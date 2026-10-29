@@ -97,6 +97,10 @@ pub struct PartHold {
     /// Of those, the beads with no held bead beside them on their own layer
     /// either: they hang in the air rather than from a neighbour.
     pub dangling_mm: f64,
+    /// The longest stretch of one path that stands on nothing, nearly
+    /// straight: how far a bead spans the air. A bridge between two walls
+    /// spans the gap between them; a row laid along a hollow spans all of it.
+    pub longest_span_mm: f64,
     /// Unheld beads in touching groups, counted.
     pub patches: usize,
     /// The largest groups first, at most [`HOLD_PATCHES_KEPT`].
@@ -109,6 +113,8 @@ pub struct PartHold {
 pub struct HoldPatch {
     pub mm: f64,
     pub dangling_mm: f64,
+    /// Its longest span, as [`PartHold::longest_span_mm`].
+    pub longest_span_mm: f64,
     /// First and last printed layer, counted from 0.
     pub layers: [usize; 2],
     /// Where its first layer starts, in the plate frame: X and Y on the bed
@@ -130,6 +136,9 @@ const HOLD_UPHILL_MM: f64 = 0.3;
 const HOLD_DOWNHILL_MM: f64 = 0.5;
 /// An unheld bead with a held bead this close on its own layer hangs from it.
 const HOLD_NEIGHBOUR_MM: f64 = 0.5;
+/// A span runs on along its path through a turn up to this sharp. A zigzag's
+/// rows are spans of their own; a curve sampled in short steps is one.
+const HOLD_SPAN_TURN_DEG: f64 = 30.0;
 
 /// How the check reads one slice: bead width, Z gap and the frame.
 #[derive(Clone, Copy, Debug)]
@@ -201,8 +210,9 @@ pub(crate) struct HoldLayer<'a> {
 /// A path's kind, its points, and the offset that puts them on the bed.
 pub(crate) type HoldBead<'a> = (PathKind, &'a [[f64; 2]], [f64; 2]);
 
-/// An unheld sample: layer, X, Y, length, and whether it dangles.
-type Unheld = (usize, f64, f64, f64, bool);
+/// An unheld sample: layer, X, Y, length, whether it dangles, and the length
+/// of the span it is in.
+type Unheld = (usize, f64, f64, f64, bool, f64);
 
 fn holds_up_part(kind: PathKind) -> bool {
     matches!(
@@ -262,6 +272,9 @@ struct Sample {
     x: f64,
     y: f64,
     mm: f64,
+    /// A span through the sample before ends here: a new path, or a turn
+    /// sharper than [`HOLD_SPAN_TURN_DEG`].
+    turn: bool,
 }
 
 fn samples(layer: &HoldLayer, part: bool) -> Vec<Sample> {
@@ -272,12 +285,17 @@ fn samples(layer: &HoldLayer, part: bool) -> Vec<Sample> {
         if (part && !is_part) || (!part && !is_support) {
             continue;
         }
+        let straight = HOLD_SPAN_TURN_DEG.to_radians().cos();
+        let mut heading: Option<[f64; 2]> = None;
         for w in points.windows(2) {
             let ([x0, y0], [x1, y1]) = (w[0], w[1]);
             let len = (x1 - x0).hypot(y1 - y0);
             if len <= 0.0 {
                 continue;
             }
+            let dir = [(x1 - x0) / len, (y1 - y0) / len];
+            let turn = heading.is_none_or(|h| h[0] * dir[0] + h[1] * dir[1] < straight);
+            heading = Some(dir);
             let n = ((len / HOLD_STEP_MM) as usize).max(1);
             for i in 0..n {
                 let f = (i as f64 + 0.5) / n as f64;
@@ -285,6 +303,7 @@ fn samples(layer: &HoldLayer, part: bool) -> Vec<Sample> {
                     x: x0 + (x1 - x0) * f + dx,
                     y: y0 + (y1 - y0) * f + dy,
                     mm: len / n as f64,
+                    turn: turn && i == 0,
                 });
             }
         }
@@ -348,12 +367,20 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
             let mut held = Vec::new();
             let mut unheld = Vec::new();
             let mut strict = 0.0;
+            // Each run of unheld samples along a path, and the run the last
+            // sample was in, if it was unheld.
+            let mut spans: Vec<f64> = Vec::new();
+            let mut open = false;
             for s in &parts[li] {
+                if s.turn {
+                    open = false;
+                }
                 let on_belt = rule
                     .belt
                     .is_some_and(|f| f.lab(s.x, s.y, z)[2] <= HOLD_BELT_MM);
                 if li == 0 || on_belt || part_rows[li - 1].hit(s.x, s.y - half, s.y + half, half) {
                     held.push([s.x, s.y]);
+                    open = false;
                     continue;
                 }
                 strict += s.mm;
@@ -369,17 +396,23 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
                 }
                 if ok {
                     held.push([s.x, s.y]);
+                    open = false;
                 } else {
-                    unheld.push((s.x, s.y, s.mm));
+                    if !open {
+                        spans.push(0.0);
+                        open = true;
+                    }
+                    *spans.last_mut().unwrap() += s.mm;
+                    unheld.push((s.x, s.y, s.mm, spans.len() - 1));
                 }
             }
             let beside = Rows::new(held.into_iter(), origin);
             let unheld = unheld
                 .into_iter()
-                .map(|(x, y, mm)| {
+                .map(|(x, y, mm, span)| {
                     let hangs =
                         beside.hit(x, y - HOLD_NEIGHBOUR_MM, y + HOLD_NEIGHBOUR_MM, neighbour);
-                    (li, x, y, mm, !hangs)
+                    (li, x, y, mm, !hangs, spans[span])
                 })
                 .collect();
             (unheld, strict)
@@ -401,11 +434,12 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
         if b.4 {
             out.dangling_mm += b.3;
         }
+        out.longest_span_mm = out.longest_span_mm.max(b.5);
     }
     // Patches: 1 mm cells in X and Y, joined to their neighbours on the same
     // layer and the next.
     let mut cells: std::collections::HashMap<(usize, i64, i64), Vec<usize>> = Default::default();
-    for (k, &(li, x, y, _, _)) in bad.iter().enumerate() {
+    for (k, &(li, x, y, ..)) in bad.iter().enumerate() {
         cells
             .entry((li, x.floor() as i64, y.floor() as i64))
             .or_default()
@@ -453,7 +487,7 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .expect("a patch has a bead");
-            let (li, x, y, _, _) = bad[first];
+            let (li, x, y, ..) = bad[first];
             HoldPatch {
                 mm: members.iter().map(|&k| bad[k].3).sum(),
                 dangling_mm: members
@@ -461,6 +495,7 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
                     .filter(|&&k| bad[k].4)
                     .map(|&k| bad[k].3)
                     .sum(),
+                longest_span_mm: members.iter().map(|&k| bad[k].5).fold(0.0, f64::max),
                 layers: [
                     layers[li].index,
                     layers[members.iter().map(|&k| bad[k].0).max().unwrap_or(li)].index,
@@ -1020,6 +1055,22 @@ mod tests {
         assert!((hold.unheld_mm - 20.0).abs() < 1e-9, "{hold:?}");
         assert!((hold.dangling_mm - 10.0).abs() < 1e-9, "{hold:?}");
         assert_eq!(hold.patches, 2, "{hold:?}");
+    }
+
+    #[test]
+    fn a_span_runs_along_a_path_until_it_lands_or_turns() {
+        // Over a floor from X 0 to 3: a row along X spans the 6.8 mm past it
+        // and its reach, and a zigzag's rows across Y are spans of 2 mm each.
+        let floor: Vec<_> = (0..20)
+            .map(|k| (PathKind::Solid, vec![[0.0, k as f64 * 0.4 - 4.0], [3.0, k as f64 * 0.4 - 4.0]]))
+            .collect();
+        let along = check(&[floor.clone(), vec![(PathKind::GapFill, line(0.0))]], false);
+        assert!((along.longest_span_mm - 6.8).abs() < 0.11, "{along:?}");
+        assert_eq!(along.largest[0].longest_span_mm, along.longest_span_mm);
+        let zigzag = vec![[5.0, 0.0], [5.0, 2.0], [5.4, 2.0], [5.4, 0.0], [5.8, 0.0], [5.8, 2.0]];
+        let across = check(&[floor, vec![(PathKind::Bridge, zigzag)]], false);
+        assert!((across.unheld_mm - 6.8).abs() < 0.11, "{across:?}");
+        assert!((across.longest_span_mm - 2.0).abs() < 0.11, "{across:?}");
     }
 
     #[test]

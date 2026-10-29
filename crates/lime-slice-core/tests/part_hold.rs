@@ -175,6 +175,8 @@ fn assert_bridged_across(part: &PartHold, bridges: &[(usize, f64)]) {
     assert!(!bridges.is_empty(), "{part:?}");
     let longest = bridges.iter().map(|b| b.1).fold(0.0, f64::max);
     assert!(longest < 3.0, "longest bridge row {longest:.2} mm");
+    assert!(part.longest_span_mm < 3.0, "{part:?}");
+    assert!(part.largest[0].longest_span_mm < 3.0, "{part:?}");
     let layer = bridges[0].0;
     assert!(bridges.iter().all(|b| b.0 == layer), "{bridges:?}");
     assert_eq!(part.patches, 1, "{part:?}");
@@ -211,6 +213,9 @@ fn an_arm_born_in_one_nozzle_plane_stands_on_nothing() {
     assert!(lip.layers[1] - lip.layers[0] <= 3, "{part:?}");
     assert!(lip.at[2] > 11.0 && lip.at[2] < 23.0, "{part:?}");
     assert!(part.dangling_mm > 0.5 * lip.mm, "{part:?}");
+    // Its rows run across the 20 mm arm with nothing under them.
+    assert!(lip.longest_span_mm > 15.0, "{part:?}");
+    assert_eq!(part.longest_span_mm, lip.longest_span_mm, "{part:?}");
 }
 
 #[test]

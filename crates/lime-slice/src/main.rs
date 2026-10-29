@@ -1496,11 +1496,12 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
     );
     let h = &a.part_hold;
     println!(
-        "audit  part beads {:.0} mm  no bead under {:.0} mm  stand on nothing {:.1} mm  dangling {:.1} mm  patches {}{}",
+        "audit  part beads {:.0} mm  no bead under {:.0} mm  stand on nothing {:.1} mm  dangling {:.1} mm  longest span {:.1} mm  patches {}{}",
         h.part_mm,
         h.no_bead_under_mm,
         h.unheld_mm,
         h.dangling_mm,
+        h.longest_span_mm,
         h.patches,
         h.largest
             .first()

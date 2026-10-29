@@ -366,7 +366,7 @@ Each coupon is sliced on the IR3 V2 preset with PETG, 0.4 mm and 0.2 mm layers, 
 **Where it shows:**
 - `SliceAudit.part_hold`, printed by the command line's `--audit`.
 - A request field `partHold`, omitted when off, so other requests keep their cache keys. The reply then carries `partHold`. Only the first belt copy is read.
-- The MCP sets `partHold` on every `slice_start`, and `gcode_summary` returns `standsOnNothing {unheldMm, danglingMm, partMm, patches, largest[5]}`. The slice guide says what it means.
+- The MCP sets `partHold` on every `slice_start`, and `gcode_summary` returns `standsOnNothing {unheldMm, danglingMm, longestSpanMm, partMm, patches, largest[5]}`. `longestSpanMm`, on the whole slice and on each patch, is the longest stretch of one path over nothing, through turns up to 30°: a bridge between walls reads a few mm, a row laid along a hollow its whole length. The slice guide says what it means.
 - It reads the emitted layers after the plan. Golden is byte-identical: 54 of 54 rows against the newest stored run (`bb09342b`). The 6 rows of the company's rear cover were left out of both sides.
 
 **It matches `pheld.py`.** The diagnosis script and the engine read the same G-code of a synthetic wall with an arm on the IR3 V2, at three underside angles, with supports off and with floor trees. The results:
