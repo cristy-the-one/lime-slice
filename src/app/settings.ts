@@ -592,7 +592,9 @@ function controlHtml(spec: ControlSpec, rules: Rules, ctx: SchemaContext): strin
     return `<label class="${cls} range" ${attrs} id="${spec.id}Label">${label}<output class="row-out" for="${spec.id}">${value}%</output><input id="${spec.id}" type="range" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}" /></label>`;
   }
   const placeholder = spec.placeholder ? ` placeholder="${escapeHtml(spec.placeholder(state))}"` : "";
-  return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="number" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}"${placeholder} /></label>`;
+  const note = refusedNoteHtml(spec);
+  const described = note ? ` aria-invalid="true" aria-describedby="${spec.id}Note"` : "";
+  return `<label class="${cls}" ${attrs}>${label}<input id="${spec.id}" type="number" min="${spec.kind.min}" max="${max}" step="${spec.kind.step}" value="${value}"${placeholder}${described} />${note}</label>`;
 }
 
 function tipAttr(tip?: string) {
@@ -1464,11 +1466,62 @@ function readNumber(spec: ControlSpec, raw: string): number {
   return typeof fallback === "number" ? fallback : 0;
 }
 
-/** An Auto-capable box shows the value the setting kept, so a typed 0 that the engine cannot print shows as the 1 it prints. */
+/** The range an Auto box takes, or null for a box that is not one. */
+function autoRange(spec: ControlSpec): { min: number; max: number } | null {
+  if (!spec.placeholder || spec.kind.type !== "number") return null;
+  return { min: spec.kind.min, max: resolveMax(spec.kind, schemaContext()) ?? Infinity };
+}
+
+/** Typed text an Auto box refuses: a number outside its range. Empty is Auto, not a refusal. */
+function outOfRange(spec: ControlSpec, raw: string): boolean {
+  const range = autoRange(spec);
+  if (!range || raw.trim() === "") return false;
+  const n = Number(raw);
+  return !Number.isFinite(n) || n < range.min || n > range.max;
+}
+
+/**
+ * The note under an Auto box that refused a typed number, by control id. It stays while the setting holds the value
+ * it went back to, so a re-render keeps it and a loaded profile that changes the setting drops it.
+ */
+const refusedNotes = new Map<string, { text: string; kept: number | boolean | string }>();
+
+function refusedNoteHtml(spec: ControlSpec): string {
+  const note = refusedNotes.get(spec.id);
+  if (!note || !spec.get || spec.get(state) !== note.kept) return "";
+  return `<span class="row-note" id="${spec.id}Note" role="status">${escapeHtml(note.text)}</span>`;
+}
+
+function showRefusedNote(t: HTMLInputElement, spec: ControlSpec) {
+  const row = t.closest(".row");
+  if (!row) return;
+  row.querySelector(".row-note")?.remove();
+  const html = refusedNoteHtml(spec);
+  if (html) {
+    row.insertAdjacentHTML("beforeend", html);
+    t.setAttribute("aria-invalid", "true");
+    t.setAttribute("aria-describedby", `${spec.id}Note`);
+  } else {
+    t.removeAttribute("aria-invalid");
+    t.removeAttribute("aria-describedby");
+  }
+}
+
+/**
+ * An Auto-capable box shows the value the setting kept, so a typed 0 that the engine cannot print shows as the 1 it prints.
+ * A number outside the box's range was never kept: the box goes back to what is, and a note under it says why.
+ */
 export function settleAutoField(t: HTMLInputElement) {
   const spec = controlById(t.id);
   if (!spec?.placeholder || !spec.get) return;
   const kept = spec.get(state);
+  const range = autoRange(spec);
+  if (range && outOfRange(spec, t.value)) {
+    refusedNotes.set(spec.id, { text: `Takes ${range.min}–${range.max}. ${t.value} was not used.`, kept });
+    t.value = String(kept);
+    showRefusedNote(t, spec);
+    return;
+  }
   if (typeof kept === "number" && Number(t.value) !== kept) t.value = String(kept);
 }
 
@@ -1632,6 +1685,9 @@ export function onSettings(ev: Event) {
     fx.scheduleAuto();
     return;
   }
+  // A number outside an Auto box's range is not kept. Leaving the box puts back the kept value with a note.
+  if (outOfRange(spec, t.value)) return;
+  if (refusedNotes.delete(spec.id)) showRefusedNote(t, spec);
   noteEdit();
   markProjectDirty();
   const value = spec.kind.type === "check" ? t.checked : spec.kind.type === "select" || spec.kind.type === "segmented" ? t.value : spec.placeholder && t.value.trim() === "" ? "" : readNumber(spec, t.value);
