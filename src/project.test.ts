@@ -695,6 +695,7 @@ const later: Partial<PresetSettings> = {
   retractSpeed: 40,
   supportAvoidance: true,
   supportStrictStacking: true,
+  supportSlowFragile: true,
   shallowSkins: true,
   solidUnderWalls: true,
   supportSource: "paint",

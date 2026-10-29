@@ -13,7 +13,7 @@ import { layerActionFields, type LayerAction } from "./layer-actions.ts";
 import { sliceOverrideFields, type OverrideDocument } from "./overrides.ts";
 import type { PresetSettings } from "./presets.ts";
 import { seamSliceField, type SeamChoice } from "./seam.ts";
-import { avoidanceSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { supportSliceFields } from "./support-interface.ts";
 import { supportSourceSliceField } from "./support-source.ts";
 import { surfaceSliceField } from "./surface-pattern.ts";
@@ -115,6 +115,7 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     supportHeightMult: settings.supportHeightMult,
     ...avoidanceSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportAvoidance),
     ...strictStackingSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportStrictStacking),
+    ...slowFragileSliceField(settings.supports && settings.supportSlowFragile),
     ...supportSliceFields({
       supports: settings.supports,
       supportStyle: settings.supportStyle,
