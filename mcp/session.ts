@@ -3110,7 +3110,7 @@ export class Session {
     if (!Number.isFinite(zMm) || zMm < 0) return { ok: false, reason: "zMm is a height in millimetres." };
     const tops = this.latest ? this.summarize(this.latest).layers.map((layer) => layer.z).filter((z) => z + 1e-9 >= zMm) : [];
     if (this.latest && tops.length === 0) return { ok: false, reason: `That is above the sliced part. The top is ${this.summarize(this.latest).layers.at(-1)?.z ?? 0} mm.` };
-    if (tops.length) zMm = Math.min(...tops);
+    if (tops.length) zMm = tops.reduce((m, z) => Math.min(m, z));
     const gcode = typeof input.gcode === "string" ? input.gcode : "";
     if (kind === "customGcode") {
       if (gcode.trim() === "") return { ok: false, reason: "A custom line needs gcode." };
