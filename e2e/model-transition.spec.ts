@@ -60,12 +60,13 @@ function lPart(volumeMm3 = 10000): MockSolid {
 
 const PART = lPart();
 const FILE = Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n");
-const CONVEX_SENTENCE = "This edge is convex. A corner wedge goes in a concave corner, on the inner side of a bend; a lip under a convex edge comes in a later step.";
+/** Upside down, the base's front edge F is a lip whose gusset would land 20 mm down the build, at the post's end: past the limit. */
+const LIP_SENTENCE = "There is nothing of the part under this lip within 20 mm along the build, so a gusset would itself start in the air. Supports or a split are the way here, or a larger maxMm.";
 
 /** What the kernel answers for a transition on the L's corner, for the op's build direction, as `corner()` works it out. */
 function wedge(op: Body): Body {
   const edges = (op.edges as unknown[]).map((edge) => (typeof edge === "number" ? edge : Number((edge as { index: number }).index)));
-  if (edges.some((edge) => edge !== CONCAVE)) return { ok: false, error: CONVEX_SENTENCE };
+  if (edges.some((edge) => edge !== CONCAVE)) return { ok: false, error: LIP_SENTENCE };
   const b = op.build as V;
   const down: V = [-b[0], -b[1], -b[2]];
   const toLayers = (n: V) => (Math.acos(Math.max(-1, Math.min(1, n[0] * down[0] + n[1] * down[1] + n[2] * down[2]))) * 180) / Math.PI;
@@ -73,7 +74,7 @@ function wedge(op: Body): Body {
   const near: V = [0, -1, 0];
   const angle = Number(op.angleDeg);
   if (toLayers(far) >= angle - 0.05) return { ok: false, error: `The flatter face here already grows at ${toLayers(far).toFixed(1)}° to the layers, as steep as the ${angle}° asked, so a wedge adds nothing. A steeper angle makes one.` };
-  if (toLayers(near) < angle - 0.05) return { ok: false, error: `Both faces here grow flatter than ${angle}° to the layers (the steeper at ${toLayers(near).toFixed(1)}°), so a wedge would itself start in the air. That is a lip, which a later step fixes; supports or a split work now.` };
+  if (toLayers(near) < angle - 0.05) return { ok: false, error: `Both faces here grow flatter than ${angle}° to the layers (the steeper at ${toLayers(near).toFixed(1)}°), so a wedge would itself start in the air. That is a lip: the Lip case puts a gusset under the flatter face, back into the part.` };
   // The new face's normal turns from the floor's toward the wall's, a right angle apart, until it makes the angle asked.
   const turn = (t: number): V => [0, -Math.sin(t), Math.cos(t)];
   let [lo, hi] = [0, Math.PI / 2];
@@ -86,7 +87,7 @@ function wedge(op: Body): Body {
   const reach = op.size === "face" ? 20 : Number(op.size);
   const nearReach = reach * Math.tan(fromFar);
   const round = (value: number) => Math.round(value * 1000) / 1000;
-  const row = { edge: CONCAVE, case: "corner", path: op.size === "face" ? "prism" : "chamfer", farFace: FLOOR, nearFace: WALL, farDeg: round(toLayers(far)), nearDeg: round(toLayers(near)), normal: turn(fromFar).map(round), angleToLayersDeg: angle, reachMm: reach, nearReachMm: round(nearReach), farEndMm: 20, volumeMm3: round(0.5 * reach * nearReach * WIDTH) };
+  const row = { edge: CONCAVE, case: "corner", path: op.size === "face" ? "prism" : "chamfer", material: "add", farFace: FLOOR, nearFace: WALL, farDeg: round(toLayers(far)), nearDeg: round(toLayers(near)), normal: turn(fromFar).map(round), angleToLayersDeg: angle, reachMm: reach, nearReachMm: round(nearReach), farEndMm: 20, volumeMm3: round(0.5 * reach * nearReach * WIDTH) };
   return { ok: true, transition: [row] };
 }
 
@@ -139,7 +140,7 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: path.join(out, name) });
 }
 
-test("the Print transition card picks an edge, previews the wedge, refuses a convex edge, applies, edits, and re-aims a stale step", async ({ page }) => {
+test("the Print transition card picks an edge, previews the wedge, refuses a lip with nothing under it, applies, edits, and re-aims a stale step", async ({ page }) => {
   test.setTimeout(180_000);
   const tree = await openPart(page);
   // Printed upside down: the base's top becomes an underside hanging off the post.
@@ -159,18 +160,19 @@ test("the Print transition card picks an edge, previews the wedge, refuses a con
   await page.locator("#modelMenuTransition").click();
   await expect(card(page)).toBeVisible();
   await expect(page.locator("#modelPanelTitle")).toHaveText("Print transition");
-  await expect(page.locator("#modelTransEdges")).toHaveText("Pick an edge in a concave corner. Shift-click adds edges.");
+  await expect(page.locator("#modelTransEdges")).toHaveText("Pick an edge in a concave corner, or a lip's lowest edge. Shift-click adds edges.");
   await expect(page.locator("#modelApply")).toBeDisabled();
   await expect(page.locator("#modelTransAngle")).toHaveValue("45");
   await expect(page.locator("#modelTransMm")).toHaveValue("2");
   await expect(page.locator("#modelTransSource")).toHaveText("From this pose on the Lime 220, its bed.");
-  await expect(page.locator("#modelTransLip")).toHaveAttribute("aria-disabled", "true");
-  await expect(page.locator("#modelTransCut")).toHaveAttribute("aria-disabled", "true");
-  await expect(page.locator("#modelTransLater")).toContainText("Lip: coming in a later version.");
+  // Material, Add or Cut, is a lip's only: hidden until an edge is found a lip.
+  await expect(page.locator("#modelTransModeRow")).toBeHidden();
 
   // The corner: the green wedge and its numbers.
   await page.mouse.click(at.get(CONCAVE)!.x, at.get(CONCAVE)!.y);
   await expect(page.locator("#modelTransEdges")).toHaveText("1 edge. Shift-click adds edges.");
+  await expect(page.locator("#modelTransFound")).toHaveText("Found a corner.");
+  await expect(page.locator("#modelTransCorner")).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#modelTransFace")).toHaveText("45° to the layers, 45° to the bed");
   await expect(page.locator("#modelTransFar")).toHaveText("0° to the layers");
   await expect(page.locator("#modelTransReach")).toHaveText("2 mm along the flatter face, 2 mm up the steeper");
@@ -188,9 +190,9 @@ test("the Print transition card picks an edge, previews the wedge, refuses a con
   expect(probed.printer).toBe("lime-220");
   await shot(page, "card-corner.png");
 
-  // A convex edge: the kernel's sentence in place of the ghost, and Apply stays off.
+  // The base's front edge, a lip with nothing under it within 20 mm: the kernel's sentence in place of the ghost, and Apply stays off.
   await page.mouse.click(at.get(CONVEX)!.x, at.get(CONVEX)!.y);
-  await expect(page.locator("#modelTransStatus")).toHaveText(CONVEX_SENTENCE);
+  await expect(page.locator("#modelTransStatus")).toHaveText(LIP_SENTENCE);
   await expect(page.locator("#modelTransNumbers")).toBeHidden();
   await expect(page.locator("#model")).not.toHaveAttribute("data-ghost", /.+/);
   await expect(page.locator("#modelApply")).toBeDisabled();
