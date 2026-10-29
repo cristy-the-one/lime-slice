@@ -1,5 +1,6 @@
 import { avoidanceSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { recipeKey } from "./slice-action.ts";
+import { shallowSkinsSliceField } from "./slice-request.ts";
 
 let failed = 0;
 
@@ -23,6 +24,10 @@ check("slow fragile supports off is omitted", Object.keys(slowFragileSliceField(
 check("slow fragile supports on is sent", slowFragileSliceField(true).supportSlowFragile === true);
 check("omitted slow fragile supports leaves the recipe key", recipeKey({ ...base, ...slowFragileSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
 check("asking for slow fragile supports changes the recipe", recipeKey({ ...base, ...slowFragileSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
+check("shallow skins off is omitted", Object.keys(shallowSkinsSliceField(false)).length === 0);
+check("shallow skins on is sent", shallowSkinsSliceField(true).shallowSkins === true);
+check("omitted shallow skins leaves the recipe key", recipeKey({ ...base, ...shallowSkinsSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
+check("asking for shallow skins changes the recipe", recipeKey({ ...base, ...shallowSkinsSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
 
 if (failed) {
   console.error(`${failed} failed`);

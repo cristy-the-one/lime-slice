@@ -245,6 +245,12 @@ pub struct SliceRequest {
     /// Combine sparse infill on speed and low-weight blends. Default on.
     #[serde(default = "default_true")]
     pub infill_combine: bool,
+    /// Find skin on slopes so shallow that each layer exposes a strip
+    /// thinner than the walls: the strips of the shell depth are joined
+    /// before the walls are taken off. More solid infill and a longer print.
+    /// Left out when off, so a request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shallow_skins: bool,
     /// Route travels inside the part and retract only when the route is blocked.
     #[serde(default = "default_true")]
     pub combing: bool,
@@ -454,6 +460,8 @@ pub struct SliceSettings {
     pub support_source: SupportSource,
     pub support_height_mult: f64,
     pub infill_combine: bool,
+    /// Skin on shallow slopes from the strips of the whole shell depth.
+    pub shallow_skins: bool,
     pub combing: bool,
     pub feature_speeds: bool,
     pub seam: SeamPlacement,
@@ -579,6 +587,7 @@ impl Default for SliceSettings {
             support_source: SupportSource::Auto,
             support_height_mult: 1.0,
             infill_combine: true,
+            shallow_skins: false,
             combing: true,
             feature_speeds: true,
             seam: SeamPlacement::Blend,
@@ -703,6 +712,7 @@ impl SliceSettings {
                 req.support_height_mult.clamp(0.0, 4.0)
             },
             infill_combine: req.infill_combine && !req.classic,
+            shallow_skins: req.shallow_skins && !req.classic,
             combing: req.combing && !req.classic,
             feature_speeds: req.feature_speeds && !req.classic,
             seam: req.seam,
@@ -891,10 +901,11 @@ impl SliceSettings {
         } else {
             "supports off".into()
         };
-        let combine = if self.infill_combine {
-            "infill combine on"
-        } else {
-            "infill combine off"
+        let combine = match (self.infill_combine, self.shallow_skins) {
+            (true, false) => "infill combine on",
+            (false, false) => "infill combine off",
+            (true, true) => "infill combine on; skin on shallow slopes",
+            (false, true) => "infill combine off; skin on shallow slopes",
         };
         let scarf = format!(
             "scarf {} {:.1} mm / {} steps",
@@ -4704,7 +4715,7 @@ impl Contours {
         let roof_started = Instant::now();
         let wall_stack = settings.line_width * fewest_walls as f64;
         let roofs = roof_distances(&bands, &contours, wall_stack);
-        let skins = skin_regions(&bands, &contours, wall_stack);
+        let skins = skin_regions(&bands, &contours, wall_stack, settings.shallow_skins);
         Self {
             bands,
             contours,
@@ -6149,26 +6160,47 @@ fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) 
 /// floor whose underside is within the bottom depth below its top, and its
 /// top skin every roof within the top depth above it, each clipped to the
 /// layer. Inside a closed part neither reaches, so it prints as interior.
+///
+/// With `shallow`, a floor or roof thinner than the walls is kept, and the
+/// walls are taken off the joined skin instead. A slope so shallow that each
+/// layer steps past half the walls exposes such a strip on every layer: alone
+/// each is closed by the walls, but the strips of the shell depth together
+/// make a skin, and without it the slab between the walls prints hollow.
 fn skin_regions(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     wall_stack: f64,
+    shallow: bool,
 ) -> [Vec<Arc<Skin>>; 2] {
     let n = bands.len();
+    let exposed = |current: &[Loop], other: &[Loop]| {
+        if shallow {
+            exposed_strips(current, other)
+        } else {
+            exposed_core(current, other, wall_stack)
+        }
+    };
     let floors: Vec<Vec<Loop>> = (0..n)
         .into_par_iter()
         .map(|i| match i {
             0 => contours[0].clone(),
-            _ => exposed_core(&contours[i], &contours[i - 1], wall_stack),
+            _ => exposed(&contours[i], &contours[i - 1]),
         })
         .collect();
     let roofs: Vec<Vec<Loop>> = (0..n)
         .into_par_iter()
         .map(|i| match contours.get(i + 1) {
             None => contours[i].clone(),
-            Some(above) => exposed_core(&contours[i], above, wall_stack),
+            Some(above) => exposed(&contours[i], above),
         })
         .collect();
+    let joined = |skin: Vec<Loop>| {
+        if shallow {
+            cored(skin, wall_stack)
+        } else {
+            skin
+        }
+    };
     let at = |(bottom, top): (f64, f64)| -> Vec<Arc<Skin>> {
         (0..n)
             .into_par_iter()
@@ -6190,8 +6222,8 @@ fn skin_regions(
                     over.extend(roofs[r].iter().cloned());
                 }
                 Arc::new(Skin {
-                    bottom: clipped_union(&contours[i], under),
-                    top: clipped_union(&contours[i], over),
+                    bottom: joined(clipped_union(&contours[i], under)),
+                    top: joined(clipped_union(&contours[i], over)),
                 })
             })
             .collect()
@@ -6231,6 +6263,30 @@ fn exposed_core(current: &[Loop], other: &[Loop], wall_stack: f64) -> Vec<Loop> 
     }
     let exposed = boolean_diff(current, other);
     island_loops(&exposed)
+        .into_iter()
+        .filter(|island| {
+            let core = offset_loops(island, -wall_stack * 0.5);
+            core.iter().map(|l| signed_area(l)).sum::<f64>() >= SKIN_CORE_MM2
+        })
+        .flatten()
+        .collect()
+}
+
+/// Every part of `current` that `other` does not cover, however thin.
+fn exposed_strips(current: &[Loop], other: &[Loop]) -> Vec<Loop> {
+    if current.is_empty() || other.is_empty() {
+        return current.to_vec();
+    }
+    boolean_diff(current, other)
+}
+
+/// The islands of `skin` with a core past half the walls, as `exposed_core`
+/// keeps them.
+fn cored(skin: Vec<Loop>, wall_stack: f64) -> Vec<Loop> {
+    if skin.is_empty() {
+        return skin;
+    }
+    island_loops(&skin)
         .into_iter()
         .filter(|island| {
             let core = offset_loops(island, -wall_stack * 0.5);
@@ -8655,6 +8711,58 @@ mod tests {
         assert_eq!(full.sanity.extrusion_moves, quiet.sanity.extrusion_moves);
         assert!((full.estimate.seconds - quiet.estimate.seconds).abs() < 1e-6);
         assert!((full.estimate.filament_g - quiet.estimate.filament_g).abs() < 1e-9);
+    }
+
+    /// A slab 5 mm long in each layer that steps `step` mm a layer, as a
+    /// down ramp nearly flat against the belt's layers does.
+    fn sliding_slab(step: f64) -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
+        let n = 24;
+        let bands = (0..n)
+            .map(|i| LayerBand {
+                index: i,
+                z: 0.2 * (i + 1) as f64,
+                height: 0.2,
+            })
+            .collect();
+        let contours = (0..n)
+            .map(|i| {
+                let y0 = step * i as f64;
+                vec![vec![
+                    [0.0, y0],
+                    [100.0, y0],
+                    [100.0, y0 + 5.0],
+                    [0.0, y0 + 5.0],
+                ]]
+            })
+            .collect();
+        (bands, contours)
+    }
+
+    fn area(loops: &[Loop]) -> f64 {
+        loops.iter().map(|l| signed_area(l)).sum()
+    }
+
+    #[test]
+    fn shallow_skins_find_the_skin_of_a_slab_that_steps_past_the_walls() {
+        let (bands, contours) = sliding_slab(0.52);
+        let wall_stack = 0.9;
+        let off = &skin_regions(&bands, &contours, wall_stack, false)[0][12];
+        assert!(
+            area(&off.top) < 1e-6 && area(&off.bottom) < 1e-6,
+            "without it the slab is all interior"
+        );
+        let on = &skin_regions(&bands, &contours, wall_stack, true)[0][12];
+        // Three strips of 0.52 mm or more over each 0.6 mm shell depth.
+        let least = 100.0 * 3.0 * 0.52 - 1.0;
+        assert!(area(&on.top) >= least, "top {}", area(&on.top));
+        assert!(area(&on.bottom) >= least, "bottom {}", area(&on.bottom));
+    }
+
+    #[test]
+    fn shallow_skins_leave_a_steep_slope_to_the_walls() {
+        let (bands, contours) = sliding_slab(0.1);
+        let on = &skin_regions(&bands, &contours, 0.9, true)[0][12];
+        assert!(area(&on.top) < 1e-6 && area(&on.bottom) < 1e-6);
     }
 }
 
