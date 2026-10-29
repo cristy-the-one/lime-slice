@@ -341,20 +341,19 @@ const REPEATABLE = new Set(["boolean", "extrude", "revolve", "pocket", "boss", "
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
 export const OP_SCHEMA = op;
 
+const opWords = new Set<string>();
+/** Adds every enum value under `node` to OP_WORDS. */
+function addOpWords(node: unknown): void {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) return node.forEach(addOpWords);
+  for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
+    if (key === "enum" && Array.isArray(child)) child.forEach((word) => typeof word === "string" && opWords.add(word));
+    else addOpWords(child);
+  }
+}
 /** Every enum value in the op schema: text an op field may hold, never an expression. */
-export const OP_WORDS: ReadonlySet<string> = (() => {
-  const words = new Set<string>();
-  const walk = (node: unknown): void => {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) return node.forEach(walk);
-    for (const [key, child] of Object.entries(node as Record<string, unknown>)) {
-      if (key === "enum" && Array.isArray(child)) child.forEach((word) => typeof word === "string" && words.add(word));
-      else walk(child);
-    }
-  };
-  walk(op);
-  return words;
-})();
+export const OP_WORDS: ReadonlySet<string> = opWords;
+addOpWords(op);
 
 const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op; guide {kind} has a kind's fields.` });
 
@@ -723,7 +722,7 @@ const partitionOp = {
 };
 (op.oneOf as unknown[]).push(partitionOp);
 
-/** --- Print transitions (docs/plan-belt-transitions.md, step 2). The corner wedge on straight edges. */
+/** --- Print transitions (docs/plan-belt-transitions.md, steps 2 and 4). The corner wedge and the lip's gusset or ramp on straight edges. */
 const transitionOp = {
   type: "object",
   additionalProperties: false,
@@ -731,15 +730,19 @@ const transitionOp = {
   properties: {
     kind: { const: "transition" },
     edges: edgeList,
-    mode: { enum: ["auto", "add", "cut"], description: "auto adds; cut is for lips, not built yet." },
+    mode: { enum: ["auto", "add", "cut"], description: "auto adds; cut ramps a lip's underside." },
+    case: { enum: ["lip", "corner"], description: "Default found per edge." },
     angleDeg: { type: "number", exclusiveMinimum: 0, maximum: 85, description: "New face to the layers. Default the support angle." },
-    size: { description: "Reach along the flatter face, mm (default 2), or \"face\" to its end.", oneOf: [{ const: "face" }, { type: "number", exclusiveMinimum: 0, maximum: 200 }] },
-    maxMm: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Refuse a wedge reaching further. Default 20." },
+    size: { description: "Corner: reach along the flatter face, mm (default 2), or \"face\" to its end.", oneOf: [{ const: "face" }, { type: "number", exclusiveMinimum: 0, maximum: 200 }] },
+    maxMm: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Refuse a wedge or gusset reaching further. Default 20." },
+    floorMm: { type: "number", exclusiveMinimum: 0, maximum: 20, description: "Cut: least left at the lip's edge. Default 2 nozzles." },
     build: { description: "Build direction, model space. Default from the pose and the plate's printer; null re-aims.", oneOf: [vec3, { type: "null" }] },
     label,
   },
 };
 (op.oneOf as unknown[]).push(transitionOp);
+// The kinds pushed after OP_WORDS was first filled: their words ("lip", "corner") are text too, not expressions.
+addOpWords(op);
 
 /**
  * One line per op kind. tools/list shows model_apply's op as these lines and the kind names, not every kind's full
@@ -770,7 +773,7 @@ export const OP_SUMMARY: Record<string, string> = {
   text: "text {text, height, depth, face, at}: raised or cut letters.",
   array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
   ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
-  transition: "transition {edges, angleDeg, size}: a wedge in a concave corner, angleDeg to the layers.",
+  transition: "transition {edges, mode, angleDeg, size}: a wedge in a concave corner or a gusset under a lip, angleDeg to the layers.",
 };
 
 /** The op branch of one kind, as the server checks it. */

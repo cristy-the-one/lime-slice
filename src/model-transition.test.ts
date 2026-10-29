@@ -6,8 +6,14 @@ import { eulerOrient } from "./mesh-place.ts";
 import { editRefusal } from "./model-edit.ts";
 import { newTree, opLabel, withChild, type TransitionOp } from "./model-tree.ts";
 import {
+  CUT_LIP_ONLY,
+  PICK_EDGE,
   TRANSITION_SIZE_MM,
   cardAimed,
+  cardCase,
+  foundWords,
+  transitionFloorMm,
+  transitionSentence,
   cardFromTransition,
   keptKey,
   newTransitionCard,
@@ -53,7 +59,7 @@ const card = newTransitionCard([7, 3], 45, ir3);
 const op = transitionFromCard(card);
 check("a new card's op has the defaults and the pose", op.angleDeg === 45 && op.size === 2 && op.beltDeg === 45 && op.printer === "ideaformer-ir3-v2" && close(op.build, [0, -s, s], 1e-9) && JSON.stringify(op.edges) === "[7,3]", JSON.stringify(op));
 check("a flat card stores no belt angle", !("beltDeg" in transitionFromCard(newTransitionCard([1], 45, flat))));
-check("a card with no edge says to pick one", transitionCardRefusal(newTransitionCard([], 45, ir3), 45) === "Pick an edge in a concave corner. Shift-click adds edges.");
+check("a card with no edge says to pick one", transitionCardRefusal(newTransitionCard([], 45, ir3), 45) === PICK_EDGE && /a lip's lowest edge/.test(PICK_EDGE));
 check("an angle under the limit is refused with the limit", /at least 45°/.test(transitionCardRefusal({ ...card, angleDeg: 30 }, 45) ?? ""));
 check("an angle past 85° is refused", /at most 85°/.test(transitionCardRefusal({ ...card, angleDeg: 86 }, 45) ?? ""));
 check("a card that works has no refusal", transitionCardRefusal(card, 45) === null && transitionCardRefusal({ ...card, size: "face" }, 45) === null);
@@ -110,6 +116,28 @@ const zs = soup.filter((_, i) => i % 3 === 2);
 check("it runs 2 mm along the floor, away from the wall", Math.min(...ys) === 10 && Math.max(...ys) === 12, `${Math.min(...ys)} ${Math.max(...ys)}`);
 check("and 3 mm up the wall", Math.min(...zs) === 10 && Math.max(...zs) === 13);
 check("a zero reach draws nothing", wedgeSoup([0, 0, 0], [1, 0, 0], [0, 0, 1], [0, 1, 0], 0, 1).length === 0);
+
+// --- Step 4, lips: the case found or chosen, Add or Cut, the wall floor, the kernel's lip rows and the history row.
+check("the wall floor is twice the nozzle", transitionFloorMm(0.4) === 0.8 && transitionFloorMm(0.6) === 1.2 && transitionFloorMm(null) === 0.8);
+const fresh = newTransitionCard([4], 45, ir3, 1.2);
+check("a new card adds, with each edge's case as found", fresh.case === null && fresh.mode === "add" && fresh.floorMm === 1.2);
+check("its op leaves out the case, the mode and the floor", !("case" in transitionFromCard(fresh)) && !("mode" in transitionFromCard(fresh)) && !("floorMm" in transitionFromCard(fresh)));
+const cutCard = { ...fresh, case: "lip" as const, mode: "cut" as const };
+const cutOp = transitionFromCard(cutCard);
+check("a cut lip carries its case, its mode and its floor", cutOp.case === "lip" && cutOp.mode === "cut" && cutOp.floorMm === 1.2, JSON.stringify(cutOp));
+check("a cut reopens as a cut, with its own floor", (() => { const again = cardFromTransition(cutOp, [4], 45, 0.8); return again.mode === "cut" && again.case === "lip" && again.floorMm === 1.2 && sameTransitionCard(again, cutCard); })());
+check("cut on a corner is refused on the card", transitionCardRefusal({ ...fresh, case: "corner", mode: "cut" }, 45) === CUT_LIP_ONLY);
+check("the case shown is the one chosen, else the one every edge was found", cardCase({ case: "corner" }, ["lip"]) === "corner" && cardCase({ case: null }, ["lip", "lip"]) === "lip" && cardCase({ case: null }, ["lip", "corner"]) === null && cardCase({ case: null }, null) === null);
+check("what was found, in words", foundWords(["lip"]) === "a lip" && foundWords(["corner", "corner"]) === "2 corners" && foundWords(["lip", "corner", "corner"]) === "1 lip and 2 corners");
+const lipRows = readTransitionRows([{ edge: 4, case: "lip", path: "gusset", material: "add", firstEdge: 4, farFace: 3, nearFace: 6, farDeg: 0, nearDeg: 90, normal: [0, 0, -1], angleToLayersDeg: 45, depthMm: 6, reachMm: 6, nearReachMm: 0, heightMm: 3, landingMm: 4.243, volumeMm3: 180, soup: [0, 0, 0, 1, 0, 0, 0, 1, 0] }], IDENTITY);
+const lipRow = lipRows?.[0];
+check("a lip row is read with its gusset's numbers and triangles", lipRow?.case === "lip" && lipRow.material === "add" && lipRow.heightMm === 3 && lipRow.landingMm === 4.243 && lipRow.leftMm === null && lipRow.soup?.length === 9, JSON.stringify(lipRow));
+check("a corner row has no triangles and reads as a corner", rows?.[0]?.case === "corner" && rows[0]!.soup === null && rows[0]!.material === "add");
+check("the gusset in words", transitionSentence(lipRow!, true) === "Edge 4: a lip 6 mm deep, its underside at 0° to the layers. The gusset runs back into the part at 45° to the layers and 0° to the belt, 3 mm down the build, landing 4.24 mm from the edge and adding 180 mm³.", transitionSentence(lipRow!, true));
+const rampRow = { ...lipRow!, path: "ramp", material: "cut" as const, landingMm: null, leftMm: 6 };
+check("the ramp in words", transitionSentence(rampRow, true) === "Edge 4: a lip 6 mm deep, its underside at 0° to the layers. The ramp runs from its root to its first edge, at 45° to the layers and 0° to the belt, leaving 6 mm there and removing 180 mm³.", transitionSentence(rampRow, true));
+check("a step of lips names lips and no size", opLabel({ ...op, edges: [1], case: "lip" }) === "Print transition (1 lip), 45°" && opLabel({ ...op, case: "lip" }) === "Print transition (2 lips), 45°");
+check("a cut says so", opLabel({ ...op, edges: [1], mode: "cut", case: "lip" }) === "Print transition (1 lip), cut, 45°");
 
 // --- History: one row, plural right, and the pencil is no longer refused.
 check("the row says one edge", opLabel(op).startsWith("Print transition (2 edges), 45°, 2 mm"), opLabel(op));

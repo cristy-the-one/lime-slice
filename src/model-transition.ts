@@ -19,8 +19,12 @@ export const TRANSITION_STALE_DEG = 1;
 export const TRANSITION_SKIN_NOTE = "Skin on shallow slopes is on: on the test coupons, wedges reaching 5 mm or more left more rows hanging than no wedge with it on. Slice and read standsOnNothing before keeping it.";
 /** The card's form of the same warning, which names the app's setting and check rather than the MCP's field. */
 export const TRANSITION_SKIN_CARD = "Skin on shallow slopes is on. On the test coupons, wedges reaching 5 mm or more left more rows hanging than no wedge with it on. A size of 3 mm or less is safe.";
-export const LIP_LATER = "Lip: coming in a later version.";
-export const CUT_LATER = "Cut comes with lips, in a later version.";
+/** Cut is offered for a lip only (plan decision 4): cutting a corner thins the wall on the bend's other side. */
+export const CUT_LIP_ONLY = "Cut is for a lip: its underside becomes a ramp. A corner takes Add.";
+/** A lip's ramp leaves at least this many nozzle widths at its first edge: the wall floor. */
+export const TRANSITION_FLOOR_NOZZLES = 2;
+/** The card's prompt with no edge picked. */
+export const PICK_EDGE = "Pick an edge in a concave corner, or a lip's lowest edge. Shift-click adds edges.";
 /** Step 6 brings chains of tangent edges; until then a click takes one straight edge. */
 export const STRAIGHT_ONLY = "Straight edges between flat faces for now. Chains of edges come in a later version.";
 
@@ -86,6 +90,12 @@ export function transitionSkinWarns(shallowSkins: boolean, reachMm: number): boo
   return shallowSkins && reachMm > TRANSITION_SIZE_MM + 1;
 }
 
+/** The wall floor a lip's ramp keeps, for the plate machine's nozzle: twice its width (0.4 mm when unknown). */
+export function transitionFloorMm(nozzleMm: number | null | undefined): number {
+  const nozzle = typeof nozzleMm === "number" && nozzleMm > 0 ? nozzleMm : 0.4;
+  return Math.round(TRANSITION_FLOOR_NOZZLES * nozzle * 1000) / 1000;
+}
+
 /** "From this pose on the IR3 V2, belt 45°", or "…, its bed" on a flat printer. */
 export function transitionSource(printerName: string, beltDeg: number | null, made = false): string {
   const where = beltDeg != null ? `belt ${formatMm(beltDeg)}°` : "its bed";
@@ -96,12 +106,22 @@ export function transitionSource(printerName: string, beltDeg: number | null, ma
 // The card's numbers.
 // ---------------------------------------------------------------------------
 
-/** What the card holds: edges by index on the solid shown, and everything the step stores. `mm` is kept while To the end of the face is on. */
+/** A case: a concave corner gets a wedge, a lip a gusset (or a ramp, cut). */
+export type TransitionCase = "corner" | "lip";
+
+/**
+ * What the card holds: edges by index on the solid shown, and everything the step stores. `mm` is kept while To the end
+ * of the face is on. `case` is the user's choice, null while each edge keeps the case the kernel finds; `mode` is Add or
+ * Cut; `floorMm` the wall floor a cut keeps, from the plate machine's nozzle.
+ */
 export interface TransitionCard {
   edges: number[];
   angleDeg: number;
   size: number | "face";
   mm: number;
+  case: TransitionCase | null;
+  mode: "add" | "cut";
+  floorMm: number;
   build: Vec3;
   beltDeg?: number;
   orient: number[];
@@ -109,19 +129,22 @@ export interface TransitionCard {
   maxMm?: number;
 }
 
-/** A new card on `edges`, with the MCP's defaults: the support limit and 2 mm, aimed from `pose`. */
-export function newTransitionCard(edges: readonly number[], supportAngle: number, pose: TransitionPose): TransitionCard {
-  return { edges: [...edges], angleDeg: transitionAngleLimit(supportAngle), size: TRANSITION_SIZE_MM, mm: TRANSITION_SIZE_MM, ...transitionPoseFields(pose) };
+/** A new card on `edges`, with the MCP's defaults: the support limit, 2 mm, Add, each edge's case as found, aimed from `pose`. */
+export function newTransitionCard(edges: readonly number[], supportAngle: number, pose: TransitionPose, floorMm = transitionFloorMm(null)): TransitionCard {
+  return { edges: [...edges], angleDeg: transitionAngleLimit(supportAngle), size: TRANSITION_SIZE_MM, mm: TRANSITION_SIZE_MM, case: null, mode: "add", floorMm, ...transitionPoseFields(pose) };
 }
 
 /** The card a stored step reopens: its own numbers, its stored pose, and `edges`, the step's edges found again on the solid. */
-export function cardFromTransition(op: TransitionOp, edges: readonly number[], supportAngle: number): TransitionCard {
+export function cardFromTransition(op: TransitionOp, edges: readonly number[], supportAngle: number, floorMm = transitionFloorMm(null)): TransitionCard {
   const size = op.size ?? TRANSITION_SIZE_MM;
   return {
     edges: [...edges],
     angleDeg: op.angleDeg ?? transitionAngleLimit(supportAngle),
     size,
     mm: typeof size === "number" ? size : TRANSITION_SIZE_MM,
+    case: op.case ?? null,
+    mode: op.mode === "cut" ? "cut" : "add",
+    floorMm: op.floorMm ?? floorMm,
     build: [...op.build] as Vec3,
     ...(op.beltDeg != null ? { beltDeg: op.beltDeg } : {}),
     orient: [...(op.orient ?? [1, 0, 0, 0, 1, 0, 0, 0, 1])],
@@ -130,7 +153,7 @@ export function cardFromTransition(op: TransitionOp, edges: readonly number[], s
   };
 }
 
-/** The op the card applies, in the solid's frame. */
+/** The op the card applies, in the solid's frame. A cut carries its wall floor; Add and a found case are left out, as the MCP leaves them. */
 export function transitionFromCard(card: TransitionCard): TransitionOp {
   return {
     kind: "transition",
@@ -139,10 +162,34 @@ export function transitionFromCard(card: TransitionCard): TransitionOp {
     angleDeg: card.angleDeg,
     size: card.size,
     ...(card.maxMm != null ? { maxMm: card.maxMm } : {}),
+    ...(card.mode === "cut" ? { mode: "cut" as const } : {}),
+    ...(card.case ? { case: card.case } : {}),
+    ...(card.mode === "cut" ? { floorMm: card.floorMm } : {}),
     ...(card.beltDeg != null ? { beltDeg: card.beltDeg } : {}),
     orient: [...card.orient],
     printer: card.printer,
   };
+}
+
+/**
+ * The case the card works on: the one chosen, or, while none is, the one every edge was found to be; null while the edges
+ * differ or nothing is known yet. `found` is each edge's case from the kernel's last answer.
+ */
+export function cardCase(card: Pick<TransitionCard, "case">, found: readonly TransitionCase[] | null): TransitionCase | null {
+  if (card.case) return card.case;
+  if (!found || found.length === 0) return null;
+  return found.every((one) => one === found[0]) ? found[0]! : null;
+}
+
+/** "a lip", "2 corners", "1 lip and 2 corners": what the kernel found on the card's edges. */
+export function foundWords(found: readonly TransitionCase[]): string {
+  const lips = found.filter((one) => one === "lip").length;
+  const corners = found.length - lips;
+  const word = (count: number, one: string) => (count === 1 ? `1 ${one}` : `${count} ${one}s`);
+  if (found.length === 1) return lips === 1 ? "a lip" : "a corner";
+  if (lips === 0) return word(corners, "corner");
+  if (corners === 0) return word(lips, "lip");
+  return `${word(lips, "lip")} and ${word(corners, "corner")}`;
 }
 
 /** The card aimed from `pose`: Aim from this pose, inside the card. */
@@ -157,7 +204,8 @@ export function sameTransitionCard(a: TransitionCard, b: TransitionCard): boolea
 
 /** Why the card cannot be checked yet, as the card says it; null when it can. */
 export function transitionCardRefusal(card: TransitionCard, supportAngle: number): string | null {
-  if (card.edges.length === 0) return "Pick an edge in a concave corner. Shift-click adds edges.";
+  if (card.edges.length === 0) return PICK_EDGE;
+  if (card.mode === "cut" && card.case === "corner") return CUT_LIP_ONLY;
   const limit = transitionAngleLimit(supportAngle);
   if (!Number.isFinite(card.angleDeg) || card.angleDeg > TRANSITION_MAX_DEG) return `The angle to the layers is at most ${TRANSITION_MAX_DEG}°.`;
   if (card.angleDeg < limit - 1e-9) return `The angle to the layers must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.`;
@@ -169,10 +217,13 @@ export function transitionCardRefusal(card: TransitionCard, supportAngle: number
 // The kernel's rows.
 // ---------------------------------------------------------------------------
 
-/** One edge of a probe's `transition`, with the new face's angle to the belt (or bed). */
+/** One edge of a probe's `transition`, with the new face's angle to the belt (or bed). A lip's far face is its underside, its near face the other face at its first edge. */
 export interface TransitionRow {
   edge: number;
+  case: TransitionCase;
+  /** "chamfer" or "prism" for a corner, "gusset" or "ramp" for a lip. */
   path: string;
+  material: "add" | "cut";
   farFace: number;
   nearFace: number;
   farDeg: number;
@@ -185,6 +236,14 @@ export interface TransitionRow {
   reachMm: number;
   nearReachMm: number;
   volumeMm3: number;
+  /** A lip's: how deep it is along its underside, how far its gusset or ramp runs down the build. */
+  depthMm: number;
+  heightMm: number;
+  /** A gusset's: how far from the edge it lands on the part. A ramp's: what it leaves at the first edge. */
+  landingMm: number | null;
+  leftMm: number | null;
+  /** A lip's gusset or ramp as triangles in the solid's frame, from the kernel; null for a corner, which the app draws. */
+  soup: number[] | null;
 }
 
 /** The plate's up in the solid's frame: the third row of the plate orientation. */
@@ -207,9 +266,13 @@ export function readTransitionRows(raw: unknown, orient: readonly number[]): Tra
     const normal = Array.isArray(one.normal) && one.normal.length === 3 && one.normal.every((v) => typeof v === "number") ? (one.normal as Vec3) : null;
     if (!normal) return [];
     const toPlate = tenth((Math.acos(Math.min(1, Math.abs(normal[0] * up[0] + normal[1] * up[1] + normal[2] * up[2]))) * 180) / Math.PI);
+    const soup = Array.isArray(one.soup) && one.soup.length >= 9 && one.soup.every((v) => typeof v === "number") ? (one.soup as number[]) : null;
+    const maybe = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
     return [{
       edge: num(one.edge),
+      case: one.case === "lip" ? "lip" : "corner",
       path: typeof one.path === "string" ? one.path : "chamfer",
+      material: one.material === "cut" ? "cut" : "add",
       farFace: num(one.farFace),
       nearFace: num(one.nearFace),
       farDeg: num(one.farDeg),
@@ -220,6 +283,11 @@ export function readTransitionRows(raw: unknown, orient: readonly number[]): Tra
       reachMm: num(one.reachMm),
       nearReachMm: num(one.nearReachMm),
       volumeMm3: num(one.volumeMm3),
+      depthMm: num(one.depthMm),
+      heightMm: num(one.heightMm),
+      landingMm: maybe(one.landingMm),
+      leftMm: maybe(one.leftMm),
+      soup,
     }];
   });
   return rows.length > 0 ? rows : null;
@@ -227,8 +295,15 @@ export function readTransitionRows(raw: unknown, orient: readonly number[]): Tra
 
 /** One row in words, as the MCP's probe reason says it. */
 export function transitionSentence(row: TransitionRow, belt: boolean): string {
+  const face = `${tenth(row.angleToLayersDeg)}° to the layers and ${row.angleToPlateDeg}° to ${belt ? "the belt" : "the bed"}`;
+  const mm3 = formatMm(Math.round(row.volumeMm3 * 10) / 10);
+  if (row.case === "lip") {
+    const head = `Edge ${row.edge}: a lip ${formatMm(row.depthMm)} mm deep, its underside at ${tenth(row.farDeg)}° to the layers.`;
+    if (row.material === "cut") return `${head} The ramp runs from its root to its first edge, at ${face}, leaving ${formatMm(row.leftMm ?? 0)} mm there and removing ${mm3} mm³.`;
+    return `${head} The gusset runs back into the part at ${face}, ${formatMm(row.heightMm)} mm down the build, landing ${formatMm(row.landingMm ?? 0)} mm from the edge and adding ${mm3} mm³.`;
+  }
   const reach = row.path === "prism" ? `to the flatter face's end, ${formatMm(row.reachMm)} mm` : `${formatMm(row.reachMm)} mm along the flatter face`;
-  return `Edge ${row.edge}: a corner, its flatter face at ${tenth(row.farDeg)}° to the layers. The wedge runs ${reach}, its face at ${tenth(row.angleToLayersDeg)}° to the layers and ${row.angleToPlateDeg}° to ${belt ? "the belt" : "the bed"}, adding ${formatMm(row.volumeMm3)} mm³.`;
+  return `Edge ${row.edge}: a corner, its flatter face at ${tenth(row.farDeg)}° to the layers. The wedge runs ${reach}, its face at ${face}, adding ${formatMm(row.volumeMm3)} mm³.`;
 }
 
 /** "45°", or "44.9–45.1°" when the edges differ. */

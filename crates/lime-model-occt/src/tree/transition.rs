@@ -1019,9 +1019,15 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
             }
         })
         .collect::<Vec<Value>>();
+    // A step whose every edge was found a lip is stored as one, so its history row names lips and a rebuild after an
+    // edit above keeps reading them so.
+    let all_lips = found.iter().all(|f| matches!(f, Found::Lip(_)));
     let mut stored = op.clone();
-    if let Op::Transition { build, .. } = &mut stored {
+    if let Op::Transition { build, case, .. } = &mut stored {
         *build = b;
+        if case.is_none() && all_lips {
+            *case = Some(TransitionCase::Lip);
+        }
     }
     Ok(Built {
         op: stored,

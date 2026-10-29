@@ -494,6 +494,11 @@ fn lips() {
         "op": transition(json!([first]), json!({})) }),
     );
     assert_eq!(applied["op"]["kind"], json!("transition"));
+    assert_eq!(
+        applied["op"]["case"],
+        json!("lip"),
+        "a step of lips is stored as one"
+    );
     let rounded = ok(
         json!({ "call": "apply", "key": "lip6", "parent": 2, "node": 3,
         "op": { "kind": "fillet", "edges": [first], "size": 0.5 } }),
