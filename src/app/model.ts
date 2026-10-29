@@ -180,7 +180,7 @@ import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
-import { bedFrame, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
+import { bedFrame, cutTraces, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
 import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCouponReply } from "../modeling/fit-coupon.ts";
@@ -682,6 +682,10 @@ export function bindModelView() {
     refusal(typed) {
       const stored = splitStored(typed);
       return stored && "reason" in stored ? stored.reason : "";
+    },
+    traces(typed) {
+      const solid = viewed();
+      return solid ? cutTraces(typed, partitionContext(solid), openPose(), solid.positions) : [];
     },
     profileSketch(plane, u, sketch, check, done) {
       openProfileSketch({
