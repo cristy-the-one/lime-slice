@@ -6,6 +6,7 @@ mod belt;
 mod calibrate;
 mod cancel;
 mod gcode;
+pub mod gcode_skeleton;
 mod gyroid;
 mod index;
 mod lightning;
@@ -18,6 +19,7 @@ mod poly;
 mod progress;
 mod reinforcement;
 mod slice;
+mod reply_parts;
 mod slice_cache;
 mod step;
 mod strategy;
@@ -56,6 +58,7 @@ pub use slice::{
     SiteSpec,     AdhesionType, LayerAction, LayerActionKind, SliceRequest, SliceResponse, SliceSettings, SlicedBeads, SupportEditSpec,
     SurfacePattern, VolumeKind,
 };
+pub use reply_parts::{take_reply_part, PART_BYTES};
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};
 pub use step::{
     load_step, load_step_timed, resolve_step_tolerance, set_step_mesher, StepMesher, StepTimings, STEP_TOLERANCE_DEFAULT_MM,

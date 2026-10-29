@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
+import { engineReplies } from "./engine-replies";
 
 /**
  * A height range added in the UI reaches a real engine and changes the slice.
@@ -18,12 +19,12 @@ type Reply = { gcode?: string; gcodeToken?: string; layers?: Layer[] };
 
 async function proxy(page: Page) {
   const bodies: Record<string, unknown>[] = [];
-  const replies: Reply[] = [];
+  const { replies, note } = engineReplies<Reply>();
   await page.route("http://127.0.0.1:43118/**", async (route) => {
     const url = route.request().url().replace("http://127.0.0.1:43118", api!);
     if (/\/api\/jobs$|\/api\/slice$/.test(url) && route.request().method() === "POST") bodies.push(route.request().postDataJSON());
     const response = await route.fetch({ url, timeout: SLICE_MS });
-    if (/\/api\/jobs\/[^/]+\/result$|\/api\/slice$/.test(url) && response.status() === 200) replies.push(JSON.parse(await response.text()));
+    if (response.status() === 200) note(url, await response.text());
     await route.fulfill({ response });
   });
   return { bodies, replies };

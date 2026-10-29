@@ -100,14 +100,17 @@ src/model-edit.test.ts
 src/model-partition.test.ts
 src/model-explode.test.ts
 src/split-print.test.ts
+src/cut-trace.test.ts
 src/fan.test.ts
 src/bridge.test.ts
 mcp/schema.test.ts
+mcp/settings-rows.test.ts
 mcp/scenario.test.ts
 mcp/export.test.ts
 mcp/golden.test.ts
 mcp/model.test.ts
 mcp/partition.test.ts
+mcp/transition.test.ts
 mcp/request.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts

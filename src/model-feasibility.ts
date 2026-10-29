@@ -18,7 +18,7 @@ import { lastEdge, type ModelPickRef } from "./model-select.ts";
 export const PROBE_WAIT_MS = 300;
 
 /** Tools whose result only the kernel can judge. Split and scale are checked from numbers alone. */
-export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell", "group", "faceExtrude", "moveFaces", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror"] as const;
+export const PROBED_TOOLS = ["fillet", "chamfer", "hole", "boolean", "extrude", "revolve", "loft", "shell", "group", "faceExtrude", "moveFaces", "pocket", "boss", "texture", "array", "ribs", "text", "pattern", "mirror", "transition"] as const;
 export type ProbedTool = (typeof PROBED_TOOLS)[number];
 
 /** What a probe that builds measured: the result, and `before`, the solid it was built on. */
@@ -123,6 +123,7 @@ const CHECKING: Record<ProbedTool, string> = {
   pattern: "Checking this pattern…",
   mirror: "Checking this mirror…",
   // --- end A4 ---
+  transition: "Checking this print transition…",
 };
 
 const FITS: Record<ProbedTool, string> = {
@@ -148,6 +149,7 @@ const FITS: Record<ProbedTool, string> = {
   // --- A4 pattern and mirror ---
   pattern: "This pattern changes the solid.",
   mirror: "This mirror changes the solid.",
+  transition: "This print transition fits.",
   // --- end A4 ---
 };
 

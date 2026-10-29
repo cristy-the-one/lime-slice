@@ -723,6 +723,24 @@ const partitionOp = {
 };
 (op.oneOf as unknown[]).push(partitionOp);
 
+/** --- Print transitions (docs/plan-belt-transitions.md, step 2). The corner wedge on straight edges. */
+const transitionOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "edges"],
+  properties: {
+    kind: { const: "transition" },
+    edges: edgeList,
+    mode: { enum: ["auto", "add", "cut"], description: "auto adds; cut is for lips, not built yet." },
+    angleDeg: { type: "number", exclusiveMinimum: 0, maximum: 85, description: "New face to the layers. Default the support angle." },
+    size: { description: "Reach along the flatter face, mm (default 2), or \"face\" to its end.", oneOf: [{ const: "face" }, { type: "number", exclusiveMinimum: 0, maximum: 200 }] },
+    maxMm: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Refuse a wedge reaching further. Default 20." },
+    build: { description: "Build direction, model space. Default from the pose and the plate's printer; null re-aims.", oneOf: [vec3, { type: "null" }] },
+    label,
+  },
+};
+(op.oneOf as unknown[]).push(transitionOp);
+
 /**
  * One line per op kind. tools/list shows model_apply's op as these lines and the kind names, not every kind's full
  * schema (that was a third of the list); guide {kind} serves a kind's full schema, and a refused op names its fields.
@@ -752,6 +770,7 @@ export const OP_SUMMARY: Record<string, string> = {
   text: "text {text, height, depth, face, at}: raised or cut letters.",
   array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
   ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
+  transition: "transition {edges, angleDeg, size}: a wedge in a concave corner, angleDeg to the layers.",
 };
 
 /** The op branch of one kind, as the server checks it. */
@@ -1727,6 +1746,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         job: jobHandle,
         layers: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0 }, description: "First and last layer index." },
+        cursor: cursor,
       },
     },
   },

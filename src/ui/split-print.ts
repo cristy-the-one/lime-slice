@@ -13,6 +13,7 @@ import { SUPPORT_NOTE } from "../modeling/partition-export.ts";
 import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
+import type { CutTrace } from "../cut-trace.ts";
 import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, jointPoints, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointPoints, withJointsOn, withJointsRefit, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type ConnectorMark, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { chainFromSketch, chainSummary, readChain, sketchFromChain, type Chain } from "../modeling/sketch-profile.ts";
@@ -47,6 +48,8 @@ export interface SplitPrintHost {
   check(op: PartitionOp | null, wait: number): void;
   /** The planner's connectors for `op` on the open solid's sections: its sentences, the counts that do not fit, the ghost. */
   connectors(op: PartitionOp): Placement | null;
+  /** Each cut's profile on the open solid, as the view draws its path; null for a straight cut (`cutTraces`). */
+  traces(op: PartitionOp): (CutTrace | null)[];
   /** Why the planner would not store `op` on the open solid, as the card says it ("" when it would). */
   refusal(op: PartitionOp): string;
   /** The defaults and floors `target`'s process gives (null: the plate's printer), for the connector fields. */
@@ -1146,7 +1149,11 @@ function ghost(): ModelGhost | null {
   // The planner's connectors; once the kernel has cut, only those it built.
   const built = check && check.phase === "done" && check.ok ? check.placed : undefined;
   const marks = (placement?.marks ?? []).filter((mark) => !built || built.includes(mark.id));
-  return planes.length > 0 ? { kind: "cuts", planes, ...(marks.length > 0 ? { marks } : {}) } : null;
+  // A shaped cut's path: its profile swept through the part, in the list's order, as the planes are.
+  const typed = op();
+  const traces = typed && host ? host.traces(typed) : [];
+  const shaped = traces.some((trace) => trace !== null);
+  return planes.length > 0 ? { kind: "cuts", planes, ...(marks.length > 0 ? { marks } : {}), ...(shaped ? { traces } : {}) } : null;
 }
 
 function axisColor(dir: Vec3): DragHandle["color"] {

@@ -498,6 +498,15 @@ export const CONTROLS: ControlSpec[] = [
     tip: "Fills a roof or floor that is nearly flat against the layers with solid skin. Without it, such a slab prints as two thin walls with nothing between them, as on a downward ramp on a belt. More solid infill and a longer print. Off prints today's skin.",
     keywords: "solid skin slope ramp hollow roof top bottom belt",
   }),
+  bound("solidUnderWalls", {
+    id: "underwalls",
+    label: "Solid under walls on infill",
+    group: "infill",
+    tier: "advanced",
+    kind: check,
+    tip: "Prints solid skin under a wall that starts over the infill of the layer before, as on a lip or a comb that begins in the air. Without it, that wall lands on sparse infill, or on nothing. More solid infill and a longer print. Off prints today's skin.",
+    keywords: "solid skin lip comb wall hollow infill overhang belt",
+  }),
   bound("gyroid3d", { id: "gyroid3d", label: "3D gyroid", group: "infill", tier: "expert", kind: select([["blend", "Blend default"], ["off", "2D sine"], ["on", "Force 3D"]]), structural: true, keywords: "infill lattice" }),
 
   // Speed & travel
@@ -686,6 +695,17 @@ export const CONTROLS: ControlSpec[] = [
     rule: "supportStrictStacking",
     tip: "Gives every row of a tree's interface its own tips on the belt, so a steep sloped roof stands on branches instead of on the row printed before it. Many more branches and a longer print: about 5 % longer on a steep housing. Off prints today's trees.",
     keywords: "strict stacking tip row slope roof belt tree",
+  }),
+  bound("supportSlowFragile", {
+    id: "fragile",
+    label: "Slow fragile supports",
+    group: "supports",
+    tier: "advanced",
+    kind: check,
+    parent: "supportMode",
+    when: (s) => s.supports,
+    tip: "Prints tree tips, branches thinner than 4 mm, and the support interface slower (40 and 30 mm/s at most), so a fast nozzle knocks fewer of them off. Trunks keep their speed. A longer print: about 3 % longer on a tree-supported housing. Off prints supports at today's speed.",
+    keywords: "fragile slow support speed tip branch interface knocked off",
   }),
   bound("supportAngle", { id: "sangle", label: "Overhang angle °", group: "supports", tier: "advanced", kind: num(20, 70, 5), parent: "supportMode", when: (s) => s.supports, rule: "supportAngle", keywords: "overhang" }),
   bound("supportHeightMult", { id: "shmult", label: "Shaft height ×", group: "supports", tier: "advanced", kind: num(1, 4, 1), parent: "supportMode", when: (s) => s.supports, keywords: "support column" }),

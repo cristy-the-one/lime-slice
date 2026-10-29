@@ -620,6 +620,42 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("a stepped part has one concave edge and the rest convex", (await count()) === 18 && (await count(true)) === 17 && (await count(false)) === 1, JSON.stringify([await count(), await count(true), await count(false)]));
 }
 
+// --- Print transitions (docs/plan-belt-transitions.md, step 2): the step 1 corner coupon, 20° past the limit, on the IR3
+// V2. A 2 mm shell side view extruded 20 mm across the belt; the corner is where the 45° slope turns into the roof.
+{
+  await call("machine_select", { printerId: "ideaformer-ir3-v2", filamentId: "lime-petg" });
+  const fall = Math.tan((20 * Math.PI) / 180);
+  const yc = (22.828 + 30 - (20 + 2 / Math.cos(Math.atan(fall)) - 30 * fall)) / (1 + fall);
+  const side = [[0, 0], [2, 0], [2, 20 - 28 * fall], [30, 20], [50, 0], [52.828, 0], [yc, 22.828 - (yc - 30)], [0, 20 + 2 / Math.cos(Math.atan(fall)) - 30 * fall]];
+  const mid = 52.828 / 2;
+  const built = await call("model_build", {
+    name: "corner coupon",
+    base: { primitive: "box", dx: 20, dy: 54.828, dz: 24 },
+    ops: [{ kind: "extrude", op: "common", profile: side.map(([y, z]) => [y! - mid, z!]), depth: 20, origin: [-10, 0, 0], turn: [90, 0, 90] }],
+  });
+  const coupon = String(built.object);
+  const edges = ((await call("edges_find", { object: coupon, direction: [1, 0, 0], limit: 100 })).edges ?? []) as { index: number; mid: number[] }[];
+  const at = (y: number, z: number) => edges.find((edge) => Math.hypot(edge.mid[1]! - (y - mid), edge.mid[2]! - z) < 1e-3)?.index ?? -1;
+  const corner = at(30, 20);
+  const probed = await call("model_probe", { object: coupon, op: { kind: "transition", edges: [corner] } });
+  const row = ((probed.transition ?? []) as Record<string, number | string>[])[0] ?? {};
+  check(
+    "the corner takes a 2 mm wedge at 45° to the layers, level on the belt",
+    probed.ok === true && row.case === "corner" && row.path === "chamfer" && row.reachMm === 2 && row.angleToLayersDeg === 45 && row.angleToBeltDeg === 0 && row.farDeg === 25,
+    JSON.stringify(probed).slice(0, 600),
+  );
+  check("the probe says it in words", /flatter face at 25° to the layers\. The wedge runs 2 mm along the flatter face, its face at 45° to the layers and 0° to the belt/.test(String(probed.reason)), String(probed.reason));
+  const before = Number((await call("model_describe", { object: coupon, limit: 1 })).volumeMm3);
+  const applied = await call("model_apply", { object: coupon, op: { kind: "transition", edges: [corner] } });
+  const after = Number((await call("model_describe", { object: coupon, limit: 1 })).volumeMm3);
+  const drop = 2 * Math.sin((20 * Math.PI) / 180);
+  check("it adds the wedge: a triangle 2 mm down the roof to the slope, 20 mm across", applied.ok === true && near(after - before, 0.5 * drop * (2 * Math.cos((20 * Math.PI) / 180) + drop) * 20, 1e-3), JSON.stringify({ before, after, reason: applied.reason }));
+  const rows = (await call("model_history", { object: coupon })).nodes as { label: string }[];
+  check("the history row names it", rows.some((one) => one.label === "Print transition 1 edge at 45°, 2 mm"), JSON.stringify(rows));
+  const outer = await call("model_probe", { object: coupon, node: "node_1", op: { kind: "transition", edges: [at(yc, 22.828 - (yc - 30))] } });
+  check("a convex edge is refused with the kernel's sentence", outer.ok === false && /This edge is convex/.test(String(outer.reason)), JSON.stringify(outer));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

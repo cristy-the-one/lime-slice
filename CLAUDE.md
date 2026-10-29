@@ -31,3 +31,4 @@ Project memory (`~/.claude/projects/C--Users-marius-lime-slice/memory/`) holds t
 |---|---|---|---|
 | 2026-10-23 | Added `land-pr`, `verify-ui`, `release` and this file | `.claude/skills/`, `CLAUDE.md` | A harness review found the repeated procedures living only as notes in memory. #407 merged with red smoke shards, and the 3.6.0 bump failed every `--locked` CI job on a stale `Cargo.lock`. |
 | 2026-10-28 | Shortened the `land-pr` and `verify-ui` descriptions | `.claude/skills/` | Descriptions load into every chat; the owner asked to cut context without losing triggers. |
+| 2026-10-29 | Added the "Target crashed is a kill" and missing-locator traps to `verify-ui` | `.claude/skills/verify-ui/SKILL.md` | Two sessions reported page crashes (Split to print, large exports) that were shell `timeout` SIGTERMs and a machine-wide `Stop-Process chrome-headless-shell`. |

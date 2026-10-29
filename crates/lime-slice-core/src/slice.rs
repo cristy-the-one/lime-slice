@@ -32,8 +32,8 @@ use crate::mesh::Mesh;
 use crate::meshes::{self, PayloadError};
 use crate::modifiers::{zone_runs, Footprint, Overrides, Print, Tweak};
 use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, loop_bounds, offset_loops,
-    resolve_nonzero, signed_area, simplify_loops, Loop,
+    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, in_solid, loop_bounds,
+    offset_loops, resolve_nonzero, signed_area, simplify_loops, Loop,
 };
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
@@ -53,7 +53,7 @@ use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
     BridgeTune,
     belt_raft_paths, order_supports, plan_brim, plan_ironing, plan_mouse_ears, plan_region_split, plan_skirt, plan_support,
-    plan_tree_brim, plan_tree_support,
+    plan_tree_brim, plan_tree_support, rest_on_interface,
     CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
     Slowdown, TravelIn,
 };
@@ -201,6 +201,11 @@ pub struct SliceRequest {
     /// its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_strict_stacking: bool,
+    /// Tree tips, thin branches, and support interface print slower: a
+    /// longer print with fewer knocked-off branches. Left out when off, so a
+    /// request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support_slow_fragile: bool,
     /// `auto` (the default) asks for supports from the overhang angle and
     /// the islands. `paint` asks only where enforce paint does. Omitted
     /// when absent, so a request that does not ask keeps its cache key.
@@ -246,6 +251,12 @@ pub struct SliceRequest {
     /// Left out when off, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shallow_skins: bool,
+    /// Solid skin under walls that stand on the interior of the layer below,
+    /// as a lip or comb born over a slot does. More solid infill and a longer
+    /// print. Left out when off, so a request that does not ask keeps its
+    /// cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub solid_under_walls: bool,
     /// Route travels inside the part and retract only when the route is blocked.
     #[serde(default = "default_true")]
     pub combing: bool,
@@ -442,6 +453,9 @@ pub struct SliceSettings {
     pub arc_fit: bool,
     pub travel_opt: bool,
     pub overhang_control: bool,
+    /// Hanging rows read by the bead's far edge, and those on support
+    /// interface printed like bridges. Set on a belt, never by a request.
+    pub hanging_rows: bool,
     pub classic: bool,
     pub support_style: SupportStyle,
     pub branch_angle: f64,
@@ -451,11 +465,16 @@ pub struct SliceSettings {
     pub support_avoidance: bool,
     /// A tip under every belt interface row. Off keeps the in-layer reach.
     pub support_strict_stacking: bool,
+    /// Tips, thin branches, and interface at the fragile speeds. Off keeps
+    /// every support at the support speed.
+    pub support_slow_fragile: bool,
     pub support_source: SupportSource,
     pub support_height_mult: f64,
     pub infill_combine: bool,
     /// Skin on shallow slopes from the strips of the whole shell depth.
     pub shallow_skins: bool,
+    /// Skin under walls that stand on the interior of the layer below.
+    pub solid_under_walls: bool,
     pub combing: bool,
     pub feature_speeds: bool,
     pub seam: SeamPlacement,
@@ -571,6 +590,7 @@ impl Default for SliceSettings {
             arc_fit: true,
             travel_opt: true,
             overhang_control: true,
+            hanging_rows: false,
             classic: false,
             support_style: SupportStyle::Tree,
             branch_angle: 40.0,
@@ -578,10 +598,12 @@ impl Default for SliceSettings {
             trunk_diameter: 4.2,
             support_avoidance: false,
             support_strict_stacking: false,
+            support_slow_fragile: false,
             support_source: SupportSource::Auto,
             support_height_mult: 1.0,
             infill_combine: true,
             shallow_skins: false,
+            solid_under_walls: false,
             combing: true,
             feature_speeds: true,
             seam: SeamPlacement::Blend,
@@ -673,6 +695,7 @@ impl SliceSettings {
             arc_fit: req.arc_fit && !req.classic,
             travel_opt: req.travel_opt && !req.classic,
             overhang_control: req.overhang_control && !req.classic,
+            hanging_rows: false,
             classic: req.classic,
             support_style: if req.classic {
                 SupportStyle::Grid
@@ -696,6 +719,7 @@ impl SliceSettings {
             },
             support_avoidance: req.support_avoidance && !req.classic,
             support_strict_stacking: req.support_strict_stacking && !req.classic,
+            support_slow_fragile: req.support_slow_fragile && !req.classic,
             // `load_object` has already refused a name it does not know.
             support_source: wire::parse_support_source(req.support_source.as_deref())
                 .unwrap_or_default(),
@@ -706,6 +730,7 @@ impl SliceSettings {
             },
             infill_combine: req.infill_combine && !req.classic,
             shallow_skins: req.shallow_skins && !req.classic,
+            solid_under_walls: req.solid_under_walls && !req.classic,
             combing: req.combing && !req.classic,
             feature_speeds: req.feature_speeds && !req.classic,
             seam: req.seam,
@@ -883,8 +908,13 @@ impl SliceSettings {
                 SupportSource::Auto => format!("angle {:.0}°, ", self.support_angle),
                 SupportSource::Paint => "painted only, ".into(),
             };
+            let fragile = if self.support_slow_fragile {
+                ", fragile parts slower"
+            } else {
+                ""
+            };
             format!(
-                "supports {style} ({angle}shaft ×{:.1}{organic})",
+                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile})",
                 self.support_height_mult.max(1.0)
             )
         } else {
@@ -895,6 +925,11 @@ impl SliceSettings {
             (false, false) => "infill combine off",
             (true, true) => "infill combine on; skin on shallow slopes",
             (false, true) => "infill combine off; skin on shallow slopes",
+        };
+        let combine = if self.solid_under_walls {
+            format!("{combine}; solid under walls on infill")
+        } else {
+            combine.to_string()
         };
         let scarf = format!(
             "scarf {} {:.1} mm / {} steps",
@@ -1946,6 +1981,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_height_mult = 1.0;
         settings.support_avoidance = false;
         settings.support_strict_stacking = false;
+        settings.support_slow_fragile = false;
         settings.support_z_gap_mm = None;
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
@@ -2096,6 +2132,7 @@ fn prepare_belt(
         // A scarf ramp and a hop both move machine Z. On a belt that axis is
         // the belt, so either one would walk the part between beads.
         object.settings.z_hop = ZHopMode::Off;
+        object.settings.hanging_rows = true;
         object.settings.scarf_seam = ScarfSeam::Off;
         object.settings.skirt = false;
         object.settings.support_tree_brim_mm = None;
@@ -2113,6 +2150,7 @@ fn prepare_belt(
         settings.supports = false;
     }
     settings.z_hop = ZHopMode::Off;
+    settings.hanging_rows = true;
     settings.scarf_seam = ScarfSeam::Off;
     settings.skirt = false;
     settings.support_tree_brim_mm = None;
@@ -3378,6 +3416,7 @@ fn compare_estimates(
             one.support_height_mult = 1.0;
             one.support_avoidance = false;
             one.support_strict_stacking = false;
+            one.support_slow_fragile = false;
         }
         let response = slice_sharing(mesh, &blend, profile, &one, cut, watch)?;
         out.push(CompareEstimate {
@@ -4139,6 +4178,10 @@ fn cut_object(
 
 /// What drawing one object's toolpaths early needs: they are drawn the way
 /// the reply draws its preview, with no travels, since nothing is ordered yet.
+/// The longest early preview a slice publishes. A browser string tops out
+/// near 536M characters, and the early preview is only a head start.
+const EARLY_PREVIEW_BYTES: usize = 64 << 20;
+
 struct Early {
     profile: PrinterProfile,
     blend: BlendMode,
@@ -4161,7 +4204,10 @@ impl Early {
             .spawn(move || {
                 let layers = early_preview(&cut, &paths, &profile, &blend, tilt.as_ref());
                 if let Ok(text) = serde_json::to_string(&serde_json::json!({ "layers": layers })) {
-                    watch.set_early(text);
+                    // A client reads it as one string; past this, the reply's own parts come instead.
+                    if text.len() <= EARLY_PREVIEW_BYTES {
+                        watch.set_early(text);
+                    }
                 }
             });
     }
@@ -4717,7 +4763,13 @@ impl Contours {
         let roof_started = Instant::now();
         let wall_stack = settings.line_width * fewest_walls as f64;
         let roofs = roof_distances(&bands, &contours, wall_stack);
-        let skins = skin_regions(&bands, &contours, wall_stack, settings.shallow_skins);
+        let skins = skin_regions(
+            &bands,
+            &contours,
+            wall_stack,
+            settings.shallow_skins,
+            settings.solid_under_walls,
+        );
         Self {
             bands,
             contours,
@@ -5125,6 +5177,7 @@ fn part_paths(
                     band.height,
                     settings.line_width,
                     bridge_tune(settings),
+                    settings.hanging_rows,
                 );
             }
             if let Some(ironing) = ironing {
@@ -5647,9 +5700,7 @@ fn plan_supports(
     let support_started = Instant::now();
     let mut opts = SupportOpts {
         angle_deg: settings.support_angle,
-        z_gap: settings
-            .support_z_gap_mm
-            .unwrap_or_else(|| settings.layer_height.max(0.12)),
+        z_gap: support_z_gap(settings),
         style: settings.support_style,
         branch_angle_deg: settings.branch_angle,
         tip_diameter: settings.tip_diameter,
@@ -5802,6 +5853,8 @@ pub(crate) struct JoinedLayer {
     part: Option<Arc<CombLayer>>,
     skirt: Vec<Extrusion>,
     under: Arc<Vec<Extrusion>>,
+    /// The support interface the part's hanging spans may rest on.
+    below: Vec<Vec<Loop>>,
     /// Where the nozzle stood when the layer began.
     from: Option<[f64; 2]>,
     /// Where it stood when the layer ended.
@@ -5818,6 +5871,7 @@ impl JoinedLayer {
         part: &Arc<CombLayer>,
         skirt: &[Extrusion],
         under: &Arc<Vec<Extrusion>>,
+        below: &[Vec<Loop>],
         from: Option<[f64; 2]>,
     ) -> bool {
         let bits = |p: Option<[f64; 2]>| p.map(|p| p.map(f64::to_bits));
@@ -5826,6 +5880,7 @@ impl JoinedLayer {
             && bits(self.from) == bits(from)
             && self.skirt == skirt
             && (Arc::ptr_eq(&self.under, under) || self.under == *under)
+            && self.below == below
     }
 
     /// The layer with the object's speed cap `cap` on its part's paths and
@@ -5945,7 +6000,9 @@ fn assemble(
             // The skirt and supports, and the travel into the part's first path.
             let lead = paths.len() + 1;
             if !joined.empty {
+                let start = paths.len();
                 paths.extend(part.combed(i));
+                rest_on_support(&mut paths[start..], &joined.below, bridge_tune(settings));
             }
             let lead = lead.min(paths.len());
             if settings.travel_opt {
@@ -5983,6 +6040,7 @@ fn empty_slot() -> Slot {
         part: None,
         skirt: Vec::new(),
         under: Arc::new(Vec::new()),
+        below: Vec::new(),
         from: None,
         end: None,
         head: 0,
@@ -6022,9 +6080,14 @@ fn join_supports(
     };
     let under = &supports.paths[i];
     let own = &part.travels.layers[i];
+    let below = if settings.overhang_control && settings.hanging_rows {
+        interface_below(cut, supports, settings, i)
+    } else {
+        Vec::new()
+    };
     if let Some(k) = kept
         .get(i)
-        .filter(|k| k.joins_like(empty, own, &skirt, under, from))
+        .filter(|k| k.joins_like(empty, own, &skirt, under, &below, from))
     {
         return Slot::Kept(k.clone());
     }
@@ -6063,12 +6126,62 @@ fn join_supports(
         part: Some(Arc::clone(own)),
         skirt,
         under: Arc::clone(under),
+        below,
         from,
         end,
         head: 0,
         layer: PrintLayer::new(layer),
     };
     Slot::Fresh(joined, head)
+}
+
+/// The Z gap between a support's interface and the part it holds.
+fn support_z_gap(settings: &SliceSettings) -> f64 {
+    settings
+        .support_z_gap_mm
+        .unwrap_or_else(|| settings.layer_height.max(0.12))
+}
+
+/// The support interface under layer `i` that its hanging spans rest on:
+/// that of each layer down through the Z gap, one interface layer deep.
+fn interface_below(
+    cut: &Contours,
+    supports: &SupportPlan,
+    settings: &SliceSettings,
+    i: usize,
+) -> Vec<Vec<Loop>> {
+    let bands = &cut.bands;
+    let reach = bands[i].z - bands[i].height - support_z_gap(settings);
+    let layers = &supports.supports.layers;
+    (i.saturating_sub(4)..i)
+        .rev()
+        .take_while(|&k| bands[k].z >= reach - bands[k].height * 0.5)
+        .filter_map(|k| layers.get(k))
+        .filter(|layer| !layer.interface.is_empty())
+        .map(|layer| layer.interface.clone())
+        .collect()
+}
+
+/// Print the part's hanging spans that rest mostly on support interface
+/// like bridges: the interface holds them up no better than air.
+fn rest_on_support(paths: &mut [Extrusion], below: &[Vec<Loop>], tune: Option<BridgeTune>) {
+    if below.is_empty() {
+        return;
+    }
+    for path in paths.iter_mut().filter(|p| p.on_overhang) {
+        let (mut on, mut all) = (0.0, 0.0);
+        for w in path.points.windows(2) {
+            let len = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
+            let mid = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+            all += len;
+            if below.iter().any(|loops| in_solid(loops, mid[0], mid[1])) {
+                on += len;
+            }
+        }
+        if all > 0.0 && on * 2.0 >= all {
+            rest_on_interface(path, tune);
+        }
+    }
 }
 
 fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) -> Vec<f64> {
@@ -6109,11 +6222,17 @@ fn roof_distances(bands: &[LayerBand], contours: &[Vec<Loop>], wall_stack: f64) 
 /// layer steps past half the walls exposes such a strip on every layer: alone
 /// each is closed by the walls, but the strips of the shell depth together
 /// make a skin, and without it the slab between the walls prints hollow.
+///
+/// With `under_walls`, a layer whose walls stand, a whole wall stack wide, on
+/// the interior of the layer below gets top skin under them, `UNDER_WALLS_MM`
+/// deep: see `under_walls`. Without it those walls print on whatever sparse
+/// infill is there, which is nothing where no roof asked for lightning.
 fn skin_regions(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     wall_stack: f64,
     shallow: bool,
+    under_walls: bool,
 ) -> [Vec<Arc<Skin>>; 2] {
     let n = bands.len();
     let exposed = |current: &[Loop], other: &[Loop]| {
@@ -6137,6 +6256,17 @@ fn skin_regions(
             Some(above) => exposed(&contours[i], above),
         })
         .collect();
+    let ceilings: Vec<Vec<Loop>> = if under_walls {
+        (0..n)
+            .into_par_iter()
+            .map(|i| match contours.get(i + 1) {
+                Some(above) => self::under_walls(&contours[i], above, wall_stack),
+                None => Vec::new(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let joined = |skin: Vec<Loop>| {
         if shallow {
             cored(skin, wall_stack)
@@ -6164,6 +6294,13 @@ fn skin_regions(
                     }
                     over.extend(roofs[r].iter().cloned());
                 }
+                for (r, ceiling) in ceilings.iter().enumerate().skip(i) {
+                    let dist = bands[i + 1..=r].iter().fold(0.0, |d, b| d + b.height);
+                    if dist > UNDER_WALLS_MM + 1e-6 {
+                        break;
+                    }
+                    over.extend(ceiling.iter().cloned());
+                }
                 Arc::new(Skin {
                     bottom: joined(clipped_union(&contours[i], under)),
                     top: joined(clipped_union(&contours[i], over)),
@@ -6176,6 +6313,38 @@ fn skin_regions(
 
 /// Core of an exposed island, past half the walls, that makes it skin, mm².
 const SKIN_CORE_MM2: f64 = 0.05;
+
+/// How deep the skin under walls standing on interior reaches, mm.
+const UNDER_WALLS_MM: f64 = 1.2;
+
+/// Where the walls of `above` stand on the interior of `current`, past the
+/// walls of `current`, grown back to the width of those walls. Only a stretch
+/// a whole wall stack wide counts: a slope steps its walls in by less than
+/// that a layer and stands on the walls below, while a lip or a comb born
+/// over a slot lands its walls on nothing.
+fn under_walls(current: &[Loop], above: &[Loop], wall_stack: f64) -> Vec<Loop> {
+    if current.is_empty() || above.is_empty() {
+        return Vec::new();
+    }
+    let core = offset_loops(current, -wall_stack);
+    if core.is_empty() {
+        return Vec::new();
+    }
+    let band = boolean_diff(above, &offset_loops(above, -wall_stack));
+    let landed = boolean_intersect(&core, &band);
+    let wide: Vec<Loop> = island_loops(&landed)
+        .into_iter()
+        .filter(|island| {
+            let inner = offset_loops(island, -wall_stack * 0.48);
+            inner.iter().map(|l| signed_area(l)).sum::<f64>() >= SKIN_CORE_MM2
+        })
+        .flatten()
+        .collect();
+    if wide.is_empty() {
+        return wide;
+    }
+    offset_loops(&wide, wall_stack * 0.5 + 0.05)
+}
 
 /// Bottom and top shell depths, mm: speed's, and a strategy's over 0.6 toughness.
 const SPEED_SHELLS: (f64, f64) = (0.6, 0.6);
@@ -7018,8 +7187,44 @@ fn support_paths(
             );
         }
     }
+    if settings.support_slow_fragile {
+        slow_fragile(&mut paths, &disks, &foot, line_width);
+    }
     paths
 }
+
+/// Print the support's fragile parts at the fragile speeds: the interface,
+/// and every tree loop that does not wrap a trunk or a foot. A loop near a
+/// trunk keeps the support speed, so a branch melted into a trunk does too.
+/// Never faster than the path already was.
+fn slow_fragile(paths: &mut [Extrusion], disks: &[Disk], feet: &[Loop], line_width: f64) {
+    let trunks: Vec<&Disk> = disks
+        .iter()
+        .filter(|d| d.r >= FRAGILE_BRANCH_RADIUS_MM)
+        .collect();
+    let tree = !disks.is_empty() || !feet.is_empty();
+    let on_trunk = |p: &[f64; 2]| {
+        trunks.iter().any(|d| {
+            let reach = d.r + line_width;
+            (p[0] - d.xy[0]).powi(2) + (p[1] - d.xy[1]).powi(2) <= reach * reach
+        }) || in_solid(feet, p[0], p[1])
+    };
+    for path in paths.iter_mut() {
+        let speed = match path.kind {
+            PathKind::SupportInterface => FRAGILE_INTERFACE_MM_S,
+            PathKind::Support if tree && !path.points.iter().any(on_trunk) => FRAGILE_BRANCH_MM_S,
+            _ => continue,
+        };
+        path.speed = path.speed.min(speed);
+    }
+}
+
+/// A tree branch thinner than this radius is fragile; trunks keep their speed.
+const FRAGILE_BRANCH_RADIUS_MM: f64 = 2.0;
+/// Tips and thin branches under "Slow fragile supports".
+const FRAGILE_BRANCH_MM_S: f64 = 40.0;
+/// Support interface under "Slow fragile supports".
+const FRAGILE_INTERFACE_MM_S: f64 = 30.0;
 
 /// A belt layer's trunks: the disks the belt clip left, less the trunks whose
 /// foot meets the belt here, and those feet cut along the belt line.
@@ -7521,6 +7726,103 @@ fn elapsed_ms(started: Instant) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn square_loop(x0: f64, y0: f64, side: f64) -> Loop {
+        vec![
+            [x0, y0],
+            [x0 + side, y0],
+            [x0 + side, y0 + side],
+            [x0, y0 + side],
+        ]
+    }
+
+    #[test]
+    fn slow_fragile_supports_slow_tips_branches_and_interface_but_not_trunks() {
+        let strategy = resolve(pure(StrategyId::Speed), &SliceSettings::default());
+        let disk = |x: f64, r: f64, n: u32| Disk {
+            xy: [x, 0.0],
+            r,
+            node: crate::support::NodeId(n),
+        };
+        let disks = [disk(0.0, 0.4, 0), disk(10.0, 1.2, 1), disk(30.0, 2.5, 2)];
+        let mut paths = plan_tree_support(&disks, &[], &strategy, 0.45);
+        paths.extend(plan_support(
+            &[square_loop(50.0, 0.0, 5.0)],
+            &strategy,
+            0.45,
+            0.6,
+            true,
+            None,
+        ));
+        let before: Vec<f64> = paths.iter().map(|p| p.speed).collect();
+        slow_fragile(&mut paths, &disks, &[], 0.45);
+        let near = |p: &Extrusion, x: f64| p.points.iter().all(|q| (q[0] - x).abs() < 3.5);
+        let mut seen = [false; 4];
+        for (path, was) in paths.iter().zip(before) {
+            if path.kind == PathKind::SupportInterface {
+                seen[3] = true;
+                assert!((path.speed - FRAGILE_INTERFACE_MM_S.min(was)).abs() < 1e-9);
+            } else if near(path, 30.0) {
+                seen[2] = true;
+                assert!(
+                    (path.speed - was).abs() < 1e-9,
+                    "a trunk keeps {was}, got {}",
+                    path.speed
+                );
+            } else {
+                seen[if near(path, 0.0) { 0 } else { 1 }] = true;
+                assert!((path.speed - FRAGILE_BRANCH_MM_S.min(was)).abs() < 1e-9);
+            }
+        }
+        assert_eq!(
+            seen, [true; 4],
+            "tip, branch, trunk, and interface all printed"
+        );
+    }
+
+    #[test]
+    fn a_hanging_span_over_support_interface_prints_like_a_bridge() {
+        let strategy = resolve(pure(StrategyId::Speed), &SliceSettings::default());
+        let span = |y: f64| {
+            let mut path = plan_support(
+                &[square_loop(0.0, y, 4.0)],
+                &strategy,
+                0.45,
+                0.2,
+                false,
+                None,
+            )
+            .remove(0);
+            path.kind = PathKind::Outer;
+            path.on_overhang = true;
+            path.speed = 130.0 * 0.32;
+            path.cap_feed = Some(CapFeed {
+                feed: 130.0,
+                slow: Slowdown::Steep,
+            });
+            path
+        };
+        let below = vec![vec![square_loop(-1.0, -1.0, 6.0)]];
+        let mut paths = vec![span(0.0), span(20.0)];
+        rest_on_support(&mut paths, &below, None);
+        assert!(
+            (paths[0].speed - 36.0).abs() < 1e-9,
+            "on interface {}",
+            paths[0].speed
+        );
+        assert!(
+            (paths[1].speed - 130.0 * 0.32).abs() < 1e-9,
+            "over air {}",
+            paths[1].speed
+        );
+        let mut held = vec![span(0.0)];
+        held[0].on_overhang = false;
+        rest_on_support(&mut held, &below, None);
+        assert!(
+            (held[0].speed - 130.0 * 0.32).abs() < 1e-9,
+            "a held span is left alone"
+        );
+    }
 
     /// The guessed tour must be the serial tour, path for path and end for
     /// end, and on these parts some guesses must hold and some must not.
@@ -8566,22 +8868,63 @@ mod tests {
     fn shallow_skins_find_the_skin_of_a_slab_that_steps_past_the_walls() {
         let (bands, contours) = sliding_slab(0.52);
         let wall_stack = 0.9;
-        let off = &skin_regions(&bands, &contours, wall_stack, false)[0][12];
+        let off = &skin_regions(&bands, &contours, wall_stack, false, false)[0][12];
         assert!(
             area(&off.top) < 1e-6 && area(&off.bottom) < 1e-6,
             "without it the slab is all interior"
         );
-        let on = &skin_regions(&bands, &contours, wall_stack, true)[0][12];
+        let on = &skin_regions(&bands, &contours, wall_stack, true, false)[0][12];
         // Three strips of 0.52 mm or more over each 0.6 mm shell depth.
         let least = 100.0 * 3.0 * 0.52 - 1.0;
         assert!(area(&on.top) >= least, "top {}", area(&on.top));
         assert!(area(&on.bottom) >= least, "bottom {}", area(&on.bottom));
     }
 
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
+        vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    }
+
+    #[test]
+    fn walls_landing_on_interior_get_skin_under_them() {
+        // A block 7.6 mm deep, then three teeth standing on its middle, as the
+        // housing's lip stands on its comb.
+        let block = vec![rect(0.0, 0.0, 80.0, 7.6)];
+        let teeth = vec![
+            rect(0.0, 1.0, 80.0, 3.0),
+            rect(0.0, 3.4, 80.0, 4.4),
+            rect(0.0, 4.8, 80.0, 6.6),
+        ];
+        let under = under_walls(&block, &teeth, 0.9);
+        assert!(area(&under) > 80.0 * 3.0, "under {}", area(&under));
+        let n = 12;
+        let bands: Vec<LayerBand> = (0..n)
+            .map(|i| LayerBand {
+                index: i,
+                z: 0.2 * (i + 1) as f64,
+                height: 0.2,
+            })
+            .collect();
+        let contours: Vec<Vec<Loop>> = (0..n)
+            .map(|i| if i < 8 { block.clone() } else { teeth.clone() })
+            .collect();
+        let off = &skin_regions(&bands, &contours, 0.9, false, false)[0][4];
+        let on = &skin_regions(&bands, &contours, 0.9, false, true)[0][4];
+        assert!(area(&off.top) < 1e-6, "today the block is all interior");
+        let skin = area(&on.top);
+        assert!(skin > 80.0 * 3.0, "1.2 mm under the teeth is skin: {skin}");
+    }
+
+    #[test]
+    fn walls_stepping_in_on_a_slope_stand_on_the_walls_below() {
+        let lower = vec![rect(0.0, 0.0, 80.0, 20.0)];
+        let upper = vec![rect(0.3, 0.3, 79.7, 19.7)];
+        assert!(area(&under_walls(&lower, &upper, 0.9)) < 1e-6);
+    }
+
     #[test]
     fn shallow_skins_leave_a_steep_slope_to_the_walls() {
         let (bands, contours) = sliding_slab(0.1);
-        let on = &skin_regions(&bands, &contours, 0.9, true)[0][12];
+        let on = &skin_regions(&bands, &contours, 0.9, true, false)[0][12];
         assert!(area(&on.top) < 1e-6 && area(&on.bottom) < 1e-6);
     }
 }

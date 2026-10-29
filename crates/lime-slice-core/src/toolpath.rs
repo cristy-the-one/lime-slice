@@ -6753,17 +6753,35 @@ pub struct BridgeTune {
 
 /// Slow unsupported spans, pin bridges, and raise the fan. The first layer is on the bed.
 /// `tune` of `None` leaves bridge flow, speed, and fan where they are today.
+///
+/// With `bead_edge`, a span is held when at least a quarter of its bead's
+/// width lies on the layer below, and its angle is read from the bead's far
+/// edge. Without it, the centreline alone decides: a bead can hang wholly in
+/// the air and still count as held, and the 42° band is never reached.
 pub fn apply_overhang(
     paths: &mut Vec<Extrusion>,
     lower: &[Loop],
     layer_height: f64,
     line_width: f64,
     tune: Option<BridgeTune>,
+    bead_edge: bool,
 ) {
     if lower.is_empty() || paths.is_empty() {
         return;
     }
-    let margin = line_width * 0.65;
+    let margin = if bead_edge {
+        Reach {
+            ends: line_width * 0.65,
+            hang: line_width * 0.25,
+            edge: line_width * 0.5,
+        }
+    } else {
+        Reach {
+            ends: line_width * 0.65,
+            hang: line_width * 0.65,
+            edge: 0.0,
+        }
+    };
     let mut next = Vec::with_capacity(paths.len());
     for path in paths.drain(..) {
         if matches!(
@@ -6783,7 +6801,7 @@ fn split_overhang(
     path: Extrusion,
     lower: &[Loop],
     layer_height: f64,
-    margin: f64,
+    margin: Reach,
     tune: Option<BridgeTune>,
 ) -> Vec<Extrusion> {
     let pts = &path.points;
@@ -6825,27 +6843,43 @@ fn class_tag(c: SpanClass) -> u8 {
     }
 }
 
+/// How far past the layer below a bead's centreline may reach.
+#[derive(Clone, Copy)]
+struct Reach {
+    /// A bridge's two ends, still anchored.
+    ends: f64,
+    /// The span itself, still held.
+    hang: f64,
+    /// From the centreline to the bead's far edge, which the angle reads.
+    edge: f64,
+}
+
 fn span_class(
     a: [f64; 2],
     b: [f64; 2],
     lower: &[Loop],
     layer_height: f64,
-    margin: f64,
+    margin: Reach,
 ) -> SpanClass {
     let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
-    let sa = supported(a, lower, margin);
-    let sb = supported(b, lower, margin);
-    let sm = supported(mid, lower, margin);
+    let sa = supported(a, lower, margin.ends);
+    let sb = supported(b, lower, margin.ends);
+    let sm = supported(mid, lower, margin.ends);
     if sa && sb && !sm {
         let len = dist2(a, b).sqrt();
         if len >= 1.2 {
             return SpanClass::Bridge;
         }
     }
-    if sm {
+    let held = if margin.hang == margin.ends {
+        sm
+    } else {
+        supported(mid, lower, margin.hang)
+    };
+    if held {
         return SpanClass::Supported;
     }
-    let outside = outside_dist(mid, lower).max(outside_dist(a, lower));
+    let outside = outside_dist(mid, lower).max(outside_dist(a, lower)) + margin.edge;
     let angle = (outside / layer_height.max(0.05)).atan().to_degrees();
     if angle < 42.0 {
         SpanClass::Supported
@@ -6907,6 +6941,40 @@ fn paint(
         }
     }
     path
+}
+
+/// An overhang span that rests on support interface instead of the part:
+/// printed like a bridge, never faster than it already was, and with the
+/// bridge flow and fan when the request set them. Its kind stays.
+pub fn rest_on_interface(path: &mut Extrusion, tune: Option<BridgeTune>) {
+    let cap = path.cap_feed;
+    let feed = cap.map_or(path.speed, |c| c.feed);
+    let bridge = Slowdown::Bridge.speed(feed);
+    if bridge < path.speed {
+        path.speed = bridge;
+        if let Some(cap) = &mut path.cap_feed {
+            cap.slow = Slowdown::Bridge;
+        }
+    }
+    path.fan = 255;
+    path.fan_role = FanRole::Overhang { boost: 255 };
+    let Some(tune) = tune else {
+        return;
+    };
+    if let Some(ratio) = tune.flow {
+        path.flow *= ratio;
+    }
+    if let Some(pwm) = tune.fan_pwm {
+        path.fan = pwm;
+        path.fan_hold = true;
+    }
+    if let Some(speed) = tune.speed_mm_s {
+        path.speed = speed;
+        if let Some(cap) = &mut path.cap_feed {
+            cap.feed = speed;
+            cap.slow = Slowdown::None;
+        }
+    }
 }
 
 /// A supported stretch shorter than this between two overhang or bridge
@@ -8505,7 +8573,7 @@ mod bridge_tests {
     fn bridges(tune: Option<BridgeTune>) -> Vec<Extrusion> {
         let mut paths = vec![span()];
         let lower = vec![square(0.0, 6.0), square(14.0, 20.0)];
-        apply_overhang(&mut paths, &lower, 0.2, 0.45, tune);
+        apply_overhang(&mut paths, &lower, 0.2, 0.45, tune, false);
         paths
             .into_iter()
             .filter(|p| p.kind == PathKind::Bridge)
@@ -8551,7 +8619,7 @@ mod bridge_tests {
             points,
             0.45,
         )];
-        apply_overhang(&mut paths, &[square(0.0, 10.0)], 0.2, 0.45, None);
+        apply_overhang(&mut paths, &[square(0.0, 10.0)], 0.2, 0.45, None, false);
         paths
     }
 
@@ -8600,5 +8668,82 @@ mod bridge_tests {
         assert_eq!(roles(5.0), vec![steep, FanRole::Part, steep], "7 mm back");
         let short = wall(jog(2.0));
         assert_eq!(short[1].fan, 150, "the gap keeps its planned fan");
+    }
+
+    fn fed_wall(out: f64) -> Vec<Extrusion> {
+        let mut path = extrusion(
+            PathKind::Outer,
+            &pure(StrategyId::Speed),
+            vec![[10.0 + out, 1.0], [10.0 + out, 9.0]],
+            0.45,
+        );
+        path.speed = 130.0;
+        path.cap_feed = Some(CapFeed {
+            feed: 130.0,
+            slow: Slowdown::None,
+        });
+        let mut paths = vec![path];
+        apply_overhang(&mut paths, &[square(0.0, 10.0)], 0.2, 0.45, None, true);
+        paths
+    }
+
+    #[test]
+    fn a_bead_that_touches_nothing_below_is_slowed() {
+        // 0.28 mm out, the whole 0.45 mm bead lies past the layer below: a
+        // belt ramp stepping 0.5 mm a layer. The centreline test called it held.
+        let found = fed_wall(0.28);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].on_overhang);
+        assert!(
+            (found[0].speed - 130.0 * 0.32).abs() < 1e-9,
+            "speed {}",
+            found[0].speed
+        );
+        assert_eq!(found[0].cap_feed.expect("cap").slow, Slowdown::Steep);
+    }
+
+    #[test]
+    fn a_bead_with_a_quarter_of_its_width_on_the_layer_below_is_held() {
+        let found = fed_wall(0.15);
+        assert!(
+            found[0].on_overhang,
+            "0.15 mm out leaves less than a quarter held"
+        );
+        let held = fed_wall(0.1);
+        assert_eq!(held.len(), 1);
+        assert!(!held[0].on_overhang);
+        assert!((held[0].speed - 130.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_span_on_support_interface_prints_like_a_bridge_but_never_faster() {
+        let mut steep = fed_wall(0.28).remove(0);
+        rest_on_interface(&mut steep, None);
+        assert!((steep.speed - 36.0).abs() < 1e-9, "speed {}", steep.speed);
+        assert_eq!(steep.cap_feed.expect("cap").slow, Slowdown::Bridge);
+        assert_eq!(steep.fan, 255);
+        assert_eq!(steep.kind, PathKind::Outer);
+        let mut slow = fed_wall(0.28).remove(0);
+        slow.speed = 20.0;
+        slow.cap_feed = Some(CapFeed {
+            feed: 62.5,
+            slow: Slowdown::Steep,
+        });
+        rest_on_interface(&mut slow, None);
+        assert!((slow.speed - 20.0).abs() < 1e-9, "speed {}", slow.speed);
+        assert_eq!(slow.cap_feed.expect("cap").slow, Slowdown::Steep);
+        let mut tuned = fed_wall(0.28).remove(0);
+        rest_on_interface(
+            &mut tuned,
+            Some(BridgeTune {
+                flow: Some(0.9),
+                speed_mm_s: Some(15.0),
+                fan_pwm: Some(204),
+            }),
+        );
+        assert!((tuned.flow - 0.9).abs() < 1e-9);
+        assert!((tuned.speed - 15.0).abs() < 1e-9);
+        assert_eq!(tuned.fan, 204);
+        assert!(tuned.fan_hold);
     }
 }

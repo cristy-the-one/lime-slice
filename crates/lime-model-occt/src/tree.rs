@@ -23,6 +23,8 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod transition;
+
 pub type NodeId = u32;
 
 /// The root node of every document: the opened solid.
@@ -570,6 +572,31 @@ pub enum Op {
         max_pieces: Option<f64>,
         #[serde(default, skip_serializing)]
         numbers: Option<PartitionNumbers>,
+    },
+    // --- Print transitions (docs/plan-belt-transitions.md, step 2). Keep this variant, and the arms marked the same
+    // way, in one block. ---
+    /// A flat wedge in the concave corner of each straight edge between two flat faces, whose new face makes `angleDeg`
+    /// with the layers. `build` is the side each new layer is laid on, in the solid's frame, worked out once at Apply
+    /// from the part's pose and its printer, so a later turn on the plate never changes the solid. `size` is how far the
+    /// wedge reaches along the flatter face, 2 mm when absent. `beltDeg`, `orient` and `printer` are that pose, stored as
+    /// sent.
+    Transition {
+        edges: Vec<EdgePick>,
+        build: [f64; 3],
+        #[serde(default = "transition::default_angle")]
+        angle_deg: f64,
+        #[serde(default)]
+        size: transition::TransitionSize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_mm: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<transition::TransitionMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        belt_deg: Option<f64>,
+        #[serde(default, skip_serializing_if = "Value::is_null")]
+        orient: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        printer: Option<String>,
     },
 }
 
@@ -3237,7 +3264,9 @@ impl Store {
                 let skipped = matches!(built.op, Op::Group { .. }).then_some(built.skipped);
                 let mut metrics = probe_metrics(from, &built.kept, skipped);
                 if !built.sides.is_empty() {
-                    let _ = write!(metrics, ",\"firstFaces\":{}", Value::Array(built.sides.clone()));
+                    // --- Print transitions: each edge's case, new face and reach.
+                    let name = if matches!(built.op, Op::Transition { .. }) { "transition" } else { "firstFaces" };
+                    let _ = write!(metrics, ",\"{name}\":{}", Value::Array(built.sides.clone()));
                 }
                 // --- Split to print: every piece's volume and box, in partition order.
                 if matches!(built.op, Op::Partition { .. }) {
@@ -3947,7 +3976,7 @@ fn picks_steps(op: &Op) -> bool {
 /// --- A1 group: the steps a blend, or a blend inside a group, takes edges from. ---
 fn blend_step_picks(op: &Op, out: &mut Vec<NodeId>) {
     match op {
-        Op::Fillet { edges, .. } | Op::Chamfer { edges, .. } => {
+        Op::Fillet { edges, .. } | Op::Chamfer { edges, .. } | Op::Transition { edges, .. } => {
             for pick in edges {
                 if let EdgePick::Step(step) = pick {
                     out.push(step.from_node);
@@ -3976,7 +4005,7 @@ struct Resolved {
 fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String> {
     match op {
         Op::Fillet { edges, size } => {
-            let (refs, picks) = resolve_blend(from, edges, false, steps)?;
+            let (refs, picks) = resolve_blend(from, edges, "fillet", steps)?;
             Ok(Resolved {
                 op: Op::Fillet {
                     edges: refs,
@@ -3995,7 +4024,7 @@ fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String>
             if size2.is_some() && angle_deg.is_some() {
                 return Err("Give a chamfer a second distance or an angle, not both.".into());
             }
-            let (refs, picks) = resolve_blend(from, edges, true, steps)?;
+            let (refs, picks) = resolve_blend(from, edges, "chamfer", steps)?;
             Ok(Resolved {
                 op: Op::Chamfer {
                     edges: refs,
@@ -4011,6 +4040,15 @@ fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String>
             thickness,
             open_faces,
         } => resolve_shell(from, open_faces, *thickness),
+        // --- Print transitions.
+        Op::Transition { edges, .. } => {
+            let (refs, picks) = resolve_blend(from, edges, "give a print transition", steps)?;
+            let mut op = op.clone();
+            if let Op::Transition { edges, .. } = &mut op {
+                *edges = refs;
+            }
+            Ok(Resolved { op, picks })
+        }
         // K3. A plain extrude has no face to resolve and falls through below.
         Op::Extrude {
             up_to: Some(_), ..
@@ -4035,10 +4073,9 @@ fn resolve(from: &mut Shape, op: &Op, steps: &Steps) -> Result<Resolved, String>
 fn resolve_blend(
     from: &mut Shape,
     edges: &[EdgePick],
-    chamfer: bool,
+    verb: &str,
     steps: &Steps,
 ) -> Result<(Vec<EdgePick>, Vec<c_int>), String> {
-    let verb = if chamfer { "chamfer" } else { "fillet" };
     let mut refs: Vec<EdgePick> = Vec::with_capacity(edges.len());
     let mut picks: Vec<c_int> = Vec::new();
     // Every edge of `from`, read once, the first time a step pick needs to look for one.
@@ -4415,6 +4452,20 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
             },
         ) if x == y && x2 == y2 && xa == ya && xf == yf && a.len() == b.len() => (a, b),
         (Op::Fillet { .. } | Op::Chamfer { .. }, _) => return false,
+        // --- Print transitions: the edges as a blend's, the rest as stored.
+        (Op::Transition { edges: a, .. }, Op::Transition { edges: b, .. }) => {
+            let mut left = stored.clone();
+            let mut right = incoming.clone();
+            for one in [&mut left, &mut right] {
+                if let Op::Transition { edges, .. } = one {
+                    edges.clear();
+                }
+            }
+            if left != right || a.len() != b.len() {
+                return false;
+            }
+            (a, b)
+        }
         // K3. A stored face matches an index pick by index, and a reference by its centre and area.
         (
             Op::Extrude {
@@ -4766,6 +4817,8 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::Group { .. } => Some("A group cannot contain another group."),
         // --- Split to print.
         Op::Partition { .. } => Some("A group cannot contain a split to print."),
+        // --- Print transitions.
+        Op::Transition { .. } => Some("A group cannot contain a print transition."),
     }
 }
 
@@ -5086,6 +5139,8 @@ fn build(
                 Err(message) => Err(BuildFail::plain(message)),
             };
         }
+        // --- Print transitions.
+        Op::Transition { .. } => return transition::build(from, op, &picks),
         Op::Fillet { size, .. } | Op::Chamfer { size, .. } => {
             let chamfer = matches!(op, Op::Chamfer { .. });
             let indexes = &picks;
@@ -5417,6 +5472,30 @@ extern "C" {
         mode: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    // --- Print transitions.
+    fn lime_tree_transition_chamfer(
+        from: *const RawShape,
+        edges: *const c_int,
+        faces: *const c_int,
+        sizes: *const f64,
+        angles: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_wedges(
+        from: *const RawShape,
+        points: *const f64,
+        along: *const f64,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_face_span(
+        shape: *mut RawShape,
+        index: c_int,
+        origin: *const f64,
+        dir: *const f64,
+        out: *mut f64,
+    ) -> c_int;
     /// What an edge is, apart from where: `out` gets the curve (0 line, 1 circle, 2 other), its direction or axis, the
     /// number of faces it bounds (0 to 2), and for each of the first two its index, surface kind (0 plane, 1 cylinder,
     /// 2 cone, 3 sphere, 4 torus, 5 other), and outward normal at the edge's middle: 15 numbers.
