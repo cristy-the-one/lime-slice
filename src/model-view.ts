@@ -42,6 +42,7 @@ import { facePaint, idleLook, sectionPlane, type LookState } from "./model-look"
 import { faceBoundarySegments } from "./model-select";
 import { sectionCap } from "./section-cap";
 import { pieceRegions } from "./split-print";
+import { CUT_TRACE_GLSL, TRACE_BOUNDS, TRACE_POINTS, traceContour, traceSheet, type CutTrace } from "./cut-trace";
 import { faceTable } from "./interact/face-table";
 import { framePose, localPoint, sameWorkplane, type Workplane } from "./workplane";
 import { hexToThree, themeColors } from "./theme";
@@ -76,7 +77,8 @@ export type ModelGhost =
   | { kind: "plane"; origin: Vec3; normal: Vec3 }
   /** --- Split to print. Every cut's plane, and each piece between them tinted on the solid by clipping planes. */
   /** Split to print's planes, and `marks`, the planner's connectors on them: each hole, across its cut, in model space. */
-  | { kind: "cuts"; planes: { origin: Vec3; normal: Vec3 }[]; marks?: { at: Vec3; normal: Vec3; radius: number; depth: number }[] }
+  /** `traces`, in the planes' order: a shaped cut's profile (`cutTraces`), drawn as its path on the part and through its tints. */
+  | { kind: "cuts"; planes: { origin: Vec3; normal: Vec3 }[]; marks?: { at: Vec3; normal: Vec3; radius: number; depth: number }[]; traces?: (CutTrace | null)[] }
   | { kind: "hole"; x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }
   /** --- F4. One cylinder per sketch point. `failed` (from 1) is the hole a probe refused. --- */
   | { kind: "holes"; holes: { x: number; y: number; z: number; radius: number; depth: number; dir?: Vec3; bore?: { radius: number; depth: number } }[]; failed?: number }
@@ -1221,6 +1223,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     canvas.dataset.ghostPose = "0";
     delete canvas.dataset.connectors;
     delete canvas.dataset.ghostTriangles;
+    delete canvas.dataset.cutTraces;
+    delete canvas.dataset.cutPath;
     clearGhosts();
     applyScale();
     clipToSplit();
@@ -1379,6 +1383,9 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
 
   /** The material that draws the side a split cuts off, tinted, shared by every split shown. */
   const offcutMaterial = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05, transparent: true, opacity: 0.35, depthWrite: false, side: THREE.DoubleSide });
+  /** The paths traced on the open solid, by trace, so a redraw that moves nothing traces nothing. */
+  let tracesHeld: { positions: Float32Array | null; paths: Map<string, Float32Array> } = { positions: null, paths: new Map() };
+
   /** --- Split to print. One material per piece, since each clips to its own slab; kept and reused, never freed. */
   const pieceMaterials: THREE.MeshStandardMaterial[] = [];
   /** A plane every point is behind: the solid draws nothing while its pieces draw it. */
@@ -1388,10 +1395,80 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     let material = pieceMaterials[index];
     if (!material) {
       material = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05, side: THREE.DoubleSide });
+      traceShader(material);
       pieceMaterials[index] = material;
     }
     material.color.setHex(tone === 0 ? accent : hexToThree(colors.teal));
     return material;
+  }
+
+  /**
+   * A piece bounded by a shaped cut keeps only the fragments on its side of that cut's profile: the shader reads the
+   * profile as `traceAt` does, so the tints part where the path is drawn. The count of such cuts is a define, so a new
+   * count compiles once and new numbers are only uniforms.
+   */
+  function traceShader(material: THREE.MeshStandardMaterial) {
+    const vec3s = () => Array.from({ length: TRACE_BOUNDS }, () => new THREE.Vector3());
+    const uniforms = {
+      cutTraceOrigin: { value: vec3s() },
+      cutTraceAcross: { value: vec3s() },
+      cutTraceW: { value: vec3s() },
+      cutTracePeriod: { value: new Array<number>(TRACE_BOUNDS).fill(0) },
+      cutTraceSide: { value: new Array<number>(TRACE_BOUNDS).fill(1) },
+      cutTraceCount: { value: new Array<number>(TRACE_BOUNDS).fill(0) },
+      cutTracePoints: { value: Array.from({ length: TRACE_BOUNDS * TRACE_POINTS }, () => new THREE.Vector2()) },
+    };
+    material.userData.cutTrace = uniforms;
+    // The standard material keeps its own STANDARD define: the count goes beside it.
+    const defined = material as THREE.MeshStandardMaterial & { defines: Record<string, unknown> };
+    defined.defines = { ...defined.defines, CUT_TRACES: 0 };
+    material.customProgramCacheKey = () => `cut-trace-${String(defined.defines.CUT_TRACES)}`;
+    material.onBeforeCompile = (shader) => {
+      if (!(Number(defined.defines.CUT_TRACES) > 0)) return;
+      Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", ["#include <common>", "varying vec3 vCutTraceAt;"].join("\n"))
+        .replace("#include <begin_vertex>", ["#include <begin_vertex>", "vCutTraceAt = (modelMatrix * vec4(transformed, 1.0)).xyz;"].join("\n"));
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", ["#include <common>", CUT_TRACE_GLSL].join("\n"))
+        .replace(
+          "#include <clipping_planes_fragment>",
+          [
+            "#include <clipping_planes_fragment>",
+            "for (int i = 0; i < CUT_TRACES; i++) {",
+            "  vec3 cutRel = vCutTraceAt - cutTraceOrigin[i];",
+            "  if (cutTraceSide[i] * (dot(cutRel, cutTraceW[i]) - cutTraceAt(i, dot(cutRel, cutTraceAcross[i]))) < 0.0) discard;",
+            "}",
+          ].join("\n"),
+        );
+    };
+  }
+
+  /** The shaped cuts that bound a piece, each with the side of its profile the piece keeps; a new count recompiles. */
+  function setPieceTraces(material: THREE.MeshStandardMaterial, bounds: { trace: CutTrace; side: number }[]) {
+    const uniforms = material.userData.cutTrace as {
+      cutTraceOrigin: { value: THREE.Vector3[] };
+      cutTraceAcross: { value: THREE.Vector3[] };
+      cutTraceW: { value: THREE.Vector3[] };
+      cutTracePeriod: { value: number[] };
+      cutTraceSide: { value: number[] };
+      cutTraceCount: { value: number[] };
+      cutTracePoints: { value: THREE.Vector2[] };
+    };
+    bounds.forEach(({ trace, side }, i) => {
+      uniforms.cutTraceOrigin.value[i]!.set(...trace.origin);
+      uniforms.cutTraceAcross.value[i]!.set(...trace.across);
+      uniforms.cutTraceW.value[i]!.set(...trace.w);
+      uniforms.cutTracePeriod.value[i] = trace.period;
+      uniforms.cutTraceSide.value[i] = side;
+      uniforms.cutTraceCount.value[i] = Math.min(trace.points.length, TRACE_POINTS);
+      trace.points.slice(0, TRACE_POINTS).forEach(([a, w], k) => uniforms.cutTracePoints.value[i * TRACE_POINTS + k]!.set(a, w));
+    });
+    const defined = material as THREE.MeshStandardMaterial & { defines: Record<string, unknown> };
+    if (Number(defined.defines.CUT_TRACES) !== bounds.length) {
+      defined.defines = { ...defined.defines, CUT_TRACES: bounds.length };
+      material.needsUpdate = true;
+    }
   }
 
   /**
@@ -1426,9 +1503,20 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     // --- Split to print: each piece is the solid clipped to its slab, in its own tint; the solid itself steps aside and
     // its edges stay drawn over the pieces.
     const cuts = ghost?.kind === "cuts" && mesh ? pieceRegions(ghost.planes) : [];
+    const traces = ghost?.kind === "cuts" ? (ghost.traces ?? []) : [];
     cuts.forEach((region, index) => {
       const material = pieceMaterial(index, region.tone);
-      const planes = [...region.bounds.map((half) => new THREE.Plane(new THREE.Vector3(...half.normal), half.constant)), ...(section ? [keep[keep.length - 1]!] : [])];
+      // A shaped cut bounds the piece by its profile, in the shader; a straight one by its plane.
+      const shaped = region.bounds
+        .filter((half) => traces[half.cut])
+        .slice(0, TRACE_BOUNDS)
+        .map((half) => {
+          const trace = traces[half.cut]!;
+          return { half, trace, side: half.normal[0] * trace.w[0] + half.normal[1] * trace.w[1] + half.normal[2] * trace.w[2] < 0 ? -1 : 1 };
+        });
+      setPieceTraces(material, shaped);
+      const flat = region.bounds.filter((half) => !shaped.some((row) => row.half === half));
+      const planes = [...flat.map((half) => new THREE.Plane(new THREE.Vector3(...half.normal), half.constant)), ...(section ? [keep[keep.length - 1]!] : [])];
       if ((material.clippingPlanes?.length ?? 0) !== planes.length) material.needsUpdate = true;
       material.clippingPlanes = planes;
       const piece = new THREE.Mesh(mesh!.geometry, material);
@@ -1713,10 +1801,18 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
         addGhostMesh(new THREE.PlaneGeometry(span, span), middle, 0.2).quaternion.setFromUnitVectors(zAxis, normal);
         return;
       }
-      for (const plane of current.planes) {
+      let traced = 0;
+      current.planes.forEach((plane, index) => {
+        // A shaped cut draws its path instead of a flat square: the folded sheet and where it meets the part.
+        const trace = current.traces?.[index];
+        if (trace && drawTrace(trace)) {
+          traced += 1;
+          return;
+        }
         const shown = cutSquare(plane);
         addGhostMesh(new THREE.PlaneGeometry(shown.span, shown.span), new THREE.Vector3(...shown.origin), 0.1).quaternion.setFromUnitVectors(zAxis, new THREE.Vector3(...plane.normal).normalize());
-      }
+      });
+      if (traced > 0) canvas.dataset.cutTraces = String(traced);
       // Each connector the planner placed: its hole, through the cut, half in each piece. The holes are inside the
       // solid, so they draw over it.
       for (const mark of current.marks ?? []) {
@@ -3507,6 +3603,55 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
    * A cut's square: centred where the solid's middle drops onto the plane, and twice as wide as the furthest corner of the
    * solid's box from there, in the plane, so it clears the section however the plane turns about its normal.
    */
+  /**
+   * A shaped cut's path, in model space: the line its profile leaves on the part, bold where it is seen and faint through
+   * the part, and the sheet it sweeps, folded along the profile, a little past the part. False when it misses the part.
+   */
+  function drawTrace(trace: CutTrace): boolean {
+    if (!solid) return false;
+    // The part's triangles are in its own frame: the trace goes there, and the path comes back with the solid's pose.
+    const back = posed.matrix.clone().invert();
+    const point = (p: Vec3) => new THREE.Vector3(...p).applyMatrix4(back).toArray() as Vec3;
+    const dir = (d: Vec3) => new THREE.Vector3(...d).transformDirection(back).toArray() as Vec3;
+    const own: CutTrace = { ...trace, origin: point(trace.origin), across: dir(trace.across), sweep: dir(trace.sweep), w: dir(trace.w) };
+    const key = JSON.stringify(own);
+    if (tracesHeld.positions !== solid.positions) tracesHeld = { positions: solid.positions, paths: new Map() };
+    const contour = tracesHeld.paths.get(key) ?? traceContour(solid.positions, own);
+    // A drag traces a new path each step: only the last few are worth keeping.
+    if (tracesHeld.paths.size >= 8) tracesHeld.paths.clear();
+    tracesHeld.paths.set(key, contour);
+    if (contour.length < 6) return false;
+    const sheet = traceSheet(own, contour, Math.max(extent * 0.04, 2));
+    const posedLine = (positions: ArrayLike<number>, width: number, opacity: number, color: number, seen: boolean) => {
+      const line = fatLine(Array.from(positions), width, opacity, color);
+      if (!line) return;
+      const material = line.material as LineMaterial;
+      material.depthTest = seen;
+      material.toneMapped = false;
+      line.matrixAutoUpdate = false;
+      line.matrix.copy(posed.matrix);
+      line.renderOrder = seen ? 5 : 4;
+      ghosts.add(line);
+    };
+    if (sheet) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(sheet.triangles, 3));
+      geometry.computeVertexNormals();
+      const meshGhost = new THREE.Mesh(geometry, ghostMaterial(0.12));
+      meshGhost.matrixAutoUpdate = false;
+      meshGhost.matrix.copy(posed.matrix);
+      meshGhost.renderOrder = 2;
+      meshGhost.raycast = () => undefined;
+      ghosts.add(meshGhost);
+      posedLine(sheet.edges, 1.25, 0.75, accent, true);
+    }
+    const ink = hexToThree(colors.text);
+    posedLine(contour, 1.5, 0.35, ink, false);
+    posedLine(contour, 3, 1, ink, true);
+    canvas.dataset.cutPath = String(Number(canvas.dataset.cutPath ?? 0) + contour.length / 6);
+    return true;
+  }
+
   function cutSquare(plane: { origin: Vec3; normal: Vec3 }): { origin: Vec3; span: number } {
     const box = solidBox ?? { min: [0, 0, 0], max: [0, 0, 0] };
     const mid = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);

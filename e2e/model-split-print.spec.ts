@@ -528,6 +528,65 @@ test("a zig-zag shows Pitch, Depth and Angle, and a dovetail Width, Depth, Angle
   await shot(page, "profile-dovetail");
 });
 
+/** A block that fits the bed whole, chunky enough that a zig-zag's teeth read on screen. */
+const BLOCK = boxSolid([120, 70, 50]);
+const cutPath = (page: Page) => page.locator("#model").getAttribute("data-cut-path").then(Number);
+
+test("a zig-zag draws its path on the part while it is edited, a straight cut its plane, and Apply leaves no ghost", async ({ page }) => {
+  await openBar(page, false, BLOCK);
+  await openCard(page);
+  await page.locator("#modelPartClear").click();
+  await page.locator("#modelPartAdd").click();
+  await expect(cuts(page)).toHaveCount(1);
+  await expect(page.locator("#model"), "a straight cut is its plane, with no path").not.toHaveAttribute("data-cut-traces", /./);
+  await page.waitForTimeout(400);
+  await shot(page, "cut-path-straight");
+  await profileKind(page).selectOption("zigzag");
+  await expect(page.locator("#model")).toHaveAttribute("data-cut-traces", "1");
+  const coarse = await cutPath(page);
+  expect(coarse, "the path is traced on the part's surface").toBeGreaterThan(8);
+  await page.waitForTimeout(400);
+  await shot(page, "cut-path-zigzag");
+  // A finer pitch is more teeth: the path follows the field at once, before any kernel answer.
+  await page.locator("#modelPartProfilePitch").fill("6");
+  await page.locator("#modelPartProfilePitch").dispatchEvent("input");
+  await expect.poll(() => cutPath(page), "a finer pitch traces more of the path").toBeGreaterThan(coarse);
+  await page.locator("#modelPartProfilePitch").fill("14");
+  await page.locator("#modelPartProfilePitch").dispatchEvent("input");
+  await page.locator("#modelPartProfileDepth").fill("8");
+  await page.locator("#modelPartProfileDepth").dispatchEvent("input");
+  await page.locator("#modelPartProfileAngle").fill("20");
+  await page.locator("#modelPartProfileAngle").dispatchEvent("change");
+  await expect(page.locator("#model"), "a tooth that keeps its tip is drawn leaning").toHaveAttribute("data-cut-traces", "1");
+  await page.waitForTimeout(400);
+  await shot(page, "cut-path-zigzag-angled");
+  // Dragging the cut's arrow moves the path with it.
+  const before = await cutPath(page);
+  const arrow = await grip(page, "cut-1");
+  await page.mouse.move(arrow.x, arrow.y);
+  await page.mouse.down();
+  await page.mouse.move(arrow.x + 40, arrow.y, { steps: 6 });
+  await expect(page.locator("#model"), "mid-drag the path is still drawn").toHaveAttribute("data-cut-traces", "1");
+  await page.mouse.up();
+  await expect(at(page, 1)).not.toHaveValue("60");
+  expect(await cutPath(page)).toBeGreaterThan(0);
+  expect(before).toBeGreaterThan(0);
+  await page.waitForTimeout(400);
+  await shot(page, "cut-path-dragged");
+  await profileKind(page).selectOption("lap");
+  await expect(page.locator("#model"), "a lap draws its step").toHaveAttribute("data-cut-traces", "1");
+  await page.waitForTimeout(400);
+  await shot(page, "cut-path-lap");
+  await profileKind(page).selectOption("tongue");
+  await expect(page.locator("#model"), "a tongue's key is local: its plane is drawn").not.toHaveAttribute("data-cut-traces", /./);
+  await profileKind(page).selectOption("zigzag");
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  await expect(page.locator("#modelPanel"), "Apply closes the card").toBeHidden();
+  await expect(labels(page)).toHaveText(["bar.step", "Split to print, 2 parts"]);
+  await expect(page.locator("#model"), "the pieces are cut: the ghost's path is gone").not.toHaveAttribute("data-cut-traces", /./);
+});
+
 test("Key and Dovetail connectors show their own fields and are placed on the section", async ({ page }) => {
   const tree = await openBar(page);
   await openCard(page);

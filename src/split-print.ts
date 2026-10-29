@@ -12,7 +12,8 @@ import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
 import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, noRoomSentence, placeCut, profileRefusals, shapedFlats, type Flat, type PlacedConnector, type Profile, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
 import { sectionLoops } from "./section-cap.ts";
 import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
-import { chainRefusal, readChain, type Chain, type ProfileSlice } from "./modeling/sketch-profile.ts";
+import { chainPoints, chainRefusal, readChain, type Chain, type ProfileSlice } from "./modeling/sketch-profile.ts";
+import { thinTrace, type CutTrace } from "./cut-trace.ts";
 
 /** The status title: within `TITLE_LIMIT` (`src/sketch/hints.ts`), as every card's is. */
 export const SPLIT_PRINT_TITLE = "Split to print";
@@ -779,6 +780,49 @@ export function exportedCommit(name: string, printer: string): string {
 export interface HalfSpace {
   normal: Vec3;
   constant: number;
+  /** The cut, by list index, whose plane bounds it: the view swaps a shaped cut's plane for its profile. */
+  cut: number;
+}
+
+/**
+ * Each cut's profile as the view draws it, in model space, list order: a zig-zag, a lap or a sketch as the kernel will
+ * cut it, sized and placed on the section as Apply stores it (`storedPartition`): a zig-zag's first low flat starts at
+ * the section's U edge, a lap's step sits at its height along V. Null for a straight cut, a tongue or a dovetail (whose
+ * key is local, not swept across the part), and a cut whose plane misses the part.
+ */
+export function cutTraces(op: PartitionOp, ctx: FillContext, pose: Affine, positions: ArrayLike<number>): (CutTrace | null)[] {
+  const filled = fillPartition(op, ctx);
+  const own = (toSolidOp({ kind: "partition", cuts: filled.cuts.map((cut) => ({ origin: cut.origin, normal: cut.normal, u: cut.u })) } as ModelOp, pose) as PartitionModelOp).cuts;
+  return filled.cuts.map((cut, at) => {
+    const profile = cut.profile;
+    if (profile.kind !== "zigzag" && profile.kind !== "lap" && profile.kind !== "sketch") return null;
+    const solid = own[at]!;
+    const section = sectionLoops(positions, solid.origin, solid.normal, solid.u!);
+    if (!section) return null;
+    const box = outlineBox(section);
+    const w = cut.normal;
+    const u = cut.u;
+    const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+    const frame = { origin: [...cut.origin] as Vec3, w };
+    if (profile.kind === "zigzag") {
+      const [p, x] = [profile.pitch, box.u0];
+      const carried = profile.side === "negative" ? -profile.depth : profile.depth;
+      const lean = (profile.depth * Math.tan((profile.angle * Math.PI) / 180)) / 2;
+      if (!(p > 0) || !(p / 2 - 2 * lean > 1e-6)) return null;
+      return { ...frame, across: u, sweep: v, period: p, points: [[x, 0], [x + p / 2, 0], [x + p / 2 + lean, carried], [x + p - lean, carried], [x + p, 0]] };
+    }
+    if (profile.kind === "lap") {
+      const step = box.v0 + (profile.height ?? (box.v1 - box.v0) / 2);
+      const carried = profile.side === "negative" ? -profile.depth : profile.depth;
+      return { ...frame, across: v, sweep: u, period: 0, points: [[step, 0], [step, carried]] };
+    }
+    const chain = readChain(profile);
+    if ("reason" in chain) return null;
+    const points = chainPoints(chain, 1).map(([a, b]) => [a, b] as [number, number]);
+    if (points.length < 2) return null;
+    if (points[points.length - 1]![0] < points[0]![0]) points.reverse();
+    return { ...frame, across: u, sweep: v, period: 0, points: thinTrace(points) };
+  });
 }
 
 /** The most pieces the preview tints, the planner's hard stop. */
@@ -790,20 +834,20 @@ export const PREVIEW_PIECES = 24;
  * between neighbours, as a checkerboard does, so two pieces that touch never share a colour.
  */
 export function pieceRegions(planes: readonly { origin: Vec3; normal: Vec3 }[]): { bounds: HalfSpace[]; tone: 0 | 1 }[] {
-  const sets: { normal: Vec3; at: number[] }[] = [];
-  for (const plane of planes) {
+  const sets: { normal: Vec3; at: { at: number; cut: number }[] }[] = [];
+  planes.forEach((plane, cut) => {
     const length = Math.hypot(...plane.normal);
-    if (!(length > 0)) continue;
+    if (!(length > 0)) return;
     const n: Vec3 = [plane.normal[0] / length, plane.normal[1] / length, plane.normal[2] / length];
     const set = sets.find((row) => Math.abs(dot(row.normal, n)) > 1 - 1e-6);
     const ref = set?.normal ?? n;
-    const at = dot(ref, plane.origin);
+    const at = { at: dot(ref, plane.origin), cut };
     if (set) set.at.push(at);
     else sets.push({ normal: n, at: [at] });
-  }
+  });
   let regions: { bounds: HalfSpace[]; tone: 0 | 1 }[] = [{ bounds: [], tone: 0 }];
   for (const set of sets) {
-    const at = [...set.at].sort((a, b) => a - b);
+    const at = [...set.at].sort((a, b) => a.at - b.at);
     const r = set.normal;
     const back: Vec3 = [-r[0], -r[1], -r[2]];
     const slabs = at.length + 1;
@@ -811,8 +855,8 @@ export function pieceRegions(planes: readonly { origin: Vec3; normal: Vec3 }[]):
     for (const region of regions) {
       for (let k = 0; k < slabs; k += 1) {
         const bounds = [...region.bounds];
-        if (k > 0) bounds.push({ normal: r, constant: -at[k - 1]! });
-        if (k < at.length) bounds.push({ normal: back, constant: at[k]! });
+        if (k > 0) bounds.push({ normal: r, constant: -at[k - 1]!.at, cut: at[k - 1]!.cut });
+        if (k < at.length) bounds.push({ normal: back, constant: at[k]!.at, cut: at[k]!.cut });
         next.push({ bounds, tone: ((region.tone + k) % 2) as 0 | 1 });
       }
     }
