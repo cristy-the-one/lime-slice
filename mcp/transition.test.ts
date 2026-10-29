@@ -138,7 +138,7 @@ check("a fix that refuses gives its sentence", planRows?.[1]?.case === "lip" && 
 check("the ready op holds only the rows that build", JSON.stringify(plan.op) === JSON.stringify({ kind: "transition", mode: "auto", angleDeg: 45, size: 2, edges: [3] }), JSON.stringify(plan.op));
 check(
   "the reason counts the cases, the refusals and the curved edges",
-  plan.ok === true && plan.curvedSkipped === 2 && JSON.stringify(plan.curvedEdges) === "[11,12]" && String(plan.reason).startsWith("3 edges start in the air: 2 corners and 1 lip, longest first. 1 fix builds; 2 refuse, each saying why. 2 curved edges skipped until a later version."),
+  plan.ok === true && plan.curvedSkipped === 2 && JSON.stringify(plan.curvedEdges) === "[11,12]" && String(plan.reason).startsWith("3 edges start in the air: 2 corners and 1 lip, longest first. 1 fix builds; 2 refuse, each saying why. 2 curved edges could not be followed, so they are not listed."),
   String(plan.reason),
 );
 check("nothing is applied", ((await call("model_history", { object })).steps as unknown[] | undefined)?.length === stepsBefore);

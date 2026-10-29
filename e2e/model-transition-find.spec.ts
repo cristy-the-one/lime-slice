@@ -153,7 +153,7 @@ test("Find edges that start in the air lists corners and lips, lights a row's ed
   await openCard(page);
   await expect(page.locator("#modelTransFind")).toHaveText("Find edges that start in the air");
   await page.locator("#modelTransFind").click();
-  await expect(status(page)).toHaveText("No straight edge starts in the air in this pose.");
+  await expect(status(page)).toHaveText("No edge starts in the air in this pose.");
   await expect(rows(page)).toHaveCount(0);
   await expect(page.locator("#modelTransFixAll")).toBeHidden();
   await expect(page.locator("#modelTransFind")).toHaveText("Find again");
