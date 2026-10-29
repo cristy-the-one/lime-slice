@@ -6515,6 +6515,7 @@ export class Session {
       edges: [row.edge],
       case: row.case,
       lengthMm: Math.round(row.lengthMm * 100) / 100,
+      ...(row.curved ? { curved: true } : {}),
       at: typedAt(row.mid),
       fix: { ...typed, edges: [row.edge] },
       ...(row.refused ? { refused: row.refused } : row.wedge ? { volumeMm3: row.wedge.volumeMm3 } : {}),

@@ -1,6 +1,7 @@
 /**
  * --- Print transitions (docs/plan-belt-transitions.md, section 5, steps 3 and 4): the card in the Model dock, opened
- * from the Features menu like Split to print. Edges come from the selection (click, Shift-click adds); the card holds
+ * from the Features menu like Split to print. Edges come from the selection (a click takes the edge's tangent chain, a
+ * second click on one of it that edge alone, Shift-click adds); the card holds
  * the case (found per edge by the kernel, or chosen), Add or Cut for a lip, the angle to the layers, the size of a
  * corner's wedge and the pose the build direction comes from, shows the kernel's answer and a ghost (green added, red
  * cut), and `app/model.ts` probes, applies and edits. The numbers live in `src/model-transition.ts`, shared with the MCP.
@@ -8,7 +9,7 @@
 import type { ModelGhost } from "../model-view";
 import { formatMm } from "../model-plane";
 import type { TransitionOp } from "../model-tree";
-import { CUT_LIP_ONLY, FIND_LABEL, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, SLICE_CHECK_NONE, caseName, cardAimed, cardCase, cardFromTransition, degreeSpan, findingSummary, fixOp, fixText, fixableEdges, foundWords, newTransitionCard, sameTransitionCard, seenText, sliceCheckSummary, sliceOnlyText, transitionAngleLimit, transitionCardRefusal, transitionFix, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type Finding, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow } from "../model-transition";
+import { CUT_LIP_ONLY, FIND_LABEL, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, caseName, cardAimed, chainClick, edgesLine, cardCase, cardFromTransition, degreeSpan, findingSummary, fixOp, fixText, fixableEdges, foundWords, newTransitionCard, sameTransitionCard, transitionAngleLimit, transitionCardRefusal, transitionFix, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type Finding, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow, SLICE_CHECK_NONE, seenText, sliceCheckSummary, sliceOnlyText } from "../model-transition";
 import { closeModelCard, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -62,6 +63,8 @@ let edit: { opened: TransitionCard } | null = null;
 /** --- Auto-find: the list, and the row under the pointer or the keyboard. */
 let listing: TransitionFindView = null;
 let hovered: number | null = null;
+/** --- Chains (step 6): the tangent chain the last plain click took, while it is still what is picked. */
+let chain: number[] | null = null;
 
 const root = () => document.querySelector<HTMLElement>("#modelTransition");
 const $ = <T extends HTMLElement>(selector: string) => root()?.querySelector<T>(selector) ?? null;
@@ -158,6 +161,7 @@ export function openTransitionEdit(op: TransitionOp, edges: readonly number[], h
 
 function begin(next: TransitionCard, head?: string, quiet = false) {
   card = next;
+  chain = null;
   check = null;
   found = null;
   listing = null;
@@ -217,7 +221,11 @@ export function setTransitionCheck(next: TransitionCheck) {
 export function transitionPicked() {
   if (!card || !host || !transitionCardOpen()) return;
   const edges = host.pickedEdges();
-  if (JSON.stringify(edges) === JSON.stringify(card.edges)) return;
+  if (chain && !(edges.length === chain.length && chain.every((edge) => edges.includes(edge)))) chain = null;
+  if (JSON.stringify(edges) === JSON.stringify(card.edges)) {
+    paintEdges();
+    return;
+  }
   card = { ...card, edges, case: null };
   found = null;
   changed(0);
@@ -248,6 +256,7 @@ function closed() {
   found = null;
   listing = null;
   hovered = null;
+  chain = null;
   host?.check(null, 0);
   host?.flag([], null);
   if (wasEdit) host?.cancelled();
@@ -263,6 +272,25 @@ export function reopenTransitionFind(numbers: TransitionCard) {
   // The readout keeps what the Fix said: the step and the new volume.
   begin({ ...numbers, edges: host.pickedEdges() }, undefined, true);
   runFind();
+}
+
+/**
+ * --- Chains (step 6). What a plain click on edge `hit` does while the card is open: "single" when the chain last taken
+ * is still picked and `hit` is one of it, so the click takes that edge alone; "chain" when the app should ask the kernel
+ * for the chain through `hit`. Null with the card closed.
+ */
+export function transitionChainClick(hit: number): "single" | "chain" | null {
+  if (!transitionCardOpen() || !card) return null;
+  const next = chainClick(card.edges, chain, hit);
+  if (next === "single") chain = null;
+  return next;
+}
+
+/** The kernel's chain through a clicked edge, now picked: the card's edge line says how to take one alone. */
+export function setTransitionChain(edges: readonly number[] | null) {
+  chain = edges && edges.length > 1 ? [...edges] : null;
+  paintEdges();
+  refreshModelCard();
 }
 
 /** The kernel's answer to Find, for the card's list. */
@@ -367,6 +395,13 @@ function paintFound() {
     const what = document.createElement("span");
     what.className = "tc-fix-text";
     what.textContent = fix ? fixText(row, fix) : "";
+    if (row.curved) {
+      const bend = document.createElement("span");
+      bend.className = "tc-curved";
+      bend.textContent = "curved";
+      bend.dataset.tip = "A curved edge, or an edge on a curved face: the wedge follows it";
+      kind.append(bend);
+    }
     pick.append(kind, size, what);
     item.append(pick);
     const button = document.createElement("button");
@@ -375,7 +410,7 @@ function paintFound() {
     button.dataset.fixFound = String(row.edge);
     button.textContent = "Fix";
     button.disabled = waiting || old || !!row.refused;
-    button.setAttribute("aria-label", `Fix this ${row.case}, ${length}`);
+    button.setAttribute("aria-label", `Fix this ${row.curved ? "curved " : ""}${row.case}, ${length}`);
     item.append(button);
     if (row.refused) {
       const why = document.createElement("p");
@@ -520,8 +555,10 @@ function paintEdges() {
   const line = $<HTMLElement>("#modelTransEdges");
   if (!line || !card) return;
   const count = card.edges.length;
-  line.textContent = count === 0 ? PICK_EDGE : count === 1 ? "1 edge. Shift-click adds edges." : `${count} edges. Shift-click adds or removes one.`;
+  const chained = !!chain && count === chain.length && chain.every((edge) => card!.edges.includes(edge));
+  line.textContent = edgesLine(count, chained);
   line.classList.toggle("is-prompt", count === 0);
+  line.toggleAttribute("data-chain", chained);
 }
 
 function paintSource() {

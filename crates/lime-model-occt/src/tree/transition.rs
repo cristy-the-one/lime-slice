@@ -23,9 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{
-    lime_tree_face_span, lime_tree_join, lime_tree_lip_gusset, lime_tree_mesh,
-    lime_tree_transition_chamfer, lime_tree_wedges, take_text, BuildFail, Built, Mesh, MeshView,
-    Op, Shape,
+    lime_tree_edge_end_faces, lime_tree_edge_stations, lime_tree_face_distances,
+    lime_tree_face_span, lime_tree_inside, lime_tree_join, lime_tree_lip_gusset, lime_tree_mesh,
+    lime_tree_transition_chamfer, lime_tree_transition_tools, lime_tree_wedges, take_text,
+    BuildFail, Built, Mesh, MeshView, Op, RawShape, Shape,
 };
 
 /// The support angle: a face holds its own rows at 45° to the layers or steeper.
@@ -45,6 +46,16 @@ const MIN_EDGE_MM: f64 = 0.2;
 const ANGLE_CHECK_DEG: f64 = 1.0;
 /// A wedge closer than this to a face's end is built to the end, as a prism.
 const END_MM: f64 = 0.05;
+/// A curved edge, or an edge on a curved face, is read about this often along its length.
+const STATION_MM: f64 = 1.0;
+/// A swept or pushed wedge's sides sink this far into their faces, past any gap the faces' curve leaves, so the
+/// boolean never meets a face it only touches.
+const SINK_MM: f64 = 0.02;
+/// The most a face may curve away from one section of wedge, along the edge or across its reach, before it is refused:
+/// a quarter of the wedge's smaller reach.
+const GAP_SHARE: f64 = 0.25;
+/// Edges whose tangents turn more than this where they meet are mitred there (plan section 4).
+const MITRE_DEG: f64 = 5.0;
 
 /// How far the wedge reaches along the far face: millimetres, or `"face"`, to that face's end. 2 mm when absent: on the
 /// step 2 coupons it held every row a larger wedge held, and from 5 mm up, with Skin on shallow slopes on, a wedge left
@@ -151,16 +162,109 @@ fn span(shape: &mut Shape, face: c_int, origin: V3, dir: V3) -> Option<(f64, f64
     (ok != 0 && out.iter().all(|v| v.is_finite())).then_some((out[0], out[1]))
 }
 
-/// One picked edge, read: straight, between two flat faces, convex or concave.
+/// A point along an edge, from its first vertex as Open CASCADE orients it: the tangent, and the outward normals of the
+/// edge's two faces in `EdgeRead::faces` order.
+#[derive(Clone, Copy)]
+pub(super) struct Station {
+    pub p: V3,
+    pub t: V3,
+    pub n: [V3; 2],
+}
+
+/// Stations a curved edge, or an edge on a curved face, is read at: about one per millimetre, at least 5, at most 65.
+pub(super) fn station_count(length: f64, even: bool) -> usize {
+    if even {
+        2
+    } else {
+        ((length / STATION_MM).ceil() as usize).clamp(4, 64) + 1
+    }
+}
+
+/// `count` stations along edge `edge`, its faces' normals in the order of `faces`. None when it cannot be read.
+pub(super) fn stations(
+    shape: &mut Shape,
+    edge: c_int,
+    faces: [c_int; 2],
+    count: usize,
+) -> Option<Vec<Station>> {
+    let mut out = vec![0.0f64; 12 * count];
+    // SAFETY: `shape` is held for this call; the kernel writes 12 numbers per station.
+    let ok = unsafe {
+        lime_tree_edge_stations(
+            shape.0.as_ptr(),
+            edge,
+            faces[0],
+            faces[1],
+            count as c_int,
+            out.as_mut_ptr(),
+        )
+    };
+    if ok == 0 || !out.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let read = |s: &[f64], at: usize| [s[at], s[at + 1], s[at + 2]];
+    let found: Vec<Station> = out
+        .chunks_exact(12)
+        .map(|s| Station {
+            p: read(s, 0),
+            t: read(s, 3),
+            n: [read(s, 6), read(s, 9)],
+        })
+        .collect();
+    found
+        .iter()
+        .all(|s| unit(s.t).is_some() && unit(s.n[0]).is_some() && unit(s.n[1]).is_some())
+        .then_some(found)
+}
+
+/// Each point's signed distance to face `face`'s surface along its outward normal: above 0 in the air outside it.
+fn distances(shape: &mut Shape, face: c_int, points: &[V3]) -> Option<Vec<f64>> {
+    let flat: Vec<f64> = points.iter().flatten().copied().collect();
+    let mut out = vec![0.0f64; points.len()];
+    // SAFETY: `shape` is held for this call; the kernel reads three numbers per point and writes one.
+    let ok = unsafe {
+        lime_tree_face_distances(
+            shape.0.as_ptr(),
+            face,
+            flat.as_ptr(),
+            points.len() as c_int,
+            out.as_mut_ptr(),
+        )
+    };
+    (ok != 0 && out.iter().all(|v| v.is_finite())).then_some(out)
+}
+
+/// The faces at either end of edge `edge`, which a tool grown into a wall at that end may change.
+fn end_faces(shape: &mut Shape, edge: c_int) -> Vec<c_int> {
+    let mut out = vec![0 as c_int; 64];
+    // SAFETY: `shape` is held for this call; the kernel writes at most 64 ints.
+    let count = unsafe { lime_tree_edge_end_faces(shape.0.as_ptr(), edge, out.as_mut_ptr(), 64) };
+    out.truncate(count.max(0) as usize);
+    out
+}
+
+/// Whether `point` lies inside the solid.
+fn inside(shape: &mut Shape, point: V3) -> bool {
+    // SAFETY: `shape` is held for this call; the kernel reads three numbers.
+    unsafe { lime_tree_inside(shape.0.as_ptr(), point.as_ptr()) == 1 }
+}
+
+/// One picked edge, read: convex or concave, between two faces; straight or curved, the faces flat or curved. A flat face
+/// or a straight edge a STEP file stores as a B-spline reads as flat or straight.
 struct EdgeRead {
     index: c_int,
     length: f64,
     mid: V3,
-    /// The edge's unit direction.
+    /// The edge's unit direction, at its middle on a curved edge.
     e: V3,
     faces: [c_int; 2],
     normals: [V3; 2],
     convex: bool,
+    /// A line between two planes as stored: the chamfer and the step 2 prism are exact on it.
+    exact: bool,
+    straight: bool,
+    flat: bool,
+    stations: Vec<Station>,
 }
 
 impl EdgeRead {
@@ -198,7 +302,7 @@ fn read_edge(
             edge.length_mm
         ))));
     }
-    let (sig, faces) = from.edge_sig(index).ok_or_else(|| {
+    let (sig, faces) = from.edge_sig_flat(index).ok_or_else(|| {
         refuse(which(
             "Open CASCADE could not read this edge's faces.".into(),
         ))
@@ -206,12 +310,6 @@ fn read_edge(
     if faces[0] < 0 || faces[1] < 0 || sig.kinds.contains(&9) {
         return Err(refuse(which(
             "This edge is not between two faces: a seam or an open boundary has no corner to fill."
-                .into(),
-        )));
-    }
-    if sig.curve != 0 || sig.kinds != [0, 0] {
-        return Err(refuse(which(
-            "A print transition is built on a straight edge between two flat faces for now. Curved edges and faces come in a later step."
                 .into(),
         )));
     }
@@ -224,14 +322,35 @@ fn read_edge(
             )))
         }
     };
-    let e = unit(sig.dir).ok_or_else(|| {
+    let exact = from
+        .edge_sig(index)
+        .is_some_and(|(raw, _)| raw.curve == 0 && raw.kinds == [0, 0]);
+    let straight = sig.curve == 0;
+    let flat = sig.kinds == [0, 0];
+    let read = stations(
+        from,
+        index,
+        faces,
+        station_count(edge.length_mm, straight && flat),
+    )
+    .ok_or_else(|| refuse(which("Open CASCADE could not read along this edge.".into())))?;
+    let e = if straight {
+        unit(sig.dir)
+    } else {
+        unit(read[read.len() / 2].t)
+    }
+    .ok_or_else(|| {
         refuse(which(
             "Open CASCADE could not read this edge's direction.".into(),
         ))
     })?;
-    // The steepest any face through the edge can lie: when even that is at least the angle asked, every face holds.
-    let across = (1.0 - dot(e, b).powi(2)).max(0.0).sqrt();
-    if deg(across.clamp(-1.0, 1.0).acos()) >= angle - 1e-6 {
+    // The steepest any face through the edge can lie: when even that is at least the angle asked, every face holds. A
+    // curved edge is refused when that holds all along it.
+    let climbs = |t: V3| {
+        let across = (1.0 - dot(t, b).powi(2)).max(0.0).sqrt();
+        deg(across.clamp(-1.0, 1.0).acos()) >= angle - 1e-6
+    };
+    if climbs(e) && read.iter().all(|s| climbs(s.t)) {
         return Err(refuse(which(format!(
             "This edge already grows at least {angle}° to the layers, so every face through it holds its own rows."
         ))));
@@ -244,6 +363,10 @@ fn read_edge(
         faces,
         normals: sig.normals,
         convex,
+        exact,
+        straight,
+        flat,
+        stations: read,
     })
 }
 
@@ -280,6 +403,382 @@ fn far_near(read: &EdgeRead, b: V3) -> ((c_int, V3), (c_int, V3)) {
     }
 }
 
+/// The new face's outward normal in a corner, and its turn from the far face: it turns from the far face's normal toward
+/// the near face's, about the edge, until it makes `angle` with the layers. At the far end it is too flat, at the near
+/// end steep enough, so the turn is bisected.
+fn wedge_normal(n_far: V3, n_near: V3, b: V3, angle: f64) -> Option<(V3, f64)> {
+    let down = scale(b, -1.0);
+    let theta = dot(n_far, n_near).clamp(-1.0, 1.0).acos();
+    let turn = |t: f64| -> V3 {
+        let s = theta.sin();
+        add(
+            scale(n_far, ((1.0 - t) * theta).sin() / s),
+            scale(n_near, (t * theta).sin() / s),
+        )
+    };
+    let target = angle.to_radians().cos();
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    for _ in 0..64 {
+        let mid = 0.5 * (lo + hi);
+        if dot(turn(mid), down) > target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let t = 0.5 * (lo + hi);
+    unit(turn(t)).map(|normal| (normal, t * theta))
+}
+
+/// Into a concave corner's face with outward normal `n` from an edge along `e`: square to the edge, in the face, toward
+/// the air side of the other face.
+fn into_corner(e: V3, n: V3, other: V3) -> Option<V3> {
+    let u = cross(e, n);
+    unit(if dot(u, other) >= 0.0 {
+        u
+    } else {
+        scale(u, -1.0)
+    })
+}
+
+/// A wedge pushed along a straight edge or swept along a curved one, before it is fused: one per picked corner on the
+/// path for curved edges and faces, chains and walls (plan section 4).
+struct ToolPlan {
+    edge: c_int,
+    straight: bool,
+    /// At the edge's first vertex as Open CASCADE orients it: sunk into the faces, then the new face's two corners.
+    section: Vec<V3>,
+    ext: [f64; 2],
+    /// Per end: the point and the side of the mitre plane kept.
+    mitre: [Option<(V3, V3)>; 2],
+    /// Per end: the edge's end point, the direction the edge arrives at it in, and the wedge's middle from there.
+    ends: [(V3, V3, V3); 2],
+    /// How far the wedge reaches from its edge.
+    size: f64,
+    /// The new face's angle to the layers, least and most along the edge.
+    angles: (f64, f64),
+    /// The triangle's own volume, without its sunk sides.
+    volume: f64,
+    /// For the ghost: the triangle at each station.
+    rings: Vec<[V3; 3]>,
+}
+
+/// Transport from station 0 to station `i`: a straight edge's prism moves its section along the edge; a sweep turns it
+/// with the frame whose binormal stays `b` (tangent, `b` × tangent, then their cross).
+fn transport(read: &EdgeRead, b: V3, i: usize) -> Option<impl Fn(V3) -> V3> {
+    let s0 = read.stations[0];
+    let si = read.stations[i];
+    let frame = |t: V3| -> Option<[V3; 3]> {
+        let t = unit(t)?;
+        let n = unit(cross(b, t))?;
+        Some([t, n, cross(t, n)])
+    };
+    let (f0, fi) = if read.straight {
+        let id = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        (id, id)
+    } else {
+        (frame(s0.t)?, frame(si.t)?)
+    };
+    Some(move |q: V3| {
+        let d = sub(q, s0.p);
+        let local = [dot(d, f0[0]), dot(d, f0[1]), dot(d, f0[2])];
+        add(
+            si.p,
+            add(
+                add(scale(fi[0], local[0]), scale(fi[1], local[1])),
+                scale(fi[2], local[2]),
+            ),
+        )
+    })
+}
+
+/// The tool for `corner`, its section read at the edge's first station and checked at every one: the steeper face must
+/// hold all along, the new face must keep the angle asked within 1°, and the faces may curve away from the section by
+/// no more than a quarter of its smaller reach, which the section's sides then sink past.
+fn corner_tool(
+    from: &mut Shape,
+    read: &EdgeRead,
+    c: &Corner,
+    b: V3,
+    angle: f64,
+    which: &dyn Fn(String) -> String,
+) -> Result<ToolPlan, BuildFail> {
+    let (fi, ni) = if c.far == read.faces[0] {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let st = &read.stations;
+    let s0 = st[0];
+    let t0 = unit(s0.t)
+        .ok_or_else(|| refuse(which("Open CASCADE could not read along this edge.".into())))?;
+    let (n_far, n_near) = (s0.n[fi], s0.n[ni]);
+    let lost = || {
+        refuse(which(
+            "This corner has no wedge at that angle where the edge starts.".into(),
+        ))
+    };
+    let (normal, from_far) = wedge_normal(n_far, n_near, b, angle).ok_or_else(lost)?;
+    let u_far = into_corner(t0, n_far, n_near).ok_or_else(lost)?;
+    let u_near = into_corner(t0, n_near, n_far).ok_or_else(lost)?;
+    let gap = dot(u_far, u_near).clamp(-1.0, 1.0).acos();
+    let reach = c.reach;
+    let near_reach = reach * from_far.sin() / (gap + from_far).sin();
+    if !(near_reach.is_finite() && near_reach > 0.0) {
+        return Err(lost());
+    }
+    let p0 = s0.p;
+    let p1 = add(p0, scale(u_far, reach));
+    let p2 = add(p0, scale(u_near, near_reach));
+    // Every station: the steeper face's angle, the new face's, and the points of the section's two sides.
+    let mut least_near = f64::INFINITY;
+    let mut angles = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut far_points = Vec::new();
+    let mut near_points = Vec::new();
+    let mut rings = Vec::with_capacity(st.len());
+    for (i, station) in st.iter().enumerate() {
+        let moved = transport(read, b, i)
+            .ok_or_else(|| refuse(which("This edge runs along the build somewhere, so no wedge holds one lean to the layers along it.".into())))?;
+        least_near = least_near.min(to_layers(station.n[ni], b));
+        let at = moved(add(p0, normal));
+        let n_i = unit(sub(at, moved(p0))).unwrap_or(normal);
+        let a = to_layers(n_i, b);
+        angles = (angles.0.min(a), angles.1.max(a));
+        for k in 1..=4 {
+            let f = k as f64 / 4.0;
+            far_points.push(moved(add(p0, scale(u_far, f * reach))));
+            near_points.push(moved(add(p0, scale(u_near, f * near_reach))));
+        }
+        rings.push([moved(p0), moved(p1), moved(p2)]);
+    }
+    if least_near < angle - 0.5 {
+        return Err(refuse(which(format!(
+            "Along this edge the steeper face turns to {least_near:.1}° to the layers, flatter than the {angle}° asked, so the wedge would start in the air there."
+        ))));
+    }
+    if angles.0 < angle - ANGLE_CHECK_DEG || angles.1 > angle + ANGLE_CHECK_DEG {
+        return Err(refuse(which(format!(
+            "Along this edge the wedge's face would range from {:.1}° to {:.1}° to the layers, more than {ANGLE_CHECK_DEG}° off the {angle}° asked: the edge climbs through the layers as it turns. A shorter run of it holds the angle.",
+            angles.0, angles.1
+        ))));
+    }
+    let gap_of = |from: &mut Shape, face: c_int, points: &[V3]| -> Result<f64, BuildFail> {
+        distances(from, face, points)
+            .map(|d| d.into_iter().fold(0.0f64, f64::max))
+            .ok_or_else(|| {
+                refuse(which(
+                    "Open CASCADE could not measure this corner's faces along the edge.".into(),
+                ))
+            })
+    };
+    let gap_far = gap_of(from, c.far, &far_points)?;
+    let gap_near = gap_of(from, c.near, &near_points)?;
+    let most = GAP_SHARE * reach.min(near_reach);
+    if gap_far.max(gap_near) > most {
+        return Err(refuse(which(format!(
+            "The faces curve away from this wedge by up to {:.2} mm along the edge, more than a quarter of its {:.2} mm reach, so it would stand off them. A smaller size, or a shorter run of the edge, keeps it on them.",
+            gap_far.max(gap_near),
+            reach.min(near_reach)
+        ))));
+    }
+    let (sink_far, sink_near) = (gap_far + SINK_MM, gap_near + SINK_MM);
+    let section = vec![
+        sub(p0, add(scale(n_far, sink_far), scale(n_near, sink_near))),
+        sub(p1, scale(n_far, sink_far)),
+        p1,
+        p2,
+        sub(p2, scale(n_near, sink_near)),
+    ];
+    let last = st.len() - 1;
+    let end_move = transport(read, b, last).ok_or_else(lost)?;
+    let middle = scale(add(add(p0, p1), p2), 1.0 / 3.0);
+    let ends = [
+        (p0, scale(t0, -1.0), sub(middle, p0)),
+        (
+            st[last].p,
+            unit(st[last].t).unwrap_or(t0),
+            sub(end_move(middle), st[last].p),
+        ),
+    ];
+    Ok(ToolPlan {
+        edge: read.index,
+        straight: read.straight,
+        section,
+        ext: [0.0; 2],
+        mitre: [None, None],
+        ends,
+        size: reach.max(near_reach) + sink_far.max(sink_near),
+        angles,
+        volume: 0.5 * reach * near_reach * gap.sin() * read.length,
+        rings,
+    })
+}
+
+/// Where two picked edges meet at an angle, each wedge runs past the shared point and is cut on the plane that bisects
+/// the turn, so they meet with no notch and no spike. Where an end meets a wall, the wedge runs into it by its own size
+/// and the boolean merges it there; at an end in the open air it stops flush (plan section 4).
+fn join_ends(from: &mut Shape, plans: &mut [ToolPlan]) {
+    let tight = MITRE_DEG.to_radians().cos();
+    for i in 0..plans.len() {
+        for end in 0..2 {
+            let (at, arrive, middle) = plans[i].ends[end];
+            let mut met = false;
+            for j in 0..plans.len() {
+                if j == i {
+                    continue;
+                }
+                for other in 0..2 {
+                    let (there, arrive_j, _) = plans[j].ends[other];
+                    if length(sub(there, at)) > 1e-4 {
+                        continue;
+                    }
+                    met = true;
+                    // Straight on, or nearly: the two sections meet flush.
+                    if dot(arrive, scale(arrive_j, -1.0)) >= tight {
+                        continue;
+                    }
+                    if let Some(m) = unit(sub(arrive, arrive_j)) {
+                        plans[i].ext[end] = 2.0 * plans[i].size.max(plans[j].size);
+                        plans[i].mitre[end] = Some((at, scale(m, -1.0)));
+                    }
+                }
+            }
+            if met {
+                continue;
+            }
+            let step = (0.1 * plans[i].size).clamp(0.05, 0.5);
+            if inside(from, add(add(at, middle), scale(arrive, step))) {
+                plans[i].ext[end] = plans[i].size;
+            }
+        }
+    }
+}
+
+/// The triangles of a wedge drawn through its section at each station, for the card's ghost.
+fn ring_soup(rings: &[[V3; 3]]) -> Vec<f64> {
+    let mut out = Vec::with_capacity(18 * 3 * rings.len() + 18);
+    let mut tri = |points: [V3; 3]| {
+        for p in points {
+            out.extend(p.map(round6));
+        }
+    };
+    if let (Some(first), Some(last)) = (rings.first(), rings.last()) {
+        tri([first[0], first[2], first[1]]);
+        tri([last[0], last[1], last[2]]);
+    }
+    for pair in rings.windows(2) {
+        let [a0, a1, a2] = pair[0];
+        let [b0, b1, b2] = pair[1];
+        for (p, q, r, s) in [(a0, a1, b1, b0), (a1, a2, b2, b1), (a2, a0, b0, b2)] {
+            tri([p, q, r]);
+            tri([p, r, s]);
+        }
+    }
+    out
+}
+
+/// The corners' tools fused on in one boolean, then checked: the boolean may change only the corners' own faces and the
+/// faces at their edges' ends (walls, and the other edge where two meet), and it adds no more than the tools hold. On
+/// straight edges between flat faces meeting nothing, it must add the wedges' own volume within 1 %, as step 2 checks.
+fn sweep_corners(
+    from: &mut Shape,
+    corners: &[&Corner],
+    plans: &[ToolPlan],
+    reads: &[&EdgeRead],
+    b: V3,
+    angle: f64,
+) -> Result<(Shape, Vec<Vec<f64>>), BuildFail> {
+    let edges: Vec<c_int> = plans.iter().map(|p| p.edge).collect();
+    let straight: Vec<c_int> = plans.iter().map(|p| c_int::from(p.straight)).collect();
+    let counts: Vec<c_int> = plans.iter().map(|p| p.section.len() as c_int).collect();
+    let sections: Vec<f64> = plans
+        .iter()
+        .flat_map(|p| p.section.iter().flatten().copied())
+        .collect();
+    let ext: Vec<f64> = plans.iter().flat_map(|p| p.ext).collect();
+    let mitres: Vec<f64> = plans
+        .iter()
+        .flat_map(|p| {
+            p.mitre.iter().flat_map(|m| match m {
+                Some((at, keep)) => [1.0, at[0], at[1], at[2], keep[0], keep[1], keep[2]],
+                None => [0.0; 7],
+            })
+        })
+        .collect();
+    let faces = from.fingerprint().faces.max(0) as usize;
+    let mut touched = vec![0 as c_int; faces];
+    let mut out = [0.0f64; 1];
+    let mut tools: *mut RawShape = std::ptr::null_mut();
+    // SAFETY: `from` is held for this call; the kernel reads the arrays as its comment says, writes one flag per face of
+    // `from`, one number, and the tools as a new shape.
+    let made = Shape::made(|error| unsafe {
+        lime_tree_transition_tools(
+            from.raw(),
+            plans.len() as c_int,
+            edges.as_ptr(),
+            straight.as_ptr(),
+            counts.as_ptr(),
+            sections.as_ptr(),
+            ext.as_ptr(),
+            mitres.as_ptr(),
+            b.as_ptr(),
+            0,
+            touched.as_mut_ptr(),
+            out.as_mut_ptr(),
+            &mut tools,
+            error,
+        )
+    });
+    let _tools = std::ptr::NonNull::new(tools).map(Shape);
+    let mut made = made.map_err(refuse)?;
+    let mut allowed: Vec<c_int> = corners.iter().flat_map(|c| [c.far, c.near]).collect();
+    for p in plans {
+        allowed.extend(end_faces(from, p.edge));
+    }
+    let others: Vec<c_int> = touched
+        .iter()
+        .enumerate()
+        .filter(|(index, &flag)| flag != 0 && !allowed.contains(&(*index as c_int)))
+        .map(|(index, _)| index as c_int)
+        .collect();
+    if let Some(&face) = others.first() {
+        let more = if others.len() > 1 {
+            format!(" and {} more", others.len() - 1)
+        } else {
+            String::new()
+        };
+        return Err(refuse(format!(
+            "The wedge would run into another part of the solid: it meets face {face}{more}, beyond the corner's own faces and the walls at its ends. Use a smaller size, or an edge with nothing else between its faces."
+        )));
+    }
+    let added = made.fingerprint().volume_mm3 - from.fingerprint().volume_mm3;
+    let expected: f64 = plans.iter().map(|p| p.volume).sum();
+    let tools_volume = out[0];
+    let plain = reads.iter().all(|r| r.straight && r.flat)
+        && plans
+            .iter()
+            .all(|p| p.ext.iter().all(|&x| x == 0.0) && p.mitre.iter().all(Option::is_none));
+    let off = if plain {
+        (added - expected).abs() > 0.01 * expected + 0.05
+    } else {
+        added < 0.5 * expected || added > tools_volume + 0.05
+    };
+    if off {
+        return Err(refuse(format!(
+            "The wedge would run into another part of the solid: it adds {added:.1} mm³ where the wedge alone is {expected:.1} mm³. Use a smaller size, or an edge with nothing else between its faces."
+        )));
+    }
+    for (c, read) in corners.iter().zip(reads) {
+        if read.straight && !has_face(&mut made, c.normal) {
+            return Err(refuse(format!(
+                "Open CASCADE built the wedge's face off the {angle}° asked, so it was not kept."
+            )));
+        }
+    }
+    let soups = plans.iter().map(|p| ring_soup(&p.rings)).collect();
+    Ok((made, soups))
+}
+
 fn corner(
     from: &mut Shape,
     read: &EdgeRead,
@@ -289,7 +788,6 @@ fn corner(
     max_mm: f64,
     which: &dyn Fn(String) -> String,
 ) -> Result<Corner, BuildFail> {
-    let down = scale(b, -1.0);
     let e = read.e;
     let ((far, n_far), (near, n_near)) = far_near(read, b);
     let far_deg = to_layers(n_far, b);
@@ -315,30 +813,8 @@ fn corner(
             "The steeper face here grows at {near_deg:.1}° to the layers, the {angle}° asked, so a wedge at that angle would run along it. A steeper angle makes one."
         ))));
     }
-    // The new face's normal turns from the far face's toward the near face's, about the edge, until it makes the angle
-    // asked with the layers. At the far end it is too flat, at the near end steep enough, so the turn is bisected.
-    let theta = dot(n_far, n_near).clamp(-1.0, 1.0).acos();
-    let turn = |t: f64| -> V3 {
-        let s = theta.sin();
-        add(
-            scale(n_far, ((1.0 - t) * theta).sin() / s),
-            scale(n_near, (t * theta).sin() / s),
-        )
-    };
-    let target = angle.to_radians().cos();
-    let (mut lo, mut hi) = (0.0f64, 1.0f64);
-    for _ in 0..64 {
-        let mid = 0.5 * (lo + hi);
-        if dot(turn(mid), down) > target {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    let t = 0.5 * (lo + hi);
-    let normal = unit(turn(t))
+    let (normal, from_far) = wedge_normal(n_far, n_near, b, angle)
         .ok_or_else(|| refuse(which("This corner has no wedge at that angle.".into())))?;
-    let from_far = t * theta;
     let (u_far, u_near) = match (read.into(n_far, n_near), read.into(n_near, n_far)) {
         (Some(f), Some(n)) => (f, n),
         _ => {
@@ -349,14 +825,14 @@ fn corner(
     };
     let gap = dot(u_far, u_near).clamp(-1.0, 1.0).acos();
     let start = read.start();
-    let far_end = span(from, far, start, u_far)
+    let far_end = span(from, far, read.mid, u_far)
         .ok_or_else(|| {
             refuse(which(
                 "Open CASCADE could not measure the flatter face.".into(),
             ))
         })?
         .1;
-    let near_end = span(from, near, start, u_near)
+    let near_end = span(from, near, read.mid, u_near)
         .ok_or_else(|| {
             refuse(which(
                 "Open CASCADE could not measure the steeper face.".into(),
@@ -544,7 +1020,7 @@ fn lip_from_root(
     let first = (0..count)
         .filter(|&index| index != read.index)
         .find(|&index| {
-            let Some((sig, faces)) = from.edge_sig(index) else {
+            let Some((sig, faces)) = from.edge_sig_flat(index) else {
                 return false;
             };
             if sig.curve != 0 || !faces.contains(&far) {
@@ -798,6 +1274,7 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
     let cut = mode == &Some(TransitionMode::Cut);
     let one = picks.len() == 1;
     let mut found = Vec::with_capacity(picks.len());
+    let mut reads: Vec<EdgeRead> = Vec::with_capacity(picks.len());
     for &index in picks {
         let which = move |text: String| {
             if one {
@@ -807,6 +1284,12 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
             }
         };
         let read = read_edge(from, index, b, *angle_deg, &which)?;
+        if (read.convex || case == &Some(TransitionCase::Lip)) && !read.straight {
+            return Err(refuse(which(
+                "A lip on a curved edge has no gusset yet: a gusset is built from a straight lip edge, its faces flat or curved. Supports are the way here for now."
+                    .into(),
+            )));
+        }
         found.push(match (read.convex, case) {
             (false, Some(TransitionCase::Lip)) => {
                 Found::Lip(lip_from_root(from, &read, b, *angle_deg, &which)?)
@@ -826,6 +1309,7 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
             }
             (true, _) => Found::Lip(lip(from, &read, index, b, *angle_deg, &which)?),
         });
+        reads.push(read);
     }
     let corners: Vec<&Corner> = found
         .iter()
@@ -834,10 +1318,45 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
             Found::Lip(_) => None,
         })
         .collect();
+    // Every corner's tool on the path that sweeps and mitres, read whatever path builds it: its ends tell whether the
+    // wedges meet one another or a wall.
+    let mut plans: Vec<ToolPlan> = Vec::with_capacity(corners.len());
+    for (f, read) in found.iter().zip(&reads) {
+        if let Found::Corner(c) = f {
+            let index = read.index;
+            let which = move |text: String| {
+                if one {
+                    text
+                } else {
+                    format!("Edge {index}: {text}")
+                }
+            };
+            plans.push(corner_tool(from, read, c, b, *angle_deg, &which)?);
+        }
+    }
+    join_ends(from, &mut plans);
+    let corner_reads: Vec<&EdgeRead> = found
+        .iter()
+        .zip(&reads)
+        .filter(|(f, _)| matches!(f, Found::Corner(_)))
+        .map(|(_, read)| read)
+        .collect();
+    let exact = corner_reads.iter().all(|read| read.exact);
+    let joined = plans
+        .iter()
+        .any(|p| p.ext.iter().any(|&x| x > 0.0) || p.mitre.iter().any(Option::is_some));
+    // Straight edges between planes as stored, meeting nothing, keep the exact paths of step 2: the chamfer, or the
+    // prism to a face's end. Anything else is swept or pushed, sunk into its faces, mitred and grown into walls.
+    let swept = !exact || joined;
     let to_end = |c: &Corner| c.reach > c.far_end - END_MM || c.near_reach > c.near_end - END_MM;
     let prism = corners.iter().any(|c| to_end(c));
     let mut kept: Option<Shape> = None;
-    if !corners.is_empty() {
+    let mut swept_soup: Vec<Vec<f64>> = Vec::new();
+    if !corners.is_empty() && swept {
+        let (made, soups) = sweep_corners(from, &corners, &plans, &corner_reads, b, *angle_deg)?;
+        swept_soup = soups;
+        kept = Some(made);
+    } else if !corners.is_empty() {
         let built = if prism {
             let points: Vec<f64> = corners
                 .iter()
@@ -974,26 +1493,60 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
         kept = Some(made);
     }
     let kept = kept.ok_or_else(|| refuse("Pick an edge to give a print transition."))?;
+    let mut corner_at = 0usize;
     let sides = found
         .iter()
         .zip(&lips_made)
         .map(|(f, made)| match (f, made) {
-            (Found::Corner(c), _) => json!({
-                "edge": c.edge,
-                "case": "corner",
-                "path": if prism { "prism" } else { "chamfer" },
-                "material": "add",
-                "farFace": c.far,
-                "nearFace": c.near,
-                "farDeg": round(c.far_deg),
-                "nearDeg": round(c.near_deg),
-                "normal": c.normal.map(round6),
-                "angleToLayersDeg": round(to_layers(c.normal, b)),
-                "reachMm": round(c.reach),
-                "nearReachMm": round(c.near_reach),
-                "farEndMm": round(c.far_end),
-                "volumeMm3": round(c.volume),
-            }),
+            (Found::Corner(c), _) => {
+                let plan = &plans[corner_at];
+                let read = corner_reads[corner_at];
+                let soup = swept_soup.get(corner_at).cloned();
+                corner_at += 1;
+                let path = if swept && !read.straight {
+                    "sweep"
+                } else if swept || prism {
+                    "prism"
+                } else {
+                    "chamfer"
+                };
+                let mut row = json!({
+                    "edge": c.edge,
+                    "case": "corner",
+                    "path": path,
+                    "material": "add",
+                    "farFace": c.far,
+                    "nearFace": c.near,
+                    "farDeg": round(c.far_deg),
+                    "nearDeg": round(c.near_deg),
+                    "normal": c.normal.map(round6),
+                    "angleToLayersDeg": round(to_layers(c.normal, b)),
+                    "reachMm": round(c.reach),
+                    "nearReachMm": round(c.near_reach),
+                    "farEndMm": round(c.far_end),
+                    "volumeMm3": round(c.volume),
+                });
+                if swept {
+                    row["curved"] = json!(!(read.straight && read.flat));
+                    row["angleRangeDeg"] = json!([round(plan.angles.0), round(plan.angles.1)]);
+                    row["ends"] = json!(plan
+                        .ext
+                        .iter()
+                        .zip(&plan.mitre)
+                        .map(|(&x, m)| if m.is_some() {
+                            "mitre"
+                        } else if x > 0.0 {
+                            "wall"
+                        } else {
+                            "flush"
+                        })
+                        .collect::<Vec<_>>());
+                    if let Some(soup) = soup {
+                        row["soup"] = json!(soup);
+                    }
+                }
+                row
+            }
             (Found::Lip(lip), made) => {
                 let made = made.as_ref().expect("a lip is built");
                 let mut row = json!({

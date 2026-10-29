@@ -12,7 +12,11 @@ import {
   cardAimed,
   caseName,
   cardCase,
+  chainClick,
   curvedNote,
+  edgeChainRequest,
+  edgesLine,
+  readEdgeChain,
   findingSummary,
   fixOp,
   fixText,
@@ -173,7 +177,7 @@ const kernelRows = {
   rows: [
     { edge: 9, case: "corner", lengthMm: 12.5, mid: [0, 1, 2], farDeg: 46, nearDeg: 90, probe: { ok: false, error: "already grows" } },
     { edge: 7, case: "lip", lengthMm: 20, mid: [1, 2, 3], farDeg: 0, nearDeg: 90, probe: { ok: false, error: "convex" } },
-    { edge: 3, case: "corner", lengthMm: 20, mid: [4, 5, 6], farDeg: 25, nearDeg: 90, probe: { ok: true, transition: [wedgeRow] } },
+    { edge: 3, case: "corner", lengthMm: 20, mid: [4, 5, 6], farDeg: 25, nearDeg: 90, curved: true, probe: { ok: true, transition: [wedgeRow] } },
     { edge: 1, case: "point", lengthMm: 30, mid: [0, 0, 0], probe: { ok: true } },
   ],
 };
@@ -190,13 +194,27 @@ else {
   check("the fix in words", fixText(finding.rows[0]!, fix) === "Wedge, 2 mm at 45°, +40 mm³" && fixText(finding.rows[1]!, fix) === "Gusset at 45°" && fixText(finding.rows[0]!, { ...fix, size: "face" }).startsWith("Wedge, to the face's end at 45°"), fixText(finding.rows[0]!, fix));
   check(
     "the summary counts cases, refusals and curved edges",
-    findingSummary(finding) === "3 edges start in the air: 2 corners and 1 lip, longest first. 1 fix builds; 2 refuse, each saying why. 1 curved edge skipped until a later version.",
+    findingSummary(finding) === "3 edges start in the air: 2 corners and 1 lip, longest first. 1 fix builds; 2 refuse, each saying why. 1 curved edge could not be followed, so it is not listed.",
     findingSummary(finding),
   );
   check("one edge whose fix builds", findingSummary({ ...finding, rows: finding.rows.slice(0, 1), curvedSkipped: 0 }) === "1 edge starts in the air: 1 corner, longest first. Its fix builds.");
-  check("none found", findingSummary({ ...finding, rows: [], curvedSkipped: 0 }) === "No straight edge starts in the air in this pose." && curvedNote(0) === null && curvedNote(3) === "3 curved edges skipped until a later version.");
+  check("none found", findingSummary({ ...finding, rows: [], curvedSkipped: 0 }) === "No edge starts in the air in this pose." && curvedNote(0) === null && curvedNote(3) === "3 curved edges could not be followed, so they are not listed.");
   check("case names", caseName("lip") === "Lip" && caseName("corner") === "Corner");
+  check("a row the kernel marks curved reads curved, the others not", finding.rows[0]!.curved === true && finding.rows[1]!.curved === false && finding.rows[2]!.curved === false);
 }
+
+// --- Step 6: a swept corner's soup, the sweep in words, and chains.
+const swept = readTransitionRows([{ ...wedgeRow, path: "sweep", soup: [0, 0, 0, 1, 0, 0, 0, 1, 0] }], [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+check("a swept corner keeps the kernel's triangles for the ghost", swept?.[0]?.path === "sweep" && swept[0]!.soup?.length === 9, JSON.stringify(swept));
+check("a swept corner in words follows the curve", !!swept && transitionSentence(swept[0]!, true).includes("2 mm along the flatter face, following the curve"), swept ? transitionSentence(swept[0]!, true) : "");
+const chainBody = edgeChainRequest("k", 4, 7);
+check("the chain request names the step and the edge", chainBody.call === "edgeChain" && chainBody.key === "k" && chainBody.node === 4 && chainBody.edge === 7);
+check("a chain reads with the clicked edge in it", JSON.stringify(readEdgeChain({ id: 4, edge: 7, edges: [6, 7, 8, 7], closed: false }, 7)) === "[6,7,8]");
+check("a chain without the clicked edge, a refusal or no edges reads as none", readEdgeChain({ edges: [1, 2] }, 7) === null && readEdgeChain({ error: "That edge is not on this solid" }, 7) === null && readEdgeChain({}, 7) === null);
+check("a first click asks for the chain", chainClick([], null, 7) === "chain" && chainClick([7], null, 7) === "chain");
+check("a click on an edge of the chain picked takes it alone", chainClick([6, 7, 8], [6, 7, 8], 8) === "single" && chainClick([8, 6, 7], [6, 7, 8], 6) === "single");
+check("a click off the chain, or once the pick changed, asks again", chainClick([6, 7, 8], [6, 7, 8], 9) === "chain" && chainClick([6, 7], [6, 7, 8], 7) === "chain" && chainClick([7], [7], 7) === "chain");
+check("the edge line names a chain and how to take one alone", edgesLine(3, true) === "A chain of 3 edges that run on with no corner. Click one of them again to take it alone; Shift-click adds or removes one." && edgesLine(1, true) === "1 edge. Shift-click adds edges." && edgesLine(3, false) === "3 edges. Shift-click adds or removes one." && edgesLine(0, true) === PICK_EDGE);
 
 if (failed) {
   console.error(`${failed} failed`);

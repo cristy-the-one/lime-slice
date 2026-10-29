@@ -263,6 +263,38 @@ TopoDS_Shape build_lip_gusset(
     const gp_Pnt& inside,
     double* out,
     std::string& error);
+/// --- Print transitions, step 6. `count` stations along `edge`, from its first vertex as oriented, 12 numbers each: the
+/// point, the unit tangent, and the outward normals of `face_a` and `face_b` there (zero where one cannot be read).
+bool edge_stations(const TopoDS_Edge& edge, const TopoDS_Face& face_a, const TopoDS_Face& face_b, int count, double* out);
+/// --- Print transitions, step 6. Each point's signed distance to the face's surface along its outward normal, positive
+/// outside the solid; NaN where it does not project.
+bool face_distances(const TopoDS_Face& face, const double* points, int count, double* out);
+/// --- Print transitions, step 6. One edge's tool: `section` (a closed polygon at the edge's first vertex as oriented)
+/// pushed along a straight edge, or swept along a curved one with its binormal held to the build direction. `ext` grows
+/// it past its start and its end along the edge's tangent there; a mitred end keeps the side of the plane through
+/// `mitre_at` that `mitre_keep` points to.
+struct TransitionTool {
+    TopoDS_Edge edge;
+    bool straight = true;
+    std::vector<gp_Pnt> section;
+    double ext[2] = {0.0, 0.0};
+    bool mitre[2] = {false, false};
+    gp_Pnt mitre_at[2];
+    gp_Dir mitre_keep[2];
+};
+/// --- Print transitions, step 6. Every tool built, fused into one (`tools`), then fused to `current` (or cut from it).
+/// `touched` gets the faces of `current` the boolean changed or removed; `tools_volume` the tools' own volume.
+TopoDS_Shape build_transition_tools(
+    const TopoDS_Shape& current,
+    const std::vector<TransitionTool>& specs,
+    const gp_Dir& binormal,
+    bool cut,
+    TopoDS_Shape& tools,
+    std::vector<TopoDS_Face>& touched,
+    double& volume,
+    double& tools_volume,
+    Handle(BRepTools_History)* history,
+    std::string& error);
 /// Faces and edges on one surface or curve merged into one. `history`, when set, takes the merge's history after its own.
 TopoDS_Shape merge_same_domain(const TopoDS_Shape& shape, Handle(BRepTools_History)* history);
 /// `kept` is the negative side of the plane, `other` the positive side. Both are solids on success,

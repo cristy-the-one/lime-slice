@@ -294,7 +294,7 @@ fn print_transitions() {
         json!({ "angleDeg": 50.0 }),
     ));
     assert!(lip.contains("That is a lip"), "{lip}");
-    // A curved edge.
+    // A curved edge is read now (step 6): this ring at the post's foot looks up the build, so nothing hangs.
     ok(
         json!({ "call": "open", "key": "tc", "primitive": { "primitive": "box", "origin": [-20.0, -20.0, 0.0], "size": [40.0, 40.0, 10.0] } }),
     );
@@ -307,7 +307,7 @@ fn print_transitions() {
         json!({ "call": "probe", "key": "tc", "node": 1, "op": { "kind": "transition", "edges": [ring], "build": [0.0, 0.0, 1.0] } }),
     );
     assert!(
-        curved.contains("straight edge between two flat faces"),
+        curved.contains("look up the build"),
         "{curved} {}",
         volume(&post)
     );

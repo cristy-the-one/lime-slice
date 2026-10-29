@@ -764,7 +764,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         return JSON.stringify({ id: req.node ?? 0, curvedSkipped: 2, curvedEdges: [11, 12], rows: [
           { edge: 7, case: "lip", lengthMm: 20, mid: [10, 20, 10], farFace: 2, nearFace: 5, farDeg: 0, nearDeg: 90, probe: { ok: false, error: "This edge is convex. A corner wedge goes in a concave corner, on the inner side of a bend; a lip under a convex edge comes in a later step." } },
           { edge: 3, case: "corner", lengthMm: 20, mid: [10, 0, 20], farFace: 4, nearFace: 1, farDeg: 25, nearDeg: 90, probe: { ok: true, transition: [wedge] } },
-          { edge: 9, case: "corner", lengthMm: 12.5, mid: [0, 10, 20], farFace: 4, nearFace: 0, farDeg: 46, nearDeg: 90, probe: { ok: false, error: "The flatter face here already grows at 46.0° to the layers, as steep as the 45° asked, so a wedge adds nothing. A steeper angle makes one." } },
+          { edge: 9, case: "corner", lengthMm: 12.5, mid: [0, 10, 20], farFace: 4, nearFace: 0, farDeg: 46, nearDeg: 90, curved: true, probe: { ok: false, error: "The flatter face here already grows at 46.0° to the layers, as steep as the 45° asked, so a wedge adds nothing. A steeper angle makes one." } },
         ] });
       }
       if (process.env.LIME_MCP_HANG_MODEL === "1" && req.op?.kind === "fillet" && (req.call === "probe" || req.call === "apply") && !engine.hung) {

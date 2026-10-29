@@ -47,7 +47,7 @@ const EDGES = [line(1, 20, 20), line(2, 10, 20), line(3, 20, 30), line(5, 0, 30)
 const BOX = { min: [0, 0, 0], max: [20, 20, 30] };
 
 function row(edge: number, kind: FoundRow["case"] = "lip"): FoundRow {
-  return { edge, case: kind, lengthMm: 20, mid: [10, 0, 0], farDeg: 0, nearDeg: 90, wedge: null, refused: null };
+  return { edge, case: kind, lengthMm: 20, mid: [10, 0, 0], farDeg: 0, nearDeg: 90, curved: false, wedge: null, refused: null };
 }
 const FINDING: Finding = { rows: [row(1), row(2, "corner")], curvedSkipped: 0, curvedEdges: [], fix: { mode: "auto", angleDeg: 45, size: 2 } };
 

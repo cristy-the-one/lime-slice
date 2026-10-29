@@ -181,8 +181,8 @@ import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
-import { closeTransitionCard, mountTransitionCard, openTransitionEdit, reopenTransitionFind, setTransitionCheck, setTransitionFinding, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
-import { PICK_EDGE, checkAgainstSlice, positionsBox, keptKey, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionFloorMm, transitionStaleBy, wedgeSoup, type Finding, type TransitionCard, type TransitionPose, type TransitionRow } from "../model-transition.ts";
+import { closeTransitionCard, mountTransitionCard, openTransitionEdit, reopenTransitionFind, setTransitionCheck, setTransitionChain, setTransitionFinding, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionChainClick, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
+import { PICK_EDGE, edgeChainRequest, keptKey, readEdgeChain, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionFloorMm, transitionStaleBy, wedgeSoup, type TransitionCard, type TransitionPose, type TransitionRow, checkAgainstSlice, positionsBox, type Finding } from "../model-transition.ts";
 import { bedFrame, cutTraces, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
@@ -5480,6 +5480,26 @@ function stlName(name: string) {
 }
 
 let measureSeq = 0;
+
+/**
+ * --- Print transitions (step 6): the tangent chain through `edge`, from the kernel, picked in place of the edge alone
+ * once it answers, if that edge is still the one picked. A lone edge, or a refusal, leaves the pick as it is.
+ */
+async function pickTransitionChain(key: string, node: NodeId, edge: number) {
+  const generation = ticket;
+  const body = await treeCall(key, node, edgeChainRequest(key, node, edge));
+  if (generation !== ticket || !transitionCardOpen()) return;
+  if (!(picks.length === 1 && picks[0]!.kind === "edge" && picks[0]!.index === edge)) return;
+  const solid = viewed();
+  const edges = (readEdgeChain(body, edge) ?? []).filter((index) => solid?.edges.some((row) => row.id === index));
+  if (edges.length < 2) return;
+  picks = edges.map((index) => ({ kind: "edge", index }));
+  paintBlendHighlight();
+  syncModelChrome(picks);
+  setTransitionChain(edges);
+  transitionPicked();
+  readout(`A chain of ${edges.length} edges that run on with no corner. Click one of them again to take it alone.`);
+}
 /** --- P3 context bar --- The click that made the current selection. `empty` is a click on nothing. */
 let contextClick: { x: number; y: number; empty: boolean } | null = null;
 let contextFromPick = false;
@@ -5501,6 +5521,9 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   noteRepeatPick(pick);
   contextClick = { x: pointer.x, y: pointer.y, empty: pick == null };
   contextFromPick = true;
+  // --- Print transitions (step 6): with the card open, a plain click on an edge takes its tangent chain, and a second
+  // click on one edge of that chain takes it alone.
+  const chainAsk = !shift && pick?.kind === "edge" ? transitionChainClick(pick.index) : null;
   picks = nextModelPicks(picks, pick, shift);
   paintBlendHighlight();
   // --- A10. Right after the section axis became Face, the pick is that plane too, kept in the solid's frame. A curved face is refused in the menu.
@@ -5511,6 +5534,7 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   syncModelChrome(picks);
   if (splitPrintOpen()) splitPrintPicked();
   if (transitionCardOpen()) transitionPicked();
+  if (chainAsk === "chain" && pick?.kind === "edge") void pickTransitionChain(lens ? lens.key : at.key, lens ? lens.node : tree.current, pick.index);
   const seq = ++measureSeq;
   if (picks.length === 0) {
     readout(`${about(solid)} Pick a face or an edge.`);

@@ -24,9 +24,9 @@ export const CUT_LIP_ONLY = "Cut is for a lip: its underside becomes a ramp. A c
 /** A lip's ramp leaves at least this many nozzle widths at its first edge: the wall floor. */
 export const TRANSITION_FLOOR_NOZZLES = 2;
 /** The card's prompt with no edge picked. */
-export const PICK_EDGE = "Pick an edge in a concave corner, or a lip's lowest edge. Shift-click adds edges.";
-/** Step 6 brings chains of tangent edges; until then a click takes one straight edge. */
-export const STRAIGHT_ONLY = "Straight edges between flat faces for now. Chains of edges come in a later version.";
+export const PICK_EDGE = "Pick an edge in a concave corner, or a lip's lowest edge. A click takes its whole chain; Shift-click adds edges.";
+/** Step 6: curved edges and faces, and chains of edges that run on with no corner. */
+export const STRAIGHT_ONLY = "Curved edges and edges on curved faces work too: the wedge follows the curve.";
 
 /** The pose a step is aimed from: the plate orientation, the plate printer's belt (null on a flat bed), and its id. */
 export interface TransitionPose {
@@ -221,7 +221,7 @@ export function transitionCardRefusal(card: TransitionCard, supportAngle: number
 export interface TransitionRow {
   edge: number;
   case: TransitionCase;
-  /** "chamfer" or "prism" for a corner, "gusset" or "ramp" for a lip. */
+  /** "chamfer", "prism" or "sweep" (along a curved edge or face) for a corner, "gusset" or "ramp" for a lip. */
   path: string;
   material: "add" | "cut";
   farFace: number;
@@ -242,7 +242,7 @@ export interface TransitionRow {
   /** A gusset's: how far from the edge it lands on the part. A ramp's: what it leaves at the first edge. */
   landingMm: number | null;
   leftMm: number | null;
-  /** A lip's gusset or ramp as triangles in the solid's frame, from the kernel; null for a corner, which the app draws. */
+  /** The wedge, gusset or ramp as triangles in the solid's frame, from the kernel: always for a lip and a swept corner, null for a straight corner, which the app draws. */
   soup: number[] | null;
 }
 
@@ -302,7 +302,7 @@ export function transitionSentence(row: TransitionRow, belt: boolean): string {
     if (row.material === "cut") return `${head} The ramp runs from its root to its first edge, at ${face}, leaving ${formatMm(row.leftMm ?? 0)} mm there and removing ${mm3} mm³.`;
     return `${head} The gusset runs back into the part at ${face}, ${formatMm(row.heightMm)} mm down the build, landing ${formatMm(row.landingMm ?? 0)} mm from the edge and adding ${mm3} mm³.`;
   }
-  const reach = row.path === "prism" ? `to the flatter face's end, ${formatMm(row.reachMm)} mm` : `${formatMm(row.reachMm)} mm along the flatter face`;
+  const reach = row.path === "prism" ? `to the flatter face's end, ${formatMm(row.reachMm)} mm` : row.path === "sweep" ? `${formatMm(row.reachMm)} mm along the flatter face, following the curve` : `${formatMm(row.reachMm)} mm along the flatter face`;
   return `Edge ${row.edge}: a corner, its flatter face at ${tenth(row.farDeg)}° to the layers. The wedge runs ${reach}, its face at ${face}, adding ${formatMm(row.volumeMm3)} mm³.`;
 }
 
@@ -384,6 +384,8 @@ export interface FoundRow {
   mid: Vec3;
   farDeg: number;
   nearDeg: number;
+  /** The edge or one of its faces is truly curved: a flat face a STEP file stores as a curve reads as flat. */
+  curved: boolean;
   wedge: TransitionRow | null;
   refused: string | null;
   /** --- Step 6b. What the last slice saw hanging at this edge; absent when it saw nothing there, or before a check. */
@@ -394,7 +396,7 @@ export interface Finding {
   rows: FoundRow[];
   /** --- Step 6b. The check against the last slice; absent until one was made. */
   slice?: SliceCheck;
-  /** Curved edges, or edges on a curved face, that looked as if they start in the air: left for a later version. */
+  /** Curved edges, or edges on a curved face, that looked as if they start in the air but the finder could not follow. */
   curvedSkipped: number;
   curvedEdges: number[];
   fix: TransitionFix;
@@ -427,7 +429,7 @@ export function readFinding(body: Record<string, unknown>, orient: readonly numb
     const probe = row.probe && typeof row.probe === "object" ? (row.probe as Record<string, unknown>) : {};
     const wedge = probe.ok === true ? readTransitionRows(probe.transition, orient)?.[0] ?? null : null;
     const refused = probe.ok === true ? null : plain(typeof probe.error === "string" && probe.error ? probe.error : "This print transition does not fit.");
-    return [{ edge: row.edge as number, case: kind, lengthMm: num(row.lengthMm), mid, farDeg: num(row.farDeg), nearDeg: num(row.nearDeg), wedge, refused }];
+    return [{ edge: row.edge as number, case: kind, lengthMm: num(row.lengthMm), mid, farDeg: num(row.farDeg), nearDeg: num(row.nearDeg), curved: row.curved === true, wedge, refused }];
   });
   rows.sort((a, b) => b.lengthMm - a.lengthMm || a.edge - b.edge);
   const curvedEdges = Array.isArray(body.curvedEdges) ? body.curvedEdges.filter((edge): edge is number => Number.isInteger(edge)) : [];
@@ -461,9 +463,9 @@ export function fixText(row: FoundRow, fix: TransitionFix): string {
   return row.wedge && !row.refused ? `${head}, +${formatMm(Math.round(row.wedge.volumeMm3 * 10) / 10)} mm³` : head;
 }
 
-/** "3 curved edges skipped until a later version.", or null with none. */
+/** "3 curved edges could not be followed, so they are not listed.", or null with none. */
 export function curvedNote(count: number): string | null {
-  return count > 0 ? `${plural(count, "curved edge")} skipped until a later version.` : null;
+  return count > 0 ? `${plural(count, "curved edge")} could not be followed, so ${count === 1 ? "it is" : "they are"} not listed.` : null;
 }
 
 /** The finding in a sentence or two, for the card's status and the MCP's reason. */
@@ -471,7 +473,7 @@ export function findingSummary(finding: Finding): string {
   const curved = curvedNote(finding.curvedSkipped);
   const tail = curved ? ` ${curved}` : "";
   const count = finding.rows.length;
-  if (count === 0) return `No straight edge starts in the air in this pose.${tail}`;
+  if (count === 0) return `No edge starts in the air in this pose.${tail}`;
   const corners = finding.rows.filter((row) => row.case === "corner").length;
   const kinds = [corners > 0 ? plural(corners, "corner") : "", count - corners > 0 ? plural(count - corners, "lip") : ""].filter(Boolean).join(" and ");
   const refused = finding.rows.filter((row) => row.refused).length;
@@ -480,6 +482,41 @@ export function findingSummary(finding: Finding): string {
   return `${plural(count, "edge")} ${count === 1 ? "starts" : "start"} in the air: ${kinds}, longest first. ${fixes}${tail}`;
 }
 
+// ---------------------------------------------------------------------------
+// Chains (plan section 5, step 6): a click takes the edges that run on from the one clicked with no corner, as the
+// kernel's `edgeChain` finds them; a second click on one of them takes it alone.
+// ---------------------------------------------------------------------------
+
+/** The kernel's `edgeChain` on step `node` of tree `key`: the tangent chain through `edge`. */
+export function edgeChainRequest(key: string, node: number, edge: number): Record<string, unknown> {
+  return { call: "edgeChain", key, node, edge };
+}
+
+/** An `edgeChain` answer, read: the chain's edges with `edge` in it, or null when the kernel refused or sent none. */
+export function readEdgeChain(body: Record<string, unknown>, edge: number): number[] | null {
+  if (typeof body.error === "string" && body.error) return null;
+  if (!Array.isArray(body.edges)) return null;
+  const edges = [...new Set(body.edges.filter((one): one is number => Number.isInteger(one) && (one as number) >= 0))];
+  return edges.includes(edge) ? edges : null;
+}
+
+/**
+ * What a plain click on `hit` does with the card open: "single" when `picked` is the chain last taken (more than one
+ * edge) and `hit` is one of it, so the second click takes that edge alone; otherwise "chain", the kernel asked for the
+ * chain through `hit`.
+ */
+export function chainClick(picked: readonly number[], chain: readonly number[] | null, hit: number): "single" | "chain" {
+  if (!chain || chain.length < 2 || !chain.includes(hit)) return "chain";
+  const same = picked.length === chain.length && chain.every((edge) => picked.includes(edge));
+  return same ? "single" : "chain";
+}
+
+/** The card's edge line: how many edges, and, for a chain just taken, how to take one alone. */
+export function edgesLine(count: number, chain: boolean): string {
+  if (count === 0) return PICK_EDGE;
+  if (chain && count > 1) return `A chain of ${count} edges that run on with no corner. Click one of them again to take it alone; Shift-click adds or removes one.`;
+  return count === 1 ? "1 edge. Shift-click adds edges." : `${count} edges. Shift-click adds or removes one.`;
+}
 
 // ---------------------------------------------------------------------------
 // The slice cross-check (plan decision 7, step 6b): after a slice, each patch of part beads that stand on nothing is
