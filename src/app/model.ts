@@ -182,7 +182,7 @@ import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeas
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { closeTransitionCard, mountTransitionCard, openTransitionEdit, reopenTransitionFind, setTransitionCheck, setTransitionFinding, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
-import { keptKey, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionStaleBy, wedgeSoup, type TransitionCard, type TransitionPose, type TransitionRow } from "../model-transition.ts";
+import { PICK_EDGE, keptKey, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionFloorMm, transitionStaleBy, wedgeSoup, type TransitionCard, type TransitionPose, type TransitionRow } from "../model-transition.ts";
 import { bedFrame, cutTraces, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
@@ -731,6 +731,7 @@ export function bindModelView() {
     printerName: (id) => loadMachineLibrary().printers.find((row) => row.id === id)?.name ?? (id || "plate's printer"),
     supportAngle: () => state.supportAngle,
     shallowSkins: () => state.shallowSkins,
+    floorMm: () => transitionFloorMm(state.profile.nozzleDiameter),
     check: checkTransition,
     wedges: transitionWedges,
     cancelled: cancelEdit,
@@ -3774,7 +3775,7 @@ async function runEdit(run: Editing) {
   if (!op) {
     if (run.op.kind === "fillet" || run.op.kind === "chamfer") readout(run.op.kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
     if (run.op.kind === "split") readout(splitNote(splitState()).text);
-    if (run.op.kind === "transition") readout("Pick an edge in a concave corner. Shift-click adds edges.");
+    if (run.op.kind === "transition") readout(PICK_EDGE);
     return;
   }
   if (op.kind === "split" && splitNote(splitState()).bad) {
@@ -6930,12 +6931,13 @@ async function sendTransitionCheck(serial: number, key: string, treeKey: string,
   if (serial === transitionSerial && state.stage === "model") setTransitionCheck(view);
 }
 
-/** The wedges the kernel's rows describe, on the solid on screen, in its own frame. */
+/** The wedges the kernel's rows describe, on the solid on screen, in its own frame. A lip's gusset or ramp comes as the kernel's own triangles. */
 function transitionWedges(rows: readonly TransitionRow[]): number[] {
   const solid = viewed();
   if (!solid) return [];
   const normal = (face: number) => solid.faces.find((item) => item.id === face)?.normal ?? outwardFromMesh(solid.positions, solid.triangles, face);
   return rows.flatMap((row) => {
+    if (row.soup) return row.soup;
     const edge = solid.edges.find((item) => item.id === row.edge);
     const far = normal(row.farFace);
     const near = normal(row.nearFace);

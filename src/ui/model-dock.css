@@ -607,8 +607,8 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-transition .tc-find[hidden] { display: none; }
 .model-transition .tc-find .model-note { margin: 0; }
 .model-transition .tc-find-run { justify-self: stretch; }
-.model-transition .tc-found { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; }
-.model-transition .tc-found[hidden], .model-transition .tc-find-foot[hidden] { display: none; }
+.model-transition .tc-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 260px; overflow-y: auto; }
+.model-transition .tc-list[hidden], .model-transition .tc-find-foot[hidden] { display: none; }
 .model-transition .tc-found-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 var(--space-2); padding: 4px 6px; border: 1px solid transparent; border-left: 3px solid var(--amber, var(--warn)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--text) 4%, transparent); }
 .model-transition .tc-found-row.is-lit { border-color: color-mix(in srgb, var(--warn) 55%, transparent); border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .model-transition .tc-found-row[data-refused] { border-left-color: var(--line); }

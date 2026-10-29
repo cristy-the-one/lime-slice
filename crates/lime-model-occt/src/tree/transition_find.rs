@@ -6,7 +6,8 @@
 //!   and the flatter one (the far face) is past the limit or within 3° of it.
 //! - **Lips:** straight convex edges between flat faces, above the belt or the bed, where both faces rise away from the
 //!   edge in build order (the edge is their lowest point there, so its first rows stand on nothing) and the flatter face
-//!   is at or past the limit. A lip that starts past a hole in a larger face is one.
+//!   is at or past the limit. A lip that starts past a hole in a larger face is one. Each underside lists its longest
+//!   such edge only: one gusset from it holds every row born with it.
 //!
 //! Edges on the belt or the bed, edges that climb through the layers at least as steeply as the limit (every face
 //! through them holds), seams, and edges shorter than 0.2 mm are left out. A point, such as a cone's tip, is no edge.
@@ -208,5 +209,9 @@ pub(super) fn find(shape: &mut Shape, b: V3, up: V3, limit: f64) -> Result<Findi
             .total_cmp(&p.length_mm)
             .then(p.edge.cmp(&q.edge))
     });
+    // One lip per underside: its rows are born at once along every edge of it, and one gusset from its longest edge
+    // holds them. The underside's other edges (its sides) are left to a pick by hand.
+    let mut undersides = std::collections::HashSet::new();
+    rows.retain(|row| row.case != "lip" || undersides.insert(row.far));
     Ok(Finding { rows, curved })
 }

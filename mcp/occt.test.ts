@@ -668,6 +668,42 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("a convex edge is refused with the kernel's sentence", outer.ok === false && /This edge is convex/.test(String(outer.reason)), JSON.stringify(outer));
 }
 
+// --- Print transitions, step 4: the step 1 lip coupon on the IR3 V2. A post at Y 20–28 with a lip hanging 6 mm toward
+// −Y, its underside in one layer; the lip's first edge runs across the belt at Y, Z = 20 − 6/√2.
+{
+  await call("machine_select", { printerId: "ideaformer-ir3-v2", filamentId: "lime-petg" });
+  const r = 6 / Math.SQRT2;
+  const side = [[20, 0], [28, 0], [28, 26], [20 - r, 26], [20 - r, 20 - r], [20, 20]];
+  const mid = (20 - r + 28) / 2;
+  const built = await call("model_build", {
+    name: "lip coupon",
+    base: { primitive: "box", dx: 20, dy: 28 - (20 - r) + 2, dz: 27 },
+    ops: [{ kind: "extrude", op: "common", profile: side.map(([y, z]) => [y! - mid, z!]), depth: 20, origin: [-10, 0, 0], turn: [90, 0, 90] }],
+  });
+  const coupon = String(built.object);
+  const edges = ((await call("edges_find", { object: coupon, direction: [1, 0, 0], limit: 100 })).edges ?? []) as { index: number; mid: number[] }[];
+  const first = edges.find((edge) => Math.hypot(edge.mid[1]! - (20 - r - mid), edge.mid[2]! - (20 - r)) < 1e-3)?.index ?? -1;
+  const probed = await call("model_probe", { object: coupon, op: { kind: "transition", edges: [first] } });
+  const row = ((probed.transition ?? []) as Record<string, unknown>[])[0] ?? {};
+  check(
+    "the lip takes a gusset at 45° to the layers, level on the belt, 3 mm down the build, 180 mm³",
+    probed.ok === true && row.case === "lip" && row.path === "gusset" && row.angleToLayersDeg === 45 && row.angleToBeltDeg === 0 && row.heightMm === 3 && near(Number(row.volumeMm3), 180, 1e-3) && !("soup" in row),
+    JSON.stringify(probed).slice(0, 800),
+  );
+  check("the probe says the lip in words", /a lip 6 mm deep, its underside at 0° to the layers\. The gusset runs back into the part at 45° to the layers and 0° to the belt, 3 mm down the build/.test(String(probed.reason)), String(probed.reason));
+  const ramp = await call("model_probe", { object: coupon, op: { kind: "transition", edges: [first], mode: "cut" } });
+  const cut = ((ramp.transition ?? []) as Record<string, unknown>[])[0] ?? {};
+  check("cut ramps the underside from the root, leaving 6 mm at the first edge over the 0.8 mm floor", ramp.ok === true && cut.material === "cut" && cut.leftMm === 6 && cut.floorMm === 0.8 && near(Number(cut.volumeMm3), 180, 1e-3), JSON.stringify(ramp).slice(0, 800));
+  const thin = await call("model_probe", { object: coupon, op: { kind: "transition", edges: [first], mode: "cut", floorMm: 7 } });
+  check("a ramp leaving under the floor is refused with the kernel's sentence", thin.ok === false && /under the 7 mm wall floor/.test(String(thin.reason)), JSON.stringify(thin));
+  const before = Number((await call("model_describe", { object: coupon, limit: 1 })).volumeMm3);
+  const applied = await call("model_apply", { object: coupon, op: { kind: "transition", edges: [first] } });
+  const after = Number((await call("model_describe", { object: coupon, limit: 1 })).volumeMm3);
+  check("the gusset is added", applied.ok === true && near(after - before, 180, 1e-3), JSON.stringify({ before, after, reason: applied.reason }));
+  const rows = (await call("model_history", { object: coupon })).nodes as { label: string }[];
+  check("the history row names the lip", rows.some((one) => one.label === "Print transition (1 lip), 45°"), JSON.stringify(rows));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

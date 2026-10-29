@@ -9,7 +9,7 @@ import { mockModelTree, type Body, type MockSolid, type TreeMock } from "./model
  * in the air" list on a synthetic part built here, never a company file. The part is a U on its side: a base with a full
  * post at its back and a shorter post at its front. Printed upside down on a flat bed, the base hangs between the posts
  * (two concave corners) and the short post's end hangs above the bed (two lips). The mocked kernel answers the finder as
- * `tree/transition_find.rs` would for that pose, each corner's fix building and each lip's refusing as step 4 is not in.
+ * `tree/transition_find.rs` would for that pose, each corner's fix building and each lip's refusing, as step 4 refuses a gusset with nothing to land on.
  */
 
 type V = [number, number, number];
@@ -28,7 +28,7 @@ const BASE_TOP = 4;
 const WALL: Record<number, number> = { [BACK]: 3, [FRONT]: 5 };
 const NORMALS: V[] = [[0, 0, -1], [0, 1, 0], [0, 0, 1], [0, -1, 0], [0, 0, 1], [0, 1, 0], [0, 0, 1], [0, -1, 0]];
 const BASE_VOLUME = 40 * 10 * WIDTH + 10 * 20 * WIDTH + 10 * 10 * WIDTH;
-const CONVEX_SENTENCE = "This edge is convex. A corner wedge goes in a concave corner, on the inner side of a bend; a lip under a convex edge comes in a later step.";
+const LIP_SENTENCE = "There is nothing of the part under this lip within 20 mm along the build, so a gusset would itself start in the air. Supports or a split are the way here, or a larger maxMm.";
 
 function quad(positions: number[], triangles: number[], face: number, corners: V[], normal: V) {
   const [a, b, c] = corners;
@@ -78,7 +78,7 @@ function wedgeRow(edge: number, angle: number, size: number) {
 
 function wedge(op: Body): Body {
   const edges = (op.edges as unknown[]).map((edge) => (typeof edge === "number" ? edge : Number((edge as { index: number }).index)));
-  if (edges.some((edge) => LIPS.includes(edge))) return { ok: false, error: CONVEX_SENTENCE };
+  if (edges.some((edge) => LIPS.includes(edge))) return { ok: false, error: LIP_SENTENCE };
   return { ok: true, transition: edges.map((edge) => wedgeRow(edge, Number(op.angleDeg), Number(op.size))) };
 }
 
@@ -114,7 +114,7 @@ async function openPart(page: Page): Promise<TreeMock> {
         edge, case: "corner", lengthMm: WIDTH, mid: mid(edge), farFace: BASE_TOP, nearFace: WALL[edge], farDeg: 0, nearDeg: 90,
         probe: wedge({ ...fix, edges: [edge] }),
       }));
-      const lips = LIPS.map((edge) => ({ edge, case: "lip", lengthMm: WIDTH, mid: mid(edge), farFace: 6, nearFace: edge === 2 ? 5 : 7, farDeg: 0, nearDeg: 90, probe: { ok: false, error: CONVEX_SENTENCE } }));
+      const lips = LIPS.map((edge) => ({ edge, case: "lip", lengthMm: WIDTH, mid: mid(edge), farFace: 6, nearFace: edge === 2 ? 5 : 7, farDeg: 0, nearDeg: 90, probe: { ok: false, error: LIP_SENTENCE } }));
       return { id: node, rows: [...corners, ...lips], curvedSkipped: 0 };
     },
   });
@@ -129,7 +129,7 @@ const readout = (page: Page) => page.locator("#modelReadout");
 const card = (page: Page) => page.locator("#modelTransition");
 const labels = (page: Page) => page.locator("#modelHistoryTree .mh-label");
 const current = (page: Page) => page.locator('#modelHistoryTree .mh-row[data-state="current"] .mh-label');
-const rows = (page: Page) => page.locator("#modelTransFound .tc-found-row");
+const rows = (page: Page) => page.locator("#modelTransList .tc-found-row");
 const status = (page: Page) => page.locator("#modelTransFindStatus");
 
 async function openCard(page: Page) {
@@ -179,7 +179,7 @@ test("Find edges that start in the air lists corners and lips, lights a row's ed
   await expect(rows(page).nth(0).locator(".tc-length")).toHaveText("20 mm");
   await expect(rows(page).nth(0).locator(".tc-fix-text")).toHaveText("Wedge, 2 mm at 45°, +40 mm³");
   await expect(rows(page).nth(2).locator(".tc-case")).toHaveText("Lip");
-  await expect(rows(page).nth(2).locator(".tc-refused")).toHaveText(CONVEX_SENTENCE);
+  await expect(rows(page).nth(2).locator(".tc-refused")).toHaveText(LIP_SENTENCE);
   await expect(rows(page).nth(2).locator(".tc-fix")).toBeDisabled();
   await expect(rows(page).nth(0).locator(".tc-fix")).toBeEnabled();
   await expect(page.locator("#modelTransFixAll")).toHaveText("Fix all (2)");

@@ -580,7 +580,8 @@ pub enum Op {
     /// with the layers. `build` is the side each new layer is laid on, in the solid's frame, worked out once at Apply
     /// from the part's pose and its printer, so a later turn on the plate never changes the solid. `size` is how far the
     /// wedge reaches along the flatter face, 2 mm when absent. `beltDeg`, `orient` and `printer` are that pose, stored as
-    /// sent.
+    /// sent. Step 4: a lip, the lowest edge of a ledge, gets a gusset back into the part, or with `mode: "cut"` its
+    /// underside becomes a ramp that leaves at least `floorMm` on top. `case` overrides the case found per edge.
     Transition {
         edges: Vec<EdgePick>,
         build: [f64; 3],
@@ -592,6 +593,10 @@ pub enum Op {
         max_mm: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<transition::TransitionMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        case: Option<transition::TransitionCase>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        floor_mm: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         belt_deg: Option<f64>,
         #[serde(default, skip_serializing_if = "Value::is_null")]
@@ -5568,6 +5573,20 @@ extern "C" {
         points: *const f64,
         along: *const f64,
         count: c_int,
+        cut: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    #[allow(clippy::too_many_arguments)]
+    fn lime_tree_lip_gusset(
+        from: *const RawShape,
+        onto: *const RawShape,
+        face: c_int,
+        at: *const f64,
+        keep: *const f64,
+        build: *const f64,
+        depth: f64,
+        inside: *const f64,
+        out: *mut f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
     fn lime_tree_face_span(

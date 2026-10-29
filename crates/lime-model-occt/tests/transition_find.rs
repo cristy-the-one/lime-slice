@@ -210,20 +210,51 @@ fn finds_edges_that_start_in_the_air() {
     );
     let lip = find("find-lip", 1, belt());
     let first = listed(&lip, 14.0, 12.0, "lip");
-    fix_ok(first);
+    // Step 4 builds the gusset under it, from this edge back to the post.
+    assert!(fix_ok(first), "{first}");
+    assert_eq!(
+        first["probe"]["transition"][0]["case"],
+        json!("lip"),
+        "{first}"
+    );
     assert!(first["farDeg"].as_f64().unwrap() < 0.01, "{first}");
     listed(&lip, 20.0, 18.0, "corner");
+    // The underside's sides lie in the same layer, but one gusset from its first edge holds them: one lip per underside.
+    assert_eq!(
+        rows(&lip)
+            .iter()
+            .filter(|row| row["case"] == json!("lip"))
+            .count(),
+        1,
+        "{lip}"
+    );
 
     // A lip past a hole: a plate parallel to the belt, held by a wall at its high-Y end, with a hole through it. The
     // hole's far edge in build order, at Y 15, is where the plate starts again with nothing under it, although the
     // plate's underside goes on lower along the build beyond the hole. Its near edge, at Y 25, is where the plate stops.
-    coupon("find-hole", &[[30.0, 0.0], [40.0, 0.0], [40.0, 12.0], [0.0, 12.0], [0.0, 10.0], [30.0, 10.0]]);
-    ok(json!({ "call": "apply", "key": "find-hole", "parent": 1, "node": 2, "op":
-        { "kind": "boolean", "op": "cut", "primitive": "box", "origin": [-5.0, 15.0, 5.0], "size": [10.0, 10.0, 10.0] } }));
+    coupon(
+        "find-hole",
+        &[
+            [30.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 12.0],
+            [0.0, 12.0],
+            [0.0, 10.0],
+            [30.0, 10.0],
+        ],
+    );
+    ok(
+        json!({ "call": "apply", "key": "find-hole", "parent": 1, "node": 2, "op":
+        { "kind": "boolean", "op": "cut", "primitive": "box", "origin": [-5.0, 15.0, 5.0], "size": [10.0, 10.0, 10.0] } }),
+    );
     let hole = find("find-hole", 2, belt());
-    let past_hole = row_at(&hole, 15.0, 10.0).unwrap_or_else(|| panic!("no lip past the hole: {hole}"));
+    let past_hole =
+        row_at(&hole, 15.0, 10.0).unwrap_or_else(|| panic!("no lip past the hole: {hole}"));
     assert_eq!(past_hole["case"], json!("lip"), "{past_hole}");
-    assert!((past_hole["lengthMm"].as_f64().unwrap() - 10.0).abs() < 1e-3, "{past_hole}");
+    assert!(
+        (past_hole["lengthMm"].as_f64().unwrap() - 10.0).abs() < 1e-3,
+        "{past_hole}"
+    );
     fix_ok(past_hole);
     assert!(row_at(&hole, 25.0, 10.0).is_none(), "{hole}");
 
@@ -242,7 +273,8 @@ fn finds_edges_that_start_in_the_air() {
     let arm = find("find-arm", 1, FLAT);
     let under = listed(&arm, 10.0, 10.0, "corner");
     assert!(fix_ok(under), "{under}");
-    listed(&arm, 20.0, 10.0, "lip");
+    let arm_lip = listed(&arm, 20.0, 10.0, "lip");
+    assert!(fix_ok(arm_lip), "{arm_lip}");
     longest_first(&arm);
 
     // An underside 46° to the layers, within 3° of the limit: listed, and its fix at the limit refuses.

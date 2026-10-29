@@ -85,6 +85,17 @@ check("no edge is refused", noEdge.ok === false && noEdge.reason === "Pick an ed
 const zero = await call("model_probe", { object, op: { kind: "transition", edges: [3], build: [0, 0, 0] } });
 check("a zero build is refused", zero.ok === false && /direction/.test(String(zero.reason)), JSON.stringify(zero));
 
+// --- Step 4, lips: the case passes through, and a cut sends the wall floor, twice the nozzle unless typed.
+check("the schema takes case and floorMm", validateTool("model_probe", { object: "obj_1", op: { kind: "transition", edges: [3], case: "lip", mode: "cut", floorMm: 1 } }) === null);
+check("the schema refuses another case", validateTool("model_probe", { object: "obj_1", op: { kind: "transition", edges: [3], case: "shelf" } }) !== null);
+const lipped = await call("model_probe", { object, op: { kind: "transition", edges: [3], case: "lip" } });
+check("case lip is sent, and an add sends no floor", lipped.ok === true && (engine.lastProbe as { case?: string }).case === "lip" && !("floorMm" in (engine.lastProbe as object)), JSON.stringify({ sent: engine.lastProbe, lipped }));
+const cutProbe = await call("model_probe", { object, op: { kind: "transition", edges: [3], mode: "cut" } });
+const nozzle = (session as unknown as { library: { nozzleMm: number } }).library.nozzleMm;
+check("a cut sends the wall floor, twice the nozzle, and echoes it", cutProbe.ok === true && (engine.lastProbe as { floorMm?: number }).floorMm === 2 * nozzle && typedOf(cutProbe).floorMm === 2 * nozzle && typedOf(cutProbe).mode === "cut", JSON.stringify({ sent: engine.lastProbe, typed: cutProbe.typed }));
+await call("model_probe", { object, op: { kind: "transition", edges: [3], mode: "cut", floorMm: 1.5 } });
+check("a typed floor is sent as typed", (engine.lastProbe as { floorMm?: number }).floorMm === 1.5);
+
 // --- Step 3: a step made for another pose. model_describe names it; the solid keeps it as built.
 await call("settings_set", { values: { supportAngle: 45 } });
 await call("object_place", { object, rotX: 0 });

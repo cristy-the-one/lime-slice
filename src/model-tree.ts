@@ -135,6 +135,10 @@ export interface TransitionOp {
   size?: number | "face";
   maxMm?: number;
   mode?: "auto" | "add" | "cut";
+  /** Step 4: the case, when overridden; found per edge when absent. The kernel stores "lip" for a step of lips. */
+  case?: "lip" | "corner";
+  /** The least a lip's ramp (mode "cut") leaves at its first edge: twice the nozzle of the plate's machine. */
+  floorMm?: number;
   beltDeg?: number;
   orient?: number[];
   printer?: string;
@@ -856,6 +860,11 @@ export function opLabel(op: ModelOp, parts?: number): string {
     }
     // --- Print transitions.
     case "transition": {
+      // A lip's gusset runs to the part and its ramp to the first edge, so no size is named.
+      if (op.case === "lip" || op.mode === "cut") {
+        const lips = op.edges.length === 1 ? "1 lip" : `${op.edges.length} lips`;
+        return `Print transition (${lips})${op.mode === "cut" ? ", cut" : ""}, ${n(op.angleDeg ?? 45)}°`;
+      }
       const count = op.edges.length === 1 ? "1 edge" : `${op.edges.length} edges`;
       const size = op.size === "face" ? "to the face's end" : `${n(op.size ?? 2)} mm`;
       return `Print transition (${count}), ${n(op.angleDeg ?? 45)}°, ${size}`;

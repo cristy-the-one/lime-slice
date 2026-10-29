@@ -89,7 +89,7 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // 14,500 on main; the five stress tools (sim_*, ~1,500 tokens, each inside its own budget) add the rest. With
 // tool groups on they are in the stress group and stay out of the first list. The transition kind's line in model_apply
 // (docs/plan-belt-transitions.md, step 2) adds about 25 tokens to a list that was at 15,999. Step 5's auto-find
-// (model_probe plan:true for a transition, in the plan field and the kind's line) adds 16 to a list at 16,042.
+// (model_probe plan:true for a transition, named in the plan field) adds 11 to a list at 16,049.
 const TOTAL_BUDGET = 16_060;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));

@@ -570,11 +570,82 @@ So the default `size` is **2 mm**, not the far face's end. The probe adds a sent
 - **Prepare's Re-aim goes through Model.** It needs the modeler, so it opens Model on the object first.
 - **The Skin on shallow slopes warning is worded for the app.** The trigger is the same as the MCP's, but the sentence does not name the MCP's `standsOnNothing` field.
 
+### As built: step 4
+
+**What a lip is, to the op.** A straight, convex edge between two flat faces that is the lowest point of both faces along the build, and whose flatter face (the underside) grows flatter to the layers than the angle asked. Its first rows appear all at once. The op now finds each edge's case by itself: a convex edge like that is a lip, a concave edge is a corner (step 2, unchanged). `case: "lip"` or `"corner"` overrides what was found.
+
+**The gusset (Add, the default for a lip).** It is built from the lip's underside, as section 4 says:
+1. The underside is swept down the build by `maxMm`.
+2. Only the side of a plane through the lip's edge, at the angle asked, that faces the part is kept.
+3. The solid is subtracted, and the piece that holds a point just under the edge is kept.
+4. **Landing check.** Every lowest point of that piece, along the build, must lie on the part. If one hangs in the air, or the piece reaches `maxMm` down, the op refuses: "There is nothing of the part under this lip within 20 mm along the build, so a gusset would itself start in the air. Supports or a split are the way here, or a larger maxMm." Only the lowest points matter: every other row of the gusset stands on the gusset's row before.
+5. The piece is fused on, and the volume check of step 2 runs: the solid grows by the piece's own volume. One new edge must border a face at the angle asked.
+
+This handles a lip off a wall and a lip over a floor alike: over a floor, the gusset fills down to the floor from where its face meets it.
+
+**The ramp (Cut).** `mode: "cut"` turns the underside into a ramp from the lip's root up to the lip's front face, at the angle asked. It is a triangular prism along the edge, cut away. It is refused when it would leave less than `floorMm` of the front face above it: "A ramp at 45° from the lip's root would leave 0.50 mm at this lip's first edge, under the 0.8 mm wall floor (twice the nozzle). A gusset (mode add) keeps the lip whole." A ramp that would come out through the top says it would cut through the lip. The removed volume must be the ramp's own, or it ran into another part of the solid.
+
+**`mode: "auto"`** adds: a wedge for a corner, a gusset for a lip. Cut is never chosen by itself. Cut on a corner is refused: "Cut is for a lip."
+
+**A lip picked at its root.** Its concave root edge is a corner by default. With `case: "lip"`, the op finds the lip's first edge, the far edge of the flatter face, straight and parallel, and builds the lip from there.
+
+**What the step stores.** As step 2, plus `case`, and `floorMm` for a cut. When every edge was found a lip, the kernel stores `case: "lip"`, so the history row reads "Print transition (1 lip), 45°", or "Print transition (1 lip), cut, 45°". A mixed step keeps "Print transition (2 edges), 45°, 2 mm".
+
+**The probe.** Each lip row has `case: "lip"`, `path` (`gusset` or `ramp`), `material` (`add` or `cut`), `firstEdge`, the underside's and front face's angles to the layers, `depthMm` (along the underside), `heightMm` (down the build), `landingMm` (a gusset's lowest point from the edge), `leftMm` and `floorMm` (a ramp's), and the volume. The kernel also sends the gusset's or ramp's triangles (`soup`) for the app's ghost; the MCP leaves them out of its reply.
+
+**The MCP.**
+- `floorMm` defaults to twice the plate machine's nozzle and is sent only with a cut. `case` passes through.
+- The probe sentence names a lip: "Edge 10: a lip 6 mm deep, its underside at 0° to the layers. The gusset runs back into the part at 45° to the layers and 0° to the belt, 3 mm down the build, landing 4.24 mm from the edge and adding 180 mm³."
+- The Skin on shallow slopes warning still reads only corners' reach.
+- **Schema.** One more enum (`case`) and `floorMm` on the op branch, a longer `OP_SUMMARY` line, and one more line in the ops guide. `tools/list` is at about 16,049 tokens, inside the 16,050 budget, so the budget is not raised.
+- **A bug fixed on the way.** `OP_WORDS`, the enum words an op may hold as text, was filled before the partition and transition kinds were added to the schema. `case: "lip"` was then read as an expression and refused as "not a parameter". It is filled again after those kinds are added.
+
+**The card.**
+- **Case.** Corner and Lip are both live. With no choice made, the button of the case the kernel found is pressed, and a line says what was found: "Found a lip.", or "Found 1 lip and 2 corners." Clicking the other case overrides it ("Found a corner; set to Lip."). Clicking the found case goes back to finding it. Picking other edges finds them again.
+- **Material: Add or Cut** appears only while the case is a lip. With Cut on, a line says the ramp keeps at least the wall floor, twice the nozzle.
+- **Size** is shown for a corner only: a gusset runs back to the part and a ramp to the lip's edge.
+- **Numbers.** For a lip, "Flatter face" reads "Underside" with the lip's depth, and "Reach" reads "Gusset" (how far down the build, and where it lands) or "Ramp" (what it leaves at the first edge). The volume reads "+180 mm³ added" or "−180 mm³ removed".
+- **Ghost.** Green for added, red for cut. A cut lies inside the solid, so it is drawn through it.
+- A refusal shows the kernel's sentence in place of the numbers, and Apply stays off, as in step 3.
+
+**Tests.**
+- Kernel (`crates/lime-model-occt/tests/transition.rs`): the step 1 lip coupon with gussets at 45° (180 mm³, 3 mm down the build, landing 4.24 mm away) and 55° (211.8 mm³); the lip from its root with `case: "lip"`; the cut (180 mm³, 6 mm left), refused under a typed 7 mm floor, on a 0.5 mm lip under the 0.8 mm floor, and at 55° through the thin lip; a lip then a fillet on its first edge, then the gusset rebuilt; shelves 4, 10 and 18 mm deep on a flat bed; a 25 mm shelf refused with nothing under it within 20 mm and within 40 mm, and the same shelf over a floor, which lands; a corner and a lip in one step; the Corner case on a lip refused.
+- MCP: `mcp/transition.test.ts` (the case and the floor sent, the schema) and `mcp/occt.test.ts` (the lip coupon through the real kernel: the gusset, its sentence, the cut, the floor refusal, Apply and the history row).
+- `src/model-transition.test.ts`: the floor, the card's round trip with a cut, the case shown, the lip rows and sentences, the history rows.
+- `e2e/model-transition-lip.spec.ts`, in `test:smoke`: a synthetic wall and shelf built in the spec. It finds the lip, previews the gusset, cuts, refuses a ramp at 50° under the floor, applies, edits to a cut, and changes the case at the root. `e2e/model-transition.spec.ts` now expects the card without the greyed Lip and Cut.
+
+**The coupon.** Step 1's lip coupon (a post with a 6 mm lip, its underside in one layer), 20 mm across the belt, sliced alone on the owner's IR3 V2 machine file with PETG, a 0.4 mm nozzle, 0.2 mm layers, Speed and supports off. The transitions were made with the op through the MCP:
+
+| Lip coupon | Unheld part beads | Longest span over nothing | Volume | Print time |
+|---|---|---|---|---|
+| No transition | 375.4 mm (275.2 at the lip) | 19.5 mm: the lip's first row, the whole width | — | 426 s |
+| Gusset at 45° | 100.2 mm | 2.3 mm | +180 mm³ | 414 s |
+| Gusset at 55° | 100.2 mm | 2.3 mm | +211.7 mm³ | 415 s |
+| Cut at 45° (6 mm left) | 100.2 mm | 2.3 mm | −180 mm³ | 405 s |
+| Cut at 55° (5.25 mm left) | 100.2 mm | 2.3 mm | −211.7 mm³ | 404 s |
+
+The 100.2 mm left in every row is step 1's gap-fill patch on the last-printed top corner, away from the lip (layers 124–125). With Skin on shallow slopes on, every row measured the same: this solid coupon has no thin roof for that rule to fill.
+
+**What the numbers say:** a gusset or a ramp at 45° takes every hanging row of the lip, and its 19.5 mm span over nothing. 55° holds no more. The ramp also saves material and time; the gusset keeps the lip's shape and adds 4 % of volume.
+
+**Golden.** 60 of 60 rows are byte-identical to the newest stored run, main at `92da7c3f`, rear cover and Baby Dragon included. The slicer is not touched.
+
+**Deviations from sections 2 to 6 and decision 4:**
+- **Size does not apply to a lip.** A gusset runs back to the part, and a ramp to the lip's first edge. `size` stays a corner's.
+- **`maxMm` is the gusset's depth down the build** for a lip, not its reach along a face.
+- **The case is one field for the whole step**, not one per edge. With none given, each edge's case is found; a typed case applies to every edge. A step of only lips is stored with `case: "lip"`.
+- **`floorMm` is a new op field.** The plan says the floor is twice the nozzle; the kernel does not know the nozzle, so the MCP and the app send it, and the step keeps it.
+- **The wall floor is measured along the front face** at the lip's first edge, which is the thinnest place a ramp leaves on a square lip.
+- **The ramp runs flush with the lip's ends**, like a corner's wedge. Section 4's rule for cuts at ends with walls is not built; a cut that would notch something else fails the volume check instead.
+- **The belt refusal is still not built.** A lip edge on the belt would need the plate pose, which the kernel does not have.
+- **The landing check reads the gusset's lowest points**, not "touches the part somewhere other than the lip": the lowest rows are the only rows that have no gusset row under them.
+- **Chains and curved lips** stay for step 6.
+
 ### As built: step 5
 
 **The finder** is in the kernel, `crates/lime-model-occt/src/tree/transition_find.rs`, reached by a new call, `transitionFind`. It reads the solid's own faces and edges against the build direction and the support limit. Nothing is sliced, so it is instant in Model. It lists:
 - **Corners:** straight concave edges between flat faces. The steeper face holds its own rows, and the flatter face is past the limit or within 3° of it.
-- **Lips:** straight convex edges between flat faces, above the belt or the bed. Both faces rise away from the edge in build order, so nothing of either is laid before it there, and the flatter face is at or within 0.5° of the limit, or past it. This is section 2's "both faces rise away from it", read at the edge. It also finds a lip that starts past a hole in a larger face, whose face goes on lower along the build beyond the hole.
+- **Lips:** straight convex edges between flat faces, above the belt or the bed. Both faces rise away from the edge in build order, so nothing of either is laid before it there, and the flatter face is at or within 0.5° of the limit, or past it. This is section 2's "both faces rise away from it", read at the edge. It also finds a lip that starts past a hole in a larger face, whose face goes on lower along the build beyond the hole. Each underside lists one lip, its longest such edge: its other edges lie in the same layer, and one gusset from that edge holds every row born with it.
 
 It leaves out:
 - an edge on the belt or the bed (within 0.05 mm of the solid's lowest point along the plate's up);
@@ -584,11 +655,11 @@ It leaves out:
 
 **Curved edges are not listed.** An edge on a curved face, or a curved edge, that looks as if it starts in the air at its middle is counted instead. The card says "3 curved edges skipped until a later version." The MCP gives the count and the edges' indexes.
 
-**Each row's fix is the op itself.** The kernel probes `{kind: "transition", edges: [edge], mode: "auto", angleDeg, size}` on the row's one edge, exactly as section 6's input shape, and the row keeps the probe's answer: the wedge's numbers, or its sentence. The finder decides nothing about what can be built. When step 4 lands, lips build with no change here.
+**Each row's fix is the op itself.** The kernel probes `{kind: "transition", edges: [edge], mode: "auto", angleDeg, size}` on the row's one edge, exactly as section 6's input shape, and the row keeps the probe's answer: the wedge's numbers, or its sentence. The finder decides nothing about what can be built. With step 4 merged, a lip's row builds its gusset with no change here: on the lip coupon, Find lists the lip, and its Fix adds 360 mm³ as one step, "Print transition (1 lip), 45°". The corner at the lip's root is listed too, as step 4 reads it, and its wedge refuses.
 
 **The card.** "Find edges that start in the air" is the first button on the Print transition card:
 - **The status line.** For example, "4 edges start in the air: 2 corners and 2 lips, longest first. 2 fixes build; 2 refuse, each saying why." With none: "No straight edge starts in the air in this pose."
-- **One row per edge, longest first.** Each row shows the case, the length, and the fix with its size and the volume it adds, such as "Wedge, 2 mm at 45°, +40 mm³". A fix that refuses shows the kernel's sentence under the row, and its Fix button is off.
+- **One row per edge, longest first.** Each row shows the case, the length, and the fix with its size and the volume it adds, such as "Wedge, 2 mm at 45°, +40 mm³" or, for a lip, "Gusset at 45°, +360 mm³". A fix that refuses shows the kernel's sentence under the row, and its Fix button is off.
 - **Hover.** Every listed edge is outlined amber on the solid. The row under the pointer, or under the keyboard focus, draws its edge bold, and its wedge in green when it builds.
 - **Fix** applies that row as its own history step.
 - **Fix all (N)** applies every row whose fix builds as one step, "Print transition (N edges)" (decision 9). Its pencil reopens the card with those edges picked, and Shift-click drops one.
@@ -600,10 +671,10 @@ It leaves out:
 - `op`, the one ready op that holds every row that builds.
 - `curvedSkipped` and `curvedEdges`.
 
-`angleDeg`, `size` and `maxMm` may be typed; any other field is refused. The guide has one more line, and `OP_SUMMARY` adds "plan:true finds edges." The `plan` field's description names the transition. Together they add 16 tokens to a `tools/list` that was at 16,042, so the budget goes from 16,050 to 16,060.
+`angleDeg`, `size` and `maxMm` may be typed; any other field is refused. The guide has one more line, and the `plan` field's description names the transition. That adds 11 tokens to a `tools/list` that was at 16,049, so the budget goes from 16,050 to 16,060. `OP_SUMMARY` is left as step 4 wrote it.
 
 **Fixes found on the way:**
-- **Words in a transition op.** The MCP read `mode: "auto"` and `size: "face"` as parameter names, because its list of words was made before the transition branch was added. Both now reach the op as typed. `model_apply` of the op that `plan: true` returns needs this. Step 4 (#503) fixes the same list for its `case` field; once it is on main, its fix is kept and this one goes.
+- **Words in a transition op.** The MCP read `mode: "auto"` and `size: "face"` as parameter names, because its list of words was made before the transition branch was added. Step 4 (#503) fixed the list for enums such as `mode` and `case`; this step keeps that fix and adds the one-word choices a schema gives as a constant, such as `size: "face"`, which still failed. Kind names stay out of the list.
 - **A wedge along a face at the limit.** When the steeper face was exactly at the angle asked, the corner op answered with a reach of 10¹⁶ mm. It now says the wedge would run along that face, and that a steeper angle makes one. The shell coupon's inner wall, which looks toward +Y at exactly 45°, has such a corner.
 
 **Tests:**
@@ -611,7 +682,7 @@ It leaves out:
   - a corner past the limit, whose 2 mm wedge builds, and the inner wall's corner at the limit, whose fix now says the wedge would run along that wall;
   - a corner at the limit, listed with its refusal;
   - a corner that holds, not listed;
-  - a lip, and the corner at its root;
+  - a lip whose gusset builds, one lip for its underside, and the corner at its root;
   - a lip past a hole in a plate parallel to the belt, and no row at the hole's near edge;
   - a box on the belt and on the bed, with nothing listed;
   - a cone's tip hanging under a plate on a leg: nothing listed under the plate where the cone is, and the circle where the cone meets the plate counted as curved.
@@ -620,12 +691,12 @@ It leaves out:
 - `mcp/occt.test.ts`, against the real kernel: the shell coupon lists the bend with a 2 mm wedge that builds, and the inner wall's corner with its sentence.
 - `e2e/model-transition-find.spec.ts`, in `test:smoke`, on a synthetic U printed upside down: find, an empty result upright, hover, Fix one, Undo, Fix all, the step's edit, and Undo.
 
-**The owner's housing,** read only, posed mouth down on the IR3 V2 as in `20261028_12_3_housing-pain.lime`. The app's request and the MCP's give the same build direction, (−0.707, 0, −0.707) in the part's frame. The finder answered in 0.02 s; probing every row's fix at 55° took 0.26 s.
+**The owner's housing,** read only, posed mouth down on the IR3 V2 as in `20261028_12_3_housing-pain.lime`. The app's request and the MCP's give the same build direction, (−0.707, 0, −0.707) in the part's frame. Finding with every row's fix probed took 0.1 s at 45° and 2.6 s at 55°, where more fixes build far enough to be checked.
 - **With the project's support angle, 70°** (limit 20° to the layers): 1 row, a 126 mm lip at the end wall, 0.5 mm above the belt. 3 curved edges were skipped.
 - **With the default support angle, 45°:** 11 rows, 7 corners and 4 lips. 27 curved edges were skipped.
   - **Every corner is at the limit.** Its flatter face is the flat roof at 45°, so its fix at 45° refuses: "a wedge adds nothing. A steeper angle makes one."
   - **At 55°,** 1 of the 11 fixes builds (+25.5 mm³). The others refuse with their sentences: the wedge would run into another part of the solid, past the flatter face's end, or both faces are flatter than 55°.
-  - **The lips** refuse until step 4: "This edge is convex…".
+  - **The lips** refuse with step 4's sentences. At 45°, their undersides lie at the limit, so their rows hold. At 55°, nothing of the part lies under them within 20 mm, so a gusset would itself start in the air.
 - **The cutout lip is among the rows.** It is a 45.4 mm lip at X −58: the far edge of the cutout in build order, where the plate around the cutout starts again with nothing under it. A test of "the lowest point of both faces" missed it, because that face goes on lower beyond the cutout. The finder now tests whether both faces rise away from the edge, as section 2 words it, and lists it. The screenshot is in the PR.
 - **The down-ramp's bend is not among the rows.** The ramp's inner roof is 22.6° to the layers. The bend where it meets the 45° roof is concave, so it would be a corner. But Open CASCADE reads that edge, or its faces, as curved, because the STEP file stores them as B-splines. It is one of the 27 curved edges skipped, and the op refuses it for the same reason. With the project's 70° support angle, the ramp is past the 20° limit anyway.
 
@@ -638,6 +709,7 @@ It leaves out:
 - **"The lowest point of their faces" is read at the edge.** Both faces must rise away from the edge, not lie wholly above it, so a lip past a hole is found (the housing's cutout).
 - **"Curved" means what Open CASCADE reads.** A flat face that a STEP file stores as a B-spline counts as curved, as in the op.
 - **Rows sharing a chain are not merged.** Each row is one edge, until chains come in step 6.
+- **One lip per underside.** Only the longest lip edge of each underside is listed; its sides can still be picked by hand.
 - **After a change of angle, size or pose, the list stays, with a note,** and its Fix buttons wait for Find again.
 - **The list is hidden while a step is edited.** An edit works on that step's own edges.
 

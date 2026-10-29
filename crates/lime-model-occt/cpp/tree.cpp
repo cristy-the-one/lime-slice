@@ -684,9 +684,9 @@ LimeShape* lime_tree_transition_chamfer(
     }
 }
 
-/// --- Print transitions. `count` triangular prisms fused to `from`: `points` holds each triangle's three corners,
-/// `along` the vector each is pushed by.
-LimeShape* lime_tree_wedges(const LimeShape* from, const double* points, const double* along, int count, char** error) {
+/// --- Print transitions. `count` triangular prisms fused to `from`, or cut from it when `cut` is 1: `points` holds each
+/// triangle's three corners, `along` the vector each is pushed by.
+LimeShape* lime_tree_wedges(const LimeShape* from, const double* points, const double* along, int count, int cut, char** error) {
     try {
         LIME_CATCH_FAULTS;
         std::vector<std::array<gp_Pnt, 3>> triangles;
@@ -698,12 +698,56 @@ LimeShape* lime_tree_wedges(const LimeShape* from, const double* points, const d
         }
         std::string message;
         double volume = 0.0;
-        const TopoDS_Shape built = build_wedges(from->held.shape, triangles, pushes, volume, message);
+        const TopoDS_Shape built = build_wedges(from->held.shape, triangles, pushes, cut == 1, volume, message);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;
         }
         return adopt(built, volume, "The wedge removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Print transitions, lips. The gusset under face `face` of `from`, built against `onto` (the solid so far), as a
+/// solid of its own: `build_lip_gusset` in kernel.cpp says what `at`, `keep`, `build`, `depth`, `inside` and `out` are.
+LimeShape* lime_tree_lip_gusset(
+    const LimeShape* from,
+    const LimeShape* onto,
+    int face,
+    const double* at,
+    const double* keep,
+    const double* build,
+    double depth,
+    const double* inside,
+    double* out,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (face < 0 || face >= from->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid");
+            return nullptr;
+        }
+        std::string message;
+        const TopoDS_Shape piece = build_lip_gusset(
+            onto->held.shape,
+            TopoDS::Face(from->held.faces(face + 1)),
+            gp_Pnt(at[0], at[1], at[2]),
+            gp_Dir(keep[0], keep[1], keep[2]),
+            gp_Dir(build[0], build[1], build[2]),
+            depth,
+            gp_Pnt(inside[0], inside[1], inside[2]),
+            out,
+            message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(piece, out[0], "Open CASCADE did not build the gusset", error, nullptr).release();
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;
