@@ -109,10 +109,11 @@ const review = Array.isArray(summary.review) ? summary.review as { text: string 
 const reviewText = review.map((line) => line.text).join("\n");
 check("the review lists M502 and M500", reviewText.includes("M502") && reviewText.includes("M500"), JSON.stringify(review));
 check("slice_start asks the engine for the part-bead check", (JSON.parse(engine.lastSlice) as { partHold?: boolean }).partHold === true);
-const hold = summary.standsOnNothing as { unheldMm: number; danglingMm: number; partMm: number; patches: number; largest: { mm: number; layers: number[]; at: number[] }[] } | undefined;
+const hold = summary.standsOnNothing as { unheldMm: number; danglingMm: number; longestSpanMm: number; partMm: number; patches: number; largest: { mm: number; longestSpanMm: number; layers: number[]; at: number[] }[] } | undefined;
 check(
   "gcode_summary reports the part beads that stand on nothing, rounded",
   hold?.unheldMm === 61.3 && hold.danglingMm === 40.5 && hold.partMm === 1234.6 && hold.patches === 2
+    && hold.longestSpanMm === 8.2 && hold.largest[1]?.longestSpanMm === 2.4
     && hold.largest[0]?.mm === 50 && hold.largest[0]?.layers.join() === "12,13" && hold.largest[0]?.at.join() === "10.1,20.5,2.6",
   JSON.stringify(hold),
 );
