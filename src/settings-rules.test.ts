@@ -18,8 +18,8 @@ const flat: RuleInput = { kind: "cartesian", belt: { raftLayers: 0, maxLengthMm:
 const belt: RuleInput = { ...flat, kind: "belt" };
 const hidden = (input: RuleInput) => [...settingsRules(input).hidden].sort();
 
-eq("a flat printer with one object hides only the belt block, its length, and its raft layers", hidden(flat), ["beltFields", "beltMaxLength", "beltRaftLayers", "printOrder"]);
-eq("a flat printer with two objects shows the print order", hidden({ ...flat, objects: 2 }), ["beltFields", "beltMaxLength", "beltRaftLayers"]);
+eq("a flat printer with one object hides only the belt block, its length, its raft layers, and the belt's tip under every row", hidden(flat), ["beltFields", "beltMaxLength", "beltRaftLayers", "printOrder", "supportStrictStacking"]);
+eq("a flat printer with two objects shows the print order", hidden({ ...flat, objects: 2 }), ["beltFields", "beltMaxLength", "beltRaftLayers", "supportStrictStacking"]);
 
 // Ruling 1: a belt raft hides Adaptive and drops it from the request.
 check("a belt raft hides adaptive layers", settingsRules({ ...belt, belt: { raftLayers: 2, maxLengthMm: null } }).hidden.has("adaptive"));
@@ -56,6 +56,9 @@ eq("a flat request carries both", settingsRules(flat).coerce(hopAndScarf), hopAn
 // A belt's layer 0 is the leading slice, not the face on the belt: no elephant's foot, and no trunk brim.
 eq("a belt hides elephant's foot and the tree brim", [settingsRules(belt).hidden.has("elephantsFoot"), settingsRules(belt).hidden.has("supportTreeBrim")], [true, true]);
 eq("a flat printer shows both", [settingsRules(flat).hidden.has("elephantsFoot"), settingsRules(flat).hidden.has("supportTreeBrim")], [false, false]);
+check("a belt shows the tip under every row", !settingsRules(belt).hidden.has("supportStrictStacking"));
+eq("a flat request does not carry the tip under every row", settingsRules(flat).coerce({ supportStrictStacking: true, mesh: "m" }), { mesh: "m" });
+eq("a belt request carries it", settingsRules(belt).coerce({ supportStrictStacking: true, mesh: "m" }), { supportStrictStacking: true, mesh: "m" });
 const firstLayer = { elephantsFootCompensationMm: 0.2, xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 };
 eq("a belt request carries neither", settingsRules(belt).coerce(firstLayer), { xyHoleCompensationMm: 0.1, supportZGapMm: 0.3 });
 eq("a flat request carries both", settingsRules(flat).coerce(firstLayer), firstLayer);

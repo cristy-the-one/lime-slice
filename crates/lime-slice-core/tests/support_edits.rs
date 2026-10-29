@@ -181,6 +181,32 @@ fn support_avoidance_is_omitted_until_it_is_on() {
 }
 
 #[test]
+fn strict_stacking_is_omitted_until_it_is_on() {
+    let plain: SliceRequest =
+        serde_json::from_value(json!({"filename": "a.stl", "dataB64": ""})).unwrap();
+    assert!(!plain.support_strict_stacking);
+    assert!(serde_json::to_value(&plain)
+        .unwrap()
+        .get("supportStrictStacking")
+        .is_none());
+
+    let on: SliceRequest = serde_json::from_value(json!({
+        "filename": "a.stl",
+        "dataB64": "",
+        "supportStrictStacking": true
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&on).unwrap()["supportStrictStacking"],
+        json!(true)
+    );
+    assert!(SliceSettings::from_request(&on).support_strict_stacking);
+    let mut classic = on.clone();
+    classic.classic = true;
+    assert!(!SliceSettings::from_request(&classic).support_strict_stacking);
+}
+
+#[test]
 fn pruning_a_tree_prints_less_support_and_reports_the_gap() {
     let base = slice(&request(json!({"includeSkeleton": true}))).unwrap();
     let sites = tree_sites(&base["skeleton"]);

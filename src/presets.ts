@@ -34,6 +34,8 @@ export interface PresetSettings {
   trunkDiameter: number;
   /** Off unless the slice asks. Omitted from the request while off. */
   supportAvoidance: boolean;
+  /** A tip under every tree interface row on a belt. Off unless the slice asks, and omitted from the request while off. */
+  supportStrictStacking: boolean;
   supportHeightMult: number;
   /** Millimetres. `null` is Auto: omitted, and the engine keeps the layer height, at least 0.12 mm. `0` is a real zero. */
   supportZGapMm: number | null;
@@ -128,6 +130,7 @@ export const DEFAULT_PRESET: PresetSettings = {
   tipDiameter: 0.8,
   trunkDiameter: 4.2,
   supportAvoidance: false,
+  supportStrictStacking: false,
   supportHeightMult: 1,
   supportZGapMm: null,
   supportXyGapMm: null,
@@ -177,7 +180,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
+export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportStrictStacking", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
 
 /** Settings that are Auto (`null`) until set. Before Auto existed they stored `0` for it, which `readPresetSettings` still reads that way. */
 const AUTO_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["supportZGapMm", "supportXyGapMm", "supportInterfaceLayers"]);

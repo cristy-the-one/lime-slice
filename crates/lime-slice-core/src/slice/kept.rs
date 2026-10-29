@@ -387,6 +387,7 @@ pub(super) fn keys(
         tip_diameter: blank.tip_diameter,
         trunk_diameter: blank.trunk_diameter,
         support_avoidance: blank.support_avoidance,
+        support_strict_stacking: blank.support_strict_stacking,
         support_source: blank.support_source,
         support_height_mult: blank.support_height_mult,
         support_paint: Vec::new(),
@@ -439,6 +440,7 @@ pub(super) fn keys(
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
+        support_strict_stacking: settings.support_strict_stacking,
         support_source: settings.support_source,
         support_paint: settings.support_paint.clone(),
         ..contours.clone()
@@ -451,6 +453,7 @@ pub(super) fn keys(
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
+        support_strict_stacking: settings.support_strict_stacking,
         support_source: settings.support_source,
         support_height_mult: settings.support_height_mult,
         support_paint: settings.support_paint.clone(),

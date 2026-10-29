@@ -1,4 +1,4 @@
-import { avoidanceSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { recipeKey } from "./slice-action.ts";
 
 let failed = 0;
@@ -15,6 +15,10 @@ check("on is sent", avoidanceSliceField(true).supportAvoidance === true);
 const base = { layerHeight: 0.2, blend: { mode: "single", strategy: "speed" }, supports: true, supportStyle: "tree" };
 check("omitted avoidance leaves the recipe key", recipeKey({ ...base, ...avoidanceSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
 check("asking for avoidance changes the recipe", recipeKey({ ...base, ...avoidanceSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
+check("strict stacking off is omitted", Object.keys(strictStackingSliceField(false)).length === 0);
+check("strict stacking on is sent", strictStackingSliceField(true).supportStrictStacking === true);
+check("omitted strict stacking leaves the recipe key", recipeKey({ ...base, ...strictStackingSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
+check("asking for strict stacking changes the recipe", recipeKey({ ...base, ...strictStackingSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
 
 if (failed) {
   console.error(`${failed} failed`);

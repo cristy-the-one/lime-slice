@@ -195,6 +195,12 @@ pub struct SliceRequest {
     /// Left out when off, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_avoidance: bool,
+    /// On a belt, a tree interface row stands only on the row under it, so
+    /// every row of a steep sloped sheet bears tips: more branches and a
+    /// longer print. Left out when off, so a request that does not ask keeps
+    /// its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support_strict_stacking: bool,
     /// `auto` (the default) asks for supports from the overhang angle and
     /// the islands. `paint` asks only where enforce paint does. Omitted
     /// when absent, so a request that does not ask keeps its cache key.
@@ -432,6 +438,8 @@ pub struct SliceSettings {
     pub trunk_diameter: f64,
     /// Per-layer avoidance for tree supports. Off leaves the walk unchanged.
     pub support_avoidance: bool,
+    /// A tip under every belt interface row. Off keeps the in-layer reach.
+    pub support_strict_stacking: bool,
     pub support_source: SupportSource,
     pub support_height_mult: f64,
     pub infill_combine: bool,
@@ -554,6 +562,7 @@ impl Default for SliceSettings {
             tip_diameter: 0.8,
             trunk_diameter: 4.2,
             support_avoidance: false,
+            support_strict_stacking: false,
             support_source: SupportSource::Auto,
             support_height_mult: 1.0,
             infill_combine: true,
@@ -669,6 +678,7 @@ impl SliceSettings {
                 4.2
             },
             support_avoidance: req.support_avoidance && !req.classic,
+            support_strict_stacking: req.support_strict_stacking && !req.classic,
             // `load_object` has already refused a name it does not know.
             support_source: wire::parse_support_source(req.support_source.as_deref())
                 .unwrap_or_default(),
@@ -838,8 +848,13 @@ impl SliceSettings {
                     } else {
                         ""
                     };
+                    let rows = if self.support_strict_stacking {
+                        ", a tip under every row"
+                    } else {
+                        ""
+                    };
                     format!(
-                        ", branch {:.0}°, tip {:.1} mm, trunk {:.1} mm{pockets}",
+                        ", branch {:.0}°, tip {:.1} mm, trunk {:.1} mm{pockets}{rows}",
                         self.branch_angle, self.tip_diameter, self.trunk_diameter
                     )
                 }
@@ -1905,6 +1920,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_style = SupportStyle::Grid;
         settings.support_height_mult = 1.0;
         settings.support_avoidance = false;
+        settings.support_strict_stacking = false;
         settings.support_z_gap_mm = None;
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
@@ -3324,6 +3340,7 @@ fn compare_estimates(
             one.support_style = SupportStyle::Grid;
             one.support_height_mult = 1.0;
             one.support_avoidance = false;
+            one.support_strict_stacking = false;
         }
         let response = slice_sharing(mesh, &blend, profile, &one, cut, watch)?;
         out.push(CompareEstimate {
@@ -5606,6 +5623,8 @@ fn plan_supports(
     };
     opts.floor = floor;
     opts.avoidance = settings.support_avoidance && settings.support_style == SupportStyle::Tree;
+    opts.strict_stacking =
+        settings.support_strict_stacking && settings.support_style == SupportStyle::Tree;
     opts.source = settings.support_source;
     if let Some(xy) = settings.support_xy_gap_mm {
         opts.xy_gap = xy;

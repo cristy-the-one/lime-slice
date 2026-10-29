@@ -102,6 +102,9 @@ enum Cmd {
         /// Keep a thickening tree branch out of a pocket it cannot leave.
         #[arg(long, default_value_t = false)]
         support_avoidance: bool,
+        /// On a belt, give every tree interface row a tip of its own.
+        #[arg(long, default_value_t = false)]
+        support_strict_stacking: bool,
         /// Sparse support shaft height multiplier. `1` keeps the model layer height.
         #[arg(long, default_value_t = 1.0)]
         support_height_mult: f64,
@@ -353,6 +356,7 @@ fn run() -> Result<(), String> {
             tip_diameter,
             trunk_diameter,
             support_avoidance,
+            support_strict_stacking,
             support_height_mult,
             infill_combine,
             combing,
@@ -430,6 +434,7 @@ fn run() -> Result<(), String> {
                 tip_diameter,
                 trunk_diameter,
                 support_avoidance,
+                support_strict_stacking,
                 support_height_mult,
                 infill_combine,
                 combing,
@@ -1685,6 +1690,7 @@ fn request_for(
         tip_diameter: settings.tip_diameter,
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
+        support_strict_stacking: settings.support_strict_stacking,
         support_source: match settings.support_source {
             lime_slice_core::SupportSource::Auto => None,
             lime_slice_core::SupportSource::Paint => Some("paint".into()),
