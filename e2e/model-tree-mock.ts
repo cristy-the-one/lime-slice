@@ -39,6 +39,8 @@ interface Handlers {
   stepEdges?(request: Body, on: MockSolid): Body;
   /** --- Print transitions, auto-find: the answer to `transitionFind` on `on`, the solid of node `node`. */
   transitionFind?(request: Body, on: MockSolid, node: number): Body;
+  /** --- Print transitions, step 6: the tangent chain through `request.edge` on `on`. Absent answers the edge alone. */
+  edgeChain?(request: Body, on: MockSolid, node: number): Body;
   /** The shape a dry-run that works answers when the request asks for a preview; without it the mock sends none. */
   preview?(request: Body, on: MockSolid, tool?: MockSolid): MockSolid | null;
   /** An answer of its own for a jump, such as a step that no longer rebuilds. Null answers as usual. */
@@ -281,6 +283,8 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       // --- Print transitions, auto-find: the edges that start in the air on the step's solid. Absent finds none.
       case "transitionFind":
         return handlers.transitionFind?.(request, base.solid, node) ?? { id: node, rows: [], curvedSkipped: 0 };
+      case "edgeChain":
+        return handlers.edgeChain?.(request, base.solid, node) ?? { id: node, edge: request.edge, edges: [request.edge], closed: false };
       case "drop": {
         const gone = subtree(doc, node);
         for (const id of gone) doc.delete(id);

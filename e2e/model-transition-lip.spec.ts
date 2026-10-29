@@ -181,7 +181,7 @@ test("the Print transition card finds a lip, adds a gusset or cuts a ramp, refus
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuTransition").click();
   await expect(card(page)).toBeVisible();
-  await expect(page.locator("#modelTransEdges")).toHaveText("Pick an edge in a concave corner, or a lip's lowest edge. Shift-click adds edges.");
+  await expect(page.locator("#modelTransEdges")).toHaveText("Pick an edge in a concave corner, or a lip's lowest edge. A click takes its whole chain; Shift-click adds edges.");
   await expect(page.locator("#modelTransModeRow")).toBeHidden();
 
   // The lip's lowest edge: found a lip, a gusset 10 mm down to the wall, green.

@@ -160,7 +160,7 @@ test("the Print transition card picks an edge, previews the wedge, refuses a lip
   await page.locator("#modelMenuTransition").click();
   await expect(card(page)).toBeVisible();
   await expect(page.locator("#modelPanelTitle")).toHaveText("Print transition");
-  await expect(page.locator("#modelTransEdges")).toHaveText("Pick an edge in a concave corner, or a lip's lowest edge. Shift-click adds edges.");
+  await expect(page.locator("#modelTransEdges")).toHaveText("Pick an edge in a concave corner, or a lip's lowest edge. A click takes its whole chain; Shift-click adds edges.");
   await expect(page.locator("#modelApply")).toBeDisabled();
   await expect(page.locator("#modelTransAngle")).toHaveValue("45");
   await expect(page.locator("#modelTransMm")).toHaveValue("2");
