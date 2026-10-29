@@ -19,6 +19,10 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <GeomLib_IsPlanarSurface.hxx>
+#include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <TopLoc_Location.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -303,6 +307,39 @@ const char* blend_failed(bool chamfer, size_t count) {
         return count > 1 ? "The chamfer did not fit these edges" : "The chamfer did not fit this edge";
     }
     return count > 1 ? "The fillet did not fit these edges" : "The fillet did not fit this edge";
+}
+
+/// Whether the curve lies within `tol` mm of the line through its ends; `dir` gets that line's direction.
+bool straight_within(const BRepAdaptor_Curve& curve, double tol, gp_Dir& dir) {
+    const double first = curve.FirstParameter();
+    const double last = curve.LastParameter();
+    const gp_Pnt a = curve.Value(first);
+    const gp_Vec chord(a, curve.Value(last));
+    const double length = chord.Magnitude();
+    if (length <= 10.0 * tol) {
+        return false;
+    }
+    const gp_Vec line = chord / length;
+    for (int k = 1; k < 32; ++k) {
+        const gp_Vec to(a, curve.Value(first + (last - first) * k / 32.0));
+        const double along = to.Dot(line);
+        if (to.Crossed(line).Magnitude() > tol || along < -tol || along > length + tol) {
+            return false;
+        }
+    }
+    dir = gp_Dir(line);
+    return true;
+}
+
+/// Whether the face's surface lies within `tol` mm of a plane.
+bool planar_within(const TopoDS_Face& face, double tol) {
+    TopLoc_Location where;
+    const Handle(Geom_Surface) surface = BRep_Tool::Surface(face, where);
+    if (surface.IsNull()) {
+        return false;
+    }
+    GeomLib_IsPlanarSurface planar(surface, tol);
+    return planar.IsPlanar() == Standard_True;
 }
 
 }  // namespace
@@ -713,6 +750,286 @@ LimeShape* lime_tree_wedges(const LimeShape* from, const double* points, const d
     }
 }
 
+/// --- Print transitions, step 6. `count` stations along edge `edge`, 12 numbers each (`edge_stations` in kernel.cpp):
+/// the point, the tangent, and the outward normals of faces `face_a` and `face_b`. 0 when an index is not on the solid.
+int lime_tree_edge_stations(LimeShape* shape, int edge, int face_a, int face_b, int count, double* out) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (edge < 0 || edge >= shape->held.edges.Extent() || face_a < 0 || face_a >= shape->held.faces.Extent() ||
+            face_b < 0 || face_b >= shape->held.faces.Extent()) {
+            return 0;
+        }
+        return edge_stations(
+                   TopoDS::Edge(shape->held.edges(edge + 1)),
+                   TopoDS::Face(shape->held.faces(face_a + 1)),
+                   TopoDS::Face(shape->held.faces(face_b + 1)),
+                   count,
+                   out)
+                   ? 1
+                   : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// --- Print transitions, step 6. The faces at either end vertex of edge `edge`: up to `capacity` indexes, and the count.
+int lime_tree_edge_end_faces(LimeShape* shape, int edge, int* out, int capacity) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (edge < 0 || edge >= shape->held.edges.Extent()) {
+            return 0;
+        }
+        TopTools_IndexedDataMapOfShapeListOfShape at_vertex;
+        TopExp::MapShapesAndAncestors(shape->held.shape, TopAbs_VERTEX, TopAbs_FACE, at_vertex);
+        TopoDS_Vertex a;
+        TopoDS_Vertex b;
+        TopExp::Vertices(TopoDS::Edge(shape->held.edges(edge + 1)), a, b);
+        int count = 0;
+        for (const TopoDS_Vertex& v : {a, b}) {
+            const TopTools_ListOfShape* faces = v.IsNull() ? nullptr : at_vertex.Seek(v);
+            if (faces == nullptr) {
+                continue;
+            }
+            for (TopTools_ListIteratorOfListOfShape it(*faces); it.More(); it.Next()) {
+                const int index = shape->held.faces.FindIndex(it.Value()) - 1;
+                if (index >= 0 && count < capacity && std::find(out, out + count, index) == out + count) {
+                    out[count++] = index;
+                }
+            }
+        }
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// --- Print transitions, step 6. 1 when `point` lies inside the solid, 0 when outside or on it, -1 when it cannot tell.
+int lime_tree_inside(LimeShape* shape, const double* point) {
+    try {
+        LIME_CATCH_FAULTS;
+        BRepClass3d_SolidClassifier classify(shape->held.shape, gp_Pnt(point[0], point[1], point[2]), 1e-7);
+        return classify.State() == TopAbs_IN ? 1 : 0;
+    } catch (...) {
+        return -1;
+    }
+}
+
+/// --- Print transitions, step 6. Each of `count` points' signed distance to face `face`'s surface, positive outside.
+int lime_tree_face_distances(LimeShape* shape, int face, const double* points, int count, double* out) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (face < 0 || face >= shape->held.faces.Extent()) {
+            return 0;
+        }
+        return face_distances(TopoDS::Face(shape->held.faces(face + 1)), points, count, out) ? 1 : 0;
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// --- Print transitions, step 6. One tool per edge, fused to `from` (or cut, with `cut`): `straight[i]` pushes the
+/// section along the edge, else it is swept with its binormal held to `binormal`. `sections` holds each tool's
+/// `section_counts[i]` corners, `ext` two lengths per tool (past its start, past its end), and `mitres` 14 numbers per
+/// tool: per end a flag, a point and the direction of the side kept. `touched` gets 1 for each face of `from` the boolean
+/// changed or removed; `out[0]` the tools' own volume; `tools` the tools as one solid.
+LimeShape* lime_tree_transition_tools(
+    const LimeShape* from,
+    int count,
+    const int* edges,
+    const int* straight,
+    const int* section_counts,
+    const double* sections,
+    const double* ext,
+    const double* mitres,
+    const double* binormal,
+    int cut,
+    int* touched,
+    double* out,
+    LimeShape** tools,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        *tools = nullptr;
+        std::vector<TransitionTool> specs;
+        const double* point = sections;
+        for (int i = 0; i < count; ++i) {
+            if (edges[i] < 0 || edges[i] >= from->held.edges.Extent() || section_counts[i] < 3) {
+                set_error(error, "That edge is not on this solid");
+                return nullptr;
+            }
+            TransitionTool spec;
+            spec.edge = TopoDS::Edge(from->held.edges(edges[i] + 1));
+            spec.straight = straight[i] != 0;
+            for (int k = 0; k < section_counts[i]; ++k, point += 3) {
+                spec.section.emplace_back(point[0], point[1], point[2]);
+            }
+            spec.ext[0] = ext[2 * i];
+            spec.ext[1] = ext[2 * i + 1];
+            for (int end = 0; end < 2; ++end) {
+                const double* m = mitres + 14 * i + 7 * end;
+                const gp_Vec keep(m[4], m[5], m[6]);
+                spec.mitre[end] = m[0] != 0.0 && keep.Magnitude() > 1e-12;
+                if (spec.mitre[end]) {
+                    spec.mitre_at[end] = gp_Pnt(m[1], m[2], m[3]);
+                    spec.mitre_keep[end] = gp_Dir(keep);
+                }
+            }
+            specs.push_back(spec);
+        }
+        std::string message;
+        TopoDS_Shape made;
+        std::vector<TopoDS_Face> changed;
+        double volume = 0.0;
+        double tools_volume = 0.0;
+        Handle(BRepTools_History) history;
+        const TopoDS_Shape result = build_transition_tools(
+            from->held.shape,
+            specs,
+            gp_Dir(binormal[0], binormal[1], binormal[2]),
+            cut != 0,
+            made,
+            changed,
+            volume,
+            tools_volume,
+            &history,
+            message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        for (int i = 0; i < from->held.faces.Extent(); ++i) {
+            touched[i] = 0;
+        }
+        for (const TopoDS_Face& face : changed) {
+            const int index = from->held.faces.FindIndex(face);
+            if (index > 0) {
+                touched[index - 1] = 1;
+            }
+        }
+        out[0] = tools_volume;
+        std::unique_ptr<LimeShape> kept = adopt(result, volume, "The wedge removed the solid", error, from, history);
+        if (!kept) {
+            return nullptr;
+        }
+        std::unique_ptr<LimeShape> piece = adopt(made, tools_volume, "Open CASCADE did not build the wedge", error, nullptr);
+        if (!piece) {
+            return nullptr;
+        }
+        *tools = piece.release();
+        return kept.release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Print transitions, step 6. The tangent chain through edge `edge`: the sharp edges of its convexity that run on
+/// from it at a vertex turning `max_deg` or less, with no branch. `out` gets up to `capacity` edge indexes, the picked
+/// edge first; `closed` 1 when the chain comes back to it. The count, or 0 when the edge is not on the solid.
+int lime_tree_edge_chain(LimeShape* shape, int edge, double max_deg, int* out, int capacity, int* closed) {
+    try {
+        LIME_CATCH_FAULTS;
+        *closed = 0;
+        if (edge < 0 || edge >= shape->held.edges.Extent() || capacity < 1) {
+            return 0;
+        }
+        TopTools_IndexedDataMapOfShapeListOfShape at_vertex;
+        TopExp::MapShapesAndAncestors(shape->held.shape, TopAbs_VERTEX, TopAbs_EDGE, at_vertex);
+        const TopoDS_Edge start = TopoDS::Edge(shape->held.edges(edge + 1));
+        const int kind = edge_kinds(shape->held.shape, {start}).front();
+        std::vector<int> chain = {edge};
+        if (kind != 1 && kind != 2) {
+            out[0] = edge;
+            return 1;
+        }
+        const double tight = std::cos(max_deg * std::acos(-1.0) / 180.0);
+        // The direction an edge leaves vertex `v` in, or a zero vector.
+        const auto leaving = [](const TopoDS_Edge& e, const TopoDS_Vertex& v) {
+            BRepAdaptor_Curve curve(e);
+            const double t = BRep_Tool::Parameter(v, e);
+            gp_Pnt p;
+            gp_Vec d;
+            curve.D1(t, p, d);
+            if (d.Magnitude() <= 1e-12) {
+                return gp_Vec(0, 0, 0);
+            }
+            d.Normalize();
+            const bool at_first = std::abs(t - curve.FirstParameter()) <= std::abs(t - curve.LastParameter());
+            return at_first ? d : d.Reversed();
+        };
+        // Walk from `e` through its vertex `v`, appending (or prepending) what runs on.
+        const auto walk = [&](TopoDS_Edge e, TopoDS_Vertex v, bool forward) {
+            while (static_cast<int>(chain.size()) < capacity) {
+                const gp_Vec arriving = leaving(e, v).Reversed();
+                const TopTools_ListOfShape* around = at_vertex.Seek(v);
+                if (around == nullptr || arriving.Magnitude() <= 1e-12) {
+                    return;
+                }
+                TopoDS_Edge next;
+                int found = 0;
+                for (TopTools_ListIteratorOfListOfShape it(*around); it.More(); it.Next()) {
+                    const TopoDS_Edge other = TopoDS::Edge(it.Value());
+                    if (other.IsSame(e) || BRep_Tool::Degenerated(other)) {
+                        continue;
+                    }
+                    const gp_Vec away = leaving(other, v);
+                    if (away.Magnitude() <= 1e-12 || arriving.Dot(away) < tight) {
+                        continue;
+                    }
+                    if (edge_kinds(shape->held.shape, {other}).front() != kind) {
+                        continue;
+                    }
+                    if (found == 0 || !next.IsSame(other)) {
+                        found += 1;
+                    }
+                    next = other;
+                }
+                if (found != 1) {
+                    return;
+                }
+                const int index = shape->held.edges.FindIndex(next) - 1;
+                if (index == edge) {
+                    *closed = 1;
+                    return;
+                }
+                if (index < 0 || std::find(chain.begin(), chain.end(), index) != chain.end()) {
+                    return;
+                }
+                if (forward) {
+                    chain.push_back(index);
+                } else {
+                    chain.insert(chain.begin(), index);
+                }
+                TopoDS_Vertex a;
+                TopoDS_Vertex b;
+                TopExp::Vertices(next, a, b);
+                v = a.IsSame(v) ? b : a;
+                e = next;
+            }
+        };
+        TopoDS_Vertex first;
+        TopoDS_Vertex last;
+        TopExp::Vertices(start, first, last);
+        if (!first.IsNull() && !last.IsNull() && !first.IsSame(last)) {
+            walk(start, last, true);
+            if (*closed == 0) {
+                walk(start, first, false);
+            }
+        }
+        // The picked edge first, then the rest in chain order.
+        const auto at = std::find(chain.begin(), chain.end(), edge);
+        std::rotate(chain.begin(), at, chain.end());
+        const int n = std::min<int>(static_cast<int>(chain.size()), capacity);
+        std::copy(chain.begin(), chain.begin() + n, out);
+        return n;
+    } catch (...) {
+        return 0;
+    }
+}
+
 /// --- Print transitions, lips. The gusset under face `face` of `from`, built against `onto` (the solid so far), as a
 /// solid of its own: `build_lip_gusset` in kernel.cpp says what `at`, `keep`, `build`, `depth`, `inside` and `out` are.
 LimeShape* lime_tree_lip_gusset(
@@ -798,7 +1115,11 @@ int lime_tree_face_span(LimeShape* shape, int index, const double* origin, const
 /// many faces the edge bounds, then for each of the first two the face's index, its surface (0 plane, 1 cylinder,
 /// 2 cone, 3 sphere, 4 torus, 5 other), and its outward normal where the edge's middle lies on it. 0 when the edge
 /// is not on the solid or cannot be read.
-int lime_tree_edge_sig(LimeShape* shape, int index, double* out) {
+///
+/// With `flat` above 0, a curve that lies within `flat` mm of the line through its ends reads as a line along that line,
+/// and a surface within `flat` mm of a plane (GeomLib_IsPlanarSurface) as a plane: a STEP file stores flat faces and
+/// straight edges as B-splines too. At 0 the curve and the surfaces are read as stored, which a saved edge's signature is.
+int lime_tree_edge_sig(LimeShape* shape, int index, double flat, double* out) {
     try {
         LIME_CATCH_FAULTS;
         for (int i = 0; i < 15; ++i) {
@@ -826,6 +1147,8 @@ int lime_tree_edge_sig(LimeShape* shape, int index, double* out) {
         } else if (curve.GetType() == GeomAbs_Circle) {
             out[0] = 1.0;
             dir = curve.Circle().Axis().Direction();
+        } else if (flat > 0.0 && straight_within(curve, flat, dir)) {
+            out[0] = 0.0;
         } else {
             out[0] = 2.0;
             if (tangent.Magnitude() > 1e-12) {
@@ -860,6 +1183,9 @@ int lime_tree_edge_sig(LimeShape* shape, int index, double* out) {
                 case GeomAbs_Sphere: slot[1] = 3.0; break;
                 case GeomAbs_Torus: slot[1] = 4.0; break;
                 default: slot[1] = 5.0; break;
+            }
+            if (flat > 0.0 && slot[1] != 0.0 && planar_within(face, flat)) {
+                slot[1] = 0.0;
             }
             double first = 0.0;
             double last = 0.0;
@@ -2344,6 +2670,27 @@ int lime_tree_solids(const LimeShape* shape, LimeShape** out, int max) {
 }
 
 #ifdef LIME_OCCT_TEST_HOOKS
+/// Debug builds only, for tests: the shape with every surface and curve converted to NURBS, as a STEP file may store a
+/// flat face or a straight edge.
+LimeShape* lime_tree_test_nurbs(const LimeShape* shape, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        BRepBuilderAPI_NurbsConvert convert(shape->held.shape, Standard_True);
+        if (!convert.IsDone()) {
+            set_error(error, "Open CASCADE did not convert the solid");
+            return nullptr;
+        }
+        const TopoDS_Shape made = convert.Shape();
+        return adopt(made, volume_of(as_solid(made)), "Open CASCADE did not convert the solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// Debug builds only, for tests: a curve read off a null edge on the shape's first face. That is the access violation
 /// inside TKBRep (BRep_Tool::CurveOnSurface) a wall push beside raised lettering hit, so a test can prove the guard.
 int lime_tree_test_fault(const LimeShape* shape, char** error) {

@@ -6509,6 +6509,7 @@ export class Session {
       edges: [row.edge],
       case: row.case,
       lengthMm: Math.round(row.lengthMm * 100) / 100,
+      ...(row.curved ? { curved: true } : {}),
       at: this.typedPoint(obj, applyPose(pose, row.mid)).map((value) => Math.round(value * 1000) / 1000 + 0),
       fix: { ...typed, edges: [row.edge] },
       ...(row.refused ? { refused: row.refused } : row.wedge ? { volumeMm3: row.wedge.volumeMm3 } : {}),

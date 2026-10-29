@@ -725,7 +725,7 @@ const partitionOp = {
 };
 (op.oneOf as unknown[]).push(partitionOp);
 
-/** --- Print transitions (docs/plan-belt-transitions.md, steps 2 and 4). The corner wedge and the lip's gusset or ramp on straight edges. */
+/** --- Print transitions (docs/plan-belt-transitions.md, steps 2 and 4). The corner wedge and the lip's gusset or ramp on straight edges; step 6 sweeps the corner wedge along curved edges and faces. */
 const transitionOp = {
   type: "object",
   additionalProperties: false,
