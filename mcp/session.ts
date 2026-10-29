@@ -61,7 +61,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
-import { readTransitionRows, transitionAngleLimit, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE } from "../src/model-transition.ts";
+import { readTransitionRows, transitionAngleLimit, transitionFloorMm, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE } from "../src/model-transition.ts";
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
@@ -5023,6 +5023,11 @@ export class Session {
     if (mode !== "auto" && mode !== "add" && mode !== "cut") return { reason: "mode is auto, add, or cut." };
     const maxMm = spec.maxMm;
     if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return { reason: "maxMm must be above 0 mm." };
+    const kase = spec.case;
+    if (kase !== undefined && kase !== "lip" && kase !== "corner") return { reason: "case is lip or corner; left out, each edge's case is found." };
+    // --- Step 4. A lip's ramp keeps the wall floor at its first edge: twice the plate machine's nozzle, unless typed.
+    const floorMm = spec.floorMm === undefined ? transitionFloorMm(this.library.nozzleMm) : spec.floorMm;
+    if (typeof floorMm !== "number" || !(floorMm > 0)) return { reason: "floorMm must be above 0 mm." };
     const printer = this.printer();
     const belt = printer.kind === "belt" ? printer.belt : null;
     const pose = typedPoseOf(obj);
@@ -5042,6 +5047,8 @@ export class Session {
       size: size as number | "face",
       ...(mode !== "auto" ? { mode: mode as "add" | "cut" } : {}),
       ...(maxMm !== undefined ? { maxMm: maxMm as number } : {}),
+      ...(kase !== undefined ? { case: kase as "lip" | "corner" } : {}),
+      ...(mode === "cut" ? { floorMm } : {}),
       ...(belt ? { beltDeg: belt.angleDeg } : {}),
       orient: [...obj.orient],
       printer: printer.id,
@@ -5059,8 +5066,14 @@ export class Session {
     const pose = typedPoseOf(obj);
     const belt = this.printer().kind === "belt";
     const kernel = raw.filter((row): row is Record<string, unknown> => !!row && typeof row === "object" && Array.isArray((row as Record<string, unknown>).normal));
-    const rows = read.map((row, i) => ({ ...kernel[i], normal: turnDir(pose, row.normal).map((value) => Math.round(value * 1000) / 1000 + 0), [belt ? "angleToBeltDeg" : "angleToBedDeg"]: row.angleToPlateDeg }));
-    return { rows, text: read.map((row) => transitionSentence(row, belt)).join(" "), reach: Math.max(...read.map((row) => row.reachMm)) };
+    // A lip's triangles are for the app's ghost, not a caller: they stay out of the reply.
+    const rows = read.map((row, i) => {
+      const { soup: _soup, ...kept } = kernel[i] ?? {};
+      return { ...kept, normal: turnDir(pose, row.normal).map((value) => Math.round(value * 1000) / 1000 + 0), [belt ? "angleToBeltDeg" : "angleToBedDeg"]: row.angleToPlateDeg };
+    });
+    // The Skin on shallow slopes warning is about a corner's wedge thickening a roof; a lip's depth is not a wedge's size.
+    const corners = read.filter((row) => row.case === "corner");
+    return { rows, text: read.map((row) => transitionSentence(row, belt)).join(" "), reach: corners.length > 0 ? Math.max(...corners.map((row) => row.reachMm)) : 0 };
   }
 
   /** K4. A face as a shell's open face: an index, a stored `{index}`, or a `{normal, nearPoint}` selector. */
@@ -5442,7 +5455,9 @@ export class Session {
     // A blend is stored as the engine echoes it: each picked edge as a reference with its signature, so a replay after
     // an edit above, or a variable that moves the part, finds the same edge rather than whatever has its old index.
     const echo = reply.op && typeof reply.op === "object" ? reply.op as ModelOp : null;
-    const stored = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && echo?.kind === baked.op.kind ? { ...echo, ...(baked.op.exprs ? { exprs: baked.op.exprs } : {}) } : baked.op;
+    const blended = (baked.op.kind === "fillet" || baked.op.kind === "chamfer") && echo?.kind === baked.op.kind ? { ...echo, ...(baked.op.exprs ? { exprs: baked.op.exprs } : {}) } : baked.op;
+    // --- Print transitions, step 4: a step the kernel found all lips is stored as one, as the app stores the echo.
+    const stored = baked.op.kind === "transition" && echo?.kind === "transition" && echo.case && !baked.op.case ? { ...baked.op, case: echo.case } : blended;
     obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored), fingerprint: null });
     const prior = obj.solid;
     const solid = rememberSolid(reply);

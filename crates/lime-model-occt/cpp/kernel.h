@@ -240,13 +240,28 @@ bool chamfer_angles_build(
     TopoDS_Shape& built,
     double& volume,
     std::string& error);
-/// --- Print transitions. Each triangle pushed along its vector into a prism, fused to `current` one after another, and
-/// the faces left on one surface merged.
+/// --- Print transitions. Each triangle pushed along its vector into a prism, fused to `current` one after another (or
+/// cut from it, with `cut`), and the faces left on one surface merged.
 TopoDS_Shape build_wedges(
     const TopoDS_Shape& current,
     const std::vector<std::array<gp_Pnt, 3>>& triangles,
     const std::vector<gp_Vec>& along,
+    bool cut,
     double& volume,
+    std::string& error);
+/// --- Print transitions, lips. The gusset under a lip as a solid of its own: `face` swept along -`build` by `depth`,
+/// on the side of the plane through `at` that `keep` points to, less `current`; the piece holding `inside`. `out` gets
+/// its volume, its lowest reach along `build` from `at`, 1 when every lowest point of it lies on `current` (0 when one
+/// hangs in the air), and one lowest point (3 numbers).
+TopoDS_Shape build_lip_gusset(
+    const TopoDS_Shape& current,
+    const TopoDS_Face& face,
+    const gp_Pnt& at,
+    const gp_Dir& keep,
+    const gp_Dir& build,
+    double depth,
+    const gp_Pnt& inside,
+    double* out,
     std::string& error);
 /// Faces and edges on one surface or curve merged into one. `history`, when set, takes the merge's history after its own.
 TopoDS_Shape merge_same_domain(const TopoDS_Shape& shape, Handle(BRepTools_History)* history);

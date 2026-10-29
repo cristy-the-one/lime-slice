@@ -41,6 +41,7 @@
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
@@ -1800,6 +1801,7 @@ TopoDS_Shape build_wedges(
     const TopoDS_Shape& current,
     const std::vector<std::array<gp_Pnt, 3>>& triangles,
     const std::vector<gp_Vec>& along,
+    bool cut,
     double& volume,
     std::string& error) {
     const char* failed = "Open CASCADE did not build the wedge";
@@ -1826,7 +1828,7 @@ TopoDS_Shape build_wedges(
             error = failed;
             return {};
         }
-        result = combine(result, "fuse", prism.Shape(), volume, error);
+        result = combine(result, cut ? "cut" : "fuse", prism.Shape(), volume, error);
         if (!error.empty()) {
             return {};
         }
@@ -1834,6 +1836,110 @@ TopoDS_Shape build_wedges(
     result = merge_same_domain(result, nullptr);
     volume = volume_of(as_solid(result));
     return result;
+}
+
+TopoDS_Shape build_lip_gusset(
+    const TopoDS_Shape& current,
+    const TopoDS_Face& face,
+    const gp_Pnt& at,
+    const gp_Dir& keep,
+    const gp_Dir& build,
+    double depth,
+    const gp_Pnt& inside,
+    double* out,
+    std::string& error) {
+    const char* failed = "Open CASCADE did not build the gusset";
+    BRepPrimAPI_MakePrism sweep(face, gp_Vec(build) * -depth);
+    sweep.Build();
+    if (!sweep.IsDone()) {
+        error = failed;
+        return {};
+    }
+    // The kept side of the plane: a square on it, large enough to hold the sweep, pushed along `keep`.
+    Bnd_Box bounds;
+    BRepBndLib::Add(sweep.Shape(), bounds, Standard_False);
+    if (bounds.IsVoid()) {
+        error = failed;
+        return {};
+    }
+    double lo[3] = {0, 0, 0};
+    double hi[3] = {0, 0, 0};
+    bounds.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    const double span = gp_Pnt(lo[0], lo[1], lo[2]).Distance(gp_Pnt(hi[0], hi[1], hi[2])) +
+                        at.Distance(gp_Pnt(0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2]))) + 1.0;
+    BRepBuilderAPI_MakeFace square(gp_Pln(at, keep), -span, span, -span, span);
+    if (!square.IsDone()) {
+        error = failed;
+        return {};
+    }
+    BRepPrimAPI_MakePrism side(square.Face(), gp_Vec(keep) * (2.0 * span));
+    side.Build();
+    if (!side.IsDone()) {
+        error = failed;
+        return {};
+    }
+    BRepAlgoAPI_Common clipped(sweep.Shape(), side.Shape());
+    if (!clipped.IsDone()) {
+        error = failed;
+        return {};
+    }
+    BRepAlgoAPI_Cut left(clipped.Shape(), current);
+    if (!left.IsDone()) {
+        error = failed;
+        return {};
+    }
+    TopoDS_Shape piece;
+    for (TopExp_Explorer it(left.Shape(), TopAbs_SOLID); it.More(); it.Next()) {
+        BRepClass3d_SolidClassifier classify(it.Current(), inside, 1e-7);
+        if (classify.State() == TopAbs_IN) {
+            piece = it.Current();
+            break;
+        }
+    }
+    if (piece.IsNull()) {
+        error = "The part already fills the space under this lip, so there is no gusset to add";
+        return {};
+    }
+    // The gusset's lowest points along the build, and whether each stands on the part.
+    double least = 1e300;
+    gp_Pnt lowest = at;
+    for (TopExp_Explorer it(piece, TopAbs_VERTEX); it.More(); it.Next()) {
+        const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(it.Current()));
+        const double reach = gp_Vec(at, p).Dot(gp_Vec(build));
+        if (reach < least) {
+            least = reach;
+            lowest = p;
+        }
+    }
+    std::vector<gp_Pnt> low;
+    for (TopExp_Explorer it(piece, TopAbs_EDGE); it.More(); it.Next()) {
+        const TopoDS_Edge edge = TopoDS::Edge(it.Current());
+        if (BRep_Tool::Degenerated(edge)) {
+            continue;
+        }
+        BRepAdaptor_Curve curve(edge);
+        for (int k = 0; k <= 4; ++k) {
+            const gp_Pnt p = curve.Value(curve.FirstParameter() + (curve.LastParameter() - curve.FirstParameter()) * k / 4.0);
+            if (gp_Vec(at, p).Dot(gp_Vec(build)) < least + 1e-4) {
+                low.push_back(p);
+            }
+        }
+    }
+    bool landed = !low.empty();
+    for (const gp_Pnt& p : low) {
+        BRepExtrema_DistShapeShape gap(BRepBuilderAPI_MakeVertex(p).Vertex(), current);
+        if (!gap.IsDone() || gap.Value() > 1e-3) {
+            landed = false;
+            break;
+        }
+    }
+    out[0] = volume_of(piece);
+    out[1] = least;
+    out[2] = landed ? 1.0 : 0.0;
+    out[3] = lowest.X();
+    out[4] = lowest.Y();
+    out[5] = lowest.Z();
+    return piece;
 }
 
 /// The other solid moves by a location, so nothing is copied, and the turn is built as a unit quaternion so the

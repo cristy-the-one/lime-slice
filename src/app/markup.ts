@@ -126,7 +126,7 @@ export function mountMarkup(root: HTMLElement) {
                 <!-- --- Split to print (D10): a card of its own, not a rail tool. The rail's Split stays one plane. --- -->
                 <button id="modelMenuSplitPrint" type="button" role="menuitem" data-tip="Cut a part too large for the printer into pieces that fit, each an object on the plate.">Split to print…</button>
                 <!-- --- Print transitions (docs/plan-belt-transitions.md, step 3): a card like Split to print's, no rail button. --- -->
-                <button id="modelMenuTransition" type="button" role="menuitem" data-tip="Add a flat wedge in a concave corner, so each row of it stands on the row before on this printer.">Print transition…</button>
+                <button id="modelMenuTransition" type="button" role="menuitem" data-tip="Add a flat wedge in a concave corner, or a gusset under a lip, so each row of it stands on the row before on this printer.">Print transition…</button>
               </div>
             </div>
           </div>
