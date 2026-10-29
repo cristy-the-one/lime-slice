@@ -49,6 +49,44 @@ export function meshCenter(min: number[], max: number[]): { cx: number; cy: numb
   return { cx: (min[0] + max[0]) / 2, cy: (min[1] + max[1]) / 2 };
 }
 
+export type Vec3 = [number, number, number];
+
+/**
+ * Scene normal of a printed layer, pointing the way layers stack. A flat bed's layers stack
+ * straight up. A belt's nozzle plane leans its top toward print +Y (scene −Z), so its layers
+ * stack along print (0, −sin a, cos a), scene (0, cos a, sin a), as the engine's `lab` turns them.
+ */
+export function layerUp(beltAngleDeg: number | null): Vec3 {
+  if (beltAngleDeg == null) return [0, 1, 0];
+  const a = (Math.min(80, Math.max(10, beltAngleDeg)) * Math.PI) / 180;
+  return [0, Math.cos(a), Math.sin(a)];
+}
+
+/**
+ * The bead box the preview shader draws for the segment `a` to `b`, in scene space: the top face
+ * lies in the layer plane, `half` to each side across the run, and the bead hangs `height` below
+ * it along `up`. Eight corners, `a`'s four then `b`'s, each end's side +1 before side −1 and top
+ * before bottom. The vertex shader computes the same points.
+ */
+export function beadCorners(a: Vec3, b: Vec3, half: number, height: number, up: Vec3): Vec3[] {
+  const run: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const lift = run[0] * up[0] + run[1] * up[1] + run[2] * up[2];
+  const along: Vec3 = [run[0] - up[0] * lift, run[1] - up[1] * lift, run[2] - up[2] * lift];
+  const len = Math.hypot(along[0], along[1], along[2]);
+  const side: Vec3 = len > 0
+    ? [(up[1] * along[2] - up[2] * along[1]) / len, (up[2] * along[0] - up[0] * along[2]) / len, (up[0] * along[1] - up[1] * along[0]) / len]
+    : [0, 0, 0];
+  const out: Vec3[] = [];
+  for (const end of [a, b]) {
+    for (const s of [1, -1]) {
+      for (const drop of [0, 1]) {
+        out.push([0, 1, 2].map((k) => end[k] + side[k] * half * s - up[k] * height * drop) as Vec3);
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Path points in print order. `xyz` is each point in scene space. `style` is
  * `STYLE_WORDS` u16 per point describing the segment that starts there:
