@@ -554,7 +554,10 @@ So the default `size` is **2 mm**, not the far face's end. The probe adds a sent
   6. Turn the part about Z, then Re-aim, which works.
   7. Turn again and Keep.
 
-**Golden.** 60 of 60 rows are byte-identical to the newest stored run (`fb5d7053`), with the rear cover included. The slicer is not touched.
+**Golden.** The slicer is not touched.
+- Before main moved, the branch was 60 of 60 byte-identical to the newest stored run (`fb5d7053`), with the rear cover included.
+- After merging main at `92da7c3f` (#500, gap fill under lightning), 51 rows are byte-identical. The other 9 are #500's: slope_ramp, the Baby Dragon and the rear cover, each under speed, region and grid.
+- The branch's slicer, tools and samples differ from `92da7c3f` only in `tools/unit-tests.txt`, so this run is stored as main's baseline at `92da7c3f`.
 
 **Deviations from section 5 and decision 5:**
 - **No tangent chains.** A click takes one straight edge, and Shift-click adds edges. Chains, and the rule that a second click takes the single edge, come with step 6.
