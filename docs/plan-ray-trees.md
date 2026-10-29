@@ -177,6 +177,36 @@ Neither beats #484 at a similar cost.
 - `an_unknown_support_demand_is_refused`.
 - Golden, flag off.
 
+### Side study: demand from the solid
+
+A second prototype, in draft #487, read demand from the B-rep solid instead of from the triangles. It sat behind the request flag `supportDemandSource: "solid"`. The owner closed #487 on 2026-10-29 without merging it; the code stays on the branch `claude/solid-overhangs`.
+
+**What it found:**
+- **The solid is already within reach.** The bridge's `meshStep` returns, for each triangle, the solid face it came from. `lime-model-load` discarded it. Keeping it gives the same mesh at no extra Open CASCADE cost. The triangle order survives the pose and the belt transforms, so face ids can reach the support code.
+- **The app never sends the solid.** It sends an STL built from the preview. Only MCP STEP imports and the command line carry it. Parts from the Model tab would need their history-tree node.
+- **Method:**
+  - A flat face is judged whole by its exact normal, with 0.5° of tolerance.
+  - A curved face is cut where its smoothed normal crosses the support angle.
+  - Angles are measured against the layers, as `past_angle` measures them.
+  - Each face's footprint per layer replaces `overhang_at`'s angle test.
+  - Classification takes 0.3–44 ms per part.
+
+**Measured** (layers → solid):
+
+| Case | Print time | Support | Limbs | Floating interface | Hairline strips |
+|---|---|---|---|---|---|
+| Housing, Automatic | 14.69 → 14.83 h (+1.0 %) | 8.50 → 9.28 cm³ | 162 → 215 | 15.41 → 14.07 % | 8 → 0 |
+| Housing, Painted only | 14.13 → 14.13 h | 0.93 → 0.93 cm³ | 39 → 39 | 0.56 → 0.46 % | n/a |
+| Telo cover, IR3 V2 | 33.32 → 34.22 h (+2.7 %) | 3.02 → 5.56 cm³ | 1,185 → 1,852 | 1.45 → 0.81 % | 33 → 2 |
+| Rear cover, flat bed | 20.48 → 21.39 h (+4.5 %) | 37.22 → 48.07 cm³ | 768 → 789 | 10.25 → 6.79 % | 2 → 0 |
+| Cylinder r15 × 60 on its side | 0.476 → 0.502 h (+5.5 %) | 0.35 → 0.63 cm³ | 54 → 54 | 0 → 0 | 5 → 3 |
+
+**Verdict.**
+- **What it removes is already handled.** It removes facet noise, but #480's filter already handles that.
+- **It asks for too much.** The face footprint also asks for the half-step that each layer holds by itself, which costs 1–5.5 % print time.
+- **Trimming loses the gain.** Trimming that half-step returned to today's cost and lost the gain (housing 14.66 h, 15.29 %).
+- **It doesn't reach the sheet.** The steep sheet on the housing is left to Tip under every row.
+
 ## 8. Risks and open points
 
 - **Printability per layer still rules.** A skeleton that is clear in 3D can still give a disk that overhangs the one below it on some layer. The bottom-up `stand` check stays for that reason, and R3 must measure how much it drops.
