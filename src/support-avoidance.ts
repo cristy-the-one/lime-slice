@@ -8,3 +8,8 @@ export function avoidanceSliceField(on: boolean): { supportAvoidance?: true } {
 export function strictStackingSliceField(on: boolean): { supportStrictStacking?: true } {
   return on ? { supportStrictStacking: true } : {};
 }
+
+/** Tips, thin branches, and interface printed slower. Off is omitted so the recipe key holds. */
+export function slowFragileSliceField(on: boolean): { supportSlowFragile?: true } {
+  return on ? { supportSlowFragile: true } : {};
+}
