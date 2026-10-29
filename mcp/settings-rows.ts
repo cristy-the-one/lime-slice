@@ -38,6 +38,7 @@ export interface SettingRow {
   min?: number;
   max?: number;
   step?: number;
+  options?: string[];
   default: unknown;
   value: unknown;
   level: string;
@@ -68,6 +69,13 @@ function shown(control: ControlSpec, settings: PresetSettings): unknown {
   }
 }
 
+/** The values a select or segmented control takes. */
+function choices(kind: ControlSpec["kind"], ctx: SchemaContext): string[] {
+  if (kind.type !== "select" && kind.type !== "segmented") return [];
+  const options = typeof kind.options === "function" ? kind.options(ctx) : kind.options;
+  return options.map(([value]) => value);
+}
+
 function span(control: ControlSpec, ctx: SchemaContext): { min: number; max: number; step: number } | null {
   const kind = control.kind;
   if (kind.type !== "number" && kind.type !== "range") return null;
@@ -78,6 +86,7 @@ function span(control: ControlSpec, ctx: SchemaContext): { min: number; max: num
 export function settingRow(control: ControlSpec, settings: PresetSettings, ctx: SchemaContext): SettingRow | null {
   if (!control.preset) return null;
   const limits = span(control, ctx);
+  const options = choices(control.kind, ctx);
   const parent = control.parent ? BY_ID.get(control.parent) : undefined;
   return {
     key: control.preset,
@@ -85,6 +94,7 @@ export function settingRow(control: ControlSpec, settings: PresetSettings, ctx: 
     unit: unitOf(control.label),
     type: control.kind.type,
     ...(limits ? { min: limits.min, max: limits.max, step: limits.step } : {}),
+    ...(options.length ? { options } : {}),
     default: shown(control, DEFAULT_PRESET),
     value: shown(control, settings),
     level: control.tier,
@@ -122,6 +132,14 @@ export function applySetting(settings: PresetSettings, key: string, value: unkno
   const control = BY_KEY.get(key);
   if (!control?.set || !control.preset) return { reason: `There is no setting named ${key}.` };
   if (control.kind.type === "check" && typeof value !== "boolean") return { reason: `${nameOf(control.label)} must be true or false.` };
+  if (control.kind.type === "select" || control.kind.type === "segmented") {
+    // Supports reads true and false as Automatic and Off, as settings_apply does.
+    if (key === "supports" && typeof value === "boolean") value = value ? "auto" : "off";
+    const options = choices(control.kind, ctx);
+    if (typeof value !== "string" || !options.includes(value)) {
+      return { reason: `${nameOf(control.label)} must be one of ${options.map((option) => `"${option}"`).join(", ")}.` };
+    }
+  }
   const auto = value === null && control.placeholder !== undefined;
   if ((control.kind.type === "number" || control.kind.type === "range") && typeof value !== "number" && !auto) {
     return { reason: `${nameOf(control.label)} must be a number${control.placeholder ? ", or null for Auto" : ""}.` };

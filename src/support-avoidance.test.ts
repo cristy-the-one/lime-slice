@@ -1,6 +1,6 @@
 import { avoidanceSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { recipeKey } from "./slice-action.ts";
-import { shallowSkinsSliceField } from "./slice-request.ts";
+import { shallowSkinsSliceField, solidUnderWallsSliceField } from "./slice-request.ts";
 
 let failed = 0;
 
@@ -28,6 +28,10 @@ check("shallow skins off is omitted", Object.keys(shallowSkinsSliceField(false))
 check("shallow skins on is sent", shallowSkinsSliceField(true).shallowSkins === true);
 check("omitted shallow skins leaves the recipe key", recipeKey({ ...base, ...shallowSkinsSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
 check("asking for shallow skins changes the recipe", recipeKey({ ...base, ...shallowSkinsSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
+check("solid under walls off is omitted", Object.keys(solidUnderWallsSliceField(false)).length === 0);
+check("solid under walls on is sent", solidUnderWallsSliceField(true).solidUnderWalls === true);
+check("omitted solid under walls leaves the recipe key", recipeKey({ ...base, ...solidUnderWallsSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
+check("asking for solid under walls changes the recipe", recipeKey({ ...base, ...solidUnderWallsSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
 
 if (failed) {
   console.error(`${failed} failed`);
