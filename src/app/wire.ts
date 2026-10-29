@@ -273,6 +273,17 @@ export function wireApp() {
       revealStress();
       return;
     }
+    // --- Print transitions: the object list's stale-pose note.
+    const reaim = t.closest<HTMLElement>("[data-transition-reaim]")?.dataset.transitionReaim;
+    if (reaim) {
+      fx.requestReaim?.(reaim);
+      return;
+    }
+    const keep = t.closest<HTMLElement>("[data-transition-keep]")?.dataset.transitionKeep;
+    if (keep) {
+      fx.keepStale?.(keep);
+      return;
+    }
     const plateCheck = t.closest<HTMLElement>("[data-plate-check]")?.dataset.plateCheck;
     if (plateCheck) {
       requestModelCheck(plateCheck);

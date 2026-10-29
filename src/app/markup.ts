@@ -112,7 +112,7 @@ export function mountMarkup(root: HTMLElement) {
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, stress, split to print"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -125,6 +125,8 @@ export function mountMarkup(root: HTMLElement) {
                 <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and solve for stress. The solid is not edited.">Stress…</button>
                 <!-- --- Split to print (D10): a card of its own, not a rail tool. The rail's Split stays one plane. --- -->
                 <button id="modelMenuSplitPrint" type="button" role="menuitem" data-tip="Cut a part too large for the printer into pieces that fit, each an object on the plate.">Split to print…</button>
+                <!-- --- Print transitions (docs/plan-belt-transitions.md, step 3): a card like Split to print's, no rail button. --- -->
+                <button id="modelMenuTransition" type="button" role="menuitem" data-tip="Add a flat wedge in a concave corner, so each row of it stands on the row before on this printer.">Print transition…</button>
               </div>
             </div>
           </div>
@@ -473,6 +475,8 @@ export function mountMarkup(root: HTMLElement) {
               <p class="model-note" id="modelNote" hidden role="status"></p>
               <!-- --- Split to print: the card's form, drawn by ui/split-print.ts while that card holds the pane. --- -->
               <div class="model-split-print" id="modelSplitPrint" data-card-for="split-print" hidden></div>
+              <!-- --- Print transitions: the card's form, drawn by ui/transition-card.ts while that card holds the pane. --- -->
+              <div class="model-transition" id="modelTransition" data-card-for="transition" hidden></div>
             </div>
             <div class="model-actions">
               <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>

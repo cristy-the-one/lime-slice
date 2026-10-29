@@ -120,8 +120,6 @@ function hasPanel(op: ModelOp): boolean {
   if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;
   // P1. A push/pull reopens Push/Pull on its faces. A move with a distance per face has no one field to show.
   if (op.kind === "moveFaces") return op.faces.length > 0 && op.faces.every((row) => row.distance === op.faces[0]!.distance);
-  // --- Print transitions: its card comes with step 3 of docs/plan-belt-transitions.md; model_edit edits it now.
-  if (op.kind === "transition") return false;
   return true;
 }
 
@@ -402,7 +400,7 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "loft":
     case "partition":
     case "transition":
-      // `editRefusal` turns a feature away before a panel opens; a split to print reopens its own card.
+      // `editRefusal` turns a feature away before a panel opens; a split to print and a print transition reopen their own cards.
       throw new Error(`No edit panel for a ${op.kind} step`);
     case "group": {
       // --- A3 composite features ---

@@ -775,6 +775,8 @@ function objectListHtml(): string {
     const notes = limit(part.bounds);
     const marks = objectMarks(obj);
     const splitNote: string | null = fx.exportSplitNote?.(obj.id) ?? null;
+    // --- Print transitions (decision 5): steps made for another pose, with Re-aim and Keep.
+    const stale: { text: string } | null = fx.transitionStaleNote?.(obj.id) ?? null;
     const selected = obj.id === state.plate.selectedId;
     const group = assemblyOf(assemblies, obj.id);
     const attach = many && !selected && !group && state.plate.selectedId
@@ -796,6 +798,7 @@ function objectListHtml(): string {
           ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
         </div>
         ${splitNote ? `<p class="obj-split">${escapeHtml(splitNote)}</p>` : ""}
+        ${stale ? `<div class="obj-stale" role="status" data-transition-stale="${escapeHtml(obj.id)}"><p>${escapeHtml(stale.text)}</p><div class="obj-stale-actions"><button class="btn" type="button" data-transition-reaim="${escapeHtml(obj.id)}" data-tip="Open Model and rebuild these steps with the build direction of this pose">Re-aim</button><button class="btn" type="button" data-transition-keep="${escapeHtml(obj.id)}" data-tip="Keep them as they are, made for the other pose">Keep</button></div></div>` : ""}
       </div>`;
   };
   // Each assembly's members follow its header where the first of them stands, root first; other objects keep their place.

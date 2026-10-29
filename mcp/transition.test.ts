@@ -85,6 +85,25 @@ check("no edge is refused", noEdge.ok === false && noEdge.reason === "Pick an ed
 const zero = await call("model_probe", { object, op: { kind: "transition", edges: [3], build: [0, 0, 0] } });
 check("a zero build is refused", zero.ok === false && /direction/.test(String(zero.reason)), JSON.stringify(zero));
 
+// --- Step 3: a step made for another pose. model_describe names it; the solid keeps it as built.
+await call("settings_set", { values: { supportAngle: 45 } });
+await call("object_place", { object, rotX: 0 });
+await call("model_probe", { object, op: { kind: "transition", edges: [3] } });
+const applied = await call("model_apply", { object, op: { kind: "transition", edges: [3] } });
+check("the transition applies", applied.ok === true, JSON.stringify(applied).slice(0, 300));
+const aimed = await call("model_describe", { object, limit: 1 });
+check("a step made for this pose has no note", !("notes" in aimed) && !("staleTransitions" in aimed), JSON.stringify(aimed.notes));
+await call("object_place", { object, rotZ: 90 });
+const described = await call("model_describe", { object, limit: 1 });
+const stale = described.staleTransitions as { node: string; offDeg: number }[] | undefined;
+check(
+  "after a turn about the plate's Z, model_describe names the step stale",
+  stale?.length === 1 && stale[0]!.offDeg === 60 && (described.notes as string[])[0]!.includes("was made for another pose") && (described.notes as string[])[0]!.includes("build:null"),
+  JSON.stringify({ notes: described.notes, stale }),
+);
+await call("object_place", { object, rotZ: 0 });
+check("turned back, the note goes", !("notes" in (await call("model_describe", { object, limit: 1 }))));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

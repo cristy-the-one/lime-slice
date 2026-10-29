@@ -61,7 +61,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
-import { buildDirection } from "../src/belt.ts";
+import { readTransitionRows, transitionAngleLimit, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE } from "../src/model-transition.ts";
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
@@ -688,14 +688,6 @@ function turnEcho(typed: Record<string, unknown>): Record<string, unknown> {
     ...(moved ? { turnNote: `It turns about the middle of its axis, so its base centre is at [${base.join(", ")}], not at origin. Give centre to place a turned shape by its middle.` } : {}),
   };
 }
-
-/**
- * --- Print transitions. The default reach along the flatter face, and the note for a longer wedge with Skin on shallow
- * slopes on: on the step 2 coupons (docs/plan-belt-transitions.md, "As built: step 2") 2 and 3 mm wedges held every row
- * a larger one held, and from 5 mm up a wedge left more rows hanging than none when that setting was on.
- */
-const TRANSITION_SIZE_MM = 2;
-const TRANSITION_SKIN_NOTE = "Skin on shallow slopes is on: on the test coupons, wedges reaching 5 mm or more left more rows hanging than no wedge with it on. Slice and read standsOnNothing before keeping it.";
 
 const EDGES_SHAPE = "edges is a list of edge indexes, [3, 7], or one pick object: {fromNode: \"node_4\", filter: \"convex\"} or {select: {direction, onFace, convex}}, not inside a list.";
 
@@ -4424,8 +4416,10 @@ export class Session {
       lengthMm: edge.lengthMm,
       ...(edge.dir ? { dir: edge.dir } : {}),
     })), input.edgesCursor, input.limit);
+    const stale = this.staleTransitions(obj, tree);
     return {
       ok: true,
+      ...(stale.length > 0 ? { notes: stale.map((row) => row.note), staleTransitions: stale.map(({ note: _note, ...row }) => row) } : {}),
       volumeMm3: solid.volumeMm3,
       solid: solid.editable,
       fingerprint: solid.fingerprint,
@@ -4435,6 +4429,25 @@ export class Session {
       ...(faces.nextCursor ? { facesNextCursor: faces.nextCursor, nextCursor: faces.nextCursor } : {}),
       ...(edges.nextCursor ? { edgesNextCursor: edges.nextCursor } : {}),
     };
+  }
+
+  /**
+   * --- Print transitions (plan section 3, decision 5). The steps on the shown branch made for another pose: their stored
+   * build direction is more than 1° from the one this pose on the plate's printer gives. The solid keeps them as built.
+   */
+  private staleTransitions(obj: PlateObject, tree: ModelTree): { node: string; label: string; offDeg: number; note: string }[] {
+    const printer = this.printer();
+    const pose = { orient: obj.orient, belt: printer.kind === "belt" ? printer.belt : null };
+    return pathTo(tree, tree.current).flatMap((id) => {
+      const step = tree.nodes.get(id);
+      if (step?.op?.kind !== "transition") return [];
+      const off = transitionStaleBy(step.op, pose);
+      if (off == null) return [];
+      const label = step.name ?? step.label;
+      const node = nodeHandle(id);
+      const turn = pose.belt ? " On the belt, even a turn about the plate's Z changes the layers." : "";
+      return [{ node, label, offDeg: Math.round(off * 10) / 10, note: `${node}, "${label}", was made for another pose: its build direction is ${formatMm(Math.round(off * 10) / 10)}° from this pose's on the ${printer.name}.${turn} The solid keeps it as built. To re-aim it, model_probe and model_edit its op with build:null at ${node}; to keep it, leave it.` }];
+    });
   }
 
   private async facesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -5000,9 +5013,9 @@ export class Session {
   private bakeTransition(obj: PlateObject, spec: Record<string, unknown>): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
     const edges = this.resolveEdges(obj, spec);
     if ("reason" in edges) return edges;
-    const limit = 90 - (Number.isFinite(this.settings.supportAngle) ? this.settings.supportAngle : 45);
+    const limit = transitionAngleLimit(this.settings.supportAngle);
     const angleDeg = spec.angleDeg === undefined ? limit : spec.angleDeg;
-    if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > 85) return { reason: "angleDeg is the new face's angle to the layers, at most 85°." };
+    if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > TRANSITION_MAX_DEG) return { reason: `angleDeg is the new face's angle to the layers, at most ${TRANSITION_MAX_DEG}°.` };
     if (angleDeg < limit - 1e-9) return { reason: `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.` };
     const size = spec.size === undefined ? TRANSITION_SIZE_MM : spec.size;
     if (size !== "face" && (typeof size !== "number" || !(size > 0))) return { reason: "size is millimetres along the flatter face, or \"face\" to its end." };
@@ -5019,7 +5032,7 @@ export class Session {
       if (typed.length !== 3 || !typed.every(Number.isFinite) || Math.hypot(...typed) < 1e-9) return { reason: "build is a direction, three numbers not all 0." };
       build = typed as [number, number, number];
     } else if (spec.build === undefined || spec.build === null) {
-      build = turnDir(pose, buildDirection(obj.orient, belt)).map((value) => Math.round(value * 1e9) / 1e9 + 0) as [number, number, number];
+      build = turnDir(pose, transitionBuild({ orient: obj.orient, belt })).map((value) => Math.round(value * 1e9) / 1e9 + 0) as [number, number, number];
     } else return { reason: "build is a direction, or null to aim from this pose." };
     const made = {
       kind: "transition" as const,
@@ -5040,30 +5053,14 @@ export class Session {
    * --- Print transitions. The kernel's rows for a probe, read in model space: the new face's normal there, and its
    * angle to the belt (or the bed), the plate's up being the third row of the plate orientation.
    */
-  private transitionRows(obj: PlateObject, raw: unknown): { rows: Record<string, unknown>[]; text: string } | null {
-    if (!Array.isArray(raw) || raw.length === 0) return null;
+  private transitionRows(obj: PlateObject, raw: unknown): { rows: Record<string, unknown>[]; text: string; reach: number } | null {
+    const read = readTransitionRows(raw, obj.orient);
+    if (!read || !Array.isArray(raw)) return null;
     const pose = typedPoseOf(obj);
-    const up = plateUp(obj.orient);
     const belt = this.printer().kind === "belt";
-    const round = (value: number) => Math.round(value * 10) / 10 + 0;
-    const rows = raw.flatMap((row) => {
-      if (!row || typeof row !== "object") return [];
-      const one = row as Record<string, unknown>;
-      const normal = Array.isArray(one.normal) && one.normal.length === 3 ? (one.normal as [number, number, number]) : null;
-      if (!normal) return [];
-      const toPlate = round((Math.acos(Math.min(1, Math.abs(normal[0] * up[0] + normal[1] * up[1] + normal[2] * up[2]))) * 180) / Math.PI);
-      return [{ ...one, normal: turnDir(pose, normal).map((value) => Math.round(value * 1000) / 1000 + 0), [belt ? "angleToBeltDeg" : "angleToBedDeg"]: toPlate }];
-    });
-    if (rows.length === 0) return null;
-    const where = belt ? "the belt" : "the bed";
-    const text = rows
-      .map((row) => {
-        const r = row as Record<string, number | string>;
-        const reach = r.path === "prism" ? `to the flatter face's end, ${formatMm(Number(r.reachMm))} mm` : `${formatMm(Number(r.reachMm))} mm along the flatter face`;
-        return `Edge ${r.edge}: a corner, its flatter face at ${round(Number(r.farDeg))}° to the layers. The wedge runs ${reach}, its face at ${round(Number(r.angleToLayersDeg))}° to the layers and ${r.angleToBeltDeg ?? r.angleToBedDeg}° to ${where}, adding ${formatMm(Number(r.volumeMm3))} mm³.`;
-      })
-      .join(" ");
-    return { rows, text };
+    const kernel = raw.filter((row): row is Record<string, unknown> => !!row && typeof row === "object" && Array.isArray((row as Record<string, unknown>).normal));
+    const rows = read.map((row, i) => ({ ...kernel[i], normal: turnDir(pose, row.normal).map((value) => Math.round(value * 1000) / 1000 + 0), [belt ? "angleToBeltDeg" : "angleToBedDeg"]: row.angleToPlateDeg }));
+    return { rows, text: read.map((row) => transitionSentence(row, belt)).join(" "), reach: Math.max(...read.map((row) => row.reachMm)) };
   }
 
   /** K4. A face as a shell's open face: an index, a stored `{index}`, or a `{normal, nearPoint}` selector. */
@@ -5247,8 +5244,7 @@ export class Session {
     if (sides) return answer({ ok: true, reason: `${note.text} ${sides.text}`, firstFaces: sides.rows });
     const wedges = this.transitionRows(obj, reply.transition);
     if (wedges) {
-      const reach = Math.max(...wedges.rows.map((row) => Number(row.reachMm) || 0));
-      const warn = this.settings.shallowSkins && reach > TRANSITION_SIZE_MM + 1 ? ` ${TRANSITION_SKIN_NOTE}` : "";
+      const warn = transitionSkinWarns(this.settings.shallowSkins, wedges.reach) ? ` ${TRANSITION_SKIN_NOTE}` : "";
       return answer({ ok: true, reason: `${note.text} ${wedges.text}${warn}`, transition: wedges.rows });
     }
     return answer({ ok: true, reason: note.text });

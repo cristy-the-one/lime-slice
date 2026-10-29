@@ -77,6 +77,7 @@ import {
   type PartitionModelOp,
   type PlateMesh,
   type PrepareKeep,
+  type TransitionOp,
   type Vec3,
 } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
@@ -140,7 +141,7 @@ import {
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountDockPanes } from "../ui/dock-panes";
-import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe } from "../ui/model-history";
+import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe, syncTransitionStale } from "../ui/model-history";
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
 import { canExplode, explodeContext, heldParts, heldPiece } from "./model-explode";
 import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
@@ -180,6 +181,8 @@ import { beltLayerNormal, boxMap } from "../sim/study.ts";
 import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeasuredFits, targetPrinter, targetPrinters } from "../ui/machine-library.ts";
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
+import { closeTransitionCard, mountTransitionCard, openTransitionEdit, setTransitionCheck, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
+import { keptKey, readTransitionRows, reaimedTransition, staleNote, transitionStaleBy, wedgeSoup, type TransitionPose, type TransitionRow } from "../model-transition.ts";
 import { bedFrame, cutTraces, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
@@ -204,7 +207,7 @@ const BROKEN = "This step could not be rebuilt, so it and the steps after it are
 const ROOT_BROKEN = "This solid's primitive builds differently in this modeler, so its history cannot be rebuilt.";
 /** Ops that name edges or faces by the solid's own numbering: they build only on a step the history built. */
 // --- P1: a face pull names faces, so a seed solid is rebuilt before the step, as a fillet is. ---
-const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces"]);
+const NAMES_TOPOLOGY = new Set<string>(["fillet", "chamfer", "shell", "faceExtrude", "moveFaces", "transition"]);
 /** A history longer than this many steps rebuilds a few steps per call, with a count in the readout. */
 const COUNTED_REBUILD = 20;
 /** Parsed solids of recently shown nodes, so a jump back to one needs no engine call. */
@@ -720,6 +723,19 @@ export function bindModelView() {
     view: () => fx.model ?? null,
     readout,
   });
+  // --- Print transitions: the Features menu's card.
+  mountTransitionCard({
+    solidOpen: () => !!viewed()?.editable && !lens,
+    pickedEdges: () => selectedEdges(picks),
+    pose: () => transitionPose(openObject()),
+    printerName: (id) => loadMachineLibrary().printers.find((row) => row.id === id)?.name ?? (id || "plate's printer"),
+    supportAngle: () => state.supportAngle,
+    shallowSkins: () => state.shallowSkins,
+    check: checkTransition,
+    wedges: transitionWedges,
+    cancelled: cancelEdit,
+    readout,
+  });
   mountParameters({
     table: () => session.parameters,
     setTable(table) {
@@ -1045,6 +1061,9 @@ export function bindModelView() {
     highlight(id) {
       fx.model?.setStepHighlight(id);
     },
+    // --- Print transitions (decision 5): the note's Re-aim and Keep.
+    reaim: () => void reaimStale(),
+    keepPose: () => keepStale(open?.objectId ?? null),
     // --- A4. Ctrl-click adds or removes a step of this solid. A tool's step is not one of those. ---
     picking: () => isRepeatTool(openModelTool()) && !lens,
     pickSource(row) {
@@ -1678,6 +1697,8 @@ function editOp(run: Editing): ModelOp | null {
   if (run.featureOp) return run.featureOp;
   // P2. The edge drag's edit is the fillet or chamfer it holds, not whatever panel is open.
   if (run.edgeOp) return run.edgeOp;
+  // --- Print transitions: the card is the editor.
+  if (run.op.kind === "transition") return transitionCardOp();
   const tool = openModelTool();
   if (run.op.kind === "root") {
     if (tool !== "create") return null;
@@ -2928,6 +2949,18 @@ async function applyTool() {
     else await applySplitPrint(typed);
     return;
   }
+  if (transitionCardOpen()) {
+    const typed = transitionCardOp();
+    if (!typed || !button || button.disabled) return;
+    setTransitionWaiting(true);
+    try {
+      if (editing) await runEdit(editing);
+      else if (await applyOp(typed, typed.edges.length === 1 ? "Adding the print transition…" : `Adding ${typed.edges.length} print transitions…`)) transitionApplied();
+    } finally {
+      setTransitionWaiting(false);
+    }
+    return;
+  }
   const tool = modelTool();
   if (editing) {
     if (button && !button.disabled) await runEdit(editing);
@@ -3179,6 +3212,16 @@ async function startOwnEdit(node: NodeId) {
   // --- Split to print: its own card, filled from the step, on the parent solid.
   if (op.kind === "partition") {
     openSplitPrintEdit(op, openPose(), editHead(latest, node));
+    return;
+  }
+  // --- Print transitions: the card, filled from the step, on the parent solid with the step's edges picked again.
+  if (op.kind === "transition") {
+    const edges = matchEdges(now.solid.edges, op.edges.filter((edge): edge is number | EdgeRef => !isEdgeStep(edge)), state.stepTolerance);
+    picks = edges.picked.map((index) => ({ kind: "edge", index }));
+    fx.model?.highlight(picks);
+    syncModelChrome(picks);
+    openTransitionEdit(op, edges.picked, editHead(latest, node));
+    if (edges.missing > 0) readout(`${edges.missing === op.edges.length ? "This step's edges are" : `${edges.missing} of this step's edges are`} not on this solid any more: pick them again.`);
     return;
   }
   openEditPanel(run, editHead(latest, node));
@@ -3578,6 +3621,7 @@ function dropEdit() {
   rootEditFrom = null;
   if (editedPanel()) closeModelTool();
   closeSplitPrint();
+  closeTransitionCard();
   if (sketching) closeSketchSession();
 }
 
@@ -3720,6 +3764,7 @@ async function runEdit(run: Editing) {
   if (!op) {
     if (run.op.kind === "fillet" || run.op.kind === "chamfer") readout(run.op.kind === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
     if (run.op.kind === "split") readout(splitNote(splitState()).text);
+    if (run.op.kind === "transition") readout("Pick an edge in a concave corner. Shift-click adds edges.");
     return;
   }
   if (op.kind === "split" && splitNote(splitState()).bad) {
@@ -4571,8 +4616,9 @@ function matchedEdgeIds(op: ModelOp): number[] {
  * another object opened, and stays put otherwise. A tool's step looked at outside an edit is read-only: the tools wait.
  */
 function present(parsed: ParsedSolid, message: string, view: Lens | null = null) {
-  // Split to print's card was worked out on the solid that was on screen.
+  // Split to print's card, and a print transition's, were worked out on the solid that was on screen.
   closeSplitPrint();
+  closeTransitionCard();
   lens = view;
   picks = [];
   hideEmpty();
@@ -4603,6 +4649,8 @@ function present(parsed: ParsedSolid, message: string, view: Lens | null = null)
   // --- A7 model check --- a queued Check opens after the solid is on screen; one already open measures this solid.
   if (checkQueued) openQueuedCheck();
   else if (openModelTool() === "check") refreshModelCheck();
+  // --- Print transitions: Prepare's Re-aim runs once that object's solid is on screen.
+  if (reaimQueued) runQueuedReaim();
 }
 
 /** Prepare asked to check this object. The tool opens once that solid, or its mesh, is on screen, and not for another. */
@@ -5242,6 +5290,7 @@ function syncUndo() {
   if (stepButton) stepButton.disabled = busy || jumping || !tree;
   setModelWaiting(busy || jumping);
   syncModelHistory(tree, modelTrees, lens?.row ?? null);
+  syncTransitionStale(staleView());
   // The Rebuild count is the shown branch's, so it follows History: another object, a new solid, a step added or dropped.
   syncRebuildCount();
   syncPosition();
@@ -5450,6 +5499,7 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   }
   syncModelChrome(picks);
   if (splitPrintOpen()) splitPrintPicked();
+  if (transitionCardOpen()) transitionPicked();
   const seq = ++measureSeq;
   if (picks.length === 0) {
     readout(`${about(solid)} Pick a face or an edge.`);
@@ -6819,4 +6869,171 @@ async function post(payload: Body): Promise<Body> {
   }
 }
 
-Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote,forgetModelTrees, followSelection, releaseModelTrees });
+// ---------------------------------------------------------------------------
+// --- Print transitions (docs/plan-belt-transitions.md, step 3): the card's check and ghost, and the stale-pose note.
+// ---------------------------------------------------------------------------
+
+/** The pose a step on `obj` is aimed from: its orientation on the plate and the plate's printer. */
+function transitionPose(obj: PlateObject | undefined): TransitionPose {
+  const printer = selection(loadMachineLibrary())?.printer;
+  const orient = obj && obj.id !== state.plate.selectedId ? obj.orient : state.orient;
+  return { orient: [...orient], belt: printer?.kind === "belt" ? printer.belt : null, printer: printer?.id ?? "" };
+}
+
+let transitionTimer = 0;
+let transitionSerial = 0;
+/** Kernel answers for the card, by `probeName`, so going back to numbers just checked asks nothing. */
+const transitionAnswers = new Map<string, Exclude<TransitionCheck, null | { phase: "checking" }>>();
+
+/** The card's op changed: the kernel builds a copy once it rests `wait` ms. */
+function checkTransition(op: TransitionOp | null, wait: number) {
+  window.clearTimeout(transitionTimer);
+  const serial = ++transitionSerial;
+  const at = open;
+  const tree = treeOf(at);
+  if (!op || !at || !tree) {
+    setTransitionCheck(null);
+    return;
+  }
+  const node = tree.current;
+  const key = probeName(at.key, node, op);
+  const known = transitionAnswers.get(key);
+  if (known) {
+    setTransitionCheck(known);
+    return;
+  }
+  setTransitionCheck({ phase: "checking" });
+  transitionTimer = window.setTimeout(() => void sendTransitionCheck(serial, key, at.key, node, op), wait);
+}
+
+async function sendTransitionCheck(serial: number, key: string, treeKey: string, node: NodeId, op: TransitionOp) {
+  if (serial !== transitionSerial || state.stage !== "model") return;
+  const body = await treeCall(treeKey, node, probeRequest(treeKey, node, op));
+  const rows = body.ok === true ? readTransitionRows(body.transition, op.orient ?? state.orient) : null;
+  const view: Exclude<TransitionCheck, null | { phase: "checking" }> = rows
+    ? { phase: "done", ok: true, rows }
+    : { phase: "done", ok: false, error: sentence(plainModelError(text(body.error) || "This print transition does not fit.", "transition")) };
+  if (typeof body.ok === "boolean") {
+    if (transitionAnswers.size >= 64) transitionAnswers.clear();
+    transitionAnswers.set(key, view);
+  }
+  if (serial === transitionSerial && state.stage === "model") setTransitionCheck(view);
+}
+
+/** The wedges the kernel's rows describe, on the solid on screen, in its own frame. */
+function transitionWedges(rows: readonly TransitionRow[]): number[] {
+  const solid = viewed();
+  if (!solid) return [];
+  const normal = (face: number) => solid.faces.find((item) => item.id === face)?.normal ?? outwardFromMesh(solid.positions, solid.triangles, face);
+  return rows.flatMap((row) => {
+    const edge = solid.edges.find((item) => item.id === row.edge);
+    const far = normal(row.farFace);
+    const near = normal(row.nearFace);
+    if (!edge || edge.points.length < 6 || !far || !near) return [];
+    const last = edge.points.length - 3;
+    const start = [edge.points[0]!, edge.points[1]!, edge.points[2]!];
+    const end = [edge.points[last]!, edge.points[last + 1]!, edge.points[last + 2]!];
+    return wedgeSoup(start, end, far, near, row.reachMm, row.nearReachMm);
+  });
+}
+
+/** "Keep" on a stale step, for the pose it was kept at: a later turn warns again. */
+const keptPoses = new Set<string>();
+
+/** The print transitions on `tree`'s path to `node` that were made for another pose and were not kept for this one. */
+function staleSteps(tree: ModelTree, node: NodeId, pose: TransitionPose): NodeId[] {
+  return pathTo(tree, node).filter((id) => {
+    const op = tree.nodes.get(id)?.op;
+    return op?.kind === "transition" && transitionStaleBy(op, pose) != null && !keptPoses.has(keptKey(tree.key, id, pose));
+  });
+}
+
+/** History's note for the open solid: its stale steps and the sentence. Null with none. */
+function staleView(): { ids: NodeId[]; text: string } | null {
+  const tree = treeOf(open);
+  if (!tree || lens) return null;
+  const pose = transitionPose(openObject());
+  const ids = staleSteps(tree, tree.current, pose);
+  return ids.length > 0 ? { ids, text: staleNote(ids.length, !!pose.belt) } : null;
+}
+
+/** Prepare's note on a plate object whose plate step has stale print transitions, or null. */
+export function transitionStaleNote(objectId: string): { text: string } | null {
+  const obj = state.plate.objects.find((item) => item.id === objectId);
+  const tree = obj?.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+  if (!obj || !tree) return null;
+  const pose = transitionPose(obj);
+  const ids = staleSteps(tree, tree.committed, pose);
+  return ids.length > 0 ? { text: staleNote(ids.length, !!pose.belt) } : null;
+}
+
+/** Keep: the stale steps of `objectId` stay as built, and the note goes until the pose changes again. */
+export function keepStale(objectId: string | null) {
+  const obj = state.plate.objects.find((item) => item.id === objectId);
+  const tree = obj?.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+  if (!obj || !tree) return;
+  const pose = transitionPose(obj);
+  for (const node of new Set([tree.current, tree.committed])) {
+    for (const id of staleSteps(tree, node, pose)) keptPoses.add(keptKey(tree.key, id, pose));
+  }
+  if (state.stage === "model") {
+    syncUndo();
+    readout("The print transitions stay as they were made, for the other pose.");
+  } else refreshObjectList();
+}
+
+/**
+ * Re-aim: every stale step on the shown branch is rebuilt with the build direction of this pose, in one edit from the
+ * earliest, with the steps after it replayed. A step that now refuses is named with its sentence, as any edit does.
+ */
+async function reaimStale() {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || busy || jumping || editing || lens || state.stage !== "model") return;
+  if (!at.solid.editable) {
+    readout(VIEW_ONLY);
+    return;
+  }
+  const pose = transitionPose(openObject());
+  const ids = staleSteps(tree, tree.current, pose);
+  const earliest = ids[0];
+  const node = earliest == null ? undefined : tree.nodes.get(earliest);
+  if (earliest == null || node?.parent == null) return;
+  const from = tree.current;
+  const replay = replayChain(tree, earliest, from);
+  const supplied = [earliest, ...replay].map((id) => {
+    const op = tree.nodes.get(id)!.op!;
+    return ids.includes(id) && op.kind === "transition" ? reaimedTransition(op, pose) : op;
+  });
+  const run: Editing = { key: at.key, target: at.key, row: rowKey([], earliest), joins: [], node: earliest, parent: node.parent, from, replay, op: supplied[0]!, panel: null, opened: null, supplied };
+  editing = run;
+  syncUndo();
+  await runEdit(run);
+  if (editing === run) {
+    editing = null;
+    syncUndo();
+  }
+}
+
+/** Prepare's Re-aim for an object: Model opens on it, and the steps are re-aimed once its solid is on screen. */
+let reaimQueued: string | null = null;
+
+export function requestReaim(objectId: string) {
+  if (!state.plate.objects.some((obj) => obj.id === objectId)) return;
+  reaimQueued = objectId;
+  const changed = state.plate.selectedId !== objectId;
+  if (changed) fx.selectPlateObject(objectId);
+  if (state.stage !== "model") {
+    document.querySelector<HTMLButtonElement>("#tabModel")?.click();
+    return;
+  }
+  if (!changed) runQueuedReaim();
+}
+
+function runQueuedReaim() {
+  if (!reaimQueued || (open?.objectId ?? state.plate.selectedId) !== reaimQueued || !treeOf(open)) return;
+  reaimQueued = null;
+  window.setTimeout(() => void reaimStale(), 0);
+}
+
+Object.assign(fx, { refreshModelContext, commitModel, exportedPart, exportSplitNote, transitionStaleNote, requestReaim, keepStale, forgetModelTrees, followSelection, releaseModelTrees });

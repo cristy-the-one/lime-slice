@@ -581,6 +581,28 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-split-print .sp-done-head { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); }
 .model-split-print .sp-done .model-note { margin-top: var(--space-2); }
 
+/* --- Print transitions: the card in the tool pane, built like Split to print's. --- */
+.model-transition[hidden] { display: none !important; }
+.model-transition .model-note { margin: 0 0 var(--space-2); }
+.model-transition .model-note[hidden], .model-transition .model-fields[hidden] { display: none !important; }
+.model-transition .tc-edges { color: var(--text); }
+.model-transition .tc-later { color: var(--text-faint); font-size: var(--fs-1); }
+.model-transition .tc-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--fs-1); }
+.model-transition .tc-row .modes { display: flex; flex-wrap: wrap; gap: 2px; }
+.model-transition .tc-row.tc-stack { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+.model-transition .tc-row.tc-stack .modes { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+.model-transition .tc-row .btn.mode[aria-disabled="true"] { color: var(--text-faint); cursor: not-allowed; }
+.model-transition .model-fields { margin: 0 0 var(--space-2); }
+.model-transition .tc-source { display: grid; gap: var(--space-1); justify-items: start; margin: var(--space-1) 0 var(--space-2); }
+.model-transition .tc-source .model-note { margin: 0; color: var(--text); }
+.model-transition .tc-source .btn[hidden] { display: none; }
+.model-transition .tc-result { border-top: 1px solid var(--line); padding-top: var(--space-2); }
+.model-transition .tc-numbers { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px var(--space-3); margin: 0 0 var(--space-2); font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+.model-transition .tc-numbers[hidden] { display: none; }
+.model-transition .tc-numbers dt { color: var(--text-dim); }
+.model-transition .tc-numbers dd { margin: 0; color: var(--text); }
+.model-transition .model-note.is-warn { color: var(--warn); }
+
 /* --- Split to print's Export… dialog. --- */
 .split-export-card { width: min(440px, calc(100% - 32px)); }
 .split-export-formats { display: grid; gap: var(--space-2); margin-bottom: var(--space-3); }

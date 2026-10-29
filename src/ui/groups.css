@@ -283,6 +283,10 @@ input.switch:checked::after { transform: translateX(13px); background: var(--on-
 .obj span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fs-1); }
 .obj-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal; font-size: var(--fs-1); color: var(--warn); }
 .obj-split { grid-column: 1 / -1; margin: 0; padding: 0 var(--space-2) var(--space-2); font-size: var(--fs-1); color: var(--text-faint); }
+/* --- Print transitions: steps made for another pose, under the object, with Re-aim and Keep. */
+.obj-stale { grid-column: 1 / -1; margin: 0 var(--space-2) var(--space-2); padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.obj-stale p { margin: 0 0 6px; color: var(--text); font-size: var(--fs-1); line-height: 1.35; }
+.obj-stale-actions { display: flex; gap: var(--space-2); }
 .obj-actions { display: flex; gap: 2px; align-items: center; }
 .obj-check, .obj-frame, .obj-remove, .obj-attach, .obj-ungroup, .obj-layout, .obj-step { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-2); }
 /* An assembly: a header row, then its parts indented under it with a rule on their left. */

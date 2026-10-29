@@ -858,7 +858,7 @@ export function opLabel(op: ModelOp, parts?: number): string {
     case "transition": {
       const count = op.edges.length === 1 ? "1 edge" : `${op.edges.length} edges`;
       const size = op.size === "face" ? "to the face's end" : `${n(op.size ?? 2)} mm`;
-      return `Print transition ${count} at ${n(op.angleDeg ?? 45)}°, ${size}`;
+      return `Print transition (${count}), ${n(op.angleDeg ?? 45)}°, ${size}`;
     }
     case "moveFaces": {
       const count = op.faces.length;

@@ -651,7 +651,7 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const drop = 2 * Math.sin((20 * Math.PI) / 180);
   check("it adds the wedge: a triangle 2 mm down the roof to the slope, 20 mm across", applied.ok === true && near(after - before, 0.5 * drop * (2 * Math.cos((20 * Math.PI) / 180) + drop) * 20, 1e-3), JSON.stringify({ before, after, reason: applied.reason }));
   const rows = (await call("model_history", { object: coupon })).nodes as { label: string }[];
-  check("the history row names it", rows.some((one) => one.label === "Print transition 1 edge at 45°, 2 mm"), JSON.stringify(rows));
+  check("the history row names it", rows.some((one) => one.label === "Print transition (1 edge), 45°, 2 mm"), JSON.stringify(rows));
   const outer = await call("model_probe", { object: coupon, node: "node_1", op: { kind: "transition", edges: [at(yc, 22.828 - (yc - 30))] } });
   check("a convex edge is refused with the kernel's sentence", outer.ok === false && /This edge is convex/.test(String(outer.reason)), JSON.stringify(outer));
 }
