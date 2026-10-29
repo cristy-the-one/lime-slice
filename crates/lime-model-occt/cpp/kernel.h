@@ -15,6 +15,7 @@
 #include <TopoDS_Shape.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 
 #include <BRepTools_History.hxx>
 #include <Standard_ErrorHandler.hxx>
@@ -226,6 +227,25 @@ bool chamfer2_build(
     double second,
     bool by_angle,
     TopoDS_Shape& built,
+    double& volume,
+    std::string& error);
+/// --- Print transitions. A chamfer on each edge by its own distance along `faces[i]` and its own angle from that face,
+/// in degrees.
+bool chamfer_angles_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const std::vector<TopoDS_Face>& faces,
+    const std::vector<double>& sizes,
+    const std::vector<double>& angles_deg,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error);
+/// --- Print transitions. Each triangle pushed along its vector into a prism, fused to `current` one after another, and
+/// the faces left on one surface merged.
+TopoDS_Shape build_wedges(
+    const TopoDS_Shape& current,
+    const std::vector<std::array<gp_Pnt, 3>>& triangles,
+    const std::vector<gp_Vec>& along,
     double& volume,
     std::string& error);
 /// Faces and edges on one surface or curve merged into one. `history`, when set, takes the merge's history after its own.

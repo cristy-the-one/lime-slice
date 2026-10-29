@@ -1,4 +1,5 @@
-import { beltAdvanceMm, beltArrowRun, beltRunTooLong, beltSliceField, beltStripLength, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
+import { beltAdvanceMm, beltArrowRun, beltRunTooLong, beltSliceField, beltStripLength, buildDirection, coerceBelt, defaultBelt, tiltPose } from "./belt.ts";
+import { eulerOrient } from "./mesh-place.ts";
 import { recipeKey } from "./slice-action.ts";
 
 let failed = 0;
@@ -78,6 +79,28 @@ check("the run an engine fit error reports is read", beltRunTooLong("belt.maxLen
 check("the same run is read from the sentence the banner shows", beltRunTooLong("The belt's max length is 30 mm, shorter than this run of 56.57 mm") === 56.57);
 check("an error about the width is not a length fix", beltRunTooLong("belt.widthMm 10 is narrower than the part, which is 20.00 mm across the belt") === null);
 check("another message is not a length fix", beltRunTooLong("walls 0 is outside 1 to 12") === null);
+
+// --- Print transitions. The build direction is locked to the engine's `mirror_rotate_x` (belt.rs), copied here as it is:
+// a plate point (x, y, z) goes to (x, −y cos α − z sin α, −y sin α + z cos α), and its new z is its layer height.
+function layerHeight(q: readonly number[], angleDeg: number): number {
+  const a = (angleDeg * Math.PI) / 180;
+  return -q[1]! * Math.sin(a) + q[2]! * Math.cos(a);
+}
+const placed = (m: readonly number[], p: readonly number[]) => [0, 1, 2].map((r) => m[3 * r]! * p[0]! + m[3 * r + 1]! * p[1]! + m[3 * r + 2]! * p[2]!);
+const dot3 = (a: readonly number[], b: readonly number[]) => a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+check("on the IR3 V2 as built, layers stack toward −Y and up", JSON.stringify(buildDirection([1, 0, 0, 0, 1, 0, 0, 0, 1], { angleDeg: 45 }).map((v) => Math.round(v * 1e6) / 1e6)) === JSON.stringify([0, -0.707107, 0.707107]));
+check("a flat bed builds along the plate's up", JSON.stringify(buildDirection(eulerOrient(90, 0, 0), null).map((v) => Math.round(v * 1e6) / 1e6 + 0)) === JSON.stringify([0, 1, 0]));
+let lockedRows = 0;
+for (const [rx, ry, rz] of [[0, 0, 0], [90, 0, 0], [0, 0, 90], [30, -45, 120], [180, 20, -60]] as const) {
+  for (const angleDeg of [30, 45, 60]) {
+    const orient = eulerOrient(rx, ry, rz);
+    const b = buildDirection(orient, { angleDeg });
+    const [p, q] = [[3, -7, 11], [-5, 2, 4]];
+    const engine = layerHeight(placed(orient, q), angleDeg) - layerHeight(placed(orient, p), angleDeg);
+    if (Math.abs(engine - dot3(b, [q[0]! - p[0]!, q[1]! - p[1]!, q[2]! - p[2]!])) < 1e-9) lockedRows += 1;
+  }
+}
+check("the build direction is the engine's layer height in the part's frame, for every turn and belt angle", lockedRows === 15, String(lockedRows));
 
 if (failed) {
   console.error(`${failed} failed`);

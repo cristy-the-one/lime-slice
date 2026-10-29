@@ -1689,6 +1689,56 @@ bool chamfer2_build(
     }
 }
 
+bool chamfer_angles_build(
+    const TopoDS_Shape& current,
+    const std::vector<TopoDS_Edge>& edges,
+    const std::vector<TopoDS_Face>& faces,
+    const std::vector<double>& sizes,
+    const std::vector<double>& angles_deg,
+    TopoDS_Shape& built,
+    double& volume,
+    std::string& error) {
+    const char* failed = edges.size() > 1 ? "The wedge did not fit these edges" : "The wedge did not fit this edge";
+    if (edges.empty() || faces.size() != edges.size() || sizes.size() != edges.size() || angles_deg.size() != edges.size()) {
+        error = failed;
+        return false;
+    }
+    const std::string refused = blend_refusal(current, edges, true);
+    if (!refused.empty()) {
+        error = refused;
+        return false;
+    }
+    g_stats.builds += 1;
+    try {
+        BRepFilletAPI_MakeChamfer builder(current);
+        for (size_t i = 0; i < edges.size(); ++i) {
+            if (!(sizes[i] > 0.0) || !(angles_deg[i] > 0.0) || !(angles_deg[i] < 180.0)) {
+                error = failed;
+                return false;
+            }
+            builder.AddDA(sizes[i], angles_deg[i] * kPi / 180.0, edges[i], faces[i]);
+        }
+        Handle(Message_ProgressIndicator) watch;
+        builder.Build(deadline_range(watch));
+        if (!builder.IsDone() || builder.Shape().IsNull()) {
+            error = past_deadline() ? deadline_message() : failed;
+            return false;
+        }
+        const TopoDS_Shape solid = as_solid(builder.Shape());
+        const double solid_volume = solid.IsNull() || !has_solid(solid) ? 0.0 : volume_of(solid);
+        if (!(solid_volume > 1e-6)) {
+            error = failed;
+            return false;
+        }
+        built = builder.Shape();
+        volume = solid_volume;
+        return true;
+    } catch (const Standard_Failure&) {
+        error = failed;
+        return false;
+    }
+}
+
 TopoDS_Shape merge_same_domain(const TopoDS_Shape& shape, Handle(BRepTools_History)* history) {
     if (shape.IsNull()) {
         return shape;
@@ -1744,6 +1794,46 @@ TopoDS_Shape build_boolean(
         return {};
     }
     return combine(current, which, tool, volume, error, history);
+}
+
+TopoDS_Shape build_wedges(
+    const TopoDS_Shape& current,
+    const std::vector<std::array<gp_Pnt, 3>>& triangles,
+    const std::vector<gp_Vec>& along,
+    double& volume,
+    std::string& error) {
+    const char* failed = "Open CASCADE did not build the wedge";
+    if (triangles.empty() || triangles.size() != along.size()) {
+        error = failed;
+        return {};
+    }
+    TopoDS_Shape result = current;
+    for (size_t i = 0; i < triangles.size(); ++i) {
+        const std::array<gp_Pnt, 3>& corner = triangles[i];
+        BRepBuilderAPI_MakePolygon outline(corner[0], corner[1], corner[2], Standard_True);
+        if (!outline.IsDone()) {
+            error = failed;
+            return {};
+        }
+        BRepBuilderAPI_MakeFace face(outline.Wire(), Standard_True);
+        if (!face.IsDone()) {
+            error = failed;
+            return {};
+        }
+        BRepPrimAPI_MakePrism prism(face.Face(), along[i]);
+        prism.Build();
+        if (!prism.IsDone()) {
+            error = failed;
+            return {};
+        }
+        result = combine(result, "fuse", prism.Shape(), volume, error);
+        if (!error.empty()) {
+            return {};
+        }
+    }
+    result = merge_same_domain(result, nullptr);
+    volume = volume_of(as_solid(result));
+    return result;
 }
 
 /// The other solid moves by a location, so nothing is copied, and the turn is built as a unit quaternion so the

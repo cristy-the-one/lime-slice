@@ -637,6 +637,119 @@ LimeShape* lime_tree_chamfer2(
     }
 }
 
+/// --- Print transitions. Edge `i` chamfered `sizes[i]` along `faces[i]`, leaving it at `angles[i]` degrees.
+LimeShape* lime_tree_transition_chamfer(
+    const LimeShape* from,
+    const int* edges,
+    const int* faces,
+    const double* sizes,
+    const double* angles,
+    int count,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<TopoDS_Edge> found;
+        std::vector<TopoDS_Face> sides;
+        for (int i = 0; i < count; ++i) {
+            if (edges[i] < 0 || edges[i] >= from->held.edges.Extent() || faces[i] < 0 ||
+                faces[i] >= from->held.faces.Extent()) {
+                set_error(error, "That edge is not on this solid");
+                return nullptr;
+            }
+            found.push_back(TopoDS::Edge(from->held.edges(edges[i] + 1)));
+            sides.push_back(TopoDS::Face(from->held.faces(faces[i] + 1)));
+        }
+        std::string message;
+        TopoDS_Shape built;
+        double volume = 0.0;
+        if (!chamfer_angles_build(
+                from->held.shape,
+                found,
+                sides,
+                std::vector<double>(sizes, sizes + count),
+                std::vector<double>(angles, angles + count),
+                built,
+                volume,
+                message)) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(built, volume, "The wedge removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Print transitions. `count` triangular prisms fused to `from`: `points` holds each triangle's three corners,
+/// `along` the vector each is pushed by.
+LimeShape* lime_tree_wedges(const LimeShape* from, const double* points, const double* along, int count, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<std::array<gp_Pnt, 3>> triangles;
+        std::vector<gp_Vec> pushes;
+        for (int i = 0; i < count; ++i) {
+            const double* p = points + 9 * i;
+            triangles.push_back({gp_Pnt(p[0], p[1], p[2]), gp_Pnt(p[3], p[4], p[5]), gp_Pnt(p[6], p[7], p[8])});
+            pushes.emplace_back(along[3 * i], along[3 * i + 1], along[3 * i + 2]);
+        }
+        std::string message;
+        double volume = 0.0;
+        const TopoDS_Shape built = build_wedges(from->held.shape, triangles, pushes, volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(built, volume, "The wedge removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// --- Print transitions. How far face `index` reaches along the unit `dir` from `origin`: `out` gets the least and the
+/// most, read from points along its boundary. 0 when the face is not on the solid.
+int lime_tree_face_span(LimeShape* shape, int index, const double* origin, const double* dir, double* out) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (index < 0 || index >= shape->held.faces.Extent()) {
+            return 0;
+        }
+        const gp_Pnt at(origin[0], origin[1], origin[2]);
+        const gp_Vec along(dir[0], dir[1], dir[2]);
+        double least = 1e300;
+        double most = -1e300;
+        for (TopExp_Explorer it(shape->held.faces(index + 1), TopAbs_EDGE); it.More(); it.Next()) {
+            const TopoDS_Edge edge = TopoDS::Edge(it.Current());
+            if (BRep_Tool::Degenerated(edge)) {
+                continue;
+            }
+            BRepAdaptor_Curve curve(edge);
+            const double first = curve.FirstParameter();
+            const double last = curve.LastParameter();
+            for (int k = 0; k <= 16; ++k) {
+                const double reach = gp_Vec(at, curve.Value(first + (last - first) * k / 16.0)).Dot(along);
+                least = std::min(least, reach);
+                most = std::max(most, reach);
+            }
+        }
+        if (!(least <= most)) {
+            return 0;
+        }
+        out[0] = least;
+        out[1] = most;
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
 /// `out` gets 15 numbers: the curve (0 line, 1 circle, 2 other), its direction (a line's) or axis (a circle's), how
 /// many faces the edge bounds, then for each of the first two the face's index, its surface (0 plane, 1 cylinder,
 /// 2 cone, 3 sphere, 4 torus, 5 other), and its outward normal where the edge's middle lies on it. 0 when the edge

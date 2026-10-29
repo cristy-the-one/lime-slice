@@ -105,7 +105,8 @@ type ModelOpBase =
   | GroupOp
   | FaceExtrudeOp
   | MoveFacesOp
-  | PartitionModelOp;
+  | PartitionModelOp
+  | TransitionOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -119,6 +120,26 @@ export type ModelOp = ModelOpBase & { exprs?: Record<string, string> };
  * node keeps the first piece in partition order; the others root trees of their own (`pieces`). Absent fields are the
  * planner's defaults (`fillPartition`).
  */
+/**
+ * --- Print transitions (docs/plan-belt-transitions.md, step 2). A flat wedge in the concave corner of each straight edge
+ * between two flat faces, whose new face makes `angleDeg` with the layers. `build` is the side each new layer is laid on,
+ * in the solid's frame, worked out once from the pose and the printer and kept, so a later turn never changes the solid.
+ * `size` is the wedge's reach along the flatter face (2 mm when absent), or "face" to its end. `beltDeg`, `orient` and `printer` are that
+ * pose, stored as sent.
+ */
+export interface TransitionOp {
+  kind: "transition";
+  edges: EdgePick[];
+  build: Vec3;
+  angleDeg?: number;
+  size?: number | "face";
+  maxMm?: number;
+  mode?: "auto" | "add" | "cut";
+  beltDeg?: number;
+  orient?: number[];
+  printer?: string;
+}
+
 export interface PartitionModelOp {
   kind: "partition";
   cuts: CutInput[];
@@ -832,6 +853,12 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const head = `${printer ? `Split to print for ${printer}` : "Split to print"}${sketched ? ", sketch" : ""}`;
       const joined = parts != null ? jointWord(op) : null;
       return parts != null ? `${head}, ${parts} parts${joined ? `, ${joined}` : ""}` : head;
+    }
+    // --- Print transitions.
+    case "transition": {
+      const count = op.edges.length === 1 ? "1 edge" : `${op.edges.length} edges`;
+      const size = op.size === "face" ? "to the face's end" : `${n(op.size ?? 2)} mm`;
+      return `Print transition ${count} at ${n(op.angleDeg ?? 45)}°, ${size}`;
     }
     case "moveFaces": {
       const count = op.faces.length;
