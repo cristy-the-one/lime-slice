@@ -8,10 +8,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { fakeEngine } from "./engine.ts";
+import { FAKE_PART_HOLD, fakeEngine } from "./engine.ts";
 import { Session } from "./session.ts";
 import { OP_KINDS, OP_SUMMARY, validateTool } from "./schema.ts";
 import { buildDirection } from "../src/belt.ts";
+import { placeMesh } from "../src/mesh-place.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-transition-"));
 
@@ -157,6 +158,47 @@ check("plan:true keeps the support limit on the angle", flatPlan.ok === false &&
 await call("machine_select", { printerId: "lime-220", filamentId: "lime-pla" });
 await call("model_probe", { object, op: { kind: "transition" }, plan: true });
 check("on a flat bed the build is the plate's up", close((engine.lastFind as { build?: number[] }).build, [0, 0, 1]), JSON.stringify(engine.lastFind));
+
+// --- Step 6b (decision 7): the rows checked against the latest slice. The stand-in's solid is the 20 mm box, its edge 3
+// along Y at its low X and Z, and its edge 5 along Y at its high X and Z. One patch is born along edge 3 (a Find row), one along edge
+// 5 (no row), and one far off the part.
+const unsliced = await call("model_probe", { object, op: { kind: "transition" }, plan: true });
+check("before a slice the reason says to slice, and no row is marked", /slice_start, then plan again/.test(String(unsliced.reason)) && !(unsliced.rows as Record<string, unknown>[]).some((row) => "seenInSlice" in row) && !("slice" in unsliced), String(unsliced.reason));
+const first = await call("slice_start", {});
+await call("slice_wait", { job: first.job });
+const placedObj = session.objects.find((row) => row.id === object)!;
+const placed = placeMesh(placedObj.source, placedObj.orient, placedObj.scale, 220, 220, placedObj.centered, placedObj.offset);
+const onPlate = (p: readonly number[]) => {
+  const m = placed.pose.rotation;
+  const d = [0, 1, 2].map((k) => placedObj.scale * (p[k]! - placedObj.seatMm * (k === 2 ? 1 : 0) - placed.pose.pivot[k]!));
+  return [0, 1, 2].map((r) => m[3 * r]! * d[0]! + m[3 * r + 1]! * d[1]! + m[3 * r + 2]! * d[2]! + placed.pose.translation[r]!) as [number, number, number];
+};
+const kept = FAKE_PART_HOLD.largest.map((row) => ({ ...row }));
+const [lo, hi] = [placedObj.solid!.bounds.min, placedObj.solid!.bounds.max];
+const along3 = [2, 8, 14, 18].map((y) => onPlate([lo[0] + 0.2, lo[1] + y, lo[2] + 0.2]));
+const along5 = [3, 9, 15].map((y) => onPlate([hi[0] - 0.2, lo[1] + y, hi[2] - 0.2]));
+FAKE_PART_HOLD.largest = [
+  { mm: 50.04, danglingMm: 38.2, longestSpanMm: 8.24, layers: [0, 1], at: along3[0]!, first: along3 },
+  { mm: 11.21, danglingMm: 2.3, longestSpanMm: 2.36, layers: [99, 99], at: along5[0]!, first: along5 },
+  { mm: 3, danglingMm: 0, longestSpanMm: 1, layers: [5, 5], at: [900, 900, 1], first: [] },
+] as typeof FAKE_PART_HOLD.largest;
+const second = await call("slice_start", {});
+await call("slice_wait", { job: second.job });
+FAKE_PART_HOLD.largest = kept;
+const seen = await call("model_probe", { object, op: { kind: "transition" }, plan: true });
+const seenRows = seen.rows as Record<string, unknown>[];
+check(
+  "the row whose edge the slice finds hanging carries seenInSlice",
+  JSON.stringify(seenRows.find((row) => (row.edges as number[])[0] === 3)?.seenInSlice) === JSON.stringify({ unheldMm: 50, longestSpanMm: 8.2, patches: 1, layers: [0, 1] }) && seenRows.filter((row) => "seenInSlice" in row).length === 1,
+  JSON.stringify(seenRows),
+);
+const sliceOnly = seen.sliceOnly as Record<string, unknown>[] | undefined;
+check("an edge that hangs only in the slice is listed with what is known", sliceOnly?.length === 1 && JSON.stringify(sliceOnly[0]!.edges) === "[5]" && sliceOnly[0]!.unheldMm === 11.2 && JSON.stringify(sliceOnly[0]!.layers) === "[99,99]" && Array.isArray(sliceOnly[0]!.at), JSON.stringify(sliceOnly));
+check("the patch off the part is another object's", JSON.stringify(seen.slice) === JSON.stringify({ patches: 2, awayFromEdges: 0 }), JSON.stringify(seen.slice));
+check("the reason says what the slice agrees on", /1 edge hangs in the last slice too\. 1 other edge hangs in it that Find does not list\./.test(String(seen.reason)), String(seen.reason));
+await call("object_place", { object, centreX: 60, centreY: 70 });
+const moved = await call("model_probe", { object, op: { kind: "transition" }, plan: true });
+check("after a move the slice is stale and nothing is marked", !(moved.rows as Record<string, unknown>[]).some((row) => "seenInSlice" in row) && /slice_start, then plan again/.test(String(moved.reason)), String(moved.reason));
 
 if (failed) {
   console.error(`${failed} failed`);

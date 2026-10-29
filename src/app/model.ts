@@ -148,7 +148,7 @@ import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTa
 import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withFrame, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
-import { addMeshBytes, livePlate, openMeshPicker, pickAddedMesh, place } from "./files";
+import { addMeshBytes, livePlate, openMeshPicker, pickAddedMesh, place, slicedKey } from "./files";
 import { beginEdit, editHistoryRefs, endModelVisit, flushEdit, markModelEdit, newestEdits, noteEdit, patchEditBrep, redoUserEdit, undoUserEdit } from "./history";
 import { fx } from "./fx";
 import { modelerFailure, plainModelError } from "./model-error";
@@ -163,7 +163,7 @@ import { revolveOutlines, revolvePresetOf, sketchForRevolve } from "../sketch/re
 import { sweepEditOf } from "../sketch/sweep";
 import { freshTreeKey, modelTrees } from "./model-trees";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
-import { apiBase, apiToken, isStepName, plateObjectSizes, refreshObjectList } from "./settings";
+import { apiBase, apiToken, isStepName, plateObjectSizes, refreshObjectList, stale } from "./settings";
 import { mountModelInspect, paintModelInspect, setInspectVolume } from "../ui/model-inspect";
 import { session, state } from "./state";
 import type { Params } from "../modeling/expr.ts";
@@ -182,7 +182,7 @@ import { beltStamp, cardsOf, printerTarget, saveMaterialCard, selection, setMeas
 import { closeSplitPrint, mountSplitPrint, openSplitPrintEdit, setSplitPrintCheck, setSplitPrintWaiting, splitPrintApplied, splitPrintHistory, splitPrintOp, splitPrintStep, showSplitPrintDone, splitPrintOpen, splitPrintPicked, type PrintOn, type SplitPrintCheck, type SplitPrintDone } from "../ui/split-print.ts";
 import { askPieceExport, pieceFiles } from "../ui/split-export.ts";
 import { closeTransitionCard, mountTransitionCard, openTransitionEdit, reopenTransitionFind, setTransitionCheck, setTransitionFinding, setTransitionWaiting, transitionApplied, transitionCardOp, transitionCardOpen, transitionPicked, type TransitionCheck } from "../ui/transition-card.ts";
-import { PICK_EDGE, keptKey, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionFloorMm, transitionStaleBy, wedgeSoup, type TransitionCard, type TransitionPose, type TransitionRow } from "../model-transition.ts";
+import { PICK_EDGE, checkAgainstSlice, positionsBox, keptKey, readFinding, readTransitionRows, reaimedTransition, staleNote, transitionFindRequest, transitionFix, transitionFloorMm, transitionStaleBy, wedgeSoup, type Finding, type TransitionCard, type TransitionPose, type TransitionRow } from "../model-transition.ts";
 import { bedFrame, cutTraces, exportTarget, exportedCommit, exportsPieces, fitOnBed, plateUp, profileSlice, sectionSpan, storedPartition, type CardFrame, type FitOnBed, type LabelSizes, type PieceCheck, type Placement } from "../split-print.ts";
 import { SUPPORT_NOTE, exportStem, partStem, pieceNames, pinsName } from "../modeling/partition-export.ts";
 import { clampPieces, defaultsFor, enterMeasured, fillConnector, mm as mmText, resetMeasured, type ConnectorSpec, type FillContext, type PartitionOp, type Target } from "../modeling/partition.ts";
@@ -6966,7 +6966,24 @@ async function findTransitions(numbers: TransitionCard) {
   if (serial !== findSerial || open !== at || treeOf(at)?.current !== node || state.stage !== "model") return;
   const plain = (text: string) => sentence(plainModelError(text, "transition"));
   const read = readFinding(body, numbers.orient, fix, plain);
-  setTransitionFinding(typeof read === "string" ? { phase: "failed", error: plain(read) } : { phase: "done", finding: read, build: [...numbers.build] });
+  // --- Step 6b. From the first Find on, slices measure the part beads on nothing, for the check below.
+  session.partHold = true;
+  setTransitionFinding(typeof read === "string" ? { phase: "failed", error: plain(read) } : { phase: "done", finding: againstSlice(read, at.objectId, tree, node, numbers.build), build: [...numbers.build] });
+}
+
+/**
+ * --- Print transitions, step 6b (plan decision 7). `finding` marked with what the last slice saw hanging at its edges,
+ * when that slice was of this object as it is now: the step on the plate, the same mesh, pose and scale, and settings
+ * unchanged. Otherwise it is returned as it is, and the card says to slice.
+ */
+function againstSlice(finding: Finding, objectId: string, tree: ModelTree, node: NodeId, build: readonly number[]): Finding {
+  const hold = session.sliceHold;
+  const sliced = hold?.objects.find((row) => row.id === objectId);
+  const obj = livePlate().find((row) => row.id === objectId);
+  const solid = viewed();
+  if (!hold || !sliced || !obj || !solid || stale() || tree.committed !== node || sliced.key !== slicedKey(obj)) return finding;
+  const edges = solid.edges.map((edge) => ({ edge: edge.id, points: edge.points }));
+  return checkAgainstSlice(finding, hold, sliced, edges, positionsBox(solid.positions), build);
 }
 
 /** Fix or Fix all: one history step. Once it builds, the card opens again on the new solid and finds what is left. */

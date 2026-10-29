@@ -57,6 +57,7 @@ src/ui/scrub.test.ts
 src/frame-fit.test.ts
 src/belt.test.ts
 src/model-transition.test.ts
+src/model-transition-slice.test.ts
 src/machine-gcode.test.ts
 src/fuzzy-skin.test.ts
 src/base64.test.ts

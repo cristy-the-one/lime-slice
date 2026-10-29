@@ -386,10 +386,14 @@ export interface FoundRow {
   nearDeg: number;
   wedge: TransitionRow | null;
   refused: string | null;
+  /** --- Step 6b. What the last slice saw hanging at this edge; absent when it saw nothing there, or before a check. */
+  seen?: SeenInSlice;
 }
 
 export interface Finding {
   rows: FoundRow[];
+  /** --- Step 6b. The check against the last slice; absent until one was made. */
+  slice?: SliceCheck;
   /** Curved edges, or edges on a curved face, that looked as if they start in the air: left for a later version. */
   curvedSkipped: number;
   curvedEdges: number[];
@@ -475,3 +479,275 @@ export function findingSummary(finding: Finding): string {
   const fixes = refused === 0 ? (count === 1 ? "Its fix builds." : "Every fix builds.") : builds === 0 ? (count === 1 ? "Its fix refuses, and says why." : "No fix builds as it is: each says why.") : `${plural(builds, "fix", "fixes")} ${builds === 1 ? "builds" : "build"}; ${refused} ${refused === 1 ? "refuses" : "refuse"}, each saying why.`;
   return `${plural(count, "edge")} ${count === 1 ? "starts" : "start"} in the air: ${kinds}, longest first. ${fixes}${tail}`;
 }
+
+
+// ---------------------------------------------------------------------------
+// The slice cross-check (plan decision 7, step 6b): after a slice, each patch of part beads that stand on nothing is
+// matched to the edges of the solid it was born at, in the solid's frame, and the Find rows on those edges read "seen in
+// the slice". A patch at an edge Find does not list is a row of its own. Read only: nothing is sliced again.
+// ---------------------------------------------------------------------------
+
+/**
+ * A patch's first layer passes this close to an edge, in the solid's frame, to count as born there. The first rows of an
+ * edge born in the air, or of a bend, lie within a bead or two of it; the default 2 mm wedge and a bead and a layer
+ * either side of it make 3 mm, past which the rows belong to a face, not to the edge.
+ */
+export const SEEN_NEAR_MM = 3;
+/**
+ * Rows hang from an edge at it or past it in build order. A patch whose first layer lies further than this before the
+ * edge along the build (top skin a few layers under a top edge, say) was not born there.
+ */
+const SEEN_BEFORE_MM = 0.5;
+
+/**
+ * One patch of the slice's `partHold` (the MCP's `standsOnNothing.largest`): `at` is where its first layer starts and
+ * `first` a spread of that layer's unheld beads, both as the engine reports them (`holdOnPlate` takes them to the plate).
+ */
+export interface HoldPatch {
+  mm: number;
+  longestSpanMm: number;
+  layers: [number, number];
+  at: Vec3;
+  first: Vec3[];
+}
+
+/**
+ * A patch point as the engine reports it, on the plate. On a flat bed it is there already. On a belt the engine lays
+ * the part flat and settles it along the belt, and the audit's points keep that settled place along the belt (Y): the
+ * object's reply `offset` Y takes them back to where the app placed it. Measured on one object at two places and three
+ * turns on the IR3 V2; across the belt (X) the point is on the plate already.
+ */
+export function holdOnPlate(p: readonly number[], beltOffsetY: number | null): Vec3 {
+  return [p[0]!, p[1]! + (beltOffsetY ?? 0), p[2]!];
+}
+
+/** One edge of the solid, as a polyline of x, y, z in the solid's frame. */
+export interface SolidEdgeLine {
+  edge: number;
+  points: ArrayLike<number>;
+}
+
+/** What the slice saw hanging at one edge: the patches born there, summed. */
+export interface SeenInSlice {
+  unheldMm: number;
+  longestSpanMm: number;
+  patches: number;
+  /** First and last printed layer, counted from 0. */
+  layers: [number, number];
+}
+
+/** A patch born at an edge that Find does not list: the edge and what is known of the patch. */
+export interface SliceOnlyRow {
+  edge: number;
+  /** How close the patch's first layer comes to the edge, mm. */
+  distMm: number;
+  /** Where the patch starts, in the solid's frame. */
+  at: Vec3;
+  unheldMm: number;
+  longestSpanMm: number;
+  layers: [number, number];
+}
+
+/**
+ * The check of one finding against one slice: the object's patches, those born at an edge Find does not list, and how
+ * many were born at no edge at all (rows inside a face, such as skin over infill; `standsOnNothing` has them).
+ */
+export interface SliceCheck {
+  patches: number;
+  only: SliceOnlyRow[];
+  faces: number;
+}
+
+/** A plate pose (`placeMesh`'s) as a map from the plate back to the solid's frame: scale and turn undone, then up by the mesh's seat. */
+export function plateToSolid(pose: { rotation: readonly number[]; pivot: readonly number[]; translation: readonly number[] }, scale: number, seatMm = 0): (p: readonly number[]) => Vec3 {
+  const m = pose.rotation;
+  const s = scale > 0 ? scale : 1;
+  return (p) => {
+    const d = [p[0]! - pose.translation[0]!, p[1]! - pose.translation[1]!, p[2]! - pose.translation[2]!];
+    // The turn is a rotation: its inverse is its transpose.
+    return [
+      (m[0]! * d[0]! + m[3]! * d[1]! + m[6]! * d[2]!) / s + pose.pivot[0]!,
+      (m[1]! * d[0]! + m[4]! * d[1]! + m[7]! * d[2]!) / s + pose.pivot[1]!,
+      (m[2]! * d[0]! + m[5]! * d[1]! + m[8]! * d[2]!) / s + pose.pivot[2]! + seatMm,
+    ];
+  };
+}
+
+/** The point of a polyline nearest `p`. */
+function nearestOn(p: V, points: ArrayLike<number>): Vec3 | null {
+  const count = Math.floor(points.length / 3);
+  if (count === 0) return null;
+  const at = (i: number): Vec3 => [points[3 * i]!, points[3 * i + 1]!, points[3 * i + 2]!];
+  let best = at(0);
+  let bestMm = Math.hypot(...sub(p, best));
+  for (let i = 1; i < count; i += 1) {
+    const a = at(i - 1);
+    const d = sub(at(i), a);
+    const len2 = dotOf(d, d);
+    const t = len2 > 1e-18 ? Math.min(1, Math.max(0, dotOf(sub(p, a), d) / len2)) : 0;
+    const q = addTo(a, d, t);
+    const mm = Math.hypot(...sub(p, q));
+    if (mm < bestMm) {
+      best = q;
+      bestMm = mm;
+    }
+  }
+  return best;
+}
+
+/** How close a patch's first-layer points come to an edge, counting only points at it or past it along `build`. */
+function bornDistance(born: readonly Vec3[], points: ArrayLike<number>, build: V): number {
+  let best = Infinity;
+  for (const p of born) {
+    const q = nearestOn(p, points);
+    if (!q) continue;
+    const d = sub(p, q);
+    if (dotOf(d, build) < -SEEN_BEFORE_MM) continue;
+    best = Math.min(best, Math.hypot(...d));
+  }
+  return best;
+}
+
+/** The patches of a slice reply's `partHold` (or the MCP's `standsOnNothing`), largest first; malformed ones are left out. */
+export function readHoldPatches(raw: unknown): HoldPatch[] {
+  if (!raw || typeof raw !== "object") return [];
+  const rows = (raw as { largest?: unknown }).largest;
+  if (!Array.isArray(rows)) return [];
+  const point = (value: unknown): Vec3 | null => (Array.isArray(value) && value.length === 3 && value.every((v) => typeof v === "number" && Number.isFinite(v)) ? [value[0], value[1], value[2]] : null);
+  return rows.flatMap((row): HoldPatch[] => {
+    if (!row || typeof row !== "object") return [];
+    const r = row as Record<string, unknown>;
+    const at = point(r.at);
+    const layers = Array.isArray(r.layers) && r.layers.length === 2 && r.layers.every((v) => Number.isInteger(v)) ? (r.layers as number[]) : null;
+    if (!at || !layers || typeof r.mm !== "number") return [];
+    const first = Array.isArray(r.first) ? r.first.map(point).filter((p): p is Vec3 => p !== null) : [];
+    return [{ mm: r.mm, longestSpanMm: typeof r.longestSpanMm === "number" ? r.longestSpanMm : 0, layers: [layers[0]!, layers[1]!], at, first }];
+  });
+}
+
+/**
+ * `finding` checked against a slice's `patches`, for a solid built along `build` (its frame). Each patch's first layer
+ * (its start and the spread of its beads, taken into the solid's frame by `toSolid`) is where its rows were born. Every
+ * Find row whose edge passes within `SEEN_NEAR_MM` of those points, with them at the edge or past it in build order,
+ * reads "seen in the slice": a lip's underside, born at once, marks both its first edge and its root when both are
+ * listed. A patch born at an edge Find does not list is a row of its own; one born at no edge is counted. Patches outside
+ * the solid's box, grown by `SEEN_NEAR_MM`, are another object's.
+ */
+export function crossCheck(finding: Finding, patches: readonly HoldPatch[], toSolid: (p: readonly number[]) => Vec3, edges: readonly SolidEdgeLine[], box: { min: readonly number[]; max: readonly number[] }, build: readonly number[]): Finding {
+  const b = unitOf(build) ?? [0, 0, 1];
+  const listed = new Set(finding.rows.map((row) => row.edge));
+  const seen = new Map<number, SeenInSlice>();
+  const only: SliceOnlyRow[] = [];
+  let count = 0;
+  let faces = 0;
+  for (const patch of patches) {
+    const at = toSolid(patch.at);
+    const inside = [0, 1, 2].every((k) => at[k]! >= box.min[k]! - SEEN_NEAR_MM && at[k]! <= box.max[k]! + SEEN_NEAR_MM);
+    if (!inside) continue;
+    count += 1;
+    const born = [at, ...patch.first.map(toSolid)];
+    let nearest: number | null = null;
+    let nearestMm = Infinity;
+    const marks: number[] = [];
+    for (const line of edges) {
+      const mm = bornDistance(born, line.points, b);
+      if (mm > SEEN_NEAR_MM) continue;
+      if (listed.has(line.edge)) marks.push(line.edge);
+      if (mm < nearestMm) {
+        nearestMm = mm;
+        nearest = line.edge;
+      }
+    }
+    for (const edge of marks) {
+      const had = seen.get(edge);
+      seen.set(
+        edge,
+        had
+          ? { unheldMm: had.unheldMm + patch.mm, longestSpanMm: Math.max(had.longestSpanMm, patch.longestSpanMm), patches: had.patches + 1, layers: [Math.min(had.layers[0], patch.layers[0]), Math.max(had.layers[1], patch.layers[1])] }
+          : { unheldMm: patch.mm, longestSpanMm: patch.longestSpanMm, patches: 1, layers: [patch.layers[0], patch.layers[1]] },
+      );
+    }
+    if (marks.length > 0) continue;
+    if (nearest == null) {
+      faces += 1;
+      continue;
+    }
+    only.push({ edge: nearest, distMm: Math.round(nearestMm * 100) / 100 + 0, at: at.map((v) => Math.round(v * 1000) / 1000 + 0) as Vec3, unheldMm: tenth(patch.mm), longestSpanMm: tenth(patch.longestSpanMm), layers: [patch.layers[0], patch.layers[1]] });
+  }
+  only.sort((a, c) => c.unheldMm - a.unheldMm || a.edge - c.edge);
+  const rows = finding.rows.map((row): FoundRow => {
+    const { seen: _old, ...rest } = row;
+    const hit = seen.get(row.edge);
+    return hit ? { ...rest, seen: { ...hit, unheldMm: tenth(hit.unheldMm), longestSpanMm: tenth(hit.longestSpanMm) } } : rest;
+  });
+  return { ...finding, rows, slice: { patches: count, only, faces } };
+}
+
+/** "layers 13–14" or "layer 31", counted from 1 as the preview's layer slider shows them. */
+function layerWords(layers: readonly [number, number]): string {
+  const [a, c] = [layers[0] + 1, layers[1] + 1];
+  return a === c ? `layer ${a}` : `layers ${a}–${c}`;
+}
+
+/** A row's mark: "Seen in the slice: 50 mm unheld, spans 8.2 mm, layers 13–14." */
+export function seenText(seen: SeenInSlice): string {
+  return `Seen in the slice: ${formatMm(seen.unheldMm)} mm unheld, spans ${formatMm(seen.longestSpanMm)} mm, ${layerWords(seen.layers)}.`;
+}
+
+/** A patch at an edge Find does not list, for the card, whose row lights the edge: "50 mm unheld at this edge, spans 8.2 mm, layers 13–14." */
+export function sliceOnlyText(row: SliceOnlyRow): string {
+  return `${formatMm(row.unheldMm)} mm unheld at this edge, spans ${formatMm(row.longestSpanMm)} mm, ${layerWords(row.layers)}.`;
+}
+
+/** The check against the last slice in a sentence or two, for the card and the MCP's reason; null before one was made. */
+export function sliceCheckSummary(finding: Finding): string | null {
+  const check = finding.slice;
+  if (!check) return null;
+  if (check.patches === 0) return "The last slice has no part bead standing on nothing on this part.";
+  const marked = finding.rows.filter((row) => row.seen).length;
+  const agree = finding.rows.length === 0 ? "" : marked === 0 ? "None of these edges hangs in the last slice." : `${plural(marked, "edge")} ${marked === 1 ? "hangs" : "hang"} in the last slice too.`;
+  const extra = check.only.length === 0 ? "" : `${plural(check.only.length, "other edge")} ${check.only.length === 1 ? "hangs" : "hang"} in it that Find does not list.`;
+  const faces = check.faces === 0 ? "" : `${plural(check.faces, "patch", "patches")} ${check.faces === 1 ? "hangs" : "hang"} away from every edge, inside a face.`;
+  return [agree, extra, faces].filter(Boolean).join(" ") || null;
+}
+
+/** One sliced object as the slice placed it: what takes its patch points back to its solid's frame. */
+export interface SlicedPose {
+  id: string;
+  pose: { rotation: readonly number[]; pivot: readonly number[]; translation: readonly number[] };
+  scale: number;
+  seatMm: number;
+  /** The reply's `offset` Y for it on a belt (`holdOnPlate`); null on a flat bed. */
+  beltOffsetY: number | null;
+  /** What it was sliced from, compared when Find checks: the same mesh, pose and scale, or the slice is another part's. */
+  key: string;
+}
+
+/** A slice's patches with the poses its objects were sliced in. */
+export interface SliceHold {
+  patches: HoldPatch[];
+  objects: SlicedPose[];
+}
+
+/** `finding` checked against `hold` for object `pose.id`, whose solid has `edges` within `box`, built along `build`. */
+export function checkAgainstSlice(finding: Finding, hold: SliceHold, pose: SlicedPose, edges: readonly SolidEdgeLine[], box: { min: readonly number[]; max: readonly number[] }, build: readonly number[]): Finding {
+  const toSolid = plateToSolid(pose.pose, pose.scale, pose.seatMm);
+  const patches = hold.patches.map((patch) => ({ ...patch, at: holdOnPlate(patch.at, pose.beltOffsetY), first: patch.first.map((p) => holdOnPlate(p, pose.beltOffsetY)) }));
+  return crossCheck(finding, patches, toSolid, edges, box, build);
+}
+
+/** The bounds of a solid's positions. */
+export function positionsBox(positions: ArrayLike<number>): { min: Vec3; max: Vec3 } {
+  const min: Vec3 = [Infinity, Infinity, Infinity];
+  const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i + 2 < positions.length; i += 3) {
+    for (let k = 0; k < 3; k += 1) {
+      min[k] = Math.min(min[k]!, positions[i + k]!);
+      max[k] = Math.max(max[k]!, positions[i + k]!);
+    }
+  }
+  return { min, max };
+}
+
+/** The note when the last slice cannot be checked against this finding: none yet, or the part changed since. */
+export const SLICE_CHECK_NONE = "Slice this pose, then Find again, to mark the edges that hang in the slice too.";

@@ -16,6 +16,7 @@ import type { PaintDisk, PaintTally } from "../support-paint";
 import { loadAutoSlice } from "../auto-slice-pref";
 import type { LayerAction } from "../layer-actions";
 import type { Assembly } from "../assembly";
+import type { SliceHold } from "../model-transition";
 
 export type { CoverageGap, EditOutcome, SupportSkeleton };
 
@@ -362,6 +363,14 @@ export const session = {
   slicedBed: null as SlicedBed | null,
   /** For a plate: each object's sent pose and reply offset, by id. */
   slicedObjects: null as { id: string; bed: SlicedBed }[] | null,
+  /**
+   * --- Print transitions, step 6b. Ask each slice for the part beads that stand on nothing (`partHold`), from the first
+   * Find in this session on, so Find can mark the edges that hang in the slice too. Off until then: the request, and its
+   * cache key, stay as they were.
+   */
+  partHold: false,
+  /** The last slice's patches of part beads on nothing, with each sliced object's pose, for Find's cross-check. */
+  sliceHold: null as SliceHold | null,
   supportUi: null as {
     refresh(): void;
     landed(ok: boolean): void;
