@@ -350,6 +350,74 @@ Each coupon is sliced on the IR3 V2 preset with PETG, 0.4 mm and 0.2 mm layers, 
 
 **One print.** The owner prints the lip and corner coupons side by side, before and after, at 45° and 55° to the layers. That is about half an hour on the IR3 V2. The photo and the numbers go in the PR.
 
+### As built: step 1
+
+**The check** is `PartHold` in `crates/lime-slice-core/src/audit.rs`. One rule serves the audit, the tests and the MCP:
+- **Part beads** are wall, outer, inner, thin-wall, gap-fill, infill, sparse, solid, top and bridge beads, sampled every 0.2 mm. Skirt and ironing are left out.
+- **Held** by any of:
+  1. a part bead on the layer below within half a bead;
+  2. a part, support or interface bead on the layer below that the bead can lean on: half a bead across, 0.3 mm back against gravity, 0.5 mm along it;
+  3. support or interface on the layers within the Z gap below, out to where gravity carries the bead on that layer (layer drop × tan of the belt angle, along slice +Y);
+  4. the belt (0.3 mm), or the first layer.
+- **Dangling:** an unheld bead with no held bead within 0.5 mm on its own layer.
+- **Patches:** unheld beads grouped over 1 mm cells in X and Y, on the same layer and the next. Each patch gives its length, its dangling length, its first and last layer, and where it starts in the plate frame (Z up from the bed or the belt).
+- **A flat bed** has no downhill side, so rules 2 and 3 reach 0.3 mm every way.
+
+**Where it shows:**
+- `SliceAudit.part_hold`, printed by the command line's `--audit`.
+- A request field `partHold`, omitted when off, so other requests keep their cache keys. The reply then carries `partHold`. Only the first belt copy is read.
+- The MCP sets `partHold` on every `slice_start`, and `gcode_summary` returns `standsOnNothing {unheldMm, danglingMm, partMm, patches, largest[5]}`. The slice guide says what it means.
+- It reads the emitted layers after the plan. Golden is byte-identical: 54 of 54 rows against the newest stored run (`bb09342b`). The 6 rows of the company's rear cover were left out of both sides.
+
+**It matches `pheld.py`.** The diagnosis script and the engine read the same G-code of a synthetic wall with an arm on the IR3 V2, at three underside angles, with supports off and with floor trees. The results:
+- Unheld and dangling length match to 0.1 mm in all six runs: for example, 742.2 / 679.2 mm with the arm born in the air.
+- Patch counts and patch lengths match.
+- "No bead under" matches in four of the six runs. In the other two, one row of 19.5 mm sits exactly on a 0.05 mm row edge of the index and falls on the other side by float rounding.
+- The engine's row index starts where the gantry's coordinate starts, so its rows fall where the script's do.
+
+**The coupons.** Each is a side view in Y and Z, extruded 20 mm across the belt. The base is a box, and an extrude `common` with the profile on the plane `turn: [90, 0, 90]`:
+- **Lip born in the air.** A post at high Y, with a lip hanging 6 mm toward −Y. The lip's underside rises 45° toward +Y, so it lies in one nozzle plane.
+- **Flat roof at the limit.** A 2 mm shell. The inner underside climbs a 45° slope (a wall to the slicer), then turns flat at Z 20, parallel to the belt.
+- **Roof 10° past the limit.** As the flat roof, but the far face falls 10° toward −Y.
+- **Roof 20° past the limit.** As the last, at 20°. This one was added because 10° past held.
+
+The transitions were made by hand:
+- **Lip:** a gusset from the lip's first edge back to the post. At 45° to the layers its face is flat; at 55° it rises 10° toward −Y.
+- **Flat roof:** a wedge. The 45° wedge is the roof itself, so none exists. The 55° wedge reaches 5 mm along the roof. It is a `chamfer {size: 5, angleDeg: 10}` on the concave corner, adding 53.5 mm³, which is the wedge to 0.1 mm³.
+- **Past the limit:** a gusset running to the far face's end, as section 2 says.
+
+Every coupon was sliced alone on the owner's IR3 V2 machine file, with PETG, a 0.4 mm nozzle, 0.2 mm layers, Speed, and supports off. Each cell below gives the unheld length at the feature in mm, with the volume added in brackets:
+
+| Coupon | No transition | 45° to the layers | 55° to the layers |
+|---|---|---|---|
+| Lip born in the air | 275.2 (all dangling but 45) | 0 (+180 mm³) | 0 (+212 mm³) |
+| Flat roof at the limit | 0 | no wedge exists | 0 (+53.5 mm³, chamfer) |
+| Roof 10° past the limit | 0 | 0 (+1,626 mm³) | 0 (+3,948 mm³) |
+| Roof 20° past the limit | 2,450.5: 1,227 outer and 1,223 inner wall | 1,223.3: inner wall only (+3,893 mm³) | 1,223.3: inner wall only (+7,015 mm³) |
+
+Print time per coupon:
+- Lip: 425 s with no transition, 412 s at 45°, 413 s at 55°.
+- Flat roof: 927 s with no transition, 948 s with the 55° wedge.
+- 10° past: 884 s, 816 s, 869 s.
+- 20° past: 630 s, 736 s, 822 s.
+
+**Outside the features**, every coupon also shows one patch of 92–110 mm. It is a gap-fill line across the full width, on the last-printed top corner (the low-Y end). The 10° gussets add a second one where the gusset thins the end. These are not transition rows. They are the slicer's gap fill over a sliver, and are worth their own look.
+
+**What the numbers say:**
+- **45° suffices.** Wherever a transition fixes anything, 45° fixes all of it, and 55° measures the same for more material. Decision 2 stays at 45°, the support angle.
+- **The lip is the case that needs it.** Born in one plane, its first rows stand on nothing. A gusset at 45° removes all of them, for 4 % more volume.
+- **A corner at the limit, or 10° past it, holds** at 0.2 mm layers. Its rows step 0.2–0.29 mm a layer, inside the half bead and the 0.5 mm lean. So the hole at the housing's turn to horizontal was not this geometry. It agrees with the diagnosis behind #490: the hollow ramp roof. Step 2's wedge for a corner at the limit has nothing to fix on a solid shell.
+- **20° past the limit fails.** The gusset removes the underside rows, but the inner wall rows above it still hang. That is the hollow-roof case. With **Skin on shallow slopes** (#490) on:
+  - the bare 20° roof keeps only its underside (1,230 mm);
+  - with a gusset, a new 1,600 mm patch appears inside the thickened roof.
+
+  The two rules need to be tuned together before step 2 sizes gussets past the limit.
+
+**The coupon sheet** for the print:
+- **Files:** `C:\Users\marius\lime-workspace\20261029_belt-transition-coupons.lime` and `.gcode`.
+- **Coupons:** eight, 10 mm wide, side by side across the belt in this order from low X: lip with no transition, lip at 45°, lip at 55°, flat roof with no transition, flat roof at 55°, 20°-past roof with no transition, at 45° and at 55°.
+- **Print:** 74 min and 12.4 g on the engine's estimate.
+
 ## 8. Risks
 
 - **The limit itself.** At 45° to the layers, the new face sits exactly where the housing's flat roof sat. If the coupon still shows unheld rows on the face at 45°, the default goes steeper (decision 2). The corner at the limit is the case most at risk: what fails there may be the slicer's handling of a limit face, not geometry. The coupon study runs first for that reason.

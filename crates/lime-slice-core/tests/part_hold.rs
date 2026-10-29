@@ -41,8 +41,16 @@ fn profile_stl(profile: &[[f64; 2]], width: f64) -> String {
     let mut faces: Vec<[[f64; 3]; 3]> = Vec::new();
     for [a, b, c] in triangulate(profile) {
         // The side view seen from +X is counter-clockwise, so +X is outward there.
-        faces.push([p3(profile[a], width), p3(profile[b], width), p3(profile[c], width)]);
-        faces.push([p3(profile[a], 0.0), p3(profile[c], 0.0), p3(profile[b], 0.0)]);
+        faces.push([
+            p3(profile[a], width),
+            p3(profile[b], width),
+            p3(profile[c], width),
+        ]);
+        faces.push([
+            p3(profile[a], 0.0),
+            p3(profile[c], 0.0),
+            p3(profile[b], 0.0),
+        ]);
     }
     for i in 0..profile.len() {
         let (a, b) = (profile[i], profile[(i + 1) % profile.len()]);

@@ -195,8 +195,14 @@ impl HoldRule {
 pub(crate) struct HoldLayer<'a> {
     pub index: usize,
     pub z: f64,
-    pub beads: Vec<(PathKind, &'a [[f64; 2]], [f64; 2])>,
+    pub beads: Vec<HoldBead<'a>>,
 }
+
+/// A path's kind, its points, and the offset that puts them on the bed.
+pub(crate) type HoldBead<'a> = (PathKind, &'a [[f64; 2]], [f64; 2]);
+
+/// An unheld sample: layer, X, Y, length, and whether it dangles.
+type Unheld = (usize, f64, f64, f64, bool);
 
 fn holds_up_part(kind: PathKind) -> bool {
     matches!(
@@ -335,7 +341,7 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
     let (across, uphill, downhill, neighbour) = rule.reach();
     let half = rule.half_bead;
     // (layer, x, y, mm, dangling) per unheld bead, and the strict sum per layer.
-    let checked: Vec<(Vec<(usize, f64, f64, f64, bool)>, f64)> = (0..layers.len())
+    let checked: Vec<(Vec<Unheld>, f64)> = (0..layers.len())
         .into_par_iter()
         .map(|li| {
             let z = layers[li].z;
@@ -346,8 +352,7 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
                 let on_belt = rule
                     .belt
                     .is_some_and(|f| f.lab(s.x, s.y, z)[2] <= HOLD_BELT_MM);
-                if li == 0 || on_belt || part_rows[li - 1].hit(s.x, s.y - half, s.y + half, half)
-                {
+                if li == 0 || on_belt || part_rows[li - 1].hit(s.x, s.y - half, s.y + half, half) {
                     held.push([s.x, s.y]);
                     continue;
                 }
@@ -372,7 +377,8 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
             let unheld = unheld
                 .into_iter()
                 .map(|(x, y, mm)| {
-                    let hangs = beside.hit(x, y - HOLD_NEIGHBOUR_MM, y + HOLD_NEIGHBOUR_MM, neighbour);
+                    let hangs =
+                        beside.hit(x, y - HOLD_NEIGHBOUR_MM, y + HOLD_NEIGHBOUR_MM, neighbour);
                     (li, x, y, mm, !hangs)
                 })
                 .collect();
@@ -383,7 +389,7 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
         part_mm: parts.iter().flatten().map(|s| s.mm).sum(),
         ..PartHold::default()
     };
-    let bad: Vec<(usize, f64, f64, f64, bool)> = checked
+    let bad: Vec<Unheld> = checked
         .into_iter()
         .flat_map(|(unheld, strict)| {
             out.no_bead_under_mm += strict;
@@ -450,7 +456,11 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
             let (li, x, y, _, _) = bad[first];
             HoldPatch {
                 mm: members.iter().map(|&k| bad[k].3).sum(),
-                dangling_mm: members.iter().filter(|&&k| bad[k].4).map(|&k| bad[k].3).sum(),
+                dangling_mm: members
+                    .iter()
+                    .filter(|&&k| bad[k].4)
+                    .map(|&k| bad[k].3)
+                    .sum(),
                 layers: [
                     layers[li].index,
                     layers[members.iter().map(|&k| bad[k].0).max().unwrap_or(li)].index,
@@ -912,7 +922,9 @@ mod tests {
         vec![[0.0, y], [10.0, y]]
     }
 
-    fn rows<'a>(stack: &'a [Vec<(PathKind, Vec<[f64; 2]>)>]) -> Vec<HoldLayer<'a>> {
+    type Stack = [Vec<(PathKind, Vec<[f64; 2]>)>];
+
+    fn rows(stack: &Stack) -> Vec<HoldLayer<'_>> {
         stack
             .iter()
             .enumerate()
@@ -927,7 +939,7 @@ mod tests {
             .collect()
     }
 
-    fn check(stack: &[Vec<(PathKind, Vec<[f64; 2]>)>], belt: bool) -> PartHold {
+    fn check(stack: &Stack, belt: bool) -> PartHold {
         let rule = HoldRule::new(0.45, 0.2, 0.2, belt.then(|| (belt_45(), 0.0)));
         part_hold(&rows(stack), &rule)
     }
@@ -949,13 +961,19 @@ mod tests {
         // Gravity runs along +Y in the slice frame. 0.4 mm downhill is
         // inside the 0.5 mm sag; 0.4 mm uphill is past the 0.3 mm reach.
         let down = check(
-            &[vec![(PathKind::Outer, line(0.0))], vec![(PathKind::Outer, line(-0.4))]],
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(-0.4))],
+            ],
             true,
         );
         assert!((down.no_bead_under_mm - 10.0).abs() < 1e-9, "{down:?}");
         assert_eq!(down.unheld_mm, 0.0, "{down:?}");
         let up = check(
-            &[vec![(PathKind::Outer, line(0.0))], vec![(PathKind::Outer, line(0.4))]],
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(0.4))],
+            ],
             true,
         );
         assert!((up.unheld_mm - 10.0).abs() < 1e-9, "{up:?}");
@@ -964,7 +982,10 @@ mod tests {
         assert_eq!(up.largest[0].layers, [1, 1]);
         // A flat bed has no downhill side.
         let flat = check(
-            &[vec![(PathKind::Outer, line(0.0))], vec![(PathKind::Outer, line(-0.4))]],
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(-0.4))],
+            ],
             false,
         );
         assert!((flat.unheld_mm - 10.0).abs() < 1e-9, "{flat:?}");
@@ -1005,7 +1026,10 @@ mod tests {
     fn skirt_and_ironing_are_not_part_beads() {
         let stack = vec![
             vec![(PathKind::Outer, line(0.0))],
-            vec![(PathKind::Skirt, line(5.0)), (PathKind::Ironing, line(-5.0))],
+            vec![
+                (PathKind::Skirt, line(5.0)),
+                (PathKind::Ironing, line(-5.0)),
+            ],
         ];
         let hold = check(&stack, true);
         assert!((hold.part_mm - 10.0).abs() < 1e-9, "{hold:?}");
