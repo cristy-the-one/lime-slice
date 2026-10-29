@@ -4178,6 +4178,10 @@ fn cut_object(
 
 /// What drawing one object's toolpaths early needs: they are drawn the way
 /// the reply draws its preview, with no travels, since nothing is ordered yet.
+/// The longest early preview a slice publishes. A browser string tops out
+/// near 536M characters, and the early preview is only a head start.
+const EARLY_PREVIEW_BYTES: usize = 64 << 20;
+
 struct Early {
     profile: PrinterProfile,
     blend: BlendMode,
@@ -4200,7 +4204,10 @@ impl Early {
             .spawn(move || {
                 let layers = early_preview(&cut, &paths, &profile, &blend, tilt.as_ref());
                 if let Ok(text) = serde_json::to_string(&serde_json::json!({ "layers": layers })) {
-                    watch.set_early(text);
+                    // A client reads it as one string; past this, the reply's own parts come instead.
+                    if text.len() <= EARLY_PREVIEW_BYTES {
+                        watch.set_early(text);
+                    }
                 }
             });
     }

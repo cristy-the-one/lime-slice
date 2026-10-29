@@ -393,7 +393,7 @@ export async function fetchStoredGcode(token: string) {
     return invoke<string>("gcode_text", { token });
   }
   const res = await fetch(`${apiBase()}/api/gcode/${token}`, { headers: authHeaders(apiToken()) });
-  if (!res.ok) throw new Error("G-code is no longer available. Slice again.");
+  if (!res.ok) throw new Error(GCODE_GONE);
   return res.text();
 }
 
@@ -401,9 +401,59 @@ export async function fetchStoredGcode(token: string) {
 export async function printableGcode(result: SliceResponse) {
   const text = await fx.loadGcode(result);
   if (!text) return text;
+  return stampGcode(text, result);
+}
+
+/** `text`, the engine's file or its skeleton, stamped as Export and Send write it. */
+function stampGcode(text: string, result: SliceResponse) {
   const seconds = result.layers.map((layer) => layer.seconds);
   const known = seconds.length > 0 && seconds.every((s): s is number => s !== undefined);
   return withPrinterGcode(withFooterGrams(text, shownGrams(result)), { layerSeconds: known ? seconds : [], layerHeight: state.layerHeight });
+}
+
+const GCODE_GONE = "G-code is no longer available. Slice again.";
+
+/** The engine's words for a failed G-code call, with an expired file said plainly. */
+function gcodeError(message: string) {
+  return /expired/.test(message) ? GCODE_GONE : message;
+}
+
+/**
+ * Save a parked file of any length. The page stamps the engine's skeleton of it (`gcode_skeleton.rs`), and the engine
+ * writes the stamped skeleton with every elided run put back: the desktop app straight to the file, `serve` as the
+ * response, which the page pipes to the file. The whole file is never a string here.
+ */
+async function saveEngineGcode(token: string, result: SliceResponse, name: string) {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      const stamped = stampGcode(await invoke<string>("gcode_skeleton", { token }), result);
+      await invoke("save_gcode", { token, stamped, defaultName: name });
+    } catch (err) {
+      throw new Error(gcodeError(String(err)));
+    }
+    return;
+  }
+  const path = `${apiBase()}/api/gcode/${encodeURIComponent(token)}`;
+  const skeleton = await fetch(`${path}/skeleton`, { headers: authHeaders(apiToken()) });
+  if (!skeleton.ok) throw new Error(GCODE_GONE);
+  const stamped = stampGcode(await skeleton.text(), result);
+  const picker = (window as unknown as { showSaveFilePicker?: (opts: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker;
+  let handle: FileSystemFileHandle | null = null;
+  if (picker) {
+    try {
+      handle = await picker({ suggestedName: name, types: [{ description: "gcode", accept: { "application/octet-stream": [".gcode"] } }] });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+    }
+  }
+  const file = await fetch(`${path}/file`, { method: "POST", headers: authHeaders(apiToken(), { "Content-Type": "text/plain" }), body: stamped });
+  if (!file.ok || !file.body) {
+    const reply = (await file.json().catch(() => ({}))) as { error?: unknown };
+    throw new Error(gcodeError(typeof reply.error === "string" ? reply.error : `export failed (${file.status})`));
+  }
+  if (handle) await file.body.pipeTo(await handle.createWritable());
+  else download(await file.blob(), name);
 }
 
 /** What a slice knows that a calibration file does not: its layer times and height. */
@@ -445,6 +495,19 @@ export async function exportGcode() {
   const result = state.result;
   // The slice failed or the settings moved while it ran: the user sees why and presses Export again.
   if (!result || stale()) return;
+  const minutes = Math.max(1, Math.round((result.estimate?.seconds ?? 0) / 60));
+  const grams = shownGrams(result).toFixed(0);
+  const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "");
+  const name = `${base}_${card()}_${minutes}m_${grams}g.gcode`;
+  if (!result.gcode && result.gcodeToken) {
+    try {
+      await saveEngineGcode(result.gcodeToken, result, name);
+    } catch (err) {
+      state.error = err instanceof Error ? err.message : String(err);
+      renderChrome();
+    }
+    return;
+  }
   let text: string;
   try {
     text = await printableGcode(result);
@@ -456,11 +519,7 @@ export async function exportGcode() {
     renderChrome();
     return;
   }
-  const minutes = Math.max(1, Math.round((result.estimate?.seconds ?? 0) / 60));
-  const grams = shownGrams(result).toFixed(0);
-  const base = (state.mesh?.name ?? "part").replace(/\.(stl|3mf|step|stp)$/i, "");
-  const blend = card();
-  await saveText(text, `${base}_${blend}_${minutes}m_${grams}g.gcode`, "gcode");
+  await saveText(text, name, "gcode");
 }
 
 export async function export3mf() {
@@ -482,9 +541,9 @@ export async function export3mf() {
   await saveBytes(bytes, name, "3mf", "model/3mf");
 }
 
-export function download(text: string, name: string) {
+export function download(data: string | Blob, name: string) {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  a.href = URL.createObjectURL(typeof data === "string" ? new Blob([data], { type: "text/plain" }) : data);
   a.download = name;
   a.click();
   URL.revokeObjectURL(a.href);

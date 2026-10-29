@@ -1746,6 +1746,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         job: jobHandle,
         layers: { type: "array", minItems: 2, maxItems: 2, items: { type: "integer", minimum: 0 }, description: "First and last layer index." },
+        cursor: cursor,
       },
     },
   },

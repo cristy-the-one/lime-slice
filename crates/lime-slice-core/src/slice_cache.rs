@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::meshes::{self, Interned, PayloadError};
+use crate::reply_parts;
 use crate::slice::{warm_kept, PreviewLayer, WholePreview};
 use crate::{slice_request_watched, GcodeText, Job, SliceRequest, Watch};
 
@@ -291,6 +292,11 @@ pub fn slice_payload_watched(
     if early {
         watch.ask_early();
     }
+    let in_parts = value
+        .as_object_mut()
+        .and_then(|o| o.remove("replyParts"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let meshes = meshes::intern(&mut value)?;
     let keys = cache.and_then(|_| request_keys(&mut value));
     let cache = cache.zip(keys.as_ref());
@@ -333,10 +339,19 @@ pub fn slice_payload_watched(
         }))
     });
     let text_sample = crate::inner_prof::Sample::start();
+    let layer_parts = match obj.get("layers").and_then(Value::as_array) {
+        Some(layers) if in_parts => {
+            let parts = reply_parts::split_layers(layers, reply_parts::PART_BYTES)?;
+            let count = parts.len();
+            Some((reply_parts::park_reply_parts(parts), count))
+        }
+        _ => None,
+    };
     let wire = serde_json::to_string(&Wire {
         reply: obj,
         from_cache,
         gcode_token,
+        layer_parts,
         meshes: &meshes,
     })
     .map_err(|e| e.to_string())?;
@@ -354,6 +369,8 @@ struct Wire<'a> {
     from_cache: bool,
     /// Present when the G-code was parked instead of sent.
     gcode_token: Option<String>,
+    /// The token and count of the parts `layers` was parked as, in place of `layers`.
+    layer_parts: Option<(String, usize)>,
     meshes: &'a Interned,
 }
 
@@ -361,11 +378,16 @@ impl Serialize for Wire<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
         for (k, v) in self.reply {
-            if self.gcode_token.is_none() || k != "gcode" {
+            let parked = (self.gcode_token.is_some() && k == "gcode")
+                || (self.layer_parts.is_some() && k == "layers");
+            if !parked {
                 map.serialize_entry(k, v)?;
             }
         }
         map.serialize_entry("fromCache", &self.from_cache)?;
+        if let Some((token, count)) = &self.layer_parts {
+            map.serialize_entry("layerParts", &json!({ "token": token, "count": count }))?;
+        }
         if let Some(token) = &self.gcode_token {
             map.serialize_entry("gcodeToken", token)?;
         }
