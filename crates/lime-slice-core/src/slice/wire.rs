@@ -11,7 +11,7 @@ use crate::support::edit::{EditOutcome, EditStatus, SupportEdit, TipSite};
 use crate::support::paint::PaintTally;
 use crate::support::paint::{PaintDisk, PaintKind, SeamDisk};
 use crate::support::skeleton::{tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
-use crate::support::{CoverageGap, InAir, SupportSource};
+use crate::support::{CoverageGap, InAir, SupportDemand, SupportSource};
 
 /// One object of a plate on the wire.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -67,6 +67,7 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("branchAngle", Scope::Object),
     ("supportAvoidance", Scope::Object),
     ("supportSource", Scope::Object),
+    ("supportDemandSource", Scope::Object),
     ("supportHeightMult", Scope::Object),
     ("scarfSeam", Scope::Object),
     ("scarfLength", Scope::Object),
@@ -262,6 +263,15 @@ pub(crate) fn parse_support_source(name: Option<&str>) -> Result<SupportSource, 
         None | Some("auto") => Ok(SupportSource::Auto),
         Some("paint") => Ok(SupportSource::Paint),
         Some(other) => Err(format!("supportSource \"{other}\" is not auto or paint")),
+    }
+}
+
+/// `supportDemandSource` as the engine reads it. Absent is `layers`.
+pub(crate) fn parse_support_demand(name: Option<&str>) -> Result<SupportDemand, String> {
+    match name {
+        None | Some("layers") => Ok(SupportDemand::Layers),
+        Some("solid") => Ok(SupportDemand::Solid),
+        Some(other) => Err(format!("supportDemandSource \"{other}\" is not layers or solid")),
     }
 }
 

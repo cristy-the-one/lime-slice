@@ -58,7 +58,7 @@ pub use slice::{
 };
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};
 pub use step::{
-    load_step, load_step_timed, resolve_step_tolerance, set_step_mesher, StepMesher, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
+    load_step, load_step_timed, resolve_step_tolerance, set_step_face_mesher, set_step_mesher, StepFaceMesher, StepMesher, StepTimings, STEP_TOLERANCE_DEFAULT_MM,
     STEP_TOLERANCE_MAX_MM, STEP_TOLERANCE_MIN_MM,
 };
 pub use strategy::{
@@ -68,4 +68,5 @@ pub use strategy::{
 pub use support::edit::{EditStatus, SupportEdit, TipSite};
 pub use support::paint::{PaintDisk, PaintKind, PaintTally};
 pub use support::skeleton::SupportSkeleton;
-pub use support::{CoverageGap, InAir, SupportSource, SupportStyle, TiltedGap};
+pub use support::solid::SolidFaces;
+pub use support::{CoverageGap, InAir, SupportDemand, SupportSource, SupportStyle, TiltedGap};

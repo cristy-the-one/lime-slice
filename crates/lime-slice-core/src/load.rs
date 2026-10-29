@@ -95,6 +95,31 @@ pub fn load_slice_mesh_tol(
     Ok(mesh)
 }
 
+/// [`load_slice_mesh_tol`], and the B-rep face of each triangle when the file
+/// is a STEP solid and the host meshes it with faces. The mesh is the same
+/// either way.
+pub(crate) fn load_slice_mesh_faces(
+    filename: &str,
+    bytes: &[u8],
+    pose_after: bool,
+    step_tolerance_mm: f64,
+) -> Result<(Mesh, Option<Vec<u32>>), String> {
+    let lower = filename.to_ascii_lowercase();
+    if lower.ends_with(".step") || lower.ends_with(".stp") {
+        if let Some(loaded) = crate::step::load_step_faces(bytes, step_tolerance_mm) {
+            let (mut mesh, faces) = loaded?;
+            if !pose_after {
+                mesh.settle_on_bed();
+            }
+            return Ok((mesh, Some(faces)));
+        }
+    }
+    Ok((
+        load_slice_mesh_tol(filename, bytes, pose_after, step_tolerance_mm)?,
+        None,
+    ))
+}
+
 fn looks_like_zip(bytes: &[u8]) -> bool {
     bytes.len() > 4 && bytes[0] == b'P' && bytes[1] == b'K'
 }

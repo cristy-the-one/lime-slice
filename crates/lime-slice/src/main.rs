@@ -321,6 +321,9 @@ fn run() -> Result<(), String> {
     if let Some((mesher, identity)) = lime_model_load::step_mesher() {
         lime_slice_core::set_step_mesher(mesher, identity);
     }
+    if let Some(mesher) = lime_model_load::step_face_mesher() {
+        lime_slice_core::set_step_face_mesher(mesher);
+    }
     if std::env::var_os("LIME_INNER_PROFILE").is_some_and(|v| v == "1") {
         lime_slice_core::set_inner_profile(true);
     }
@@ -1688,6 +1691,10 @@ fn request_for(
         support_source: match settings.support_source {
             lime_slice_core::SupportSource::Auto => None,
             lime_slice_core::SupportSource::Paint => Some("paint".into()),
+        },
+        support_demand_source: match settings.support_demand {
+            lime_slice_core::SupportDemand::Layers => None,
+            lime_slice_core::SupportDemand::Solid => Some("solid".into()),
         },
         support_height_mult: settings.support_height_mult,
         support_z_gap_mm: settings.support_z_gap_mm,

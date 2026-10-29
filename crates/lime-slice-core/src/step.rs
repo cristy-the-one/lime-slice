@@ -52,6 +52,41 @@ pub fn set_step_mesher(mesher: StepMesher, identity: String) {
         .unwrap_or_else(|_| panic!("STEP mesher already installed"));
 }
 
+/// The host's mesher, keeping the B-rep face of each triangle. Its triangles
+/// must be the ones the [`StepMesher`] installed beside it returns.
+pub type StepFaceMesher = fn(&[u8], f64) -> Result<(Vec<[[f64; 3]; 3]>, Vec<u32>), String>;
+
+static FACE_MESHER: std::sync::OnceLock<StepFaceMesher> = std::sync::OnceLock::new();
+
+/// Install once, after [`set_step_mesher`]. Without it, no STEP file brings
+/// its faces, and support demand reads the layers.
+pub fn set_step_face_mesher(mesher: StepFaceMesher) {
+    FACE_MESHER
+        .set(mesher)
+        .unwrap_or_else(|_| panic!("STEP face mesher already installed"));
+}
+
+/// The mesh [`load_step`] returns, with each triangle's face. `None` when no
+/// face mesher is installed.
+pub(crate) fn load_step_faces(
+    bytes: &[u8],
+    tolerance_mm: f64,
+) -> Option<Result<(Mesh, Vec<u32>), String>> {
+    let mesher = FACE_MESHER.get()?;
+    MESHER.get()?;
+    Some((|| {
+        let tol_mm = resolve_step_tolerance(tolerance_mm)?;
+        let (triangles, faces) = mesher(bytes, tol_mm)?;
+        if triangles.is_empty() || triangles.iter().flatten().flatten().any(|v| !v.is_finite()) {
+            return Err("STEP mesher returned an empty or non-finite mesh".into());
+        }
+        if faces.len() != triangles.len() {
+            return Err("STEP mesher's faces do not match its triangles".into());
+        }
+        Ok((Mesh { triangles }, faces))
+    })())
+}
+
 pub(crate) fn mesher_identity() -> &'static str {
     MESHER.get().map_or("truck", |(_, identity)| identity.as_str())
 }

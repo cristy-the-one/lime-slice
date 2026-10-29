@@ -674,6 +674,9 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
         if let Some((mesher, identity)) = lime_model_load::step_mesher() {
             lime_slice_core::set_step_mesher(mesher, identity);
         }
+        if let Some(mesher) = lime_model_load::step_face_mesher() {
+            lime_slice_core::set_step_face_mesher(mesher);
+        }
     });
 
     export_fn(env, exports, "version", version_cb);

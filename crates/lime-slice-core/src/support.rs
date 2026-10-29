@@ -14,6 +14,7 @@ pub(crate) mod avoidance;
 pub(crate) mod edit;
 pub(crate) mod paint;
 pub(crate) mod skeleton;
+pub(crate) mod solid;
 pub(crate) mod tree;
 
 use paint::PaintDisk;
@@ -33,6 +34,17 @@ pub enum SupportSource {
     Auto,
     /// Only what enforce paint asks for. The angle and the islands ask for nothing.
     Paint,
+}
+
+/// What tells the angle where the part needs support.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SupportDemand {
+    /// The difference between each layer and the one under it.
+    #[default]
+    Layers,
+    /// The B-rep faces, when the part came from a solid. A part without one
+    /// reads the layers.
+    Solid,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -408,6 +420,7 @@ impl Supports {
             contours,
             contours,
             &[],
+            None,
             opts,
             &crate::progress::Watch::idle(),
         )
@@ -416,15 +429,18 @@ impl Supports {
     /// Supports holding up `own`, the part's contours, as `paint` asks.
     /// `solid` is what the trees avoid and may stand on: the part, and any
     /// other object moved into the part's frame. Alone, it is `own`.
+    /// `faced`, when given, is the part's solid, whose faces ask in place of
+    /// the layers.
     pub(crate) fn build_with(
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
         paint: &[PaintDisk],
+        faced: Option<solid::Faced<'_>>,
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let mut supports = Self::walk_with(bands, own, solid, paint, opts, watch)?;
+        let mut supports = Self::walk_with(bands, own, solid, paint, faced, opts, watch)?;
         if !project(
             &mut supports.layers,
             1,
@@ -485,6 +501,7 @@ impl Supports {
             contours,
             contours,
             &[],
+            None,
             opts,
             &crate::progress::Watch::idle(),
         )
@@ -495,10 +512,11 @@ impl Supports {
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
         paint: &[PaintDisk],
+        faced: Option<solid::Faced<'_>>,
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
-        let demand = Demand::new(bands, own, solid, paint, opts, watch)?;
+        let demand = Demand::new(bands, own, solid, paint, faced, opts, watch)?;
         let (forest, disks) = if opts.style == SupportStyle::Tree {
             grow(&demand, bands, solid, opts, watch)?
         } else {
@@ -752,12 +770,14 @@ impl Patch {
 
 impl Demand {
     /// Overhangs come from `own`, painted. Interface keeps clear of
-    /// `solid`, and a column that reaches it stops there.
+    /// `solid`, and a column that reaches it stops there. `faced` asks in
+    /// place of the angle between layers; the islands still ask.
     fn new(
         bands: &[LayerBand],
         own: &[Vec<Loop>],
         solid: &[Vec<Loop>],
         paint: &[PaintDisk],
+        faced: Option<solid::Faced<'_>>,
         opts: &SupportOpts,
         watch: &crate::progress::Watch,
     ) -> Option<Self> {
@@ -774,19 +794,29 @@ impl Demand {
         let angle = slope_of(opts.angle_deg);
         let iface_n = opts.interface_layers.max(1);
         let tree = opts.style == SupportStyle::Tree;
+        let faces = faced.map(|faced| {
+            let spec = solid::Spec {
+                angle_deg: opts.angle_deg,
+                floor: opts.floor,
+                down: paint.iter().any(|d| d.kind == paint::PaintKind::Enforce),
+            };
+            solid::read(faced, bands, own, &spec)
+        });
         // Everything that depends only on one layer of the part is found in
         // parallel. The pass below carries each overhang down to its contact.
         let overhangs: Vec<Vec<Loop>> = (0..n)
             .into_par_iter()
             .map(|i| {
-                let asked = match opts.source {
-                    SupportSource::Auto if opts.floor.is_some() => {
+                let asked = match (opts.source, &faces) {
+                    (SupportSource::Auto, Some(faces)) => past_faces(bands, own, i, angle, faces),
+                    (SupportSource::Auto, None) if opts.floor.is_some() => {
                         past_hairline(overhang_at(bands, own, i, angle), bands[i].height / angle)
                     }
-                    SupportSource::Auto => overhang_at(bands, own, i, angle),
-                    SupportSource::Paint => Vec::new(),
+                    (SupportSource::Auto, None) => overhang_at(bands, own, i, angle),
+                    (SupportSource::Paint, _) => Vec::new(),
                 };
-                paint::paint_layer(paint, bands, own, i, asked)
+                let down = faces.as_ref().map(|f| f.down[i].as_slice());
+                paint::paint_layer_over(paint, bands, own, i, asked, down)
             })
             .collect();
         let gaps: Vec<Vec<Loop>> = contours
@@ -1295,6 +1325,25 @@ fn overhang_at(bands: &[LayerBand], contours: &[Vec<Loop>], i: usize, slope: f64
     } else {
         // Keep a small island the angle test would drop as a sliver.
         drop_slivers(boolean_union(&angle_overhang, &islands), 0.05)
+    }
+}
+
+/// Layer `i`'s faces past the angle, and its islands.
+fn past_faces(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    i: usize,
+    slope: f64,
+    faces: &solid::SolidDemand,
+) -> Vec<Loop> {
+    let Some((upper, lower, dx)) = layer_pair(bands, contours, i, slope) else {
+        return Vec::new();
+    };
+    let islands = unsupported_islands(upper, lower, dx);
+    if islands.is_empty() {
+        faces.past[i].clone()
+    } else {
+        drop_slivers(boolean_union(&faces.past[i], &islands), 0.05)
     }
 }
 

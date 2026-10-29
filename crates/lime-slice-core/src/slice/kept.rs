@@ -388,6 +388,8 @@ pub(super) fn keys(
         trunk_diameter: blank.trunk_diameter,
         support_avoidance: blank.support_avoidance,
         support_source: blank.support_source,
+        support_demand: blank.support_demand,
+        solid_faces: None,
         support_height_mult: blank.support_height_mult,
         support_paint: Vec::new(),
         // The part stages plan without the object's speed cap. `finish`
@@ -440,6 +442,8 @@ pub(super) fn keys(
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
         support_source: settings.support_source,
+        support_demand: settings.support_demand,
+        solid_faces: settings.solid_faces.clone(),
         support_paint: settings.support_paint.clone(),
         ..contours.clone()
     };
@@ -452,6 +456,8 @@ pub(super) fn keys(
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
         support_source: settings.support_source,
+        support_demand: settings.support_demand,
+        solid_faces: settings.solid_faces.clone(),
         support_height_mult: settings.support_height_mult,
         support_paint: settings.support_paint.clone(),
         // Support paths are never loops, so where a loop starts never reaches them.

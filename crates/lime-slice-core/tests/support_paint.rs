@@ -680,3 +680,43 @@ fn an_unknown_support_source_is_refused_by_name() {
         "supportSource \"\" is not auto or paint"
     );
 }
+
+/// Solid demand needs a STEP solid meshed with its faces. An STL has none,
+/// and without the Open CASCADE bridge neither has a STEP file, so both
+/// read the layers and keep every byte.
+#[test]
+fn solid_demand_without_a_solid_keeps_every_byte() {
+    let cube = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/cube.step"
+    ))
+    .unwrap();
+    for (plain, extra) in [
+        (ledges(json!({})), json!({})),
+        (
+            ledges(json!({"supportSource": "paint"})),
+            json!({"supportSource": "paint", "supportPaint": [under_left("enforce", 0.0, 6.0)]}),
+        ),
+        (request("cube.step", b64(&cube), json!({})), json!({})),
+    ] {
+        let mut asked = plain.clone();
+        let mut base = plain.clone();
+        for (k, v) in extra.as_object().unwrap() {
+            asked[k] = v.clone();
+            base[k] = v.clone();
+        }
+        asked["supportDemandSource"] = json!("solid");
+        let layers = sliced(&base);
+        assert_eq!(sliced(&asked)["gcode"], layers["gcode"]);
+        base["supportDemandSource"] = json!("layers");
+        assert_eq!(sliced(&base)["gcode"], layers["gcode"]);
+    }
+}
+
+#[test]
+fn an_unknown_support_demand_source_is_refused_by_name() {
+    assert_eq!(
+        slice(&ledges(json!({"supportDemandSource": "faces"}))).unwrap_err(),
+        "supportDemandSource \"faces\" is not layers or solid"
+    );
+}

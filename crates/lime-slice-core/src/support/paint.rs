@@ -105,9 +105,22 @@ pub(crate) fn paint_layer(
     i: usize,
     overhang: Vec<Loop>,
 ) -> Vec<Loop> {
+    paint_layer_over(disks, bands, own, i, overhang, None)
+}
+
+/// [`paint_layer`], with enforce paint reaching `facing_down` when given
+/// instead of the layer's own underside.
+pub(crate) fn paint_layer_over(
+    disks: &[PaintDisk],
+    bands: &[LayerBand],
+    own: &[Vec<Loop>],
+    i: usize,
+    overhang: Vec<Loop>,
+    facing_down: Option<&[Loop]>,
+) -> Vec<Loop> {
     let (lo, hi) = (bands[i].z - bands[i].height, bands[i].z);
     let mut demand = overhang;
-    let mut facing_down: Option<Vec<Loop>> = None;
+    let mut facing_down: Option<Vec<Loop>> = facing_down.map(<[Loop]>::to_vec);
     let mut touched = false;
     for run in disks.chunk_by(|a, b| a.kind == b.kind) {
         let circles: Vec<Loop> = run

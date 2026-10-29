@@ -229,17 +229,38 @@ pub fn step_mesher() -> Option<(StepMesher, String)> {
 
 pub type StepMesher = fn(&[u8], f64) -> Result<Vec<[[f64; 3]; 3]>, String>;
 
+/// Triangles, and the B-rep face of each.
+pub type FacedTriangles = (Vec<[[f64; 3]; 3]>, Vec<u32>);
+
+/// [`StepMesher`]'s triangles, plus the B-rep face each one belongs to.
+pub type StepFaceMesher = fn(&[u8], f64) -> Result<FacedTriangles, String>;
+
+/// The same bridge as [`step_mesher`], keeping each triangle's face. Its
+/// triangles are the ones [`step_mesher`] returns for the same bytes.
+pub fn step_face_mesher() -> Option<StepFaceMesher> {
+    step_mesher().map(|_| mesh_step_faces as StepFaceMesher)
+}
+
 fn mesh_step(bytes: &[u8], tolerance: f64) -> Result<Vec<[[f64; 3]; 3]>, String> {
+    Ok(mesh_step_faces(bytes, tolerance)?.0)
+}
+
+fn mesh_step_faces(bytes: &[u8], tolerance: f64) -> Result<FacedTriangles, String> {
     use base64::Engine;
     let request = serde_json::json!({
         "call": "meshStep",
         "dataB64": base64::engine::general_purpose::STANDARD.encode(bytes),
         "chordMm": tolerance,
     });
-    decode_step_mesh(&tree(&request.to_string())?)
+    decode_step_faces(&tree(&request.to_string())?)
 }
 
+#[cfg(test)]
 fn decode_step_mesh(reply: &str) -> Result<Vec<[[f64; 3]; 3]>, String> {
+    Ok(decode_step_faces(reply)?.0)
+}
+
+fn decode_step_faces(reply: &str) -> Result<FacedTriangles, String> {
     use base64::Engine;
     let value: serde_json::Value = serde_json::from_str(reply).map_err(|err| err.to_string())?;
     if let Some(error) = value["error"].as_str() {
@@ -263,7 +284,7 @@ fn decode_step_mesh(reply: &str) -> Result<Vec<[[f64; 3]; 3]>, String> {
     if positions.is_empty() || positions.len() % 36 != 0 || faces.len() != positions.len() / 9 {
         return Err(damaged());
     }
-    positions
+    let triangles = positions
         .chunks_exact(36)
         .map(|tri| {
             let out = [0, 1, 2].map(|v| {
@@ -277,12 +298,17 @@ fn decode_step_mesh(reply: &str) -> Result<Vec<[[f64; 3]; 3]>, String> {
             }
             Ok(out)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    let faces = faces
+        .chunks_exact(4)
+        .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+        .collect();
+    Ok((triangles, faces))
 }
 
 #[cfg(test)]
 mod mesh_tests {
-    use super::decode_step_mesh;
+    use super::{decode_step_faces, decode_step_mesh};
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde_json::json;
 
@@ -297,6 +323,7 @@ mod mesh_tests {
             mesh,
             vec![[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
         );
+        assert_eq!(decode_step_faces(&reply.to_string()).unwrap().1, vec![17]);
         reply["solid"] = json!(false);
         assert!(decode_step_mesh(&reply.to_string())
             .unwrap_err()
