@@ -60,7 +60,7 @@ export const GUIDES: Guide[] = [
       "1. mesh_import {path}. The ledge sample is samples/overhang_ledge.stl.",
       "2. paint_supports {region:{overhangBelowDeg:50}, radiusMm:3, mode:\"enforce\"}. Disks match a hand brush. A box that misses the part is refused.",
       "3. paint_list to read the disks. paint_seam and reinforce_add use the same region.",
-      "4. settings_set {values:{supports:true}} when the warning says supports are off.",
+      "4. settings_set {values:{supports:true}} when the warning says supports are off. supportPaintJoin (on by default) also holds the part between enforce dabs up to 6 mm apart.",
       "5. slice_start, then slice_wait. The slice body carries the disks.",
       "6. support_trees, then support_edit {action:\"prune\", site:{xy, zMm}, scope:\"tree\"}, then slice again.",
     ].join("\n"),

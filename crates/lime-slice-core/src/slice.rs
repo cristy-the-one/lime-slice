@@ -201,6 +201,11 @@ pub struct SliceRequest {
     /// its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_strict_stacking: bool,
+    /// Enforce paint fills the gaps between its dabs where the part faces
+    /// down, so a surface painted in dabs is held between them too. Left out
+    /// when off, so a request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support_paint_join: bool,
     /// Tree tips, thin branches, and support interface print slower: a
     /// longer print with fewer knocked-off branches. Left out when off, so a
     /// request that does not ask keeps its cache key.
@@ -465,6 +470,8 @@ pub struct SliceSettings {
     pub support_avoidance: bool,
     /// A tip under every belt interface row. Off keeps the in-layer reach.
     pub support_strict_stacking: bool,
+    /// Enforce paint fills the gaps between its dabs. Off keeps each dab to itself.
+    pub support_paint_join: bool,
     /// Tips, thin branches, and interface at the fragile speeds. Off keeps
     /// every support at the support speed.
     pub support_slow_fragile: bool,
@@ -598,6 +605,7 @@ impl Default for SliceSettings {
             trunk_diameter: 4.2,
             support_avoidance: false,
             support_strict_stacking: false,
+            support_paint_join: false,
             support_slow_fragile: false,
             support_source: SupportSource::Auto,
             support_height_mult: 1.0,
@@ -719,6 +727,7 @@ impl SliceSettings {
             },
             support_avoidance: req.support_avoidance && !req.classic,
             support_strict_stacking: req.support_strict_stacking && !req.classic,
+            support_paint_join: req.support_paint_join && !req.classic,
             support_slow_fragile: req.support_slow_fragile && !req.classic,
             // `load_object` has already refused a name it does not know.
             support_source: wire::parse_support_source(req.support_source.as_deref())
@@ -906,6 +915,9 @@ impl SliceSettings {
             };
             let angle = match self.support_source {
                 SupportSource::Auto => format!("angle {:.0}°, ", self.support_angle),
+                SupportSource::Paint if self.support_paint_join => {
+                    "painted only, gaps between dabs filled, ".into()
+                }
                 SupportSource::Paint => "painted only, ".into(),
             };
             let fragile = if self.support_slow_fragile {
@@ -1981,6 +1993,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_height_mult = 1.0;
         settings.support_avoidance = false;
         settings.support_strict_stacking = false;
+        settings.support_paint_join = false;
         settings.support_slow_fragile = false;
         settings.support_z_gap_mm = None;
         settings.support_xy_gap_mm = None;
@@ -3416,6 +3429,7 @@ fn compare_estimates(
             one.support_height_mult = 1.0;
             one.support_avoidance = false;
             one.support_strict_stacking = false;
+            one.support_paint_join = false;
             one.support_slow_fragile = false;
         }
         let response = slice_sharing(mesh, &blend, profile, &one, cut, watch)?;
@@ -4803,15 +4817,15 @@ impl Contours {
     }
 
     /// What prints over air without supports, less what `paint` holds up.
-    fn in_air(&self, angle_deg: f64, paint: &[PaintDisk]) -> InAir {
+    fn in_air(&self, angle_deg: f64, paint: &[PaintDisk], join: f64) -> InAir {
         if !paint.is_empty() {
-            return crate::support::in_air(&self.bands, &self.contours, angle_deg, paint);
+            return crate::support::in_air(&self.bands, &self.contours, angle_deg, paint, join);
         }
         let bits = angle_deg.to_bits();
         if let Some(&(_, found)) = self.in_air.get().filter(|(at, _)| *at == bits) {
             return found;
         }
-        let found = crate::support::in_air(&self.bands, &self.contours, angle_deg, &[]);
+        let found = crate::support::in_air(&self.bands, &self.contours, angle_deg, &[], 0.0);
         let _ = self.in_air.set((bits, found));
         found
     }
@@ -5716,6 +5730,9 @@ fn plan_supports(
     opts.strict_stacking =
         settings.support_strict_stacking && settings.support_style == SupportStyle::Tree;
     opts.source = settings.support_source;
+    if settings.support_paint_join {
+        opts.paint_join_mm = crate::support::PAINT_JOIN_MM;
+    }
     if let Some(xy) = settings.support_xy_gap_mm {
         opts.xy_gap = xy;
     }
@@ -5727,7 +5744,7 @@ fn plan_supports(
         return Err("cancelled".into());
     }
     if !settings.supports {
-        let in_air = cut.in_air(opts.angle_deg, &[]);
+        let in_air = cut.in_air(opts.angle_deg, &[], 0.0);
         if watch.stopped(settings.job) {
             return Err("cancelled".into());
         }
@@ -5777,7 +5794,7 @@ fn plan_supports(
     let toolpath_ms = elapsed_ms(toolpath_started);
     // Painted only leaves the rest of the part to print over air, so say so.
     let in_air = (opts.source == SupportSource::Paint)
-        .then(|| cut.in_air(opts.angle_deg, &settings.support_paint));
+        .then(|| cut.in_air(opts.angle_deg, &settings.support_paint, opts.paint_join_mm));
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }

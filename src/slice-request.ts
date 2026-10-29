@@ -13,7 +13,7 @@ import { layerActionFields, type LayerAction } from "./layer-actions.ts";
 import { sliceOverrideFields, type OverrideDocument } from "./overrides.ts";
 import type { PresetSettings } from "./presets.ts";
 import { seamSliceField, type SeamChoice } from "./seam.ts";
-import { avoidanceSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { supportSliceFields } from "./support-interface.ts";
 import { supportSourceSliceField } from "./support-source.ts";
 import { surfaceSliceField } from "./surface-pattern.ts";
@@ -81,6 +81,14 @@ function withoutStudy(record: Record<string, unknown>): Record<string, unknown> 
   return out;
 }
 
+/** Support paint on this record, or on any of its plate objects. */
+function painted(record: Record<string, unknown>): boolean {
+  const disks = (value: unknown) => Array.isArray(value) && value.length > 0;
+  if (disks(record.supportPaint)) return true;
+  const objects = record.objects;
+  return Array.isArray(objects) && objects.some((item) => !!item && typeof item === "object" && disks((item as Record<string, unknown>).supportPaint));
+}
+
 /** The object `rules.coerce` turns into the engine's request. Field order matches the app's previous body. */
 export function sliceRequest(input: SliceRequestInput): Record<string, unknown> {
   const settings = input.settings;
@@ -116,6 +124,7 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     ...avoidanceSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportAvoidance),
     ...strictStackingSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportStrictStacking),
     ...slowFragileSliceField(settings.supports && settings.supportSlowFragile),
+    ...paintJoinSliceField(settings.supports && settings.supportPaintJoin, painted(one) || painted(plate)),
     ...supportSliceFields({
       supports: settings.supports,
       supportStyle: settings.supportStyle,

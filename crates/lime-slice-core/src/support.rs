@@ -92,7 +92,16 @@ pub struct SupportOpts {
     /// under it lies, with no `CANTILEVER_MM` reach past it, so every row
     /// of a steep sloped sheet bears tips. Off, the walk seeds as before.
     pub strict_stacking: bool,
+    /// Enforce paint fills the gaps up to this wide between its dabs on a
+    /// layer, on what faces down there. `0` keeps each dab to itself.
+    pub paint_join_mm: f64,
 }
+
+/// How wide a gap between enforce dabs on one layer is filled when the
+/// request asks, mm. Dabs a brush leaves along a face meet that face's layers
+/// as a row of circles; on a face nearly parallel to the layers the gaps
+/// between them were 2 to 5 mm, and the part's beads hung over each one.
+pub(crate) const PAINT_JOIN_MM: f64 = 6.0;
 
 /// The belt in the slice frame. Printable material is `y <= y_max(z)`.
 /// `None` leaves every support path where it was.
@@ -218,6 +227,7 @@ impl Default for SupportOpts {
             avoidance: false,
             source: SupportSource::Auto,
             strict_stacking: false,
+            paint_join_mm: 0.0,
         }
     }
 }
@@ -791,7 +801,7 @@ impl Demand {
                     SupportSource::Auto => overhang_at(bands, own, i, angle),
                     SupportSource::Paint => Vec::new(),
                 };
-                paint::paint_layer(paint, bands, own, i, asked)
+                paint::paint_layer(paint, bands, own, i, asked, opts.paint_join_mm)
             })
             .collect();
         let gaps: Vec<Vec<Loop>> = contours
@@ -1344,6 +1354,7 @@ pub(crate) fn in_air(
     contours: &[Vec<Loop>],
     angle_deg: f64,
     paint: &[PaintDisk],
+    join: f64,
 ) -> InAir {
     let slope = slope_of(angle_deg);
     let (islands, overhangs): (Vec<Vec<Unheld>>, Vec<Vec<Unheld>>) = (0..bands.len())
@@ -1355,7 +1366,7 @@ pub(crate) fn in_air(
             let held = if paint.is_empty() {
                 Vec::new()
             } else {
-                paint::paint_layer(paint, bands, contours, i, Vec::new())
+                paint::paint_layer(paint, bands, contours, i, Vec::new(), join)
             };
             let without_held = |loops: Vec<Loop>| {
                 if held.is_empty() || loops.is_empty() {
