@@ -1489,6 +1489,22 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
         "audit  coverage {}",
         coverage_line(&a.coverage).unwrap_or_else(|| "every demanded interface prints".into())
     );
+    let h = &a.part_hold;
+    println!(
+        "audit  part beads {:.0} mm  no bead under {:.0} mm  stand on nothing {:.1} mm  dangling {:.1} mm  patches {}{}",
+        h.part_mm,
+        h.no_bead_under_mm,
+        h.unheld_mm,
+        h.dangling_mm,
+        h.patches,
+        h.largest
+            .first()
+            .map(|p| format!(
+                "  largest {:.1} mm on layers {}-{} at {:.1}, {:.1}, {:.1}",
+                p.mm, p.layers[0], p.layers[1], p.at[0], p.at[1], p.at[2]
+            ))
+            .unwrap_or_default()
+    );
     let t = &a.trees;
     if t.tips > 0 {
         println!(
@@ -1744,6 +1760,7 @@ fn request_for(
         height_ranges: Vec::new(),
         modifier_volumes: Vec::new(),
         include_skeleton: false,
+        part_hold: false,
         preview_base: None,
         belt: None,
     }

@@ -593,6 +593,19 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
 }
 
 /** A stand-in for scripted tests. It does not slice. A committed STEP round-trips its mesh. */
+/** What the fake engine answers for `partHold`: two patches of unheld part beads. */
+export const FAKE_PART_HOLD = {
+  partMm: 1234.56,
+  noBeadUnderMm: 80.04,
+  unheldMm: 61.25,
+  danglingMm: 40.5,
+  patches: 2,
+  largest: [
+    { mm: 50.04, danglingMm: 38.2, layers: [12, 13], at: [10.123, 20.456, 2.6] },
+    { mm: 11.21, danglingMm: 2.3, layers: [30, 30], at: [1, 2, 6.2] },
+  ],
+};
+
 export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; resets: number; previewResets: number; folds: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
   const kept = new Map<string, KeptSolid>();
@@ -941,7 +954,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       const need = Number(process.env.LIME_MCP_POLLS_UNTIL_DONE ?? 1);
       const untilDone = Number.isFinite(need) && need > 0 ? need : 1;
       if (job.status === "running" && job.polls >= untilDone) job.status = "done";
-      const request = JSON.parse(job.body) as { layerActions?: { kind?: string; gcode?: string }[] };
+      const request = JSON.parse(job.body) as { layerActions?: { kind?: string; gcode?: string }[]; partHold?: boolean };
       const actions = request.layerActions ?? [];
       const extra = [
         ...actions.filter((action) => action.kind === "customGcode" && action.gcode).map((action) => action.gcode),
@@ -970,6 +983,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
           })),
           skeleton: FAKE_SKELETON,
           coverage: [{ z: [4, 8], areaMm2: 40, min: [10, -4], max: [40, 16], outline: [[[10, -4], [40, -4], [40, 16], [10, 16]]] }],
+          ...(request.partHold ? { partHold: FAKE_PART_HOLD } : {}),
           mesh: { triangles: 12 },
         }) : undefined,
       });

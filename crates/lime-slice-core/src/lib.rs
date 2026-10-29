@@ -24,7 +24,7 @@ mod strategy;
 mod support;
 mod toolpath;
 
-pub use audit::{audit_slice, SliceAudit};
+pub use audit::{audit_slice, HoldPatch, PartHold, SliceAudit};
 pub use calibrate::{
     flow_from_request, flow_tower, pressure_advance_from_request, pressure_advance_tower,
     retract_from_request, retract_tower, temperature_from_request, temperature_tower, FlowBand,
