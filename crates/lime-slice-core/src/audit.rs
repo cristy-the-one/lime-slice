@@ -77,6 +77,403 @@ pub struct SliceAudit {
     pub trees: TreeCensus,
     /// Demanded interface the supports leave unheld, largest patch first.
     pub coverage: Vec<CoverageGap>,
+    /// Part beads that stand on nothing.
+    pub part_hold: PartHold,
+}
+
+/// Part beads that stand on nothing: wall, skin, infill, bridge and gap-fill
+/// beads that no bead, support or belt holds. A slice whose supports all
+/// stand can still print a roof row in the air; this is the measure for that.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartHold {
+    /// Part bead length checked.
+    pub part_mm: f64,
+    /// Part beads with no part bead under them within half a bead. Supports
+    /// or the stacking rule may still hold them.
+    pub no_bead_under_mm: f64,
+    /// Part beads nothing holds.
+    pub unheld_mm: f64,
+    /// Of those, the beads with no held bead beside them on their own layer
+    /// either: they hang in the air rather than from a neighbour.
+    pub dangling_mm: f64,
+    /// Unheld beads in touching groups, counted.
+    pub patches: usize,
+    /// The largest groups first, at most [`HOLD_PATCHES_KEPT`].
+    pub largest: Vec<HoldPatch>,
+}
+
+/// One group of unheld part beads on touching layers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldPatch {
+    pub mm: f64,
+    pub dangling_mm: f64,
+    /// First and last printed layer, counted from 0.
+    pub layers: [usize; 2],
+    /// Where its first layer starts, in the plate frame: X and Y on the bed
+    /// or the belt, Z up from it.
+    pub at: [f64; 3],
+}
+
+pub const HOLD_PATCHES_KEPT: usize = 20;
+/// Part beads are sampled this often along their path.
+const HOLD_STEP_MM: f64 = 0.2;
+/// Row height of the sample index across the layer.
+const HOLD_ROW_MM: f64 = 0.05;
+/// A bead this close to the belt stands on it.
+const HOLD_BELT_MM: f64 = 0.3;
+/// How far back against gravity a bead may reach over what is under it.
+const HOLD_UPHILL_MM: f64 = 0.3;
+/// How far downhill it may lean onto what is under it: a belt bead sags
+/// onto the row below.
+const HOLD_DOWNHILL_MM: f64 = 0.5;
+/// An unheld bead with a held bead this close on its own layer hangs from it.
+const HOLD_NEIGHBOUR_MM: f64 = 0.5;
+
+/// How the check reads one slice: bead width, Z gap and the frame.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HoldRule {
+    pub half_bead: f64,
+    /// Support this many layers under the gap still holds a bead.
+    pub gap_layers: usize,
+    /// The frame that laid the plate flat on a belt. Absent on a flat bed.
+    pub belt: Option<crate::belt::Frame>,
+    /// Slice Y plus this is the distance down the nozzle plane from where
+    /// the gantry's coordinate starts, the same on every layer. The index
+    /// rows start there, so they fall where they do in the G-code.
+    origin: f64,
+}
+
+impl HoldRule {
+    pub(crate) fn new(
+        line_width: f64,
+        layer_height: f64,
+        z_gap: f64,
+        belt: Option<(crate::belt::Frame, f64)>,
+    ) -> Self {
+        Self {
+            half_bead: line_width * 0.5,
+            gap_layers: (z_gap / layer_height.max(1e-6)).round().max(1.0) as usize,
+            belt: belt.map(|(frame, _)| frame),
+            origin: belt.map_or(0.0, |(f, start)| f.y_shift - f.z_drop - start),
+        }
+    }
+
+    /// Across, uphill and downhill reach, and the neighbour's reach across.
+    /// A belt's slice frame has gravity along +Y in every layer, so a bead may
+    /// sag that way. A flat bed has no downhill side.
+    fn reach(&self) -> (f64, f64, f64, f64) {
+        match self.belt {
+            Some(_) => (
+                self.half_bead,
+                HOLD_UPHILL_MM,
+                HOLD_DOWNHILL_MM,
+                self.half_bead,
+            ),
+            None => (
+                HOLD_UPHILL_MM,
+                HOLD_UPHILL_MM,
+                HOLD_UPHILL_MM,
+                HOLD_NEIGHBOUR_MM,
+            ),
+        }
+    }
+
+    /// How far gravity carries a point down `dz` of slice height, along +Y.
+    fn drift(&self, dz: f64) -> f64 {
+        self.belt.map_or(0.0, |f| dz * f.sin_a / f.cos_a)
+    }
+
+    fn plate(&self, x: f64, y: f64, z: f64) -> [f64; 3] {
+        self.belt.map_or([x, y, z], |f| f.lab(x, y, z))
+    }
+}
+
+/// One printed layer for the check: its index, slice Z, and its beads in bed
+/// coordinates (the path's points plus the offset).
+pub(crate) struct HoldLayer<'a> {
+    pub index: usize,
+    pub z: f64,
+    pub beads: Vec<HoldBead<'a>>,
+}
+
+/// A path's kind, its points, and the offset that puts them on the bed.
+pub(crate) type HoldBead<'a> = (PathKind, &'a [[f64; 2]], [f64; 2]);
+
+/// An unheld sample: layer, X, Y, length, and whether it dangles.
+type Unheld = (usize, f64, f64, f64, bool);
+
+fn holds_up_part(kind: PathKind) -> bool {
+    matches!(
+        kind,
+        PathKind::Wall
+            | PathKind::Outer
+            | PathKind::Inner
+            | PathKind::ThinWall
+            | PathKind::GapFill
+            | PathKind::Infill
+            | PathKind::Sparse
+            | PathKind::Solid
+            | PathKind::Top
+            | PathKind::Bridge
+    )
+}
+
+/// Sample points of one layer: rows of `HOLD_ROW_MM` across Y, each with
+/// its X values sorted. A window takes whole rows, so it reaches up to one
+/// row further than asked. `origin` puts the row edges where the gantry's
+/// own coordinate has them on a belt.
+struct Rows {
+    rows: std::collections::HashMap<i64, Vec<f64>>,
+    origin: f64,
+}
+
+impl Rows {
+    fn new(points: impl Iterator<Item = [f64; 2]>, origin: f64) -> Self {
+        let mut rows: std::collections::HashMap<i64, Vec<f64>> = Default::default();
+        for [x, y] in points {
+            rows.entry(((y + origin) / HOLD_ROW_MM).floor() as i64)
+                .or_default()
+                .push(x);
+        }
+        for row in rows.values_mut() {
+            row.sort_by(f64::total_cmp);
+        }
+        Self { rows, origin }
+    }
+
+    /// Any point in the rows from `lo` to `hi` within `across` of `x`.
+    fn hit(&self, x: f64, lo: f64, hi: f64, across: f64) -> bool {
+        let (a, b) = (
+            ((lo + self.origin) / HOLD_ROW_MM).floor() as i64,
+            ((hi + self.origin) / HOLD_ROW_MM).floor() as i64,
+        );
+        (a..=b).any(|r| {
+            self.rows.get(&r).is_some_and(|row| {
+                let j = row.partition_point(|&v| v < x - across);
+                j < row.len() && row[j] <= x + across
+            })
+        })
+    }
+}
+
+struct Sample {
+    x: f64,
+    y: f64,
+    mm: f64,
+}
+
+fn samples(layer: &HoldLayer, part: bool) -> Vec<Sample> {
+    let mut out = Vec::new();
+    for &(kind, points, [dx, dy]) in &layer.beads {
+        let is_part = holds_up_part(kind);
+        let is_support = matches!(kind, PathKind::Support | PathKind::SupportInterface);
+        if (part && !is_part) || (!part && !is_support) {
+            continue;
+        }
+        for w in points.windows(2) {
+            let ([x0, y0], [x1, y1]) = (w[0], w[1]);
+            let len = (x1 - x0).hypot(y1 - y0);
+            if len <= 0.0 {
+                continue;
+            }
+            let n = ((len / HOLD_STEP_MM) as usize).max(1);
+            for i in 0..n {
+                let f = (i as f64 + 0.5) / n as f64;
+                out.push(Sample {
+                    x: x0 + (x1 - x0) * f + dx,
+                    y: y0 + (y1 - y0) * f + dy,
+                    mm: len / n as f64,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The check on a plate's emitted layers. Later belt copies repeat the
+/// first one's layers and are left out.
+pub(crate) fn plate_hold(
+    layers: &[crate::gcode::PlateLayer],
+    offsets: &[[f64; 2]],
+    rule: &HoldRule,
+) -> PartHold {
+    let held: Vec<HoldLayer> = layers
+        .iter()
+        .filter(|l| l.belt_shift == 0.0 && !l.is_empty())
+        .map(|l| HoldLayer {
+            index: l.index,
+            z: l.z,
+            beads: l
+                .paths()
+                .map(|(object, p)| {
+                    let offset = offsets.get(object as usize).copied().unwrap_or([0.0, 0.0]);
+                    (p.kind, p.points.as_slice(), offset)
+                })
+                .collect(),
+        })
+        .collect();
+    part_hold(&held, rule)
+}
+
+/// The part-bead check on printed layers in print order. A part bead is held
+/// by any of:
+/// 1. a part bead on the layer below within half a bead;
+/// 2. a part, support or interface bead on the layer below that it can lean
+///    on: within `across`, and from `uphill` back to `downhill` along gravity;
+/// 3. support or interface within the Z gap below it, out to where gravity
+///    carries it on that layer;
+/// 4. the belt, or the first layer.
+///
+/// Unheld beads are grouped over 1 mm cells on the same or the next layer.
+pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
+    let origin = rule.origin;
+    let parts: Vec<Vec<Sample>> = layers.par_iter().map(|l| samples(l, true)).collect();
+    let part_rows: Vec<Rows> = parts
+        .par_iter()
+        .map(|s| Rows::new(s.iter().map(|s| [s.x, s.y]), origin))
+        .collect();
+    let support_rows: Vec<Rows> = layers
+        .par_iter()
+        .map(|l| Rows::new(samples(l, false).into_iter().map(|s| [s.x, s.y]), origin))
+        .collect();
+    let (across, uphill, downhill, neighbour) = rule.reach();
+    let half = rule.half_bead;
+    // (layer, x, y, mm, dangling) per unheld bead, and the strict sum per layer.
+    let checked: Vec<(Vec<Unheld>, f64)> = (0..layers.len())
+        .into_par_iter()
+        .map(|li| {
+            let z = layers[li].z;
+            let mut held = Vec::new();
+            let mut unheld = Vec::new();
+            let mut strict = 0.0;
+            for s in &parts[li] {
+                let on_belt = rule
+                    .belt
+                    .is_some_and(|f| f.lab(s.x, s.y, z)[2] <= HOLD_BELT_MM);
+                if li == 0 || on_belt || part_rows[li - 1].hit(s.x, s.y - half, s.y + half, half) {
+                    held.push([s.x, s.y]);
+                    continue;
+                }
+                strict += s.mm;
+                let (lo, hi) = (s.y - uphill, s.y + downhill);
+                let mut ok = part_rows[li - 1].hit(s.x, lo, hi, across)
+                    || support_rows[li - 1].hit(s.x, lo, hi, across);
+                for k in 1..=rule.gap_layers + 1 {
+                    if ok || k > li {
+                        break;
+                    }
+                    let drift = rule.drift(z - layers[li - k].z);
+                    ok = support_rows[li - k].hit(s.x, s.y - uphill, s.y + drift + uphill, across);
+                }
+                if ok {
+                    held.push([s.x, s.y]);
+                } else {
+                    unheld.push((s.x, s.y, s.mm));
+                }
+            }
+            let beside = Rows::new(held.into_iter(), origin);
+            let unheld = unheld
+                .into_iter()
+                .map(|(x, y, mm)| {
+                    let hangs =
+                        beside.hit(x, y - HOLD_NEIGHBOUR_MM, y + HOLD_NEIGHBOUR_MM, neighbour);
+                    (li, x, y, mm, !hangs)
+                })
+                .collect();
+            (unheld, strict)
+        })
+        .collect();
+    let mut out = PartHold {
+        part_mm: parts.iter().flatten().map(|s| s.mm).sum(),
+        ..PartHold::default()
+    };
+    let bad: Vec<Unheld> = checked
+        .into_iter()
+        .flat_map(|(unheld, strict)| {
+            out.no_bead_under_mm += strict;
+            unheld
+        })
+        .collect();
+    for b in &bad {
+        out.unheld_mm += b.3;
+        if b.4 {
+            out.dangling_mm += b.3;
+        }
+    }
+    // Patches: 1 mm cells in X and Y, joined to their neighbours on the same
+    // layer and the next.
+    let mut cells: std::collections::HashMap<(usize, i64, i64), Vec<usize>> = Default::default();
+    for (k, &(li, x, y, _, _)) in bad.iter().enumerate() {
+        cells
+            .entry((li, x.floor() as i64, y.floor() as i64))
+            .or_default()
+            .push(k);
+    }
+    let keys: Vec<(usize, i64, i64)> = cells.keys().copied().collect();
+    let slot: std::collections::HashMap<(usize, i64, i64), usize> =
+        keys.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+    let mut parent: Vec<usize> = (0..keys.len()).collect();
+    fn find(parent: &mut [usize], mut c: usize) -> usize {
+        while parent[c] != c {
+            parent[c] = parent[parent[c]];
+            c = parent[c];
+        }
+        c
+    }
+    for (i, &(li, cx, cy)) in keys.iter().enumerate() {
+        for dl in 0..=1 {
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    if let Some(&j) = slot.get(&(li + dl, cx + dx, cy + dy)) {
+                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        if a != b {
+                            parent[a] = b;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut groups: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+    for (i, key) in keys.iter().enumerate() {
+        let root = find(&mut parent, i);
+        groups.entry(root).or_default().extend(&cells[key]);
+    }
+    let mut patches: Vec<HoldPatch> = groups
+        .into_values()
+        .map(|members| {
+            let first = members
+                .iter()
+                .copied()
+                .min_by(|&a, &b| {
+                    (bad[a].0, bad[a].1, bad[a].2)
+                        .partial_cmp(&(bad[b].0, bad[b].1, bad[b].2))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .expect("a patch has a bead");
+            let (li, x, y, _, _) = bad[first];
+            HoldPatch {
+                mm: members.iter().map(|&k| bad[k].3).sum(),
+                dangling_mm: members
+                    .iter()
+                    .filter(|&&k| bad[k].4)
+                    .map(|&k| bad[k].3)
+                    .sum(),
+                layers: [
+                    layers[li].index,
+                    layers[members.iter().map(|&k| bad[k].0).max().unwrap_or(li)].index,
+                ],
+                at: rule.plate(x, y, layers[li].z),
+            }
+        })
+        .collect();
+    patches.sort_by(|a, b| b.mm.total_cmp(&a.mm).then(a.layers.cmp(&b.layers)));
+    out.patches = patches.len();
+    patches.truncate(HOLD_PATCHES_KEPT);
+    out.largest = patches;
+    out
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -243,6 +640,28 @@ pub fn audit_slice(
     out.tree_depths = tree_depths(supports, bands);
     out.trees = tree_census(&planned.supports.forest, bands);
     out.coverage = planned.coverage;
+    let hold_layers: Vec<HoldLayer> = planned
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !l.paths.is_empty())
+        .map(|(i, l)| HoldLayer {
+            index: i,
+            z: l.z,
+            beads: l
+                .paths
+                .iter()
+                .map(|p| (p.kind, p.points.as_slice(), [0.0, 0.0]))
+                .collect(),
+        })
+        .collect();
+    let z_gap = settings
+        .support_z_gap_mm
+        .unwrap_or_else(|| settings.layer_height.max(0.12));
+    out.part_hold = part_hold(
+        &hold_layers,
+        &HoldRule::new(settings.line_width, settings.layer_height, z_gap, None),
+    );
     Ok(out)
 }
 
@@ -485,6 +904,136 @@ mod tests {
         let ring = vec![square(0.0, 0.0, 10.0), hole];
         let area = uncovered_area(&ring);
         assert!((area - 1.99).abs() < 1e-6, "{area}");
+    }
+
+    /// A 45° belt frame that puts slice Z straight into lab height, so the
+    /// belt never holds a bead in these tests above the first layer.
+    fn belt_45() -> crate::belt::Frame {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        crate::belt::Frame {
+            sin_a: s,
+            cos_a: s,
+            z_drop: 0.0,
+            y_shift: -1000.0,
+        }
+    }
+
+    fn line(y: f64) -> Vec<[f64; 2]> {
+        vec![[0.0, y], [10.0, y]]
+    }
+
+    type Stack = [Vec<(PathKind, Vec<[f64; 2]>)>];
+
+    fn rows(stack: &Stack) -> Vec<HoldLayer<'_>> {
+        stack
+            .iter()
+            .enumerate()
+            .map(|(i, beads)| HoldLayer {
+                index: i,
+                z: 0.2 * (i + 1) as f64,
+                beads: beads
+                    .iter()
+                    .map(|(k, p)| (*k, p.as_slice(), [0.0, 0.0]))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    fn check(stack: &Stack, belt: bool) -> PartHold {
+        let rule = HoldRule::new(0.45, 0.2, 0.2, belt.then(|| (belt_45(), 0.0)));
+        part_hold(&rows(stack), &rule)
+    }
+
+    #[test]
+    fn a_bead_over_a_bead_is_held() {
+        let stack = vec![
+            vec![(PathKind::Outer, line(0.0))],
+            vec![(PathKind::Outer, line(0.2))],
+        ];
+        let hold = check(&stack, true);
+        assert!((hold.part_mm - 20.0).abs() < 1e-9, "{hold:?}");
+        assert_eq!(hold.unheld_mm, 0.0, "{hold:?}");
+        assert_eq!(hold.no_bead_under_mm, 0.0, "{hold:?}");
+    }
+
+    #[test]
+    fn a_belt_bead_leans_downhill_further_than_uphill() {
+        // Gravity runs along +Y in the slice frame. 0.4 mm downhill is
+        // inside the 0.5 mm sag; 0.4 mm uphill is past the 0.3 mm reach.
+        let down = check(
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(-0.4))],
+            ],
+            true,
+        );
+        assert!((down.no_bead_under_mm - 10.0).abs() < 1e-9, "{down:?}");
+        assert_eq!(down.unheld_mm, 0.0, "{down:?}");
+        let up = check(
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(0.4))],
+            ],
+            true,
+        );
+        assert!((up.unheld_mm - 10.0).abs() < 1e-9, "{up:?}");
+        assert!((up.dangling_mm - 10.0).abs() < 1e-9, "{up:?}");
+        assert_eq!(up.patches, 1);
+        assert_eq!(up.largest[0].layers, [1, 1]);
+        // A flat bed has no downhill side.
+        let flat = check(
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(-0.4))],
+            ],
+            false,
+        );
+        assert!((flat.unheld_mm - 10.0).abs() < 1e-9, "{flat:?}");
+    }
+
+    #[test]
+    fn support_under_the_gap_holds_where_gravity_carries_the_bead() {
+        // Interface two layers down, 0.5 mm downhill: the bead falls 0.4 mm
+        // along +Y over those two layers, plus the 0.3 mm reach.
+        let stack = vec![
+            vec![(PathKind::SupportInterface, line(0.5))],
+            vec![],
+            vec![(PathKind::Bridge, line(0.0))],
+        ];
+        let hold = check(&stack, true);
+        assert_eq!(hold.unheld_mm, 0.0, "{hold:?}");
+        let flat = check(&stack, false);
+        assert!((flat.unheld_mm - 10.0).abs() < 1e-9, "{flat:?}");
+    }
+
+    #[test]
+    fn a_bead_beside_a_held_bead_hangs_and_one_alone_dangles() {
+        let stack = vec![
+            vec![(PathKind::Outer, line(0.0))],
+            vec![
+                (PathKind::Outer, line(0.0)),
+                (PathKind::Inner, line(0.4)),
+                (PathKind::Solid, line(-3.0)),
+            ],
+        ];
+        let hold = check(&stack, true);
+        assert!((hold.unheld_mm - 20.0).abs() < 1e-9, "{hold:?}");
+        assert!((hold.dangling_mm - 10.0).abs() < 1e-9, "{hold:?}");
+        assert_eq!(hold.patches, 2, "{hold:?}");
+    }
+
+    #[test]
+    fn skirt_and_ironing_are_not_part_beads() {
+        let stack = vec![
+            vec![(PathKind::Outer, line(0.0))],
+            vec![
+                (PathKind::Skirt, line(5.0)),
+                (PathKind::Ironing, line(-5.0)),
+            ],
+        ];
+        let hold = check(&stack, true);
+        assert!((hold.part_mm - 10.0).abs() < 1e-9, "{hold:?}");
+        assert_eq!(hold.unheld_mm, 0.0);
     }
 
     #[test]

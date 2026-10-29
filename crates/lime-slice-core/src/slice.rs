@@ -392,6 +392,11 @@ pub struct SliceRequest {
     /// Also return the tree outline the UI picks limbs from.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_skeleton: bool,
+    /// Also measure the part beads that stand on nothing, as `partHold`.
+    /// It reads the finished layers and never changes the G-code. Omitted
+    /// when off, so a request that does not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub part_hold: bool,
     /// The `previewToken` of the preview the client shows. When the engine
     /// still holds that preview, the reply carries `previewPatch` instead
     /// of `layers`.
@@ -560,6 +565,8 @@ pub struct SliceSettings {
     pub object_tweak: Tweak,
     /// Report the tree outline on the response.
     pub include_skeleton: bool,
+    /// Report the part beads that stand on nothing on the response.
+    pub part_hold: bool,
     /// The preview the client holds, from `SliceRequest::preview_base`.
     pub preview_base: Option<String>,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
@@ -649,6 +656,7 @@ impl Default for SliceSettings {
             overrides: Overrides::default(),
             object_tweak: Tweak::default(),
             include_skeleton: false,
+            part_hold: false,
             preview_base: None,
             job: Job::default(),
             capture_beads: false,
@@ -843,6 +851,7 @@ impl SliceSettings {
                 infill_floor: None,
             },
             include_skeleton: req.include_skeleton,
+            part_hold: req.part_hold,
             preview_base: req.preview_base.clone(),
             job: Job::default(),
             capture_beads: false,
@@ -1269,6 +1278,10 @@ pub struct SliceResponse {
     /// closed on its own. Response metadata only: G-code is unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<SliceWarning>,
+    /// Part beads that stand on nothing, when the request set `partHold`.
+    /// The first belt copy only; the others print the same layers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_hold: Option<crate::audit::PartHold>,
     /// The emitted beads, when `slice_beads` asked for them. Never on the wire.
     #[serde(skip)]
     pub beads: Option<Arc<SlicedBeads>>,
@@ -1802,6 +1815,7 @@ pub(crate) fn warm_kept(req: SliceRequest, job: Job) {
         compare: false,
         include_gcode: false,
         include_skeleton: false,
+        part_hold: false,
         preview_base: None,
         ..req
     };
@@ -2715,6 +2729,17 @@ fn slice_plate(
         ))
     };
     let emit_layers: &[PlateLayer] = stamped.as_deref().unwrap_or(emit_held.as_slice());
+    let part_hold = settings.part_hold.then(|| {
+        let z_gap = settings
+            .support_z_gap_mm
+            .unwrap_or_else(|| layer_height.max(0.12));
+        let frame = belt_job.as_ref().map(|job| (job.belt.frame, job.belt.start));
+        crate::audit::plate_hold(
+            emit_layers,
+            &offsets,
+            &crate::audit::HoldRule::new(line_width, layer_height, z_gap, frame),
+        )
+    });
     let beads = settings.capture_beads.then(|| {
         let offset = offsets.first().copied().unwrap_or([0.0, 0.0]);
         Arc::new(sliced_beads(
@@ -3177,6 +3202,7 @@ fn slice_plate(
         objects: objects_view,
         collisions,
         warnings: mesh_warnings(repaired_layers, bridged_mm, dropped_chains),
+        part_hold,
         beads,
     })
 }
