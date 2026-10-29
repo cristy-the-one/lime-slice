@@ -1,7 +1,7 @@
 import { fx } from "./fx";
 import { state, session, worker, cachedRecipes, type ParetoPoint, type SliceResponse } from "./state";
 import { autoSliceAllowed, autoSliceDeferred, meshKeyHex, partFrameKey, quietRefresh, recipeKey, type SliceAction, sliceAction, sliceBusyLabel, sliceErrorRetryable, storesReply, FORCE_LABEL } from "../slice-action";
-import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, withMeshData } from "./files";
+import { currentPlacement, livePlate, meshBase64, meshBytes, fail, isTauri, objectBase64, objectFingerprint, objectPlacement, slicedKey, withMeshData } from "./files";
 import { MeshRefs, sendWithMeshes, unknownMeshRef, type MeshFields, type SentMesh } from "../mesh-refs";
 import { adoptPatch, dropEarly, paintStatus, previewBase, showEarly } from "./viewer";
 import { blend, renderChrome, settingsHash, markBusy, paintBanner, busyText, markEngineDown, apiBase, stale, apiToken, touch } from "./settings";
@@ -9,7 +9,8 @@ import { editRequestFields } from "../support-edit-list";
 import { replyOffset, type SlicedBed } from "../bed-offset";
 import { emptyOverrides } from "../overrides";
 import { sliceRequest } from "../slice-request";
-import { plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
+import { meshSeat, plateListed, slicePlateFields, sourceFrame, type PlateObject, type PlateRequestObject } from "../plate";
+import { readHoldPatches, type SliceHold } from "../model-transition";
 import { normalInfillDensity, reinforcementRequestFields } from "../reinforcement";
 import { seamRequestFields } from "../seam-paint";
 import { paintRequestFields } from "../support-paint";
@@ -201,7 +202,7 @@ export function payload() {
         ...(objects.some((obj) => objectTree(obj)) ? { includeSkeleton: true } : {}),
       }
     : {};
-  return rules.coerce(sliceRequest({
+  const request = rules.coerce(sliceRequest({
     one,
     plate,
     order: orderFields(rules, order),
@@ -216,6 +217,22 @@ export function payload() {
     overrides: state.overrides ?? emptyOverrides(),
     includePreview: true,
   }));
+  // --- Print transitions, step 6b: the part beads on nothing, for Find's check, once Find has been used.
+  if (session.partHold) request.partHold = true;
+  return request;
+}
+
+/** What Find needs of a slice's part-bead check: its patches, and each object as it was placed for it. */
+function sliceHoldOf(body: SliceResponse, objects: readonly PlateObject[], belt: boolean): SliceHold | null {
+  const raw = (body as { partHold?: unknown }).partHold;
+  if (!raw) return null;
+  return {
+    patches: readHoldPatches(raw),
+    objects: objects.map((obj) => {
+      const offset = replyOffset(body.objects?.find((v) => v.id === obj.id)?.offset ?? body.offset);
+      return { id: obj.id, pose: objectPlacement(obj).pose, scale: obj.partScale, seatMm: meshSeat(obj.bytes) ?? 0, beltOffsetY: belt ? offset[1] : null, key: slicedKey(obj) };
+    }),
+  };
 }
 
 /** The loaded mesh as a request names it on its own: the object the pose tools hold, which is the selected one on a plate. */
@@ -335,6 +352,10 @@ export async function runSlice(force = false) {
   request.replyParts = true;
   const listed = request.objects as PlateRequestObject[] | undefined;
   const selected = listed?.find((o) => o.id === state.plate.selectedId);
+  // --- Print transitions, step 6b: the objects this slice's part-bead check covers, as they are placed now.
+  const live = livePlate();
+  const holdObjects = request.partHold ? (listed ? listed.flatMap((o) => live.filter((p) => p.id === o.id)) : live.filter((p) => p.id === (state.plate.selectedId ?? live[0]?.id)).slice(0, 1)) : [];
+  const holdBelt = beltStamp(loadMachineLibrary()) !== null;
   const edits = (listed ? selected?.supportEdits : request.supportEdits) ? state.supportEdits : [];
   const paint = state.supportPaint;
   const paintedIndex = listed ? Math.max(0, listed.findIndex((o) => o.id === state.plate.selectedId)) : 0;
@@ -404,6 +425,7 @@ export async function runSlice(force = false) {
     session.slicedBed = slicedBed;
     session.slicedObjects =
       slicedObjects?.map((o) => ({ ...o, bed: { ...o.bed, offset: replyOffset(body.objects?.find((v) => v.id === o.id)?.offset) } })) ?? null;
+    session.sliceHold = request.partHold ? sliceHoldOf(body, holdObjects, holdBelt) : null;
     const prev = session.slicedFrame !== null && session.shownRecipe !== null ? { frame: session.slicedFrame, recipe: session.shownRecipe } : null;
     session.slicedFrame = partFrame;
     state.slicedHash = hash;
@@ -707,7 +729,7 @@ export async function runPareto() {
   renderChrome();
   try {
     // The engine estimates one object: on a plate, the selected one, alone and in the plate's settings.
-    const { objects: _objects, includeSkeleton: _skeleton, printOrder: _order, sequentialClearanceMm: _clearance, sequentialGantryMm: _gantry, ...single } = payload() as Record<string, unknown>;
+    const { objects: _objects, includeSkeleton: _skeleton, printOrder: _order, sequentialClearanceMm: _clearance, sequentialGantryMm: _gantry, partHold: _hold, ...single } = payload() as Record<string, unknown>;
     const body = { ...single, ...ownMesh(), printer: { ...(single.printer as object), filamentDensityGCm3: state.profile.filamentDensityGCm3 }, dataB64: meshBase64() };
     let points: ParetoPoint[];
     if (isTauri()) {

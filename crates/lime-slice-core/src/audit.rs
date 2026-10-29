@@ -120,9 +120,15 @@ pub struct HoldPatch {
     /// Where its first layer starts, in the plate frame: X and Y on the bed
     /// or the belt, Z up from it.
     pub at: [f64; 3],
+    /// Its first layer's unheld beads, at most [`HOLD_FIRST_POINTS`] of them
+    /// spread along it, in the plate frame as `at`: where the patch was born,
+    /// for matching it to the model edge it hangs from.
+    pub first: Vec<[f64; 3]>,
 }
 
 pub const HOLD_PATCHES_KEPT: usize = 20;
+/// Points kept of a patch's first layer.
+pub const HOLD_FIRST_POINTS: usize = 12;
 /// Part beads are sampled this often along their path.
 const HOLD_STEP_MM: f64 = 0.2;
 /// Row height of the sample index across the layer.
@@ -488,6 +494,25 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
                 })
                 .expect("a patch has a bead");
             let (li, x, y, ..) = bad[first];
+            // The first layer's samples in the order `at` was picked by, and an even spread of them.
+            let mut born: Vec<(f64, f64)> = members
+                .iter()
+                .filter(|&&k| bad[k].0 == li)
+                .map(|&k| (bad[k].1, bad[k].2))
+                .collect();
+            born.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let keep = born.len().min(HOLD_FIRST_POINTS);
+            let first = (0..keep)
+                .map(|i| {
+                    let at = if keep > 1 {
+                        i * (born.len() - 1) / (keep - 1)
+                    } else {
+                        0
+                    };
+                    let (px, py) = born[at];
+                    rule.plate(px, py, layers[li].z)
+                })
+                .collect();
             HoldPatch {
                 mm: members.iter().map(|&k| bad[k].3).sum(),
                 dangling_mm: members
@@ -501,6 +526,7 @@ pub(crate) fn part_hold(layers: &[HoldLayer], rule: &HoldRule) -> PartHold {
                     layers[members.iter().map(|&k| bad[k].0).max().unwrap_or(li)].index,
                 ],
                 at: rule.plate(x, y, layers[li].z),
+                first,
             }
         })
         .collect();
@@ -992,6 +1018,34 @@ mod tests {
     }
 
     #[test]
+    fn a_patch_keeps_a_spread_of_its_first_layer() {
+        // A 10 mm row 5 mm off the one under it, then a row on top of it:
+        // the patch is born on layer 1, along the whole row.
+        let hold = check(
+            &[
+                vec![(PathKind::Outer, line(0.0))],
+                vec![(PathKind::Outer, line(5.0))],
+                vec![(PathKind::Outer, line(5.0))],
+            ],
+            false,
+        );
+        let patch = &hold.largest[0];
+        assert_eq!(patch.layers, [1, 1], "{hold:?}");
+        assert_eq!(patch.first.len(), HOLD_FIRST_POINTS, "{patch:?}");
+        assert_eq!(patch.first[0], patch.at, "{patch:?}");
+        let xs: Vec<f64> = patch.first.iter().map(|p| p[0]).collect();
+        assert!(xs.windows(2).all(|w| w[0] <= w[1]), "{xs:?}");
+        assert!(xs[0] < 0.5 && *xs.last().unwrap() > 9.5, "{xs:?}");
+        assert!(
+            patch
+                .first
+                .iter()
+                .all(|p| (p[1] - 5.0).abs() < 1e-9 && (p[2] - 0.4).abs() < 1e-9),
+            "{patch:?}"
+        );
+    }
+
+    #[test]
     fn a_belt_bead_leans_downhill_further_than_uphill() {
         // Gravity runs along +Y in the slice frame. 0.4 mm downhill is
         // inside the 0.5 mm sag; 0.4 mm uphill is past the 0.3 mm reach.
@@ -1062,12 +1116,27 @@ mod tests {
         // Over a floor from X 0 to 3: a row along X spans the 6.8 mm past it
         // and its reach, and a zigzag's rows across Y are spans of 2 mm each.
         let floor: Vec<_> = (0..20)
-            .map(|k| (PathKind::Solid, vec![[0.0, k as f64 * 0.4 - 4.0], [3.0, k as f64 * 0.4 - 4.0]]))
+            .map(|k| {
+                (
+                    PathKind::Solid,
+                    vec![[0.0, k as f64 * 0.4 - 4.0], [3.0, k as f64 * 0.4 - 4.0]],
+                )
+            })
             .collect();
-        let along = check(&[floor.clone(), vec![(PathKind::GapFill, line(0.0))]], false);
+        let along = check(
+            &[floor.clone(), vec![(PathKind::GapFill, line(0.0))]],
+            false,
+        );
         assert!((along.longest_span_mm - 6.8).abs() < 0.11, "{along:?}");
         assert_eq!(along.largest[0].longest_span_mm, along.longest_span_mm);
-        let zigzag = vec![[5.0, 0.0], [5.0, 2.0], [5.4, 2.0], [5.4, 0.0], [5.8, 0.0], [5.8, 2.0]];
+        let zigzag = vec![
+            [5.0, 0.0],
+            [5.0, 2.0],
+            [5.4, 2.0],
+            [5.4, 0.0],
+            [5.8, 0.0],
+            [5.8, 2.0],
+        ];
         let across = check(&[floor, vec![(PathKind::Bridge, zigzag)]], false);
         assert!((across.unheld_mm - 6.8).abs() < 0.11, "{across:?}");
         assert!((across.longest_span_mm - 2.0).abs() < 0.11, "{across:?}");

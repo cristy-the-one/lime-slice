@@ -61,7 +61,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
-import { findingSummary, fixableEdges, readFinding, readTransitionRows, transitionAngleLimit, transitionFindRequest, transitionFloorMm, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE, type TransitionFix } from "../src/model-transition.ts";
+import { checkAgainstSlice, findingSummary, fixableEdges, readFinding, readHoldPatches, readTransitionRows, sliceCheckSummary, type Finding, type SlicedPose, transitionAngleLimit, transitionFindRequest, transitionFloorMm, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE, type TransitionFix } from "../src/model-transition.ts";
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
@@ -143,6 +143,8 @@ const STEP = 0.05;
 const SLICE_WAIT_DEFAULT_S = 20;
 const SLICE_WAIT_MAX_S = 120;
 const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
+/** --- Print transitions, step 6b. plan:true before a slice of this plate as it is. */
+const SLICE_CHECK_MCP = "slice_start, then plan again, to mark the rows that hang in the slice too (seenInSlice).";
 const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
 const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
 
@@ -476,6 +478,8 @@ function rememberSolid(body: Record<string, unknown>) {
     triangles: Uint32Array.from(solid.triangles),
     faces: faceRows(solid.positions, solid.triangles, solid.faces),
     edges: solid.edges.map((edge) => ({ index: edge.id, lengthMm: edge.lengthMm, ...edgeGeometry(edge.points, edge.lengthMm) })),
+    /** --- Print transitions, step 6b. Each edge's polyline in the solid's frame, for the check against a slice. */
+    lines: solid.edges.map((edge) => ({ edge: edge.id, points: Float32Array.from(edge.points) })),
     bounds: boundsOf(solid.positions),
   };
 }
@@ -6501,22 +6505,51 @@ export class Session {
       if (lost) return lost;
       throw err;
     }
-    const read = readFinding(reply, obj.orient, fix, (text) => plainModelError(text, "transition"));
-    if (typeof read === "string") return { ok: false, reason: plainModelError(read, "transition") };
+    const found = readFinding(reply, obj.orient, fix, (text) => plainModelError(text, "transition"));
+    if (typeof found === "string") return { ok: false, reason: plainModelError(found, "transition") };
+    const read = this.againstSlice(obj, found, build);
     const pose = typedPoseOf(obj);
+    const typedAt = (p: readonly number[]) => this.typedPoint(obj, applyPose(pose, p)).map((value) => Math.round(value * 1000) / 1000 + 0);
     const typed = { kind: "transition", mode: "auto", angleDeg, size, ...(maxMm !== undefined ? { maxMm } : {}) };
     const rows = read.rows.map((row) => ({
       edges: [row.edge],
       case: row.case,
       lengthMm: Math.round(row.lengthMm * 100) / 100,
       ...(row.curved ? { curved: true } : {}),
-      at: this.typedPoint(obj, applyPose(pose, row.mid)).map((value) => Math.round(value * 1000) / 1000 + 0),
+      at: typedAt(row.mid),
       fix: { ...typed, edges: [row.edge] },
       ...(row.refused ? { refused: row.refused } : row.wedge ? { volumeMm3: row.wedge.volumeMm3 } : {}),
+      ...(row.seen ? { seenInSlice: row.seen } : {}),
     }));
     const fixable = fixableEdges(read);
     const next = fixable.length > 0 ? ` The op fixes the ${fixable.length === 1 ? "row that builds" : `${fixable.length} rows that build`} as one step: model_probe it, then model_apply it, or apply one row's fix alone.` : "";
-    return { ok: true, reason: `${findingSummary(read)}${next}`, rows, ...(read.curvedSkipped > 0 ? { curvedSkipped: read.curvedSkipped, curvedEdges: read.curvedEdges } : {}), ...(fixable.length > 0 ? { op: { ...typed, edges: fixable } } : {}) };
+    const check = read.slice ? ` ${sliceCheckSummary(read) ?? ""}`.trimEnd() : ` ${SLICE_CHECK_MCP}`;
+    const sliceOnly = (read.slice?.only ?? []).map((row) => ({ edges: [row.edge], distMm: row.distMm, at: typedAt(row.at), unheldMm: row.unheldMm, longestSpanMm: row.longestSpanMm, layers: row.layers }));
+    return {
+      ok: true,
+      reason: `${findingSummary(read)}${next}${check}`,
+      rows,
+      ...(read.curvedSkipped > 0 ? { curvedSkipped: read.curvedSkipped, curvedEdges: read.curvedEdges } : {}),
+      ...(fixable.length > 0 ? { op: { ...typed, edges: fixable } } : {}),
+      ...(read.slice ? { slice: { patches: read.slice.patches, awayFromEdges: read.slice.faces }, ...(sliceOnly.length > 0 ? { sliceOnly } : {}) } : {}),
+    };
+  }
+
+  /**
+   * --- Print transitions, step 6b (plan decision 7). `finding` marked with what the latest slice saw hanging at its
+   * edges, when that slice is still this plate as it is (the stamp `gcode_summary` reads); as it is otherwise.
+   */
+  private againstSlice(obj: PlateObject, finding: Finding, build: readonly number[]): Finding {
+    const job = this.latest;
+    const wire = job?.wire;
+    if (!job || !wire || this.staleReason(job) || !wire.partHold || !obj.solid) return finding;
+    const hold = readHoldPatches(wire.partHold);
+    const placed = this.placed(obj);
+    const objects = Array.isArray(wire.objects) ? (wire.objects as { id?: unknown; offset?: number[] }[]) : [];
+    const offset = objects.find((row) => row.id === obj.id)?.offset ?? (wire.offset as number[] | undefined);
+    const belt = this.printer().kind === "belt";
+    const sliced: SlicedPose = { id: obj.id, pose: placed.pose, scale: obj.scale, seatMm: obj.seatMm, beltOffsetY: belt ? (Number(offset?.[1]) || 0) : null, key: "" };
+    return checkAgainstSlice(finding, { patches: hold, objects: [sliced] }, sliced, obj.solid.lines, obj.solid.bounds, build);
   }
 
   /**

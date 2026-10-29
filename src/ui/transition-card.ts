@@ -9,7 +9,7 @@
 import type { ModelGhost } from "../model-view";
 import { formatMm } from "../model-plane";
 import type { TransitionOp } from "../model-tree";
-import { CUT_LIP_ONLY, FIND_LABEL, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, caseName, cardAimed, chainClick, edgesLine, cardCase, cardFromTransition, degreeSpan, findingSummary, fixOp, fixText, fixableEdges, foundWords, newTransitionCard, sameTransitionCard, transitionAngleLimit, transitionCardRefusal, transitionFix, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type Finding, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow } from "../model-transition";
+import { CUT_LIP_ONLY, FIND_LABEL, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, caseName, cardAimed, chainClick, edgesLine, cardCase, cardFromTransition, degreeSpan, findingSummary, fixOp, fixText, fixableEdges, foundWords, newTransitionCard, sameTransitionCard, transitionAngleLimit, transitionCardRefusal, transitionFix, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type Finding, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow, SLICE_CHECK_NONE, seenText, sliceCheckSummary, sliceOnlyText } from "../model-transition";
 import { closeModelCard, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 
@@ -82,6 +82,8 @@ export function mountTransitionCard(next: TransitionHost) {
       <p class="model-note" id="modelTransFindStatus" role="status" hidden></p>
       <p class="model-note is-warn" id="modelTransFindStale" hidden>The angle, the size or the pose changed since. Find again to check the fixes.</p>
       <ul class="tc-list" id="modelTransList" aria-label="Edges that start in the air" hidden></ul>
+      <p class="model-note tc-slice-status" id="modelTransSliceStatus" role="status" hidden></p>
+      <ul class="tc-list tc-slice-only" id="modelTransSliceOnly" aria-label="Edges that hang only in the slice" hidden></ul>
       <div class="tc-find-foot" id="modelTransFindFoot" hidden>
         <button class="btn primary" type="button" id="modelTransFixAll" data-tip="Every fix that builds, as one history step. Edit that step later to drop an edge.">Fix all</button>
       </div>
@@ -128,13 +130,14 @@ export function mountTransitionCard(next: TransitionHost) {
   body.addEventListener("click", onClick);
   body.addEventListener("input", onInput);
   body.addEventListener("change", onInput);
-  const list = body.querySelector<HTMLElement>("#modelTransList");
-  list?.addEventListener("pointerover", (ev) => hoverRow(rowEdge(ev.target)));
-  list?.addEventListener("pointerleave", () => hoverRow(null));
-  list?.addEventListener("focusin", (ev) => hoverRow(rowEdge(ev.target)));
-  list?.addEventListener("focusout", (ev) => {
-    if (!(ev.relatedTarget instanceof Node && list.contains(ev.relatedTarget))) hoverRow(null);
-  });
+  for (const list of body.querySelectorAll<HTMLElement>("#modelTransList, #modelTransSliceOnly")) {
+    list.addEventListener("pointerover", (ev) => hoverRow(rowEdge(ev.target)));
+    list.addEventListener("pointerleave", () => hoverRow(null));
+    list.addEventListener("focusin", (ev) => hoverRow(rowEdge(ev.target)));
+    list.addEventListener("focusout", (ev) => {
+      if (!(ev.relatedTarget instanceof Node && list.contains(ev.relatedTarget))) hoverRow(null);
+    });
+  }
 }
 
 /** The Features menu's Print transition…: the card opens on the solid on screen, with the edges already picked. */
@@ -294,7 +297,7 @@ export function setTransitionChain(edges: readonly number[] | null) {
 export function setTransitionFinding(next: TransitionFindView) {
   if (!transitionCardOpen()) return;
   listing = next;
-  if (hovered != null && !(listing?.phase === "done" && listing.finding.rows.some((row) => row.edge === hovered))) hovered = null;
+  if (hovered != null && !listedEdges().includes(hovered)) hovered = null;
   paintFound();
   refreshModelCard();
 }
@@ -322,21 +325,26 @@ function runFind() {
 }
 
 function rowEdge(target: EventTarget | null): number | null {
-  const row = target instanceof Element ? target.closest<HTMLElement>("[data-found]") : null;
-  return row ? Number(row.dataset.found) : null;
+  const row = target instanceof Element ? target.closest<HTMLElement>("[data-found], [data-slice-only]") : null;
+  return row ? Number(row.dataset.found ?? row.dataset.sliceOnly) : null;
+}
+
+/** Every edge the card lists: Find's rows, then the edges only the last slice finds hanging. */
+function listedEdges(): number[] {
+  if (listing?.phase !== "done") return [];
+  return [...listing.finding.rows.map((row) => row.edge), ...(listing.finding.slice?.only ?? []).map((row) => row.edge)];
 }
 
 function hoverRow(edge: number | null) {
   if (edge === hovered) return;
   hovered = edge;
-  for (const row of root()?.querySelectorAll<HTMLElement>("[data-found]") ?? []) row.classList.toggle("is-lit", Number(row.dataset.found) === edge);
+  for (const row of root()?.querySelectorAll<HTMLElement>("[data-found], [data-slice-only]") ?? []) row.classList.toggle("is-lit", Number(row.dataset.found ?? row.dataset.sliceOnly) === edge);
   flagFound();
   refreshModelCard();
 }
 
 function flagFound() {
-  const rows = listing?.phase === "done" ? listing.finding.rows : [];
-  host?.flag(rows.map((row) => row.edge), hovered);
+  host?.flag(listedEdges(), hovered);
 }
 
 /** The found list: a status line, one row per edge with its case, length, fix and Fix, then Fix all. */
@@ -411,9 +419,53 @@ function paintFound() {
       why.dataset.tip = row.refused;
       item.append(why);
     }
+    if (row.seen) {
+      item.dataset.seen = "";
+      const mark = document.createElement("p");
+      mark.className = "tc-seen";
+      mark.textContent = seenText(row.seen);
+      item.append(mark);
+    }
     return item;
   }));
+  paintSliceCheck();
   flagFound();
+}
+
+/**
+ * --- Step 6b. The check against the last slice: a line under the list, and the edges that hang in the slice that Find
+ * does not list, each a button that picks its edge. Before a slice of this pose, the line says to slice.
+ */
+function paintSliceCheck() {
+  const status = $<HTMLElement>("#modelTransSliceStatus");
+  const list = $<HTMLElement>("#modelTransSliceOnly");
+  if (!status || !list) return;
+  const finding = listing?.phase === "done" ? listing.finding : null;
+  const text = !finding ? "" : finding.slice ? sliceCheckSummary(finding) ?? "" : SLICE_CHECK_NONE;
+  status.textContent = text;
+  status.hidden = text === "";
+  status.classList.toggle("is-pending", !!finding && !finding.slice);
+  const only = finding?.slice?.only ?? [];
+  list.hidden = only.length === 0;
+  list.replaceChildren(...only.map((row) => {
+    const item = document.createElement("li");
+    item.className = "tc-found-row tc-only-row";
+    item.dataset.sliceOnly = String(row.edge);
+    const pick = document.createElement("button");
+    pick.type = "button";
+    pick.className = "tc-found-pick";
+    pick.dataset.pickFound = String(row.edge);
+    pick.dataset.tip = "Pick this edge, to check a print transition on it with the card's numbers";
+    const kind = document.createElement("span");
+    kind.className = "tc-case";
+    kind.textContent = "Slice only";
+    const what = document.createElement("span");
+    what.className = "tc-fix-text tc-only-text";
+    what.textContent = sliceOnlyText(row);
+    pick.append(kind, what);
+    item.append(pick);
+    return item;
+  }));
 }
 
 function fixFound(edges: readonly number[]) {

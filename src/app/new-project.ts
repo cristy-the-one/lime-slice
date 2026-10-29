@@ -162,6 +162,7 @@ export function blankProject() {
   session.slicedEdits = [];
   session.slicedPaint = [];
   session.slicedBed = null;
+  session.sliceHold = null;
   session.slicedObjects = null;
   session.fingerSource = null;
   session.fingerScale = Number.NaN;

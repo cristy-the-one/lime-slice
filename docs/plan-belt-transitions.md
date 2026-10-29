@@ -797,6 +797,31 @@ No wedge changes them, because they hang at the B-spline side corners, which the
 - **The volume check on these paths is looser.** The wedge must add at least half its own volume, and no more than its tools hold. The face check carries the "ran into something" refusal. A straight edge between flat faces meeting nothing keeps the 1 % check.
 - **The housing could not be fixed by a wedge.** The goal of this step was a real fix on the down-ramp bend, and that fix does not exist as a wedge, for the reasons above.
 
+### As built: step 6b
+
+**The slice cross-check (decision 7).** After a slice, each patch of part beads that stand on nothing is taken back to the solid's frame through the object's plate pose. Find then marks the rows whose edges the patch was born at: "Seen in the slice: 120 mm unheld, spans 18.6 mm, layers 101–102."
+- **Born at an edge** means the patch's first layer passes within 3 mm of it, at the edge or past it in build order (at most 0.5 mm before it). 3 mm is a bead or two from the edge, plus the default 2 mm wedge.
+- **A lip's underside** is born all at once, so it marks both the lip's first edge and its root.
+- **A patch at an edge Find does not list** is a row of its own, "Slice only". Hovering it lights its edge, and its button picks the edge.
+- **Patches at no edge,** such as skin over infill, are counted in a sentence.
+- **Before a slice of this pose,** or after the part, its pose, its settings or its Model step changed, the card says to slice and Find again.
+
+**The MCP.** `plan:true` gives `seenInSlice` on rows, `sliceOnly`, and `slice {patches, awayFromEdges}`, for the latest slice while its stamp is current. The card and the MCP share one helper in `src/model-transition.ts`.
+
+**It only reads the slice.** G-code is unchanged, and golden is 60 of 60 byte-identical to `ae8aad72`.
+
+**The owner's housing,** read only: posed as in the -pain project, on the IR3 V2, with PETG, 0.2 mm layers and the project's 70° support angle.
+- The cross-check marked the ramp-foot corner's new edge "seen in the slice": 1,944.6 mm, layers 996–1026.
+- It listed slice-only rows at the two ends of the down-ramp bend, about 2,000 mm on layers 1113–1139 with a 29.6 mm span, and at the ramp foot's side corner.
+
+**Deviations:**
+- **The audit gives each patch a spread of its first layer** (`first`, up to 12 points). `at` alone is the first layer's lowest-X bead, which on a lip lay at its root, 10 mm from the first edge.
+- **On a belt, the audit's points keep the part's settled place along the belt.** The object's reply `offset` Y takes them back to the plate. This was measured on one object, at two places and three turns, on the IR3 V2. Plates of several objects on the belt are not measured.
+- **The app asks for `partHold` only from the first Find in a session.** A slice before that keeps its request and cache key. The cost is about 60 ms of engine time on the Baby Dragon, 2–3 % of a cold slice. Print time is unchanged.
+- **Patches at no edge are counted, not listed.**
+- **The card checks only when the Model step on screen is the one on the plate.**
+- **A Find run before the Model tree is opened does not mark rows.** If the bare slice was taken before the first Model call, the plated step is not yet known, so Find asks to slice again.
+
 ## 8. Risks
 
 - **The limit itself.** At 45° to the layers, the new face sits exactly where the housing's flat roof sat. If the coupon still shows unheld rows on the face at 45°, the default goes steeper (decision 2). The corner at the limit is the case most at risk: what fails there may be the slicer's handling of a limit face, not geometry. The coupon study runs first for that reason.

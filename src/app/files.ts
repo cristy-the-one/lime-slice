@@ -26,7 +26,7 @@ import { assemblyNotice, shellCount } from "../mesh-shells";
 import { solidsOffer, stepSolidHint } from "../step-solids";
 import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
-import { addedMesh, boundEntries, emptyPlate, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
+import { addedMesh, boundEntries, emptyPlate, meshTokenOf, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
 import { bedParts } from "../model-context";
 import { syncAssemblyView } from "./assemblies.ts";
 import { supportModeState } from "../support-source";
@@ -323,6 +323,12 @@ export function objectPlacement(obj: PlateObject): Placement {
   const placement = placeObject(obj, state.profile.bedX, state.profile.bedY);
   placed.set(obj.id, { source: obj.sourcePos, key, placement });
   return placement;
+}
+
+/** An object's mesh, turn, place and scale: what a slice's check was made for. */
+export function slicedKey(obj: PlateObject): string {
+  const pose = objectPlacement(obj).pose;
+  return `${JSON.stringify([pose.rotation, pose.pivot, pose.translation, obj.partScale])}:${meshTokenOf(obj.bytes)}`;
 }
 
 /** One object's scaled, unposed mesh as the engine is sent it, with its Base64 and fingerprint once asked. */
