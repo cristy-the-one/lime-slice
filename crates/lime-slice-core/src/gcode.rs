@@ -36,6 +36,11 @@ pub struct GcodeStats {
     /// the minimum layer time, in layer order. Empty when no layer was slowed.
     pub layer_slow: Vec<f64>,
     pub cancelled: bool,
+    /// Path the printer's Klipper `max_velocity` holds below the feed the
+    /// G-code asks for, in millimetres, and the fastest such feed. Both 0 when
+    /// no move is capped.
+    pub capped_mm: f64,
+    pub capped_feed_mm_s: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -1076,6 +1081,8 @@ struct LayerScan {
     retracts: usize,
     z_hops: usize,
     bounds: Option<[f64; 4]>,
+    capped_mm: f64,
+    capped_feed: f64,
 }
 
 /// One layer scanned from `entry`. Without `log` the scan only finds where
@@ -1141,6 +1148,8 @@ fn scan_layers(
                 bounds: w
                     .bounds_init
                     .then_some([w.min_x, w.max_x, w.min_y, w.max_y]),
+                capped_mm: w.capped_mm,
+                capped_feed: w.capped_feed,
             }
         })
         .collect();
@@ -1242,8 +1251,13 @@ fn write_preamble(
     } else if let Some(k) = klipper {
         let _ = writeln!(
             out,
-            "; estimator: klipper square_corner_velocity={:.1} minimum_cruise_ratio={:.2} extruder_corner_velocity={:.1}",
-            k.square_corner_velocity, k.min_cruise_ratio, k.extruder_corner_v
+            "; estimator: klipper square_corner_velocity={:.1} minimum_cruise_ratio={:.2} extruder_corner_velocity={:.1} max_velocity={} max_z_velocity={} max_z_accel={}",
+            k.square_corner_velocity,
+            k.min_cruise_ratio,
+            k.extruder_corner_v,
+            k.max_velocity,
+            k.z_velocity,
+            k.z_accel
         );
     } else {
         let _ = writeln!(
@@ -1352,22 +1366,24 @@ struct Writer {
     slow_floor: f64,
     klipper: Option<KlipperCfg>,
     fans: Fans,
+    capped_mm: f64,
+    capped_feed: f64,
 }
 
-struct KinMove {
-    dist: f64,
-    cruise: f64,
-    accel: f64,
-    entry_dir: [f64; 2],
-    exit_dir: [f64; 2],
-    kind: &'static str,
+pub(crate) struct KinMove {
+    pub(crate) dist: f64,
+    pub(crate) cruise: f64,
+    pub(crate) accel: f64,
+    pub(crate) entry_dir: [f64; 2],
+    pub(crate) exit_dir: [f64; 2],
+    pub(crate) kind: &'static str,
     /// The Klipper model reads the next three. The generic estimator leaves them 0.
     /// Signed Z travel of the move, so a hop's slope is a 3D direction.
-    dz: f64,
+    pub(crate) dz: f64,
     /// Filament millimetres per millimetre of path.
-    e_per_mm: f64,
+    pub(crate) e_per_mm: f64,
     /// The `M204` acceleration in force, before any axis limit cut `accel`.
-    m204: f64,
+    pub(crate) m204: f64,
 }
 
 impl Writer {
@@ -1435,6 +1451,8 @@ impl Writer {
             slow_floor: cfg.min_layer.map_or(0.0, |m| m.floor_mm_s),
             klipper: cfg.klipper,
             fans: cfg.fans,
+            capped_mm: 0.0,
+            capped_feed: 0.0,
         }
     }
 
@@ -1705,8 +1723,10 @@ impl Writer {
             // The M204 in force, as Klipper holds it, not the rounded request.
             m204 = self.accel.max(50.0);
             accel = m204;
-            if k.max_velocity > 0.0 {
-                cruise = cruise.min(k.max_velocity);
+            if k.max_velocity > 0.0 && cruise > k.max_velocity {
+                self.capped_mm += dist;
+                self.capped_feed = self.capped_feed.max(cruise);
+                cruise = k.max_velocity;
             }
             if dz.abs() > 1e-9 {
                 let ratio = dist / dz.abs();
@@ -1735,13 +1755,15 @@ impl Writer {
     /// Klipper accelerates it at `max_extrude_only_accel`; the generic estimator does not.
     fn extruder_move_s(&self, mm: f64) -> f64 {
         match &self.klipper {
-            Some(k) => move_time(
-                mm,
-                0.0,
-                0.0,
-                self.retract_speed.min(k.e_velocity),
-                k.e_accel,
-            ),
+            Some(k) => {
+                let one = [extruder_only_move(
+                    mm,
+                    self.retract_speed,
+                    self.accel.max(50.0),
+                    k,
+                )];
+                plan_klipper(&one, k).iter().sum()
+            }
             None => mm / self.retract_speed,
         }
     }
@@ -1852,6 +1874,8 @@ impl Writer {
         self.arc_moves += scan.arc_moves;
         self.retracts += scan.retracts;
         self.z_hops += scan.z_hops;
+        self.capped_mm += scan.capped_mm;
+        self.capped_feed = self.capped_feed.max(scan.capped_feed);
         if let Some([min_x, max_x, min_y, max_y]) = scan.bounds {
             if self.bounds_init {
                 self.min_x = self.min_x.min(min_x);
@@ -2594,6 +2618,8 @@ impl Writer {
             layer_seconds: self.layer_seconds,
             layer_slow: Vec::new(),
             cancelled: self.cancelled,
+            capped_mm: self.capped_mm,
+            capped_feed_mm_s: self.capped_feed,
         }
     }
 }
@@ -2626,7 +2652,7 @@ fn feature_rows(
         .collect()
 }
 
-fn hypot(x: f64, y: f64) -> f64 {
+pub(crate) fn hypot(x: f64, y: f64) -> f64 {
     x.hypot(y)
 }
 
@@ -2837,7 +2863,7 @@ fn junction_speed(cruise: f64, accel: f64, cos_theta: f64) -> f64 {
     (accel.max(50.0) * 0.02 / sin_half).sqrt().min(cruise)
 }
 
-fn move_time(dist: f64, v0: f64, v1: f64, cruise: f64, accel: f64) -> f64 {
+pub(crate) fn move_time(dist: f64, v0: f64, v1: f64, cruise: f64, accel: f64) -> f64 {
     let a = accel.max(50.0);
     let cruise = cruise.max(v0).max(v1).max(1.0);
     let d_acc = (cruise * cruise - v0 * v0).max(0.0) / (2.0 * a);
@@ -2924,25 +2950,25 @@ fn plan_lookahead(moves: &[KinMove], junction_deviation: f64) -> Vec<f64> {
 
 /// What Klipper's toolhead needs to time a move, from the printer profile.
 #[derive(Clone, Copy)]
-struct KlipperCfg {
-    square_corner_velocity: f64,
+pub(crate) struct KlipperCfg {
+    pub(crate) square_corner_velocity: f64,
     /// `scv² (√2 − 1)`. Klipper's junction deviation is this over the `M204` acceleration, so a
     /// move's deviation times its own acceleration is this over the ratio of the two.
-    corner_k: f64,
-    min_cruise_ratio: f64,
-    extruder_corner_v: f64,
+    pub(crate) corner_k: f64,
+    pub(crate) min_cruise_ratio: f64,
+    pub(crate) extruder_corner_v: f64,
     /// `0` leaves the feeds uncapped.
-    max_velocity: f64,
+    pub(crate) max_velocity: f64,
     /// `0` adds no limit.
-    z_velocity: f64,
-    z_accel: f64,
+    pub(crate) z_velocity: f64,
+    pub(crate) z_accel: f64,
     /// Extruder-only moves: `max_extrude_only_velocity` and `max_extrude_only_accel`.
-    e_velocity: f64,
-    e_accel: f64,
+    pub(crate) e_velocity: f64,
+    pub(crate) e_accel: f64,
 }
 
 impl KlipperCfg {
-    fn new(profile: &PrinterProfile) -> Self {
+    pub(crate) fn new(profile: &PrinterProfile) -> Self {
         let or = |v: f64, fallback: f64| {
             if v.is_finite() && v >= 0.0 {
                 v
@@ -2977,8 +3003,25 @@ impl KlipperCfg {
     }
 }
 
+/// A retract or prime of `mm` of filament at `feed`, as Klipper's toolhead queues it:
+/// held to the extruder's own limits, stopped at both ends, and, like every move,
+/// short of its peak by the cruise ratio of the `M204` acceleration in force.
+pub(crate) fn extruder_only_move(mm: f64, feed: f64, m204: f64, k: &KlipperCfg) -> KinMove {
+    KinMove {
+        dist: mm,
+        cruise: feed.min(k.e_velocity).max(1e-3),
+        accel: k.e_accel,
+        entry_dir: [0.0, 0.0],
+        exit_dir: [0.0, 0.0],
+        kind: "travel",
+        dz: 0.0,
+        e_per_mm: 0.0,
+        m204,
+    }
+}
+
 /// Each move's seconds under Klipper's lookahead, for a chain that starts and ends at rest.
-fn plan_klipper(moves: &[KinMove], k: &KlipperCfg) -> Vec<f64> {
+pub(crate) fn plan_klipper(moves: &[KinMove], k: &KlipperCfg) -> Vec<f64> {
     moves
         .iter()
         .zip(klipper_speeds(moves, k))

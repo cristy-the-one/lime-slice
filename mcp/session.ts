@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning, meshKeyHex } from "../src/slice-action.ts";
 import { fanDefaults } from "../src/fan.ts";
-import { filamentGrams, groupFeatures } from "../src/estimate.ts";
+import { filamentGrams, groupFeatures, velocityCapWarning, type VelocityCap } from "../src/estimate.ts";
 import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
@@ -3665,6 +3665,8 @@ export class Session {
     if (air) out.push(air);
     const cover = coverageWarning((wire.coverage as { areaMm2: number }[] | undefined) ?? []);
     if (cover) out.push(cover);
+    const capped = velocityCapWarning((wire.estimate as { velocityCap?: VelocityCap } | undefined)?.velocityCap);
+    if (capped) out.push(capped);
     return out;
   }
 
