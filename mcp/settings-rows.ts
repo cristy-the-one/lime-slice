@@ -47,6 +47,7 @@ export interface SettingRow {
 }
 
 function unitOf(label: string): string {
+  if (/mm\/s²/i.test(label)) return "mm/s²";
   if (/mm\/s/i.test(label)) return "mm/s";
   if (/%/.test(label)) return "%";
   if (/\bmm\b/i.test(label)) return "mm";
@@ -55,7 +56,7 @@ function unitOf(label: string): string {
 }
 
 function nameOf(label: string): string {
-  return label.replace(/\s*mm\/s$/i, "").replace(/\s*mm$/i, "").replace(/\s*%$/i, "").replace(/\s*°$/i, "").trim();
+  return label.replace(/\s*mm\/s²$/i, "").replace(/\s*mm\/s$/i, "").replace(/\s*mm$/i, "").replace(/\s*%$/i, "").replace(/\s*°$/i, "").trim();
 }
 
 function shown(control: ControlSpec, settings: PresetSettings): unknown {

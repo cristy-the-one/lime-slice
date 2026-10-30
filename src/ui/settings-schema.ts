@@ -107,7 +107,7 @@ function bound<K extends keyof PresetSettings>(key: K, spec: Omit<ControlSpec, "
 }
 
 /** A number that is Auto (`null`) until set. The box is empty and shows Auto greyed; an emptied box is Auto again. */
-function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInterfaceLayers" | BridgeKey>(
+function autoNumber<K extends "supportZGapMm" | "supportXyGapMm" | "supportInterfaceLayers" | "supportGentleSpeedMmS" | "supportGentleAccelMmS2" | BridgeKey>(
   key: K,
   spec: Omit<ControlSpec, "preset" | "get" | "set" | "placeholder"> & { auto: (s: Settings) => string; clamp?: (value: number) => number },
 ): ControlSpec {
@@ -709,14 +709,39 @@ export const CONTROLS: ControlSpec[] = [
   }),
   bound("supportSlowFragile", {
     id: "fragile",
-    label: "Slow fragile supports",
+    label: "Print supports gently",
     group: "supports",
     tier: "advanced",
     kind: check,
     parent: "supportMode",
     when: (s) => s.supports,
-    tip: "Prints tree tips, branches thinner than 4 mm, and the support interface slower (40 and 30 mm/s at most), so a fast nozzle knocks fewer of them off. Trunks keep their speed. A longer print: about 3 % longer on a tree-supported housing. Off prints supports at today's speed.",
-    keywords: "fragile slow support speed tip branch interface knocked off",
+    structural: true,
+    tip: "For supports the nozzle knocks over or tears strings from. Every support, grid or tree, prints slower (40 mm/s, the interface 30 mm/s) and with a softer acceleration (2000 mm/s²), and the nozzle retracts whenever it leaves a support, so it leaves no thin threads between them to catch on later layers. A longer print. Off prints supports at today's speed.",
+    keywords: "gentle fragile slow support speed acceleration accel tip branch grid interface knocked over string spider web retract",
+  }),
+  autoNumber("supportGentleSpeedMmS", {
+    id: "gentlespeed",
+    label: "Gentle speed mm/s",
+    group: "supports",
+    tier: "expert",
+    kind: num(5, 200, 1),
+    parent: "fragile",
+    when: (s) => s.supports && s.supportSlowFragile,
+    tip: "Empty is Auto: 40 mm/s. The fastest any support prints while Print supports gently is on; the interface stays at 30 mm/s or this, whichever is slower.",
+    keywords: "gentle support speed slow feed",
+    auto: () => "40",
+  }),
+  autoNumber("supportGentleAccelMmS2", {
+    id: "gentleaccel",
+    label: "Gentle accel mm/s²",
+    group: "supports",
+    tier: "expert",
+    kind: num(100, 20000, 100),
+    parent: "fragile",
+    when: (s) => s.supports && s.supportSlowFragile,
+    tip: "Empty is Auto: 2000 mm/s². The acceleration supports print at while Print supports gently is on, set with M204 before each support and restored after it. The printer's Max accel still caps it.",
+    keywords: "gentle support acceleration accel m204 jerk shake",
+    auto: () => "2000",
   }),
   bound("supportAngle", { id: "sangle", label: "Overhang angle °", group: "supports", tier: "advanced", kind: num(20, 70, 5), parent: "supportMode", when: (s) => s.supports, rule: "supportAngle", keywords: "overhang" }),
   bound("supportHeightMult", { id: "shmult", label: "Shaft height ×", group: "supports", tier: "advanced", kind: num(1, 4, 1), parent: "supportMode", when: (s) => s.supports, keywords: "support column" }),
@@ -763,15 +788,14 @@ export const CONTROLS: ControlSpec[] = [
   }),
   bound("supportTreeBrimMm", {
     id: "stbrim",
-    label: "Tree brim mm",
+    label: "Support brim mm",
     group: "supports",
     tier: "advanced",
     kind: num(0, 12, 0.5),
     parent: "supportTools",
-    when: (s) => s.supports && s.supportStyle === "tree",
-    rule: "supportTreeBrim",
-    tip: "0 prints each bed trunk as it is. A width adds concentric loops around trunks that stand on the first layer.",
-    keywords: "tree brim trunk bed adhesion",
+    when: (s) => s.supports,
+    tip: "A brim under every support, grid or tree, where it stands on the bed or the belt, so a tall thin support has a wider foot and stays standing. 0 prints none; 3 mm is a good start. On a belt the brim lies on the belt around each support's foot, along the belt and across it. It keeps the XY gap from the part.",
+    keywords: "support brim foot adhesion tree grid trunk bed belt knocked over",
   }),
 
   // Printer details

@@ -195,7 +195,7 @@ test("a belt hides the settings it forces off or cannot use, and sends none of t
   await expect(page.locator("#printOrder")).toHaveValue("sequential");
 });
 
-test("a belt hides elephant's foot and the tree brim, and a flat printer sends them again", async ({ page }) => {
+test("a belt hides elephant's foot and keeps the support brim, and a flat printer sends both again", async ({ page }) => {
   await quiet(page);
   const bodies: Record<string, unknown>[] = [];
   await page.route("**/api/slice", async (route) => {
@@ -218,13 +218,13 @@ test("a belt hides elephant's foot and the tree brim, and a flat printer sends t
 
   await page.locator("#machineKind").selectOption("belt");
   await expect(page.locator("#efoot")).toHaveCount(0);
-  await expect(page.locator("#stbrim")).toHaveCount(0);
+  await expect(page.locator("#stbrim")).toHaveValue("4");
   await expect(page.locator("#xyhole")).toBeVisible();
   await page.locator("#slice").click();
   await expect.poll(() => bodies.length).toBe(2);
   expect(bodies[1].belt).toBeTruthy();
   expect(bodies[1]).not.toHaveProperty("elephantsFootCompensationMm");
-  expect(bodies[1]).not.toHaveProperty("supportTreeBrimMm");
+  expect(bodies[1].supportTreeBrimMm).toBe(4);
 
   await page.locator("#machineKind").selectOption("cartesian");
   await expect(page.locator("#efoot")).toHaveValue("0.3");

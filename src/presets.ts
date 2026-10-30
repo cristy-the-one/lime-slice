@@ -40,7 +40,12 @@ export interface PresetSettings {
   supportStrictStacking: boolean;
   /** Enforce paint also fills the gaps between its dabs where the part faces down. */
   supportPaintJoin: boolean;
+  /** Print every support gently: slower, at a lower acceleration, and retracting off each support. Omitted while off. */
   supportSlowFragile: boolean;
+  /** mm/s under gentle supports. `null` is Auto: omitted, and the engine keeps 40. */
+  supportGentleSpeedMmS: number | null;
+  /** mm/s² under gentle supports. `null` is Auto: omitted, and the engine keeps 2000. */
+  supportGentleAccelMmS2: number | null;
   supportHeightMult: number;
   /** Millimetres. `null` is Auto: omitted, and the engine keeps the layer height, at least 0.12 mm. `0` is a real zero. */
   supportZGapMm: number | null;
@@ -53,7 +58,7 @@ export interface PresetSettings {
    * Always `true`. A settings object without it has each `0` of the three support interface keys read as Auto.
    */
   supportGapsAuto: true;
-  /** Millimetres of concentric brim around bed trunks. `0` is omitted. */
+  /** Millimetres of brim under the supports, on the bed or the belt, for every style. `0` is omitted. */
   supportTreeBrimMm: number;
   infillCombine: boolean;
   /** Skin on slopes so shallow that each layer steps past the walls. Off unless asked, and omitted from the request while off. */
@@ -142,6 +147,8 @@ export const DEFAULT_PRESET: PresetSettings = {
   supportStrictStacking: false,
   supportPaintJoin: true,
   supportSlowFragile: false,
+  supportGentleSpeedMmS: null,
+  supportGentleAccelMmS2: null,
   supportHeightMult: 1,
   supportZGapMm: null,
   supportXyGapMm: null,
@@ -193,10 +200,13 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportStrictStacking", "supportPaintJoin", "shallowSkins", "supportSlowFragile", "solidUnderWalls", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
+export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportStrictStacking", "supportPaintJoin", "shallowSkins", "supportSlowFragile", "supportGentleSpeedMmS", "supportGentleAccelMmS2", "solidUnderWalls", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
 
 /** Settings that are Auto (`null`) until set. Before Auto existed they stored `0` for it, which `readPresetSettings` still reads that way. */
 const AUTO_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["supportZGapMm", "supportXyGapMm", "supportInterfaceLayers"]);
+
+/** Settings that are Auto (`null`) until set, and were added with Auto. */
+const NULLABLE_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["supportGentleSpeedMmS", "supportGentleAccelMmS2"]);
 
 function isBridgeKey(key: keyof PresetSettings): key is BridgeKey {
   return Object.hasOwn(BRIDGE_LIMITS, key);
@@ -217,8 +227,8 @@ export function readPresetSettings(value: unknown): PresetSettings | null {
       out[key] = kept;
       continue;
     }
-    if (AUTO_KEYS.has(key)) {
-      if (got === undefined || got === null || (legacy && got === 0)) continue;
+    if (AUTO_KEYS.has(key) || NULLABLE_KEYS.has(key)) {
+      if (got === undefined || got === null || (legacy && got === 0 && AUTO_KEYS.has(key))) continue;
       if (typeof got !== "number" || !Number.isFinite(got)) return null;
       (out as unknown as Record<string, unknown>)[key] = got;
       continue;

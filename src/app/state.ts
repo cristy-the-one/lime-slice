@@ -215,6 +215,8 @@ export const state = {
   supportStrictStacking: false,
   supportPaintJoin: true,
   supportSlowFragile: false,
+  supportGentleSpeedMmS: null as number | null,
+  supportGentleAccelMmS2: null as number | null,
   supportHeightMult: 1,
   supportZGapMm: null as number | null,
   supportXyGapMm: null as number | null,

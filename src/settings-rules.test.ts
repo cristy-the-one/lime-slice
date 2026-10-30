@@ -53,14 +53,14 @@ const hopAndScarf = { zHop: "smart", zHopHeight: 0.4, zHopMinTravel: 2, scarfSea
 eq("a belt request carries neither", settingsRules(belt).coerce(hopAndScarf), { gyroid3d: "blend" });
 eq("a flat request carries both", settingsRules(flat).coerce(hopAndScarf), hopAndScarf);
 
-// A belt's layer 0 is the leading slice, not the face on the belt: no elephant's foot, and no trunk brim.
-eq("a belt hides elephant's foot and the tree brim", [settingsRules(belt).hidden.has("elephantsFoot"), settingsRules(belt).hidden.has("supportTreeBrim")], [true, true]);
-eq("a flat printer shows both", [settingsRules(flat).hidden.has("elephantsFoot"), settingsRules(flat).hidden.has("supportTreeBrim")], [false, false]);
+// A belt's layer 0 is the leading slice, not the face on the belt: no elephant's foot. The support brim lies on the belt.
+eq("a belt hides elephant's foot", settingsRules(belt).hidden.has("elephantsFoot"), true);
+eq("a flat printer shows it", settingsRules(flat).hidden.has("elephantsFoot"), false);
 check("a belt shows the tip under every row", !settingsRules(belt).hidden.has("supportStrictStacking"));
 eq("a flat request does not carry the tip under every row", settingsRules(flat).coerce({ supportStrictStacking: true, mesh: "m" }), { mesh: "m" });
 eq("a belt request carries it", settingsRules(belt).coerce({ supportStrictStacking: true, mesh: "m" }), { supportStrictStacking: true, mesh: "m" });
 const firstLayer = { elephantsFootCompensationMm: 0.2, xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 };
-eq("a belt request carries neither", settingsRules(belt).coerce(firstLayer), { xyHoleCompensationMm: 0.1, supportZGapMm: 0.3 });
+eq("a belt request carries the support brim but no elephant's foot", settingsRules(belt).coerce(firstLayer), { xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 });
 eq("a flat request carries both", settingsRules(flat).coerce(firstLayer), firstLayer);
 
 // Ruling 10: one advance control, and only the matching field is sent.

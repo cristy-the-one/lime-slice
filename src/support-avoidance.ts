@@ -17,7 +17,20 @@ export function paintJoinSliceField(on: boolean, painted: boolean): { supportPai
   return on && painted ? { supportPaintJoin: true } : {};
 }
 
-/** Tips, thin branches, and interface printed slower. Off is omitted so the recipe key holds. */
+/** Every support printed gently. Off is omitted so the recipe key holds. */
 export function slowFragileSliceField(on: boolean): { supportSlowFragile?: true } {
   return on ? { supportSlowFragile: true } : {};
+}
+
+/** The gentle feed and acceleration a set value asks for. Auto, and either value while gentle printing is off, is omitted. */
+export function gentleSliceFields(
+  on: boolean,
+  speedMmS: number | null,
+  accelMmS2: number | null,
+): { supportGentleSpeedMmS?: number; supportGentleAccelMmS2?: number } {
+  if (!on) return {};
+  const out: { supportGentleSpeedMmS?: number; supportGentleAccelMmS2?: number } = {};
+  if (speedMmS !== null && Number.isFinite(speedMmS) && speedMmS > 0) out.supportGentleSpeedMmS = Math.min(200, Math.max(5, Math.round(speedMmS)));
+  if (accelMmS2 !== null && Number.isFinite(accelMmS2) && accelMmS2 > 0) out.supportGentleAccelMmS2 = Math.min(20000, Math.max(100, Math.round(accelMmS2)));
+  return out;
 }
