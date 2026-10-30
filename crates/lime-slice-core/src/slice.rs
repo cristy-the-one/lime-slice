@@ -51,9 +51,10 @@ use crate::support::{
 };
 use crate::toolpath::{
     apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
+    retract_off_supports,
     BridgeTune,
     belt_raft_paths, order_supports, plan_brim, plan_ironing, plan_mouse_ears, plan_region_split, plan_skirt, plan_support,
-    plan_tree_brim, plan_tree_support, rest_on_interface,
+    plan_brim_lines, plan_support_brim, plan_tree_support, rest_on_interface,
     CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
     Slowdown, TravelIn,
 };
@@ -206,11 +207,19 @@ pub struct SliceRequest {
     /// when off, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_paint_join: bool,
-    /// Tree tips, thin branches, and support interface print slower: a
-    /// longer print with fewer knocked-off branches. Left out when off, so a
+    /// Print supports gently: every support path of every style at a gentle
+    /// feed and acceleration, the interface slower still, and a retract on
+    /// every travel that leaves a support. A longer print with fewer
+    /// knocked-over supports and fewer strings. Left out when off, so a
     /// request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub support_slow_fragile: bool,
+    /// Support feed under `support_slow_fragile`, mm/s. Omitted keeps 40.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_gentle_speed_mm_s: Option<f64>,
+    /// Support acceleration under `support_slow_fragile`, mm/s². Omitted keeps 2000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_gentle_accel_mm_s2: Option<f64>,
     /// `auto` (the default) asks for supports from the overhang angle and
     /// the islands. `paint` asks only where enforce paint does. Omitted
     /// when absent, so a request that does not ask keeps its cache key.
@@ -230,7 +239,9 @@ pub struct SliceRequest {
     /// Dense interface layers under the part. Omitted keeps 3. `0` prints one, the fewest there can be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_interface_layers: Option<u32>,
-    /// Concentric brim around tree trunks on the first layer. Omitted prints none.
+    /// Brim under every support, of every style, where it stands on the bed
+    /// or the belt, millimetres wide. Omitted prints none. The name is from
+    /// when only tree trunks had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_tree_brim_mm: Option<f64>,
     /// Multiplier on a bridge bead. Omitted keeps 1.
@@ -472,9 +483,14 @@ pub struct SliceSettings {
     pub support_strict_stacking: bool,
     /// Enforce paint fills the gaps between its dabs. Off keeps each dab to itself.
     pub support_paint_join: bool,
-    /// Tips, thin branches, and interface at the fragile speeds. Off keeps
-    /// every support at the support speed.
+    /// Every support path at the gentle feed and acceleration, and a retract
+    /// on every travel that leaves a support. Off keeps every support at the
+    /// support speed.
     pub support_slow_fragile: bool,
+    /// `None` keeps [`GENTLE_SUPPORT_MM_S`].
+    pub support_gentle_speed_mm_s: Option<f64>,
+    /// `None` keeps [`GENTLE_SUPPORT_ACCEL`].
+    pub support_gentle_accel_mm_s2: Option<f64>,
     pub support_source: SupportSource,
     pub support_height_mult: f64,
     pub infill_combine: bool,
@@ -518,7 +534,7 @@ pub struct SliceSettings {
     pub support_xy_gap_mm: Option<f64>,
     /// `None` keeps 3.
     pub support_interface_layers: Option<u32>,
-    /// `None` prints tree trunks on layer 0 with no extra brim.
+    /// `None` prints no brim under the supports.
     pub support_tree_brim_mm: Option<f64>,
     /// `None` keeps bridge flow at 1.
     pub bridge_flow_ratio: Option<f64>,
@@ -607,6 +623,8 @@ impl Default for SliceSettings {
             support_strict_stacking: false,
             support_paint_join: false,
             support_slow_fragile: false,
+            support_gentle_speed_mm_s: None,
+            support_gentle_accel_mm_s2: None,
             support_source: SupportSource::Auto,
             support_height_mult: 1.0,
             infill_combine: true,
@@ -729,6 +747,14 @@ impl SliceSettings {
             support_strict_stacking: req.support_strict_stacking && !req.classic,
             support_paint_join: req.support_paint_join && !req.classic,
             support_slow_fragile: req.support_slow_fragile && !req.classic,
+            support_gentle_speed_mm_s: req
+                .support_gentle_speed_mm_s
+                .filter(|v| v.is_finite() && *v > 0.0 && !req.classic)
+                .map(|v| v.clamp(5.0, 200.0)),
+            support_gentle_accel_mm_s2: req
+                .support_gentle_accel_mm_s2
+                .filter(|v| v.is_finite() && *v > 0.0 && !req.classic)
+                .map(|v| v.clamp(100.0, 20000.0)),
             // `load_object` has already refused a name it does not know.
             support_source: wire::parse_support_source(req.support_source.as_deref())
                 .unwrap_or_default(),
@@ -920,13 +946,19 @@ impl SliceSettings {
                 }
                 SupportSource::Paint => "painted only, ".into(),
             };
-            let fragile = if self.support_slow_fragile {
-                ", fragile parts slower"
-            } else {
-                ""
+            let fragile = match self.gentle() {
+                Some(g) => format!(
+                    ", printed gently at {:.0} mm/s and {:.0} mm/s²",
+                    g.speed, g.accel
+                ),
+                None => String::new(),
+            };
+            let brim = match self.support_tree_brim_mm {
+                Some(mm) => format!(", brim {mm:.1} mm"),
+                None => String::new(),
             };
             format!(
-                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile})",
+                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim})",
                 self.support_height_mult.max(1.0)
             )
         } else {
@@ -993,6 +1025,14 @@ impl SliceSettings {
             format!("; min layer {} s, floor {} mm/s", m.time_s, m.floor_mm_s)
         });
         format!("{layers}; {supports}; {combine}; {scarf}; {gyroid}; {hop}{seam}{ironing}{fuzzy}{flow}{retract}{cooling}")
+    }
+
+    /// The feed and acceleration supports print at, when they print gently.
+    pub(crate) fn gentle(&self) -> Option<Gentle> {
+        self.support_slow_fragile.then(|| Gentle {
+            speed: self.support_gentle_speed_mm_s.unwrap_or(GENTLE_SUPPORT_MM_S),
+            accel: self.support_gentle_accel_mm_s2.unwrap_or(GENTLE_SUPPORT_ACCEL),
+        })
     }
 
     /// The minimum layer time the request asks for. `0` is off, like leaving it out.
@@ -2010,6 +2050,8 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_strict_stacking = false;
         settings.support_paint_join = false;
         settings.support_slow_fragile = false;
+        settings.support_gentle_speed_mm_s = None;
+        settings.support_gentle_accel_mm_s2 = None;
         settings.support_z_gap_mm = None;
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
@@ -2163,7 +2205,6 @@ fn prepare_belt(
         object.settings.hanging_rows = true;
         object.settings.scarf_seam = ScarfSeam::Off;
         object.settings.skirt = false;
-        object.settings.support_tree_brim_mm = None;
         // Blend would hide the seam wherever the strategy likes. The belt edge
         // is the back of the nozzle plane, which is Rear after the rotation.
         // An explicit seam stays unless the printer asks for the belt edge.
@@ -2181,7 +2222,6 @@ fn prepare_belt(
     settings.hanging_rows = true;
     settings.scarf_seam = ScarfSeam::Off;
     settings.skirt = false;
-    settings.support_tree_brim_mm = None;
     let extra = f64::from(belt.copies - 1) * belt.stride(extent);
     if extra > 0.0 {
         // Later copies print later, so they stand upstream of the first: toward -Y.
@@ -5045,8 +5085,11 @@ impl SupportPlan {
         }
         let layers = &self.supports.layers;
         let shaft = shaft_scales(layers, settings.support_height_mult);
+        // A belt brim reaches across layers, so an edit can move the brim of
+        // layers it did not touch.
+        let across = self.supports.floor().is_some() && settings.support_tree_brim_mm.is_some();
         let mut repaint: Vec<usize> = (0..shaft.len())
-            .filter(|&i| shaft[i] != self.shaft[i])
+            .filter(|&i| across || shaft[i] != self.shaft[i])
             .chain(changed.iter().copied())
             .collect();
         repaint.sort_unstable();
@@ -5866,6 +5909,10 @@ fn paint(
     let layers = &supports.layers;
     // A belt foot spreads as wide as a trunk, as a trunk on the bed does.
     let spread = 0.5 * settings.trunk_diameter.max(settings.tip_diameter + 0.6) * 0.95;
+    let brims = match floor {
+        Some(floor) => belt_brims(cut, supports, floor, settings, spread),
+        None => Vec::new(),
+    };
     which
         .par_iter()
         .map(|&i| {
@@ -5887,6 +5934,7 @@ fn paint(
                 i,
                 floor,
                 &feet,
+                brims.get(i).and_then(Option::as_ref),
             );
             if count {
                 watch.tick();
@@ -6068,6 +6116,17 @@ fn assemble(
                     settings.line_width * 0.8,
                     joined.from,
                 );
+                if settings.support_slow_fragile {
+                    if let Some(layer) = supports.supports.layers.get(i) {
+                        retract_off_supports(
+                            &mut paths[..lead],
+                            joined.from,
+                            &layer.interface,
+                            &layer.disks,
+                            settings.line_width,
+                        );
+                    }
+                }
             }
             let after_top = part.travels.layers[i].after_top;
             hop_travels(&mut paths[..lead], &contours[i], after_top, settings);
@@ -6127,13 +6186,14 @@ fn join_supports(
     let support = supports.supports.layers.get(i);
     let unsupported =
         support.is_none_or(|s| s.sparse.is_empty() && s.interface.is_empty() && s.disks.is_empty());
-    let empty = contour.is_empty() && unsupported;
+    let under = &supports.paths[i];
+    // A belt brim can lie on a layer with no support of its own.
+    let empty = contour.is_empty() && unsupported && under.is_empty();
     let skirt = if band.index == 0 && !empty {
         skirt_paths(contour, support, band.z, blend, settings)
     } else {
         Vec::new()
     };
-    let under = &supports.paths[i];
     let own = &part.travels.layers[i];
     let below = if settings.overhang_control && settings.hanging_rows {
         interface_below(cut, supports, settings, i)
@@ -7182,6 +7242,7 @@ fn support_paths(
     layer_index: usize,
     floor: Option<FloorPlane>,
     feet: &[Foot],
+    belt_brim: Option<&BeltBrim>,
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
     let (disks, foot) = belt_trunks(&layer.disks, feet, floor, z, contours, settings);
@@ -7189,12 +7250,9 @@ fn support_paths(
     // Y from layer to layer. Its lines fall with it, through a point fixed
     // in the lab, so each layer's lines stand on the lines below.
     let through = floor.map(|floor| [0.0, -z * floor.tan_a()]);
-    // Only trunks still standing on layer 0 are on the bed. A belt has no
-    // flat bed there (`skirt` is off), so it keeps the trunk as it grew.
-    let brim_mm = if layer_index == 0
-        && settings.skirt
-        && settings.support_style == SupportStyle::Tree
-    {
+    // Only supports standing on layer 0 are on the bed. A belt has no flat
+    // bed there (`skirt` is off); its brim comes from `belt_brim`.
+    let brim_mm = if layer_index == 0 && settings.skirt {
         settings.support_tree_brim_mm.unwrap_or(0.0)
     } else {
         0.0
@@ -7217,8 +7275,6 @@ fn support_paths(
                 &speed,
                 Some(split),
                 line_width,
-                contours,
-                brim_mm,
                 through,
             );
         }
@@ -7236,50 +7292,219 @@ fn support_paths(
                 &resolved,
                 None,
                 line_width,
-                contours,
-                brim_mm,
                 through,
             );
         }
     }
-    if settings.support_slow_fragile {
-        slow_fragile(&mut paths, &disks, &foot, line_width);
+    if brim_mm > 1e-6 || belt_brim.is_some() {
+        let strategy = match blend {
+            BlendMode::ByRegion { .. } => resolve(pure(StrategyId::Toughness), settings),
+            other => layer_strategy(other, z, settings),
+        };
+        if brim_mm > 1e-6 {
+            let region = boolean_union(&layer.sparse, &layer.interface);
+            let gap = settings
+                .support_xy_gap_mm
+                .unwrap_or_else(|| SupportOpts::default().xy_gap);
+            paths.extend(plan_support_brim(
+                &region, &disks, contours, &strategy, line_width, brim_mm, gap,
+            ));
+        }
+        if let Some(brim) = belt_brim {
+            paths.extend(plan_brim_lines(&brim.spans, brim.y, &strategy, line_width));
+        }
+    }
+    if let Some(gentle) = settings.gentle() {
+        print_gently(&mut paths, gentle);
     }
     paths
 }
 
-/// Print the support's fragile parts at the fragile speeds: the interface,
-/// and every tree loop that does not wrap a trunk or a foot. A loop near a
-/// trunk keeps the support speed, so a branch melted into a trunk does too.
-/// Never faster than the path already was.
-fn slow_fragile(paths: &mut [Extrusion], disks: &[Disk], feet: &[Loop], line_width: f64) {
-    let trunks: Vec<&Disk> = disks
-        .iter()
-        .filter(|d| d.r >= FRAGILE_BRANCH_RADIUS_MM)
-        .collect();
-    let tree = !disks.is_empty() || !feet.is_empty();
-    let on_trunk = |p: &[f64; 2]| {
-        trunks.iter().any(|d| {
-            let reach = d.r + line_width;
-            (p[0] - d.xy[0]).powi(2) + (p[1] - d.xy[1]).powi(2) <= reach * reach
-        }) || in_solid(feet, p[0], p[1])
+/// One belt layer's support brim: a line along X at slice `y`, where the
+/// layer meets the belt, over `spans`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct BeltBrim {
+    pub y: f64,
+    pub spans: Vec<[f64; 2]>,
+}
+
+/// The brim each belt layer lays beside the supports that stand on the belt.
+/// A layer meets the belt along one line; where its supports cross that line
+/// they stand on the belt, and those pieces over every layer are the support
+/// feet on the belt. The brim is the belt within the brim width of a foot,
+/// measured on the belt, less the feet and the part, so it widens a foot
+/// across the belt on its own layer and along the belt on the layers before
+/// and after it. Empty unless a brim is asked for.
+fn belt_brims(
+    cut: &Contours,
+    supports: &Supports,
+    floor: FloorPlane,
+    settings: &SliceSettings,
+    spread: f64,
+) -> Vec<Option<BeltBrim>> {
+    let Some(width) = settings.support_tree_brim_mm.filter(|_| settings.supports) else {
+        return Vec::new();
     };
+    let line_width = settings.line_width;
+    let bands = &cut.bands;
+    let ys: Vec<f64> = bands
+        .iter()
+        .map(|b| floor.y_max(b.z) - 0.5 * line_width)
+        .collect();
+    let feet: Vec<Vec<[f64; 2]>> = (0..bands.len())
+        .into_par_iter()
+        .map(|i| {
+            let Some(layer) = supports.layers.get(i) else {
+                return Vec::new();
+            };
+            let mut spans = line_spans(&layer.sparse, ys[i]);
+            spans.extend(line_spans(&layer.interface, ys[i]));
+            let circles = layer.disks.iter().map(|d| (d.xy, d.r)).chain(
+                supports
+                    .belt_feet(bands, i, spread)
+                    .into_iter()
+                    .map(|f| (f.xy, f.spread)),
+            );
+            for (c, r) in circles {
+                let dy = ys[i] - c[1];
+                if dy.abs() < r {
+                    let half = (r * r - dy * dy).sqrt();
+                    spans.push([c[0] - half, c[0] + half]);
+                }
+            }
+            merge_spans(spans)
+        })
+        .collect();
+    if feet.iter().all(Vec::is_empty) {
+        return Vec::new();
+    }
+    // Slice Y between two belt lines, measured along the belt.
+    let along = (1.0 + floor.tan_a().powi(2)).sqrt();
+    let gap = settings
+        .support_xy_gap_mm
+        .unwrap_or_else(|| SupportOpts::default().xy_gap);
+    (0..bands.len())
+        .into_par_iter()
+        .map(|j| {
+            let mut spans = Vec::new();
+            let mut reach_from = |k: usize| {
+                let off = (ys[j] - ys[k]).abs() * along;
+                if off > width {
+                    return false;
+                }
+                let reach = (width * width - off * off).sqrt();
+                spans.extend(feet[k].iter().map(|s| [s[0] - reach, s[1] + reach]));
+                true
+            };
+            for k in (0..=j).rev() {
+                if !reach_from(k) {
+                    break;
+                }
+            }
+            for k in j + 1..bands.len() {
+                if !reach_from(k) {
+                    break;
+                }
+            }
+            if spans.is_empty() {
+                return None;
+            }
+            let mut taken = feet[j].clone();
+            taken.extend(
+                line_spans(&cut.contours[j], ys[j])
+                    .into_iter()
+                    .map(|s| [s[0] - gap, s[1] + gap]),
+            );
+            let spans = subtract_spans(&merge_spans(spans), &merge_spans(taken));
+            (!spans.is_empty()).then_some(BeltBrim { y: ys[j], spans })
+        })
+        .collect()
+}
+
+/// Where the line at `y` runs inside `loops`, by even-odd crossings.
+fn line_spans(loops: &[Loop], y: f64) -> Vec<[f64; 2]> {
+    let mut xs = Vec::new();
+    for l in loops {
+        let n = l.len();
+        for k in 0..n {
+            let (a, b) = (l[k], l[(k + 1) % n]);
+            if (a[1] > y) != (b[1] > y) {
+                xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+            }
+        }
+    }
+    xs.sort_by(f64::total_cmp);
+    xs.chunks_exact(2).map(|w| [w[0], w[1]]).collect()
+}
+
+/// `spans` sorted, with the overlapping ones joined.
+fn merge_spans(mut spans: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    spans.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    let mut out: Vec<[f64; 2]> = Vec::with_capacity(spans.len());
+    for s in spans {
+        match out.last_mut() {
+            Some(last) if s[0] <= last[1] => last[1] = last[1].max(s[1]),
+            _ => out.push(s),
+        }
+    }
+    out
+}
+
+/// `spans` less `cut`, both sorted and joined.
+fn subtract_spans(spans: &[[f64; 2]], cut: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let mut out = Vec::new();
+    for s in spans {
+        let mut from = s[0];
+        for c in cut {
+            if c[1] <= from || c[0] >= s[1] {
+                continue;
+            }
+            if c[0] > from {
+                out.push([from, c[0]]);
+            }
+            from = from.max(c[1]);
+        }
+        if from < s[1] {
+            out.push([from, s[1]]);
+        }
+    }
+    out
+}
+
+/// Every support path at the gentle feed and acceleration, the interface at
+/// the interface feed when that is slower. The same for every support style:
+/// a grid line, a tree tip, a trunk, a foot, and a brim alike. Never faster
+/// than the path already was.
+fn print_gently(paths: &mut [Extrusion], gentle: Gentle) {
     for path in paths.iter_mut() {
         let speed = match path.kind {
-            PathKind::SupportInterface => FRAGILE_INTERFACE_MM_S,
-            PathKind::Support if tree && !path.points.iter().any(on_trunk) => FRAGILE_BRANCH_MM_S,
+            PathKind::SupportInterface => gentle.speed.min(GENTLE_INTERFACE_MM_S),
+            PathKind::Support => gentle.speed,
             _ => continue,
         };
         path.speed = path.speed.min(speed);
+        path.accel = path.accel.min(gentle.accel);
     }
 }
 
-/// A tree branch thinner than this radius is fragile; trunks keep their speed.
-const FRAGILE_BRANCH_RADIUS_MM: f64 = 2.0;
-/// Tips and thin branches under "Slow fragile supports".
-const FRAGILE_BRANCH_MM_S: f64 = 40.0;
-/// Support interface under "Slow fragile supports".
-const FRAGILE_INTERFACE_MM_S: f64 = 30.0;
+/// How supports print when they print gently.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Gentle {
+    pub speed: f64,
+    pub accel: f64,
+}
+
+/// Support feed under "Print supports gently" when the request names none.
+/// Half the Speed strategy's 80 mm/s support feed, and the Toughness
+/// strategy's outer wall feed.
+pub(crate) const GENTLE_SUPPORT_MM_S: f64 = 40.0;
+/// Support acceleration under "Print supports gently" when the request
+/// names none. A 40 mm/s line is at speed within 0.4 mm, so it costs almost
+/// no time over the feed alone, while the head pushes a standing support
+/// with under 60 % of the Speed strategy's 3500 mm/s².
+pub(crate) const GENTLE_SUPPORT_ACCEL: f64 = 2000.0;
+/// Support interface under "Print supports gently".
+const GENTLE_INTERFACE_MM_S: f64 = 30.0;
 
 /// A belt layer's trunks: the disks the belt clip left, less the trunks whose
 /// foot meets the belt here, and those feet cut along the belt line.
@@ -7303,23 +7528,6 @@ fn belt_trunks<'a>(
         .support_xy_gap_mm
         .unwrap_or_else(|| SupportOpts::default().xy_gap);
     (Cow::Owned(kept), foot_loops(feet, floor.y_max(z), contours, gap))
-}
-
-/// Tree trunks, plus a brim when this layer asked for one. `brim_mm` of 0
-/// is `plan_tree_support` alone.
-fn tree_beads(
-    disks: &[Disk],
-    feet: &[Loop],
-    strategy: &ResolvedStrategy,
-    line_width: f64,
-    contours: &[Loop],
-    brim_mm: f64,
-) -> Vec<Extrusion> {
-    let mut paths = plan_tree_support(disks, feet, strategy, line_width);
-    if brim_mm > 1e-6 {
-        paths.extend(plan_tree_brim(disks, contours, strategy, line_width, brim_mm));
-    }
-    paths
 }
 
 /// The first layer's skirt around the part and its support footprint.
@@ -7442,8 +7650,6 @@ fn emit_supports(
     high: &ResolvedStrategy,
     split: Option<RegionSplit>,
     line_width: f64,
-    contours: &[Loop],
-    brim_mm: f64,
     through: Option<[f64; 2]>,
 ) {
     if support.is_empty() && interface.is_empty() && disks.is_empty() && feet.is_empty() {
@@ -7466,7 +7672,7 @@ fn emit_supports(
                     through,
                 )
             } else {
-                tree_beads(disks, feet, strategy, line_width, contours, brim_mm)
+                plan_tree_support(disks, feet, strategy, line_width)
             };
             if shaft_scale > 1.01 {
                 for path in &mut sparse {
@@ -7490,7 +7696,7 @@ fn emit_supports(
         // beads on the plane, so a trunk that leans across the cut is not
         // drawn twice and a trunk outside the outline is not dropped.
         if (!disks.is_empty() || !feet.is_empty()) && shaft_scale > 0.0 {
-            let mut trunks = tree_beads(disks, feet, low, line_width, contours, brim_mm);
+            let mut trunks = plan_tree_support(disks, feet, low, line_width);
             if shaft_scale > 1.01 {
                 for path in &mut trunks {
                     path.bead_height = layer_height * shaft_scale;
@@ -7792,7 +7998,7 @@ mod tests {
     }
 
     #[test]
-    fn slow_fragile_supports_slow_tips_branches_and_interface_but_not_trunks() {
+    fn gentle_supports_slow_and_soften_every_support_path_alike() {
         let strategy = resolve(pure(StrategyId::Speed), &SliceSettings::default());
         let disk = |x: f64, r: f64, n: u32| Disk {
             xy: [x, 0.0],
@@ -7801,37 +8007,77 @@ mod tests {
         };
         let disks = [disk(0.0, 0.4, 0), disk(10.0, 1.2, 1), disk(30.0, 2.5, 2)];
         let mut paths = plan_tree_support(&disks, &[], &strategy, 0.45);
-        paths.extend(plan_support(
-            &[square_loop(50.0, 0.0, 5.0)],
+        for interface in [false, true] {
+            paths.extend(plan_support(
+                &[square_loop(50.0, 0.0, 5.0)],
+                &strategy,
+                0.45,
+                0.6,
+                interface,
+                None,
+            ));
+        }
+        let mut part = plan_support(
+            &[square_loop(70.0, 0.0, 5.0)],
             &strategy,
             0.45,
             0.6,
-            true,
+            false,
             None,
-        ));
-        let before: Vec<f64> = paths.iter().map(|p| p.speed).collect();
-        slow_fragile(&mut paths, &disks, &[], 0.45);
-        let near = |p: &Extrusion, x: f64| p.points.iter().all(|q| (q[0] - x).abs() < 3.5);
-        let mut seen = [false; 4];
-        for (path, was) in paths.iter().zip(before) {
-            if path.kind == PathKind::SupportInterface {
-                seen[3] = true;
-                assert!((path.speed - FRAGILE_INTERFACE_MM_S.min(was)).abs() < 1e-9);
-            } else if near(path, 30.0) {
-                seen[2] = true;
-                assert!(
-                    (path.speed - was).abs() < 1e-9,
-                    "a trunk keeps {was}, got {}",
-                    path.speed
-                );
-            } else {
-                seen[if near(path, 0.0) { 0 } else { 1 }] = true;
-                assert!((path.speed - FRAGILE_BRANCH_MM_S.min(was)).abs() < 1e-9);
-            }
+        );
+        for path in &mut part {
+            path.kind = PathKind::Solid;
         }
+        paths.extend(part);
+        let before: Vec<(f64, f64)> = paths.iter().map(|p| (p.speed, p.accel)).collect();
+        assert!(before.iter().any(|(s, a)| *s > 40.0 && *a > 2000.0));
+        let gentle = Gentle {
+            speed: GENTLE_SUPPORT_MM_S,
+            accel: GENTLE_SUPPORT_ACCEL,
+        };
+        print_gently(&mut paths, gentle);
+        let mut seen = [false; 3];
+        for (path, (speed, accel)) in paths.iter().zip(before) {
+            let (want_speed, want_accel) = match path.kind {
+                PathKind::SupportInterface => {
+                    seen[1] = true;
+                    (
+                        speed.min(GENTLE_INTERFACE_MM_S),
+                        accel.min(GENTLE_SUPPORT_ACCEL),
+                    )
+                }
+                PathKind::Support => {
+                    seen[0] = true;
+                    (
+                        speed.min(GENTLE_SUPPORT_MM_S),
+                        accel.min(GENTLE_SUPPORT_ACCEL),
+                    )
+                }
+                _ => {
+                    seen[2] = true;
+                    (speed, accel)
+                }
+            };
+            assert!((path.speed - want_speed).abs() < 1e-9, "{:?}", path.kind);
+            assert!((path.accel - want_accel).abs() < 1e-9, "{:?}", path.kind);
+        }
+        assert_eq!(seen, [true; 3], "support, interface, and part all printed");
+    }
+
+    #[test]
+    fn brim_spans_join_cut_and_follow_a_line() {
+        let spans = merge_spans(vec![[5.0, 6.0], [0.0, 2.0], [1.5, 3.0]]);
+        assert_eq!(spans, vec![[0.0, 3.0], [5.0, 6.0]]);
         assert_eq!(
-            seen, [true; 4],
-            "tip, branch, trunk, and interface all printed"
+            subtract_spans(&[[0.0, 10.0]], &[[2.0, 3.0], [8.0, 12.0]]),
+            vec![[0.0, 2.0], [3.0, 8.0]]
+        );
+        assert_eq!(
+            line_spans(
+                &[square_loop(0.0, 0.0, 4.0), square_loop(10.0, 0.0, 2.0)],
+                1.0
+            ),
+            vec![[0.0, 4.0], [10.0, 12.0]]
         );
     }
 

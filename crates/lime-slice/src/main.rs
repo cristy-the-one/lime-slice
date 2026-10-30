@@ -106,9 +106,19 @@ enum Cmd {
         /// On a belt, give every tree interface row a tip of its own.
         #[arg(long, default_value_t = false)]
         support_strict_stacking: bool,
-        /// Print tree tips, thin branches, and support interface slower.
+        /// Print every support gently: slower, at a lower acceleration, and
+        /// retracting on every travel that leaves a support.
         #[arg(long, default_value_t = false)]
         support_slow_fragile: bool,
+        /// Support feed under `--support-slow-fragile`, mm/s. Omitted keeps 40.
+        #[arg(long)]
+        support_gentle_speed: Option<f64>,
+        /// Support acceleration under `--support-slow-fragile`, mm/s². Omitted keeps 2000.
+        #[arg(long)]
+        support_gentle_accel: Option<f64>,
+        /// Brim under every support where it stands on the bed or the belt, mm.
+        #[arg(long)]
+        support_brim: Option<f64>,
         /// Sparse support shaft height multiplier. `1` keeps the model layer height.
         #[arg(long, default_value_t = 1.0)]
         support_height_mult: f64,
@@ -395,6 +405,9 @@ fn run() -> Result<(), String> {
             support_avoidance,
             support_strict_stacking,
             support_slow_fragile,
+            support_gentle_speed,
+            support_gentle_accel,
+            support_brim,
             support_height_mult,
             infill_combine,
             shallow_skins,
@@ -477,6 +490,15 @@ fn run() -> Result<(), String> {
                 support_strict_stacking,
                 support_paint_join: false,
                 support_slow_fragile,
+                support_gentle_speed_mm_s: support_gentle_speed
+                    .filter(|v| support_slow_fragile && v.is_finite() && *v > 0.0)
+                    .map(|v| v.clamp(5.0, 200.0)),
+                support_gentle_accel_mm_s2: support_gentle_accel
+                    .filter(|v| support_slow_fragile && v.is_finite() && *v > 0.0)
+                    .map(|v| v.clamp(100.0, 20000.0)),
+                support_tree_brim_mm: support_brim
+                    .filter(|v| !classic && v.is_finite() && *v > 1e-6)
+                    .map(|v| v.min(20.0)),
                 support_height_mult,
                 infill_combine,
                 shallow_skins,
@@ -1879,6 +1901,8 @@ fn request_for(
         support_strict_stacking: settings.support_strict_stacking,
         support_paint_join: settings.support_paint_join,
         support_slow_fragile: settings.support_slow_fragile,
+        support_gentle_speed_mm_s: settings.support_gentle_speed_mm_s,
+        support_gentle_accel_mm_s2: settings.support_gentle_accel_mm_s2,
         support_source: match settings.support_source {
             lime_slice_core::SupportSource::Auto => None,
             lime_slice_core::SupportSource::Paint => Some("paint".into()),

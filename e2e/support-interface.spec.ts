@@ -54,7 +54,7 @@ async function fillNumber(page: Page, id: string, value: string) {
   }).toPass();
 }
 
-test("support gaps and a tree brim stay off a default slice and are sent when set", async ({ page }) => {
+test("support gaps and a support brim stay off a default slice and are sent when set", async ({ page }) => {
   const bodies = await quiet(page);
   await page.goto("/");
   await autoSliceOff(page);
@@ -86,7 +86,7 @@ test("support gaps and a tree brim stay off a default slice and are sent when se
   await sliceMatching(page, bodies, (body) => body.supportStyle === "tree" && body.supportTreeBrimMm === 4);
 
   await page.locator("#sstyle").selectOption("grid");
-  await sliceMatching(page, bodies, (body) => body.supportStyle === "grid" && body.supportTreeBrimMm === undefined && body.supportZGapMm === 0.35);
+  await sliceMatching(page, bodies, (body) => body.supportStyle === "grid" && body.supportTreeBrimMm === 4 && body.supportZGapMm === 0.35);
 
   await page.locator("#sstyle").selectOption("tree");
   await fillNumber(page, "szgap", "");

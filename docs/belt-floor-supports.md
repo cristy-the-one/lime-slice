@@ -18,6 +18,7 @@ The planner runs after the plate is rotated so the nozzle plane is horizontal. I
 - Compare stays refused on a belt.
 - Support edits apply to the planned part, so with copies every copy changes together. The skeleton and the gaps are the first copy's; the reply's `beltCopies` says how far the others sit, and the edit overlay is drawn and picked on each copy (`docs/support-edits.md`).
 - `classic` still grows floor supports when the flag is on. It does not force them off.
+- A support brim (`supportTreeBrimMm`, every style) lies on the belt. Each layer meets the belt along one line, `y_max(z)`; where that layer's support crosses the line, half a bead inside it, the support stands on the belt. Those pieces over every layer are the feet. The brim is the belt within the brim width of a foot, measured on the belt (`1 / cos(angle)` per slice Y), less the feet and the part grown by the XY gap. Each layer prints its share as one support line along X on its belt line, so a foot widens across the belt on its own layer and along the belt on the layers before and after it. Layers below the belt's start are dropped as before, so a brim upstream of the first foot is cut there.
 
 ## UI
 

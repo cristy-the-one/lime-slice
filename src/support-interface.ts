@@ -1,7 +1,8 @@
 /**
  * Support interface sent on a slice. A `null` is Auto and is omitted, so a default request keeps the engine's gap,
  * its three interface layers, and trunks with no brim. A `0` gap is a real zero and is sent. Zero interface layers
- * is sent as 1, the fewest the engine prints. The tree brim has no Auto: its `0` means no brim and is omitted.
+ * is sent as 1, the fewest the engine prints. The support brim has no Auto: its `0` means no brim and is omitted. It is
+ * sent for every support style.
  */
 
 export interface SupportInterface {
@@ -46,10 +47,10 @@ export function supportSliceFields(row: SupportInterface): Partial<{ [K in keyof
   const z = gap(row.supportZGapMm, SUPPORT_Z_GAP_MAX);
   const xy = gap(row.supportXyGapMm, SUPPORT_XY_GAP_MAX);
   const layers = interfaceLayersSent(row.supportInterfaceLayers);
-  const trunkBrim = row.supportStyle === "tree" ? brim(row.supportTreeBrimMm, 20) : undefined;
+  const supportBrim = brim(row.supportTreeBrimMm, 20);
   if (z !== undefined) out.supportZGapMm = z;
   if (xy !== undefined) out.supportXyGapMm = xy;
   if (layers !== undefined) out.supportInterfaceLayers = layers;
-  if (trunkBrim !== undefined) out.supportTreeBrimMm = trunkBrim;
+  if (supportBrim !== undefined) out.supportTreeBrimMm = supportBrim;
   return out;
 }

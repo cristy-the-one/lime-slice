@@ -714,6 +714,8 @@ const later: Partial<PresetSettings> = {
   supportStrictStacking: true,
   supportPaintJoin: false,
   supportSlowFragile: true,
+  supportGentleSpeedMmS: 25,
+  supportGentleAccelMmS2: 1200,
   shallowSkins: true,
   solidUnderWalls: true,
   supportSource: "paint",

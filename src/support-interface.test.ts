@@ -52,7 +52,7 @@ check("interface layers are held to the most the engine takes", supportSliceFiel
 check("a number that is not finite is Auto", Object.keys(supportSliceFields({ ...auto, supportZGapMm: Number.NaN })).length === 0);
 
 const grid = supportSliceFields({ ...auto, supportStyle: "grid", supportTreeBrimMm: 4, supportZGapMm: 0.2 });
-check("a grid keeps the z gap and drops the brim", grid.supportZGapMm === 0.2 && grid.supportTreeBrimMm === undefined);
+check("a grid keeps the z gap and the brim", grid.supportZGapMm === 0.2 && grid.supportTreeBrimMm === 4);
 
 const {
   supportZGapMm: _z,

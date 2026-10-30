@@ -53,7 +53,6 @@ export type ControlId =
   | "klipperLimits"
   | "adhesion"
   | "elephantsFoot"
-  | "supportTreeBrim"
   | "supportStrictStacking"
   | "arcFit";
 
@@ -73,9 +72,8 @@ const OWNED: Record<ControlId, readonly string[]> = {
   // The firmware name and the limits only Klipper's toolhead reads.
   klipperLimits: ["firmware", "squareCornerVelocity", "minimumCruiseRatio", "extruderCornerVelocity", "maxVelocity", "maxZVelocity", "maxZAccel"],
   adhesion: ["adhesion", "brimWidthMm", "brimGapMm", "skirtLoops"],
-  // Layer 0 on a belt is the leading slice, not the face on the belt, and the engine grows no trunk brim there.
+  // Layer 0 on a belt is the leading slice, not the face on the belt.
   elephantsFoot: ["elephantsFootCompensationMm"],
-  supportTreeBrim: ["supportTreeBrimMm"],
   // The rule decides when a belt interface row counts as held; a flat bed has no such rows.
   supportStrictStacking: ["supportStrictStacking"],
   // Never hidden, only disabled; the request keeps the user's choice and the printer's `firmwareArcs` overrules it.
@@ -114,7 +112,7 @@ export function settingsRules(input: RuleInput): Rules {
   if (belt || input.objects < 2) hidden.add("printOrder");
   if (belt) hidden.add("zHop").add("scarf");
   if (!belt) hidden.add("beltFields").add("supportStrictStacking");
-  if (belt) hidden.add("adhesion").add("elephantsFoot").add("supportTreeBrim");
+  if (belt) hidden.add("adhesion").add("elephantsFoot");
   if (input.belt.maxLengthMm == null) hidden.add("beltMaxLength");
   if (input.belt.raftLayers <= 0) hidden.add("beltRaftLayers");
   if (input.firmware !== "klipper") hidden.add("klipperLimits");

@@ -42,6 +42,18 @@ const rows = settingRows({ settings: on, ctx, query: "supports", all: true });
 const mode = rows.find((row) => row.key === "supports");
 check("the supports row lists its choices", JSON.stringify(mode?.options) === JSON.stringify(["off", "auto", "paint"]), JSON.stringify(mode));
 
+const allRows = settingRows({ settings: on, ctx, all: true });
+const row = (key: string) => allRows.find((r) => r.key === key);
+check("gentle printing is a row", row("supportSlowFragile")?.label === "Print supports gently", JSON.stringify(row("supportSlowFragile")));
+check("the gentle speed is in mm/s and Auto by default", row("supportGentleSpeedMmS")?.unit === "mm/s" && row("supportGentleSpeedMmS")?.default === null, JSON.stringify(row("supportGentleSpeedMmS")));
+check("the gentle accel is in mm/s²", row("supportGentleAccelMmS2")?.unit === "mm/s²" && row("supportGentleAccelMmS2")?.label === "Gentle accel", JSON.stringify(row("supportGentleAccelMmS2")));
+check("the gentle values depend on gentle printing", row("supportGentleAccelMmS2")?.dependsOn === "supportSlowFragile");
+check("the support brim is one row for every style", row("supportTreeBrimMm")?.label === "Support brim" && row("supportTreeBrimMm")?.unit === "mm");
+const gentle = set(on, "supportGentleAccelMmS2", 1500);
+check("a gentle accel is taken", "settings" in gentle && gentle.settings.supportGentleAccelMmS2 === 1500, JSON.stringify(gentle));
+const autoAccel = "settings" in gentle ? set(gentle.settings, "supportGentleAccelMmS2", null) : gentle;
+check("null puts the gentle accel back to Auto", "settings" in autoAccel && autoAccel.settings.supportGentleAccelMmS2 === null, JSON.stringify(autoAccel));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

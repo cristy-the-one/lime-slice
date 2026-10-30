@@ -1,8 +1,9 @@
-//! Concentric brim around tree trunks that stand on the first layer.
+//! Concentric brim around supports that stand on the first layer.
 //!
 //! A trunk that finishes the walk on layer 0 is on the bed. Its disk is the
-//! circle `organic_disks` already printed. The brim is the band outside that
-//! circle, kept off the part, filled with one loop per line width.
+//! circle `organic_disks` already printed; a grid column's is its region.
+//! The brim is the band outside them, kept off the part, filled with one
+//! loop per line width.
 //!
 //! On a belt the trunks meet the tilted belt instead, and their feet are
 //! spread and cut along the belt line (`belt_feet`, `foot_loops`).
@@ -12,20 +13,26 @@ use crate::poly::{boolean_diff, offset_loops, resolve_nonzero, signed_area, Loop
 
 use super::{clip_half, Disk, FloorPlane, NodeId, SupportLayer};
 
-/// Outward rings covering `brim_mm` past each on-bed trunk. Empty when the
+/// Outward rings covering `brim_mm` past each on-bed support: the support
+/// `region` and the trunk `disks`, kept `gap` off the part. Empty when the
 /// brim is off, so a slice that does not ask never offsets.
-pub(crate) fn on_bed_brim(disks: &[Disk], part: &[Loop], line_width: f64, brim_mm: f64) -> Vec<Loop> {
-    if disks.is_empty() || brim_mm <= 1e-6 || line_width <= 1e-6 {
+pub(crate) fn on_bed_brim(
+    region: &[Loop],
+    disks: &[Disk],
+    part: &[Loop],
+    line_width: f64,
+    brim_mm: f64,
+    gap: f64,
+) -> Vec<Loop> {
+    if (disks.is_empty() && region.is_empty()) || brim_mm <= 1e-6 || line_width <= 1e-6 {
         return Vec::new();
     }
-    let circles: Vec<Loop> = disks
-        .iter()
-        .map(|disk| circle(disk.xy, disk.r.max(0.32)))
-        .collect();
-    let solid = if circles.len() == 1 {
-        circles
+    let mut shapes: Vec<Loop> = region.to_vec();
+    shapes.extend(disks.iter().map(|disk| circle(disk.xy, disk.r.max(0.32))));
+    let solid = if shapes.len() == 1 {
+        shapes
     } else {
-        resolve_nonzero(circles)
+        resolve_nonzero(shapes)
     };
     if solid.is_empty() {
         return Vec::new();
@@ -33,7 +40,7 @@ pub(crate) fn on_bed_brim(disks: &[Disk], part: &[Loop], line_width: f64, brim_m
     let grown = offset_loops(&solid, brim_mm);
     let mut band = boolean_diff(&grown, &solid);
     if !part.is_empty() {
-        let keep_out = offset_loops(part, line_width * 0.5);
+        let keep_out = offset_loops(part, gap.max(line_width * 0.5));
         band = boolean_diff(&band, &keep_out);
     }
     let steps = ((brim_mm / line_width).ceil() as u32).clamp(1, 40);
@@ -202,13 +209,42 @@ mod tests {
 
     #[test]
     fn a_bed_trunk_grows_concentric_brim_outside_itself() {
-        assert!(on_bed_brim(&[disk(2.0)], &[], 0.45, 0.0).is_empty());
-        let rings = on_bed_brim(&[disk(2.0)], &[], 0.45, 1.35);
+        assert!(on_bed_brim(&[], &[disk(2.0)], &[], 0.45, 0.0, 0.0).is_empty());
+        let rings = on_bed_brim(&[], &[disk(2.0)], &[], 0.45, 1.35, 0.0);
         assert!(rings.len() >= 2, "loops {}", rings.len());
         let (min_r, max_r) = radii(&rings);
         assert!(min_r > 2.0, "inner centerline {min_r}");
         assert!(max_r > 2.7, "outer centerline {max_r}");
         assert!(max_r < 2.0 + 1.35 + 0.2, "outer centerline {max_r}");
+    }
+
+    #[test]
+    fn a_grid_region_grows_the_same_brim_outside_itself() {
+        let region = vec![vec![[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]]];
+        let rings = on_bed_brim(&region, &[], &[], 0.45, 1.35, 0.0);
+        assert!(rings.len() >= 2, "loops {}", rings.len());
+        for loop_ in &rings {
+            for p in loop_ {
+                assert!(
+                    p[0].abs().max(p[1].abs()) > 1.0,
+                    "a brim bead inside the column at {p:?}"
+                );
+            }
+        }
+        let gap = on_bed_brim(
+            &region,
+            &[],
+            &[vec![[3.0, -5.0], [9.0, -5.0], [9.0, 5.0], [3.0, 5.0]]],
+            0.45,
+            3.0,
+            0.55,
+        );
+        for p in gap.iter().flatten() {
+            assert!(
+                p[0] < 3.0 - 0.55 - 0.2,
+                "the brim came within the gap of the part at {p:?}"
+            );
+        }
     }
 
     #[test]
@@ -219,7 +255,7 @@ mod tests {
             [20.0, 10.0],
             [1.0, 10.0],
         ]];
-        let rings = on_bed_brim(&[disk(2.0)], &part, 0.45, 1.35);
+        let rings = on_bed_brim(&[], &[disk(2.0)], &part, 0.45, 1.35, 0.0);
         assert!(!rings.is_empty());
         let mut saw_free_side = false;
         for loop_ in &rings {

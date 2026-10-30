@@ -1,4 +1,4 @@
-import { avoidanceSliceField, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, gentleSliceFields, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { recipeKey } from "./slice-action.ts";
 import { shallowSkinsSliceField, solidUnderWallsSliceField } from "./slice-request.ts";
 
@@ -24,6 +24,10 @@ check("slow fragile supports off is omitted", Object.keys(slowFragileSliceField(
 check("slow fragile supports on is sent", slowFragileSliceField(true).supportSlowFragile === true);
 check("omitted slow fragile supports leaves the recipe key", recipeKey({ ...base, ...slowFragileSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
 check("asking for slow fragile supports changes the recipe", recipeKey({ ...base, ...slowFragileSliceField(true) }, "mesh") !== recipeKey(base, "mesh"));
+check("gentle speed and accel at Auto are omitted", Object.keys(gentleSliceFields(true, null, null)).length === 0);
+check("gentle speed and accel are omitted while gentle printing is off", Object.keys(gentleSliceFields(false, 25, 1200)).length === 0);
+check("a set gentle speed and accel are sent", JSON.stringify(gentleSliceFields(true, 25, 1200)) === '{"supportGentleSpeedMmS":25,"supportGentleAccelMmS2":1200}');
+check("gentle values are held to what the engine takes", JSON.stringify(gentleSliceFields(true, 1, 90000)) === '{"supportGentleSpeedMmS":5,"supportGentleAccelMmS2":20000}');
 check("filling between paint dabs is sent when something is painted", paintJoinSliceField(true, true).supportPaintJoin === true);
 check("filling between paint dabs is omitted with nothing painted", Object.keys(paintJoinSliceField(true, false)).length === 0);
 check("filling between paint dabs off is omitted", Object.keys(paintJoinSliceField(false, true)).length === 0);

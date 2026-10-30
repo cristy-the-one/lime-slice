@@ -3566,16 +3566,19 @@ pub fn plan_tree_support(
     paths
 }
 
-/// Concentric loops outside layer-0 trunks that stand on the bed.
-/// `brim_mm` of 0 prints nothing, and the caller skips this entirely then.
-pub fn plan_tree_brim(
+/// Concentric loops outside the layer-0 supports that stand on the bed: the
+/// support `region` of a grid and the `disks` of trees alike, kept `gap` off
+/// the part. `brim_mm` of 0 prints nothing, and the caller skips this then.
+pub fn plan_support_brim(
+    region: &[Loop],
     disks: &[Disk],
     part: &[Loop],
     strategy: &ResolvedStrategy,
     line_width: f64,
     brim_mm: f64,
+    gap: f64,
 ) -> Vec<Extrusion> {
-    let loops = crate::support::tree::on_bed_brim(disks, part, line_width, brim_mm);
+    let loops = crate::support::tree::on_bed_brim(region, disks, part, line_width, brim_mm, gap);
     if loops.is_empty() {
         return Vec::new();
     }
@@ -3583,6 +3586,31 @@ pub fn plan_tree_brim(
     let mut paths = Vec::new();
     emit_support_loops(&mut paths, &loops, strategy, line_width, speed);
     paths
+}
+
+/// A belt layer's brim: one support line along X at slice `y`, over each of
+/// `spans`, in order. A span shorter than a line width prints nothing.
+pub fn plan_brim_lines(
+    spans: &[[f64; 2]],
+    y: f64,
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+) -> Vec<Extrusion> {
+    let speed = crate::strategy::support_speed(strategy, false);
+    spans
+        .iter()
+        .filter(|span| span[1] - span[0] >= line_width)
+        .map(|span| {
+            let mut path = extrusion(
+                PathKind::Support,
+                strategy,
+                vec![[span[0], y], [span[1], y]],
+                line_width,
+            );
+            path.speed = speed;
+            path
+        })
+        .collect()
 }
 
 fn emit_support_loops(
@@ -4000,6 +4028,57 @@ pub fn comb_layer(
             path.take_comb(comb_between(&comb, from, start));
         }
         cursor = path.points.last().copied();
+    }
+}
+
+/// Retract on every open-air travel into or out of a support that does not
+/// stay on solid support, whatever its length. An open-air travel otherwise
+/// retracts only past `OPEN_AIR_RETRACT_MIN_MM`, so the nozzle oozes a thread
+/// across every gap between supports shorter than that, and across the open
+/// cells of a sparse grid, and catches the threads on later layers. A step
+/// of two line widths or less, a travel inside the dense interface
+/// `regions`, and one within a tree branch of `disks` keep their rule. Run
+/// after `comb_layer`, from the same `from`.
+pub fn retract_off_supports(
+    paths: &mut [Extrusion],
+    from: Option<[f64; 2]>,
+    regions: &[Loop],
+    disks: &[Disk],
+    line_width: f64,
+) {
+    let grown = if regions.is_empty() {
+        Vec::new()
+    } else {
+        offset_loops(regions, line_width * 0.5)
+    };
+    let area = Outline::owned(grown);
+    let on_one = |a: [f64; 2], b: [f64; 2]| {
+        if dist2(a, b) <= 4.0 * line_width * line_width {
+            return true;
+        }
+        if area.box_holds(a) && area.box_holds(b) && area.contains(a) && area.segment_inside(a, b) {
+            return true;
+        }
+        disks.iter().any(|d| {
+            let reach = (d.r + line_width).powi(2);
+            dist2(a, d.xy) <= reach && dist2(b, d.xy) <= reach
+        })
+    };
+    let mut cursor = from;
+    let mut after_support = false;
+    for path in paths.iter_mut() {
+        let Some(start) = path.points.first().copied() else {
+            continue;
+        };
+        let support = matches!(path.kind, PathKind::Support | PathKind::SupportInterface);
+        if let Some(at) = cursor {
+            if path.travel_in == TravelIn::Open && (support || after_support) && !on_one(at, start)
+            {
+                path.travel_in = TravelIn::Blocked;
+            }
+        }
+        cursor = path.points.last().copied();
+        after_support = support;
     }
 }
 
