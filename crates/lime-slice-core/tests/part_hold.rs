@@ -204,6 +204,55 @@ fn a_ridge_on_a_bed_bridges_across_its_strip() {
     assert_bridged_across(&part, &bridges);
 }
 
+/// A tray on the bed: a floor `floor` mm thick, `size` across, with a rim
+/// `rim` wide up to `height`, open on top.
+fn tray_stl(size: [f64; 2], floor: f64, height: f64, rim: f64) -> String {
+    let [l, w] = size;
+    let mut faces: Vec<[[f64; 3]; 3]> = Vec::new();
+    let mut quad = |a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]| {
+        faces.push([a, b, c]);
+        faces.push([a, c, d]);
+    };
+    let outer = [[0.0, 0.0], [l, 0.0], [l, w], [0.0, w]];
+    let inner = [[rim, rim], [l - rim, rim], [l - rim, w - rim], [rim, w - rim]];
+    let at = |p: [f64; 2], z: f64| [p[0], p[1], z];
+    quad(at(outer[0], 0.0), at(outer[3], 0.0), at(outer[2], 0.0), at(outer[1], 0.0));
+    for k in 0..4 {
+        let (a, b) = (outer[k], outer[(k + 1) % 4]);
+        quad(at(a, 0.0), at(b, 0.0), at(b, height), at(a, height));
+        let (c, d) = (inner[(k + 1) % 4], inner[k]);
+        quad(at(a, height), at(b, height), at(c, height), at(d, height));
+        quad(at(c, floor), at(d, floor), at(d, height), at(c, height));
+    }
+    quad(at(inner[0], floor), at(inner[1], floor), at(inner[2], floor), at(inner[3], floor));
+    let mut out = String::from("solid tray\n");
+    for face in faces {
+        out.push_str("facet normal 0 0 0\nouter loop\n");
+        for v in face {
+            out.push_str(&format!("vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        out.push_str("endloop\nendfacet\n");
+    }
+    out.push_str("endsolid tray\n");
+    out
+}
+
+/// Where a tray's floor closes over lightning, its top skin covers the pocket
+/// and leaves a ring of interior under the rim, too narrow for a cell. Void
+/// fill used to lay that ring's first rows along it, all the way round, over
+/// the hollow cell below: a 33 mm span on this tray. The ring is no straight
+/// strip, so it bridges across in short tiles now.
+#[test]
+fn a_ring_closing_a_tray_floor_bridges_across() {
+    let (part, bridges) = hold_and_bridges(&tray_stl([100.0, 10.0], 6.0, 11.0, 2.6), json!({}));
+    assert!(bridges.len() > 100, "{part:?}");
+    let longest = bridges.iter().map(|b| b.1).fold(0.0, f64::max);
+    assert!(longest < 3.0, "longest bridge row {longest:.2} mm");
+    let layer = bridges[0].0;
+    assert!(bridges.iter().all(|b| b.0 == layer), "{bridges:?}");
+    assert!(part.longest_span_mm < 10.0, "{part:?}");
+}
+
 #[test]
 fn an_arm_born_in_one_nozzle_plane_stands_on_nothing() {
     let part = hold(&wall_and_arm(45.0), json!({ "belt": ir3() }));

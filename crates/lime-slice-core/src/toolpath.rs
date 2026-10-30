@@ -832,7 +832,10 @@ fn emit_void_fill_over(
         let spans: Vec<(Vec<Loop>, f64)> =
             island_loops(&drop_slivers(boolean_intersect(&voids, hollow), SKIN_SLIVER_MM2))
                 .into_iter()
-                .filter_map(|span| across_long_strip(&span).map(|across| (span, across)))
+                .flat_map(|span| match across_long_strip(&span) {
+                    Some(across) => vec![(span, across)],
+                    None => narrow_run_tiles(&span),
+                })
                 .collect();
         if !spans.is_empty() {
             let cut: Vec<Loop> = spans.iter().flat_map(|(span, _)| span.clone()).collect();
@@ -983,6 +986,59 @@ fn across_long_strip(region: &[Loop]) -> Option<f64> {
     };
     let across = along + std::f64::consts::FRAC_PI_2;
     (extent(along) > VOID_SPAN_MM && extent(across) <= VOID_BRIDGE_MM).then_some(across)
+}
+
+/// A narrow void piece over nothing that turns is cut into tiles this wide,
+/// so no row in a tile spans more than a row that holds over the hollow.
+const VOID_TILE_MM: f64 = VOID_SPAN_MM;
+
+/// A void piece over nothing that is narrow everywhere and long, but no
+/// straight strip: the ring a roof's interior leaves around its top skin, or
+/// an L or U where a closing interior turns. Its rows would run along it over
+/// the hollow, as far as it goes straight. It is cut into square tiles, and
+/// each tile's piece bridges the narrowest way across. Empty for any other
+/// piece, which fills as it did.
+fn narrow_run_tiles(region: &[Loop]) -> Vec<(Vec<Loop>, f64)> {
+    let Some((lo, hi)) = loop_bounds(region) else {
+        return Vec::new();
+    };
+    if (hi[0] - lo[0]).max(hi[1] - lo[1]) <= VOID_SPAN_MM
+        || !offset_loops(region, -VOID_BRIDGE_MM * 0.5).is_empty()
+    {
+        return Vec::new();
+    }
+    let cell = |v: f64| (v / VOID_TILE_MM).floor() as i64;
+    let mut out = Vec::new();
+    for i in cell(lo[0])..=cell(hi[0]) {
+        for j in cell(lo[1])..=cell(hi[1]) {
+            let (x0, y0) = (i as f64 * VOID_TILE_MM, j as f64 * VOID_TILE_MM);
+            let (x1, y1) = (x0 + VOID_TILE_MM, y0 + VOID_TILE_MM);
+            let tile = vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+            let cut = drop_slivers(boolean_intersect(region, &[tile]), SKIN_SLIVER_MM2);
+            for piece in island_loops(&cut) {
+                let across = narrowest_way(&piece[0]);
+                out.push((piece, across));
+            }
+        }
+    }
+    out
+}
+
+/// The direction, in steps of 15°, along which `ring` is shortest: rows that
+/// way are the shortest that cross it.
+fn narrowest_way(ring: &[[f64; 2]]) -> f64 {
+    let extent = |angle: f64| {
+        let (c, s) = (angle.cos(), angle.sin());
+        let (lo, hi) = ring
+            .iter()
+            .map(|p| p[0] * c + p[1] * s)
+            .fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+        hi - lo
+    };
+    (0..12)
+        .map(|k| k as f64 * std::f64::consts::PI / 12.0)
+        .min_by(|a, b| extent(*a).total_cmp(&extent(*b)))
+        .unwrap_or(0.0)
 }
 
 /// Bridge rows at `across` over a void piece over nothing, a bead apart, each
@@ -8386,6 +8442,36 @@ mod solid_row_tests {
         assert!(over.iter().all(|r| r.0 == PathKind::Bridge));
         assert!(over.iter().all(|r| hypot2(r.1[0], r.1[1]) < 3.0));
         assert!(over.iter().any(|r| (r.1[0][1] - r.1[1][1]).abs() > 2.0));
+    }
+
+    #[test]
+    fn a_ring_over_a_hollow_cell_bridges_across_it_in_tiles() {
+        // Walls on both sides of a 3 mm frame leave a ring of interior a
+        // little over a millimetre wide, under six beads, all the way round.
+        let region = vec![
+            vec![[0.0, 0.0], [30.0, 0.0], [30.0, 10.0], [0.0, 10.0]],
+            vec![[3.0, 3.0], [3.0, 7.0], [27.0, 7.0], [27.0, 3.0]],
+        ];
+        let strategy = pure(StrategyId::Speed);
+        let rows = |hollow: Option<Vec<Loop>>| -> Vec<(PathKind, [[f64; 2]; 2])> {
+            let features = PathFeatures {
+                hollow_below: hollow.map(std::sync::Arc::new),
+                ..PathFeatures::default()
+            };
+            let mut hint = [0.0, 0.0];
+            plan_region(&region, &strategy, 0.45, &mut hint, &features)
+                .iter()
+                .filter(|p| matches!(p.kind, PathKind::GapFill | PathKind::Bridge))
+                .flat_map(|p| p.points.windows(2).map(|w| (p.kind, [w[0], w[1]])))
+                .collect()
+        };
+        // On solid ground the rows run along the ring's sides.
+        let held = rows(None);
+        assert!(held.iter().any(|r| hypot2(r.1[0], r.1[1]) > 20.0));
+        // Over a cell no row runs along it: every one crosses it.
+        let over = rows(Some(rectangle(40.0, 20.0)));
+        assert!(over.iter().filter(|r| r.0 == PathKind::Bridge).count() > 20);
+        assert!(over.iter().all(|r| hypot2(r.1[0], r.1[1]) < 3.0), "{over:?}");
     }
 
     fn annulus() -> Vec<Loop> {
