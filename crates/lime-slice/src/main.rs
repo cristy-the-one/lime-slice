@@ -1639,8 +1639,12 @@ fn edit_line(n: usize, edit: &lime_slice_core::EditOutcomeView) -> String {
         Some([lo, hi]) => format!("{} layers changed in {lo}..={hi}", edit.changed_layers),
         None => "no layer changed".to_string(),
     };
+    let grown = match edit.grown.len() {
+        0 => String::new(),
+        k => format!("  grew {k} branch{}", if k == 1 { "" } else { "es" }),
+    };
     format!(
-        "edit {n}  {status}  {span}  newly floating {:.1} mm2 in {} patch{}",
+        "edit {n}  {status}  {span}  newly floating {:.1} mm2 in {} patch{}{grown}",
         edit.newly_floating_mm2,
         edit.floating.len(),
         if edit.floating.len() == 1 { "" } else { "es" }

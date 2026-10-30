@@ -254,6 +254,11 @@ pub(crate) struct Supports {
     /// before its regrow's first joined a kept limb, whose knots never took
     /// its load.
     regrown: Vec<usize>,
+    /// The limbs each grow added. Their tips held no interface of their own.
+    grafted: Vec<std::ops::Range<usize>>,
+    /// The enforce dabs the demand was painted with, in the slice frame. A
+    /// grown branch reaches for them first.
+    enforce: Vec<PaintDisk>,
     /// The settings it grew with. Edits re-stand layers with the same lean and pitch.
     opts: SupportOpts,
 }
@@ -488,6 +493,8 @@ impl Supports {
             restored: vec![Vec::new(); layers],
             edits: 0,
             regrown: Vec::new(),
+            grafted: Vec::new(),
+            enforce: Vec::new(),
             opts: *opts,
         }
     }
@@ -540,6 +547,12 @@ impl Supports {
             born: demand.born,
             edits: 0,
             regrown: Vec::new(),
+            grafted: Vec::new(),
+            enforce: paint
+                .iter()
+                .filter(|d| d.kind == paint::PaintKind::Enforce)
+                .copied()
+                .collect(),
             opts: *opts,
         })
     }
@@ -998,6 +1011,8 @@ struct Walk<'a> {
     nodes: Vec<Node>,
     next_id: u32,
     ended: Vec<(NodeId, End)>,
+    /// A grow's walk: each new tip leans on its own to a kept knot.
+    solo: bool,
 }
 
 impl<'a> Walk<'a> {
@@ -1049,6 +1064,7 @@ impl<'a> Walk<'a> {
             nodes: Vec::new(),
             next_id,
             ended: Vec::new(),
+            solo: false,
         }
     }
 
@@ -1169,6 +1185,29 @@ impl<'a> Walk<'a> {
         }
     }
 
+    /// Bear one tip at `xy`, carrying one tip's load, with its interface
+    /// stack frozen over it as a tip born from the demand is.
+    fn plant(&mut self, xy: [f64; 2], to_bed: bool) {
+        self.nodes.push(Node {
+            id: self.next_id,
+            xy,
+            above: xy,
+            radius: self.tip_r,
+            dist: 0.0,
+            freeze: self.iface_n,
+            load: 1.0,
+            to_bed,
+        });
+        self.next_id += 1;
+    }
+
+    /// Start again with no nodes, numbering the next tip `next_id`.
+    fn restart(&mut self, next_id: u32) {
+        self.nodes.clear();
+        self.ended.clear();
+        self.next_id = next_id;
+    }
+
     /// Step every node from layer `i` down to the next among `fixed`, and
     /// record in `forest` how the limbs that stop here end.
     fn descend(&mut self, i: usize, fixed: &mut Fixed, forest: &mut Forest) {
@@ -1188,6 +1227,7 @@ impl<'a> Walk<'a> {
             drift: self
                 .floor
                 .map_or(0.0, |floor| floor.fall(self.bands[i].height)),
+            solo: self.solo,
         };
         let nodes = std::mem::take(&mut self.nodes);
         let avoid = self.avoidance.as_ref().map(|areas| (areas, i - 1));
@@ -1215,6 +1255,14 @@ struct Fixed {
     knots: Vec<Node>,
     grid: CellGrid,
     widest: f64,
+    /// Kept knots a new node may neither lean toward nor join, only keep
+    /// clear of: the trees a grown branch does not belong to.
+    others: Vec<Node>,
+    others_grid: CellGrid,
+    others_widest: f64,
+    /// Where a node a grow aims at one knot steps to on this layer instead
+    /// of the knot it pairs with, by node id.
+    aims: HashMap<u32, [f64; 2]>,
     /// The id of every kept knot joined on this step, and the load it took.
     joined: Vec<(NodeId, f64)>,
 }
@@ -1222,15 +1270,28 @@ struct Fixed {
 impl Fixed {
     /// `knots` in ascending id order.
     fn new(knots: Vec<Node>) -> Self {
-        let mut grid = CellGrid::new(PAIR_CELL_MM);
-        for (k, n) in knots.iter().enumerate() {
-            grid.insert(k, n.xy);
-        }
-        let widest = knots.iter().map(|n| n.radius).fold(0.0, f64::max);
+        Self::among(knots, Vec::new())
+    }
+
+    /// `knots` as hosts, and `others` as obstacles only.
+    fn among(knots: Vec<Node>, others: Vec<Node>) -> Self {
+        let index = |nodes: &[Node]| {
+            let mut grid = CellGrid::new(PAIR_CELL_MM);
+            for (k, n) in nodes.iter().enumerate() {
+                grid.insert(k, n.xy);
+            }
+            (grid, nodes.iter().map(|n| n.radius).fold(0.0, f64::max))
+        };
+        let (grid, widest) = index(&knots);
+        let (others_grid, others_widest) = index(&others);
         Self {
             knots,
             grid,
             widest,
+            others,
+            others_grid,
+            others_widest,
+            aims: HashMap::new(),
             joined: Vec::new(),
         }
     }
@@ -1265,12 +1326,21 @@ impl Fixed {
 
     /// True when `n`'s disk at `p` would overlap a kept disk it cannot join.
     fn blocks(&self, p: [f64; 2], n: &Node, grow: &Grow) -> bool {
-        !self.is_empty()
+        let hosts = !self.is_empty()
             && self.grid.around(p, self.widest + n.radius).any(|k| {
                 let h = &self.knots[k];
                 (p[0] - h.xy[0]).hypot(p[1] - h.xy[1]) < h.radius + n.radius
                     && !can_carry(h, n, grow)
-            })
+            });
+        hosts
+            || (!self.others.is_empty()
+                && self
+                    .others_grid
+                    .around(p, self.others_widest + n.radius)
+                    .any(|k| {
+                        let h = &self.others[k];
+                        (p[0] - h.xy[0]).hypot(p[1] - h.xy[1]) < h.radius + n.radius
+                    }))
     }
 }
 
@@ -1610,6 +1680,8 @@ struct Grow {
     /// Slice Y every unfrozen node falls toward the belt on this step. `0`
     /// off a belt, where nodes fall straight down.
     drift: f64,
+    /// Nodes pair with and merge into kept knots only, never each other.
+    solo: bool,
 }
 
 /// Pitch actually left standing. An explicit `max_tip_spacing` wins; otherwise
@@ -1710,7 +1782,14 @@ fn propagate_nodes(
             n.xy[1] += grow.drift;
         }
     }
-    let steps = pair_steps(&next, &fixed.knots, grow, max_step, avoid);
+    let mut steps = pair_steps(&next, &fixed.knots, grow, max_step, avoid);
+    if !fixed.aims.is_empty() {
+        for (n, step) in next.iter().zip(steps.iter_mut()) {
+            if let Some(&to) = fixed.aims.get(&n.id).filter(|_| n.freeze == 0) {
+                *step = step_toward(n.xy, to, max_step);
+            }
+        }
+    }
     let flare = flare_per_mm(grow.load_factor) * grow.height;
     for (n, xy) in next.iter_mut().zip(steps) {
         let from = n.xy;
@@ -1769,7 +1848,9 @@ fn propagate_nodes(
         }
         kept.push(n);
     }
-    merge_nodes(&mut kept, grow, max_step, ended, avoid);
+    if !grow.solo {
+        merge_nodes(&mut kept, grow, max_step, ended, avoid);
+    }
     if grow.next_is_bed {
         for n in &mut kept {
             if n.freeze == 0 {
@@ -1842,6 +1923,7 @@ fn pair_steps(
             return None;
         }
         let met = match (a < nodes.len(), b < nodes.len()) {
+            (true, true) if grow.solo => None,
             (true, true) => meet(node(a), node(b), grow),
             (true, false) => meet_fixed(node(a), node(b), grow),
             (false, true) => meet_fixed(node(b), node(a), grow),
@@ -3336,6 +3418,7 @@ mod tests {
                     load_factor,
                     floor_y_max: None,
                     drift: 0.0,
+                    solo: false,
                 };
                 let got = pair_steps(&nodes, &[], &grow, 0.17, None);
                 let want = pair_steps_by_scan(&nodes, &grow, 0.17);
@@ -4131,6 +4214,7 @@ mod tests {
             load_factor,
             floor_y_max: None,
             drift: 0.0,
+            solo: false,
         };
         let pair = |load| {
             vec![[0.0, 0.0], [0.5, 0.0]]

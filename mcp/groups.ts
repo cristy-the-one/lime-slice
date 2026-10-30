@@ -15,7 +15,7 @@ export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
     ],
   },
   paint: { holds: "support, seam, and reinforcement paint", tools: ["paint_supports", "paint_seam", "reinforce_add", "paint_list", "paint_clear"] },
-  supports: { holds: "the sliced support trees: read and prune", tools: ["support_trees", "support_edit"] },
+  supports: { holds: "the sliced support trees: read, prune, and grow", tools: ["support_trees", "support_edit"] },
   plate: {
     holds: "more plate work: duplicate, arrange, split shells, print order, height ranges, modifiers, overrides",
     tools: ["object_duplicate", "plate_arrange", "object_split_shells", "plate_print_order", "range_add", "modifier_add", "overrides_list", "override_remove"],

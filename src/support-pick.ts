@@ -1,5 +1,5 @@
 /** Picking tree supports from the skeleton. Pure: no three.js, no DOM. Print space is X right, Y depth, Z up. */
-import type { BeltCopies, CoverageGap, RegrowEdit, SiteSpec, SupportSkeleton, TiltedGap } from "./support-edits.ts";
+import type { BeltCopies, CoverageGap, GrowEdit, RegrowEdit, SiteSpec, SupportSkeleton, TiltedGap } from "./support-edits.ts";
 import { keepsPoint, type SectionSpec, type Vec3 } from "./section-plane.ts";
 
 export type PickScope = "branch" | "tree";
@@ -222,6 +222,22 @@ function planeOf(points: readonly Vec3[]): [Vec3, Vec3] | null {
   }
   const len = Math.hypot(normal[0], normal[1], normal[2]);
   return len < 1e-9 ? null : [a, [normal[0] / len, normal[1] / len, normal[2] / len]];
+}
+
+/**
+ * The grow that adds up to `count` branches to the tree limb `k` belongs to. It names the tree by every live
+ * birth site in it, as deleting the tree would, so a replay after a re-slice still finds it if any tip survived.
+ */
+export function growFor(index: LimbIndex, k: number, count: number): GrowEdit {
+  return { kind: "grow", sites: sitesOf(index, treeLimbs(index, k)), count };
+}
+
+/** Skeleton indices of the limbs whose ids are `ids`, ascending. An id the skeleton lacks is left out. */
+export function limbsWithIds(index: LimbIndex, ids: readonly number[]): number[] {
+  return ids.flatMap((id) => {
+    const k = index.at.get(id);
+    return k === undefined ? [] : [k];
+  }).sort((a, b) => a - b);
 }
 
 /** The regrow that targets one gap: its bounds box as one closed loop and its z range. Same as the engine's `over_gaps`. */

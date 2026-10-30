@@ -68,9 +68,15 @@ const prune = await call("support_edit", { action: "prune", site: { xy: [20, 0],
 check("a prune names the sites", prune.ok === true && (prune.sites as number) >= 1, JSON.stringify(prune));
 const regrow = await call("support_edit", { action: "regrow", site: { xy: [20, 0], zMm: 6 } });
 check("a regrow uses the unheld patch", regrow.ok === true && regrow.action === "regrow", JSON.stringify(regrow));
+const growDry = await call("support_edit", { action: "grow", site: { xy: [20, 0], zMm: 8 }, dryRun: true });
+check("a grow dry run names the tree and the default count", growDry.ok === true && growDry.dryRun === true && growDry.count === 6, JSON.stringify(growDry));
+const grow = await call("support_edit", { action: "grow", site: { xy: [20, 0], zMm: 8 }, count: 4 });
+check("a grow names the tree and the count", grow.ok === true && grow.action === "grow" && grow.count === 4, JSON.stringify(grow));
 const edited = await call("slice_start", { scope: "object" });
 await call("slice_wait", { job: edited.job });
-const editedBody = JSON.parse(engine.lastSlice) as { supportEdits?: { kind?: string }[]; reinforcement?: { kind?: string }[] };
+const editedBody = JSON.parse(engine.lastSlice) as { supportEdits?: { kind?: string; count?: number; spacing?: number; sites?: unknown[] }[]; reinforcement?: { kind?: string }[] };
+const grown = editedBody.supportEdits?.find((row) => row.kind === "grow");
+check("the next slice sends the grow with the tree's sites", grown?.count === 4 && grown.spacing === undefined && (grown.sites?.length ?? 0) >= 1, JSON.stringify(grown));
 check("the next slice sends the prune and the regrow", editedBody.supportEdits?.some((row) => row.kind === "prune") === true && editedBody.supportEdits?.some((row) => row.kind === "regrow") === true, JSON.stringify(editedBody.supportEdits));
 check("the slice sends the reinforcement volume", editedBody.reinforcement?.some((row) => row.kind === "box") === true, JSON.stringify(editedBody.reinforcement));
 

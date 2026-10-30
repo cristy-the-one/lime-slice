@@ -122,6 +122,58 @@ test("delete a tree, regrow its gap, undo, and clear", async ({ page }) => {
   expect((await supportSeconds(page)).text).toBe(before.text);
 });
 
+test("grow branches on a tree, then undo", async ({ page }) => {
+  await page.route("http://127.0.0.1:43118/**", async (route) => {
+    const url = route.request().url().replace("http://127.0.0.1:43118", api!);
+    const response = await route.fetch({ url, timeout: SLICE_MS });
+    await route.fulfill({ response });
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.locator("#fileMenu > summary").click();
+  await page.locator("#samples > summary").click();
+  await page.locator('[data-sample="overhang_ledge.stl"]').click();
+  await expect(page.locator("#objectList .obj").first()).toBeVisible({ timeout: 30_000 });
+  await page.locator("#levelPick").selectOption("advanced");
+  await setSupports(page, "auto");
+  await page.locator("#sstyle").selectOption("tree");
+  await page.locator("#slice").click();
+  await sliced(page);
+  await page.getByRole("tab", { name: "Preview", exact: true }).click();
+  await page.getByRole("button", { name: "3D", exact: true }).click();
+  await page.keyboard.press("End");
+  const before = await supportSeconds(page);
+
+  await page.keyboard.press("e");
+  const readout = page.locator("#supportReadout");
+  const box = (await page.locator("#view3d").boundingBox())!;
+  let at: { x: number; y: number } | null = null;
+  for (let row = 1; row < 24 && !at; row++) {
+    for (let col = 1; col < 32 && !at; col++) {
+      const x = box.x + (box.width * col) / 32;
+      const y = box.y + (box.height * row) / 24;
+      await page.mouse.move(x, y);
+      if (/^(Tree|Branch) · /.test((await readout.textContent()) ?? "")) at = { x, y };
+    }
+  }
+  expect(at, "a support under the pointer somewhere in the view").not.toBeNull();
+  await page.mouse.click(at!.x, at!.y);
+  await page.locator("#supportGrowCount").fill("3");
+  await page.locator('#supportEditbar [data-action="grow"]').click();
+  const rows = page.locator("#supportEdits li[data-edit]");
+  await expect(rows.first().locator(".se-text")).toContainText(/Grew [1-3] branch(es)? on the tree\./, { timeout: SLICE_MS });
+  await sliced(page);
+  await expect(readout).toHaveText(/^New · [1-3] branch(es)?$/);
+  const grown = await supportSeconds(page);
+  expect(grown.seconds).toBeGreaterThan(before.seconds);
+
+  await page.getByRole("button", { name: "Undo last" }).click();
+  await sliced(page);
+  await expect(rows).toHaveCount(0);
+  expect((await supportSeconds(page)).text).toBe(before.text);
+});
+
 test("Supports off prints no support, and on lets trees be edited", async ({ page }) => {
   await page.addInitScript(() => {
     delete (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker;

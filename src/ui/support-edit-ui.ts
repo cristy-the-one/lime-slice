@@ -1,8 +1,8 @@
 import { createElement, TreeDeciduous, X } from "lucide";
 import type { BeltCopies, CoverageGap, EditOutcome, SupportSkeleton } from "../support-edits";
-import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, gapZ, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
+import { alignOutcomes, appendEdit, badgeOf, clearEdits, editTitle, gapsToShow, gapZ, GROW_DEFAULT, outcomeText, removeEdit, undoLast, type EditEntry } from "../support-edit-list";
 import { replyFrameEdit } from "../bed-offset";
-import { capsulesOf, copyOffsets, indexSkeleton, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
+import { capsulesOf, copyOffsets, growFor, indexSkeleton, limbsWithIds, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, type LimbIndex, type PickScope, type Visible } from "../support-pick";
 import type { PickEvent, SliceView3d } from "../view3d";
 import { isMobileLayout } from "../platform";
 import { markProjectDirty } from "../project-dirty";
@@ -38,14 +38,17 @@ export interface SupportEditHooks {
   prepareTree(): boolean;
 }
 
-type Target = { kind: "limb"; limb: number; scope: PickScope } | { kind: "gap"; gap: CoverageGap } | null;
-type Why = "append" | "remove" | "clear";
+/** `grown` is the branches the last grow added, shown selected until the next pick. */
+type Target = { kind: "limb"; limb: number; scope: PickScope } | { kind: "grown"; limbs: number[] } | { kind: "gap"; gap: CoverageGap } | null;
+type Why = "append" | "grow" | "remove" | "clear";
 
 const OTHER: Record<PickScope, PickScope> = { branch: "tree", tree: "branch" };
 const SCOPE_LABEL: Record<PickScope, string> = { branch: "Branch", tree: "Tree" };
 /** Pick tolerance past a limb's radius: a fixed floor plus a few screen pixels. */
 const SLOP_MM = 0.3;
 const SLOP_PX = 4;
+/** Most branches the bar asks for at once. The engine takes up to 200; more than this is a different tool. */
+const GROW_BAR_MAX = 50;
 const X_ICON = createElement(X, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }).outerHTML;
 
 export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) {
@@ -63,12 +66,19 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     </div>
     <span class="se-readout" id="supportReadout"></span>
     <button class="btn se-danger" type="button" data-action="delete" aria-keyshortcuts="Delete"><span></span><kbd aria-hidden="true">Del</kbd></button>
+    <span class="se-grow" role="group" aria-label="Grow branches on this tree">
+      <input class="se-count" id="supportGrowCount" type="number" inputmode="numeric" min="1" max="${GROW_BAR_MAX}" step="1" value="${GROW_DEFAULT}" aria-label="Branches to grow" title="Branches to add to the tree">
+      <button class="btn" type="button" data-action="grow" aria-keyshortcuts="G"><span>Grow branches</span><kbd aria-hidden="true">G</kbd></button>
+    </span>
     <button class="btn" type="button" data-action="regrow-selected" hidden>Regrow here</button>
     <button class="btn" type="button" data-action="done">Done</button>`;
   const scopeButtons = [...bar.querySelectorAll<HTMLButtonElement>("[data-scope]")];
   const readout = bar.querySelector<HTMLElement>(".se-readout")!;
   const deleteButton = bar.querySelector<HTMLButtonElement>('[data-action="delete"]')!;
   const regrowButton = bar.querySelector<HTMLButtonElement>('[data-action="regrow-selected"]')!;
+  const growGroup = bar.querySelector<HTMLElement>(".se-grow")!;
+  const growButton = bar.querySelector<HTMLButtonElement>('[data-action="grow"]')!;
+  const growCount = bar.querySelector<HTMLInputElement>("#supportGrowCount")!;
   const panel = document.createElement("section");
   panel.className = "support-edits";
   panel.id = "supportEdits";
@@ -139,8 +149,8 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     return !!index && index.skel.id.length > 0;
   }
 
-  function limbsOf(t: Target & { kind: "limb" }) {
-    return selectLimbs(index!, t.limb, t.scope);
+  function limbsOf(t: Target & { kind: "limb" | "grown" }) {
+    return t.kind === "grown" ? t.limbs : selectLimbs(index!, t.limb, t.scope);
   }
 
   /** A belt's copies, which the overlay repeats the skeleton on. */
@@ -149,7 +159,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   }
 
   function capsulesFor(t: Target, visible: Visible, copies: BeltCopies | undefined) {
-    if (t?.kind !== "limb" || !index) return null;
+    if ((t?.kind !== "limb" && t?.kind !== "grown") || !index) return null;
     // A belt's capsules are cut to the shown layers, so they change with the slider, and repeat on each copy.
     const key = onBelt() ? `${visible.zLow},${visible.zHigh},${copies?.count},${copies?.shiftMm}` : "";
     let hit = caps.get(t);
@@ -163,6 +173,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   function same(a: Target, b: Target) {
     if (a?.kind === "gap" && b?.kind === "gap") return a.gap === b.gap;
     if (a?.kind === "limb" && b?.kind === "limb") return a.limb === b.limb && a.scope === b.scope;
+    if (a?.kind === "grown" && b?.kind === "grown") return a.limbs === b.limbs;
     return a === b;
   }
 
@@ -185,6 +196,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       return `Unheld · ${t.gap.areaMm2.toFixed(1)} mm² · Z ${low.toFixed(2)}–${high.toFixed(2)}`;
     }
     const n = sitesOf(index!, limbsOf(t)).length;
+    if (t.kind === "grown") return `New · ${n} branch${n === 1 ? "" : "es"}`;
     return `${SCOPE_LABEL[t.scope]} · ${n} tip${n === 1 ? "" : "s"}`;
   }
 
@@ -197,9 +209,14 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     const onGap = selected?.kind === "gap";
     deleteButton.hidden = onGap;
     regrowButton.hidden = !onGap;
-    deleteButton.firstElementChild!.textContent = `Delete ${selected?.kind === "limb" ? selected.scope : scope}`;
-    deleteButton.disabled = locked || selected?.kind !== "limb";
+    deleteButton.firstElementChild!.textContent = selected?.kind === "grown" ? "Delete new" : `Delete ${selected?.kind === "limb" ? selected.scope : scope}`;
+    deleteButton.disabled = locked || (selected?.kind !== "limb" && selected?.kind !== "grown");
     regrowButton.disabled = locked;
+    growGroup.hidden = onGap;
+    const canGrow = selected?.kind === "limb" && !locked;
+    growButton.disabled = !canGrow;
+    growCount.disabled = !canGrow;
+    growButton.title = canGrow ? "Add branches from this tree to the nearest underside that needs them" : "Pick a tree to grow it";
   }
 
   function paintPanel(v: SupportEditView) {
@@ -323,8 +340,9 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     if (!selected || !index) return null;
     if (selected.kind === "gap") return { kind: "gap", areaMm2: selected.gap.areaMm2, z: gapZ(selected.gap) };
     const sites = sitesOf(index, limbsOf(selected));
+    const pickScope = selected.kind === "grown" ? "branch" : selected.scope;
     // A site's z is a slice-frame id on a belt, not a height anyone sees.
-    return { kind: "limb", scope: selected.scope, tips: sites.length, z: onBelt() ? null : sites[0]?.z ?? null };
+    return { kind: "limb", scope: pickScope, tips: sites.length, z: onBelt() ? null : sites[0]?.z ?? null };
   }
 
   function placePanel() {
@@ -414,10 +432,28 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
 
   function deleteSelected() {
     const v = hooks.view();
-    if (selected?.kind !== "limb" || !index || v.busy || !v.treeSupports) return;
+    if ((selected?.kind !== "limb" && selected?.kind !== "grown") || !index || v.busy || !v.treeSupports) return;
     const sites = replyFrameEdit(sitesOf(index, limbsOf(selected)));
     if (!sites.length) return;
-    commit(appendEdit(v.edits, { id: nextId++, edit: { kind: "prune", sites }, scope: selected.scope }), "append");
+    const pickScope = selected.kind === "grown" ? "branch" : selected.scope;
+    commit(appendEdit(v.edits, { id: nextId++, edit: { kind: "prune", sites }, scope: pickScope }), "append");
+  }
+
+  /** The count field as a whole number of branches the bar allows. */
+  function branchCount() {
+    const n = Math.round(Number(growCount.value));
+    const count = Number.isFinite(n) ? Math.min(GROW_BAR_MAX, Math.max(1, n)) : GROW_DEFAULT;
+    growCount.value = String(count);
+    return count;
+  }
+
+  /** Grow branches on the tree the selected limb belongs to, whichever scope picked it. */
+  function growSelected() {
+    const v = hooks.view();
+    if (selected?.kind !== "limb" || !index || v.busy || !v.treeSupports) return;
+    const edit = replyFrameEdit(growFor(index, selected.limb, branchCount()));
+    if (!edit.sites.length) return;
+    commit(appendEdit(v.edits, { id: nextId++, edit, tips: edit.sites.length }), "grow");
   }
 
   function regrow(gap: CoverageGap) {
@@ -439,6 +475,25 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     const newest = v.edits[v.edits.length - 1];
     const outcome = newest ? alignOutcomes(v.edits, v.sent, v.result?.supportEdits ?? [])[v.edits.length - 1] : undefined;
     if (!newest || !outcome) return;
+    if (why === "grow") {
+      // The new branches stay selected, so they show where they went and Delete drops just them.
+      sync(v);
+      const limbs = index ? limbsWithIds(index, outcome.grown ?? []) : [];
+      if (editing && limbs.length) {
+        selected = { kind: "grown", limbs };
+        hover = selected;
+        refresh();
+      }
+      const undo = {
+        label: "Undo",
+        run: () => {
+          const now = hooks.view().edits;
+          if (now[now.length - 1]?.id === newest.id) commit(undoLast(now), "remove");
+        },
+      };
+      pushToast(outcomeText(newest, outcome), limbs.length ? "info" : "warn", undo);
+      return;
+    }
     const warn = outcome.status === "stale" || outcome.newlyFloatingMm2 > 0.05;
     if (warn) pushToast(outcomeText(newest, outcome), "warn");
   }
@@ -501,6 +556,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
     const action = button.dataset.action;
     if (action === "done") setEditing(false);
     if (action === "delete") deleteSelected();
+    if (action === "grow") growSelected();
     if (action === "regrow-selected" && selected?.kind === "gap") regrow(selected.gap);
   });
 
@@ -550,6 +606,9 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       ev.preventDefault();
     } else if (ev.key === "Delete" || ev.key === "Backspace") {
       deleteSelected();
+      ev.preventDefault();
+    } else if (ev.key === "g" || ev.key === "G") {
+      growSelected();
       ev.preventDefault();
     }
   }, { capture: true });

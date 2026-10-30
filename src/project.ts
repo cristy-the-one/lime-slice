@@ -37,7 +37,7 @@ import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileOb
 import { readStudy } from "./sim/study.ts";
 import { isGlobalFrame, readWorkplane } from "./workplane.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
-import type { EditEntry } from "./support-edit-list.ts";
+import { GROW_MAX, type EditEntry } from "./support-edit-list.ts";
 import { readSavedTree, savedToolObjects, treeBody } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
 import { readSeamPaint } from "./seam-paint.ts";
@@ -777,7 +777,7 @@ function readEdits(value: unknown): EditEntry[] | string {
   return out;
 }
 
-/** A prune keeps sites (xy plus contact height). A regrow keeps its region and z range. Walk ids are not read. */
+/** A prune keeps sites (xy plus contact height). A regrow keeps its region and z range. A grow keeps its tree's sites and count. Walk ids are not read. */
 function readEdit(value: unknown): EditEntry | string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "This project file is incomplete.";
   const row = value as Record<string, unknown>;
@@ -798,6 +798,16 @@ function readEdit(value: unknown): EditEntry | string {
     if (typeof region === "string") return region;
     if (!z) return "This project file is incomplete.";
     return { id: row.id, areaMm2: row.areaMm2 as number, edit: { kind: "regrow", region, z } };
+  }
+  if (body.kind === "grow") {
+    const count = body.count;
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > GROW_MAX) return "This project file is incomplete.";
+    if (typeof row.tips !== "number" || !Number.isInteger(row.tips) || row.tips < 0) return "This project file is incomplete.";
+    if (body.spacing !== undefined && (!finite(body.spacing) || (body.spacing as number) < 0)) return "This project file is incomplete.";
+    const sites = readSites(body.sites);
+    if (typeof sites === "string") return sites;
+    const spacing = body.spacing === undefined ? {} : { spacing: body.spacing as number };
+    return { id: row.id, tips: row.tips, edit: { kind: "grow", sites, count, ...spacing } };
   }
   return "This project file is incomplete.";
 }

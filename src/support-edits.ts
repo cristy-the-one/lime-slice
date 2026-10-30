@@ -62,7 +62,19 @@ export interface RegrowEdit {
   z: [number, number];
 }
 
-export type SupportEdit = PruneEdit | RegrowEdit;
+/**
+ * Grow up to `count` new branches on the tree the limbs born at `sites` belong to, each from a fresh tip on the
+ * nearest underside that needs support: enforce paint first, then beside a tip already touching, then any other.
+ * `spacing` is the least distance from a new tip to any other tip, mm; leave it out to take one from the pitch.
+ */
+export interface GrowEdit {
+  kind: "grow";
+  sites: SiteSpec[];
+  count: number;
+  spacing?: number;
+}
+
+export type SupportEdit = PruneEdit | RegrowEdit | GrowEdit;
 
 /**
  * Fields a slice request adds for support edits. Leave `supportEdits` unset when there are none
@@ -90,6 +102,8 @@ export type EditOutcome = EditStatus & {
   newlyFloatingMm2: number;
   /** Coverage gaps the edit leaves, specks included. */
   floating: CoverageGap[];
+  /** A grow's new limbs, by the ids `SupportSkeleton.id` carries. Absent for the other edits and a grow that added none. */
+  grown?: number[];
 };
 
 /**

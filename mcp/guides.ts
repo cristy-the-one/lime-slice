@@ -63,6 +63,7 @@ export const GUIDES: Guide[] = [
       "4. settings_set {values:{supports:true}} when the warning says supports are off. supportPaintJoin (on by default) also holds the part between enforce dabs up to 6 mm apart.",
       "5. slice_start, then slice_wait. The slice body carries the disks.",
       "6. support_trees, then support_edit {action:\"prune\", site:{xy, zMm}, scope:\"tree\"}, then slice again.",
+      "7. support_edit {action:\"grow\", site:{xy, zMm}, count:6} adds branches to that tree toward the nearest underside that needs them, enforce paint first. Slice again; support_trees edits[].grown says how many grew.",
     ].join("\n"),
   },
   {
