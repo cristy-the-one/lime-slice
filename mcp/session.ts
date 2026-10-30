@@ -6545,10 +6545,7 @@ export class Session {
     if (!job || !wire || this.staleReason(job) || !wire.partHold || !obj.solid) return finding;
     const hold = readHoldPatches(wire.partHold);
     const placed = this.placed(obj);
-    const objects = Array.isArray(wire.objects) ? (wire.objects as { id?: unknown; offset?: number[] }[]) : [];
-    const offset = objects.find((row) => row.id === obj.id)?.offset ?? (wire.offset as number[] | undefined);
-    const belt = this.printer().kind === "belt";
-    const sliced: SlicedPose = { id: obj.id, pose: placed.pose, scale: obj.scale, seatMm: obj.seatMm, beltOffsetY: belt ? (Number(offset?.[1]) || 0) : null, key: "" };
+    const sliced: SlicedPose = { id: obj.id, pose: placed.pose, scale: obj.scale, seatMm: obj.seatMm, key: "" };
     return checkAgainstSlice(finding, { patches: hold, objects: [sliced] }, sliced, obj.solid.lines, obj.solid.bounds, build);
   }
 

@@ -223,15 +223,12 @@ export function payload() {
 }
 
 /** What Find needs of a slice's part-bead check: its patches, and each object as it was placed for it. */
-function sliceHoldOf(body: SliceResponse, objects: readonly PlateObject[], belt: boolean): SliceHold | null {
+function sliceHoldOf(body: SliceResponse, objects: readonly PlateObject[]): SliceHold | null {
   const raw = (body as { partHold?: unknown }).partHold;
   if (!raw) return null;
   return {
     patches: readHoldPatches(raw),
-    objects: objects.map((obj) => {
-      const offset = replyOffset(body.objects?.find((v) => v.id === obj.id)?.offset ?? body.offset);
-      return { id: obj.id, pose: objectPlacement(obj).pose, scale: obj.partScale, seatMm: meshSeat(obj.bytes) ?? 0, beltOffsetY: belt ? offset[1] : null, key: slicedKey(obj) };
-    }),
+    objects: objects.map((obj) => ({ id: obj.id, pose: objectPlacement(obj).pose, scale: obj.partScale, seatMm: meshSeat(obj.bytes) ?? 0, key: slicedKey(obj) })),
   };
 }
 
@@ -355,7 +352,6 @@ export async function runSlice(force = false) {
   // --- Print transitions, step 6b: the objects this slice's part-bead check covers, as they are placed now.
   const live = livePlate();
   const holdObjects = request.partHold ? (listed ? listed.flatMap((o) => live.filter((p) => p.id === o.id)) : live.filter((p) => p.id === (state.plate.selectedId ?? live[0]?.id)).slice(0, 1)) : [];
-  const holdBelt = beltStamp(loadMachineLibrary()) !== null;
   const edits = (listed ? selected?.supportEdits : request.supportEdits) ? state.supportEdits : [];
   const paint = state.supportPaint;
   const paintedIndex = listed ? Math.max(0, listed.findIndex((o) => o.id === state.plate.selectedId)) : 0;
@@ -425,7 +421,7 @@ export async function runSlice(force = false) {
     session.slicedBed = slicedBed;
     session.slicedObjects =
       slicedObjects?.map((o) => ({ ...o, bed: { ...o.bed, offset: replyOffset(body.objects?.find((v) => v.id === o.id)?.offset) } })) ?? null;
-    session.sliceHold = request.partHold ? sliceHoldOf(body, holdObjects, holdBelt) : null;
+    session.sliceHold = request.partHold ? sliceHoldOf(body, holdObjects) : null;
     const prev = session.slicedFrame !== null && session.shownRecipe !== null ? { frame: session.slicedFrame, recipe: session.shownRecipe } : null;
     session.slicedFrame = partFrame;
     state.slicedHash = hash;

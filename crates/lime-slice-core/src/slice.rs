@@ -2733,7 +2733,13 @@ fn slice_plate(
         let z_gap = settings
             .support_z_gap_mm
             .unwrap_or_else(|| layer_height.max(0.12));
-        let frame = belt_job.as_ref().map(|job| (job.belt.frame, job.belt.start));
+        // A lone part's place along the belt is out of the laid mesh, so the
+        // audit adds it back; a plate of several baked it in already.
+        let frame = belt_job.as_ref().map(|job| {
+            let to_bed = job.offsets.first().copied().flatten().unwrap_or([0.0, 0.0]);
+            let baked = job.baked.first().copied().unwrap_or([0.0, 0.0]);
+            (job.belt.frame, job.belt.start, to_bed[1] - baked[1])
+        });
         crate::audit::plate_hold(
             emit_layers,
             &offsets,

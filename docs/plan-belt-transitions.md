@@ -816,7 +816,7 @@ No wedge changes them, because they hang at the B-spline side corners, which the
 
 **Deviations:**
 - **The audit gives each patch a spread of its first layer** (`first`, up to 12 points). `at` alone is the first layer's lowest-X bead, which on a lip lay at its root, 10 mm from the first edge.
-- **On a belt, the audit's points keep the part's settled place along the belt.** The object's reply `offset` Y takes them back to the plate. This was measured on one object, at two places and three turns, on the IR3 V2. Plates of several objects on the belt are not measured.
+- **On a belt, the audit's points kept the part's settled place along the belt.** Laying a lone part flat keeps its place along the belt out of the laid mesh, and the audit never added it back. Step 6b worked around it in the app and the MCP with the reply's `offset` Y. The engine now adds it back (`HoldRule`'s `along`), so `at` and `first` are on the plate on a belt too, and the workaround is gone. A plate of several objects bakes their places into the mesh, so it was never off. `tests/part_hold.rs` checks a belt patch at three places on the plate.
 - **The app asks for `partHold` only from the first Find in a session.** A slice before that keeps its request and cache key. The cost is about 60 ms of engine time on the Baby Dragon, 2–3 % of a cold slice. Print time is unchanged.
 - **Patches at no edge are counted, not listed.**
 - **The card checks only when the Model step on screen is the one on the plate.**

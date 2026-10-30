@@ -158,6 +158,10 @@ pub(crate) struct HoldRule {
     /// the gantry's coordinate starts, the same on every layer. The index
     /// rows start there, so they fall where they do in the G-code.
     origin: f64,
+    /// The plate's place along the belt that laying flat settled away: a
+    /// lone part keeps it out of the laid mesh. Added back to every point
+    /// reported, so they land in the plate frame.
+    along: f64,
 }
 
 impl HoldRule {
@@ -165,13 +169,14 @@ impl HoldRule {
         line_width: f64,
         layer_height: f64,
         z_gap: f64,
-        belt: Option<(crate::belt::Frame, f64)>,
+        belt: Option<(crate::belt::Frame, f64, f64)>,
     ) -> Self {
         Self {
             half_bead: line_width * 0.5,
             gap_layers: (z_gap / layer_height.max(1e-6)).round().max(1.0) as usize,
-            belt: belt.map(|(frame, _)| frame),
-            origin: belt.map_or(0.0, |(f, start)| f.y_shift - f.z_drop - start),
+            belt: belt.map(|(frame, ..)| frame),
+            origin: belt.map_or(0.0, |(f, start, _)| f.y_shift - f.z_drop - start),
+            along: belt.map_or(0.0, |(.., along)| along),
         }
     }
 
@@ -201,7 +206,10 @@ impl HoldRule {
     }
 
     fn plate(&self, x: f64, y: f64, z: f64) -> [f64; 3] {
-        self.belt.map_or([x, y, z], |f| f.lab(x, y, z))
+        self.belt.map_or([x, y, z], |f| {
+            let [x, y, z] = f.lab(x, y, z);
+            [x, y + self.along, z]
+        })
     }
 }
 
@@ -1001,7 +1009,7 @@ mod tests {
     }
 
     fn check(stack: &Stack, belt: bool) -> PartHold {
-        let rule = HoldRule::new(0.45, 0.2, 0.2, belt.then(|| (belt_45(), 0.0)));
+        let rule = HoldRule::new(0.45, 0.2, 0.2, belt.then(|| (belt_45(), 0.0, 0.0)));
         part_hold(&rows(stack), &rule)
     }
 
