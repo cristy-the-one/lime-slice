@@ -680,3 +680,32 @@ fn an_unknown_support_source_is_refused_by_name() {
         "supportSource \"\" is not auto or paint"
     );
 }
+
+#[test]
+fn joined_dabs_hold_the_gap_between_them_and_change_nothing_unpainted() {
+    let plain = sliced(&ledges(json!({})));
+    let asked = sliced(&ledges(json!({"supportPaintJoin": true})));
+    assert_eq!(asked["gcode"], plain["gcode"]);
+    let dabs = json!([
+        under_left("enforce", -4.5, 3.0),
+        under_left("enforce", 4.5, 3.0)
+    ]);
+    let hold = |join: bool| {
+        let reply = sliced(&ledges(json!({
+            "supportSource": "paint",
+            "supportPaint": dabs,
+            "supportPaintJoin": join,
+            "partHold": true,
+        })));
+        let unheld = reply["partHold"]["unheldMm"].as_f64().unwrap();
+        (reply, unheld)
+    };
+    let (apart, apart_mm) = hold(false);
+    let (joined, joined_mm) = hold(true);
+    assert!(support_mm(&apart) > 0.0);
+    assert!(
+        joined_mm < apart_mm - 5.0,
+        "unheld part beads: joined {joined_mm:.1} mm, apart {apart_mm:.1} mm"
+    );
+    assert!(sites(&joined).iter().all(|s| s[0] < 10.0));
+}

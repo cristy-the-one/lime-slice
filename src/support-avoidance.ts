@@ -9,6 +9,14 @@ export function strictStackingSliceField(on: boolean): { supportStrictStacking?:
   return on ? { supportStrictStacking: true } : {};
 }
 
+/**
+ * Gaps between enforce dabs filled. Sent only while supports are on and something is painted,
+ * so an unpainted slice keeps its recipe key.
+ */
+export function paintJoinSliceField(on: boolean, painted: boolean): { supportPaintJoin?: true } {
+  return on && painted ? { supportPaintJoin: true } : {};
+}
+
 /** Tips, thin branches, and interface printed slower. Off is omitted so the recipe key holds. */
 export function slowFragileSliceField(on: boolean): { supportSlowFragile?: true } {
   return on ? { supportSlowFragile: true } : {};

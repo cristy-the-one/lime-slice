@@ -16,7 +16,8 @@ use serde::Serialize;
 use crate::adaptive::LayerBand;
 use crate::mesh::Mesh;
 use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, drop_slivers, resolve_nonzero, Loop,
+    boolean_diff, boolean_intersect, boolean_union, drop_slivers, offset_loops, resolve_nonzero,
+    Loop,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +105,7 @@ pub(crate) fn paint_layer(
     own: &[Vec<Loop>],
     i: usize,
     overhang: Vec<Loop>,
+    join: f64,
 ) -> Vec<Loop> {
     let (lo, hi) = (bands[i].z - bands[i].height, bands[i].z);
     let mut demand = overhang;
@@ -122,6 +124,11 @@ pub(crate) fn paint_layer(
         demand = match run[0].kind {
             PaintKind::Block => boolean_diff(&demand, &brush),
             PaintKind::Enforce => {
+                let brush = if join > 0.0 {
+                    joined(&brush, join)
+                } else {
+                    brush
+                };
                 let under = facing_down.get_or_insert_with(|| underside(own, i));
                 boolean_union(&demand, &boolean_intersect(under, &brush))
             }
@@ -132,6 +139,12 @@ pub(crate) fn paint_layer(
     } else {
         demand
     }
+}
+
+/// `brush` with every gap up to `join` wide between its dabs filled: grown
+/// by half of it, then shrunk back, so no edge moves past its own dab.
+fn joined(brush: &[Loop], join: f64) -> Vec<Loop> {
+    offset_loops(&offset_loops(brush, join * 0.5), -join * 0.5)
 }
 
 /// Every part of layer `i` with nothing of the part under it, at any angle.
@@ -349,9 +362,9 @@ mod tests {
             r: 30.0,
         };
         let (enforce, block) = (at(PaintKind::Enforce), at(PaintKind::Block));
-        let kept = paint_layer(&[block, enforce], &bands, &own, 1, Vec::new());
+        let kept = paint_layer(&[block, enforce], &bands, &own, 1, Vec::new(), 0.0);
         assert!((area(&kept) - 40.0).abs() < 1e-6, "{}", area(&kept));
-        let gone = paint_layer(&[enforce, block], &bands, &own, 1, Vec::new());
+        let gone = paint_layer(&[enforce, block], &bands, &own, 1, Vec::new(), 0.0);
         assert_eq!(gone, Vec::<Loop>::new());
         let untouched = vec![square(10.0, 0.0, 14.0, 10.0)];
         let far = PaintDisk {
@@ -359,9 +372,34 @@ mod tests {
             ..block
         };
         assert_eq!(
-            paint_layer(&[far], &bands, &own, 1, untouched.clone()),
+            paint_layer(&[far], &bands, &own, 1, untouched.clone(), 0.0),
             untouched
         );
+    }
+
+    #[test]
+    fn joined_dabs_hold_the_gap_between_them_and_nothing_past_the_underside() {
+        let bands = [band(0.2), band(0.4)];
+        let own = vec![
+            vec![square(0.0, 0.0, 30.0, 10.0)],
+            vec![square(0.0, 0.0, 30.0, 14.0)],
+        ];
+        let dab = |x: f64| PaintDisk {
+            kind: PaintKind::Enforce,
+            p: [x, 12.0, 0.3],
+            n: [0.0, 0.0, -1.0],
+            r: 2.0,
+        };
+        let dabs = [dab(5.0), dab(11.0), dab(25.0)];
+        let gap = square(7.5, 10.0, 8.5, 14.0);
+        let alone = paint_layer(&dabs, &bands, &own, 1, Vec::new(), 0.0);
+        assert!(area(&boolean_intersect(&alone, &[gap.clone()])) < 1e-6);
+        let joined = paint_layer(&dabs, &bands, &own, 1, Vec::new(), 6.0);
+        assert!(area(&boolean_intersect(&joined, &[gap])) > 1.5);
+        let far = square(14.0, 10.0, 22.0, 14.0);
+        assert!(area(&boolean_intersect(&joined, &[far])) < 1e-6);
+        let underside = square(0.0, 10.0, 30.0, 14.0);
+        assert!(area(&boolean_diff(&joined, &[underside])) < 1e-6);
     }
 
     #[test]

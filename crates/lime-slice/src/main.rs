@@ -448,6 +448,7 @@ fn run() -> Result<(), String> {
                 trunk_diameter,
                 support_avoidance,
                 support_strict_stacking,
+                support_paint_join: false,
                 support_slow_fragile,
                 support_height_mult,
                 infill_combine,
@@ -1804,6 +1805,7 @@ fn request_for(
         trunk_diameter: settings.trunk_diameter,
         support_avoidance: settings.support_avoidance,
         support_strict_stacking: settings.support_strict_stacking,
+        support_paint_join: settings.support_paint_join,
         support_slow_fragile: settings.support_slow_fragile,
         support_source: match settings.support_source {
             lime_slice_core::SupportSource::Auto => None,

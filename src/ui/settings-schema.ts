@@ -696,6 +696,17 @@ export const CONTROLS: ControlSpec[] = [
     tip: "Gives every row of a tree's interface its own tips on the belt, so a steep sloped roof stands on branches instead of on the row printed before it. Many more branches and a longer print: about 5 % longer on a steep housing. Off prints today's trees.",
     keywords: "strict stacking tip row slope roof belt tree",
   }),
+  bound("supportPaintJoin", {
+    id: "paintjoin",
+    label: "Fill between paint dabs",
+    group: "supports",
+    tier: "advanced",
+    kind: check,
+    parent: "supportMode",
+    when: (s) => s.supports,
+    tip: "Enforce paint also holds the part between your dabs, up to 6 mm apart, where it faces down. Dabs along a face nearly level with the layers leave gaps, and the part's beads hang over each one. Off holds only what each dab covers.",
+    keywords: "paint enforce dab brush gap join fill between painted",
+  }),
   bound("supportSlowFragile", {
     id: "fragile",
     label: "Slow fragile supports",
