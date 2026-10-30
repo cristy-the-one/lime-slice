@@ -7,6 +7,7 @@ mod calibrate;
 mod cancel;
 mod gcode;
 pub mod gcode_skeleton;
+mod gcode_time;
 mod gyroid;
 mod index;
 mod lightning;
@@ -36,6 +37,7 @@ pub use calibrate::{
 };
 pub use cancel::{cancel_all, Job};
 pub use gcode::{Bead, GcodeText};
+pub use gcode_time::estimate_gcode_seconds;
 pub use toolpath::PathKind;
 pub use inner_prof::{
     enabled as inner_profile_on, report as inner_profile, reset as reset_inner_profile,
@@ -56,7 +58,7 @@ pub use slice::{
     BeadLayer, BeltCopies, BlendScore, CompareEstimate, EditOutcomeView, FeatureEstimate, HeightRangeSpec,
     ModifierVolumeSpec, PaintDiskSpec, ParetoPoint, PreviewLayer, PrintEstimate, RigidPose,
     SiteSpec,     AdhesionType, LayerAction, LayerActionKind, SliceRequest, SliceResponse, SliceSettings, SlicedBeads, SupportEditSpec,
-    SurfacePattern, VolumeKind,
+    SurfacePattern, VelocityCap, VolumeKind,
 };
 pub use reply_parts::{take_reply_part, PART_BYTES};
 pub use slice_cache::{slice_payload, slice_payload_watched, SliceCache};

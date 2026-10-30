@@ -250,6 +250,33 @@ enum Cmd {
         #[command(subcommand)]
         kind: CalibrateCmd,
     },
+    /// Time a G-code file the way the engine times a Klipper slice, from the
+    /// moves as written. Prints seconds and, when the file has one, its own
+    /// `; TIME:` estimate beside them.
+    Estimate {
+        input: PathBuf,
+        /// printer.cfg `max_velocity`, mm/s. 0 leaves the feeds uncapped.
+        #[arg(long, default_value_t = 0.0)]
+        max_velocity: f64,
+        /// printer.cfg `max_accel`, mm/s². The file's `M204` sets the rest.
+        #[arg(long, default_value_t = 10_000.0)]
+        max_accel: f64,
+        #[arg(long, default_value_t = 5.0)]
+        square_corner_velocity: f64,
+        #[arg(long, default_value_t = 0.5)]
+        minimum_cruise_ratio: f64,
+        #[arg(long, default_value_t = 1.0)]
+        extruder_corner_velocity: f64,
+        /// On a belt printer this is the belt. 0 adds no limit.
+        #[arg(long, default_value_t = 0.0)]
+        max_z_velocity: f64,
+        #[arg(long, default_value_t = 0.0)]
+        max_z_accel: f64,
+        #[arg(long, default_value_t = 0.4)]
+        nozzle: f64,
+        #[arg(long, default_value_t = 1.75)]
+        filament_diameter: f64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -575,6 +602,47 @@ fn run() -> Result<(), String> {
             resolve_serve_token(token, token_from_env()),
         ),
         Cmd::Calibrate { kind } => calibrate(kind),
+        Cmd::Estimate {
+            input,
+            max_velocity,
+            max_accel,
+            square_corner_velocity,
+            minimum_cruise_ratio,
+            extruder_corner_velocity,
+            max_z_velocity,
+            max_z_accel,
+            nozzle,
+            filament_diameter,
+        } => {
+            let text =
+                fs::read_to_string(&input).map_err(|e| format!("{}: {e}", input.display()))?;
+            let profile = lime_slice_core::PrinterProfile {
+                nozzle_diameter: nozzle,
+                filament_diameter,
+                max_accel,
+                firmware: Some(lime_slice_core::Firmware::Klipper),
+                square_corner_velocity,
+                minimum_cruise_ratio,
+                extruder_corner_velocity,
+                max_velocity,
+                max_z_velocity,
+                max_z_accel,
+                ..lime_slice_core::PrinterProfile::default()
+            };
+            let seconds = lime_slice_core::estimate_gcode_seconds(&text, &profile);
+            let written = text.lines().rev().find_map(|line| {
+                line.strip_prefix("; TIME:")?
+                    .split('s')
+                    .next()?
+                    .parse::<f64>()
+                    .ok()
+            });
+            match written {
+                Some(written) => println!("estimate {seconds:.1} s  file says {written:.1} s"),
+                None => println!("estimate {seconds:.1} s"),
+            }
+            Ok(())
+        }
     }
 }
 
