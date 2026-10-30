@@ -312,7 +312,22 @@ fn bad_edits_are_refused_with_a_reason() {
     );
     assert_eq!(
         err(json!({"supportEdits": [{"kind": "melt", "sites": []}]})),
-        "unknown variant `melt`, expected `prune` or `regrow`"
+        "unknown variant `melt`, expected one of `prune`, `regrow`, `grow`"
+    );
+    let site = json!([{"xy": [1.0, 1.0], "z": 2.0}]);
+    assert_eq!(
+        err(json!({"supportEdits": [{"kind": "grow", "sites": site, "count": 0}]})),
+        "supportEdits[0]: a grow adds 1 to 200 branches, not 0"
+    );
+    assert_eq!(
+        err(
+            json!({"supportEdits": [{"kind": "grow", "sites": site, "count": 2, "spacing": -1.0}]})
+        ),
+        "supportEdits[0]: grow spacing -1 is not 0 to 50 mm"
+    );
+    assert_eq!(
+        err(json!({"supportEdits": [{"kind": "grow", "sites": [], "count": 2}]})),
+        "supportEdits[0]: a grow needs at least one site"
     );
     assert_eq!(
         err(
@@ -342,4 +357,60 @@ fn grid_supports_have_no_limbs_so_every_edit_is_stale() {
             "start": [0], "xs": [], "ys": [], "zs": [], "rs": []
         })
     );
+}
+
+#[test]
+fn growing_a_tree_prints_more_support_and_names_the_new_limbs() {
+    let base = slice(&request(json!({"includeSkeleton": true}))).unwrap();
+    let sites = tree_sites(&base["skeleton"]);
+    let limbs = base["skeleton"]["id"].as_array().unwrap().len();
+    let grown = slice(&request(json!({
+        "includeSkeleton": true,
+        "supportEdits": [{"kind": "grow", "sites": sites, "count": 3}]
+    })))
+    .unwrap();
+    assert_eq!(
+        grown["supportEdits"][0]["status"], "applied",
+        "{}",
+        grown["supportEdits"]
+    );
+    assert_ne!(base["gcode"], grown["gcode"]);
+    assert!(support_mm(&grown) > support_mm(&base));
+    let outcome = &grown["supportEdits"][0];
+    assert_eq!(outcome["status"], "applied");
+    let ids: Vec<u64> = outcome["grown"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "{outcome}");
+    let skeleton = &grown["skeleton"];
+    let col = |name: &str| skeleton[name].as_array().unwrap().to_vec();
+    let (id, tree) = (col("id"), col("tree"));
+    assert_eq!(id.len(), limbs + 3);
+    let root = &tree[id
+        .iter()
+        .position(|v| v == &sites_root(&base["skeleton"]))
+        .unwrap()];
+    for g in &ids {
+        let k = id.iter().position(|v| v.as_u64() == Some(*g)).unwrap();
+        assert_eq!(&tree[k], root, "limb {g} grew on the picked tree");
+    }
+    assert_eq!(grown["coverage"], json!([]));
+    // Without `count` the edit is malformed, not a default.
+    assert!(slice(&request(json!({
+        "supportEdits": [{"kind": "grow", "sites": sites}]
+    })))
+    .unwrap_err()
+    .contains("missing field `count`"));
+}
+
+/// Root id of the tree `tree_sites` picks.
+fn sites_root(skeleton: &Value) -> Value {
+    let tree = skeleton["tree"].as_array().unwrap();
+    tree.iter()
+        .find(|t| tree.iter().filter(|u| u == t).count() >= 2)
+        .cloned()
+        .unwrap()
 }

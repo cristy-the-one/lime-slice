@@ -268,7 +268,7 @@ Remove one paint layer.
 
 ### support_edit
 
-Prune or regrow a tree. support_trees first.
+Prune, regrow, or grow a tree. support_trees first. `action: "grow"` with `count` (1 to 200, default 6) adds that many branches to the tree at `site`, each toward the nearest underside that needs support: enforce paint first, then beside a tip already touching. After the next slice, `support_trees` lists `edits` with how many grew.
 
 ### support_trees
 

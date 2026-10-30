@@ -161,7 +161,7 @@ Support painting is done. See [Shipped: support painting](#shipped-support-paint
 Demand comes from the mesh and the overhang angle, not from the user.
 
 - `overhang_at` in `crates/lime-slice-core/src/support.rs` marks the area past the support angle, plus islands. The walk grows tips from that demand. Nothing in the request adds or removes a patch of it.
-- Edits are `prune` and `regrow` only (`src/support-edits.ts`). A prune stores birth sites. A regrow stores a region and a z range. They are replayed in order. Empty `supportEdits` is omitted so the cache key stays put (`editRequestFields`).
+- Edits are `prune`, `regrow`, and `grow` (`src/support-edits.ts`). A grow reaches for enforce paint first (`docs/support-edits.md`). A prune stores birth sites. A regrow stores a region and a z range. They are replayed in order. Empty `supportEdits` is omitted so the cache key stays put (`editRequestFields`).
 - The UI picks a limb or a coverage gap from the skeleton after a slice (`src/ui/support-edit-ui.ts`, `docs/ui-support-edits-plan.md`). It does not draw on the part to choose demand.
 - Compact editing is the preview: a branch tap, a tree long-press, and a Prune or Regrow chip. The prepare canvas is where the mesh is, and it has no brush.
 

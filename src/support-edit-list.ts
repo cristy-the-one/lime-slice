@@ -1,11 +1,18 @@
 /** The user's support edit list and how to describe it. Pure: no three.js, no DOM. */
-import type { CoverageGap, EditOutcome, PruneEdit, RegrowEdit, SupportEditRequest } from "./support-edits.ts";
+import type { CoverageGap, EditOutcome, GrowEdit, PruneEdit, RegrowEdit, SupportEditRequest } from "./support-edits.ts";
 import type { PickScope } from "./support-pick.ts";
 
 /** One edit the user made, plus what the UI needs to describe it. `id` is unique within a session. */
 export type EditEntry =
   | { id: number; edit: PruneEdit; scope: PickScope }
-  | { id: number; edit: RegrowEdit; areaMm2: number };
+  | { id: number; edit: RegrowEdit; areaMm2: number }
+  /** `tips` is how many tips the tree had when it was picked. */
+  | { id: number; edit: GrowEdit; tips: number };
+
+/** How many branches a grow adds when the user does not say. */
+export const GROW_DEFAULT = 6;
+/** Most branches one grow adds, as the engine allows. */
+export const GROW_MAX = 200;
 
 export function appendEdit(list: readonly EditEntry[], entry: EditEntry): EditEntry[] {
   return [...list, entry];
@@ -51,6 +58,7 @@ export function badgeOf(outcome: EditOutcome | undefined): Badge | null {
 }
 
 const tips = (n: number) => `${n} tip${n === 1 ? "" : "s"}`;
+const branches = (n: number) => `${n} branch${n === 1 ? "" : "es"}`;
 const mm2 = (v: number) => `${v.toFixed(1)} mm²`;
 const zRange = (z: readonly [number, number]) => `Z ${z[0].toFixed(2)}–${z[1].toFixed(2)}`;
 /** Coverage changes under this are boolean noise, the engine's smallest unheld piece. */
@@ -62,16 +70,25 @@ export function gapZ(gap: CoverageGap): [number, number] {
 }
 
 /**
- * Short title, e.g. "Delete tree · 36 tips", "Delete branch · 1 tip", "Regrow · Z 4.20–6.40".
+ * Short title, e.g. "Delete tree · 36 tips", "Delete branch · 1 tip", "Regrow · Z 4.20–6.40", "Grow tree · +6 branches".
  * On a belt a regrow's `z` is a slice-frame height no layer shows, so it names the area instead.
  */
 export function editTitle(entry: EditEntry, belt = false): string {
+  if ("tips" in entry) return `Grow tree · +${branches(entry.edit.count)}`;
   if (!("scope" in entry)) return belt ? `Regrow · ${mm2(entry.areaMm2)}` : `Regrow · ${zRange(entry.edit.z)}`;
   return `Delete ${entry.scope} · ${tips(entry.edit.sites.length)}`;
 }
 
 /** One sentence pair for the toast and the panel. */
 export function outcomeText(entry: EditEntry, outcome: EditOutcome): string {
+  if ("tips" in entry) {
+    const grown = outcome.grown?.length ?? 0;
+    if (outcome.status === "stale" && grown === 0) return "Nothing grown: no underside this tree can reach needs another branch, or the tree changed.";
+    const held = outcome.newlyFloatingMm2 < -NOISE_MM2 ? ` ${mm2(-outcome.newlyFloatingMm2)} of overhang held again.` : "";
+    const asked = entry.edit.count;
+    const rest = grown < asked ? ` ${asked - grown} more found no clear path.` : "";
+    return `Grew ${branches(grown)} on the tree.${rest}${held}`;
+  }
   if (!("scope" in entry)) {
     if (outcome.status === "stale") return "Nothing unheld to regrow here.";
     return outcome.newlyFloatingMm2 < -NOISE_MM2 ? `Regrew supports. ${mm2(-outcome.newlyFloatingMm2)} of overhang held again.` : "";

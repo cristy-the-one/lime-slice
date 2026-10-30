@@ -30,7 +30,7 @@ Model edits (hole, counterbore, screw, fillet, chamfer, split, scale, a sized bo
 
 Slice, estimates, and warnings. `slice_wait` reports progress and can return while the slice is still running. Cancelling the wait does not cancel the slice. The slice itself is cancelled with that job's watch. G-code and 3MF export, a paged G-code read, mesh stats, and a measurement between two faces or two points. `layer_summary` is the count and the times. `layer_detail`, `layer_paths`, and `layer_image` read the latest slice. `render_view` writes a shaded PNG of the mesh (top, front, or iso). It does not draw sliced layers and it does not capture the desktop window.
 
-Paint for supports and seams, reinforcement, and support prune and regrow are on the session. Calibration towers (pressure advance, flow, temperature, retract) and the Pareto blend call the public builders through the MCP addon only. The slicer crates are unchanged.
+Paint for supports and seams, reinforcement, and support prune, regrow, and grow are on the session. Calibration towers (pressure advance, flow, temperature, retract) and the Pareto blend call the public builders through the MCP addon only. The slicer crates are unchanged.
 
 Guides at `lime://guide/slice`, `lime://guide/model`, `lime://guide/paint`, and `lime://guide/calibrate` carry the worked call sequences. Transport is newline-delimited JSON on stdio. One slice runs at a time. There is no send-to-printer tool.
 

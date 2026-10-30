@@ -14,13 +14,15 @@ Loading a new mesh clears the list. A later slice of the same part replays it. A
 
 Edit mode is the tree button, E, or the command palette. Hover highlights the limb under the cursor. Click selects it. Shift toggles branch and tree. The bar offers Delete and Regrow, and the panel lists edits with Undo, remove, and Clear. Gap outlines draw in the 3D view while editing.
 
+With a limb selected, the bar also offers Grow branches, with a count beside it (1 to 50, 6 to start; G grows). It grows the selected limb's whole tree, whichever scope picked it, by `growFor`. When the slice lands, the new branches are the selection ("New · 6 branches"), so Delete drops just them, and a toast says how many grew with an Undo button. The edit list names it "Grow tree · +6 branches". A tree with room for fewer says so: "Grew 4 branches on the tree. 2 more found no clear path."
+
 ## Compact
 
 The phone layout does not use the desktop bar. After a slice that returned a skeleton, a 36px tree button (44px hit) sits on the preview. The More menu's Edit supports item opens the same mode. The preview sheet opens to the 56px peek, and the 3D view keeps at least 70% of a 390×844 screen.
 
 - Tap a support to select that branch. Long-press selects the whole tree. The tap does not hide the chrome.
 - The peek names the selection (branch or tree, and the tip's contact height, or the tip count). A coverage gap with nothing selected shows the real coverage warning.
-- A chip at the bottom of the 3D view says Prune or Regrow. Prune appends the selection's sites. Regrow appends `regrowFor` for the selected gap.
+- A chip at the bottom of the 3D view says Prune or Regrow. Prune appends the selection's sites. Regrow appends `regrowFor` for the selected gap. Grow is desktop only for now; a grow in the list replays here like any edit.
 - Drag the sheet to half. The edit list, Undo, Clear, and each gap's Regrow button are the desktop panel, reparented into the sheet. The canvas is the area above the sheet, so the model stays framed in what is still visible.
 - Grid style, or a slice with no skeleton, does not offer the button. The list explains that tree supports are off.
 

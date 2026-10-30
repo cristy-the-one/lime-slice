@@ -46,6 +46,13 @@ const base = { layerHeight: 0.2, supports: false };
 eq("off fields leave the recipe key alone", recipeKey({ ...base, ...editRequestFields([], false) }, "mesh"), recipeKey(base, "mesh"));
 eq("sites reach the recipe unrounded", recipeKey(editRequestFields([branch], true), "m").includes("4.123456789"), true);
 
+const grow: EditEntry = { id: 4, edit: { kind: "grow", sites: [site(1), site(2)], count: 6 }, tips: 2 };
+eq("grow title", editTitle(grow), "Grow tree · +6 branches");
+eq("belt grow title is as on a flat bed", editTitle(grow, true), "Grow tree · +6 branches");
+eq("a grow travels as it is", editRequestFields([grow], true), { supportEdits: [grow.edit], includeSkeleton: true });
+eq("grow that grew every branch", outcomeText(grow, outcome({ status: "applied", grown: [61, 62, 63, 64, 65, 66] })), "Grew 6 branches on the tree.");
+eq("grow that grew some", outcomeText(grow, outcome({ status: "rebound", movedMm: 0.4, grown: [61], newlyFloatingMm2: -2.5 })), "Grew 1 branch on the tree. 5 more found no clear path. 2.5 mm² of overhang held again.");
+eq("grow that found nothing", outcomeText(grow, outcome({ status: "stale", missed: 6 })), "Nothing grown: no underside this tree can reach needs another branch, or the tree changed.");
 eq("tree title", editTitle(tree), "Delete tree · 36 tips");
 eq("branch title", editTitle(branch), "Delete branch · 1 tip");
 eq("regrow title", editTitle(regrow), "Regrow · Z 4.20–6.40");

@@ -118,7 +118,7 @@ function mountToolRail(hooks: ChromeHooks) {
   const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "Drop the flattest face onto the bed.");
   lay.classList.add("is-disabled");
   lay.setAttribute("aria-disabled", "true");
-  const supports = toolButton("supports", TreeDeciduous, "Edit supports", "Pick tree supports to delete or regrow. Does not move the part.");
+  const supports = toolButton("supports", TreeDeciduous, "Edit supports", "Pick tree supports to delete, regrow, or grow more branches. Does not move the part.");
   supports.setAttribute("aria-pressed", "false");
   supports.classList.add("is-disabled");
   supports.setAttribute("aria-disabled", "true");

@@ -6,15 +6,16 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 use serde::Serialize;
 
-#[cfg(test)]
-use super::NodeId;
 use super::{
-    lean_of, load_factor_of, organic_disks, section_load, solid_area, stand, tip_radius, union_all,
-    CellGrid, CoverageGap, End, Fixed, Life, Limb, Node, Pitch, SupportLayer, SupportStyle,
+    components, lean_of, load_factor_of, organic_disks, point_inside, sample_cells,
+    sample_component, section_load, solid_area, stand, tip_radius, union_all, Bounds, CellGrid,
+    CoverageGap, End, Fixed, Forest, Life, Limb, Node, NodeId, Pitch, SupportLayer, SupportStyle,
     Supports, Walk, COVERAGE_OUTLINE_MM, UNHELD_PIECE_MM2,
 };
 use crate::adaptive::LayerBand;
-use crate::poly::{boolean_diff, boolean_intersect, drop_slivers, offset_loops, Loop};
+use crate::poly::{
+    boolean_diff, boolean_intersect, clip_to_rect, drop_slivers, in_solid, offset_loops, Loop,
+};
 
 /// Where a limb is born: the xy of its first knot, at the `z` of its top
 /// layer. Walk ids renumber whenever the input changes and a birth site does
@@ -36,6 +37,19 @@ pub enum SupportEdit {
     /// never change: the new ones lean toward them, join one only where it
     /// is already thick enough, and otherwise keep clear of them.
     Regrow { region: Vec<Loop>, z: [f64; 2] },
+    /// Grow up to `count` new branches on the tree the limbs born at `sites`
+    /// belong to, each from a fresh tip on the nearest underside that needs
+    /// support and that the tree can reach and carry: enforce paint first,
+    /// even where it is already held, then beside a tip already touching,
+    /// then any other. A new tip stands `spacing` mm or more from every
+    /// live tip and from the others, closer than the walk packs tips; `0`
+    /// spaces them by the pitch. The tree's knots never change, and new
+    /// limbs keep clear of every other tree.
+    Grow {
+        sites: Vec<TipSite>,
+        count: u32,
+        spacing: f64,
+    },
 }
 
 #[cfg(test)]
@@ -77,6 +91,8 @@ pub(crate) struct EditOutcome {
     /// that were not there before it, for a regrow the ones whose outline
     /// still meets its region.
     pub floating: Vec<CoverageGap>,
+    /// The limbs a grow added, by walk id. Empty for the other edits.
+    pub grown: Vec<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -125,9 +141,15 @@ impl Supports {
         for edit in edits {
             let by = self.edits;
             self.edits += 1;
+            let first = self.forest.limbs.len();
             let (status, dirty) = match edit {
                 SupportEdit::Prune { sites } => self.prune(sites, bands, by),
                 SupportEdit::Regrow { region, z } => self.regrow(region, *z, bands, contours, by),
+                SupportEdit::Grow {
+                    sites,
+                    count,
+                    spacing,
+                } => self.grow(sites, *count, *spacing, bands, contours, by),
             };
             let (changed, stood) = self.rebuild(&dirty, bands, contours);
             let after = if changed.is_empty() {
@@ -141,12 +163,18 @@ impl Supports {
                 stood,
                 newly_floating_mm2: area(&after) - area(&before),
                 floating: match edit {
-                    SupportEdit::Prune { .. } => after
+                    SupportEdit::Prune { .. } | SupportEdit::Grow { .. } => after
                         .iter()
                         .filter(|g| !before.contains(g))
                         .cloned()
                         .collect(),
                     SupportEdit::Regrow { region, z } => gaps_in(&after, region, *z),
+                },
+                grown: match edit {
+                    SupportEdit::Grow { .. } => (first..self.forest.limbs.len())
+                        .map(|k| NodeId(k as u32 + 1))
+                        .collect(),
+                    _ => Vec::new(),
                 },
             });
             before = after;
@@ -163,30 +191,8 @@ impl Supports {
         bands: &[LayerBand],
         by: u32,
     ) -> (EditStatus, Vec<bool>) {
-        let tol = Pitch::of(&self.opts).keep * 0.5;
+        let (pick, status) = self.matched(sites, bands);
         let limbs = &mut self.forest.limbs;
-        let mut born: Vec<Vec<usize>> = vec![Vec::new(); bands.len()];
-        for (k, l) in limbs.iter().enumerate() {
-            born[l.top].push(k);
-        }
-        let mut pick = vec![false; limbs.len()];
-        let (mut missed, mut moved, mut rebound) = (0, 0.0f64, false);
-        for s in sites {
-            let Some((k, across, dz)) = nearest(s, limbs, &born, bands, tol) else {
-                missed += 1;
-                continue;
-            };
-            pick[k] = true;
-            moved = moved.max(across.hypot(dz));
-            rebound |= across > REBOUND_MM || dz > 1e-6;
-        }
-        let status = if missed > 0 {
-            EditStatus::Stale { missed }
-        } else if rebound {
-            EditStatus::Rebound { moved_mm: moved }
-        } else {
-            EditStatus::Applied
-        };
         let mut dirty = vec![false; bands.len()];
         // `need[h]` is the highest layer a surviving guest joins limb `h` on.
         // A host has a smaller id than its guests, so walking down the ids
@@ -305,6 +311,419 @@ impl Supports {
             dirty[limb.bottom()..=limb.top].fill(true);
         }
         (EditStatus::Applied, dirty)
+    }
+
+    /// Which limbs `sites` name, and how they matched.
+    fn matched(&self, sites: &[TipSite], bands: &[LayerBand]) -> (Vec<bool>, EditStatus) {
+        let tol = Pitch::of(&self.opts).keep * 0.5;
+        let limbs = &self.forest.limbs;
+        let mut born: Vec<Vec<usize>> = vec![Vec::new(); bands.len()];
+        for (k, l) in limbs.iter().enumerate() {
+            born[l.top].push(k);
+        }
+        let mut pick = vec![false; limbs.len()];
+        let (mut missed, mut moved, mut rebound) = (0, 0.0f64, false);
+        for s in sites {
+            let Some((k, across, dz)) = nearest(s, limbs, &born, bands, tol) else {
+                missed += 1;
+                continue;
+            };
+            pick[k] = true;
+            moved = moved.max(across.hypot(dz));
+            rebound |= across > REBOUND_MM || dz > 1e-6;
+        }
+        let status = if missed > 0 {
+            EditStatus::Stale { missed }
+        } else if rebound {
+            EditStatus::Rebound { moved_mm: moved }
+        } else {
+            EditStatus::Applied
+        };
+        (pick, status)
+    }
+
+    /// Grow branches on the trees of the limbs `sites` name: bear a tip on
+    /// each place `grow_targets` picks and walk them down, joining only the
+    /// tree's own knots and keeping clear of every other kept knot. Returns
+    /// `Stale` when no site matched or nothing could be grown, and per
+    /// layer whether the edit touched it.
+    fn grow(
+        &mut self,
+        sites: &[TipSite],
+        count: u32,
+        spacing: f64,
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+        by: u32,
+    ) -> (EditStatus, Vec<bool>) {
+        let n = self.layers.len();
+        let mut dirty = vec![false; n];
+        if self.opts.style != SupportStyle::Tree || n == 0 {
+            let missed = sites.len().max(1);
+            return (EditStatus::Stale { missed }, dirty);
+        }
+        let (pick, status) = self.matched(sites, bands);
+        if matches!(status, EditStatus::Stale { missed } if missed >= sites.len()) {
+            return (status, dirty);
+        }
+        let limbs = &self.forest.limbs;
+        let mut root: Vec<usize> = (0..limbs.len()).collect();
+        for k in 0..limbs.len() {
+            if let End::Merged { into } = limbs[k].end {
+                root[k] = root[into.0 as usize - 1];
+            }
+        }
+        let mut tree = vec![false; limbs.len()];
+        for k in (0..limbs.len()).filter(|&k| pick[k]) {
+            tree[root[k]] = true;
+        }
+        let member: Vec<bool> = root.iter().map(|&r| tree[r]).collect();
+        let (ranked, spacing) = self.grow_targets(&member, spacing, bands, contours);
+        let first = self.forest.limbs.len();
+        let mut walk = Walk::new(
+            bands,
+            contours,
+            &self.demanded,
+            &self.opts,
+            first as u32 + 1,
+        );
+        walk.solo = true;
+        // A branch that would cross another tree gives up its place to the
+        // next best one, and the rest walk again without it.
+        let mut out = vec![false; ranked.len()];
+        let mut grown = None;
+        for round in 0..GROW_ROUNDS {
+            let chosen = spaced(&ranked, &out, count, spacing, bands);
+            if chosen.is_empty() {
+                break;
+            }
+            let (forest, ids) = self.walk_grown(&mut walk, &ranked, &chosen, &member);
+            let hit = self.crossing(&forest, first, &member);
+            let crosses = |id: u32| {
+                let mut k = id as usize - 1;
+                loop {
+                    if hit[k - first] {
+                        return true;
+                    }
+                    match forest.limbs[k].end {
+                        End::Merged { into } if into.0 as usize > first => {
+                            k = into.0 as usize - 1;
+                        }
+                        _ => return false,
+                    }
+                }
+            };
+            let bad: Vec<usize> = chosen
+                .iter()
+                .zip(&ids)
+                .filter(|&(_, &id)| crosses(id))
+                .map(|(&c, _)| c)
+                .collect();
+            if bad.is_empty() {
+                grown = Some(forest);
+                break;
+            }
+            for c in bad {
+                out[c] = true;
+            }
+            if round + 1 >= GROW_REFILLS {
+                for (c, o) in out.iter_mut().enumerate() {
+                    *o |= !chosen.contains(&c);
+                }
+            }
+        }
+        let Some(mut grown) = grown else {
+            let missed = count.max(1) as usize;
+            return (EditStatus::Stale { missed }, dirty);
+        };
+        self.forest.limbs.extend(grown.limbs.drain(first..));
+        for (at, new) in self.forest.at.iter_mut().zip(grown.at) {
+            at.extend(new);
+        }
+        self.regrown.push(first);
+        self.grafted.push(first..self.forest.limbs.len());
+        // A tip an earlier edit pruned took its interface cell with it.
+        // The new tip holds that cell again.
+        let half = Pitch::of(&self.opts).keep * 0.5;
+        let iface = self.opts.interface_layers.max(1) as usize;
+        for limb in &self.forest.limbs[first..] {
+            dirty[limb.bottom()..=limb.top].fill(true);
+            let [x, y] = limb.knots[0].xy;
+            let cell = vec![
+                [x - half, y - half],
+                [x + half, y - half],
+                [x + half, y + half],
+                [x - half, y + half],
+            ];
+            for i in (limb.top + 1).saturating_sub(iface)..=limb.top {
+                self.restored[i].push((by, vec![cell.clone()]));
+            }
+        }
+        (status, dirty)
+    }
+
+    /// Places to bear a new tip for the limbs in `member`, best first, and
+    /// the spacing they keep: `spacing`, or one from the pitch when it is 0.
+    /// A place is on the overhang reaching its contact on some layer, off
+    /// the part, at least the spacing from every live tip, and a tip there
+    /// can lean onto a knot of the tree with load to spare within
+    /// `GROW_REACH_MM` of fall. Places on enforce paint rank first, then
+    /// places within two spacings of a live tip, then the rest; within a
+    /// rank the shorter fall wins.
+    fn grow_targets(
+        &self,
+        member: &[bool],
+        spacing: f64,
+        bands: &[LayerBand],
+        contours: &[Vec<Loop>],
+    ) -> (Vec<GrowTarget>, f64) {
+        let n = self.layers.len();
+        let opts = &self.opts;
+        let pitch = Pitch::of(opts);
+        let (tip_r, load_factor, lean) = (tip_radius(opts), load_factor_of(opts), lean_of(opts));
+        let spacing = if spacing > 0.0 {
+            spacing
+        } else {
+            (pitch.fine * 0.5).max(4.0 * tip_r)
+        };
+        let limbs = &self.forest.limbs;
+        let hosts: Vec<Vec<(Node, f64)>> = (0..n)
+            .into_par_iter()
+            .map(|j| {
+                self.layers[j]
+                    .disks
+                    .iter()
+                    .filter_map(|d| {
+                        let k = d.node.0 as usize - 1;
+                        if !member.get(k).copied().unwrap_or(false) {
+                            return None;
+                        }
+                        let limb = &limbs[k];
+                        let knot = limb.knots[limb.top - j];
+                        let spare = section_load(knot.radius, tip_r, load_factor) - knot.load;
+                        (spare >= 1.0 - 1e-9).then_some((knot, spare))
+                    })
+                    .collect()
+            })
+            .collect();
+        let iface = opts.interface_layers.max(1) as usize;
+        let (Some(lo), Some(hi)) = (
+            hosts.iter().position(|h| !h.is_empty()),
+            hosts.iter().rposition(|h| !h.is_empty()),
+        ) else {
+            return (Vec::new(), spacing);
+        };
+        let mut bounds: Bounds = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        let mut widest = 0.0f64;
+        for (h, _) in hosts[lo..=hi].iter().flatten() {
+            bounds.0 = [bounds.0[0].min(h.xy[0]), bounds.0[1].min(h.xy[1])];
+            bounds.1 = [bounds.1[0].max(h.xy[0]), bounds.1[1].max(h.xy[1])];
+            widest = widest.max(h.radius);
+        }
+        let reach =
+            lean * GROW_REACH_MM + opts.floor.map_or(0.0, |f| f.fall(GROW_REACH_MM)) + widest;
+        let (min, max) = (
+            [bounds.0[0] - reach, bounds.0[1] - reach],
+            [bounds.1[0] + reach, bounds.1[1] + reach],
+        );
+        let near = 2.0 * spacing;
+        let mut tips = CellGrid::new(near);
+        let touching: Vec<([f64; 2], f64)> = limbs
+            .iter()
+            .filter(|l| l.life == Life::Live)
+            .map(|l| (l.knots[0].xy, bands[l.top].z))
+            .collect();
+        for (k, t) in touching.iter().enumerate() {
+            tips.insert(k, t.0);
+        }
+        let top_z = bands[hi].z + GROW_REACH_MM;
+        let cell = (spacing * 0.5).clamp(0.6, 3.0);
+        let mut found: Vec<GrowTarget> = (lo + iface + 1..n)
+            .into_par_iter()
+            .filter(|&t| bands[t].z <= top_z && !self.born[t].is_empty())
+            .flat_map_iter(|t| {
+                let z = bands[t].z;
+                let (paint_lo, paint_hi) = (
+                    z + opts.z_gap - bands[t].height,
+                    z + opts.z_gap + bands[t].height,
+                );
+                let painted: Vec<_> = self
+                    .enforce
+                    .iter()
+                    .filter(|d| d.meets(paint_lo, paint_hi))
+                    .collect();
+                let part = contours.get(t).map(Vec::as_slice).unwrap_or(&[]);
+                let region = clip_to_rect(&self.born[t], min, max);
+                let mut out = Vec::new();
+                let mut close = Vec::new();
+                for comp in components(&region) {
+                    let mut pts = sample_component(&comp, cell);
+                    if pts.len() <= 1 {
+                        let cells = sample_cells(&comp, cell);
+                        if cells.len() > pts.len() {
+                            pts = cells;
+                        }
+                    }
+                    if pts.is_empty() {
+                        pts.extend(point_inside(&comp));
+                    }
+                    for p in pts {
+                        if !part.is_empty() && in_solid(part, p[0], p[1]) {
+                            continue;
+                        }
+                        tips.near(p, near, &mut close);
+                        let closest = close
+                            .iter()
+                            .map(|&k| apart(touching[k], (p, z)))
+                            .fold(f64::INFINITY, f64::min);
+                        if closest < spacing {
+                            continue;
+                        }
+                        let Some((fall, at, host, room)) =
+                            host_within(p, t, iface, &hosts, lo, bands, lean, opts.floor)
+                        else {
+                            continue;
+                        };
+                        let slack = opts.paint_join_mm * 0.5;
+                        let rank = if painted
+                            .iter()
+                            .any(|d| d.covers(p, paint_lo, paint_hi, slack))
+                        {
+                            0
+                        } else if closest <= near {
+                            1
+                        } else {
+                            2
+                        };
+                        out.push(GrowTarget {
+                            layer: t,
+                            xy: p,
+                            to_bed: host.to_bed,
+                            host: host.id,
+                            room,
+                            aim: (at, host.xy),
+                            rank,
+                            fall,
+                        });
+                    }
+                }
+                out
+            })
+            .collect();
+        found.sort_by(|a, b| {
+            a.rank
+                .cmp(&b.rank)
+                .then(a.fall.total_cmp(&b.fall))
+                .then(b.layer.cmp(&a.layer))
+                .then(a.xy[0].total_cmp(&b.xy[0]))
+                .then(a.xy[1].total_cmp(&b.xy[1]))
+        });
+        (found, spacing)
+    }
+
+    /// Walk tips planted on `chosen` of `ranked` down among the kept knots,
+    /// into a forest of its own whose first limbs stand for the kept ones.
+    /// The kept limbs of `member` are the hosts and every other one an
+    /// obstacle. Returns the forest and each chosen place's limb id.
+    fn walk_grown(
+        &self,
+        walk: &mut Walk,
+        ranked: &[GrowTarget],
+        chosen: &[usize],
+        member: &[bool],
+    ) -> (Forest, Vec<u32>) {
+        let first = self.forest.limbs.len();
+        let kept = Limb {
+            top: 0,
+            knots: Vec::new(),
+            end: End::Bed,
+            life: Life::Live,
+        };
+        let mut forest = Forest {
+            limbs: vec![kept; first],
+            at: vec![Vec::new(); self.layers.len()],
+        };
+        walk.restart(first as u32 + 1);
+        let mut order = chosen.to_vec();
+        order.sort_by_key(|&c| ranked[c].layer);
+        let (lowest, top) = (ranked[order[0]].layer, ranked[order[order.len() - 1]].layer);
+        let mut ids = vec![0; chosen.len()];
+        let mut aims: HashMap<u32, (usize, [f64; 2])> = HashMap::new();
+        let mut extra = vec![0.0; first];
+        let mut joins = self.kept_joins();
+        for i in (0..=top).rev() {
+            if i < lowest && walk.nodes.is_empty() {
+                break;
+            }
+            while let Some(&c) = order.last().filter(|&&c| ranked[c].layer == i) {
+                let at = chosen.iter().position(|&k| k == c).unwrap_or(0);
+                ids[at] = walk.next_id;
+                aims.insert(walk.next_id, ranked[c].aim);
+                walk.plant(ranked[c].xy, ranked[c].to_bed);
+                order.pop();
+            }
+            walk.arrive(i, &[], &[]);
+            forest.record(i, &walk.nodes);
+            let (hosts, others): (Vec<Node>, Vec<Node>) = match i {
+                0 => (Vec::new(), Vec::new()),
+                _ => {
+                    while let Some(&(_, host, load)) = joins.last().filter(|j| j.0 >= i - 1) {
+                        extra[host] += load;
+                        joins.pop();
+                    }
+                    self.kept_at(i - 1, first, &extra, &joins)
+                        .into_iter()
+                        .partition(|k| member[k.id as usize - 1])
+                }
+            };
+            let mut fixed = Fixed::among(hosts, others);
+            if i > 0 {
+                let drift = self
+                    .opts
+                    .floor
+                    .map_or(0.0, |f| f.fall(walk.bands[i].height));
+                fixed.aims = walk
+                    .nodes
+                    .iter()
+                    .filter(|n| n.freeze <= 1)
+                    .filter_map(|n| {
+                        let &(j, xy) = aims.get(&n.id)?;
+                        let k = i.checked_sub(j).filter(|&k| k > 0)? as f64;
+                        let from = [n.xy[0], n.xy[1] + drift];
+                        let to = [xy[0], xy[1] - drift * (k - 1.0)];
+                        let next = [
+                            from[0] + (to[0] - from[0]) / k,
+                            from[1] + (to[1] - from[1]) / k,
+                        ];
+                        Some((n.id, next))
+                    })
+                    .collect();
+            }
+            walk.descend(i, &mut fixed, &mut forest);
+            for (host, load) in fixed.joined {
+                extra[host.0 as usize - 1] += load;
+            }
+        }
+        (forest, ids)
+    }
+
+    /// Per limb of `forest` from `first` on, whether one of its printed
+    /// knots overlaps a disk of a tree outside `member` on the same layer
+    /// by more than `CROSS_MM`.
+    fn crossing(&self, forest: &Forest, first: usize, member: &[bool]) -> Vec<bool> {
+        forest.limbs[first..]
+            .iter()
+            .map(|l| {
+                (l.bottom()..=l.top).any(|i| {
+                    let knot = l.knots[l.top - i];
+                    knot.freeze == 0
+                        && self.layers[i].disks.iter().any(|d| {
+                            !member[d.node.0 as usize - 1]
+                                && dist(d.xy, knot.xy) < d.r + knot.radius - CROSS_MM
+                        })
+                })
+            })
+            .collect()
     }
 
     /// Knots of the limbs before `first` whose disks stand on `layer`, by
@@ -467,7 +886,11 @@ impl Supports {
             if limb.reach().is_some_and(|to| i <= to) {
                 live.push(knot);
             } else if let (true, Some(by)) = (knot.freeze > 0, limb.life.pruned_by()) {
-                pruned.push((knot.xy, by));
+                // A grown tip only joined a tip's cell that its neighbours
+                // already held, so pruning it clears nothing.
+                if !self.grafted.iter().any(|g| g.contains(&(k as usize))) {
+                    pruned.push((knot.xy, by));
+                }
             }
         }
         let pitch = Pitch::of(&self.opts);
@@ -618,6 +1041,113 @@ fn unrestored(cells: Vec<(Loop, u32)>, restored: &[(u32, Vec<Loop>)]) -> Vec<Loo
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Distance between two tips, each an xy at its layer's z.
+fn apart(a: ([f64; 2], f64), b: ([f64; 2], f64)) -> f64 {
+    dist(a.0, b.0).hypot(a.1 - b.1)
+}
+
+/// Up to `count` of `ranked` not `out`, best first, each at least `spacing`
+/// from the others taken, and no more leaning on one limb than the knot
+/// each leans toward has room for. Indices into `ranked`.
+fn spaced(
+    ranked: &[GrowTarget],
+    out: &[bool],
+    count: u32,
+    spacing: f64,
+    bands: &[LayerBand],
+) -> Vec<usize> {
+    let mut taken: Vec<usize> = Vec::new();
+    let mut used: HashMap<u32, u32> = HashMap::new();
+    for (c, f) in ranked.iter().enumerate() {
+        if taken.len() >= count as usize {
+            break;
+        }
+        let here = (f.xy, bands[f.layer].z);
+        let clear = taken.iter().all(|&t| {
+            let t = &ranked[t];
+            apart((t.xy, bands[t.layer].z), here) >= spacing
+        });
+        let on = used.entry(f.host).or_insert(0);
+        if !out[c] && clear && *on < f.room {
+            *on += 1;
+            taken.push(c);
+        }
+    }
+    taken
+}
+
+/// Rounds a grow walks its branches again after dropping one that crossed
+/// another tree. Each of the first `GROW_REFILLS` takes the next best place
+/// in its stead; the rest only drop.
+const GROW_ROUNDS: usize = 16;
+const GROW_REFILLS: usize = 12;
+
+/// Two trees' disks overlapping by less than this, mm, only touch: about
+/// one bead, as neighbouring trees of a walk touch.
+const CROSS_MM: f64 = 0.4;
+
+/// A grown branch falls at most this far, mm, from its new tip to the knot
+/// of its tree it joins. Places above the tree's highest disk count up to
+/// this high over it.
+const GROW_REACH_MM: f64 = 24.0;
+
+/// Where a grown branch is born, and how good a place it is.
+#[derive(Clone, Copy, Debug)]
+struct GrowTarget {
+    layer: usize,
+    xy: [f64; 2],
+    /// The ground of the knot it leans toward, which it must share to join.
+    to_bed: bool,
+    /// That knot's limb, and how many more tips it can carry.
+    host: u32,
+    room: u32,
+    /// The layer of that knot, and where it stands there.
+    aim: (usize, [f64; 2]),
+    /// 0 on enforce paint, 1 beside a live tip, 2 elsewhere.
+    rank: u8,
+    /// Fall from the tip to that knot, mm.
+    fall: f64,
+}
+
+/// The shortest fall from a tip born at `xy` on layer `t` to a knot of
+/// `hosts` it can lean onto, with that knot and the whole tips it has room
+/// for. The tip holds still
+/// through its `iface` interface layers, then leans `lean` per mm of fall
+/// and, on a belt, drifts with it. The nearest knot on the highest layer
+/// it reaches wins.
+#[allow(clippy::too_many_arguments)]
+fn host_within(
+    xy: [f64; 2],
+    t: usize,
+    iface: usize,
+    hosts: &[Vec<(Node, f64)>],
+    lo: usize,
+    bands: &[LayerBand],
+    lean: f64,
+    floor: Option<super::FloorPlane>,
+) -> Option<(f64, usize, Node, u32)> {
+    let start = (t + 1).checked_sub(iface)?;
+    let below = start.checked_sub(1)?;
+    for j in (lo..=below).rev() {
+        let fall = bands[t].z - bands[j].z;
+        if fall > GROW_REACH_MM {
+            break;
+        }
+        let walked = bands[start].z - bands[j].z;
+        let at = [xy[0], xy[1] + floor.map_or(0.0, |f| f.fall(walked))];
+        let budget = lean * walked;
+        let best = hosts[j]
+            .iter()
+            .map(|(h, spare)| (dist(at, h.xy), h, spare))
+            .filter(|(d, h, _)| *d <= budget + h.radius * 0.5)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, h, spare)) = best {
+            return Some((fall, j, *h, (spare + 1e-9).floor() as u32));
+        }
+    }
+    None
 }
 
 /// The square of half-width `hold` around `t`, cut down to the points
@@ -1163,7 +1693,9 @@ mod tests {
                 SupportEdit::Prune { sites } => EditStatus::Stale {
                     missed: sites.len(),
                 },
-                SupportEdit::Regrow { .. } => unreachable!("the plate edits only prune"),
+                SupportEdit::Regrow { .. } | SupportEdit::Grow { .. } => {
+                    unreachable!("the plate edits only prune")
+                }
             })
             .collect();
         assert_eq!(away, missed);
@@ -1281,6 +1813,8 @@ mod tests {
             restored: vec![Vec::new(); bands.len()],
             edits: 0,
             regrown: Vec::new(),
+            grafted: Vec::new(),
+            enforce: Vec::new(),
             opts: plate_opts(),
         };
         s.layers = s.rebuilt(&bands, &contours);
@@ -1455,6 +1989,7 @@ mod tests {
             stood: 0,
             newly_floating_mm2: 0.0,
             floating: Vec::new(),
+            grown: Vec::new(),
         };
         assert_eq!(out, vec![stale.clone()]);
         assert_eq!((s.layers.clone(), limb_bits(&s)), (layers, limbs));
@@ -1659,6 +2194,8 @@ mod tests {
             restored: vec![Vec::new(); bands.len()],
             edits: 0,
             regrown: Vec::new(),
+            grafted: Vec::new(),
+            enforce: Vec::new(),
             opts: plate_opts(),
         };
         s.layers = s.rebuilt(&bands, &[]);
@@ -1733,5 +2270,265 @@ mod tests {
             ]),
             one_taken
         );
+    }
+
+    fn root_of(s: &Supports, mut k: usize) -> usize {
+        while let End::Merged { into } = s.forest.limbs[k].end {
+            k = into.0 as usize - 1;
+        }
+        k
+    }
+
+    /// Live birth sites before `first`, as xy at the band z.
+    fn tips_before(s: &Supports, bands: &[LayerBand], first: usize) -> Vec<([f64; 2], f64)> {
+        s.forest.limbs[..first]
+            .iter()
+            .filter(|l| l.life == Life::Live)
+            .map(|l| (l.knots[0].xy, bands[l.top].z))
+            .collect()
+    }
+
+    /// Disks of a grown limb that overlap, on the same layer, a disk of a
+    /// tree other than `root`'s by more than a touch: layer, grown node,
+    /// other node.
+    fn grown_overlaps(s: &Supports, first: usize, root: usize) -> Vec<(usize, u32, u32)> {
+        let mut hits = Vec::new();
+        for (i, layer) in s.layers.iter().enumerate() {
+            for g in layer.disks.iter().filter(|d| d.node.0 as usize > first) {
+                for o in &layer.disks {
+                    let k = o.node.0 as usize - 1;
+                    if k >= first || root_of(s, k) == root {
+                        continue;
+                    }
+                    if dist(g.xy, o.xy) < g.r + o.r - CROSS_MM {
+                        hits.push((i, g.node.0, o.node.0));
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    fn grow_on(sites: Vec<TipSite>, count: u32, spacing: f64) -> SupportEdit {
+        SupportEdit::Grow {
+            sites,
+            count,
+            spacing,
+        }
+    }
+
+    #[test]
+    fn growing_a_tree_adds_branches_that_join_it_beside_its_own_tips() {
+        let (bands, contours) = plate();
+        let opts = plate_opts();
+        let mut s = Supports::build(&bands, &contours, &opts).unwrap();
+        let base_disks: usize = s.layers.iter().map(|l| l.disks.len()).sum();
+        let tree = biggest_tree(&s, &bands);
+        let root = root_of(&s, tree);
+        let sites = s.tree_sites(id(tree), &bands);
+        let first = s.forest.limbs.len();
+        let before = tips_before(&s, &bands, first);
+        let out = s.apply(&[grow_on(sites, 4, 0.0)], &bands, &contours);
+        assert_eq!(out[0].status, EditStatus::Applied, "{out:?}");
+        assert_eq!(
+            out[0].grown,
+            (first..first + 4).map(id).collect::<Vec<_>>(),
+            "{out:?}"
+        );
+        assert!(!out[0].changed.is_empty());
+        let roots: Vec<usize> = (first..s.forest.limbs.len())
+            .map(|k| root_of(&s, k))
+            .collect();
+        assert_eq!(
+            roots,
+            vec![root; 4],
+            "every new limb ends in the picked tree"
+        );
+        let spacing = (Pitch::of(&opts).fine * 0.5).max(4.0 * tip_radius(&opts));
+        for l in &s.forest.limbs[first..] {
+            let tip = (l.knots[0].xy, bands[l.top].z);
+            let nearest = before
+                .iter()
+                .map(|&t| apart(t, tip))
+                .fold(f64::INFINITY, f64::min);
+            // Off every tip the walk left, and beside one: nothing on the
+            // plate is painted, so a place by a tip ranks first.
+            assert!(nearest >= spacing - 1e-9, "{nearest} mm from a tip");
+            assert!(nearest <= 2.0 * spacing + 1e-9, "{nearest} mm from a tip");
+        }
+        assert_eq!(grown_overlaps(&s, first, root), Vec::new());
+        same_layers(&s.layers, &s.rebuilt(&bands, &contours), "grown");
+        let disks: usize = s.layers.iter().map(|l| l.disks.len()).sum();
+        assert!(disks > base_disks, "{disks} disks against {base_disks}");
+    }
+
+    #[test]
+    fn a_grown_tree_reaches_for_enforce_paint_first() {
+        use super::super::paint::{PaintDisk, PaintKind};
+        let (bands, contours) = plate();
+        let opts = plate_opts();
+        // A 3 mm dab on the plate's underside near one end, at z 15.2.
+        let dab = PaintDisk {
+            kind: PaintKind::Enforce,
+            p: [4.0, 7.0, 15.2],
+            n: [0.0, 0.0, -1.0],
+            r: 3.0,
+        };
+        let mut s = Supports::build_with(
+            &bands,
+            &contours,
+            &contours,
+            &[dab],
+            &opts,
+            &crate::progress::Watch::idle(),
+        )
+        .unwrap();
+        let tip_near = |s: &Supports| {
+            (0..s.forest.limbs.len())
+                .filter(|&k| s.forest.limbs[k].life == Life::Live)
+                .min_by(|&a, &b| {
+                    let d = |k: usize| dist(s.forest.limbs[k].knots[0].xy, [4.0, 7.0]);
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap()
+        };
+        let near = tip_near(&s);
+        let first = s.forest.limbs.len();
+        let out = s.apply(
+            &[grow_on(s.tree_sites(id(near), &bands), 2, 1.2)],
+            &bands,
+            &contours,
+        );
+        assert_eq!(out[0].grown.len(), 2, "{out:?}");
+        for l in &s.forest.limbs[first..] {
+            let d = dist(l.knots[0].xy, [4.0, 7.0]);
+            assert!(d <= 3.0 + 1e-6, "a grown tip {d} mm from the dab");
+        }
+        same_layers(&s.layers, &s.rebuilt(&bands, &contours), "painted");
+
+        // Without the dab the same grow goes elsewhere first.
+        let mut bare = Supports::build(&bands, &contours, &opts).unwrap();
+        let near = tip_near(&bare);
+        let first = bare.forest.limbs.len();
+        bare.apply(
+            &[grow_on(bare.tree_sites(id(near), &bands), 2, 1.2)],
+            &bands,
+            &contours,
+        );
+        assert!(bare.forest.limbs[first..]
+            .iter()
+            .any(|l| dist(l.knots[0].xy, [4.0, 7.0]) > 3.0));
+    }
+
+    #[test]
+    fn grown_branches_keep_clear_of_other_trees_and_the_part() {
+        let mut grew = 0;
+        for (name, fixture) in fixtures() {
+            let (bands, contours, _) = &fixture;
+            let mut s = build(&fixture);
+            if s.forest.limbs.is_empty() {
+                continue;
+            }
+            let tree = biggest_tree(&s, bands);
+            let root = root_of(&s, tree);
+            let first = s.forest.limbs.len();
+            let sites = s.tree_sites(id(tree), bands);
+            let out = s.apply(&[grow_on(sites, 12, 0.0)], bands, contours);
+            grew += out[0].grown.len();
+            assert_eq!(grown_overlaps(&s, first, root), Vec::new(), "{name}");
+            for (i, layer) in s.layers.iter().enumerate() {
+                for d in layer.disks.iter().filter(|d| d.node.0 as usize > first) {
+                    assert!(
+                        !in_solid(&contours[i], d.xy[0], d.xy[1]),
+                        "{name}: a grown disk inside the part on layer {i}"
+                    );
+                }
+            }
+            same_layers(&s.layers, &s.rebuilt(bands, contours), name);
+        }
+        assert!(grew >= 10, "only {grew} branches grown");
+    }
+
+    #[test]
+    fn a_grow_replays_after_a_reslice_and_goes_stale_off_the_part() {
+        let (bands, contours) = plate();
+        let opts = plate_opts();
+        let s = Supports::build(&bands, &contours, &opts).unwrap();
+        let tree = biggest_tree(&s, &bands);
+        let edits = vec![
+            grow_on(s.tree_sites(id(tree), &bands), 3, 0.0),
+            SupportEdit::Prune {
+                sites: vec![s.limb_site(id(0), &bands)],
+            },
+        ];
+        let run = |contours: &[Vec<Loop>]| {
+            let mut s = Supports::build(&bands, contours, &opts).unwrap();
+            let out = s.apply(&edits, &bands, contours);
+            same_layers(&s.layers, &s.rebuilt(&bands, contours), "replayed");
+            out
+        };
+        let first = run(&contours);
+        assert_eq!(first, run(&contours), "a replay is the same");
+        assert_eq!(first[0].grown.len(), 3);
+
+        let moved = run(&shifted(&contours, 0.5, 0.0));
+        let EditStatus::Rebound { moved_mm } = moved[0].status else {
+            panic!("{moved:?}");
+        };
+        assert!((moved_mm - 0.5).abs() < 1e-6, "{moved_mm}");
+        assert_eq!(moved[0].grown.len(), 3);
+
+        let away = run(&shifted(&contours, 0.0, 40.0));
+        assert!(
+            matches!(away[0].status, EditStatus::Stale { missed } if missed > 0),
+            "{away:?}"
+        );
+        assert_eq!(away[0].grown, Vec::new());
+        assert!(away[0].changed.is_empty());
+    }
+
+    #[test]
+    fn pruning_the_grown_branches_gives_back_the_build() {
+        let (bands, contours) = plate();
+        let mut s = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let built = s.layers.clone();
+        let tree = biggest_tree(&s, &bands);
+        let first = s.forest.limbs.len();
+        let out = s.apply(
+            &[grow_on(s.tree_sites(id(tree), &bands), 3, 0.0)],
+            &bands,
+            &contours,
+        );
+        assert_eq!(s.regrown, vec![first]);
+        assert!(!s.kept_joins().is_empty(), "grown tips joined the tree");
+        let sites: Vec<TipSite> = out[0]
+            .grown
+            .iter()
+            .map(|&g| s.limb_site(g, &bands))
+            .collect();
+        let pruned = s.apply(&[SupportEdit::Prune { sites }], &bands, &contours);
+        assert_eq!(pruned[0].status, EditStatus::Applied);
+        same_layers(&s.layers, &built, "grown then pruned");
+    }
+
+    #[test]
+    fn growing_on_grid_supports_or_off_every_tree_is_stale() {
+        let (bands, contours) = plate();
+        let grid = SupportOpts {
+            style: SupportStyle::Grid,
+            ..plate_opts()
+        };
+        let at = |x: f64| TipSite {
+            xy: [x, x],
+            z: 15.0,
+        };
+        let mut s = Supports::build(&bands, &contours, &grid).unwrap();
+        let out = s.apply(&[grow_on(vec![at(5.0)], 2, 0.0)], &bands, &contours);
+        assert_eq!(out[0].status, EditStatus::Stale { missed: 1 });
+        let mut s = Supports::build(&bands, &contours, &plate_opts()).unwrap();
+        let layers = s.layers.clone();
+        let out = s.apply(&[grow_on(vec![at(500.0)], 2, 0.0)], &bands, &contours);
+        assert_eq!(out[0].status, EditStatus::Stale { missed: 1 });
+        assert_eq!(s.layers, layers);
     }
 }

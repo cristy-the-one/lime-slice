@@ -85,6 +85,18 @@ impl PaintDisk {
         (dz < self.r).then(|| (self.r * self.r - dz * dz).sqrt())
     }
 
+    /// True when the disk's ball meets the band from `lo` to `hi`.
+    pub(crate) fn meets(&self, lo: f64, hi: f64) -> bool {
+        self.reach_on(lo, hi).is_some()
+    }
+
+    /// True when the disk covers `xy` on the band from `lo` to `hi`, or
+    /// comes within `slack` of it there.
+    pub(crate) fn covers(&self, xy: [f64; 2], lo: f64, hi: f64, slack: f64) -> bool {
+        self.reach_on(lo, hi)
+            .is_some_and(|r| (xy[0] - self.p[0]).hypot(xy[1] - self.p[1]) <= r + slack)
+    }
+
     fn circle(&self, radius: f64) -> Loop {
         let step = (1.0 - CIRCLE_TOLERANCE_MM / radius).clamp(-1.0, 1.0).acos();
         let sides = ((std::f64::consts::TAU / step.max(1e-3)).ceil() as usize).clamp(12, 96);

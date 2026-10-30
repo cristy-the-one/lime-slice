@@ -1716,16 +1716,17 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "support_edit",
-    description: "Prune or regrow a tree. support_trees first.",
+    description: "Prune, regrow, or grow a tree. support_trees first.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["action", "site"],
       properties: {
         object: handle,
-        action: { enum: ["prune", "regrow"], description: "prune or regrow." },
+        action: { enum: ["prune", "regrow", "grow"], description: "prune, regrow, or grow." },
         site: { type: "object", description: "xy and zMm of the limb." },
         scope: { enum: ["branch", "tree"], description: "branch or tree." },
+        count: { type: "integer", description: "grow: branches, 1-200, default 6." },
         dryRun: { type: "boolean", description: "Do not write." },
       },
     },

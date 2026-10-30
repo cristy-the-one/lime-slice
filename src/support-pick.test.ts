@@ -1,4 +1,4 @@
-import { branchLimbs, capsulesOf, indexSkeleton, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, treeLimbs, type Visible } from "./support-pick.ts";
+import { branchLimbs, capsulesOf, growFor, indexSkeleton, limbsWithIds, pickGap, pickLimb, placedGap, regrowFor, selectLimbs, sitesOf, treeLimbs, type Visible } from "./support-pick.ts";
 import type { BeltCopies, CoverageGap, SupportSkeleton } from "./support-edits.ts";
 
 let failed = 0;
@@ -39,6 +39,13 @@ eq("branch of the root is the whole tree", branchLimbs(index, 0), [0, 1, 2, 3, 4
 eq("branch follows a three-level into chain", branchLimbs(index, 1), [1, 2, 3]);
 eq("branch of a tip is the tip", branchLimbs(index, 3), [3]);
 eq("tree of a tip", treeLimbs(index, 3), [0, 1, 2, 3, 4]);
+eq("a grow names its tree by every live site, picked from any limb", growFor(index, 3, 4), {
+  kind: "grow",
+  sites: sitesOf(index, [0, 1, 2, 3, 4]),
+  count: 4,
+});
+eq("a grow on the second tree", growFor(index, 6, 1).sites.map((s) => s.xy[0]), [30, 33]);
+eq("grown ids map to skeleton indices", limbsWithIds(index, [7, 2, 99]), [1, 6]);
 eq("second tree", selectLimbs(index, 6, "tree"), [5, 6]);
 eq("branch scope", selectLimbs(index, 1, "branch"), [1, 2, 3]);
 eq(

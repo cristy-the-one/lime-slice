@@ -232,6 +232,19 @@ pub enum SupportEditSpec {
         region: Vec<Vec<[f64; 2]>>,
         z: [f64; 2],
     },
+    /// Grow up to `count` branches on the tree the limbs born at `sites`
+    /// belong to. `spacing` is the least distance between a new tip and any
+    /// other tip, mm; absent or `0` takes one from the pitch.
+    Grow {
+        sites: Vec<SiteSpec>,
+        count: u32,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        spacing: f64,
+    },
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 /// A birth site: xy in mm at the band z the skeleton reported.
@@ -243,6 +256,10 @@ pub struct SiteSpec {
 }
 
 const MAX_EDITS: usize = 1000;
+/// Most branches one grow may add.
+const MAX_GROW: u32 = 200;
+/// Widest spacing a grow may ask for, mm.
+const MAX_GROW_SPACING_MM: f64 = 50.0;
 const MAX_SITES: usize = 200_000;
 const MAX_REGION_POINTS: usize = 100_000;
 const MAX_MM: f64 = 100_000.0;
@@ -404,25 +421,46 @@ fn parse_one(
     sites: &mut usize,
     points: &mut usize,
 ) -> Result<SupportEdit, String> {
+    let tip_sites = |specs: &[SiteSpec], sites: &mut usize, what: &str| {
+        if specs.is_empty() {
+            return Err(format!("a {what} needs at least one site"));
+        }
+        *sites += specs.len();
+        if *sites > MAX_SITES {
+            return Err(format!("more than {MAX_SITES} sites across all edits"));
+        }
+        specs
+            .iter()
+            .map(|s| {
+                finite(s.xy[0], "site x")?;
+                finite(s.xy[1], "site y")?;
+                finite(s.z, "site z")?;
+                Ok(TipSite { xy: s.xy, z: s.z })
+            })
+            .collect::<Result<Vec<_>, String>>()
+    };
     match spec {
         SupportEditSpec::Prune { sites: specs } => {
-            if specs.is_empty() {
-                return Err("a prune needs at least one site".into());
+            tip_sites(specs, sites, "prune").map(|sites| SupportEdit::Prune { sites })
+        }
+        SupportEditSpec::Grow {
+            sites: specs,
+            count,
+            spacing,
+        } => {
+            if !(1..=MAX_GROW).contains(count) {
+                return Err(format!("a grow adds 1 to {MAX_GROW} branches, not {count}"));
             }
-            *sites += specs.len();
-            if *sites > MAX_SITES {
-                return Err(format!("more than {MAX_SITES} sites across all edits"));
+            if !spacing.is_finite() || !(0.0..=MAX_GROW_SPACING_MM).contains(spacing) {
+                return Err(format!(
+                    "grow spacing {spacing} is not 0 to {MAX_GROW_SPACING_MM} mm"
+                ));
             }
-            specs
-                .iter()
-                .map(|s| {
-                    finite(s.xy[0], "site x")?;
-                    finite(s.xy[1], "site y")?;
-                    finite(s.z, "site z")?;
-                    Ok(TipSite { xy: s.xy, z: s.z })
-                })
-                .collect::<Result<_, String>>()
-                .map(|sites| SupportEdit::Prune { sites })
+            tip_sites(specs, sites, "grow").map(|sites| SupportEdit::Grow {
+                sites,
+                count: *count,
+                spacing: *spacing,
+            })
         }
         SupportEditSpec::Regrow { region, z } => {
             if region.is_empty() {
@@ -490,6 +528,10 @@ pub struct EditOutcomeView {
     pub newly_floating_mm2: f64,
     /// Coverage gaps the edit leaves, specks included.
     pub floating: Vec<CoverageGap>,
+    /// A grow's new limbs, by the ids `skeleton.id` carries. Absent for the
+    /// other edits and for a grow that added none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub grown: Vec<u32>,
 }
 
 impl EditOutcomeView {
@@ -512,6 +554,7 @@ impl EditOutcomeView {
             changed_span: span,
             newly_floating_mm2: outcome.newly_floating_mm2,
             floating: tilt_gaps(&outcome.floating, bands, tilt),
+            grown: outcome.grown.iter().map(|id| id.0).collect(),
         }
     }
 }

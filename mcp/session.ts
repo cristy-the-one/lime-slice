@@ -45,10 +45,10 @@ import { decodeProject, encodeProject, finishProject, prepareProject } from "../
 import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-thumb.ts";
 import { savedTree, loadedTree, toolFirst, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
-import { appendEdit, editRequestFields } from "../src/support-edit-list.ts";
+import { appendEdit, editRequestFields, GROW_DEFAULT, GROW_MAX } from "../src/support-edit-list.ts";
 import type { EditEntry } from "../src/support-edit-list.ts";
-import { indexSkeleton, selectLimbs, sitesOf } from "../src/support-pick.ts";
-import type { CoverageGap, SupportSkeleton } from "../src/support-edits.ts";
+import { growFor, indexSkeleton, selectLimbs, sitesOf } from "../src/support-pick.ts";
+import type { CoverageGap, EditOutcome, SupportSkeleton } from "../src/support-edits.ts";
 import { diskFromHit, MAX_PAINT_DISKS, paintCounts, paintRequestFields, type PaintDisk, type PaintKind } from "../src/support-paint.ts";
 import { seamRequestFields, type SeamDisk } from "../src/seam-paint.ts";
 import { addDiskToRegion, MAX_REINFORCE_REGIONS, normalInfillDensity, reinforcementRequestFields, totalReinforceDisks, type ReinforceDisk, type ReinforceRegion } from "../src/reinforcement.ts";
@@ -7988,8 +7988,8 @@ export class Session {
   private supportEdit(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
-    const action = input.action === "regrow" ? "regrow" : input.action === "prune" ? "prune" : null;
-    if (!action) return { ok: false, reason: "action is prune or regrow." };
+    const action = input.action === "regrow" || input.action === "prune" || input.action === "grow" ? input.action : null;
+    if (!action) return { ok: false, reason: "action is prune, regrow, or grow." };
     const job = this.latest;
     const skeleton = job?.wire?.skeleton as SupportSkeleton | undefined;
     if (!skeleton?.id?.length) return { ok: false, reason: "Slice with tree supports first." };
@@ -8019,6 +8019,17 @@ export class Session {
       }
     });
     if (best < 0 || bestD > 15) return { ok: false, reason: "No support is at that point." };
+    if (action === "grow") {
+      const count = input.count === undefined ? GROW_DEFAULT : input.count;
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > GROW_MAX) return { ok: false, reason: `count is 1 to ${GROW_MAX} branches.` };
+      const edit = growFor(index, best, count);
+      if (edit.sites.length === 0) return { ok: false, reason: "No support is at that point." };
+      if (input.dryRun === true) return { ok: true, dryRun: true, action, tree: skeleton.tree[best], count };
+      const id = obj.supportEdits.reduce((max, entry) => Math.max(max, entry.id), 0) + 1;
+      this.remember("Support edit");
+      obj.supportEdits = appendEdit(obj.supportEdits, { id, edit, tips: edit.sites.length });
+      return { ok: true, action, tree: skeleton.tree[best], count, stale: true, label: "Support edit" };
+    }
     const scope = input.scope === "branch" ? "branch" : "tree";
     const sites = sitesOf(index, selectLimbs(index, best, scope));
     if (sites.length === 0) return { ok: false, reason: "No support is at that point." };
@@ -8048,7 +8059,16 @@ export class Session {
     const trees = [...groups.values()];
     const start = typeof input.cursor === "string" ? Number(input.cursor) : 0;
     const limit = typeof input.limit === "number" ? Math.min(100, Math.max(1, Math.round(input.limit))) : 20;
-    return { ok: true, total: trees.length, trees: trees.slice(start, start + limit), ...(start + limit < trees.length ? { nextCursor: String(start + limit) } : {}) };
+    // What each support edit did on this slice, in edit order: a grow says how many branches it added.
+    const outcomes = Array.isArray(job.wire.supportEdits) ? job.wire.supportEdits as EditOutcome[] : [];
+    const edits = outcomes.map((row) => ({ status: row.status, newlyFloatingMm2: row.newlyFloatingMm2, ...(row.grown ? { grown: row.grown.length } : {}) }));
+    return {
+      ok: true,
+      total: trees.length,
+      trees: trees.slice(start, start + limit),
+      ...(edits.length ? { edits } : {}),
+      ...(start + limit < trees.length ? { nextCursor: String(start + limit) } : {}),
+    };
   }
 
   private layerColumns(input: Record<string, unknown>): { paths: PathColumns; z: number; index: number } | { reason: string } {

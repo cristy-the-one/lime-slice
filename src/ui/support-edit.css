@@ -69,6 +69,18 @@
   border-color: currentColor;
   opacity: 0.7;
 }
+.se-grow {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-1);
+}
+.se-grow[hidden] { display: none; }
+.support-editbar .se-count {
+  width: 5ch;
+  padding: 0 var(--space-1);
+  text-align: center;
+}
 .btn.se-danger {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, var(--surface-2));

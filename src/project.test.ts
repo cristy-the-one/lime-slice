@@ -40,6 +40,16 @@ const regrow: EditEntry = {
   areaMm2: 3.5,
   edit: { kind: "regrow", region: [[[0, 0], [4, 0], [4, 2], [0, 2]]], z: [1, 4.5] },
 };
+const grow: EditEntry = {
+  id: 3,
+  tips: 4,
+  edit: { kind: "grow", sites: [{ xy: [1.5, -2], z: 4.25 }, { xy: [2, -2], z: 4.25 }], count: 6 },
+};
+const spaced: EditEntry = {
+  id: 4,
+  tips: 1,
+  edit: { kind: "grow", sites: [{ xy: [0, 0], z: 2 }], count: 2, spacing: 3.5 },
+};
 
 const project: LimeProject = {
   version: 1,
@@ -55,7 +65,7 @@ const project: LimeProject = {
   preset: "bench",
   profile: { ...defaultProfile(), name: "Shop printer", bedX: 300 },
   level: "advanced",
-  supportEdits: [prune, regrow],
+  supportEdits: [prune, regrow, grow, spaced],
 };
 
 const text = serializeProject(project);
@@ -122,6 +132,13 @@ eq("a prune stores sites, not a walk id", wire.supportEdits[0].edit, {
 });
 check("the prune edit has no limb id", !("limb" in wire.supportEdits[0].edit) && !("walk" in wire.supportEdits[0].edit));
 eq("a regrow stores its region and z range", wire.supportEdits[1].edit.kind, "regrow");
+eq("a grow stores its tree's sites and count", wire.supportEdits[2].edit, { ...grow.edit } as Record<string, unknown>);
+eq("a grow's spacing is stored only when set", wire.supportEdits[3].edit, { ...spaced.edit } as Record<string, unknown>);
+{
+  const bad = JSON.parse(text) as { objects: { supportEdits: { edit: Record<string, unknown> }[] }[] };
+  bad.objects[0]!.supportEdits[2]!.edit.count = 0;
+  eq("a grow of no branches is incomplete", parseProject(JSON.stringify(bad)), { ok: false, message: "This project file is incomplete." });
+}
 
 /** A file as version 1 wrote it: the one object's mesh, placement, and edits at the top. */
 function asVersion1(source: string): Record<string, unknown> {
@@ -198,7 +215,7 @@ check("a one-object project is written as a version 4 plate", wireProject.versio
 check("a one-object project keeps no top-level mesh", wireProject.mesh === undefined);
 const version1Text = JSON.stringify(asVersion1(text));
 const fromVersion1 = parseProject(version1Text);
-check("a version 1 file still opens", fromVersion1.ok && fromVersion1.project.mesh.hash === project.mesh.hash && fromVersion1.project.supportEdits.length === 2);
+check("a version 1 file still opens", fromVersion1.ok && fromVersion1.project.mesh.hash === project.mesh.hash && fromVersion1.project.supportEdits.length === 4);
 
 const migrated = applyMigrations(JSON.parse(version1Text) as Record<string, unknown>);
 check("version 1 migrates to one object", migrated.ok);
