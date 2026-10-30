@@ -13,7 +13,7 @@ import { coverageWarning, inAirWarning } from "../slice-action";
 import { meshRepairOf, meshWarningKey, meshWarningText } from "./mesh-warning";
 import { supportModeOf, type SupportMode } from "../support-source";
 import { applySliceProgress, currentSliceProgress } from "../ui/slice-progress";
-import { filamentCost, filamentGrams } from "../estimate";
+import { filamentCost, filamentGrams, velocityCapWarning } from "../estimate";
 import { durationTile, formatCount, formatDuration, formatLength, formatMass, formatMetres, formatMoney, formatMs } from "../format";
 import { featureRows, featureTableMarkup } from "../ui/legend";
 import { shellCount } from "../mesh-shells";
@@ -1146,7 +1146,9 @@ export function estimateHtml() {
   const rows = featureTableMarkup(previewFeatureRows(), (mm) => filamentGrams(mm, state.profile));
   const grams = filamentGrams(est.filamentMm, state.profile);
   const tile = durationTile(est.seconds);
+  const capped = velocityCapWarning(est.velocityCap);
   return `
+    ${capped ? `<p class="mesh-warn" id="velocityCapWarn" role="status"><span>${escapeHtml(capped)}</span></p>` : ""}
     <div class="big" data-tip="Filament ${formatMoney(state.profile.filamentCostPerKg)} / kg from the filament.">
       <div><b>${tile.value}</b><small>${tile.unit}</small></div>
       <div><b id="estGrams">${formatMass(grams)}</b><small><span id="estCost">${formatMoney(filamentCost(grams, state.profile))}</span> · ${formatMetres(est.filamentMm)}</small></div>

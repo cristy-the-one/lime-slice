@@ -1482,6 +1482,21 @@ pub struct PrintEstimate {
     /// Time and filament per path kind, including travel.
     #[serde(default)]
     pub by_feature: Vec<FeatureEstimate>,
+    /// Set when the printer's Klipper `max_velocity` is below feeds the slice
+    /// writes: Klipper runs those moves at the cap, and so does the estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub velocity_cap: Option<VelocityCap>,
+}
+
+/// How much of a slice the printer's `max_velocity` holds back.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VelocityCap {
+    pub max_velocity_mm_s: f64,
+    /// The fastest feed the G-code asks for above the cap.
+    pub fastest_feed_mm_s: f64,
+    /// Share of the toolhead's path, travel included, that runs at the cap.
+    pub capped_share: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3155,6 +3170,7 @@ fn slice_plate(
             Vec::new(),
         )
     };
+    let velocity_cap = velocity_cap(&gcode, &profile);
     Ok(SliceResponse {
         core_ms,
         baseline_ms,
@@ -3198,6 +3214,7 @@ fn slice_plate(
                 mean_scarf_mm,
                 max_seam_z_step_mm,
                 by_feature: feature_estimates(&gcode.by_feature, &profile),
+                velocity_cap,
             }
         },
         score: score_of(
@@ -3382,6 +3399,21 @@ fn feature_estimates(
             filament_g: row.filament_mm * scale,
         })
         .collect()
+}
+
+fn velocity_cap(
+    gcode: &crate::gcode::GcodeStats,
+    profile: &PrinterProfile,
+) -> Option<VelocityCap> {
+    if gcode.capped_mm <= 0.0 {
+        return None;
+    }
+    let path = (gcode.extrusion_length_mm + gcode.travel_length_mm).max(gcode.capped_mm);
+    Some(VelocityCap {
+        max_velocity_mm_s: profile.max_velocity,
+        fastest_feed_mm_s: gcode.capped_feed_mm_s,
+        capped_share: gcode.capped_mm / path,
+    })
 }
 
 fn compare_estimates(

@@ -1,3 +1,4 @@
+import type { VelocityCap } from "../estimate";
 import type { SlicedBed } from "../bed-offset";
 import { emptyOverrides } from "../overrides";
 import { emptyPlate, type PlateState } from "../plate";
@@ -112,6 +113,8 @@ export interface SliceResponse {
     retracts?: number;
     scarfedLoops?: number;
     byFeature?: FeatureRow[];
+    /** The printer's Max velocity below feeds the slice writes. */
+    velocityCap?: VelocityCap;
   };
   compare?: { label: string; seconds: number; filamentG: number }[];
   gcode: string;

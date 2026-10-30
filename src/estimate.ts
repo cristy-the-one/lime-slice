@@ -17,6 +17,30 @@ export interface Filament {
   filamentCostPerKg: number;
 }
 
+/** The engine's report of a Klipper `max_velocity` below the feeds the slice writes. */
+export interface VelocityCap {
+  maxVelocityMmS: number;
+  fastestFeedMmS: number;
+  /** 0–1 of the toolhead's path, travel included. */
+  cappedShare: number;
+}
+
+/**
+ * The sentence for a printer whose Max velocity holds back a real part of the
+ * slice, or "" when it holds back little. Klipper runs those moves at the cap,
+ * and the estimate with it, so a Max velocity typed short of printer.cfg's
+ * makes every estimate long without changing a move.
+ */
+export function velocityCapWarning(cap: VelocityCap | undefined): string {
+  if (!cap || !(cap.cappedShare >= 0.05)) return "";
+  const share = Math.round(cap.cappedShare * 100);
+  return `Max velocity ${formatSpeed(cap.maxVelocityMmS)} mm/s holds ${share}% of the path below the feeds this slice writes (up to ${formatSpeed(cap.fastestFeedMmS)} mm/s), and the time assumes it. Match it to printer.cfg's max_velocity in Printer details if the printer is faster.`;
+}
+
+function formatSpeed(mmS: number): string {
+  return String(Math.round(mmS * 10) / 10);
+}
+
 /** Grams of `mm` of filament, computed as the engine's G-code footer computes them. */
 export function filamentGrams(mm: number, filament: Filament): number {
   const r = filament.filamentDiameter * 0.5;

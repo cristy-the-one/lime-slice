@@ -1,4 +1,4 @@
-import { filamentCost, filamentGrams, groupFeatures, withFooterGrams, type Filament } from "./estimate.ts";
+import { filamentCost, filamentGrams, groupFeatures, velocityCapWarning, withFooterGrams, type Filament } from "./estimate.ts";
 
 let failed = 0;
 
@@ -21,6 +21,14 @@ eq("a metre of 1.75 mm PETG", filamentGrams(1000, petg).toFixed(4), "3.0547");
 eq("cost of 250 g at 30 €/kg", filamentCost(250, petg), 7.5);
 // The engine's reply for the 20 mm cube at 1.24 g/cm³: filamentMm 862.547532413776, filamentG 2.5725907335234646.
 eq("the engine's grams for the cube, to the bit", filamentGrams(862.547532413776, pla), 2.5725907335234646);
+
+eq("no cap, no sentence", velocityCapWarning(undefined), "");
+eq("a cap on 3% of the path says nothing", velocityCapWarning({ maxVelocityMmS: 300, fastestFeedMmS: 350, cappedShare: 0.03 }), "");
+eq(
+  "the IR3 V2 typed at 40 mm/s",
+  velocityCapWarning({ maxVelocityMmS: 40, fastestFeedMmS: 300, cappedShare: 0.968 }),
+  "Max velocity 40 mm/s holds 97% of the path below the feeds this slice writes (up to 300 mm/s), and the time assumes it. Match it to printer.cfg's max_velocity in Printer details if the printer is faster.",
+);
 
 const footer = "G1 Z30.000 F600\nM106 S0\n; bed 220x220 mm nozzle 0.40 mm\n; TIME:301.6s FILAMENT_MM:862.55 FILAMENT_G:2.573 ARCS:2\nM84\n";
 eq(

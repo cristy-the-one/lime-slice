@@ -418,6 +418,10 @@ jobs:
       - name: Release CLI
         run: cargo build -p lime-slice --release --locked
 
+      # The estimate a Klipper slice writes against the Klipper model that matches real prints.
+      - name: Print-time estimate matches klipper_time.py
+        run: bash tools/estimate_check.sh target/release/lime-slice
+
       # Same cache as the rust job. A miss builds OCCT here too.
       - name: Restore the OCCT shared libraries
         id: occt-cache
