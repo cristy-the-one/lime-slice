@@ -885,3 +885,74 @@ The owner split a part with a zig-zag and called choosing it "pretty blind". On 
 - *After Apply.* Nothing of the ghost stays (the spec checks it). The pieces are the kernel's solids, so their cut faces are the teeth themselves, drawn as geometry with their edges, and Explode and View's Colour by step already show them apart. An overlay on a face that already has that shape adds nothing, and a stale one would lie after an Update. This was not seen in a screenshot here: against the real engine, headless Chromium's page crashes a few seconds after the card's probe answers, on `main`'s build as well and for a straight cut too, so the real-kernel evidence stops at the card (see the PR).
 
 Tests: `src/cut-trace.test.ts` (the profile at any A, a period both ways, a lap's step, the polyline clipped at its ends, the line on a bar and its length, the sheet, a posed part, a lap, each piece bound naming its cut) and `e2e/model-split-print.spec.ts` (a straight cut has no path; a zig-zag traces one, which a finer pitch lengthens before any kernel answer; angled teeth; a drag keeps it; a lap traces its step; a tongue draws its plane; Apply leaves no ghost).
+
+## 32. As built: sliding a profile, and no paper-thin walls (2026-10-30)
+
+The owner split a part with a zig-zag and was left with "paper thin half walls": a tooth's flank had landed a fraction of a millimetre inside one of the part's walls, so one piece kept a sliver of that wall standing the depth of the tooth. He asked for two things: a way to slide an automated profile along the cut without moving the cut, and, better, a rule that makes such a sliver impossible, "not refusing, but imposing that it cannot happen". Both are built. The planner does all of it (`src/modeling/profile-shift.ts`, called from `placeShaped` in `src/split-print.ts`); the kernel gained one path.
+
+### What a shift is, per profile
+
+`shift` is millimetres on the profile, stored on the op. 0, and absent, is exactly where the planner put the profile before shifts existed. The cut's plane, its origin and its tilts never move.
+
+| Profile | What `shift` slides | How it is stored |
+|---|---|---|
+| Zig-zag | The teeth along U. It is a phase: taken modulo the pitch, so 12.5 on a 10 mm pitch cuts as 2.5. | `u0`, where a period starts, is the section's low U plus the phase. |
+| Lap | The step along V, from where Height (or Half) puts it. The step is the only thing a lap can slide without moving the cut, so the lap's shift is an offset on top of Height; it is clamped so both shoulders keep their floor. | `at`, as before. |
+| Tongue | The tongue across V, from the middle of the section. Along U it already runs the section less its margins, so there is nothing to slide that way. | `v`, as before. |
+| Dovetail | The dovetail across its slide (across V for a slide along U, across U for a slide along V). | `v`, as before. |
+
+The stored op keeps the shift as it was asked for: a typed number as typed (`shift: 12.5`), or Auto as the shift it chose with `shiftAuto: true`. A typed 0 stores no `shift`, so an op with no shift stores exactly what it stored before. A replay reads only `u0`, `at` and `v`, so a project saved before this change, which has none of these fields, builds the same solids.
+
+### The no-thin-wall rule
+
+**The floor.** The thinnest wall a split may leave is the process's wall floor and never under 0.8 mm (`sliverFloor`): two 0.4 mm beads on FDM, the narrowest wall a slicer fills with two perimeters and no gap fill; 1 mm on the Form 4 (twice its 0.5 mm feature). Under that the slicer prints a single bead or nothing, which is the "paper thin" the owner saw.
+
+**How walls are read.** On the section the solid has at the cut, and for a zig-zag or a lap also on the section the profile's depth along the normal, where its far flats sit. Each line the profile cuts across the section (a flank of a zig-zag, a lap's riser, a tongue's or a dovetail's groove edges) is followed along its length; at every 0.4 mm along it, the material from the line to the nearest face or the next line on each side is that side's wall. A wall is thin only when it stays under the floor for more than twice the floor along the line (1.6 mm): a flank that meets a slanted or curved face makes a corner, which is a short wedge, not a wall. A line within 0.05 mm of a face inside the part (a hole's or a rib's, not the outline's) counts as a 0 mm wall, so the cut never lays a flank on a face. A tongue's or a dovetail's groove that leaves the material (breaks into a hole) counts as 0 there.
+
+**Auto.** Auto tries the shifts (the zig-zag one pitch in 0.1 mm steps; the others every 0.1 mm of their room) and takes the one whose thinnest wall is thickest, counting everything at three floors (2.4 mm) or more as equal, and among those the one nearest 0. So a profile that already leaves every wall 2.4 mm or more stays exactly where it was (every existing test of a solid bar kept its numbers), and one that does not moves the least that gives its walls the most.
+
+**When no shift clears every wall.** The profile is changed where it would leave the sliver, and the card says so in one sentence:
+- *Zig-zag:* the pair of flanks around the thinnest wall is taken out, the pair that leaves the thicker walls, until every wall holds. Taking a pair out flattens a tooth onto the cut plane, or fills the gap between two teeth up to their tips; a tie flattens. "Cut 1: 1 tooth was flattened onto the cut plane so no wall is under 0.8 mm." The changed profile is stored as the zig-zag's `start` and `chain`, a polyline in (U, W) as a sketch's is, and the kernel cuts a zig-zag that has a `chain` along it with the sketch's path (`tree.rs`, `profile_numbers`; up to 16,000 segments, where a sketch keeps 200).
+- *Tongue and dovetail:* a typed shift that would leave a thin wall moves to the nearest place that does not ("Cut 1: the tongue was moved 2.45 mm so no wall is under 0.8 mm.", on the bar with a hole below). When no place clears the whole length, it is shortened to the longest stretch that keeps its walls, at the place that gives the longest; a dovetail's stretch keeps one end of the section open so it can still slide in ("…was shortened to 40 mm…", with its length). One that has no stretch as long as its own width is left out of that cut, which is then straight: "Cut 1: the tongue has no place that keeps every wall at 0.8 mm, so the cut is straight."
+- *Lap:* a typed step that would leave a thin wall moves to the nearest place that does not; a lap with no such place is left out, the cut straight, with the same kind of sentence. A lap has one step, so there is no part of it to change locally.
+- A profile left out is stored as `{kind: "straight", wanted: {…}}`: the kernel cuts the plane, and the pencil reopens the card with the profile that was asked for.
+
+The rule runs at every Apply and every probe, for the card and the MCP alike; it does not run on a replay, which builds what was stored.
+
+**Auto is on by default for a new shaped cut in the card.** It costs no print time and changes nothing on a part that has no thin wall at the cut, so it is not a "costly default". The MCP keeps 0 when `shift` is absent, as the brief asked, and takes `shift: "auto"`; the rule itself applies to both, so an MCP zig-zag at shift 0 whose flank would leave a sliver gets that tooth flattened, with the sentence in `notes`. Old saved cuts keep their stored placement: the pencil reads an op with no shift as a typed 0, not as Auto.
+
+### Measured
+
+Synthetic parts only. "Kernel" is the real Open CASCADE pieces (`crates/lime-model-occt/tests/partition_shift.rs`, the thinnest slab between two faces square to the cut's U in either piece); "planner" is the rule's own reading.
+
+| Part, profile | Before (shift 0, as `main` cuts it) | After | Source |
+|---|---|---|---|
+| Thin-walled box 120 × 30.9 × 20 mm, 1.2 mm walls, zig-zag 10 mm pitch, 3 mm deep | 0.3 mm: a flank 0.3 mm inside the far side wall | Auto slides 9.6 mm: 1.2 mm, the wall itself | kernel |
+| The same box, typed shift 0 | 0.3 mm | that tooth flattened: 1.2 mm | kernel |
+| Five ribs 1.2 mm thick, 6.2 mm apart, zig-zag 10 mm | 0.6 mm at Auto's best shift, 9.2 mm (every shift lays a flank in a rib) | one tooth flattened: 1.2 mm | kernel |
+| Bar 120 × 30 × 20 with a hole along it 1.5 mm above the middle of the section, tongue 6 mm | the groove breaks into the hole (0 mm); the kernel's groove takes less than its own volume | Auto moves it 4.05 mm down: walls 2.4 mm, the groove whole by volume to 1e-6 mm³ | planner and kernel |
+| The same bar, lap step typed 0.3 mm under the hole | 0.3 mm floor under the hole | Auto moves the step 0.4 mm up, into the hole, where it crosses only the 5 mm walls beside it: 8.4 mm | planner |
+| Solid bar 60 mm across, zig-zag 7 mm pitch | 0.5 mm: the last tooth's sliver at the section's edge | Auto slides 5.5 mm: 2 mm at both edges | planner |
+
+### The card
+
+- **Shift** is a field beside the profile's sizes for a lap, a zig-zag, a tongue and a dovetail, with an **Auto** toggle after it. Empty is Auto: the placeholder reads "Auto 9.6", the shift Auto chose, and the toggle is pressed. Typing a number, or scrubbing its label, makes it manual and releases the toggle; emptying the field or pressing Auto goes back. It takes negative numbers, either way along the cut.
+- **The arrow.** The selected cut's profile has an arrow on it, along the way it slides: on the tooth nearest the section's middle at the tips for a zig-zag, on the step at the section's edge for a lap, at the key's end for a tongue or a dovetail. Dragging it types the shift (a press that does not move leaves Auto on); Ctrl snaps to whole millimetres and Shift slows it, as every Model handle; the heads-up field follows it and takes a typed number. The path (section 31) and the probe's pieces follow while it moves, with no kernel call until the release. The arrow follows the typed number, so it moves smoothly past a whole pitch, while the cut takes its phase.
+- **The note** under the profile says what was changed to keep the walls, in the planner's sentence without "Cut N:", and the thinnest wall at the cut when it is under three floors or something was changed ("Thinnest wall at the cut: 1.2 mm.").
+- **Undo and Redo** step the card, as for every other handle: a drag and what the heads-up field typed after it is one step, the Auto toggle another. The pencil reads a stored Auto back as Auto and a typed shift as typed.
+
+Decisions, with the reason:
+1. A field plus an Auto toggle, not a slider: a shift is a length the user may want exact (to line a tooth up with a feature), and every other size in the card is a field; Fusion's and Onshape's pattern offsets are typed fields too.
+2. Empty is Auto, as Height's empty is Half: one convention for "the planner chooses" across the card.
+3. The arrow sits on the profile, not on the plane's own arrow: the plane arrow moves the cut, and the owner was explicit that the profile moves, not the cut. Its accent colour sets it apart from the axis-coloured cut arrows.
+4. The guarantee changes the profile rather than refusing, and says what it changed in one sentence, in the same place the card puts every profile sentence.
+
+### Deviations from the brief
+
+- The guarantee also applies to an op with no `shift` (the MCP, a new Apply of a card cut with a typed 0): such an op builds byte for byte the solids it built before **unless** one of its flanks would leave a wall under the floor, in which case that tooth is flattened and the note says so. Byte-identical old projects are kept because a replay never re-runs the rule. Leaving the sliver for those calls would defeat "cannot happen".
+- The planner still refuses sizes no place can hold at all (a tongue wider than the section less its walls), as before: the rule is about where a profile that fits sits, not about its size.
+- Walls are read on the section at the cut and at the profile's depth. A part whose walls change shape within the profile's depth is read on those two sections; the kernel's cut is exact, the reading is not.
+- A tongue's and a dovetail's walls are read on the cut plane, not along the groove's depth.
+- A sketched profile has no shift: it is drawn where it goes, and milestone 10 already refuses a sketch that leaves a wall under the floor.
+
+Tests: `src/modeling/profile-shift.test.ts` (the floor, the phase, the flanks, Auto's choice and its tie-break, walls along a line and the corner rule, the thin-walled box at shift 0 and on Auto, a typed shift, the op the card stores and the pencil reads back, an op with no shift, the ribs, the tongue and the lap beside a hole); `src/split-print.test.ts` and `src/cut-trace.test.ts` (Auto keeps every earlier placement on a solid bar, and moves the 7 mm zig-zag off the 0.5 mm sliver); `crates/lime-model-occt/tests/partition_shift.rs` (the real pieces of those parts, the thinnest wall before and after, volumes summing to the part); `mcp/occt.test.ts` (no shift, `shift: "auto"` and a typed shift through `model_probe` and `model_apply` on the real kernel); `e2e/model-split-print.spec.ts` (the field, Auto, the typed 0's sentence, the arrow's drag, the Auto toggle, Undo and Redo, Apply and the pencil).

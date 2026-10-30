@@ -665,6 +665,8 @@ const PROFILE_STRIDE: usize = 14;
 const CHAIN_STRIDE: usize = 5;
 /// The most segments a sketched cut's chain may have.
 const CHAIN_MAX: usize = 200;
+/// The most segments a changed zig-zag's chain may have: four a period, as many periods as the kernel's own zig-zag.
+const ZIGZAG_CHAIN_MAX: usize = 16_000;
 
 
 /// The planner's Max pieces (`clampPieces` in `src/modeling/partition.ts`): 12 when absent, from 2 to 24.
@@ -754,6 +756,19 @@ fn profile_numbers(cuts: &[PartitionCut]) -> Result<(Vec<[f64; PROFILE_STRIDE]>,
                         0.0
                     };
                 }
+                "zigzag" if cut.profile.get("chain").is_some() => {
+                    // A zig-zag whose teeth the planner changed to keep its walls (`planZigzag`) is its chain, cut
+                    // as a sketch's is.
+                    let segments = profile_chain(&cut.profile, at, ZIGZAG_CHAIN_MAX)?;
+                    let [su, sw] = chain_point(cut.profile.get("start"))
+                        .ok_or_else(|| format!("Cut {}'s zig-zag needs start, [u, w].", at + 1))?;
+                    out[0] = 5.0;
+                    out[1] = chains.len() as f64;
+                    out[2] = (segments.len() / CHAIN_STRIDE) as f64;
+                    out[3] = su;
+                    out[4] = sw;
+                    chains.extend(segments);
+                }
                 "zigzag" => {
                     out[0] = 3.0;
                     out[1] = side * number("depth")?;
@@ -762,7 +777,7 @@ fn profile_numbers(cuts: &[PartitionCut]) -> Result<(Vec<[f64; PROFILE_STRIDE]>,
                     out[4] = number("u0")?;
                 }
                 "sketch" => {
-                    let segments = sketch_chain(&cut.profile, at)?;
+                    let segments = profile_chain(&cut.profile, at, CHAIN_MAX)?;
                     let [su, sw] = chain_point(cut.profile.get("start"))
                         .ok_or_else(|| format!("Cut {}'s sketch needs start, [u, w].", at + 1))?;
                     out[0] = 5.0;
@@ -796,14 +811,15 @@ fn chain_point(value: Option<&Value>) -> Option<[f64; 2]> {
     }
 }
 
-/// A sketched cut's chain as the kernel reads it, `CHAIN_STRIDE` numbers a segment. Lines and arcs only.
-fn sketch_chain(profile: &Value, at: usize) -> Result<Vec<f64>, String> {
+/// A sketched cut's chain as the kernel reads it, `CHAIN_STRIDE` numbers a segment, at most `max` segments. Lines and
+/// arcs only.
+fn profile_chain(profile: &Value, at: usize, max: usize) -> Result<Vec<f64>, String> {
     let cut = at + 1;
     let Some(rows) = profile.get("chain").and_then(Value::as_array) else {
         return Err(format!("Cut {cut}'s sketch needs chain, a list of lines and arcs."));
     };
-    if rows.is_empty() || rows.len() > CHAIN_MAX {
-        return Err(format!("Cut {cut}'s sketch has {} segments; it takes 1 to {CHAIN_MAX}.", rows.len()));
+    if rows.is_empty() || rows.len() > max {
+        return Err(format!("Cut {cut}'s sketch has {} segments; it takes 1 to {max}.", rows.len()));
     }
     let mut out = Vec::with_capacity(rows.len() * CHAIN_STRIDE);
     for row in rows {
@@ -1189,12 +1205,24 @@ pub fn partition_primitive(
 /// piece and the pins as `{volumeMm3, solids, valid, closed, surfaces}` (`lime_tree_surfaces`), each pin's volume, the
 /// reply's `connectors` and `notes`, and the op the tree would store.
 pub fn partition_joints(solid: &str, op: &str) -> Result<String, String> {
-    let solid: Solid = serde_json::from_str(solid).map_err(|err| err.to_string())?;
+    let text: Value = serde_json::from_str(solid).map_err(|err| err.to_string())?;
+    // A test part with holes or walls: the primitive, then each op of `before` (a boolean, say) on it, in order.
+    let before: Vec<Op> = match text.get("before") {
+        Some(list) => serde_json::from_value(list.clone()).map_err(|err| err.to_string())?,
+        None => Vec::new(),
+    };
+    let solid: Solid = serde_json::from_value(text).map_err(|err| err.to_string())?;
     let op: Op = serde_json::from_str(op).map_err(|err| err.to_string())?;
     let _store = lock();
     let mut whole = Shape::primitive(&solid)?;
     let _budget = GroupBudget::start();
     let steps = Steps::new();
+    for first in &before {
+        let resolved = resolve(&mut whole, first, &steps)?;
+        whole = build(&mut whole, resolved, false, None, &steps)
+            .map_err(|fail| fail.message)?
+            .kept;
+    }
     let resolved = resolve(&mut whole, &op, &steps)?;
     let built = build(&mut whole, resolved, false, None, &steps).map_err(|fail| fail.message)?;
     let report = |shape: &Shape| -> Result<Value, String> {

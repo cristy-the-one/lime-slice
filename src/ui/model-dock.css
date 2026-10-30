@@ -571,6 +571,11 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 /* --- Milestone 10: a sketched cut's row, and the card stepping aside while its profile is drawn in the sketch card. --- */
 .model-split-print .sp-sketch { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); }
 .model-split-print .sp-sketch[hidden] { display: none; }
+/* --- Profile shift: the field and its Auto toggle share the fields' row; the toggle sits on the field's baseline. --- */
+.model-split-print .sp-shift-auto { align-self: end; height: var(--control-h); min-width: 0; }
+.model-split-print .sp-shift-auto[aria-pressed="true"] { background: var(--surface-3); color: var(--text); font-weight: 600; }
+.model-split-print .sp-shift-auto[hidden] { display: none; }
+.model-split-print .sp-shift input::placeholder { color: var(--text-dim); }
 /* --- Connectors placed by hand: each one's U and V on the cut, and Refit. --- */
 .model-split-print .sp-points { margin: 0 0 var(--space-2); }
 .model-split-print .sp-points[hidden] { display: none; }

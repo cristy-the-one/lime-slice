@@ -14,7 +14,7 @@ import { couponGaps, couponLabel } from "../modeling/fit-coupon.ts";
 import type { PartitionModelOp, Vec3 } from "../model-tree";
 import type { Affine } from "../model-space";
 import type { CutTrace } from "../cut-trace.ts";
-import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, jointPoints, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointPoints, withJointsOn, withJointsRefit, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type ConnectorMark, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind } from "../split-print";
+import { CURVED, NO_CUTS, PICK_FACE, SPLIT_PRINT_STEPS, withProfileField, withProfileKind, SPLIT_PRINT_TITLE, cardFromFit, cardFromOp, cardOp, cardPlanes, cutBase, cutFieldName, cutSummary, emptyCard, exportTarget, fitLabel, jointPoints, pieceLines, sameCard, withCutAdded, withCutChanged, withCutDeleted, withCutMode, withCutsCleared, withJointCount, withJointField, withJointPoints, withJointsOn, withJointsRefit, withJointType, withProfileSketch, withSelected, squareTo, type Card, type CardCut, type CardFrame, type CardJointType, type ConnectorMark, type CutMode, type FitOnBed, type LabelSizes, type PieceCheck, type Placement, type ProfileKind, SHIFTED_KINDS, type ShapedInfo } from "../split-print";
 import { closeModelCard, fieldNumber, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { chainFromSketch, chainSummary, readChain, sketchFromChain, type Chain } from "../modeling/sketch-profile.ts";
 import { emptySketch, type SketchData } from "../sketch/model.ts";
@@ -52,6 +52,8 @@ export interface SplitPrintHost {
   traces(op: PartitionOp): (CutTrace | null)[];
   /** Why the planner would not store `op` on the open solid, as the card says it ("" when it would). */
   refusal(op: PartitionOp): string;
+  /** --- Profile shift. Each cut's shaped profile as Apply would place it: the shift, its walls, what was changed; null for a straight cut. */
+  shaped(op: PartitionOp): (ShapedInfo | null)[];
   /** The defaults and floors `target`'s process gives (null: the plate's printer), for the connector fields. */
   defaults(target: Target | null): PartitionDefaults | null;
   /** The slice setting XY hole compensation, in millimetres; its note shows while it is not 0. */
@@ -116,6 +118,8 @@ let notes: string[] = [];
 let check: SplitPrintCheck = null;
 /** The planner's connectors for the card's op, worked out when the card changes. */
 let placement: Placement | null = null;
+/** --- Profile shift. Each cut's shaped profile as Apply would place it, worked out when the card changes. */
+let shapedNow: (ShapedInfo | null)[] = [];
 /** While a step is edited: the card as the step filled it, so an untouched card offers no Update, and its header. */
 let edit: { opened: Card; head: string } | null = null;
 let waiting = false;
@@ -131,7 +135,7 @@ let moving = false;
 let dragging: { index: number; before: Card; handle?: string; points?: UV[] } | null = null;
 let hud: HudMount | null = null;
 /** What the heads-up field types into: the plane's number and tilts, the joint's depth, or connector `k`'s U and V. */
-let hudKind: "plane" | "depth" | `joint-${number}` = "plane";
+let hudKind: "plane" | "depth" | "shift" | `joint-${number}` = "plane";
 /** --- Drag handles. The card before each change, for Model's Undo while the card is open, and after it, for Redo. */
 let past: Card[] = [];
 let future: Card[] = [];
@@ -207,6 +211,8 @@ export function mountSplitPrint(next: SplitPrintHost) {
         <label data-profile-for="lap zigzag tongue dovetail"><span class="scrub-label" data-scrub>Depth</span><input id="modelPartProfileDepth" type="number" step="0.5" min="0" aria-label="Depth, along W, millimetres"></label>
         <label data-profile-for="zigzag dovetail"><span class="scrub-label" data-scrub>Angle</span><input id="modelPartProfileAngle" type="number" step="1" min="0" max="60" aria-label="Flank angle from the normal, degrees"></label>
         <label data-profile-for="lap"><span class="scrub-label" data-scrub>Height</span><input id="modelPartProfileHeight" type="number" step="0.5" min="0" placeholder="Half" aria-label="Lap height, from the section's low side, millimetres"></label>
+        <label data-profile-for="lap zigzag tongue dovetail" class="sp-shift" data-tip="Slides the profile along the cut; the cut stays put. Empty is Auto."><span class="scrub-label" data-scrub>Shift</span><input id="modelPartProfileShift" type="number" step="0.5" placeholder="Auto" aria-label="Shift the profile along the cut, millimetres; empty is Auto"></label>
+        <button class="btn sp-shift-auto" id="modelPartProfileShiftAuto" type="button" data-profile-for="lap zigzag tongue dovetail" aria-pressed="true" data-tip="Auto: the shift that keeps the thickest walls">Auto</button>
       </div>
       <label class="sp-print" id="modelPartProfileSlideRow" hidden><span class="scrub-label">Slide</span><select id="modelPartProfileSlide" aria-label="Which way the dovetail slides">
         <option value="u">Along U</option><option value="v">Along V</option>
@@ -656,6 +662,7 @@ export function splitPrintOp(): PartitionOp | null {
 function changed(wait: number | null) {
   const typed = op();
   placement = typed && card.cuts.some((cut) => cut.joints.on) ? host?.connectors(typed) ?? null : null;
+  shapedNow = typed && card.cuts.some((cut) => SHIFTED_KINDS.includes(cut.profile.kind)) ? host?.shaped(typed) ?? [] : [];
   paintRows();
   paintPlane();
   paintProfile();
@@ -854,7 +861,21 @@ function paintProfile() {
   shown("#modelPartProfileHeight", typed.height, undefined);
   shown("#modelPartProfileWidth", typed.width, kind === "dovetail" ? d?.dovetailWidthMm : d?.tongueWidthMm);
   put("#modelPartProfileSide", typed.side === "negative" ? "negative" : "positive");
+  // --- Profile shift. Empty is Auto, whose choice shows in the field's placeholder; a typed shift shows as typed.
+  const info = shapedNow[card.selected] ?? null;
+  const typedShift = (cut.profile as { shift?: unknown }).shift;
+  const shiftInput = $<HTMLInputElement>("#modelPartProfileShift");
+  if (shiftInput) {
+    if (document.activeElement !== shiftInput) shiftInput.value = typeof typedShift === "number" ? mm(typedShift) : "";
+    shiftInput.placeholder = info?.auto ? `Auto ${mm(info.shift)}` : "Auto";
+  }
+  $<HTMLButtonElement>("#modelPartProfileShiftAuto")?.setAttribute("aria-pressed", typeof typedShift === "number" ? "false" : "true");
   const sentences = d ? profileRefusals(cut.profile, d) : [];
+  if (sentences.length === 0 && info) {
+    if (info.note) sentences.push(info.note.replace(/^Cut \d+: /, "").replace(/^./, (c) => c.toUpperCase()));
+    // The thinnest wall only when it is worth a look: under three floors, the walls Auto is content with, or after a change.
+    if (!info.straight && Number.isFinite(info.thinnest) && (info.note || info.thinnest < 3 * info.floor - 1e-9)) sentences.push(`Thinnest wall at the cut: ${mm(info.thinnest)} mm.`);
+  }
   if (note) {
     note.textContent = sentences.join(" ");
     note.hidden = sentences.length === 0;
@@ -1233,6 +1254,25 @@ function handles(): DragHandle[] {
         cutIndex: index,
       });
     }
+    // --- Profile shift. An arrow on the profile, along the way it slides: dragging it types the shift, off Auto.
+    const shift = shapedNow[index];
+    if (shift && SHIFTED_KINDS.includes(cut.profile.kind)) {
+      out.push({
+        id: "profile-shift",
+        kind: "axis",
+        look: "arrow",
+        fields: ["modelPartProfileShift"],
+        seat: { at: "feature", origin: shift.handle.at },
+        dir: shift.handle.dir,
+        rate: 1,
+        step: 1,
+        color: "accent",
+        label: `${SHIFT_NAMES[shift.kind]} shift`,
+        unit: "mm",
+        values: [shift.value],
+        cutIndex: index,
+      });
+    }
     const name = connectorName(index);
     const length = Math.hypot(...plan.normal) || 1;
     const across = plan.normal.map((n) => n / length) as Vec3;
@@ -1291,6 +1331,15 @@ function jointDepth(index: number): { at: Vec3; dir: Vec3; value: number; name: 
     top = Math.max(top, p.reduce((sum, value, i) => sum + (value - plane.origin[i]!) * up[i]!, 0));
   }
   return { at: plane.origin.map((o, i) => o + up[i]! * top + dir[i]! * value) as Vec3, dir, value, name: names[typed.kind]! };
+}
+
+/** What a shift slides, for its arrow's label and the heads-up field. */
+const SHIFT_NAMES: Record<ShapedInfo["kind"], string> = { lap: "Step", zigzag: "Teeth", tongue: "Tongue", dovetail: "Dovetail" };
+
+/** A dragged shift to a hundredth of a millimetre, as the other handles' numbers show. */
+function tidyShift(value: number): number {
+  const r = Math.round(value * 100) / 100;
+  return Object.is(r, -0) ? 0 : r;
 }
 
 /** The connector type's name on the selected cut, for a handle's label: "Dowel". */
@@ -1357,6 +1406,11 @@ function drag(event: HandleDrag) {
   } else if (id === "joint-depth") {
     card = withProfileField(card, index, { depth: value });
     showHud(index, "depth");
+  } else if (id === "profile-shift") {
+    // A press that does not move leaves Auto on; any move types the shift.
+    const auto = (card.cuts[index]!.profile as { shift?: unknown }).shift === undefined;
+    if (!auto || Math.abs(value - (event.handle.values[0] ?? value)) > 1e-9) card = withProfileField(card, index, { shift: tidyShift(value) });
+    showHud(index, "shift");
   } else {
     const patch: Partial<CardCut> = id === "tilt-a" ? { tiltA: value } : id === "tilt-b" ? { tiltB: value } : { value };
     card = withCutChanged(card, index, patch);
@@ -1387,6 +1441,12 @@ function showHud(index: number, kind: typeof hudKind) {
     origin = depth.at;
     toward = depth.dir;
     fields = [{ id: "modelPartProfileDepth", label: `${depth.name} depth, along the cut`, unit: "mm", value: depth.value, places: 2 }];
+  } else if (kind === "shift") {
+    const shift = shapedNow[index];
+    if (!shift) return;
+    origin = shift.handle.at;
+    toward = shift.handle.dir;
+    fields = [{ id: "modelPartProfileShift", label: `${SHIFT_NAMES[shift.kind]} shift, along the cut`, unit: "mm", value: shift.value, places: 2 }];
   } else if (kind.startsWith("joint-")) {
     const k = Number(kind.slice("joint-".length));
     const point = connectorPoints(index).find((one) => one.k === k);
@@ -1424,6 +1484,8 @@ function setFromHud(index: number, values: readonly number[]) {
   if (!card.cuts[index]) return;
   if (hudKind === "depth") {
     if (values[0] !== undefined && values[0] >= 0) card = withProfileField(card, index, { depth: values[0] });
+  } else if (hudKind === "shift") {
+    if (values[0] !== undefined && Number.isFinite(values[0])) card = withProfileField(card, index, { shift: tidyShift(values[0]) });
   } else if (hudKind.startsWith("joint-")) {
     const k = Number(hudKind.slice("joint-".length));
     const points = (dragging?.points ?? connectorPoints(index).map((point) => [...point.uv] as UV)).map((point) => [...point] as UV);
@@ -1512,6 +1574,12 @@ function onClick(ev: Event) {
     openSketch(card.selected);
     return;
   }
+  if (target.closest("#modelPartProfileShiftAuto") && card.cuts[card.selected]) {
+    // --- Profile shift. Back to Auto: the typed shift goes, and the walls choose again.
+    card = withProfileField(card, card.selected, { shift: undefined });
+    changed(0);
+    return;
+  }
   if (target.closest("#modelPartCoupon") && card.cuts[card.selected]) {
     void printCoupon(card.cuts[card.selected]!.joints.spec);
     return;
@@ -1596,6 +1664,17 @@ function readField(ev: Event): boolean {
     if (!points?.[k] || input.value.trim() === "" || !Number.isFinite(typed)) return false;
     points[k]![point[2] === "u" ? 0 : 1] = typed;
     card = withJointPoints(card, card.selected, points);
+    return true;
+  }
+  if (input.id === "modelPartProfileShift") {
+    // --- Profile shift. Any number, either way along the cut; empty is Auto again.
+    if (input.value.trim() === "") {
+      card = withProfileField(card, card.selected, { shift: undefined });
+      return true;
+    }
+    const typed = fieldNumber(input.id);
+    if (!Number.isFinite(typed)) return false;
+    card = withProfileField(card, card.selected, { shift: typed });
     return true;
   }
   const profileField = PROFILE_FIELDS[input.id];

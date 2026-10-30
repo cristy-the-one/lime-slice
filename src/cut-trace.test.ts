@@ -71,7 +71,7 @@ const [trace] = cutTraces(zigOp, ctx, IDENTITY_POSE, bar) as [CutTrace];
 const stored = storedPartition(zigOp, ctx, IDENTITY_POSE, { positions: bar, up: [0, 0, 1] }) as { op: PartitionModelOp };
 const storedU0 = (stored.op.cuts[0]!.profile as unknown as { u0: number }).u0;
 eq("the zig-zag runs along the section's long side, its teeth along the cut's normal", [trace.across, trace.w, trace.period], [[0, 1, 0], [1, 0, 0], 7]);
-eq("its first flat starts where Apply stores it, the section's edge", [trace.points[0]![0], storedU0], [-30, -30]);
+eq("its first flat starts where Apply stores it: Auto slides the 7 mm teeth 5.5 mm, so neither end of the 60 mm section keeps a 0.5 mm sliver", [trace.points[0]![0], storedU0], [-24.5, -24.5]);
 
 // The line on the bar: every point on the profile and on the bar's surface; its length the zig-zag across both long
 // faces (60 mm and 17 flanks of 3 mm each) and the two short sides (20 mm each).

@@ -159,7 +159,7 @@ check("typed fields survive filling", show(fillPartition({ cuts: [{ origin: [0, 
   { type: "dowel", count: 2, margin: 5.05, place: "fit", at: [], radius: 4, depth: 4, clearance: 0.25, endGap: 0.4, hole: "teardrop" }));
 check("max pieces is clamped when filling", fillPartition({ cuts: [], maxPieces: 99 }, ctx).maxPieces === 24);
 const lap = fillPartition({ cuts: [{ origin: [0, 0, 40], normal: [0, 0, 1], profile: { kind: "lap" } }] }, ctx).cuts[0]!.profile;
-check("a lap defaults to half the section along V", show(lap) === show({ kind: "lap", depth: 8, height: 25, side: "positive" }), show(lap));
+check("a lap defaults to half the section along V", show(lap) === show({ kind: "lap", depth: 8, height: 25, side: "positive", shift: 0 }), show(lap));
 check("a plug defaults to the positive side", (fillConnector({ type: "plug" }, base) as { side: string }).side === "positive");
 check("the dovetail connector slides along U", (fillConnector({ type: "dovetail" }, base) as { slide: string }).slide === "u");
 check("U is the longer side of the section", show(defaultU([1, 0, 0], { min: [0, 0, 0], max: [10, 5, 50] })) === "[0,0,1]");

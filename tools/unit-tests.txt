@@ -198,3 +198,4 @@ src/measure-points.test.ts
 src/orbit-glide.test.ts
 src/modeling/measured-fits.test.ts
 mcp/measured-fits.test.ts
+src/modeling/profile-shift.test.ts
