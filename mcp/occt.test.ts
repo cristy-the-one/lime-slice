@@ -704,6 +704,28 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   check("the history row names the lip", rows.some((one) => one.label === "Print transition (1 lip), 45°"), JSON.stringify(rows));
 }
 
+// --- Split to print, profile shift (plan section 32): a thin-walled box 120 × 30.9 × 20 mm, walls 1.2 mm, open along X,
+// cut across X at 0 with a 10 mm zig-zag. At shift 0 a flank lies 0.3 mm inside a wall; the planner flattens that tooth.
+{
+  const tube = String((await call("solid_new", { primitive: "box", dx: 120, dy: 30.9, dz: 20 })).object);
+  const hollowed = await call("model_apply", { object: tube, probe: true, op: { kind: "boolean", op: "cut", primitive: "box", origin: [-61, -14.25, 1.2], dx: 122, dy: 28.5, dz: 17.6 } });
+  check("the box is hollowed along X", hollowed.ok === true, JSON.stringify(hollowed).slice(0, 400));
+  const whole = 120 * 30.9 * 20 - 120 * 28.5 * 17.6;
+  const zigOp = (shift?: number | "auto") => ({ kind: "partition", labels: { on: false }, cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0], u: [0, 1, 0], profile: { kind: "zigzag", pitch: 10, depth: 3, angle: 0, ...(shift !== undefined ? { shift } : {}) } }] });
+  const volumes = (reply: Record<string, unknown>) => ((reply.pieces ?? []) as { volumeMm3: number }[]).map((p) => p.volumeMm3);
+  const plain = await call("model_probe", { object: tube, op: zigOp() });
+  check("no shift is shift 0, and the tooth on the wall is flattened, in a sentence", plain.ok === true && (plain.notes as string[] | undefined)?.includes("Cut 1: 1 tooth was flattened onto the cut plane so no wall is under 0.8 mm.") === true && near(volumes(plain).reduce((a, b) => a + b, 0), whole, 1e-3), JSON.stringify(plain).slice(0, 600));
+  const auto = await call("model_apply", { object: tube, op: zigOp("auto"), probe: true });
+  const stored = (auto.stored as { cuts: { profile: Record<string, unknown> }[] } | undefined)?.cuts[0]!.profile ?? {};
+  check("shift auto slides the teeth 9.6 mm, changes none, and the op stores it", auto.ok === true && stored.shiftAuto === true && stored.shift === 9.6 && near(stored.u0, -15.45 + 9.6, 1e-6) && !("chain" in stored) && !(auto.notes as string[] | undefined)?.some((note) => note.includes("flattened")), JSON.stringify(auto).slice(0, 600));
+  const autoProbe = await call("model_probe", { object: tube, op: zigOp("auto"), node: "node_1" });
+  check("and its pieces sum to the hollow box", autoProbe.ok === true && near(volumes(autoProbe).reduce((a, b) => a + b, 0), whole, 1e-3), JSON.stringify(volumes(autoProbe)));
+  const typed = await call("model_probe", { object: tube, op: zigOp(12.5), node: "node_1" });
+  const typedU0 = ((typed.stored as { cuts: { profile: { u0?: number } }[] } | undefined)?.cuts[0]?.profile.u0) ?? NaN;
+  check("a typed shift is a phase: 12.5 mm on a 10 mm pitch starts the period 2.5 mm in", typed.ok === true && near(typedU0, -15.45 + 2.5, 1e-6), JSON.stringify(typed).slice(0, 400));
+  console.log(`occt: profile shift on the thin-walled box, Auto ${volumes(autoProbe).map((v) => v.toFixed(3)).join(", ")} mm³`);
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

@@ -1701,3 +1701,96 @@ test("an Update while the background cut runs keeps both apart: the cut fills th
   expect(exported.length > 0 && exported.every((key) => fresh.includes(key) && !stale.includes(key)), `the export names the Update's pieces, ${exported}`).toBe(true);
   expect(partitionCuts(tree, before).length, "and needs no cut of its own").toBe(1);
 });
+
+// --- Profile shift (plan section 32): a thin-walled box whose 1.2 mm walls a 10 mm zig-zag at shift 0 leaves a sliver in.
+/** A box `size` from the origin with walls `wall` thick, open along X: its section is a rectangular ring. */
+function tubeSolid(size: V, wall: number): MockSolid {
+  const [lx, ly, lz] = size;
+  const outer: [number, number][] = [[0, 0], [ly, 0], [ly, lz], [0, lz]];
+  const inner: [number, number][] = [[wall, wall], [ly - wall, wall], [ly - wall, lz - wall], [wall, lz - wall]];
+  const quads: V[][] = [];
+  for (let k = 0; k < 4; k += 1) {
+    const [a, b] = [outer[k]!, outer[(k + 1) % 4]!];
+    const [c, d] = [inner[k]!, inner[(k + 1) % 4]!];
+    quads.push([[0, a[0], a[1]], [0, b[0], b[1]], [lx, b[0], b[1]], [lx, a[0], a[1]]]);
+    quads.push([[0, d[0], d[1]], [0, c[0], c[1]], [lx, c[0], c[1]], [lx, d[0], d[1]]]);
+    quads.push([[0, a[0], a[1]], [0, c[0], c[1]], [0, d[0], d[1]], [0, b[0], b[1]]]);
+    quads.push([[lx, a[0], a[1]], [lx, b[0], b[1]], [lx, d[0], d[1]], [lx, c[0], c[1]]]);
+  }
+  const positions: number[] = [];
+  const triangles: number[] = [];
+  quads.forEach((q, face) => {
+    for (const tri of [[0, 1, 2], [0, 2, 3]]) {
+      for (const i of tri) positions.push(...q[i]!);
+      triangles.push(face);
+    }
+  });
+  return { volumeMm3: lx * (ly * lz - (ly - 2 * wall) * (lz - 2 * wall)), positions, triangles, faces: quads.map((_, id) => ({ id, areaMm2: 0 })), edges: [] };
+}
+
+const TUBE = tubeSolid([120, 30.9, 20], 1.2);
+type ShiftedProfile = Shaped & { shift?: number; shiftAuto?: boolean; chain?: unknown[] };
+const shiftField = (page: Page) => page.locator("#modelPartProfileShift");
+const shiftAuto = (page: Page) => page.locator("#modelPartProfileShiftAuto");
+
+test("a zig-zag's shift: Auto keeps the thin walls, a typed shift flattens the tooth on a wall, the arrow drags it, Auto and Undo bring it back", async ({ page }) => {
+  const tree = await openBar(page, false, TUBE);
+  await openCard(page);
+  await page.locator("#modelPartClear").click();
+  await page.locator("#modelPartAdd").click();
+  await expect(cuts(page)).toHaveCount(1);
+  await profileKind(page).selectOption("zigzag");
+  // Auto: the teeth slide 9.6 mm, so no flank lies in either 1.2 mm side wall.
+  await expect(shiftField(page)).toBeVisible();
+  await expect(shiftField(page)).toHaveValue("");
+  await expect(shiftField(page)).toHaveAttribute("placeholder", "Auto 9.6");
+  await expect(shiftAuto(page)).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => lastProfile(tree) as ShiftedProfile).toEqual(expect.objectContaining({ kind: "zigzag", shift: 9.6, shiftAuto: true }));
+  expect((lastProfile(tree) as ShiftedProfile).chain, "Auto changes no tooth here").toBeUndefined();
+  if ((await page.locator("#modelPartHowOpen").getAttribute("aria-expanded")) === "true") await page.locator("#modelPartHowOpen").click();
+  await page.waitForTimeout(400);
+  await shot(page, "shift-auto");
+  // A typed 0 is the placement before shifts: its flank would leave 0.3 mm of wall, so that tooth is flattened, and said.
+  await shiftField(page).fill("0");
+  await shiftField(page).dispatchEvent("change");
+  await expect(shiftAuto(page)).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#modelPartProfileNote")).toContainText("1 tooth was flattened onto the cut plane so no wall is under 0.8 mm.");
+  await expect.poll(() => Array.isArray((lastProfile(tree) as ShiftedProfile).chain), "the probe sends the changed teeth").toBe(true);
+  expect(lastProfile(tree).u0).toBeCloseTo(-15.45, 6);
+  await page.waitForTimeout(400);
+  await shot(page, "shift-typed-0-flattened");
+  // The arrow on the teeth drags the shift along the cut; Ctrl snaps it to whole millimetres.
+  const head = await grip(page, "profile-shift");
+  const seat = (await seatsOf(page))["profile-shift"]!;
+  const length = Math.hypot(head.x - seat.x, head.y - seat.y) || 1;
+  await dragHandle(page, "profile-shift", ((head.x - seat.x) / length) * 30, ((head.y - seat.y) / length) * 30);
+  const dragged = Number(await shiftField(page).inputValue());
+  expect(dragged, "the drag typed a shift").toBeGreaterThan(0);
+  expect(Number.isInteger(dragged), `Ctrl snaps to whole millimetres, got ${dragged}`).toBe(true);
+  await expect.poll(() => (lastProfile(tree) as ShiftedProfile).shift, "the release checks the dragged shift").toBe(dragged);
+  await expect(hud(page).locator("input").first()).toHaveAttribute("data-field", "modelPartProfileShift");
+  await page.keyboard.press("Enter");
+  await expect(shiftField(page), "Enter keeps the dragged shift").toHaveValue(String(dragged));
+  await page.waitForTimeout(400);
+  await shot(page, "shift-dragged");
+  // Auto takes the typed shift away and the walls choose again.
+  await shiftAuto(page).click();
+  await expect(shiftField(page)).toHaveValue("");
+  await expect(shiftAuto(page)).toHaveAttribute("aria-pressed", "true");
+  await expect(shiftField(page), "the walls choose again; the kernel already answered for this op, so nothing is asked").toHaveAttribute("placeholder", "Auto 9.6");
+  // One Undo is the Auto click: the dragged shift comes back.
+  await page.locator("#modelUndo").click();
+  await expect(shiftField(page)).toHaveValue(String(dragged));
+  await expect(shiftAuto(page)).toHaveAttribute("aria-pressed", "false");
+  await page.locator("#modelRedo").click();
+  await expect(shiftField(page)).toHaveValue("");
+  // Apply stores the shift, and the pencil reads Auto back as Auto.
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  const applied = tree.of("apply").at(-1)!.op as { cuts: { profile: ShiftedProfile }[] };
+  expect(applied.cuts[0]!.profile).toEqual(expect.objectContaining({ kind: "zigzag", shift: 9.6, shiftAuto: true }));
+  await page.getByRole("treeitem", { name: /^Split to print, 2 parts/ }).locator(".mh-edit").click();
+  await expect(profileKind(page)).toHaveValue("zigzag");
+  await expect(shiftField(page)).toHaveValue("");
+  await expect(shiftAuto(page)).toHaveAttribute("aria-pressed", "true");
+});

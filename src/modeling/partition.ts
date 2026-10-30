@@ -77,11 +77,18 @@ export type ResolvedConnector =
 
 export type Profile =
   | { kind: "straight" }
-  | { kind: "lap"; depth?: number; height?: number; side?: Side }
-  | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number; side?: Side }
-  | { kind: "tongue"; width?: number; depth?: number; side?: Side }
-  | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; side?: Side }
+  | { kind: "lap"; depth?: number; height?: number; side?: Side; shift?: Shift }
+  | { kind: "zigzag"; pitch?: number; depth?: number; angle?: number; side?: Side; shift?: Shift }
+  | { kind: "tongue"; width?: number; depth?: number; side?: Side; shift?: Shift }
+  | { kind: "dovetail"; width?: number; angle?: number; depth?: number; slide?: Slide; side?: Side; shift?: Shift }
   | SketchProfile;
+
+/**
+ * How far a shaped profile slides along the cut, in millimetres, without moving the cut (`src/modeling/profile-shift.ts`):
+ * a zig-zag's teeth along U (taken into one pitch), a lap's step along V, a tongue across V, a dovetail across its slide.
+ * 0, and absent, is where the planner put the profile before shifts existed. "auto" chooses it from the part's walls.
+ */
+export type Shift = number | "auto";
 
 /**
  * --- Milestone 10. A sketched profile: the open chain in the cut's U and W from its origin, which the kernel sweeps along
@@ -97,10 +104,10 @@ export interface SketchProfile {
 /** `height: null` is half the section along V, known once the section is. */
 export type ResolvedProfile =
   | { kind: "straight" }
-  | { kind: "lap"; depth: number; height: number | null; side: Side }
-  | { kind: "zigzag"; pitch: number; depth: number; angle: number; side: Side }
-  | { kind: "tongue"; width: number; depth: number; side: Side }
-  | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide; side: Side }
+  | { kind: "lap"; depth: number; height: number | null; side: Side; shift: Shift }
+  | { kind: "zigzag"; pitch: number; depth: number; angle: number; side: Side; shift: Shift }
+  | { kind: "tongue"; width: number; depth: number; side: Side; shift: Shift }
+  | { kind: "dovetail"; width: number; angle: number; depth: number; slide: Slide; side: Side; shift: Shift }
   | SketchProfile;
 
 export interface Cut {
@@ -543,11 +550,12 @@ export function fillProfile(profile: Profile | undefined, d: PartitionDefaults, 
         depth: p.depth ?? d.lapDepthMm,
         height: p.height ?? (vSpanMm === undefined ? null : vSpanMm / 2),
         side: p.side ?? "positive",
+        shift: shiftOf(p.shift),
       };
     case "zigzag":
-      return { kind: "zigzag", pitch: p.pitch ?? d.zigzagPitchMm, depth: p.depth ?? d.zigzagDepthMm, angle: p.angle ?? d.zigzagAngleDeg, side: p.side ?? "positive" };
+      return { kind: "zigzag", pitch: p.pitch ?? d.zigzagPitchMm, depth: p.depth ?? d.zigzagDepthMm, angle: p.angle ?? d.zigzagAngleDeg, side: p.side ?? "positive", shift: shiftOf(p.shift) };
     case "tongue":
-      return { kind: "tongue", width: p.width ?? d.tongueWidthMm, depth: p.depth ?? d.tongueDepthMm, side: p.side ?? "positive" };
+      return { kind: "tongue", width: p.width ?? d.tongueWidthMm, depth: p.depth ?? d.tongueDepthMm, side: p.side ?? "positive", shift: shiftOf(p.shift) };
     case "dovetail":
       return {
         kind: "dovetail",
@@ -556,8 +564,14 @@ export function fillProfile(profile: Profile | undefined, d: PartitionDefaults, 
         depth: p.depth ?? d.dovetailDepthMm,
         slide: p.slide ?? "u",
         side: p.side ?? "positive",
+        shift: shiftOf(p.shift),
       };
   }
+}
+
+/** A typed shift: "auto", or a finite number of millimetres; anything else is 0, the placement before shifts. */
+export function shiftOf(shift: unknown): Shift {
+  return shift === "auto" ? "auto" : typeof shift === "number" && Number.isFinite(shift) ? shift : 0;
 }
 
 export interface FillContext {
@@ -1254,7 +1268,7 @@ export function shapedFlats(profile: ShapedProfile, box: { u0: number; u1: numbe
       { u: 0, w: carried, tilt: 0, u0: -FAR_MM, u1: FAR_MM, v0: profile.at, v1: FAR_MM },
     ];
   }
-  if (profile.kind === "zigzag" && profile.depth !== undefined && profile.pitch !== undefined && profile.pitch > 0) {
+  if (profile.kind === "zigzag" && profile.depth !== undefined && profile.pitch !== undefined && profile.pitch > 0 && !profile.chain) {
     const pitch = profile.pitch;
     const carried = profile.side === "negative" ? -profile.depth : profile.depth;
     const lean = (profile.depth * Math.tan(((profile.angle ?? 0) * Math.PI) / 180)) / 2;
@@ -1275,7 +1289,8 @@ export function shapedFlats(profile: ShapedProfile, box: { u0: number; u1: numbe
     }
     return out;
   }
-  if (profile.kind === "sketch" && profile.start && profile.chain) {
+  // A zig-zag whose teeth were changed to keep its walls (`planZigzag`) is stored as its chain, as a sketch is.
+  if ((profile.kind === "sketch" || profile.kind === "zigzag") && profile.start && profile.chain) {
     const out: Flat[] = [];
     let at = profile.start;
     for (const segment of profile.chain) {

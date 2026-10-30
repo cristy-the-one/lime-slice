@@ -686,6 +686,10 @@ export function bindModelView() {
       const stored = splitStored(typed);
       return stored && "reason" in stored ? stored.reason : "";
     },
+    shaped(typed) {
+      const stored = splitStored(typed);
+      return stored && !("reason" in stored) ? (stored.shaped ?? []) : [];
+    },
     traces(typed) {
       const solid = viewed();
       return solid ? cutTraces(typed, partitionContext(solid), openPose(), solid.positions) : [];

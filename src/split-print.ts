@@ -9,10 +9,11 @@ import { boundsOf, type Mat3 } from "./mesh-place.ts";
 import { clampTilt, formatMm, splitBase, tiltedNormal, tiltOf, type FacePlane, type SplitBase } from "./model-plane.ts";
 import { applyPose, fromSolidOp, toSolidOp, turnDir, type Affine } from "./model-space.ts";
 import type { ModelOp, PartitionModelOp, Vec3 } from "./model-tree.ts";
-import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, mm, NO_FIT_SENTENCE, notBuiltYet, noRoomSentence, placeCut, profileRefusals, shapedFlats, type Flat, type PlacedConnector, type Profile, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { clipSection, connectorNames, defaultsFor, fillPartition, fitPrinter, jointFootprint, mm, NO_FIT_SENTENCE, notBuiltYet, noRoomSentence, placeCut, profileRefusals, shapedFlats, type Flat, type PartitionDefaults, type PlacedConnector, type Profile, type ResolvedProfile, type Section, type UV, type Axis, type Box, type ConnectorFit, type ConnectorSpec, type FillContext, type PartitionOp, type ResolvedConnector, type Target } from "./modeling/partition.ts";
+import { planKey, planStep, planZigzag, sectionRuns, sliverFloor } from "./modeling/profile-shift.ts";
 import { sectionLoops } from "./section-cap.ts";
 import { storedOrient, type OrientChoice } from "./modeling/joint-down.ts";
-import { chainPoints, chainRefusal, readChain, type Chain, type ProfileSlice } from "./modeling/sketch-profile.ts";
+import { chainPoints, chainRefusal, readChain, type Chain, type ChainSegment, type ProfileSlice } from "./modeling/sketch-profile.ts";
 import { thinTrace, type CutTrace } from "./cut-trace.ts";
 
 /** The status title: within `TITLE_LIMIT` (`src/sketch/hints.ts`), as every card's is. */
@@ -26,7 +27,7 @@ export const SPLIT_PRINT_STEPS: readonly string[] = [
   "Fit the bed proposes the cuts a part too large for the printer needs. Add cut puts one in the middle of the largest piece.",
   "Drag a plane's arrow, or type its At X, Y, or Z. Ctrl snaps to whole millimetres; while dragging, type a number and Tab to the tilts.",
   "Tilt A and Tilt B turn the selected cut. Face aims it at a picked flat face, an offset into the part.",
-  "A shaped cut's knob drags its depth. A connector's dot slides it across the cut; Refit spreads them again. Undo takes back one drag.",
+  "A shaped cut's knob drags its depth, and its arrow slides the profile along the cut; Shift's Auto picks the slide that keeps every wall thick. A connector's dot slides it across the cut; Refit spreads them again. Undo takes back one drag.",
   "Apply cuts the part. Each piece becomes an object on the plate; Lay out on the bed places the new ones around the others.",
 ];
 
@@ -306,7 +307,7 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
       const joints = card.cuts[at]!.joints;
       const profile = card.cuts[at]!.profile;
       const u = profile.kind === "sketch" ? squareTo(card.cuts[at]!.u, plane!.normal) : null;
-      return { origin: plane!.origin, normal: plane!.normal, ...(u ? { u } : {}), ...(profile.kind !== "straight" ? { profile } : {}), ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
+      return { origin: plane!.origin, normal: plane!.normal, ...(u ? { u } : {}), ...(profile.kind !== "straight" ? { profile: cardProfile(profile) } : {}), ...(joints.on ? { connectors: { on: true, types: [{ ...joints.spec }] } } : {}) };
     }),
     ...(card.target ? { target: card.target } : {}),
     arrange: card.layout,
@@ -314,6 +315,14 @@ export function cardOp(card: Card, center: Vec3, frame: CardFrame | null, sizes:
     ...(!exportTarget(card.target) && card.orient.some((one) => one === "joint") ? { orient: storedOrient(card.orient) } : {}),
     labels: card.numbers ? { on: true, face: "cut", height: sizes.height, depth: sizes.depth } : { on: false },
   };
+}
+
+/** The profiles a shift slides. */
+export const SHIFTED_KINDS: readonly string[] = ["lap", "zigzag", "tongue", "dovetail"];
+
+/** --- Profile shift. In the card a shaped profile with no shift typed is on Auto; the op says so, since absent is 0 elsewhere. */
+function cardProfile(profile: Profile): Profile {
+  return SHIFTED_KINDS.includes(profile.kind) && (profile as { shift?: unknown }).shift === undefined ? ({ ...profile, shift: "auto" } as Profile) : profile;
 }
 
 /** `u` made square to `normal`, unit length; null when there is none or it lies along the normal. */
@@ -343,11 +352,16 @@ export function cardFromOp(op: PartitionModelOp, pose: Affine, center: Vec3, fra
 
 /** A stored cut's profile back in the card: the kind and the sizes the planner stored; the planner's own fields are dropped. */
 function profileOf(stored: Profile | undefined): Profile {
+  // A shaped profile the walls left no place for is stored straight, with the profile that was asked for.
+  const wanted = (stored as { wanted?: Profile } | undefined)?.wanted;
+  if (stored?.kind === "straight" && wanted && SHIFTED_KINDS.includes(wanted.kind)) return profileOf(wanted);
   if (!stored || stored.kind === "straight") return { kind: "straight" };
-  if (stored.kind === "lap") return { kind: "lap", ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.height !== undefined ? { height: stored.height } : {}), ...(stored.side ? { side: stored.side } : {}) };
-  if (stored.kind === "tongue") return { kind: "tongue", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.side ? { side: stored.side } : {}) };
-  if (stored.kind === "zigzag") return { kind: "zigzag", ...(stored.pitch !== undefined ? { pitch: stored.pitch } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.side ? { side: stored.side } : {}) };
-  if (stored.kind === "dovetail") return { kind: "dovetail", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.slide ? { slide: stored.slide } : {}), ...(stored.side ? { side: stored.side } : {}) };
+  // A stored Auto shift is Auto again (absent, in the card); a typed one reads back as typed. Before shifts, none: 0.
+  const typedShift = (stored as { shift?: unknown; shiftAuto?: unknown }).shiftAuto === true ? {} : { shift: typeof (stored as { shift?: unknown }).shift === "number" ? (stored as { shift: number }).shift : 0 };
+  if (stored.kind === "lap") return { kind: "lap", ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.height !== undefined ? { height: stored.height } : {}), ...(stored.side ? { side: stored.side } : {}), ...typedShift };
+  if (stored.kind === "tongue") return { kind: "tongue", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.side ? { side: stored.side } : {}), ...typedShift };
+  if (stored.kind === "zigzag") return { kind: "zigzag", ...(stored.pitch !== undefined ? { pitch: stored.pitch } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.side ? { side: stored.side } : {}), ...typedShift };
+  if (stored.kind === "dovetail") return { kind: "dovetail", ...(stored.width !== undefined ? { width: stored.width } : {}), ...(stored.angle !== undefined ? { angle: stored.angle } : {}), ...(stored.depth !== undefined ? { depth: stored.depth } : {}), ...(stored.slide ? { slide: stored.slide } : {}), ...(stored.side ? { side: stored.side } : {}), ...typedShift };
   if (stored.kind === "sketch") return { kind: "sketch", ...(stored.start ? { start: [...stored.start] } : {}), ...(stored.chain ? { chain: structuredClone(stored.chain) } : {}), ...(stored.sketch ? { sketch: structuredClone(stored.sketch) } : {}) } as Profile;
   return { kind: "straight" };
 }
@@ -485,6 +499,8 @@ export interface Placement {
   marks: ConnectorMark[];
   /** The connectors the planner left out, by id, with its sentence. */
   dropped: { id: string; sentence: string }[];
+  /** --- Profile shift. Each cut's shaped profile as placed (`placeShaped`), list order; null for a straight or sketched cut. */
+  shaped?: (ShapedInfo | null)[];
 }
 
 /** The hole a resolved connector leaves, and how far it reaches across the cut, for the ghost. */
@@ -537,6 +553,7 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   // --- Milestone 8. A lap or a tongue is sized on the section the solid has at its cut: the planner's numbers are
   // millimetres from the cut's origin along its own U and V, so a replay builds the same joint.
   const shapedFloor = defaultsFor(filled.target, ctx);
+  const shaped: (ShapedInfo | null)[] = own.cuts.map(() => null);
   for (const [at, cut] of own.cuts.entries()) {
     const resolved = filled.cuts[at]!.profile;
     if (resolved.kind === "sketch") {
@@ -558,35 +575,18 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
     const box = outlineBox(section);
     const refusals = profileRefusals(resolved as unknown as Profile, shapedFloor, box.v1 - box.v0);
     if (refusals.length > 0) return { reason: `Cut ${at + 1}: ${refusals[0]}` };
-    if (resolved.kind === "lap") {
-      const height = resolved.height ?? (box.v1 - box.v0) / 2;
-      cut.profile = { kind: "lap", depth: resolved.depth, height, side: resolved.side, at: box.v0 + height } as unknown as typeof cut.profile;
-      continue;
-    }
-    if (resolved.kind === "zigzag") {
-      cut.profile = { kind: "zigzag", pitch: resolved.pitch, depth: resolved.depth, angle: resolved.angle, side: resolved.side, u0: box.u0 } as unknown as typeof cut.profile;
-      continue;
-    }
     const typedFit = filled.cuts[at]!.connectors.types[0];
     const clearance = typedFit && typedFit.clearance !== null ? typedFit.clearance : shapedFloor.clearance?.snug;
-    if (clearance === undefined || clearance === null) return { reason: `Cut ${at + 1}: ${NO_FIT_SENTENCE}` };
-    if (resolved.kind === "dovetail") {
-      // The dovetail runs the whole section along its slide; across it, it sits in the middle with its walls.
-      const along = resolved.slide === "v" ? [box.v0, box.v1] : [box.u0, box.u1];
-      const over = resolved.slide === "v" ? [box.u0, box.u1] : [box.v0, box.v1];
-      const room = (over[1]! - over[0]!) - resolved.width - 2 * (clearance + shapedFloor.wallFloorMm);
-      if (room < 0) return { reason: `Cut ${at + 1}: the section is too small for a dovetail ${mm(resolved.width)} mm wide with ${mm(shapedFloor.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
-      cut.profile = { kind: "dovetail", width: resolved.width, angle: resolved.angle, depth: resolved.depth, slide: resolved.slide, side: resolved.side, clearance, endGap: shapedFloor.endGapMm, u0: along[0]!, u1: along[1]!, v: (over[0]! + over[1]!) / 2 } as unknown as typeof cut.profile;
-      continue;
-    }
-    const margin = Math.max(shapedFloor.marginMm, resolved.width / 2 + clearance + shapedFloor.wallFloorMm);
-    const [u0, u1] = [box.u0 + margin, box.u1 - margin];
-    const middle = (box.v0 + box.v1) / 2;
-    if (u1 - u0 < resolved.width || middle - resolved.width / 2 - clearance - shapedFloor.wallFloorMm < box.v0 || middle + resolved.width / 2 + clearance + shapedFloor.wallFloorMm > box.v1) {
-      return { reason: `Cut ${at + 1}: the section is too small for a tongue ${mm(resolved.width)} mm wide with ${mm(shapedFloor.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
-    }
-    cut.profile = { kind: "tongue", width: resolved.width, depth: resolved.depth, side: resolved.side, clearance, endGap: shapedFloor.endGapMm, u0, u1, v: middle } as unknown as typeof cut.profile;
+    if ((resolved.kind === "tongue" || resolved.kind === "dovetail") && (clearance === undefined || clearance === null)) return { reason: `Cut ${at + 1}: ${NO_FIT_SENTENCE}` };
+    // --- Profile shift. The profile slides along the cut by its shift, Auto's or typed, and keeps every wall at the floor.
+    const keyed = resolved.kind === "tongue" || resolved.kind === "dovetail";
+    const placed = placeShaped(at, cut as SolidCut, resolved, section, solid!.positions, shapedFloor, keyed ? (clearance ?? 0) : 0, pose);
+    if ("reason" in placed) return placed;
+    cut.profile = placed.profile as unknown as typeof cut.profile;
+    shaped[at] = placed.info;
+    if (placed.info.note) placement.notes.push(placed.info.note);
   }
+  placement.shaped = shaped;
   if (!jointed) return { op: own, ...placement };
   const floor = defaultsFor(filled.target, ctx).wallFloorMm;
   let roomless: string | null = null;
@@ -637,6 +637,226 @@ export function storedPartition(op: PartitionOp, ctx: FillContext, pose: Affine,
   });
   if (roomless) return { reason: roomless };
   return { op: { ...own, cuts, up: solid?.up ?? [0, 0, 1] }, ...placement };
+}
+
+/** A cut in the solid's own frame, as the op stores it. */
+type SolidCut = { origin: Vec3; normal: Vec3; u: Vec3 };
+
+/**
+ * --- Profile shift. A shaped cut's profile as `placeShaped` placed it, for the card: the shift as cut (Auto's choice, or
+ * the typed one taken into a pitch), the thinnest wall it leaves, the floor, the sentence when the profile was changed to
+ * keep its walls, and the arrow that slides it, in model space, with the value it shows.
+ */
+export interface ShapedInfo {
+  kind: "lap" | "zigzag" | "tongue" | "dovetail";
+  auto: boolean;
+  shift: number;
+  /** What the arrow and the field show: the typed shift as typed, or Auto's. */
+  value: number;
+  thinnest: number;
+  floor: number;
+  note: string | null;
+  /** The profile was left out and the cut is straight: no place kept its walls. */
+  straight: boolean;
+  handle: { at: Vec3; dir: Vec3 };
+}
+
+/** The profile a cut stores after `placeShaped`, and what the card shows of it. */
+type ShapedPlace = { profile: Record<string, unknown>; info: ShapedInfo } | { reason: string };
+
+/** Placed profiles by mesh, so the card's many asks on one change (the ghost, the refusal, the connectors) place it once. */
+const shapedCache = new WeakMap<object, Map<string, ShapedPlace>>();
+const SHAPED_CACHE_SIZE = 48;
+
+/**
+ * --- Profile shift. A lap, a zig-zag, a tongue or a dovetail placed on the section `section` its cut has (the solid's own
+ * frame), as Apply stores it: slid by its shift (`src/modeling/profile-shift.ts`), Auto's when the shift is "auto", and
+ * changed where it would leave a wall under the floor. A zig-zag keeps `u0`, where a period starts, now the section's low
+ * U plus the shift; a lap its step `at`; a tongue and a dovetail their middle `v` and their ends. A stored shift of 0 that
+ * leaves every wall stores what was stored before shifts, so a replay builds the same solid.
+ */
+function placeShaped(
+  at: number,
+  cut: SolidCut,
+  resolved: Extract<ResolvedProfile, { kind: "lap" | "zigzag" | "tongue" | "dovetail" }>,
+  section: Section,
+  positions: ArrayLike<number>,
+  d: PartitionDefaults,
+  clearance: number,
+  pose: Affine,
+): ShapedPlace {
+  const key = JSON.stringify([at, cut.origin, cut.normal, cut.u, resolved, clearance, d.wallFloorMm, d.floors.lapShoulderMm, d.marginMm, d.endGapMm, pose]);
+  const store = typeof positions === "object" ? (shapedCache.get(positions) ?? new Map<string, ShapedPlace>()) : null;
+  if (store && typeof positions === "object") shapedCache.set(positions, store);
+  const known = store?.get(key);
+  if (known) return known;
+  const made = placeShapedNow(at, cut, resolved, section, positions, d, clearance, pose);
+  if (store) {
+    if (store.size >= SHAPED_CACHE_SIZE) store.delete(store.keys().next().value!);
+    store.set(key, made);
+  }
+  return made;
+}
+
+function placeShapedNow(
+  at: number,
+  cut: SolidCut,
+  resolved: Extract<ResolvedProfile, { kind: "lap" | "zigzag" | "tongue" | "dovetail" }>,
+  section: Section,
+  positions: ArrayLike<number>,
+  d: PartitionDefaults,
+  clearance: number,
+  pose: Affine,
+): ShapedPlace {
+  const box = outlineBox(section);
+  const floor = sliverFloor(d.wallFloorMm);
+  const step = floor / 2;
+  const w = unitOf(cut.normal);
+  const u = squareTo(cut.u, w) ?? cut.u;
+  const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
+  const point = (a: number, b: number, c: number): Vec3 => applyPose(pose, [0, 1, 2].map((i) => cut.origin[i]! + u[i]! * a + v[i]! * b + w[i]! * c) as Vec3);
+  const turn = (axis: Vec3) => turnDir(pose, axis);
+  /** The section `depth` along the normal, where a lap's second flat or a zig-zag's tips sit. */
+  const sectionAt = (depth: number) => {
+    const origin: Vec3 = [0, 1, 2].map((i) => cut.origin[i]! + w[i]! * depth) as Vec3;
+    return sectionLoops(positions, origin, cut.normal, cut.u);
+  };
+  const auto = resolved.shift === "auto";
+  const typed = resolved.shift === "auto" ? 0 : resolved.shift;
+  const shiftFields = (resolvedShift: number): Record<string, unknown> => (auto ? { shift: roundMm(resolvedShift), shiftAuto: true } : typed !== 0 ? { shift: typed } : {});
+  const name = `Cut ${at + 1}`;
+  const info = (kind: ShapedInfo["kind"], shift: number, thinnest: number, note: string | null, handle: ShapedInfo["handle"], straight = false): ShapedInfo => ({
+    kind,
+    auto,
+    shift: roundMm(shift),
+    value: auto ? roundMm(shift) : typed,
+    thinnest,
+    floor,
+    note,
+    straight,
+    handle,
+  });
+  const straightOf = (wanted: Record<string, unknown>) => ({ kind: "straight", wanted });
+  if (resolved.kind === "zigzag") {
+    const carried = resolved.side === "negative" ? -resolved.depth : resolved.depth;
+    const tips = sectionAt(carried);
+    const tipBox = tips ? outlineBox(tips) : null;
+    const plan = planZigzag({
+      pitch: resolved.pitch,
+      carried,
+      angle: resolved.angle,
+      u0: box.u0,
+      u1: box.u1,
+      shift: resolved.shift,
+      atPlane: sectionRuns(section, 0, box.v0, box.v1, step),
+      atTips: tips && tipBox ? sectionRuns(tips, 0, tipBox.v0, tipBox.v1, step) : null,
+      floor,
+    });
+    const changes = [
+      plan.flattened > 0 ? `${countOf(plan.flattened, "tooth was", "teeth were")} flattened onto the cut plane` : null,
+      plan.filled > 0 ? `${countOf(plan.filled, "gap between teeth was", "gaps between teeth were")} filled` : null,
+    ].filter((one): one is string => one !== null);
+    const note = changes.length > 0 ? `${name}: ${changes.join(" and ")} so no wall is under ${mm(floor)} mm.` : null;
+    // The arrow sits on the tooth nearest the section's middle, at its top edge, and moves with the shift as typed.
+    const p = resolved.pitch;
+    const k = Math.round(((box.u0 + box.u1) / 2 - box.u0 - (3 * p) / 4) / p);
+    const shown = auto ? plan.shift : typed;
+    const handle = { at: point(box.u0 + shown + (3 * p) / 4 + k * p, box.v1, carried), dir: turn(u) };
+    return {
+      profile: { kind: "zigzag", pitch: resolved.pitch, depth: resolved.depth, angle: resolved.angle, side: resolved.side, u0: plan.start, ...shiftFields(plan.shift), ...(plan.chain ? { start: plan.chain.start, chain: plan.chain.chain } : {}) },
+      info: info("zigzag", plan.shift, plan.thinnest, note, handle),
+    };
+  }
+  if (resolved.kind === "lap") {
+    const height = resolved.height ?? (box.v1 - box.v0) / 2;
+    const base = box.v0 + height;
+    const carried = resolved.side === "negative" ? -resolved.depth : resolved.depth;
+    const flat = sectionAt(carried);
+    const flatBox = flat ? outlineBox(flat) : null;
+    const shoulder = d.floors.lapShoulderMm;
+    const plan = planStep({
+      base,
+      shift: resolved.shift,
+      lo: box.v0 + shoulder,
+      hi: box.v1 - shoulder,
+      atPlane: sectionRuns(section, 1, box.u0, box.u1, step),
+      atFlat: flat && flatBox ? sectionRuns(flat, 1, flatBox.u0, flatBox.u1, step) : null,
+      floor,
+    });
+    const stepAt = plan.at ?? base + typed;
+    const handle = { at: point(box.u1, auto ? stepAt : base + typed, carried / 2), dir: turn(v) };
+    const lap = { kind: "lap", depth: resolved.depth, height, side: resolved.side };
+    if (plan.at === null) {
+      const note = `${name}: the lap's step has no place that keeps every wall at ${mm(floor)} mm, so the cut is straight.`;
+      return { profile: straightOf({ ...lap, ...shiftFields(plan.shift) }), info: info("lap", plan.shift, plan.thinnest, note, handle, true) };
+    }
+    const note = plan.moved > 1e-6 ? `${name}: the lap's step was moved ${mm(plan.moved)} mm so no wall is under ${mm(floor)} mm.` : null;
+    return { profile: { ...lap, at: plan.at, ...shiftFields(plan.shift) }, info: info("lap", plan.shift, plan.thinnest, note, handle) };
+  }
+  if (resolved.kind === "dovetail") {
+    // The dovetail runs the whole section along its slide; across it, it sits in the middle with its walls, slid by its shift.
+    const slideV = resolved.slide === "v";
+    const along = slideV ? [box.v0, box.v1] : [box.u0, box.u1];
+    const over = slideV ? [box.u0, box.u1] : [box.v0, box.v1];
+    const room = (over[1]! - over[0]!) - resolved.width - 2 * (clearance + d.wallFloorMm);
+    if (room < 0) return { reason: `${name}: the section is too small for a dovetail ${mm(resolved.width)} mm wide with ${mm(d.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
+    const middle = (over[0]! + over[1]!) / 2;
+    const half = jointFootprint({ kind: "dovetail", width: resolved.width, angle: resolved.angle, clearance, endGap: d.endGapMm, slide: resolved.slide === "v" ? "v" : "u", v: 0 })!.high;
+    const lo = Math.min(middle, over[0]! + half + floor);
+    const hi = Math.max(middle, over[1]! - half - floor);
+    const plan = planKey({ middle, shift: resolved.shift, half, lo, hi, runs: sectionRuns(section, slideV ? 0 : 1, along[0]!, along[1]!, step), from: along[0]!, to: along[1]!, openEnd: true, shortest: resolved.width, floor });
+    const across = slideV ? u : v;
+    const shown = auto ? (plan.middle ?? middle) - middle : typed;
+    const handle = { at: slideV ? point(middle + shown, along[1]!, 0) : point(along[1]!, middle + shown, 0), dir: turn(across) };
+    const dovetail = { kind: "dovetail", width: resolved.width, angle: resolved.angle, depth: resolved.depth, slide: resolved.slide, side: resolved.side, clearance, endGap: d.endGapMm };
+    if (plan.middle === null) {
+      const note = `${name}: the dovetail has no place that keeps every wall at ${mm(floor)} mm, so the cut is straight.`;
+      return { profile: straightOf({ ...dovetail, ...shiftFields(plan.shift) }), info: info("dovetail", plan.shift, plan.thinnest, note, handle, true) };
+    }
+    const ends = plan.trimmed ?? [along[0]!, along[1]!];
+    const note = keyNote(name, "dovetail", plan.trimmed ? ends[1] - ends[0] : null, plan.moved, floor);
+    return { profile: { ...dovetail, u0: ends[0], u1: ends[1], v: plan.middle, ...shiftFields(plan.shift) }, info: info("dovetail", plan.shift, plan.thinnest, note, handle) };
+  }
+  const margin = Math.max(d.marginMm, resolved.width / 2 + clearance + d.wallFloorMm);
+  const [u0, u1] = [box.u0 + margin, box.u1 - margin];
+  const middle = (box.v0 + box.v1) / 2;
+  if (u1 - u0 < resolved.width || middle - resolved.width / 2 - clearance - d.wallFloorMm < box.v0 || middle + resolved.width / 2 + clearance + d.wallFloorMm > box.v1) {
+    return { reason: `${name}: the section is too small for a tongue ${mm(resolved.width)} mm wide with ${mm(d.wallFloorMm)} mm walls. Make it narrower, or cut straight.` };
+  }
+  const half = resolved.width / 2 + clearance;
+  const lo = Math.min(middle, box.v0 + half + floor);
+  const hi = Math.max(middle, box.v1 - half - floor);
+  const plan = planKey({ middle, shift: resolved.shift, half, lo, hi, runs: sectionRuns(section, 1, u0 - clearance, u1 + clearance, step), from: u0 - clearance, to: u1 + clearance, openEnd: false, shortest: resolved.width + 2 * clearance, floor });
+  const shown = auto ? (plan.middle ?? middle) - middle : typed;
+  const handle = { at: point(u1, middle + shown, 0), dir: turn(v) };
+  const tongue = { kind: "tongue", width: resolved.width, depth: resolved.depth, side: resolved.side, clearance, endGap: d.endGapMm };
+  if (plan.middle === null) {
+    const note = `${name}: the tongue has no place that keeps every wall at ${mm(floor)} mm, so the cut is straight.`;
+    return { profile: straightOf({ ...tongue, ...shiftFields(plan.shift) }), info: info("tongue", plan.shift, plan.thinnest, note, handle, true) };
+  }
+  const ends: [number, number] = plan.trimmed ? [plan.trimmed[0] + clearance, plan.trimmed[1] - clearance] : [u0, u1];
+  const note = keyNote(name, "tongue", plan.trimmed ? ends[1] - ends[0] : null, plan.moved, floor);
+  return { profile: { ...tongue, u0: ends[0], u1: ends[1], v: plan.middle, ...shiftFields(plan.shift) }, info: info("tongue", plan.shift, plan.thinnest, note, handle) };
+}
+
+/** What became of a tongue or a dovetail that had to give way to a wall: moved, shortened, or both. */
+function keyNote(name: string, key: "tongue" | "dovetail", shortened: number | null, moved: number, floor: number): string | null {
+  const parts = [moved > 1e-6 ? `moved ${mm(moved)} mm` : null, shortened !== null ? `shortened to ${mm(shortened)} mm` : null].filter((one): one is string => one !== null);
+  return parts.length > 0 ? `${name}: the ${key} was ${parts.join(" and ")} so no wall is under ${mm(floor)} mm.` : null;
+}
+
+function countOf(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+function roundMm(value: number): number {
+  const r = Math.round(value * 1e6) / 1e6;
+  return Object.is(r, -0) ? 0 : r;
+}
+
+function unitOf(a: Vec3): Vec3 {
+  const n = Math.hypot(...a) || 1;
+  return [a[0] / n, a[1] / n, a[2] / n];
 }
 
 /** The number at the end of a connector's id: 3 for `c1-3`. */
@@ -799,22 +1019,26 @@ export function cutTraces(op: PartitionOp, ctx: FillContext, pose: Affine, posit
     const solid = own[at]!;
     const section = sectionLoops(positions, solid.origin, solid.normal, solid.u!);
     if (!section) return null;
-    const box = outlineBox(section);
     const w = cut.normal;
     const u = cut.u;
     const v: Vec3 = [w[1] * u[2] - w[2] * u[1], w[2] * u[0] - w[0] * u[2], w[0] * u[1] - w[1] * u[0]];
     const frame = { origin: [...cut.origin] as Vec3, w };
-    if (profile.kind === "zigzag") {
-      const [p, x] = [profile.pitch, box.u0];
+    if (profile.kind === "zigzag" || profile.kind === "lap") {
+      // --- Profile shift. Where Apply puts it: slid by its shift, its teeth changed where they would leave a sliver.
+      const lean = profile.kind === "zigzag" ? (profile.depth * Math.tan((profile.angle * Math.PI) / 180)) / 2 : 0;
+      if (profile.kind === "zigzag" && (!(profile.pitch > 0) || !(profile.pitch / 2 - 2 * lean > 1e-6))) return null;
+      const placed = placeShaped(at, solid as SolidCut, profile, section, positions, defaultsFor(filled.target, ctx), 0, pose);
+      if ("reason" in placed) return null;
+      const stored = placed.profile as { kind: string; u0?: number; at?: number; pitch?: number; start?: UV; chain?: ChainSegment[] };
       const carried = profile.side === "negative" ? -profile.depth : profile.depth;
-      const lean = (profile.depth * Math.tan((profile.angle * Math.PI) / 180)) / 2;
-      if (!(p > 0) || !(p / 2 - 2 * lean > 1e-6)) return null;
-      return { ...frame, across: u, sweep: v, period: p, points: [[x, 0], [x + p / 2, 0], [x + p / 2 + lean, carried], [x + p - lean, carried], [x + p, 0]] };
-    }
-    if (profile.kind === "lap") {
-      const step = box.v0 + (profile.height ?? (box.v1 - box.v0) / 2);
-      const carried = profile.side === "negative" ? -profile.depth : profile.depth;
-      return { ...frame, across: v, sweep: u, period: 0, points: [[step, 0], [step, carried]] };
+      if (stored.kind === "lap") return { ...frame, across: v, sweep: u, period: 0, points: [[stored.at!, 0], [stored.at!, carried]] };
+      if (stored.kind === "zigzag" && !stored.chain) {
+        const [p, x] = [stored.pitch!, stored.u0!];
+        return { ...frame, across: u, sweep: v, period: p, points: [[x, 0], [x + p / 2, 0], [x + p / 2 + lean, carried], [x + p - lean, carried], [x + p, 0]] };
+      }
+      if (stored.kind !== "zigzag" || !stored.start || !stored.chain) return null;
+      const points = chainPoints({ start: stored.start, chain: stored.chain }, 1).map(([a, b]) => [a, b] as [number, number]);
+      return { ...frame, across: u, sweep: v, period: 0, points: thinTrace(points) };
     }
     const chain = readChain(profile);
     if ("reason" in chain) return null;
