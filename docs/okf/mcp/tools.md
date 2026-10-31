@@ -286,7 +286,7 @@ After two objects are on the plate. Packs them on the bed. dryRun moves nothing.
 
 ### object_split_shells
 
-After mesh_import of a mesh with separate shells, or a STEP of several solids. Each shell or solid becomes an object. Then plate_arrange.
+After mesh_import of a mesh with separate shells, or a STEP of several solids. Each shell or solid becomes an object. A committed model of several solids gives each object only its own solid, the one whose box is that shell, so a later join, describe, or STEP export sees that solid alone. Then plate_arrange.
 
 ### plate_print_order
 
