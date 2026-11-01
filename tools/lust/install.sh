@@ -19,7 +19,11 @@ exe=""
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     exe=".exe"
-    [ -f "$dest/third_party/tcc/lib/tcc.lib" ] || powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dest/scripts/build-tcc.ps1" >&2
+    # PowerShell 7 (pwsh), as lust's CI runs it: Windows PowerShell 5.1 hands build-tcc.ps1's cl arguments over as
+    # one string ("D9002 ignoring unknown option '/nologo /O2 ...'").
+    ps=pwsh
+    command -v pwsh > /dev/null || ps=powershell.exe
+    [ -f "$dest/third_party/tcc/lib/tcc.lib" ] || "$ps" -NoProfile -ExecutionPolicy Bypass -File "$dest/scripts/build-tcc.ps1" >&2
     ;;
   Darwin)
     echo "lust does not build on macOS yet" >&2
