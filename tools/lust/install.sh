@@ -24,6 +24,13 @@ case "$(uname -s)" in
     ps=pwsh
     command -v pwsh > /dev/null || ps=powershell.exe
     [ -f "$dest/third_party/tcc/lib/tcc.lib" ] || "$ps" -NoProfile -ExecutionPolicy Bypass -File "$dest/scripts/build-tcc.ps1" >&2
+    # Git Bash's coreutils `link` comes before MSVC's link.exe on PATH, and rustc would call it.
+    msvc_link=$(where.exe link.exe 2>/dev/null | tr -d '\r' | grep -vi '\\Git\\' | head -n 1 || true)
+    if [ -z "$msvc_link" ]; then
+      echo "MSVC link.exe is not on PATH: run this from a Visual Studio developer shell" >&2
+      exit 1
+    fi
+    export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$msvc_link"
     ;;
   Darwin)
     echo "lust does not build on macOS yet" >&2
