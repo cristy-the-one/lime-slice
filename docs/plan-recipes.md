@@ -11,6 +11,10 @@ tcc builds against. Not yet: macOS (lust does not build there, so its installers
 carry none, CI skips the recipe steps on macOS, and the tool answers that it
 needs lust).
 
+Next: `docs/plan-recipe-plugins.md` keeps recipes as plugins (named, typed
+parameters, a live History step, a Plugins panel, sharing). It takes over S2
+and S8 below.
+
 An LLM driving Lime Slice through MCP writes a short Rust recipe instead of
 hundreds of JSON ops. lust checks, builds and runs it in milliseconds, with
 machine-applicable fixes for its errors. Every geometry, slicing or stress call
