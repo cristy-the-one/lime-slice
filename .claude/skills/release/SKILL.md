@@ -39,7 +39,7 @@ Commit "Bump the app to X.Y.Z". Open a PR titled "Lime Slice X.Y.Z". Its body li
 2. Read the merge commit's versions: `git show <sha>:package.json`, `src-tauri/tauri.conf.json`, and `Cargo.toml` must all say X.Y.Z. Also confirm `git ls-remote --tags origin vX.Y.Z` is empty.
 3. `git tag -a vX.Y.Z <merge-sha> -m "lime-slice X.Y.Z"`, then `git push origin vX.Y.Z`. Annotated, on the merge commit, never on a branch tip.
 4. The push starts `release.yml`. Find the run with `gh run list --workflow release.yml`, and watch it in the background with `gh run watch <id> --exit-status`; don't poll by hand.
-5. When it succeeds, check that the draft has all five assets: `gh release view vX.Y.Z --json isDraft,assets`. They are the Windows `x64-setup.exe`, both macOS `.dmg` (aarch64 and x64), the `.AppImage`, and the `.deb`.
+5. When it succeeds, check that the draft has all three assets: `gh release view vX.Y.Z --json isDraft,assets`. They are the Windows `x64-setup.exe`, the `.AppImage`, and the `.deb`. macOS is off in `release.yml` since 4.8.0 (lust does not build there); with it back on, add both `.dmg` files (aarch64 and x64).
 
 ## 3. Notes
 
