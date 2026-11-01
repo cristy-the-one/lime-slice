@@ -138,6 +138,7 @@ jobs:
           node --experimental-strip-types mcp/occt.test.ts
           node --experimental-strip-types mcp/vars-drive.test.ts
           node --experimental-strip-types mcp/step-solids.test.ts
+          node --experimental-strip-types mcp/split-shells-brep.test.ts
           node --experimental-strip-types mcp/kernel-gaps.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts

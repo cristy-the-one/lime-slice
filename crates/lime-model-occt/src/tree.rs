@@ -1549,6 +1549,7 @@ pub fn call(request: &str) -> String {
         Request::MeshStep { .. }
             | Request::Capabilities
             | Request::StepSolids { .. }
+            | Request::ShapeSolids { .. }
             | Request::FitCoupon { .. }
     );
     let answer = store.handle(request);
@@ -1601,6 +1602,12 @@ enum Request {
         data_b64: String,
         #[serde(default)]
         files: bool,
+    },
+    /// Stateless, as `stepSolids`: the solids of a shape the engine wrote (`brep`) or of a STEP file, each on its own
+    /// in the engine's binary format, with its volume and its geometric box. A committed compound is split this way,
+    /// one solid per shell of its mesh.
+    ShapeSolids {
+        data_b64: String,
     },
 
     /// Open a tree from its root: a STEP, a primitive built from its numbers, or a feature (an extrude, a
@@ -2582,6 +2589,29 @@ impl Store {
                                 .map_err(Failure::Message)?;
                         row["bytesBase64"] =
                             json!(base64::engine::general_purpose::STANDARD.encode(&piece));
+                    }
+                    rows.push(row);
+                }
+                Ok(Answer::Plain(json!({ "solids": rows }).to_string()))
+            }
+            Request::ShapeSolids { data_b64 } => {
+                let shape = root_shape(Some(data_b64), None, None, None, None)?;
+                let more = format!("This shape has more than {STEP_SOLIDS_MAX} solids");
+                let solids = shape
+                    .solids_up_to(STEP_SOLIDS_MAX, &more)
+                    .map_err(Failure::Message)?;
+                let mut rows = Vec::with_capacity(solids.len());
+                for solid in &solids {
+                    let bytes = solid.brep_bytes().map_err(Failure::Message)?;
+                    let mut row = json!({
+                        "volumeMm3": solid.fingerprint().volume_mm3,
+                        "bytesBase64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    });
+                    if let Some(bounds) = solid.bounds() {
+                        row["bounds"] = json!({
+                            "min": [bounds[0], bounds[1], bounds[2]],
+                            "max": [bounds[3], bounds[4], bounds[5]],
+                        });
                     }
                     rows.push(row);
                 }

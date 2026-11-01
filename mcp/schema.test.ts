@@ -90,8 +90,9 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // tool groups on they are in the stress group and stay out of the first list. The transition kind's line in model_apply
 // (docs/plan-belt-transitions.md, step 2) adds about 25 tokens to a list that was at 15,999. Step 5's auto-find
 // (model_probe plan:true for a transition, named in the plan field) adds 11 to a list at 16,049. support_edit's
-// grow action and its count add 24 to a list at 16,060.
-const TOTAL_BUDGET = 16_084;
+// grow action and its count add 24 to a list at 16,060. object_split_shells names that a committed
+// model of several solids gives each object only its own solid, 19 tokens on a list at 16,084.
+const TOTAL_BUDGET = 16_103;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");

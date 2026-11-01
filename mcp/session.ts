@@ -113,6 +113,7 @@ import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
+import { matchShellSolids, type SolidBounds } from "./shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../src/step-solids.ts";
 import { reviewGcode } from "./review.ts";
 import { GUIDES, guideByUri, KIND_GUIDES } from "./guides.ts";
@@ -2793,6 +2794,41 @@ export class Session {
     return { ok: true, objects: made, label: "Duplicate" };
   }
 
+  /**
+   * The solids of a committed shape, one per shell, or null when the shape is one solid or cannot be read.
+   * Null leaves each piece with the shape it already had.
+   */
+  private async shellSolids(obj: PlateObject, shells: readonly Float32Array[]): Promise<((SolidBounds & { bytes: Uint8Array }) | null)[] | null> {
+    if (!obj.brep) return null;
+    let written: Record<string, unknown>;
+    try {
+      written = JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify({ call: "shapeSolids", dataB64: bytesToBase64(obj.brep) })))) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    if (typeof written.error === "string" || !Array.isArray(written.solids)) return null;
+    const solids: (SolidBounds & { bytes: Uint8Array })[] = [];
+    for (const row of written.solids as Record<string, unknown>[]) {
+      const bytes = row && typeof row.bytesBase64 === "string" ? base64ToBytes(row.bytesBase64) : null;
+      const volume = row?.volumeMm3;
+      const bounds = row?.bounds as { min?: unknown; max?: unknown } | undefined;
+      const min = Array.isArray(bounds?.min) ? bounds.min.map(Number) : null;
+      const max = Array.isArray(bounds?.max) ? bounds.max.map(Number) : null;
+      if (!bytes || typeof volume !== "number" || !min || !max || min.length !== 3 || max.length !== 3 || min.some((value) => !Number.isFinite(value)) || max.some((value) => !Number.isFinite(value))) return null;
+      solids.push({ bytes, volumeMm3: volume, bounds: { min, max } });
+    }
+    if (solids.length < 2) return null;
+    return matchShellSolids(shells, obj.seatMm, solids);
+  }
+
+  /** `solid` is this shell's own shape. With none, the piece is a mesh and does not keep the whole compound. */
+  private keepShellSolid(obj: PlateObject, solid: { bytes: Uint8Array } | null): void {
+    if (solid) obj.brep = solid.bytes;
+    else delete obj.brep;
+    obj.platedNode = null;
+    obj.treeStale = false;
+  }
+
   private async splitShells(id: string): Promise<Record<string, unknown>> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
@@ -2801,6 +2837,10 @@ export class Session {
     const groups = shellGroups(obj.source);
     if (!groups) return { ok: false, reason: "This mesh is one shell." };
     const pieces = takeGroups(obj.source, groups.groups);
+    // A commit keeps the whole shape in `brep` and an STL of every solid in `source`. The mesh splits by shell, and
+    // each piece was left holding that whole shape, so a later join or describe used every solid. A shape of several
+    // solids is split here, and each shell keeps the solid whose box it is.
+    const splitModel = await this.shellSolids(obj, pieces);
     this.remember("Separate shells");
     const made: string[] = [];
     const stem = obj.fileName.replace(/\.(stl|3mf|step|stp)$/i, "") || obj.name;
@@ -2815,6 +2855,7 @@ export class Session {
         obj.triangles = source.length / 9;
         obj.tree = null;
         obj.solid = null;
+        if (splitModel) this.keepShellSolid(obj, splitModel[index] ?? null);
         made.push(obj.id);
         return;
       }
@@ -2836,6 +2877,7 @@ export class Session {
         solid: null,
         probes: new Map(),
         platedNode: null,
+        ...(splitModel ? { brep: splitModel[index]?.bytes } : {}),
         supportEdits: [],
         supportPaint: [],
         seamPaint: [],

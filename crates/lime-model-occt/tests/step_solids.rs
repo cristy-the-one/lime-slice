@@ -153,7 +153,56 @@ fn a_named_step_export_reads_back_as_its_solids() {
         1e-3,
     );
 
-    for key in ["tall", "tall-2", "tall-3", "piece-0", "piece-1", "piece-2"] {
+    // A cut that leaves two solids, written as one brep, comes back as those two solids and no others.
+    let whole = ok(json!({ "call": "open", "key": "halves", "box": [40.0, 10.0, 10.0] }));
+    within(whole["volumeMm3"].as_f64().unwrap(), 4000.0, 1e-6);
+    let cut = ok(json!({
+        "call": "apply", "key": "halves", "parent": 0, "node": 1,
+        "op": { "kind": "boolean", "op": "cut", "primitive": "box", "origin": [18.0, -1.0, -1.0], "size": [4.0, 12.0, 12.0] },
+    }));
+    within(cut["volumeMm3"].as_f64().unwrap(), 3600.0, 1e-3);
+    let brep = ok(json!({ "call": "export", "key": "halves", "node": 1, "format": "brep" }));
+    let split = ok(json!({ "call": "shapeSolids", "dataB64": brep["bytesBase64"] }));
+    let halves = solids(&split);
+    assert_eq!(halves.len(), 2, "{split}");
+    let mut by_x = halves.clone();
+    by_x.sort_by(|a, b| {
+        a["bounds"]["min"][0]
+            .as_f64()
+            .unwrap()
+            .total_cmp(&b["bounds"]["min"][0].as_f64().unwrap())
+    });
+    for (row, x0) in by_x.iter().zip([0.0, 22.0]) {
+        within(row["volumeMm3"].as_f64().unwrap(), 1800.0, 1e-3);
+        within(row["bounds"]["min"][0].as_f64().unwrap(), x0, 1e-6);
+        within(row["bounds"]["max"][0].as_f64().unwrap(), x0 + 18.0, 1e-6);
+        within(row["bounds"]["min"][2].as_f64().unwrap(), 0.0, 1e-6);
+        within(row["bounds"]["max"][2].as_f64().unwrap(), 10.0, 1e-6);
+    }
+    for (index, row) in by_x.iter().enumerate() {
+        let key = format!("half-{index}");
+        let opened = ok(json!({ "call": "open", "key": key, "dataB64": row["bytesBase64"] }));
+        within(opened["volumeMm3"].as_f64().unwrap(), 1800.0, 1e-2);
+        let alone = ok(json!({ "call": "shapeSolids", "dataB64": row["bytesBase64"] }));
+        assert_eq!(solids(&alone).len(), 1, "{alone}");
+        within(
+            solids(&alone)[0]["volumeMm3"].as_f64().unwrap(),
+            1800.0,
+            1e-2,
+        );
+    }
+    let one = ok(json!({ "call": "export", "key": "halves", "node": 0, "format": "brep" }));
+    let single = ok(json!({ "call": "shapeSolids", "dataB64": one["bytesBase64"] }));
+    assert_eq!(solids(&single).len(), 1, "{single}");
+    within(
+        solids(&single)[0]["volumeMm3"].as_f64().unwrap(),
+        4000.0,
+        1e-3,
+    );
+
+    for key in [
+        "tall", "tall-2", "tall-3", "piece-0", "piece-1", "piece-2", "halves", "half-0", "half-1",
+    ] {
         ok(json!({ "call": "close", "key": key }));
     }
 }

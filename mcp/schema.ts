@@ -1147,7 +1147,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_split_shells",
-    description: "After mesh_import of a mesh with separate shells, or a STEP of several solids. Each shell or solid becomes an object. Then plate_arrange.",
+    description: "After mesh_import of a mesh with separate shells, or a STEP of several solids. Each shell or solid becomes an object. A committed model of several solids gives each object only its own solid. Then plate_arrange.",
     inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
   },
   {
