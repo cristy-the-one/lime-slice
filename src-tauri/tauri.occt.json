@@ -3,6 +3,11 @@
     "resources": {
       "resources/occt/": "occt/",
       "resources/mcp/": "mcp/"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libc6-dev"]
+      }
     }
   }
 }

@@ -231,6 +231,39 @@ jobs:
       - name: Bundle the MCP server
         run: npm run build:mcp
 
+      # recipe_run builds recipes with lust (tools/lust/LUST_REV) and its tinycc. They ship in mcp/lust beside
+      # server.mjs, which finds them there (mcp/recipe.ts findLust). lust does not build on macOS yet, so the
+      # macOS installers carry none and recipe_run answers "Recipes need lust" there.
+      - name: Cache lust
+        if: runner.os != 'macOS'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/lust
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+
+      # On Windows install.sh loads the Visual Studio developer environment itself (tools/lust/msvc-env.sh).
+      - name: Build lust and stage it beside the MCP server
+        if: runner.os != 'macOS'
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools/lust/install.sh "$RUNNER_TEMP/lust" > /dev/null
+          tools/lust/stage.sh "$RUNNER_TEMP/lust" src-tauri/resources/mcp/lust
+
+      # A recipe built and run by the staged copy, with the bundled server's engine.
+      - name: Run recipes with the staged lust
+        if: runner.os != 'macOS'
+        timeout-minutes: 10
+        shell: bash
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: |
+          set -euo pipefail
+          exe=""
+          [ "$RUNNER_OS" = "Windows" ] && exe=".exe"
+          LIME_LUST="$PWD/src-tauri/resources/mcp/lust/bin/lust$exe" node --experimental-strip-types mcp/recipe.test.ts
+
       # Without these a Windows install that lacks the VC++ Redistributable
       # stops at start with "MSVCP140.dll was not found".
       - name: Stage the Visual C++ runtime (Windows)
@@ -253,3 +286,17 @@ jobs:
           uploadUpdaterSignatures: false
           retryAttempts: 3
           args: ${{ matrix.args }}
+
+      # Recipes need the bundled lust and its tcc to stay executable inside the .deb.
+      - name: Check lust in the .deb
+        if: matrix.label == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=$(ls target/release/bundle/deb/*.deb | head -n 1)
+          listing=$(dpkg-deb -c "$deb")
+          for f in mcp/lust/bin/lust mcp/lust/bin/lust-core mcp/lust/lib/lust/tcc/bin/tcc; do
+            echo "$listing" | grep -E "^-rwxr-xr-x .*/$f\$" || { echo "$f is missing or not executable in $deb"; exit 1; }
+          done
+          echo "$listing" | grep -q "mcp/lust/COPYING-tinycc" || { echo "tinycc's licence is missing in $deb"; exit 1; }
+          dpkg-deb -f "$deb" Depends | grep -q libc6-dev || { echo "$deb does not depend on libc6-dev"; exit 1; }

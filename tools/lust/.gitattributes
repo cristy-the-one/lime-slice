@@ -1,0 +1,2 @@
+# Git Bash runs these on Windows, and bash stops at a CRLF line end ("set: pipefail: invalid option name").
+*.sh text eol=lf

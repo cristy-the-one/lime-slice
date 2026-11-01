@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds lust, the checker and compiler recipe_run uses, at the commit in tools/lust/LUST_REV.
 # Usage: tools/lust/install.sh [dir]   (default ~/.lime-slice/lust). Prints the lust binary's path last.
-# Linux, and Windows under Git Bash from a Visual Studio developer shell (tcc is built with cl there).
+# Linux, and Windows under Git Bash with Visual Studio's C++ tools (tcc is built with cl there); a developer shell is
+# loaded when cl is not on PATH. tools/lust/stage.sh lays the build out for the installers.
 # macOS is not supported yet: lust does not build there (tcc Mach-O). CI skips the recipe steps on macOS.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -19,6 +20,8 @@ exe=""
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     exe=".exe"
+    # Outside a Visual Studio developer shell, take its environment from vcvars64.bat (found with vswhere).
+    command -v cl.exe > /dev/null || . "$here/msvc-env.sh"
     # PowerShell 7 (pwsh), as lust's CI runs it: Windows PowerShell 5.1 hands build-tcc.ps1's cl arguments over as
     # one string ("D9002 ignoring unknown option '/nologo /O2 ...'").
     ps=pwsh

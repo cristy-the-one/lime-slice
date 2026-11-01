@@ -250,6 +250,8 @@ The installer puts the server in `%LOCALAPPDATA%\Lime Slice\mcp\`, with its engi
 
 Point the client at `server.mjs` in the installed app. Do not point it at `mcp\server.ts` from a checkout unless you build the engine yourself (see "From a checkout").
 
+Recipes (`recipe_run`, Rust programs that build a part) need nothing else: the installer ships the lust compiler and its tinycc in `mcp\lust` beside `server.mjs`, and the server uses that copy.
+
 After you install a new version of the app, restart the client too, so it runs the new server.
 
 ### macOS and Linux
@@ -259,7 +261,7 @@ The setup is the same. Only the paths differ:
 - macOS: `/Applications/Lime Slice.app/Contents/Resources/mcp/server.mjs`. Claude Desktop's config is `~/Library/Application Support/Claude/claude_desktop_config.json`.
 - Linux (`.deb`): `/usr/lib/Lime Slice/mcp/server.mjs`. Claude Desktop's config is `~/.config/Claude/claude_desktop_config.json`.
 
-Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way.
+Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way. Recipes on Linux need the C headers of `libc6-dev`: the `.deb` installs it, and an AppImage user runs `sudo apt install libc6-dev`. The macOS app has no recipes yet: lust does not build on macOS, and `recipe_run` answers that it needs lust.
 
 ### What it does
 
