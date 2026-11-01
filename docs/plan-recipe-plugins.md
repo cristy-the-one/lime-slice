@@ -27,7 +27,7 @@ from the person keeps it as a **plugin**: a named, described, versioned Rust fil
 ### Non-goals
 
 - An editor for Rust source inside the app. v1 shows the source read-only and opens the plugin folder; agents and
-  people edit the file elsewhere. (Open decision O7.)
+  people edit the file elsewhere. (Decided: O7, section 13.)
 - A public plugin store, signatures, or a server. Sharing is a file (section 7).
 - Plugins that change slicing, settings, supports or G-code. The allowlist stays the Model calls of S4. A plugin is a
   solid modelling feature.
@@ -84,7 +84,7 @@ without an explicit act:
 
 Why not save every run to the library automatically: a chat makes many small throwaway runs (`check`, `dry`,
 corrections). The library would fill with near-copies. A draft costs nothing and lives with the project; promotion is
-one call. (Open decision O1.)
+one call. (Decided: O1, section 13.)
 
 A run that failed, a `check` or a `dry` run is never a draft.
 
@@ -196,7 +196,7 @@ fn main() { /* ... */ }
 - A file whose body does not match its hash is treated as edited by hand: the app recomputes the hash and `params`
   (one describe run), bumps `version`, and says so once.
 - Rejected: a folder with `manifest.json` and `main.rs` (two files to send, two to keep in step), and a JSON file with
-  the source as a string (unreadable, does not build as is). (Open decision O2.)
+  the source as a string (unreadable, does not build as is). (Decided: O2, section 13.)
 
 ### D7. Three places
 
@@ -262,7 +262,7 @@ anything that reads trees today. `model-tree-file.ts` reads and writes both fiel
   the form says "Built for a 0.4 mm nozzle; a rebuild uses 0.6 mm."
 - **Several parts in one run.** v1 stamps a run that made at most one part and changed at most the part it was given.
   A run that made several parts keeps them as plain parts with a note, "Made by bolt-circle-flange v3 with 2 other
-  parts; run it again from Plugins to change it." (Open decision O4.)
+  parts; run it again from Plugins to change it." (Decided: O4, section 13.)
 
 ### D9. When the source changed or is gone
 
