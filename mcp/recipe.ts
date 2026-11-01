@@ -100,9 +100,15 @@ export function findLust(): string | null {
   return null;
 }
 
+/** The text with CRLF and lone CR line ends made LF. */
+export function lfOnly(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
 /** A panic line, rustc's form: `thread 'main' (123) panicked at path:line:col:` then the message. */
 function panicOf(stderr: string): { line: number; message: string } | null {
-  const m = /panicked at ([^\n]*?):(\d+):(\d+):\n([^\n]*)/.exec(stderr);
+  // Windows writes `src\\main.rs` and CRLF line ends.
+  const m = /panicked at ([^\r\n]*?):(\d+):(\d+):\r?\n([^\r\n]*)/.exec(stderr);
   return m ? { line: Number(m[2]), message: m[4]! } : null;
 }
 
@@ -190,6 +196,9 @@ export class RecipeHost {
   /** Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds. */
   async build(name: string, source: string, autofix: boolean): Promise<BuildResult> {
     const started = Date.now();
+    // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
+    // at the wrong place.
+    source = lfOnly(source);
     const avail = this.available();
     if (!avail.ok) return { ok: false, diagnostics: [], source, fixRounds: 0, ms: 0, reason: avail.reason };
     mkdirSync(this.root, { recursive: true });

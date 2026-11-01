@@ -109,7 +109,7 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
-import { DEFAULT_LIMITS, RecipeHost, recipeCrateDir, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -1255,7 +1255,7 @@ export class Session {
     if (!ready.ok) return { ok: false, reason: ready.reason };
     const mode = input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
     const name = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : "recipe";
-    const source = String(input.source);
+    const source = lfOnly(String(input.source));
     this.noteStage(`building recipe ${name}`, 0);
     const built = await host.build(name, source, input.autofix !== false);
     const fixed = built.source !== source ? { fixedSource: built.source, fixRounds: built.fixRounds } : {};

@@ -59,6 +59,13 @@ function stub(log: RecipeCallSite[]) {
   check("applyAutoEdits is the same fix", applyAutoEdits(broken, unfixed.diagnostics) === built.source);
 }
 
+// --- A CRLF recipe (a Windows checkout) takes the same fix at the same place.
+{
+  const crlf = example.replace(/\r?\n/g, "\r\n").replace('let width = s.param_f64("width", 60.0);', "let width: f64 = 60;");
+  const built = await host.build("bar", crlf, true);
+  check("a CRLF recipe gets the fix in the right place", built.ok && built.source.includes("let width: f64 = 60.0;") && !built.source.includes("\r"), built.source.slice(0, 300));
+}
+
 // --- The run: calls in order with their recipe lines, refusals passed back, done with metrics.
 {
   const built = await host.build("bar", example, true);
