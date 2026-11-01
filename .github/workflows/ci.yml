@@ -127,6 +127,18 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # recipe_run checks and compiles recipes with lust, pinned in tools/lust/LUST_REV. Linux and
+      # Windows only: lust does not build on macOS yet, so mcp-macos skips these steps (see there).
+      - name: Cache lust
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/lust
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+
+      - name: Build lust
+        timeout-minutes: 20
+        run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
+
       - name: MCP server against real Open CASCADE
         timeout-minutes: 25
         env:
@@ -148,6 +160,8 @@ jobs:
           node --experimental-strip-types mcp/assembly-part-frame.test.ts
           # A Model edit between two sliced solves needs OCCT, so the sim region test runs here, not in the mcp job.
           node --experimental-strip-types mcp/sim-region.test.ts
+          # recipe_run end to end: lust builds, OCCT cuts, a failed or dry run is taken back.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-session.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -291,6 +305,18 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # recipe_run checks and compiles recipes with lust, pinned in tools/lust/LUST_REV. Linux and
+      # Windows only: lust does not build on macOS yet, so mcp-macos skips these steps (see there).
+      - name: Cache lust
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/lust
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+
+      - name: Build lust
+        timeout-minutes: 20
+        run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
+
       - name: Typecheck the server
         run: npx tsc -p mcp
 
@@ -327,6 +353,7 @@ jobs:
           node --experimental-strip-types src/paint-region.test.ts
           node --experimental-strip-types mcp/batch3.test.ts
           node --experimental-strip-types mcp/batch4.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
 
   mcp-windows:
     name: MCP server (Windows)
@@ -361,6 +388,29 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
+      - name: Cache lust
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/lust
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+
+      # tcc is built with cl, so the Visual Studio developer shell is loaded first, as lust's own CI does.
+      - name: Build lust
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $lust = bash tools/lust/install.sh "$env:RUNNER_TEMP/lust" | Select-Object -Last 1
+          if ($LASTEXITCODE -ne 0) { throw "tools/lust/install.sh failed" }
+          Add-Content -Path $env:GITHUB_ENV -Value "LIME_LUST=$lust"
+
+      - name: Recipes
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/recipe.test.ts
+
   mcp-macos:
     name: MCP server (macOS)
     needs: changes
@@ -389,6 +439,15 @@ jobs:
           node --experimental-strip-types mcp/native-load.test.ts
           node --experimental-strip-types mcp/scenario.test.ts
           node --experimental-strip-types mcp/stdio.test.ts
+
+      # Skipped until lust builds on macOS (tcc Mach-O; lust's own macOS job is off too). recipe_run answers
+      # "Recipes need lust" here. To turn it back on, delete `if: false` and give this job the Cache lust and
+      # Build lust steps of the mcp job.
+      - name: Recipes
+        if: false
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/recipe.test.ts
 
   bench:
     name: release bench smoke

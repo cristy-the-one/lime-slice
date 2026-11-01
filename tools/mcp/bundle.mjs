@@ -1,7 +1,7 @@
 // Bundles the MCP server for the installer: plain JavaScript that a stock Node 22
 // runs without type stripping. The engine library is copied next to it by the
 // release workflow. Usage: node tools/mcp/bundle.mjs [outdir]
-import { readFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -24,4 +24,7 @@ await build({
   define: { __LIME_MCP_VERSION__: JSON.stringify(version) },
   logLevel: "warning",
 });
+// recipe_run builds recipes against lime-recipe; the server finds this copy beside it (mcp/recipe.ts).
+mkdirSync(`${outdir}/lime-recipe/src`, { recursive: true });
+copyFileSync(`${root}crates/lime-recipe/src/lib.rs`, `${outdir}/lime-recipe/src/lib.rs`);
 console.log(`MCP server ${version} bundled into ${outdir}`);

@@ -2861,6 +2861,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lime-recipe"
+version = "4.7.0"
+
+[[package]]
 name = "lime-shell"
 version = "4.7.0"
 dependencies = [

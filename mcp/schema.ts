@@ -1509,6 +1509,24 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "recipe_run",
+    description: "Build a part with a Rust recipe: lust checks it, applies safe fixes, runs it; each call is the MCP tool of that name. One undo step. guide {topic:\"recipes\"}.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["source"],
+      properties: {
+        source: { type: "string", minLength: 1, maxLength: 100000, description: "Rust main using lime_recipe." },
+        name: { type: "string", minLength: 1, maxLength: 60, description: "Same name rebuilds warm." },
+        params: { type: "object", description: "Session::param_* reads them." },
+        object: handle,
+        mode: { enum: ["check", "dry", "apply"], description: "Default apply; dry undoes." },
+        autofix: { type: "boolean", description: "Default true." },
+        timeoutS: { type: "number", minimum: 1, maximum: 120, description: "Default 30." },
+      },
+    },
+  },
+  {
     name: "model_anchors",
     description: "Labelled steps with the box of what each applied, as anchors read them: min, max, centre, size.",
     inputSchema: {

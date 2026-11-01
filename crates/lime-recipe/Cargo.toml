@@ -1,0 +1,11 @@
+[package]
+name = "lime-recipe"
+version = "4.7.0"
+# Recipes build with lust (edition 2024 only) as well as with rustc, so this
+# crate states its own fields instead of inheriting the workspace's 2021.
+edition = "2024"
+license = "MIT"
+publish = false
+description = "The recipe side of Lime Slice's recipe protocol (docs/plan-recipes.md): no dependencies, built by lust and by rustc."
+
+[dependencies]

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Builds lust, the checker and compiler recipe_run uses, at the commit in tools/lust/LUST_REV.
+# Usage: tools/lust/install.sh [dir]   (default ~/.lime-slice/lust). Prints the lust binary's path last.
+# Linux, and Windows under Git Bash from a Visual Studio developer shell (tcc is built with cl there).
+# macOS is not supported yet: lust does not build there (tcc Mach-O). CI skips the recipe steps on macOS.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+rev=$(tr -d '[:space:]' < "$here/LUST_REV")
+dest=${1:-$HOME/.lime-slice/lust}
+repo=${LUST_REPO:-https://github.com/cristy-the-one/lust-lang.git}
+if [ ! -d "$dest/.git" ]; then
+  git clone -q "$repo" "$dest"
+fi
+if [ "$(git -C "$dest" rev-parse HEAD)" != "$rev" ]; then
+  git -C "$dest" fetch -q origin "$rev" 2>/dev/null || git -C "$dest" fetch -q origin
+  git -C "$dest" checkout -q --detach "$rev"
+fi
+exe=""
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    exe=".exe"
+    [ -f "$dest/third_party/tcc/lib/tcc.lib" ] || powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$dest/scripts/build-tcc.ps1" >&2
+    ;;
+  Darwin)
+    echo "lust does not build on macOS yet" >&2
+    exit 2
+    ;;
+  *)
+    [ -f "$dest/third_party/tcc/lib/libtcc.a" ] || "$dest/scripts/build-tcc.sh" >&2
+    ;;
+esac
+(cd "$dest" && LUST_TCC_HOME="$dest/third_party/tcc" cargo build --release --locked --bins >&2)
+"$dest/target/release/lust$exe" --version >&2
+echo "$dest/target/release/lust$exe"
