@@ -87,6 +87,8 @@ export interface RunOutcome {
 
 const SLOTS = 4;
 const MAX_FIX_ROUNDS = 3;
+/** A build that runs longer than this is stuck: a cold one takes about half a second. */
+const BUILD_LIMIT_MS = 120_000;
 
 /** The lust binary: LIME_LUST, else `lust` on PATH. Null when neither answers `--version`. */
 export function findLust(): string | null {
@@ -323,15 +325,33 @@ export class RecipeHost {
   }
 }
 
-function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> {
+/**
+ * One lust command. It ends at the process's exit, not when its pipes close: on Windows the daemon lust starts can
+ * inherit them and keep them open. Output still in flight gets a moment to arrive. A command past `limitMs` is killed.
+ */
+function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, limitMs = BUILD_LIMIT_MS): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (code: number | null, note = "") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(limit);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({ code, stdout, stderr: stderr + note });
+    };
+    const limit = setTimeout(() => {
+      child.kill();
+      finish(null, `\nlust ${args[0] ?? ""} did not finish within ${limitMs / 1000} s and was stopped.`);
+    }, limitMs);
     child.stdout.setEncoding("utf8").on("data", (c: string) => (stdout += c));
     child.stderr.setEncoding("utf8").on("data", (c: string) => (stderr += c));
-    child.on("error", (err) => resolve({ code: -1, stdout, stderr: err.message }));
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("error", (err) => finish(-1, err.message));
+    child.on("close", (code) => finish(code));
+    child.on("exit", (code) => setTimeout(() => finish(code), 200));
   });
 }
 

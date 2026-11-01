@@ -407,6 +407,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "LIME_LUST=$lust"
 
       - name: Recipes
+        timeout-minutes: 10
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/recipe.test.ts
