@@ -6,10 +6,10 @@
 
 export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   model: {
-    holds: "solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, history, commit, STEP export, measure",
+    holds: "solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, recipes, history, commit, STEP export, measure",
     tools: [
       "solid_new", "model_describe", "faces_find", "edges_find", "workplane_set", "workplane_print_up", "model_place", "model_probe",
-      "surface_at", "model_check", "model_apply", "model_apply_batch", "model_build", "model_define", "model_anchors", "model_params",
+      "surface_at", "model_check", "model_apply", "model_apply_batch", "model_build", "recipe_run", "model_define", "model_anchors", "model_params",
       "model_history", "model_goto", "model_undo", "model_redo", "model_edit", "model_rename", "model_drop", "model_commit",
       "model_export_step", "measure",
     ],

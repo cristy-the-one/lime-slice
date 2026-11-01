@@ -109,6 +109,7 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
+import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -251,12 +252,12 @@ export function typedExprs(op: unknown): Record<string, string> | undefined {
 function changesPlate(name: string): boolean {
   if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
   if (name === "sim_setup" || name === "sim_sweep") return true;
-  return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "mesh_import" || name === "project_open" || name === "project_create";
+  return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "recipe_run" || name === "mesh_import" || name === "project_open" || name === "project_create";
 }
 
 /** Calls that can outlast a client's request timeout: the autosave is written before they start. */
 // A sweep that reslices is one slice and one solve per variant.
-const LONG_CALLS = new Set(["model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import", "sim_sweep"]);
+const LONG_CALLS = new Set(["recipe_run", "model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import", "sim_sweep"]);
 const NAME_LIMIT = 120;
 /** Tools whose op fields may be text expressions. */
 
@@ -268,7 +269,7 @@ const NAME_LIMIT = 120;
 const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
-  "sim_run", "sim_sweep", "model_params",
+  "sim_run", "sim_sweep", "model_params", "recipe_run",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -1015,6 +1016,10 @@ export class Session {
    * it takes them off the plate, and a redo brings them back (D9). Not saved.
    */
   private piecesOffPlate: PlateObject[] = [];
+  /** recipe_run's builder and runner, made on its first call. */
+  private recipeHost: RecipeHost | null = null;
+  /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
+  private recipeDepth = 0;
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   private pendingRecipe: Recipe | null = null;
   /**
@@ -1237,9 +1242,130 @@ export class Session {
     return end({ ok: true });
   }
 
+  /**
+   * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
+   * going through runCall as a plan step does. The run is one transaction: a refusal the recipe does not handle, a
+   * panic, a limit, a cancel, or dry mode takes back every object it made and every step it added; an apply that
+   * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
+   */
+  private async recipeRun(input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
+    if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url) });
+    const host = this.recipeHost;
+    const ready = host.available();
+    if (!ready.ok) return { ok: false, reason: ready.reason };
+    const mode = input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
+    const name = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : "recipe";
+    const source = lfOnly(String(input.source));
+    this.noteStage(`building recipe ${name}`, 0);
+    const built = await host.build(name, source, input.autofix !== false);
+    const fixed = built.source !== source ? { fixedSource: built.source, fixRounds: built.fixRounds } : {};
+    const diagnostics = built.diagnostics.map((d) => ({ code: d.code, line: d.line, col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
+    if (!built.ok || !built.exe) {
+      return { ok: false, reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms };
+    }
+    if (mode === "check") return { ok: true, built: true, ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms };
+
+    const objectArg = typeof input.object === "string" ? input.object : undefined;
+    if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
+    const created: string[] = [];
+    /** Parts that were on the plate before the run, with the step each stood at. */
+    const touched = new Map<string, number | null>();
+    const notes: string[] = [];
+    const touch = (id: string) => {
+      if (id === "" || created.includes(id) || touched.has(id)) return;
+      const obj = this.find(id);
+      if (obj) touched.set(id, obj.tree?.current ?? null);
+    };
+    if (objectArg) touch(objectArg);
+    const ctx: CallMeta = { progressToken: meta?.progressToken, signal: meta?.signal };
+    const call = async (site: RecipeCallSite): Promise<RecipeReply> => {
+      if (site.tool === "log") {
+        if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);
+        return { ok: true, result: { ok: true } };
+      }
+      if (site.tool !== "solid_new") touch(typeof site.args.object === "string" ? site.args.object : this.selected);
+      this.noteStage(`recipe ${name}: call ${site.id} ${site.tool} (line ${site.line})`);
+      let value: Record<string, unknown>;
+      try {
+        value = await this.runCall(site.tool, site.args, ctx, true);
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      if (site.tool === "solid_new" && typeof value.object === "string" && value.ok !== false) created.push(value.object);
+      if (value.ok === false) {
+        const { ok: _ok, reason, ...extra } = value;
+        return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
+      }
+      return { ok: true, result: value };
+    };
+    const printer = this.printer();
+    const start = {
+      params: (input.params && typeof input.params === "object" ? input.params : {}) as Record<string, unknown>,
+      context: { units: "mm", ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    };
+    const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
+    this.recipeDepth += 1;
+    let out;
+    try {
+      out = await host.run(built.exe, start, call, limits, meta?.signal);
+    } finally {
+      this.recipeDepth -= 1;
+    }
+    const report = { calls: out.calls, ...(out.refused.length ? { refused: out.refused } : {}), ...(notes.length ? { notes } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms };
+    if (!out.ok || mode === "dry") {
+      const undone = await this.recipeRollback(created, touched);
+      if (!out.ok) return { ok: false, reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
+      return { ok: true, dry: true, object: out.done!.object, metrics: out.done!.metrics, ...report, rolledBack: undone };
+    }
+    // --- The apply: each part the run changed gets its new steps as one undo step, then is committed to the plate.
+    // A commit the plate refuses (a mesh that does not close, say) takes the whole run back, the parts committed before
+    // it too: those are committed again at the step they went back to.
+    const label = `recipe ${name}`;
+    const commitOne = (id: string) => this.runCall("model_commit", { object: id }, ctx, true).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+    const committedTouched: string[] = [];
+    for (const id of [...created, ...touched.keys()]) {
+      const obj = this.find(id);
+      if (!obj) continue;
+      const before = touched.get(id);
+      if (before !== undefined && (obj.tree?.current ?? null) === before) continue;
+      const committed = await commitOne(id);
+      if (committed.ok === false) {
+        const undone = await this.recipeRollback(created, touched);
+        for (const back of committedTouched) await commitOne(back);
+        const why = String(committed.reason ?? "The commit was refused.");
+        return { ok: false, reason: `The recipe ran, but ${id} could not be committed to the plate: ${why} The run was taken back.`, object: id, metrics: out.done!.metrics, ...report, rolledBack: undone };
+      }
+      if (before !== undefined) committedTouched.push(id);
+    }
+    for (const [id, before] of touched) {
+      const obj = this.find(id);
+      const end = obj?.tree?.current ?? null;
+      if (obj && before !== null && end !== null && end !== before) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
+    }
+    return { ok: true, object: out.done!.object, metrics: out.done!.metrics, ...(created.length ? { created } : {}), ...report };
+  }
+
+  /** Takes a recipe run back: objects it made leave the plate, parts it changed go back to the step they stood at. */
+  private async recipeRollback(created: string[], touched: Map<string, number | null>): Promise<{ removed: string[]; restored: string[] }> {
+    const removed: string[] = [];
+    const restored: string[] = [];
+    for (const id of [...created].reverse()) {
+      if (!this.find(id)) continue;
+      const value = await this.objectRemove(id).catch(() => ({ ok: false }));
+      if (value.ok !== false) removed.push(id);
+    }
+    for (const [id, node] of touched) {
+      const obj = this.find(id);
+      if (!obj || node === null || (obj.tree?.current ?? null) === node) continue;
+      const value = await this.gotoNode(obj, node).catch(() => ({ ok: false }));
+      if (value.ok !== false) restored.push(id);
+    }
+    return { removed, restored };
+  }
+
   /** With groups on, a tool of a group not enabled is refused with the call that enables it. */
   private groupRefusal(name: string): Record<string, unknown> | null {
-    const group = this.toolGroups ? groupOf(name) : null;
+    const group = this.toolGroups && this.recipeDepth === 0 ? groupOf(name) : null;
     if (group === null || this.toolGroups!.has(group)) return null;
     return { ok: false, group, reason: `${name} is in the ${group} group, which is not enabled. Call tools_enable {groups:["${group}"]}, then call ${name} again.` };
   }
@@ -1539,6 +1665,7 @@ export class Session {
       case "object_select": return this.objectSelect(String(input.object), input.name);
       case "object_place": return this.objectPlace(input);
       case "object_remove": return this.objectRemove(String(input.object));
+      case "recipe_run": return this.recipeRun(input, meta);
       case "object_duplicate": return this.objectDuplicate(input);
       case "object_split_shells": return this.splitShells(String(input.object));
       case "plate_arrange": return this.plateArrange(input);

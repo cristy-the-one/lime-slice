@@ -281,6 +281,35 @@ export const KIND_GUIDES: Record<string, string> = {
   ].join("\n"),
 };
 
+GUIDES.push({
+  uri: "lime://guide/recipes",
+  name: "Recipes",
+  tools: ["recipe_run", "solid_new", "model_apply", "model_describe", "model_check", "model_commit"],
+  text: [
+    "A recipe is a Rust main that builds a part with loops, ifs, and arithmetic between the calls. One recipe_run replaces a probe-and-apply round trip per step.",
+    "1. recipe_run {source, name, params, mode:\"check\"} builds it only. lust checks the recipe and applies the fixes it marks safe (an integer where an f64 goes, say); fixedSource is the text that built. Other diagnostics carry code, line, and fix.",
+    "2. recipe_run {source, name, params} runs it. Each call is the MCP tool of that name: solid_new, model_apply (probe:true is sent), model_describe, model_check, measure, faces_find, edges_find, surface_at, model_probe, model_apply_batch, model_history, and log. Nothing else: no files, network, threads, or environment.",
+    "3. The reply has object, metrics (what done_with returned), calls, refused (each refusal with its recipe line), and notes (each log). A call the recipe handles with if let Err stays a refusal on the list; one it unwraps ends the run.",
+    "The run is one transaction. A panic, an unhandled refusal, a limit (timeoutS, 2000 calls), or a cancel takes it all back: new objects leave the plate, a part passed as object goes back to its step. mode:\"dry\" runs and then takes it back too, for the metrics. An apply commits each part it touched (model_commit), and the steps it added to a part are one undo step.",
+    "Keep the same name to edit and rerun: the build is warm, about 30 ms for an edit.",
+    "The API (crate lime_recipe): Session::start(); s.param_f64(\"width\", 60.0), param_u32, param_bool, param_str; s.context() has units, bedMm, nozzleMm, object; s.object() is the part passed as object (an Option). s.solid_new(ops::cuboid(x, y, z)) or ops::cylinder(radius, height) gives a Part. s.apply(&part, op) with ops::hole_through(origin, axis, d), ops::hole, ops::boolean(op, primitive, origin), ops::fillet(edges, mm). s.call(tool, Json) for any other recipe call. s.volume(&part), s.check(&part), s.log(text). End with s.done(&part) or s.done_with(&part, Json::obj().set(\"holes\", n)).",
+    "Json::obj().set(key, value) builds args; r.at(\"faces.0.face\") and as_f64, as_str, as_bool read results. Every call returns Result<_, Refusal>; e.reason is the refusal sentence and e.line the recipe line.",
+    "use lime_recipe::{ops, Json, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    "    let width = s.param_f64(\"width\", 60.0);",
+    "    let part = s.solid_new(ops::cuboid(width, 20.0, 4.0)).unwrap();",
+    "    let mut n = 0;",
+    "    for i in 0..4 {",
+    "        let x = -width / 2.0 + width * (i as f64 + 0.5) / 4.0;",
+    "        if s.apply(&part, ops::hole_through([x, 0.0, 4.0], [0.0, 0.0, -1.0], 3.2)).is_ok() { n += 1; }",
+    "    }",
+    "    s.done_with(&part, Json::obj().set(\"holes\", n));",
+    "}",
+    "The language is lust's subset of Rust: std collections, closures, traits, generics, iterators, format!, f64 math. A recipe that builds under lust builds and runs the same under Cargo against the same crate.",
+  ].join("\n"),
+});
+
 export function guideByUri(uri: string): Guide | undefined {
   return GUIDES.find((guide) => guide.uri === uri);
 }

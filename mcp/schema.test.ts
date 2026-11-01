@@ -91,8 +91,10 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // (docs/plan-belt-transitions.md, step 2) adds about 25 tokens to a list that was at 15,999. Step 5's auto-find
 // (model_probe plan:true for a transition, named in the plan field) adds 11 to a list at 16,049. support_edit's
 // grow action and its count add 24 to a list at 16,060. object_split_shells names that a committed
-// model of several solids gives each object only its own solid, 19 tokens on a list at 16,084.
-const TOTAL_BUDGET = 16_103;
+// model of several solids gives each object only its own solid, 19 tokens on a list at 16,084. recipe_run
+// (docs/plan-recipes.md) adds 249 to a list at 16,103; it is in the model group, so the first list with groups on
+// does not grow, and one recipe stands in for a probe-and-apply round trip per op.
+const TOTAL_BUDGET = 16_352;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
