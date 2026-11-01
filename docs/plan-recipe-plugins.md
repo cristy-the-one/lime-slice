@@ -445,25 +445,24 @@ MCP server from the app (the app does not ship Node and the server is the user's
 | Token budget | a larger tool list | one tool with actions, ~260 tokens, in the model group |
 | Describe mode misreads `target` | the form offers "new part" for a plugin that needs one | the dry run in D3 runs with no object for `new` and with a test cube for `object`; a mismatch is fixed in the header at save |
 
-## 13. Open decisions for the owner
+## 13. Decisions
 
-- **O1. Keeping.** Drafts kept automatically in the project, plugins only by an explicit keep (this plan); or every
-  successful run saved to the library as well?
-- **O2. File format.** One `.rs` file with a `//!` front matter header (this plan); or a folder with `manifest.json`
-  and `main.rs`?
-- **O3. MCP writes outside the workspace.** May the MCP server write plugin files to the app's plugin folder (this
-  plan, `<slug>.rs` only), or must it save into `LIME_MCP_WORKSPACE/plugins` and leave the app to import them?
-- **O4. Multi-part runs.** A run that makes several parts: plain parts with a note in v1 (this plan), or a live stamp
-  across several objects from the start?
-- **O5. Signatures.** No signing in v1, hash shown (this plan); or sign plugins now (with what key, and who issues it)?
-- **O6. Samples.** Ship a set of sample plugins in the installer, for example the ten reference parts of
-  `plan-recipes.md`'s efficiency study? Who curates them?
-- **O7. Editing source in the app.** Read-only source plus "Reveal in folder" in v1 (this plan); or a code editor
-  pane with lust's diagnostics inline, later?
-- **O8. Restricting every recipe to its own parts** (D11.1) also changes `recipe_run` for agents today. Accept that, or
-  restrict only runs of saved plugins?
-- **O9. Major API compatibility window.** Ship every earlier major's crate forever (this plan, it is small), or drop
-  majors after a set number of releases?
+The owner answered on 2026-11-01: the plan's choice stands for every question, and O6 has its sample.
+
+- **O1. Keeping.** Drafts are kept automatically in the project; a plugin is saved only by an explicit keep.
+- **O2. File format.** One `.rs` file with a `//!` front matter header.
+- **O3. MCP writes outside the workspace.** The MCP server may write plugin files to the app's plugin folder,
+  `<slug>.rs` files only.
+- **O4. Multi-part runs.** Plain parts with a note in v1.
+- **O5. Signatures.** No signing in v1; the hash is shown.
+- **O6. Samples.** Yes, shipped in the installer, but in a later release than the plugin milestones. The first sample
+  is the owner's gear pyramid recipe (`gear_pyramid.rs`: a ring of ten interlocked involute spur gears, 16 and 10
+  teeth, module 2, on capped axle pins inside a hollow square pyramid, print-in-place), made a plugin with its
+  numbers as parameters. One or two more are chosen then, for example from `plan-recipes.md`'s reference parts.
+  The owner curates them.
+- **O7. Editing source in the app.** Read-only source plus "Reveal in folder" in v1.
+- **O8. Restricting every recipe to its own parts** (D11.1). Accepted for every `recipe_run`, not only saved plugins.
+- **O9. Major API compatibility window.** Every earlier major's crate ships for good.
 
 ## 14. Milestones
 
