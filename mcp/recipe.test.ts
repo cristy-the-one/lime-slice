@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applyAutoEdits, findLust, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { applyAutoEdits, findLust, lfOnly, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -56,7 +56,8 @@ function stub(log: RecipeCallSite[]) {
   check("fixed source has 60.0", built.source.includes("let width: f64 = 60.0;"), built.source.slice(0, 400));
   const unfixed = await host.build("bar", broken, false);
   check("without autofix the build fails", !unfixed.ok && unfixed.diagnostics.some((d) => d.code === "L0110" && d.edits.some((e) => e.auto)), unfixed.diagnostics);
-  check("applyAutoEdits is the same fix", applyAutoEdits(broken, unfixed.diagnostics) === built.source);
+  // The host builds LF text (a Windows checkout of the example is CRLF), so the edits apply to that.
+  check("applyAutoEdits is the same fix", applyAutoEdits(lfOnly(broken), unfixed.diagnostics) === built.source);
 }
 
 // --- A CRLF recipe (a Windows checkout) takes the same fix at the same place.
