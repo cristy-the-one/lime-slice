@@ -90,10 +90,18 @@ const MAX_FIX_ROUNDS = 3;
 /** A build that runs longer than this is stuck: a cold one takes about half a second. */
 const BUILD_LIMIT_MS = 120_000;
 
-/** The lust binary: LIME_LUST, else `lust` on PATH. Null when neither answers `--version`. */
-export function findLust(): string | null {
-  const candidates = [process.env.LIME_LUST, "lust"].filter((c): c is string => typeof c === "string" && c !== "");
-  for (const c of candidates) {
+/**
+ * Where lust is looked for, in order: LIME_LUST, the copy the installers ship beside the server (`lust/bin/lust` next
+ * to server.mjs, tools/lust/stage.sh; it finds its tcc and library from its own path), then `lust` on PATH.
+ */
+export function lustCandidates(moduleUrl?: string): string[] {
+  const bundled = moduleUrl ? join(fileURLToPath(new URL("./lust/bin/", moduleUrl)), process.platform === "win32" ? "lust.exe" : "lust") : undefined;
+  return [process.env.LIME_LUST, bundled && existsSync(bundled) ? bundled : undefined, "lust"].filter((c): c is string => typeof c === "string" && c !== "");
+}
+
+/** The first of `lustCandidates` that answers `--version`, or null. */
+export function findLust(moduleUrl?: string): string | null {
+  for (const c of lustCandidates(moduleUrl)) {
     const r = spawnSync(c, ["--version"], { encoding: "utf8", timeout: 10_000 });
     if (r.status === 0) return c;
   }
@@ -128,20 +136,26 @@ export class RecipeHost {
   readonly root: string;
   private readonly crateDir: string;
   private lust: string | null | undefined;
+  private readonly moduleUrl: string | undefined;
   /** Recipe names in use order, most recent last, and the slot each holds. */
   private slotOrder: string[] = [];
   private readonly slotOf = new Map<string, number>();
 
-  constructor(opts: { crateDir: string; root?: string; lust?: string | null }) {
+  /** `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). */
+  constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string }) {
     this.crateDir = opts.crateDir;
     this.root = opts.root ?? join(tmpdir(), `lime-recipes-${process.pid}`);
     this.lust = opts.lust;
+    this.moduleUrl = opts.moduleUrl;
   }
 
   /** Whether recipes can run here, and why not. */
   available(): { ok: true; lust: string } | { ok: false; reason: string } {
-    if (this.lust === undefined) this.lust = findLust();
-    if (this.lust === null) return { ok: false, reason: "Recipes need lust, which is not installed here. Set LIME_LUST to the lust binary, or put lust on PATH." };
+    if (this.lust === undefined) this.lust = findLust(this.moduleUrl);
+    if (this.lust === null) {
+      const why = process.platform === "darwin" ? " lust does not build on macOS yet, so the macOS app does not ship it." : "";
+      return { ok: false, reason: `Recipes need lust, which is not installed here.${why} Set LIME_LUST to the lust binary, or put lust on PATH.` };
+    }
     if (!existsSync(join(this.crateDir, "src", "lib.rs"))) return { ok: false, reason: `The lime-recipe crate is missing (${this.crateDir}).` };
     return { ok: true, lust: this.lust };
   }

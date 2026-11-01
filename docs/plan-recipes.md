@@ -1,10 +1,15 @@
 # Plan: recipes as code
 
-Status: the first slice is built. The lust side is on the fork (merged as PR #11 of
-cristy-the-one/lust-lang, pinned in `tools/lust/LUST_REV`); the lime-slice side
-is `recipe_run` (`mcp/recipe.ts`, `crates/lime-recipe`). Not yet: lust in the
-installers, and macOS (lust does not build there, so CI skips the recipe steps
-on macOS and the tool answers that it needs lust).
+Status: the first slice is built. The lust side is merged on the fork's `next`
+branch (PR #11 of cristy-the-one/lust-lang, merge commit pinned in
+`tools/lust/LUST_REV`); the lime-slice side is `recipe_run` (`mcp/recipe.ts`,
+`crates/lime-recipe`). The Windows and Linux installers ship lust, lust-core,
+tinycc and lust's library in `mcp/lust` beside `server.mjs`, and the server uses
+that copy unless `LIME_LUST` names another (S12; lust's daemon exits after 30
+idle minutes). The `.deb` depends on `libc6-dev`, whose headers and C runtime
+tcc builds against. Not yet: macOS (lust does not build there, so its installers
+carry none, CI skips the recipe steps on macOS, and the tool answers that it
+needs lust).
 
 An LLM driving Lime Slice through MCP writes a short Rust recipe instead of
 hundreds of JSON ops. lust checks, builds and runs it in milliseconds, with

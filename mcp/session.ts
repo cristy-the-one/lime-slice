@@ -1249,7 +1249,7 @@ export class Session {
    * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
    */
   private async recipeRun(input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
-    if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url) });
+    if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
     const host = this.recipeHost;
     const ready = host.available();
     if (!ready.ok) return { ok: false, reason: ready.reason };
