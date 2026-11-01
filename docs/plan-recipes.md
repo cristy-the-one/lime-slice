@@ -1,6 +1,6 @@
 # Plan: recipes as code
 
-Status: the first slice is built. The lust side is on the fork (PR #11 of
+Status: the first slice is built. The lust side is on the fork (merged as PR #11 of
 cristy-the-one/lust-lang, pinned in `tools/lust/LUST_REV`); the lime-slice side
 is `recipe_run` (`mcp/recipe.ts`, `crates/lime-recipe`). Not yet: lust in the
 installers, and macOS (lust does not build there, so CI skips the recipe steps
