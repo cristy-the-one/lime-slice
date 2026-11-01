@@ -404,6 +404,12 @@ interface Job {
   handle: string;
   engineId: number;
   objectId: string;
+  /** True when this job sliced every object, not the selected one. */
+  plateScope: boolean;
+  /** Object ids whose meshes went into this slice. */
+  slicedIds: string[];
+  /** Another object was on the plate, so the result names the slice set. */
+  others: boolean;
   stamp: string;
   status: string;
   gcode?: string;
@@ -3375,14 +3381,13 @@ export class Session {
     return { printOrder: this.printOrder, clearanceMm: this.clearanceMm, gantryMm: this.gantryMm };
   }
 
-  /** Fields the app's `payload()` puts on one object, or on the plate when more than one is listed. */
-  private sliceBody(obj: PlateObject, scope?: unknown): { body: Record<string, unknown>; mesh: Uint8Array } {
+  /** The selected object's fields, or every object's when `scope` is `plate`. A missing scope is the selection. */
+  private sliceBody(obj: PlateObject, scope?: unknown): { body: Record<string, unknown>; mesh: Uint8Array; plate: boolean } {
     const placed = this.placed(obj);
     const name = /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName;
     const mesh = stlBytes(scaledCanonical(obj.source, obj.scale), name);
-    const objectScope = scope === "object";
-    const plateScope = scope === "plate" || (!objectScope && this.plateWantsObjects());
-    const oneObject = objectScope && !settingsEmpty(obj.objectSettings);
+    const plateScope = scope === "plate";
+    const oneObject = !plateScope && !settingsEmpty(obj.objectSettings);
     const listed = plateScope || oneObject;
     const rules = this.sliceRules(plateScope ? this.objects.length : 1);
     const oneExtra = listed ? {} : this.oneObjectFields(obj);
@@ -3405,7 +3410,7 @@ export class Session {
       oneExtra,
       encodeMesh: false,
     });
-    return { body, mesh };
+    return { body, mesh, plate: plateScope };
   }
 
   private sliceRules(objects: number) {
@@ -3418,10 +3423,6 @@ export class Session {
       objects,
       supportMode: this.settings.supportSource === "paint" ? "paint" : "auto",
     });
-  }
-
-  private plateWantsObjects(): boolean {
-    return this.objects.length > 1 || this.objects.some((obj) => !settingsEmpty(obj.objectSettings));
   }
 
   private oneObjectFields(obj: PlateObject): Record<string, unknown> {
@@ -3520,19 +3521,41 @@ export class Session {
     const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), plateBody ? undefined : built.mesh))) as { id?: number; error?: string };
     if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
     this.jobSeq += 1;
-    const job: Job = { handle: `job_${this.jobSeq}`, engineId: started.id, objectId: obj.id, stamp: this.sliceStamp(), status: "running" };
+    const job: Job = {
+      handle: `job_${this.jobSeq}`,
+      engineId: started.id,
+      objectId: obj.id,
+      plateScope: built.plate,
+      slicedIds: built.plate ? this.objects.map((row) => row.id) : [obj.id],
+      others: this.objects.length > 1,
+      stamp: this.sliceStamp(),
+      status: "running",
+    };
     this.running = job;
     this.retainJobs(job);
+    const identity = this.sliceIdentity(job);
+    if (skipped.length) {
+      const skip = `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.`;
+      identity.notSliced = skipped;
+      identity.note = identity.note ? `${String(identity.note)} ${skip}` : skip;
+    }
     return {
       ok: true,
       job: job.handle,
       status: "running",
-      object: obj.id,
-      name: shownName(obj.name),
+      ...identity,
       collisions,
       objects: this.objects.map((row) => row.id),
-      ...(skipped.length ? { notSliced: skipped, note: `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.` } : {}),
     };
+  }
+
+  /** Names the meshes this job sliced. A plate job says so, and never claims it was only the selection. */
+  private sliceIdentity(job: Job): Record<string, unknown> {
+    if (job.plateScope) return { scope: "plate", sliced: job.slicedIds, note: "Sliced the whole plate." };
+    const named = this.find(job.objectId);
+    const one = named ? { object: named.id, name: shownName(named.name) } : { object: job.objectId };
+    if (job.others) return { ...one, scope: "object", sliced: job.slicedIds };
+    return one;
   }
 
   private sliceStamp(): string {
@@ -3616,9 +3639,8 @@ export class Session {
     if (meta?.signal?.aborted && job.status === "running") {
       return { ok: false, job: job.handle, status: "cancelled", reason: "The wait was cancelled." };
     }
-    const named = this.find(job.objectId);
     if (job.status === "running") {
-      return { ok: true, job: job.handle, status: "running", fraction, stage, ...(named ? { object: named.id, name: named.name } : {}) };
+      return { ok: true, job: job.handle, status: "running", fraction, stage, ...this.sliceIdentity(job) };
     }
     if (this.running?.handle === job.handle && job.status !== "running") this.running = null;
     if (job.status === "done") this.latest = job;
@@ -3632,8 +3654,7 @@ export class Session {
       ok: true,
       job: job.handle,
       status: "done",
-      object: named?.id,
-      name: named ? shownName(named.name) : undefined,
+      ...this.sliceIdentity(job),
       printer: this.printer().name,
       filament: this.filament().name,
       layerHeight: this.settings.layerHeight,

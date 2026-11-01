@@ -22,7 +22,7 @@ These override the architecture recommendation in section 3 and the open questio
 
 ### What shipped
 
-Open and import, list and place, arrange, duplicate, separate shells, and plate undo and redo. `slice_start` slices the selected object or the whole plate. The plate body matches the app's builder, including per-object settings, overrides, modifiers, paint, support edits, reinforcement, and print order. A session slice uses the built-in machine library and the same field helpers as the app, so a Lime 220 / PLA slice carries that printer's fan and Klipper firmware.
+Open and import, list and place, arrange, duplicate, separate shells, and plate undo and redo. `slice_start` slices the selected object, or the whole plate when `scope` is `plate`. Overlapping objects stay out of a one-object slice. The plate body matches the app's builder, including per-object settings, overrides, modifiers, paint, support edits, reinforcement, and print order. A session slice uses the built-in machine library and the same field helpers as the app, so a Lime 220 / PLA slice carries that printer's fan and Klipper firmware.
 
 Settings: `settings_schema` lists keys and ranges, and `settings_set` writes many keys at once, including per-object keys. A value outside the panel's range is refused in one sentence. Profiles and the machine can be read, edited, and saved.
 

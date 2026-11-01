@@ -323,6 +323,7 @@ jobs:
           node --experimental-strip-types mcp/part-a.test.ts
           node --experimental-strip-types mcp/batch1.test.ts
           node --experimental-strip-types mcp/batch2.test.ts
+          node --experimental-strip-types mcp/slice-scope.test.ts
           node --experimental-strip-types src/paint-region.test.ts
           node --experimental-strip-types mcp/batch3.test.ts
           node --experimental-strip-types mcp/batch4.test.ts

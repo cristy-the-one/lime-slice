@@ -19,7 +19,7 @@ export const GUIDES: Guide[] = [
       "1. mesh_import {path}. The handle comes back as object.",
       "2. machine_list, then machine_select {printerId, filamentId}.",
       "3. settings_schema {query} to read a key, then settings_set {values}. Layer height is millimetres, 0.08 to 0.4.",
-      "4. slice_start. It slices the selected object, or the whole plate when more than one object is on it.",
+      "4. slice_start. It slices the selected object. scope plate slices every object on the plate, and the result says so.",
       "5. slice_wait {job} until status is done. Call it again while status is running.",
       "6. gcode_summary, then gcode_export {name} to write a file in the workspace.",
       "gcode_summary's standsOnNothing is the part beads (walls, skins, infill, bridges, gap fill) that no bead, support or belt holds: unheldMm, danglingMm for those with no held bead beside them either, longestSpanMm for the longest stretch of one path over nothing (a short bridge between walls spans a few mm; a row laid along a hollow spans all of it), and the largest patches with their layers and where each starts (plate X, Y, and Z up from the bed or belt). Floating support counts nothing; this is the measure of a roof or lip printed in the air.",
