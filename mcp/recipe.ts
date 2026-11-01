@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 /** The MCP tools a recipe may call (S4). Each goes to the function its tool uses. `log` is the host's own. */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "log",
+  "model_check", "model_history", "measure", "model_place", "object_place", "log",
 ]);
 
 export interface RecipeLimits {

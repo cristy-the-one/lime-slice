@@ -1510,13 +1510,12 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "recipe_run",
-    description: "Build a part with a Rust recipe: lust checks it, applies safe fixes, runs it; each call is the MCP tool of that name. One undo step. guide {topic:\"recipes\"}.",
+    description: "Build a part with a Rust recipe: lust checks it, applies safe fixes, runs it; each call is the MCP tool of that name. One undo step, saved. guide {topic:\"recipes\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["source"],
       properties: {
-        source: { type: "string", minLength: 1, maxLength: 100000, description: "Rust main using lime_recipe." },
+        source: { type: "string", minLength: 1, maxLength: 100000, description: "Rust main; omit, with object, to rerun." },
         name: { type: "string", minLength: 1, maxLength: 60, description: "Same name rebuilds warm." },
         params: { type: "object", description: "Session::param_* reads them." },
         object: handle,

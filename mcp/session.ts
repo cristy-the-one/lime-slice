@@ -376,6 +376,8 @@ export interface PlateObject {
   buildLog?: { base: string; start: number; steps: { key: string; node: number | null; first: number | null }[]; refused: boolean };
   /** The model_build call this object came from, before expansion: rerun it with new parameters, and saved with the project. */
   recipe?: Recipe;
+  /** The recipe_run that made this object: a key of `rustRecipes`. Saved with the project. */
+  rustRecipe?: string;
   /** Stress study. Absent until sim_setup. Not sent to the slicer. */
   sim?: ObjectStudy;
 }
@@ -386,6 +388,13 @@ interface TypedWorkplane {
   origin: [number, number, number];
   turn: [number, number, number];
   text: { origin: unknown; turn: unknown };
+}
+
+/** A recipe_run's source as it built, the parameters of its last apply, and the objects that apply made. */
+export interface RustRecipe {
+  source: string;
+  params: Record<string, unknown>;
+  objects: string[];
 }
 
 /** A model_build's base, ops, parameters, and name, as typed. */
@@ -1018,6 +1027,8 @@ export class Session {
   private piecesOffPlate: PlateObject[] = [];
   /** recipe_run's builder and runner, made on its first call. */
   private recipeHost: RecipeHost | null = null;
+  /** recipe_run sources by name, with the parameters and objects of their last apply. Saved with the project. */
+  private rustRecipes = new Map<string, RustRecipe>();
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   private recipeDepth = 0;
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
@@ -1254,8 +1265,18 @@ export class Session {
     const ready = host.available();
     if (!ready.ok) return { ok: false, reason: ready.reason };
     const mode = input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
-    const name = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : "recipe";
-    const source = lfOnly(String(input.source));
+    // --- A rerun: no source, and an object a recipe_run made. Its stored source runs again with the stored
+    // parameters under the new ones; on success the objects the last apply made are replaced.
+    let rerun: { name: string; stored: RustRecipe } | null = null;
+    if (typeof input.source !== "string") {
+      const key = typeof input.object === "string" ? this.find(input.object)?.rustRecipe : undefined;
+      const stored = key ? this.rustRecipes.get(key) : undefined;
+      if (!key || !stored) return { ok: false, reason: "Pass source, or the object of an earlier recipe_run to run its recipe again." };
+      rerun = { name: key, stored };
+    }
+    const name = rerun ? rerun.name : typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : "recipe";
+    const source = rerun ? rerun.stored.source : lfOnly(String(input.source));
+    const params = { ...(rerun?.stored.params ?? {}), ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
     this.noteStage(`building recipe ${name}`, 0);
     const built = await host.build(name, source, input.autofix !== false);
     const fixed = built.source !== source ? { fixedSource: built.source, fixRounds: built.fixRounds } : {};
@@ -1265,7 +1286,8 @@ export class Session {
     }
     if (mode === "check") return { ok: true, built: true, ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms };
 
-    const objectArg = typeof input.object === "string" ? input.object : undefined;
+    // A rerun's object names the recipe, not a part for it to change.
+    const objectArg = typeof input.object === "string" && !rerun ? input.object : undefined;
     if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
     const created: string[] = [];
     /** Parts that were on the plate before the run, with the step each stood at. */
@@ -1282,6 +1304,15 @@ export class Session {
       if (site.tool === "log") {
         if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);
         return { ok: true, result: { ok: true } };
+      }
+      // Placing changes no history step, so a run could not take it back on a part it did not make.
+      if (site.tool === "model_place" || site.tool === "object_place") {
+        const target = typeof site.args.object === "string" ? site.args.object : this.selected;
+        const align = site.args.align as { to?: unknown } | undefined;
+        const others = [site.args.to, align?.to].filter((v): v is string => typeof v === "string" && v !== "bed");
+        if (!created.includes(target) || others.some((id) => !created.includes(id))) {
+          return { ok: false, error: `${site.tool} in a recipe places only the objects this run made (solid_new), relative to each other or the bed.` };
+        }
       }
       if (site.tool !== "solid_new") touch(typeof site.args.object === "string" ? site.args.object : this.selected);
       this.noteStage(`recipe ${name}: call ${site.id} ${site.tool} (line ${site.line})`);
@@ -1300,7 +1331,7 @@ export class Session {
     };
     const printer = this.printer();
     const start = {
-      params: (input.params && typeof input.params === "object" ? input.params : {}) as Record<string, unknown>,
+      params,
       context: { units: "mm", ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
     };
     const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
@@ -1342,7 +1373,17 @@ export class Session {
       const end = obj?.tree?.current ?? null;
       if (obj && before !== null && end !== null && end !== before) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
     }
-    return { ok: true, object: out.done!.object, metrics: out.done!.metrics, ...(created.length ? { created } : {}), ...report };
+    // --- Kept with the project when the run made objects: the source as it built, these parameters, and what it made.
+    // A rerun takes the last apply's objects off the plate now that the new ones are committed.
+    const replaced = rerun ? rerun.stored.objects.filter((id) => !created.includes(id) && this.find(id)) : [];
+    for (const id of replaced) await this.objectRemove(id).catch(() => ({ ok: false }));
+    if (created.length) this.rustRecipes.set(name, { source: built.source, params, objects: [...created] });
+    // Only what the run made names it: a rerun replaces those. A part it changed keeps the steps as one undo step.
+    for (const id of created) {
+      const obj = this.find(id);
+      if (obj) obj.rustRecipe = name;
+    }
+    return { ok: true, object: out.done!.object, metrics: out.done!.metrics, ...(created.length ? { created } : {}), ...(replaced.length ? { replaced } : {}), recipe: name, ...report };
   }
 
   /** Takes a recipe run back: objects it made leave the plate, parts it changed go back to the step they stood at. */
@@ -6299,8 +6340,13 @@ export class Session {
   private mcpModelRecord(): Record<string, unknown> | null {
     const recipes: Record<string, unknown> = {};
     for (const obj of this.objects) if (obj.recipe) recipes[obj.id] = { recipe: obj.recipe, ...(obj.buildLog ? { buildLog: obj.buildLog } : {}) };
+    // A recipe_run source is kept once, by name; each object names it.
+    for (const obj of this.objects) if (obj.rustRecipe && this.rustRecipes.has(obj.rustRecipe)) recipes[obj.id] = { ...(recipes[obj.id] as object | undefined), rust: obj.rustRecipe };
+    const used = new Set(this.objects.map((obj) => obj.rustRecipe).filter((key): key is string => !!key));
+    const rustRecipes = Object.fromEntries([...this.rustRecipes].filter(([key]) => used.has(key)));
     const workplanes = Object.fromEntries(this.objects.filter((obj) => obj.workplaneTyped).map((obj) => [obj.id, obj.workplaneTyped]));
     const record = {
+      ...(Object.keys(rustRecipes).length ? { rustRecipes } : {}),
       ...(this.parts.size ? { parts: Object.fromEntries(this.parts) } : {}),
       ...(Object.keys(recipes).length ? { recipes } : {}),
       ...(Object.keys(workplanes).length ? { workplanes } : {}),
@@ -6311,7 +6357,17 @@ export class Session {
   /** A project's MCP record back into the session: what it does not understand it leaves out. */
   private adoptMcpModel(value: Record<string, unknown> | undefined): void {
     this.parts.clear();
+    this.rustRecipes.clear();
     if (!value) return;
+    const rust = value.rustRecipes;
+    if (rust && typeof rust === "object") {
+      for (const [key, saved] of Object.entries(rust)) {
+        const row = saved as Partial<RustRecipe> | null;
+        if (!row || typeof row.source !== "string") continue;
+        const objects = Array.isArray(row.objects) ? row.objects.filter((id): id is string => typeof id === "string") : [];
+        this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects });
+      }
+    }
     const parts = value.parts;
     if (parts && typeof parts === "object") {
       for (const [name, part] of Object.entries(parts)) {
@@ -6323,7 +6379,8 @@ export class Session {
     if (recipes && typeof recipes === "object") {
       for (const [id, saved] of Object.entries(recipes)) {
         const obj = this.find(id);
-        const row = saved as { recipe?: Recipe; buildLog?: PlateObject["buildLog"] } | null;
+        const row = saved as { recipe?: Recipe; buildLog?: PlateObject["buildLog"]; rust?: unknown } | null;
+        if (obj && typeof row?.rust === "string" && this.rustRecipes.has(row.rust)) obj.rustRecipe = row.rust;
         if (!obj || !row?.recipe || typeof row.recipe !== "object") continue;
         obj.recipe = row.recipe;
         if (row.buildLog && Array.isArray(row.buildLog.steps) && typeof row.buildLog.base === "string") obj.buildLog = row.buildLog;
@@ -6627,6 +6684,7 @@ export class Session {
       brep: undefined,
       buildLog: undefined,
       recipe: undefined,
+      rustRecipe: undefined,
     };
     this.objects.push(half);
     return id;

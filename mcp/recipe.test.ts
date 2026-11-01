@@ -169,6 +169,42 @@ function stub(log: RecipeCallSite[]) {
   grouped.toolGroups = new Set(["model"]);
   const logged = await grouped.call("recipe_run", { source: src(["    let p = s.solid_new(ops::cuboid(4.0, 4.0, 4.0)).unwrap();", '    s.log("made it");', "    s.done(&p);"]), name: "box" });
   check("session: log notes come back with their line", logged.ok === true && JSON.stringify(logged.notes) === JSON.stringify(["line 5: made it"]), logged);
+
+  // --- A recipe places what it made; a part it did not make it may not move.
+  const placed = src([
+    '    let n = s.param_u32("n", 2);',
+    "    let mut last = None;",
+    "    for i in 0..n {",
+    "        let p = s.solid_new(ops::cuboid(4.0, 4.0, 4.0)).unwrap();",
+    '        s.call("object_place", lime_recipe::Json::obj().set("object", p.object.as_str()).set("centreX", 20.0 + 10.0 * i as f64).set("centreY", 30.0)).unwrap();',
+    "        last = Some(p);",
+    "    }",
+    '    let pts = lime_recipe::Json::arr(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);',
+    "    let p = last.unwrap();",
+    '    s.done_with(&p, lime_recipe::Json::obj().set("outline", pts));',
+  ]);
+  const two = await call("recipe_run", { source: placed, name: "row" });
+  const listed = (await call("plate_list", {})).objects as { object: string; centreMm: number[] }[];
+  const made = (two.created as string[] | undefined) ?? [];
+  const xs = made.map((oid) => listed.find((row) => row.object === oid)?.centreMm[0]);
+  check("session: a recipe places the objects it made", two.ok === true && made.length === 2 && xs[1]! - xs[0]! === 10 && two.recipe === "row", { two, xs });
+  check("session: Json::arr takes an outline", JSON.stringify((two.metrics as { outline?: unknown }).outline) === "[[0,0],[1,0],[0,1]]", two.metrics);
+  const moveOther = await call("recipe_run", { source: src([`    s.call("object_place", lime_recipe::Json::obj().set("object", "${id}").set("centreX", 5.0)).unwrap();`]), name: "nudge" });
+  check("session: placing a part the run did not make is refused", moveOther.ok === false && /places only the objects this run made/.test(JSON.stringify(moveOther.refused)), moveOther);
+
+  // --- Saved with the project, and run again from its object with new parameters.
+  const saved = await call("project_save", { name: "recipes.lime" });
+  const doc = JSON.parse(readFileSync(join(process.env.LIME_MCP_WORKSPACE!, "recipes.lime"), "utf8")) as { mcpModel?: { rustRecipes?: Record<string, { source: string; params: Record<string, unknown>; objects: string[] }>; recipes?: Record<string, { rust?: string }> } };
+  const row = doc.mcpModel?.rustRecipes?.row;
+  check("session: the project keeps a recipe_run source once, by name", saved.ok === true && !!row && row.source.includes("object_place") && JSON.stringify(row.objects) === JSON.stringify(made) && made.every((oid) => doc.mcpModel?.recipes?.[oid]?.rust === "row"), doc.mcpModel);
+  const reopened = new Session(fakeEngine());
+  await reopened.call("project_open", { path: "recipes.lime" });
+  const three = await reopened.call("recipe_run", { object: made[0], params: { n: 3 } });
+  const after3 = ((await reopened.call("plate_list", {})).objects as { object: string }[]).map((r) => r.object);
+  check("session: a rerun from the object makes the new set and takes the old one off", three.ok === true && (three.created as string[]).length === 3 && JSON.stringify(three.replaced) === JSON.stringify(made) && made.every((oid) => !after3.includes(oid)), { three, after3 });
+  const plain = String((await reopened.call("solid_new", { primitive: "box", dx: 3, dy: 3, dz: 3 })).object);
+  const none = await reopened.call("recipe_run", { object: plain });
+  check("session: a rerun needs an object a recipe_run made", none.ok === false && /Pass source/.test(String(none.reason)), none);
 }
 
 if (failed > 0) {
