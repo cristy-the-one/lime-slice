@@ -77,19 +77,21 @@ jobs:
             engine: liblime_mcp_engine.so
             # deb is the local Linux default; the release also builds an AppImage.
             args: --bundles deb,appimage --config src-tauri/tauri.occt.json
-          - label: macos-arm
-            platform: macos-latest
-            target: aarch64-apple-darwin
-            bridge: liblime_model_occt.dylib
-            engine: liblime_mcp_engine.dylib
-            args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
-          - label: macos-intel
-            platform: macos-latest
-            target: x86_64-apple-darwin
-            bridge: liblime_model_occt.dylib
-            engine: liblime_mcp_engine.dylib
-            # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
-            args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
+          # macOS is off for now (2026-11-01): lust, which recipes need, does not build there yet (tcc Mach-O).
+          # Uncomment these two entries to build the dmgs again.
+#         - label: macos-arm
+#           platform: macos-latest
+#           target: aarch64-apple-darwin
+#           bridge: liblime_model_occt.dylib
+#           engine: liblime_mcp_engine.dylib
+#           args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
+#         - label: macos-intel
+#           platform: macos-latest
+#           target: x86_64-apple-darwin
+#           bridge: liblime_model_occt.dylib
+#           engine: liblime_mcp_engine.dylib
+#           # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
+#           args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: windows
             platform: windows-latest
             target: ""

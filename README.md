@@ -418,7 +418,7 @@ Clipper2 (`clipper2c-sys`) compiles its C++ sources with the Rust `cc` crate. Th
 
 ## Releases
 
-`.github/workflows/release.yml` builds unsigned installers when a tag named `v*` is pushed, and when someone runs the workflow by hand. The artifacts are attached to a **draft** GitHub Release. Linux is a `.deb` plus an `.AppImage` (Ubuntu 24.04). macOS is two `.dmg` files, Apple silicon and Intel, rather than one universal binary. Windows is an NSIS installer. The existing CI jobs are unchanged.
+`.github/workflows/release.yml` builds unsigned installers when a tag named `v*` is pushed, and when someone runs the workflow by hand. The artifacts are attached to a **draft** GitHub Release. Linux is a `.deb` plus an `.AppImage` (Ubuntu 24.04). macOS is off for now, because lust (which recipes need) does not build there yet; when it is back, it is two `.dmg` files, Apple silicon and Intel, rather than one universal binary. Windows is an NSIS installer. The existing CI jobs are unchanged.
 
 These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, and the AppImage is not signed either. Code signing, notarization, and the Tauri updater plugin are not part of this workflow. A later signing setup would fill these secrets; none of them are read today:
 
