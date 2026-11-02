@@ -76,6 +76,9 @@ hex side, 3 mm ribs, rounded nodes), using only the MCP's guides and one recipe 
 | Cleanup | `clean(tol)`: duplicate points, collinear points, slivers under an area |
 | Output | `Poly::to_loop() -> Json` (lines and arcs, ready for `extrude.loops`) and `Region::to_loops()` |
 
+`offset` and `round_corners` agree with the sketch card's Offset and Fillet on corners (`plan-sketch-for-people.md`
+section 7a): outside corners rounded by the distance, inside corners sharp, short edges reduced, never refused.
+
 ### I2. Lattices
 
 `lime_recipe::lattice`: `hex(side, orientation)`, `rect(pitch_u, pitch_v)`, `staggered(...)` and `along(points, count)`.
@@ -110,6 +113,9 @@ frame alongside (I7). An inset that empties the region answers with an empty `Re
 
 `s.section(origin, normal) -> Region`: the solid's cross-section at a plane, for wall and rib checks inside a
 recipe.
+
+(The sketch card's Copy edge, `plan-sketch-for-people.md` U1, copies the same outline in the app; section 7a there
+holds both to the same loops.)
 
 ### I7. Plane frames
 

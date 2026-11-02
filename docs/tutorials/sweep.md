@@ -2,7 +2,7 @@
 
 Sweep carries one closed profile along an open path. Draw the profile and the path as two sketches. The open sketch supplies whichever of the two it is, and a pinned card supplies the other. **Sweep** (W) is on the sketch card.
 
-The profile plane has to face the start of the path. A profile whose plane lies along the path is refused ("The profile lies along the path"). These examples draw the profile on YZ, whose normal is +X, and start the path on XY along +X (a line at 0°).
+The profile plane has to face the start of the path. A profile whose plane lies along the path is refused, and the sentence names the plane to use instead ("The profile and the path are on the same plane, so there is nothing to sweep. Finish this sketch, then draw the profile in a new sketch on the YZ plane, which faces where the path starts."). These examples draw the profile on YZ, whose normal is +X, and start the path on XY along +X (a line at 0°).
 
 A corner that turns more than 25° is refused ("This path has a sharp corner"). Fillet the corner, or draw the bend as a tangent arc. Shift+A starts an arc tangent to the last line: type a radius and a sweep angle. G is Fillet corner: click the two lines and type a radius.
 

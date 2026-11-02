@@ -515,7 +515,8 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    fingerprint (unit, stand-in engine, and OCCT in CI); a Playwright spec with a scripted transport (the browser
    build has no Tauri): edit a value, rebuild, undo returns the old value.
 
-7. **The Plugins panel.** D13: list, search, sections, form, Preview with Live, Apply, Save as plugin… from History,
+7. **The Plugins panel.** (Designed after `plan-sketch-for-people.md` milestones 1 and 5, so it follows the sketch
+   card's tips, demos and 1440 px layout; see that plan's section 7a.) D13: list, search, sections, form, Preview with Live, Apply, Save as plugin… from History,
    Use vN, Reveal in folder, Remove; the "Plugin author" setting; macOS read-only state (D15).
    *Ships:* the feature, for a person, end to end on Windows and Linux.
    *Tested by:* a Playwright spec on the panel (search, form ranges and units, apply lands one History row, preview
