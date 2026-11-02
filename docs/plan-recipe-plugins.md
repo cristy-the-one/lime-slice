@@ -711,7 +711,10 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
      exactly as the MCP host does on a rebuild (`preferKept`); the same text either way. A copy that is missing is one
      sentence. A kept plugin carries its own `mod ingredients` and builds as it stands.
    - **MCP change.** A run whose made tool was joined into the part (keepTool false) is now stamped: the tool left the
-     plate, so the run made or changed one part (O4). Before, it counted the tool and kept plain steps.
+     plate, so the run made or changed one part (O4). Before, it counted the tool and kept plain steps. And
+     `recipe_run {keep}` now checks the plugin (D3's dry run with its defaults) on its part as it stood before the run,
+     not on the part the run had just changed: there, pegs fused again changed nothing, a split's default plane was
+     already the part's edge, and the keep was refused on the real kernel (the stand-in engine did not show it).
    - **Refused in the window, one sentence each, because the window has no place for them yet:** a fit coupon
      (`solid_new {coupon}`, two parts with pins), an assembly (`model_place {to}` or `{assembly}`: the plate's assembly
      table), `model_check {interference}` (it reads every part on the plate), and the planners (`model_probe {plan}`).
