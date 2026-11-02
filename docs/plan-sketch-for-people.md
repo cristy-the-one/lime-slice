@@ -63,6 +63,23 @@ The reasons on greyed buttons come from `featureBlocked()` in `src/app/sketch.ts
 builders in `src/sketch/*.ts` (for example `SHARP_CORNER` and the along-path refusal in `src/sketch/sweep.ts`,
 `CROSS_REFUSAL` for revolve).
 
+### B0. Broken today: Draw-menu tools draw blind
+
+Reported by the owner on 2026-11-02: with **Circle**, nothing is drawn until the second click, and the diameter
+can't be typed (no size box in the viewport), unlike Line and Rectangle. `step-modeler.md` promises both ("The
+box shows the diameter").
+
+The tool layer has them: `drawHud` returns the Diameter field (`src/sketch/tools.ts:179`), and the ghost samples
+exist (`src/sketch/tools.ts:338`). The gap is in how `src/app/sketch.ts` shows a Draw-menu tool's ghost and size
+box. Arc, Polygon and Slot go through the same Draw-menu path and must be checked too.
+
+**Done when**, for each of Circle, Arc, Polygon, Slot and Spline:
+- the ghost follows the pointer after the first click;
+- the size box opens at the pointer with the tool's fields (Circle: diameter);
+- typing a size and pressing Enter commits it.
+
+An e2e spec per tool checks this in `test:smoke`. This is milestone 0, before anything else in this plan.
+
 ## 3. Rules every tool follows
 
 These apply to every item in sections 4 to 6, and to anything added to the sketch card later.
@@ -278,6 +295,7 @@ paths that existed before.
 Each is one PR to `main`, smallest useful first, and each updates `docs/step-modeler.md` and the matching
 tutorial.
 
+0. **B0**: Draw-menu tools show their ghost and size box while drawing (a bug fix, not a feature).
 1. **P1 + P3**: purpose tips and every reason rewritten, with red marks for open ends and sharp corners.
 2. **S1 + S2**: Sweep in one sketch and Pipe mode, the owner's blocked case.
 3. **L1 + E1**: Add a shape above, and Close the gap.
