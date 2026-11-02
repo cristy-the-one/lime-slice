@@ -89,9 +89,25 @@ test("Apply asks no second check, undo and redo ask the engine nothing, and a ty
   await page.locator("#modelToolBoolean").click();
   await expect.poll(() => calls.release !== null).toBe(true);
   await expect(apply).toBeDisabled();
+  await expect(page.locator("#modelNote")).toContainText("Checking");
+  // The note stops saying "Checking" when the answer lands. Watched in the page, Apply must already be on by then:
+  // not on a later timer or frame. A wall-clock budget here measured the CI runner's load and failed on slow runs.
+  await page.evaluate(() => {
+    const note = document.querySelector("#modelNote")!;
+    const button = document.querySelector<HTMLButtonElement>("#modelApply")!;
+    (window as unknown as { applyOnLanding: Promise<boolean> }).applyOnLanding = new Promise((resolve) => {
+      const watch = new MutationObserver(() => {
+        if (note.textContent?.includes("Checking")) return;
+        watch.disconnect();
+        resolve(!button.disabled);
+      });
+      watch.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+    });
+  });
   calls.holdProbes = false;
   calls.release?.();
-  await expect(apply, "Apply is on as soon as the answer lands").toBeEnabled({ timeout: 250 });
+  expect(await page.evaluate(() => (window as unknown as { applyOnLanding: Promise<boolean> }).applyOnLanding), "Apply is on as soon as the answer lands").toBe(true);
+  await expect(apply).toBeEnabled();
   expect(calls.probes).toBe(1);
 
   await apply.click();
