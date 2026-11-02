@@ -18,6 +18,8 @@ import {
   finishSketch,
   redoSketch,
   reopenSketch,
+  rubber,
+  sketchDimensions,
   sketchKey,
   sketchOff,
   sketchPointer,
@@ -212,6 +214,30 @@ function editing(sketch: SketchData, tool: SketchTool = "select"): SketchEditor 
   eq("a dragged circle is centred on the press", sketchOf(circle).entities.map((entity) => (entity.kind === "circle" ? Math.round(entity.radius) : -1)), [6]);
   const small = drag(open(), [0, 0], [0.5, 0.25]);
   eq("a press that hardly moved is still one click", sketchOf(small).entities.length, 0);
+}
+
+// --- A14b. While the button is held, a click tool's shape and its size box are already there (owner, 2026-11-02:
+// a dragged circle only appeared on release, and its diameter could not be typed). ---
+{
+  let held = sketchPointer(withTool(open(), "circle"), pointer("down", [0, 0]), env);
+  held = sketchPointer(held, pointer("move", [6, 0]), env);
+  eq("a held drag already draws the circle", (rubber(held)?.length ?? 0) > 8, true);
+  eq("a held drag opens the diameter box", sketchDimensions(held)?.fields.map((field) => [field.id, Math.round(field.value)]), [["diameter", 12]]);
+  eq("nothing is kept before the release", sketchOf(held).entities.length, 0);
+  const typed = commitSizes(held, [20]);
+  eq("a diameter typed during the drag is kept", sketchOf(typed).entities.map((entity) => (entity.kind === "circle" ? Math.round(entity.radius) : -1)), [10]);
+  const released = sketchPointer(typed, pointer("up", [6, 0]), env);
+  eq("the release after a typed size adds nothing", { entities: sketchOf(released).entities.length, open: released.draw.gesture }, { entities: 1, open: null });
+  const clicked = click(click(withTool(open(), "circle"), [0, 0]), [4, 0]);
+  eq("click, move, click still draws a circle", sketchOf(clicked).entities.map((entity) => (entity.kind === "circle" ? Math.round(entity.radius) : -1)), [4]);
+  let line = sketchPointer(open(), pointer("down", [0, 0]), env);
+  line = sketchPointer(line, pointer("move", [10, 0]), env);
+  eq("a held line drag shows its length", sketchDimensions(line)?.fields[0]?.id, "length");
+  for (const tool of ["arc", "polygon", "slot"] as const) {
+    let shape = sketchPointer(withTool(open(), tool), pointer("down", [0, 0]), env);
+    shape = sketchPointer(shape, pointer("move", [8, 2]), env);
+    eq(`a held ${tool} drag already shows something`, rubber(shape) != null, true);
+  }
 }
 
 // --- A17. Shift and a box add to the selection. ---
