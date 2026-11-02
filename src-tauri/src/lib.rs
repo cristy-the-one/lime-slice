@@ -19,6 +19,7 @@ mod bridge;
 mod open_file;
 mod prusa_http;
 mod quiet_process;
+mod recipe;
 use prusa_http::prusa_link_http;
 
 fn gcode_store() -> &'static Mutex<HashMap<String, GcodeText>> {
@@ -449,6 +450,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(window_state())
         .setup(|app| {
+            app.manage(recipe::Recipes::new(app.path().resource_dir().ok()));
             if let Ok(dir) = app.path().resource_dir() {
                 lime_model_load::add_search_dir(dir.join("occt").join("lib"));
             }
@@ -469,6 +471,12 @@ pub fn run() {
             }
             bridge::start(app.handle().clone());
             Ok(())
+        })
+        // A recipe never outlives the window (D16).
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window.state::<recipe::Recipes>().stop_all();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             slice_model,
@@ -491,7 +499,13 @@ pub fn run() {
             model_tree,
             prusa_link_http,
             bridge::bridge_ready,
-            open_file::take_launch_file
+            open_file::take_launch_file,
+            recipe::recipe_available,
+            recipe::recipe_build,
+            recipe::recipe_start,
+            recipe::recipe_send,
+            recipe::recipe_close_input,
+            recipe::recipe_kill
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");

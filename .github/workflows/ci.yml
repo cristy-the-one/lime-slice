@@ -147,6 +147,13 @@ jobs:
         timeout-minutes: 20
         run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
 
+      # The app's recipe runner with a real recipe built by lust (the workspace test above skipped it without lust).
+      - name: Recipe runner with lust
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: cargo test -p lime-recipe-runner --locked
+
       - name: MCP server against real Open CASCADE
         timeout-minutes: 25
         env:
@@ -436,6 +443,13 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/recipe.test.ts
+
+      # The app's recipe runner on Windows: the job object's memory cap and kill, and a real recipe built by lust.
+      - name: Recipe runner
+        timeout-minutes: 15
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: cargo test -p lime-recipe-runner --locked
 
       # The same calls under lust and rustc for the crate's geometry: their libm differ here in the last bit.
       - name: Recipe geometry, lust against rustc
