@@ -10,15 +10,21 @@
  * Nothing here knows the plate. Rollback and commit belong to the caller, which sees every call.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** The MCP tools a recipe may call (S4). Each goes to the function its tool uses. `log` is the host's own. */
+import { workspaceRoot } from "./workspace.ts";
+
+/**
+ * The MCP tools a recipe may call (S4). Each goes to the function its tool uses. `log` and `data` (recipe data by name,
+ * R-A) are the host's own.
+ */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log",
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data",
 ]);
 
 export interface RecipeLimits {
@@ -64,8 +70,11 @@ export interface RecipeCallSite {
   line: number;
 }
 
-/** The caller's answer: the tool's result, or a refusal sentence (with any hint fields to pass on). */
-export type RecipeReply = { ok: true; result: unknown } | { ok: false; error: string; extra?: Record<string, unknown> };
+/**
+ * The caller's answer: the tool's result, or a refusal sentence (with any hint fields to pass on). `halt` ends the run
+ * after this call without a failure (a partial dry run's step limit, I23): the recipe gets no reply and is stopped.
+ */
+export type RecipeReply = { ok: true; result: unknown; halt?: string } | { ok: false; error: string; extra?: Record<string, unknown> };
 
 export type RecipeCall = (call: RecipeCallSite) => Promise<RecipeReply>;
 
@@ -80,6 +89,8 @@ export interface RunOutcome {
   reason?: string;
   /** The recipe line the failure points at: a panic's, or the last refused call's. */
   line?: number;
+  /** The caller halted the run after a call (RecipeReply.halt): why, and that call's id and recipe line. */
+  halted?: { reason: string; id: number; line: number };
   exitCode?: number | null;
   stderr: string;
   ms: number;
@@ -248,6 +259,7 @@ export class RecipeHost {
     let stderr = "";
     let buffer = "";
     let failure: { reason: string; line?: number } | null = null;
+    let halted: RunOutcome["halted"];
     let done: RunOutcome["done"];
     let queue: Promise<void> = Promise.resolve();
     return new Promise((resolve) => {
@@ -256,8 +268,8 @@ export class RecipeHost {
         signal?.removeEventListener("abort", onAbort);
         const panic = panicOf(stderr);
         const lastRefused = refused[refused.length - 1];
-        let reason = failure?.reason;
-        let line = failure?.line;
+        let reason = failure?.reason ?? halted?.reason;
+        let line = failure?.line ?? halted?.line;
         if (!reason && !done) {
           if (panic) {
             reason = `The recipe panicked at line ${panic.line}: ${panic.message}`;
@@ -269,7 +281,7 @@ export class RecipeHost {
           }
           if (line === undefined && lastRefused) line = lastRefused.line;
         }
-        resolve({ ok: !reason && !!done, ...(done ? { done } : {}), calls, refused, ...(reason ? { reason } : {}), ...(line !== undefined ? { line } : {}), exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started });
+        resolve({ ok: !reason && !!done, ...(done ? { done } : {}), calls, refused, ...(reason ? { reason } : {}), ...(line !== undefined ? { line } : {}), ...(halted && !failure ? { halted } : {}), exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started });
       };
       const stop = (reason: string, line?: number) => {
         if (!failure) failure = { reason, ...(line !== undefined ? { line } : {}) };
@@ -299,7 +311,7 @@ export class RecipeHost {
         if (!child.stdin.destroyed) child.stdin.write(`${text}\n`);
       };
       const handle = async (line: string): Promise<void> => {
-        if (failure || done || line.trim() === "") return;
+        if (failure || halted || done || line.trim() === "") return;
         if (Buffer.byteLength(line) > limits.maxLineBytes) return stop(`A recipe line passed ${limits.maxLineBytes} bytes.`);
         let msg: Record<string, unknown>;
         try {
@@ -330,6 +342,11 @@ export class RecipeHost {
           }
         }
         if (failure) return;
+        if (answer.ok && answer.halt) {
+          halted = { reason: answer.halt, id, line: site.line };
+          child.kill();
+          return;
+        }
         if (answer.ok) {
           reply(JSON.stringify({ id, ok: true, result: answer.result ?? null }));
         } else {
@@ -376,6 +393,103 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, limitMs = BUIL
     child.on("close", (code) => finish(code));
     child.on("exit", (code) => setTimeout(() => finish(code), 200));
   });
+}
+
+/** Recipe data as a run read it: the parsed value, its file's size and SHA-256. */
+export interface RecipeData {
+  sha256: string;
+  bytes: number;
+  value: unknown;
+}
+
+/** The largest recipe source or data file read from the workspace. */
+const RECIPE_FILE_MAX_BYTES = 4 * 1024 * 1024;
+const DATA_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]*(\/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$/;
+
+/** A regular file under `root`, by its real path, or null when it is missing or leaves the root. */
+function fileUnder(root: string, rel: string): string | null {
+  const full = resolve(root, rel);
+  let real: string;
+  try {
+    real = realpathSync(full);
+  } catch {
+    return null;
+  }
+  const back = relative(root, real);
+  if (back === "" || back.startsWith("..") || isAbsolute(back)) return null;
+  return statSync(real).isFile() ? real : null;
+}
+
+/** --- R-A. A recipe's source from a `.rs` file in the MCP workspace, so a rerun after an edit sends only the path. */
+export function recipeSourceFile(path: string): { text: string; stem: string; path: string } | { reason: string } {
+  const root = workspaceRoot();
+  if (!root) return { reason: "path reads a .rs file in LIME_MCP_WORKSPACE, which this server does not have. Pass source instead." };
+  if (!path.toLowerCase().endsWith(".rs") || path.includes("\0")) return { reason: "path names a .rs file in the workspace." };
+  const real = fileUnder(root, path);
+  if (!real) return { reason: `There is no ${path} in the workspace (${root}).` };
+  if (statSync(real).size > RECIPE_FILE_MAX_BYTES) return { reason: `${path} is larger than ${RECIPE_FILE_MAX_BYTES / (1024 * 1024)} MB.` };
+  return { text: readFileSync(real, "utf8"), stem: basename(real, extname(real)), path };
+}
+
+/** A CSV as rows of cells: numbers where a cell reads as one, else text. A file of one column is one list. */
+export function parseCsv(text: string): unknown[] {
+  const rows = lfOnly(text).split("\n").filter((line) => line.trim() !== "").map((line) => line.split(",").map((cell) => {
+    const trimmed = cell.trim();
+    const n = Number(trimmed);
+    return trimmed !== "" && Number.isFinite(n) ? n : trimmed;
+  }));
+  return rows.every((row) => row.length === 1) ? rows.map((row) => row[0]) : rows;
+}
+
+/**
+ * --- R-A. Recipe data by name: `<name>.json` or `<name>.csv` (or the name with its extension) in the MCP workspace.
+ * The host reads it, so the recipe stays without files (S13). Null when there is no such file.
+ */
+export function recipeDataFile(name: string): RecipeData | { reason: string } | null {
+  if (!DATA_NAME.test(name) || name.split("/").includes("..")) return { reason: `${name || "(no name)"} is not a data name: letters, digits, _ . - and / between parts.` };
+  const root = workspaceRoot();
+  if (!root) return { reason: "Recipe data is read from LIME_MCP_WORKSPACE, which this server does not have." };
+  const lower = name.toLowerCase();
+  const tries = lower.endsWith(".json") || lower.endsWith(".csv") ? [name] : [`${name}.json`, `${name}.csv`];
+  for (const rel of tries) {
+    const real = fileUnder(root, rel);
+    if (!real) continue;
+    const bytes = readFileSync(real);
+    if (bytes.byteLength > RECIPE_FILE_MAX_BYTES) return { reason: `${rel} is larger than ${RECIPE_FILE_MAX_BYTES / (1024 * 1024)} MB.` };
+    const text = bytes.toString("utf8");
+    let value: unknown;
+    if (rel.toLowerCase().endsWith(".csv")) value = parseCsv(text);
+    else {
+      try {
+        value = JSON.parse(text);
+      } catch (err) {
+        return { reason: `${rel} is not JSON: ${err instanceof Error ? err.message : String(err)}` };
+      }
+    }
+    return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength, value };
+  }
+  return null;
+}
+
+/** The refusal for a data name with no file: the names the workspace has, at most 20. */
+export function recipeDataMissing(name: string): string {
+  const root = workspaceRoot();
+  const names: string[] = [];
+  const walk = (dir: string, prefix: string, depth: number) => {
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (names.length >= 20) return;
+      if (entry.isDirectory() && depth < 2) walk(join(dir, entry.name), `${prefix}${entry.name}/`, depth + 1);
+      else if (entry.isFile() && /\.(json|csv)$/i.test(entry.name) && !/\.lime(machine|profile)\.json$/i.test(entry.name)) names.push(`${prefix}${entry.name.replace(/\.(json|csv)$/i, "")}`);
+    }
+  };
+  if (root) walk(root, "", 0);
+  return `No recipe data is named ${name}: write ${name}.json or ${name}.csv into the workspace${root ? ` (${root})` : ""}.${names.length ? ` It has: ${names.join(", ")}.` : ""}`;
 }
 
 /** lust's `--json` lines, the diagnostics of the recipe file first. */

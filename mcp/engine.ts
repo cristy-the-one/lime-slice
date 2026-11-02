@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type ChildProcess, fork } from "node:child_process";
+import { totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { encodePaths } from "../src/preview-wire.ts";
@@ -43,6 +44,44 @@ export class ProtocolError extends Error {
     super(message);
     this.name = "ProtocolError";
   }
+}
+
+/**
+ * --- R-C. An engine process ended under a call it did not kill: a crash in the kernel, a stack overflow, or the memory
+ * cap. `why` says which in plain words. The process is started again on the next call; what it held open is gone.
+ */
+export class EngineStopped extends ProtocolError {
+  readonly why: string;
+  readonly role: string;
+  constructor(role: string, why: string) {
+    super(`The engine stopped (${why}). The next call starts it again.`);
+    this.name = "EngineStopped";
+    this.role = role;
+    this.why = why;
+  }
+}
+
+/** The marker the engine process writes on stdout before it ends itself over the memory cap. */
+export const MEMORY_CAP_MARK = "lime-mcp-engine: memory cap ";
+
+/** Why an engine process ended, from its exit code or signal, in words a reply can carry. */
+export function stopReason(code: number | null, signal: NodeJS.Signals | null, memoryMb?: number): string {
+  if (memoryMb !== undefined) return `it passed its memory cap of ${memoryMb >= 1024 ? `${Math.round((memoryMb / 1024) * 10) / 10} GB` : `${Math.round(memoryMb)} MB`}`;
+  const unsigned = code === null ? null : code >>> 0;
+  const known: Record<number, string> = {
+    0xc0000005: "an access violation in the kernel",
+    0xc00000fd: "a stack overflow in the kernel",
+    0xc0000409: "the kernel aborted",
+    0xc0000017: "it ran out of memory",
+    0xc000001d: "an illegal instruction in the kernel",
+    0xe06d7363: "an exception the kernel did not catch",
+  };
+  if (unsigned !== null && known[unsigned]) return known[unsigned]!;
+  if (signal === "SIGSEGV" || signal === "SIGBUS") return "a memory fault in the kernel";
+  if (signal === "SIGABRT" || code === 134) return "the kernel aborted";
+  if (signal === "SIGKILL" || code === 137) return "the system stopped it, most often for memory";
+  if (signal) return `signal ${signal}`;
+  return unsigned !== null && unsigned > 0xffff ? `exit code 0x${unsigned.toString(16).toUpperCase()}` : `exit code ${code}`;
 }
 
 export interface Engine {
@@ -205,6 +244,17 @@ export function withMesh(body: string, bytes?: Uint8Array): string {
   return JSON.stringify(parsed);
 }
 
+/**
+ * --- R-C. The memory an engine process may use before it ends itself: LIME_MCP_ENGINE_CAP_MB, else 70 % of the
+ * machine's memory for the modeler and the mesh preview. The slicer has no cap. 0 is none.
+ */
+export function engineCapMb(role: string, env: NodeJS.ProcessEnv = process.env, totalBytes = totalmem()): number {
+  if (role === "slice") return 0;
+  const set = Number(env.LIME_MCP_ENGINE_CAP_MB);
+  if (env.LIME_MCP_ENGINE_CAP_MB !== undefined && Number.isFinite(set) && set >= 0) return set;
+  return Math.round((totalBytes * 0.7) / (1024 * 1024));
+}
+
 interface WorkerCall {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -256,6 +306,7 @@ class EngineWorker {
         ...process.env,
         LIME_MCP_ENGINE_ROOT: this.root,
         LIME_MCP_ENGINE_ROLE: this.role,
+        LIME_MCP_ENGINE_CAP_MB: String(engineCapMb(this.role)),
         // An installed app's own Open CASCADE, unless the client chose another.
         ...(occt ? { LIME_OCCT_BRIDGE: occt } : {}),
       },
@@ -263,7 +314,13 @@ class EngineWorker {
       stdio: ["ignore", "pipe", "inherit", "ipc"],
     });
     children.add(child);
-    child.stdout?.pipe(process.stderr);
+    // --- R-C. The engine writes one line before it ends itself over the memory cap; the rest is passed on.
+    let memoryMb: number | undefined;
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      const at = chunk.indexOf(MEMORY_CAP_MARK);
+      if (at >= 0) memoryMb = Number.parseFloat(chunk.slice(at + MEMORY_CAP_MARK.length)) || 0;
+      process.stderr.write(chunk);
+    });
     child.on("message", (msg: { id: number; ok: boolean; result?: unknown; error?: string }) => {
       if (generation !== this.generation) return;
       if (msg.id === -1) {
@@ -283,10 +340,20 @@ class EngineWorker {
       this.pending.clear();
     };
     child.on("error", (err) => fail(err instanceof ProtocolError ? err : new ProtocolError(err.message)));
-    child.on("exit", (code) => {
+    child.on("exit", (code, signal) => {
       children.delete(child);
       if (generation !== this.generation || this.failed) return;
-      fail(new ProtocolError(`The engine stopped (code ${code}). The next call starts it again.`));
+      // The memory cap's line can still be in the pipe when the exit arrives.
+      let told = false;
+      const tell = () => {
+        if (told || generation !== this.generation || this.failed) return;
+        told = true;
+        fail(new EngineStopped(this.role, stopReason(code, signal, memoryMb)));
+      };
+      if (child.stdout && !child.stdout.readableEnded) {
+        child.stdout.once("end", tell);
+        setTimeout(tell, 200).unref();
+      } else tell();
     });
     // An idle engine does not keep the server alive; the stdio loop does.
     child.unref();
@@ -766,6 +833,12 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
           { edge: 3, case: "corner", lengthMm: 20, mid: [10, 0, 20], farFace: 4, nearFace: 1, farDeg: 25, nearDeg: 90, probe: { ok: true, transition: [wedge] } },
           { edge: 9, case: "corner", lengthMm: 12.5, mid: [0, 10, 20], farFace: 4, nearFace: 0, farDeg: 46, nearDeg: 90, curved: true, probe: { ok: false, error: "The flatter face here already grows at 46.0° to the layers, as steep as the 45° asked, so a wedge adds nothing. A steeper angle makes one." } },
         ] });
+      }
+      // --- R-C. A loft of more than four sections stops the stand-in kernel as a crash would: its trees are gone.
+      const sections = (req.op as { sections?: unknown[] } | undefined)?.sections;
+      if (process.env.LIME_MCP_FAKE_STOP_LOFT === "1" && req.op?.kind === "loft" && (req.call === "probe" || req.call === "apply") && Array.isArray(sections) && sections.length > 4) {
+        for (const lost of kept.keys()) if (!lost.includes("#")) engine.lost.add(lost);
+        return Promise.reject(new EngineStopped("model", stopReason(0xc00000fd, null)));
       }
       if (process.env.LIME_MCP_HANG_MODEL === "1" && req.op?.kind === "fillet" && (req.call === "probe" || req.call === "apply") && !engine.hung) {
         engine.hung = true;
