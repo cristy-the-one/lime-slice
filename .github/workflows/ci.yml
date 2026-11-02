@@ -365,6 +365,7 @@ jobs:
           node --experimental-strip-types src/paint-region.test.ts
           node --experimental-strip-types mcp/batch3.test.ts
           node --experimental-strip-types mcp/batch4.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
@@ -422,6 +423,13 @@ jobs:
           $lust = bash tools/lust/install.sh "$env:RUNNER_TEMP/lust" | Select-Object -Last 1
           if ($LASTEXITCODE -ne 0) { throw "tools/lust/install.sh failed" }
           Add-Content -Path $env:GITHUB_ENV -Value "LIME_LUST=$lust"
+
+      # A recipe's own sin, cos, exp, ln...: the same bits under lust and rustc (the UCRT's, on Windows).
+      - name: Recipe float maths, lust against rustc
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/recipe-floatmath.test.ts
 
       - name: Recipes
         timeout-minutes: 10
