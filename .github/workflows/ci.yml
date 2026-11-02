@@ -365,6 +365,7 @@ jobs:
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
 
   mcp-windows:
     name: MCP server (Windows)
@@ -429,6 +430,13 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/recipe-geom2d.test.ts
+
+      # Plugins: keep a recipe, find it, run it by id, versions, describe mode, own parts only.
+      - name: Recipe plugins
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/plugin.test.ts
 
   mcp-macos:
     name: MCP server (macOS)
