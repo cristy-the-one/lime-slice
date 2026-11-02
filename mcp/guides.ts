@@ -311,6 +311,32 @@ GUIDES.push({
     "    s.done_with(&part, Json::obj().set(\"holes\", n));",
     "}",
     "The language is lust's subset of Rust: std collections, closures, traits, generics, iterators, format!, f64 math. A recipe that builds under lust builds and runs the same under Cargo against the same crate.",
+    "2D geometry is in the crate, tested: lime_recipe::geom2d (polygons, regions with holes, booleans, offsets, rounded corners, loops JSON) and lime_recipe::lattice (hex, square, brick, triangle cells clipped to a region). guide {topic:\"ingredients\"} lists them. Use them instead of writing clipping or corner code.",
+  ].join("\n"),
+});
+
+GUIDES.push({
+  uri: "lime://guide/ingredients",
+  name: "Recipe ingredients",
+  tools: ["recipe_run"],
+  text: [
+    "Standard ingredients in lime_recipe for a recipe's 2D work. Pure functions, no calls; the same bits under lust and rustc. Sizes in mm, angles in degrees. Pt is [f64; 2].",
+    "use lime_recipe::geom2d::{rect, rounded_rect, circle, regular, Size, Poly, Region, Profile, Corner}; use lime_recipe::lattice::{hex, Orient};",
+    "Shapes: rect(w, h) and circle(r, segments) around the origin; regular(sides, Size::Side(s) | Size::Across(flats) | Size::Corners(d), centre, rot_deg); rounded_rect(w, h, r) -> Profile; Poly::new(vec![[x, y], ...]).",
+    "Poly: area() (signed, counter-clockwise positive), perimeter(), centroid(), bbox() -> [min, max], is_convex(), contains(p), translate(dx, dy), rotate(deg, about), reversed(), clean(tol), region(), to_loop().",
+    "Region (outlines counter-clockwise, holes clockwise; concave, touching and overlapping edges are fine): Region::from_poly(&p), Region::with_holes(&outer, &holes), Region::from_loops(&loops) (even-odd), Region::empty(). a.union(&b), a.intersect(&b), a.difference(&b), a.xor(&b), a.clip(&poly) (an intersect, fast for a small shape on a big region).",
+    "Region measures: area() (holes off), perimeter(), centroid(), bbox(), contains(p), loops(), pieces() (one outline with its holes each), is_empty(); without_small(min_area), clean(tol), translate, rotate.",
+    "Offsets: r.offset(d) -> Profile grows by d (shrinks when negative): an outside corner is rounded with radius |d| about the old corner, an inside corner stays sharp, a corner with edges too short gets a smaller radius (Corner::Reduced), never a refusal. r.offset_miter(d) -> Region keeps every corner sharp, for more booleans.",
+    "Corners: p.round_corners(r), p.chamfer_corners(d), p.round_corners_with(r, max_share, min_r) (a corner uses at most max_share of each edge; under min_r it stays sharp); the same on Region. Each gives a Profile whose corners list says Corner::Full, Corner::Reduced(r) or Corner::Sharp per corner, and counts() gives [full, reduced, sharp].",
+    "Output for extrude: poly.to_loop() and profile.to_loop() give one loop; region.to_loops() and profile.to_loops() give one loops array per separate piece (its outline, then its holes): one extrude each. profile.to_region(tol) splits arcs into edges for more booleans; profile.area() counts arcs exactly.",
+    "Lattices: hex(side, Orient::Pointy | Orient::Flat), lattice::rect(pitch_u, pitch_v), staggered(pitch_u, pitch_v, shift), tri(side), along(&path, count, cell_poly). Then .rib(t) (walls t thick between cells), .at(origin), .turned(deg), and .cells(&region, min_area) -> Vec<Cell>: index [column, row], centre, region (the cell's material inside the region), clipped, poly(), area().",
+    "Data: s.data_f64(\"name\") reads the workspace's name.json or one-column name.csv as Vec<f64>; s.data_points2(\"name\") reads [x, y] rows as Vec<[f64; 2]> for Poly::new; s.data(\"name\") gives the Json.",
+    "Example, a honeycomb floor of pockets with rounded corners:",
+    "let floor = rect(280.0, 100.0).chamfer_corners(8.0).to_region(0.0);",
+    "for c in hex(10.0, Orient::Pointy).rib(2.4).cells(&floor, 12.0) {",
+    "    let lp = c.poly().clean(0.05).round_corners_with(2.0, 0.45, 0.3).to_loop();",
+    "    s.apply(&part, Json::obj().set(\"kind\", \"extrude\").set(\"op\", \"cut\").set(\"origin\", [0.0, 0.0, 5.0]).set(\"depth\", 3.5).set(\"loops\", vec![lp])).unwrap();",
+    "}",
   ].join("\n"),
 });
 

@@ -2863,6 +2863,9 @@ dependencies = [
 [[package]]
 name = "lime-recipe"
 version = "4.9.0"
+dependencies = [
+ "lime-model-occt",
+]
 
 [[package]]
 name = "lime-shell"

@@ -106,6 +106,34 @@ impl Json {
         }
     }
 
+    /// An array of numbers, or of one-number rows (a one-column CSV), as `f64`s.
+    pub fn as_f64s(&self) -> Option<Vec<f64>> {
+        let mut out = Vec::new();
+        for item in self.as_array()?.iter() {
+            let v = match item {
+                Json::Num(n) => *n,
+                Json::Arr(row) if row.len() == 1 => row[0].as_f64()?,
+                _ => return None,
+            };
+            out.push(v);
+        }
+        Some(out)
+    }
+
+    /// An array of `[x, y]` rows (more columns are ignored), or of `{x, y}` objects, as points.
+    pub fn as_points2(&self) -> Option<Vec<[f64; 2]>> {
+        let mut out = Vec::new();
+        for item in self.as_array()?.iter() {
+            let p = match item {
+                Json::Arr(row) if row.len() >= 2 => [row[0].as_f64()?, row[1].as_f64()?],
+                Json::Obj(_) => [item.get("x")?.as_f64()?, item.get("y")?.as_f64()?],
+                _ => return None,
+            };
+            out.push(p);
+        }
+        Some(out)
+    }
+
     /// Parses one JSON text.
     pub fn parse(text: &str) -> Result<Json, String> {
         let chars: Vec<char> = text.chars().collect();
@@ -516,6 +544,28 @@ impl Session {
         self.call("model_check", Json::obj().set("object", part.object.as_str()))
     }
 
+    /// `data {name}`: the workspace's `<name>.json` as it is, or `<name>.csv` as rows of numbers.
+    #[track_caller]
+    pub fn data(&mut self, name: &str) -> Result<Json, Refusal> {
+        self.call("data", Json::obj().set("name", name))
+    }
+
+    /// `data {name}` as a list of numbers (a JSON array, or a one-column CSV).
+    #[track_caller]
+    pub fn data_f64(&mut self, name: &str) -> Result<Vec<f64>, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let d = self.data(name)?;
+        d.as_f64s().ok_or(Refusal { reason: format!("The data {name} is not a list of numbers."), line })
+    }
+
+    /// `data {name}` as points: `[x, y]` rows (a two-column CSV) or `{x, y}` objects, ready for `geom2d::Poly::new`.
+    #[track_caller]
+    pub fn data_points2(&mut self, name: &str) -> Result<Vec<[f64; 2]>, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let d = self.data(name)?;
+        d.as_points2().ok_or(Refusal { reason: format!("The data {name} is not a list of [x, y] points."), line })
+    }
+
     /// A note the host shows with the result.
     #[track_caller]
     pub fn log(&mut self, text: &str) {
@@ -577,6 +627,1569 @@ pub mod ops {
     }
 }
 
+/// 2D geometry for sketches and cell patterns: polygons, regions with holes,
+/// booleans, offsets, rounded and chamfered corners, cleanup, and the `loops`
+/// JSON `extrude` takes. Pure functions, no calls to the host.
+///
+/// A `Region` keeps every outline counter-clockwise and every hole clockwise,
+/// so material is always on the left of a loop. Booleans and offsets accept
+/// concave outlines, holes, touching edges and overlapping edges.
+pub mod geom2d {
+    use super::Json;
+    use std::collections::HashMap;
+
+    const PI: f64 = std::f64::consts::PI;
+
+    /// A point or a vector, `[x, y]` in mm.
+    pub type Pt = [f64; 2];
+
+    /// Points closer than this (mm) are one point in a boolean or an offset.
+    pub const SNAP: f64 = 1e-7;
+
+    fn sub(a: Pt, b: Pt) -> Pt {
+        [a[0] - b[0], a[1] - b[1]]
+    }
+    fn add(a: Pt, b: Pt) -> Pt {
+        [a[0] + b[0], a[1] + b[1]]
+    }
+    fn mul(a: Pt, k: f64) -> Pt {
+        [a[0] * k, a[1] * k]
+    }
+    fn dot(a: Pt, b: Pt) -> f64 {
+        a[0] * b[0] + a[1] * b[1]
+    }
+    fn cross(a: Pt, b: Pt) -> f64 {
+        a[0] * b[1] - a[1] * b[0]
+    }
+    fn len(a: Pt) -> f64 {
+        a[0].hypot(a[1])
+    }
+    fn dist(a: Pt, b: Pt) -> f64 {
+        len(sub(a, b))
+    }
+    fn norm(a: Pt) -> Pt {
+        let l = len(a);
+        if l > 0.0 { [a[0] / l, a[1] / l] } else { [0.0, 0.0] }
+    }
+    /// `x` held between `lo` and `hi`.
+    pub fn clamp(x: f64, lo: f64, hi: f64) -> f64 {
+        if x < lo {
+            lo
+        } else if x > hi {
+            hi
+        } else {
+            x
+        }
+    }
+
+    fn turn(p: Pt, deg: f64) -> Pt {
+        let (s, c) = sin_cos_deg(deg);
+        [p[0] * c - p[1] * s, p[0] * s + p[1] * c]
+    }
+
+    // Trigonometry from + - * / and sqrt only (fdlibm's kernels), so a recipe gets the same bits under
+    // lust and rustc: their libm sin, cos, tan, atan2 and acos differ in the last bit for some inputs.
+
+    #[allow(clippy::excessive_precision)]
+    fn k_sin(x: f64) -> f64 {
+        let z = x * x;
+        let r = 0.00833333333332249 + z * (-0.0001984126982985795 + z * (2.7557313707070068e-06 + z * (-2.5050760253406863e-08 + z * 1.58969099521155e-10)));
+        x + z * x * (-0.16666666666666632 + z * r)
+    }
+
+    #[allow(clippy::excessive_precision)]
+    fn k_cos(x: f64) -> f64 {
+        let z = x * x;
+        let r = z * (0.0416666666666666 + z * (-0.001388888888887411 + z * (2.480158728947673e-05 + z * (-2.7557314351390663e-07 + z * (2.087572321298175e-09 + z * -1.1359647557788195e-11)))));
+        let hz = 0.5 * z;
+        let w = 1.0 - hz;
+        w + (((1.0 - w) - hz) + z * r)
+    }
+
+    /// `(sin, cos)` of `n` quarter turns plus `r` (within ±π/4).
+    fn quadrant(n: i64, r: f64) -> (f64, f64) {
+        let (s, c) = (k_sin(r), k_cos(r));
+        let (s, c) = match n.rem_euclid(4) {
+            0 => (s, c),
+            1 => (c, -s),
+            2 => (-s, -c),
+            _ => (-c, s),
+        };
+        (s + 0.0, c + 0.0)
+    }
+
+    /// `(sin, cos)` of an angle in degrees, exact at multiples of 90°, with the same bits under lust and rustc.
+    pub fn sin_cos_deg(deg: f64) -> (f64, f64) {
+        let n = (deg / 90.0).round();
+        let r = (deg - 90.0 * n) * (PI / 180.0);
+        quadrant(n as i64, r)
+    }
+
+    fn sin_cos(x: f64) -> (f64, f64) {
+        let n = (x * (2.0 / PI)).round();
+        let r = (x - n * 1.5707963267341256) - n * 6.077100506506192e-11;
+        quadrant(n as i64, r)
+    }
+
+    #[allow(clippy::excessive_precision, clippy::approx_constant)]
+    fn atan(x: f64) -> f64 {
+        const HI: [f64; 4] = [0.4636476090008061, 0.7853981633974483, 0.982793723247329, 1.5707963267948966];
+        const LO: [f64; 4] = [2.2698777452961687e-17, 3.061616997868383e-17, 1.3903311031230998e-17, 6.123233995736766e-17];
+        let neg = x < 0.0;
+        let mut a = x.abs();
+        if a >= 7.378697629483821e19 {
+            return if neg { -HI[3] - LO[3] } else { HI[3] + LO[3] };
+        }
+        let id: i32 = if a < 0.4375 {
+            -1
+        } else if a < 1.1875 {
+            if a < 0.6875 {
+                a = (2.0 * a - 1.0) / (2.0 + a);
+                0
+            } else {
+                a = (a - 1.0) / (a + 1.0);
+                1
+            }
+        } else if a < 2.4375 {
+            a = (a - 1.5) / (1.0 + 1.5 * a);
+            2
+        } else {
+            a = -1.0 / a;
+            3
+        };
+        let z = a * a;
+        let w = z * z;
+        let s1 = z * (0.3333333333333293 + w * (0.14285714272503466 + w * (0.09090887133436507 + w * (0.06661073137387531 + w * (0.049768779946159324 + w * 0.016285820115365782)))));
+        let s2 = w * (-0.19999999999876483 + w * (-0.11111110405462356 + w * (-0.0769187620504483 + w * (-0.058335701337905735 + w * -0.036531572744216916))));
+        let v = if id < 0 {
+            a - a * (s1 + s2)
+        } else {
+            let k = id as usize;
+            HI[k] - ((a * (s1 + s2) - LO[k]) - a)
+        };
+        if neg { -v } else { v }
+    }
+
+    fn atan2(y: f64, x: f64) -> f64 {
+        const PI_LO: f64 = 1.2246467991473532e-16;
+        if x == 0.0 {
+            return if y > 0.0 {
+                PI / 2.0
+            } else if y < 0.0 {
+                -PI / 2.0
+            } else {
+                0.0
+            };
+        }
+        let z = atan((y / x).abs());
+        if x > 0.0 {
+            if y < 0.0 { -z } else { z }
+        } else if y < 0.0 {
+            (z - PI_LO) - PI
+        } else {
+            PI - (z - PI_LO)
+        }
+    }
+
+    /// The parameter along a..b of the point nearest `p`, and the distance to it.
+    fn seg_near(p: Pt, a: Pt, b: Pt) -> (f64, f64) {
+        let d = sub(b, a);
+        let l2 = dot(d, d);
+        let t = if l2 > 0.0 { clamp(dot(sub(p, a), d) / l2, 0.0, 1.0) } else { 0.0 };
+        (t, dist(p, add(a, mul(d, t))))
+    }
+
+    /// Winding number of a closed point list around `p` (not on it).
+    fn winding(pts: &[Pt], p: Pt) -> i32 {
+        let n = pts.len();
+        let mut w = 0;
+        for i in 0..n {
+            let a = pts[i];
+            let b = pts[(i + 1) % n];
+            let side = cross(sub(b, a), sub(p, a));
+            if a[1] <= p[1] {
+                if b[1] > p[1] && side > 0.0 {
+                    w += 1;
+                }
+            } else if b[1] <= p[1] && side < 0.0 {
+                w -= 1;
+            }
+        }
+        w
+    }
+
+    fn on_boundary(pts: &[Pt], p: Pt) -> bool {
+        let n = pts.len();
+        (0..n).any(|i| seg_near(p, pts[i], pts[(i + 1) % n]).1 <= SNAP)
+    }
+
+    fn bbox_of(pts: &[Pt]) -> [Pt; 2] {
+        if pts.is_empty() {
+            return [[0.0, 0.0], [0.0, 0.0]];
+        }
+        let mut lo = pts[0];
+        let mut hi = pts[0];
+        for p in pts.iter() {
+            lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+            hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+        }
+        [lo, hi]
+    }
+
+    fn json_pt(p: Pt) -> Json {
+        Json::from(vec![p[0], p[1]])
+    }
+
+    /// A closed outline: the last point joins the first. Counter-clockwise has positive area.
+    #[derive(Clone, Debug, PartialEq, Default)]
+    pub struct Poly {
+        /// The corners in order.
+        pub pts: Vec<Pt>,
+    }
+
+    impl From<Vec<Pt>> for Poly {
+        fn from(pts: Vec<Pt>) -> Poly {
+            Poly::new(pts)
+        }
+    }
+
+    impl Poly {
+        /// The outline through `pts`; a last point equal to the first is dropped.
+        pub fn new(pts: Vec<Pt>) -> Poly {
+            let mut pts = pts;
+            while pts.len() > 1 && dist(pts[0], pts[pts.len() - 1]) <= SNAP {
+                pts.pop();
+            }
+            Poly { pts }
+        }
+
+        /// Signed area in mm²: positive when counter-clockwise.
+        pub fn area(&self) -> f64 {
+            let n = self.pts.len();
+            let mut s = 0.0;
+            for i in 0..n {
+                s += cross(self.pts[i], self.pts[(i + 1) % n]);
+            }
+            s * 0.5
+        }
+
+        /// Length of the closed outline in mm.
+        pub fn perimeter(&self) -> f64 {
+            let n = self.pts.len();
+            (0..n).map(|i| dist(self.pts[i], self.pts[(i + 1) % n])).fold(0.0, |s, d| s + d)
+        }
+
+        /// The centre of the enclosed area (the mean of the points when there is no area).
+        pub fn centroid(&self) -> Pt {
+            let n = self.pts.len();
+            if n == 0 {
+                return [0.0, 0.0];
+            }
+            let a = self.area();
+            if a.abs() < 1e-12 {
+                let s = self.pts.iter().fold([0.0, 0.0], |acc, p| add(acc, *p));
+                return mul(s, 1.0 / n as f64);
+            }
+            let mut c = [0.0, 0.0];
+            for i in 0..n {
+                let p = self.pts[i];
+                let q = self.pts[(i + 1) % n];
+                let k = cross(p, q);
+                c = add(c, mul(add(p, q), k));
+            }
+            mul(c, 1.0 / (6.0 * a))
+        }
+
+        /// `[min, max]` corners of the bounding box.
+        pub fn bbox(&self) -> [Pt; 2] {
+            bbox_of(&self.pts)
+        }
+
+        /// True when every corner turns the same way and the outline goes round once.
+        pub fn is_convex(&self) -> bool {
+            let n = self.pts.len();
+            if n < 3 {
+                return false;
+            }
+            let mut sign = 0.0;
+            let mut total = 0.0;
+            for i in 0..n {
+                let d1 = sub(self.pts[i], self.pts[(i + n - 1) % n]);
+                let d2 = sub(self.pts[(i + 1) % n], self.pts[i]);
+                let c = cross(d1, d2);
+                total += atan2(c, dot(d1, d2));
+                if c.abs() > 1e-12 * len(d1) * len(d2) {
+                    if sign == 0.0 {
+                        sign = c.signum();
+                    } else if c.signum() != sign {
+                        return false;
+                    }
+                }
+            }
+            (total.abs() - 2.0 * PI).abs() < 1e-6
+        }
+
+        /// True when `p` is inside or on the outline (non-zero winding).
+        pub fn contains(&self, p: Pt) -> bool {
+            on_boundary(&self.pts, p) || winding(&self.pts, p) != 0
+        }
+
+        /// The same outline the other way round.
+        pub fn reversed(&self) -> Poly {
+            let mut pts = self.pts.clone();
+            pts.reverse();
+            Poly { pts }
+        }
+
+        /// Moved by `[dx, dy]`.
+        pub fn translate(&self, dx: f64, dy: f64) -> Poly {
+            Poly { pts: self.pts.iter().map(|p| [p[0] + dx, p[1] + dy]).collect() }
+        }
+
+        /// Turned by `deg` (counter-clockwise) about `about`.
+        pub fn rotate(&self, deg: f64, about: Pt) -> Poly {
+            Poly { pts: self.pts.iter().map(|p| add(about, turn(sub(*p, about), deg))).collect() }
+        }
+
+        /// Without points closer than `tol` to the one before, without points within `tol`
+        /// of the line through their neighbours, and empty when the outline is a sliver
+        /// (thinner than `tol` on average: 2 × area / perimeter < `tol`).
+        pub fn clean(&self, tol: f64) -> Poly {
+            let mut pts: Vec<Pt> = Vec::new();
+            for p in self.pts.iter() {
+                if let Some(q) = pts.last() {
+                    if dist(*p, *q) <= tol {
+                        continue;
+                    }
+                }
+                pts.push(*p);
+            }
+            while pts.len() > 1 && dist(pts[0], pts[pts.len() - 1]) <= tol {
+                pts.pop();
+            }
+            let mut changed = true;
+            while changed && pts.len() >= 3 {
+                changed = false;
+                let mut i = 0;
+                while i < pts.len() && pts.len() >= 3 {
+                    let n = pts.len();
+                    let a = pts[(i + n - 1) % n];
+                    let b = pts[i];
+                    let c = pts[(i + 1) % n];
+                    let ac = len(sub(c, a));
+                    let off = if ac <= tol { 0.0 } else { cross(sub(c, a), sub(b, a)).abs() / ac };
+                    if off <= tol {
+                        pts.remove(i);
+                        changed = true;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            let out = Poly { pts };
+            if out.pts.len() < 3 || 2.0 * out.area().abs() < tol * out.perimeter() {
+                return Poly::default();
+            }
+            out
+        }
+
+        /// This outline as a region (a self-crossing outline keeps what it winds round).
+        pub fn region(&self) -> Region {
+            Region::from_poly(self)
+        }
+
+        /// Every corner rounded with radius `r`, shrunk where an edge is too short (see `round_corners_with`).
+        pub fn round_corners(&self, r: f64) -> Profile {
+            self.round_corners_with(r, 1.0, 0.0)
+        }
+
+        /// Every corner rounded with radius `r`. A corner may use at most `max_share` of each
+        /// edge beside it, and two corners never use more than the whole edge between them;
+        /// the radius shrinks to fit (`Corner::Reduced`). A corner whose radius would be under
+        /// `min_r`, or a straight one, stays sharp.
+        pub fn round_corners_with(&self, r: f64, max_share: f64, min_r: f64) -> Profile {
+            let radii = vec![r; self.pts.len()];
+            let (path, corners) = corner_path(self, &radii, max_share, min_r, false);
+            Profile { paths: vec![path], corners: vec![corners] }
+        }
+
+        /// Every corner cut back `d` mm along both edges, shortened where an edge is too short.
+        pub fn chamfer_corners(&self, d: f64) -> Profile {
+            let radii = vec![d; self.pts.len()];
+            let (path, corners) = corner_path(self, &radii, 1.0, 0.0, true);
+            Profile { paths: vec![path], corners: vec![corners] }
+        }
+
+        /// One loop for `extrude.loops`: `{start, segments: [{kind:"line", to}, ...]}`.
+        pub fn to_loop(&self) -> Json {
+            let n = self.pts.len();
+            if n == 0 {
+                return Json::obj().set("start", json_pt([0.0, 0.0])).set("segments", Vec::<Json>::new());
+            }
+            let mut segs: Vec<Json> = Vec::new();
+            for k in 1..=n {
+                segs.push(Json::obj().set("kind", "line").set("to", json_pt(self.pts[k % n])));
+            }
+            Json::obj().set("start", json_pt(self.pts[0])).set("segments", segs)
+        }
+    }
+
+    /// A `w` × `h` rectangle centred on the origin, counter-clockwise from the corner at (−w/2, −h/2).
+    pub fn rect(w: f64, h: f64) -> Poly {
+        let (x, y) = (w / 2.0, h / 2.0);
+        Poly { pts: vec![[-x, -y], [x, -y], [x, y], [-x, y]] }
+    }
+
+    /// `rect(w, h)` with every corner rounded with radius `r`.
+    pub fn rounded_rect(w: f64, h: f64, r: f64) -> Profile {
+        rect(w, h).round_corners(r)
+    }
+
+    /// A circle of radius `r` around the origin as `segments` straight edges, the first point on +X.
+    pub fn circle(r: f64, segments: u32) -> Poly {
+        let n = segments.max(3);
+        Poly { pts: (0..n).map(|k| { let (s, c) = sin_cos_deg(360.0 * k as f64 / n as f64); [r * c, r * s] }).collect() }
+    }
+
+    /// How big a regular polygon is.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Size {
+        /// The length of one side.
+        Side(f64),
+        /// Twice the distance from the centre to a side (across the flats, for an even count).
+        Across(f64),
+        /// Twice the distance from the centre to a corner (across the corners).
+        Corners(f64),
+    }
+
+    /// A regular polygon around `centre`, its first corner at `rot_deg` from +X, counter-clockwise.
+    pub fn regular(sides: u32, size: Size, centre: Pt, rot_deg: f64) -> Poly {
+        let n = sides.max(3);
+        let (sin_half, cos_half) = sin_cos_deg(180.0 / n as f64);
+        let r = match size {
+            Size::Side(s) => {
+                if n == 6 { s } else { s / (2.0 * sin_half) }
+            }
+            Size::Across(a) => a / 2.0 / cos_half,
+            Size::Corners(c) => c / 2.0,
+        };
+        let step = 360.0 / n as f64;
+        let pts = (0..n)
+            .map(|k| {
+                let (s, c) = sin_cos_deg(rot_deg + step * k as f64);
+                [centre[0] + r * c, centre[1] + r * s]
+            })
+            .collect();
+        Poly { pts }
+    }
+
+    /// One piece of a `Path`: a line to a point, or an arc through a point to a point.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Seg {
+        /// `Line(to)`.
+        Line(Pt),
+        /// `Arc(through, to)`.
+        Arc(Pt, Pt),
+    }
+
+    /// A closed loop of lines and arcs from `start` back to `start`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Path {
+        /// Where the loop starts and ends.
+        pub start: Pt,
+        /// The pieces in order, the last ending at `start`.
+        pub segs: Vec<Seg>,
+    }
+
+    /// Centre, radius, start angle and signed sweep of the arc from `p0` through `pm` to `p1`.
+    fn arc_of(p0: Pt, pm: Pt, p1: Pt) -> Option<(Pt, f64, f64, f64)> {
+        let b = sub(pm, p0);
+        let c = sub(p1, p0);
+        let dd = 2.0 * cross(b, c);
+        if dd.abs() < 1e-15 {
+            return None;
+        }
+        let u = [(c[1] * dot(b, b) - b[1] * dot(c, c)) / dd, (b[0] * dot(c, c) - c[0] * dot(b, b)) / dd];
+        let centre = add(p0, u);
+        let r = len(u);
+        let a0 = atan2(p0[1] - centre[1], p0[0] - centre[0]);
+        let a1 = atan2(p1[1] - centre[1], p1[0] - centre[0]);
+        let tau = 2.0 * PI;
+        let wrap = |x: f64| x - (x / tau).floor() * tau;
+        let sweep = if dd > 0.0 { wrap(a1 - a0) } else { -wrap(a0 - a1) };
+        Some((centre, r, a0, sweep))
+    }
+
+    impl Path {
+        /// The loop for `extrude.loops`: `{start, segments}` with `line` and `arc` segments.
+        pub fn to_loop(&self) -> Json {
+            let mut segs: Vec<Json> = Vec::new();
+            for s in self.segs.iter() {
+                match s {
+                    Seg::Line(to) => segs.push(Json::obj().set("kind", "line").set("to", json_pt(*to))),
+                    Seg::Arc(through, to) => {
+                        segs.push(Json::obj().set("kind", "arc").set("through", json_pt(*through)).set("to", json_pt(*to)))
+                    }
+                }
+            }
+            Json::obj().set("start", json_pt(self.start)).set("segments", segs)
+        }
+
+        /// The loop as straight edges: each arc split so no chord strays more than `tol` mm from it.
+        pub fn to_poly(&self, tol: f64) -> Poly {
+            let mut pts = vec![self.start];
+            let mut at = self.start;
+            for s in self.segs.iter() {
+                match *s {
+                    Seg::Line(to) => {
+                        pts.push(to);
+                        at = to;
+                    }
+                    Seg::Arc(through, to) => {
+                        if let Some((c, r, a0, sweep)) = arc_of(at, through, to) {
+                            let step = if tol > 0.0 && tol < r {
+                                let z = (tol / (2.0 * r)).sqrt();
+                                4.0 * atan2(z, (1.0 - z * z).sqrt())
+                            } else {
+                                PI / 2.0
+                            };
+                            let n = ((sweep.abs() / step).ceil() as usize).max(1);
+                            for k in 1..n {
+                                let a = a0 + sweep * k as f64 / n as f64;
+                                let (sa, ca) = sin_cos(a);
+                                pts.push([c[0] + r * ca, c[1] + r * sa]);
+                            }
+                        }
+                        pts.push(to);
+                        at = to;
+                    }
+                }
+            }
+            Poly::new(pts)
+        }
+
+        /// Signed area in mm², arcs counted exactly.
+        pub fn area(&self) -> f64 {
+            let mut s = 0.0;
+            let mut at = self.start;
+            for seg in self.segs.iter() {
+                let to = match *seg {
+                    Seg::Line(to) => to,
+                    Seg::Arc(through, to) => {
+                        if let Some((_, r, _, sweep)) = arc_of(at, through, to) {
+                            s += r * r * (sweep - sin_cos(sweep).0);
+                        }
+                        to
+                    }
+                };
+                s += cross(at, to);
+                at = to;
+            }
+            s * 0.5
+        }
+    }
+
+    /// What became of one corner when rounding or chamfering.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Corner {
+        /// The size asked for.
+        Full,
+        /// A smaller size (the radius or the cut-back that fitted).
+        Reduced(f64),
+        /// Left sharp: not asked for, straight, or the fitted size was under the minimum.
+        Sharp,
+    }
+
+    /// Loops of lines and arcs, outlines counter-clockwise and holes clockwise, each outline
+    /// followed by its holes; `corners` reports each loop's corners in point order.
+    #[derive(Clone, Debug, PartialEq, Default)]
+    pub struct Profile {
+        /// The loops.
+        pub paths: Vec<Path>,
+        /// What became of each corner, one list per loop.
+        pub corners: Vec<Vec<Corner>>,
+    }
+
+    impl Profile {
+        /// The first loop, for an `extrude` of one outline with no holes.
+        pub fn to_loop(&self) -> Json {
+            match self.paths.first() {
+                Some(p) => p.to_loop(),
+                None => Poly::default().to_loop(),
+            }
+        }
+
+        /// One `loops` array per separate piece: its outline first, then its holes.
+        pub fn to_loops(&self) -> Vec<Json> {
+            let mut out: Vec<Json> = Vec::new();
+            let mut cur: Vec<Json> = Vec::new();
+            for p in self.paths.iter() {
+                if p.area() > 0.0 && !cur.is_empty() {
+                    out.push(Json::Arr(cur));
+                    cur = Vec::new();
+                }
+                cur.push(p.to_loop());
+            }
+            if !cur.is_empty() {
+                out.push(Json::Arr(cur));
+            }
+            out
+        }
+
+        /// The area in mm², arcs counted exactly.
+        pub fn area(&self) -> f64 {
+            self.paths.iter().map(|p| p.area()).fold(0.0, |s, a| s + a)
+        }
+
+        /// As a region of straight edges, arcs split to `tol` mm, for more booleans.
+        pub fn to_region(&self, tol: f64) -> Region {
+            let polys: Vec<Poly> = self.paths.iter().map(|p| p.to_poly(tol)).collect();
+            resolve(&polys, &[], Fill::Positive)
+        }
+
+        /// How many corners came out `[full, reduced, sharp]`.
+        pub fn counts(&self) -> [usize; 3] {
+            let mut c = [0, 0, 0];
+            for loop_corners in self.corners.iter() {
+                for k in loop_corners.iter() {
+                    match k {
+                        Corner::Full => c[0] += 1,
+                        Corner::Reduced(_) => c[1] += 1,
+                        Corner::Sharp => c[2] += 1,
+                    }
+                }
+            }
+            c
+        }
+    }
+
+    /// Rounds (or chamfers) each corner `i` of `poly` with `radii[i]` (0 leaves it sharp).
+    fn corner_path(poly: &Poly, radii: &[f64], max_share: f64, min_r: f64, chamfer: bool) -> (Path, Vec<Corner>) {
+        let n = poly.pts.len();
+        if n < 3 {
+            let start = poly.pts.first().copied().unwrap_or([0.0, 0.0]);
+            let segs = poly.pts.iter().skip(1).map(|p| Seg::Line(*p)).collect();
+            return (Path { start, segs }, vec![Corner::Sharp; n]);
+        }
+        let mut rr: Vec<f64> = vec![0.0; n];
+        let mut tl: Vec<f64> = vec![0.0; n];
+        let mut tan_half: Vec<f64> = vec![0.0; n];
+        let mut bis: Vec<Pt> = vec![[0.0, 0.0]; n];
+        let mut sin_half: Vec<f64> = vec![0.0; n];
+        for i in 0..n {
+            let v = poly.pts[i];
+            let pv = poly.pts[(i + n - 1) % n];
+            let nx = poly.pts[(i + 1) % n];
+            let e1 = len(sub(pv, v));
+            let e2 = len(sub(nx, v));
+            let u1 = norm(sub(pv, v));
+            let u2 = norm(sub(nx, v));
+            let c = clamp(dot(u1, u2), -1.0, 1.0);
+            let s = cross(u1, u2).abs();
+            bis[i] = norm(add(u1, u2));
+            let r = radii[i];
+            if r <= 0.0 || s < 1e-9 {
+                continue;
+            }
+            if c >= 0.0 {
+                tan_half[i] = s / (1.0 + c);
+                sin_half[i] = s / (2.0 * ((1.0 + c) / 2.0).sqrt());
+            } else {
+                tan_half[i] = (1.0 - c) / s;
+                sin_half[i] = ((1.0 - c) / 2.0).sqrt();
+            }
+            let room = max_share * e1.min(e2);
+            if chamfer {
+                rr[i] = r.min(room);
+                tl[i] = rr[i];
+            } else {
+                rr[i] = r.min(room * tan_half[i]);
+                tl[i] = rr[i] / tan_half[i];
+            }
+        }
+        let mut fit = vec![1.0; n];
+        for i in 0..n {
+            let j = (i + 1) % n;
+            let l = len(sub(poly.pts[j], poly.pts[i]));
+            let need = tl[i] + tl[j];
+            if need > l && need > 0.0 {
+                let f = l / need;
+                fit[i] = f64::min(fit[i], f);
+                fit[j] = f64::min(fit[j], f);
+            }
+        }
+        let mut ins: Vec<Pt> = Vec::new();
+        let mut outs: Vec<Pt> = Vec::new();
+        let mut mids: Vec<Option<Pt>> = Vec::new();
+        let mut corners: Vec<Corner> = Vec::new();
+        for i in 0..n {
+            let v = poly.pts[i];
+            if fit[i] < 1.0 {
+                rr[i] *= fit[i];
+                tl[i] *= fit[i];
+            }
+            if tl[i] <= 0.0 || rr[i] < min_r || rr[i] < 1e-9 {
+                ins.push(v);
+                outs.push(v);
+                mids.push(None);
+                corners.push(Corner::Sharp);
+                continue;
+            }
+            let u1 = norm(sub(poly.pts[(i + n - 1) % n], v));
+            let u2 = norm(sub(poly.pts[(i + 1) % n], v));
+            let d = if chamfer { rr[i] } else { rr[i] / tan_half[i] };
+            ins.push(add(v, mul(u1, d)));
+            outs.push(add(v, mul(u2, d)));
+            if chamfer {
+                mids.push(None);
+            } else {
+                mids.push(Some(add(v, mul(bis[i], rr[i] / sin_half[i] - rr[i]))));
+            }
+            corners.push(if rr[i] >= radii[i] * (1.0 - 1e-9) { Corner::Full } else { Corner::Reduced(rr[i]) });
+        }
+        let mut segs: Vec<Seg> = Vec::new();
+        for k in 1..=n {
+            let i = k % n;
+            segs.push(Seg::Line(ins[i]));
+            match mids[i] {
+                Some(m) => segs.push(Seg::Arc(m, outs[i])),
+                None => {
+                    if dist(ins[i], outs[i]) > 0.0 {
+                        segs.push(Seg::Line(outs[i]));
+                    }
+                }
+            }
+        }
+        (Path { start: outs[0], segs }, corners)
+    }
+
+    /// A 2D area: outlines with holes. Outlines run counter-clockwise, holes clockwise, and
+    /// each outline comes before its holes. Build one with `from_poly`, `with_holes`,
+    /// `from_loops`, or a boolean.
+    #[derive(Clone, Debug, PartialEq, Default)]
+    pub struct Region {
+        loops: Vec<Poly>,
+    }
+
+    impl From<Poly> for Region {
+        fn from(p: Poly) -> Region {
+            Region::from_poly(&p)
+        }
+    }
+
+    impl Region {
+        /// No area.
+        pub fn empty() -> Region {
+            Region { loops: Vec::new() }
+        }
+
+        /// The area an outline winds round, in either direction.
+        pub fn from_poly(p: &Poly) -> Region {
+            let p = if p.area() < 0.0 { p.reversed() } else { p.clone() };
+            resolve(&[p], &[], Fill::NonZero)
+        }
+
+        /// `outer` with `holes` taken out (either direction for each).
+        pub fn with_holes(outer: &Poly, holes: &[Poly]) -> Region {
+            let mut loops = vec![if outer.area() < 0.0 { outer.reversed() } else { outer.clone() }];
+            for h in holes.iter() {
+                loops.push(if h.area() > 0.0 { h.reversed() } else { h.clone() });
+            }
+            resolve(&loops, &[], Fill::Positive)
+        }
+
+        /// Loops nested any way, in any direction: inside an odd number of them is material.
+        pub fn from_loops(loops: &[Poly]) -> Region {
+            resolve(loops, &[], Fill::EvenOdd)
+        }
+
+        /// The loops: each outline (counter-clockwise) followed by its holes (clockwise).
+        pub fn loops(&self) -> &Vec<Poly> {
+            &self.loops
+        }
+
+        /// True when there is no area.
+        pub fn is_empty(&self) -> bool {
+            self.loops.is_empty()
+        }
+
+        /// The separate pieces, each one outline with its holes.
+        pub fn pieces(&self) -> Vec<Region> {
+            let mut out: Vec<Region> = Vec::new();
+            for l in self.loops.iter() {
+                if l.area() > 0.0 || out.is_empty() {
+                    out.push(Region { loops: vec![l.clone()] });
+                } else if let Some(last) = out.last_mut() {
+                    last.loops.push(l.clone());
+                }
+            }
+            out
+        }
+
+        /// Net area in mm² (holes taken off).
+        pub fn area(&self) -> f64 {
+            self.loops.iter().map(|l| l.area()).fold(0.0, |s, a| s + a)
+        }
+
+        /// Length of every outline and hole in mm.
+        pub fn perimeter(&self) -> f64 {
+            self.loops.iter().map(|l| l.perimeter()).fold(0.0, |s, p| s + p)
+        }
+
+        /// The centre of the area.
+        pub fn centroid(&self) -> Pt {
+            let a = self.area();
+            if a.abs() < 1e-12 {
+                return self.loops.first().map(|l| l.centroid()).unwrap_or([0.0, 0.0]);
+            }
+            let mut c = [0.0, 0.0];
+            for l in self.loops.iter() {
+                c = add(c, mul(l.centroid(), l.area()));
+            }
+            mul(c, 1.0 / a)
+        }
+
+        /// `[min, max]` corners of the bounding box.
+        pub fn bbox(&self) -> [Pt; 2] {
+            let pts: Vec<Pt> = self.loops.iter().flat_map(|l| l.pts.iter().copied()).collect();
+            bbox_of(&pts)
+        }
+
+        /// True when `p` is in the material or on its edge.
+        pub fn contains(&self, p: Pt) -> bool {
+            if self.loops.iter().any(|l| on_boundary(&l.pts, p)) {
+                return true;
+            }
+            self.loops.iter().map(|l| winding(&l.pts, p)).sum::<i32>() != 0
+        }
+
+        /// Material in either.
+        pub fn union(&self, other: &Region) -> Region {
+            resolve(&self.loops, &other.loops, Fill::Union)
+        }
+
+        /// Material in both.
+        pub fn intersect(&self, other: &Region) -> Region {
+            resolve(&self.loops, &other.loops, Fill::Intersect)
+        }
+
+        /// Material in this and not in `other`.
+        pub fn difference(&self, other: &Region) -> Region {
+            resolve(&self.loops, &other.loops, Fill::Difference)
+        }
+
+        /// Material in exactly one of the two.
+        pub fn xor(&self, other: &Region) -> Region {
+            resolve(&self.loops, &other.loops, Fill::Xor)
+        }
+
+        /// The material inside `shape`: the same as `intersect` with `shape`'s region, and much faster
+        /// when `shape` is small against this region (a cell against a whole floor).
+        pub fn clip(&self, shape: &Poly) -> Region {
+            let b = shape.bbox();
+            let lo = [b[0][0] - 1.0, b[0][1] - 1.0];
+            let hi = [b[1][0] + 1.0, b[1][1] + 1.0];
+            let near: Vec<Poly> = self.loops.iter().map(|l| window(l, lo, hi)).filter(|l| l.pts.len() >= 3).collect();
+            let shape = if shape.area() < 0.0 { shape.reversed() } else { shape.clone() };
+            resolve(&[shape], &near, Fill::Intersect)
+        }
+
+        /// Grown by `d` mm (shrunk when negative), the way a sketch offset does it:
+        /// - an outside corner (convex in the offset direction) is rounded with radius |d|,
+        ///   its centre on the original corner;
+        /// - an inside corner stays sharp;
+        /// - a corner whose edges are too short for that radius gets a smaller one
+        ///   (`Corner::Reduced`), never a refusal.
+        ///
+        /// Outside corners closer together than 2|d| merge before they are rounded, so a narrow
+        /// gap closes straight. A shape thinner than 2|d| disappears when shrunk.
+        /// `offset_miter` keeps every corner sharp and stays a `Region`.
+        pub fn offset(&self, d: f64) -> Profile {
+            let grown = self.offset_miter(d);
+            let mut out = Profile::default();
+            for l in grown.loops.iter() {
+                let n = l.pts.len();
+                let radii: Vec<f64> = (0..n)
+                    .map(|i| {
+                        let c = cross(sub(l.pts[i], l.pts[(i + n - 1) % n]), sub(l.pts[(i + 1) % n], l.pts[i]));
+                        if (d > 0.0 && c > 0.0) || (d < 0.0 && c < 0.0) { d.abs() } else { 0.0 }
+                    })
+                    .collect();
+                let (path, corners) = corner_path(l, &radii, 1.0, 0.0, false);
+                out.paths.push(path);
+                out.corners.push(corners);
+            }
+            out
+        }
+
+        /// Grown by `d` mm (shrunk when negative) with every corner sharp: an outside corner
+        /// is mitred (cut square when sharper than about 2°), an inside corner stays sharp.
+        pub fn offset_miter(&self, d: f64) -> Region {
+            if d == 0.0 || self.loops.is_empty() {
+                return self.clone();
+            }
+            let raw: Vec<Poly> = self.loops.iter().map(|l| offset_loop(l, d)).collect();
+            resolve(&raw, &[], Fill::Positive)
+        }
+
+        /// Every loop cleaned (`Poly::clean`); loops that become slivers are dropped.
+        pub fn clean(&self, tol: f64) -> Region {
+            let loops: Vec<Poly> = self.loops.iter().map(|l| l.clean(tol)).filter(|l| l.pts.len() >= 3).collect();
+            resolve(&loops, &[], Fill::Positive)
+        }
+
+        /// Without the pieces whose area is under `min_area` mm².
+        pub fn without_small(&self, min_area: f64) -> Region {
+            let mut loops: Vec<Poly> = Vec::new();
+            for p in self.pieces() {
+                if p.area() >= min_area {
+                    loops.extend(p.loops);
+                }
+            }
+            Region { loops }
+        }
+
+        /// Every corner rounded with radius `r` (see `Poly::round_corners_with`).
+        pub fn round_corners(&self, r: f64) -> Profile {
+            self.round_corners_with(r, 1.0, 0.0)
+        }
+
+        /// Every corner rounded; the radius shrinks to fit as in `Poly::round_corners_with`.
+        pub fn round_corners_with(&self, r: f64, max_share: f64, min_r: f64) -> Profile {
+            let mut out = Profile::default();
+            for l in self.loops.iter() {
+                let p = l.round_corners_with(r, max_share, min_r);
+                out.paths.extend(p.paths);
+                out.corners.extend(p.corners);
+            }
+            out
+        }
+
+        /// Every corner cut back `d` mm along both edges.
+        pub fn chamfer_corners(&self, d: f64) -> Profile {
+            let mut out = Profile::default();
+            for l in self.loops.iter() {
+                let p = l.chamfer_corners(d);
+                out.paths.extend(p.paths);
+                out.corners.extend(p.corners);
+            }
+            out
+        }
+
+        /// Moved by `[dx, dy]`.
+        pub fn translate(&self, dx: f64, dy: f64) -> Region {
+            Region { loops: self.loops.iter().map(|l| l.translate(dx, dy)).collect() }
+        }
+
+        /// Turned by `deg` (counter-clockwise) about `about`.
+        pub fn rotate(&self, deg: f64, about: Pt) -> Region {
+            Region { loops: self.loops.iter().map(|l| l.rotate(deg, about)).collect() }
+        }
+
+        /// One `loops` array per separate piece: its outline first, then its holes.
+        pub fn to_loops(&self) -> Vec<Json> {
+            self.pieces().iter().map(|p| Json::Arr(p.loops.iter().map(|l| l.to_loop()).collect())).collect()
+        }
+    }
+
+    /// One loop cut to the box `lo`..`hi` edge by edge (Sutherland–Hodgman). The result may run along the
+    /// box's sides there and back, but it winds round every point inside the box as the loop does.
+    fn window(l: &Poly, lo: Pt, hi: Pt) -> Poly {
+        let mut pts = l.pts.clone();
+        for side in 0..4 {
+            let axis = side % 2;
+            let bound = if side < 2 { lo[axis] } else { hi[axis] };
+            let inside = |p: Pt| if side < 2 { p[axis] >= bound } else { p[axis] <= bound };
+            let n = pts.len();
+            let mut out: Vec<Pt> = Vec::new();
+            for i in 0..n {
+                let cur = pts[i];
+                let prev = pts[(i + n - 1) % n];
+                if inside(cur) != inside(prev) {
+                    let t = (bound - prev[axis]) / (cur[axis] - prev[axis]);
+                    let mut x = add(prev, mul(sub(cur, prev), t));
+                    x[axis] = bound;
+                    out.push(x);
+                }
+                if inside(cur) {
+                    out.push(cur);
+                }
+            }
+            pts = out;
+            if pts.is_empty() {
+                break;
+            }
+        }
+        Poly { pts }
+    }
+
+    /// The raw offset of one loop: mitred outside corners, inside corners through the
+    /// original point (the backward bits wind the other way and drop out in `resolve`).
+    fn offset_loop(p: &Poly, d: f64) -> Poly {
+        let n = p.pts.len();
+        let mut out: Vec<Pt> = Vec::new();
+        for i in 0..n {
+            let v = p.pts[i];
+            let d1 = norm(sub(v, p.pts[(i + n - 1) % n]));
+            let d2 = norm(sub(p.pts[(i + 1) % n], v));
+            let n1 = [d1[1], -d1[0]];
+            let n2 = [d2[1], -d2[0]];
+            let c = cross(d1, d2);
+            if c.abs() < 1e-12 && dot(d1, d2) > 0.0 {
+                out.push(add(v, mul(n1, d)));
+            } else if c * d > 0.0 {
+                let k = 1.0 + dot(n1, n2);
+                if k > 1e-3 {
+                    out.push(add(v, mul(add(n1, n2), d / k)));
+                } else {
+                    out.push(add(add(v, mul(n1, d)), mul(d1, d.abs())));
+                    out.push(sub(add(v, mul(n2, d)), mul(d2, d.abs())));
+                }
+            } else {
+                out.push(add(v, mul(n1, d)));
+                out.push(v);
+                out.push(add(v, mul(n2, d)));
+            }
+        }
+        Poly { pts: out }
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fill {
+        Union,
+        Intersect,
+        Difference,
+        Xor,
+        NonZero,
+        Positive,
+        EvenOdd,
+    }
+
+    fn filled(f: Fill, a: i32, b: i32) -> bool {
+        match f {
+            Fill::Union => a != 0 || b != 0,
+            Fill::Intersect => a != 0 && b != 0,
+            Fill::Difference => a != 0 && b == 0,
+            Fill::Xor => (a != 0) != (b != 0),
+            Fill::NonZero => a != 0,
+            Fill::Positive => a > 0,
+            Fill::EvenOdd => a % 2 != 0,
+        }
+    }
+
+    struct Edge {
+        p: Pt,
+        q: Pt,
+        side: usize,
+    }
+
+    struct Group {
+        u: usize,
+        v: usize,
+        net: [i32; 2],
+        edges: Vec<usize>,
+    }
+
+    /// Points within `SNAP` of each other share one index.
+    struct Pool {
+        pts: Vec<Pt>,
+        grid: HashMap<(i64, i64), Vec<usize>>,
+    }
+
+    impl Pool {
+        fn id(&mut self, p: Pt) -> usize {
+            let kx = (p[0] / SNAP).floor() as i64;
+            let ky = (p[1] / SNAP).floor() as i64;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    if let Some(list) = self.grid.get(&(kx + dx, ky + dy)) {
+                        for &i in list.iter() {
+                            if dist(self.pts[i], p) <= SNAP {
+                                return i;
+                            }
+                        }
+                    }
+                }
+            }
+            let id = self.pts.len();
+            self.pts.push(p);
+            self.grid.entry((kx, ky)).or_default().push(id);
+            id
+        }
+    }
+
+    /// The boolean of two loop sets under a fill rule: every edge is split where it meets
+    /// another, each piece is kept where the rule fills one side and not the other, and the
+    /// kept pieces are joined into loops with material on their left.
+    fn resolve(a: &[Poly], b: &[Poly], fill: Fill) -> Region {
+        let mut edges: Vec<Edge> = Vec::new();
+        for (side, set) in [a, b].iter().enumerate() {
+            for l in set.iter() {
+                let n = l.pts.len();
+                if n < 3 {
+                    continue;
+                }
+                for i in 0..n {
+                    let p = l.pts[i];
+                    let q = l.pts[(i + 1) % n];
+                    if dist(p, q) > SNAP {
+                        edges.push(Edge { p, q, side });
+                    }
+                }
+            }
+        }
+        let n = edges.len();
+        let boxes: Vec<[Pt; 2]> = edges.iter().map(|e| bbox_of(&[e.p, e.q])).collect();
+        let mut cuts: Vec<Vec<(f64, Pt)>> = vec![Vec::new(); n];
+        // Pairs in order of their boxes' left side, so the scan for each edge stops past its right side.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|a, b| boxes[*a][0][0].partial_cmp(&boxes[*b][0][0]).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(b)));
+        for oi in 0..n {
+            let i = order[oi];
+            for &j in order[oi + 1..].iter() {
+                let (bi, bj) = (boxes[i], boxes[j]);
+                if bj[0][0] > bi[1][0] + SNAP {
+                    break;
+                }
+                if bi[0][0] > bj[1][0] + SNAP || bi[0][1] > bj[1][1] + SNAP || bj[0][1] > bi[1][1] + SNAP {
+                    continue;
+                }
+                let (p, q, r, s) = (edges[i].p, edges[i].q, edges[j].p, edges[j].q);
+                for x in [r, s] {
+                    let (t, d) = seg_near(x, p, q);
+                    if d <= SNAP && dist(x, p) > SNAP && dist(x, q) > SNAP {
+                        cuts[i].push((t, x));
+                    }
+                }
+                for x in [p, q] {
+                    let (t, d) = seg_near(x, r, s);
+                    if d <= SNAP && dist(x, r) > SNAP && dist(x, s) > SNAP {
+                        cuts[j].push((t, x));
+                    }
+                }
+                let d1 = sub(q, p);
+                let d2 = sub(s, r);
+                let den = cross(d1, d2);
+                if den.abs() > 1e-12 * len(d1) * len(d2) {
+                    let t = cross(sub(r, p), d2) / den;
+                    let u = cross(sub(r, p), d1) / den;
+                    if t > 0.0 && t < 1.0 && u > 0.0 && u < 1.0 {
+                        let x = add(p, mul(d1, t));
+                        if dist(x, p) > SNAP && dist(x, q) > SNAP && dist(x, r) > SNAP && dist(x, s) > SNAP {
+                            cuts[i].push((t, x));
+                            cuts[j].push((u, x));
+                        }
+                    }
+                }
+            }
+        }
+        let mut pool = Pool { pts: Vec::new(), grid: HashMap::new() };
+        let mut groups: Vec<Group> = Vec::new();
+        let mut group_of: HashMap<(usize, usize), usize> = HashMap::new();
+        for (i, e) in edges.iter().enumerate() {
+            let mut c = cuts[i].clone();
+            c.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(std::cmp::Ordering::Equal));
+            let mut ids = vec![pool.id(e.p)];
+            for (_, x) in c.iter() {
+                ids.push(pool.id(*x));
+            }
+            ids.push(pool.id(e.q));
+            for k in 0..ids.len() - 1 {
+                let (u, v) = (ids[k], ids[k + 1]);
+                if u == v {
+                    continue;
+                }
+                let key = (u.min(v), u.max(v));
+                let g = match group_of.get(&key) {
+                    Some(g) => *g,
+                    None => {
+                        groups.push(Group { u: key.0, v: key.1, net: [0, 0], edges: Vec::new() });
+                        group_of.insert(key, groups.len() - 1);
+                        groups.len() - 1
+                    }
+                };
+                groups[g].net[e.side] += if u < v { 1 } else { -1 };
+                groups[g].edges.push(i);
+            }
+        }
+        let mut kept: Vec<(usize, usize)> = Vec::new();
+        for g in groups.iter() {
+            // Winding just left of the piece: a ray from its middle along its left normal, counting the
+            // edges it crosses (half-open, so a ray through a corner counts once). Right = left - net.
+            let (pu, pv) = (pool.pts[g.u], pool.pts[g.v]);
+            let m = mul(add(pu, pv), 0.5);
+            let d = norm(sub(pv, pu));
+            let n = [-d[1], d[0]];
+            let mut left = [0i32; 2];
+            for (k, e) in edges.iter().enumerate() {
+                if g.edges.contains(&k) {
+                    continue;
+                }
+                let sa = cross(n, sub(e.p, m));
+                let sb = cross(n, sub(e.q, m));
+                let up = sa <= 0.0 && sb > 0.0;
+                let down = sb <= 0.0 && sa > 0.0;
+                if !up && !down {
+                    continue;
+                }
+                let ta = dot(n, sub(e.p, m));
+                let tb = dot(n, sub(e.q, m));
+                if ta + (tb - ta) * (-sa / (sb - sa)) > 0.0 {
+                    left[e.side] += if up { 1 } else { -1 };
+                }
+            }
+            let right = [left[0] - g.net[0], left[1] - g.net[1]];
+            let l = filled(fill, left[0], left[1]);
+            let r = filled(fill, right[0], right[1]);
+            if l && !r {
+                kept.push((g.u, g.v));
+            } else if r && !l {
+                kept.push((g.v, g.u));
+            }
+        }
+        let mut from: Vec<Vec<usize>> = vec![Vec::new(); pool.pts.len()];
+        for (k, e) in kept.iter().enumerate() {
+            from[e.0].push(k);
+        }
+        let mut used = vec![false; kept.len()];
+        let mut cycles: Vec<Vec<usize>> = Vec::new();
+        // Where each point sits on the walk being followed, so a walk that comes back to one of its
+        // points splits that cycle off: every loop comes out simple, touching others only at points.
+        let mut on_walk: Vec<usize> = vec![usize::MAX; pool.pts.len()];
+        for k0 in 0..kept.len() {
+            if used[k0] {
+                continue;
+            }
+            used[k0] = true;
+            let start = kept[k0].0;
+            let mut ids = vec![start];
+            on_walk[start] = 0;
+            let mut k = k0;
+            loop {
+                let cur = kept[k].1;
+                if on_walk[cur] != usize::MAX {
+                    let j = on_walk[cur];
+                    let cycle: Vec<usize> = ids[j..].to_vec();
+                    for &i in cycle.iter() {
+                        on_walk[i] = usize::MAX;
+                    }
+                    cycles.push(cycle);
+                    ids.truncate(j);
+                    if ids.is_empty() {
+                        break;
+                    }
+                    on_walk[cur] = usize::MAX;
+                }
+                on_walk[cur] = ids.len();
+                ids.push(cur);
+                let din = sub(pool.pts[cur], pool.pts[kept[k].0]);
+                let mut best: Option<usize> = None;
+                let mut best_turn = -10.0;
+                for &c in from[cur].iter() {
+                    if used[c] {
+                        continue;
+                    }
+                    let dout = sub(pool.pts[kept[c].1], pool.pts[cur]);
+                    let t = if kept[c].1 == kept[k].0 { -5.0 } else { atan2(cross(din, dout), dot(din, dout)) };
+                    if t > best_turn {
+                        best_turn = t;
+                        best = Some(c);
+                    }
+                }
+                match best {
+                    Some(c) => {
+                        used[c] = true;
+                        k = c;
+                    }
+                    None => break,
+                }
+            }
+            for &i in ids.iter() {
+                on_walk[i] = usize::MAX;
+            }
+        }
+        let mut found: Vec<Poly> = Vec::new();
+        for ids in cycles.iter() {
+            let mut pts: Vec<Pt> = ids.iter().map(|&i| pool.pts[i]).collect();
+            let mut changed = true;
+            while changed && pts.len() >= 3 {
+                changed = false;
+                let mut i = 0;
+                while i < pts.len() && pts.len() >= 3 {
+                    let m = pts.len();
+                    let a = pts[(i + m - 1) % m];
+                    let c = pts[(i + 1) % m];
+                    let (_, d) = seg_near(pts[i], a, c);
+                    if d <= SNAP {
+                        pts.remove(i);
+                        changed = true;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            let p = Poly { pts };
+            if p.pts.len() >= 3 && p.area().abs() > SNAP * SNAP {
+                found.push(p);
+            }
+        }
+        let mut outers: Vec<Poly> = Vec::new();
+        let mut holes: Vec<Poly> = Vec::new();
+        for p in found {
+            if p.area() > 0.0 {
+                outers.push(p);
+            } else {
+                holes.push(p);
+            }
+        }
+        let mut owned: Vec<Vec<Poly>> = vec![Vec::new(); outers.len()];
+        for h in holes {
+            let mut best: Option<usize> = None;
+            for (i, o) in outers.iter().enumerate() {
+                if o.area() < -h.area() || !h.pts.iter().all(|p| o.contains(*p)) {
+                    continue;
+                }
+                let smaller = match best {
+                    Some(b) => o.area() < outers[b].area(),
+                    None => true,
+                };
+                if smaller {
+                    best = Some(i);
+                }
+            }
+            if let Some(b) = best {
+                owned[b].push(h);
+            }
+        }
+        let mut loops: Vec<Poly> = Vec::new();
+        for (o, hs) in outers.into_iter().zip(owned) {
+            loops.push(o);
+            loops.extend(hs);
+        }
+        Region { loops }
+    }
+}
+
+/// Cell patterns clipped to a region: hexagons, squares, bricks, triangles, or cells
+/// along a line. Each cell comes back with its centre, its piece of the region, and
+/// whether the region's edge cut it.
+pub mod lattice {
+    use super::geom2d::{self, Poly, Pt, Region, Size};
+
+    /// Which way a hexagon points.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Orient {
+        /// A corner at the top; rows run along X, odd rows shifted half a cell.
+        Pointy,
+        /// A flat side at the top: the `Pointy` grid turned 90°.
+        Flat,
+    }
+
+    /// One cell of a pattern.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Cell {
+        /// `[column, row]` in the grid (`[k, 0]` along a line).
+        pub index: [i32; 2],
+        /// The centre of the whole cell, before clipping.
+        pub centre: Pt,
+        /// The cell's material inside the region (a clipped cell can be more than one piece).
+        pub region: Region,
+        /// True when the region's edge cut the cell.
+        pub clipped: bool,
+    }
+
+    impl Cell {
+        /// The cell's first outline (the whole cell when it has one piece and no hole).
+        pub fn poly(&self) -> Poly {
+            self.region.loops().first().cloned().unwrap_or_default()
+        }
+
+        /// The cell's area in mm².
+        pub fn area(&self) -> f64 {
+            self.region.area()
+        }
+    }
+
+    /// A pattern of cells: lattice points and the cell shape around each.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Grid {
+        pitch: Pt,
+        shift: f64,
+        shapes: Vec<Poly>,
+        centres: Vec<Pt>,
+        points: Vec<Pt>,
+        origin: Pt,
+        turn_deg: f64,
+        rib: f64,
+    }
+
+    fn lattice_grid(pitch: Pt, shift: f64, shapes: Vec<Poly>, centres: Vec<Pt>) -> Grid {
+        Grid { pitch, shift, shapes, centres, points: Vec::new(), origin: [0.0, 0.0], turn_deg: 0.0, rib: 0.0 }
+    }
+
+    /// Hexagons of side `side` that tile the plane (pitch √3·side across, 1.5·side between rows).
+    pub fn hex(side: f64, orient: Orient) -> Grid {
+        let shape = geom2d::regular(6, Size::Side(side), [0.0, 0.0], 90.0);
+        let px = 3f64.sqrt() * side;
+        let g = lattice_grid([px, 1.5 * side], px / 2.0, vec![shape], vec![[0.0, 0.0]]);
+        match orient {
+            Orient::Pointy => g,
+            Orient::Flat => g.turned(90.0),
+        }
+    }
+
+    /// `pitch_u` × `pitch_v` rectangles in straight rows and columns.
+    pub fn rect(pitch_u: f64, pitch_v: f64) -> Grid {
+        lattice_grid([pitch_u, pitch_v], 0.0, vec![geom2d::rect(pitch_u, pitch_v)], vec![[0.0, 0.0]])
+    }
+
+    /// `pitch_u` × `pitch_v` rectangles with every odd row shifted `shift` along X (bricks: `pitch_u / 2`).
+    pub fn staggered(pitch_u: f64, pitch_v: f64, shift: f64) -> Grid {
+        lattice_grid([pitch_u, pitch_v], shift, vec![geom2d::rect(pitch_u, pitch_v)], vec![[0.0, 0.0]])
+    }
+
+    /// Equilateral triangles of side `side`, pointing up and down in turn.
+    pub fn tri(side: f64) -> Grid {
+        let h = side * 3f64.sqrt() / 2.0;
+        let up = Poly { pts: vec![[-side / 2.0, -h / 2.0], [side / 2.0, -h / 2.0], [0.0, h / 2.0]] };
+        let down = Poly { pts: vec![[side / 2.0, h / 2.0], [-side / 2.0, h / 2.0], [0.0, -h / 2.0]] };
+        lattice_grid([side / 2.0, h], 0.0, vec![up, down], vec![[0.0, -h / 6.0], [0.0, h / 6.0]])
+    }
+
+    /// `count` copies of `cell` (drawn around the origin) spaced evenly along the open line
+    /// `path`, the first at its start and the last at its end (one copy sits at the middle).
+    pub fn along(path: &[Pt], count: usize, cell: Poly) -> Grid {
+        let mut lengths = vec![0.0];
+        for i in 1..path.len() {
+            let d = (path[i][0] - path[i - 1][0]).hypot(path[i][1] - path[i - 1][1]);
+            lengths.push(lengths[i - 1] + d);
+        }
+        let total = lengths.last().copied().unwrap_or(0.0);
+        let mut points: Vec<Pt> = Vec::new();
+        for k in 0..count {
+            let s = if count == 1 { total / 2.0 } else { total * k as f64 / (count - 1) as f64 };
+            let mut i = 1;
+            while i + 1 < path.len() && lengths[i] < s {
+                i += 1;
+            }
+            if path.len() < 2 {
+                points.push(path.first().copied().unwrap_or([0.0, 0.0]));
+                continue;
+            }
+            let seg = lengths[i] - lengths[i - 1];
+            let t = if seg > 0.0 { geom2d::clamp((s - lengths[i - 1]) / seg, 0.0, 1.0) } else { 0.0 };
+            let (a, b) = (path[i - 1], path[i]);
+            points.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+        }
+        Grid { pitch: [0.0, 0.0], shift: 0.0, shapes: vec![cell], centres: vec![[0.0, 0.0]], points, origin: [0.0, 0.0], turn_deg: 0.0, rib: 0.0 }
+    }
+
+    impl Grid {
+        /// Leave walls `t` mm thick between cells: each cell shrinks by `t / 2` all round.
+        pub fn rib(self, t: f64) -> Grid {
+            Grid { rib: t, ..self }
+        }
+
+        /// Put lattice point `[0, 0]` at `origin`.
+        pub fn at(self, origin: Pt) -> Grid {
+            Grid { origin, ..self }
+        }
+
+        /// Turn the whole pattern by `deg` about its origin (adds to an earlier turn).
+        pub fn turned(self, deg: f64) -> Grid {
+            let turn_deg = self.turn_deg + deg;
+            Grid { turn_deg, ..self }
+        }
+
+        fn place(&self, p: Pt) -> Pt {
+            let (s, c) = geom2d::sin_cos_deg(self.turn_deg);
+            if self.turn_deg == 0.0 {
+                return [self.origin[0] + p[0], self.origin[1] + p[1]];
+            }
+            [self.origin[0] + p[0] * c - p[1] * s, self.origin[1] + p[0] * s + p[1] * c]
+        }
+
+        /// The cells that meet `region`, row by row from the lowest, each row by column;
+        /// pieces under `min_area` mm² are dropped, and a cell with nothing left is skipped.
+        pub fn cells(&self, region: &Region, min_area: f64) -> Vec<Cell> {
+            let mut out: Vec<Cell> = Vec::new();
+            if region.is_empty() || self.shapes.is_empty() {
+                return out;
+            }
+            let shapes: Vec<Poly> = self
+                .shapes
+                .iter()
+                .map(|s| if self.rib > 0.0 { s.region().offset_miter(-self.rib / 2.0).loops().first().cloned().unwrap_or_default() } else { s.clone() })
+                .collect();
+            let reach = self.shapes.iter().flat_map(|s| s.pts.iter()).fold(0.0f64, |m, p| m.max(p[0].hypot(p[1])));
+            let mut sites: Vec<([i32; 2], Pt)> = Vec::new();
+            if !self.points.is_empty() || self.pitch[0] <= 0.0 || self.pitch[1] <= 0.0 {
+                for (k, p) in self.points.iter().enumerate() {
+                    sites.push(([k as i32, 0], *p));
+                }
+            } else {
+                let rb = region.bbox();
+                let (s, c) = geom2d::sin_cos_deg(-self.turn_deg);
+                let mut lo = [f64::MAX, f64::MAX];
+                let mut hi = [f64::MIN, f64::MIN];
+                for q in [rb[0], [rb[1][0], rb[0][1]], rb[1], [rb[0][0], rb[1][1]]] {
+                    let d = [q[0] - self.origin[0], q[1] - self.origin[1]];
+                    let f = [d[0] * c - d[1] * s, d[0] * s + d[1] * c];
+                    lo = [lo[0].min(f[0]), lo[1].min(f[1])];
+                    hi = [hi[0].max(f[0]), hi[1].max(f[1])];
+                }
+                let (pu, pv) = (self.pitch[0], self.pitch[1]);
+                let j0 = ((lo[1] - reach) / pv).floor() as i32 - 1;
+                let j1 = ((hi[1] + reach) / pv).ceil() as i32 + 1;
+                let i0 = ((lo[0] - reach - self.shift.abs()) / pu).floor() as i32 - 1;
+                let i1 = ((hi[0] + reach + self.shift.abs()) / pu).ceil() as i32 + 1;
+                for j in j0..=j1 {
+                    let shift = if j.rem_euclid(2) == 1 { self.shift } else { 0.0 };
+                    for i in i0..=i1 {
+                        sites.push(([i, j], [i as f64 * pu + shift, j as f64 * pv]));
+                    }
+                }
+            }
+            let rb = region.bbox();
+            let mut region_boxes: Vec<[Pt; 2]> = Vec::new();
+            for l in region.loops().iter() {
+                let n = l.pts.len();
+                for i in 0..n {
+                    let (a, b) = (l.pts[i], l.pts[(i + 1) % n]);
+                    region_boxes.push([[a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]]);
+                }
+            }
+            for (index, local) in sites {
+                let k = if shapes.len() > 1 { ((index[0] + index[1]).rem_euclid(shapes.len() as i32)) as usize } else { 0 };
+                let shape = &shapes[k];
+                let cell = Poly { pts: shape.pts.iter().map(|p| self.place([local[0] + p[0], local[1] + p[1]])).collect() };
+                let cc = self.centres.get(k).copied().unwrap_or([0.0, 0.0]);
+                let centre = self.place([local[0] + cc[0], local[1] + cc[1]]);
+                let cb = cell.bbox();
+                if cb[0][0] > rb[1][0] || cb[1][0] < rb[0][0] || cb[0][1] > rb[1][1] || cb[1][1] < rb[0][1] {
+                    continue;
+                }
+                let touches = region_boxes.iter().any(|b| !(b[0][0] > cb[1][0] || b[1][0] < cb[0][0] || b[0][1] > cb[1][1] || b[1][1] < cb[0][1]));
+                let whole = cell.area().abs();
+                let piece = if touches {
+                    region.clip(&cell)
+                } else if region.contains(cell.centroid()) {
+                    cell.region()
+                } else {
+                    Region::empty()
+                };
+                let piece = piece.without_small(min_area);
+                if piece.is_empty() {
+                    continue;
+                }
+                let clipped = piece.loops().len() != 1 || (piece.area() - whole).abs() > 1e-9 * whole.max(1.0);
+                out.push(Cell { index, centre, region: piece, clipped });
+            }
+            out
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,11 +2225,461 @@ mod tests {
     }
 
     #[test]
+    fn data_shapes() {
+        assert_eq!(Json::parse("[1, 2.5, -3]").unwrap().as_f64s(), Some(vec![1.0, 2.5, -3.0]));
+        assert_eq!(Json::parse("[[1], [2]]").unwrap().as_f64s(), Some(vec![1.0, 2.0]));
+        assert_eq!(Json::parse("[[1, 2]]").unwrap().as_f64s(), None);
+        assert_eq!(Json::parse("[[1, 2, 9], [3, 4]]").unwrap().as_points2(), Some(vec![[1.0, 2.0], [3.0, 4.0]]));
+        assert_eq!(Json::parse(r#"[{"x": 1, "y": 2}]"#).unwrap().as_points2(), Some(vec![[1.0, 2.0]]));
+        assert_eq!(Json::parse("[1, 2]").unwrap().as_points2(), None);
+        assert_eq!(Json::parse(r#"{"a": 1}"#).unwrap().as_f64s(), None);
+    }
+
+    #[test]
     fn ops_shapes() {
         assert_eq!(ops::cuboid(10.0, 20.0, 4.0).to_string(), r#"{"primitive":"box","dx":10,"dy":20,"dz":4}"#);
         assert_eq!(
             ops::boolean("cut", ops::cylinder(2.0, 5.0), [1.0, 0.0, 0.0]).to_string(),
             r#"{"primitive":"cylinder","radius":2,"height":5,"kind":"boolean","op":"cut","origin":[1,0,0]}"#
         );
+    }
+}
+
+#[cfg(test)]
+mod geom_tests {
+    use super::geom2d::*;
+    use super::lattice;
+    use std::f64::consts::PI;
+
+    fn near(a: f64, b: f64, tol: f64) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    fn sq(x0: f64, y0: f64, s: f64) -> Region {
+        Region::from_poly(&rect(s, s).translate(x0 + s / 2.0, y0 + s / 2.0))
+    }
+
+    /// Area by counting a fine grid of sample points: an independent check of a boolean.
+    fn sampled_area(r: &Region, lo: Pt, hi: Pt, n: usize) -> f64 {
+        let (dx, dy) = ((hi[0] - lo[0]) / n as f64, (hi[1] - lo[1]) / n as f64);
+        let mut inside = 0;
+        for i in 0..n {
+            for j in 0..n {
+                if r.contains([lo[0] + (i as f64 + 0.5) * dx + 1.234e-5, lo[1] + (j as f64 + 0.5) * dy + 2.345e-5]) {
+                    inside += 1;
+                }
+            }
+        }
+        inside as f64 * dx * dy
+    }
+
+    #[test]
+    fn own_trigonometry_matches_std() {
+        for k in -4000..4000 {
+            let deg = k as f64 * 0.37;
+            let (s, c) = sin_cos_deg(deg);
+            let turned = (deg - 360.0 * (deg / 360.0).round()).to_radians();
+            assert!(near(s, turned.sin(), 4e-16) && near(c, turned.cos(), 4e-16), "{deg}");
+        }
+        assert_eq!(sin_cos_deg(90.0), (1.0, 0.0));
+        assert_eq!(sin_cos_deg(-180.0), (0.0, -1.0));
+        assert_eq!(sin_cos_deg(450.0), (1.0, 0.0));
+        let hex = regular(6, Size::Side(10.0), [0.0, 0.0], 90.0);
+        assert_eq!(hex.pts[0], [0.0, 10.0]);
+    }
+
+    #[test]
+    fn shapes_and_measures() {
+        let r = rect(4.0, 2.0);
+        assert_eq!(r.area(), 8.0);
+        assert_eq!(r.perimeter(), 12.0);
+        assert_eq!(r.bbox(), [[-2.0, -1.0], [2.0, 1.0]]);
+        assert_eq!(r.translate(3.0, 1.0).centroid(), [3.0, 1.0]);
+        assert!(r.is_convex());
+        assert!(r.contains([0.0, 0.0]) && r.contains([2.0, 0.5]) && !r.contains([2.1, 0.0]));
+        assert_eq!(r.reversed().area(), -8.0);
+        let hex = regular(6, Size::Side(10.0), [0.0, 0.0], 90.0);
+        assert!(near(hex.area(), 1.5 * 3f64.sqrt() * 100.0, 1e-9));
+        assert!(near(hex.pts[0][1], 10.0, 1e-12) && near(hex.pts[0][0], 0.0, 1e-12));
+        let flats = regular(6, Size::Across(10.0), [0.0, 0.0], 0.0);
+        assert!(near(flats.bbox()[1][1] * 2.0, 10.0, 1e-9));
+        let corners = regular(5, Size::Corners(10.0), [1.0, 2.0], 0.0);
+        assert!(near(corners.pts[0][0], 6.0, 1e-12));
+        let sq5 = regular(4, Size::Side(5.0), [0.0, 0.0], 45.0);
+        assert!(near(sq5.area(), 25.0, 1e-9));
+        assert!(near(circle(10.0, 720).area(), PI * 100.0, 0.01));
+        let l = Poly::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [10.0, 10.0], [10.0, 20.0], [0.0, 20.0], [0.0, 0.0]]);
+        assert_eq!(l.pts.len(), 6);
+        assert!(!l.is_convex());
+        assert!(!l.contains([15.0, 15.0]) && l.contains([5.0, 15.0]) && l.contains([10.0, 15.0]));
+        let bowtie = Poly::new(vec![[0.0, 0.0], [2.0, 2.0], [2.0, 0.0], [0.0, 2.0]]);
+        assert!(!bowtie.is_convex());
+        assert_eq!(Poly::default().area(), 0.0);
+        assert_eq!(Poly::default().centroid(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn booleans_of_squares() {
+        let a = sq(0.0, 0.0, 2.0);
+        let b = sq(1.0, 1.0, 2.0);
+        assert!(near(a.union(&b).area(), 7.0, 1e-9));
+        assert_eq!(a.union(&b).loops().len(), 1);
+        assert_eq!(a.union(&b).loops()[0].pts.len(), 8);
+        assert!(near(a.intersect(&b).area(), 1.0, 1e-9));
+        assert!(near(a.difference(&b).area(), 3.0, 1e-9));
+        assert!(near(a.xor(&b).area(), 6.0, 1e-9));
+        assert_eq!(a.xor(&b).pieces().len(), 2);
+        // Sharing a whole edge: one outline, the shared edge and its split points gone.
+        let c = sq(2.0, 0.0, 2.0);
+        let u = a.union(&c);
+        assert_eq!(u.loops().len(), 1);
+        assert_eq!(u.loops()[0].pts.len(), 4);
+        assert!(near(u.area(), 8.0, 1e-9));
+        assert!(a.intersect(&c).is_empty());
+        // Touching at one corner: two pieces.
+        let d = sq(2.0, 2.0, 2.0);
+        assert_eq!(a.union(&d).pieces().len(), 2);
+        assert!(near(a.union(&d).area(), 8.0, 1e-9));
+        // The same square twice.
+        assert!(near(a.union(&a).area(), 4.0, 1e-9));
+        assert!(a.difference(&a).is_empty());
+        assert!(near(a.intersect(&a).area(), 4.0, 1e-9));
+        // Missing entirely.
+        let far = sq(10.0, 10.0, 1.0);
+        assert!(a.intersect(&far).is_empty());
+        assert!(near(a.difference(&far).area(), 4.0, 1e-9));
+        assert!(near(Region::empty().union(&a).area(), 4.0, 1e-9));
+        // Hexagons that only share an edge.
+        let h1 = Region::from_poly(&regular(6, Size::Side(20.0), [0.0, 0.0], 90.0));
+        let h2 = Region::from_poly(&regular(6, Size::Side(20.0), [20.0 * 3f64.sqrt(), 0.0], 90.0));
+        assert!(h1.intersect(&h2).is_empty(), "{:?}", h1.intersect(&h2));
+        assert_eq!(h1.union(&h2).loops().len(), 1);
+        assert!(Region::empty().intersect(&a).is_empty());
+    }
+
+    #[test]
+    fn booleans_with_holes_and_concave_outlines() {
+        let big = sq(0.0, 0.0, 10.0);
+        let small = sq(3.0, 3.0, 4.0);
+        let ring = big.difference(&small);
+        assert_eq!(ring.loops().len(), 2);
+        assert!(ring.loops()[0].area() > 0.0 && ring.loops()[1].area() < 0.0);
+        assert_eq!(ring.pieces().len(), 1);
+        assert!(near(ring.area(), 84.0, 1e-9));
+        assert!(!ring.contains([5.0, 5.0]) && ring.contains([1.0, 5.0]) && ring.contains([3.0, 5.0]));
+        // Filling the hole back gives the square again, as one loop.
+        let filled = ring.union(&small);
+        assert_eq!(filled.loops().len(), 1);
+        assert!(near(filled.area(), 100.0, 1e-9));
+        // An island in the hole.
+        let island = sq(4.0, 4.0, 2.0);
+        let with_island = ring.union(&island);
+        assert_eq!(with_island.pieces().len(), 2);
+        assert!(near(with_island.area(), 88.0, 1e-9));
+        // A bar across the ring cuts it in two.
+        let bar = Region::from_poly(&rect(2.0, 20.0).translate(5.0, 5.0));
+        let halves = ring.difference(&bar);
+        assert_eq!(halves.pieces().len(), 2);
+        assert!(near(halves.area(), 84.0 - 2.0 * 6.0, 1e-9));
+        // A concave L against a square across its notch.
+        let l = Region::from_poly(&Poly::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [10.0, 10.0], [10.0, 20.0], [0.0, 20.0]]));
+        let s = sq(5.0, 5.0, 10.0);
+        assert!(near(l.intersect(&s).area(), 75.0, 1e-9));
+        assert!(near(l.union(&s).area(), 300.0 + 25.0, 1e-9));
+        assert!(near(l.difference(&s).area(), 300.0 - 75.0, 1e-9));
+        let lo = [-1.0, -1.0];
+        let hi = [21.0, 21.0];
+        for r in [l.intersect(&s), l.union(&s), l.difference(&s), l.xor(&s), ring.difference(&bar)] {
+            let sampled = sampled_area(&r, lo, hi, 440);
+            assert!(near(sampled, r.area(), 0.5), "{} vs {}", sampled, r.area());
+        }
+    }
+
+    #[test]
+    fn booleans_of_curved_and_star_shapes() {
+        let c = Region::from_poly(&circle(10.0, 96));
+        let star: Vec<Pt> = (0..10)
+            .map(|k| {
+                let r = if k % 2 == 0 { 14.0 } else { 5.0 };
+                let a = (90.0 + 36.0 * k as f64).to_radians();
+                [r * a.cos(), r * a.sin()]
+            })
+            .collect();
+        let s = Region::from_poly(&Poly::new(star));
+        let i = c.intersect(&s);
+        let u = c.union(&s);
+        let d = c.difference(&s);
+        assert!(near(i.area() + u.area(), c.area() + s.area(), 1e-6));
+        assert!(near(d.area(), c.area() - i.area(), 1e-6));
+        assert_eq!(d.pieces().len(), 5);
+        assert_eq!(s.difference(&c).pieces().len(), 5);
+        let lo = [-15.0, -15.0];
+        let hi = [15.0, 15.0];
+        for r in [&i, &u, &d] {
+            assert!(near(sampled_area(r, lo, hi, 600), r.area(), 0.6));
+        }
+    }
+
+    /// Random outlines on a coarse grid, so edges overlap, cross at corners and touch: the
+    /// area identities of the four booleans hold and the results' loops are valid inputs again.
+    #[test]
+    fn random_grid_outlines() {
+        let mut seed: u64 = 12345;
+        let mut next = move |n: u64| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) % n) as f64
+        };
+        for round in 0..400 {
+            let mut make = || {
+                let k = 3 + next(6) as usize;
+                let pts: Vec<Pt> = (0..k).map(|_| [next(7) * 2.0, next(7) * 2.0]).collect();
+                Poly::new(pts)
+            };
+            let a = Region::from_poly(&make());
+            let pb = make();
+            let b = Region::from_poly(&pb);
+            assert!(near(a.clip(&pb).area(), a.intersect(&b).area(), 1e-9), "round {round}: clip");
+            let (u, i, d, x) = (a.union(&b), a.intersect(&b), a.difference(&b), a.xor(&b));
+            assert!(near(u.area() + i.area(), a.area() + b.area(), 1e-9), "round {round}: {a:?} {b:?}");
+            assert!(near(d.area(), a.area() - i.area(), 1e-9), "round {round}");
+            assert!(near(x.area(), u.area() - i.area(), 1e-9), "round {round}");
+            for r in [&u, &i, &d, &x] {
+                for l in r.loops().iter() {
+                    assert!(l.pts.len() >= 3);
+                    assert!((0..l.pts.len()).all(|p| (p + 1..l.pts.len()).all(|q| l.pts[p] != l.pts[q])), "round {round}: a loop touches itself");
+                }
+                assert!(near(r.union(&Region::empty()).area(), r.area(), 1e-9), "round {round}: not stable");
+            }
+            let grown = a.offset_miter(0.7);
+            let shrunk = a.offset_miter(-0.4);
+            assert!(grown.area() >= a.area() - 1e-9 && shrunk.area() <= a.area() + 1e-9, "round {round}");
+            assert!(shrunk.loops().iter().all(|l| l.pts.iter().all(|p| a.contains(*p))), "round {round}: shrunk outside");
+            assert!(a.offset(0.7).to_region(0.001).difference(&grown).area() < 1e-6, "round {round}: rounded beyond mitred");
+            if round % 30 == 0 {
+                assert!(near(sampled_area(&d, [0.0, 0.0], [12.0, 12.0], 240), d.area(), 0.3), "round {round}: {} vs {}
+A {:?}
+B {:?}
+D {:?}", sampled_area(&d, [0.0, 0.0], [12.0, 12.0], 240), d.area(), a, b, d);
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_input() {
+        let flat = Region::from_poly(&Poly::new(vec![[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]));
+        assert!(flat.is_empty());
+        let two = Region::from_poly(&Poly::new(vec![[0.0, 0.0], [1.0, 0.0]]));
+        assert!(two.is_empty());
+        // A loop that touches itself at one point is two pieces.
+        let touch = Poly::new(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0], [1.0, 1.0], [0.0, 1.0]]);
+        let r = Region::from_poly(&touch);
+        assert_eq!(r.pieces().len(), 2);
+        assert!(near(r.area(), 2.0, 1e-12));
+        // A self-crossing bow tie keeps both lobes.
+        let bowtie = Region::from_poly(&Poly::new(vec![[0.0, 0.0], [2.0, 2.0], [2.0, 0.0], [0.0, 2.0]]));
+        assert_eq!(bowtie.pieces().len(), 2);
+        assert!(near(bowtie.area(), 2.0, 1e-12));
+        // A hole drawn on the outline's edge leaves a U.
+        let u = Region::with_holes(&rect(4.0, 4.0).translate(2.0, 2.0), &[rect(2.0, 2.0).translate(2.0, 1.0)]);
+        assert_eq!(u.loops().len(), 1);
+        assert!(near(u.area(), 12.0, 1e-12));
+        // Nested any way round: even-odd.
+        let nest = Region::from_loops(&[rect(10.0, 10.0), rect(6.0, 6.0), rect(2.0, 2.0)]);
+        assert_eq!(nest.pieces().len(), 2);
+        assert!(near(nest.area(), 100.0 - 36.0 + 4.0, 1e-12));
+    }
+
+    #[test]
+    fn corners_round_and_chamfer() {
+        let r = rect(20.0, 10.0).round_corners(2.0);
+        assert_eq!(r.counts(), [4, 0, 0]);
+        assert!(near(r.area(), 200.0 - (4.0 - PI) * 4.0, 1e-9));
+        let json = r.to_loop().to_string();
+        assert!(json.starts_with(r#"{"start":[-8,-5],"segments":[{"kind":"line","to":[8,-5]},{"kind":"arc","through":["#), "{json}");
+        // Edges shorter than the radius: each corner shrinks to fit.
+        let thin = rect(10.0, 1.0).round_corners(2.0);
+        assert!(thin.corners[0].iter().all(|c| matches!(c, Corner::Reduced(r) if near(*r, 0.5, 1e-12))));
+        assert!(near(thin.area(), 10.0 - (4.0 - PI) * 0.25, 1e-9));
+        // A share limit and a minimum radius, as the honeycomb recipe rounds its cells.
+        let capped = rect(10.0, 1.0).round_corners_with(2.0, 0.45, 0.0);
+        assert_eq!(capped.counts(), [0, 4, 0]);
+        assert!(capped.corners[0].iter().all(|c| matches!(c, Corner::Reduced(r) if near(*r, 0.45, 1e-12))));
+        let sharp = rect(10.0, 1.0).round_corners_with(2.0, 0.45, 0.5);
+        assert_eq!(sharp.counts(), [0, 0, 4]);
+        assert_eq!(sharp.to_loop().to_string(), rect(10.0, 1.0).to_loop().to_string());
+        // A concave corner is rounded the other way: material is added.
+        let l = Poly::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [10.0, 10.0], [10.0, 20.0], [0.0, 20.0]]);
+        let lr = l.round_corners(1.0);
+        assert_eq!(lr.counts(), [6, 0, 0]);
+        assert!(near(lr.area(), 300.0 - 5.0 * (4.0 - PI) / 4.0 + (4.0 - PI) / 4.0, 1e-9));
+        let ch = rect(10.0, 10.0).chamfer_corners(1.0);
+        assert_eq!(ch.counts(), [4, 0, 0]);
+        assert!(near(ch.area(), 100.0 - 2.0, 1e-9));
+        assert_eq!(ch.paths[0].segs.len(), 8);
+        let ch_short = rect(10.0, 1.0).chamfer_corners(1.0);
+        assert!(ch_short.corners[0].iter().all(|c| matches!(c, Corner::Reduced(r) if near(*r, 0.5, 1e-12))));
+        let rr = rounded_rect(30.0, 20.0, 5.0);
+        assert!(near(rr.area(), 600.0 - (4.0 - PI) * 25.0, 1e-9));
+        let back = rr.to_region(0.001);
+        assert!(near(back.area(), rr.area(), 0.03), "{} vs {}", back.area(), rr.area());
+        assert!(near(rr.to_region(1e-5).area(), rr.area(), 3e-4));
+        assert!(back.contains([0.0, 0.0]) && !back.contains([14.9, 9.9]));
+    }
+
+    // The three corner fixtures shared with the sketch card's Offset (docs/plan-sketch-for-people.md, 7a).
+    #[test]
+    fn offset_fixture_outside_corner() {
+        let square = Region::from_poly(&rect(20.0, 20.0).translate(10.0, 10.0));
+        let grown = square.offset(2.0);
+        assert_eq!(grown.counts(), [4, 0, 0]);
+        assert!(near(grown.area(), 400.0 + 4.0 * 20.0 * 2.0 + PI * 4.0, 1e-9));
+        // Each arc is centred on the original corner: the corner at (20, 20) bulges to (21.414, 21.414).
+        let s = 2.0 / 2f64.sqrt();
+        let arcs: Vec<Pt> = grown.paths[0]
+            .segs
+            .iter()
+            .filter_map(|g| match g {
+                Seg::Arc(m, _) => Some(*m),
+                Seg::Line(_) => None,
+            })
+            .collect();
+        assert!(arcs.iter().any(|m| near(m[0], 20.0 + s, 1e-9) && near(m[1], 20.0 + s, 1e-9)), "{arcs:?}");
+        let shrunk = square.offset(-2.0);
+        assert_eq!(shrunk.counts(), [0, 0, 4]);
+        assert!(near(shrunk.area(), 256.0, 1e-9));
+    }
+
+    #[test]
+    fn offset_fixture_inside_corner() {
+        let l = Region::from_poly(&Poly::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [10.0, 10.0], [10.0, 20.0], [0.0, 20.0]]));
+        let grown = l.offset(1.0);
+        assert_eq!(grown.counts(), [5, 0, 1]);
+        let path = &grown.paths[0];
+        let ends: Vec<Pt> = path
+            .segs
+            .iter()
+            .map(|g| match g {
+                Seg::Line(to) => *to,
+                Seg::Arc(_, to) => *to,
+            })
+            .collect();
+        assert!(ends.contains(&[11.0, 11.0]), "{ends:?}");
+        assert!(near(grown.area(), 300.0 + 80.0 - 1.0 + 1.25 * PI, 1e-9));
+        // Shrinking: the inside corner becomes the outside one and is the only one rounded.
+        let shrunk = l.offset(-1.0);
+        assert_eq!(shrunk.counts(), [1, 0, 5]);
+    }
+
+    #[test]
+    fn offset_fixture_short_edge_corner() {
+        // A 1 mm step: grown by 2, the corner above it has 1 mm of edge, so its radius is reduced to 1.
+        let step = Region::from_poly(&Poly::new(vec![[0.0, 0.0], [20.0, 0.0], [20.0, 10.0], [11.0, 10.0], [11.0, 11.0], [0.0, 11.0]]));
+        let grown = step.offset(2.0);
+        assert_eq!(grown.counts(), [4, 1, 1]);
+        assert!(grown.corners[0].iter().any(|c| matches!(c, Corner::Reduced(r) if near(*r, 1.0, 1e-9))), "{:?}", grown.corners);
+        assert!(grown.area() > step.area());
+    }
+
+    #[test]
+    fn offsets() {
+        let ring = sq(0.0, 0.0, 10.0).difference(&sq(3.0, 3.0, 4.0));
+        let m = ring.offset_miter(-1.0);
+        assert!(near(m.area(), 64.0 - 36.0, 1e-9));
+        assert_eq!(m.loops().len(), 2);
+        assert!(ring.offset_miter(-2.0).area() < 1e-9);
+        assert!(sq(0.0, 0.0, 2.0).offset(-1.5).paths.is_empty());
+        assert!(near(sq(0.0, 0.0, 2.0).offset_miter(1.0).area(), 16.0, 1e-9));
+        assert_eq!(ring.offset(0.0).paths.len(), 2);
+        // Growing two squares 4 mm apart by 2.5: they join.
+        let two = sq(0.0, 0.0, 10.0).union(&sq(14.0, 0.0, 10.0));
+        assert_eq!(two.offset_miter(2.5).pieces().len(), 1);
+        assert_eq!(two.offset_miter(1.5).pieces().len(), 2);
+        // A circle grows by the distance.
+        let c = Region::from_poly(&circle(10.0, 360)).offset_miter(2.0);
+        assert!(near(c.area(), PI * 144.0, 0.05));
+        // A dumbbell shrunk past its neck comes apart.
+        let bell = sq(0.0, 0.0, 10.0).union(&sq(20.0, 0.0, 10.0)).union(&Region::from_poly(&rect(12.0, 2.0).translate(15.0, 5.0)));
+        assert_eq!(bell.pieces().len(), 1);
+        assert_eq!(bell.offset_miter(-1.5).pieces().len(), 2);
+    }
+
+    #[test]
+    fn cleanup() {
+        let messy = Poly::new(vec![[0.0, 0.0], [0.01, 0.0], [5.0, 0.0], [10.0, 0.001], [10.0, 10.0], [0.0, 10.0], [0.0, 5.0]]);
+        assert_eq!(messy.clean(0.05).pts, vec![[0.0, 0.0], [10.0, 0.001], [10.0, 10.0], [0.0, 10.0]]);
+        let sliver = Poly::new(vec![[0.0, 0.0], [10.0, 0.0], [10.0, 0.02], [0.0, 0.02]]);
+        assert!(sliver.clean(0.05).pts.is_empty());
+        assert_eq!(sliver.clean(0.01).pts.len(), 4);
+        let spike = Poly::new(vec![[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);
+        assert_eq!(spike.clean(1e-6).pts.len(), 4);
+        let r = Region::from_loops(&[rect(10.0, 10.0), sliver.translate(-20.0, 0.0)]);
+        assert_eq!(r.loops().len(), 2);
+        assert_eq!(r.clean(0.05).loops().len(), 1);
+    }
+
+    #[test]
+    fn loops_json() {
+        let p = Poly::new(vec![[0.0, 0.0], [1.5, 0.0], [0.0, 2.0]]);
+        assert_eq!(
+            p.to_loop().to_string(),
+            r#"{"start":[0,0],"segments":[{"kind":"line","to":[1.5,0]},{"kind":"line","to":[0,2]},{"kind":"line","to":[0,0]}]}"#
+        );
+        let ring = sq(0.0, 0.0, 10.0).difference(&sq(3.0, 3.0, 4.0)).union(&sq(20.0, 0.0, 2.0));
+        let loops = ring.to_loops();
+        assert_eq!(loops.len(), 2);
+        assert_eq!(loops[0].as_array().map(|a| a.len()), Some(2));
+        assert_eq!(loops[1].as_array().map(|a| a.len()), Some(1));
+        let rounded = ring.round_corners(0.5).to_loops();
+        assert_eq!(rounded.iter().map(|l| l.as_array().map(|a| a.len()).unwrap_or(0)).collect::<Vec<_>>(), vec![2, 1]);
+        assert_eq!(rounded[0].at("1.segments.1.kind").and_then(|k| k.as_str()), Some("arc"));
+    }
+
+    #[test]
+    fn lattices() {
+        let floor = Region::from_poly(&rect(100.0, 60.0));
+        let cells = lattice::hex(10.0, lattice::Orient::Pointy).cells(&floor, 0.0);
+        let total: f64 = cells.iter().map(|c| c.area()).sum();
+        assert!(near(total, 6000.0, 1e-6));
+        assert!(cells.iter().any(|c| !c.clipped) && cells.iter().any(|c| c.clipped));
+        let full = cells.iter().find(|c| c.index == [0, 0]).unwrap();
+        assert!(!full.clipped && near(full.area(), 1.5 * 3f64.sqrt() * 100.0, 1e-9));
+        assert_eq!(full.centre, [0.0, 0.0]);
+        let odd = cells.iter().find(|c| c.index == [0, 1]).unwrap();
+        assert!(near(odd.centre[0], 3f64.sqrt() * 5.0, 1e-12) && near(odd.centre[1], 15.0, 1e-12));
+        // Walls: a 2.4 mm rib leaves a pocket of side 10 - 2.4/√3.
+        let pockets = lattice::hex(10.0, lattice::Orient::Pointy).rib(2.4).cells(&floor, 12.0);
+        let p0 = pockets.iter().find(|c| c.index == [0, 0]).unwrap();
+        let a2 = 10.0 - 2.4 / 3f64.sqrt();
+        assert!(near(p0.area(), 1.5 * 3f64.sqrt() * a2 * a2, 1e-9));
+        assert!(pockets.iter().all(|c| c.area() >= 12.0));
+        // Flat hexagons: a flat side on top.
+        let flat = lattice::hex(10.0, lattice::Orient::Flat).cells(&floor, 0.0);
+        let f0 = flat.iter().find(|c| c.index == [0, 0]).unwrap();
+        assert!(near(f0.region.bbox()[1][1], 3f64.sqrt() * 5.0, 1e-9));
+        // Squares fill exactly, bricks and triangles tile too.
+        let squares = lattice::rect(10.0, 10.0).at([5.0, 5.0]).cells(&floor, 0.0);
+        assert_eq!(squares.len(), 60);
+        assert!(squares.iter().all(|c| !c.clipped));
+        let bricks: f64 = lattice::staggered(10.0, 5.0, 5.0).cells(&floor, 0.0).iter().map(|c| c.area()).sum();
+        assert!(near(bricks, 6000.0, 1e-6));
+        let tris = lattice::tri(10.0).cells(&floor, 0.0);
+        assert!(near(tris.iter().map(|c| c.area()).sum::<f64>(), 6000.0, 1e-6));
+        let t0 = tris.iter().find(|c| c.index == [0, 0]).unwrap();
+        assert!(near(t0.centre[1], -10.0 * 3f64.sqrt() / 12.0, 1e-12));
+        // A ring: no cell in the hole.
+        let ring = floor.difference(&Region::from_poly(&rect(40.0, 30.0)));
+        let ring_cells = lattice::rect(5.0, 5.0).cells(&ring, 0.0);
+        assert!(near(ring_cells.iter().map(|c| c.area()).sum::<f64>(), 6000.0 - 1200.0, 1e-6));
+        // Along a line, and a turned grid.
+        let pegs = lattice::along(&[[0.0, 0.0], [30.0, 0.0], [30.0, 40.0]], 8, circle(1.0, 24)).cells(&Region::from_poly(&rect(200.0, 200.0)), 0.0);
+        assert_eq!(pegs.len(), 8);
+        assert!(near(pegs[7].centre[0], 30.0, 1e-12) && near(pegs[7].centre[1], 40.0, 1e-12));
+        assert!(near(pegs[1].centre[0], 10.0, 1e-12));
+        let turned = lattice::rect(10.0, 10.0).turned(45.0).at([1.0, 1.0]).cells(&floor, 0.0);
+        assert!(near(turned.iter().map(|c| c.area()).sum::<f64>(), 6000.0, 1e-6));
+        // An empty region, and slivers dropped by min_area.
+        assert!(lattice::hex(10.0, lattice::Orient::Pointy).cells(&Region::empty(), 0.0).is_empty());
+        let few = lattice::rect(10.0, 10.0).cells(&Region::from_poly(&rect(10.5, 10.5)), 3.0);
+        assert_eq!(few.len(), 1);
     }
 }
