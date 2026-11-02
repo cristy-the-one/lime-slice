@@ -2,7 +2,7 @@
 
 Worked examples for Revolve, Loft, and Sweep in the desktop Model window. Each one is built in the real UI: the profile, the path or axis, the values, and the solid.
 
-The tools are buttons on the sketch card in the left dock, and keys while a sketch is open. There is no rail button for them.
+The tools are buttons on the sketch card in the left dock, and keys while a sketch is open. There is no rail button for them. To see one work before drawing your own, click **?** at the end of the Make row, or **Show me** at the top of a tool's How: a small ready-made sketch opens, and **Back to my sketch** returns to yours.
 
 | | Example | What it shows |
 | --- | --- | --- |

@@ -943,6 +943,21 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 }
 .sketch-how-pop[hidden] { display: none; }
 .sketch-how-pop li { margin: 2px 0; }
+/* P2: Show me heads a tool's How; the Make row's How lists one per tool; a demo names itself above Draw. */
+.sketch-how-pop > .sketch-show-me { margin: 2px 0 0 -14px; }
+.sketch-how-pop > .sketch-show-me + ol { margin-top: 4px; }
+.sketch-make-how { width: 28px; min-width: 28px; padding: 0; }
+.sketch-how-pop.sketch-make-how-pop { flex: 1 1 100%; padding: 6px 8px; }
+.sketch-how-lead { margin: 0 0 6px; color: var(--text-dim); }
+.sketch-how-demos { display: flex; flex-wrap: wrap; gap: 4px; }
+.sketch-section.sketch-demo {
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+.sketch-demo-note { margin: 0; color: var(--text); }
 /* The sentence for a feature that is waiting on a pick, with its own Cancel, in the card. */
 .sketch-prompt {
   flex: 1 1 100%;

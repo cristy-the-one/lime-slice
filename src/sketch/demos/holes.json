@@ -1,0 +1,22 @@
+{
+  "v": 1,
+  "plane": { "origin": [0, 0, 0], "turn": [0, 0, 0] },
+  "points": [
+    { "id": 1, "at": [-18, -8] },
+    { "id": 2, "at": [18, -8] },
+    { "id": 3, "at": [18, 8] },
+    { "id": 4, "at": [-18, 8] },
+    { "id": 5, "at": [-10, 0] },
+    { "id": 6, "at": [0, 0] },
+    { "id": 7, "at": [10, 0] }
+  ],
+  "entities": [
+    { "id": 1, "kind": "line", "a": 1, "b": 2, "construction": true },
+    { "id": 2, "kind": "line", "a": 2, "b": 3, "construction": true },
+    { "id": 3, "kind": "line", "a": 3, "b": 4, "construction": true },
+    { "id": 4, "kind": "line", "a": 4, "b": 1, "construction": true },
+    { "id": 5, "kind": "circle", "centre": 5, "radius": 2 },
+    { "id": 6, "kind": "circle", "centre": 6, "radius": 2 },
+    { "id": 7, "kind": "circle", "centre": 7, "radius": 2 }
+  ]
+}
