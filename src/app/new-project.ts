@@ -74,6 +74,7 @@ export function blankProject() {
   clearStressCells();
   // --- A8. File > New drops the previous project's MCP record. ---
   session.mcpModel = undefined;
+  session.plugins = undefined;
   session.parameters = {};
   session.assemblies = [];
   noteParametersBuilt();

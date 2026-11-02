@@ -6,6 +6,10 @@ import { jumped, newTree, withChild, type ModelOp, type ModelTree, type PluginSt
 import { loadedTree, readSavedTree, savedTree } from "./model-tree-file.ts";
 import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, stampedRunOf } from "./plugin-step.ts";
 import { readPlugins } from "./project.ts";
+import { RECIPE_API } from "./plugin-step.ts";
+import { checkedCopies, readPluginFile } from "./plugin-file.ts";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 let failed = 0;
 function eq<T>(name: string, actual: T, expected: T): void {
@@ -67,6 +71,18 @@ eq("a value left out is not the same", sameValues({ a: 1 }, { a: 1, b: 2 }), fal
 // The project's plugin copies: hash to file text; anything else is left out.
 eq("plugin copies are read by hash", readPlugins({ ["b".repeat(64)]: "//! ---\n", short: "x", ["c".repeat(64)]: 5 }), { ["b".repeat(64)]: "//! ---\n" });
 eq("no copies is none", readPlugins({}), undefined);
+
+// The app reads the project's copies as the MCP server writes them: the body hashed the same way, an edit seen.
+const tinyBody = "use lime_recipe::Session;\r\nfn main() {\r\n    let _s = Session::start();\r\n}\r\n";
+const sha = createHash("sha256").update(tinyBody.replace(/\r\n?/g, "\n"), "utf8").digest("hex");
+const text = `//! ---\n//! plugin: tiny\n//! title: Tiny\n//! version: 2\n//! api: 1.1\n//! params: [{"name":"w","kind":"number","default":3}]\n//! ---\n${tinyBody}`;
+const copies = await checkedCopies({ [sha]: text, ["d".repeat(64)]: text.replace("Session::start", "Session::start ") });
+eq("a copy whose body hashes to its key is intact; an edited one is not", [copies.get(sha)?.intact, copies.get("d".repeat(64))?.intact], [true, false]);
+eq("the header is read", [readPluginFile(text)?.title, readPluginFile(text)?.version, readPluginFile(text)?.params[0]?.name], ["Tiny", 2, "w"]);
+eq("a file with no front matter is no plugin file", readPluginFile("fn main() {}"), null);
+const crate = readFileSync(new URL("../crates/lime-recipe/src/lib.rs", import.meta.url), "utf8");
+const api = /pub const API: \(u32, u32\) = \((\d+), (\d+)\);/.exec(crate);
+eq("the app's recipe API level is the crate's", api ? [Number(api[1]), Number(api[2])] : null, [...RECIPE_API]);
 
 if (failed) {
   console.error(`plugin-step: ${failed} failed`);
