@@ -690,6 +690,60 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    *Tested by:* a Playwright spec on the panel (search, form ranges and units, apply lands one History row, preview
    rolls back), a macOS-state spec with lust absent, screenshots; a desktop check on Windows with the installed app.
 
+   **As built (milestone 7, branch `claude/plugins-panel`):**
+   - **Where.** A card in the Model dock (`src/ui/plugins-panel.ts`), opened from the Features menu's "Plugins…"
+     (beside Parameters) or Ctrl+Alt+L, holding the pane as Split to print does; no rail button (sketch plan 7a).
+     Apply and Cancel are the pane's own; Esc closes it.
+   - **The library in the app.** `src-tauri/src/plugins.rs` lists, writes, removes and reveals files in the folder the
+     MCP server writes (`LIME_PLUGINS_DIR`, else the app's data folder, the same identifier), touching only `<id>.rs`,
+     `<id>.vN.rs` (five kept, as `writePlugin`), `presets/<id>.json` and `settings.json`, each written whole through a
+     rename. Everything else is browser-safe TypeScript in `src/plugins/library.ts`: reading the files (every version by
+     hash), presets, the author, the sections, search (`queryScore`'s rule), last used (kept in the browser), the form's
+     checks, the save's version rule (`pluginSave`'s), Use vN's carried values, and the project's copies.
+     `pluginFileText` writes the MCP's bytes (checked in `mcp/plugins-file.test.ts`).
+   - **List.** "In this project" holds the project's plugins whose id the library lacks (D10's Add to library); a
+     project copy of a library plugin, at any version, is listed once, in the library, since History's Use vN moves a
+     step between versions. "Samples" waits for O6's samples, which ship later; the section is drawn when it has rows.
+     Badges: "needs a part" and "edited" (a library file whose body no longer matches its hash). Not "imported", which is
+     milestone 8's.
+   - **Form.** D5's fields from the header's `params` (the History card's layout and classes), the range and unit after
+     each, checked as typed with the reason in the card and on the greyed Apply; presets from `presets/<id>.json` fill
+     it (a value that no longer fits is named and left at its default). Values the run is given are those that differ
+     from the defaults, so the step's card marks the rest "default". Typed expressions of project parameters (D5's
+     `exprs`) are not built yet.
+   - **Preview and Apply** run the plugin on the open part from its shown step through the app's runner and the
+     shared call answers (`src/recipe/apply.ts`, the front half of a rebuild). Preview shows the result in place of
+     the part (the pane's preview, as a tool's dry run), then goes back to the shown step and drops the run from the
+     engine: History keeps its rows. Live previews 300 ms after the last change while the last run took under 1 s.
+     Apply keeps the run as one History row, stamped (D8) so its pencil changes it later, and the project keeps the
+     plugin's file. D13's "dry run" is a real run taken back, as the MCP's dry mode is.
+   - **History.** The env History reads gains the library: a stamp whose code only the library holds works as if the
+     project carried it (and the next save writes the copy, D9 row 3); "v5 is in your library." with **Use v5** in the
+     card and the row menu rebuilds the step with v5 (values carried by name, a dropped one named), as one undo step;
+     the no-copy sentence becomes "not in this project or your library". **Save as plugin…** on a draft's row and card
+     opens a dialog (title, description, author), then runs D3's checks in the app (a describe run, then a run with the
+     defaults on the part as it stood before the draft's run, taken back), writes the file with the MCP's version rule,
+     turns the draft's stamps into the plugin's, and the project keeps the file.
+   - **Plugin author.** A field in the gear menu, kept as `settings.json` in the library; the MCP server reads it at
+     each save (`pluginAuthor` in `mcp/plugins.ts`), and `LIME_PLUGIN_AUTHOR`, when set, still wins (tests, portable
+     installs). A name typed in Save as plugin… becomes the setting when none is set.
+   - **Tips, reasons, Show me.** Each button carries a purpose line and, greyed, its reason on a second line
+     (`blockedTip`, as the sketch card); every reason ends with the next action (`src/ui/plugins-panel-text.ts`,
+     checked by the unit test). The How (?) lists four steps under **Show me**, which opens a demo plugin (the recipes
+     guide's drilled bar, its numbers typed) with a strip that says the next change; its Apply is greyed ("This is a
+     demo, so nothing is added to your part.").
+   - **macOS and no lust (D15).** The panel lists, searches and shows every form read-only with the runner's sentence
+     and "Projects open, and parts built with plugins are kept as built."; Preview, Apply, Use vN and Save as plugin…
+     are greyed with it; Reveal in folder, View source and Remove work. The browser build reads no library and says so.
+   - UX decisions: a list and a plugin's page in one card (with "All plugins" back) rather than both at once, since
+     the dock is about 270 px wide; Enter in a field applies, as in every Model panel, and Enter in the search opens
+     the first match; Remove asks first; the Use vN note is drawn as news, not as a warning.
+   - Tests: `src/plugins/library.test.ts` (unit chain), `src/model-history.test.ts` (the library's D9 cases),
+     `mcp/plugins-file.test.ts` (same bytes, the author setting), `cargo test -p lime-slice-desktop --lib plugins::`,
+     `e2e/model-plugins-panel.spec.ts` and `e2e/model-plugins-mac.spec.ts` (in `test:smoke`, with a library and a
+     scripted runner in the page). Screenshots in `test-results/plugins-panel/`. The desktop check with the installed
+     app is the owner's.
+
 8. **Import, export and trust.** D10 and D11.2 to D11.6: export, import (file, drop, MCP `save {source}`), name
    clash, first-run source view, `mod`/`#[path]`/`extern crate` refused, text caps, build time limit.
    *Ships:* plugins move between machines and people safely.
