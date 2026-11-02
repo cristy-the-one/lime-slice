@@ -2868,6 +2868,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lime-recipe-runner"
+version = "4.12.0"
+dependencies = [
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "lime-shell"
 version = "4.12.0"
 dependencies = [
@@ -2938,6 +2946,7 @@ version = "4.12.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
+ "lime-recipe-runner",
  "lime-sim-bridge",
  "lime-slice-core",
  "mimalloc",

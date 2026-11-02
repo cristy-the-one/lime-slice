@@ -1,9 +1,9 @@
 // A feature typed in the panel expands into the same pieces as the same feature typed over MCP.
 import { expand } from "./modeling/compose.ts";
 import { expandContextFromSolid, levelFrame, type FrameFace } from "./modeling/frames.ts";
-import { facesMatching } from "../mcp/selectors.ts";
+import { facesMatching } from "./modeling/selectors.ts";
 import { standRegion } from "../mcp/plane-region.ts";
-import { faceRows, type FaceRow } from "../mcp/solid-geometry.ts";
+import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { facePlane } from "./model-plane.ts";
 import { editPanel } from "./model-edit.ts";

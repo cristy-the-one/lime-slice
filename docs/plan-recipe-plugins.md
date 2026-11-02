@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 4 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 6 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -603,12 +603,85 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    *Tested by:* every `mcp/recipe*.test.ts` unchanged; Rust tests for the runner (timeout, memory cap, kill on drop,
    line limit) with a tiny recipe on Windows and Linux CI; a host test over a scripted transport in Node.
 
+   **As built (milestone 5, branch `claude/plugin-runner`):**
+   - **The host.** `src/recipe/host.ts` holds protocol v1 for both sides: the build loop with lust's `auto` fix rounds
+     and the ingredients suffix (`buildRecipe` over a `RecipeCompile`), the run loop (`runRecipe` over a `RecipeSpawn`:
+     start line, calls, replies, refusals, `done`, describe mode, notes, late parameters, the limits), diagnostics and
+     byte-offset edits. It uses no Node: byte lengths and edits go through `TextEncoder`. `mcp/recipe.ts` keeps the
+     slots, lust, the child process (`nodeSpawn`) and the workspace's files, and re-exports the host, so every
+     `mcp/recipe*.test.ts` runs unchanged. A runner may end a run with its own reason (a memory cap); it becomes the
+     run's reason.
+   - **The runner is a crate.** The process side is `crates/lime-recipe-runner`, not code inside `src-tauri`: its tests
+     then build and run on Windows CI in seconds (the MCP Windows job), where the Tauri crate is never compiled.
+     `src-tauri/src/recipe.rs` is the thin Tauri layer over it: `recipe_available`, `recipe_build {slot, source}`,
+     `recipe_start {run, exe, limits}`, `recipe_send`, `recipe_close_input`, `recipe_kill`, with `recipe-line` and
+     `recipe-exit` events. It starts only a slot program under its own root, the app's slots and lust daemon live under
+     `%TEMP%/lime-recipes-app` (apart from the MCP server's), one build runs at a time and stops at 30 s (D11.3), and
+     every running recipe is killed when the window closes. lust is `LIME_LUST`, else `mcp/lust/bin/lust` in the app's
+     resources, else PATH; the crate is `LIME_RECIPE_CRATE`, else `mcp/lime-recipe` in the resources.
+   - **Limits in the runner.** Wall time, calls, lines (calls × 2 + 1000, room for notes and describe lines), line
+     length, and the memory cap (1 GB, D11.2), with the host's own sentences. Memory is the peak private commit on
+     Windows, read every 20 ms, with a job object as the backstop at twice the cap that also kills the recipe when its
+     handle closes; on Linux the peak resident size (`VmHWM`). `setrlimit` was not used: an address-space cap would
+     also count the allocator's reserved ranges.
+   - **`src/recipe/tauri.ts`** (`AppRecipes`) is the app's transport: builds in four slots by name as the MCP keeps
+     them, a run id the window picks, listeners set before the start, replies sent in order. Nothing in the window
+     calls it yet (milestone 6).
+   - Tests: `src/recipe/host.test.ts` (unit chain; a scripted recipe: a whole run, the allowlist, a panic, every limit,
+     a runner's reason, cancel, halt, describe mode, fix rounds, ingredient edits never applied, diagnostics, byte
+     edits), `src/recipe/tauri.test.ts` (unit chain; a scripted Tauri runner: commands, events of another run ignored,
+     slots, no lust), `cargo test -p lime-recipe-runner` (a stand-in recipe binary for the empty environment, time,
+     memory cap, kill on drop, line, line count and call limits; a real recipe that only logs, built by lust, in CI's
+     Linux and Windows jobs with `LIME_RECIPE_REQUIRED=1`), and `src-tauri` tests for the slot-only start.
+
 6. **The app answers recipe calls.** `src/recipe/app-calls.ts`; the face and edge finders and the remaining handlers
    moved into `src/modeling/` with MCP tests unchanged; Edit values and Rebuild on a plugin step in the app.
    *Ships:* a person changes a plugin part's values in the window and it rebuilds, as one undo step.
    *Tested by:* each sample plugin run through the app adapter and through the MCP session gives the same
    fingerprint (unit, stand-in engine, and OCCT in CI); a Playwright spec with a scripted transport (the browser
    build has no Tauri): edit a value, rebuild, undo returns the old value.
+
+   **As built (milestone 6, branch `claude/plugin-app-calls`):**
+   - **Shared handlers.** What decides a call's answer moved out of `mcp/session.ts` so the app and the session run the
+     same code: `src/modeling/bake.ts` (`bakeOp`, the typed op made into the stored op, with resolveEdges, bakedFace,
+     profilePlane and the loop, profile and section readers; a join, a split to print and a print transition come
+     through hooks only the session gives), `src/modeling/model-calls.ts` (the solid as calls read it, paging, the
+     model_describe, faces_find and edges_find replies, the probe verdict, the stored echo of a blend, the step guard,
+     the applied reply, a solid's sections, the part's face context and typed plane, an edit's built and broken steps),
+     and `src/modeling/selectors.ts` and `solid-geometry.ts` (moved from `mcp/`, which re-exports them). The replay of
+     the steps after a run is `replayOps` and `replayedTree` in `src/recipe/rebuild.ts`, used by both. Every MCP test
+     runs unchanged.
+   - **`src/recipe/app-calls.ts`** answers on one part, on a branch in a copy of its tree: log, data (what the step's
+     draft kept), model_describe, faces_find, edges_find, surface_at, section, model_probe, model_apply,
+     model_apply_batch (one by one, or combined), with own-parts-only (O8). Refused with a sentence that points to
+     `recipe_run {object, params}`: composite ops, split, join, partition, transition, model_check, measure,
+     model_history, anchors other than `part`, and solid_new, model_place and object_place (a stamped branch run
+     changes one part).
+   - **`src/recipe/rebuild.ts`** (`rebuildPluginStep`) builds the code, runs it from the step before the run with the
+     stamped values under the changed ones and today's bed and nozzle, stamps the new run (fresh run id, the values,
+     the fingerprint), and replays the later steps in one engine edit. A failure shows the old step again and hands
+     back what the engine must drop.
+   - **The card** (`src/ui/model-history.ts`): fields are editable where the app runs plugins (the desktop app with
+     lust; the browser says it needs the desktop app). Numbers and counts are checked against their range as they are
+     typed ("Studs is 1 to 10."), a changed value says "changed", Reset puts the stamped values back, Enter or
+     Rebuild runs (unchanged values rerun too, which is how drift shows). The readout says what was rebuilt and how many
+     later steps; a failure is said in the card and the readout, and the part is as it was. The card follows the plugin
+     to its new rows, and back on Undo, so Undo shows the old values and Redo the new. One Undo is the edit's
+     (`editBack`), as a step edit's is.
+   - **D9, asking.** An edited project copy is no longer only refused: Rebuild asks in the card ("Confirm" runs the
+     changed code), the new stamp names that code's hash, and the project keeps it under that hash with its header's
+     `source-sha256` rewritten, so the MCP reads it as intact.
+   - **Not built here:** a part the plugin made (stamped on the root) still rebuilds over MCP, and the card says so;
+     "Use vN" waits for the library read of milestone 7; a draft that imports library ingredients rebuilds over MCP;
+     `exprs` (a value typed as a project expression) waits for the Plugins panel's form.
+   - Tests: `mcp/plugin-app.test.ts` (real lust; the stand-in engine, real OCCT in CI's OCCT job): the same plugin
+     rebuilt with the same new values through the MCP and through the app adapter gives the same stamp values, run
+     fingerprint, stored ops of the whole shown path and final solid; unchanged values land on the stamp; a panic is
+     taken back; a part the plugin made is refused. `e2e/model-plugin-rebuild.spec.ts` (in `test:smoke`; a scripted
+     runner behind `__limeRecipeRunner`): range refusal and Reset, rebuild with the later step replayed, the new run
+     as one row on a new branch, Undo back to the old values and Redo, a refused run said in the card, the save
+     keeping both stamps, and an edited copy that asks then runs. `src/model-history.test.ts` for which steps can
+     change. Screenshots in `test-results/plugin-rebuild/`.
 
 7. **The Plugins panel.** (Designed after `plan-sketch-for-people.md` milestones 1 and 5, so it follows the sketch
    card's tips, demos and 1440 px layout; see that plan's section 7a.) D13: list, search, sections, form, Preview with Live, Apply, Save as plugin… from History,

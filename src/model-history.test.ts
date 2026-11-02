@@ -422,6 +422,17 @@ eq("D9: a newer recipe API", pluginStepView({ ...stamp, api: "2.0" }, env({ copi
 const draftView = pluginStepView(draftStamp, env({ copies: new Map(), drafts: draftSources({ rustRecipes: { studs: { source: "fn main() {}\n", sha256: draftStamp.sha256, params: {}, objects: [] } } }) }));
 eq("a draft's code is its kept source, and its values are the stamped ones", [draftView.note, draftView.kind, draftView.source, draftView.fields.map((f) => [f.name, f.value])], [null, "draft", "fn main() {}\n", [["studs", 5]]]);
 
+// --- Milestone 6. Which steps the card lets change: the project's code, intact; an edited copy asks first; else none.
+eq("an intact copy rebuilds", view.rebuild, "yes");
+eq("a draft rebuilds", draftView.rebuild, "yes");
+eq("an edited copy asks first", pluginStepView(stamp, env({ copies: new Map([[stamp.sha256, copyOf("1.1", false)]]) })).rebuild, "ask");
+eq("no copy, macOS, and a newer API do not rebuild", [
+  pluginStepView(stamp, env({ copies: new Map() })).rebuild,
+  pluginStepView(stamp, env({ mac: true })).rebuild,
+  pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) })).rebuild,
+], ["no", "no", "no"]);
+eq("a number field carries its declared range", view.fields.filter((f) => f.min !== undefined).map((f) => [f.name, f.min, f.max]).length > 0, true);
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
