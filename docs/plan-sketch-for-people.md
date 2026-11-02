@@ -207,6 +207,40 @@ a circle, move it. Finish returns to the loft with both sections picked.
 Stores: the same `loft` op with two sketches in `drawing.sketches`. **Done when** square-to-round takes
 Loft, Add a shape above, draw a circle, Apply, without touching an origin plane or the Offset field.
 
+**As built (milestone 3, L1 + E1).**
+- E1 is `closeGap` in `src/sketch/close-gap.ts`. It takes milestone 1's red ends (`openEnds`) and pairs them
+  nearest first. A pair within 0.2 mm (`SNAP_GAP_MM`) is snapped: the later point becomes the earlier one, as a
+  drop onto it would. A point a constraint or size names is never moved; its gap gets a line. Any wider pair is
+  joined with a line from the earlier end to the later one, as the Line tool would draw it. The button is offered
+  only when the result has more shapes than the drawing had, so a lone line or a closing line that would cross
+  the drawing never shows it.
+- Deviation: the plan offered Close the gap only for ends within 1 mm. Lane F's brief asks for one action whenever
+  the drawing doesn't close, so the button shows for any gap that one line closes (a U across its top, an arc into
+  a D); the 1 mm rule became the snap rule, tightened to 0.2 mm so a move is never visible in a print.
+- **Close the gap** sits on the Make row after Extrude, only while it can help. Hovering it shows the red ends.
+  The open-ends reason then reads "… Click Close the gap, or drag one end onto the other." (`REASON.openEndsClose`).
+  One click is one undo step (`editActiveSketch` in `session.ts`), and the status line says what it did.
+- L1 is `shapeAbove`, `planeAbove` and `settleAbove` in `src/sketch/loft-above.ts`. The copy is the whole first
+  drawing (points, lines, ids and sizes, so a driving size still works), on the plane moved along its normal with
+  the same turn. It drops a face or workplane `on` and keeps an origin plane's, as the chooser's Offset does.
+- The loft strip shows **Height** (20 mm; type it, or drag the word sideways, 1 mm per 4 px) and **Add a shape
+  above** while the loft has one section from the open sketch and that sketch has one shape. The first sketch
+  becomes a card, and the copy opens on the plane above with a **Shape above** strip in place of Make: the height
+  again (it moves the open sketch, undo steps included, via `moveActivePlane`), **Back to loft** and Cancel.
+- Back to loft (or Finish sketch) pins the shape above, reopens the first sketch, and starts the loft through the
+  strict code: `beginLoft`, then `takeLoftSketch` on the new card. So the stored op is the strict path's by
+  construction. Ruled and Join/Cut/New are kept across the trip. Cancel drops the copy and returns to the loft with
+  its one section. Esc twice, or another tool taking the dock, leaves both sketches as cards.
+- Square to round: drawing a circle beside the untouched copy turns the copy into helper lines on Back to loft,
+  so the circle is the top and the copy stays as a guide. A moved or resized copy is the person's shape and is left
+  alone; two shapes of their own say "Delete the ones the loft shouldn't use, then click Back to loft."
+- Deviation: the done-when clicks are Loft, Add a shape above, draw a circle, **Back to loft**, Apply. The plan's
+  own text says Finish returns to the loft, and the loft ghost is seen before Apply.
+- Section 7 tests: `src/sketch/loft-above.test.ts` checks the copy against a square drawn by hand on XY offset 20,
+  and the whole loft op (and square to round over helper lines) against the strict path's. `close-gap.test.ts`
+  checks the closed L and the snapped square, and their extrude ops, against the drawings closed by hand.
+  `e2e/model-sketch-assist.spec.ts` drives both, a dragged and a typed height, Cancel and Finish.
+
 ### S1. Sweep in one sketch
 
 If the open sketch has exactly one closed shape and one open chain on the same plane, Sweep accepts both

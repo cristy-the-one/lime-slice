@@ -531,7 +531,7 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   const pop = page.locator("#sketchHow");
   if (await pop.isHidden()) await page.keyboard.press("Enter");
   await expect(pop).toBeVisible();
-  await expect(pop.locator("li").first()).toHaveText("Pick sections in order.");
+  await expect(pop.locator("li").first()).toHaveText("Pick sections in order, or click Add a shape above.");
   const after = await drawAt();
   expect(after).toEqual(before);
   const overflow = await page.locator("#sketchCards button").evaluateAll((nodes) => nodes.filter((node) => node.scrollWidth > node.clientWidth + 1).map((node) => (node as HTMLElement).innerText));

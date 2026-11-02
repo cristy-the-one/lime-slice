@@ -57,11 +57,13 @@ import {
   commitSizes,
   discardSketch,
   enterSketch,
+  editActiveSketch,
   enterSketchData,
   finishSketch,
   pinSketch,
   previewSizes,
   redoSketch,
+  moveActivePlane,
   reopenSketch,
   sketchBusy,
   sketchDimensions,
@@ -85,7 +87,9 @@ import {
 } from "../sketch/session";
 import { isDrawTool } from "../sketch/tools";
 import { featureTitle, fitStatus, hintSteps } from "../sketch/hints";
-import { axisCrossings, blockedTip, EDIT_BUTTONS, MAKE_BUTTONS, noShapeReason, openEnds, PURPOSE, REASON, sharpCorners, type EditButton, type MakeButton } from "../sketch/reasons";
+import { ASSIST_PURPOSE, axisCrossings, blockedTip, EDIT_BUTTONS, MAKE_BUTTONS, namesOpenEnds, noShapeReason, openEnds, PURPOSE, REASON, sharpCorners, type EditButton, type MakeButton } from "../sketch/reasons";
+import { closeGap, type ClosedGap } from "../sketch/close-gap";
+import { ABOVE_HEIGHT_MM, planeAbove, settleAbove, shapeAbove } from "../sketch/loft-above";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
 import { CONSTRAIN_MENU, constraintGlyphs, dimensionLabels, firstLineMeasure, type ConstraintGlyph, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
 import { evaluate, ExprError } from "../modeling/expr.ts";
@@ -592,6 +596,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let cardFocus: string[] = [];
   /** --- B14. How far the chosen origin plane is moved along its normal, typed on the "Sketch on" card. --- */
   let chooseOffset = 0;
+  /** --- L1. The height Add a shape above uses, and the loft that waits while the shape above is drawn. --- */
+  let aboveHeight = ABOVE_HEIGHT_MM;
+  let above: { firstId: number; secondId: number; copy: SketchData; basePlane: SketchData["plane"]; height: number; ruled: boolean; choice: ModeChoice } | null = null;
+  /** --- E1. What Close the gap would make of each drawing, worked out once per drawing. --- */
+  const gapOf = new WeakMap<SketchData, ClosedGap | null>();
   let shownPlanes: OriginPlane[] = [];
   let chooseDown: { x: number; y: number } | null = null;
   let lastClient = { x: 0, y: 0 };
@@ -681,7 +690,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   // R2: a greyed button whose reason is about the drawing marks the place while its tip is read.
   const markFromButton = (ev: Event) => {
     const target = ev.target instanceof Element ? ev.target.closest("button") : null;
-    if (target instanceof HTMLButtonElement && target.dataset.reason === REASON.openEnds) showMarks("open");
+    if (target instanceof HTMLButtonElement && (namesOpenEnds(target.dataset.reason) || target.dataset.sketchCloseGap != null)) showMarks("open");
   };
   cards?.addEventListener("mouseover", markFromButton);
   cards?.addEventListener("focusin", markFromButton);
@@ -693,7 +702,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!(target instanceof HTMLButtonElement)) return;
     if (target.getAttribute("aria-disabled") === "true") {
       const why = target.dataset.reason || target.dataset.tip || target.title;
-      if (why === REASON.openEnds) showMarks("open");
+      if (namesOpenEnds(why)) showMarks("open");
       if (why) {
         host.readout(why);
         pushToast(why, "info");
@@ -755,6 +764,24 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (host.sketchHolesArmed()) host.endSketchHoles();
       if (revolve) void commitRevolve();
       else beginRevolve();
+      return;
+    }
+    // --- E1. Close the gap: the red ends joined in one undo step. ---
+    if (target.dataset.sketchCloseGap != null) {
+      closeTheGap();
+      return;
+    }
+    // --- L1. Add a shape above, and the strip of the shape above. ---
+    if (target.dataset.sketchAbove != null && loft) {
+      addShapeAbove();
+      return;
+    }
+    if (target.dataset.sketchAboveDone != null) {
+      backToLoft();
+      return;
+    }
+    if (target.dataset.sketchAboveCancel != null) {
+      cancelAbove();
       return;
     }
     // --- F3. Loft and sweep live on the card. A second click applies. ---
@@ -838,6 +865,11 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     if (target.dataset.sketchFinish != null) {
+      // L1: Finish on the shape above goes back to the loft, with both sections picked.
+      if (aboveOpen()) {
+        backToLoft();
+        return;
+      }
       endExtrude();
       endRevolve();
       endLoft();
@@ -868,6 +900,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
         return;
       }
       host.closeTool();
+      above = null;
       editor = reopenSketch(editor, pinnedId);
       aimKey = "";
       refsKey = "";
@@ -1421,6 +1454,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     parts.push(pinned.map((item) => `${item.id}=${item.name}`).join("/"));
     if (editor.phase === "editing") {
       parts.push(activeSketch(editor)?.on?.kind ?? "");
+      // E1 and L1: Close the gap, Add a shape above and the shape above's strip come and go with the drawing.
+      parts.push(gapToClose() ? "gap" : "", canAddAbove() ? "above" : "", aboveOpen() ? "above-open" : "");
       if (profile) parts.push(`profile:${profileNote()}`);
       if (gesture || revolve || loft || sweep) {
         const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
@@ -1474,6 +1509,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       markBlocked(apply, featureBlocked());
     }
     paintStarts();
+    const done = cards?.querySelector<HTMLButtonElement>("[data-sketch-above-done]");
+    const drawn = activeSketch(editor);
+    if (done && above && drawn) markBlocked(done, aboveBlocked(settleAbove(above.copy, drawn).sketch));
     const sentence = pickPrompt();
     const text = cards?.querySelector<HTMLElement>(".sketch-prompt-text");
     if (text) {
@@ -1562,7 +1600,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return "";
     }
     if (loft) {
-      if (loft.picks.length < 2) return REASON.loftSecond;
+      if (loft.picks.length < 2) return canAddAbove() ? REASON.loftAbove : REASON.loftSecond;
       return "";
     }
     if (sweep) {
@@ -1602,18 +1640,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ? editedRegions(sketch) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor)
       : chooseRegions(sketch, editor.selection.entities, null);
     if (kind === "extrude") {
-      if (regions.length === 0) return noShapeReason(sketch);
+      if (regions.length === 0) return shapeWhy(sketch);
       if (chosen.length === 0) return REASON.pickExtrude;
       return "";
     }
     if (kind === "revolve") {
-      if (regions.length === 0) return noShapeReason(sketch);
+      if (regions.length === 0) return shapeWhy(sketch);
       if (chosen.length === 0) return REASON.pickRevolveStart;
       return "";
     }
     if (kind === "loft") {
       const elsewhere = editor.pinned.some((item) => item.id !== editor.active && sketchRegions(item.sketch).length > 0);
-      if (regions.length === 0 && !elsewhere) return noShapeReason(sketch);
+      if (regions.length === 0 && !elsewhere) return shapeWhy(sketch);
       return "";
     }
     if (kind === "holes") {
@@ -1622,14 +1660,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return "";
     }
     const path = openChain(sketch) ?? pinnedChain();
-    if (chosen.length === 0 && !pinnedRegion() && !path) return sketch.entities.length === 0 ? REASON.sweepNothing : noShapeReason(sketch);
+    if (chosen.length === 0 && !pinnedRegion() && !path) return sketch.entities.length === 0 ? REASON.sweepNothing : shapeWhy(sketch);
     return "";
   }
 
   function blockedStart(kind: StartKind): boolean {
     const why = startWhy(kind, true);
     if (!why) return false;
-    if (why === REASON.openEnds) showMarks("open");
+    if (namesOpenEnds(why)) showMarks("open");
     host.readout(why);
     pushToast(why, "info");
     return true;
@@ -1669,7 +1707,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return [
       sketchSection("Draw", "draw", drawTools()),
       sketchSection("Edit", "edit", editTools()),
-      profile ? profileStrip() : feature ? featureStrip() : sketchSection("Make", "make", makeTools()),
+      profile ? profileStrip() : feature ? featureStrip() : aboveOpen() ? aboveStrip() : sketchSection("Make", "make", makeTools()),
       sketchFooter(),
     ];
   }
@@ -1735,13 +1773,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   /** P1: the Make row comes from `MAKE_BUTTONS`. Holes stays on the row off a face, greyed with the reason. */
   function makeTools(): Node[] {
-    return MAKE_BUTTONS.map((id) => {
+    const out: Node[] = MAKE_BUTTONS.map((id) => {
       const { label, command, data } = MAKE_LABELS[id];
       const button = textButton(sketchKeyLabel(label, command), { [data]: "" });
       button.dataset.tipIdle = tipWithShortcut(PURPOSE[id], keyOf(command));
       markBlocked(button, startActive(id) ? "" : startWhy(id));
       return button;
     });
+    // E1: only while the drawing has open ends that one click can close, beside Extrude.
+    if (gapToClose()) {
+      const close = textButton("Close the gap", { sketchCloseGap: "" });
+      close.classList.add("sketch-assist");
+      close.dataset.tipIdle = ASSIST_PURPOSE.closeGap;
+      markBlocked(close, "");
+      out.splice(1, 0, close);
+    }
+    return out;
   }
 
   /** Replaces Make while Extrude, Revolve, Loft or Sweep is open. */
@@ -1779,6 +1826,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ruled.dataset.tip = "R toggles smooth and ruled.";
       ruled.title = ruled.dataset.tip;
       options.append(ruled);
+    }
+    if (loft && canAddAbove()) {
+      const add = textButton("Add a shape above", { sketchAbove: "" });
+      add.classList.add("primary");
+      add.dataset.tipIdle = ASSIST_PURPOSE.above;
+      markBlocked(add, "");
+      options.append(heightField(), add);
     }
     const value = featureValue();
     if (value) options.append(value);
@@ -1936,7 +1990,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return foot;
     }
     const finish = textButton("Finish sketch", { sketchFinish: "" });
-    if (!(gesture || revolve || loft || sweep)) finish.classList.add("primary");
+    // L1: on the shape above, Back to loft is the one primary button; Finish does the same.
+    if (!(gesture || revolve || loft || sweep) && !aboveOpen()) finish.classList.add("primary");
     foot.append(look, finish);
     return foot;
   }
@@ -2699,6 +2754,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const left = editor.phase === "editing" && next.phase !== "editing";
     const session = editSession;
     if (left) {
+      above = null;
       next = endEditSession(next);
       if (host.sketchHolesArmed()) host.endSketchHoles();
       gesture = null;
@@ -3405,6 +3461,216 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.view.setGhost(parts.length > 0 ? { kind: "soup", positions: new Float32Array(parts) } : null);
   }
 
+  // --- E1. Close the gap. ---
+  /** What Close the gap makes of the open drawing, or null when nothing it could do closes a shape. */
+  function gapToClose(): ClosedGap | null {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing" || sketchRegions(sketch).length > 0) return null;
+    if (!gapOf.has(sketch)) gapOf.set(sketch, closeGap(sketch));
+    return gapOf.get(sketch) ?? null;
+  }
+
+  /** Why the drawing makes no shape. Open ends that Close the gap can join say so. */
+  function shapeWhy(sketch: SketchData): string {
+    const why = noShapeReason(sketch);
+    return why === REASON.openEnds && gapToClose() ? REASON.openEndsClose : why;
+  }
+
+  function closeTheGap() {
+    const closed = gapToClose();
+    if (!closed) return;
+    editor = editActiveSketch(editor, closed.sketch);
+    redMarks = null;
+    cardFocus = ["[data-sketch-extrude]"];
+    publish("open");
+    const lines = closed.joins.filter((join) => join.kind === "line").length;
+    const said = lines === 0 ? "The ends now meet." : lines === 1 ? "A line now joins the ends." : `${lines} lines now join the ends.`;
+    host.readout(`${said} Press E to extrude it, or Ctrl+Z to undo.`);
+  }
+
+  // --- L1. Add a shape above. ---
+  /** The loft has its first section from the open sketch, and that sketch has one shape to copy up. */
+  function canAddAbove(): boolean {
+    if (!loft || loft.picks.length !== 1 || editor.phase !== "editing" || editSession || profile) return false;
+    const sketch = activeSketch(editor);
+    return !!sketch && loft.picks[0]!.sketchId === editor.active && sketchRegions(sketch).length === 1;
+  }
+
+  /** The shape above is open, with its loft waiting. */
+  function aboveOpen(): boolean {
+    return above != null && editor.phase === "editing" && editor.active === above.secondId && !(gesture || revolve || loft || sweep);
+  }
+
+  function addShapeAbove() {
+    if (!loft || !canAddAbove()) return;
+    const first = activeSketch(editor)!;
+    const firstId = editor.active!;
+    const copy = shapeAbove(first, aboveHeight);
+    if ("error" in copy) {
+      host.readout(copy.error);
+      pushToast(copy.error, "info");
+      return;
+    }
+    const kept = { ruled: loft.ruled, choice: loft.choice };
+    endLoft();
+    // The first sketch is kept as a card; the copy opens on the plane above it, ready to edit.
+    editor = enterSketchData(editor, copy);
+    if (editor.active == null) return;
+    above = { firstId, secondId: editor.active, copy, basePlane: first.plane, height: aboveHeight, ...kept };
+    aimKey = "";
+    refsKey = "";
+    cardFocus = ["[data-sketch-above-done]"];
+    publish("open");
+    host.readout(aboveSentence());
+  }
+
+  function aboveSentence(): string {
+    const first = editor.pinned.find((item) => item.id === above?.firstId)?.name ?? "the first sketch";
+    return `A copy of ${first}, ${formatHeight(above?.height ?? aboveHeight)} mm above it. Change it, or delete it and draw another shape, then click Back to loft.`;
+  }
+
+  /** Why Back to loft can't go back yet, or "". The copy left as it came, beside a new shape, is not a reason. */
+  function aboveBlocked(sketch: SketchData): string {
+    const regions = sketchRegions(sketch).length;
+    if (regions === 0) return shapeWhy(sketch);
+    if (regions > 1) return REASON.manyRegionsAbove;
+    return "";
+  }
+
+  /** Back to the loft: the shape above becomes a card, the first sketch opens again, and both are picked. */
+  function backToLoft() {
+    const pending = above;
+    if (!pending || !aboveOpen()) return;
+    const now = activeSketch(editor)!;
+    const settled = settleAbove(pending.copy, now);
+    const why = aboveBlocked(settled.sketch);
+    if (why) {
+      if (namesOpenEnds(why)) showMarks("open");
+      host.readout(why);
+      pushToast(why, "info");
+      return;
+    }
+    if (settled.helpers) editor = editActiveSketch(editor, settled.sketch);
+    above = null;
+    editor = finishSketch(editor);
+    editor = reopenSketch(editor, pending.firstId);
+    aimKey = "";
+    refsKey = "";
+    beginLoft();
+    if (!loft) return;
+    loft = { ...loft, ruled: pending.ruled, choice: pending.choice };
+    takeLoftSketch(pending.secondId);
+    cardFocus = ["[data-sketch-apply]"];
+    publish("skip");
+    host.readout(settled.helpers ? "The copy stays as a helper outline, and your new shape is the top. Press Enter to apply the loft." : "Both shapes are picked. Press Enter to apply the loft.");
+  }
+
+  /** Cancel on the shape above: it goes, and the loft is back as it was, with its one section. */
+  function cancelAbove() {
+    const pending = above;
+    if (!pending || !aboveOpen()) return;
+    above = null;
+    editor = discardSketch(editor, pending.secondId);
+    editor = reopenSketch(editor, pending.firstId);
+    aimKey = "";
+    refsKey = "";
+    beginLoft();
+    if (loft) loft = { ...loft, ruled: pending.ruled, choice: pending.choice };
+    publish("open");
+  }
+
+  /** The height of the shape above: typed, or dragged sideways on its label. On the shape above it moves the plane. */
+  function setAboveHeight(value: number) {
+    if (!Number.isFinite(value) || value === 0) {
+      host.readout("Type a height other than 0, such as 20 or -20.");
+      return;
+    }
+    aboveHeight = value;
+    if (above && aboveOpen()) {
+      above = { ...above, height: value };
+      editor = moveActivePlane(editor, planeAbove(above.basePlane, value));
+      aimKey = "";
+      refsKey = "";
+      publish("skip");
+      host.readout(aboveSentence());
+    }
+  }
+
+  function heightField(): HTMLLabelElement {
+    const label = document.createElement("label");
+    label.className = "sketch-value sketch-height";
+    const name = document.createElement("span");
+    name.className = "sketch-scrub";
+    name.textContent = "Height";
+    name.title = "Drag sideways to change the height, or type it.";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.value = formatHeight(above && aboveOpen() ? above.height : aboveHeight);
+    input.dataset.sketchAboveHeight = "";
+    input.setAttribute("aria-label", "Height of the shape above, mm");
+    const unit = document.createElement("span");
+    unit.textContent = "mm";
+    input.addEventListener("change", () => setAboveHeight(Number(input.value.trim().replace(",", "."))));
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      setAboveHeight(Number(input.value.trim().replace(",", ".")));
+    });
+    // A drag on the word: 1 mm for every 4 px, whole millimetres, never through 0.
+    name.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      const startX = ev.clientX;
+      const start = Number(input.value.trim().replace(",", ".")) || aboveHeight;
+      name.setPointerCapture(ev.pointerId);
+      const move = (moved: PointerEvent) => {
+        let value = Math.round(start + (moved.clientX - startX) / 4);
+        if (value === 0) value = start > 0 ? 1 : -1;
+        input.value = formatHeight(value);
+      };
+      const up = () => {
+        name.removeEventListener("pointermove", move);
+        name.removeEventListener("pointerup", up);
+        name.removeEventListener("pointercancel", up);
+        setAboveHeight(Number(input.value));
+        if (!aboveOpen()) publish("skip");
+      };
+      name.addEventListener("pointermove", move);
+      name.addEventListener("pointerup", up);
+      name.addEventListener("pointercancel", up);
+    });
+    label.append(name, input, unit);
+    return label;
+  }
+
+  /** In place of Make on the shape above: what it is, its height, Back to loft and Cancel. */
+  function aboveStrip(): HTMLElement {
+    const strip = document.createElement("section");
+    strip.className = "sketch-section sketch-feature sketch-above";
+    strip.dataset.sketchSection = "above";
+    const head = document.createElement("div");
+    head.className = "sketch-feature-row";
+    const name = document.createElement("p");
+    name.className = "sketch-feature-name";
+    name.textContent = "Shape above";
+    head.append(name, heightField());
+    const note = document.createElement("p");
+    note.className = "sketch-above-note model-note";
+    note.setAttribute("role", "status");
+    note.textContent = "Edit the copy for the loft's top: drag it, set its sizes, or delete it and draw another shape.";
+    const done = textButton("Back to loft", { sketchAboveDone: "" });
+    done.classList.add("primary");
+    done.dataset.tipIdle = ASSIST_PURPOSE.backToLoft;
+    const sketch = activeSketch(editor);
+    markBlocked(done, sketch && above ? aboveBlocked(settleAbove(above.copy, sketch).sketch) : "");
+    const actions = document.createElement("div");
+    actions.className = "sketch-feature-actions";
+    actions.append(done, textButton("Cancel", { sketchAboveCancel: "" }));
+    strip.append(note, head, actions);
+    return strip;
+  }
+
   // --- F3. Loft and sweep from the open sketch. ---
   function scaleOf(scale: number | number[]): number {
     return typeof scale === "number" ? scale : scale[0] ?? 1;
@@ -4067,4 +4333,9 @@ function framesMatch(a: SketchFrame, b: SketchFrame): boolean {
   const origin = Math.hypot(a.origin[0] - b.origin[0], a.origin[1] - b.origin[1], a.origin[2] - b.origin[2]);
   const normal = Math.abs(a.w[0] * b.w[0] + a.w[1] * b.w[1] + a.w[2] * b.w[2]);
   return origin < 0.5 && normal > 0.999;
+}
+
+/** A height as the field shows it: two decimals at most. */
+function formatHeight(value: number): string {
+  return String(Math.round(value * 100) / 100);
 }

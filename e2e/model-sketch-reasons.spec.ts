@@ -75,7 +75,7 @@ test("lines that don't close say so, with the open ends in red", async ({ page }
 
   const extrude = page.locator("button[data-sketch-extrude]");
   await expect(extrude).toHaveAttribute("aria-disabled", "true");
-  await expect(extrude).toHaveAttribute("data-reason", "Your lines don't close a shape yet, so the red ends need to meet. Drag one onto the other, or trim the overhang (T).");
+  await expect(extrude).toHaveAttribute("data-reason", "Your lines don't close a shape yet, so the red ends need to meet. Click Close the gap, or drag one end onto the other.");
   await extrude.hover();
   await expect(page.locator(".lime-tip[data-open=true]")).toContainText("the red ends need to meet");
   await expect(canvas, "both open ends are marked").toHaveAttribute("data-sketch-marks", "2");
