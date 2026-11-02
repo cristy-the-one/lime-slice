@@ -336,8 +336,11 @@ await compare({
   ].join("\n"),
 });
 
-// --- 5. Reading the part: model_check, measure and model_history, then a print transition on an edge.
-await compare({
+// --- 5. Reading the part: model_check, measure and model_history, then a ledge that overhangs the block's side and a
+// print transition under it. The ledge's underside meets the side along one concave edge running in Y, flat to the
+// layers, so the edge starts in the air and really needs a transition. (The stand-in engine builds no ledge edges; there
+// the recipe falls back to edge 0, which it does not refuse.)
+const lip = await compare({
   name: "checked lip",
   id: "checked-lip",
   given: true,
@@ -357,20 +360,27 @@ await compare({
     '    s.log(&format!("span {}", span.get("distanceMm").map(|v| v.to_string()).unwrap_or_default()));',
     '    let history = s.call("model_history", op(&format!(r#"{{"object":"{}"}}"#, p.object))).unwrap();',
     '    s.log(&format!("history {}", history.get("nodes").and_then(|n| n.as_array()).map(|n| n.len()).unwrap_or(0)));',
-    '    s.apply(&p, op(&format!(r#"{{"kind":"transition","edges":[0],"size":{size}}}"#))).unwrap();',
+    '    s.apply(&p, op(r#"{"kind":"boolean","op":"fuse","primitive":"box","dx":15,"dy":20,"dz":4,"origin":[15,-10,6],"label":"ledge"}"#)).unwrap();',
+    '    let under = s.call("edges_find", op(&format!(r#"{{"object":"{}","direction":[0,1,0],"convex":false}}"#, p.object))).unwrap();',
+    '    let edges: Vec<f64> = under.get("edges").and_then(|e| e.as_array()).map(|rows| rows.iter().filter_map(|row| row.get("index").and_then(|i| i.as_f64())).collect()).unwrap_or_default();',
+    '    let pick = if edges.is_empty() { "[0]".to_string() } else { format!("[{}]", edges.iter().map(|i| format!("{}", *i as u32)).collect::<Vec<_>>().join(",")) };',
+    '    s.log(&format!("under the ledge {} edge(s)", edges.len()));',
+    '    s.apply(&p, op(&format!(r#"{{"kind":"transition","edges":{pick},"size":{size}}}"#))).unwrap();',
     "    s.done(&p);",
     "}",
     "",
   ].join("\n"),
 });
 
-// --- 6. A split to print inside a draft's run: the part keeps its tree, the other piece is a tree of its own. (A draft:
-// keep's check dry-runs the defaults on the part this run already cut, where the default plane is the part's edge.)
+if (lip && real) check("checked lip: on the real kernel the transition is on the ledge's own underside edge", logs(lip.viaApp.notes).some((line) => /^under the ledge [1-9]\d* edge/.test(line)), logs(lip.viaApp.notes));
+
+// --- 6. A split to print inside the run: the part keeps its tree, the other piece is a tree of its own. Keeping it
+// checks the plugin on the block as it was before the run; on the cut part its default plane would be the part's edge.
 const cut = await compare({
   name: "cut in two",
   id: "cut-in-two",
   given: true,
-  keep: false,
+  keep: true,
   params: { at: 4 },
   later: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 20, origin: [-15, 0, -5] },
   source: [

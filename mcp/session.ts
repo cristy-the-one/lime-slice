@@ -1486,15 +1486,15 @@ export class Session {
       ...(rebuilt ? { rebuilt } : {}),
       ...report,
       ...(nuggets.length && input.keep === undefined ? { nuggets } : {}),
-      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used)),
+      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null)),
     };
   }
 
   /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
-  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>): Promise<Record<string, unknown>> {
+  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null): Promise<Record<string, unknown>> {
     if (keep === undefined) return {};
     const k = (keep && typeof keep === "object" ? keep : {}) as { title?: unknown; description?: unknown };
-    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, ingredients });
+    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, objectFrom, ingredients });
     if ("reason" in saved) return { keepRefused: saved.reason };
     const row = entryKey ? this.rustRecipes.get(entryKey) : undefined;
     if (row) row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
@@ -1565,9 +1565,12 @@ export class Session {
 
   /**
    * --- D3. Saving checks the plugin once more: a describe run for its parameters, then a dry run with its defaults
-   * (on `objectHint`, or on a test block when it needs a part and none is given). Late parameters are refused.
+   * (on `objectHint`, or on a test block when it needs a part and none is given). Late parameters are refused. A run
+   * just kept is checked on its part as it stood before the run (`objectFrom`), the part the plugin was written for: on
+   * the part it already changed, a split there, a fuse into what it already added, or a cut through a hole it already
+   * cut is refused, and the plugin could never be kept.
    */
-  private async pluginCheck(body: string, objectHint: string | undefined): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
+  private async pluginCheck(body: string, objectHint: string | undefined, objectFrom: number | null = null): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
     const described = await this.recipeDescribe(body);
     if ("reason" in described) return { reason: `This plugin does not build with its own defaults: ${described.reason} Change the defaults or the code, then keep it.` };
     let object = described.target === "new" ? undefined : objectHint && this.find(objectHint) ? objectHint : undefined;
@@ -1578,10 +1581,18 @@ export class Session {
       block = object = made.object;
     }
     const selected = this.selected;
+    const part = object && !block ? this.find(object) : null;
+    const tip = part?.tree?.current ?? null;
+    const back = part && tip !== null && objectFrom !== null && objectFrom !== tip && part.tree?.nodes.has(objectFrom);
     let dry: Record<string, unknown>;
     try {
+      if (back) {
+        const shown = await this.gotoNode(part!, objectFrom);
+        if (shown.ok === false) return { reason: `The step before the run could not be shown for the plugin's check: ${String(shown.reason ?? "the engine refused it.")}` };
+      }
       dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", ...(object ? { object } : {}) });
     } finally {
+      if (back && part!.tree?.nodes.has(tip!)) await this.gotoNode(part!, tip).catch(() => ({ ok: false }));
       if (block) await this.objectRemove(block).catch(() => ({ ok: false }));
       this.selected = selected;
     }
@@ -1596,7 +1607,7 @@ export class Session {
    * the same body keeps its version (new words only); with another body it is the next version when the run was of
    * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
    */
-  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; ingredients?: Record<string, KeptIngredient> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[] } | { reason: string }> {
+  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[] } | { reason: string }> {
     const title = oneLine(opts.title, TITLE_MAX);
     if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
     let body = lfOnly(opts.source);
@@ -1610,7 +1621,7 @@ export class Session {
     const bad = body.split("\n").findIndex((line) => /^\s*(mod\s+\w+\s*;|#\s*\[\s*path\b|extern\s+crate\s+(?!lime_recipe\b))/.test(line));
     if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
     const sha256 = bodyHash(body);
-    const checked = await this.pluginCheck(body, opts.objectHint);
+    const checked = await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null);
     if ("reason" in checked) return checked;
     const dir = pluginsDir();
     let id = slugOf(title) || slugOf(opts.name ?? "") || "plugin";
