@@ -155,7 +155,7 @@ import { modelerFailure, plainModelError } from "./model-error";
 import { mountEdgeDrag } from "./edge-drag";
 import { closeSketchSession, forgetSketches, holdSketchForApply, mountSketch, openProfileSketch, openSketchFeature, openSketchLoft, openSketchRevolve, sketchHistoryButtons, sketchOccupiesView, sketchRedo, sketchTakesPick, sketchUndo } from "./sketch";
 import { chainFromSketch } from "../modeling/sketch-profile.ts";
-import { holeMarks, holeSizeRefusal, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
+import { POINT_REFUSAL, holeMarks, holeSizeRefusal, holesInModel, isSketchHoleGroup, pointsFromSource, sketchHoleSource, type HoleSizes, type HoleTarget } from "../sketch/holes.ts";
 import { sketchJson, type SketchData } from "../sketch/model.ts";
 import { featureOutlines, opensSketchEditor, presetOf, sketchForFeature } from "../sketch/extrude";
 import { loftEditOf, readFaceLoops } from "../sketch/loft";
@@ -2990,7 +2990,7 @@ async function applyTool() {
   if (!op) {
     if (tool === "fillet" || tool === "chamfer") readout(tool === "fillet" ? "Pick an edge to fillet." : "Pick an edge to chamfer.");
     if (tool === "split") readout(splitNote(splitState()).text);
-    if (tool === "hole" && sketchHoleDraft) readout(holeSizeRefusal(holeSizesNow()) ?? "Select points or circle centres.");
+    if (tool === "hole" && sketchHoleDraft) readout(holeSizeRefusal(holeSizesNow()) ?? POINT_REFUSAL);
     return;
   }
   if (op.kind === "split") {

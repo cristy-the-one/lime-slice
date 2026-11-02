@@ -1786,7 +1786,10 @@ test("a zig-zag's shift: Auto keeps the thin walls, a typed shift flattens the t
   await expect(shiftField(page)).toHaveValue("");
   // Apply stores the shift, and the pencil reads Auto back as Auto.
   await expect(apply(page)).toBeEnabled();
+  const before = tree.of("apply").length;
   await apply(page).click();
+  // The click only sends the request; read the op once the modeler has it, as the other Apply checks do.
+  await expect.poll(() => tree.of("apply").length, "Apply sends one cut").toBe(before + 1);
   const applied = tree.of("apply").at(-1)!.op as { cuts: { profile: ShiftedProfile }[] };
   expect(applied.cuts[0]!.profile).toEqual(expect.objectContaining({ kind: "zigzag", shift: 9.6, shiftAuto: true }));
   await page.getByRole("treeitem", { name: /^Split to print, 2 parts/ }).locator(".mh-edit").click();

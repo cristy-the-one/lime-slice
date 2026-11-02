@@ -58,8 +58,8 @@ const picked = { entities: [] as number[], points: ids };
 
 check("a face sketch can take holes", sketchOnFace(three));
 check("a plane sketch cannot", !sketchOnFace(emptySketch({ origin: [0, 0, 0], turn: [0, 0, 0] }, { kind: "plane", name: "XY" })));
-eq("the sentence names the face", FACE_REFUSAL, "Sketch on a face to place a hole at each point.");
-eq("the sentence names the points", POINT_REFUSAL, "Select points or circle centres.");
+eq("the sentence names the face", FACE_REFUSAL, "Holes go into a face. Start the sketch on a face of the part, then draw points where the holes go.");
+eq("the sentence names the points", POINT_REFUSAL, "Select the points or circles where the holes go. Draw them first if there are none.");
 
 const targets = holeTargets(three, picked);
 eq("three selected points are three holes", targets.map((point) => point.id), ids);

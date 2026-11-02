@@ -159,6 +159,27 @@ where the reason is geometric:
 **Done when** every reason string in `src/sketch/` and `featureBlocked()` passes a unit test that it ends with
 an action, and an open-ends sketch shows its red dots in an e2e screenshot.
 
+**As built (milestone 1, P1 + P3).**
+- `src/sketch/reasons.ts` holds the purpose lines (`PURPOSE`), the card's Edit and Make rows (`EDIT_BUTTONS`,
+  `MAKE_BUTTONS`), every card reason (`REASON`), and the marks: `openEnds`, `sharpCorners` (the sweep's own 25° rule),
+  `axisCrossings`. The card builds both rows from those lists, so a button with no purpose can't be drawn.
+- Tips: the purpose line with the key. A greyed button keeps it and adds the reason on a second line (the tooltip
+  shows the reason in the warning colour); the reason alone is `data-reason`, which a click or the key says in the
+  status line. The Construction and Use lines don't name the button, so they read the same after C1 and U1 rename it.
+- Reasons by cause, not one sentence per button: nothing drawn, open ends, only helper lines, crossings that close
+  nothing, or a shape not picked. Open ends get red dots when the greyed button is hovered or focused, or its key is
+  pressed, and keep them until the drawing changes, so they don't sit on an intended sweep route while drawing. A sharp
+  sweep corner and a revolve-axis crossing are marked whenever the feature is open. The canvas carries
+  `data-sketch-marks` and `data-sketch-marks-kind`.
+- Holes stays on the Make row off a face, greyed with the face reason, instead of being hidden.
+- Wording that differs from the table above: "Add a shape above" (L1) isn't built, so the loft reasons point to
+  another sketch's card or a face; the sharp-corner reason points to Fillet corner (G), since S3's radius isn't on the
+  card yet. Builder refusals that already ended with an action kept their words, including the revolve builder's
+  `CROSS_REFUSAL`, which a parameter rebuild through the MCP can return; the card shows the table's sentence.
+- `src/sketch/reasons.test.ts` checks every `*_REFUSAL`, `SHARP_CORNER`, `EDGE_MEET`, `error:` and `note:` sentence in
+  `src/sketch/` and `src/app/sketch.ts` ends with an action verb; `e2e/model-sketch-reasons.spec.ts` checks the tips
+  and the open-ends dots. Nothing under `mcp/` changed, and no saved field.
+
 ## 5. Make operations, done the natural way
 
 ### E1. Extrude: close the shape for me

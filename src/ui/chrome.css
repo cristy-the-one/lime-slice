@@ -19,6 +19,8 @@
 }
 .lime-tip[data-open="true"] { display: flex; }
 .lime-tip kbd { flex: 0 0 auto; background: var(--surface-1); }
+.lime-tip-lines { display: flex; flex-direction: column; gap: 2px; }
+.lime-tip-lines > span + span { color: var(--warn, var(--text)); }
 
 /* The rail: 48px at the far left, one tool set per stage, captions over the groups, the dock toggle at its foot. */
 .tool-rail {

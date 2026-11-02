@@ -3321,14 +3321,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     const selected = role === "selected" || role === "hover";
     const material = new THREE.PointsMaterial({
-      color: role === "selected" ? 0xffd166 : role === "hover" ? 0xffffff : accent,
-      size: selected ? 8 : 6,
+      color: role === "refuse" ? hexToThree(colors.danger) : role === "selected" ? 0xffd166 : role === "hover" ? 0xffffff : accent,
+      // R2: a red mark is larger than a point, so an open end reads at a glance.
+      size: role === "refuse" ? 12 : selected ? 8 : 6,
       sizeAttenuation: false,
       depthTest: false,
       transparent: true,
     });
     const cloud = new THREE.Points(geometry, material);
-    cloud.renderOrder = 6;
+    cloud.renderOrder = role === "refuse" ? 7 : 6;
     cloud.raycast = () => undefined;
     sketchGroup.add(cloud);
   }

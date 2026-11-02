@@ -21,7 +21,7 @@ const EQUAL_MM = 1e-4;
 
 export const DRAFT_UP_TO_REFUSAL = "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth.";
 export const UP_TO_SECOND_REFUSAL = "An extrude up to a face starts at the profile. Drop the second depth.";
-export const DEPTH_REFUSAL = "An extrude needs a depth other than 0.";
+export const DEPTH_REFUSAL = "Set a depth other than 0 for the extrude.";
 /** The engine takes a profile of at most this many loops: the outline and its holes. */
 export const PROFILE_LOOPS_MAX = 32;
 
@@ -227,7 +227,7 @@ export function sketchTouchesSolid(frame: SketchFrame, regions: readonly Region[
 
 /** The op, with a copy of the sketch on each extrude. An error is the kernel's sentence and is not sent. */
 export function buildSketchExtrude(draft: ExtrudeDraft): { op: ModelOp } | { error: string } {
-  if (draft.regions.length === 0) return { error: "Select a region to extrude." };
+  if (draft.regions.length === 0) return { error: "Click inside the shape to extrude." };
   const distance = draft.distance;
   const depth2 = draft.depth2 != null && draft.depth2 > 0 ? draft.depth2 : null;
   const draftDeg = draft.draftDeg != null && draft.draftDeg !== 0 ? draft.draftDeg : null;

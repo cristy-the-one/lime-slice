@@ -109,20 +109,20 @@ eq("a line grows to the next wall", grownEnds, [0, 0, 8, 0]);
 eq("the fence is left where it was", extend(fence.sketch, stub.id, [4.5, 0]).sketch.entities.find((entity) => entity.id === fence.id) && fence.sketch.entities.length, 2);
 
 const lonely = addLine(emptySketch(), [0, 0], [5, 0]);
-eq("nothing to meet refuses the extend", extend(lonely.sketch, lonely.id, [5, 0]).error, "Extend this end until it meets another line or arc. Nothing is in the way yet.");
+eq("nothing to meet refuses the extend", extend(lonely.sketch, lonely.id, [5, 0]).error, "Nothing is in the way of this end yet. Draw a line or arc for it to reach, then extend it.");
 eq("and leaves the line", extend(lonely.sketch, lonely.id, [5, 0]).sketch, lonely.sketch);
 const round = addCircle(emptySketch(), [0, 0], 5);
-eq("a circle cannot be extended", extend(round.sketch, round.id, [5, 0]).error, "A circle is already closed.");
+eq("a circle cannot be extended", extend(round.sketch, round.id, [5, 0]).error, "A circle is already closed. Click a line, arc, or open spline to extend.");
 const loop = addSpline(emptySketch(), [[0, 0], [1, 1], [0, 2], [0, 0]]);
 const loopEntity = loop.sketch.entities[0]!;
-eq("a closed spline cannot be extended", extend(loop.sketch, loopEntity.id, [1, 1]).error, "A closed spline has no end to extend.");
+eq("a closed spline cannot be extended", extend(loop.sketch, loopEntity.id, [1, 1]).error, "A closed spline has no end. Click a line, arc, or open spline to extend.");
 
 const flat = addLine(emptySketch(), [0, 0], [10, 0]);
 const raised = offset(flat.sketch, [flat.id], 5);
 const raisedLine = raised.sketch.entities.find((entity) => entity.id !== flat.id);
 eq("a line offsets to its left", raisedLine ? lineEnds(raised.sketch, raisedLine) : null, [0, 5, 10, 5]);
 check("the original line stays", raised.sketch.entities.some((entity) => entity.id === flat.id));
-eq("a zero offset is refused", offset(flat.sketch, [flat.id], 0).error, "An offset needs a distance other than 0.");
+eq("a zero offset is refused", offset(flat.sketch, [flat.id], 0).error, "Type an offset distance other than 0.");
 eq("an empty selection is refused", offset(flat.sketch, [], 1).error, "Select a line, arc, circle, or spline to offset.");
 
 const box = rect(10, 6);
@@ -213,14 +213,14 @@ const parallelB = addLine(parallelA.sketch, [0, 1], [4, 1]);
 eq(
   "parallel lines are refused",
   filletCorner(parallelB.sketch, parallelA.id, parallelB.id, 1).error,
-  "These lines do not meet, so there is no corner to round.",
+  "These lines do not meet, so there is no corner to round. Pick two lines that share an end.",
 );
 const straightA = addLine(emptySketch(), [0, 0], [2, 0]);
 const straightB = addLine(straightA.sketch, [2, 0], [5, 0]);
 eq(
   "a straight run is refused",
   filletCorner(straightB.sketch, straightA.id, straightB.id, 1).error,
-  "These lines are straight, so there is no corner to round.",
+  "These lines are straight, so there is no corner to round. Pick two lines at an angle.",
 );
 
 const source = addLine(emptySketch(), [0, 0], [1, 0]);
@@ -234,8 +234,8 @@ eq("mirroring nothing is refused", mirror(source.sketch, [], [0, 0], [0, 1]).err
 const copied = linearCopy(source.sketch, [source.id], [10, 0], 2);
 const copies = copied.sketch.entities.map((entity) => lineEnds(copied.sketch, entity));
 eq("two steps land at 10 and at 20", copies, [[0, 0, 1, 0], [10, 0, 11, 0], [20, 0, 21, 0]]);
-eq("a copy needs a count", linearCopy(source.sketch, [source.id], [1, 0], 0).error, "A copy needs a count of at least 1.");
-eq("a copy needs a distance", linearCopy(source.sketch, [source.id], [0, 0], 1).error, "A copy needs a distance.");
+eq("a copy needs a count", linearCopy(source.sketch, [source.id], [1, 0], 0).error, "Set a count of 1 or more for the copies.");
+eq("a copy needs a distance", linearCopy(source.sketch, [source.id], [0, 0], 1).error, "Set a distance between the copies.");
 
 const spoke = addLine(emptySketch(), [1, 0], [2, 0]);
 const spun = polarCopy(spoke.sketch, [spoke.id], [0, 0], 90, 3);
@@ -246,7 +246,7 @@ near(
   [1, 0, 2, 0, 0, 1, 0, 2, -1, 0, -2, 0, 0, -1, 0, -2],
   1e-9,
 );
-eq("a round copy needs an angle", polarCopy(spoke.sketch, [spoke.id], [0, 0], 0, 2).error, "A round copy needs an angle other than 0.");
+eq("a round copy needs an angle", polarCopy(spoke.sketch, [spoke.id], [0, 0], 0, 2).error, "Set an angle other than 0 for the round copy.");
 eq("the sketch that was copied is unchanged", polarCopy(spoke.sketch, [spoke.id], [0, 0], 90, 1).sketch !== spoke.sketch && spoke.sketch.entities.length, 1);
 
 

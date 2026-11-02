@@ -369,6 +369,8 @@ test("an L path is refused instead of sweeping a sharp corner", async ({ page })
   await expect(canvas).toHaveAttribute("data-sketch-kinds", "line,line");
   await page.keyboard.press("Escape");
   await page.keyboard.press("W");
-  await expect(page.locator("#modelReadout")).toContainText("sharp corner");
+  await expect(page.locator("#modelReadout")).toContainText("turns sharply");
+  await expect(canvas, "a red dot sits on the corner").toHaveAttribute("data-sketch-marks-kind", "sharp");
+  await expect(canvas).toHaveAttribute("data-sketch-marks", "1");
   await expect(page.locator("#objectList .obj")).toHaveCount(0);
 });

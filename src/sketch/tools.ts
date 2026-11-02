@@ -471,7 +471,7 @@ function arcPointer(sketch: SketchData, state: DrawState, ev: DrawPointer): Draw
   if (!gesture || (gesture.kind !== "arc3" && gesture.kind !== "arcTan")) {
     if (ev.shift || state.tangentArm) {
       const end = lastLineEnd(sketch);
-      if (!end) return note(sketch, { ...state, tangentArm: false }, ev.selection, "Draw a line first. A tangent arc starts at its end.");
+      if (!end) return note(sketch, { ...state, tangentArm: false }, ev.selection, "A tangent arc starts at the end of a line. Draw a line first.");
       const arc = tangentArc(end.from, end.dir, ev.at);
       if (!arc) return note(sketch, { ...state, tangentArm: false }, ev.selection, "An arc's three points are in a straight line. Move the end off the tangent.");
       return placeArc(sketch, { ...state, tangentArm: false }, arcPoint(arc, 0), arcPoint(arc, 1), arcPoint(arc, 0.5), ev.selection);

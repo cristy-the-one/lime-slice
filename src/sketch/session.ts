@@ -493,7 +493,7 @@ export function sketchKey(editor: SketchEditor, key: string, mods: { ctrl: boole
     if (!mods.shift) return next;
     const sketch = activeSketch(next);
     const gesture = sketch ? tangentGesture(sketch) : null;
-    if (!gesture) return { ...next, draw: { ...next.draw, tangentArm: true, note: "Draw a line first. A tangent arc starts at its end." } };
+    if (!gesture) return { ...next, draw: { ...next.draw, tangentArm: true, note: "A tangent arc starts at the end of a line. Draw a line first." } };
     return { ...next, draw: { ...next.draw, gesture, note: null } };
   }
   if (key === "n" || key === "N") return withTool(editor, "polygon");

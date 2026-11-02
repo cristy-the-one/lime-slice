@@ -19,7 +19,7 @@ import { sentence } from "./loops.ts";
 
 /** A turn steeper than this, at a corner the path actually bends, is refused. */
 export const SHARP_DEG = 25;
-export const SHARP_CORNER = "This path has a sharp corner. Fillet the corner, or draw a smooth arc. A sweep that follows the corner is not available yet.";
+export const SHARP_CORNER = "The route turns sharply at the red dot, and a sweep can't follow a sharp corner yet. Round that corner with Fillet corner (G), or draw the bend as an arc.";
 export const EDGE_MEET = "Pick an edge that meets the path.";
 export const PATH_REFUSAL = "Pick an open path: a chain in a sketch, or solid edges with Shift.";
 export const PROFILE_REFUSAL = "Pick a region to sweep.";
