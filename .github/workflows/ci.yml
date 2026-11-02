@@ -51,6 +51,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The debug build of the whole workspace, its tests, OCCT and lust fill the runner's disk: the Test step
+      # stopped on "No space left on device" three times on 2026-11-01. These preinstalled SDKs are not used here.
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
+          df -h / | tail -1
+
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
         run: |

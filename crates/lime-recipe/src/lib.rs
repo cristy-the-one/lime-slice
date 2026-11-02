@@ -29,6 +29,21 @@ impl Json {
         Json::Obj(Vec::new())
     }
 
+    /// An array of anything that converts: `Json::arr(vec![1.0, 2.0])`, `Json::arr(points)`.
+    pub fn arr<T: Into<Json>>(items: Vec<T>) -> Json {
+        Json::Arr(items.into_iter().map(|v| v.into()).collect())
+    }
+
+    /// This array with `value` added at the end (an empty array when it was not one).
+    pub fn push(self, value: impl Into<Json>) -> Json {
+        let mut items = match self {
+            Json::Arr(items) => items,
+            _ => Vec::new(),
+        };
+        items.push(value.into());
+        Json::Arr(items)
+    }
+
     /// This object with `key` set to `value` (replacing an earlier value).
     pub fn set(self, key: &str, value: impl Into<Json>) -> Json {
         let mut fields = match self {
@@ -344,6 +359,22 @@ impl From<Vec<Json>> for Json {
         Json::Arr(v)
     }
 }
+impl From<Vec<f64>> for Json {
+    fn from(v: Vec<f64>) -> Json {
+        Json::Arr(v.into_iter().map(Json::Num).collect())
+    }
+}
+/// An outline: `vec![[x, y], ...]` goes straight into an op's `points`.
+impl From<Vec<[f64; 2]>> for Json {
+    fn from(v: Vec<[f64; 2]>) -> Json {
+        Json::Arr(v.into_iter().map(Json::from).collect())
+    }
+}
+impl From<Vec<[f64; 3]>> for Json {
+    fn from(v: Vec<[f64; 3]>) -> Json {
+        Json::Arr(v.into_iter().map(Json::from).collect())
+    }
+}
 
 /// A call the host refused: the engine's sentence. `line` is where the
 /// recipe made the call.
@@ -569,6 +600,15 @@ mod tests {
         assert_eq!(v.at("faces.0.index").and_then(Json::as_f64), Some(3.0));
         assert_eq!(v.get("s").and_then(Json::as_str), Some("é\t"));
         assert!(Json::parse("{").is_err());
+    }
+
+    #[test]
+    fn arrays() {
+        let outline: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.5, 0.0], [0.0, 2.0]];
+        assert_eq!(Json::from(outline.clone()).to_string(), "[[0,0],[1.5,0],[0,2]]");
+        assert_eq!(Json::arr(outline).to_string(), "[[0,0],[1.5,0],[0,2]]");
+        assert_eq!(Json::arr(vec![1u32, 2]).push("x").to_string(), r#"[1,2,"x"]"#);
+        assert_eq!(Json::Null.push(1.0).to_string(), "[1]");
     }
 
     #[test]

@@ -685,7 +685,10 @@ export function recipeNote(mcpModel: unknown, objectId: string): RecipeNote | nu
   if (!recipes || typeof recipes !== "object" || Array.isArray(recipes)) return null;
   const saved = (recipes as Record<string, unknown>)[objectId];
   if (!saved || typeof saved !== "object" || Array.isArray(saved)) return null;
-  const recipe = (saved as { recipe?: unknown }).recipe;
+  // A recipe_run object names its source in `rustRecipes`, kept once per recipe name.
+  const rust = (saved as { rust?: unknown }).rust;
+  const rustRow = typeof rust === "string" ? ((mcpModel as { rustRecipes?: Record<string, unknown> }).rustRecipes ?? {})[rust] : undefined;
+  const recipe = rustRow && typeof rustRow === "object" ? { name: rust, params: (rustRow as { params?: unknown }).params } : (saved as { recipe?: unknown }).recipe;
   if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) return null;
   const rec = recipe as { name?: unknown; params?: unknown };
   const bits: string[] = [];

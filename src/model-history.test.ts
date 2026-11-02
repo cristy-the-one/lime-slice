@@ -349,6 +349,10 @@ eq("an object with a recipe says so", recipeNote({ recipes: { "obj-1": { recipe:
   title: "Built by a recipe",
   detail: "pegs · count = 3 · wall = n / 2",
 });
+eq("a recipe_run object names its recipe and parameters", recipeNote({ rustRecipes: { gears: { source: "fn main() {}", params: { teeth: 16 }, objects: ["obj-3"] } }, recipes: { "obj-3": { rust: "gears" } } }, "obj-3"), {
+  title: "Built by a recipe",
+  detail: "gears · teeth = 16",
+});
 eq("another object has no recipe", recipeNote({ recipes: { "obj-1": { recipe: { name: "pegs", params: {} } } } }, "obj-2"), null);
 eq("a recipe with no name still counts", recipeNote({ recipes: { part: { recipe: { params: {} } } } }, "part")?.title, "Built by a recipe");
 
