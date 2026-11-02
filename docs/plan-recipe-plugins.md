@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 4 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 5 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -602,6 +602,37 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    *Ships:* nothing visible; the app can build and run a recipe that only logs.
    *Tested by:* every `mcp/recipe*.test.ts` unchanged; Rust tests for the runner (timeout, memory cap, kill on drop,
    line limit) with a tiny recipe on Windows and Linux CI; a host test over a scripted transport in Node.
+
+   **As built (milestone 5, branch `claude/plugin-runner`):**
+   - **The host.** `src/recipe/host.ts` holds protocol v1 for both sides: the build loop with lust's `auto` fix rounds
+     and the ingredients suffix (`buildRecipe` over a `RecipeCompile`), the run loop (`runRecipe` over a `RecipeSpawn`:
+     start line, calls, replies, refusals, `done`, describe mode, notes, late parameters, the limits), diagnostics and
+     byte-offset edits. It uses no Node: byte lengths and edits go through `TextEncoder`. `mcp/recipe.ts` keeps the
+     slots, lust, the child process (`nodeSpawn`) and the workspace's files, and re-exports the host, so every
+     `mcp/recipe*.test.ts` runs unchanged. A runner may end a run with its own reason (a memory cap); it becomes the
+     run's reason.
+   - **The runner is a crate.** The process side is `crates/lime-recipe-runner`, not code inside `src-tauri`: its tests
+     then build and run on Windows CI in seconds (the MCP Windows job), where the Tauri crate is never compiled.
+     `src-tauri/src/recipe.rs` is the thin Tauri layer over it: `recipe_available`, `recipe_build {slot, source}`,
+     `recipe_start {run, exe, limits}`, `recipe_send`, `recipe_close_input`, `recipe_kill`, with `recipe-line` and
+     `recipe-exit` events. It starts only a slot program under its own root, the app's slots and lust daemon live under
+     `%TEMP%/lime-recipes-app` (apart from the MCP server's), one build runs at a time and stops at 30 s (D11.3), and
+     every running recipe is killed when the window closes. lust is `LIME_LUST`, else `mcp/lust/bin/lust` in the app's
+     resources, else PATH; the crate is `LIME_RECIPE_CRATE`, else `mcp/lime-recipe` in the resources.
+   - **Limits in the runner.** Wall time, calls, lines (calls × 2 + 1000, room for notes and describe lines), line
+     length, and the memory cap (1 GB, D11.2), with the host's own sentences. Memory is the peak private commit on
+     Windows, read every 20 ms, with a job object as the backstop at twice the cap that also kills the recipe when its
+     handle closes; on Linux the peak resident size (`VmHWM`). `setrlimit` was not used: an address-space cap would
+     also count the allocator's reserved ranges.
+   - **`src/recipe/tauri.ts`** (`AppRecipes`) is the app's transport: builds in four slots by name as the MCP keeps
+     them, a run id the window picks, listeners set before the start, replies sent in order. Nothing in the window
+     calls it yet (milestone 6).
+   - Tests: `src/recipe/host.test.ts` (unit chain; a scripted recipe: a whole run, the allowlist, a panic, every limit,
+     a runner's reason, cancel, halt, describe mode, fix rounds, ingredient edits never applied, diagnostics, byte
+     edits), `src/recipe/tauri.test.ts` (unit chain; a scripted Tauri runner: commands, events of another run ignored,
+     slots, no lust), `cargo test -p lime-recipe-runner` (a stand-in recipe binary for the empty environment, time,
+     memory cap, kill on drop, line, line count and call limits; a real recipe that only logs, built by lust, in CI's
+     Linux and Windows jobs with `LIME_RECIPE_REQUIRED=1`), and `src-tauri` tests for the slot-only start.
 
 6. **The app answers recipe calls.** `src/recipe/app-calls.ts`; the face and edge finders and the remaining handlers
    moved into `src/modeling/` with MCP tests unchanged; Edit values and Rebuild on a plugin step in the app.

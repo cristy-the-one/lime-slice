@@ -1,0 +1,21 @@
+[package]
+name = "lime-recipe-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "The app's recipe runner (docs/plan-recipe-plugins.md D16): builds a recipe with the bundled lust and runs it with limits and a memory cap. The protocol itself is src/recipe/host.ts."
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+# A stand-in recipe for the runner's tests: sleeps, eats memory, writes long or many lines.
+[[bin]]
+name = "lime-recipe-probe"
+path = "src/bin/probe.rs"
+test = false
+doc = false
