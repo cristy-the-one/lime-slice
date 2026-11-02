@@ -177,6 +177,34 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   await expect(page.locator("#modelBar")).not.toHaveAttribute("data-tool", /.+/);
 });
 
+test("a circle drawn by dragging shows while the button is held and takes a typed diameter", async ({ page }) => {
+  // Owner, 2026-11-02: a dragged circle appeared only on release, and its diameter could not be typed.
+  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openBox(page);
+  const canvas = page.locator("#model");
+  await page.locator("#modelToolSketch").click();
+  await page.locator("[data-sketch-plane=XY]").click();
+  await expect(canvas).toHaveAttribute("data-sketch", "editing");
+  await page.getByRole("button", { name: "Circle", exact: true }).click();
+  await expect(canvas).toHaveAttribute("data-sketch-current-tool", "circle");
+
+  const box = (await canvas.boundingBox())!;
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(centre.x, centre.y);
+  await page.mouse.down();
+  await page.mouse.move(centre.x + 60, centre.y, { steps: 6 });
+  await hudNear(page, "mm");
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "0");
+  if (process.env.LIME_SHOTS) await page.screenshot({ path: `${process.env.LIME_SHOTS}/circle-drag-held.png` });
+  const hud = page.locator(".interact-hud:not([hidden])");
+  await hud.locator("input").nth(0).fill("20");
+  await hud.locator("input").nth(0).press("Enter");
+  await page.mouse.up();
+  await expect(canvas).toHaveAttribute("data-sketch-entities", "1");
+  await expect(canvas).toHaveAttribute("data-sketch-kinds", "circle");
+});
+
 test("constraints live in the sketch card and a typed length drives the line", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openBox(page);

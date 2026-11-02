@@ -23,7 +23,24 @@ export const SHARP_CORNER = "This path has a sharp corner. Fillet the corner, or
 export const EDGE_MEET = "Pick an edge that meets the path.";
 export const PATH_REFUSAL = "Pick an open path: a chain in a sketch, or solid edges with Shift.";
 export const PROFILE_REFUSAL = "Pick a region to sweep.";
-export const ALONG_REFUSAL = "The profile lies along the path. Draw it on a plane across the path's start, such as a workplane square to it.";
+
+/**
+ * The refusal for a profile whose plane lies along the path, in words a person can act on: when the
+ * path starts within 10° of an axis it names the origin plane that faces it, and the card's Offset
+ * that puts the plane through the start. Otherwise it points to a workplane.
+ */
+export function alongRefusal(start: Vec3, ahead: Vec3): string {
+  const lead = "The profile and the path are on the same plane, so there is nothing to sweep.";
+  const length = Math.hypot(...ahead);
+  const axis = [0, 1, 2].reduce((best, i) => (Math.abs(ahead[i]!) > Math.abs(ahead[best]!) ? i : best), 0);
+  if (length > 0 && Math.abs(ahead[axis]!) >= Math.cos((10 * Math.PI) / 180) * length) {
+    const plane = ["YZ", "XZ", "XY"][axis]!;
+    const offset = Math.round(start[axis]! * 10) / 10;
+    const at = offset === 0 ? "" : ` with Offset ${offset} mm`;
+    return `${lead} Finish this sketch, then draw the profile in a new sketch on the ${plane} plane${at}, which faces where the path starts.`;
+  }
+  return `${lead} Finish this sketch, then set a workplane square to where the path starts and draw the profile there.`;
+}
 
 /** How many samples a smooth path keeps. Sharp corners are judged before this. */
 const MAX_SAMPLES = 16;
@@ -217,7 +234,7 @@ export function buildSketchSweep(draft: SweepDraft): { op: LoftOp } | { error: s
   const plane = frameOf(draft.profileSketch.plane);
   const start = path[0]!;
   const ahead = sub(path[1]!, start);
-  if (Math.abs(dot(plane.w, ahead)) < Math.sin((10 * Math.PI) / 180) * Math.hypot(...ahead)) return { error: ALONG_REFUSAL };
+  if (Math.abs(dot(plane.w, ahead)) < Math.sin((10 * Math.PI) / 180) * Math.hypot(...ahead)) return { error: alongRefusal(start, ahead) };
   const factors = scaleIsList ? (draft.scale as number[]) : endScale(path, draft.scale as number);
   // A circle as far out as the profile reaches is swept first, so a bend too tight for the profile is refused.
   const reach = Math.max(...sampleLoop(draft.profile.outer).map((point) => Math.hypot(...sub(toWorld(plane, point), start))), 1e-3);
