@@ -136,6 +136,12 @@ if (viaApp.ok) {
   check("the old branch is kept as it was", treeB.nodes.size < viaApp.tree.nodes.size && [...treeB.nodes.keys()].every((id) => viaApp.tree.nodes.has(id)));
 }
 
+/**
+ * The part's tree as the app holds it after each rebuild, as `src/app/model.ts` keeps it in `modelTrees`: the engine
+ * holds every step a rebuild added, so the next one takes its ids from this tree's `nextId`, never an older tree's.
+ */
+let latest: ModelTree = viaApp.ok ? viaApp.tree : treeB;
+
 // --- The same values again, on the app's own rebuild: the same solid as stamped.
 if (viaApp.ok) {
   const again = runsOnPath(viaApp.tree).find((row) => row.stamp?.plugin === "stud-row")!;
@@ -143,15 +149,18 @@ if (viaApp.ok) {
   check("the engine shows the rebuilt tip", !!solidView(shown));
   const same = await rebuildPluginStep({ part: { ...part, tree: viaApp.tree }, run: again as never, body, params: again.stamp!.params, context: again.stamp!.context, recipes: host, engine: engineCall, chordMm: 0.05, runId: "e5f6a7b8" });
   check("unchanged values land on the stamp's fingerprint", same.ok === true && same.sameSolid === true, same);
+  if (same.ok) latest = same.tree;
 }
 
-// --- A run that fails is taken back: the engine shows the step the part stood on.
+// --- A run that fails is taken back: the engine shows the step the part stood on, and the ids it took stay taken.
 {
   const broken = body.replace("s.done(&p);", 'panic!("no studs today");');
-  const before = treeB.current;
-  const out = await rebuildPluginStep({ part, run: runB as never, body: broken, params: runB!.stamp!.params, context: runB!.stamp!.context, recipes: host, engine: engineCall, chordMm: 0.05, runId: "deadbeef" });
+  const run = runsOnPath(latest).find((row) => row.stamp?.plugin === "stud-row")!;
+  const before = latest.current;
+  const out = await rebuildPluginStep({ part: { ...part, tree: latest }, run: run as never, body: broken, params: run.stamp!.params, context: run.stamp!.context, recipes: host, engine: engineCall, chordMm: 0.05, runId: "deadbeef" });
   check("a panic is the reason, with its line", out.ok === false && /panicked at line \d+: no studs today/.test(out.reason), out);
-  const shown = await engineCall(before, { call: "goto", key: treeB.key, node: before, chordMm: 0.05 });
+  check("the failure names the steps to drop and the next free id", out.ok === false && out.dropFrom === latest.nextId && (out.nextId ?? 0) > latest.nextId, out);
+  const shown = await engineCall(before, { call: "goto", key: latest.key, node: before, chordMm: 0.05 });
   check("the part's step still builds after the failure", typeof shown.error !== "string" && !!solidView(shown), shown.error);
 }
 
