@@ -126,7 +126,7 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   for (const label of ["Line", "Rectangle", "Circle", "Arc", "Spline", "Polygon", "Slot"]) {
     await expect(page.locator(`[data-sketch-section=draw] [data-sketch-tool]`, { hasText: label }).or(page.getByRole("button", { name: label, exact: true }))).toBeVisible();
   }
-  for (const label of ["Select", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
+  for (const label of ["Select", "Trim", "Offset", "Fillet corner", "Helper line", "Copy edge"]) {
     await expect(page.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
   await expect(page.locator('[data-sketch-tool="trim"]')).toHaveAttribute("data-tip", "Cut away the part of a line between crossings, to clean up a drawing. (T)");

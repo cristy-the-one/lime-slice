@@ -35,7 +35,7 @@ async function openSketch(page: Page) {
 test("every Edit and Make button says what it is for", async ({ page }) => {
   await openSketch(page);
   // The Make row's ? (P2's Show me list) is a How, not a tool.
-  const buttons = page.locator("[data-sketch-section=edit] .sketch-edit > button, [data-sketch-section=edit] [data-sketch-menu], [data-sketch-section=make] .sketch-make > button:not([data-sketch-make-how])");
+  const buttons = page.locator("[data-sketch-section=edit] .sketch-edit > button:not([data-sketch-edit-how]), [data-sketch-section=edit] [data-sketch-menu], [data-sketch-section=make] .sketch-make > button:not([data-sketch-make-how])");
   const count = await buttons.count();
   expect(count, "the card's Edit and Make buttons").toBe(Object.keys(PURPOSE).length);
   for (const [selector, purpose] of Object.entries(PURPOSE)) {

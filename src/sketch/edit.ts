@@ -9,14 +9,17 @@
  */
 import {
   EPS,
+  add,
   arcFrom3,
   arcPoint,
   arcTangent,
   cornerFillet,
+  cross,
   curveIntersect,
   curveOf,
   curveProject,
   dist,
+  dot,
   leftNormal,
   lineCircleHits,
   lineLineHit,
@@ -26,6 +29,8 @@ import {
   rayHits,
   rotatePoint,
   samePt,
+  scale,
+  sub,
   translatePoint,
   unit,
   type Curve,
@@ -99,11 +104,19 @@ export function extend(sketch: SketchData, entityId: number, at: Pt): EditResult
 }
 
 /**
+ * How an offset meets at a corner. `sharp` mitres every corner. `round` is the sketch card's rule, the same as
+ * `geom2d::offset` in `crates/lime-recipe` (`docs/plan-sketch-for-people.md`, 7a): an outside corner is rounded with
+ * the offset distance, centred on the original corner; an inside corner stays sharp; a corner whose edges are too
+ * short for that radius gets a smaller one, never a refusal.
+ */
+export type OffsetCorners = "sharp" | "round";
+
+/**
  * Offsets `entityIds` by `distance` millimetres, to the left of each entity when positive.
  * A connected chain is offset as one chain, so corners meet. Lines and arcs stay exact; a
  * spline is sampled.
  */
-export function offset(sketch: SketchData, entityIds: readonly number[], distance: number): EditResult {
+export function offset(sketch: SketchData, entityIds: readonly number[], distance: number, corners: OffsetCorners = "sharp"): EditResult {
   if (!entityIds.length) return { sketch, error: "Select a line, arc, circle, or spline to offset." };
   if (!Number.isFinite(distance) || Math.abs(distance) <= EPS) return { sketch, error: "Type an offset distance other than 0." };
   const entities = entityIds.map((id) => sketchEntity(sketch, id));
@@ -119,9 +132,199 @@ export function offset(sketch: SketchData, entityIds: readonly number[], distanc
     next = built.sketch;
     if (built.ends) ends.push(...built.ends);
   }
-  const welded = weld(next, ends, distance);
+  const welded = weld(next, ends, distance, corners);
   if (welded.error) return { sketch, error: welded.error };
-  return { sketch: prunePoints(welded.sketch) };
+  const rounded = corners === "round" ? roundOutside(welded.sketch, welded.outside ?? [], Math.abs(distance)) : welded.sketch;
+  return { sketch: prunePoints(rounded) };
+}
+
+/**
+ * --- T1 (`docs/plan-sketch-for-people.md`). The pieces Trim would remove from one entity, in order along it: the stretches
+ * between the crossings `trim` cuts at. `cut` says which ends of a piece are a crossing, where the card draws a small gap,
+ * and `crossed` is false when nothing cuts the entity into pieces, so Trim has nothing to trim on it. ---
+ */
+export interface TrimPiece {
+  t0: number;
+  t1: number;
+  /** Along the piece, start to end. */
+  samples: Pt[];
+  cut: [boolean, boolean];
+}
+
+export function trimPieces(sketch: SketchData, entityId: number): { pieces: TrimPiece[]; crossed: boolean } | null {
+  const entity = sketchEntity(sketch, entityId);
+  const curve = entity && curveOf(sketch, entity);
+  if (!entity || !curve) return null;
+  const closed = isClosed(curve);
+  const params: number[] = [];
+  for (const other of sketch.entities) {
+    if (other.id === entity.id) continue;
+    const otherCurve = curveOf(sketch, other);
+    if (!otherCurve) continue;
+    for (const crossing of curveIntersect(curve, otherCurve)) params.push(closed ? wrap(crossing.t0) : clamp(crossing.t0));
+  }
+  const spans = spansOf(params, closed);
+  const isCut = (t: number) => (closed ? params.length > 0 : false) || params.some((value) => Math.abs(value - (t > 1 ? t - 1 : t)) < 1e-7);
+  const pieces = spans.map(([t0, t1]): TrimPiece => ({ t0, t1, samples: spanSamples(curve, t0, t1), cut: [isCut(t0), isCut(t1)] }));
+  // One piece and nothing inside it: the only crossings, if any, are at its ends.
+  const crossed = spans.length > 1 || (closed && params.length > 0);
+  return { pieces, crossed };
+}
+
+/** The index of the piece of `entityId` nearest `at`, or -1. */
+export function trimPieceAt(sketch: SketchData, entityId: number, at: Pt): number {
+  const entity = sketchEntity(sketch, entityId);
+  const curve = entity && curveOf(sketch, entity);
+  const found = trimPieces(sketch, entityId);
+  if (!curve || !found) return -1;
+  const hit = curveProject(curve, at);
+  if (!hit) return -1;
+  return found.pieces.findIndex((piece) => inSpan(hit.t, piece.t0, piece.t1));
+}
+
+function spanSamples(curve: Curve, t0: number, t1: number): Pt[] {
+  if (curve.kind === "line") return [pointOn(curve, t0), pointOn(curve, t1)];
+  const steps = curve.kind === "spline" ? Math.max(2, Math.ceil((t1 - t0) * curve.samples.length)) : Math.max(2, Math.ceil((t1 - t0) * 48));
+  const out: Pt[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = t0 + ((t1 - t0) * i) / steps;
+    out.push(pointOn(curve, curve.kind === "spline" && curve.closed ? t % 1 : Math.min(t, curve.kind === "circle" ? t : 1)));
+  }
+  return out;
+}
+
+/**
+ * --- F1. The two lines that meet at `pointId`, when exactly two lines end there and nothing else uses the point. A
+ * click on that point is a click on the corner. ---
+ */
+export function cornerLines(sketch: SketchData, pointId: number): [number, number] | null {
+  const users = sketch.entities.filter((entity) => {
+    if (entity.kind === "line" || entity.kind === "arc") return entity.a === pointId || entity.b === pointId;
+    if (entity.kind === "circle") return entity.centre === pointId;
+    return entity.through.includes(pointId);
+  });
+  if (users.length !== 2 || users.some((entity) => entity.kind !== "line")) return null;
+  const [a, b] = users as [Extract<SketchEntity, { kind: "line" }>, Extract<SketchEntity, { kind: "line" }>];
+  const at = sketchPoint(sketch, pointId)?.at;
+  const far = (line: typeof a) => sketchPoint(sketch, line.a === pointId ? line.b : line.a)?.at;
+  const fa = far(a);
+  const fb = far(b);
+  if (!at || !fa || !fb) return null;
+  const u = unit(sub(fa, at));
+  const v = unit(sub(fb, at));
+  // Two lines in one straight run have no corner to round.
+  if (!u || !v || Math.abs(cross(u, v)) < 1e-6) return null;
+  return [a.id, b.id];
+}
+
+/** The points of `pointIds` that are corners, in that order. */
+export function cornerPoints(sketch: SketchData, pointIds: readonly number[]): number[] {
+  return pointIds.filter((id) => cornerLines(sketch, id) != null);
+}
+
+/** F1: every corner in `pointIds` rounded with one radius, as one edit. A corner that doesn't fit refuses the lot. */
+export function filletCorners(sketch: SketchData, pointIds: readonly number[], radius: number): EditResult {
+  const corners = cornerPoints(sketch, pointIds);
+  if (corners.length === 0) return { sketch, error: "Click a corner where two lines meet, or drag a box around corners." };
+  let next = sketch;
+  for (const id of corners) {
+    const lines = cornerLines(next, id);
+    if (!lines) return { sketch, error: CORNER_CLASH };
+    const applied = filletCorner(next, lines[0], lines[1], radius);
+    if (applied.error) return { sketch, error: corners.length > 1 ? CORNER_CLASH : applied.error };
+    next = applied.sketch;
+  }
+  return { sketch: next };
+}
+
+/** F1: the refusal for several corners when one of them has no room. */
+export const CORNER_CLASH = "That radius doesn't fit at every corner. Type a smaller radius.";
+
+/**
+ * --- O1. Offset makes walls. `both` offsets each side by `distance`, as a bi-directional offset does; `close` joins the
+ * ends of an open chain with straight lines, so the result is a closed shape (one side: the original line is its other
+ * side); `helper` turns the original into helper lines, so it guides without splitting the wall. A closed outline has
+ * no ends, so `close` leaves it alone and `both` makes a ring. Corners follow the card's rule (`round`). ---
+ */
+export interface WallOptions {
+  both: boolean;
+  close: boolean;
+  helper: boolean;
+}
+
+export function offsetWall(sketch: SketchData, entityIds: readonly number[], distance: number, options: WallOptions): EditResult {
+  if (!options.both && !options.close && !options.helper) return offset(sketch, entityIds, distance, "round");
+  const sides = options.both ? [Math.abs(distance), -Math.abs(distance)] : [distance];
+  const ends = chainEnds(sketch, entityIds);
+  let next = sketch;
+  const sideEnds: Pt[][] = [];
+  for (const side of sides) {
+    const before = new Set(next.entities.map((entity) => entity.id));
+    const applied = offset(next, entityIds, side, "round");
+    if (applied.error) return { sketch, error: applied.error };
+    next = applied.sketch;
+    if (ends) sideEnds.push(ends.map((end) => endOf(next, before, end, Math.abs(side)) ?? end));
+  }
+  if (options.close && ends) {
+    // Both sides: across the two new lines at each end. One side: from the original's end to the new line's.
+    const from = options.both ? sideEnds[0]! : ends;
+    const to = options.both ? sideEnds[1]! : sideEnds[0]!;
+    for (let i = 0; i < 2; i += 1) {
+      if (samePt(from[i]!, to[i]!)) continue;
+      const a = place(next, from[i]!);
+      const b = place(a.sketch, to[i]!);
+      next = addLine(b.sketch, a.id, b.id).sketch;
+    }
+  }
+  // One side closed uses the original as the wall's other side, so it stays solid.
+  if (options.helper && !(options.close && !options.both && ends)) {
+    const ids = new Set(entityIds);
+    next = { ...next, entities: next.entities.map((entity) => (ids.has(entity.id) ? { ...entity, construction: true as const } : entity)) };
+  }
+  return { sketch: prunePoints(next) };
+}
+
+/** True when `entityIds` form one open chain, so Close the ends has two ends to join. */
+export function hasOpenEnds(sketch: SketchData, entityIds: readonly number[]): boolean {
+  return chainEnds(sketch, entityIds) != null;
+}
+
+/** The two free ends of `entityIds` when they are one open chain of lines, arcs or splines. */
+function chainEnds(sketch: SketchData, entityIds: readonly number[]): [Pt, Pt] | null {
+  const entities = entityIds.map((id) => sketchEntity(sketch, id)).filter((entity): entity is SketchEntity => !!entity);
+  if (entities.length === 0 || entities.length !== entityIds.length || !orderChain(sketch, entities)) return null;
+  const open = freeEnds(sketch, entities);
+  return open.length === 2 ? [open[0]!, open[1]!] : null;
+}
+
+/** The ends of `entities` that no other of them shares. A circle or a closed spline has none. */
+function freeEnds(sketch: SketchData, entities: readonly SketchEntity[]): Pt[] {
+  const count = new Map<string, { at: Pt; n: number }>();
+  for (const entity of entities) {
+    const curve = curveOf(sketch, entity);
+    if (!curve || curve.kind === "circle" || (curve.kind === "spline" && curve.closed)) continue;
+    const pair: Pt[] = curve.kind === "line" ? [curve.a, curve.b] : curve.kind === "arc" ? [arcPoint(curve.arc, 0), arcPoint(curve.arc, 1)] : [curve.controls[0]!, curve.controls[curve.controls.length - 1]!];
+    for (const at of pair) {
+      const key = keyOf(at);
+      count.set(key, { at, n: (count.get(key)?.n ?? 0) + 1 });
+    }
+  }
+  return [...count.values()].filter((item) => item.n === 1).map((item) => item.at);
+}
+
+/** The free end of the new offset pieces that sits `distance` from the original end `end`. */
+function endOf(sketch: SketchData, before: ReadonlySet<number>, end: Pt, distance: number): Pt | null {
+  const added = sketch.entities.filter((entity) => !before.has(entity.id));
+  let best: Pt | null = null;
+  let bestGap = 1e-4;
+  for (const at of freeEnds(sketch, added)) {
+    const gap = Math.abs(dist(at, end) - distance);
+    if (gap < bestGap) {
+      best = at;
+      bestGap = gap;
+    }
+  }
+  return best;
 }
 
 /** An arc tangent to two lines that meet at a corner, trimming both back to the arc. */
@@ -197,6 +400,8 @@ interface EndRef {
   /** The raw offset point, before a corner weld. */
   at: Pt;
   support: Support;
+  /** The original curve's direction at the joint, pointing away from it along the curve. */
+  away: Pt;
 }
 
 type Support =
@@ -218,8 +423,8 @@ function offsetOne(sketch: SketchData, entity: SketchEntity, distance: number): 
     return {
       sketch: added.sketch,
       ends: [
-        { joint: curve.a, entityId: added.id, which: "a", at: a, support },
-        { joint: curve.b, entityId: added.id, which: "b", at: b, support },
+        { joint: curve.a, entityId: added.id, which: "a", at: a, support, away: dir },
+        { joint: curve.b, entityId: added.id, which: "b", at: b, support, away: negate(dir) },
       ],
     };
   }
@@ -241,8 +446,8 @@ function offsetOne(sketch: SketchData, entity: SketchEntity, distance: number): 
     return {
       sketch: added.sketch,
       ends: [
-        { joint: arcPoint(curve.arc, 0), entityId: added.id, which: "a", at: start, support },
-        { joint: arcPoint(curve.arc, 1), entityId: added.id, which: "b", at: end, support },
+        { joint: arcPoint(curve.arc, 0), entityId: added.id, which: "a", at: start, support, away: arcTangent(curve.arc, 0) },
+        { joint: arcPoint(curve.arc, 1), entityId: added.id, which: "b", at: end, support, away: negate(arcTangent(curve.arc, 1)) },
       ],
     };
   }
@@ -253,7 +458,14 @@ function offsetOne(sketch: SketchData, entity: SketchEntity, distance: number): 
   return { sketch: added.sketch, ends: [] };
 }
 
-function weld(sketch: SketchData, ends: EndRef[], distance: number): EditResult {
+/** An outside corner the weld mitred between two offset lines, rounded afterwards by `roundOutside`. */
+interface OutsideCorner {
+  point: number;
+  lines: [number, number];
+}
+
+function weld(sketch: SketchData, ends: EndRef[], distance: number, corners: OffsetCorners): EditResult & { outside?: OutsideCorner[] } {
+  const outside: OutsideCorner[] = [];
   const groups = new Map<string, EndRef[]>();
   for (const end of ends) {
     const key = `${Math.round(end.joint[0] / EPS)}:${Math.round(end.joint[1] / EPS)}`;
@@ -265,6 +477,20 @@ function weld(sketch: SketchData, ends: EndRef[], distance: number): EditResult 
   for (const group of groups.values()) {
     if (group.length !== 2) continue;
     const [p, q] = group as [EndRef, EndRef];
+    // An outside corner: each raw end lies behind the other curve's start, so the two offset pieces leave a gap.
+    const opens = !samePt(p.at, q.at) && dot(sub(p.at, p.joint), q.away) < -1e-9 && dot(sub(q.at, q.joint), p.away) < -1e-9;
+    if (corners === "round" && opens && (p.support.kind !== "line" || q.support.kind !== "line")) {
+      // A corner with an arc on one side is joined round at once: an arc of the offset distance about the corner.
+      const bend = unit(add(sub(p.at, p.joint), sub(q.at, q.joint)));
+      if (bend) {
+        const pa = place(next, p.at);
+        const qa = place(pa.sketch, q.at);
+        next = pointEntity(qa.sketch, p.entityId, p.which, pa.id);
+        next = pointEntity(next, q.entityId, q.which, qa.id);
+        next = addArc(next, pa.id, qa.id, add(p.joint, scale(bend, Math.abs(distance)))).sketch;
+        continue;
+      }
+    }
     const hit = supportHit(p.support, q.support, midpoint(p.at, q.at));
     if (!hit) continue;
     if (dist(hit, p.joint) > Math.max(50, Math.abs(distance) * 20)) continue;
@@ -274,6 +500,9 @@ function weld(sketch: SketchData, ends: EndRef[], distance: number): EditResult 
     next = pointEntity(next, q.entityId, q.which, moved.id);
     next = retouchArc(next, p.entityId);
     if (q.entityId !== p.entityId) next = retouchArc(next, q.entityId);
+    if (corners === "round" && opens && p.support.kind === "line" && q.support.kind === "line" && p.entityId !== q.entityId) {
+      outside.push({ point: moved.id, lines: [p.entityId, q.entityId] });
+    }
   }
   // An offset side that flipped has been eaten by the shape.
   for (const end of ends) {
@@ -287,7 +516,91 @@ function weld(sketch: SketchData, ends: EndRef[], distance: number): EditResult 
       if (along <= EPS) return { sketch, error: "That offset is larger than this shape. Use a smaller one." };
     }
   }
-  return { sketch: next };
+  return { sketch: next, outside };
+}
+
+/**
+ * Rounds each mitred outside corner with `radius`, the arc centred on the original corner, by `geom2d`'s rule
+ * (`corner_path` in `crates/lime-recipe`): the radius shrinks to fit the shorter edge at that corner, and two corners
+ * sharing an edge shrink together until their tangent lengths fit it. A corner left with no room stays sharp.
+ */
+function roundOutside(sketch: SketchData, outside: readonly OutsideCorner[], radius: number): SketchData {
+  interface Plan {
+    corner: OutsideCorner;
+    at: Pt;
+    dirs: [Pt, Pt];
+    radius: number;
+    reach: number;
+    tanHalf: number;
+  }
+  const lineLength = (id: number): number => {
+    const entity = sketchEntity(sketch, id);
+    if (!entity || entity.kind !== "line") return 0;
+    const a = sketchPoint(sketch, entity.a);
+    const b = sketchPoint(sketch, entity.b);
+    return a && b ? dist(a.at, b.at) : 0;
+  };
+  const plans: Plan[] = [];
+  for (const corner of outside) {
+    const at = sketchPoint(sketch, corner.point)?.at;
+    const far = corner.lines.map((id) => {
+      const entity = sketchEntity(sketch, id);
+      if (!entity || entity.kind !== "line") return null;
+      const other = entity.a === corner.point ? entity.b : entity.b === corner.point ? entity.a : null;
+      return other == null ? null : sketchPoint(sketch, other)?.at ?? null;
+    });
+    if (!at || !far[0] || !far[1]) continue;
+    const u1 = unit(sub(far[0], at));
+    const u2 = unit(sub(far[1], at));
+    if (!u1 || !u2) continue;
+    const c = Math.max(-1, Math.min(1, dot(u1, u2)));
+    const s = Math.abs(cross(u1, u2));
+    if (s < 1e-9) continue;
+    const tanHalf = c >= 0 ? s / (1 + c) : (1 - c) / s;
+    const room = Math.min(lineLength(corner.lines[0]), lineLength(corner.lines[1]));
+    const fitted = Math.min(radius, room * tanHalf);
+    plans.push({ corner, at, dirs: [u1, u2], radius: fitted, reach: fitted / tanHalf, tanHalf });
+  }
+  // Two corners on one edge share it: both shrink by the same factor until their reaches fit.
+  const fit = plans.map(() => 1);
+  for (let i = 0; i < plans.length; i += 1) {
+    for (let j = i + 1; j < plans.length; j += 1) {
+      const shared = plans[i]!.corner.lines.find((id) => plans[j]!.corner.lines.includes(id));
+      if (shared == null) continue;
+      const length = lineLength(shared);
+      const need = plans[i]!.reach + plans[j]!.reach;
+      if (need > length && need > 0) {
+        const f = length / need;
+        fit[i] = Math.min(fit[i]!, f);
+        fit[j] = Math.min(fit[j]!, f);
+      }
+    }
+  }
+  let next = sketch;
+  plans.forEach((plan, index) => {
+    const r = plan.radius * fit[index]!;
+    if (r < 1e-6) return;
+    const reach = r / plan.tanHalf;
+    const tangentA = add(plan.at, scale(plan.dirs[0], reach));
+    const tangentB = add(plan.at, scale(plan.dirs[1], reach));
+    const bisector = unit(add(plan.dirs[0], plan.dirs[1]));
+    if (!bisector) return;
+    const sinHalf = plan.tanHalf / Math.sqrt(1 + plan.tanHalf * plan.tanHalf);
+    const centre = add(plan.at, scale(bisector, r / sinHalf));
+    const through = sub(centre, scale(bisector, r));
+    const pa = place(next, tangentA);
+    const pb = place(pa.sketch, tangentB);
+    next = pb.sketch;
+    const ids: [number, number] = [pa.id, pb.id];
+    plan.corner.lines.forEach((line, k) => {
+      const entity = sketchEntity(next, line);
+      if (!entity || entity.kind !== "line") return;
+      next = pointEntity(next, line, entity.a === plan.corner.point ? "a" : "b", ids[k]!);
+    });
+    next = addArc(next, pa.id, pb.id, through).sketch;
+  });
+  // An edge its two corners took whole is gone: the arcs meet on its old ends.
+  return { ...next, entities: next.entities.filter((entity) => !(entity.kind === "line" && entity.a === entity.b)) };
 }
 
 function retouchArc(sketch: SketchData, entityId: number): SketchData {
@@ -778,6 +1091,10 @@ function place(sketch: SketchData, pt: Pt): { sketch: SketchData; id: number } {
 function radial(centre: Pt, point: Pt, radius: number): Pt {
   const hit = projectToCircle(centre, radius, point);
   return hit ? hit.pt : point;
+}
+
+function negate(a: Pt): Pt {
+  return [-a[0], -a[1]];
 }
 
 function midpoint(a: Pt, b: Pt): Pt {

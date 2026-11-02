@@ -13,7 +13,10 @@ import { sketchRegions } from "./regions.ts";
 import { axisChoices, buildSketchRevolve } from "./revolve.ts";
 import { roundRouteCorners, routeCornerLines, smallestRouteRadius } from "./round-route.ts";
 import { buildSketchSweep, oneSketchSweep, openChain, pipeProfile, standUpProfile } from "./sweep.ts";
-import { DEMO_DONE, DEMO_HOLE_SIZES, DEMO_KINDS, DEMO_LEAD, DEMOS, LOFT_TOP_HEIGHT_MM, LOFT_TOP_NAME, demoDrawing, demoForHow, placeDemo, type DemoKind } from "./demos.ts";
+import { DEMO_DONE, DEMO_HOLE_SIZES, DEMO_KINDS, DEMO_LEAD, DEMO_WALL, DEMOS, EDIT_DEMO_KINDS, EDIT_DEMO_LEAD, LOFT_TOP_HEIGHT_MM, LOFT_TOP_NAME, demoDrawing, demoForHow, isEditDemo, placeDemo, type DemoKind } from "./demos.ts";
+import { activeSketch, commitSizes, enterSketchData, sketchOff, sketchPointer, withRefs, withTool, type SketchEditor, type SketchEnv } from "./session.ts";
+import { armOffset } from "./tools.ts";
+import { EDIT_BUTTONS } from "./reasons.ts";
 import { IDENTITY_POSE } from "../model-space.ts";
 
 let failed = 0;
@@ -146,6 +149,62 @@ for (const kind of DEMO_KINDS) {
 }
 
 eq("the op each demo checks", DEMO_KINDS.map((kind) => DEMOS[kind].op), ["extrude", "revolve", "loft", "loft", "loft", "group"]);
+
+// --- Milestone 6: each Edit tool's demo, and the tool's next click on it, through the editor a person drives. ---
+for (const tool of ["trim", "offset", "fillet", "construction", "use"] as const) check(`the Edit tool ${tool} has a demo`, (EDIT_DEMO_KINDS as readonly string[]).includes(tool) && (EDIT_BUTTONS as readonly string[]).includes(tool));
+for (const kind of EDIT_DEMO_KINDS) {
+  const spec = DEMOS[kind];
+  check(`${kind}: the next step ends with what to do: ${spec.tryIt}`, endsWithAction(spec.tryIt));
+  check(`${kind}: the next step fits the status line`, spec.tryIt.length <= HINT_LIMIT);
+  check(`${kind}: what it made is a sentence`, spec.made.length > 10 && spec.made.endsWith("."));
+  check(`${kind}: its op is its tool`, spec.op === kind && isEditDemo(kind));
+  const stored = demoDrawing(kind);
+  eq(`${kind} reads back as the JSON it is`, sketchJson(stored), stored);
+  const { drawing, aim } = placed(kind);
+  eq(`${kind} is on the person's plane`, drawing.plane, plane);
+  check(`${kind} says where the next click goes`, !!aim && Math.abs(aim[0] - spec.aim![0] - centre[0]) < 1e-9 && Math.abs(aim[1] - spec.aim![1] - centre[1]) < 1e-9);
+}
+check("the Edit row's lead is a sentence", EDIT_DEMO_LEAD.endsWith("."));
+{
+  const env: SketchEnv = { mmPerPx: 0.05, project: (at) => ({ x: at[0] * 20, y: at[1] * 20 }) };
+  const at = (uv: [number, number]) => ({ uv, sx: uv[0] * 20, sy: uv[1] * 20, shift: false, ctrl: false, alt: false });
+  const click = (editor: SketchEditor, uv: [number, number]) =>
+    sketchPointer(sketchPointer(sketchPointer(editor, { phase: "down", ...at(uv) }, env), { phase: "move", ...at(uv) }, env), { phase: "up", ...at(uv) }, env);
+  const open = (kind: (typeof EDIT_DEMO_KINDS)[number]) => {
+    const demo = placed(kind);
+    let editor = withTool(enterSketchData(sketchOff(), demo.drawing), kind);
+    if (demo.refs) editor = withRefs(editor, demo.refs);
+    return { editor, aim: demo.aim!, drawing: demo.drawing };
+  };
+
+  const trim = open("trim");
+  eq("trim: the outline closes only through the overhang's crossing", sketchRegions(trim.drawing).length, 1);
+  const trimmed = activeSketch(click(trim.editor, trim.aim))!;
+  check("trim: one click at the aim cuts the overhang off", trimmed.points.every((point) => point.at[0] <= 15 + centre[0] + 1e-9));
+  eq("trim: and the plate is still one shape", sketchRegions(trimmed).length, 1);
+
+  const off = open("offset");
+  const ids = off.drawing.entities.map((entity) => entity.id);
+  let wall = { ...off.editor, draw: armOffset(off.drawing, { ...off.editor.draw, wall: { ...DEMO_WALL } }, ids, off.aim) };
+  wall = commitSizes(wall, [1.5]);
+  const walled = activeSketch(wall)!;
+  eq("offset: 1.5 and Enter make one wall", sketchRegions(walled).length, 1);
+  check("offset: around the route, now helper lines", ids.every((id) => walled.entities.find((entity) => entity.id === id)?.construction === true));
+
+  const fillet = open("fillet");
+  const rounded = activeSketch(commitSizes(click(fillet.editor, fillet.aim), [4]))!;
+  eq("fillet: a click on the corner and 4 round it", rounded.entities.filter((entity) => entity.kind === "arc").length, 1);
+
+  const helper = open("construction");
+  eq("helper line: the middle line splits the plate in two", sketchRegions(helper.drawing).length, 2);
+  const helped = activeSketch(click(helper.editor, helper.aim))!;
+  eq("helper line: one click makes it a helper, and the plate is one shape", [helped.entities.filter((entity) => entity.construction).length, sketchRegions(helped).length], [1, 1]);
+
+  const use = open("use");
+  eq("copy edge: the demo starts with nothing drawn", use.drawing.entities.length, 0);
+  const copied = activeSketch(click(use.editor, use.aim))!;
+  eq("copy edge: a click inside the face copies its outline and its hole", copied.entities.map((entity) => entity.kind).sort(), ["circle", "line", "line", "line", "line"]);
+}
 
 if (failed) {
   console.error(`${failed} failed`);
