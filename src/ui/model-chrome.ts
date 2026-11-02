@@ -684,9 +684,19 @@ export function closeModelCard() {
   if (!tool) paintOpenTool(null);
   fx.model?.setGhost(null);
   fx.model?.setHandles([]);
+  if (!tool) fx.model?.setPreview(null);
   was.closed();
   refreshGhost();
   hooks?.paramsChanged();
+}
+
+/**
+ * --- Plugins (D13). The open card's preview: a shape drawn in place of the solid while the card is open, as a tool's
+ * dry-run is. Null, or the card closing, draws the solid again.
+ */
+export function setModelCardPreview(next: ModelSolid | null) {
+  if (!card && next) return;
+  fx.model?.setPreview(next);
 }
 
 /** The open card's id, or null. */
@@ -2605,6 +2615,8 @@ function onEnter(ev: KeyboardEvent) {
   const target = ev.target instanceof Element ? ev.target : null;
   // A button in the panel (a primitive, Corners or Flats, Fuse) takes Enter as its own click.
   if (!target?.closest("#modelPanel") || target.closest("button")) return;
+  // A field that takes Enter itself (the Plugins panel's search opens the first match).
+  if (target.closest("[data-own-enter]")) return;
   ev.preventDefault();
   ev.stopPropagation();
   document.querySelector<HTMLButtonElement>("#modelApply")?.click();

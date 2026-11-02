@@ -73,6 +73,7 @@ export function mountMarkup(root: HTMLElement) {
         </label>
         <label class="row setting" data-label="auto-slice when a slice takes under 20 s" data-tip="Slice again by itself after a change, while the last slice took under 20 seconds."><span class="row-label">Auto-slice when a slice takes under 20 s</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
         <label class="row setting" data-label="show tool labels" data-tip="Widen the tool rail and show each tool's name. Off by default."><span class="row-label">Show tool labels</span><input id="railLabels" type="checkbox" class="switch" role="switch" /></label>
+        <label class="row setting" data-label="plugin author" data-tip="The name a plugin you keep is signed with, in the app and through the MCP. Never filled from your account."><span class="row-label">Plugin author</span><input id="pluginAuthor" type="text" maxlength="60" placeholder="unknown" spellcheck="false" autocomplete="off" /></label>
       </div>
     </header>
     <div class="banner-rail" id="banner"></div>
@@ -112,7 +113,7 @@ export function mountMarkup(root: HTMLElement) {
             <!-- A3 composite features: one button, the last used on it, the rest in the menu beside the rail. -->
             <div class="model-feature" id="modelFeature">
               <button class="model-tool" id="modelToolFeatures" type="button" data-tool="pocket" aria-pressed="false" data-tip="Cut a rect, circle, or arch into the picked face">Pocket</button>
-              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, stress, split to print, print transition"></button>
+              <button class="model-feature-more" id="modelFeatureMore" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="modelFeatureMenu" aria-label="Features" data-tip="Pocket, boss, texture, array, ribs, text, parameters, plugins, stress, split to print, print transition"></button>
               <div class="model-feature-menu" id="modelFeatureMenu" role="menu" aria-label="Features" hidden>
                 <button class="model-tool" type="button" role="menuitem" data-tool="pocket">Pocket</button>
                 <button class="model-tool" type="button" role="menuitem" data-tool="boss">Boss</button>
@@ -122,6 +123,8 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="model-tool" type="button" role="menuitem" data-tool="text">Text</button>
                 <!-- --- A6. Parameters live in the Model dock; this goes to them. --- -->
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
+                <!-- --- Plugins (docs/plan-recipe-plugins.md D13): the library's card, beside Parameters. No rail button. --- -->
+                <button id="modelMenuPlugins" type="button" role="menuitem" data-tip="Run a plugin from your library on this part or as a new one. Ctrl+Alt+L">Plugins…</button>
                 <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and solve for stress. The solid is not edited.">Stress…</button>
                 <!-- --- Split to print (D10): a card of its own, not a rail tool. The rail's Split stays one plane. --- -->
                 <button id="modelMenuSplitPrint" type="button" role="menuitem" data-tip="Cut a part too large for the printer into pieces that fit, each an object on the plate.">Split to print…</button>
@@ -477,6 +480,8 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-split-print" id="modelSplitPrint" data-card-for="split-print" hidden></div>
               <!-- --- Print transitions: the card's form, drawn by ui/transition-card.ts while that card holds the pane. --- -->
               <div class="model-transition" id="modelTransition" data-card-for="transition" hidden></div>
+              <!-- --- Plugins: the card's list and form, drawn by ui/plugins-panel.ts while that card holds the pane. --- -->
+              <div class="model-plugins" id="modelPlugins" data-card-for="plugins" hidden></div>
             </div>
             <div class="model-actions">
               <button class="btn model-actions-lead" id="modelWpPrint" type="button" data-for="workplane" data-tip="Turn the part on the plate so W points up and U runs along X. Undo takes it back">Print with W up</button>

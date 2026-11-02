@@ -8,7 +8,7 @@ import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
 import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type RunMark } from "./model-tree.ts";
 import { RECIPE_API, runEndingAt, runRedoFrom } from "./plugin-step.ts";
-import type { CheckedCopy, PluginParamInfo } from "./plugin-file.ts";
+import type { CheckedCopy, PluginFileInfo, PluginParamInfo } from "./plugin-file.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -786,6 +786,10 @@ export interface PluginStepView {
    * the app (Rebuild asks first, D9); `no` when the code is missing, needs a newer API, or cannot run on this platform.
    */
   rebuild: "yes" | "ask" | "no";
+  /** --- Milestone 7, D9. A newer version of this plugin in the person's library: "Use vN" offers it. */
+  newer?: { version: number };
+  /** A draft (a recipe run nobody kept): its row offers Save as plugin…. */
+  draft: boolean;
 }
 
 /** What the app knows of a step's code: the project's checked copies, the drafts it carries, and where it runs. */
@@ -795,6 +799,11 @@ export interface PluginEnv {
   drafts: ReadonlyMap<string, string>;
   /** The macOS app ships no lust. */
   mac: boolean;
+  /**
+   * --- Milestone 7. The person's library, where the app reads it: every version by hash (a copy the project lacks),
+   * and each plugin's current version (Use vN). Absent in the browser build.
+   */
+  library?: { bySha: ReadonlyMap<string, PluginFileInfo>; current: ReadonlyMap<string, { version: number; sha256: string }> };
 }
 
 /** The project's drafts by hash: each `mcpModel.rustRecipes` entry's source. */
@@ -822,7 +831,9 @@ function apiNewer(api: string): string | null {
  * copies here; the library's are the MCP server's to read.
  */
 export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepView {
-  const copy = env.copies.get(stamp.sha256);
+  // --- Milestone 7, D9: no copy in the project, but the library holds the same code (current or `<id>.vN.rs`).
+  const fromLibrary = env.copies.has(stamp.sha256) ? undefined : env.library?.bySha.get(stamp.sha256);
+  const copy = env.copies.get(stamp.sha256) ?? (fromLibrary ? { file: fromLibrary, intact: true } : undefined);
   const file = copy?.file ?? null;
   const draft = env.drafts.get(stamp.sha256) ?? null;
   const declared = file?.params ?? [];
@@ -839,7 +850,7 @@ export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepVi
   let note: string | null = null;
   if (copy && !copy.intact) note = "This project's copy of the plugin was changed outside the app.";
   else if (newer) note = `This plugin needs recipe API ${newer}, from a newer Lime Slice; this app has ${RECIPE_API[0]}.${RECIPE_API[1]}.`;
-  else if (!copy && !draft) note = "The plugin source is not in this project. The part is kept as built; its values cannot change.";
+  else if (!copy && !draft) note = env.library ? "The plugin source is not in this project or your library. The part is kept as built; its values cannot change." : "The plugin source is not in this project. The part is kept as built; its values cannot change.";
   else if (env.mac) note = "Rebuilding needs lust, which the macOS app does not ship yet.";
   return {
     title: file?.title || stamp.plugin,
@@ -851,5 +862,13 @@ export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepVi
     note,
     source: file?.text ?? draft,
     rebuild: copy && !copy.intact && file && !newer && !env.mac ? "ask" : note ? "no" : "yes",
+    ...(libraryNewer(stamp, env) ? { newer: libraryNewer(stamp, env)! } : {}),
+    draft: stamp.version < 1,
   };
+}
+
+/** D9: the library's version of this plugin when it is newer than the stamp's, else null. */
+function libraryNewer(stamp: PluginStamp, env: PluginEnv): { version: number } | null {
+  const current = stamp.version >= 1 ? env.library?.current.get(stamp.plugin) : undefined;
+  return current && current.version > stamp.version && current.sha256 !== stamp.sha256 ? { version: current.version } : null;
 }

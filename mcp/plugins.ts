@@ -85,6 +85,22 @@ export function pluginsDir(): string {
   return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), APP_ID, "plugins");
 }
 
+/**
+ * A saved plugin's author: `LIME_PLUGIN_AUTHOR` when it is set (tests, portable installs), else the app's "Plugin
+ * author" setting (`settings.json` in the library, written by the Plugins panel), else `unknown`. Never an account or
+ * OS user name (D2).
+ */
+export function pluginAuthor(dir = pluginsDir()): string {
+  const named = oneLine(process.env.LIME_PLUGIN_AUTHOR, AUTHOR_MAX);
+  if (named) return named;
+  try {
+    const settings = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")) as { author?: unknown };
+    return oneLine(settings?.author, AUTHOR_MAX) || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** `[a-z0-9-]`, at most 48 characters, from a title or a name. Empty when nothing is left. */
 export function slugOf(text: string): string {
   return text.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, SLUG_MAX).replace(/-+$/, "");

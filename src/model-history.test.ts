@@ -408,7 +408,7 @@ const header = (api = "1.1") => [
 ].join("\n");
 const copyOf = (api?: string, intact = true): CheckedCopy => {
   const text = header(api);
-  return { file: { plugin: "stud-row", title: "Stud row", version: 3, description: "A row of studs along the top.", author: "Marius", madeBy: "claude-code", api: api ?? "1.1", params: JSON.parse(text.split("\n")[8]!.slice("//! params: ".length)), body: "fn main() {}", text }, intact };
+  return { file: { plugin: "stud-row", title: "Stud row", version: 3, description: "A row of studs along the top.", author: "Marius", madeBy: "claude-code", api: api ?? "1.1", params: JSON.parse(text.split("\n")[8]!.slice("//! params: ".length)), target: "object", headerSha: "", created: "", lust: "", body: "fn main() {}", text }, intact };
 };
 const env = (over: Partial<PluginEnv> = {}): PluginEnv => ({ copies: new Map([[stamp.sha256, copyOf()]]), drafts: new Map(), mac: false, ...over });
 const view = pluginStepView(stamp, env());
@@ -432,6 +432,15 @@ eq("no copy, macOS, and a newer API do not rebuild", [
   pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) })).rebuild,
 ], ["no", "no", "no"]);
 eq("a number field carries its declared range", view.fields.filter((f) => f.min !== undefined).map((f) => [f.name, f.min, f.max]).length > 0, true);
+
+// --- Milestone 7. The library in D9: a copy the project lacks, a newer version (Use vN), the sentence when neither has it.
+const libFile = copyOf().file!;
+const lib = (version: number, sha = "f".repeat(64)) => ({ bySha: new Map([[stamp.sha256, libFile]]), current: new Map([["stud-row", { version, sha256: sha }]]) });
+const fromLib = pluginStepView(stamp, env({ copies: new Map(), library: lib(3, stamp.sha256) }));
+eq("D9: only the library has the code: everything works", [fromLib.note, fromLib.rebuild, fromLib.title, !!fromLib.source, fromLib.newer ?? null], [null, "yes", "Stud row", true, null]);
+eq("D9: a newer version in the library is offered, never forced", [pluginStepView(stamp, env({ library: lib(5) })).newer, pluginStepView(stamp, env({ library: lib(5) })).note, pluginStepView(stamp, env({ library: lib(5) })).rebuild], [{ version: 5 }, null, "yes"]);
+eq("D9: neither the project nor the library has it", pluginStepView(stamp, env({ copies: new Map(), library: { bySha: new Map(), current: new Map() } })).note, "The plugin source is not in this project or your library. The part is kept as built; its values cannot change.");
+eq("a draft is marked for Save as plugin…, and has no newer version", [draftView.draft, view.draft, pluginStepView(draftStamp, env({ library: lib(9) })).newer ?? null], [true, false, null]);
 
 if (failed) {
   console.error(`${failed} failed`);

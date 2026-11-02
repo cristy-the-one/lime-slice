@@ -106,6 +106,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-frame-all", label: "Frame every object", group: "Model", keys: ["Shift+Home"], when: "model", keywords: "reset view zoom fit camera all" },
   { id: "model-history", label: "Model history", group: "Model", keys: ["Shift+H"], when: "model", target: "#modelHistoryOpen, #modelHistoryToggle", keywords: "steps tree branch undo jump rename" },
   { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model-any", typing: true, keywords: "expression variable wall height rebuild" },
+  // --- Plugins (D13): the Features menu's card, and Ctrl+Alt+L.
+  { id: "model-plugins", label: "Plugins", group: "Model", keys: ["Ctrl+Alt+L"], when: "model", keywords: "plugin recipe library preset run lust apply preview" },
   { id: "model-stress", label: "Stress", group: "Model", when: "model", keywords: "stress fem load fixture safety" },
   // --- Split to print (D10): the Features menu's card. No key, so the ? sheet leaves it out; the rail's Split keeps D.
   { id: "model-split-print", label: "Split to print", group: "Model", when: "model", keywords: "split cut connector peg dowel bed resin export" },

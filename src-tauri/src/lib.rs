@@ -17,6 +17,7 @@ use tauri_plugin_dialog::DialogExt;
 
 mod bridge;
 mod open_file;
+mod plugins;
 mod prusa_http;
 mod quiet_process;
 mod recipe;
@@ -505,7 +506,12 @@ pub fn run() {
             recipe::recipe_start,
             recipe::recipe_send,
             recipe::recipe_close_input,
-            recipe::recipe_kill
+            recipe::recipe_kill,
+            plugins::plugin_library_list,
+            plugins::plugin_library_save,
+            plugins::plugin_library_write,
+            plugins::plugin_library_remove,
+            plugins::plugin_library_reveal
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");
