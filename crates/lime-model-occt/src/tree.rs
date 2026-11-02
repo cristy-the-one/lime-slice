@@ -376,7 +376,7 @@ pub enum ProfileSegment {
     Spline { through: Vec<[f64; 2]>, to: [f64; 2] },
 }
 
-/// A closed loop on a profile's plane. The first of an op's loops is the outline; the rest are holes.
+/// A closed loop on a profile's plane. A loop inside no other is an outline, and one inside an outline is its hole.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileLoop {
@@ -491,6 +491,15 @@ pub enum Op {
         /// K1: closed loops in place of `profile`. Empty, and omitted, for a point profile.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         loops: Vec<ProfileLoop>,
+        // --- I20 cells (docs/plan-recipe-ingredients.md). Each is absent on any other extrude. With any of them, each
+        // outline of `loops` is one cell: clipped to `clip` (loops on the same plane), left out under `minArea` mm²,
+        // its corners rounded to `cornerRadius`, and every cell meets the part in one boolean. ---
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        clip: Vec<ProfileLoop>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner_radius: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_area: Option<f64>,
     },
     /// The same outline turned `angleDeg` (360 when absent) about the in-plane axis through `axisOrigin` ([0, 0]
     /// when absent) along `axisDir` (V, [0, 1], when absent), and combined by `op`.
@@ -540,6 +549,10 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Value::is_null")]
         source: Value,
         steps: Vec<Op>,
+        /// I19: every step is a tool of this one boolean, built alone, and all of them meet the solid at once. A step
+        /// whose tool does not build is left out. Absent on a group built step by step.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        combine: Option<BooleanOp>,
     },
     // --- K4: faceExtrude, moveFaces. Keep this block together. ---
     /// The face pushed along its outward normal: fused when `distance` is positive, cut when negative.
@@ -1732,6 +1745,31 @@ enum Request {
         node: NodeId,
         face: FacePick,
     },
+    // --- Recipe reads (docs/plan-recipe-ingredients.md I5–I7). Keep these together. ---
+    /// I5: a flat face's outline inset `insetMm`, in `frame` (origin, U, V: nine numbers) or the face's own: the frame,
+    /// the extrude `origin` and `turn` that draw in it, `loops`, `regions` sampled to `chordMm`, and `areaMm2`.
+    FaceOutline {
+        key: String,
+        node: NodeId,
+        face: FacePick,
+        #[serde(default)]
+        inset_mm: f64,
+        #[serde(default = "default_outline_chord")]
+        chord_mm: f64,
+        #[serde(default)]
+        frame: Option<[f64; 9]>,
+    },
+    /// I6: the solid at `node` cut by the plane through `origin` along `normal`, in `frame` on that plane, answered as
+    /// `faceOutline` answers.
+    Section {
+        key: String,
+        node: NodeId,
+        origin: [f64; 3],
+        normal: [f64; 3],
+        frame: [f64; 9],
+        #[serde(default = "default_outline_chord")]
+        chord_mm: f64,
+    },
     /// Debug builds only: an access violation inside Open CASCADE on purpose, on step `node`'s solid, answered as the
     /// refusal any such crash gets (`tests/kernel_fault.rs`).
     #[cfg(lime_occt_test_hooks)]
@@ -1855,6 +1893,11 @@ struct SavedNode {
 
 fn default_chord() -> f64 {
     0.1
+}
+
+/// I5–I6: how closely an outline's curves are sampled into points, unless the request says.
+fn default_outline_chord() -> f64 {
+    0.05
 }
 
 /// The kernel's clamp, so one reply is cached once whatever chord asked for it.
@@ -2790,6 +2833,29 @@ impl Store {
                 }
                 Ok(Answer::Plain(body.to_string()))
             }
+            // --- I5, I6: read from the solid the node already holds.
+            Request::FaceOutline { key, node, face, inset_mm, chord_mm, frame } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let found = resolve_one_face(shape, face).map_err(Failure::Message)?;
+                let mut body = shape
+                    .face_region(found.index, frame.as_ref(), inset_mm, chord_mm)
+                    .map_err(Failure::Message)?;
+                if let Some(fields) = body.as_object_mut() {
+                    fields.insert("id".into(), json!(node));
+                    fields.insert("face".into(), json!(found.index));
+                }
+                Ok(Answer::Plain(body.to_string()))
+            }
+            Request::Section { key, node, origin, normal, frame, chord_mm } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let mut body = shape.section(origin, normal, &frame, chord_mm).map_err(Failure::Message)?;
+                if let Some(fields) = body.as_object_mut() {
+                    fields.insert("id".into(), json!(node));
+                }
+                Ok(Answer::Plain(body.to_string()))
+            }
             #[cfg(lime_occt_test_hooks)]
             Request::TestFault { key, node } => {
                 self.ensure(&key, node)?;
@@ -3146,6 +3212,10 @@ impl Store {
             fields.push(("parts", Part::Json((built.pieces.len() + 1).to_string())));
         }
         push_numbers(&mut fields, built.numbered.as_deref(), built.joined.as_ref());
+        // --- I19–I20: what a combined group or an extrude of cells did.
+        if let Some((name, value)) = &built.report {
+            fields.push((name, Part::Json(value.to_string())));
+        }
         if !piece_keys.is_empty() {
             let list = self.start_pieces(built.pieces, &piece_keys, pieces, chord);
             fields.push(("pieces", Part::Json(list)));
@@ -3390,6 +3460,10 @@ impl Store {
                     // --- Print transitions: each edge's case, new face and reach.
                     let name = if matches!(built.op, Op::Transition { .. }) { "transition" } else { "firstFaces" };
                     let _ = write!(metrics, ",\"{name}\":{}", Value::Array(built.sides.clone()));
+                }
+                // --- I19–I20: what a combined group or an extrude of cells did.
+                if let Some((name, value)) = &built.report {
+                    let _ = write!(metrics, ",\"{name}\":{value}");
                 }
                 // --- Split to print: every piece's volume and box, in partition order.
                 if matches!(built.op, Op::Partition { .. }) {
@@ -4724,8 +4798,8 @@ fn same_request(stored: &Op, incoming: &Op) -> bool {
                 })
         }
         // --- A1 group: the steps, recursively. `source` is the composite as typed and is not compared. ---
-        (Op::Group { steps: a, .. }, Op::Group { steps: b, .. }) => {
-            return a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_request(x, y))
+        (Op::Group { steps: a, combine: p, .. }, Op::Group { steps: b, combine: q, .. }) => {
+            return p == q && a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_request(x, y))
         }
         (Op::Group { .. }, _) | (_, Op::Group { .. }) => return false,
         _ => return stored == incoming,
@@ -4759,8 +4833,8 @@ fn same_build(a: &Op, b: &Op) -> bool {
             },
         ) => x == y && t.key == u.key && t.node == u.node && r == q,
         // --- A1 group: the steps, recursively. `source` and the label build nothing. ---
-        (Op::Group { steps: a, .. }, Op::Group { steps: b, .. }) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_build(x, y))
+        (Op::Group { steps: a, combine: p, .. }, Op::Group { steps: b, combine: q, .. }) => {
+            p == q && a.len() == b.len() && a.iter().zip(b).all(|(x, y)| same_build(x, y))
         }
         _ => a == b,
     }
@@ -4807,6 +4881,8 @@ struct Built {
     skipped: u32,
     /// A chamfer by two sizes: for each edge, the face its first distance runs along. Empty for any other op.
     sides: Vec<Value>,
+    /// I19–I20: what a combined group or an extrude of cells did, sent in the reply as it is. None for any other op.
+    report: Option<(&'static str, Value)>,
 }
 
 /// --- Split to print. Where each piece's number was cut, in partition order.
@@ -5100,6 +5176,7 @@ fn build_group(
             label,
             source,
             steps: stored,
+            combine: None,
         },
         kept,
         other: None,
@@ -5109,8 +5186,166 @@ fn build_group(
         joined: None,
         skipped,
         sides: Vec::new(),
+        report: None,
     })
 }
+
+// --- Recipe lattices (docs/plan-recipe-ingredients.md I19–I20). Keep this block together. ---
+
+/// I20: an extrude of cells on `from`, or alone (a new solid, or a combined group's tool) with no `from`. The solid,
+/// and what became of the cells: `{cells, clipped, outside, small, failed, corners: {full, reduced, sharp}}`, with
+/// `firstFailure` when a cell did not build.
+fn extrude_cells(from: Option<&Shape>, op: &Op) -> Result<(Shape, Value), String> {
+    let Op::Extrude {
+        op: which,
+        origin,
+        turn,
+        depth,
+        symmetric,
+        depth2,
+        draft_deg,
+        up_to,
+        loops,
+        clip,
+        corner_radius,
+        min_area,
+        ..
+    } = op
+    else {
+        return Err("Cells are an extrude's.".into());
+    };
+    let p = [
+        origin[0],
+        origin[1],
+        origin[2],
+        turn[0],
+        turn[1],
+        turn[2],
+        *depth,
+        f64::from(u8::from(*symmetric)),
+        corner_radius.unwrap_or(0.0),
+        min_area.unwrap_or(0.0),
+    ];
+    let mut blob = Vec::new();
+    encode_loops(loops, &mut blob);
+    let mut region = Vec::new();
+    if !clip.is_empty() {
+        encode_loops(clip, &mut region);
+    }
+    let mut counts = [0.0f64; 8];
+    let mut note: *mut c_char = std::ptr::null_mut();
+    let flags = extent_flags(*depth2, *draft_deg, up_to.as_ref());
+    let shape = Shape::made(|error| unsafe {
+        lime_tree_extrude_cells(
+            from.map_or(std::ptr::null(), Shape::raw),
+            which.name().as_ptr(),
+            p.as_ptr(),
+            blob.as_ptr(),
+            blob.len() as c_int,
+            region.as_ptr(),
+            region.len() as c_int,
+            depth2.unwrap_or(0.0),
+            draft_deg.unwrap_or(0.0),
+            flags,
+            counts.as_mut_ptr(),
+            &mut note,
+            error,
+        )
+    });
+    let first_failure = take_text(note);
+    let shape = shape?;
+    let mut report = json!({
+        "cells": counts[0],
+        "clipped": counts[1],
+        "outside": counts[2],
+        "small": counts[3],
+        "failed": counts[4],
+        "corners": { "full": counts[5], "reduced": counts[6], "sharp": counts[7] },
+    });
+    if let (Some(first), Some(fields)) = (first_failure, report.as_object_mut()) {
+        fields.insert("firstFailure".into(), json!(first));
+    }
+    Ok((shape, report))
+}
+
+/// I19: one step's tool, built alone, for a combined group of `which`. Only booleans, extrudes, revolves, and lofts
+/// of that same boolean are tools.
+fn step_tool(step: &Op, which: BooleanOp) -> Result<Shape, String> {
+    let named = match which {
+        BooleanOp::Fuse => "fuse",
+        BooleanOp::Cut => "cut",
+        BooleanOp::Common => "common",
+    };
+    let wrong = || format!("A combined batch of {named} takes only {named} steps: boolean, extrude, revolve, or loft.");
+    match step {
+        Op::Boolean { op, tool, .. } if *op == which => Shape::primitive(tool),
+        Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } if *op == which => {
+            let mut alone = step.clone();
+            match &mut alone {
+                Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } => *op = BooleanOp::Fuse,
+                _ => {}
+            }
+            Shape::feature(&alone)
+        }
+        _ => Err(wrong()),
+    }
+}
+
+/// I19: a group whose steps are all tools of one boolean. Each tool is built alone; one that does not build is left
+/// out and reported by its index. Every tool that built meets `from` in one boolean, one history step. The group stores
+/// every step as sent, so a replay leaves the same ones out.
+fn build_combined(from: &mut Shape, label: String, source: Value, steps: Vec<Op>, which: BooleanOp) -> Result<Built, BuildFail> {
+    let count = steps.len();
+    if count == 0 {
+        return Err(BuildFail::plain("A group needs at least one step."));
+    }
+    let mut tools = Vec::with_capacity(count);
+    let mut failed = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        if let Some(message) = group_overran(index, count) {
+            return Err(BuildFail::plain(message));
+        }
+        match step_tool(step, which) {
+            Ok(tool) => tools.push(tool),
+            Err(message) => failed.push(json!({ "index": index, "reason": message })),
+        }
+    }
+    if tools.is_empty() {
+        let first = failed
+            .first()
+            .and_then(|row| row["reason"].as_str())
+            .unwrap_or("No tool built.");
+        return Err(BuildFail::plain(if count == 1 {
+            first.to_string()
+        } else {
+            format!("None of its {count} tools built. The first: {first}")
+        }));
+    }
+    let raws: Vec<*const RawShape> = tools.iter().map(Shape::raw).collect();
+    let kept = Shape::made(|error| unsafe {
+        lime_tree_combine(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, error)
+    })
+    .map_err(BuildFail::plain)?;
+    let report = json!({ "tools": tools.len(), "failed": failed });
+    Ok(Built {
+        op: Op::Group {
+            label,
+            source,
+            steps,
+            combine: Some(which),
+        },
+        kept,
+        other: None,
+        pieces: Vec::new(),
+        pins: None,
+        numbered: None,
+        joined: None,
+        skipped: 0,
+        sides: Vec::new(),
+        report: Some(("combined", report)),
+    })
+}
+// --- end recipe lattices ---
 
 /// Run a resolved op on `from`. With `probe`, a fillet or chamfer that does not fit also reports
 /// the largest size that does. A join takes its tool's solid in `tool`. `edge_steps` are the edges
@@ -5129,9 +5364,12 @@ fn build(
     let Resolved { op, picks } = resolved;
     // --- A1 group: built here, so the match below stays the single-op arms. ---
     if matches!(op, Op::Group { .. }) {
-        let Op::Group { label, source, steps } = op else {
+        let Op::Group { label, source, steps, combine } = op else {
             unreachable!("matched a group");
         };
+        if let Some(which) = combine {
+            return build_combined(from, label, source, steps, which);
+        }
         return build_group(from, label, source, steps, probe, edge_steps);
     }
     let mut other = None;
@@ -5316,6 +5554,7 @@ fn build(
                     joined: None,
                     skipped: 0,
                     sides,
+                    report: None,
                 }),
                 Err(message) => Err(BuildFail::plain(message)),
             };
@@ -5353,6 +5592,7 @@ fn build(
                     joined: None,
                     skipped: 0,
                     sides: Vec::new(),
+                    report: None,
                 }),
                 Err(message) => Err(BuildFail {
                     message,
@@ -5378,7 +5618,7 @@ fn build(
             depth2,
             draft_deg,
             up_to,
-            loops: _,
+            ..
         } => {
             let mut p = vec![
                 origin[0],
@@ -5555,6 +5795,7 @@ fn build(
             joined,
             skipped: 0,
             sides: Vec::new(),
+            report: None,
         }),
         Err(message) => Err(BuildFail::plain(message)),
     }
@@ -5987,6 +6228,44 @@ extern "C" {
         face: c_int,
         error: *mut *mut c_char,
     ) -> *mut c_char;
+    // --- Recipe reads and lattices (I5–I7, I19–I20). Keep this block together. ---
+    fn lime_tree_face_region(
+        shape: *const RawShape,
+        face: c_int,
+        frame: *const f64,
+        inset: f64,
+        chord: f64,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+    fn lime_tree_section(
+        shape: *const RawShape,
+        plane: *const f64,
+        frame: *const f64,
+        chord: f64,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
+    fn lime_tree_extrude_cells(
+        from: *const RawShape,
+        op: *const c_char,
+        p: *const f64,
+        loops: *const f64,
+        loops_len: c_int,
+        clip: *const f64,
+        clip_len: c_int,
+        depth2: f64,
+        draft_deg: f64,
+        flags: c_int,
+        counts: *mut f64,
+        note: *mut *mut c_char,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    fn lime_tree_combine(
+        from: *const RawShape,
+        op: *const c_char,
+        tools: *const *const RawShape,
+        count: c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     #[cfg(lime_occt_test_hooks)]
     fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     #[cfg(lime_occt_test_hooks)]
@@ -6130,12 +6409,31 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             draft_deg,
             up_to,
             loops,
+            clip,
+            corner_radius,
+            min_area,
         } => {
             if !profile.is_empty() {
                 return Err(BuildFail::plain("Give a profile or loops, not both."));
             }
             if *smooth || !corners.is_empty() {
                 return Err(BuildFail::plain(shape_note));
+            }
+            if !clip.is_empty() || corner_radius.is_some() || min_area.is_some() {
+                let (kept, cells) = extrude_cells(Some(from), &op).map_err(BuildFail::plain)?;
+                let report = Some(("cells", cells));
+                return Ok(Built {
+                    op,
+                    kept,
+                    other: None,
+                    pieces: Vec::new(),
+                    pins: None,
+                    numbered: None,
+                    joined: None,
+                    skipped: 0,
+                    sides: Vec::new(),
+                    report,
+                });
             }
             let p = [
                 origin[0],
@@ -6291,6 +6589,7 @@ fn build_k1_loops(from: &Shape, resolved: Resolved) -> Result<Built, BuildFail> 
             joined: None,
             skipped: 0,
             sides: Vec::new(),
+            report: None,
         }),
         Err(message) => Err(BuildFail::plain(message)),
     }
@@ -6579,7 +6878,7 @@ impl Shape {
                 depth2,
                 draft_deg,
                 up_to,
-                loops: _,
+                ..
             } => {
                 let mut p = vec![
                     origin[0],
@@ -6721,12 +7020,18 @@ impl Shape {
                 draft_deg,
                 up_to,
                 loops,
+                clip,
+                corner_radius,
+                min_area,
             } => {
                 if !profile.is_empty() {
                     return refuse("Give a profile or loops, not both.".into());
                 }
                 if *smooth || !corners.is_empty() {
                     return refuse(shape_note.into());
+                }
+                if !clip.is_empty() || corner_radius.is_some() || min_area.is_some() {
+                    return extrude_cells(None, op).map(|(shape, _)| shape);
                 }
                 let p = [
                     origin[0],
@@ -7132,6 +7437,30 @@ impl Shape {
         serde_json::from_str(&text)
             .map_err(|_| "Open CASCADE could not read this face's outline.".to_string())
     }
+
+    // --- Recipe reads (I5–I7). Keep this block together. ---
+    /// I5. Face `index`'s outline inset `inset` mm, as `{frame, origin, turn, loops, regions, areaMm2}`, in `frame`
+    /// (origin, U, V) or the face's own.
+    fn face_region(&self, index: c_int, frame: Option<&[f64; 9]>, inset: f64, chord: f64) -> Result<Value, String> {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let frame_ptr = frame.map_or(std::ptr::null(), |numbers| numbers.as_ptr());
+        let ptr = unsafe { lime_tree_face_region(self.raw(), index, frame_ptr, inset, chord, &mut error) };
+        let message = take_text(error);
+        let text = take_text(ptr)
+            .ok_or_else(|| message.unwrap_or_else(|| "Open CASCADE could not read this face's outline.".into()))?;
+        serde_json::from_str(&text).map_err(|_| "Open CASCADE could not read this face's outline.".to_string())
+    }
+
+    /// I6. The solid cut by the plane through `origin` along `normal`, in `frame` (origin, U, V on that plane).
+    fn section(&self, origin: [f64; 3], normal: [f64; 3], frame: &[f64; 9], chord: f64) -> Result<Value, String> {
+        let plane = [origin[0], origin[1], origin[2], normal[0], normal[1], normal[2]];
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let ptr = unsafe { lime_tree_section(self.raw(), plane.as_ptr(), frame.as_ptr(), chord, &mut error) };
+        let message = take_text(error);
+        let text = take_text(ptr).ok_or_else(|| message.unwrap_or_else(|| "Open CASCADE did not cut this section.".into()))?;
+        serde_json::from_str(&text).map_err(|_| "Open CASCADE did not cut this section.".to_string())
+    }
+    // --- end recipe reads ---
 
     fn face(&mut self, index: i32) -> Option<FaceRef> {
         let mut mid = [0.0; 3];

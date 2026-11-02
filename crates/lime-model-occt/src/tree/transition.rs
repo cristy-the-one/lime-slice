@@ -1598,6 +1598,7 @@ pub(super) fn build(from: &mut Shape, op: Op, picks: &[c_int]) -> Result<Built, 
         joined: None,
         skipped: 0,
         sides,
+        report: None,
     })
 }
 
