@@ -207,3 +207,5 @@ if (failed > 0) {
   process.exit(1);
 }
 console.log("plugin-step: all passed");
+// The session leaves its engine and lust children running; end the process, as recipe-reads does, or the CI step waits for its timeout.
+process.exit(0);
