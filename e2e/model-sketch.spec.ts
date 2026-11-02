@@ -525,7 +525,7 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await expect(prompt).toContainText("A loft needs a second shape at another height.");
   const readout = (await page.locator("#modelReadout").innerText()).trim();
   expect(readout.length, readout).toBeLessThanOrEqual(80);
-  const how = page.getByRole("button", { name: "How" });
+  const how = page.getByRole("button", { name: "How", exact: true });
   await how.focus();
   await expect(how).toBeFocused();
   const pop = page.locator("#sketchHow");

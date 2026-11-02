@@ -177,6 +177,7 @@ src/sketch/hints.test.ts
 src/sketch/reasons.test.ts
 src/sketch/close-gap.test.ts
 src/sketch/loft-above.test.ts
+src/sketch/demos.test.ts
 src/modeling/index.test.ts
 src/model-face.test.ts
 src/model-loops.test.ts
