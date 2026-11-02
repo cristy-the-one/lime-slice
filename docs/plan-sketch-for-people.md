@@ -2,7 +2,8 @@
 
 Status: plan, for review. Written 2026-11-02 against `main` at v4.9.0 (`a3548da2`). Nothing here is built yet.
 Companions: `docs/plan-gui-cad-modeling.md` (the sketch editor and features, sections 4 and 5) and
-`docs/step-modeler.md` (Sketch, as built). The small sweep wording fix on `claude/sweep-refusal-wording` is the
+`docs/step-modeler.md` (Sketch, as built). It runs beside the recipe plans (`docs/plan-recipes.md`,
+`docs/plan-recipe-plugins.md`, `docs/plan-recipe-ingredients.md`); section 7a says where they meet. The small sweep wording fix on `claude/sweep-refusal-wording` is the
 first example of section 3's rule and is not repeated here.
 
 The owner, on 2026-11-02, after trying the sketch card: "no idea how to use these. i did not manage, so far, to
@@ -271,6 +272,24 @@ paths that existed before.
   geometry. For example, S1's sweep equals the two-sketch sweep with the profile drawn stood up by hand.
 - The renames (C1, U1) are labels only. `data-sketch-tool` values, command ids in `src/ui/commands.ts` and
   saved field names stay.
+
+## 7a. Fits with the other plans
+
+This plan is the app side of modelling; the recipe plans are the agent side. They share no files and no data
+formats, and this section keeps them from drifting apart.
+
+| Here | There | Rule |
+|---|---|---|
+| U1 Copy edge copies a face's whole outline into the sketch (TypeScript, from the plate mesh and B-rep edges the card already has) | Ingredients I5 `face_outline` and I7 plane frames read the same outline from the kernel for recipes | Both mean the same boundary in the same plane frame. When I5 lands, a test compares Copy edge on a fixture face with `face_outline` (same loops within 0.05 mm). Copy edge may later call it; it doesn't have to. |
+| O1 Offset makes walls (Both sides, Close the ends) in `src/sketch/` | Ingredients I1 `geom2d::offset` and `round_corners` in `lime-recipe` (Rust) | Two implementations in two runtimes. They agree on corners: an outside corner is rounded with the offset distance, an inside corner stays sharp, and a corner whose edges are too short is reduced, not refused. Each side's tests include the same three fixtures. |
+| S1 Sweep in one sketch, S2 Pipe mode, S3 rounded corners | Recipes call `sweep` with the same fields | No new op and no new field (section 7). A recipe and the card build the same sweep for the same geometry. A real pipe along a wire stays the follow-up in `plan-gui-cad-modeling.md` §5.4 (b), in neither plan. |
+| P1 purpose tips, P2 Show me demos, the card layout | Plugins D13, the Plugins panel in the Model tab (plugin milestone 7), and "Save as plugin…" on a History row | No new rail buttons in either plan. The Plugins panel is designed after milestones 1 and 5 here land, so it follows the card's tip and demo style and fits the 1440 px layout. |
+| P3 reasons in the person's words, red marks where the problem is | Ingredients I8 (selectors say which face they picked) and the recipe refusals | The same rule on both sides: a reason names the next action and points at the place. A recipe refusal names the face; a card reason marks it in the viewport. |
+| Saved sketches unchanged (section 1) | Recipes saved in the `.lime` (`mcpModel.rustRecipes`, #527), plugin stamps (plugin D8) | Neither plan rewrites the other's part of the project file. |
+
+**Order.** Milestones here run in their own lane, beside the recipe lanes (host fixes, `geom2d`, kernel reads),
+which touch `mcp/`, `crates/lime-recipe` and the kernel only. Milestone 6 here (O1, U1) lands after ingredients
+I1 and I5 if they are ready, so the shared fixtures can be checked; it doesn't wait for them otherwise.
 
 ## 8. Risks
 
