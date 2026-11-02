@@ -362,6 +362,7 @@ jobs:
           node --experimental-strip-types mcp/batch3.test.ts
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
 
   mcp-windows:
     name: MCP server (Windows)
@@ -419,6 +420,13 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/recipe.test.ts
+
+      # The same calls under lust and rustc for the crate's geometry: their libm differ here in the last bit.
+      - name: Recipe geometry, lust against rustc
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/recipe-geom2d.test.ts
 
   mcp-macos:
     name: MCP server (macOS)

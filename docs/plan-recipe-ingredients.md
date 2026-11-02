@@ -282,6 +282,36 @@ Each is one PR to `main`, smallest useful first. Each updates `docs/mcp-server.m
 
 1. **I8 + I22 + I23.** Selector reports, replace on rerun, `maxSteps`. Small and removes rebuilds.
 2. **I1–I4.** `geom2d` and `lattice` in `lime-recipe`, with the guide topic and tests.
+
+   **As built (milestone 2, branch `claude/recipe-geom2d`):**
+   - **I1.** `lime_recipe::geom2d`: `Poly` (measures, `clean`, `to_loop`), `Region` (outlines counter-clockwise, holes
+     clockwise; `from_poly`, `with_holes`, `from_loops`), `union`/`intersect`/`difference`/`xor`, `clip` (an intersect
+     against a small shape, windowed first, for cells), `offset`/`offset_miter`, `round_corners`/`round_corners_with`/
+     `chamfer_corners` with a `Corner` report per corner, `Profile` (loops of lines and arcs) and `to_loops()`, one
+     `loops` array per separate piece, since an `extrude` takes one outline and its holes. The booleans split every
+     edge where it meets another, keep each piece where the fill rule changes across it (winding by a ray along the
+     piece's normal), and join the kept pieces into simple loops. `offset` follows the sketch plan's rule (7a): an
+     outside corner rounded with the distance, an inside corner sharp, short edges reduce the radius.
+   - **I2.** `lime_recipe::lattice`: `hex(side, Orient)`, `rect`, `staggered`, `tri`, `along(path, count, cell)`,
+     then `.rib(t)`, `.at(origin)`, `.turned(deg)` and `.cells(&region, min_area)`: index, centre, the clipped
+     region and `clipped`. Node rounding is `round_corners_with` on each cell.
+   - **I3.** `guide {topic: "ingredients"}` (about 820 tokens) lists every public item with an example;
+     `guide {topic: "recipes"}` names the modules. Not built: nearest names for a misspelled function. lust already
+     says `cannot find value hexa in module lattice`; listing close names is a change to lust (or to the host's
+     diagnostics), not to the crate.
+   - **I4.** `cargo test -p lime-recipe`: shapes, measures, booleans with holes, concave and touching outlines,
+     a star against a circle, degenerate input (zero area, a self-touching loop, a bow tie, a hole on the outline's
+     edge), corners shorter than the radius, the three offset fixtures shared with the sketch card, cleanup, loops
+     JSON, lattices, and 400 random outlines on a coarse grid (20,000 checked once) for the area identities.
+     `tests/kernel_reference.rs` checks six boolean cases against Open CASCADE's volumes (within 1e-6 mm²).
+     `mcp/recipe-geom2d.test.ts` builds a sample and the guide's example with lust and with rustc and compares every
+     call. It found that lust's `sin`, `cos`, `tan`, `atan2`, `acos`, `exp` and `ln` differ from rustc's in the last
+     bit on 0.01–3 % of inputs on Windows (`+ - * /`, `sqrt` and `hypot` agree), so the 2026-11-02 honeycomb recipe
+     sends one cell 1 ulp apart under the two; the crate computes its own trigonometry from basic arithmetic.
+   - **Done when.** The honeycomb recipe rewritten with `geom2d` and `lattice` has no geometry functions and is 79
+     lines instead of 199; it cuts the same 115 cells (38 clipped) as the original, each loop equal within
+     1.4e-14 mm (other start points). The volume was not measured on a kernel build: equal loops make the same solid.
+   - All of it is inline modules in `src/lib.rs`, because the recipe host and the installer copy only that file.
 3. **I5–I7.** Face outline, section, frames.
 4. **I18–I21.** Loops limit, `apply_many`, `array` cells, progress.
 5. **I9–I11.** Ingredient files, import, plugins carrying their ingredients. Needs the plugin plan's D6–D7 first.
