@@ -103,13 +103,13 @@ import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from 
 
 import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
-import { occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
+import { EngineStopped, occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
-import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -128,8 +128,8 @@ import { settingsRangeError } from "./settings-check.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
-import { expandContextFromSolid, type FrameFace } from "../src/modeling/frames.ts";
+import { addsPiece, anchorOf, cleanOp, cutsOffPiece, withBoxAnchor, pieceReport, separateReason, splitReason, COMPOSITE_KINDS, expand, faceFrame, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type FacePick, type Piece } from "../src/modeling/compose.ts";
+import { expandContextFromSolid, nearPick, ON_FACE_MM, pickSentence, type FrameFace } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
 import { assemblyOf, attached, exportParts, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
@@ -395,6 +395,10 @@ export interface RustRecipe {
   source: string;
   params: Record<string, unknown>;
   objects: string[];
+  /** --- R-A. The recipe data the last apply read, by name, so a rerun builds the same where the files are missing. */
+  data?: Record<string, RecipeData>;
+  /** The workspace file the source was read from, when it came from one. */
+  path?: string;
 }
 
 /** A model_build's base, ops, parameters, and name, as typed. */
@@ -611,10 +615,28 @@ interface PlateSnap {
 }
 
 class ModelRunaway extends Error {
-  constructor(message: string) {
+  /** --- R-C. The modeler's process ended under the call, rather than running past its time. */
+  readonly crashed: boolean;
+  constructor(message: string, crashed = false) {
     super(message);
     this.name = "ModelRunaway";
+    this.crashed = crashed;
   }
+}
+
+/** --- I8. A face a selector picked during a call, with the nearPoint it was aimed at. */
+type PickRow = FacePick & { nearPoint?: number[] };
+
+/**
+ * The call's reply with the faces its selectors picked: `picked` on any reply, and on a refusal one sentence per pick
+ * after the reason, so a wrong face is named where the agent reads why.
+ */
+function withPicks(value: Record<string, unknown>, picks: readonly PickRow[]): Record<string, unknown> {
+  if (picks.length === 0 || value.picked !== undefined) return value;
+  const picked = picks.map(({ nearPoint: _near, ...row }) => (row.level === null ? (({ level: _level, ...rest }) => rest)(row) : row));
+  if (value.ok !== false) return { ...value, picked };
+  const said = picks.map((row) => pickSentence(row, row.nearPoint)).join(" ");
+  return { ...value, ...(typeof value.reason === "string" ? { reason: `${value.reason} ${said}` } : {}), picked };
 }
 
 function domainRefusal(message: string): { ok: false; reason: string; next?: string } | null {
@@ -1058,6 +1080,11 @@ export class Session {
   private inflight = 0;
   /** The progress token and cancel signal of the call each piece of work belongs to. */
   private readonly callContext = new AsyncLocalStorage<CallMeta>();
+  /** --- I8. The faces each call's selectors resolved to, for its reply and its refusal. */
+  private readonly pickLog = new AsyncLocalStorage<PickRow[]>();
+
+  /** When this server started, for a reply about a job an earlier server ran. */
+  private readonly startedAt = new Date().toISOString();
 
   constructor(engine: Engine) {
     this.engine = engine;
@@ -1100,8 +1127,9 @@ export class Session {
     const stop = new AbortController();
     const ctx: CallMeta = detachable ? { progressToken: meta?.progressToken, signal: stop.signal } : (meta ?? {});
     let result: ReturnType<Session["dispatch"]>;
+    const picks: PickRow[] = [];
     try {
-      result = this.callContext.run(ctx, () => this.dispatch(name, input, ctx));
+      result = this.callContext.run(ctx, () => this.pickLog.run(picks, () => this.dispatch(name, input, ctx)));
     } catch (err) {
       this.inflight -= 1;
       throw err;
@@ -1110,11 +1138,11 @@ export class Session {
       const { payload, carriedAll } = this.bridgePayload(name, input, value);
       this.lastBridge = payload;
       void mirror(payload, this.bridgeLink, carriedAll);
-      return this.withAutosaveHint(value);
+      return withPicks(this.withAutosaveHint(value), picks);
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
         const refusal = domainRefusal(err.message);
-        if (refusal) return refusal;
+        if (refusal) return withPicks(refusal, picks);
       }
       throw err;
     }).finally(() => {
@@ -1265,18 +1293,35 @@ export class Session {
     const ready = host.available();
     if (!ready.ok) return { ok: false, reason: ready.reason };
     const mode = input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
+    // --- I23. A partial run stops after this many applied ops; it is always taken back.
+    const maxSteps = typeof input.maxSteps === "number" ? input.maxSteps : undefined;
+    if (maxSteps !== undefined && mode !== "dry") return { ok: false, reason: "maxSteps is for mode:\"dry\": a run stopped part way is always taken back." };
+    // --- R-A. The source from a .rs file in the workspace, so an edit and rerun sends only the path.
+    if (typeof input.path === "string" && typeof input.source === "string") return { ok: false, reason: "Pass source or path, not both." };
+    const file = typeof input.path === "string" ? recipeSourceFile(input.path) : null;
+    if (file && "reason" in file) return { ok: false, reason: file.reason };
+    const typed = file ? file.text : typeof input.source === "string" ? input.source : null;
     // --- A rerun: no source, and an object a recipe_run made. Its stored source runs again with the stored
-    // parameters under the new ones; on success the objects the last apply made are replaced.
+    // parameters under the new ones.
     let rerun: { name: string; stored: RustRecipe } | null = null;
-    if (typeof input.source !== "string") {
+    if (typed === null) {
       const key = typeof input.object === "string" ? this.find(input.object)?.rustRecipe : undefined;
       const stored = key ? this.rustRecipes.get(key) : undefined;
-      if (!key || !stored) return { ok: false, reason: "Pass source, or the object of an earlier recipe_run to run its recipe again." };
+      if (!key || !stored) return { ok: false, reason: "Pass source or path, or the object of an earlier recipe_run to run its recipe again." };
       rerun = { name: key, stored };
     }
-    const name = rerun ? rerun.name : typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : "recipe";
-    const source = rerun ? rerun.stored.source : lfOnly(String(input.source));
-    const params = { ...(rerun?.stored.params ?? {}), ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
+    const given = typeof input.name === "string" ? input.name : file ? file.stem : "recipe";
+    const name = rerun ? rerun.name : given.replace(/[^A-Za-z0-9_-]/g, "_");
+    // --- I22. New source for an object an earlier run of this name made: the run makes the part again and replaces
+    // that run's objects, as a rerun does. Any other object is a part for the recipe to work on.
+    const madeBy = typeof input.object === "string" && !rerun ? this.find(input.object)?.rustRecipe : undefined;
+    // An earlier part kept under `<name>@<object>` (a run of the same name without object) is that name's too.
+    const sameName = madeBy !== undefined && (madeBy === name || madeBy.startsWith(`${name}@`)) && this.rustRecipes.has(madeBy);
+    const replacing = rerun ?? (sameName ? { name: madeBy!, stored: this.rustRecipes.get(madeBy!)! } : null);
+    /** The entry the run is kept under: the one it replaces, else its name. */
+    const key = replacing?.name ?? name;
+    const source = rerun ? rerun.stored.source : lfOnly(typed!);
+    const params = { ...(replacing?.stored.params ?? {}), ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
     this.noteStage(`building recipe ${name}`, 0);
     const built = await host.build(name, source, input.autofix !== false);
     const fixed = built.source !== source ? { fixedSource: built.source, fixRounds: built.fixRounds } : {};
@@ -1286,13 +1331,18 @@ export class Session {
     }
     if (mode === "check") return { ok: true, built: true, ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms };
 
-    // A rerun's object names the recipe, not a part for it to change.
-    const objectArg = typeof input.object === "string" && !rerun ? input.object : undefined;
+    // A rerun's or replace's object names the recipe, not a part for it to change.
+    const objectArg = typeof input.object === "string" && !replacing ? input.object : undefined;
     if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
     const created: string[] = [];
+    /** Objects the run placed itself: a replace keeps the old part's place for the others. */
+    const placed = new Set<string>();
     /** Parts that were on the plate before the run, with the step each stood at. */
     const touched = new Map<string, number | null>();
     const notes: string[] = [];
+    /** --- R-A. Recipe data the run read, by name: kept with the recipe so a rerun builds the same elsewhere. */
+    const dataUsed = new Map<string, RecipeData>();
+    let applied = 0;
     const touch = (id: string) => {
       if (id === "" || created.includes(id) || touched.has(id)) return;
       const obj = this.find(id);
@@ -1305,6 +1355,17 @@ export class Session {
         if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);
         return { ok: true, result: { ok: true } };
       }
+      if (site.tool === "data") {
+        const wanted = typeof site.args.name === "string" ? site.args.name : "";
+        const held = dataUsed.get(wanted);
+        if (held) return { ok: true, result: held.value };
+        // A rerun reads what its last apply kept; a run with source reads the workspace's file, so an edited file counts.
+        const kept = replacing?.stored.data?.[wanted];
+        const found = rerun && kept ? kept : recipeDataFile(wanted) ?? (kept ? kept : null);
+        if (!found || "reason" in found) return { ok: false, error: found && "reason" in found ? found.reason : recipeDataMissing(wanted) };
+        dataUsed.set(wanted, found);
+        return { ok: true, result: found.value };
+      }
       // Placing changes no history step, so a run could not take it back on a part it did not make.
       if (site.tool === "model_place" || site.tool === "object_place") {
         const target = typeof site.args.object === "string" ? site.args.object : this.selected;
@@ -1313,6 +1374,7 @@ export class Session {
         if (!created.includes(target) || others.some((id) => !created.includes(id))) {
           return { ok: false, error: `${site.tool} in a recipe places only the objects this run made (solid_new), relative to each other or the bed.` };
         }
+        placed.add(target);
       }
       if (site.tool !== "solid_new") touch(typeof site.args.object === "string" ? site.args.object : this.selected);
       this.noteStage(`recipe ${name}: call ${site.id} ${site.tool} (line ${site.line})`);
@@ -1327,6 +1389,9 @@ export class Session {
         const { ok: _ok, reason, ...extra } = value;
         return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
       }
+      if (site.tool === "model_apply") applied += 1;
+      if (site.tool === "model_apply_batch") applied += Array.isArray(site.args.ops) ? site.args.ops.length : 1;
+      if (maxSteps !== undefined && applied >= maxSteps) return { ok: true, result: value, halt: `The run stopped after ${applied} applied op${applied === 1 ? "" : "s"} (maxSteps ${maxSteps}), at line ${site.line}.` };
       return { ok: true, result: value };
     };
     const printer = this.printer();
@@ -1343,6 +1408,17 @@ export class Session {
       this.recipeDepth -= 1;
     }
     const report = { calls: out.calls, ...(out.refused.length ? { refused: out.refused } : {}), ...(notes.length ? { notes } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms };
+    // --- I23. What the parts measured when a partial run stopped, before it is taken back.
+    if (out.halted) {
+      const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {
+        const solid = this.find(id)?.solid;
+        if (!solid) return [];
+        const size = solid.bounds.max.map((value, axis) => Math.round((value - solid.bounds.min[axis]!) * 100) / 100);
+        return [[id, { volumeMm3: Math.round(solid.volumeMm3 * 100) / 100, sizeMm: size }]];
+      }));
+      const undone = await this.recipeRollback(created, touched);
+      return { ok: true, dry: true, partial: true, stopped: out.halted.reason, line: out.halted.line, applied, metrics: sofar, ...report, rolledBack: undone };
+    }
     if (!out.ok || mode === "dry") {
       const undone = await this.recipeRollback(created, touched);
       if (!out.ok) return { ok: false, reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
@@ -1373,17 +1449,84 @@ export class Session {
       const end = obj?.tree?.current ?? null;
       if (obj && before !== null && end !== null && end !== before) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
     }
-    // --- Kept with the project when the run made objects: the source as it built, these parameters, and what it made.
-    // A rerun takes the last apply's objects off the plate now that the new ones are committed.
-    const replaced = rerun ? rerun.stored.objects.filter((id) => !created.includes(id) && this.find(id)) : [];
-    for (const id of replaced) await this.objectRemove(id).catch(() => ({ ok: false }));
-    if (created.length) this.rustRecipes.set(name, { source: built.source, params, objects: [...created] });
+    // --- I22. A rerun or a replace hands each old object's handle, place, and name to the new object in its turn, so
+    // the part keeps its handle with a new history; old objects with no new one leave the plate.
+    let object = out.done!.object;
+    const replaced: string[] = [];
+    const removed: string[] = [];
+    if (replacing) {
+      const old = replacing.stored.objects.filter((id) => !created.includes(id) && this.find(id));
+      for (const [i, oldId] of old.entries()) {
+        const newId = created[i];
+        if (newId === undefined) {
+          if ((await this.objectRemove(oldId).catch(() => ({ ok: false }))).ok !== false) removed.push(oldId);
+          continue;
+        }
+        await this.takeOver(oldId, newId, !placed.has(newId));
+        created[i] = oldId;
+        if (object === newId) object = oldId;
+        replaced.push(oldId);
+      }
+    }
+    const fresh = created.filter((id) => !replaced.includes(id));
+    // --- Kept with the project when the run made objects: the source as it built, these parameters, its data, and
+    // what it made. A run of the same name without object leaves an earlier run's parts as they were, under their own
+    // entry, and says how to replace them.
+    let earlier: string | undefined;
+    if (created.length && !replacing) {
+      const prior = this.rustRecipes.get(name);
+      const left = prior?.objects.filter((id) => this.find(id)?.rustRecipe === name) ?? [];
+      if (prior && left.length) {
+        const key = `${name}@${left[0]}`;
+        this.rustRecipes.set(key, { ...prior, objects: left });
+        for (const id of left) this.find(id)!.rustRecipe = key;
+        earlier = `${left.join(", ")} from an earlier run of ${name} ${left.length === 1 ? "is" : "are"} still on the plate. To replace ${left.length === 1 ? "it" : "them"} instead, pass object:"${left[0]}" with the source.`;
+      }
+    }
+    const data = dataUsed.size ? Object.fromEntries(dataUsed) : undefined;
+    if (created.length) this.rustRecipes.set(key, { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}) });
     // Only what the run made names it: a rerun replaces those. A part it changed keeps the steps as one undo step.
     for (const id of created) {
       const obj = this.find(id);
-      if (obj) obj.rustRecipe = name;
+      if (obj) obj.rustRecipe = key;
     }
-    return { ok: true, object: out.done!.object, metrics: out.done!.metrics, ...(created.length ? { created } : {}), ...(replaced.length ? { replaced } : {}), recipe: name, ...report };
+    return {
+      ok: true,
+      object,
+      metrics: out.done!.metrics,
+      ...(fresh.length ? { created: fresh } : {}),
+      ...(replaced.length ? { replaced } : {}),
+      ...(removed.length ? { removed } : {}),
+      ...(data ? { data: Object.fromEntries([...dataUsed].map(([key, row]) => [key, { sha256: row.sha256, bytes: row.bytes }])) } : {}),
+      ...(earlier ? { earlier } : {}),
+      recipe: key,
+      ...report,
+    };
+  }
+
+  /**
+   * --- I22. The object `newId` takes the handle `oldId`: the old one leaves the plate, and the new one takes its handle,
+   * its place in the list, its name and, unless the run placed it, its place on the plate and in the model.
+   */
+  private async takeOver(oldId: string, newId: string, keepPlace: boolean): Promise<void> {
+    const old = this.find(oldId);
+    const made = this.find(newId);
+    if (!old || !made) return;
+    await this.closeTree(old);
+    const at = this.objects.indexOf(old);
+    this.objects.splice(this.objects.indexOf(made), 1);
+    this.objects.splice(at, 1, made);
+    made.id = oldId;
+    made.name = old.name;
+    if (keepPlace) {
+      made.orient = [...old.orient] as Mat3;
+      made.scale = old.scale;
+      made.centered = old.centered;
+      made.offset = { ...old.offset };
+      made.modelPose = { m: [...old.modelPose.m] as PlateObject["modelPose"]["m"], t: [...old.modelPose.t] as PlateObject["modelPose"]["t"] };
+      if (old.frame !== undefined) made.frame = old.frame;
+    }
+    if (this.selected === newId) this.selected = oldId;
   }
 
   /** Takes a recipe run back: objects it made leave the plate, parts it changed go back to the step they stood at. */
@@ -3771,7 +3914,7 @@ export class Session {
     const work = this.workJobs.find((row) => row.handle === handle);
     if (work) return this.workWait(work, meta, timeoutS);
     const job = this.jobOf(handle);
-    if (!job) return { ok: false, job: handle, reason: "That slice job is not in this session." };
+    if (!job) return this.lostJob(handle);
     const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS)
       ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS))
       : SLICE_WAIT_DEFAULT_S;
@@ -3840,6 +3983,26 @@ export class Session {
       // The engine sometimes returns the sentence itself.
     }
     return error;
+  }
+
+  /**
+   * --- R-C. A job this session never had. When the plate is empty and a server that has ended left an autosave, the
+   * job was that server's: its plate is opened again here, and the reply says so.
+   */
+  private async lostJob(handle: string): Promise<Record<string, unknown>> {
+    const reason = "That slice job is not in this session.";
+    const previous = this.previousAutosave;
+    if (!previous || this.objects.length > 0 || this.jobs.length > 0 || this.workJobs.length > 0) return { ok: false, job: handle, reason };
+    const opened = await this.projectOpen(previous.path).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
+    if (opened.ok === false) return { ok: false, job: handle, reason: `${reason} ${previous.note}` };
+    return {
+      ok: false,
+      job: handle,
+      status: "lost",
+      reason: `${reason} The server restarted at ${this.startedAt}, so the job is gone; the plate was restored from the autosave of ${previous.savedAt} (${previous.path}), as it stood before that call. Run the call again.`,
+      restored: previous.path,
+      objects: this.objects.map((obj) => obj.id),
+    };
   }
 
   private async sliceCancel(handle: string): Promise<Record<string, unknown>> {
@@ -4410,6 +4573,15 @@ export class Session {
     return `This ${name} did not finish in ${seconds} s. Nothing changed. Try a smaller size or fewer edges.`;
   }
 
+  /** --- R-C. The sentence for a call whose kernel process ended under it. */
+  private crashMessage(kind: string, why: string): string {
+    if (kind === "preview") return `This mesh stopped the kernel while opening (${why}). Nothing changed.`;
+    if (kind === "loft") return `The loft stopped the kernel (${why}). Nothing changed. Make it in shorter pieces: at most 4 sections each, each piece starting at the section the last one ended on.`;
+    if (kind === "shell") return `The shell stopped the kernel (${why}). Nothing changed. To hollow a loft, cut an inner loft instead.`;
+    const name = kind === "open" ? "history" : kind;
+    return `This ${name} stopped the kernel (${why}). Nothing changed. Try a smaller size or fewer pieces.`;
+  }
+
   /**
    * A native call on a worker. The timer runs on this thread, so a blocked call can be cut off.
    * `onRunaway` replaces the stuck worker; by default that is the modeler, which drops the open trees.
@@ -4436,6 +4608,12 @@ export class Session {
       if (err instanceof ModelRunaway) {
         await onRunaway();
         throw err;
+      }
+      // --- R-C. The process under the call ended (a kernel crash, a stack overflow, its memory cap). It is a refusal,
+      // as a runaway is: the open trees are dropped and built again on next use, and the step never happened.
+      if (err instanceof EngineStopped) {
+        await onRunaway();
+        throw new ModelRunaway(this.crashMessage(kind, err.why), true);
       }
       throw new ProtocolError(err instanceof Error ? err.message : "The modeler did not answer.");
     } finally {
@@ -4478,7 +4656,7 @@ export class Session {
       ok: false,
       reason: err.message,
       treeLost: true,
-      treeNote: "The modeler did not answer, so it was restarted, which closed every open history in it. Nothing applied is lost: each history is built again from its first solid and its steps on its next use, which takes a while on a long one.",
+      treeNote: `${err.crashed ? "The modeler stopped" : "The modeler did not answer, so it was restarted"}, which closed every open history in it. Nothing applied is lost: each history is built again from its first solid and its steps on its next use, which takes a while on a long one.`,
     };
   }
 
@@ -4694,7 +4872,15 @@ export class Session {
     const matched = facesMatching(obj.solid.faces, input, obj.solid);
     if ("reason" in matched) return { ok: false, reason: matched.reason };
     const listed = page(matched, input.cursor, input.limit);
-    return { ok: true, total: matched.length, frame: "part", faces: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+    // --- I8. A nearPoint on no face is said so, with the face level with it that has material.
+    const near = Array.isArray(input.nearPoint) ? (input.nearPoint as number[]) : null;
+    const first = matched[0];
+    let note: string | undefined;
+    if (near && first && typeof first.distanceMm === "number" && first.distanceMm > ON_FACE_MM) {
+      const gap = new Map(matched.map((row) => [row.index, row.distanceMm ?? Infinity] as const));
+      note = pickSentence(nearPick(obj.solid.faces as FrameFace[], first.index, near, gap), near).replace("The face selector picked", "The nearest face is");
+    }
+    return { ok: true, total: matched.length, frame: "part", faces: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...(note ? { note } : {}) };
   }
 
   private async edgesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -5741,6 +5927,24 @@ export class Session {
    * The builder is shared with the app's feature tools (`src/modeling/frames.ts`).
    */
   private expandContext(obj: PlateObject): ExpandContext {
+    const ctx = this.expandContextOf(obj);
+    const log = this.pickLog.getStore();
+    const detail = ctx.faceByDetail;
+    if (!log || !detail) return ctx;
+    // --- I8. Each face a selector resolves to is kept for the call's reply.
+    return {
+      ...ctx,
+      faceBy: (selector) => {
+        const pick = detail(selector);
+        if ("reason" in pick) return pick;
+        const near = Array.isArray(selector.nearPoint) ? (selector.nearPoint as number[]).slice(0, 3) : undefined;
+        if (!log.some((row) => row.index === pick.index && JSON.stringify(row.nearPoint) === JSON.stringify(near)) && log.length < 16) log.push({ ...pick, ...(near ? { nearPoint: near } : {}) });
+        return pick.index;
+      },
+    };
+  }
+
+  private expandContextOf(obj: PlateObject): ExpandContext {
     // --- D24. A moved part is read in model space, as the app reads it, since every op goes through toSolidOp once.
     // The posed mesh and its face frames are kept per solid and pose (posedContext), so a batch reads them once.
     if (obj.solid && !isIdentity(typedPoseOf(obj))) return { ...posedContext(obj.solid, typedPoseOf(obj)), plane: this.typedPlane(obj) };
@@ -6365,7 +6569,8 @@ export class Session {
         const row = saved as Partial<RustRecipe> | null;
         if (!row || typeof row.source !== "string") continue;
         const objects = Array.isArray(row.objects) ? row.objects.filter((id): id is string => typeof id === "string") : [];
-        this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects });
+        const data = row.data && typeof row.data === "object" ? Object.fromEntries(Object.entries(row.data).filter(([, kept]) => !!kept && typeof kept === "object" && typeof kept.sha256 === "string" && "value" in kept)) : {};
+        this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects, ...(Object.keys(data).length ? { data } : {}), ...(typeof row.path === "string" ? { path: row.path } : {}) });
       }
     }
     const parts = value.parts;
