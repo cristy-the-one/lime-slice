@@ -156,7 +156,8 @@ const block = String((await call("solid_new", { primitive: "box", dx: 30, dy: 20
 const studRun = await call("recipe_run", { source: studs, name: "studs", object: block, keep: { title: "Studs on top", description: "A row of studs on a part." } });
 const studFile = readFileSync(join(library, "studs-on-top.rs"), "utf8");
 check("a plugin that needs a part is kept with target object", studRun.ok === true && (studRun.kept as { id: string } | undefined)?.id === "studs-on-top" && studFile.includes("//! target: object"), { studRun, head: studFile.slice(0, 600) });
-check("the keep's check run on the part is taken back: one undo is the recipe", (await call("model_undo", { object: block })).group === "recipe studs");
+// The kept run's steps are a plugin step now (milestone 3), so the undo names the plugin it was kept as.
+check("the keep's check run on the part is taken back: one undo is the recipe", (await call("model_undo", { object: block })).group === "recipe studs-on-top");
 const needsPart = await call("recipe_run", { plugin: "studs-on-top" });
 check("running it without a part says it needs one", needsPart.ok === false && /needs a part/.test(String(needsPart.reason)), needsPart);
 

@@ -40,7 +40,8 @@ import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, uni
 import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, relativePose, seatLift, thenPose, toSolidOp, turnDir, typedPoseOf, type Affine, type ObjectFrame } from "../src/model-space.ts";
-import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type LoftSection, type ModelOp, type ModelTree, type NodeId, type PluginStamp, type ProfileLoop, type ProfileSegment, type Vec2 } from "../src/model-tree.ts";
+import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, type StampedRun } from "../src/plugin-step.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
@@ -385,6 +386,13 @@ export interface PlateObject {
   recipe?: Recipe;
   /** The recipe_run that made this object: a key of `rustRecipes`. Saved with the project. */
   rustRecipe?: string;
+  /**
+   * --- Plugin steps (D8). A rebuild of the plugin that made this part gave it a new tree: the object it replaced, kept
+   * off the plate so one model_undo at `tip` puts it back. Not saved.
+   */
+  rebuiltFrom?: { prior: PlateObject; tip: number };
+  /** The rebuilt object a model_undo took back, so model_redo brings it again. Not saved. */
+  rebuiltTo?: PlateObject;
   /** Stress study. Absent until sim_setup. Not sent to the slicer. */
   sim?: ObjectStudy;
 }
@@ -418,6 +426,19 @@ export interface RustRecipe {
    * --- I10. The ingredients the source imported, as they built, by `ingredients::<name>` (`<name>@<N>` when pinned):
    * a rerun builds these, and a plugin kept from this run carries them (I11).
    */
+  ingredients?: Record<string, KeptIngredient>;
+}
+
+/** --- Plugin steps (D8). A recipe_run that rebuilds a stamped run: the part, the run, and where the part stood. */
+interface PluginRebuild {
+  obj: PlateObject;
+  run: StampedRun;
+  stamp: PluginStamp;
+  /** The step shown before the rebuild: Undo goes back to it. */
+  from: number;
+  /** The steps after the run on the way to `from`: built again after the new run. */
+  later: number[];
+  /** A draft's ingredient copies, as its last apply built them. */
   ingredients?: Record<string, KeptIngredient>;
 }
 
@@ -1086,6 +1107,11 @@ export class Session {
   private recipeHost: RecipeHost | null = null;
   /** recipe_run sources by name, with the parameters and objects of their last apply. Saved with the project. */
   private rustRecipes = new Map<string, RustRecipe>();
+  /**
+   * --- Plugin steps (D7). The project's own copy of each plugin its stamped steps name, by the body's SHA-256: the
+   * whole file as the project carried it. Read on open, written on save with the copies the library still has.
+   */
+  private projectPlugins = new Map<string, string>();
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   private recipeDepth = 0;
   /** The MCP client's name from initialize: a kept plugin's made-by. */
@@ -1342,11 +1368,50 @@ export class Session {
     // --- R-A. The source from a .rs file in the workspace, so an edit and rerun sends only the path.
     if (typeof input.path === "string" && typeof input.source === "string") return { ok: false, reason: "Pass source or path, not both." };
     // --- Plugins (D14): a library plugin by id, built against this API level, under its id as the recipe name.
-    let plugin: { id: string; version: number; sha256: string; title: string; target: PluginTarget; note?: string } | null = null;
+    let plugin: { id: string; version: number; sha256: string; title: string; target: PluginTarget; api: string; note?: string } | null = null;
     let pluginBody: string | null = null;
     let presetParams: Record<string, unknown> = {};
-    if (typeof input.plugin === "string") {
-      if (typeof input.source === "string" || typeof input.path === "string") return { ok: false, reason: "Pass plugin, source, or path: one of them." };
+    if (typeof input.plugin === "string" && (typeof input.source === "string" || typeof input.path === "string")) return { ok: false, reason: "Pass plugin, source, or path: one of them." };
+    // --- Plugin steps (D8). recipe_run {plugin, object} on a part whose history holds a stamped run of that plugin, or
+    // {object} alone on a part a kept run changed, rebuilds that run with the code the stamp names (D9: the project's
+    // copy, else the library's file of that hash, else the draft): from the step before it, the given values over the
+    // stamped ones, the steps after it replayed, as one undo step. A run that made the part (stamped on the root) makes
+    // it again as a new tree for the same object.
+    const stepTarget = typeof input.object === "string" && typeof input.source !== "string" && typeof input.path !== "string" ? this.find(input.object) : undefined;
+    let rebuild: PluginRebuild | null = null;
+    const stepNotes: string[] = [];
+    if (stepTarget?.tree && mode !== "check") {
+      const wanted = typeof input.plugin === "string" ? input.plugin : undefined;
+      const runs = runsOnPath(stepTarget.tree).filter((row) => row.stamp);
+      const pick = wanted !== undefined
+        ? [...runs].reverse().find((row) => row.stamp!.plugin === wanted)
+        : stepTarget.rustRecipe ? runs.find((row) => row.before === null) : runs.at(-1);
+      if (pick?.stamp) {
+        const stamp = pick.stamp;
+        if (input.preset !== undefined) return { ok: false, reason: "A preset starts a new run. To change this plugin step, pass params; its other values stay as stamped." };
+        // A part a draft made reruns from its own entry even when the stamp's code is missing (#527's rerun).
+        const looked = this.stampSource(stamp);
+        if ("reason" in looked && (wanted !== undefined || pick.before !== null)) return { ok: false, reason: looked.reason };
+        const found = "reason" in looked ? { body: "", notes: [] as string[], title: undefined, target: undefined, api: undefined, ingredients: undefined } : looked;
+        stepNotes.push(...found.notes);
+        const tree = stepTarget.tree;
+        const shown = pathTo(tree, tree.current);
+        rebuild = { obj: stepTarget, run: pick, stamp, from: tree.current, later: shown.slice(shown.indexOf(pick.last) + 1) };
+        if (stamp.version > 0) {
+          plugin = { id: stamp.plugin, version: stamp.version, sha256: stamp.sha256, title: found.title ?? stamp.plugin, target: found.target ?? "either", api: found.api ?? stamp.api };
+          pluginBody = found.body;
+        } else if (pick.before !== null) pluginBody = found.body;
+        if (found.ingredients) rebuild.ingredients = found.ingredients;
+        const printer = this.printer();
+        const bed: [number, number, number] = [printer.bedX, printer.bedY, printer.bedZ];
+        if (stamp.context.nozzleMm !== this.library.nozzleMm) stepNotes.push(`Built for a ${formatMm(stamp.context.nozzleMm)} mm nozzle; this rebuild uses ${formatMm(this.library.nozzleMm)} mm.`);
+        if (stamp.context.bedMm.some((v, i) => v !== bed[i])) stepNotes.push(`Built for a ${stamp.context.bedMm.map(formatMm).join(" × ")} mm bed; this rebuild uses ${bed.map(formatMm).join(" × ")} mm.`);
+        if (pick.before !== null && rebuild.later.some((id) => tree.nodes.get(id)?.op?.kind === "partition")) {
+          return { ok: false, reason: "A split to print follows this plugin step, and a rebuild cannot cut its pieces again. Undo to before the split, rebuild, then split again." };
+        }
+      }
+    }
+    if (typeof input.plugin === "string" && !rebuild) {
       if (input.plugin.startsWith("draft:")) return { ok: false, reason: `A draft runs again from its object (recipe_run {object, params}), or keep it first: nugget {action:"save", kind:"plugin", from:"${input.plugin.slice(6)}", title, description}.` };
       const got = await this.pluginFile(input.plugin);
       if ("reason" in got) return { ok: false, reason: got.reason };
@@ -1354,7 +1419,7 @@ export class Session {
       const tooNew = apiRefusal(h.api, this.crateApi());
       if (tooNew) return { ok: false, reason: tooNew };
       if (h.target === "object" && typeof input.object !== "string") return { ok: false, reason: `${h.title} needs a part: pass object, the part to run it on.` };
-      plugin = { id: h.plugin, version: h.version, sha256: got.file.sha256, title: h.title, target: h.target, ...(got.note ? { note: got.note } : {}) };
+      plugin = { id: h.plugin, version: h.version, sha256: got.file.sha256, title: h.title, target: h.target, api: h.api, ...(got.note ? { note: got.note } : {}) };
       pluginBody = got.file.body;
       // --- I14. A preset's values under the given params, checked against the plugin's ranges again at use.
       if (typeof input.preset === "string") {
@@ -1365,8 +1430,9 @@ export class Session {
         if (problem) return { ok: false, reason: `The preset ${h.plugin}/${name} no longer fits this version of the plugin: ${problem}` };
         presetParams = row.params;
       }
-    } else if (input.preset !== undefined) return { ok: false, reason: "A preset runs with its plugin: recipe_run {plugin, preset}." };
+    } else if (input.preset !== undefined && !rebuild) return { ok: false, reason: "A preset runs with its plugin: recipe_run {plugin, preset}." };
     if (input.keep !== undefined && mode !== "apply") return { ok: false, reason: "keep keeps an apply that reached done; a check or dry run is never kept." };
+    if (input.keep !== undefined && rebuild) return { ok: false, reason: "keep keeps a new run; a rebuild of a plugin step runs the code the step already names." };
     const file = typeof input.path === "string" ? recipeSourceFile(input.path) : null;
     if (file && "reason" in file) return { ok: false, reason: file.reason };
     const typed = pluginBody ?? (file ? file.text : typeof input.source === "string" ? input.source : null);
@@ -1379,21 +1445,25 @@ export class Session {
       if (!key || !stored) return { ok: false, reason: "Pass source or path, or the object of an earlier recipe_run to run its recipe again." };
       rerun = { name: key, stored };
     }
-    const given = plugin ? plugin.id : typeof input.name === "string" ? input.name : file ? file.stem : "recipe";
+    const given = plugin ? plugin.id : rebuild ? rebuild.stamp.plugin : typeof input.name === "string" ? input.name : file ? file.stem : "recipe";
     const name = rerun ? rerun.name : given.replace(/[^A-Za-z0-9_-]/g, "_");
     // --- I22. New source for an object an earlier run of this name made: the run makes the part again and replaces
     // that run's objects, as a rerun does. Any other object is a part for the recipe to work on.
-    const madeBy = typeof input.object === "string" && !rerun ? this.find(input.object)?.rustRecipe : undefined;
+    const branchRebuild = rebuild !== null && rebuild.run.before !== null;
+    const madeBy = typeof input.object === "string" && !rerun && !branchRebuild ? this.find(input.object)?.rustRecipe : undefined;
     // An earlier part kept under `<name>@<object>` (a run of the same name without object) is that name's too.
     const sameName = madeBy !== undefined && (madeBy === name || madeBy.startsWith(`${name}@`)) && this.rustRecipes.has(madeBy);
-    const replacing = rerun ?? (sameName ? { name: madeBy!, stored: this.rustRecipes.get(madeBy!)! } : null);
+    // A rebuild of the run that made the part replaces that part, whatever name the plugin now has.
+    const madeKey = rebuild && !branchRebuild ? rebuild.obj.rustRecipe : undefined;
+    const rootRebuild = madeKey !== undefined && this.rustRecipes.has(madeKey) ? { name: madeKey, stored: this.rustRecipes.get(madeKey)! } : null;
+    const replacing = rerun ?? rootRebuild ?? (sameName ? { name: madeBy!, stored: this.rustRecipes.get(madeBy!)! } : null);
     /** The entry the run is kept under: the one it replaces, else its name. */
     const key = replacing?.name ?? name;
     const source = rerun ? rerun.stored.source : lfOnly(typed!);
-    const params = { ...(replacing?.stored.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
+    const params = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
     // --- I10. The ingredients the source imports, from the library (a rerun: the copies its last apply built), built
     // after the recipe as inline modules, the same text under lust and rustc.
-    const resolved = resolveIngredients(source, { kept: replacing?.stored.ingredients, preferKept: !!rerun });
+    const resolved = resolveIngredients(source, { kept: replacing?.stored.ingredients ?? rebuild?.ingredients, preferKept: !!rerun || !!rebuild });
     if ("reason" in resolved) return { ok: false, reason: resolved.reason };
     const usedIngredients = Object.values(resolved.used);
     this.noteStage(`building recipe ${name}`, 0);
@@ -1409,6 +1479,11 @@ export class Session {
     // A rerun's or replace's object names the recipe, not a part for it to change.
     const objectArg = typeof input.object === "string" && !replacing ? input.object : undefined;
     if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
+    // --- Plugin steps (D8). A rebuild runs on the part as it stood before the run: a new branch from there.
+    if (rebuild && branchRebuild) {
+      const back = await this.gotoNode(rebuild.obj, rebuild.run.before!);
+      if (back.ok === false) return { ok: false, reason: `The step before the plugin's run could not be shown: ${String(back.reason ?? "the engine refused it.")}` };
+    }
     const created: string[] = [];
     /** Objects the run placed itself: a replace keeps the old part's place for the others. */
     const placed = new Set<string>();
@@ -1420,10 +1495,13 @@ export class Session {
     /** The arguments of each refused call, by call id: what a harvested lesson is about (I13). */
     const refusedArgs = new Map<number, Record<string, unknown>>();
     let applied = 0;
+    /** The first step id each touched part's tree would give the run: what a rollback drops. */
+    const firstNew = new Map<string, number>();
     const touch = (id: string) => {
       if (id === "" || created.includes(id) || touched.has(id)) return;
       const obj = this.find(id);
       if (obj) touched.set(id, obj.tree?.current ?? null);
+      if (obj?.tree) firstNew.set(id, obj.tree.nextId);
     };
     if (objectArg) touch(objectArg);
     const ctx: CallMeta = { progressToken: meta?.progressToken, signal: meta?.signal };
@@ -1488,6 +1566,12 @@ export class Session {
       context: { units: "mm", ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
     };
     const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
+    /** Takes the run back; a rebuild also shows the old branch again, where the part stood before it. */
+    const rollback = async () => {
+      const undone = await this.recipeRollback(created, touched, firstNew);
+      if (rebuild && branchRebuild && rebuild.obj.tree?.current !== rebuild.from) await this.gotoNode(rebuild.obj, rebuild.from).catch(() => ({ ok: false }));
+      return undone;
+    };
     this.recipeDepth += 1;
     let out;
     try {
@@ -1513,18 +1597,50 @@ export class Session {
         const size = solid.bounds.max.map((value, axis) => Math.round((value - solid.bounds.min[axis]!) * 100) / 100);
         return [[id, { volumeMm3: Math.round(solid.volumeMm3 * 100) / 100, sizeMm: size }]];
       }));
-      const undone = await this.recipeRollback(created, touched);
+      const undone = await rollback();
       return { ok: true, dry: true, partial: true, stopped: out.halted.reason, line: out.halted.line, applied, metrics: sofar, ...report, rolledBack: undone };
     }
     if (!out.ok || mode === "dry") {
-      const undone = await this.recipeRollback(created, touched);
+      const undone = await rollback();
       if (!out.ok) return { ok: false, reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
       return { ok: true, dry: true, object: out.done!.object, metrics: out.done!.metrics, ...report, rolledBack: undone };
     }
-    // --- The apply: each part the run changed gets its new steps as one undo step, then is committed to the plate.
-    // A commit the plate refuses (a mesh that does not close, say) takes the whole run back, the parts committed before
-    // it too: those are committed again at the step they went back to.
+    // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
+    // what, every node carries the run's id, and that run is one undo step, in the project too. A run over several
+    // parts keeps plain steps, each part's as one undo step for this session (O4).
     const label = `recipe ${name}`;
+    const parts = [...created, ...[...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id)];
+    const api = this.crateApi();
+    const stampFields: Omit<PluginStamp, "fingerprint"> = {
+      plugin: plugin?.id ?? name.split("@")[0]!,
+      version: plugin?.version ?? 0,
+      sha256: plugin?.sha256 ?? bodyHash(built.source),
+      api: plugin?.api ?? `${api[0]}.${api[1]}`,
+      params: Object.fromEntries(Object.entries(params).filter(([, v]) => typeof v === "boolean" || typeof v === "string" || (typeof v === "number" && Number.isFinite(v)))) as PluginStamp["params"],
+      context: { bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    };
+    const only = parts.length === 1 && name !== "plugin_check" ? this.find(parts[0]!) : undefined;
+    const stamped = only ? this.stampRun(only, touched.get(only.id) ?? null, created.includes(only.id), stampFields) : null;
+    if (parts.length > 1) notes.push(`${plugin?.title ?? name} made or changed ${parts.length} parts in one run, so its steps stay plain steps; run it again to change them.`);
+    // --- A rebuild: the steps that followed the old run, built again on the new one. With the same values the solid
+    // should be the stamp's; the reply says when it is not.
+    let rebuilt: { replayed: number; broken?: string; sameSolid?: boolean } | undefined;
+    if (rebuild && stamped && only) {
+      const oldTree = rebuild.obj.tree!;
+      const renamed = new Map(rebuild.run.ids.length === stamped.ids.length ? rebuild.run.ids.map((id, i) => [id, stamped.ids[i]!] as const) : []);
+      const sameSolid = sameValues(rebuild.stamp.params, stampFields.params) ? sameFingerprint(stamped.stamp?.fingerprint ?? null, rebuild.stamp.fingerprint) : undefined;
+      if (sameSolid === false) notes.push("This plugin built a different solid from the same values; the plugin or the app changed since.");
+      const replay = await this.replaySteps(only, oldTree, rebuild.later, renamed);
+      if ("reason" in replay) {
+        const undone = await rollback();
+        return { ok: false, reason: `The plugin ran, but the steps after it could not be built again: ${replay.reason} The rebuild was taken back.`, ...report, rolledBack: undone };
+      }
+      rebuilt = { replayed: replay.replayed, ...(replay.broken ? { broken: replay.broken } : {}), ...(sameSolid !== undefined ? { sameSolid } : {}) };
+    }
+    if (stepNotes.length) notes.unshift(...stepNotes);
+    // --- The apply: each changed part is committed to the plate. A commit the plate refuses (a mesh that does not close,
+    // say) takes the whole run back, the parts committed before it too: those are committed again at the step they went
+    // back to.
     const commitOne = (id: string) => this.runCall("model_commit", { object: id }, ctx, true).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
     const committedTouched: string[] = [];
     for (const id of [...created, ...touched.keys()]) {
@@ -1532,9 +1648,11 @@ export class Session {
       if (!obj) continue;
       const before = touched.get(id);
       if (before !== undefined && (obj.tree?.current ?? null) === before) continue;
+      // A replayed step that no longer builds leaves the part on the last step that did, uncommitted, as an edit does.
+      if (rebuilt?.broken && obj === only) continue;
       const committed = await commitOne(id);
       if (committed.ok === false) {
-        const undone = await this.recipeRollback(created, touched);
+        const undone = await rollback();
         for (const back of committedTouched) await commitOne(back);
         const why = String(committed.reason ?? "The commit was refused.");
         return { ok: false, reason: `The recipe ran, but ${id} could not be committed to the plate: ${why} The run was taken back.`, object: id, metrics: out.done!.metrics, ...report, rolledBack: undone };
@@ -1544,7 +1662,10 @@ export class Session {
     for (const [id, before] of touched) {
       const obj = this.find(id);
       const end = obj?.tree?.current ?? null;
-      if (obj && before !== null && end !== null && end !== before) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
+      if (!obj || before === null || end === null || end === before) continue;
+      // A rebuild is one undo step back to the old branch as it was shown; a stamped run is one by its run id.
+      if (rebuild && branchRebuild && obj === rebuild.obj) obj.groups = [...(obj.groups ?? []), { start: rebuild.from, end, label }];
+      else if (!stamped || obj !== only) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
     }
     // --- I22. A rerun or a replace hands each old object's handle, place, and name to the new object in its turn, so
     // the part keeps its handle with a new history; old objects with no new one leave the plate.
@@ -1559,7 +1680,7 @@ export class Session {
           if ((await this.objectRemove(oldId).catch(() => ({ ok: false }))).ok !== false) removed.push(oldId);
           continue;
         }
-        await this.takeOver(oldId, newId, !placed.has(newId));
+        await this.takeOver(oldId, newId, !placed.has(newId), rebuild?.run.before === null && rebuild.obj.id === oldId);
         created[i] = oldId;
         if (object === newId) object = oldId;
         replaced.push(oldId);
@@ -1599,7 +1720,7 @@ export class Session {
       const obj = this.find(id);
       if (obj) obj.rustRecipe = key;
     }
-    const nuggets = rerun ? [] : this.harvest(key, built.source, refused, refusedArgs, plugin, input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : undefined, typeof input.preset === "string" ? input.preset : undefined);
+    const nuggets = rerun || rebuild ? [] : this.harvest(key, built.source, refused, refusedArgs, plugin, input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : undefined, typeof input.preset === "string" ? input.preset : undefined);
     return {
       ok: true,
       object,
@@ -1610,6 +1731,8 @@ export class Session {
       ...(data ? { data: Object.fromEntries([...dataUsed].map(([key, row]) => [key, { sha256: row.sha256, bytes: row.bytes }])) } : {}),
       ...(earlier ? { earlier } : {}),
       recipe: key,
+      ...(stamped ? { step: { run: stamped.id, steps: stamped.ids.length } } : {}),
+      ...(rebuilt ? { rebuilt } : {}),
       ...report,
       ...(nuggets.length && input.keep === undefined ? { nuggets } : {}),
       ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used)),
@@ -1624,7 +1747,25 @@ export class Session {
     if ("reason" in saved) return { keepRefused: saved.reason };
     const row = entryKey ? this.rustRecipes.get(entryKey) : undefined;
     if (row) row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
+    if (row) this.promoteStamps(row, name, saved);
     return { kept: saved };
+  }
+
+  /**
+   * --- Plugin steps (D8). A draft kept as a plugin: the steps it stamped on the parts it made or changed now name the
+   * plugin, so a rebuild finds it. Another draft with the same code keeps its own name.
+   */
+  private promoteStamps(row: RustRecipe, name: string, saved: { id: string; version: number; sha256: string }): void {
+    const recipe = name.split("@")[0]!;
+    for (const id of new Set([...row.objects, ...(row.changed ?? [])])) {
+      const obj = this.find(id);
+      const tree = obj?.tree;
+      if (!obj || !tree) continue;
+      for (const node of tree.nodes.values()) {
+        if (node.plugin?.version !== 0 || node.plugin.sha256 !== row.sha256 || node.plugin.plugin !== recipe) continue;
+        obj.tree = withNode(obj.tree!, node.id, { plugin: { ...node.plugin, plugin: saved.id, version: saved.version, sha256: saved.sha256 } });
+      }
+    }
   }
 
   /** --- Plugins (docs/plan-recipe-plugins.md D12). This host's crate API, read from the crate the recipes build against. */
@@ -1886,6 +2027,7 @@ export class Session {
       if (typeof input.from === "string") {
         const draft = this.latestDraft(input.from);
         if (draft) draft.row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
+        if (draft) this.promoteStamps(draft.row, input.from, saved);
       }
       return { ok: true, ...saved, path: join(dir, `${saved.id}.rs`) };
     }
@@ -2127,11 +2269,13 @@ export class Session {
    * --- I22. The object `newId` takes the handle `oldId`: the old one leaves the plate, and the new one takes its handle,
    * its place in the list, its name and, unless the run placed it, its place on the plate and in the model.
    */
-  private async takeOver(oldId: string, newId: string, keepPlace: boolean): Promise<void> {
+  private async takeOver(oldId: string, newId: string, keepPlace: boolean, keepOld = false): Promise<void> {
     const old = this.find(oldId);
     const made = this.find(newId);
     if (!old || !made) return;
-    await this.closeTree(old);
+    // A rebuilt plugin part keeps the old object, its tree open, for one model_undo.
+    if (keepOld && made.tree) made.rebuiltFrom = { prior: old, tip: made.tree.current };
+    else await this.closeTree(old);
     const at = this.objects.indexOf(old);
     this.objects.splice(this.objects.indexOf(made), 1);
     this.objects.splice(at, 1, made);
@@ -2148,8 +2292,104 @@ export class Session {
     if (this.selected === newId) this.selected = oldId;
   }
 
+  /**
+   * --- Plugin steps (D8). Marks a run's nodes on the one part it made or changed: the whole path when it made the part
+   * (the stamp on the root), else the steps after `before`. Returns the run, or null when the path does not hold it.
+   */
+  private stampRun(obj: PlateObject, before: number | null, made: boolean, stamp: Omit<PluginStamp, "fingerprint">): StampedRun | null {
+    const tree = obj.tree;
+    if (!tree) return null;
+    const path = pathTo(tree, tree.current);
+    const at = before === null ? -1 : path.indexOf(before);
+    const ids = made ? path : at >= 0 ? path.slice(at + 1) : [];
+    if (ids.length === 0) return null;
+    const fingerprint = tree.nodes.get(tree.current)?.fingerprint ?? obj.solid?.fingerprint ?? null;
+    obj.tree = markedRun(tree, ids, randomUUID().slice(0, 8), { ...stamp, fingerprint });
+    return runEndingAt(obj.tree, tree.current);
+  }
+
+  /**
+   * --- Plugin steps (D9). The code a stamp names, by its hash: the project's own copy, else the library's file of that
+   * hash (the current version or an older `<plugin>.vN.rs`), else a draft's kept source. A sentence when none is there,
+   * when the project's copy was edited, or when the code needs a newer recipe API.
+   */
+  private stampSource(stamp: PluginStamp): { body: string; notes: string[]; title?: string; target?: PluginTarget; api?: string; ingredients?: Record<string, KeptIngredient> } | { reason: string } {
+    const notes: string[] = [];
+    const current = stamp.version > 0 && isSlug(stamp.plugin) ? readPlugin(stamp.plugin) : null;
+    const library = current && !("reason" in current) ? current : null;
+    if (library && library.sha256 !== stamp.sha256 && library.header.version > stamp.version) {
+      notes.push(`v${library.header.version} of ${stamp.plugin} is in your library; this rebuild runs v${stamp.version}, the code the step was built with.`);
+    }
+    let file: PluginFile | null = null;
+    const copy = this.projectPlugins.get(stamp.sha256);
+    if (copy !== undefined) {
+      const parsed = parsePlugin(copy);
+      if ("reason" in parsed || parsed.sha256 !== stamp.sha256) return { reason: "This project's copy of the plugin was changed outside the app. The part is kept as built; its values cannot change until the plugin is run again." };
+      file = parsed;
+    }
+    if (!file && library?.sha256 === stamp.sha256) file = library;
+    if (!file && stamp.version > 0 && isSlug(stamp.plugin)) {
+      for (const version of olderVersions(stamp.plugin)) {
+        const old = readPlugin(stamp.plugin, pluginsDir(), version);
+        if (old && !("reason" in old) && old.sha256 === stamp.sha256) {
+          file = old;
+          break;
+        }
+      }
+    }
+    if (file) {
+      const tooNew = apiRefusal(file.header.api, this.crateApi());
+      if (tooNew) return { reason: tooNew };
+      return { body: file.body, notes, title: file.header.title, target: file.header.target, api: file.header.api };
+    }
+    const draft = [...this.rustRecipes.values()].filter((row) => row.sha256 === stamp.sha256).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
+    if (draft) return { body: draft.source, notes, ...(draft.ingredients ? { ingredients: draft.ingredients } : {}) };
+    return { reason: "The plugin source is not in this project or your library. The part is kept as built; its values cannot change." };
+  }
+
+  /**
+   * --- Plugin steps (D8). The steps `ids` of `from` built again, in order, on `obj`'s shown step, as an edit replays the
+   * steps after the one it changed: one engine call, and a step that no longer builds is kept broken with the ones
+   * under it. `renamed` maps the old steps the ops name (an edge of a step) to the new ones. Each keeps its name, and a
+   * later plugin step its stamp.
+   */
+  private async replaySteps(obj: PlateObject, from: ModelTree, ids: readonly NodeId[], renamed: ReadonlyMap<NodeId, NodeId>): Promise<{ replayed: number; broken?: string } | { reason: string }> {
+    const tree = obj.tree;
+    if (!tree || ids.length === 0) return { replayed: 0 };
+    const parent = tree.current;
+    const fresh = this.reserveOn(tree.key, ids.length);
+    const map = new Map([...renamed, ...stepIds(ids, fresh)]);
+    const ops = ids.map((id) => renumberedSteps(from.nodes.get(id)!.op!, map));
+    let reply: Record<string, unknown>;
+    try {
+      reply = await this.treeCall(editRequest(tree.key, parent, fresh[0]!, ops[0]!, fresh.slice(1).map((id, i) => ({ id, op: ops[i + 1]! })), obj.stepTolerance || CHORD), "edit", this.replayBudgetMs(ids.length));
+    } catch (err) {
+      const lost = this.lostReply(err);
+      if (lost) return { reason: String(lost.reason ?? "The engine stopped.") };
+      throw err;
+    }
+    if (typeof reply.error === "string" && reply.error) return { reason: plainModelError(reply.error) };
+    const built = readBuilt(reply.built);
+    const broken = readBroken(reply.broken);
+    const steps: ForkStep[] = fresh.map((id, i) => {
+      const made = built?.get(id);
+      return { id, op: made ? keepSketch(made.op, ops[i]!) : ops[i]!, fingerprint: made?.fingerprint ?? null, ...(broken?.id === id ? { broken: broken.error } : {}) };
+    });
+    const tip = [...steps].reverse().find((step) => !step.broken)?.id ?? fresh[0]!;
+    let next = forked(obj.tree ?? tree, parent, steps, tip);
+    fresh.forEach((id, i) => {
+      const old = from.nodes.get(ids[i]!)!;
+      next = withNode(next, id, { label: old.label, ...(old.name ? { name: old.name } : {}), ...(old.plugin ? { plugin: old.plugin } : {}), ...(old.run ? { run: old.run } : {}) });
+    });
+    obj.tree = next;
+    const solid = rememberSolid(reply);
+    if (solid) obj.solid = solid;
+    obj.probes.clear();
+    return { replayed: ids.length, ...(broken ? { broken: broken.error } : {}) };
+  }
+
   /** Takes a recipe run back: objects it made leave the plate, parts it changed go back to the step they stood at. */
-  private async recipeRollback(created: string[], touched: Map<string, number | null>): Promise<{ removed: string[]; restored: string[] }> {
+  private async recipeRollback(created: string[], touched: Map<string, number | null>, firstNew?: ReadonlyMap<string, number>): Promise<{ removed: string[]; restored: string[] }> {
     const removed: string[] = [];
     const restored: string[] = [];
     for (const id of [...created].reverse()) {
@@ -2162,6 +2402,10 @@ export class Session {
       if (!obj || node === null || (obj.tree?.current ?? null) === node) continue;
       const value = await this.gotoNode(obj, node).catch(() => ({ ok: false }));
       if (value.ok !== false) restored.push(id);
+      // The steps the run added go too, so Redo does not walk into a run that was taken back.
+      const from = firstNew?.get(id);
+      if (value.ok === false || from === undefined || !obj.tree) continue;
+      for (const child of [...obj.tree.nodes.values()].filter((row) => row.parent === node && row.id >= from)) obj.tree = dropped(obj.tree, child.id) ?? obj.tree;
     }
     return { removed, restored };
   }
@@ -2837,6 +3081,7 @@ export class Session {
     this.adoptParameters({});
     this.assemblies = [];
     this.adoptMcpModel(undefined);
+    this.projectPlugins.clear();
     return { ok: true, project: "project", label: "New plate" };
   }
 
@@ -2954,6 +3199,7 @@ export class Session {
     this.adoptParameters(parsed.project);
     this.assemblies = readAssemblies(parsed.project.assemblies, this.objects);
     this.adoptMcpModel(parsed.project.mcpModel);
+    this.projectPlugins = new Map(Object.entries(parsed.project.plugins ?? {}));
     const skipped = this.notSliced();
     return {
       ok: true,
@@ -3248,12 +3494,47 @@ export class Session {
     return undefined;
   }
 
+  /** --- Plugin steps (D8). Every stamp on the plate's trees, and on the trees of tools that left it. */
+  private stamps(): PluginStamp[] {
+    const out: PluginStamp[] = [];
+    for (const obj of [...this.objects, ...this.toolsOffPlate]) for (const node of obj.tree?.nodes.values() ?? []) if (node.plugin) out.push(node.plugin);
+    return out;
+  }
+
+  /**
+   * --- Plugin steps (D7). The project's copy of each library plugin a stamped step names: the copy the project came
+   * with, else the library's file of that hash. Null when there are none.
+   */
+  private pluginCopies(): Record<string, string> | null {
+    const out: Record<string, string> = {};
+    for (const stamp of this.stamps()) {
+      if (stamp.version === 0 || out[stamp.sha256] !== undefined) continue;
+      const kept = this.projectPlugins.get(stamp.sha256);
+      if (kept !== undefined) {
+        out[stamp.sha256] = kept;
+        continue;
+      }
+      if (!isSlug(stamp.plugin)) continue;
+      for (const version of [undefined, ...olderVersions(stamp.plugin)]) {
+        const file = readPlugin(stamp.plugin, pluginsDir(), version);
+        if (file && !("reason" in file) && file.sha256 === stamp.sha256) {
+          out[stamp.sha256] = file.text;
+          break;
+        }
+      }
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
   /** The project as project_save writes it, from the plate as it stands. */
   private saveDocument(): LimeProject {
     const doc = this.projectDocument();
     const mcpModel = this.mcpModelRecord();
     if (mcpModel) doc.mcpModel = mcpModel;
     else delete doc.mcpModel;
+    const plugins = this.pluginCopies();
+    if (plugins) doc.plugins = plugins;
+    else delete doc.plugins;
     const parameters = readParameters(this.paramText);
     if (parameters) doc.parameters = parameters;
     else delete doc.parameters;
@@ -7359,7 +7640,7 @@ export class Session {
     for (let node: number | null = tree.current; node !== null; node = tree.nodes.get(node)?.parent ?? null) path.push(node);
     const onPath = new Set(path);
     const grouped = new Set<number>();
-    for (const group of obj.groups ?? []) {
+    for (const group of this.stepGroups(obj)) {
       if (group.label.toLowerCase() !== wanted || !onPath.has(group.end) || !onPath.has(group.start)) continue;
       for (let node: number | null = group.end; node !== null && node !== group.start; node = tree.nodes.get(node)?.parent ?? null) grouped.add(node);
     }
@@ -7396,6 +7677,15 @@ export class Session {
     return [0, 1, 2].map((c) => m[c]! * d[0]! + m[3 + c]! * d[1]! + m[6 + c]! * d[2]!) as [number, number, number];
   }
 
+  /** The runs one undo takes back, by label: the session's groups, and each stamped recipe run as `recipe <name>`. */
+  private stepGroups(obj: PlateObject): { start: number; end: number; label: string }[] {
+    const runs = obj.tree ? [...obj.tree.nodes.values()].flatMap((node) => {
+      const run = node.run && node.run.k === node.run.n ? runEndingAt(obj.tree!, node.id) : null;
+      return run && run.before !== null ? [{ start: run.before, end: run.last, label: `recipe ${run.stamp?.plugin ?? "run"}` }] : [];
+    }) : [];
+    return [...(obj.groups ?? []), ...runs];
+  }
+
   /** model_anchors: every label on the path to the current step with its box, or one label's. */
   private anchorsTool(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
     if (!obj.tree) return { ok: false, reason: "This object has no Model history yet." };
@@ -7409,7 +7699,7 @@ export class Session {
       if (!row?.op) continue;
       names.add(row.label.replace(/ \d+\/\d+$/, ""));
     }
-    for (const group of obj.groups ?? []) if (obj.tree.nodes.has(group.end)) names.add(group.label);
+    for (const group of this.stepGroups(obj)) if (obj.tree.nodes.has(group.end)) names.add(group.label);
     const rows = [...names].reverse().flatMap((name) => {
       const box = this.labelBox(obj, name);
       return box ? [anchorRow(name, box)] : [];
@@ -7426,6 +7716,9 @@ export class Session {
     for (const obj of this.objects) if (obj.rustRecipe && this.rustRecipes.has(obj.rustRecipe)) recipes[obj.id] = { ...(recipes[obj.id] as object | undefined), rust: obj.rustRecipe };
     const used = new Set(this.objects.map((obj) => obj.rustRecipe).filter((key): key is string => !!key));
     for (const [key, row] of this.rustRecipes) if (row.changed?.some((id) => this.find(id))) used.add(key);
+    // --- Plugin steps (D7). A draft a stamped step names is kept too: it is that step's code.
+    const drafts = new Set(this.stamps().filter((stamp) => stamp.version === 0).map((stamp) => stamp.sha256));
+    for (const [key, row] of this.rustRecipes) if (row.sha256 && drafts.has(row.sha256)) used.add(key);
     const rustRecipes = Object.fromEntries([...this.rustRecipes].filter(([key]) => used.has(key)));
     const workplanes = Object.fromEntries(this.objects.filter((obj) => obj.workplaneTyped).map((obj) => [obj.id, obj.workplaneTyped]));
     const record = {
@@ -7723,7 +8016,7 @@ export class Session {
     const wanted = value.trim().toLowerCase();
     const rows = [...obj.tree.nodes.values()].filter((node) => node.label.toLowerCase() === wanted);
     if (rows.length > 0) return rows[rows.length - 1]!.id;
-    const group = [...(obj.groups ?? [])].reverse().find((row) => row.label.toLowerCase() === wanted && obj.tree!.nodes.has(row.end));
+    const group = [...this.stepGroups(obj)].reverse().find((row) => row.label.toLowerCase() === wanted && obj.tree!.nodes.has(row.end));
     return group ? group.end : null;
   }
 
@@ -8559,6 +8852,9 @@ export class Session {
       current: node.id === tree.current,
       committed: node.id === tree.committed,
       broken: node.broken ?? false,
+      // --- Plugin steps (D8): the run a step belongs to, and on its first step what ran with which values.
+      ...(node.plugin ? { plugin: { id: node.plugin.plugin, version: node.plugin.version, params: node.plugin.params } } : {}),
+      ...(node.run ? { run: `${node.run.id} ${node.run.k}/${node.run.n}` } : {}),
     }));
     const listed = page(rows, input.cursor, input.limit);
     return { ok: true, nodes: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
@@ -8595,6 +8891,19 @@ export class Session {
   }
 
   private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
+    // --- Plugin steps (D8). A part a plugin made, rebuilt as a new tree: one undo puts the old object back, one redo the new.
+    const swap = direction === "undo" ? obj.rebuiltFrom : undefined;
+    if (swap && obj.tree?.current === swap.tip) {
+      this.objects.splice(this.objects.indexOf(obj), 1, swap.prior);
+      swap.prior.rebuiltTo = obj;
+      return { ok: true, object: obj.id, node: nodeHandle(swap.prior.tree?.current ?? 0), group: `rebuild ${swap.prior.rustRecipe?.split("@")[0] ?? "plugin"}` };
+    }
+    if (direction === "redo" && obj.rebuiltTo) {
+      const next = obj.rebuiltTo;
+      obj.rebuiltTo = undefined;
+      this.objects.splice(this.objects.indexOf(obj), 1, next);
+      return { ok: true, object: obj.id, node: nodeHandle(next.tree?.current ?? 0), group: `rebuild ${next.rustRecipe?.split("@")[0] ?? "plugin"}` };
+    }
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const group = direction === "undo"
@@ -8604,6 +8913,13 @@ export class Session {
       const moved = await this.gotoNode(obj, direction === "undo" ? group.start : group.end);
       obj.undoneGroup = direction === "undo" && moved.ok === true ? group : undefined;
       return moved.ok === true ? { ...moved, group: group.label } : moved;
+    }
+    // A stamped run is one undo step by its run id, so it stays one after the project is saved and opened again.
+    const run = direction === "undo" ? runEndingAt(tree, tree.current) : runRedoFrom(tree);
+    if (run && run.before !== null) {
+      const moved = await this.gotoNode(obj, direction === "undo" ? run.before : run.last);
+      obj.undoneGroup = undefined;
+      return moved.ok === true ? { ...moved, group: `recipe ${run.stamp?.plugin ?? "run"}` } : moved;
     }
     const target = direction === "undo" ? undoTarget(tree) : redoTarget(tree);
     if (target === null) return { ok: false, reason: direction === "undo" ? "This is the start of the history." : "There is nothing to redo." };
