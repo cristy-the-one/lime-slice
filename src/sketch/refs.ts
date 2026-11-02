@@ -123,6 +123,47 @@ export function refChain(refs: RefGeom, index: number): RefChain | null {
   return { points, closed };
 }
 
+/**
+ * --- U1 (`docs/plan-sketch-for-people.md`). Every loop of the face outline, when `at` lies on the face: inside its
+ * outer loop and in none of its holes (even-odd over the loops). This is what Copy edge copies for a click inside the
+ * face, the same boundary `face_outline` reads from the kernel for a recipe (plan section 7a). Null off the face. ---
+ */
+export function faceOutlineAt(refs: RefGeom, at: Pt): RefChain[] | null {
+  const loops = faceLoops(refs);
+  if (loops.length === 0) return null;
+  let inside = false;
+  for (const loop of loops) if (loopHas(loop.points, at)) inside = !inside;
+  return inside ? loops : null;
+}
+
+/** The face outline's closed loops, each in order along it. */
+export function faceLoops(refs: RefGeom): RefChain[] {
+  const key = (at: Pt) => `${Math.round(at[0] * 1e4)},${Math.round(at[1] * 1e4)}`;
+  const loops: RefChain[] = [];
+  const used = new Set<number>();
+  refs.segments.forEach((segment, index) => {
+    if (segment.source !== "outline" || used.has(index)) return;
+    const chain = refChain(refs, index);
+    if (!chain) return;
+    const keys = new Set(chain.points.map(key));
+    refs.segments.forEach((other, i) => {
+      if (other.source === "outline" && keys.has(key(other.a)) && keys.has(key(other.b))) used.add(i);
+    });
+    if (chain.closed) loops.push(chain);
+  });
+  return loops;
+}
+
+function loopHas(points: readonly Pt[], at: Pt): boolean {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const a = points[i]!;
+    const b = points[j]!;
+    if (a[1] > at[1] !== b[1] > at[1] && at[0] < ((b[0] - a[0]) * (at[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
+}
+
 function project(frame: SketchFrame, point: Vec3): Pt {
   return toPlane(frame, point).uv;
 }

@@ -218,7 +218,7 @@ const refs = {
 };
 eq("an outline wins a tie with an edge", hitReference(refs, [0, 2], 0.5), 1);
 editor = withRefs(open("use"), refs);
-check("use says to click a faint edge", sketchReadout(editor).startsWith("Use."));
+check("Copy edge says to click an edge or the face", sketchReadout(editor).startsWith("Copy edge."));
 editor = click(editor, [3, 0]);
 eq("using an edge copies that one line", activeSketch(editor)?.entities.length, 1);
 editor = click(editor, [0, 2]);

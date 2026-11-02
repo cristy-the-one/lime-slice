@@ -32,7 +32,7 @@ import type { LoftSection, ModelOp, ProfileLoop } from "../model-tree";
 import type { ModelView } from "../model-view";
 import { sketchJson, type FaceRef, type SketchData, type SketchOn, type Vec3 } from "../sketch/model";
 import { DRILL_ALL_QUESTION, FACE_REFUSAL, POINT_REFUSAL, everyHoleSelection, holeTargets, holesInModel, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
-import { DEMO_DONE, DEMO_HOLE_SIZES, DEMO_KINDS, DEMO_LEAD, DEMOS, demoForHow, placeDemo, type DemoKind } from "../sketch/demos";
+import { DEMO_DONE, DEMO_HOLE_SIZES, DEMO_KINDS, DEMO_LEAD, DEMO_WALL, DEMOS, EDIT_DEMO_KINDS, EDIT_DEMO_LEAD, demoForHow, isEditDemo, placeDemo, type DemoKind } from "../sketch/demos";
 import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw";
 import {
   frameFromWorkplane,
@@ -49,8 +49,9 @@ import {
   type SketchFrame,
 } from "../sketch/frame";
 import { gridLines } from "../sketch/grid";
-import { boxCrosses } from "../sketch/hit";
-import { projectReferences } from "../sketch/refs";
+import { boxCrosses, hitSketch } from "../sketch/hit";
+import { projectReferences, type RefGeom } from "../sketch/refs";
+import { hasOpenEnds } from "../sketch/edit";
 import {
   activeSketch,
   beginChoose,
@@ -77,6 +78,7 @@ import {
   withLook,
   withRefs,
   withTool,
+  withWall,
   acknowledgeDimensionFocus,
   selectConstraint,
   applyConstraint,
@@ -87,7 +89,7 @@ import {
   type SketchEditor,
   type SketchTool,
 } from "../sketch/session";
-import { isDrawTool } from "../sketch/tools";
+import { armOffset, isDrawTool } from "../sketch/tools";
 import { featureTitle, fitStatus, hintSteps } from "../sketch/hints";
 import { ASSIST_PURPOSE, axisCrossings, blockedTip, EDIT_BUTTONS, MAKE_BUTTONS, namesOpenEnds, noShapeReason, openEnds, PURPOSE, REASON, sharpCorners, type EditButton, type MakeButton } from "../sketch/reasons";
 import { closeGap, type ClosedGap } from "../sketch/close-gap";
@@ -498,14 +500,18 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     howFeature: string | null;
     howOpen: boolean;
     makeHowOpen: boolean;
+    editHowOpen: boolean;
     aimKey: string;
     /** The Hole panel was open on these points: it opens on them again. */
     holes: { sketch: SketchData; targets: HoleTarget[] } | null;
     camera: { position: Vec3; target: Vec3; up: Vec3 };
   }
-  let demo: { kind: DemoKind; saved: DemoSaved; made: boolean; focus: Vec3 } | null = null;
+  /** `refs` is Copy edge's stand-in face; `undoBase` the demo drawing's undo depth when it opened, so an edit counts. */
+  let demo: { kind: DemoKind; saved: DemoSaved; made: boolean; focus: Vec3; refs?: RefGeom; undoBase: number; aim?: [number, number] } | null = null;
   /** P2: the Make row's How, with a Show me button per tool. */
   let makeHowOpen = false;
+  /** Milestone 6: the Edit row's How, with a Show me button per Edit tool. */
+  let editHowOpen = false;
   /** A demo is a sketch of its own with nowhere to attach: every feature in it is a new object, as on a root edit. */
   const featureEdit = (): "root" | "step" | null => (demo ? "root" : host.featureEdit());
   /** R2: open ends asked for by a greyed reason, for the drawing they were asked for. Any edit of it clears them. */
@@ -774,7 +780,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     // --- P2. Show me, the Make row's How, and the way out of a demo. ---
     const shown = target.dataset.sketchDemo;
-    if (shown && (DEMO_KINDS as readonly string[]).includes(shown)) {
+    if (shown && ([...DEMO_KINDS, ...EDIT_DEMO_KINDS] as readonly string[]).includes(shown)) {
       openDemo(shown as DemoKind);
       return;
     }
@@ -782,6 +788,20 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       makeHowOpen = !makeHowOpen;
       cardFocus = makeHowOpen ? ["#sketchMakeHow [data-sketch-demo]"] : ["[data-sketch-make-how]"];
       publish("skip");
+      return;
+    }
+    if (target.dataset.sketchEditHow != null) {
+      editHowOpen = !editHowOpen;
+      cardFocus = editHowOpen ? ["#sketchEditHow [data-sketch-demo]"] : ["[data-sketch-edit-how]"];
+      publish("skip");
+      return;
+    }
+    // O1: Offset's wall options. The offset being typed keeps its line and distance, and its ghost follows.
+    const wall = target.dataset.sketchWall;
+    if (wall === "both" || wall === "close" || wall === "helper") {
+      editor = withWall(editor, wall);
+      cardFocus = [`[data-sketch-wall="${wall}"]`];
+      publish("values");
       return;
     }
     if (target.dataset.sketchDemoLeave != null) {
@@ -1206,7 +1226,16 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     if (editor.phase !== "choosing") faceForHoles = false;
-    if (editor.phase !== "editing") makeHowOpen = false;
+    if (editor.phase !== "editing") {
+      makeHowOpen = false;
+      editHowOpen = false;
+    }
+    // Milestone 6: in an Edit tool's demo, the tool's first edit of the drawing is what the demo made.
+    if (demo && !demo.made && isEditDemo(demo.kind) && editor.tool === demo.kind && editor.undo.length > demo.undoBase) {
+      demo = { ...demo, made: true };
+      host.canvas.dataset.sketchDemoMade = demo.kind;
+      cardFocus = ["[data-sketch-demo-leave]"];
+    }
     const frame = drawingFrame();
     if (frame) ensureRefs(frame);
     shownPlanes = editor.phase === "choosing" ? chooserPlanes() : [];
@@ -1269,7 +1298,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     saidLast = true;
     // P2: a demo's status line says the next click, then that it is done; a refusal still comes first.
-    const featureNote = sweep ? sweep.note : loft ? loft.note : revolve ? revolveNote : gesture ? extrudeNote() : "";
+    const featureNote = sweep ? sweep.note : loft ? loft.note : revolve ? revolveNote : gesture ? extrudeNote() : demo && isEditDemo(demo.kind) ? editor.draw.note ?? "" : "";
     if (demo && editor.phase === "editing" && !featureNote) host.readout(fitStatus(demo.made ? DEMO_DONE : DEMOS[demo.kind].tryIt));
     else if (sweep && editor.phase === "editing") host.readout(fitStatus(sweep.note || sweepReadout()));
     else if (loft && editor.phase === "editing") host.readout(fitStatus(loft.note || loftReadout()));
@@ -1300,6 +1329,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function ensureRefs(frame: SketchFrame) {
+    // Milestone 6: Copy edge's demo reads its stand-in face, not the part's edges.
+    if (demo?.refs) {
+      if (refsKey !== "demo") {
+        refsKey = "demo";
+        editor = withRefs(editor, demo.refs);
+      }
+      return;
+    }
     const on = activeSketch(editor)?.on;
     const face = on?.kind === "face" ? on.face.index : null;
     const key = `${editor.active}:${face ?? "x"}:${frame.origin.map((value) => value.toFixed(2)).join()}${profile ? ":profile" : ""}`;
@@ -1316,7 +1353,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const frame = drawingFrame();
     const grid = frame ? gridFor(frame) : [];
-    const mesh = sketchMesh(editor, frame, grid, shownPlanes);
+    const mesh = sketchMesh(editor, frame, grid, shownPlanes, host.view.sketchView().mmPerPx);
+    host.canvas.dataset.sketchTrimPieces = String(mesh.shown?.trimPieces ?? 0);
+    host.canvas.dataset.sketchTrimHot = mesh.shown?.trimHot ?? "";
+    host.canvas.dataset.sketchRefHot = String(mesh.shown?.refHot ?? 0);
     if (gesture?.guide) mesh.strokes.push({ xyz: [...gesture.guide[0], ...gesture.guide[1]], role: "hint" });
     if (revolve && frame) mesh.strokes.push(...revolveStrokes(frame));
     if ((loft || sweep) && frame) mesh.strokes.push(...pinnedStrokes());
@@ -1536,6 +1576,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     // S3: the corner radius while Round corners is on, "off" while it is offered but off.
     host.canvas.dataset.sweepRound = sweeping?.round ? (sweeping.round.on ? String(sweeping.round.radius) : "off") : "";
     host.canvas.dataset.sketchDemo = demo?.kind ?? "";
+    // O1 and C1: Offset's wall options, and Shift+X's helper lines, for tests.
+    const wallOn = editor.draw.wall;
+    host.canvas.dataset.sketchWall = [wallOn.both ? "both" : "", wallOn.close ? "close" : "", wallOn.helper ? "helper" : ""].filter(Boolean).join(",");
+    host.canvas.dataset.sketchHelperLine = editor.phase === "editing" && editor.helperLine ? "1" : "";
+    // Milestone 6: where an Edit tool's demo wants its next click, in client pixels, for tests.
+    const aimFrame = demo?.aim && editor.phase === "editing" ? drawingFrame() : null;
+    const aimAt = aimFrame && demo?.aim ? host.view.projectPoint(toWorld(aimFrame, demo.aim)) : null;
+    if (aimAt) host.canvas.dataset.sketchDemoAim = `${aimAt.x.toFixed(1)},${aimAt.y.toFixed(1)}`;
+    else delete host.canvas.dataset.sketchDemoAim;
     host.canvas.dataset.sketchMarks = String(redShown.count);
     host.canvas.dataset.sketchMarksKind = redShown.kind;
     // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
@@ -1590,7 +1639,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (revolve) parts.push(revolve.follow ? "follow" : axisKey(revolve.axis), String(revolve.regions.length));
       if (profile) parts.push(`profile:${profileNote()}`);
       // P2: the demo's strip and footer, and the Make row's How.
-      parts.push(demo ? `demo:${demo.kind}:${demo.made}` : "", makeHowOpen ? "make-how" : "");
+      parts.push(demo ? `demo:${demo.kind}:${demo.made}` : "", makeHowOpen ? "make-how" : "", editHowOpen ? "edit-how" : "");
+      // O1: the wall options show while Offset is on, and Close the ends only for a line with ends.
+      if (editor.tool === "offset") {
+        const offsetting = editor.draw.gesture?.kind === "offset" ? editor.draw.gesture.distance : null;
+        parts.push(`wall:${JSON.stringify(editor.draw.wall)}:${offsetHasEnds()}:${offsetting}`);
+      }
       if (gesture || revolve || loft || sweep) {
         const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
         const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
@@ -1904,11 +1958,84 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   /** P1: the Edit row comes from `EDIT_BUTTONS`, so a button cannot ship without its purpose line. */
   function editTools(): Node[] {
-    return EDIT_BUTTONS.map((id) => {
+    const out: Node[] = EDIT_BUTTONS.map((id) => {
       if (id === "constrain") return constrainMenu();
       const { label, command } = EDIT_LABELS[id];
       return namedTool(id, label, tipWithShortcut(PURPOSE[id], command ? keyOf(command) : undefined));
     });
+    // P2 for the Edit tools: a ? after them whose How lists a Show me for each one. A demo has none of its own.
+    if (!demo) out.push(...editHow());
+    // O1: Offset's wall options, under the row while Offset is on.
+    if (editor.tool === "offset") out.push(wallRow());
+    return out;
+  }
+
+  /** O1: Both sides, Close the ends, and Keep the line as a helper, each pressed while on. */
+  function wallRow(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "sketch-wall";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", "Offset options");
+    const wall = editor.draw.wall;
+    const ends = offsetHasEnds();
+    const option = (key: "both" | "close" | "helper", label: string, tip: string) => {
+      const button = textButton(label, { sketchWall: key });
+      button.setAttribute("aria-pressed", wall[key] ? "true" : "false");
+      button.dataset.tip = tip;
+      button.title = tip;
+      return button;
+    };
+    row.append(option("both", "Both sides", ASSIST_PURPOSE.wallBoth));
+    // A closed outline has no ends to close; a line about to be offset may, so the option shows until one is picked.
+    if (ends !== false) row.append(option("close", "Close the ends", ASSIST_PURPOSE.wallClose));
+    // With one side closed, the line is the wall's other side, so it can't be a helper.
+    if (wall.both || !wall.close || ends === false) row.append(option("helper", "Keep the line as a helper", ASSIST_PURPOSE.wallHelper));
+    const gesture = editor.draw.gesture;
+    if (gesture?.kind === "offset" && Math.abs(gesture.distance) > 1e-6 && (wall.both || wall.close)) {
+      const note = document.createElement("p");
+      note.className = "sketch-wall-note";
+      note.setAttribute("role", "status");
+      const thick = Math.abs(gesture.distance) * (wall.both ? 2 : 1);
+      note.textContent = `Wall ${formatHeight(thick)} mm`;
+      row.append(note);
+    }
+    return row;
+  }
+
+  /** O1: whether the offset being made has two ends to close: null before a line is picked. */
+  function offsetHasEnds(): boolean | null {
+    const gesture = editor.draw.gesture;
+    const sketch = activeSketch(editor);
+    if (gesture?.kind !== "offset" || !sketch) return null;
+    return hasOpenEnds(sketch, gesture.ids);
+  }
+
+  /** P2 on the Edit row: a ? after the tools, whose How lists a Show me for each Edit tool. */
+  function editHow(): Node[] {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn sketch-make-how sketch-edit-how";
+    button.textContent = "?";
+    button.dataset.sketchEditHow = "";
+    button.setAttribute("aria-label", "Edit tool demos");
+    button.setAttribute("aria-expanded", editHowOpen ? "true" : "false");
+    button.setAttribute("aria-controls", "sketchEditHow");
+    button.dataset.tip = ASSIST_PURPOSE.editHow;
+    button.title = button.dataset.tip;
+    const pop = document.createElement("div");
+    pop.id = "sketchEditHow";
+    pop.className = "sketch-how-pop sketch-make-how-pop";
+    pop.setAttribute("role", "group");
+    pop.setAttribute("aria-label", "Show me");
+    pop.hidden = !editHowOpen;
+    const lead = document.createElement("p");
+    lead.className = "sketch-how-lead";
+    lead.textContent = EDIT_DEMO_LEAD;
+    const row = document.createElement("div");
+    row.className = "sketch-how-demos";
+    for (const kind of EDIT_DEMO_KINDS) row.append(showMeButton(kind, DEMOS[kind].label));
+    pop.append(lead, row);
+    return [button, pop];
   }
 
   /** P1: the Make row comes from `MAKE_BUTTONS`. Holes stays on the row off a face, greyed with the reason. */
@@ -2975,6 +3102,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       "sketch-fillet": { key: "g" },
       "sketch-use": { key: "u" },
       "sketch-construction": { key: "x" },
+      "sketch-helper-line": { key: "x", shift: true },
       "sketch-look": { key: "o" },
       "sketch-delete": { key: "Delete" },
       "sketch-undo": { key: "z", ctrl: true },
@@ -3162,6 +3290,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       howFeature,
       howOpen,
       makeHowOpen,
+      editHowOpen,
       aimKey,
       holes: host.sketchHolesArmed() ? { sketch, targets: holeTargets(sketch, editor.selection) } : null,
       camera: { position: [...view.position], target: [...view.target], up: [...view.up] },
@@ -3186,12 +3315,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     howFeature = null;
     howOpen = false;
     makeHowOpen = false;
+    editHowOpen = false;
     menuOpen = null;
-    demo = { kind, saved, made: false, focus: toWorld(frame, centre) };
+    demo = { kind, saved, made: false, focus: toWorld(frame, centre), undoBase: 0, ...(placed.refs ? { refs: placed.refs } : {}), ...(placed.aim ? { aim: placed.aim } : {}) };
     editor = next;
     aimKey = "";
     refsKey = "";
     host.canvas.dataset.sketchDemoMade = "";
+    if (isEditDemo(kind)) {
+      openEditDemo(kind, placed.drawing, placed.aim ?? centre);
+      return;
+    }
     if (kind === "extrude") beginExtrude();
     else if (kind === "revolve") beginRevolve();
     else if (kind === "loft") beginLoft();
@@ -3201,6 +3335,25 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       cardFocus = ["[data-sketch-holes]"];
       publish("open");
     }
+  }
+
+  /**
+   * Milestone 6: an Edit tool's demo opens with that tool on, ready for the click the strip names. Trim shows its red
+   * piece before the pointer moves; Offset has the route picked with Both sides and Close the ends on, and waits for a
+   * typed distance.
+   */
+  function openEditDemo(kind: DemoKind, drawing: SketchData, aim: [number, number]) {
+    editor = withTool(editor, kind as SketchTool);
+    if (kind === "trim") {
+      const hit = hitSketch(drawing, aim, 0.5);
+      editor = { ...editor, pointer: aim, hover: { point: null, entity: hit.entity } };
+    }
+    if (kind === "offset") {
+      const ids = drawing.entities.map((entity) => entity.id);
+      editor = { ...editor, cursor: aim, draw: armOffset(drawing, { ...editor.draw, wall: { ...DEMO_WALL } }, ids, aim), selection: { entities: ids, points: [] } };
+    }
+    cardFocus = ["[data-sketch-demo-leave]"];
+    publish("open");
   }
 
   /** The demo's Apply: the op its tool built, which goes nowhere. The ghost stays, so the person sees what it made. */
@@ -3226,7 +3379,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   /** Close the demo and put back the sketch, feature, Hole panel and camera exactly as Show me found them. */
   function leaveDemo() {
     if (!demo) return;
-    const { saved } = demo;
+    const { saved, kind: left } = demo;
     demo = null;
     clearFeatureView();
     editor = saved.editor;
@@ -3245,12 +3398,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     howFeature = saved.howFeature;
     howOpen = saved.howOpen;
     makeHowOpen = saved.makeHowOpen;
+    editHowOpen = saved.editHowOpen;
     menuOpen = null;
     aimKey = saved.aimKey;
     refsKey = "";
     host.canvas.dataset.sketchDemoMade = "";
     // The keyboard goes back to the How the demo was opened from.
-    cardFocus = [".sketch-how-open", "[data-sketch-make-how]"];
+    cardFocus = [".sketch-how-open", isEditDemo(left) ? "[data-sketch-edit-how]" : "[data-sketch-make-how]"];
     publish("open");
     host.view.setSketchCamera({ ...saved.camera, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround && !featureTilt() });
     if (gesture) armProbe();
@@ -3329,6 +3483,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const show = textButton(label, { sketchDemo: kind });
     show.classList.add("sketch-show-me");
     show.dataset.tip = `Try ${DEMOS[kind].label} on a small ready-made sketch. Your own sketch comes back after.`;
+    show.dataset.sketchDemoGroup = isEditDemo(kind) ? "edit" : "make";
     show.title = show.dataset.tip;
     return show;
   }
@@ -4976,9 +5131,10 @@ const EDIT_LABELS: Record<Exclude<EditButton, "constrain">, { label: string; com
   select: { label: "Select", command: null },
   trim: { label: "Trim", command: "sketch-trim" },
   offset: { label: "Offset", command: "sketch-offset" },
-  construction: { label: "Construction", command: "sketch-construction" },
+  // C1 and U1: named for what they do. The tool values, commands, keys and the saved `construction` field are unchanged.
+  construction: { label: "Helper line", command: "sketch-construction" },
   fillet: { label: "Fillet corner", command: "sketch-fillet" },
-  use: { label: "Use", command: "sketch-use" },
+  use: { label: "Copy edge", command: "sketch-use" },
 };
 
 /** The Make row's labels, commands and data attributes. */

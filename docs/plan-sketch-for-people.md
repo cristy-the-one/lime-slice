@@ -419,6 +419,57 @@ All of T1–K1 store the same sketch data (`SketchData`) as today. The rename ke
 **Done when** each has a unit test for its behaviour, and the saved sketch round-trips unchanged for the
 paths that existed before.
 
+**As built (milestone 6, T1 + O1 + F1 + C1 + U1, each with its demo).**
+- T1 is `trimPieces` and `trimPieceAt` in `src/sketch/edit.ts`: the spans `trim` cuts at, with which ends are a
+  crossing. While Trim is on, `src/sketch/draw.ts` draws every line as those pieces, 7 px short of each crossing end (at
+  most a quarter of the piece), and the piece under the pointer in the refusal red; the pointer is the unsnapped one
+  (`editor.pointer`), as Trim's click is. A line nothing cuts into pieces (a lone line, or a rectangle's side touched only
+  at its corners) says "Nothing crosses this line, so it is one piece. Press Delete to remove it." on hover, and a click
+  picks it rather than removing it, so Delete does. Deviation: a click used to remove such a line; the plan's sentence
+  only makes sense if it doesn't.
+- O1 is `offset(..., "round")` and `offsetWall` in `src/sketch/edit.ts`. The corner rule is `geom2d::offset`'s, ported
+  rather than called (two runtimes, as 7a says): the chain is mitred as before, then each outside corner between two
+  lines is rounded with the distance, centred on the original corner, its radius cut to the shorter edge × tan(half the
+  angle) and then shared along an edge two corners use, exactly as `corner_path` does; a corner with an arc on one side
+  is joined round at once. `src/sketch/edit-tools.test.ts` runs the three Rust fixtures (outside corners, the L's inside
+  corner at (11, 11), the 1 mm step reduced to radius 1) with the Rust areas. The strict `offset` keeps its sharp
+  mitres, so nothing else that calls it changes; only the card's Offset rounds.
+- Both sides follows the bi-directional offset of SolidWorks and Onshape: the distance applies on each side, and the
+  options row shows the wall's thickness while it is typed ("Wall 3 mm"). Close the ends joins the free ends with
+  straight lines (SolidWorks' "cap ends" also offers arcs; lines are what a wall wants and arcs can come later). One side
+  closed uses the original as the wall's other side, so it stays solid and Keep the line as a helper hides. The helper
+  option switches on with Close the ends, as the plan says, and off again with it. The three options sit in a row under
+  the Edit row only while Offset is on (no new height otherwise), are remembered between offsets in the editor's draw
+  state, and are never saved. A closed outline offset both sides is a ring; Close the ends leaves it alone.
+- F1: in Fillet corner a click on a point where exactly two lines meet (not in one straight run) arms those two lines,
+  so dragging or typing the radius works as before (`cornerLines`). A drag across empty space draws a box like Select's;
+  its corners arm together and wait for a typed radius, and G with corner points already selected does the same.
+  `filletCorners` rounds them in order with `filletCorner`, as one undo step, and refuses the lot with "That radius
+  doesn't fit at every corner. Type a smaller radius." when one has no room. A click on a corner stores exactly what two
+  line clicks store (unit test).
+- C1: the card, the Draw menu, the shortcut sheet and the status line say **Helper line**; `construction`, X and
+  `sketch-construction` are unchanged. Shift+X is a new command (`sketch-helper-line`): the Line tool with
+  `editor.helperLine` set, so every line drawn is a helper line from the first click, until L or another tool. The plan
+  says "with Shift+X held"; a mode is the same result without holding two keys while clicking.
+- U1: **Copy edge** (U, `use`). `faceOutlineAt` in `src/sketch/refs.ts` finds the face outline's loops and, for a point
+  inside the face (even-odd over the loops, so not in a hole), returns all of them; a click there copies them all. Under
+  the pointer the edge Copy edge would copy, or the whole outline over the face, is drawn wider and bright
+  (`refHot`). The 7a comparison with `face_outline` on a fixture face isn't in this PR: the card's outline comes from the
+  view's mesh, which the unit chain doesn't build, and both read the face's loops in the sketch frame.
+- Demos (P2 for the Edit tools, per Q3): five more saved sketches in `src/sketch/demos/` (`trim`, `offset`, `fillet`,
+  `construction`, `use` with its stand-in face `use-face`), each with an `aim` where the next click goes. They open from
+  a **?** at the end of the Edit row, the Make row's pattern, since Edit tools have no How popover. Trim opens with the
+  overhang already red; Offset opens with the L route picked, Both sides and Close the ends on, and the size box waiting
+  ("Type 1.5 in the box, press Enter."); Fillet corner, Helper line and Copy edge wait for one click. Copy edge's face is
+  given to the card as the reference edges, so the person's part is never read. The tool's first edit of the demo's
+  drawing is what the demo made (`data-sketch-demo-made` is the tool name); Back to my sketch puts the person's drawing,
+  undo steps and Offset options back.
+- Tests: `src/sketch/edit-tools.test.ts` (fixtures, walls, pieces, corners, Shift+X, Copy edge, the options in the editor,
+  and every edit round-tripping as saved `SketchData`), `src/sketch/demos.test.ts` (each Edit demo's next click works).
+  `e2e/model-sketch-edit-tools.spec.ts` (smoke) drives each demo from the Edit row's ?, a 2 mm wall from one line
+  that extrudes, and Shift+X. `e2e/model-sketch.spec.ts` and `e2e/model-sketch-reasons.spec.ts` changed only for the
+  new labels and to leave the Edit row's ? out of the P1 count. Nothing under `mcp/` changed, and no saved field.
+
 ## 7. MCP safety
 
 - No file under `mcp/` changes in any milestone. CI's MCP jobs and `mcp/schema.test.ts` run unchanged.

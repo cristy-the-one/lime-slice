@@ -25,9 +25,12 @@ import {
 import type { RefGeom } from "./refs.ts";
 // --- S3 drawing tools. Gesture state and geometry live in tools.ts. ---
 import {
+  armCorners,
+  CORNER_MISSING,
   drawAnchor,
   drawCommit,
   drawDimensions,
+  drawGhosts,
   drawPointer,
   drawPreview,
   drawReadout,
@@ -36,11 +39,16 @@ import {
   hitReference,
   idleDraw,
   isDrawTool,
+  noCrossing,
   tangentGesture,
   toggleConstruction,
+  toggleWall,
   type DrawState,
   type DrawTool,
 } from "./tools.ts";
+// --- Sketch for people, milestone 6: the Edit tools show what they will do. ---
+import { cornerLines, trimPieces, type WallOptions } from "./edit.ts";
+import { faceOutlineAt } from "./refs.ts";
 // --- S4 constraints and driving dimensions. The solver runs only when the sketch has some. ---
 import {
   applyConstrainAction,
@@ -118,6 +126,12 @@ export interface SketchEditor {
   cursor: Pt | null;
   snap: SnapHit | null;
   hover: { point: number | null; entity: number | null };
+  /** Where the pointer is on the plane before snapping: Trim's red piece is the one under it. */
+  pointer: Pt | null;
+  /** U1: the reference edge Copy edge would copy, or the face when the pointer is inside it. */
+  hoverRef: { index: number | null; face: boolean };
+  /** C1: Shift+X started the Line tool drawing helper lines. Another tool ends it. */
+  helperLine: boolean;
   /** A typed size stands in for the cursor until Enter or the next move. */
   typed: Pt | null;
   drag: Drag | null;
@@ -172,6 +186,9 @@ export function sketchOff(): SketchEditor {
     cursor: null,
     snap: null,
     hover: { point: null, entity: null },
+    pointer: null,
+    hoverRef: { index: null, face: false },
+    helperLine: false,
     typed: null,
     drag: null,
     box: null,
@@ -220,6 +237,9 @@ export function enterSketch(editor: SketchEditor, plane: SketchPlane, on?: Sketc
     cursor: null,
     snap: null,
     hover: { point: null, entity: null },
+    pointer: null,
+    hoverRef: { index: null, face: false },
+    helperLine: false,
     typed: null,
     drag: null,
     box: null,
@@ -300,7 +320,37 @@ export function withRefs(editor: SketchEditor, refs: RefGeom): SketchEditor {
 
 export function withTool(editor: SketchEditor, tool: SketchTool): SketchEditor {
   if (editor.phase !== "editing") return editor;
-  return { ...clearGesture(editor), tool, esc: 0 };
+  return { ...clearGesture(editor), tool, esc: 0, helperLine: false, hoverRef: { index: null, face: false } };
+}
+
+/** C1: Shift+X. The Line tool, drawing helper lines from the first click. */
+export function withHelperLine(editor: SketchEditor): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  return { ...withTool(editor, "line"), helperLine: true };
+}
+
+/** O1: switch one of Offset's wall options. An offset being typed keeps its line and distance. */
+export function withWall(editor: SketchEditor, key: keyof WallOptions): SketchEditor {
+  if (editor.phase !== "editing") return editor;
+  return { ...editor, draw: { ...editor.draw, wall: toggleWall(editor.draw.wall, key) } };
+}
+
+/** O1 and F1: an edit's ghost in separate pieces, or null when the rubber band shows it. */
+export function ghosts(editor: SketchEditor): Pt[][] | null {
+  const sketch = activeSketch(editor);
+  if (!sketch || editor.phase !== "editing" || !isDrawTool(editor.tool)) return null;
+  return drawGhosts(sketch, editor.draw);
+}
+
+/** T1: Trim's pieces of the line under the pointer, and which one a click removes, for the view. */
+export function trimHover(editor: SketchEditor): { entity: number; piece: number; crossed: boolean } | null {
+  const sketch = activeSketch(editor);
+  if (!sketch || editor.tool !== "trim" || editor.hover.entity == null || !editor.pointer) return null;
+  const found = trimPieces(sketch, editor.hover.entity);
+  if (!found) return null;
+  if (!found.crossed) return { entity: editor.hover.entity, piece: -1, crossed: false };
+  const piece = trimPieceIndex(sketch, editor.hover.entity, editor.pointer);
+  return { entity: editor.hover.entity, piece, crossed: true };
 }
 
 export function withLook(editor: SketchEditor, on: boolean): SketchEditor {
@@ -457,8 +507,19 @@ function gestureOpen(editor: SketchEditor): boolean {
 
 function pointerStep(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv): SketchEditor {
   const snapped = snapAt(editor, sketch, ev.uv, env.mmPerPx);
-  let next: SketchEditor = { ...editor, cursor: snapped.at, snap: snapped, typed: ev.phase === "move" ? null : editor.typed, esc: ev.phase === "down" ? 0 : editor.esc };
-  if (ev.phase === "move") next = { ...next, hover: hitSketch(sketch, snapped.at, env.mmPerPx * 8) };
+  let next: SketchEditor = { ...editor, cursor: snapped.at, snap: snapped, pointer: ev.uv, typed: ev.phase === "move" ? null : editor.typed, esc: ev.phase === "down" ? 0 : editor.esc };
+  // The edit tools pick what is under the pointer itself, so their hover does too.
+  const edit = EDIT_TOOLS.has(next.tool);
+  if (ev.phase === "move") next = { ...next, hover: hitSketch(sketch, edit ? ev.uv : snapped.at, env.mmPerPx * 8) };
+  if (ev.phase === "move" && next.tool === "use") {
+    const index = hitReference(next.refs, ev.uv, env.mmPerPx * 8);
+    next = { ...next, hoverRef: { index, face: index == null && faceOutlineAt(next.refs, ev.uv) != null } };
+  }
+  // F1: in Fillet corner, a drag across empty space boxes the corners to round together.
+  if (next.tool === "fillet") {
+    const boxed = filletBox(next, sketch, ev, env);
+    if (boxed) return boxed;
+  }
   if (next.tool === "select") {
     const picked = selectPointer(next, sketch, ev, env, snapped.at);
     if (ev.phase !== "down") return picked;
@@ -502,8 +563,9 @@ export function sketchKey(editor: SketchEditor, key: string, mods: { ctrl: boole
   if (key === "b" || key === "B") return withTool(editor, "spline");
   if (key === "t" || key === "T") return withTool(editor, "trim");
   if (key === "f" || key === "F") return withTool(editor, "offset");
-  if (key === "g" || key === "G") return withTool(editor, "fillet");
+  if (key === "g" || key === "G") return filletKey(editor);
   if (key === "u" || key === "U") return withTool(editor, "use");
+  if ((key === "x" || key === "X") && mods.shift) return withHelperLine(editor);
   if (key === "x" || key === "X") return constructionKey(editor);
   if (key === "Enter") return enterKey(editor);
   if (key === "Escape") return onEsc(editor);
@@ -550,6 +612,9 @@ export function sketchReadout(editor: SketchEditor): string {
   if (editor.esc === 1 && !editor.chain && !editor.rect && !editor.draw.gesture) return `Esc again finishes the sketch.${tail}`;
   if (editor.lookAround) return `Look around is on. O locks the view.${tail}`;
   const refused = editor.draw.note ? ` ${editor.draw.note}` : "";
+  if (editor.tool === "line" && editor.helperLine) {
+    return `Helper line. Click points. Lines drawn now are helper lines.${refused}${tail}`;
+  }
   if (editor.tool === "line") {
     return `Line. Click points. Type a length and an angle.${refused}${tail}`;
   }
@@ -557,7 +622,10 @@ export function sketchReadout(editor: SketchEditor): string {
     return `Rectangle. Click two corners.${refused}${tail}`;
   }
   if (isDrawTool(editor.tool)) {
-    const note = editor.draw.note ? ` ${editor.draw.note}` : "";
+    // T1: over a line nothing crosses, Trim says so before the click.
+    const lone = editor.draw.note ? null : trimHover(editor);
+    const loneNote = lone && !lone.crossed && sketch ? ` ${noCrossing(sketch.entities.find((entity) => entity.id === lone.entity)?.kind ?? "line")}` : "";
+    const note = editor.draw.note ? ` ${editor.draw.note}` : loneNote;
     return `${drawReadout(editor.tool)}${note}${tail}`;
   }
   // --- S4 ---
@@ -662,7 +730,7 @@ function placeLinePoint(editor: SketchEditor, sketch: SketchData, at: Pt): Sketc
   if (chain.length >= 2 && first && Math.hypot(first[0] - at[0], first[1] - at[1]) <= 1e-4) return closeChain(editor, sketch);
   const before = currentMark(editor);
   const end = ensurePoint(sketch, at);
-  const line = addLine(end.sketch, chain[chain.length - 1]!, end.id);
+  const line = addLine(end.sketch, chain[chain.length - 1]!, end.id, editor.helperLine);
   const next = replaceSketch({ ...editor, chain: [...chain, end.id], typed: null }, line.sketch);
   return { ...next, undo: [...editor.undo, before].slice(-100), redo: [] };
 }
@@ -671,7 +739,7 @@ function closeChain(editor: SketchEditor, sketch: SketchData): SketchEditor {
   const chain = editor.chain;
   if (!chain || chain.length < 2) return endChain(editor);
   const before = currentMark(editor);
-  const line = addLine(sketch, chain[chain.length - 1]!, chain[0]!);
+  const line = addLine(sketch, chain[chain.length - 1]!, chain[0]!, editor.helperLine);
   const next = replaceSketch({ ...endChain(editor), typed: null }, line.sketch);
   return { ...next, undo: [...editor.undo, before].slice(-100), redo: [] };
 }
@@ -805,9 +873,71 @@ function applyMark(editor: SketchEditor, mark: Mark): SketchEditor {
   return replaceSketch({ ...clearGesture(editor), selection, esc: 0, constrain: freshConstrain() }, sketch);
 }
 
+/** The Edit row's tools: they act on what is under the pointer, not on a snapped point. */
+const EDIT_TOOLS = new Set<SketchTool>(["trim", "offset", "fillet", "construction", "use"]);
+
+/** T1: which of Trim's pieces of `entity` lies under `at`. */
+function trimPieceIndex(sketch: SketchData, entity: number, at: Pt): number {
+  const found = trimPieces(sketch, entity);
+  if (!found) return -1;
+  let best = -1;
+  let gap = Infinity;
+  found.pieces.forEach((piece, index) => {
+    for (let i = 0; i + 1 < piece.samples.length; i += 1) {
+      const d = segmentDistance(piece.samples[i]!, piece.samples[i + 1]!, at);
+      if (d < gap) {
+        gap = d;
+        best = index;
+      }
+    }
+  });
+  return best;
+}
+
+function segmentDistance(a: Pt, b: Pt, at: Pt): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const length2 = dx * dx + dy * dy;
+  const t = length2 > 0 ? Math.max(0, Math.min(1, ((at[0] - a[0]) * dx + (at[1] - a[1]) * dy) / length2)) : 0;
+  return Math.hypot(a[0] + dx * t - at[0], a[1] + dy * t - at[1]);
+}
+
+/**
+ * F1: Fillet corner's box. A press on empty space (no line or point under it) with no corner picked starts a box, as
+ * Select's does; on release the corners inside it are armed together. Null when the event isn't the box's.
+ */
+function filletBox(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv): SketchEditor | null {
+  const gesture = editor.draw.gesture;
+  if (ev.phase === "down" && !editor.box && (gesture == null || gesture.kind === "filletMany")) {
+    const hit = hitSketch(sketch, ev.uv, env.mmPerPx * 8);
+    if (hit.point != null || hit.entity != null) return null;
+    return { ...editor, box: { sx: ev.sx, sy: ev.sy, x: ev.sx, y: ev.sy, shift: ev.shift } };
+  }
+  if (!editor.box) return null;
+  if (ev.phase === "move") return { ...editor, box: { ...editor.box, x: ev.sx, y: ev.sy } };
+  if (ev.phase !== "up") return editor;
+  const box = editor.box;
+  const tiny = (box.x - box.sx) ** 2 + (box.y - box.sy) ** 2 <= 16;
+  if (tiny) return { ...editor, box: null, draw: { ...editor.draw, gesture: null, note: CORNER_MISSING } };
+  const picked = boxPick(sketch, { x0: box.sx, y0: box.sy, x1: box.x, y1: box.y }, false, env.project);
+  const draw = armCorners(sketch, editor.draw, picked.points, { sx: ev.sx, sy: ev.sy });
+  const corners = picked.points.filter((id) => cornerLines(sketch, id) != null);
+  return { ...editor, box: null, draw, selection: { entities: [], points: corners } };
+}
+
+/** F1: G opens Fillet corner, armed on the corner points already selected, if any. */
+function filletKey(editor: SketchEditor): SketchEditor {
+  const next = withTool(editor, "fillet");
+  const sketch = activeSketch(next);
+  if (!sketch || editor.selection.points.length === 0) return next;
+  const draw = armCorners(sketch, next.draw, editor.selection.points, { sx: 0, sy: 0 });
+  if (!draw.gesture) return next;
+  return { ...next, draw, selection: { entities: [], points: [...editor.selection.points] } };
+}
+
 function applyDrawPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv, at: Pt): SketchEditor {
   const tol = env.mmPerPx * 8;
-  const edit = editor.tool === "trim" || editor.tool === "offset" || editor.tool === "fillet" || editor.tool === "construction" || editor.tool === "use";
+  const edit = EDIT_TOOLS.has(editor.tool);
   const output = drawPointer(sketch, editor.draw, editor.tool as DrawTool, {
     phase: ev.phase,
     at,
@@ -1118,6 +1248,9 @@ export function enterSketchData(editor: SketchEditor, sketch: SketchData): Sketc
     cursor: null,
     snap: null,
     hover: { point: null, entity: null },
+    pointer: null,
+    hoverRef: { index: null, face: false },
+    helperLine: false,
     typed: null,
     drag: null,
     box: null,
