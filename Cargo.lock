@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "lime-recipe-runner"
-version = "4.11.0"
+version = "4.12.0"
 dependencies = [
  "serde_json",
  "windows-sys 0.61.2",
