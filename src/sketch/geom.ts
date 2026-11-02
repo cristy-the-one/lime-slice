@@ -318,7 +318,7 @@ export function sampleSpline(points: readonly Pt[], closed: boolean, stepMm = 0.
 
 /** The most points between a spline segment's ends that the engine, the file reader and the MCP take. */
 export const SPLINE_THROUGH_MAX = 200;
-export const SPLINE_THROUGH_REFUSAL = `A spline segment has at most ${SPLINE_THROUGH_MAX} points between its ends.`;
+export const SPLINE_THROUGH_REFUSAL = `A spline segment has at most ${SPLINE_THROUGH_MAX} points between its ends. Split it into two splines.`;
 
 /**
  * Few points that a smooth curve through them follows within `tolMm` of the dense `samples`: the ends, and the samples
@@ -514,26 +514,26 @@ export function cornerFillet(
   b1: Pt,
   radius: number,
 ): { tangentA: Pt; tangentB: Pt; through: Pt; centre: Pt } | { error: string } {
-  if (!(radius > 0) || !Number.isFinite(radius)) return { error: "A corner round needs a radius above 0." };
+  if (!(radius > 0) || !Number.isFinite(radius)) return { error: "Type a corner radius above 0." };
   const corner = sharedEnd(a0, a1, b0, b1);
   if (!corner) {
     const crossing = lineLineHit(a0, a1, b0, b1);
     if (crossing && in01(crossing.t) && in01(crossing.u) && !endpointHit(crossing.t) && !endpointHit(crossing.u)) {
       return { error: "These lines cross. Trim them so they meet at the corner you want to round." };
     }
-    return { error: "These lines do not meet, so there is no corner to round." };
+    return { error: "These lines do not meet, so there is no corner to round. Pick two lines that share an end." };
   }
   const dirA = unit(sub(corner.otherA, corner.at));
   const dirB = unit(sub(corner.otherB, corner.at));
-  if (!dirA || !dirB) return { error: "These lines do not meet, so there is no corner to round." };
+  if (!dirA || !dirB) return { error: "These lines do not meet, so there is no corner to round. Pick two lines that share an end." };
   const alpha = Math.atan2(Math.abs(cross(dirA, dirB)), dot(dirA, dirB));
-  if (alpha < 1e-4 || Math.PI - alpha < 1e-4) return { error: "These lines are straight, so there is no corner to round." };
+  if (alpha < 1e-4 || Math.PI - alpha < 1e-4) return { error: "These lines are straight, so there is no corner to round. Pick two lines at an angle." };
   const tangentLength = radius / Math.tan(alpha / 2);
   if (dist(corner.at, corner.otherA) < tangentLength - 1e-6 || dist(corner.at, corner.otherB) < tangentLength - 1e-6) {
     return { error: "That radius does not fit these two lines. Use a smaller one." };
   }
   const bisector = unit(add(dirA, dirB));
-  if (!bisector) return { error: "These lines are straight, so there is no corner to round." };
+  if (!bisector) return { error: "These lines are straight, so there is no corner to round. Pick two lines at an angle." };
   const centre = add(corner.at, scale(bisector, radius / Math.sin(alpha / 2)));
   return {
     tangentA: add(corner.at, scale(dirA, tangentLength)),

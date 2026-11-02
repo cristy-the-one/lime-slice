@@ -129,11 +129,11 @@ test("drawing tools stay in the sketch card and take a typed size", async ({ pag
   for (const label of ["Select", "Trim", "Offset", "Fillet corner", "Construction", "Use"]) {
     await expect(page.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
-  await expect(page.locator('[data-sketch-tool="trim"]')).toHaveAttribute("data-tip", "Trim (T)");
-  await expect(page.locator('[data-sketch-tool="offset"]')).toHaveAttribute("data-tip", "Offset (F)");
-  await expect(page.locator('[data-sketch-tool="construction"]')).toHaveAttribute("data-tip", "Construction (X)");
-  await expect(page.locator('[data-sketch-tool="fillet"]')).toHaveAttribute("data-tip", "Fillet corner (G)");
-  await expect(page.locator('[data-sketch-tool="use"]')).toHaveAttribute("data-tip", "Use. Click a faint edge to copy it. (U)");
+  await expect(page.locator('[data-sketch-tool="trim"]')).toHaveAttribute("data-tip", "Cut away the part of a line between crossings, to clean up a drawing. (T)");
+  await expect(page.locator('[data-sketch-tool="offset"]')).toHaveAttribute("data-tip", "Copy a line or outline at a distance, for walls and borders. (F)");
+  await expect(page.locator('[data-sketch-tool="construction"]')).toHaveAttribute("data-tip", "Helper lines for axes and symmetry. They snap but aren't part of the shape. (X)");
+  await expect(page.locator('[data-sketch-tool="fillet"]')).toHaveAttribute("data-tip", "Round off a corner where two lines meet. (G)");
+  await expect(page.locator('[data-sketch-tool="use"]')).toHaveAttribute("data-tip", "Copy an edge of your part into the sketch, to draw from it. (U)");
   const arcD = await page.locator('[data-sketch-tool="arc"] path').first().getAttribute("d");
   const filletD = await page.locator("#modelToolFillet path").first().getAttribute("d");
   expect(arcD).not.toBe(filletD);
@@ -494,11 +494,13 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
   const extrude = page.locator("[data-sketch-extrude]");
   await expect(extrude).toHaveAttribute("aria-disabled", "true");
-  await expect(extrude).toHaveAttribute("data-tip", "Draw a closed profile to extrude.");
+  await expect(extrude).toHaveAttribute("data-reason", /^Nothing is drawn yet\. Draw a closed shape/);
+  await expect(extrude).toHaveAttribute("data-tip", /^Push a shape into a solid, or cut it into the part\. \(E\)\nNothing is drawn yet\./);
   await extrude.evaluate((button: HTMLElement) => button.focus({ focusVisible: true }));
-  await expect(page.locator(".lime-tip")).toContainText("Draw a closed profile to extrude.");
+  await expect(page.locator(".lime-tip")).toContainText("Nothing is drawn yet.");
+  await expect(page.locator(".lime-tip")).toContainText("Push a shape into a solid");
   await extrude.click({ force: true });
-  await expect(page.locator("#toasts")).toContainText("Draw a closed profile to extrude.");
+  await expect(page.locator("#toasts")).toContainText("Nothing is drawn yet. Draw a closed shape");
 
   const box = (await canvas.boundingBox())!;
   const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
@@ -520,7 +522,7 @@ test("extrude waits for a profile, and loft says what to pick", async ({ page })
   await page.locator("[data-sketch-loft]").click();
   const prompt = page.locator(".sketch-prompt-text");
   await expect(prompt).toBeVisible();
-  await expect(prompt).toContainText("Pick at least two sections to loft.");
+  await expect(prompt).toContainText("A loft needs a second shape at another height.");
   const readout = (await page.locator("#modelReadout").innerText()).trim();
   expect(readout.length, readout).toBeLessThanOrEqual(80);
   const how = page.getByRole("button", { name: "How" });

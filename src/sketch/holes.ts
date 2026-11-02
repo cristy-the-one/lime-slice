@@ -13,8 +13,8 @@ import { frameFromWorkplane, toWorld, type SketchFrame } from "./frame.ts";
 import { sketchEntity, sketchJson, sketchPoint, type Pt, type SketchData } from "./model.ts";
 import { workplaneIn, type Workplane } from "../workplane.ts";
 
-export const FACE_REFUSAL = "Sketch on a face to place a hole at each point.";
-export const POINT_REFUSAL = "Select points or circle centres.";
+export const FACE_REFUSAL = "Holes go into a face. Start the sketch on a face of the part, then draw points where the holes go.";
+export const POINT_REFUSAL = "Select the points or circles where the holes go. Draw them first if there are none.";
 
 export interface HoleTarget {
   id: number;
@@ -83,12 +83,12 @@ export function holeTargets(sketch: SketchData, selection: { entities: readonly 
  * above 0, a depth above 0 unless the hole goes through, and a counterbore wider than the hole and deeper than 0.
  */
 export function holeSizeRefusal(sizes: HoleSizes): string | null {
-  if (!(sizes.radius > 0)) return "A hole needs a diameter above 0.";
-  if (!sizes.through && !(sizes.depth > 0)) return "A hole needs a depth above 0, or Through.";
+  if (!(sizes.radius > 0)) return "Type a hole diameter above 0.";
+  if (!sizes.through && !(sizes.depth > 0)) return "Type a hole depth above 0, or tick Through.";
   if (sizes.counterboreRadius != null && sizes.counterboreDepth != null) {
-    if (!(sizes.counterboreRadius > sizes.radius)) return "A counterbore needs a diameter larger than the hole's.";
-    if (!(sizes.counterboreDepth > 0)) return "A counterbore needs a depth above 0.";
-    if (!sizes.through && !(sizes.counterboreDepth < sizes.depth)) return "A counterbore must be shallower than the hole.";
+    if (!(sizes.counterboreRadius > sizes.radius)) return "Type a counterbore diameter larger than the hole's.";
+    if (!(sizes.counterboreDepth > 0)) return "Type a counterbore depth above 0.";
+    if (!sizes.through && !(sizes.counterboreDepth < sizes.depth)) return "Type a counterbore depth less than the hole's.";
   }
   return null;
 }

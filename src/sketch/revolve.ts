@@ -23,8 +23,8 @@ export const FULL_TURN = 360;
 const AXIS_MM = 1e-6;
 
 export const CROSS_REFUSAL = "The profile crosses the revolve axis. Keep it on one side.";
-export const ANGLE_REFUSAL = "A revolve needs an angle above 0 and at most 360 degrees.";
-export const AXIS_REFUSAL = "The revolve axis needs a direction in the profile's plane.";
+export const ANGLE_REFUSAL = "Set an angle above 0 and at most 360 degrees for the revolve.";
+export const AXIS_REFUSAL = "The revolve axis needs a direction in the shape's plane. Pick a line in the sketch as the axis.";
 
 export type AxisKind = "line" | "construction" | "edge" | "u" | "v";
 
@@ -211,7 +211,7 @@ export function typedAngle(value: number): { angle: number } | { error: string }
 
 /** The op, with a copy of the sketch on each revolve. An error is the kernel's sentence and is not sent. */
 export function buildSketchRevolve(draft: RevolveDraft): { op: ModelOp } | { error: string } {
-  if (draft.regions.length === 0) return { error: "Select a region to revolve." };
+  if (draft.regions.length === 0) return { error: "Click the shape to spin, then the line to spin it around." };
   const angle = typedAngle(draft.angleDeg);
   if ("error" in angle) return angle;
   if (!Number.isFinite(draft.axis.dir[0]) || !Number.isFinite(draft.axis.dir[1]) || Math.hypot(draft.axis.dir[0], draft.axis.dir[1]) < 1e-9) {

@@ -16,7 +16,7 @@ export interface SketchStroke {
 
 export interface SketchDot {
   at: Vec3;
-  role: "point" | "selected" | "hover";
+  role: "point" | "selected" | "hover" | "refuse";
 }
 
 export interface SketchQuad {
