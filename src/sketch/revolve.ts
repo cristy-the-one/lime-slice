@@ -13,7 +13,7 @@ import { arcFrom3, arcPoint, curveOf, dist, sampleSpline, unit } from "./geom.ts
 import type { ArcGeom, Pt } from "./geom.ts";
 import { emptySketch, sketchJson, type SketchData } from "./model.ts";
 import { toLoops, type ProfileLoop, type ProfileSegment, type Region } from "./regions.ts";
-import { chooseRegions, cycleMode, modeLabel, outlinesOf, regionsOfOutlines, resolveExtrudeMode, sketchTouchesSolid, tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
+import { chooseRegions, cycleMode, modeLabel, outlinesOf, regionsOfOutlines, resolveExtrudeMode, sampleLoop, sketchTouchesSolid, tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import type { RefSegment } from "./refs.ts";
 import { copyLoops, drawLoop, lineLoop } from "./loops.ts";
 
@@ -118,6 +118,76 @@ export function pickAxis(axes: readonly RevolveAxis[], at: Pt, tolMm: number): R
     if (!best || rank < best.rank || (rank === best.rank && distance < best.distance)) best = { axis, rank, distance };
   }
   return best?.axis ?? null;
+}
+
+/** --- V1. An axis the card lists by name, so a revolve needs no hover. --- */
+export interface AxisChoice {
+  /** The button's words, after "Spin around:". */
+  label: string;
+  axis: RevolveAxis;
+  /** True when a picked shape crosses this axis: listed, but greyed with the reason. */
+  crosses: boolean;
+}
+
+/**
+ * V1: the axes a person can spin around, in words, in the card's order. Helper lines first ("your helper line", per
+ * C1's name for construction lines), then the line already picked when it is none of those ("this line"), then the
+ * straight sides of the picked shapes that bound them (left, right, bottom, top), then the plane's vertical and
+ * horizontal axes. `names` adds the model axis a plane axis runs along, such as "Y".
+ */
+export function axisChoices(sketch: SketchData, regions: readonly Region[], current: RevolveAxis | null, names: { u?: string; v?: string } = {}): AxisChoice[] {
+  const out: AxisChoice[] = [];
+  const add = (label: string, axis: RevolveAxis) => {
+    if (out.some((item) => sameAxisLine(item.axis, axis))) return;
+    out.push({ label, axis, crosses: regions.some((region) => regionCrossesAxis(region, axis)) });
+  };
+  const lines = sketchAxes(sketch);
+  const helpers = lines.filter((axis) => axis.kind === "construction").slice(0, 3);
+  helpers.forEach((axis, index) => add(helpers.length === 1 ? "your helper line" : `helper line ${index + 1}`, axis));
+  const [u, v] = planeAxes() as [RevolveAxis, RevolveAxis];
+  const sides: { label: string; axis: RevolveAxis }[] = [];
+  const box = regionsBox(regions);
+  if (box) {
+    const solid = lines.filter((axis) => axis.kind === "line");
+    const side = (label: string, test: (axis: RevolveAxis) => boolean) => {
+      const found = solid.find(test);
+      if (found) sides.push({ label, axis: found });
+    };
+    const vertical = (axis: RevolveAxis) => Math.abs(axis.dir[0]) < 1e-6;
+    const horizontal = (axis: RevolveAxis) => Math.abs(axis.dir[1]) < 1e-6;
+    side("the shape's left side", (axis) => vertical(axis) && Math.abs(axis.origin[0] - box.minU) <= 1e-6);
+    side("the shape's right side", (axis) => vertical(axis) && Math.abs(axis.origin[0] - box.maxU) <= 1e-6);
+    side("the shape's bottom", (axis) => horizontal(axis) && Math.abs(axis.origin[1] - box.minV) <= 1e-6);
+    side("the shape's top", (axis) => horizontal(axis) && Math.abs(axis.origin[1] - box.maxV) <= 1e-6);
+  }
+  const known = [...helpers, ...sides.map((item) => item.axis), u, v];
+  if (current && !known.some((axis) => sameAxisLine(axis, current))) add("this line", current);
+  // A side on a plane axis (a cup's wall drawn on the centreline) is listed as that axis, the name people look for.
+  for (const item of sides) if (!sameAxisLine(item.axis, u) && !sameAxisLine(item.axis, v)) add(item.label, item.axis);
+  add(names.v ? `the vertical axis (${names.v})` : "the vertical axis", v);
+  add(names.u ? `the horizontal axis (${names.u})` : "the horizontal axis", u);
+  return out;
+}
+
+/** True when `a` and `b` lie on one line, whichever way each points and however long each is. */
+export function sameAxisLine(a: RevolveAxis, b: RevolveAxis): boolean {
+  const cross = a.dir[0] * b.dir[1] - a.dir[1] * b.dir[0];
+  if (Math.abs(cross) > 1e-6) return false;
+  return Math.abs(signedSide(b.origin, a)) <= 1e-6;
+}
+
+function regionsBox(regions: readonly Region[]): { minU: number; maxU: number; minV: number; maxV: number } | null {
+  let box: { minU: number; maxU: number; minV: number; maxV: number } | null = null;
+  for (const region of regions) {
+    const outer = toLoops(region)[0];
+    if (!outer) continue;
+    for (const point of sampleLoop(outer)) {
+      box = box
+        ? { minU: Math.min(box.minU, point[0]), maxU: Math.max(box.maxU, point[0]), minV: Math.min(box.minV, point[1]), maxV: Math.max(box.maxV, point[1]) }
+        : { minU: point[0], maxU: point[0], minV: point[1], maxV: point[1] };
+    }
+  }
+  return box;
 }
 
 /** Signed millimetres to the left of the axis's direction. On the line is 0. */

@@ -11,6 +11,7 @@ import {
   ANGLE_REFUSAL,
   CROSS_REFUSAL,
   FULL_TURN,
+  axisChoices,
   axisWorld,
   buildSketchRevolve,
   chooseRegions,
@@ -30,6 +31,7 @@ import {
   revolveOutlines,
   revolvePresetOf,
   revolveRing,
+  sameAxisLine,
   signedSide,
   sketchAxes,
   sketchForRevolve,
@@ -203,6 +205,51 @@ eq("flip reverses the direction", turned.dir, [-0, -1]);
 eq("flip keeps the origin", turned.origin, [1, 1]);
 eq("flip covers the same stretch", [turned.from, turned.to], [-5, -0]);
 eq("two flips are the axis again", flipAxis(turned).dir, [0, 1]);
+
+// --- V1. The axes listed in words: helper lines first, the shape's sides, then the plane's axes. A listed axis makes
+// the same revolve as hovering it. ---
+{
+  let cup = rect(5, 2, 10, 20);
+  cup = addLine(cup, [-3, -5], [-3, 25], true).sketch;
+  const shape = chooseRegions(cup, [], null);
+  const listed = axisChoices(cup, shape, null, { u: "X", v: "Y" });
+  eq("the card's words, in its order", listed.map((choice) => choice.label), [
+    "your helper line",
+    "the shape's left side",
+    "the shape's right side",
+    "the shape's bottom",
+    "the shape's top",
+    "the vertical axis (Y)",
+    "the horizontal axis (X)",
+  ]);
+  check("none of them crosses the shape", listed.every((choice) => !choice.crosses));
+  const onAxis = rect(0, 2, 10, 20);
+  const onAxisLabels = axisChoices(onAxis, chooseRegions(onAxis, [], null), null).map((choice) => choice.label);
+  check("a side on the centreline is listed as the vertical axis", onAxisLabels.includes("the vertical axis") && !onAxisLabels.includes("the shape's left side"));
+  eq("a picked side keeps its name, not \"this line\"", axisChoices(cup, shape, listed[1]!.axis).map((choice) => choice.label).slice(0, 2), ["your helper line", "the shape's left side"]);
+  const hovered = pickAxis([...sketchAxes(cup), ...planeAxes()], [-3, 10], 0.5);
+  check("hovering picks the helper line", hovered?.kind === "construction");
+  const byList = buildSketchRevolve({ sketch: cup, regions: shape, axis: listed[0]!.axis, angleDeg: 360, mode: "new" });
+  const byHover = hovered ? buildSketchRevolve({ sketch: cup, regions: shape, axis: hovered, angleDeg: 360, mode: "new" }) : { error: "no axis" };
+  check("both build", "op" in byList && "op" in byHover);
+  eq("a listed helper line stores the hovered revolve", "op" in byList ? byList.op : null, "op" in byHover ? byHover.op : null);
+  const left = buildSketchRevolve({ sketch: cup, regions: shape, axis: listed[1]!.axis, angleDeg: 360, mode: "new" });
+  const leftHover = pickAxis([...sketchAxes(cup), ...planeAxes()], [5, 10], 0.5);
+  eq("so does the shape's left side", "op" in left ? left.op : null, leftHover ? (buildSketchRevolve({ sketch: cup, regions: shape, axis: leftHover, angleDeg: 360, mode: "new" }) as { op: unknown }).op : null);
+
+  // Two helper lines are numbered; a line already picked that isn't listed is "this line"; an axis across the shape
+  // is listed but crosses.
+  let middle = rect(-5, 0, 10, 20);
+  middle = addLine(middle, [-8, 0], [-8, 20], true).sketch;
+  middle = addLine(middle, [8, 0], [8, 20], true).sketch;
+  const across = chooseRegions(middle, [], null);
+  const tilted = { origin: [20, 0] as [number, number], dir: [Math.SQRT1_2, Math.SQRT1_2] as [number, number], kind: "edge" as const };
+  const named = axisChoices(middle, across, tilted);
+  eq("two helper lines are numbered, a picked edge is this line", named.slice(0, 3).map((choice) => choice.label), ["helper line 1", "helper line 2", "this line"]);
+  check("the vertical axis crosses the shape", named.find((choice) => choice.label === "the vertical axis")?.crosses === true);
+  check("the shape's left side does not", named.find((choice) => choice.label === "the shape's left side")?.crosses === false);
+  check("a listed axis is not repeated as a plane axis", sameAxisLine(planeAxes()[1]!, { origin: [0, 5], dir: [0, -1], kind: "line" }));
+}
 
 if (failed > 0) {
   console.error(`${failed} failed`);
