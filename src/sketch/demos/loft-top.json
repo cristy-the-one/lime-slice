@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "plane": { "origin": [0, 0, 0], "turn": [0, 0, 0] },
+  "points": [
+    { "id": 1, "at": [0, 0] }
+  ],
+  "entities": [
+    { "id": 1, "kind": "circle", "centre": 1, "radius": 6 }
+  ]
+}

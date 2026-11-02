@@ -31,7 +31,8 @@ import type { Bounds } from "../mesh-place";
 import type { LoftSection, ModelOp, ProfileLoop } from "../model-tree";
 import type { ModelView } from "../model-view";
 import { sketchJson, type FaceRef, type SketchData, type SketchOn, type Vec3 } from "../sketch/model";
-import { DRILL_ALL_QUESTION, FACE_REFUSAL, POINT_REFUSAL, everyHoleSelection, holeTargets, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
+import { DRILL_ALL_QUESTION, FACE_REFUSAL, POINT_REFUSAL, everyHoleSelection, holeTargets, holesInModel, sketchOnFace, type HoleTarget } from "../sketch/holes.ts";
+import { DEMO_DONE, DEMO_HOLE_SIZES, DEMO_KINDS, DEMO_LEAD, DEMOS, demoForHow, placeDemo, type DemoKind } from "../sketch/demos";
 import { sketchMesh, type OriginPlane, type SketchStroke } from "../sketch/draw";
 import {
   frameFromWorkplane,
@@ -43,6 +44,7 @@ import {
   rayOnPlane,
   rayOnQuad,
   SKETCH_ANIM_MS,
+  toPlane,
   toWorld,
   type SketchFrame,
 } from "../sketch/frame";
@@ -351,6 +353,9 @@ export function sketchRedo(): void {
   api.redo();
 }
 
+/** P2: how large a demo is framed, in millimetres, whatever the size of the part. */
+const DEMO_EXTENT_MM = 60;
+
 export function mountSketch(host: SketchHost): { sync(): void } {
   const cards = document.querySelector<HTMLElement>("#sketchCards");
   const button = document.querySelector<HTMLButtonElement>("#modelToolSketch");
@@ -472,6 +477,37 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   let faceForHoles = false;
   /** V1: the axes the revolve strip lists, by their words. */
   let shownAxes: AxisChoice[] = [];
+  /**
+   * --- P2. Show me: a demo sketch open in place of the person's. `saved` is everything the card held when it opened, put
+   * back as it was when the demo closes; `made` is set once the tool's Apply ran in the demo, which sends nothing.
+   */
+  interface DemoSaved {
+    editor: SketchEditor;
+    gesture: ExtrudeGesture | null;
+    revolve: RevolveGesture | null;
+    revolveNote: string;
+    loft: LoftGesture | null;
+    sweep: SweepGesture | null;
+    drillAsk: { sketch: SketchData; count: number } | null;
+    redMarks: { kind: "open"; drawing: string } | null;
+    editSession: boolean;
+    editOutlines: ProfileLoop[];
+    editCards: number[];
+    above: typeof above;
+    aboveHeight: number;
+    howFeature: string | null;
+    howOpen: boolean;
+    makeHowOpen: boolean;
+    aimKey: string;
+    /** The Hole panel was open on these points: it opens on them again. */
+    holes: { sketch: SketchData; targets: HoleTarget[] } | null;
+    camera: { position: Vec3; target: Vec3; up: Vec3 };
+  }
+  let demo: { kind: DemoKind; saved: DemoSaved; made: boolean; focus: Vec3 } | null = null;
+  /** P2: the Make row's How, with a Show me button per tool. */
+  let makeHowOpen = false;
+  /** A demo is a sketch of its own with nowhere to attach: every feature in it is a new object, as on a root edit. */
+  const featureEdit = (): "root" | "step" | null => (demo ? "root" : host.featureEdit());
   /** R2: open ends asked for by a greyed reason, for the drawing they were asked for. Any edit of it clears them. */
   let redMarks: { kind: "open"; drawing: string } | null = null;
   /** What the last draw marked in red, for the canvas dataset. */
@@ -736,6 +772,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       }
       return;
     }
+    // --- P2. Show me, the Make row's How, and the way out of a demo. ---
+    const shown = target.dataset.sketchDemo;
+    if (shown && (DEMO_KINDS as readonly string[]).includes(shown)) {
+      openDemo(shown as DemoKind);
+      return;
+    }
+    if (target.dataset.sketchMakeHow != null) {
+      makeHowOpen = !makeHowOpen;
+      cardFocus = makeHowOpen ? ["#sketchMakeHow [data-sketch-demo]"] : ["[data-sketch-make-how]"];
+      publish("skip");
+      return;
+    }
+    if (target.dataset.sketchDemoLeave != null) {
+      leaveDemo();
+      return;
+    }
     const plane = target.dataset.sketchPlane;
     if (plane === "XY" || plane === "XZ" || plane === "YZ" || plane === "workplane") {
       enterNamed(plane);
@@ -887,7 +939,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (target.dataset.sketchMode != null && (gesture || revolve || loft || sweep)) {
       const asked = target.dataset.sketchMode;
       const picked = asked === "fuse" || asked === "cut" || asked === "new" || asked === "common" || asked === "auto" ? asked : null;
-      const next = picked ?? cycleMode(sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto", host.featureEdit());
+      const next = picked ?? cycleMode(sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto", featureEdit());
       if (sweep) sweep = { ...sweep, choice: next, note: "" };
       else if (loft) loft = { ...loft, choice: next, note: "" };
       else if (revolve) revolve = { ...revolve, choice: next };
@@ -1082,6 +1134,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sweepProfile = "0";
   host.canvas.dataset.sweepMade = "";
   host.canvas.dataset.sweepRound = "";
+  host.canvas.dataset.sketchDemo = "";
+  host.canvas.dataset.sketchDemoMade = "";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : offsetFrame(originFrame(name, host.origin()));
@@ -1145,7 +1199,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function publish(hudMode: "open" | "values" | "skip") {
+    // P2: anything that ends the demo's sketch (Finish, Discard, Esc twice, another tool) ends the demo, and puts the
+    // person's sketch back in its place.
+    if (demo && editor.phase !== "editing") {
+      leaveDemo();
+      return;
+    }
     if (editor.phase !== "choosing") faceForHoles = false;
+    if (editor.phase !== "editing") makeHowOpen = false;
     const frame = drawingFrame();
     if (frame) ensureRefs(frame);
     shownPlanes = editor.phase === "choosing" ? chooserPlanes() : [];
@@ -1207,7 +1268,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     saidLast = true;
-    if (sweep && editor.phase === "editing") host.readout(fitStatus(sweep.note || sweepReadout()));
+    // P2: a demo's status line says the next click, then that it is done; a refusal still comes first.
+    const featureNote = sweep ? sweep.note : loft ? loft.note : revolve ? revolveNote : gesture ? extrudeNote() : "";
+    if (demo && editor.phase === "editing" && !featureNote) host.readout(fitStatus(demo.made ? DEMO_DONE : DEMOS[demo.kind].tryIt));
+    else if (sweep && editor.phase === "editing") host.readout(fitStatus(sweep.note || sweepReadout()));
     else if (loft && editor.phase === "editing") host.readout(fitStatus(loft.note || loftReadout()));
     else if (revolve && editor.phase === "editing") host.readout(fitStatus(revolveNote || revolveReadout()));
     else if (gesture && editor.phase === "editing") host.readout(fitStatus(extrudeReadout()));
@@ -1224,13 +1288,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     aimKey = key;
     const view = host.view.sketchView();
     // --- B15. An extrude or a revolve tilts the view so its depth shows; back in the sketch the view is the plan again.
-    const pose = (tilt ? tiltedAtFrame : lookAtFrame)(frame, host.focus(), host.extent(), view.fov);
+    // P2: a demo is framed on itself, whatever the size of the part.
+    const pose = (tilt ? tiltedAtFrame : lookAtFrame)(frame, demo ? demo.focus : host.focus(), demo ? DEMO_EXTENT_MM : host.extent(), view.fov);
     host.view.setSketchCamera({ ...pose, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround && !tilt });
   }
 
   /** An extrude or a revolve is being aimed. */
   function featureTilt(): boolean {
-    return !!(gesture || revolve);
+    // P2: in a demo, a loft or a sweep tilts too, so the shape it makes can be seen.
+    return !!(gesture || revolve) || (demo != null && !!(loft || sweep));
   }
 
   function ensureRefs(frame: SketchFrame) {
@@ -1469,6 +1535,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sweepMade = sweeping?.pipe ? "pipe" : sweeping?.oneSketch ? sweeping.oneSketch.stance : "";
     // S3: the corner radius while Round corners is on, "off" while it is offered but off.
     host.canvas.dataset.sweepRound = sweeping?.round ? (sweeping.round.on ? String(sweeping.round.radius) : "off") : "";
+    host.canvas.dataset.sketchDemo = demo?.kind ?? "";
     host.canvas.dataset.sketchMarks = String(redShown.count);
     host.canvas.dataset.sketchMarksKind = redShown.kind;
     // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
@@ -1522,6 +1589,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (sweep?.round) parts.push(`round:${sweep.round.on}`);
       if (revolve) parts.push(revolve.follow ? "follow" : axisKey(revolve.axis), String(revolve.regions.length));
       if (profile) parts.push(`profile:${profileNote()}`);
+      // P2: the demo's strip and footer, and the Make row's How.
+      parts.push(demo ? `demo:${demo.kind}:${demo.made}` : "", makeHowOpen ? "make-how" : "");
       if (gesture || revolve || loft || sweep) {
         const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
         const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
@@ -1775,6 +1844,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function editingRow(): Node[] {
     const feature = gesture || revolve || loft || sweep;
     return [
+      ...(demo ? [demoStrip()] : []),
       sketchSection("Draw", "draw", drawTools()),
       sketchSection("Edit", "edit", editTools()),
       profile ? profileStrip() : feature ? featureStrip() : aboveOpen() ? aboveStrip() : askOpen() ? askStrip() : sketchSection("Make", "make", makeTools()),
@@ -1866,6 +1936,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       markBlocked(start, "");
       out.push(start);
     }
+    // P2: the Make row's How, with Show me for each tool. A demo has none of its own.
+    if (!demo) out.push(...makeHow());
     return out;
   }
 
@@ -1885,7 +1957,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     name.textContent = gesture ? "Extrude" : revolve ? "Revolve" : loft ? "Loft" : sweep?.pipe ? "Pipe" : "Sweep";
     const head = document.createElement("div");
     head.className = "sketch-feature-row";
-    head.append(name, modeControl());
+    // A demo is always a new object, so Join, Cut and New object have nothing to choose between.
+    head.append(name, ...(demo ? [] : [modeControl()]));
     const options = document.createElement("div");
     options.className = "sketch-feature-row";
     if (revolve) options.append(textButton("Flip", { sketchFlip: "" }));
@@ -2011,8 +2084,19 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       item.textContent = step;
       list.append(item);
     }
+    // P2 (R5): the first line is Show me, which opens this tool's demo. A demo has none of its own.
+    const shown = demo ? null : demoForHow(kind);
+    if (shown) pop.append(showMeButton(shown, "Show me"));
     pop.append(list);
-    const open = howSeen(kind) <= 3;
+    let open: boolean;
+    if (demo) {
+      // The demo's strip says the next click, so its How stays shut, and a demo isn't counted as a visit.
+      open = howFeature === kind && howOpen;
+      howFeature = kind;
+    } else if (howFeature === kind) {
+      // The card is rebuilt within one visit (another value, the demo closed): the How stays as the person left it.
+      open = howOpen;
+    } else open = howSeen(kind) <= 3;
     howOpen = open;
     pop.hidden = !open;
     button.setAttribute("aria-expanded", open ? "true" : "false");
@@ -2142,6 +2226,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       use.classList.add("primary");
       use.dataset.tip = "Cut along this chain";
       foot.append(look, textButton("Cancel", { sketchProfileCancel: "" }), use);
+      return foot;
+    }
+    // P2: a demo is never kept. Its one way out puts the person's sketch back.
+    if (demo) {
+      const back = textButton("Back to my sketch", { sketchDemoLeave: "" });
+      back.classList.add("primary");
+      back.dataset.tip = "Close the demo and go back to your sketch, as you left it (Esc twice)";
+      back.title = back.dataset.tip;
+      foot.append(look, back);
       return foot;
     }
     const finish = textButton("Finish sketch", { sketchFinish: "" });
@@ -2601,6 +2694,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function closeQuietly() {
+    leaveDemoQuietly();
     dropProfile();
     if (host.sketchHolesArmed()) host.endSketchHoles();
     if (editor.phase !== "editing" && editor.phase !== "choosing") {
@@ -2633,6 +2727,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     new MutationObserver(() => {
       // A profile sketch belongs to the split's card, which closes it when another tool takes the dock.
       if (!bar.dataset.tool || !sketchBusy(editor) || host.sketchHolesArmed() || (applying || holding) || profile) return;
+      // P2: the demo closes first, so the person's own sketch gives way as it would have.
+      leaveDemoQuietly();
       if (editor.phase === "choosing") {
         editor = finishSketch(editor);
         publish("open");
@@ -2646,6 +2742,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     holding = on && sketchBusy(editor);
   };
   forgetImpl = () => {
+    leaveDemoQuietly();
     dropProfile();
     if (editor.phase === "off" && editor.pinned.length === 0 && !editSession) return;
     if (host.sketchHolesArmed()) host.endSketchHoles();
@@ -2732,6 +2829,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const howHost = cards?.querySelector(".sketch-how");
     if (howOpen && ev.target instanceof Node && howHost?.contains(ev.target)) {
       closeHow(true);
+      return true;
+    }
+    // P2: Esc shuts the Make row's How first, as it shuts a menu.
+    if (makeHowOpen) {
+      makeHowOpen = false;
+      cardFocus = ["[data-sketch-make-how]"];
+      publish("skip");
       return true;
     }
     if (menuOpen) {
@@ -2822,7 +2926,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   function cycleSketchMode(): boolean {
-    const lock = host.featureEdit();
+    const lock = featureEdit();
     if (loft) loft = { ...loft, choice: cycleMode(loft.choice, lock), note: "" };
     else if (sweep) sweep = { ...sweep, choice: cycleMode(sweep.choice, lock), note: "" };
     else if (revolve) revolve = { ...revolve, choice: cycleMode(revolve.choice, lock) };
@@ -2902,6 +3006,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   function escapeFeature(end: () => void) {
     if (!editSession) {
       end();
+      // P2: in a demo the next Esc leaves it, so Esc twice from the tool goes back to the person's sketch.
+      if (demo) editor = { ...editor, esc: 1 };
       return;
     }
     leaveEditing(editor.active != null ? discardSketch(editor, editor.active) : finishSketch(editor));
@@ -2957,6 +3063,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       host.readout(POINT_REFUSAL);
       return;
     }
+    if (demo) {
+      demoHoles(sketch, targets);
+      return;
+    }
     host.beginSketchHoles(sketch, targets);
     publish("open");
   }
@@ -2982,6 +3092,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!sketch) return;
     const selection = everyHoleSelection(sketch);
     editor = { ...editor, selection };
+    if (demo) {
+      demoHoles(sketch, holeTargets(sketch, selection));
+      return;
+    }
     host.beginSketchHoles(sketch, holeTargets(sketch, selection));
     publish("open");
   }
@@ -3020,6 +3134,205 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return strip;
   }
 
+  // --- P2. Show me. ---
+
+  /**
+   * Open `kind`'s demo on the plane of the open sketch, centred where the view looks, with the tool started so its next
+   * click is the one the strip names. The person's sketch, feature and camera are kept to put back.
+   */
+  function openDemo(kind: DemoKind) {
+    const sketch = activeSketch(editor);
+    const frame = drawingFrame();
+    if (demo || !sketch || !frame || editor.phase !== "editing" || applying || holding || profile) return;
+    const view = host.view.sketchView();
+    const saved: DemoSaved = {
+      editor,
+      gesture,
+      revolve,
+      revolveNote,
+      loft,
+      sweep,
+      drillAsk,
+      redMarks,
+      editSession,
+      editOutlines,
+      editCards,
+      above,
+      aboveHeight,
+      howFeature,
+      howOpen,
+      makeHowOpen,
+      aimKey,
+      holes: host.sketchHolesArmed() ? { sketch, targets: holeTargets(sketch, editor.selection) } : null,
+      camera: { position: [...view.position], target: [...view.target], up: [...view.up] },
+    };
+    clearFeatureView();
+    const centre = toPlane(frame, host.focus()).uv;
+    const placed = placeDemo(kind, { plane: sketch.plane, ...(sketch.on ? { on: sketch.on } : {}), centre });
+    let next = sketchOff();
+    for (const item of placed.cards) next = pinSketch(next, item.sketch, item.name);
+    next = enterSketchData(next, placed.drawing);
+    gesture = null;
+    revolve = null;
+    revolveNote = "";
+    loft = null;
+    sweep = null;
+    drillAsk = null;
+    redMarks = null;
+    editSession = false;
+    editOutlines = [];
+    editCards = [];
+    above = null;
+    howFeature = null;
+    howOpen = false;
+    makeHowOpen = false;
+    menuOpen = null;
+    demo = { kind, saved, made: false, focus: toWorld(frame, centre) };
+    editor = next;
+    aimKey = "";
+    refsKey = "";
+    host.canvas.dataset.sketchDemoMade = "";
+    if (kind === "extrude") beginExtrude();
+    else if (kind === "revolve") beginRevolve();
+    else if (kind === "loft") beginLoft();
+    else if (kind === "sweep" || kind === "pipe") beginSweep();
+    else {
+      // Holes waits for H, the click the strip names.
+      cardFocus = ["[data-sketch-holes]"];
+      publish("open");
+    }
+  }
+
+  /** The demo's Apply: the op its tool built, which goes nowhere. The ghost stays, so the person sees what it made. */
+  function demoMade(op: ModelOp) {
+    if (!demo) return;
+    demo = { ...demo, made: true };
+    host.canvas.dataset.sketchDemoMade = op.kind;
+    cardFocus = ["[data-sketch-demo-leave]"];
+    publish("open");
+  }
+
+  /** The demo's Holes: the group the Hole panel would apply at its opening sizes. The panel itself is the part's. */
+  function demoHoles(sketch: SketchData, targets: readonly HoleTarget[]) {
+    const built = holesInModel({ sketch, points: targets, pose: host.pose(), sizes: DEMO_HOLE_SIZES });
+    if ("error" in built) {
+      host.readout(built.error);
+      publish("open");
+      return;
+    }
+    demoMade(built.op);
+  }
+
+  /** Close the demo and put back the sketch, feature, Hole panel and camera exactly as Show me found them. */
+  function leaveDemo() {
+    if (!demo) return;
+    const { saved } = demo;
+    demo = null;
+    clearFeatureView();
+    editor = saved.editor;
+    gesture = saved.gesture;
+    revolve = saved.revolve;
+    revolveNote = saved.revolveNote;
+    loft = saved.loft;
+    sweep = saved.sweep;
+    drillAsk = saved.drillAsk;
+    redMarks = saved.redMarks;
+    editSession = saved.editSession;
+    editOutlines = saved.editOutlines;
+    editCards = saved.editCards;
+    above = saved.above;
+    aboveHeight = saved.aboveHeight;
+    howFeature = saved.howFeature;
+    howOpen = saved.howOpen;
+    makeHowOpen = saved.makeHowOpen;
+    menuOpen = null;
+    aimKey = saved.aimKey;
+    refsKey = "";
+    host.canvas.dataset.sketchDemoMade = "";
+    // The keyboard goes back to the How the demo was opened from.
+    cardFocus = [".sketch-how-open", "[data-sketch-make-how]"];
+    publish("open");
+    host.view.setSketchCamera({ ...saved.camera, animateMs: SKETCH_ANIM_MS, lock: !editor.lookAround && !featureTilt() });
+    if (gesture) armProbe();
+    else if (revolve) armRevolveProbe();
+    else if (loft) armLoftProbe();
+    else if (sweep) armSweepProbe();
+    if (saved.holes) host.beginSketchHoles(saved.holes.sketch, saved.holes.targets);
+  }
+
+  /** The demo closes under the card (Model left, a history jump, another tool): the person's state comes back unsaid. */
+  function leaveDemoQuietly() {
+    if (!demo) return;
+    const saved = demo.saved;
+    // The Hole panel isn't reopened under a tool that is taking the dock.
+    demo = { ...demo, saved: { ...saved, holes: null } };
+    leaveDemo();
+  }
+
+  /** What a feature shows outside the card: the probe on its way, the handles, the ghost, the preview, the Hole panel. */
+  function clearFeatureView() {
+    window.clearTimeout(probeTimer);
+    host.view.setHandles([]);
+    host.view.setGhost(null);
+    host.clearExtrudePreview();
+    if (host.sketchHolesArmed()) host.endSketchHoles();
+  }
+
+  /** Above Draw while a demo is open: which tool, and the next click or what it made. */
+  function demoStrip(): HTMLElement {
+    const open = demo!;
+    const spec = DEMOS[open.kind];
+    const strip = document.createElement("section");
+    strip.className = "sketch-section sketch-feature sketch-demo";
+    strip.dataset.sketchSection = "demo";
+    strip.dataset.sketchDemoOpen = open.kind;
+    const name = document.createElement("p");
+    name.className = "sketch-feature-name";
+    name.textContent = `Show me: ${spec.label}`;
+    const note = document.createElement("p");
+    note.className = "sketch-demo-note model-note";
+    note.setAttribute("role", "status");
+    note.textContent = open.made ? `${spec.made} ${DEMO_DONE}` : spec.tryIt;
+    strip.append(name, note);
+    return strip;
+  }
+
+  /** P2 on the Make row: a ? after the tools, whose How lists a Show me for each one. */
+  function makeHow(): Node[] {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn sketch-make-how";
+    button.textContent = "?";
+    button.dataset.sketchMakeHow = "";
+    button.setAttribute("aria-label", "Make tool demos");
+    button.setAttribute("aria-expanded", makeHowOpen ? "true" : "false");
+    button.setAttribute("aria-controls", "sketchMakeHow");
+    button.dataset.tip = "Show me how each one works";
+    button.title = button.dataset.tip;
+    const pop = document.createElement("div");
+    pop.id = "sketchMakeHow";
+    pop.className = "sketch-how-pop sketch-make-how-pop";
+    pop.setAttribute("role", "group");
+    pop.setAttribute("aria-label", "Show me");
+    pop.hidden = !makeHowOpen;
+    const lead = document.createElement("p");
+    lead.className = "sketch-how-lead";
+    lead.textContent = DEMO_LEAD;
+    const row = document.createElement("div");
+    row.className = "sketch-how-demos";
+    for (const kind of DEMO_KINDS) row.append(showMeButton(kind, DEMOS[kind].label));
+    pop.append(lead, row);
+    return [button, pop];
+  }
+
+  function showMeButton(kind: DemoKind, label: string): HTMLButtonElement {
+    const show = textButton(label, { sketchDemo: kind });
+    show.classList.add("sketch-show-me");
+    show.dataset.tip = `Try ${DEMOS[kind].label} on a small ready-made sketch. Your own sketch comes back after.`;
+    show.title = show.dataset.tip;
+    return show;
+  }
+
   /** H1: keep this sketch as a card and pick a face for the holes. */
   function startOnFace() {
     if (host.sketchHolesArmed()) host.endSketchHoles();
@@ -3046,7 +3359,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       depth2: null,
       draft: null,
       upTo: null,
-      choice: host.featureEdit() === "root" ? "new" : "auto",
+      choice: featureEdit() === "root" ? "new" : "auto",
       regions: chosen,
       dragging: false,
       guide: null,
@@ -3090,8 +3403,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       hasSolid: host.solid() != null,
       touches,
       distance: gesture?.distance ?? 0,
-      lockNew: host.featureEdit() === "root",
-      stepEdit: host.featureEdit() === "step",
+      lockNew: featureEdit() === "root",
+      stepEdit: featureEdit() === "step",
     });
   }
 
@@ -3168,6 +3481,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const op = withExprs(built.op, gesture.texts);
     const mode = resolvedMode();
     const key = extrudeKey();
+    if (demo) {
+      demoMade(op);
+      return;
+    }
     const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
     if (error === undefined) return;
     if (error) {
@@ -3448,7 +3765,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       angle: preset?.angleDeg ?? 360,
       axis,
       follow: !preset,
-      choice: preset?.choice ?? (host.featureEdit() === "root" ? "new" : "auto"),
+      choice: preset?.choice ?? (featureEdit() === "root" ? "new" : "auto"),
       regions,
       dragging: false,
       crossing: regions.some((region) => regionCrossesAxis(region, axis)),
@@ -3489,8 +3806,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       hasSolid: host.solid() != null,
       touches,
       distance: 1,
-      lockNew: host.featureEdit() === "root",
-      stepEdit: host.featureEdit() === "step",
+      lockNew: featureEdit() === "root",
+      stepEdit: featureEdit() === "step",
     });
   }
 
@@ -3530,6 +3847,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const op = withExprs(built.op, revolve.angleText ? { angle: revolve.angleText } : undefined);
     const mode = resolvedRevolveMode();
+    if (demo) {
+      demoMade(op);
+      return;
+    }
     const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
     if (error === undefined) return;
     if (error) {
@@ -3937,7 +4258,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       sketch: sketchJson(sketch),
       section: sectionFromRegion(sketch, region),
     }));
-    loft = { picks, ruled: false, choice: host.featureEdit() === "root" ? "new" : "auto", note: "" };
+    loft = { picks, ruled: false, choice: featureEdit() === "root" ? "new" : "auto", note: "" };
     publish("open");
     armLoftProbe();
   }
@@ -3958,7 +4279,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (loft) endLoft();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
-    const choice: ModeChoice = host.featureEdit() === "root" ? "new" : "auto";
+    const choice: ModeChoice = featureEdit() === "root" ? "new" : "auto";
     const blank = { scale: 1, edges: [], choice, dragging: false, down: null, note: "" };
     // S1: a shape and a route in this one sketch stand the shape up at the route's start.
     const split = oneSketchSweep(sketch);
@@ -4008,13 +4329,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       check,
       scale: 1,
       edges: [],
-      choice: host.featureEdit() === "root" ? "new" : "auto",
+      choice: featureEdit() === "root" ? "new" : "auto",
       dragging: false,
       down: null,
       note: "",
     };
     if (profile && profileSketch && path.length >= 2) {
-      const built = buildSketchSweep({ profileSketch, profile, path, check, pathSketch, scale: 1, mode: host.featureEdit() === "root" ? "new" : "fuse" });
+      const built = buildSketchSweep({ profileSketch, profile, path, check, pathSketch, scale: 1, mode: featureEdit() === "root" ? "new" : "fuse" });
       if ("error" in built) sweep = { ...sweep, note: built.error };
     }
     sweep = roundedSweep(sweep);
@@ -4027,7 +4348,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
    * stance or sizes. The fields are the strict sweep's, so the builder, the ghost and Apply don't tell them apart.
    */
   function madeSweep(next: SweepGesture): SweepGesture {
-    const mode = host.featureEdit() === "root" ? "new" : "fuse";
+    const mode = featureEdit() === "root" ? "new" : "fuse";
     let made: SweepGesture = next;
     if (next.oneSketch) {
       const { split, stance, drawnProfile, sketch } = next.oneSketch;
@@ -4067,7 +4388,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (s.profileSketch === from && s.profile) next = { ...next, profileSketch: to, profile: sameRegionIn(to, toLoops(s.profile)) ?? s.profile };
     if (!next.profile || !next.profileSketch || next.path.length < 2) return next;
-    const built = buildSketchSweep({ profileSketch: next.profileSketch, profile: next.profile, path: next.path, check: next.check, pathSketch: next.pathSketch, scale: next.scale, mode: host.featureEdit() === "root" ? "new" : "fuse" });
+    const built = buildSketchSweep({ profileSketch: next.profileSketch, profile: next.profile, path: next.path, check: next.check, pathSketch: next.pathSketch, scale: next.scale, mode: featureEdit() === "root" ? "new" : "fuse" });
     const note = "error" in built ? built.error : "";
     return { ...next, note };
   }
@@ -4197,8 +4518,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       hasSolid: host.solid() != null,
       touches,
       distance: 1,
-      lockNew: host.featureEdit() === "root",
-      stepEdit: host.featureEdit() === "step",
+      lockNew: featureEdit() === "root",
+      stepEdit: featureEdit() === "step",
     });
   }
 
@@ -4208,8 +4529,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       hasSolid: host.solid() != null,
       touches: loftTouches(),
       distance: 1,
-      lockNew: host.featureEdit() === "root",
-      stepEdit: host.featureEdit() === "step",
+      lockNew: featureEdit() === "root",
+      stepEdit: featureEdit() === "step",
     });
   }
 
@@ -4260,6 +4581,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     const mode = resolvedLoftMode();
+    if (demo) {
+      demoMade(built.op);
+      return;
+    }
     const error = await committed(host.commitExtrude(built.op, mode === "new" ? "new" : "on-solid"));
     if (error === undefined) return;
     if (error) {
@@ -4423,6 +4748,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const mode = resolvedSweepMode();
     // S3: the rounded corners are the sketch's from this Apply on, as if Fillet corner had made them.
     const round = sweep.round?.on && sweep.round.rounded ? { base: sweep.round.base, rounded: sweep.round.rounded } : null;
+    if (demo) {
+      demoMade(op);
+      return;
+    }
     const error = await committed(host.commitExtrude(op, mode === "new" ? "new" : "on-solid"));
     if (error === undefined) return;
     if (error) {
