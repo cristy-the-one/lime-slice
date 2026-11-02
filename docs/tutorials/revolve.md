@@ -2,7 +2,7 @@
 
 Revolve spins a sketch region about an axis in its plane. Open a sketch, draw a closed profile that stays on one side of the axis, then press **Revolve** (V) on the sketch card.
 
-The axis is whatever is under the pointer: a sketch line, a construction line, a projected edge, or the plane's U or V axis. A sketch line wins over a construction line, then an edge, then U or V. The first click locks it. Drag across the axis to set the angle, one pixel per degree. Ctrl snaps to 15°. The angle stays between 0.1° and 360°. Type 360 for a full turn. Enter or **Apply** keeps it.
+The card lists the axes in words under **Spin around**: your helper lines first, then the shape's straight sides (left, right, bottom, top), then the vertical and horizontal axes of the plane. Click one and the revolve uses it, with no hovering. Or point at it: the axis is whatever is under the pointer, a sketch line, a construction line, a projected edge, or the plane's U or V axis. A sketch line wins over a construction line, then an edge, then U or V. The first click locks it. Drag across the axis to set the angle, one pixel per degree. Ctrl snaps to 15°. The angle stays between 0.1° and 360°. Type 360 for a full turn. Enter or **Apply** keeps it.
 
 On the XZ plane, U is X (angle 0° points right) and V is Z (angle 90° points up). A line's length and angle are typed in the heads-up box. Enter places the point and stays in the chain. Click the start point to close. Esc ends the chain.
 
@@ -26,7 +26,7 @@ The outer radius is 24 mm, the wall and floor are 4 mm, and the cup is 36 mm tal
 
 ![The closed cup section sits to the right of the vertical axis. Revolve is on the sketch card.](../screenshots/tutorials/revolve/cup-03-profile.png)
 
-Click **Revolve**. The view tilts so the spin can be seen. Move the pointer onto the vertical centreline, away from the profile. That line is V. A profile line under the pointer would win, so stay off the wall. The ghost is a full turn because the angle opens at 360.
+Click **Revolve**. The view tilts so the spin can be seen. The quickest way is **the vertical axis (Z)** under Spin around on the card. Or move the pointer onto the vertical centreline, away from the profile. That line is V. A profile line under the pointer would win, so stay off the wall. The ghost is a full turn because the angle opens at 360.
 
 ![The pointer is on V. The green ghost is the cup at 360°. Click once here to lock this axis.](../screenshots/tutorials/revolve/cup-04-axis.png)
 

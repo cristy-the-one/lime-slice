@@ -208,6 +208,19 @@ if (filletArc && filletArc.kind === "arc") {
   near("and bulges through the quarter circle", filletArc.through, [2 - Math.SQRT2, 2 - Math.SQRT2]);
 }
 eq("a radius that does not fit is refused", filletCorner(corner, horizontal.id, vertical.id, 20).error, "That radius does not fit these two lines. Use a smaller one.");
+{
+  // Two lines whose ends sit on one spot without sharing a point: each is trimmed back from the corner, not from its
+  // own first point (S3 rounds such route corners too).
+  const first = addLine(emptySketch(), [0, 0], [10, 0]);
+  const second = addLine(first.sketch, [10, 0], [10, 10]);
+  const apart = filletCorner(second.sketch, first.id, second.id, 2);
+  const ends = (id: number) => {
+    const line = apart.sketch.entities.find((entity) => entity.id === id);
+    return line && line.kind === "line" ? [...(sketchPoint(apart.sketch, line.a)?.at ?? []), ...(sketchPoint(apart.sketch, line.b)?.at ?? [])] : [];
+  };
+  near("unshared corner: the first line keeps its start and ends at the arc", ends(first.id), [0, 0, 8, 0]);
+  near("unshared corner: the second line starts at the arc and keeps its end", ends(second.id), [10, 2, 10, 10]);
+}
 const parallelA = addLine(emptySketch(), [0, 0], [4, 0]);
 const parallelB = addLine(parallelA.sketch, [0, 1], [4, 1]);
 eq(

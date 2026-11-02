@@ -137,9 +137,12 @@ export function filletCorner(sketch: SketchData, lineA: number, lineB: number, r
   const fillet = cornerFillet(a0.at, a1.at, b0.at, b1.at, radius);
   if ("error" in fillet) return { sketch, error: fillet.error };
   const cornerId = sharedPoint(a, b);
+  // Two lines whose ends only sit on the same spot meet where an end of one is an end of the other. Each line is
+  // trimmed back from that end, not from its first point.
+  const cornerAt = samePt(a0.at, b0.at) || samePt(a0.at, b1.at) ? a0.at : a1.at;
   let next = sketch;
-  next = retargetLine(next, a, cornerId, a0.at, fillet.tangentA);
-  next = retargetLine(next, b, cornerId, b0.at, fillet.tangentB);
+  next = retargetLine(next, a, cornerId, cornerAt, fillet.tangentA);
+  next = retargetLine(next, b, cornerId, cornerAt, fillet.tangentB);
   const placedA = place(next, fillet.tangentA);
   const placedB = place(placedA.sketch, fillet.tangentB);
   const arc = addArc(placedB.sketch, placedA.id, placedB.id, fillet.through, a.construction || b.construction);
