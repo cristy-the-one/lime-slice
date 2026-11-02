@@ -93,8 +93,11 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // grow action and its count add 24 to a list at 16,060. object_split_shells names that a committed
 // model of several solids gives each object only its own solid, 19 tokens on a list at 16,084. recipe_run
 // (docs/plan-recipes.md) adds 249 to a list at 16,103; it is in the model group, so the first list with groups on
-// does not grow, and one recipe stands in for a probe-and-apply round trip per op.
-const TOTAL_BUDGET = 16_352;
+// does not grow, and one recipe stands in for a probe-and-apply round trip per op. section (docs/plan-recipe-ingredients.md
+// I5–I6 and the groovi R-B ask: a face's outline, plane cuts of a solid, and cuts of a mesh, in one tool rather than
+// three) and model_apply_batch's combine (I19) add 308 to a list at 16,351. section is in the model group, so the first
+// list with groups on does not grow; one section call replaces an outside script that read the STL by hand.
+const TOTAL_BUDGET = 16_660;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");

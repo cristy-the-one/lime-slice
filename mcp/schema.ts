@@ -384,12 +384,11 @@ const profilePlace = {
 };
 const profile = { type: "array", minItems: 3, maxItems: 200, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
 const point2 = { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } };
-/** K1: loops in place of a point profile. The first loop is the outline; the rest are holes. */
+/** K1: loops in place of a point profile. I18: up to 1,000; a loop inside another is its hole, one inside a hole an island. */
 const loopsField = {
   type: "array",
   minItems: 1,
-  maxItems: 32,
-  description: "Outline, then holes.",
+  description: "Up to 1000 outlines; one inside another is its hole.",
   items: {
     type: "object",
     additionalProperties: false,
@@ -631,6 +630,10 @@ const surfaceOps = [
           sides: { type: "integer", minimum: 3, maximum: 64, description: "Polygon." },
           across: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Polygon corners." },
           turnDeg: { type: "number", minimum: -360, maximum: 360, description: "Cell turn." },
+          loops: { ...loopsField, description: "Any cell, [u, v] about its centre: clipped to the face's outline less margin, all in one boolean." },
+          cornerRadius: { type: "number", minimum: 0, maximum: 100, description: "Loops: round each corner, smaller where an edge is short." },
+          draftDeg: { type: "number", minimum: -45, maximum: 45, description: "Loops: walls lean in this far toward the cell's far end." },
+          minArea: { type: "number", minimum: 0, description: "Loops: leave out clipped cells under this, mm²." },
         },
       },
       pitch: { type: "array", minItems: 2, maxItems: 2, items: { type: "number", exclusiveMinimum: 0 }, description: "[U, V] cell spacing." },
@@ -873,6 +876,7 @@ const READ_ONLY = new Set([
   "layer_summary",
   "measure",
   "surface_at",
+  "section",
   "model_check",
   "paint_list",
   "support_trees",
@@ -1330,7 +1334,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "faces_find",
-    description: "After solid_new or a STEP import. Part-frame centres, mm. Then workplane_set with faceIndex.",
+    description: "After solid_new or a STEP import. Part-frame centres, mm; a flat face's frame and extrude turn. Then workplane_set with faceIndex.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1410,6 +1414,25 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; transition: edges that start in the air. Nothing changes." } } },
   },
   {
+    name: "section",
+    description: "Real outlines as [u, v] loops, with each plane's frame and the extrude origin, turn for it: a flat face's (face, insetMm) or cuts. Solids exact; meshes by triangles.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        face: { description: "Index, or {normal, nearPoint}." },
+        insetMm: { type: "number", minimum: 0, description: "With face." },
+        planes: { type: "array", maxItems: 100, items: { type: "object" }, description: "[{origin, normal}]." },
+        fan: { type: "object", description: "{axisPoint, axisDir, anglesDeg}." },
+        levels: { type: "object", description: "{axis: x|y|z, values}." },
+        resample: { type: "integer", minimum: 3, maximum: 2000, description: "Mesh: points a loop." },
+        startAngleDeg: { type: "number", description: "Mesh: loop start." },
+        chordMm: { type: "number", minimum: 0.001, maximum: 5, description: "Default 0.05." },
+      },
+    },
+  },
+  {
     name: "surface_at",
     description: "First hit of a ray on the solid, part frame, mm: point, normal, distanceMm, faceIndex. Give point and direction, or x and y for a ray down from above. Mesh, 0.05 mm.",
     inputSchema: {
@@ -1466,6 +1489,7 @@ export const TOOLS: ToolSpec[] = [
         label: { type: "string", minLength: 1, maxLength: 80, description: "Batch name; node fields take it." },
         onError: { enum: ["rollback", "stop", "skip"], description: "rollback, stop, or skip." },
         params: { type: "object", description: "This call only, on top of model_params." },
+        combine: { enum: ["cut", "fuse"], description: "Ops of this boolean as one: one step, failures by index." },
       },
     },
   },

@@ -170,6 +170,8 @@ jobs:
           node --experimental-strip-types mcp/sim-region.test.ts
           # recipe_run end to end: lust builds, OCCT cuts, a failed or dry run is taken back.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-session.test.ts
+          # Recipes read real geometry (section, face frames) and build lattices in one boolean, the honeycomb floor too.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-reads.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
