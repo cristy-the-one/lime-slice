@@ -7,7 +7,7 @@ import type { LoftSection, ProfileLoop, Vec3 } from "../model-tree.ts";
 import { frameOf, toWorld } from "./frame.ts";
 import { addArc, addLine, emptySketch, type SketchData } from "./model.ts";
 import { sketchRegions, toLoops } from "./regions.ts";
-import { ALONG_REFUSAL, SHARP_CORNER, buildSketchSweep, extendPath, openChain, sharpCorner, sweepEditOf, turningDeg } from "./sweep.ts";
+import { SHARP_CORNER, alongRefusal, buildSketchSweep, extendPath, openChain, sharpCorner, sweepEditOf, turningDeg } from "./sweep.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -84,7 +84,11 @@ if (profile) {
   if (chain) {
     eq("samples inside the arc are not corners", sharpCorner(chain.path, chain.check), null);
     const along = buildSketchSweep({ profileSketch, profile, path: chain.path, check: chain.check, pathSketch: arc, scale: 1, mode: "new" });
-    eq("a profile drawn on the path's own plane is refused in words", "error" in along ? along.error : "", ALONG_REFUSAL);
+    const alongText = "error" in along ? along.error : "";
+    check("a profile drawn on the path's own plane is refused in words", alongText.startsWith("The profile and the path are on the same plane"));
+    check("the refusal names the origin plane that faces the arc's start", /on the (XZ|YZ) plane, which faces/.test(alongText));
+    eq("a path starting along X off the origin names YZ and its offset", alongRefusal([12, 3, 0], [1, 0, 0]), "The profile and the path are on the same plane, so there is nothing to sweep. Finish this sketch, then draw the profile in a new sketch on the YZ plane with Offset 12 mm, which faces where the path starts.");
+    check("a slanted start points to a workplane", alongRefusal([0, 0, 0], [1, 1, 0]).includes("set a workplane square to where the path starts"));
     const rising = risingArc();
     const swept = buildSketchSweep({
       profileSketch,
