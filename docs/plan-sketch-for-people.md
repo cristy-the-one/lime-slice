@@ -141,6 +141,43 @@ pipe. The demo sketch is never saved unless the person keeps it.
 **Done when** each listed tool's Show me opens a sketch on which that tool's next click succeeds, checked by
 an e2e spec per tool in `test:smoke`.
 
+**As built (milestone 5, P2 for the Make tools).**
+- Six demos, one per Make tool plus Pipe: `src/sketch/demos/*.json` are saved sketches (read with `readSketch`, so a bad
+  file fails), drawn around (0, 0). `placeDemo` in `src/sketch/demos.ts` moves one onto the open sketch's plane, centred
+  where the view looks (the camera's focus on that plane), and the card frames it at 60 mm whatever the part's size.
+  Extrude: a 30 × 20 plate with a Ø8 hole. Revolve: the tutorial's cup wall, smaller, beside a helper line. Loft: a
+  16 mm square, with a Ø12 circle 20 mm above as a card named "Top shape" (the duct). Sweep: a Ø6 circle and a line
+  with a tangent arc (the bent pipe). Pipe: an L route, so Round corners shows. Holes: three Ø4 circles inside a helper
+  outline.
+- Where Show me is: the first line of each tool's How popover (Extrude, Revolve, Loft, Sweep, Sweep in one sketch,
+  Pipe; not the split's profile), as R5 says, and a **?** at the end of the Make row whose popover lists all six. The
+  second is a deviation from the plan's wording: Holes has no strip of its own before H, and the plan's demo is for a
+  person who doesn't know how to start a tool, so the Make row needed a way in before any tool is open.
+- Ready for the next click: the tool is started when the demo opens. Extrude and Pipe wait for a distance or a
+  diameter in the size box; Revolve for "your helper line" under Spin around; Loft for the top shape's card or the
+  circle; Sweep for Apply (its circle already stands up); Holes for H, then Yes. The demo's strip above Draw and the
+  status line say that step (`DEMOS[kind].tryIt`), each ending with an action (R1, checked in `demos.test.ts`).
+- Never the person's part: in a demo every feature is a new object (the card treats it as a root edit, so Join and Cut
+  are hidden and no probe is sent), and each Apply (extrude, revolve, loft, sweep, and Holes' Yes) builds its op
+  through the same code as the real Apply, then stops before the modeler. The ghost stays, the strip says what was
+  made and "Done. Nothing was added to your part. Click Back to my sketch.", and the canvas's `data-sketch-demo-made`
+  is the op kind. Holes builds the group at 4 mm × 5 mm and doesn't open the Hole panel, which belongs to the part.
+- Returning exactly: Show me keeps the whole card state (the editor with its undo steps and cards, the open feature
+  with its typed values, an open Hole panel's points, the How, the camera) and Back to my sketch puts it back. Esc
+  closes the demo's tool and then the demo (Esc twice); Finish isn't on a demo's card. Leaving Model, a history jump,
+  another model, or another tool closes the demo first, so the person's sketch is handled as before.
+- A demo never counts as a How visit, and its own How stays shut since the strip says the step. Within one visit to a
+  feature the How now keeps the open or shut state the person left it in when the card is rebuilt (it used to follow
+  the visit count on every rebuild), which is what lets Back to my sketch return the How as it was.
+- Edit tools' demos (Trim, Offset, Fillet corner, Construction, Use) come with milestone 6, per Q3.
+- Tests: `src/sketch/demos.test.ts` places every demo on a turned, moved plane and builds its tool's op with the
+  builders the card uses (the pipe at 8 mm rounds at 4 mm and builds; Holes picks 3 targets). `e2e/model-sketch-show-me.spec.ts`
+  (smoke) opens each demo the way a person would, does its next click, checks the op kind, that no request reached
+  the modeler and the object list didn't change, and that the person's sketch, feature and values come back (Extrude's
+  6 mm still applies as 6 mm afterwards). Two existing specs changed only their selectors: the P1 button count leaves
+  out the Make row's ?, and the How button is matched exactly, since "Show me" contains "how". Nothing under `mcp/`
+  changed, and no saved field.
+
 ### P3. Reasons in the person's words
 
 `featureBlocked()` and every builder refusal in `src/sketch/` are rewritten to R1, with a viewport mark (R2)
