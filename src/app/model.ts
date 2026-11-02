@@ -146,8 +146,13 @@ import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosit
 import { bodySha256, checkedCopies, pluginFileText, type PluginFileInfo, type PluginParamInfo, type PluginTarget } from "../plugin-file";
 import { RECIPE_API, runsOnPath } from "../plugin-step";
 import { freshRunId, rebuildPluginStep } from "../recipe/rebuild";
+import type { AppRunEnv, RunPart } from "../recipe/app-calls";
+import { builtText, inlineIngredients, keptCopy, type KeptIngredient } from "../recipe/ingredients";
+import type { PlatePlace } from "../modeling/placing";
+import { cleanOp } from "../modeling/compose";
+import { readPartition } from "../../mcp/partition";
 import { recipeRuntime, recipesUnavailable, RECIPES_NEED_APP } from "../recipe/runtime";
-import { runPluginOnPart } from "../recipe/apply";
+import { runPluginFresh } from "../recipe/apply";
 import { applyPluginsPanel, loadLibrary, mountPluginAuthor, mountPluginsPanel, pluginAuthor, pluginLibrary, pluginsPanelOpen, refreshPluginsPanel, setPluginAuthor, type PluginRunResult } from "../ui/plugins-panel";
 import { carriedValues, droppedSentence, libraryIo, oneLine, savePlan, DESCRIPTION_MAX, TITLE_MAX, type FormValue, type PanelPlugin, type PluginLibrary } from "../plugins/library";
 import { setModelCardPreview } from "../ui/model-chrome";
@@ -1104,11 +1109,6 @@ export function bindModelView() {
     keepPose: () => keepStale(open?.objectId ?? null),
     // --- Plugin steps (milestone 6): a plugin step's values change in the card and rebuild here.
     pluginRunner: recipesUnavailable,
-    pluginMade(row) {
-      const tree = treeOf(open);
-      const step = readRow(foldHead(row));
-      return !!tree && !!step && runsOnPath(tree).some((run) => run.ids.includes(step.id) && run.before === null);
-    },
     async pluginRebuild(row, changes, edited) {
       const next = await rebuildPluginRow(row, changes, edited);
       return next ? { row: next } : { reason: readoutText || "The step was not rebuilt." };
@@ -2741,7 +2741,7 @@ function redoNode(tree: ModelTree): NodeId | null {
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
 async function step(way: "undo" | "redo") {
-  if (!busy && !jumping && !editing && !sketchRootEdit && newObjectStep(way)) return;
+  if (!busy && !jumping && !editing && !sketchRootEdit && (swapStep(way) || newObjectStep(way))) return;
   const at = open;
   const tree = treeOf(at);
   const node = tree ? (way === "undo" ? undoNode(tree) : redoNode(tree)) : null;
@@ -5310,8 +5310,8 @@ function syncUndo() {
   const framing = openModelTool() === "workplane";
   // While a step is edited, Cancel is the way back.
   const held = busy || jumping || !tree || !!editing;
-  const unmake = !busy && !jumping && !editing && canUnmake();
-  const remake = !busy && !jumping && !editing && canRemake();
+  const unmake = !busy && !jumping && !editing && (canUnmake() || canSwapBack("undo"));
+  const remake = !busy && !jumping && !editing && (canRemake() || canSwapBack("redo"));
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
   const stressHist = stressOpen() && !openModelTool() ? stressUndoState() : { undo: false, redo: false };
@@ -5436,9 +5436,12 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
     readout("The plugin source is not in this project. The part is kept as built; its values cannot change.");
     return null;
   }
-  // A draft's ingredients are the library's: the MCP builds them in (a kept plugin carries its own).
-  if (/\bingredients::/.test(body) && !/\bmod\s+ingredients\b/.test(body)) {
-    readout(`${title} imports ingredients from the library, which the app does not read yet. Change its values over MCP (recipe_run with this part).`);
+  // --- I10. A draft's ingredients: the copies its last apply built, which the project keeps with it, inlined as the
+  // MCP host inlines them (a kept plugin carries its own `mod ingredients`).
+  const kept = keptIngredients(stamp.sha256);
+  const resolved = inlineIngredients(body, (ref, key) => kept[key] ?? { reason: `${title} imports the ingredient ${ref.module}${ref.version !== undefined ? ` v${ref.version}` : ""}, and this project keeps no copy of it. Change its values over MCP (recipe_run with this part), where the library is read.` });
+  if ("reason" in resolved) {
+    readout(resolved.reason);
     return null;
   }
   const recipes = await recipeRuntime();
@@ -5450,21 +5453,22 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
   if (!obj) return null;
   const from = tree.current;
   const mine = ticket;
+  const madeIt = run.before === null;
   busy = true;
   syncUndo();
   readout(`Rebuilding ${title}…`);
   let result: Awaited<ReturnType<typeof rebuildPluginStep>>;
   try {
     result = await rebuildPluginStep({
-      part: { id: at.objectId, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model" },
+      part: { id: at.objectId, name: obj.name, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), modelPose: modelPoseOf(obj), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model", place: platePlaceOf(obj) },
       run: { ...run, stamp },
       body,
+      suffix: resolved.suffix,
       params: swap ? swap.params : { ...stamp.params, ...changes },
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
-      data: keptRecipeData(stamp.sha256),
       recipes,
-      engine: (node, request) => treeCall(at.key, node, request),
-      chordMm: state.stepTolerance,
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      env: recipeEnv(at.objectId, madeIt, stamp.sha256),
       runId: freshRunId(),
     });
   } finally {
@@ -5472,10 +5476,11 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
     syncUndo();
   }
   if (!result.ok) {
-    // The attempt's steps leave the engine, and their ids stay taken, as a cancelled edit's do.
+    // The attempt's steps leave the engine, and their ids stay taken, as a cancelled edit's do; its new trees close.
     const now = modelTrees.get(at.key);
     if (now && result.nextId !== undefined && result.nextId > now.nextId) modelTrees.set(at.key, { ...now, nextId: result.nextId });
     if (result.dropFrom !== undefined) await dropInEngine(at.key, result.dropFrom);
+    for (const key of result.close ?? []) void post({ call: "close", key });
   }
   if (mine !== ticket || open?.key !== at.key || state.stage !== "model") return null;
   if (!result.ok) {
@@ -5505,10 +5510,15 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
     // The code came from the library: the project keeps a copy, so it rebuilds where the library lacks it.
     session.plugins = { ...(session.plugins ?? {}), [stamp.sha256]: libraryCopy.text };
   }
-  modelTrees.set(at.key, next);
-  keepSolid(at.key, parsed.id, state.stepTolerance, parsed);
-  open = { ...at, solid: parsed };
-  editBack = { key: at.key, tip: parsed.id, back: from, undone: false };
+  // Trees the new run's steps name (a split's half, a split to print's pieces, a joined tool) stay, as an Apply's do.
+  keepRunTrees(at, result.others);
+  if (result.made) swapMadeTree(at, result.made, next, parsed);
+  else {
+    modelTrees.set(at.key, next);
+    keepSolid(at.key, parsed.id, state.stepTolerance, parsed);
+    open = { ...at, solid: parsed };
+    editBack = { key: at.key, tip: parsed.id, back: from, undone: false };
+  }
   markProjectDirty();
   const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
   const after = result.replayed === 0 ? "" : result.replayed === 1 ? " and rebuilt the step after it" : ` and rebuilt ${result.replayed} steps after it`;
@@ -5522,6 +5532,133 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
   // The run's own row: folded under its first step's key, or that step's row when it is one step.
   const head = rowKey([], result.ids[0]!);
   return result.ids.length > 1 ? `fold:${head}` : head;
+}
+
+/** What a plugin run in the window reads besides its part: the printer, the settings, and ids for what it makes. */
+function recipeEnv(objectId: string, madeIt: boolean, sha256: string): AppRunEnv {
+  const picked = selection(loadMachineLibrary());
+  const printer = picked?.printer;
+  // A part the plugin made is made again under its own plate id, so its replies name the part they always named.
+  let own = madeIt;
+  return {
+    chordMm: state.stepTolerance,
+    ...(keptRecipeData(sha256) ? { data: keptRecipeData(sha256)! } : {}),
+    params: evaluateTable(session.parameters).values,
+    printer: { id: printer?.id ?? "plate", name: printer?.name ?? state.profile.name, bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter, belt: printer?.kind === "belt" ? printer.belt : null },
+    supportAngle: state.supportAngle,
+    newPart: () => {
+      const id = own ? objectId : freshPlateId();
+      own = false;
+      return { id, key: freshTreeKey(id) };
+    },
+    pieceKey: (owner, _node, piece) => freshTreeKey(`${owner}-${piece === "half" ? "piece" : piece === "pins" ? "pins" : "part"}`),
+    partition: (spec, part) => {
+      const typed = readPartition(spec, (id) => {
+        const row = targetPrinter(loadMachineLibrary(), id);
+        return row ? printerTarget(row) : null;
+      });
+      if ("reason" in typed) return typed;
+      if (!part.solid) return { reason: "This solid could not be read." };
+      const stored = storedPartition(typed, partitionContext(part.solid as unknown as ParsedSolid), typedPoseOf(part), { positions: part.solid.positions, up: plateUp(part.place.orient) });
+      if ("reason" in stored) return stored;
+      return { op: stored.op, typed: cleanOp(spec), ...(stored.notes ? { notes: stored.notes } : {}) };
+    },
+  };
+}
+
+/** The plate place a run reads of `obj`: its mesh, turn, scale and spot. */
+function platePlaceOf(obj: PlateObject): PlatePlace {
+  const selected = obj.id === state.plate.selectedId;
+  return {
+    source: new Float32Array(selected && state.sourcePos ? state.sourcePos : obj.sourcePos),
+    orient: [...(selected ? state.orient : obj.orient)] as Mat3,
+    scale: selected ? state.partScale : obj.partScale,
+    centered: obj.centered,
+    offset: { ...obj.offset },
+  };
+}
+
+/** The copies of the ingredients a draft of this code built with, by key, as the project keeps them. */
+function keptIngredients(sha256: string): Record<string, KeptIngredient> {
+  const rust = (session.mcpModel as { rustRecipes?: Record<string, { sha256?: unknown; ingredients?: unknown }> } | undefined)?.rustRecipes;
+  const row = rust ? Object.values(rust).find((entry) => entry?.sha256 === sha256 && entry.ingredients && typeof entry.ingredients === "object") : undefined;
+  const out: Record<string, KeptIngredient> = {};
+  for (const [key, value] of Object.entries((row?.ingredients ?? {}) as Record<string, unknown>)) {
+    const copy = keptCopy(value);
+    if (copy) out[key] = copy;
+  }
+  return out;
+}
+
+/**
+ * Trees a rebuilt run left that its steps name: a split's other half goes on the plate as a split's does; a split to
+ * print's pieces wait in their trees with their meshes, and the plate takes them when the commit crosses the cut, as
+ * after an edit; a joined tool's tree stays for the join, off the plate.
+ */
+function keepRunTrees(at: Opened, others: readonly RunPart[]) {
+  for (const part of others) {
+    const solid = part.body ? decodeSolid(part.body) : null;
+    if (!solid || typeof solid === "string") {
+      modelTrees.set(part.tree.key, part.tree);
+      continue;
+    }
+    if (part.origin === "half" && part.cut && addPiece(at, solid, part.tree.key, part.cut.node)) continue;
+    const held = part.origin === "piece" || part.origin === "pins" || part.origin === "half";
+    modelTrees.set(part.tree.key, held ? { ...withNode(part.tree, part.tree.current, { mesh: meshOf(solid, `${part.name}.stl`) }), committed: part.tree.current } : part.tree);
+    keepSolid(part.tree.key, part.tree.current, state.stepTolerance, solid);
+  }
+}
+
+/** --- A part a plugin made, rebuilt: its new tree, and the Prepare step that put it on the plate, for one Undo back. */
+let swapBack: { id: string; key: string; tip: NodeId; step: object | null; undone: boolean } | null = null;
+
+/**
+ * A part the plugin made, rebuilt: the plate object keeps its id, name and place, and takes the new tree, shown at its
+ * tip and on the plate in one Prepare step, so one Undo goes back to the old tree and its values (D8).
+ */
+function swapMadeTree(at: Opened, made: RunPart, next: ModelTree, parsed: ParsedSolid) {
+  const key = next.key;
+  commitModel();
+  const mesh = meshOf(parsed);
+  modelTrees.set(key, { ...withNode(next, next.current, { mesh }), committed: next.current });
+  keepSolid(key, parsed.id, state.stepTolerance, parsed);
+  noteEdit();
+  syncPlateFromState();
+  setTreeKey(at.objectId, key);
+  if (made.posed) state.plate = withModelPose(state.plate, at.objectId, made.modelPose);
+  state.mesh = { name: mesh.name, bytes: mesh.bytes };
+  state.sourcePos = new Float32Array(mesh.sourcePos);
+  state.supportEdits = [];
+  state.supportPaint = [];
+  state.seamPaint = [];
+  state.reinforcement = [];
+  setBrep(at.objectId, mesh.step);
+  syncPlateFromState();
+  place();
+  flushEdit();
+  markModelEdit();
+  editBack = null;
+  open = { objectId: at.objectId, key, solid: parsed };
+  swapBack = { id: at.objectId, key, tip: next.current, step: newestEdits().undo, undone: false };
+}
+
+/** Whether Undo (or Redo) is the swap back to a rebuilt part's old tree (or forward to its new one). */
+function canSwapBack(way: "undo" | "redo"): boolean {
+  const swap = swapBack;
+  const edits = newestEdits();
+  if (!swap || edits.pending || open?.objectId !== swap.id) return false;
+  if (way === "undo") return !swap.undone && open.key === swap.key && treeOf(open)?.current === swap.tip && edits.undo === swap.step;
+  return swap.undone && edits.redo === swap.step;
+}
+
+function swapStep(way: "undo" | "redo"): boolean {
+  if (!canSwapBack(way)) return false;
+  const swap = swapBack!;
+  if (!(way === "undo" ? undoUserEdit() : redoUserEdit())) return false;
+  const edits = newestEdits();
+  swapBack = { ...swap, undone: way === "undo", step: way === "undo" ? edits.redo : edits.undo };
+  showModel();
+  return true;
 }
 
 /** A folded run's row is keyed `fold:` and its first step's key: that step's row. */
@@ -5573,45 +5710,47 @@ function clearPluginPreview() {
 const NEEDS_PART = "This plugin changes a part, and none is open. Select a part in the objects list, then open it in Model.";
 
 /**
- * The Plugins panel's run: on the part on screen from its shown step (a plugin that needs a part or may take one). A
- * preview shows the run's solid in place of the part and drops the run; an apply keeps it as one History row, stamped,
- * and the project keeps the plugin's code.
+ * The Plugins panel's run. A plugin that needs a part, or may take one, runs on the part on screen from its shown step;
+ * one that makes its own part (or may, with nothing open) runs with no part. A preview shows the run's solid in place of
+ * the part and takes the whole run back; an apply keeps it as one History row (or one new object), stamped, and the
+ * project keeps the plugin's code. What the window cannot answer yet comes back as the call's own sentence.
  */
 async function runPanelPlugin(plugin: PanelPlugin, params: Record<string, FormValue>, mode: "preview" | "apply"): Promise<PluginRunResult> {
   const at = open;
   const tree = treeOf(at);
-  if (plugin.file.target === "new" || !at || !tree || state.stage !== "model") {
-    return plugin.file.target === "object" ? { ok: false, reason: NEEDS_PART } : { ok: false, reason: "A plugin that builds a new part runs from MCP for now (recipe_run {plugin}). Open a part to run plugins that change one." };
-  }
+  const onPart = plugin.file.target === "object" || (plugin.file.target === "either" && !!at && !!tree);
+  if (state.stage !== "model") return { ok: false, reason: "Plugins run in the Model tab. Open Model, then run it again." };
+  if (onPart && (!at || !tree)) return { ok: false, reason: NEEDS_PART };
   if (busy || jumping || editing || rebuilding) return { ok: false, reason: STILL_WORKING };
-  if (!at.solid.editable) return { ok: false, reason: VIEW_ONLY };
-  if (lens) return { ok: false, reason: "History shows an earlier step. Click the last step in History, then run the plugin." };
-  if (/\bingredients::/.test(plugin.file.body) && !/\bmod\s+ingredients\b/.test(plugin.file.body)) {
-    return { ok: false, reason: `${plugin.file.title} imports ingredients from the library, which the app does not read yet. Run it over MCP (recipe_run {plugin}).` };
-  }
+  if (onPart && !at!.solid.editable) return { ok: false, reason: VIEW_ONLY };
+  if (onPart && lens) return { ok: false, reason: "History shows an earlier step. Click the last step in History, then run the plugin." };
+  // A kept plugin carries its ingredients inside (`mod ingredients`); one that imports them from the library runs over MCP.
+  const resolved = inlineIngredients(plugin.file.body, (ref) => ({ reason: `${plugin.file.title} imports the ingredient ${ref.module} from your library, which the window does not build in yet. Run it over MCP (recipe_run {plugin}).` }));
+  if ("reason" in resolved) return { ok: false, reason: resolved.reason };
   const recipes = await recipeRuntime();
   if (!recipes) return { ok: false, reason: RECIPES_NEED_APP };
-  const obj = openObject();
-  if (!obj) return { ok: false, reason: NEEDS_PART };
+  const obj = onPart ? openObject() : undefined;
+  if (onPart && !obj) return { ok: false, reason: NEEDS_PART };
   clearPluginPreview();
-  const from = tree.current;
+  const from = onPart ? tree!.current : null;
   const mine = ticket;
   const title = plugin.file.title;
   busy = true;
   syncUndo();
   readout(mode === "preview" ? `Previewing ${title}…` : `Running ${title}…`);
   const started = performance.now();
-  let result: Awaited<ReturnType<typeof runPluginOnPart>>;
+  let result: Awaited<ReturnType<typeof runPluginFresh>>;
   try {
-    result = await runPluginOnPart({
-      part: { id: at.objectId, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model" },
+    result = await runPluginFresh({
+      part: onPart ? { id: at!.objectId, name: obj!.name, tree: tree!, pose: typedPoseOf({ modelPose: modelPoseOf(obj!), frame: obj!.frame }), modelPose: modelPoseOf(obj!), workplane: obj!.workplane ?? GLOBAL_WORKPLANE, frame: "model", place: platePlaceOf(obj!) } : null,
       plugin: { id: plugin.file.plugin, version: plugin.file.version, sha256: plugin.sha256, api: plugin.file.api },
       body: plugin.file.body,
+      suffix: resolved.suffix,
       params,
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? 0.4 },
       recipes,
-      engine: (node, request) => treeCall(at.key, node, request),
-      chordMm: state.stepTolerance,
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      env: recipeEnv(at?.objectId ?? "", false, plugin.sha256),
       runId: freshRunId(),
     });
   } finally {
@@ -5619,46 +5758,102 @@ async function runPanelPlugin(plugin: PanelPlugin, params: Record<string, FormVa
     syncUndo();
   }
   const ms = performance.now() - started;
-  const keepIds = (nextId: number | undefined) => {
-    const now = modelTrees.get(at.key);
-    if (now && nextId !== undefined && nextId > now.nextId) modelTrees.set(at.key, { ...now, nextId });
+  /** The run leaves the engine: the given part's steps drop (their ids stay taken), and the trees it opened close. */
+  const takeBack = async (trace: { dropFrom?: NodeId; nextId?: number; close?: string[] }) => {
+    if (at && onPart) {
+      const now = modelTrees.get(at.key);
+      if (now && trace.nextId !== undefined && trace.nextId > now.nextId) modelTrees.set(at.key, { ...now, nextId: trace.nextId });
+      if (from !== null) await treeCall(at.key, from, gotoRequest(at.key, from, state.stepTolerance));
+      if (trace.dropFrom !== undefined) await dropInEngine(at.key, trace.dropFrom);
+    }
+    for (const key of trace.close ?? []) void post({ call: "close", key });
   };
   if (!result.ok) {
-    // The attempt's steps leave the engine, and their ids stay taken, as a cancelled edit's do.
-    keepIds(result.nextId);
-    if (result.dropFrom !== undefined) await dropInEngine(at.key, result.dropFrom);
+    await takeBack(result);
     const where = result.line !== undefined && !/line \d+/.test(result.reason) ? ` (line ${result.line})` : "";
-    const reason = `${title} did not run: ${sentence(result.reason)}${where} The part is as it was.`;
+    const reason = `${title} did not run: ${sentence(result.reason)}${where}${onPart ? " The part is as it was." : ""}`;
     readout(reason);
     return { ok: false, reason };
   }
   const parsed = decodeSolid(result.body);
-  if (mode === "preview" || typeof parsed === "string" || mine !== ticket || open?.key !== at.key || state.stage !== "model") {
-    // A preview, or a run the person moved away from: the part's tree is as it was, and the run leaves the engine.
-    keepIds(result.tree.nextId);
-    await treeCall(at.key, from, gotoRequest(tree.key, from, state.stepTolerance));
-    await dropInEngine(at.key, result.ids[0]!);
+  const moved = mine !== ticket || state.stage !== "model" || (onPart && open?.key !== at!.key);
+  if (mode === "preview" || typeof parsed === "string" || moved) {
+    // A preview, or a run the person moved away from: nothing is kept, and the run leaves the engine.
+    await takeBack(result);
     if (typeof parsed === "string") return { ok: false, reason: parsed };
-    if (mode !== "preview" || mine !== ticket || open?.key !== at.key || !pluginsPanelOpen()) return { ok: false, reason: "The part changed while the plugin ran, so nothing was kept. Run it again." };
+    if (mode !== "preview" || moved || !pluginsPanelOpen()) return { ok: false, reason: "The part changed while the plugin ran, so nothing was kept. Run it again." };
     pluginPreviewOn = true;
     setModelCardPreview(parsed);
-    const text = `Preview of “${title}”: ${about(parsed)} Nothing is kept until you Apply.`;
+    const text = `Preview of “${title}”${result.made ? ", a new part" : ""}: ${about(parsed)} Nothing is kept until you Apply.`;
     readout(text);
     return { ok: true, ms, text };
   }
-  modelTrees.set(at.key, result.tree);
-  keepSolid(at.key, parsed.id, state.stepTolerance, parsed);
-  open = { ...at, solid: parsed };
-  editBack = { key: at.key, tip: parsed.id, back: from, undone: false };
   // D7: the project carries the code its plugin steps name, so it rebuilds where the library lacks it.
   if (!session.plugins?.[plugin.sha256]) session.plugins = { ...(session.plugins ?? {}), [plugin.sha256]: plugin.file.text };
-  markProjectDirty();
   const values = Object.entries(params).map(([name, value]) => `${plugin.file.params.find((p) => p.name === name)?.label?.trim() || name} ${String(value)}`).join(", ");
   const notes = result.notes.filter((note) => !/^line \d+: /.test(note)).map((note) => ` ${sentence(note)}`).join("");
+  if (result.made) {
+    // A new part: a plate object of its own, stamped on its root, one Prepare step that Undo takes back.
+    if (at && onPart) await takeBack({ ...(result.dropFrom !== undefined ? { dropFrom: result.dropFrom } : {}), ...(result.nextId !== undefined ? { nextId: result.nextId } : {}) });
+    const name = result.made.name || title;
+    const made = addMadeObject(result.made, result.tree, parsed, name);
+    keepRunTrees(made, result.others);
+    markProjectDirty();
+    const text = `Applied “${title}” v${plugin.file.version}${values ? ` with ${values}` : ""}: ${name}, a new part, which Undo takes back. ${about(parsed)}${notes}`;
+    present(parsed, text);
+    return { ok: true, ms, text };
+  }
+  modelTrees.set(at!.key, result.tree);
+  keepSolid(at!.key, parsed.id, state.stepTolerance, parsed);
+  keepRunTrees(at!, result.others);
+  open = { ...at!, solid: parsed };
+  editBack = { key: at!.key, tip: parsed.id, back: from!, undone: false };
+  markProjectDirty();
   const text = `Applied “${title}” v${plugin.file.version}${values ? ` with ${values}` : ""}: one step in History, which Undo takes back. ${about(parsed)}${notes}`;
   present(parsed, text);
   noteParametersBuilt();
   return { ok: true, ms, text };
+}
+
+/** A part a plugin made, as a new plate object beside the others (or where the run placed it), shown in Model. */
+function addMadeObject(made: RunPart, tree: ModelTree, parsed: ParsedSolid, name: string): Opened {
+  const others = plateBoxes();
+  commitModel();
+  forgetPlaceSteps();
+  forgetWorkplaneSteps();
+  flushEdit();
+  noteEdit();
+  syncPlateFromState();
+  const first = state.plate.objects.length === 0;
+  const unique = uniqueName(name, state.plate.objects.map((obj) => obj.name));
+  const positions = new Float32Array(parsed.positions);
+  const seat = settleBy(positions);
+  const fileName = `${unique}.stl`;
+  const bytes = encodeStl(positions, fileName);
+  setMeshSeat(bytes, seat);
+  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+  const pose = made.posed ? made.modelPose : newSolidPose(others, boundsOf(positions));
+  const { bedX, bedY } = state.profile;
+  state.plate = addedSolid(state.plate, { name: unique, fileName, bytes, sourcePos: positions, stepTolerance: state.stepTolerance }, made.id, tree.key, pose, bedX, bedY);
+  applySelectedToState(state.plate);
+  modelTrees.set(tree.key, { ...withNode(tree, tree.current, { mesh }), committed: tree.current });
+  keepSolid(tree.key, tree.current, state.stepTolerance, parsed);
+  place(first ? "load" : "transform");
+  flushEdit();
+  markModelEdit();
+  noteMadeObject(made.id);
+  ticket += 1;
+  picks = [];
+  parked = null;
+  shownFor = made.id;
+  open = { objectId: made.id, key: tree.key, solid: parsed };
+  return open;
+}
+
+/** `name`, or `name 2`, `name 3`, … when the plate has it. */
+function uniqueName(name: string, taken: readonly string[]): string {
+  if (!taken.includes(name)) return name;
+  for (let n = 2; ; n += 1) if (!taken.includes(`${name} ${n}`)) return `${name} ${n}`;
 }
 
 /**
@@ -5680,10 +5875,12 @@ async function savePluginRow(row: RowKey, words: { title: string; description: s
   if (busy || jumping || editing || rebuilding) return { reason: STILL_WORKING };
   const title = oneLine(words.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title. Type one line, at most 60 characters." };
-  const body = source.replace(/\r\n?/g, "\n").replace(/^\n+/, "");
-  if (/\bingredients::/.test(body) && !/\bmod\s+ingredients\b/.test(body)) {
-    return { reason: "This recipe imports ingredients from your library, which the app cannot carry inside a plugin yet. Keep it over MCP: nugget {action: \"save\", kind: \"plugin\", from}." };
-  }
+  // --- I11. A plugin stays one file: the ingredients the draft built with go inside it, as the MCP's keep puts them.
+  const kept = keptIngredients(stamp.sha256);
+  const lf = source.replace(/\r\n?/g, "\n").replace(/^\n+/, "");
+  const inlined = inlineIngredients(lf, (ref, key) => kept[key] ?? { reason: `This recipe imports the ingredient ${ref.module}, and this project keeps no copy of it. Keep it over MCP: nugget {action: "save", kind: "plugin", from}.` });
+  if ("reason" in inlined) return { reason: inlined.reason };
+  const body = builtText(lf, inlined.suffix);
   const bad = body.split("\n").findIndex((line) => /^\s*(mod\s+\w+\s*;|#\s*\[\s*path\b|extern\s+crate\s+(?!lime_recipe\b))/.test(line));
   if (bad >= 0) return { reason: `A plugin is one file against lime_recipe, and line ${bad + 1} brings in another file or crate. Remove it, then save again.` };
   const io = await libraryIo();
@@ -5704,38 +5901,40 @@ async function savePluginRow(row: RowKey, words: { title: string; description: s
     return param as unknown as PluginParamInfo;
   });
   const target: PluginTarget = !described.described.readObject ? "new" : described.described.ended ? "either" : "object";
-  // D3, part two: a run with the defaults, on the part as it stood before the draft's run, taken back.
-  if (target !== "new" && run.before !== null) {
-    const obj = openObject();
-    if (!obj) return { reason: NEEDS_PART };
-    const from = tree.current;
-    busy = true;
+  // D3, part two: a run with the defaults, taken back: on the part as it stood before the draft's run, or with no part
+  // for a plugin that makes its own.
+  const onPart = target !== "new" && run.before !== null;
+  const obj = openObject();
+  if (onPart && !obj) return { reason: NEEDS_PART };
+  const from = tree.current;
+  busy = true;
+  syncUndo();
+  let dry: Awaited<ReturnType<typeof runPluginFresh>>;
+  try {
+    dry = await runPluginFresh({
+      part: onPart ? { id: at.objectId, name: obj!.name, tree: jumped(tree, run.before!), pose: typedPoseOf({ modelPose: modelPoseOf(obj!), frame: obj!.frame }), modelPose: modelPoseOf(obj!), workplane: obj!.workplane ?? GLOBAL_WORKPLANE, frame: "model", place: platePlaceOf(obj!) } : null,
+      plugin: { id: stamp.plugin, version: 0, sha256: stamp.sha256, api: stamp.api },
+      body,
+      params: {},
+      context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? 0.4 },
+      recipes,
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      env: recipeEnv(at.objectId, false, stamp.sha256),
+      runId: freshRunId(),
+    });
+  } finally {
+    busy = false;
     syncUndo();
-    let dry: Awaited<ReturnType<typeof runPluginOnPart>>;
-    try {
-      dry = await runPluginOnPart({
-        part: { id: at.objectId, tree: jumped(tree, run.before), pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model" },
-        plugin: { id: stamp.plugin, version: 0, sha256: stamp.sha256, api: stamp.api },
-        body,
-        params: {},
-        context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? 0.4 },
-        recipes,
-        engine: (node, request) => treeCall(at.key, node, request),
-        chordMm: state.stepTolerance,
-        runId: freshRunId(),
-      });
-    } finally {
-      busy = false;
-      syncUndo();
-    }
-    const nextId = dry.ok ? dry.tree.nextId : dry.nextId;
+  }
+  if (onPart) {
+    const nextId = dry.nextId;
     const now = modelTrees.get(at.key);
     if (now && nextId !== undefined && nextId > now.nextId) modelTrees.set(at.key, { ...now, nextId });
     await treeCall(at.key, from, gotoRequest(tree.key, from, state.stepTolerance));
-    const dropFrom = dry.ok ? dry.ids[0] : dry.dropFrom;
-    if (dropFrom !== undefined) await dropInEngine(at.key, dropFrom);
-    if (!dry.ok) return { reason: `This plugin does not build with its own defaults: ${sentence(dry.reason)} Change the defaults or the code, then keep it.` };
+    if (dry.dropFrom !== undefined) await dropInEngine(at.key, dry.dropFrom);
   }
+  for (const key of dry.close ?? []) void post({ call: "close", key });
+  if (!dry.ok) return { reason: `This plugin does not build with its own defaults: ${sentence(dry.reason)} Change the defaults or the code, then keep it.` };
   const sha256 = await bodySha256(body);
   const library = await loadLibrary();
   const plan = savePlan(library, title, sha256, stamp.plugin);

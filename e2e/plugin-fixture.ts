@@ -78,7 +78,7 @@ export interface Doc { plugins?: Record<string, string>; objects: { modelTree: {
  * writes a plugin run: the first three cuts are the run. `copy` changes the project's copy of the plugin; `before`
  * runs before the page loads (a scripted recipe runner, say).
  */
-export async function pluginProject(page: Page, opts: { copy?: (file: string) => string; after?: number[]; before?: (page: Page) => Promise<void>; edit?: (doc: Doc & Record<string, unknown>) => void } = {}): Promise<Doc> {
+export async function pluginProject(page: Page, opts: { copy?: (file: string) => string; after?: number[]; before?: (page: Page) => Promise<void>; made?: boolean; edit?: (doc: Doc & Record<string, unknown>) => void } = {}): Promise<Doc> {
   const copy = opts.copy ?? ((file: string) => file);
   const readout = page.locator("#modelReadout");
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -108,8 +108,11 @@ export async function pluginProject(page: Page, opts: { copy?: (file: string) =>
   const nodes = doc.objects[0]!.modelTree.nodes;
   const cuts = nodes.filter((node) => node.op?.kind === "boolean");
   expect(cuts).toHaveLength(3 + (opts.after?.length ?? 0));
-  cuts.slice(0, 3).forEach((node, i) => {
-    node.run = { id: "a1b2c3d4", k: i + 1, n: 3 };
+  // `made`: the plugin made the part, so its run starts at the part's first step (the stamp on the root, as the MCP
+  // stamps a part a run made).
+  const run = opts.made ? [nodes.find((node) => node.parent === null)!, ...cuts.slice(0, 3)] : cuts.slice(0, 3);
+  run.forEach((node, i) => {
+    node.run = { id: "a1b2c3d4", k: i + 1, n: run.length };
     if (i === 0) node.plugin = { plugin: "stud-row", version: 3, sha256: SHA, api: "1.1", params: { studs: 5 }, context: { bedMm: [250, 210, 220], nozzleMm: 0.4 }, fingerprint: { volumeMm3: 1600, faces: 6, edges: 12 } };
   });
   doc.plugins = { [SHA]: copy(FILE) };

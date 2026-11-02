@@ -94,7 +94,7 @@ export async function scriptedRunner(page: Page, available = true) {
     let studs = 0;
     let made = 0;
     const say = (line: unknown) => emit("recipe-line", { run, line: JSON.stringify(line) });
-    const cut = (id: number) => say({ id, call: "model_apply", args: { object, op: { kind: "boolean", op: "cut", primitive: "box", dx: 2 * studs, dy: 20, dz: 20, origin: [0, 0, 0] }, probe: true }, at: { line: 10 } });
+    const cut = (n: number) => say({ id: n + 1, call: "model_apply", args: { object, op: { kind: "boolean", op: "cut", primitive: "box", dx: 2 * studs, dy: 20, dz: 20, origin: [0, 0, 0] }, probe: true }, at: { line: 10 } });
     (window as unknown as { __recipeLog: typeof log }).__recipeLog = log;
     (window as unknown as { __limeRecipeRunner: unknown }).__limeRecipeRunner = {
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
@@ -115,7 +115,13 @@ export async function scriptedRunner(page: Page, available = true) {
           }
           if (msg.v === 1) {
             object = String(msg.context?.object ?? "");
-            studs = Number(msg.params?.studs ?? msg.params?.notches ?? 3);
+            studs = Number(msg.params?.studs ?? msg.params?.notches ?? msg.params?.holes ?? 3);
+            made = 0;
+            // With no part, the recipe makes its own first (a plugin that builds a new part).
+            if (!object) {
+              say({ id: 1, call: "solid_new", args: { primitive: "box", dx: 20, dy: 20, dz: 10, name: "bar" }, at: { line: 8 } });
+              return null;
+            }
             made = 1;
             cut(made);
             return null;
@@ -124,6 +130,7 @@ export async function scriptedRunner(page: Page, available = true) {
             emit("recipe-exit", { run, code: 101, reason: null, stderr: `thread 'main' (7) panicked at src/main.rs:10:5:\n${msg.error}\n` });
             return null;
           }
+          if (!object) object = String((msg as { result?: { object?: string } }).result?.object ?? "");
           if (made < studs) {
             made += 1;
             cut(made);

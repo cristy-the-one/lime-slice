@@ -209,7 +209,31 @@ test("the How's Show me opens a demo plugin ready for its next change, and its A
   await expect(card(page).locator('.mh-plugin-control[data-name="width"]')).toBeFocused();
   await expect(page.locator("#modelApply")).toBeDisabled();
   await expect(page.locator("#modelApply")).toHaveAttribute("data-reason", "This is a demo, so nothing is added to your part. Click Back to my plugins.");
+  // The demo makes a new part: Live previews it after the change, and the plate keeps what it had.
+  const objects = await page.locator("#objectList .obj").count();
+  await card(page).locator('.mh-plugin-control[data-name="holes"]').fill("6");
+  await expect(readout(page)).toContainText("Preview of “Drilled bar (demo)”, a new part");
+  await expect(readout(page)).toContainText("Volume 4800 mm³");
   await page.screenshot({ path: `${shots}/panel-show-me.png` });
   await card(page).locator("#modelPluginsBack").click();
   await expect(card(page).locator(".pp-pick")).toHaveCount(3);
+  await expect(page.locator("#objectList .obj")).toHaveCount(objects);
+});
+
+test("a plugin that builds a new part applies as a new object, stamped, and Undo takes it back", async ({ page }) => {
+  mkdirSync(shots, { recursive: true });
+  await pluginProject(page, { before: both });
+  const objects = await page.locator("#objectList .obj").count();
+  await openPanel(page);
+  await card(page).locator('.pp-pick[data-key="library:bolt-flange"]').click();
+  await expect(card(page).locator("#modelPluginsTarget")).toHaveText("Builds a new part.");
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Applied “Bolt-circle flange” v2: bar, a new part, which Undo takes back.");
+  await expect(page.locator("#objectList .obj")).toHaveCount(objects + 1);
+  await expect(page.getByRole("treeitem", { name: /^Bolt-circle flange · plugin v2/ })).toHaveCount(1);
+  await page.screenshot({ path: `${shots}/panel-new-part.png` });
+  await page.keyboard.press("Escape");
+  await page.locator("#tabPrepare").click();
+  await page.keyboard.press("Control+z");
+  await expect(page.locator("#objectList .obj")).toHaveCount(objects);
 });

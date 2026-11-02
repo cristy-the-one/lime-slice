@@ -84,7 +84,8 @@ let demo = false;
 const values = new Map<string, FormValue>();
 let preset = "";
 let busy = false;
-let lastMs = Infinity;
+/** How long the last run took; 0 before the first, so Live tries once and then follows the measure. */
+let lastMs = 0;
 let liveTimer: ReturnType<typeof setTimeout> | null = null;
 let status: { text: string; problem: boolean } | null = null;
 let howOpen = false;
@@ -635,7 +636,7 @@ function select(key: string) {
   preset = "";
   menuOpen = false;
   status = null;
-  lastMs = Infinity;
+  lastMs = 0;
   paint();
   $<HTMLElement>("#modelPluginsFields .mh-plugin-control")?.focus({ preventScroll: true });
 }
@@ -648,7 +649,7 @@ function startDemo() {
   values.clear();
   preset = "";
   status = null;
-  lastMs = Infinity;
+  lastMs = 0;
   paint();
   host?.readout(DEMO_TRY);
   $<HTMLElement>("#modelPluginsFields .mh-plugin-control")?.focus({ preventScroll: true });
