@@ -3,9 +3,9 @@
  * Each one expands through the shared modelling module into a group of boolean steps, the same pieces the MCP builds
  * for the same solid and the same spec. The panel, the ghost, and the drag handles live with the other Model tools.
  */
-import { facesMatching } from "../mcp/selectors.ts";
+import { facesMatching } from "./modeling/selectors.ts";
 import { standRegion } from "../mcp/plane-region.ts";
-import { faceRows, type FaceRow } from "../mcp/solid-geometry.ts";
+import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
 import { anchorOf, expand, type Piece } from "./modeling/compose.ts";

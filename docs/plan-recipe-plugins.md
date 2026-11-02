@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 5 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 6 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -640,6 +640,48 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    *Tested by:* each sample plugin run through the app adapter and through the MCP session gives the same
    fingerprint (unit, stand-in engine, and OCCT in CI); a Playwright spec with a scripted transport (the browser
    build has no Tauri): edit a value, rebuild, undo returns the old value.
+
+   **As built (milestone 6, branch `claude/plugin-app-calls`):**
+   - **Shared handlers.** What decides a call's answer moved out of `mcp/session.ts` so the app and the session run the
+     same code: `src/modeling/bake.ts` (`bakeOp`, the typed op made into the stored op, with resolveEdges, bakedFace,
+     profilePlane and the loop, profile and section readers; a join, a split to print and a print transition come
+     through hooks only the session gives), `src/modeling/model-calls.ts` (the solid as calls read it, paging, the
+     model_describe, faces_find and edges_find replies, the probe verdict, the stored echo of a blend, the step guard,
+     the applied reply, a solid's sections, the part's face context and typed plane, an edit's built and broken steps),
+     and `src/modeling/selectors.ts` and `solid-geometry.ts` (moved from `mcp/`, which re-exports them). The replay of
+     the steps after a run is `replayOps` and `replayedTree` in `src/recipe/rebuild.ts`, used by both. Every MCP test
+     runs unchanged.
+   - **`src/recipe/app-calls.ts`** answers on one part, on a branch in a copy of its tree: log, data (what the step's
+     draft kept), model_describe, faces_find, edges_find, surface_at, section, model_probe, model_apply,
+     model_apply_batch (one by one, or combined), with own-parts-only (O8). Refused with a sentence that points to
+     `recipe_run {object, params}`: composite ops, split, join, partition, transition, model_check, measure,
+     model_history, anchors other than `part`, and solid_new, model_place and object_place (a stamped branch run
+     changes one part).
+   - **`src/recipe/rebuild.ts`** (`rebuildPluginStep`) builds the code, runs it from the step before the run with the
+     stamped values under the changed ones and today's bed and nozzle, stamps the new run (fresh run id, the values,
+     the fingerprint), and replays the later steps in one engine edit. A failure shows the old step again and hands
+     back what the engine must drop.
+   - **The card** (`src/ui/model-history.ts`): fields are editable where the app runs plugins (the desktop app with
+     lust; the browser says it needs the desktop app). Numbers and counts are checked against their range as they are
+     typed ("Studs is 1 to 10."), a changed value says "changed", Reset puts the stamped values back, Enter or
+     Rebuild runs (unchanged values rerun too, which is how drift shows). The readout says what was rebuilt and how many
+     later steps; a failure is said in the card and the readout, and the part is as it was. The card follows the plugin
+     to its new rows, and back on Undo, so Undo shows the old values and Redo the new. One Undo is the edit's
+     (`editBack`), as a step edit's is.
+   - **D9, asking.** An edited project copy is no longer only refused: Rebuild asks in the card ("Confirm" runs the
+     changed code), the new stamp names that code's hash, and the project keeps it under that hash with its header's
+     `source-sha256` rewritten, so the MCP reads it as intact.
+   - **Not built here:** a part the plugin made (stamped on the root) still rebuilds over MCP, and the card says so;
+     "Use vN" waits for the library read of milestone 7; a draft that imports library ingredients rebuilds over MCP;
+     `exprs` (a value typed as a project expression) waits for the Plugins panel's form.
+   - Tests: `mcp/plugin-app.test.ts` (real lust; the stand-in engine, real OCCT in CI's OCCT job): the same plugin
+     rebuilt with the same new values through the MCP and through the app adapter gives the same stamp values, run
+     fingerprint, stored ops of the whole shown path and final solid; unchanged values land on the stamp; a panic is
+     taken back; a part the plugin made is refused. `e2e/model-plugin-rebuild.spec.ts` (in `test:smoke`; a scripted
+     runner behind `__limeRecipeRunner`): range refusal and Reset, rebuild with the later step replayed, the new run
+     as one row on a new branch, Undo back to the old values and Redo, a refused run said in the card, the save
+     keeping both stamps, and an edited copy that asks then runs. `src/model-history.test.ts` for which steps can
+     change. Screenshots in `test-results/plugin-rebuild/`.
 
 7. **The Plugins panel.** (Designed after `plan-sketch-for-people.md` milestones 1 and 5, so it follows the sketch
    card's tips, demos and 1440 px layout; see that plan's section 7a.) D13: list, search, sections, form, Preview with Live, Apply, Save as plugin… from History,

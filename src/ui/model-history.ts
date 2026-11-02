@@ -49,6 +49,15 @@ interface ModelHistoryHooks {
   reaim?(): void;
   /** Keep: the stale steps stay as built, and the note goes for this pose. */
   keepPose?(): void;
+  /** --- Plugin steps (milestone 6). Null when plugins run here, else the sentence that says why not. */
+  pluginRunner?(): Promise<string | null>;
+  /** Whether the row's run made its part: the app rebuilds plugin steps on a part it was given. */
+  pluginMade?(row: RowKey): boolean;
+  /**
+   * Rebuild the row's plugin step with these values changed (and the code changed outside the app, when `edited`): the
+   * row of the new run, or null when nothing was rebuilt (the readout says why).
+   */
+  pluginRebuild?(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean): Promise<{ row: RowKey } | { reason: string }>;
 }
 
 /** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
@@ -97,6 +106,20 @@ let pluginTitle: PluginTitle | undefined;
 let pluginEnvKey = 0;
 let pluginCard: HTMLElement | null = null;
 let pluginCardRow: RowKey | null = null;
+/** The plugin the card shows, so it follows the step when a rebuild, Undo or Redo gives the run new rows. */
+let pluginCardPlugin: string | null = null;
+/** The card's step was on the way to the step shown, so the card moves with the part when an Undo changes branch. */
+let pluginCardFollows = false;
+/** The values typed into the card and not rebuilt yet, by name; kept while History repaints. */
+const pluginDraft = new Map<string, number | boolean | string>();
+/** Why plugins cannot run here (null: they can; undefined: not asked yet). */
+let pluginRunnerNote: string | null | undefined;
+/** A rebuild on its way: the card's controls wait for it. */
+let pluginBusy = false;
+/** --- D9. The project's copy was edited: the first Rebuild asks, the second runs the changed code. */
+let pluginAsking = false;
+/** Why the last Rebuild did not rebuild, shown until a value changes. */
+let pluginFailure: string | null = null;
 let sourceSheet: HTMLElement | null = null;
 let sourceReturn: HTMLElement | null = null;
 let focusId: RowKey | null = null;
@@ -1089,7 +1112,18 @@ function buildPluginCard(): HTMLElement {
   view.addEventListener("click", () => {
     if (pluginCardRow) openSource(pluginCardRow);
   });
-  actions.append(view);
+  // --- Milestone 6. Reset puts back the values the step was built with; Rebuild runs the plugin with the new ones.
+  const reset = Object.assign(document.createElement("button"), { type: "button", className: "btn", id: "modelPluginReset", textContent: "Reset" });
+  reset.dataset.tip = "Back to the values this step was built with";
+  reset.addEventListener("click", () => {
+    pluginDraft.clear();
+    pluginAsking = false;
+    pluginFailure = null;
+    refreshPluginCard();
+  });
+  const rebuild = Object.assign(document.createElement("button"), { type: "button", className: "btn primary", id: "modelPluginRebuild", textContent: "Rebuild" });
+  rebuild.addEventListener("click", () => void rebuildFromCard());
+  actions.append(view, reset, rebuild);
   card.append(head, meta, note, fields, hint, actions);
   card.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
@@ -1101,7 +1135,19 @@ function buildPluginCard(): HTMLElement {
 }
 
 function openPluginCard(id: RowKey) {
+  if (pluginCardRow !== id) {
+    pluginDraft.clear();
+    pluginAsking = false;
+    pluginFailure = null;
+  }
   pluginCardRow = id;
+  pluginCardPlugin = layout?.rows.find((row) => row.key === id)?.plugin?.plugin ?? null;
+  if (pluginRunnerNote === undefined && hooks?.pluginRunner) {
+    void hooks.pluginRunner().then((why) => {
+      pluginRunnerNote = why;
+      refreshPluginCard();
+    });
+  }
   refreshPluginCard();
   if (isMobileLayout()) setSheet(true, false);
   pluginCard?.querySelector<HTMLElement>(".mh-plugin-close")?.focus({ preventScroll: true });
@@ -1110,6 +1156,10 @@ function openPluginCard(id: RowKey) {
 function closePluginCard(refocus: boolean) {
   const id = pluginCardRow;
   pluginCardRow = null;
+  pluginCardPlugin = null;
+  pluginDraft.clear();
+  pluginAsking = false;
+  pluginFailure = null;
   if (pluginCard) pluginCard.hidden = true;
   if (refocus && id != null && rowEls.has(id)) focusRow(id);
 }
@@ -1117,7 +1167,24 @@ function closePluginCard(refocus: boolean) {
 /** The card follows its row: new values after a rebuild, gone when the row is. */
 function refreshPluginCard() {
   if (!pluginCard) return;
-  const row = pluginCardRow == null ? undefined : layout?.rows.find((item) => item.key === pluginCardRow);
+  let row = pluginCardRow == null ? undefined : layout?.rows.find((item) => item.key === pluginCardRow);
+  // A rebuild, an Undo or a Redo shows the run under other rows: the card follows the same plugin's step on the way to
+  // the step shown. The other branch, still drawn beside it, is not the part as it stands.
+  const onPath = (item: HistoryRow) => item.state === "current" || item.state === "past";
+  // A card opened on the other branch on purpose stays there.
+  if (pluginCardPlugin && (!row || (!onPath(row) && pluginCardFollows))) {
+    const same = (layout?.rows ?? []).filter((item) => item.via.length === 0 && item.plugin?.plugin === pluginCardPlugin);
+    const shown = [...same].reverse().find(onPath);
+    const moved = shown ?? (row ? undefined : same.at(-1));
+    if (moved && moved.key !== row?.key) {
+      row = moved;
+      pluginCardRow = row.key;
+      pluginDraft.clear();
+      pluginAsking = false;
+      pluginFailure = null;
+    }
+  }
+  pluginCardFollows = !!row && onPath(row);
   const view = pluginView(row);
   if (!view || !visible()) {
     pluginCard.hidden = true;
@@ -1133,42 +1200,196 @@ function refreshPluginCard() {
   const note = pluginCard.querySelector<HTMLElement>(".mh-plugin-note")!;
   note.textContent = view.note ?? "";
   note.hidden = !view.note;
+  const made = !!(row && hooks?.pluginMade?.(row.key));
+  const editable = view.rebuild !== "no" && pluginRunnerNote === null && !made && !!hooks?.pluginRebuild;
   const fields = pluginCard.querySelector<HTMLElement>(".mh-plugin-fields")!;
-  fields.replaceChildren(...view.fields.map(pluginField));
+  const focused = document.activeElement instanceof HTMLElement && fields.contains(document.activeElement) ? document.activeElement.dataset.name : undefined;
+  fields.replaceChildren(...view.fields.map((field) => pluginField(field, editable && !pluginBusy)));
+  if (focused) fields.querySelector<HTMLElement>(`[data-name="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   if (view.fields.length === 0) fields.append(Object.assign(document.createElement("p"), { className: "mh-plugin-empty", textContent: "This plugin takes no values." }));
   const hint = pluginCard.querySelector<HTMLElement>(".mh-plugin-hint")!;
-  hint.textContent = view.note
-    ? "The part stays as it was built, with every step after it."
-    : "Read-only for now. An agent can change these values over MCP (recipe_run with this part), and the step rebuilds with the steps after it.";
+  const problem = editable ? (draftProblem(view) ?? pluginFailure) : null;
+  hint.textContent = pluginBusy
+    ? "Rebuilding the step and the steps after it…"
+    : pluginAsking
+      ? "The step was built with other code. Rebuild with the project's changed copy? Its stamp then names the changed code."
+      : problem
+        ? problem
+        : view.rebuild === "no"
+          ? "The part stays as it was built, with every step after it."
+          : made
+            ? "This part was made by the plugin. Its values change over MCP for now (recipe_run with this part); the app rebuilds plugin steps on a part it was given."
+            : pluginRunnerNote === undefined
+              ? "Checking whether plugins run here…"
+              : pluginRunnerNote
+                ? `${pluginRunnerNote} The part stays as it was built.`
+                : "Change a value, then Rebuild. The steps after it are built again, and Undo goes back to these values.";
+  hint.classList.toggle("is-problem", !!problem && !pluginBusy && !pluginAsking);
+  const changed = draftChanges(view);
+  const rebuild = pluginCard.querySelector<HTMLButtonElement>("#modelPluginRebuild")!;
+  const reset = pluginCard.querySelector<HTMLButtonElement>("#modelPluginReset")!;
+  rebuild.hidden = !editable;
+  reset.hidden = !editable;
+  // Unchanged values rebuild too: that is how a person checks the plugin still builds what it built.
+  rebuild.disabled = pluginBusy || (editable && !!draftProblem(view));
+  rebuild.textContent = pluginBusy ? "Rebuilding…" : pluginAsking ? "Confirm" : "Rebuild";
+  rebuild.dataset.tip = Object.keys(changed).length ? "Run the plugin with these values; one Undo goes back" : "Run the plugin again with the same values";
+  reset.disabled = pluginBusy || (pluginDraft.size === 0 && !pluginAsking);
+  pluginCard.toggleAttribute("aria-busy", pluginBusy);
   const source = pluginCard.querySelector<HTMLButtonElement>("#modelPluginSourceOpen")!;
   source.disabled = !view.source;
   source.dataset.tip = view.source ? "The plugin's code, read-only" : "This project does not carry the code.";
 }
 
-/** One value, as the form will take it: read-only until the app rebuilds plugin steps itself (milestone 6). */
-function pluginField(field: PluginStepView["fields"][number]): HTMLElement {
+/** One value: the one typed and not rebuilt yet, else the one the step was built with. Read-only where it cannot change. */
+function pluginField(field: PluginStepView["fields"][number], editable: boolean): HTMLElement {
   const row = document.createElement("label");
   row.className = "mh-plugin-field";
   if (field.help) row.dataset.tip = field.help;
   const name = Object.assign(document.createElement("span"), { className: "mh-plugin-name", textContent: field.label });
-  let control: HTMLElement;
+  const value = pluginDraft.has(field.name) ? pluginDraft.get(field.name)! : field.value;
+  const typed = pluginDraft.has(field.name) && String(pluginDraft.get(field.name)) !== String(field.value);
+  const tail = Object.assign(document.createElement("span"), { className: "mh-plugin-unit" });
+  let control: HTMLInputElement | HTMLSelectElement;
   if (field.kind === "toggle") {
-    const box = Object.assign(document.createElement("input"), { type: "checkbox", checked: field.value === true, disabled: true });
-    control = box;
+    control = Object.assign(document.createElement("input"), { type: "checkbox", checked: value === true, disabled: !editable });
+    control.addEventListener("change", () => noteDraft(field, (control as HTMLInputElement).checked));
   } else if (field.kind === "choice") {
     const select = document.createElement("select");
-    select.disabled = true;
-    for (const option of field.options?.length ? field.options : [String(field.value)]) select.append(new Option(option, option, false, option === String(field.value)));
+    select.disabled = !editable;
+    for (const option of field.options?.length ? field.options : [String(value)]) select.append(new Option(option, option, false, option === String(value)));
+    select.addEventListener("change", () => noteDraft(field, select.value));
     control = select;
   } else {
-    const input = Object.assign(document.createElement("input"), { type: "text", readOnly: true, value: String(field.value) });
-    input.inputMode = field.kind === "number" || field.kind === "count" ? "decimal" : "text";
+    const input = Object.assign(document.createElement("input"), { type: "text", readOnly: !editable, value: String(value) });
+    input.inputMode = field.kind === "number" ? "decimal" : field.kind === "count" ? "numeric" : "text";
+    input.spellcheck = false;
+    input.addEventListener("input", () => {
+      noteDraft(field, input.value, false);
+      const changed = input.value.trim() !== String(field.value);
+      input.toggleAttribute("data-typed", changed);
+      tail.textContent = unitText(field, changed);
+    });
+    input.addEventListener("change", () => noteDraft(field, input.value));
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      noteDraft(field, input.value);
+      void rebuildFromCard();
+    });
     control = input;
   }
   control.classList.add("mh-plugin-control");
-  const tail = Object.assign(document.createElement("span"), { className: "mh-plugin-unit", textContent: [field.unit ?? "", field.isDefault ? "default" : ""].filter(Boolean).join(" · ") });
+  control.dataset.name = field.name;
+  control.toggleAttribute("data-typed", typed);
+  control.setAttribute("aria-label", field.label);
+  const range = field.kind === "number" || field.kind === "count" ? rangeText(field) : "";
+  tail.textContent = unitText(field, typed);
+  if (range) tail.title = range;
   row.append(name, control, tail);
   return row;
+}
+
+/** What follows a value: its unit, then "changed" for a typed one not rebuilt yet, else "default" when it was not given. */
+function unitText(field: PluginStepView["fields"][number], changed: boolean): string {
+  return [field.unit ?? "", changed ? "changed" : field.isDefault ? "default" : ""].filter(Boolean).join(" · ");
+}
+
+/** "1 to 10", for a number's tip and its refusal. */
+function rangeText(field: PluginStepView["fields"][number]): string {
+  if (field.min !== undefined && field.max !== undefined) return `${field.min} to ${field.max}`;
+  if (field.min !== undefined) return `at least ${field.min}`;
+  if (field.max !== undefined) return `at most ${field.max}`;
+  return "";
+}
+
+/** A typed value kept in the draft, as text while it is being typed; `repaint` refreshes the card around it. */
+function noteDraft(field: PluginStepView["fields"][number], raw: string | boolean, repaint = true) {
+  pluginAsking = false;
+  pluginFailure = null;
+  if (typeof raw === "boolean" || field.kind === "choice" || field.kind === "text") pluginDraft.set(field.name, raw);
+  else pluginDraft.set(field.name, raw.trim());
+  if (repaint) refreshPluginCard();
+  else syncRebuildButton();
+}
+
+/** While a value is typed, only the button and the hint follow; the field keeps the caret. */
+function syncRebuildButton() {
+  const row = pluginCardRow == null ? undefined : layout?.rows.find((item) => item.key === pluginCardRow);
+  const view = pluginView(row);
+  if (!pluginCard || !view) return;
+  const problem = draftProblem(view);
+  const hint = pluginCard.querySelector<HTMLElement>(".mh-plugin-hint")!;
+  if (problem) hint.textContent = problem;
+  else if (hint.classList.contains("is-problem")) hint.textContent = "Change a value, then Rebuild. The steps after it are built again, and Undo goes back to these values.";
+  hint.classList.toggle("is-problem", !!problem);
+  const rebuild = pluginCard.querySelector<HTMLButtonElement>("#modelPluginRebuild")!;
+  rebuild.disabled = pluginBusy || !!problem;
+  const reset = pluginCard.querySelector<HTMLButtonElement>("#modelPluginReset")!;
+  reset.disabled = pluginBusy || pluginDraft.size === 0;
+}
+
+/** A typed number read as one, or null. Counts are whole. */
+function draftNumber(field: PluginStepView["fields"][number], raw: number | boolean | string): number | null {
+  const n = typeof raw === "number" ? raw : Number(String(raw).replace(",", "."));
+  if (String(raw).trim() === "" || !Number.isFinite(n)) return null;
+  return field.kind === "count" && !Number.isInteger(n) ? null : n;
+}
+
+/** The first typed value that cannot be built, said in one sentence; null when they all can. */
+function draftProblem(view: PluginStepView): string | null {
+  for (const field of view.fields) {
+    if (!pluginDraft.has(field.name) || (field.kind !== "number" && field.kind !== "count")) continue;
+    const n = draftNumber(field, pluginDraft.get(field.name)!);
+    if (n === null) return field.kind === "count" ? `${field.label} is a whole number.` : `${field.label} is a number.`;
+    const range = rangeText(field);
+    if ((field.min !== undefined && n < field.min) || (field.max !== undefined && n > field.max)) return `${field.label} is ${range}${field.unit ? ` ${field.unit}` : ""}.`;
+  }
+  return null;
+}
+
+/** The typed values that differ from the step's, as the plugin takes them. */
+function draftChanges(view: PluginStepView): Record<string, number | boolean | string> {
+  const out: Record<string, number | boolean | string> = {};
+  for (const field of view.fields) {
+    if (!pluginDraft.has(field.name)) continue;
+    const raw = pluginDraft.get(field.name)!;
+    const value = field.kind === "number" || field.kind === "count" ? draftNumber(field, raw) : raw;
+    if (value === null || value === field.value) continue;
+    out[field.name] = value;
+  }
+  return out;
+}
+
+/** Rebuild: the plugin runs with the card's values; the card then shows the new run's. */
+async function rebuildFromCard() {
+  const id = pluginCardRow;
+  const row = id == null ? undefined : layout?.rows.find((item) => item.key === id);
+  const view = pluginView(row);
+  if (!id || !view || pluginBusy || !hooks?.pluginRebuild || view.rebuild === "no" || pluginRunnerNote !== null || draftProblem(view)) return;
+  if (view.rebuild === "ask" && !pluginAsking) {
+    pluginAsking = true;
+    refreshPluginCard();
+    pluginCard?.querySelector<HTMLElement>("#modelPluginRebuild")?.focus({ preventScroll: true });
+    return;
+  }
+  const changes = draftChanges(view);
+  pluginBusy = true;
+  refreshPluginCard();
+  let done: { row: RowKey } | { reason: string } = { reason: "The step was not rebuilt." };
+  try {
+    done = await hooks.pluginRebuild(id, changes, view.rebuild === "ask");
+  } finally {
+    pluginBusy = false;
+    pluginAsking = false;
+  }
+  if ("row" in done) {
+    pluginDraft.clear();
+    pluginCardRow = done.row;
+    pluginFailure = null;
+  } else pluginFailure = done.reason;
+  refreshPluginCard();
+  pluginCard?.querySelector<HTMLElement>("#modelPluginRebuild")?.focus({ preventScroll: true });
 }
 
 function buildSourceSheet(): HTMLElement {

@@ -17,6 +17,7 @@ import {
   thenPose,
   toSolidOp,
   turnDir,
+  typedPoseOf,
   viewFrameOf,
   type Affine,
   type ObjectFrame,
@@ -142,10 +143,13 @@ import {
 } from "../ui/model-chrome";
 import { mountDockPanes } from "../ui/dock-panes";
 import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, pluginStepTitle, syncModelRecipe, syncPluginSteps, syncTransitionStale } from "../ui/model-history";
-import { checkedCopies } from "../plugin-file";
+import { bodySha256, checkedCopies } from "../plugin-file";
+import { runsOnPath } from "../plugin-step";
+import { freshRunId, rebuildPluginStep } from "../recipe/rebuild";
+import { recipeRuntime, recipesUnavailable, RECIPES_NEED_APP } from "../recipe/runtime";
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
 import { canExplode, explodeContext, heldParts, heldPiece } from "./model-explode";
-import { draftSources, dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
+import { draftSources, dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type PluginEnv, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withFrame, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
@@ -192,7 +196,7 @@ import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../modeling/j
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
 import { meshKeyHex } from "../slice-action";
-import { axesOf, drillDown, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
+import { axesOf, drillDown, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
 type Body = Record<string, unknown>;
 
@@ -1080,6 +1084,17 @@ export function bindModelView() {
     // --- Print transitions (decision 5): the note's Re-aim and Keep.
     reaim: () => void reaimStale(),
     keepPose: () => keepStale(open?.objectId ?? null),
+    // --- Plugin steps (milestone 6): a plugin step's values change in the card and rebuild here.
+    pluginRunner: recipesUnavailable,
+    pluginMade(row) {
+      const tree = treeOf(open);
+      const step = readRow(foldHead(row));
+      return !!tree && !!step && runsOnPath(tree).some((run) => run.ids.includes(step.id) && run.before === null);
+    },
+    async pluginRebuild(row, changes, edited) {
+      const next = await rebuildPluginRow(row, changes, edited);
+      return next ? { row: next } : { reason: readoutText || "The step was not rebuilt." };
+    },
     // --- A4. Ctrl-click adds or removes a step of this solid. A tool's step is not one of those. ---
     picking: () => isRepeatTool(openModelTool()) && !lens,
     pickSource(row) {
@@ -5317,6 +5332,8 @@ function syncUndo() {
 
 /** --- Plugin steps (D9). The project's plugin copies, checked against their hashes once per opened project. */
 let pluginEnvFor: [Record<string, string> | undefined, Record<string, unknown> | undefined] | null = null;
+/** The env the History card shows, kept for a rebuild to read the same copies. */
+let pluginEnvNow: PluginEnv | null = null;
 function syncPluginEnv() {
   const plugins = session.plugins;
   const mcpModel = session.mcpModel;
@@ -5325,8 +5342,141 @@ function syncPluginEnv() {
   const mac = /Mac/i.test(navigator.platform || navigator.userAgent);
   void checkedCopies(plugins).then((copies) => {
     if (pluginEnvFor?.[0] !== plugins || pluginEnvFor?.[1] !== mcpModel) return;
-    syncPluginSteps({ copies, drafts: draftSources(mcpModel), mac });
+    pluginEnvNow = { copies, drafts: draftSources(mcpModel), mac };
+    syncPluginSteps(pluginEnvNow);
   });
+}
+
+/**
+ * --- Plugin steps (docs/plan-recipe-plugins.md D8, milestone 6). The card's Rebuild: the plugin runs again with the
+ * changed values from the step before its run, through the app's recipe runner, the steps after it are built again,
+ * and the part shows the new branch. The old branch stays as it was, so one Undo goes back to the old values. A run
+ * that fails leaves the part as it was and says why.
+ */
+async function rebuildPluginRow(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean): Promise<RowKey | null> {
+  const at = open;
+  const tree = treeOf(at);
+  if (!at || !tree || state.stage !== "model") return null;
+  if (busy || jumping || editing || rebuilding) {
+    readout(STILL_WORKING);
+    return null;
+  }
+  if (!at.solid.editable) {
+    readout(VIEW_ONLY);
+    return null;
+  }
+  const step = readRow(foldHead(row));
+  const run = step && step.via.length === 0 ? runsOnPath(tree).find((item) => item.ids.includes(step.id) && item.stamp) : undefined;
+  if (!run?.stamp) {
+    readout("This step is no longer in the history.");
+    return null;
+  }
+  const stamp = run.stamp;
+  const env = pluginEnvNow;
+  const copy = env?.copies.get(stamp.sha256);
+  const draft = env?.drafts.get(stamp.sha256);
+  const title = copy?.file?.title || stamp.plugin;
+  let body: string;
+  if (copy?.file) {
+    if (!copy.intact && !edited) {
+      readout("This project's copy of the plugin was changed outside the app. Rebuild asks before it runs the changed code.");
+      return null;
+    }
+    body = copy.file.body;
+  } else if (draft !== undefined) {
+    body = draft;
+  } else {
+    readout("The plugin source is not in this project. The part is kept as built; its values cannot change.");
+    return null;
+  }
+  // A draft's ingredients are the library's: the MCP builds them in (a kept plugin carries its own).
+  if (/\bingredients::/.test(body) && !/\bmod\s+ingredients\b/.test(body)) {
+    readout(`${title} imports ingredients from the library, which the app does not read yet. Change its values over MCP (recipe_run with this part).`);
+    return null;
+  }
+  const recipes = await recipeRuntime();
+  if (!recipes) {
+    readout(RECIPES_NEED_APP);
+    return null;
+  }
+  const obj = openObject();
+  if (!obj) return null;
+  const from = tree.current;
+  const mine = ticket;
+  busy = true;
+  syncUndo();
+  readout(`Rebuilding ${title}…`);
+  let result: Awaited<ReturnType<typeof rebuildPluginStep>>;
+  try {
+    result = await rebuildPluginStep({
+      part: { id: at.objectId, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model" },
+      run: { ...run, stamp },
+      body,
+      params: { ...stamp.params, ...changes },
+      context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
+      data: keptRecipeData(stamp.sha256),
+      recipes,
+      engine: (node, request) => treeCall(at.key, node, request),
+      chordMm: state.stepTolerance,
+      runId: freshRunId(),
+    });
+  } finally {
+    if (mine === ticket) busy = false;
+    syncUndo();
+  }
+  if (!result.ok) {
+    // The attempt's steps leave the engine, and their ids stay taken, as a cancelled edit's do.
+    const now = modelTrees.get(at.key);
+    if (now && result.nextId !== undefined && result.nextId > now.nextId) modelTrees.set(at.key, { ...now, nextId: result.nextId });
+    if (result.dropFrom !== undefined) await dropInEngine(at.key, result.dropFrom);
+  }
+  if (mine !== ticket || open?.key !== at.key || state.stage !== "model") return null;
+  if (!result.ok) {
+    const where = result.line !== undefined && !/line \d+/.test(result.reason) ? ` (line ${result.line})` : "";
+    readout(`${title} was not rebuilt: ${sentence(result.reason)}${where} The part is as it was.`);
+    return null;
+  }
+  const parsed = decodeSolid(result.body);
+  if (typeof parsed === "string") {
+    readout(parsed);
+    return null;
+  }
+  let next = result.tree;
+  // --- D9. The changed copy ran: the stamp names that code, and the project keeps it under its own hash.
+  if (edited && copy?.file && !copy.intact) {
+    const sha = await bodySha256(copy.file.body);
+    const first = next.nodes.get(result.ids[0]!);
+    if (first?.plugin) next = withNode(next, first.id, { plugin: { ...first.plugin, sha256: sha } });
+    session.plugins = { ...(session.plugins ?? {}), [sha]: copy.file.text.replace(/^\/\/! source-sha256: .*$/m, `//! source-sha256: ${sha}`) };
+  }
+  modelTrees.set(at.key, next);
+  keepSolid(at.key, parsed.id, state.stepTolerance, parsed);
+  open = { ...at, solid: parsed };
+  editBack = { key: at.key, tip: parsed.id, back: from, undone: false };
+  markProjectDirty();
+  const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
+  const after = result.replayed === 0 ? "" : result.replayed === 1 ? " and rebuilt the step after it" : ` and rebuilt ${result.replayed} steps after it`;
+  const failure = result.broken ? ` Step ${pathTo(next, result.broken.id).length - 1}, “${label(result.broken.id)}”, could not be rebuilt: ${sentence(result.broken.error)} The view shows the last step that built.` : "";
+  const values = Object.entries(changes).map(([name, value]) => `${copy?.file?.params.find((p) => p.name === name)?.label?.trim() || name} ${String(value)}`).join(", ");
+  const context = stamp.context.nozzleMm !== state.profile.nozzleDiameter && state.profile.nozzleDiameter ? ` Built for a ${mm(stamp.context.nozzleMm)} mm nozzle; this rebuild used ${mm(state.profile.nozzleDiameter)} mm.` : "";
+  const notes = result.notes.filter((note) => !/^line \d+: /.test(note)).map((note) => ` ${sentence(note)}`).join("");
+  present(parsed, `Rebuilt “${title}”${values ? ` with ${values}` : ""}${after}. ${about(parsed)}${failure}${context}${notes}`);
+  noteParametersBuilt();
+  // The run's own row: folded under its first step's key, or that step's row when it is one step.
+  const head = rowKey([], result.ids[0]!);
+  return result.ids.length > 1 ? `fold:${head}` : head;
+}
+
+/** A folded run's row is keyed `fold:` and its first step's key: that step's row. */
+function foldHead(row: RowKey): RowKey {
+  return row.startsWith("fold:") ? row.slice(5) : row;
+}
+
+/** Recipe data a draft of this code kept (`data {name}`), for the plugin to read again. */
+function keptRecipeData(sha256: string): Record<string, { value: unknown }> | undefined {
+  const rust = (session.mcpModel as { rustRecipes?: Record<string, { sha256?: unknown; data?: unknown }> } | undefined)?.rustRecipes;
+  const row = rust ? Object.values(rust).find((entry) => entry?.sha256 === sha256 && entry.data && typeof entry.data === "object") : undefined;
+  return row ? (row.data as Record<string, { value: unknown }>) : undefined;
 }
 
 /** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */
