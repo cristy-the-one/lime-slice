@@ -111,7 +111,7 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
-import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
+import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -4927,9 +4927,19 @@ export class Session {
    */
   private async sectionTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const chordMm = typeof input.chordMm === "number" ? input.chordMm : 0.05;
+    // --- saveAs: the answer goes to the workspace as recipe data (data {name}), and the reply only counts it, so a
+    // mesh's measured sections never pass through the model. A recipe reads section's answer directly instead.
+    const saveAs = typeof input.saveAs === "string" ? input.saveAs : undefined;
+    if (saveAs !== undefined && this.recipeDepth > 0) return { ok: false, reason: "A recipe reads section's answer directly; saveAs is for a call from the chat." };
     const answer = (sections: Record<string, unknown>[], extra: Record<string, unknown> = {}): Record<string, unknown> => {
       const points = sections.reduce((sum, section) => sum + pointsIn(section), 0);
-      if (points > MAX_SECTION_POINTS) return { ok: false, reason: `This answer would hold ${points} points, over ${MAX_SECTION_POINTS}. Cut fewer planes, pass resample, or a larger chordMm.` };
+      if (saveAs !== undefined) {
+        const saved = writeRecipeData(saveAs, { object: obj.id, ...extra, sections });
+        if ("reason" in saved) return { ok: false, reason: saved.reason };
+        const areas = sections.map((section) => section.areaMm2);
+        return { ok: true, object: obj.id, ...extra, saved: saveAs, ...saved, sections: sections.length, points, ...(areas.length <= 50 ? { areasMm2: areas } : {}) };
+      }
+      if (points > MAX_SECTION_POINTS) return { ok: false, reason: `This answer would hold ${points} points, over ${MAX_SECTION_POINTS}. Cut fewer planes, pass resample, or a larger chordMm, or pass saveAs to keep it as recipe data.` };
       return { ok: true, object: obj.id, ...extra, sections };
     };
     const cuts = input.face === undefined ? cutPlanes(input) : null;

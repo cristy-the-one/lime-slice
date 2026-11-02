@@ -5861,7 +5861,8 @@ TopoDS_Face profile_loops_face(const ProfileFrame& frame, std::vector<ProfileLoo
     }
     if (groups.size() != 1) {
         error = deepest > 1 ? "A hole lies inside another hole. Keep each hole inside the outline only."
-                            : "A hole lies outside the outline. Keep each hole inside.";
+                            : "A revolve takes one outline with its holes, and these loops make " + std::to_string(groups.size()) +
+                                  " outlines. Revolve each outline in its own op; model_apply_batch with combine applies them in one step.";
         return {};
     }
     return group_face(frame, groups.front(), lift, error);
@@ -6636,7 +6637,9 @@ TopoDS_Shape build_loft_loops(
                 const gp_Pnt at = frame.at(loops[h + 1].start[0], loops[h + 1].start[1]);
                 BRepClass_FaceClassifier inside(outer_face.Face(), at, 1e-7);
                 if (inside.State() != TopAbs_IN) {
-                    error = prefix + "A hole lies outside the outline. Keep each hole inside.";
+                    error = prefix + "A loop lies outside the first one. A loft section takes one outline (its first loop) with "
+                                     "its holes inside it: loft each outline in its own op; model_apply_batch with combine "
+                                     "applies them in one step.";
                     return {};
                 }
             }

@@ -566,6 +566,40 @@ impl Session {
         d.as_points2().ok_or(Refusal { reason: format!("The data {name} is not a list of [x, y] points."), line })
     }
 
+    /// `section {object, face, insetMm}`: a flat face's outline, inset by `inset` mm (0 for the edge itself).
+    /// `face` is an index (`3.0`) or `Json::obj().set("normal", [0.0, 0.0, 1.0]).set("nearPoint", [x, y, z])`.
+    /// An inset that leaves nothing gives an empty region.
+    #[track_caller]
+    pub fn face_outline(&mut self, part: &Part, face: impl Into<Json>, inset: f64) -> Result<Section, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let r = self.call("section", Json::obj().set("object", part.object.as_str()).set("face", face).set("insetMm", inset))?;
+        Section::all(&r).into_iter().next().ok_or(Refusal { reason: "section gave no outline".to_string(), line })
+    }
+
+    /// `section {object, planes}`: the part cut by the plane through `origin` square to `normal`.
+    #[track_caller]
+    pub fn section(&mut self, part: &Part, origin: [f64; 3], normal: [f64; 3]) -> Result<Section, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let plane = Json::obj().set("origin", origin).set("normal", normal);
+        let r = self.call("section", Json::obj().set("object", part.object.as_str()).set("planes", Json::Arr(vec![plane])))?;
+        Section::all(&r).into_iter().next().ok_or(Refusal { reason: "section gave no cut".to_string(), line })
+    }
+
+    /// `section` with any of its arguments (`planes`, `fan`, `levels`; the object is set here): one `Section` a plane.
+    #[track_caller]
+    pub fn sections(&mut self, part: &Part, args: Json) -> Result<Vec<Section>, Refusal> {
+        let r = self.call("section", args.set("object", part.object.as_str()))?;
+        Ok(Section::all(&r))
+    }
+
+    /// `model_apply_batch {combine}`: every op (`op` is "cut" or "fuse", and each op's own `op` must match) meets the
+    /// part in one boolean, one history step. An op that does not fit is listed in `failures`; the rest apply.
+    #[track_caller]
+    pub fn apply_many(&mut self, part: &Part, op: &str, ops: Vec<Json>) -> Result<Combined, Refusal> {
+        let r = self.call("model_apply_batch", Json::obj().set("object", part.object.as_str()).set("ops", Json::Arr(ops)).set("combine", op))?;
+        Ok(Combined::from_json(&r))
+    }
+
     /// A note the host shows with the result.
     #[track_caller]
     pub fn log(&mut self, text: &str) {
@@ -583,6 +617,118 @@ impl Session {
         let mut out = std::io::stdout().lock();
         writeln!(out, "{msg}").unwrap();
         out.flush().unwrap();
+    }
+}
+
+fn vec3(v: Option<&Json>) -> [f64; 3] {
+    let n = |i: usize| v.and_then(|a| a.as_array()).and_then(|a| a.get(i)).and_then(Json::as_f64).unwrap_or(0.0);
+    [n(0), n(1), n(2)]
+}
+
+/// A plane's frame in the part frame: `origin`, and the unit axes `u`, `v` (in the plane) and `w` (its normal).
+/// A point `[a, b]` of a section is `origin + a·u + b·v`.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Frame {
+    pub origin: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+    pub w: [f64; 3],
+}
+
+impl Frame {
+    /// The part-frame point at `[a, b]` in this plane.
+    pub fn point(&self, p: geom2d::Pt) -> [f64; 3] {
+        let mut out = [0.0; 3];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = self.origin[i] + p[0] * self.u[i] + p[1] * self.v[i];
+        }
+        out
+    }
+}
+
+/// One answer of `section`: a face's outline or a plane's cut, in the plane's frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Section {
+    pub frame: Frame,
+    /// The `origin` and `turn` an `extrude` takes to draw in this frame.
+    pub origin: [f64; 3],
+    pub turn: [f64; 3],
+    /// The area as points (curves sampled to the call's chord, 0.05 mm by default), for `geom2d`.
+    pub region: geom2d::Region,
+    /// The kernel's `loops`, arcs kept, ready for `extrude.loops`.
+    pub loops: Json,
+    /// Net area, mm².
+    pub area: f64,
+}
+
+impl Section {
+    /// Every section in a `section` reply, or in recipe data saved with `saveAs` (the same shape).
+    pub fn all(reply: &Json) -> Vec<Section> {
+        match reply.get("sections").and_then(Json::as_array) {
+            Some(rows) => rows.iter().map(Section::from_json).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// One section from its JSON row.
+    pub fn from_json(row: &Json) -> Section {
+        let frame = row.get("frame");
+        let mut loops: Vec<geom2d::Poly> = Vec::new();
+        if let Some(regions) = row.get("regions").and_then(Json::as_array) {
+            for r in regions.iter() {
+                if let Some(outer) = r.get("outer").and_then(Json::as_points2) {
+                    loops.push(geom2d::Poly::new(outer));
+                }
+                if let Some(holes) = r.get("holes").and_then(Json::as_array) {
+                    for h in holes.iter() {
+                        if let Some(pts) = h.as_points2() {
+                            loops.push(geom2d::Poly::new(pts));
+                        }
+                    }
+                }
+            }
+        }
+        Section {
+            frame: Frame {
+                origin: vec3(frame.and_then(|f| f.get("origin"))),
+                u: vec3(frame.and_then(|f| f.get("u"))),
+                v: vec3(frame.and_then(|f| f.get("v"))),
+                w: vec3(frame.and_then(|f| f.get("w"))),
+            },
+            origin: vec3(row.get("origin")),
+            turn: vec3(row.get("turn")),
+            region: if loops.is_empty() { geom2d::Region::empty() } else { geom2d::Region::from_loops(&loops) },
+            loops: row.get("loops").cloned().unwrap_or(Json::Arr(Vec::new())),
+            area: row.get("areaMm2").and_then(Json::as_f64).unwrap_or(0.0),
+        }
+    }
+
+    /// An `extrude` op that draws `loops` (one piece: an outline, then its holes) in this frame: `op` is "cut" or
+    /// "fuse", `depth` along `w` (negative goes into the part).
+    pub fn extrude(&self, op: &str, depth: f64, loops: Json) -> Json {
+        Json::obj().set("kind", "extrude").set("op", op).set("origin", self.origin).set("turn", self.turn).set("depth", depth).set("loops", loops)
+    }
+}
+
+/// What `apply_many` did: how many ops applied, and each op left out with its index in the list and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Combined {
+    pub applied: u32,
+    pub failures: Vec<(usize, String)>,
+    /// The whole reply (node, fingerprint, bounds).
+    pub reply: Json,
+}
+
+impl Combined {
+    pub fn from_json(r: &Json) -> Combined {
+        let mut failures: Vec<(usize, String)> = Vec::new();
+        if let Some(rows) = r.get("failures").and_then(Json::as_array) {
+            for f in rows.iter() {
+                let index = f.get("index").and_then(Json::as_f64).unwrap_or(0.0) as usize;
+                failures.push((index, f.get("reason").and_then(Json::as_str).unwrap_or("").to_string()));
+            }
+        }
+        Combined { applied: r.get("applied").and_then(Json::as_f64).unwrap_or(0.0) as u32, failures, reply: r.clone() }
     }
 }
 
@@ -2233,6 +2379,34 @@ mod tests {
         assert_eq!(Json::parse(r#"[{"x": 1, "y": 2}]"#).unwrap().as_points2(), Some(vec![[1.0, 2.0]]));
         assert_eq!(Json::parse("[1, 2]").unwrap().as_points2(), None);
         assert_eq!(Json::parse(r#"{"a": 1}"#).unwrap().as_f64s(), None);
+    }
+
+    #[test]
+    fn section_reads_a_reply() {
+        let reply = Json::parse(
+            r#"{"ok":true,"sections":[{"frame":{"origin":[0,0,10],"u":[1,0,0],"v":[0,1,0],"w":[0,0,1]},"origin":[0,0,10],"turn":[0,0,0],
+            "loops":[{"start":[-5,-5],"segments":[]}],"regions":[{"outer":[[-5,-5],[5,-5],[5,5],[-5,5]],"holes":[[[-1,-1],[-1,1],[1,1],[1,-1]]]}],"areaMm2":96}]}"#,
+        )
+        .unwrap();
+        let all = Section::all(&reply);
+        assert_eq!(all.len(), 1);
+        let s = &all[0];
+        assert_eq!(s.frame.w, [0.0, 0.0, 1.0]);
+        assert_eq!(s.frame.point([2.0, 3.0]), [2.0, 3.0, 10.0]);
+        assert!((s.region.area() - 96.0).abs() < 1e-9);
+        assert_eq!(s.area, 96.0);
+        assert_eq!(s.loops.as_array().map(|l| l.len()), Some(1));
+        let op = s.extrude("cut", -2.0, s.loops.clone());
+        assert_eq!(op.get("turn").map(|t| t.to_string()), Some("[0,0,0]".to_string()));
+        assert!(Section::all(&Json::obj()).is_empty());
+    }
+
+    #[test]
+    fn combined_reads_failures() {
+        let r = Json::parse(r#"{"ok":true,"applied":3,"failures":[{"index":1,"reason":"no"}]}"#).unwrap();
+        let c = Combined::from_json(&r);
+        assert_eq!(c.applied, 3);
+        assert_eq!(c.failures, vec![(1, "no".to_string())]);
     }
 
     #[test]

@@ -141,6 +141,22 @@ Every face query (`faces_find`, I5, I6) also returns the face's frame `{origin, 
   mesh (R-B item 2) and `saveAs` into recipe data (R-B item 4, which needs lane A's R-A store) are not done here.
 - The typed `s.face_outline` / `s.section` wrappers returning lane B's `Region` wait for `geom2d` to land.
 
+**As built, the leftovers (branch `claude/recipe-leftovers`):**
+
+- **Typed wrappers** in `lime-recipe`: `s.face_outline(&part, face, inset)`, `s.section(&part, origin, normal)` and
+  `s.sections(&part, args)` return `Section {frame, origin, turn, region, loops, area}`. `region` is a `geom2d::Region`
+  built from the answer's sampled `regions` (even-odd over every outline and hole), so a lattice clips to the real
+  face; `loops` keeps the kernel's arcs; `frame.point([u, v])` gives the part-frame point; `sec.extrude(op, depth,
+  loops)` is the extrude that draws in that frame. `Section::all(&json)` reads a reply or saved data.
+  `mcp/recipe-geom2d.test.ts` runs a recipe using all of them under lust and rustc (same calls, byte for byte), and
+  `mcp/recipe-reads.test.ts` runs one on the real kernel.
+- **R-B item 4, `saveAs`.** `section {..., saveAs: "name"}` writes the answer, as the call would have answered it, to
+  `<name>.json` in the MCP workspace: the store lane A's `data {name}` reads. The reply counts it (`sections`,
+  `points`, `bytes`, `sha256`, and each `areasMm2` up to 50), so a mesh's measured sections never pass through the
+  model. Saved, an answer may hold more than the 100,000 points a reply may, up to the 4 MB a recipe reads. A recipe's
+  own `section` call is refused `saveAs` (a recipe has no files; it reads the answer directly). In a recipe,
+  `Section::all(&s.data("name").unwrap())` reads it back.
+
 ### I8. Say which face a selector picked
 
 Every selector (`face`, `onFace`, `nearPoint`) reports the face it resolved to: index, normal, centre and area. It goes
@@ -250,6 +266,13 @@ A run past 5 s reports `stage` as `call N of about M, line L` (M taken from the 
   `s.call("model_apply_batch", ...)`: a group with `combine`, one History row (not a row per op: the app's history
   shows a group as one row), one undo, one against the cap. Failures come back in `failures` by index with
   `applied`. The typed `s.apply_many` wrapper belongs in `lime-recipe` (lane B's crate) and waits for it.
+  As built in the leftovers: `s.apply_many(&part, "cut" | "fuse", ops) -> Combined {applied, failures: [(index,
+  reason)], reply}`.
+- **Revolve and loft with several outlines** (leftovers): not built. A revolve or loft section of several outlines is
+  one solid per outline fused, which `combine: "fuse"` already does in one step, so the kernel keeps one outline and
+  the refusal now says so and points there: "A revolve takes one outline with its holes, and these loops make 2
+  outlines. Revolve each outline in its own op; model_apply_batch with combine applies them in one step." (it said "A
+  hole lies outside the outline."), and the same for a loft section.
 - **I20.** `array.cell.loops` with `cornerRadius`, `draftDeg`, and `minArea` becomes one extrude of cells: the kernel
   clips each cell to the face's real outline less `margin` (read with I5's `faceOutline`), drops slivers, rounds
   corners with a radius that shrinks where an edge is short, and builds them all in one boolean. `region`, `from`,

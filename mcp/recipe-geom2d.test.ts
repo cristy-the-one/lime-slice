@@ -45,10 +45,30 @@ const rlib = join(dir, "liblime_recipe.rlib");
 const lib = spawnSync("rustc", ["--edition", "2024", "-O", "--crate-type", "rlib", "--crate-name", "lime_recipe", join(crateDir, "src", "lib.rs"), "-o", rlib], { encoding: "utf8" });
 check("rustc builds lime_recipe", lib.status === 0, lib.stderr);
 
+/** A section answer as the kernel gives one: a 284 × 104 floor with R7 corners (arcs in loops, sampled in regions). */
+const corner = (cx: number, cy: number, a0: number) => Array.from({ length: 9 }, (_, i) => {
+  const a = ((a0 + (90 * i) / 8) * Math.PI) / 180;
+  return [Math.round((cx + 7 * Math.cos(a)) * 1e6) / 1e6, Math.round((cy + 7 * Math.sin(a)) * 1e6) / 1e6];
+});
+const SECTION_REPLY = {
+  ok: true,
+  object: "obj_1",
+  sections: [{
+    frame: { origin: [0, 0, 5], u: [1, 0, 0], v: [0, 1, 0], w: [0, 0, 1] },
+    origin: [0, 0, 5],
+    turn: [0, 0, 0],
+    loops: [{ start: [-135, -52], segments: [{ kind: "line", to: [135, -52] }, { kind: "arc", to: [142, -45], center: [135, -45] }, { kind: "line", to: [142, 45] }] }],
+    regions: [{ outer: [...corner(135, -45, -90), ...corner(135, 45, 0), ...corner(-135, 45, 90), ...corner(-135, -45, 180)], holes: [] }],
+    areaMm2: 29493.94,
+  }],
+};
+
 function stub(log: RecipeCallSite[]) {
   return async (site: RecipeCallSite): Promise<RecipeReply> => {
     log.push(site);
     if (site.tool === "solid_new") return { ok: true, result: { ok: true, object: "obj_1" } };
+    if (site.tool === "section") return { ok: true, result: SECTION_REPLY };
+    if (site.tool === "model_apply_batch") return { ok: true, result: { ok: true, applied: (site.args.ops as unknown[]).length - 1, combined: (site.args.ops as unknown[]).length, failures: [{ index: 1, reason: "This op misses the part." }] } };
     return { ok: true, result: { ok: true, volumeMm3: 1000 } };
   };
 }
@@ -99,6 +119,34 @@ if (lib.status === 0) {
   ].join("\n");
   const floor = await sameUnderBoth("guide_floor", example);
   check("the guide's example cuts cells", floor.filter((c) => c.tool === "model_apply").length > 100, floor.length);
+
+  // The typed wrappers for section and combine: a honeycomb clipped to the floor's real outline, cut in one boolean.
+  const wrapped = [
+    "use lime_recipe::lattice::{hex, Orient};",
+    "use lime_recipe::{ops, Json, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    "    let part = s.solid_new(ops::cuboid(300.0, 120.0, 10.0)).unwrap();",
+    "    let floor = s.face_outline(&part, Json::obj().set(\"normal\", [0.0, 0.0, 1.0]).set(\"nearPoint\", [0.0, 0.0, 5.0]), 3.0).unwrap();",
+    "    let cut = s.section(&part, [0.0, 0.0, 2.0], [0.0, 0.0, 1.0]).unwrap();",
+    "    let many = s.sections(&part, Json::obj().set(\"levels\", Json::obj().set(\"axis\", \"z\").set(\"values\", vec![1.0, 2.0]))).unwrap();",
+    "    let mut ops: Vec<Json> = Vec::new();",
+    "    for c in hex(10.0, Orient::Pointy).rib(2.4).cells(&floor.region, 12.0) {",
+    "        let lp = c.poly().clean(0.05).round_corners_with(2.0, 0.45, 0.3).to_loop();",
+    "        ops.push(floor.extrude(\"cut\", -3.5, Json::arr(vec![lp])));",
+    "    }",
+    "    let n = ops.len();",
+    "    let done = s.apply_many(&part, \"cut\", ops).unwrap();",
+    "    let corner = floor.frame.point([10.0, 20.0]);",
+    "    s.done_with(&part, Json::obj().set(\"cells\", n).set(\"applied\", done.applied).set(\"left\", done.failures.len()).set(\"area\", floor.region.area()).set(\"cutArea\", cut.area).set(\"levels\", many.len()).set(\"corner\", corner));",
+    "}",
+    "",
+  ].join("\n");
+  const viaWrappers = await sameUnderBoth("section_wrappers", wrapped);
+  const batch = viaWrappers.find((c) => c.tool === "model_apply_batch");
+  const sent = (batch?.args.ops as { origin?: number[]; depth?: number }[] | undefined) ?? [];
+  check("the wrappers send section and one combined batch", viaWrappers.map((c) => c.tool).join() === "solid_new,section,section,section,model_apply_batch" && batch?.args.combine === "cut" && sent.length > 100 && sent[0]?.origin?.[2] === 5 && sent[0]?.depth === -3.5, viaWrappers.map((c) => c.tool));
+  check("face_outline sends its face and inset", JSON.stringify(viaWrappers[1]?.args) === '{"object":"obj_1","face":{"normal":[0,0,1],"nearPoint":[0,0,5]},"insetMm":3}', viaWrappers[1]?.args);
 }
 
 if (failed > 0) {
