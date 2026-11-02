@@ -1,6 +1,6 @@
 import { occtHint } from "./engine.ts";
 import { groupOf, TOOL_GROUPS } from "./groups.ts";
-import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, validateTool, type ToolSpec } from "./schema.ts";
+import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, UNLISTED_TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -105,7 +105,11 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // action, as the plan chose over four) and recipe_run's plugin and keep add 281 to a list at 16,740 (the plan estimated
 // about 260). Both are in the model group, so the first list with groups on does not grow, and one plugin list plus a
 // recipe_run {plugin} replaces writing and sending a recipe again: thousands of tokens a reuse.
-const TOTAL_BUDGET = 17_030;
+// Nuggets (docs/plan-recipe-ingredients.md I12–I16, Q2): one nugget tool for plugins, ingredients, presets and lessons,
+// in place of the plugin tool (which still answers, unlisted) and the three more tools the plan sketched, and
+// recipe_run's preset, add 102 to a list at 17,021. nugget is in the model group, so the first list with groups on does
+// not grow, and one find before writing replaces rewriting helpers a library already holds.
+const TOTAL_BUDGET = 17_130;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
@@ -116,7 +120,7 @@ const largest = sized.slice(0, 10).map((row) => `${row.name} ~${row.tokens}`).jo
 check(`tools/list fits ${TOTAL_BUDGET} tokens${total > TOTAL_BUDGET ? ` (it is ~${total}; largest: ${largest})` : ""}`, total <= TOTAL_BUDGET);
 const grouped = Object.values(TOOL_GROUPS).flatMap((row) => row.tools);
 check("every grouped tool is a tool, in one group", grouped.every((name) => names.has(name)) && new Set(grouped).size === grouped.length);
-check("groups off lists every tool but tools_enable", listedTools(null).length === TOOLS.length - 1 && !listedTools(null).some((tool) => tool.name === "tools_enable"));
+check("groups off lists every tool but tools_enable and the unlisted ones", listedTools(null).length === TOOLS.length - 1 - UNLISTED_TOOLS.size && !listedTools(null).some((tool) => UNLISTED_TOOLS.has(tool.name)) &&!listedTools(null).some((tool) => tool.name === "tools_enable"));
 check("groups on lists the core and tools_enable first", listedTools(new Set()).every((tool) => groupOf(tool.name) === null) && listedTools(new Set()).some((tool) => tool.name === "tools_enable") && listedTools(new Set()).some((tool) => tool.name === "slice_start"));
 check("an enabled group adds its tools", listedTools(new Set(["paint"]).add("model")).some((tool) => tool.name === "model_apply" && listedTools(new Set(["paint"])).every((row) => row.name !== "model_apply")));
 check("model_apply lists every op kind by name",JSON.stringify(rows.find((row) => row.name === "model_apply")!.inputSchema).includes('"enum":["hole","fillet"'));
