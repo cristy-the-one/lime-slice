@@ -761,6 +761,10 @@ export interface PluginField {
   unit?: string;
   options?: string[];
   help?: string;
+  /** The range a number or count takes, as the header declares it. */
+  min?: number;
+  max?: number;
+  step?: number;
   /** The value is the parameter's default: the run was not given one. */
   isDefault: boolean;
 }
@@ -777,6 +781,11 @@ export interface PluginStepView {
   note: string | null;
   /** The code, read-only, when the project has it. */
   source: string | null;
+  /**
+   * --- Milestone 6. Whether the step's values can change here: `yes`; `ask` when the project's copy was edited outside
+   * the app (Rebuild asks first, D9); `no` when the code is missing, needs a newer API, or cannot run on this platform.
+   */
+  rebuild: "yes" | "ask" | "no";
 }
 
 /** What the app knows of a step's code: the project's checked copies, the drafts it carries, and where it runs. */
@@ -819,7 +828,7 @@ export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepVi
   const declared = file?.params ?? [];
   const fields: PluginField[] = declared.map((p) => {
     const given = stamp.params[p.name];
-    return { name: p.name, label: p.label?.trim() || p.name, kind: p.kind, value: given ?? p.default, ...(p.unit ? { unit: p.unit } : {}), ...(p.options ? { options: p.options } : {}), ...(p.help ? { help: p.help } : {}), isDefault: given === undefined };
+    return { name: p.name, label: p.label?.trim() || p.name, kind: p.kind, value: given ?? p.default, ...(p.unit ? { unit: p.unit } : {}), ...(p.options ? { options: p.options } : {}), ...(p.help ? { help: p.help } : {}), ...(typeof p.min === "number" ? { min: p.min } : {}), ...(typeof p.max === "number" ? { max: p.max } : {}), ...(typeof p.step === "number" ? { step: p.step } : {}), isDefault: given === undefined };
   });
   // A value the header does not declare (a draft, or a parameter declared without a builder) still shows.
   for (const [name, value] of Object.entries(stamp.params)) {
@@ -841,5 +850,6 @@ export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepVi
     fields,
     note,
     source: file?.text ?? draft,
+    rebuild: copy && !copy.intact && file && !newer && !env.mac ? "ask" : note ? "no" : "yes",
   };
 }

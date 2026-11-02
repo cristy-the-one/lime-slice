@@ -1230,7 +1230,7 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
   color: var(--text);
   line-height: 1.35;
 }
-.mh-plugin-fields { display: grid; grid-template-columns: minmax(0, 1fr) 72px auto; gap: 4px 6px; margin-top: 6px; align-items: center; }
+.mh-plugin-fields { display: grid; grid-template-columns: minmax(0, 1fr) 88px auto; gap: 4px 6px; margin-top: 6px; align-items: center; }
 .mh-plugin-field { display: contents; }
 .mh-plugin-name { min-width: 0; color: var(--text); line-height: 1.25; overflow-wrap: anywhere; }
 .mh-plugin-control { justify-self: stretch; min-width: 0; height: 22px; font: inherit; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -1246,7 +1246,11 @@ input.mh-plugin-control[readonly], select.mh-plugin-control:disabled {
 .mh-plugin-unit { color: var(--text-faint); font: 500 10px / 1 var(--font-mono); white-space: nowrap; }
 .mh-plugin-empty { grid-column: 1 / -1; margin: 0; color: var(--text-dim); }
 .mh-plugin-hint { margin: 6px 0 0; color: var(--text-dim); line-height: 1.35; }
-.mh-plugin-actions { display: flex; gap: var(--space-2); margin-top: 6px; }
+.mh-plugin-hint.is-problem { color: var(--warn); }
+.mh-plugin-control[data-typed] { border-color: var(--accent); }
+.mh-plugin-actions #modelPluginReset { margin-left: auto; }
+.mh-plugin[aria-busy] .mh-plugin-fields { opacity: 0.6; }
+.mh-plugin-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: 6px; }
 .mh-source-card { width: min(880px, calc(100% - 32px)); }
 .mh-source-sub { margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--fs-1); }
 .mh-source {
