@@ -124,8 +124,10 @@ export const COMMANDS: CommandSpec[] = [
   { id: "sketch-trim", label: "Trim", group: "Sketch", keys: ["T"], when: "sketch", show: "help", target: '[data-sketch-tool="trim"]' },
   { id: "sketch-offset", label: "Offset", group: "Sketch", keys: ["F"], when: "sketch", show: "help", target: '[data-sketch-tool="offset"]' },
   { id: "sketch-fillet", label: "Fillet corner", group: "Sketch", keys: ["G"], when: "sketch", show: "help", target: '[data-sketch-tool="fillet"]' },
-  { id: "sketch-use", label: "Use", group: "Sketch", keys: ["U"], when: "sketch", show: "help", target: '[data-sketch-tool="use"]' },
-  { id: "sketch-construction", label: "Construction", group: "Sketch", keys: ["X"], when: "sketch", show: "help", target: '[data-sketch-tool="construction"]' },
+  // --- Sketch for people C1 and U1: the labels say what the tools do; the ids, keys and tool values are unchanged.
+  { id: "sketch-use", label: "Copy edge", group: "Sketch", keys: ["U"], when: "sketch", show: "help", target: '[data-sketch-tool="use"]', keywords: "use project reference edge outline face" },
+  { id: "sketch-construction", label: "Helper line", group: "Sketch", keys: ["X"], when: "sketch", show: "help", target: '[data-sketch-tool="construction"]', keywords: "construction guide axis symmetry" },
+  { id: "sketch-helper-line", label: "Draw helper lines", group: "Sketch", keys: ["Shift+X"], when: "sketch", show: "help", target: '[data-sketch-tool="construction"]', keywords: "construction line guide axis" },
   { id: "sketch-look", label: "Look around", group: "Sketch", keys: ["O"], when: "sketch", show: "help", target: "[data-sketch-look]" },
   { id: "sketch-extrude", label: "Extrude", group: "Sketch", keys: ["E"], when: "sketch", show: "help", target: "[data-sketch-extrude]" },
   { id: "sketch-revolve", label: "Revolve", group: "Sketch", keys: ["V"], when: "sketch", show: "help", target: "[data-sketch-revolve]" },

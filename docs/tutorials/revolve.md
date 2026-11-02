@@ -77,7 +77,7 @@ The solid is Ø40 mm and 22 mm tall, with a through bore and a groove between th
 
 A construction line can be the axis, and it does not have to be U or V. The profile is a bowl wall to the right of that line, and the angle is 180° so the result is a half shell.
 
-On XZ, draw a **Line** from U = 6, V = −4, length 44 at 90°. Esc ends the chain. Select the line and press **X** (or Draw, then Construction). It turns orange and is left out of the region.
+On XZ, draw a **Line** from U = 6, V = −4, length 44 at 90°. Esc ends the chain. Select the line and press **X** (or click **Helper line** on the card). It becomes a helper line and is left out of the region. Shift+X before drawing it does the same in one step.
 
 ![The orange construction line is the future axis, 6 mm to the right of the origin.](../screenshots/tutorials/revolve/bowl-01-axis.png)
 

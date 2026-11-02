@@ -4,7 +4,7 @@
  * Pure geometry and the gesture. The editor shell (`session.ts`) owns undo, snapping, and the
  * heads-up box. No solver: a typed size or a drag places the geometry directly.
  */
-import { filletCorner, offset, trim } from "./edit.ts";
+import { cornerLines, filletCorner, filletCorners, offset, offsetWall, trim, trimPieces, type WallOptions } from "./edit.ts";
 import {
   arcFrom3,
   arcPoint,
@@ -37,7 +37,7 @@ import {
   type SketchData,
   type SketchEntity,
 } from "./model.ts";
-import { refChain, type RefGeom } from "./refs.ts";
+import { faceOutlineAt, refChain, type RefChain, type RefGeom } from "./refs.ts";
 
 export const DRAW_TOOLS = ["circle", "arc", "polygon", "slot", "spline", "trim", "offset", "fillet", "construction", "use"] as const;
 export type DrawTool = (typeof DRAW_TOOLS)[number];
@@ -55,8 +55,8 @@ export const DRAW_MENU: { tool: DrawTool; label: string; shortcut: string }[] = 
   { tool: "trim", label: "Trim", shortcut: "T" },
   { tool: "offset", label: "Offset", shortcut: "F" },
   { tool: "fillet", label: "Fillet corner", shortcut: "G" },
-  { tool: "construction", label: "Construction", shortcut: "X" },
-  { tool: "use", label: "Use", shortcut: "U" },
+  { tool: "construction", label: "Helper line", shortcut: "X" },
+  { tool: "use", label: "Copy edge", shortcut: "U" },
 ];
 
 export interface DrawSelection {
@@ -73,7 +73,9 @@ export type DrawGesture =
   | { kind: "spline"; points: number[]; entity: number | null }
   | { kind: "offset"; ids: number[]; origin: Pt; normal: Pt; sense: 1 | -1; distance: number; sx: number; sy: number; armed: boolean }
   | { kind: "fillet"; line: number; sx: number; sy: number }
-  | { kind: "filletReady"; lines: [number, number]; radius: number; sx: number; sy: number; armed: boolean };
+  | { kind: "filletReady"; lines: [number, number]; radius: number; sx: number; sy: number; armed: boolean }
+  /** F1: several corners picked by a box, rounded with one typed radius. */
+  | { kind: "filletMany"; corners: number[]; radius: number };
 
 export interface DrawState {
   /** Remembered between polygons. At least 3. */
@@ -85,6 +87,8 @@ export interface DrawState {
   tangentArm: boolean;
   /** The HUD numbers last typed, so the edited field can be told from the live ones. */
   hud: number[] | null;
+  /** O1: Offset's Both sides, Close the ends and Keep the line as a helper, remembered between offsets. */
+  wall: WallOptions;
 }
 
 export interface DrawField {
@@ -124,7 +128,13 @@ const MIN_SIDES = 3;
 const MAX_SIDES = 360;
 
 export function freshDraw(): DrawState {
-  return { sides: 6, gesture: null, note: null, tangentArm: false, hud: null };
+  return { sides: 6, gesture: null, note: null, tangentArm: false, hud: null, wall: { both: false, close: false, helper: false } };
+}
+
+/** O1: the wall options after one is switched. Close the ends brings the helper line with it, as it starts out on. */
+export function toggleWall(wall: WallOptions, key: keyof WallOptions): WallOptions {
+  if (key === "close") return { ...wall, close: !wall.close, helper: !wall.close };
+  return { ...wall, [key]: !wall[key] };
 }
 
 export function idleDraw(state: DrawState): DrawState {
@@ -161,15 +171,15 @@ export function drawReadout(tool: DrawTool): string {
     case "spline":
       return "Spline. Click points. Double-click ends it.";
     case "trim":
-      return "Trim. Click the piece to remove.";
+      return "Trim. Point at a piece: the red one goes on a click.";
     case "offset":
       return "Offset. Click a line and drag, or type.";
     case "fillet":
-      return "Fillet corner. Click two lines that meet.";
+      return "Fillet corner. Click a corner, or drag a box around corners.";
     case "construction":
-      return "Construction. Click a line to toggle it.";
+      return "Helper line. Click a line to toggle it.";
     case "use":
-      return "Use. Click a faint edge to copy it.";
+      return "Copy edge. Click a faint edge, or inside the face.";
   }
 }
 
@@ -225,7 +235,7 @@ export function drawDimensions(state: DrawState, tool: DrawTool, at: Pt | null):
   if (tool === "offset" && gesture?.kind === "offset") {
     return { kind: "offset", fields: [{ id: "distance", label: "Distance", unit: "mm", value: gesture.distance }] };
   }
-  if (tool === "fillet" && gesture?.kind === "filletReady") {
+  if (tool === "fillet" && (gesture?.kind === "filletReady" || gesture?.kind === "filletMany")) {
     return { kind: "fillet", fields: [{ id: "radius", label: "Radius", unit: "mm", value: gesture.radius }] };
   }
   return null;
@@ -289,7 +299,7 @@ export function drawPreview(state: DrawState, values: readonly number[], at: Pt 
   if (gesture.kind === "offset") {
     return { state: { ...state, gesture: { ...gesture, distance: values[0] ?? 0 }, hud: [values[0] ?? 0] }, typed: null };
   }
-  if (gesture.kind === "filletReady") {
+  if (gesture.kind === "filletReady" || gesture.kind === "filletMany") {
     return { state: { ...state, gesture: { ...gesture, radius: Math.abs(values[0] ?? 0) }, hud: [values[0] ?? 0] }, typed: null };
   }
   return { state: { ...state, hud: [...values] }, typed: null };
@@ -304,7 +314,7 @@ export function drawCommit(sketch: SketchData, state: DrawState, tool: DrawTool,
   if (tool === "polygon" && armed.gesture?.kind === "polygon" && preview.typed) return commitPolygon(sketch, armed, preview.typed, selection);
   if (tool === "slot" && armed.gesture?.kind === "slot" && armed.gesture.second) return commitSlot(sketch, armed, armed.gesture.second, Math.abs(values[1] ?? 0), selection);
   if (tool === "offset" && armed.gesture?.kind === "offset") return commitOffset(sketch, armed, values[0] ?? 0, selection);
-  if (tool === "fillet" && armed.gesture?.kind === "filletReady") return commitFillet(sketch, armed, Math.abs(values[0] ?? 0), selection);
+  if (tool === "fillet" && (armed.gesture?.kind === "filletReady" || armed.gesture?.kind === "filletMany")) return commitFillet(sketch, armed, Math.abs(values[0] ?? 0), selection);
   if (tool === "spline") return endSpline(sketch, state, selection);
   if (tool === "trim" && hit.entity != null) return applyTrim(sketch, state, hit.entity, at ?? hitPoint(sketch, hit) ?? [0, 0], selection);
   if (tool === "use") return applyUse(sketch, state, refs, ref, selection);
@@ -328,7 +338,7 @@ export function drawPointer(sketch: SketchData, state: DrawState, tool: DrawTool
     return applyTrim(sketch, next, ev.hit.entity, ev.raw, ev.selection);
   }
   if (tool === "construction") return applyConstruction(sketch, next, constructionIds(sketch, ev.hit, { entities: [], points: [] }), ev.selection);
-  if (tool === "use") return applyUse(sketch, next, refs, ev.ref, ev.selection);
+  if (tool === "use") return applyUse(sketch, next, refs, ev.ref, ev.selection, ev.raw);
   return { sketch, state: next, selection: ev.selection, committed: false };
 }
 
@@ -357,10 +367,68 @@ export function drawRubber(sketch: SketchData, state: DrawState, tool: DrawTool,
     const controls = [...points, at];
     return controls.length >= 2 ? sampleSpline(controls, false) : controls;
   }
-  if (gesture.kind === "offset" && Math.abs(gesture.distance) > 1e-6) return offsetSamples(sketch, gesture.ids, gesture.distance * gesture.sense);
+  // Offset and several corners draw their ghost as separate pieces (`drawGhosts`).
+  if (gesture.kind === "offset" || gesture.kind === "filletMany") return null;
   if (gesture.kind === "filletReady" && gesture.radius > 1e-6) return filletSamples(sketch, gesture.lines[0], gesture.lines[1], gesture.radius);
   if (tool === "trim" || tool === "construction" || tool === "use") return null;
   return null;
+}
+
+/**
+ * The ghost of an edit that adds several separate pieces: an offset (both sides, closed ends) and a fillet of several
+ * corners. Each new curve is its own polyline, so the gap between two sides is not drawn as a line.
+ */
+export function drawGhosts(sketch: SketchData, state: DrawState): Pt[][] | null {
+  const gesture = state.gesture;
+  if (gesture?.kind === "offset" && Math.abs(gesture.distance) > 1e-6) {
+    const applied = offsetWall(sketch, gesture.ids, gesture.distance * gesture.sense, state.wall);
+    return applied.error ? null : newPieces(sketch, applied.sketch);
+  }
+  if (gesture?.kind === "filletMany" && gesture.radius > 1e-6) {
+    const out: Pt[][] = [];
+    for (const corner of gesture.corners) {
+      const lines = cornerLines(sketch, corner);
+      const arc = lines && filletSamples(sketch, lines[0], lines[1], gesture.radius);
+      if (arc) out.push(arc);
+    }
+    return out.length ? out : null;
+  }
+  return null;
+}
+
+function newPieces(before: SketchData, after: SketchData): Pt[][] {
+  const old = new Set(before.entities.map((entity) => entity.id));
+  const out: Pt[][] = [];
+  for (const entity of after.entities) {
+    if (old.has(entity.id)) continue;
+    const curve = curveOf(after, entity);
+    if (!curve) continue;
+    out.push(curve.kind === "line" ? [curve.a, curve.b] : curve.kind === "circle" ? circleSamples(curve.centre, curve.radius) : curve.kind === "arc" ? arcSamples(curve.arc) : curve.samples);
+  }
+  return out;
+}
+
+/**
+ * F1: arm Fillet corner on corners picked at once (a box, or points selected before G). One corner opens as if its two
+ * lines were clicked, so dragging sets the radius; several wait for a typed radius.
+ */
+export function armCorners(sketch: SketchData, state: DrawState, pointIds: readonly number[], at: { sx: number; sy: number }): DrawState {
+  const corners = pointIds.filter((id) => cornerLines(sketch, id) != null);
+  if (corners.length === 0) return { ...state, gesture: null, note: CORNER_MISSING, hud: null };
+  if (corners.length === 1) {
+    const lines = cornerLines(sketch, corners[0]!)!;
+    return { ...state, gesture: { kind: "filletReady", lines, radius: 0, sx: at.sx, sy: at.sy, armed: false }, note: null, hud: null };
+  }
+  return { ...state, gesture: { kind: "filletMany", corners, radius: 0 }, note: null, hud: null };
+}
+
+/** F1: what Fillet corner says when a click or a box finds no corner. */
+export const CORNER_MISSING = "Click a corner where two lines meet, or drag a box around corners.";
+
+/** T1: what Trim says over, or on, a line nothing crosses. */
+export function noCrossing(kind: SketchEntity["kind"]): string {
+  const name = kind === "circle" ? "circle" : kind === "arc" ? "arc" : kind === "spline" ? "curve" : "line";
+  return `Nothing crosses this ${name}, so it is one piece. Press Delete to remove it.`;
 }
 
 /** Corners of a regular polygon. The first is `corner`, and the rest run counter-clockwise. */
@@ -591,6 +659,17 @@ function endSpline(sketch: SketchData, state: DrawState, selection: DrawSelectio
   return { sketch: pruned, state: { ...state, gesture: null, note: null, hud: null }, selection, committed: false };
 }
 
+/** O1: arm Offset on `ids` from outside a click, ready for a typed distance: the demo's line is picked already. */
+export function armOffset(sketch: SketchData, state: DrawState, ids: readonly number[], toward: Pt): DrawState {
+  const primary = ids[0];
+  const entity = primary == null ? undefined : sketchEntity(sketch, primary);
+  const curve = entity && curveOf(sketch, entity);
+  const frame = curve && leftOf(curve, toward);
+  if (!frame) return state;
+  const gesture: DrawGesture = { kind: "offset", ids: [...ids], origin: frame.origin, normal: frame.normal, sense: offsetSense(sketch, [...ids], frame.origin, frame.normal), distance: 0, sx: 0, sy: 0, armed: true };
+  return { ...state, gesture, note: null, hud: null };
+}
+
 function offsetPointer(sketch: SketchData, state: DrawState, ev: DrawPointer): DrawResult {
   const gesture = state.gesture;
   if (ev.phase === "down") {
@@ -610,7 +689,7 @@ function offsetPointer(sketch: SketchData, state: DrawState, ev: DrawPointer): D
 function commitOffset(sketch: SketchData, state: DrawState, distance: number, selection: DrawSelection): DrawResult {
   const gesture = state.gesture;
   if (gesture?.kind !== "offset") return { sketch, state, selection, committed: false };
-  const applied = offset(sketch, gesture.ids, distance * gesture.sense);
+  const applied = offsetWall(sketch, gesture.ids, distance * gesture.sense, state.wall);
   if (applied.error) return note(sketch, state, selection, applied.error);
   return { sketch: applied.sketch, state: { ...state, gesture: null, note: null, hud: null }, selection: { entities: [], points: [] }, committed: true };
 }
@@ -629,12 +708,29 @@ function filletPointer(sketch: SketchData, state: DrawState, ev: DrawPointer): D
     }
     return { sketch, state, selection: ev.selection, committed: false };
   }
+  if (gesture?.kind === "filletMany") {
+    // Several corners wait for a typed radius. A click elsewhere starts again from that click.
+    if (ev.phase !== "up") return { sketch, state, selection: ev.selection, committed: false };
+    return filletPointer(sketch, { ...state, gesture: null }, ev);
+  }
   if (ev.phase !== "up") {
     if (gesture?.kind === "fillet") return { sketch, state, selection: ev.selection, committed: false };
     return { sketch, state, selection: ev.selection, committed: false };
   }
+  // F1: a click on the corner itself is a click on its two lines.
+  if (gesture?.kind !== "fillet" && ev.hit.point != null) {
+    const lines = cornerLines(sketch, ev.hit.point);
+    if (lines) {
+      return {
+        sketch,
+        state: { ...state, gesture: { kind: "filletReady", lines, radius: 0, sx: ev.sx, sy: ev.sy, armed: false }, note: null, hud: null },
+        selection: { entities: [...lines], points: [ev.hit.point] },
+        committed: false,
+      };
+    }
+  }
   const line = closestLine(sketch, ev.raw, ev.tolMm);
-  if (line == null) return note(sketch, state, ev.selection, "Click two lines to round their corner.");
+  if (line == null) return note(sketch, state, ev.selection, CORNER_MISSING);
   if (gesture?.kind !== "fillet") {
     return { sketch, state: { ...state, gesture: { kind: "fillet", line, sx: ev.sx, sy: ev.sy }, note: null, hud: null }, selection: { entities: [line], points: [] }, committed: false };
   }
@@ -657,33 +753,37 @@ function armFillet(sketch: SketchData, state: DrawState, first: number, ev: Draw
 
 function commitFillet(sketch: SketchData, state: DrawState, radius: number, selection: DrawSelection): DrawResult {
   const gesture = state.gesture;
-  if (gesture?.kind !== "filletReady") return { sketch, state, selection, committed: false };
-  if (!(radius > 1e-6)) return note(sketch, state, selection, "A corner round needs a radius above 0.");
-  const applied = filletCorner(sketch, gesture.lines[0], gesture.lines[1], radius);
+  if (gesture?.kind !== "filletReady" && gesture?.kind !== "filletMany") return { sketch, state, selection, committed: false };
+  if (!(radius > 1e-6)) return note(sketch, state, selection, "A corner round needs a radius above 0. Type one, such as 2.");
+  const applied = gesture.kind === "filletMany" ? filletCorners(sketch, gesture.corners, radius) : filletCorner(sketch, gesture.lines[0], gesture.lines[1], radius);
   if (applied.error) return note(sketch, state, selection, applied.error);
   return { sketch: applied.sketch, state: { ...state, gesture: null, note: null, hud: null }, selection: { entities: [], points: [] }, committed: true };
 }
 
 function applyTrim(sketch: SketchData, state: DrawState, entityId: number, at: Pt, selection: DrawSelection): DrawResult {
+  // T1: a line nothing crosses has no piece to cut away. It is picked, so Delete removes it if that was the wish.
+  const pieces = trimPieces(sketch, entityId);
+  const entity = sketchEntity(sketch, entityId);
+  if (pieces && entity && !pieces.crossed) return note(sketch, state, { entities: [entityId], points: [] }, noCrossing(entity.kind));
   const applied = trim(sketch, entityId, at);
   if (applied.error) return note(sketch, state, selection, applied.error);
   return { sketch: applied.sketch, state: { ...state, gesture: null, note: null, hud: null }, selection: { entities: [], points: [] }, committed: true };
 }
 
 function applyConstruction(sketch: SketchData, state: DrawState, ids: number[], selection: DrawSelection): DrawResult {
-  if (ids.length === 0) return note(sketch, state, selection, "Click a line to make it construction, or select one first.");
+  if (ids.length === 0) return note(sketch, state, selection, "Click a line to make it a helper line, or select one first.");
   const next = toggleConstruction(sketch, ids);
   return { sketch: next, state: { ...state, note: null, hud: null }, selection: { entities: ids, points: [] }, committed: true };
 }
 
-function applyUse(sketch: SketchData, state: DrawState, refs: RefGeom, index: number | null, selection: DrawSelection): DrawResult {
-  if (index == null) return note(sketch, state, selection, "Click a faint edge or the face outline.");
-  const chain = refChain(refs, index);
-  if (!chain) return note(sketch, state, selection, "Click a faint edge or the face outline.");
+function applyUse(sketch: SketchData, state: DrawState, refs: RefGeom, index: number | null, selection: DrawSelection, at?: Pt): DrawResult {
+  // U1: a click inside the face, away from its edges, copies the face's whole outline: every loop of it.
+  const chains: RefChain[] | null = index != null ? [refChain(refs, index)].filter((chain): chain is RefChain => chain != null) : at ? faceOutlineAt(refs, at) : null;
+  if (!chains || chains.length === 0) return note(sketch, state, selection, USE_MISSING);
   // The view's edges are tessellated. Runs that lie on one line or one circle are copied as that line, arc or circle.
   let next = sketch;
   let added = 0;
-  for (const piece of fitPieces(chain.points, chain.closed)) {
+  for (const piece of chains.flatMap((chain) => fitPieces(chain.points, chain.closed))) {
     if (piece.kind === "circle") {
       if (hasCircle(next, piece.centre, piece.radius)) continue;
       next = addCircle(next, piece.centre, piece.radius).sketch;
@@ -700,9 +800,12 @@ function applyUse(sketch: SketchData, state: DrawState, refs: RefGeom, index: nu
     }
     added += 1;
   }
-  if (added === 0) return note(sketch, state, selection, "That edge is already in the sketch.");
+  if (added === 0) return note(sketch, state, selection, "That edge is already in the sketch. Click another edge, or draw from this one.");
   return { sketch: next, state: { ...state, note: null, hud: null }, selection, committed: true };
 }
+
+/** U1: what Copy edge says when a click finds no edge and no face. */
+export const USE_MISSING = "Click a faint edge of the part, or inside the face the sketch is on.";
 
 function beginOffset(sketch: SketchData, ev: DrawPointer): { gesture: Extract<DrawGesture, { kind: "offset" }> } | { error: string } {
   let primary = ev.hit.entity;
@@ -822,21 +925,6 @@ function filletSamples(sketch: SketchData, lineA: number, lineB: number, radius:
   if ("error" in fillet) return null;
   const arc = arcFrom3(fillet.tangentA, fillet.through, fillet.tangentB);
   return arc ? arcSamples(arc) : null;
-}
-
-function offsetSamples(sketch: SketchData, ids: number[], distance: number): Pt[] | null {
-  const applied = offset(sketch, ids, distance);
-  if (applied.error) return null;
-  const points: Pt[] = [];
-  for (const entity of applied.sketch.entities) {
-    if (sketch.entities.some((old) => old.id === entity.id)) continue;
-    const curve = curveOf(applied.sketch, entity);
-    if (!curve) continue;
-    const samples = curve.kind === "line" ? [curve.a, curve.b] : curve.kind === "circle" ? circleSamples(curve.centre, curve.radius) : curve.kind === "arc" ? arcSamples(curve.arc) : curve.samples;
-    if (points.length && samples.length && dist(points[points.length - 1]!, samples[0]!) < 1e-4) samples.shift();
-    points.push(...samples);
-  }
-  return points.length >= 2 ? points : null;
 }
 
 function slotSamples(c1: Pt, c2: Pt, width: number): Pt[] | null {

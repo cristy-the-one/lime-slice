@@ -950,6 +950,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-how-pop.sketch-make-how-pop { flex: 1 1 100%; padding: 6px 8px; }
 .sketch-how-lead { margin: 0 0 6px; color: var(--text-dim); }
 .sketch-how-demos { display: flex; flex-wrap: wrap; gap: 4px; }
+/* O1: Offset's wall options sit under the Edit row while Offset is on. */
+.sketch-wall { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.sketch-wall-note { margin: 0 0 0 4px; color: var(--text-dim); }
 .sketch-section.sketch-demo {
   gap: 2px;
   padding: 6px 8px;
