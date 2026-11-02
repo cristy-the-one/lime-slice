@@ -300,14 +300,14 @@ I1 and I5 if they are ready, so the shared fixtures can be checked; it doesn't w
 - **Card height.** Purpose tips add no height, and the new buttons appear only in the mode they belong to.
   Check at 1440 × 900 for each milestone.
 
-## 9. Questions for the owner
+## 9. Decisions
 
-- **Q1. Renames.** "Helper line" for Construction and "Copy edge" for Use (C1, U1), or keep the CAD names and
-  rely on the purpose tips? The plan's choice: rename, since the tips can't fix a label people skip.
-- **Q2. Inferred constraints (K1).** On by default (Fusion, Onshape), or a setting that starts off? The plan's
-  choice: on, with Ctrl to skip.
-- **Q3. Demos (P2).** Ship all eleven in the first milestone, or Make tools first? The plan's choice: Make
-  tools first, with the milestone that changes each Edit tool bringing its demo.
+The owner answered on 2026-11-02: the plan's choice for all three.
+
+- **Q1. Renames.** Construction reads **Helper line** and Use reads **Copy edge** (C1, U1). Keys, ids and saved
+  fields stay.
+- **Q2. Inferred constraints (K1).** On by default, with Ctrl to skip.
+- **Q3. Demos (P2).** Make tools first; each Edit tool's demo comes with the milestone that changes that tool.
 
 ## 10. Milestones
 
