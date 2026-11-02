@@ -227,8 +227,12 @@ export class RecipeHost {
     return { ...process.env, LUST_DAEMON_SOCKET: join(this.root, "lust.sock"), LUST_CACHE_DIR: join(this.root, "cache") };
   }
 
-  /** Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds. */
-  async build(name: string, source: string, autofix: boolean): Promise<BuildResult> {
+  /**
+   * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
+   * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
+   * it, and `source` in the result is the recipe without it.
+   */
+  async build(name: string, source: string, autofix: boolean, suffix = ""): Promise<BuildResult> {
     const started = Date.now();
     // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
     // at the wrong place.
@@ -242,9 +246,12 @@ export class RecipeHost {
     const exe = join(slot, process.platform === "win32" ? "recipe.exe" : "recipe");
     let current = source;
     for (let round = 0; ; round += 1) {
-      writeFileSync(main, current);
+      const own = current.endsWith("\n") || !suffix ? current : `${current}\n`;
+      const ownLines = own.split("\n").length - 1;
+      const ownBytes = Buffer.byteLength(own);
+      writeFileSync(main, suffix ? own + suffix : current);
       const r = await run(avail.lust, ["build", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], this.lustEnv());
-      const diagnostics = parseDiagnostics(r.stdout, main);
+      const diagnostics = parseDiagnostics(r.stdout, main).map((d) => (suffix && (d.line > ownLines || d.edits.some((e) => e.end > ownBytes)) ? { ...d, edits: [] } : d));
       if (r.code === 0) return { ok: true, diagnostics, source: current, fixRounds: round, exe, ms: Date.now() - started };
       if (diagnostics.length === 0) {
         return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };

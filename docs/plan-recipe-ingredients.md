@@ -418,6 +418,26 @@ Each is one PR to `main`, smallest useful first. Each updates `docs/mcp-server.m
 3. **I5–I7.** Face outline, section, frames.
 4. **I18–I21.** Loops limit, `apply_many`, `array` cells, progress.
 5. **I9–I11.** Ingredient files, import, plugins carrying their ingredients. Needs the plugin plan's D6–D7 first.
+
+   **As built (milestone 5, branch `claude/nuggets-ingredients`, `mcp/ingredients.ts`):**
+   - **I9.** The plugin file (D6) with `//! ingredient: <id>` where a plugin has `plugin: <id>` (the key is the kind, so
+     no separate `kind:` line), and no `target` or `params`. Stored in `<plugins>/ingredients/` (the library, D7), with
+     D12's versions and older copies as plugins have them. The project copy is each run's kept copy (below); samples
+     come with the plugin samples. An id must start with a letter and not be a Rust keyword, because a recipe names it
+     as a module (`moulded-tray` is `ingredients::moulded_tray`).
+   - **I10.** The host does the import, not the language: it scans the recipe (comments and strings blanked) for
+     `ingredients::<name>` and `ingredients::<name>::v<N>`, in `use` lines, groups or inline paths, resolves them
+     and what they name in turn (`crate::ingredients::<other>`), and appends the bodies after the recipe as
+     `mod ingredients { pub mod <name> { <latest> pub mod v<N> { <pinned> } } }`, each after a stamp line. lust and
+     rustc build that same text (`mcp/ingredient.test.ts`: the same calls byte for byte). Appending keeps the recipe's
+     lines; a diagnostic, refused call or panic inside an ingredient is reported as that ingredient's line, and lust's
+     fix edits are not applied there. An unknown name is refused before the build with the closest names and every
+     name the library has. A draft keeps each ingredient's body as built (`rustRecipes[...].ingredients`, saved in
+     the project), and a rerun builds those, as it does with its data.
+   - **I11.** `keep` and `plugin save` write the recipe with its ingredients inlined (stamped `// ingredient: <id> v<N>
+     sha256:<hash>`); a source with its own `mod ingredients` is built as it stands, so the plugin runs without the
+     library and is unchanged by a library update. `plugin get` lists them (`ingredients`). The hash covers the
+     inlined block too, so a plugin re-kept with another ingredient version is a new version.
 6. **I12–I17.** Saving ingredients, presets, lessons, harvest suggestions, `nugget find`.
 7. **I24–I25.** Process-aware checks.
 
