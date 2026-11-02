@@ -93,6 +93,13 @@ fn a_rectangle_revolved_about_an_axis() {
         "The profile crosses the revolve axis. Keep it on one side.",
     );
 
+    // Two outlines side by side: a revolve takes one, and the refusal points to one op each, combined.
+    let two = revolve(json!([rect(2.0, 0.0, 3.0, 4.0), rect(5.0, 0.0, 6.0, 4.0)]), [0.0, 0.0], [0.0, 1.0], 360.0);
+    refused(
+        &open_feature("rev2", &two),
+        "A revolve takes one outline with its holes, and these loops make 2 outlines. Revolve each outline in its own op; model_apply_batch with combine applies them in one step.",
+    );
+
     // u = 0..4, v = 0..4, touching the U axis. A disk of radius 4, 4 mm thick: π·16·4.
     let about_u = revolve(json!([rect(0.0, 0.0, 4.0, 4.0)]), [0.0, 0.0], [1.0, 0.0], 360.0);
     near(volume(&open_feature("revu", &about_u)), 64.0 * PI);

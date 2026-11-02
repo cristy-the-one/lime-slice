@@ -1,5 +1,5 @@
 //! K1 profile v2: loops, arcs, and holes. A washer and a rounded rectangle against areas worked out by hand,
-//! and the refusals for an open loop, crossing loops, and a hole outside the outline.
+//! and the refusals for an open loop, crossing loops, and a second outline that stands off the part.
 //! `LIME_REQUIRE_OCCT=1` makes a missing kernel a failure.
 
 use std::f64::consts::PI;
@@ -126,9 +126,10 @@ fn washer_and_rounded_rectangle_and_the_refusals() {
         &apply("loops", 0, 90, &extrude(json!([rect(0.0, 0.0, 10.0, 10.0), rect(8.0, 8.0, 14.0, 14.0)]), 5.0)),
         "These loops cross.",
     );
+    // A loop outside every other is an outline of its own (I18): here it stands off the block, a separate body.
     refused(
         &apply("loops", 0, 90, &extrude(json!([rect(0.0, 0.0, 10.0, 10.0), rect(20.0, 20.0, 24.0, 24.0)]), 5.0)),
-        "A hole lies outside the outline. Keep each hole inside.",
+        "This would add a separate body; place it touching the part.",
     );
     let mut both = extrude(json!([rect(0.0, 0.0, 10.0, 10.0)]), 5.0);
     both["profile"] = json!([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]);

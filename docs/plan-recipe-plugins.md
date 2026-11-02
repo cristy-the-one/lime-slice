@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: plan, for review. Written 2026-11-01 against `main` at v4.8.0 (`723d1842`). Nothing here is built yet.
+Status: milestones 1 and 2 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -479,12 +479,50 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    body keeps the version, name clash, remove, a header that does not match its hash), the real-lust session test
    (keep, then run by id, same fingerprint), `schema.test.ts` budgets, a refusal test for a call on another part.
 
+   **As built (milestone 1, branch `claude/recipe-plugins-m1`, with milestone 2):**
+   - **One store.** The plan's drafts are #527's `rustRecipes`, not a second map. That store already kept a run's
+     source as it built, its parameters, its data and its objects, saved in the project as `mcpModel.rustRecipes`.
+     It now also keeps runs that only changed a part (their `changed` parts; under the name, or `<name>@<part>` when
+     the name's entry still has parts on the plate), each entry's `sha256` (D1's identity) and order (`at`), and the
+     stamp `plugin: {id, version, sha256}` of the plugin a run came from or was kept as. `plugin list` shows them as
+     `draft:<name>` and `save {from}` takes the latest of a name. Because #527 already saves the store, drafts outlive
+     the session in the project (the plan had that at milestone 3); the project copy of a plugin as a file (`plugins`
+     map, D7) and the stamp on nodes (D8) are still milestone 3.
+   - D6's file and hash, D7's library (`LIME_PLUGINS_DIR`, five older versions), D14's tool and `recipe_run {plugin,
+     keep}`, `API`, the guide's reuse paragraph (first in `lime://guide/recipes`) and its first sentence in the
+     server instructions, and O8 for every run, as the plan says. `session_info.plugins` has no project count yet.
+   - **Version or clash.** A save of the same body keeps the version. Another body is the next version when the run's
+     name is the plugin's id (`recipe_run {plugin}` runs it under its id, and the guide tells an agent to edit and
+     run it under that name); otherwise it is a different recipe with the same title, kept as `<id>-2` (D10's rule,
+     brought forward for saves).
+   - **Checks** (D3) run at every save, not only from milestone 2: a describe run, then a dry run with the defaults on
+     the run's part or a 40 × 40 × 20 test block. D11.4's `mod`, `#[path]` and `extern crate` refusal is in (one
+     line); the rest of D11 waits for milestone 8.
+   - **Author** is `LIME_PLUGIN_AUTHOR` or `unknown` until the app's "Plugin author" setting (milestone 7); `made-by`
+     is the client's `clientInfo.name` from initialize; `lust` is lust's build id from `lust --version`.
+   - **Budget.** The tool and the two fields cost 281 tokens (the plan said about 260): the list is at 17,021 of
+     17,030. Both are in the model group.
+   - Tests: `mcp/plugins-file.test.ts` (format, hash, versions, removal, API check; no lust), `mcp/plugin.test.ts`
+     (keep, list with a query, get, run by id with the same volume, held values, same body keeps the version, a new
+     version, a clash, a hand-edited file, late parameters, defaults that do not build, a plugin that needs a part,
+     a call on another part refused, a newer API refused, the project keeping drafts, remove; real lust, stand-in
+     engine), `mcp/recipe-session.test.ts` (keep, then run by id on OCCT: the same fingerprint).
+
 2. **Typed parameters.** `number`, `count`, `toggle`, `choice`, `text` builders; describe mode; late-parameter note;
    `API = (1, 1)`; `params` and `target` in the header; save refuses late parameters and defaults that do not build
    (D3).
    *Ships:* `plugin list` shows each plugin's parameters with units and ranges; agents pass valid values first time.
    *Tested by:* `cargo test -p lime-recipe` for each builder's JSON and clamping; `mcp/recipe.test.ts` for the
    describe line, byte for byte under lust and rustc; a plugin with a late parameter refused with its line.
+
+   **As built (milestone 2, same branch):** the five builders with `range`, `step`, `unit`, `label`, `help`,
+   `max_len`; describe mode; `{"note"}` for a held value, `{"late_param"}` after the first call; `API = (1, 1)`. The
+   builders keep no reference to the session (a builder holding `&Session` crashed lust's borrow checker, as did a
+   match guard with a closure over the bound value; both are written around in the crate). `target` is `object` when
+   the describe run read `s.object()` and then panicked, `either` when it read it and went on, else `new`.
+   `cargo test -p lime-recipe` checks each builder's JSON and the held values; `mcp/plugin.test.ts` checks the
+   describe line through a save and the late-parameter refusal under lust; `mcp/recipe-geom2d.test.ts` builds the
+   recipes guide's example (now typed) under lust and rustc, call for call.
 
 3. **The plugin step in the MCP session and the project.** `PluginStamp` and `run` on nodes; `model-tree-file.ts`
    reads and writes them; `project_save` writes the `plugins` map; `project_open` reads it; `obj.groups` for runs

@@ -493,7 +493,7 @@ export function sketchKey(editor: SketchEditor, key: string, mods: { ctrl: boole
     if (!mods.shift) return next;
     const sketch = activeSketch(next);
     const gesture = sketch ? tangentGesture(sketch) : null;
-    if (!gesture) return { ...next, draw: { ...next.draw, tangentArm: true, note: "Draw a line first. A tangent arc starts at its end." } };
+    if (!gesture) return { ...next, draw: { ...next.draw, tangentArm: true, note: "A tangent arc starts at the end of a line. Draw a line first." } };
     return { ...next, draw: { ...next.draw, gesture, note: null } };
   }
   if (key === "n" || key === "N") return withTool(editor, "polygon");
@@ -1071,6 +1071,30 @@ export function pinSketch(editor: SketchEditor, sketch: SketchData, name: string
   while (used.has(id)) id += 1;
   const card: PinnedSketch = { id, name, sketch: sketchJson(sketch) };
   return { ...editor, pinned: [...editor.pinned, card], nextName: Math.max(editor.nextName, id + 1) };
+}
+
+/**
+ * --- E1 (sketch for people). Replace the open drawing as one undo step, the way Close the gap does: Ctrl+Z puts the
+ * drawing back as it was. The selection is cleared, since the ids it named may have gone.
+ */
+export function editActiveSketch(editor: SketchEditor, sketch: SketchData): SketchEditor {
+  if (editor.phase !== "editing" || editor.active == null) return editor;
+  const before = currentMark(editor);
+  const cleared = clearGesture(editor);
+  return { ...replaceSketch(cleared, sketch), undo: [...editor.undo, before].slice(-100), redo: [], selection: freshSelection(), esc: 0 };
+}
+
+/**
+ * --- L1 (sketch for people). Move the open sketch to `plane`. Its undo steps move with it, so Ctrl+Z changes the
+ * drawing and never the height the person typed.
+ */
+export function moveActivePlane(editor: SketchEditor, plane: SketchData["plane"]): SketchEditor {
+  if (editor.phase !== "editing" || editor.active == null) return editor;
+  const sketch = activeSketch(editor);
+  if (!sketch) return editor;
+  const moved = (mark: Mark): Mark => ({ ...mark, sketch: { ...mark.sketch, plane: { origin: [...plane.origin], turn: [...plane.turn] } } });
+  const next = replaceSketch(editor, { ...sketch, plane: { origin: [...plane.origin], turn: [...plane.turn] } });
+  return { ...next, undo: editor.undo.map(moved), redo: editor.redo.map(moved) };
 }
 
 /**

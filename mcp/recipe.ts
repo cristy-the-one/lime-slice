@@ -11,9 +11,9 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { workspaceRoot } from "./workspace.ts";
@@ -24,7 +24,7 @@ import { workspaceRoot } from "./workspace.ts";
  */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "log", "data",
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data",
 ]);
 
 export interface RecipeLimits {
@@ -94,6 +94,15 @@ export interface RunOutcome {
   exitCode?: number | null;
   stderr: string;
   ms: number;
+  /** The recipe's own notes that are not calls: a value held inside its range, say (lime-recipe 1.1). */
+  notes?: string[];
+  /** Parameters declared after the first call, with their lines: a form drawn before the run could not show them. */
+  lateParams?: { name: string; line: number }[];
+  /**
+   * Describe mode (`start.describe`): the parameters in declared order, whether the recipe read its object, and the
+   * line of the first call, where describe mode ended.
+   */
+  described?: { params: Record<string, unknown>[]; readObject: boolean; ended: boolean; line?: number };
 }
 
 const SLOTS = 4;
@@ -218,8 +227,12 @@ export class RecipeHost {
     return { ...process.env, LUST_DAEMON_SOCKET: join(this.root, "lust.sock"), LUST_CACHE_DIR: join(this.root, "cache") };
   }
 
-  /** Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds. */
-  async build(name: string, source: string, autofix: boolean): Promise<BuildResult> {
+  /**
+   * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
+   * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
+   * it, and `source` in the result is the recipe without it.
+   */
+  async build(name: string, source: string, autofix: boolean, suffix = ""): Promise<BuildResult> {
     const started = Date.now();
     // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
     // at the wrong place.
@@ -233,9 +246,12 @@ export class RecipeHost {
     const exe = join(slot, process.platform === "win32" ? "recipe.exe" : "recipe");
     let current = source;
     for (let round = 0; ; round += 1) {
-      writeFileSync(main, current);
+      const own = current.endsWith("\n") || !suffix ? current : `${current}\n`;
+      const ownLines = own.split("\n").length - 1;
+      const ownBytes = Buffer.byteLength(own);
+      writeFileSync(main, suffix ? own + suffix : current);
       const r = await run(avail.lust, ["build", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], this.lustEnv());
-      const diagnostics = parseDiagnostics(r.stdout, main);
+      const diagnostics = parseDiagnostics(r.stdout, main).map((d) => (suffix && (d.line > ownLines || d.edits.some((e) => e.end > ownBytes)) ? { ...d, edits: [] } : d));
       if (r.code === 0) return { ok: true, diagnostics, source: current, fixRounds: round, exe, ms: Date.now() - started };
       if (diagnostics.length === 0) {
         return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
@@ -261,6 +277,9 @@ export class RecipeHost {
     let failure: { reason: string; line?: number } | null = null;
     let halted: RunOutcome["halted"];
     let done: RunOutcome["done"];
+    const notes: string[] = [];
+    const lateParams: { name: string; line: number }[] = [];
+    const described: NonNullable<RunOutcome["described"]> | undefined = start.describe === true ? { params: [], readObject: false, ended: false } : undefined;
     let queue: Promise<void> = Promise.resolve();
     return new Promise((resolve) => {
       const finish = (code: number | null) => {
@@ -270,6 +289,12 @@ export class RecipeHost {
         const lastRefused = refused[refused.length - 1];
         let reason = failure?.reason ?? halted?.reason;
         let line = failure?.line ?? halted?.line;
+        const extra = { ...(notes.length ? { notes } : {}), ...(lateParams.length ? { lateParams } : {}), ...(described ? { described } : {}) };
+        // Describe mode ends at the first call or at done; a panic after the recipe read its object means it needs one.
+        if (described && !failure && (described.ended || (described.readObject && panic))) {
+          resolve({ ok: true, calls, refused, exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started, ...extra });
+          return;
+        }
         if (!reason && !done) {
           if (panic) {
             reason = `The recipe panicked at line ${panic.line}: ${panic.message}`;
@@ -281,7 +306,7 @@ export class RecipeHost {
           }
           if (line === undefined && lastRefused) line = lastRefused.line;
         }
-        resolve({ ok: !reason && !!done, ...(done ? { done } : {}), calls, refused, ...(reason ? { reason } : {}), ...(line !== undefined ? { line } : {}), ...(halted && !failure ? { halted } : {}), exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started });
+        resolve({ ok: !reason && !!done, ...(done ? { done } : {}), calls, refused, ...(reason ? { reason } : {}), ...(line !== undefined ? { line } : {}), ...(halted && !failure ? { halted } : {}), exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started, ...extra });
       };
       const stop = (reason: string, line?: number) => {
         if (!failure) failure = { reason, ...(line !== undefined ? { line } : {}) };
@@ -318,6 +343,28 @@ export class RecipeHost {
           msg = JSON.parse(line) as Record<string, unknown>;
         } catch {
           return stop(`The recipe wrote a line that is not JSON: ${line.slice(0, 120)}`);
+        }
+        // Lines that are not calls take no reply (lime-recipe 1.1): describe mode, notes, late parameters.
+        if (msg.describe && typeof msg.describe === "object") {
+          const d = msg.describe as Record<string, unknown>;
+          if (!described) return stop("The recipe wrote a describe line outside describe mode.");
+          if (d.param && typeof d.param === "object") described.params.push({ ...(d.param as Record<string, unknown>), ...(typeof d.line === "number" ? { line: d.line } : {}) });
+          if (d.object === true) described.readObject = true;
+          if (d.end === true) {
+            described.ended = true;
+            if (typeof d.line === "number") described.line = d.line;
+            child.kill();
+          }
+          return;
+        }
+        if (typeof msg.note === "string") {
+          if (notes.length < 200) notes.push(msg.note.slice(0, 400));
+          return;
+        }
+        if (msg.late_param && typeof msg.late_param === "object") {
+          const late = msg.late_param as { name?: unknown; line?: unknown };
+          if (lateParams.length < 50) lateParams.push({ name: String(late.name ?? ""), line: typeof late.line === "number" ? late.line : 0 });
+          return;
         }
         if (msg.done && typeof msg.done === "object") {
           const d = msg.done as Record<string, unknown>;
@@ -469,6 +516,29 @@ export function recipeDataFile(name: string): RecipeData | { reason: string } | 
     return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength, value };
   }
   return null;
+}
+
+/**
+ * Writes recipe data: `<name>.json` in the MCP workspace (parent folders made), through a temporary file and a rename.
+ * The same names and limit as `data {name}` reads. The reply is its path in the workspace, size, and SHA-256.
+ */
+export function writeRecipeData(name: string, value: unknown): { path: string; bytes: number; sha256: string } | { reason: string } {
+  const bare = name.toLowerCase().endsWith(".json") ? name.slice(0, -5) : name;
+  if (!DATA_NAME.test(bare) || bare.split("/").includes("..") || bare.toLowerCase().endsWith(".csv")) return { reason: `${name || "(no name)"} is not a data name: letters, digits, _ . - and / between parts.` };
+  const root = workspaceRoot();
+  if (!root) return { reason: "Recipe data is written to LIME_MCP_WORKSPACE, which this server does not have." };
+  const text = JSON.stringify(value);
+  const bytes = Buffer.byteLength(text);
+  if (bytes > RECIPE_FILE_MAX_BYTES) return { reason: `This answer is ${Math.round(bytes / 1024)} KB, over the ${RECIPE_FILE_MAX_BYTES / (1024 * 1024)} MB a recipe can read. Cut fewer planes, pass resample, or a larger chordMm.` };
+  const rel = `${bare}.json`;
+  const full = resolve(root, rel);
+  const back = relative(root, full);
+  if (back.startsWith("..") || isAbsolute(back)) return { reason: `${name} leaves the workspace.` };
+  mkdirSync(dirname(full), { recursive: true });
+  const tmp = `${full}.${process.pid}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, full);
+  return { path: rel, bytes, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
 /** The refusal for a data name with no file: the names the workspace has, at most 20. */

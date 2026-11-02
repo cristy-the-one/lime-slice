@@ -170,6 +170,8 @@ jobs:
           node --experimental-strip-types mcp/sim-region.test.ts
           # recipe_run end to end: lust builds, OCCT cuts, a failed or dry run is taken back.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-session.test.ts
+          # Recipes read real geometry (section, face frames) and build lattices in one boolean, the honeycomb floor too.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-reads.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -363,6 +365,10 @@ jobs:
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 
   mcp-windows:
     name: MCP server (Windows)
@@ -427,6 +433,34 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/recipe.test.ts
+
+      # The same calls under lust and rustc for the crate's geometry: their libm differ here in the last bit.
+      - name: Recipe geometry, lust against rustc
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/recipe-geom2d.test.ts
+
+      # Plugins: keep a recipe, find it, run it by id, versions, describe mode, own parts only.
+      - name: Recipe plugins
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/plugin.test.ts
+
+      # Ingredients: imported by name, the same calls under lust and rustc, carried inside a kept plugin.
+      - name: Recipe ingredients
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/ingredient.test.ts
+
+      # Nuggets: harvest offers, keeping an ingredient, presets, lessons, one find over every kind.
+      - name: Recipe nuggets
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/nugget.test.ts
 
   mcp-macos:
     name: MCP server (macOS)

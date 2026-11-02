@@ -26,3 +26,14 @@ fn main() {
 
 Every op an MCP edit takes can be sent as JSON: `Json::obj().set("kind",
 "fillet").set("edges", ...)`. The `ops` helpers cover the common ones.
+
+## Geometry
+
+`geom2d` and `lattice` do the 2D work a recipe would otherwise write by
+hand: polygons and regions with holes, booleans, offsets, rounded corners,
+cleanup, the `loops` an `extrude` takes, and cell patterns clipped to a
+region (`examples/vent_plate.rs`). They use their own sine, cosine and
+arctangent, so a recipe sends the same bytes under lust and rustc, whose
+libm differ in the last bit on Windows (`mcp/recipe-geom2d.test.ts`).
+`tests/kernel_reference.rs` checks the booleans against Open CASCADE.
+Everything stays in `src/lib.rs`: the recipe host copies only that file.

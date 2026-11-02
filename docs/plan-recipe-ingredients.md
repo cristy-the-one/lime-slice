@@ -122,6 +122,41 @@ holds both to the same loops.)
 Every face query (`faces_find`, I5, I6) also returns the face's frame `{origin, u, v, w}` and the matching
 `origin`/`turn` for an `extrude`, so a recipe never has to work out axis conventions by trial.
 
+### As built: I5–I7 and groovi R-B (milestone 3)
+
+- **One tool, `section`**, rather than three: `{face, insetMm}` is I5, `{planes | fan | levels}` is I6, and on a mesh
+  object (no solid) it is R-B's `mesh_section`, cut by the triangles in the plate frame with `resample` and
+  `startAngleDeg`, open chains under `open`. The tools/list was one token under its budget; three tools would have
+  cost about 700 tokens, one costs 270 (`mcp/schema.test.ts`). A recipe calls it as `s.call("section", ...)`; it is on
+  the allowlist.
+- **Answer shape.** Each section is `{frame: {origin, u, v, w}, origin, turn, loops, regions, areaMm2}`. `loops` are
+  ready for `extrude.loops` (curves kept as arcs and splines); `regions` are `{outer, holes}` point lists sampled to
+  `chordMm` (0.05 mm), the `Region` lane B's `geom2d` reads. The kernel calls are `faceOutline` and `section`
+  (`docs/step-modeler.md`).
+- **Frames.** A face's frame is the one `extrude {face}`, `array`, and the other composites use (`levelFrame`: V up a
+  wall), so `faces_find` (now with `frame` on every flat face), `section`, and the ops agree. A plane of `planes` is
+  framed as a face of that normal would be; a fan's U is radial and V along the axis.
+- **Inset** is the kernel's offset of the face (arcs at corners); an inset that leaves nothing answers no loops.
+- **`surface_at` on a mesh** (R-B item 1) casts against the triangles in the plate frame. `render_view {section}` on a
+  mesh (R-B item 2) and `saveAs` into recipe data (R-B item 4, which needs lane A's R-A store) are not done here.
+- The typed `s.face_outline` / `s.section` wrappers returning lane B's `Region` wait for `geom2d` to land.
+
+**As built, the leftovers (branch `claude/recipe-leftovers`):**
+
+- **Typed wrappers** in `lime-recipe`: `s.face_outline(&part, face, inset)`, `s.section(&part, origin, normal)` and
+  `s.sections(&part, args)` return `Section {frame, origin, turn, region, loops, area}`. `region` is a `geom2d::Region`
+  built from the answer's sampled `regions` (even-odd over every outline and hole), so a lattice clips to the real
+  face; `loops` keeps the kernel's arcs; `frame.point([u, v])` gives the part-frame point; `sec.extrude(op, depth,
+  loops)` is the extrude that draws in that frame. `Section::all(&json)` reads a reply or saved data.
+  `mcp/recipe-geom2d.test.ts` runs a recipe using all of them under lust and rustc (same calls, byte for byte), and
+  `mcp/recipe-reads.test.ts` runs one on the real kernel.
+- **R-B item 4, `saveAs`.** `section {..., saveAs: "name"}` writes the answer, as the call would have answered it, to
+  `<name>.json` in the MCP workspace: the store lane A's `data {name}` reads. The reply counts it (`sections`,
+  `points`, `bytes`, `sha256`, and each `areasMm2` up to 50), so a mesh's measured sections never pass through the
+  model. Saved, an answer may hold more than the 100,000 points a reply may, up to the 4 MB a recipe reads. A recipe's
+  own `section` call is refused `saveAs` (a recipe has no files; it reads the answer directly). In a recipe,
+  `Section::all(&s.data("name").unwrap())` reads it back.
+
 ### I8. Say which face a selector picked
 
 Every selector (`face`, `onFace`, `nearPoint`) reports the face it resolved to: index, normal, centre and area. It goes
@@ -220,6 +255,36 @@ building block a recipe calls with its own lattice. It is not a honeycomb op.
 A run past 5 s reports `stage` as `call N of about M, line L` (M taken from the previous run of the same name).
 
 **Done when** the 115-cell floor of section 2 builds in under 10 s on the owner's machine.
+
+### As built: I18–I21 (milestone 4)
+
+- **I18.** `extrude.loops` takes 1,000. Loops are sorted by nesting, not by order: a loop inside no other is an outline,
+  so one extrude holds a whole lattice of cells; a loop inside a hole is an island. Each outline is its own prism and
+  every prism meets the part in one boolean. The crossing check sweeps edge boxes instead of measuring every pair of
+  edges. Over 1,000 is refused pointing to `combine`. A revolve and a loft section keep one outline.
+- **I19** is `model_apply_batch {ops, combine: "cut" | "fuse"}`, called from a recipe as
+  `s.call("model_apply_batch", ...)`: a group with `combine`, one History row (not a row per op: the app's history
+  shows a group as one row), one undo, one against the cap. Failures come back in `failures` by index with
+  `applied`. The typed `s.apply_many` wrapper belongs in `lime-recipe` (lane B's crate) and waits for it.
+  As built in the leftovers: `s.apply_many(&part, "cut" | "fuse", ops) -> Combined {applied, failures: [(index,
+  reason)], reply}`.
+- **Revolve and loft with several outlines** (leftovers): not built. A revolve or loft section of several outlines is
+  one solid per outline fused, which `combine: "fuse"` already does in one step, so the kernel keeps one outline and
+  the refusal now says so and points there: "A revolve takes one outline with its holes, and these loops make 2
+  outlines. Revolve each outline in its own op; model_apply_batch with combine applies them in one step." (it said "A
+  hole lies outside the outline."), and the same for a loft section.
+- **I20.** `array.cell.loops` with `cornerRadius`, `draftDeg`, and `minArea` becomes one extrude of cells: the kernel
+  clips each cell to the face's real outline less `margin` (read with I5's `faceOutline`), drops slivers, rounds
+  corners with a radius that shrinks where an edge is short, and builds them all in one boolean. `region`, `from`,
+  and `fit` stay with shape cells.
+- **I21.** The progress stage reads `recipe <name>: call N of about M, line L (tool)` from the second run of a name on,
+  at every call rather than only past 5 s.
+- **Measured** on the owner's machine with a synthetic tray like section 2's (300 × 120 × 100, 5 mm drafted walls, a
+  3 mm rib slab, 115 hex cells with 2 mm rounded nodes and a 1.5° draft; no owner file): cell by cell 38.2 s
+  (before) and 39.9 s (after) for the recipe run; one extrude of the 115 loops 3.0 s; `combine` 2.7 s; an `array` of
+  loops clipped to the real floor 4.5 s. The first two give the cell-by-cell volume exactly (579,798.89 mm³).
+  `mcp/recipe-reads.test.ts` builds such a floor with a recipe in about 5 s.
+- Fixed on the way: a drafted extrude with a negative depth grew the wrong way and changed nothing.
 
 ## 7. Rerun identity
 
@@ -320,10 +385,84 @@ Each is one PR to `main`, smallest useful first. Each updates `docs/mcp-server.m
      job a restarted server never had reopens the last autosave. The exact groovi cut (19 sections) did not stop the
      kernel on this build: it is refused ("The boolean removed the solid."), and the chunked hollow finishes in 30 s.
 2. **I1–I4.** `geom2d` and `lattice` in `lime-recipe`, with the guide topic and tests.
+
+   **As built (milestone 2, branch `claude/recipe-geom2d`):**
+   - **I1.** `lime_recipe::geom2d`: `Poly` (measures, `clean`, `to_loop`), `Region` (outlines counter-clockwise, holes
+     clockwise; `from_poly`, `with_holes`, `from_loops`), `union`/`intersect`/`difference`/`xor`, `clip` (an intersect
+     against a small shape, windowed first, for cells), `offset`/`offset_miter`, `round_corners`/`round_corners_with`/
+     `chamfer_corners` with a `Corner` report per corner, `Profile` (loops of lines and arcs) and `to_loops()`, one
+     `loops` array per separate piece, since an `extrude` takes one outline and its holes. The booleans split every
+     edge where it meets another, keep each piece where the fill rule changes across it (winding by a ray along the
+     piece's normal), and join the kept pieces into simple loops. `offset` follows the sketch plan's rule (7a): an
+     outside corner rounded with the distance, an inside corner sharp, short edges reduce the radius.
+   - **I2.** `lime_recipe::lattice`: `hex(side, Orient)`, `rect`, `staggered`, `tri`, `along(path, count, cell)`,
+     then `.rib(t)`, `.at(origin)`, `.turned(deg)` and `.cells(&region, min_area)`: index, centre, the clipped
+     region and `clipped`. Node rounding is `round_corners_with` on each cell.
+   - **I3.** `guide {topic: "ingredients"}` (about 820 tokens) lists every public item with an example;
+     `guide {topic: "recipes"}` names the modules. Not built: nearest names for a misspelled function. lust already
+     says `cannot find value hexa in module lattice`; listing close names is a change to lust (or to the host's
+     diagnostics), not to the crate.
+   - **I4.** `cargo test -p lime-recipe`: shapes, measures, booleans with holes, concave and touching outlines,
+     a star against a circle, degenerate input (zero area, a self-touching loop, a bow tie, a hole on the outline's
+     edge), corners shorter than the radius, the three offset fixtures shared with the sketch card, cleanup, loops
+     JSON, lattices, and 400 random outlines on a coarse grid (20,000 checked once) for the area identities.
+     `tests/kernel_reference.rs` checks six boolean cases against Open CASCADE's volumes (within 1e-6 mm²).
+     `mcp/recipe-geom2d.test.ts` builds a sample and the guide's example with lust and with rustc and compares every
+     call. It found that lust's `sin`, `cos`, `tan`, `atan2`, `acos`, `exp` and `ln` differ from rustc's in the last
+     bit on 0.01–3 % of inputs on Windows (`+ - * /`, `sqrt` and `hypot` agree), so the 2026-11-02 honeycomb recipe
+     sends one cell 1 ulp apart under the two; the crate computes its own trigonometry from basic arithmetic.
+   - **Done when.** The honeycomb recipe rewritten with `geom2d` and `lattice` has no geometry functions and is 79
+     lines instead of 199; it cuts the same 115 cells (38 clipped) as the original, each loop equal within
+     1.4e-14 mm (other start points). The volume was not measured on a kernel build: equal loops make the same solid.
+   - All of it is inline modules in `src/lib.rs`, because the recipe host and the installer copy only that file.
 3. **I5–I7.** Face outline, section, frames.
 4. **I18–I21.** Loops limit, `apply_many`, `array` cells, progress.
 5. **I9–I11.** Ingredient files, import, plugins carrying their ingredients. Needs the plugin plan's D6–D7 first.
+
+   **As built (milestone 5, branch `claude/nuggets-ingredients`, `mcp/ingredients.ts`):**
+   - **I9.** The plugin file (D6) with `//! ingredient: <id>` where a plugin has `plugin: <id>` (the key is the kind, so
+     no separate `kind:` line), and no `target` or `params`. Stored in `<plugins>/ingredients/` (the library, D7), with
+     D12's versions and older copies as plugins have them. The project copy is each run's kept copy (below); samples
+     come with the plugin samples. An id must start with a letter and not be a Rust keyword, because a recipe names it
+     as a module (`moulded-tray` is `ingredients::moulded_tray`).
+   - **I10.** The host does the import, not the language: it scans the recipe (comments and strings blanked) for
+     `ingredients::<name>` and `ingredients::<name>::v<N>`, in `use` lines, groups or inline paths, resolves them
+     and what they name in turn (`crate::ingredients::<other>`), and appends the bodies after the recipe as
+     `mod ingredients { pub mod <name> { <latest> pub mod v<N> { <pinned> } } }`, each after a stamp line. lust and
+     rustc build that same text (`mcp/ingredient.test.ts`: the same calls byte for byte). Appending keeps the recipe's
+     lines; a diagnostic, refused call or panic inside an ingredient is reported as that ingredient's line, and lust's
+     fix edits are not applied there. An unknown name is refused before the build with the closest names and every
+     name the library has. A draft keeps each ingredient's body as built (`rustRecipes[...].ingredients`, saved in
+     the project), and a rerun builds those, as it does with its data.
+   - **I11.** `keep` and `plugin save` write the recipe with its ingredients inlined (stamped `// ingredient: <id> v<N>
+     sha256:<hash>`); a source with its own `mod ingredients` is built as it stands, so the plugin runs without the
+     library and is unchanged by a library update. `plugin get` lists them (`ingredients`). The hash covers the
+     inlined block too, so a plugin re-kept with another ingredient version is a new version.
 6. **I12–I17.** Saving ingredients, presets, lessons, harvest suggestions, `nugget find`.
+
+   **As built (milestone 6, branch `claude/nuggets-find`, `mcp/nuggets.ts`):**
+   - **Q2, one tool.** `nugget {action: find | get | save | remove, kind: plugin | ingredient | preset | lesson}`.
+     `find` searches every kind and the session's drafts; the rest take `kind`, and for plugins they are the plugin
+     tool's own. The `plugin` tool keeps answering (clients and notes written for 4.10.0) but is no longer listed: the
+     list grows by 102 tokens (to 17,123), where `plugin` beside three more tools would have cost about 700. A lesson
+     names what it is about in `id`, which saved a field. `recipe_run {plugin, preset}` is the one new run field.
+   - **I12.** `save {kind: "ingredient", from, items}` lifts the items and what they name, made public, with the
+     recipe's `use` lines; `source` saves a whole module. It must build alone under lust or it is not kept, with the
+     line. Not built: running doc examples as tests (a lifted helper has none; an ingredient with examples can be
+     tested by a recipe that imports it). The app's History menu entry is plugin milestone 7's panel.
+   - **I13.** `nuggets` on an apply's reply, at most three, each with its ready-made call: functions over 10 lines that
+     never name `Session`, a refused call the run got past (the lesson's text is left for the agent to write: only it
+     knows what got past the refusal), and a plugin run's own values. Never on a rerun or a `keep`.
+   - **I14.** Presets per plugin in `presets/<plugin>.json`, checked against the declared parameters at save and at
+     use. Presets are for library plugins only: a draft has no declared ranges to check them against.
+   - **I15.** `lessons.json` in the library (Q3); `guide {kind}` answers `data.seenInPractice`, newest five first.
+   - **I16.** `session_info.nuggets`; the server instructions and the recipes guide say `nugget find` first.
+   - **I17.** `get` of an ingredient lists the plugins that carry it and, from two, proposes promotion. The PR to
+     `lime-recipe` stays a person's (or an agent's, asked) decision.
+   - **Section 9.** No seeds ship now: they come from the honeycomb tray, a sample for a later release (Q4).
+   - **Done when** (section 13, adapted), `mcp/nugget.test.ts`: a session's run offers its `cells` helper, the offered
+     call keeps it as `honeycomb`, and a fresh session's `nugget find honeycomb` returns it with its `use` line, and a
+     recipe importing it runs.
 7. **I24–I25.** Process-aware checks.
 
 ## 13. Done for the whole plan

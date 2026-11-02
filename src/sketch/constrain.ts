@@ -191,7 +191,7 @@ function finishDraft(sketch: SketchData, built: Draft, strict: boolean): Constra
 
 export function commitDriving(sketch: SketchData, id: number, value: number, expr?: string | null): ConstrainBuild {
   const current = parseConstraints(sketch).find((item) => item.id === id);
-  if (!current || !("value" in current)) return { error: "That label is not a driving dimension." };
+  if (!current || !("value" in current)) return { error: "That label is not a driving dimension. Click a dimension's number to change it." };
   if (!Number.isFinite(value)) return { error: "Type a number." };
   if ((current.kind === "length" || current.kind === "radius" || current.kind === "diameter") && !(value > 0)) {
     return { error: "Type a distance greater than zero." };
@@ -474,7 +474,7 @@ function fromSelection(sketch: SketchData, tool: ConstrainTool, selection: { ent
   if (tool === "parallel" || tool === "perpendicular" || tool === "angle") {
     if (lines.length >= 2) {
       const constraint = tool === "angle" ? angleConstraint(sketch, lines[0]!, lines[1]!) : ({ id: 0, kind: tool, a: lines[0]!, b: lines[1]! } as SketchConstraint);
-      return constraint ? { constraint } : { error: "Those lines need a direction." };
+      return constraint ? { constraint } : { error: "Those lines have no length. Pick two lines with a length." };
     }
     return { hint: tool === "angle" ? "Angle needs two lines." : `${labelOf(tool)} needs two lines.` };
   }

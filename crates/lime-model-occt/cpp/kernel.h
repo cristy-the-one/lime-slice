@@ -604,6 +604,54 @@ TopoDS_Shape build_extrude_loops_extent(
     const ExtrudeExtent& extent,
     double& volume,
     std::string& error);
+
+/// The tools, each built alone, meeting `current` in one boolean by `which`, checked as one tool is: a cut or fuse
+/// that changes nothing and a fuse that leaves a separate body are refused. `noun` names the edit in those sentences.
+/// With no `current`, the tools fused are the new solid.
+TopoDS_Shape combine_profile_tools(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<TopoDS_Shape>& tools,
+    const char* noun,
+    double& volume,
+    std::string& error);
+
+/// What `build_extrude_cells` did with its cells: built, clipped by the region, left out (outside it, under the
+/// smallest area, or failing to build), and each corner it rounded as full, reduced, or left sharp.
+struct CellCounts {
+    int cells = 0;
+    int clipped = 0;
+    int outside = 0;
+    int small = 0;
+    int failed = 0;
+    int full = 0;
+    int reduced = 0;
+    int sharp = 0;
+    std::string first_failure;
+};
+
+/// A lattice of cells in one boolean (docs/plan-recipe-ingredients.md I20). Each outline in `loops`, with its holes,
+/// is one cell: clipped to the region `clip` (loops on the same plane; none clips nothing), left out under `min_area`
+/// mm², its corners rounded to `corner_radius`, then pushed by `depth` and `extent` (a second depth or a draft, not a
+/// face). Every cell's tool meets `current` in one boolean by `which`. A cell that does not build is left out and
+/// counted; none left is a refusal.
+TopoDS_Shape build_extrude_cells(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    const std::vector<ProfileLoop>& clip,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double corner_radius,
+    double min_area,
+    CellCounts& counts,
+    double& volume,
+    std::string& error);
 TopoDS_Shape build_revolve_loops(
     const TopoDS_Shape& current,
     double before,
@@ -666,5 +714,15 @@ TopoDS_Shape build_move_faces(
     std::string& error);
 /// `{origin, turn, loops}` for a flat face: D2 loops in the face's plane. Empty, and `error` set, otherwise.
 std::string face_loops_json(const TopoDS_Face& face, std::string& error);
+
+// --- Recipe reads (docs/plan-recipe-ingredients.md I5–I7). Keep this block together. ---
+/// I5: a flat face's outline, inset `inset` mm (0 for none), in a frame: `frame` is nine numbers (origin, U, V) in
+/// the face's plane, or null for the face's own (its centre, as `face_loops_json`). The answer is the frame with the
+/// `extrude` origin and turn that draw in it, `loops` ready for `extrude.loops`, `regions` sampled to `chord` mm, and
+/// `areaMm2`. An inset that leaves nothing answers with no loops.
+std::string face_region_json(const TopoDS_Face& face, const double* frame, double inset, double chord, std::string& error);
+/// I6: the shape cut by the plane (`plane`: origin and normal), in the frame `frame` (nine numbers in that plane), as
+/// `face_region_json` answers.
+std::string section_json(const TopoDS_Shape& shape, const double* plane, const double* frame, double chord, std::string& error);
 
 }  // namespace lime_occt

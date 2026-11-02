@@ -115,6 +115,11 @@ mcp/partition.test.ts
 mcp/transition.test.ts
 mcp/request.test.ts
 mcp/recipe-find.test.ts
+mcp/plugins-file.test.ts
+mcp/ingredients-file.test.ts
+mcp/nuggets-file.test.ts
+mcp/mesh-section.test.ts
+mcp/sections.test.ts
 src/sim/recipe.test.ts
 src/sim/study.test.ts
 src/sim/bridge-body.test.ts
@@ -163,10 +168,14 @@ src/sketch/revolve.test.ts
 src/sketch/loft.test.ts
 src/sketch/loops.test.ts
 src/sketch/sweep.test.ts
+src/sketch/round-route.test.ts
 src/sketch/edit.test.ts
 src/sketch/solve.test.ts
 src/sketch/session.test.ts
 src/sketch/hints.test.ts
+src/sketch/reasons.test.ts
+src/sketch/close-gap.test.ts
+src/sketch/loft-above.test.ts
 src/modeling/index.test.ts
 src/model-face.test.ts
 src/model-loops.test.ts

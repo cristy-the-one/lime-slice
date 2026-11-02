@@ -159,6 +159,27 @@ where the reason is geometric:
 **Done when** every reason string in `src/sketch/` and `featureBlocked()` passes a unit test that it ends with
 an action, and an open-ends sketch shows its red dots in an e2e screenshot.
 
+**As built (milestone 1, P1 + P3).**
+- `src/sketch/reasons.ts` holds the purpose lines (`PURPOSE`), the card's Edit and Make rows (`EDIT_BUTTONS`,
+  `MAKE_BUTTONS`), every card reason (`REASON`), and the marks: `openEnds`, `sharpCorners` (the sweep's own 25° rule),
+  `axisCrossings`. The card builds both rows from those lists, so a button with no purpose can't be drawn.
+- Tips: the purpose line with the key. A greyed button keeps it and adds the reason on a second line (the tooltip
+  shows the reason in the warning colour); the reason alone is `data-reason`, which a click or the key says in the
+  status line. The Construction and Use lines don't name the button, so they read the same after C1 and U1 rename it.
+- Reasons by cause, not one sentence per button: nothing drawn, open ends, only helper lines, crossings that close
+  nothing, or a shape not picked. Open ends get red dots when the greyed button is hovered or focused, or its key is
+  pressed, and keep them until the drawing changes, so they don't sit on an intended sweep route while drawing. A sharp
+  sweep corner and a revolve-axis crossing are marked whenever the feature is open. The canvas carries
+  `data-sketch-marks` and `data-sketch-marks-kind`.
+- Holes stays on the Make row off a face, greyed with the face reason, instead of being hidden.
+- Wording that differs from the table above: "Add a shape above" (L1) isn't built, so the loft reasons point to
+  another sketch's card or a face; the sharp-corner reason points to Fillet corner (G), since S3's radius isn't on the
+  card yet. Builder refusals that already ended with an action kept their words, including the revolve builder's
+  `CROSS_REFUSAL`, which a parameter rebuild through the MCP can return; the card shows the table's sentence.
+- `src/sketch/reasons.test.ts` checks every `*_REFUSAL`, `SHARP_CORNER`, `EDGE_MEET`, `error:` and `note:` sentence in
+  `src/sketch/` and `src/app/sketch.ts` ends with an action verb; `e2e/model-sketch-reasons.spec.ts` checks the tips
+  and the open-ends dots. Nothing under `mcp/` changed, and no saved field.
+
 ## 5. Make operations, done the natural way
 
 ### E1. Extrude: close the shape for me
@@ -186,6 +207,40 @@ a circle, move it. Finish returns to the loft with both sections picked.
 Stores: the same `loft` op with two sketches in `drawing.sketches`. **Done when** square-to-round takes
 Loft, Add a shape above, draw a circle, Apply, without touching an origin plane or the Offset field.
 
+**As built (milestone 3, L1 + E1).**
+- E1 is `closeGap` in `src/sketch/close-gap.ts`. It takes milestone 1's red ends (`openEnds`) and pairs them
+  nearest first. A pair within 0.2 mm (`SNAP_GAP_MM`) is snapped: the later point becomes the earlier one, as a
+  drop onto it would. A point a constraint or size names is never moved; its gap gets a line. Any wider pair is
+  joined with a line from the earlier end to the later one, as the Line tool would draw it. The button is offered
+  only when the result has more shapes than the drawing had, so a lone line or a closing line that would cross
+  the drawing never shows it.
+- Deviation: the plan offered Close the gap only for ends within 1 mm. Lane F's brief asks for one action whenever
+  the drawing doesn't close, so the button shows for any gap that one line closes (a U across its top, an arc into
+  a D); the 1 mm rule became the snap rule, tightened to 0.2 mm so a move is never visible in a print.
+- **Close the gap** sits on the Make row after Extrude, only while it can help. Hovering it shows the red ends.
+  The open-ends reason then reads "… Click Close the gap, or drag one end onto the other." (`REASON.openEndsClose`).
+  One click is one undo step (`editActiveSketch` in `session.ts`), and the status line says what it did.
+- L1 is `shapeAbove`, `planeAbove` and `settleAbove` in `src/sketch/loft-above.ts`. The copy is the whole first
+  drawing (points, lines, ids and sizes, so a driving size still works), on the plane moved along its normal with
+  the same turn. It drops a face or workplane `on` and keeps an origin plane's, as the chooser's Offset does.
+- The loft strip shows **Height** (20 mm; type it, or drag the word sideways, 1 mm per 4 px) and **Add a shape
+  above** while the loft has one section from the open sketch and that sketch has one shape. The first sketch
+  becomes a card, and the copy opens on the plane above with a **Shape above** strip in place of Make: the height
+  again (it moves the open sketch, undo steps included, via `moveActivePlane`), **Back to loft** and Cancel.
+- Back to loft (or Finish sketch) pins the shape above, reopens the first sketch, and starts the loft through the
+  strict code: `beginLoft`, then `takeLoftSketch` on the new card. So the stored op is the strict path's by
+  construction. Ruled and Join/Cut/New are kept across the trip. Cancel drops the copy and returns to the loft with
+  its one section. Esc twice, or another tool taking the dock, leaves both sketches as cards.
+- Square to round: drawing a circle beside the untouched copy turns the copy into helper lines on Back to loft,
+  so the circle is the top and the copy stays as a guide. A moved or resized copy is the person's shape and is left
+  alone; two shapes of their own say "Delete the ones the loft shouldn't use, then click Back to loft."
+- Deviation: the done-when clicks are Loft, Add a shape above, draw a circle, **Back to loft**, Apply. The plan's
+  own text says Finish returns to the loft, and the loft ghost is seen before Apply.
+- Section 7 tests: `src/sketch/loft-above.test.ts` checks the copy against a square drawn by hand on XY offset 20,
+  and the whole loft op (and square to round over helper lines) against the strict path's. `close-gap.test.ts`
+  checks the closed L and the snapped square, and their extrude ops, against the drawings closed by hand.
+  `e2e/model-sketch-assist.spec.ts` drives both, a dragged and a typed height, Cancel and Finish.
+
 ### S1. Sweep in one sketch
 
 If the open sketch has exactly one closed shape and one open chain on the same plane, Sweep accepts both
@@ -206,6 +261,24 @@ hollow tube). The circle is generated at the start, facing the route.
 Stores: the same sweep, with a circle profile (and a second circle as a hole for Wall). **Done when** the
 tutorial's bent pipe takes: line, tangent arc, W, type 8, Apply.
 
+**As built (milestone 2, S1 + S2).**
+- `oneSketchSweep`, `standUpProfile` and `pipeProfile` in `src/sketch/sweep.ts`. The drawing splits by what its lines
+  join: a piece with a loose end is the route, the rest is the shape. S1 needs exactly one shape (holes allowed) and an
+  open route. The stood-up plane is the drawing's plane turned so its normal runs along the route's start, so the
+  shape keeps its points, lines and ids; only `on` and its constraints are dropped from the stood-up copy.
+- The route's start direction is the first piece's own direction, or the three-point tangent where the start is a
+  sampled arc. A three-point tangent over a line then an arc's samples tilted the plane by a few degrees.
+- Stored op: `drawing.sweep.profile` is the stood-up shape and `pathSketch` is the route alone, which is exactly a
+  two-sketch sweep. `src/sketch/sweep.test.ts` checks the whole op against a circle drawn by hand on a plane facing
+  the start (`{u: -Z, v: Y, w: X}` at the route's start). History Edit reopens it as a two-sketch sweep.
+- The card's toggle is one button, **Profile: stood up at the start** / **Profile: as drawn** (`data-sketch-stance`).
+  "As drawn" gives #529's same-plane refusal.
+- Pipe opens at 5 mm with Wall 0. Diameter and Wall are in the heads-up box, and Diameter is also on the card. A drag
+  doesn't scale a pipe. History Edit of a pipe reopens it as an ordinary sweep of its circle sketch, not as Pipe.
+- A click on another shape leaves S1 or Pipe for the ordinary sweep. How steps exist for both (`sweep-one`, `pipe`).
+- No route arrow (R2) yet: the stood-up ghost shows which end was taken. `e2e/model-sweep-one-sketch.spec.ts` sweeps
+  a circle and a route with W, Enter, and a route alone as an 8 mm tube.
+
 ### S3. Round sharp corners for me
 
 A route with a corner over 25° is no longer only refused: the card shows **Round corners** with a radius
@@ -224,6 +297,50 @@ closes this sketch (keeping it) and arms face picking. On a face sketch with not
 
 Stores: the same hole group. **Done when** H on a face sketch with three circles, nothing selected, drills
 three holes after one Yes.
+
+**As built (milestone 4, S3 + H1 + V1).**
+- S3 is `routeCornerLines`, `roundRouteCorners` and `smallestRouteRadius` in `src/sketch/round-route.ts`. The sharp
+  corners are milestone 1's (`sharpCorners`, the sweep's own 25° rule); each must be two solid lines ending at the same
+  spot, or nothing is offered and the sharp-corner reason stays. Rounding is `filletCorner` at each corner, then
+  `carryDims`, which is what Fillet corner (G) does. The radius on offer starts at the profile's own radius (its reach
+  from its centre), rounded up to 0.5 mm, and grows by a quarter until the sweep builds (12 tries); in practice it is
+  the profile's radius (3 for a 6 mm circle, 4 for an 8 mm pipe).
+- The card shows **Round corners** (pressed) and **Radius** whenever it can help, for S1, Pipe, and a two-sketch sweep
+  whose route is the open sketch. The sweep's fields then come from the rounded copy, so the ghost, the route drawn over
+  the sketch, and Apply all use it, and the sketch itself is untouched until Apply. Off brings the red dot and the
+  reason back, now "… Click Round corners, or draw the bend as an arc." (`REASON.sharpRound`). A typed radius is kept
+  (a pipe made wider then still uses it); a cleared field goes back to the smallest. The field takes each keystroke,
+  and the size box leaves its keys alone (`data-own-keys` in `src/interact/hud.ts`), so Enter applies what it says.
+- Apply sends the sweep of the rounded drawing, and only when the modeler takes it are the arcs written into the open
+  sketch (`editActiveSketch`), so the sketch card keeps them and History Edit reopens them. Deviation: "one undo step"
+  is one Apply. After Apply the sketch is closed, so Ctrl+Z takes the sweep back and the card keeps its arcs, as Fillet
+  corner then Sweep would leave it.
+- Bug fixed on the way: Fillet corner on two lines whose ends sit on one spot without sharing a point trimmed the first
+  line from its start, not from the corner (`filletCorner` passed the line's first point as the corner). Lines drawn as
+  one chain share the point and were never affected.
+- H1: off a face, while the part has faces, Holes keeps its place greyed with "Holes go into a face. Click Start on a
+  face, then draw points or circles where the holes go." (`REASON.holesFace`; with no part, milestone 1's sentence
+  stays) and **Start on a face** sits after it. It keeps the sketch as a card (`beginChoose`) and the chooser opens
+  with "Your sketch is kept as a card. Click a face of the part to draw the holes on."
+- On a face sketch with nothing selected, H asks "Drill at every point and circle centre in this sketch?" in place of
+  the Make row, with **Yes, drill 3 holes** (focused; Enter, or H again) and **No, I'll pick** (Esc, which says
+  `POINT_REFUSAL`). "Every point and circle centre" is `everyHoleSelection`: each solid circle and each point no line
+  uses. A helper circle (a bolt circle the holes sit on) and the ends of lines are left out. Yes selects them and opens
+  the Hole panel, exactly as H on that selection does, so the group stored is the same. Deviation: the done-when
+  "drills three holes after one Yes" is Yes, then the Hole panel's Apply with its sizes, since a hole needs a diameter
+  and a depth; Yes replaces the three Shift-clicks.
+- V1 is `axisChoices` in `src/sketch/revolve.ts`: "Spin around:" then helper lines ("your helper line", or numbered),
+  "this line" for a picked axis that is none of the others, the straight sides that bound the picked shape ("the
+  shape's left side", right side, bottom, top), and "the vertical axis (Y)", "the horizontal axis (X)" named by the
+  model axis they run along. A line is listed once; a side on a plane axis is listed as that axis. A listed axis the
+  shape crosses is greyed with "The shape crosses this line. Pick an axis beside the shape." The pressed one is the
+  axis in use, none while the axis still follows the pointer. The list wraps above Flip and the angle; at 1440 x 1000
+  the revolve card keeps its Apply on screen with room to spare.
+- Section 7 tests: `src/sketch/round-route.test.ts` (the rounded drawing equals Fillet corner's; the S1 sweep of it
+  equals the two-sketch sweep of a circle drawn by hand facing the route and the route rounded by hand; a pipe; what
+  isn't offered), `holes.test.ts` (Yes stores the hand-picked group), `revolve.test.ts` (a listed helper line and a
+  listed side store the hovered revolve). `e2e/model-sketch-anywhere.spec.ts` drives all three. Nothing under `mcp/`
+  changed, and no saved field.
 
 ## 6. Edit tools, done the natural way
 

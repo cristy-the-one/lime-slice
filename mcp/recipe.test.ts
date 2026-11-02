@@ -283,6 +283,26 @@ function stub(log: RecipeCallSite[]) {
   check("session: the project carries the data, so a rerun builds without the files", rebuilt.ok === true && rebuilt.object === trayId && (rebuilt.metrics as { n?: number }).n === 3, rebuilt);
   process.env.LIME_MCP_WORKSPACE = ws;
 
+  // --- section {saveAs}: a mesh's measured sections go to the workspace as recipe data, and a recipe reads them back.
+  const meshCube = String((await reopened.call("mesh_import", { path: fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url)) })).object);
+  const savedLevels = await reopened.call("section", { object: meshCube, levels: { axis: "z", values: [5, 10, 15] }, resample: 32, saveAs: "cube/levels" });
+  const savedFile = join(ws, "cube", "levels.json");
+  const savedDoc = JSON.parse(readFileSync(savedFile, "utf8")) as { sections: { regions: unknown[] }[] };
+  check("section saveAs writes the answer as recipe data and replies with counts only", savedLevels.ok === true && savedLevels.saved === "cube/levels" && savedLevels.sections === 3 && (savedLevels.areasMm2 as number[]).every((a) => Math.abs(a - 400) < 12) && !JSON.stringify(savedLevels).includes("regions") && savedDoc.sections.length === 3, savedLevels);
+  const levels = src([
+    '    let d = s.data("cube/levels").unwrap();',
+    "    let secs = lime_recipe::Section::all(&d);",
+    "    let p = s.solid_new(ops::cuboid(secs[1].region.area().sqrt(), 5.0, 5.0)).unwrap();",
+    '    s.done_with(&p, lime_recipe::Json::obj().set("levels", secs.len()).set("area", secs[1].region.area()).set("z", secs[1].frame.origin[2]));',
+  ]);
+  const readBack = await reopened.call("recipe_run", { source: levels, name: "levels" });
+  const lm = readBack.metrics as { levels?: number; area?: number; z?: number } | undefined;
+  check("a recipe reads the saved sections with Section::all", readBack.ok === true && lm?.levels === 3 && Math.abs((lm?.area ?? 0) - 400) < 12, readBack);
+  const inRecipe = await reopened.call("recipe_run", { source: src([`    let r = s.call("section", lime_recipe::Json::obj().set("object", "${meshCube}").set("levels", lime_recipe::Json::obj().set("axis", "z").set("values", vec![5.0])).set("saveAs", "x"));`, "    let p = s.solid_new(ops::cuboid(1.0, 1.0, 1.0)).unwrap();", "    if let Err(e) = r { s.log(&e.reason); }", "    s.done(&p);"]), name: "nosave", object: meshCube });
+  check("a recipe may not write data with saveAs", inRecipe.ok === true && JSON.stringify(inRecipe.notes).includes("saveAs is for a call from the chat"), inRecipe);
+  const badName = await reopened.call("section", { object: meshCube, levels: { axis: "z", values: [5] }, saveAs: "../out" });
+  check("saveAs keeps to data names in the workspace", badName.ok === false && /not a data name/.test(String(badName.reason)), badName);
+
   // --- R-C. A loft that stops the kernel is a refusal the recipe handles: it cuts in pieces of four sections.
   process.env.LIME_MCP_FAKE_STOP_LOFT = "1";
   const chunked = src([

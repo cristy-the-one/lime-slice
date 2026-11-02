@@ -536,13 +536,13 @@ test("Enter on an extrude that is refused says why under the box and in the stat
 
   // A refusal the client knows is said as the value is typed, before Enter.
   await page.keyboard.type("0");
-  await expect(note).toHaveText("An extrude needs a depth other than 0.");
-  await expect(readout).toContainText("An extrude needs a depth other than 0.");
+  await expect(note).toHaveText("Set a depth other than 0 for the extrude.");
+  await expect(readout).toContainText("Set a depth other than 0 for the extrude.");
   await page.keyboard.press("Enter");
   await page.mouse.move(box.x + 20, box.y + 20);
   await page.mouse.move(box.x + 40, box.y + 30);
-  await expect(readout, "the hint does not write over it").toContainText("An extrude needs a depth other than 0.");
-  await expect(note).toHaveText("An extrude needs a depth other than 0.");
+  await expect(readout, "the hint does not write over it").toContainText("Set a depth other than 0 for the extrude.");
+  await expect(note).toHaveText("Set a depth other than 0 for the extrude.");
   await expect(canvas, "the extrude stays open to fix").toHaveAttribute("data-extrude", "aim");
 
   // The engine's refusal stays too, under the box and in the status line, after the pointer moves.

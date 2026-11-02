@@ -9,3 +9,7 @@ publish = false
 description = "The recipe side of Lime Slice's recipe protocol (docs/plan-recipes.md): no dependencies, built by lust and by rustc."
 
 [dependencies]
+
+[dev-dependencies]
+# The kernel, as the reference for geom2d booleans in tests only (tests/kernel_reference.rs). Recipes never link it.
+lime-model-occt = { path = "../lime-model-occt" }

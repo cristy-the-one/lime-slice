@@ -14,9 +14,9 @@ import { loopSignedArea, toLoops, type ProfileLoop, type Region } from "./region
 import { tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import { copyLoop, drawLoop, lineLoop, sampleLoopPoints, sentence } from "./loops.ts";
 
-export const COPLANAR_REFUSAL = "The loft has no volume: its sections lie in one plane.";
-export const SECTIONS_REFUSAL = "A loft needs two or more sections.";
-export const FACE_SOLID_REFUSAL = "A face section needs a solid.";
+export const COPLANAR_REFUSAL = "The shapes are all on one plane, so the loft has no volume. Pick a shape on another plane, at another height.";
+export const SECTIONS_REFUSAL = "A loft needs a second shape at another height. Click another sketch's card, or a flat face of the part.";
+export const FACE_SOLID_REFUSAL = "A face section needs a solid. Pick a shape in a sketch instead.";
 const FACE_FLAT = "Face loops are for a flat face.";
 const FACE_OUTLINE = "Open CASCADE could not read this face's outline.";
 

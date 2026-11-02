@@ -88,13 +88,13 @@ export function extend(sketch: SketchData, entityId: number, at: Pt): EditResult
   const entity = sketchEntity(sketch, entityId);
   const curve = entity && curveOf(sketch, entity);
   if (!entity || !curve) return { sketch, error: "Click a line, arc, or spline to extend." };
-  if (curve.kind === "circle") return { sketch, error: "A circle is already closed." };
-  if (curve.kind === "spline" && curve.closed) return { sketch, error: "A closed spline has no end to extend." };
+  if (curve.kind === "circle") return { sketch, error: "A circle is already closed. Click a line, arc, or open spline to extend." };
+  if (curve.kind === "spline" && curve.closed) return { sketch, error: "A closed spline has no end. Click a line, arc, or open spline to extend." };
   const hit = curveProject(curve, at);
   if (!hit) return { sketch, error: "Click a line, arc, or spline to extend." };
   const atStart = hit.t <= 0.5;
   const target = nearestHit(sketch, entity.id, curve, atStart);
-  if (!target) return { sketch, error: "Extend this end until it meets another line or arc. Nothing is in the way yet." };
+  if (!target) return { sketch, error: "Nothing is in the way of this end yet. Draw a line or arc for it to reach, then extend it." };
   return { sketch: prunePoints(extendTo(sketch, entity, curve, atStart, target)) };
 }
 
@@ -105,7 +105,7 @@ export function extend(sketch: SketchData, entityId: number, at: Pt): EditResult
  */
 export function offset(sketch: SketchData, entityIds: readonly number[], distance: number): EditResult {
   if (!entityIds.length) return { sketch, error: "Select a line, arc, circle, or spline to offset." };
-  if (!Number.isFinite(distance) || Math.abs(distance) <= EPS) return { sketch, error: "An offset needs a distance other than 0." };
+  if (!Number.isFinite(distance) || Math.abs(distance) <= EPS) return { sketch, error: "Type an offset distance other than 0." };
   const entities = entityIds.map((id) => sketchEntity(sketch, id));
   if (entities.some((entity) => !entity)) return { sketch, error: "Select a line, arc, circle, or spline to offset." };
   const present = entities as SketchEntity[];
@@ -137,9 +137,12 @@ export function filletCorner(sketch: SketchData, lineA: number, lineB: number, r
   const fillet = cornerFillet(a0.at, a1.at, b0.at, b1.at, radius);
   if ("error" in fillet) return { sketch, error: fillet.error };
   const cornerId = sharedPoint(a, b);
+  // Two lines whose ends only sit on the same spot meet where an end of one is an end of the other. Each line is
+  // trimmed back from that end, not from its first point.
+  const cornerAt = samePt(a0.at, b0.at) || samePt(a0.at, b1.at) ? a0.at : a1.at;
   let next = sketch;
-  next = retargetLine(next, a, cornerId, a0.at, fillet.tangentA);
-  next = retargetLine(next, b, cornerId, b0.at, fillet.tangentB);
+  next = retargetLine(next, a, cornerId, cornerAt, fillet.tangentA);
+  next = retargetLine(next, b, cornerId, cornerAt, fillet.tangentB);
   const placedA = place(next, fillet.tangentA);
   const placedB = place(placedA.sketch, fillet.tangentB);
   const arc = addArc(placedB.sketch, placedA.id, placedB.id, fillet.through, a.construction || b.construction);
@@ -158,9 +161,9 @@ export function mirror(sketch: SketchData, entityIds: readonly number[], axisA: 
 /** `count` copies of `entityIds`, the ith shifted by `i` times `delta`. */
 export function linearCopy(sketch: SketchData, entityIds: readonly number[], delta: Pt, count: number): EditResult {
   if (!entityIds.length) return { sketch, error: "Select something to copy." };
-  if (!Number.isInteger(count) || count < 1) return { sketch, error: "A copy needs a count of at least 1." };
+  if (!Number.isInteger(count) || count < 1) return { sketch, error: "Set a count of 1 or more for the copies." };
   if (!Number.isFinite(delta[0]) || !Number.isFinite(delta[1]) || Math.hypot(delta[0], delta[1]) <= EPS) {
-    return { sketch, error: "A copy needs a distance." };
+    return { sketch, error: "Set a distance between the copies." };
   }
   let next = sketch;
   for (let i = 1; i <= count; i++) {
@@ -174,8 +177,8 @@ export function linearCopy(sketch: SketchData, entityIds: readonly number[], del
 /** `count` copies of `entityIds`, the ith turned by `i` times `angleDeg` about `centre`. */
 export function polarCopy(sketch: SketchData, entityIds: readonly number[], centre: Pt, angleDeg: number, count: number): EditResult {
   if (!entityIds.length) return { sketch, error: "Select something to copy." };
-  if (!Number.isInteger(count) || count < 1) return { sketch, error: "A round copy needs a count of at least 1." };
-  if (!Number.isFinite(angleDeg) || Math.abs(angleDeg) <= 1e-9) return { sketch, error: "A round copy needs an angle other than 0." };
+  if (!Number.isInteger(count) || count < 1) return { sketch, error: "Set a count of 1 or more for the round copy." };
+  if (!Number.isFinite(angleDeg) || Math.abs(angleDeg) <= 1e-9) return { sketch, error: "Set an angle other than 0 for the round copy." };
   let next = sketch;
   const step = (angleDeg * Math.PI) / 180;
   for (let i = 1; i <= count; i++) {
