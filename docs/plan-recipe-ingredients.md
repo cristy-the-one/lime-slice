@@ -122,6 +122,25 @@ holds both to the same loops.)
 Every face query (`faces_find`, I5, I6) also returns the face's frame `{origin, u, v, w}` and the matching
 `origin`/`turn` for an `extrude`, so a recipe never has to work out axis conventions by trial.
 
+### As built: I5–I7 and groovi R-B (milestone 3)
+
+- **One tool, `section`**, rather than three: `{face, insetMm}` is I5, `{planes | fan | levels}` is I6, and on a mesh
+  object (no solid) it is R-B's `mesh_section`, cut by the triangles in the plate frame with `resample` and
+  `startAngleDeg`, open chains under `open`. The tools/list was one token under its budget; three tools would have
+  cost about 700 tokens, one costs 270 (`mcp/schema.test.ts`). A recipe calls it as `s.call("section", ...)`; it is on
+  the allowlist.
+- **Answer shape.** Each section is `{frame: {origin, u, v, w}, origin, turn, loops, regions, areaMm2}`. `loops` are
+  ready for `extrude.loops` (curves kept as arcs and splines); `regions` are `{outer, holes}` point lists sampled to
+  `chordMm` (0.05 mm), the `Region` lane B's `geom2d` reads. The kernel calls are `faceOutline` and `section`
+  (`docs/step-modeler.md`).
+- **Frames.** A face's frame is the one `extrude {face}`, `array`, and the other composites use (`levelFrame`: V up a
+  wall), so `faces_find` (now with `frame` on every flat face), `section`, and the ops agree. A plane of `planes` is
+  framed as a face of that normal would be; a fan's U is radial and V along the axis.
+- **Inset** is the kernel's offset of the face (arcs at corners); an inset that leaves nothing answers no loops.
+- **`surface_at` on a mesh** (R-B item 1) casts against the triangles in the plate frame. `render_view {section}` on a
+  mesh (R-B item 2) and `saveAs` into recipe data (R-B item 4, which needs lane A's R-A store) are not done here.
+- The typed `s.face_outline` / `s.section` wrappers returning lane B's `Region` wait for `geom2d` to land.
+
 ### I8. Say which face a selector picked
 
 Every selector (`face`, `onFace`, `nearPoint`) reports the face it resolved to: index, normal, centre and area. It goes
@@ -220,6 +239,29 @@ building block a recipe calls with its own lattice. It is not a honeycomb op.
 A run past 5 s reports `stage` as `call N of about M, line L` (M taken from the previous run of the same name).
 
 **Done when** the 115-cell floor of section 2 builds in under 10 s on the owner's machine.
+
+### As built: I18–I21 (milestone 4)
+
+- **I18.** `extrude.loops` takes 1,000. Loops are sorted by nesting, not by order: a loop inside no other is an outline,
+  so one extrude holds a whole lattice of cells; a loop inside a hole is an island. Each outline is its own prism and
+  every prism meets the part in one boolean. The crossing check sweeps edge boxes instead of measuring every pair of
+  edges. Over 1,000 is refused pointing to `combine`. A revolve and a loft section keep one outline.
+- **I19** is `model_apply_batch {ops, combine: "cut" | "fuse"}`, called from a recipe as
+  `s.call("model_apply_batch", ...)`: a group with `combine`, one History row (not a row per op: the app's history
+  shows a group as one row), one undo, one against the cap. Failures come back in `failures` by index with
+  `applied`. The typed `s.apply_many` wrapper belongs in `lime-recipe` (lane B's crate) and waits for it.
+- **I20.** `array.cell.loops` with `cornerRadius`, `draftDeg`, and `minArea` becomes one extrude of cells: the kernel
+  clips each cell to the face's real outline less `margin` (read with I5's `faceOutline`), drops slivers, rounds
+  corners with a radius that shrinks where an edge is short, and builds them all in one boolean. `region`, `from`,
+  and `fit` stay with shape cells.
+- **I21.** The progress stage reads `recipe <name>: call N of about M, line L (tool)` from the second run of a name on,
+  at every call rather than only past 5 s.
+- **Measured** on the owner's machine with a synthetic tray like section 2's (300 × 120 × 100, 5 mm drafted walls, a
+  3 mm rib slab, 115 hex cells with 2 mm rounded nodes and a 1.5° draft; no owner file): cell by cell 38.2 s
+  (before) and 39.9 s (after) for the recipe run; one extrude of the 115 loops 3.0 s; `combine` 2.7 s; an `array` of
+  loops clipped to the real floor 4.5 s. The first two give the cell-by-cell volume exactly (579,798.89 mm³).
+  `mcp/recipe-reads.test.ts` builds such a floor with a recipe in about 5 s.
+- Fixed on the way: a drafted extrude with a negative depth grew the wrong way and changed nothing.
 
 ## 7. Rerun identity
 

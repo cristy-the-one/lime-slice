@@ -95,7 +95,9 @@ import {
 } from "./sim.ts";
 import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
-import { CURVED_FACE, GLOBAL_WORKPLANE, drillDown, workplaneIn, workplaneOwn, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
+import { CURVED_FACE, GLOBAL_WORKPLANE, axesOf, drillDown, workplaneIn, workplaneOwn, isGlobalFrame, localPoint, planePoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
+import { cellExtent, latticeLoops } from "./cells.ts";
+import { cutPlanes, frameNumbers, frameOf, MAX_SECTION_POINTS, meshSection, pointsIn, type CutPlane } from "./sections.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
 import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setMeasuredFits, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
@@ -792,13 +794,28 @@ function firstAfter(tree: ModelTree, from: number, to: number): number | null {
 
 const LOOP_SHAPE = "smooth and corners are for a point profile. A loop uses arc and spline segments.";
 
+/** Past this many loops or steps, an applied op's echo counts them instead of listing them. */
+const ECHO_ITEMS = 32;
+
+/** I18–I20: an op as a reply echoes it, with a lattice's loops, its region, and a combined group's steps counted, not listed. */
+function compactEcho(op: Record<string, unknown>): Record<string, unknown> {
+  const count = (value: unknown, noun: string) => (Array.isArray(value) ? `${value.length} ${noun}${value.length === 1 ? "" : "s"}` : value);
+  const long = (value: unknown) => Array.isArray(value) && value.length > ECHO_ITEMS;
+  return {
+    ...op,
+    ...(long(op.loops) || op.clip !== undefined ? { loops: count(op.loops, "loop") } : {}),
+    ...(op.clip !== undefined ? { clip: count(op.clip, "loop") } : {}),
+    ...(long(op.steps) || op.combine !== undefined ? { steps: count(op.steps, "step") } : {}),
+  };
+}
+
 /**
  * K1 loops, when the field is present. Absent means the op uses a point profile. A bad loop is a sentence.
  */
 function readLoopsField(value: unknown): { loops?: ProfileLoop[] } | { reason: string } {
   if (value === undefined) return {};
   if (!Array.isArray(value) || value.length < 1) return { reason: "A profile needs a loop." };
-  if (value.length > 32) return { reason: "A profile takes at most 32 loops." };
+  if (value.length > 1000) return { reason: "A profile takes at most 1000 loops. Split it into several extrudes, or use model_apply_batch with combine." };
   const loops: ProfileLoop[] = [];
   for (const raw of value) {
     if (!raw || typeof raw !== "object" || !Array.isArray((raw as { segments?: unknown }).segments)) return { reason: "A loop needs a start and its segments." };
@@ -1053,6 +1070,8 @@ export class Session {
   private rustRecipes = new Map<string, RustRecipe>();
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   private recipeDepth = 0;
+  /** I21: each recipe name's call count on its last run, for "call N of about M". */
+  private readonly recipeCallCounts = new Map<string, number>();
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   private pendingRecipe: Recipe | null = null;
   /**
@@ -1377,7 +1396,9 @@ export class Session {
         placed.add(target);
       }
       if (site.tool !== "solid_new") touch(typeof site.args.object === "string" ? site.args.object : this.selected);
-      this.noteStage(`recipe ${name}: call ${site.id} ${site.tool} (line ${site.line})`);
+      // --- I21. How far along: the call count of the last run of this name stands in for the total.
+      const about = this.recipeCallCounts.get(name);
+      this.noteStage(`recipe ${name}: call ${site.id}${about !== undefined ? ` of about ${Math.max(about, site.id)}` : ""}, line ${site.line} (${site.tool})`);
       let value: Record<string, unknown>;
       try {
         value = await this.runCall(site.tool, site.args, ctx, true);
@@ -1407,6 +1428,7 @@ export class Session {
     } finally {
       this.recipeDepth -= 1;
     }
+    if (out.calls > 0) this.recipeCallCounts.set(name, out.calls);
     const report = { calls: out.calls, ...(out.refused.length ? { refused: out.refused } : {}), ...(notes.length ? { notes } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms };
     // --- I23. What the parts measured when a partial run stopped, before it is taken back.
     if (out.halted) {
@@ -4402,6 +4424,12 @@ export class Session {
   }
 
   private async surfaceAt(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    // --- R-B. A mesh has no solid: the ray meets its triangles where the plate holds them.
+    if (this.meshBlock(obj)) {
+      const placed = this.placed(obj);
+      const hit = surfaceAtSolid({ positions: placed.positions, triangles: new Uint32Array(0), bounds: { min: [...placed.bounds.min], max: [...placed.bounds.max] } }, input);
+      return hit.ok === false ? hit : { ...hit, frame: "plate" };
+    }
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
@@ -4521,6 +4549,7 @@ export class Session {
         return this.probeMeasured(obj, { ...input, op: anchored.op });
       }
       case "surface_at": return this.surfaceAt(obj, input);
+      case "section": return this.sectionTool(obj, input);
       case "model_check": return this.modelCheck(obj, input);
       case "model_apply": return this.applyTool(obj, input);
       case "model_apply_batch": return this.applyBatch(obj, input);
@@ -4880,7 +4909,73 @@ export class Session {
       const gap = new Map(matched.map((row) => [row.index, row.distanceMm ?? Infinity] as const));
       note = pickSentence(nearPick(obj.solid.faces as FrameFace[], first.index, near, gap), near).replace("The face selector picked", "The nearest face is");
     }
-    return { ok: true, total: matched.length, frame: "part", faces: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...(note ? { note } : {}) };
+    // --- I7. A flat face's frame, as extrude {face}, array, and section use it: origin, U, V, W and the turn that draws in it.
+    const ctx = this.expandContext(obj);
+    const rows = listed.rows.map((row) => {
+      if (!row.normal) return row;
+      const framed = ctx.face(row.index);
+      if ("reason" in framed) return row;
+      return { ...row, frame: { ...frameOf(framed.plane), turn: framed.plane.turn.map((n) => Math.round(n * 1e6) / 1e6) } };
+    });
+    return { ok: true, total: matched.length, frame: "part", faces: rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...(note ? { note } : {}) };
+  }
+
+  /**
+   * section (I5–I7, R-B): a flat face's outline inset by insetMm, or the part cut by planes, as loops in each plane's
+   * frame with the extrude origin and turn that draw in it. A solid is read exactly from the kernel; a mesh is cut by its
+   * triangles where the plate holds them.
+   */
+  private async sectionTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const chordMm = typeof input.chordMm === "number" ? input.chordMm : 0.05;
+    const answer = (sections: Record<string, unknown>[], extra: Record<string, unknown> = {}): Record<string, unknown> => {
+      const points = sections.reduce((sum, section) => sum + pointsIn(section), 0);
+      if (points > MAX_SECTION_POINTS) return { ok: false, reason: `This answer would hold ${points} points, over ${MAX_SECTION_POINTS}. Cut fewer planes, pass resample, or a larger chordMm.` };
+      return { ok: true, object: obj.id, ...extra, sections };
+    };
+    const cuts = input.face === undefined ? cutPlanes(input) : null;
+    if (cuts && "reason" in cuts) return { ok: false, reason: cuts.reason };
+    if (input.face !== undefined && ["planes", "fan", "levels"].some((key) => input[key] !== undefined)) return { ok: false, reason: "Give a face or planes, not both." };
+    if (this.meshBlock(obj)) {
+      if (!cuts) return { ok: false, reason: "A mesh has no faces to outline. Cut it with planes, fan, or levels." };
+      const positions = this.placed(obj).positions;
+      const options = { ...(typeof input.resample === "number" ? { resample: input.resample } : {}), ...(typeof input.startAngleDeg === "number" ? { startAngleDeg: input.startAngleDeg } : {}) };
+      return answer(cuts.map((cut) => meshSection(positions, cut, options)), { frame: "plate" });
+    }
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+    const pose = typedPoseOf(obj);
+    // The kernel reads the solid in its own frame; the answer names the frame the part's numbers are typed in.
+    const restate = (reply: Record<string, unknown>, plane: Workplane, cut?: CutPlane): Record<string, unknown> => {
+      const { id: _id, face: _face, frame: _frame, origin: _origin, turn: _turn, ...rest } = reply;
+      return {
+        ...(cut ? { plane: { origin: cut.origin, normal: cut.normal } } : {}),
+        frame: frameOf(plane),
+        origin: frameOf(plane).origin,
+        turn: plane.turn.map((n) => Math.round(n * 1e6) / 1e6),
+        ...rest,
+      };
+    };
+    if (!cuts) {
+      const ctx = this.expandContext(obj);
+      const index = typeof input.face === "number" ? input.face : input.face && typeof input.face === "object" ? ctx.faceBy(input.face as Record<string, unknown>) : { reason: "face is an index or {normal, nearPoint}." };
+      if (typeof index !== "number") return { ok: false, reason: index.reason };
+      const framed = ctx.face(index);
+      if ("reason" in framed) return { ok: false, reason: framed.reason };
+      const own = workplaneOwn(framed.plane, pose);
+      const reply = await this.treeCall({ call: "faceOutline", key: tree.key, node: tree.current, face: index, insetMm: typeof input.insetMm === "number" ? input.insetMm : 0, chordMm, frame: frameNumbers(own) }, "section");
+      if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+      return answer([restate(reply, framed.plane)], { face: index });
+    }
+    const sections: Record<string, unknown>[] = [];
+    for (const [index, cut] of cuts.entries()) {
+      const own = workplaneOwn(cut.plane, pose);
+      const normal = axesOf(own)[2];
+      const reply = await this.treeCall({ call: "section", key: tree.key, node: tree.current, origin: own.origin, normal, frame: frameNumbers(own), chordMm }, "section");
+      if (typeof reply.error === "string" && reply.error) return { ok: false, reason: `Plane ${index + 1}: ${plainModelError(reply.error)}` };
+      sections.push(restate(reply, cut.plane, cut));
+    }
+    return answer(sections);
   }
 
   private async edgesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -5896,7 +5991,9 @@ export class Session {
     if (leftPlate) await this.followJoins(obj);
     const other = otherKey ? this.keepOtherHalf(obj, otherKey, reply.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : this.keptSide(obj, baked.op)) : undefined;
-    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: cleanOp(baked.op as unknown as Record<string, unknown>), typed: cleanOp(baked.typed), ...turnEcho(baked.typed) };
+    // --- I19–I20: what a combined group or an extrude of cells did, as the kernel counted it.
+    const counted = { ...(reply.cells ? { cells: reply.cells } : {}), ...(reply.combined ? { combined: reply.combined } : {}) };
+    return { ok: true, node: nodeHandle(node), ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(leftPlate ? { toolLeftPlate: leftPlate } : {}), stored: compactEcho(cleanOp(baked.op as unknown as Record<string, unknown>)), typed: compactEcho(cleanOp(baked.typed)), ...turnEcho(baked.typed), ...counted };
   }
 
   /**
@@ -6020,6 +6117,8 @@ export class Session {
     let touching = 0;
     let touchingAt: string | undefined;
     let made = 0;
+    /** I20: what became of each loops array's cells, by op. */
+    const cellReports: Record<string, unknown>[] = [];
     const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
     const meta = this.callContext.getStore();
     // Progress per step, so a client that resets its timeout on progress keeps waiting for a long batch.
@@ -6085,6 +6184,22 @@ export class Session {
       };
       const twin = options.texts?.[index];
       this.linkingOp = index + offset;
+      // --- I20. An array whose cell is loops is one extrude of cells: one step, one boolean.
+      if (raw.kind === "array" && (raw.cell as { loops?: unknown } | undefined)?.loops !== undefined) {
+        if ((made += 1) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+        const baked = await this.bakeCells(obj, raw);
+        const done = "reason" in baked ? { ok: false, reason: baked.reason } : await this.bakedApply(obj, baked, label);
+        if (done.ok !== true) {
+          const ended = await refuse({ reason: String(done.reason ?? "This array did not apply.") });
+          if (ended) return ended;
+          continue;
+        }
+        const node = parseNode(done.node);
+        if (node !== null) nodes.push(node);
+        if (done.cells && typeof done.cells === "object") cellReports.push({ index: index + offset, ...(done.cells as Record<string, unknown>) });
+        checkpoints.push(obj.tree?.current ?? null);
+        continue;
+      }
       if (!isComposite(raw.kind)) {
         if ((made += 1) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
         const baked = twin === undefined ? null : this.bake(obj, structuredClone(raw));
@@ -6249,6 +6364,7 @@ export class Session {
       ...(skipped ? { skipped, missedNote: `${skipped} step${skipped === 1 ? "" : "s"} missed the solid and were left out.` } : {}),
       ...(touching ? { leftOut: touching, leftOutNote: `${touching} step${touching === 1 ? "" : "s"} would have left pieces meeting only along an edge, even ${TOUCH_TRIM} mm shorter at each end, and ${touching === 1 ? "was" : "were"} left out. The first: ${touchingAt}` } : {}),
       ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
+      ...(cellReports.length ? { cells: cellReports.length === 1 ? cellReports[0] : cellReports } : {}),
       ...(options.label ? { label: options.label } : {}),
       fingerprint: obj.solid?.fingerprint ?? null,
       bounds: obj.solid?.bounds ?? null,
@@ -6321,9 +6437,133 @@ export class Session {
     return { ok: true, node };
   }
 
+  /** A baked op probed, then applied: the kernel keeps the probe's build, so it is built once. */
+  private async bakedApply(obj: PlateObject, baked: { op: ModelOp; typed: Record<string, unknown> }, label: string | undefined, budgetMs?: number): Promise<Record<string, unknown>> {
+    const at = await this.opened(obj);
+    if ("reason" in at) return { ok: false, reason: at.reason };
+    const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budgetMs);
+    if (probed.ok !== true) return probed;
+    const done = await this.applyBaked(obj, at, baked, {}, budgetMs);
+    const node = parseNode(done.node);
+    if (done.ok === true && label?.trim() && node !== null) this.rename(obj, node, label);
+    return done;
+  }
+
+  /**
+   * I19: model_apply_batch with combine. Every op is a tool of that one boolean: each is built alone, and all of them
+   * meet the part in one kernel boolean, one history step that counts once. An op that is not a plain boolean, extrude,
+   * revolve, or loft of that kind, or whose tool does not build, is reported by its index; the rest still apply.
+   */
+  private async applyCombined(obj: PlateObject, raws: Record<string, unknown>[], combine: "cut" | "fuse", label: string | undefined): Promise<Record<string, unknown>> {
+    const opened = await this.opened(obj);
+    if ("reason" in opened) return { ok: false, reason: opened.reason };
+    const failures: Record<string, unknown>[] = [];
+    const steps: ModelOp[] = [];
+    const indexOf: number[] = [];
+    const kinds = new Set(["boolean", "extrude", "revolve", "loft"]);
+    for (const [index, raw] of raws.entries()) {
+      const anchored = this.anchored(obj, raw);
+      if ("reason" in anchored) {
+        failures.push({ index, reason: anchored.reason });
+        continue;
+      }
+      const op = anchored.op;
+      if (isComposite(op.kind) || !kinds.has(String(op.kind))) {
+        failures.push({ index, reason: `A combined batch takes boolean, extrude, revolve, and loft ops; ${String(op.kind)} is not one. Apply it on its own.` });
+        continue;
+      }
+      const baked = this.bake(obj, structuredClone(op));
+      if ("reason" in baked) {
+        failures.push({ index, reason: baked.reason });
+        continue;
+      }
+      if ((baked.op as { op?: unknown }).op !== combine) {
+        failures.push({ index, reason: `This batch combines ${combine}s; this op is a ${String((baked.op as { op?: unknown }).op)}.` });
+        continue;
+      }
+      steps.push(baked.op);
+      indexOf.push(index);
+    }
+    if (steps.length === 0) return { ok: false, applied: 0, failures, reason: "No op of the batch can be combined." };
+    const name = label?.trim() || `${steps.length} ${combine}s in one boolean`;
+    const group: GroupOp = { kind: "group", label: name.slice(0, 80), source: { kind: "batch", combine, ops: raws.length }, steps, combine };
+    const budget = Math.max(this.modelTimeoutMs(), steps.length * 250);
+    const done = await this.bakedApply(obj, { op: group, typed: { kind: "batch", combine, ops: raws.length } }, label, budget);
+    if (done.ok !== true) return { ...done, applied: 0, ...(failures.length ? { failures } : {}) };
+    const report = (done.combined ?? {}) as { tools?: number; failed?: { index: number; reason: string }[] };
+    for (const row of report.failed ?? []) failures.push({ index: indexOf[row.index] ?? row.index, reason: row.reason });
+    failures.sort((a, b) => Number(a.index) - Number(b.index));
+    const { combined: _combined, ...rest } = done;
+    return {
+      ...rest,
+      applied: steps.length - (report.failed?.length ?? 0),
+      combined: steps.length,
+      ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} left out; the rest applied in one step.` } : {}),
+      fingerprint: obj.solid?.fingerprint ?? null,
+      bounds: obj.solid?.bounds ?? null,
+    };
+  }
+
+  /**
+   * I20: an array whose cell is loops, as one extrude of cells on the face. The lattice is laid out as any array's; the
+   * kernel clips every cell to the face's outline less the margin (read from the solid, so curved edges count), leaves
+   * out slivers under minArea, rounds the corners, and builds every cell in one boolean.
+   */
+  private async bakeCells(obj: PlateObject, raw: Record<string, unknown>): Promise<{ op: ModelOp; typed: Record<string, unknown> } | { reason: string }> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { reason: tree.reason };
+    const cell = (raw.cell ?? {}) as Record<string, unknown>;
+    if (cell.shape !== undefined) return { reason: "A cell is a shape or loops, not both." };
+    if (raw.region !== undefined || raw.from !== undefined || raw.fit !== undefined) return { reason: "A loops cell is clipped to the face itself: region, from, and fit are for shape cells." };
+    const loops = readLoopsField(cell.loops);
+    if ("reason" in loops) return loops;
+    const ctx = this.expandContext(obj);
+    const index = raw.faceIndex !== undefined ? Math.round(Number(raw.faceIndex)) : raw.face && typeof raw.face === "object" ? ctx.faceBy(raw.face as Record<string, unknown>) : { reason: "An array of loops needs a face or faceIndex to clip its cells to." };
+    if (typeof index !== "number") return { reason: index.reason };
+    const framed = ctx.face(index);
+    if ("reason" in framed) return framed;
+    const pitch = Array.isArray(raw.pitch) && raw.pitch.length === 2 && raw.pitch.every((n) => typeof n === "number" && n > 0) ? raw.pitch as [number, number] : typeof raw.pitch === "number" && raw.pitch > 0 ? [raw.pitch, raw.pitch] as [number, number] : null;
+    if (!pitch) return { reason: "An array needs a pitch [u, v] in millimetres, each above 0." };
+    const depth = typeof raw.depth === "number" ? raw.depth : 0;
+    if (!(depth > 0)) return { reason: "An array needs a depth: how far out of the face, or into it for a cut." };
+    const op = raw.op === "cut" ? "cut" : "fuse";
+    const laid = latticeLoops({
+      cell: loops.loops!,
+      extent: framed.extent,
+      pitch,
+      stagger: raw.stagger === true,
+      angleDeg: typeof raw.angleDeg === "number" ? raw.angleDeg : 0,
+      turnDeg: typeof cell.turnDeg === "number" ? cell.turnDeg : 0,
+    });
+    if ("reason" in laid) return laid;
+    // The region the cells keep to: the face's own outline, inset by the margin, in the array's frame.
+    const margin = typeof raw.margin === "number" ? raw.margin : 0;
+    const own = workplaneOwn(framed.plane, typedPoseOf(obj));
+    const outline = await this.treeCall({ call: "faceOutline", key: tree.key, node: tree.current, face: index, insetMm: margin, chordMm: 0.05, frame: frameNumbers(own) }, "array");
+    if (typeof outline.error === "string" && outline.error) return { reason: plainModelError(outline.error) };
+    const clip = Array.isArray(outline.loops) ? outline.loops as ProfileLoop[] : [];
+    if (clip.length === 0) return { reason: `A margin of ${margin} mm leaves nothing of that face.` };
+    const extent = cellExtent(op, depth, typeof cell.draftDeg === "number" ? cell.draftDeg : 0);
+    const made: ModelOp = {
+      kind: "extrude",
+      op,
+      origin: [...framed.plane.origin],
+      turn: [...framed.plane.turn],
+      depth: extent.depth,
+      depth2: extent.depth2,
+      ...(extent.draftDeg !== undefined ? { draftDeg: extent.draftDeg } : {}),
+      loops: laid,
+      clip,
+      ...(typeof cell.cornerRadius === "number" && cell.cornerRadius > 0 ? { cornerRadius: cell.cornerRadius } : {}),
+      minArea: typeof cell.minArea === "number" ? cell.minArea : 0,
+    };
+    return { op: toSolidOp(made, typedPoseOf(obj)), typed: cleanOp(raw) };
+  }
+
   private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
     if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
+    if (input.combine === "cut" || input.combine === "fuse") return this.applyCombined(obj, ops, input.combine, typeof input.label === "string" ? input.label : undefined);
     const texts = this.pendingTexts;
     this.pendingTexts = [];
     const { checkpoints: _checkpoints, ...ran } = await this.applyMany(obj, ops, { label: typeof input.label === "string" ? input.label : undefined, onError: input.onError, texts });

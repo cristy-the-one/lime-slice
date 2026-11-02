@@ -163,7 +163,7 @@ export type ProfileSegment =
   | { kind: "arc"; through: Vec2; to: Vec2 }
   | { kind: "spline"; through: Vec2[]; to: Vec2 };
 
-/** A closed loop on a profile's plane. The first of an op's loops is the outline; the rest are holes. */
+/** A closed loop on a profile's plane. A loop inside no other is an outline; one inside an outline is its hole. */
 export interface ProfileLoop {
   start: Vec2;
   segments: ProfileSegment[];
@@ -180,13 +180,16 @@ export interface GroupOp {
   /** The composite as typed (`{kind: "pocket", ...}`). Absent on a group that was not typed as one. */
   source?: unknown;
   steps: ModelOp[];
+  /** I19: every step is a tool of this one boolean, built alone and combined at once. Absent on a step-by-step group. */
+  combine?: BooleanKind;
 }
 
 /**
  * A closed outline of `[u, v]` points on a plane, as a workplane is: `origin`, and `turn` about X, then Y, then Z, whose
  * columns are U, V, and W. An extrude pushes it `depth` along W (−W when negative), or centred on the plane with
  * `symmetric`; a revolve turns it about an in-plane axis. Either is then fused, cut, or intersected with the solid.
- * `loops` replaces `profile`: the first loop is the outline, and the rest are holes.
+ * `loops` replaces `profile`: each loop inside no other is an outline, a loop inside one is its hole, and one inside a
+ * hole is an island, up to 1,000 loops, all in one boolean.
  */
 export interface ExtrudeOp {
   kind: "extrude";
@@ -207,6 +210,13 @@ export interface ExtrudeOp {
   upTo?: number | FaceRef;
   /** K1: closed loops in place of `profile`. Absent for a point profile. */
   loops?: ProfileLoop[];
+  /**
+   * I20 cells: with any of these, each outline of `loops` is one cell, clipped to `clip` (loops on the same plane),
+   * left out under `minArea` mm², its corners rounded to `cornerRadius`; every cell meets the solid in one boolean.
+   */
+  clip?: ProfileLoop[];
+  cornerRadius?: number;
+  minArea?: number;
   /**
    * --- F1. The sketch this extrude was edited as. The kernel never reads it.
    * Absent on an extrude from before sketches, and on one typed without a drawing.

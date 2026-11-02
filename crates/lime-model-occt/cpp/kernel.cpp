@@ -76,6 +76,9 @@
 #include <GeomAbs_JoinType.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepFilletAPI_MakeFillet2d.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
+#include <ChFi2d_ConstructionError.hxx>
 #include <BRepGProp.hxx>
 #include <BRepGProp_Domain.hxx>
 #include <BRepGProp_Face.hxx>
@@ -1172,10 +1175,10 @@ Message_ProgressRange deadline_range(Handle(Message_ProgressIndicator)& watch) {
 /// default options, so setting options on one and calling `Build` again ran every boolean twice, the first time
 /// destructively, which could change the input's tolerances. History stays unfilled unless `history` is set: a hole's
 /// tool fuse and a split's piece fuse never ask, so their shapes stay as they were.
-TopoDS_Shape boolean_op(
+TopoDS_Shape boolean_list(
     const std::string& op,
     const TopoDS_Shape& solid,
-    const TopoDS_Shape& tool,
+    const TopTools_ListOfShape& tools,
     std::string& error,
     Handle(BRepTools_History)* history = nullptr) {
     BOPAlgo_Operation operation = BOPAlgo_UNKNOWN;
@@ -1193,8 +1196,6 @@ TopoDS_Shape boolean_op(
     const Timed timed(g_stats.boolean_us);
     TopTools_ListOfShape objects;
     objects.Append(solid);
-    TopTools_ListOfShape tools;
-    tools.Append(tool);
     BRepAlgoAPI_BooleanOperation algo;
     algo.SetArguments(objects);
     algo.SetTools(tools);
@@ -1213,6 +1214,17 @@ TopoDS_Shape boolean_op(
         *history = algo.History();
     }
     return algo.Shape();
+}
+
+TopoDS_Shape boolean_op(
+    const std::string& op,
+    const TopoDS_Shape& solid,
+    const TopoDS_Shape& tool,
+    std::string& error,
+    Handle(BRepTools_History)* history = nullptr) {
+    TopTools_ListOfShape tools;
+    tools.Append(tool);
+    return boolean_list(op, solid, tools, error, history);
 }
 
 bool accepted_result(const TopoDS_Shape& shape, double& volume, std::string& error) {
@@ -4271,6 +4283,9 @@ ProfileFrame frame_of(const ProfileSpec& spec) {
 /// Below this two profile points are one, in millimetres.
 constexpr double kProfileMm = 1e-6;
 
+/// The most loops one profile takes: outlines and holes together, a lattice of cells in one extrude.
+constexpr size_t kMaxLoops = 1000;
+
 double cross2(double ax, double ay, double bx, double by) { return ax * by - ay * bx; }
 
 /// Whether the closed segments ab and cd share a point.
@@ -4558,6 +4573,67 @@ TopoDS_Shape combine_profile(
             }
         } catch (const Standard_Failure&) {
         }
+        return {};
+    }
+    return result;
+}
+
+/// `combine_profile` for several tools at once: one boolean of every tool, checked as one tool is. With no solid under
+/// them, the tools fused together are the new solid.
+TopoDS_Shape combine_profile_tools(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<TopoDS_Shape>& tools,
+    const char* noun,
+    double& volume,
+    std::string& error) {
+    if (tools.empty()) {
+        error = std::string("The ") + noun + " has no volume.";
+        return {};
+    }
+    if (tools.size() == 1) {
+        return combine_profile(current, before, which, tools.front(), noun, volume, error);
+    }
+    if (current.IsNull()) {
+        TopTools_ListOfShape rest;
+        for (size_t i = 1; i < tools.size(); ++i) {
+            rest.Append(tools[i]);
+        }
+        const TopoDS_Shape fused = which == "fuse" ? boolean_list("fuse", tools.front(), rest, error) : TopoDS_Shape();
+        if (which == "fuse" && fused.IsNull()) {
+            if (error.empty()) {
+                error = "Open CASCADE did not complete the boolean";
+            }
+            return {};
+        }
+        return combine_profile(current, before, which, fused.IsNull() ? tools.front() : fused, noun, volume, error);
+    }
+    if (which != "fuse" && which != "cut" && which != "common") {
+        error = "The boolean is fuse, cut, or common";
+        return {};
+    }
+    const int bodies = count_of(current, TopAbs_SOLID);
+    TopTools_ListOfShape list;
+    for (const TopoDS_Shape& tool : tools) {
+        list.Append(tool);
+    }
+    const TopoDS_Shape result = boolean_list(which, current, list, error);
+    if (!error.empty()) {
+        return {};
+    }
+    if (!accepted_result(result, volume, error)) {
+        if (which == "common") {
+            error = "The solids do not overlap";
+        }
+        return {};
+    }
+    if (which != "common" && std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        error = std::string("The ") + noun + " does not change the part.";
+        return {};
+    }
+    if (which == "fuse" && count_of(result, TopAbs_SOLID) > bodies) {
+        error = "This would add a separate body; place it touching the part.";
         return {};
     }
     return result;
@@ -5103,8 +5179,19 @@ TopoDS_Shape extent_from_face(
         tool = k3_draft_both(face, hi, lo, draft_rad, error);
     } else if (depth < 0.0) {
         // The profile stays the section on the plane. The prism runs along −W and a positive angle shrinks that end.
-        face.Reverse();
+        // LocOpe_DPrism grows along the face's surface normal whatever the face's orientation, so the prism is built
+        // along +W and mirrored through the profile's plane.
         tool = k3_draft_prism(face, std::abs(depth), draft_rad, error);
+        if (!tool.IsNull()) {
+            gp_Trsf mirror;
+            mirror.SetMirror(gp_Ax2(frame.origin, frame.w));
+            tool = BRepBuilderAPI_Transform(tool, mirror, Standard_True).Shape();
+            GProp_GProps props;
+            integrate(tool, props);
+            if (props.Mass() < 0.0) {
+                tool.Reverse();
+            }
+        }
     } else {
         tool = k3_draft_prism(face, depth, draft_rad, error);
     }
@@ -5368,8 +5455,8 @@ bool loops_readable(std::vector<ProfileLoop>& loops, std::string& error) {
         error = "A profile needs a loop.";
         return false;
     }
-    if (loops.size() > 32) {
-        error = "A profile takes at most 32 loops.";
+    if (loops.size() > kMaxLoops) {
+        error = "A profile takes at most 1000 loops.";
         return false;
     }
     for (ProfileLoop& loop : loops) {
@@ -5526,21 +5613,58 @@ bool edges_cross(const std::vector<std::vector<TopoDS_Edge>>& groups, std::strin
         int loop = 0;
         int index = 0;
         int count = 0;
+        Bnd_Box box;
+        double from = 0.0;
+        double to = 0.0;
     };
     std::vector<Item> all;
+    Bnd_Box whole;
     for (int loop = 0; loop < static_cast<int>(groups.size()); ++loop) {
-        const int count = static_cast<int>(groups[loop].size());
+        const int count = static_cast<int>(groups[static_cast<size_t>(loop)].size());
         for (int index = 0; index < count; ++index) {
-            all.push_back(Item{groups[static_cast<size_t>(loop)][static_cast<size_t>(index)], loop, index, count});
+            Item item;
+            item.edge = groups[static_cast<size_t>(loop)][static_cast<size_t>(index)];
+            item.loop = loop;
+            item.index = index;
+            item.count = count;
+            BRepBndLib::Add(item.edge, item.box);
+            item.box.Enlarge(2e-5);
+            whole.Add(item.box);
+            all.push_back(item);
         }
     }
+    if (all.size() < 2 || whole.IsVoid()) {
+        return false;
+    }
+    // Sweep along the longest side of the whole box: only edges whose boxes overlap are measured, so a lattice of a
+    // thousand cells costs about what its neighbours do, not every pair.
+    double lo[3];
+    double hi[3];
+    whole.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    int axis = 0;
+    for (int k = 1; k < 3; ++k) {
+        if (hi[k] - lo[k] > hi[axis] - lo[axis]) {
+            axis = k;
+        }
+    }
+    for (Item& item : all) {
+        double a[3];
+        double b[3];
+        item.box.Get(a[0], a[1], a[2], b[0], b[1], b[2]);
+        item.from = a[axis];
+        item.to = b[axis];
+    }
+    std::sort(all.begin(), all.end(), [](const Item& x, const Item& y) { return x.from < y.from; });
     for (size_t i = 0; i < all.size(); ++i) {
-        for (size_t j = i + 1; j < all.size(); ++j) {
+        for (size_t j = i + 1; j < all.size() && all[j].from <= all[i].to; ++j) {
             if (all[i].loop == all[j].loop) {
                 const int apart = std::abs(all[i].index - all[j].index);
                 if (apart == 1 || apart == all[i].count - 1) {
                     continue;
                 }
+            }
+            if (all[i].box.IsOut(all[j].box)) {
+                continue;
             }
             BRepExtrema_DistShapeShape dist(all[i].edge, all[j].edge);
             if (dist.IsDone() && dist.Value() <= 1e-5) {
@@ -5552,36 +5676,126 @@ bool edges_cross(const std::vector<std::vector<TopoDS_Edge>>& groups, std::strin
     return false;
 }
 
-/// `loops` is oriented here: the outline turns counter-clockwise about W, holes the other way.
-TopoDS_Face profile_loops_face(const ProfileFrame& frame, std::vector<ProfileLoop> loops, double lift, std::string& error) {
-    if (!loops_readable(loops, error)) {
-        return {};
-    }
-    orient_loops(loops);
-    std::vector<std::vector<TopoDS_Edge>> groups;
-    groups.reserve(loops.size());
-    for (const ProfileLoop& loop : loops) {
-        std::vector<TopoDS_Edge> edges;
-        double from[2] = {loop.start[0], loop.start[1]};
-        for (const ProfileSeg& seg : loop.segments) {
-            TopoDS_Edge edge = loop_edge(frame, from, seg, lift, error);
-            if (edge.IsNull()) {
-                if (error.empty()) {
-                    error = "Open CASCADE did not build the profile";
-                }
-                return {};
+/// The loop's edges on the plane lifted `lift` along W. Empty with `error` set when one does not build.
+std::vector<TopoDS_Edge> loop_edges(const ProfileFrame& frame, const ProfileLoop& loop, double lift, std::string& error) {
+    std::vector<TopoDS_Edge> edges;
+    double from[2] = {loop.start[0], loop.start[1]};
+    for (const ProfileSeg& seg : loop.segments) {
+        TopoDS_Edge edge = loop_edge(frame, from, seg, lift, error);
+        if (edge.IsNull()) {
+            if (error.empty()) {
+                error = "Open CASCADE did not build the profile";
             }
-            edges.push_back(edge);
-            from[0] = seg.to[0];
-            from[1] = seg.to[1];
+            return {};
         }
-        groups.push_back(std::move(edges));
+        edges.push_back(edge);
+        from[0] = seg.to[0];
+        from[1] = seg.to[1];
     }
-    if (edges_cross(groups, error)) {
-        return {};
+    return edges;
+}
+
+/// Loops sorted by nesting. A loop inside an even number of others is an outline and starts a group; one inside an
+/// odd number is a hole of the innermost loop around it. Each group comes back outline first, the outline turning
+/// counter-clockwise about W and its holes the other way. `deepest` is the deepest nesting seen. Every loop is checked,
+/// and no two may cross.
+bool group_loops(
+    const ProfileFrame& frame,
+    std::vector<ProfileLoop> loops,
+    std::vector<std::vector<ProfileLoop>>& groups,
+    int& deepest,
+    std::string& error) {
+    groups.clear();
+    deepest = 0;
+    if (!loops_readable(loops, error)) {
+        return false;
     }
+    std::vector<std::vector<TopoDS_Edge>> edges;
+    edges.reserve(loops.size());
+    for (const ProfileLoop& loop : loops) {
+        std::vector<TopoDS_Edge> built = loop_edges(frame, loop, 0.0, error);
+        if (built.empty()) {
+            return false;
+        }
+        edges.push_back(std::move(built));
+    }
+    if (edges_cross(edges, error)) {
+        return false;
+    }
+    const size_t n = loops.size();
+    std::vector<int> depth(n, 0);
+    std::vector<int> parent(n, -1);
+    if (n > 1) {
+        const gp_Pln plane(gp_Ax3(frame.at(0.0, 0.0), frame.w, frame.u));
+        std::vector<TopoDS_Face> faces(n);
+        std::vector<Bnd_Box> boxes(n);
+        for (size_t i = 0; i < n; ++i) {
+            const TopoDS_Wire wire = wire_of(edges[i], error);
+            if (wire.IsNull()) {
+                if (error.empty()) {
+                    error = "Open CASCADE did not join the loop into one outline.";
+                }
+                return false;
+            }
+            BRepBuilderAPI_MakeFace maker(plane, wire, Standard_True);
+            if (!maker.IsDone()) {
+                error = "Open CASCADE did not build the profile";
+                return false;
+            }
+            faces[i] = maker.Face();
+            BRepBndLib::Add(wire, boxes[i]);
+            boxes[i].Enlarge(1e-6);
+        }
+        std::vector<std::vector<int>> around(n);
+        for (size_t j = 0; j < n; ++j) {
+            const gp_Pnt at = frame.at(loops[j].start[0], loops[j].start[1]);
+            for (size_t i = 0; i < n; ++i) {
+                if (i == j || boxes[i].IsOut(at)) {
+                    continue;
+                }
+                BRepClass_FaceClassifier inside(faces[i], at, 1e-7);
+                if (inside.State() == TopAbs_IN) {
+                    around[j].push_back(static_cast<int>(i));
+                }
+            }
+            depth[j] = static_cast<int>(around[j].size());
+            deepest = std::max(deepest, depth[j]);
+        }
+        for (size_t j = 0; j < n; ++j) {
+            for (const int i : around[j]) {
+                if (depth[static_cast<size_t>(i)] == depth[j] - 1) {
+                    parent[j] = i;
+                }
+            }
+        }
+    }
+    std::vector<int> group_of(n, -1);
+    for (size_t i = 0; i < n; ++i) {
+        if (depth[i] % 2 == 0) {
+            group_of[i] = static_cast<int>(groups.size());
+            groups.push_back(std::vector<ProfileLoop>{loops[i]});
+        }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        if (depth[i] % 2 == 1 && parent[i] >= 0 && group_of[static_cast<size_t>(parent[i])] >= 0) {
+            groups[static_cast<size_t>(group_of[static_cast<size_t>(parent[i])])].push_back(loops[i]);
+        }
+    }
+    for (std::vector<ProfileLoop>& group : groups) {
+        orient_loops(group);
+    }
+    return true;
+}
+
+/// One group's face on the plane lifted `lift` along W: an outline and its holes, as `group_loops` sorted and turned
+/// them. The face's normal points along W.
+TopoDS_Face group_face(const ProfileFrame& frame, const std::vector<ProfileLoop>& loops, double lift, std::string& error) {
     std::vector<TopoDS_Wire> wires;
-    for (const std::vector<TopoDS_Edge>& edges : groups) {
+    for (const ProfileLoop& loop : loops) {
+        const std::vector<TopoDS_Edge> edges = loop_edges(frame, loop, lift, error);
+        if (edges.empty()) {
+            return {};
+        }
         TopoDS_Wire wire = wire_of(edges, error);
         if (wire.IsNull()) {
             if (error.empty()) {
@@ -5591,38 +5805,15 @@ TopoDS_Face profile_loops_face(const ProfileFrame& frame, std::vector<ProfileLoo
         }
         wires.push_back(wire);
     }
+    if (wires.empty()) {
+        error = "A profile needs a loop.";
+        return {};
+    }
     const gp_Pln plane(gp_Ax3(frame.at(0.0, 0.0, lift), frame.w, frame.u));
     BRepBuilderAPI_MakeFace maker(plane, wires.front(), Standard_True);
     if (!maker.IsDone()) {
         error = "Open CASCADE did not build the profile";
         return {};
-    }
-    TopoDS_Face outer = maker.Face();
-    for (size_t h = 1; h < loops.size(); ++h) {
-        const gp_Pnt at = frame.at(loops[h].start[0], loops[h].start[1], lift);
-        BRepClass_FaceClassifier inside(outer, at, 1e-7);
-        if (inside.State() != TopAbs_IN) {
-            error = "A hole lies outside the outline. Keep each hole inside.";
-            return {};
-        }
-    }
-    for (size_t i = 1; i < wires.size(); ++i) {
-        const TopoDS_Wire interior = TopoDS::Wire(wires[i].Reversed());
-        BRepBuilderAPI_MakeFace hole_face(plane, interior, Standard_True);
-        if (!hole_face.IsDone()) {
-            continue;
-        }
-        for (size_t j = 1; j < loops.size(); ++j) {
-            if (j == i) {
-                continue;
-            }
-            const gp_Pnt at = frame.at(loops[j].start[0], loops[j].start[1], lift);
-            BRepClass_FaceClassifier inside(hole_face.Face(), at, 1e-7);
-            if (inside.State() == TopAbs_IN) {
-                error = "A hole lies inside another hole. Keep each hole inside the outline only.";
-                return {};
-            }
-        }
     }
     for (size_t h = 1; h < wires.size(); ++h) {
         maker.Add(wires[h]);
@@ -5658,6 +5849,22 @@ TopoDS_Face profile_loops_face(const ProfileFrame& frame, std::vector<ProfileLoo
         return {};
     }
     return face;
+}
+
+/// One outline and its holes as a face, for the ops that take a single outline (a revolve, a loft section, a draft).
+/// `loops` is turned here: the outline counter-clockwise about W, holes the other way.
+TopoDS_Face profile_loops_face(const ProfileFrame& frame, std::vector<ProfileLoop> loops, double lift, std::string& error) {
+    std::vector<std::vector<ProfileLoop>> groups;
+    int deepest = 0;
+    if (!group_loops(frame, std::move(loops), groups, deepest, error)) {
+        return {};
+    }
+    if (groups.size() != 1) {
+        error = deepest > 1 ? "A hole lies inside another hole. Keep each hole inside the outline only."
+                            : "A hole lies outside the outline. Keep each hole inside.";
+        return {};
+    }
+    return group_face(frame, groups.front(), lift, error);
 }
 
 ProfileFrame frame_from(const double origin[3], const double turn[3]) {
@@ -5755,8 +5962,8 @@ bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop
         return false;
     }
     const int nloops = static_cast<int>(std::llround(data[at++]));
-    if (nloops < 1 || nloops > 32) {
-        error = nloops < 1 ? "A profile needs a loop." : "A profile takes at most 32 loops.";
+    if (nloops < 1 || nloops > static_cast<int>(kMaxLoops)) {
+        error = nloops < 1 ? "A profile needs a loop." : "A profile takes at most 1000 loops.";
         return false;
     }
     for (int i = 0; i < nloops; ++i) {
@@ -5827,8 +6034,9 @@ TopoDS_Shape build_extrude_loops(
     double& volume,
     std::string& error) {
     const ProfileFrame frame = frame_from(origin, turn);
-    const TopoDS_Face check = profile_loops_face(frame, loops, 0.0, error);
-    if (check.IsNull()) {
+    std::vector<std::vector<ProfileLoop>> groups;
+    int deepest = 0;
+    if (!group_loops(frame, loops, groups, deepest, error)) {
         return {};
     }
     if (!std::isfinite(depth) || !(std::abs(depth) > kTinyMm)) {
@@ -5837,20 +6045,132 @@ TopoDS_Shape build_extrude_loops(
     }
     const double length = std::abs(depth);
     const double start = symmetric ? -length / 2.0 : std::min(depth, 0.0);
-    TopoDS_Face face = check;
-    if (std::abs(start) > 1e-15) {
-        face = profile_loops_face(frame, loops, start, error);
+    // Each outline with its holes is its own prism; every prism meets the part in one boolean.
+    std::vector<TopoDS_Shape> tools;
+    tools.reserve(groups.size());
+    for (const std::vector<ProfileLoop>& group : groups) {
+        const TopoDS_Face face = group_face(frame, group, start, error);
         if (face.IsNull()) {
             return {};
         }
+        BRepPrimAPI_MakePrism prism(face, gp_Vec(frame.w) * length);
+        const TopoDS_Shape tool = built(prism, "extrude", error);
+        if (tool.IsNull()) {
+            return {};
+        }
+        tools.push_back(tool);
     }
-    BRepPrimAPI_MakePrism prism(face, gp_Vec(frame.w) * length);
-    const TopoDS_Shape tool = built(prism, "extrude", error);
+    return combine_profile_tools(current, before, which, tools, "extrude", volume, error);
+}
+
+namespace {
+
+/// The face's boundary on the profile plane as [u, v] pairs, from its drawn curves: what a draft's closing check reads.
+std::vector<double> face_outline_uv(const ProfileFrame& frame, const TopoDS_Shape& face) {
+    std::vector<double> outline;
+    for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+        BRepAdaptor_Curve curve(TopoDS::Edge(it.Current()));
+        GCPnts_QuasiUniformDeflection sampler(curve, 0.01);
+        if (!sampler.IsDone()) {
+            continue;
+        }
+        for (int i = 1; i <= sampler.NbPoints(); ++i) {
+            const gp_Vec at(frame.origin, sampler.Value(i));
+            outline.push_back(at.Dot(gp_Vec(frame.u)));
+            outline.push_back(at.Dot(gp_Vec(frame.v)));
+        }
+    }
+    return outline;
+}
+
+/// A face on the profile plane pushed by `extent` as one tool, before it meets the part: a draft, two depths, or a
+/// plain prism. A face with holes is drafted outline first, each hole the other way, and the holes cut in one boolean.
+TopoDS_Shape face_tool(
+    const ProfileFrame& frame,
+    const TopoDS_Face& face,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    std::string& error) {
+    const bool has_draft = extent.has_draft && std::abs(extent.draft_deg) > 1e-9;
+    const auto lifted = [&](const TopoDS_Shape& shape, double lift) {
+        if (std::abs(lift) <= 1e-15) {
+            return TopoDS::Face(shape);
+        }
+        gp_Trsf move;
+        move.SetTranslation(gp_Vec(frame.w) * lift);
+        return TopoDS::Face(BRepBuilderAPI_Transform(shape, move, Standard_True).Shape());
+    };
+    std::vector<TopoDS_Wire> wires;
+    const TopoDS_Wire outer = BRepTools::OuterWire(face);
+    for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) {
+        const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+        if (!wire.IsSame(outer)) {
+            wires.push_back(wire);
+        }
+    }
+    const gp_Pln plane(gp_Ax3(frame.origin, frame.w, frame.u));
+    const auto one = [&](const TopoDS_Face& shape, const ExtrudeExtent& with) {
+        const std::vector<double> outline = face_outline_uv(frame, shape);
+        double ignored = 0.0;
+        return extent_from_face(
+            TopoDS_Shape(),
+            0.0,
+            "fuse",
+            frame,
+            [&](double lift, std::string&) { return lifted(shape, lift); },
+            [&](double shrink) { return outline.size() >= 2 && k3_draft_closes(outline, shrink); },
+            depth,
+            symmetric,
+            with,
+            ignored,
+            error);
+    };
+    if (!has_draft || wires.empty()) {
+        return one(face, extent);
+    }
+    BRepBuilderAPI_MakeFace outline_face(plane, outer, Standard_True);
+    if (!outline_face.IsDone()) {
+        error = "Open CASCADE did not build the profile";
+        return {};
+    }
+    TopoDS_Shape tool = one(outline_face.Face(), extent);
     if (tool.IsNull()) {
         return {};
     }
-    return combine_profile(current, before, which, tool, "extrude", volume, error);
+    ExtrudeExtent inward = extent;
+    inward.draft_deg = -extent.draft_deg;
+    std::vector<TopoDS_Shape> holes;
+    for (const TopoDS_Wire& wire : wires) {
+        BRepBuilderAPI_MakeFace hole_face(plane, wire, Standard_True);
+        if (!hole_face.IsDone()) {
+            error = "Open CASCADE did not build the profile";
+            return {};
+        }
+        TopoDS_Face hole = hole_face.Face();
+        BRepAdaptor_Surface surface(hole);
+        gp_Dir normal = surface.Plane().Axis().Direction();
+        if (hole.Orientation() == TopAbs_REVERSED) {
+            normal.Reverse();
+        }
+        if (normal.Dot(frame.w) < 0.0) {
+            hole.Reverse();
+        }
+        const TopoDS_Shape drafted = one(hole, inward);
+        if (drafted.IsNull()) {
+            if (error == "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.") {
+                error = "This draft closes a hole before the depth. Use a smaller angle or a shorter depth.";
+            }
+            return {};
+        }
+        holes.push_back(drafted);
+    }
+    double tool_volume = volume_of(tool);
+    double cut_volume = 0.0;
+    return combine_profile_tools(tool, tool_volume, "cut", holes, "extrude", cut_volume, error);
 }
+
+}  // namespace
 
 TopoDS_Shape build_extrude_loops_extent(
     const TopoDS_Shape& current,
@@ -5869,78 +6189,326 @@ TopoDS_Shape build_extrude_loops_extent(
         return build_extrude_loops(current, before, which, origin, turn, loops, depth, symmetric, volume, error);
     }
     const ProfileFrame frame = frame_from(origin, turn);
-    if (profile_loops_face(frame, loops, 0.0, error).IsNull()) {
+    std::vector<std::vector<ProfileLoop>> groups;
+    int deepest = 0;
+    if (!group_loops(frame, loops, groups, deepest, error)) {
         return {};
     }
-    const char* closes_profile = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
-    if (has_draft && loops.size() > 1 && !extent.has_up_to) {
-        // LocOpe_DPrism does not draft a face with a round hole. The outline is drafted alone, and each hole is drafted
-        // the other way (a positive angle narrows the material, so it widens the hole) and cut from it.
-        std::string message;
-        double tool_volume = 0.0;
-        TopoDS_Shape tool = build_extrude_loops_extent(
-            TopoDS_Shape(), 0.0, "fuse", origin, turn, std::vector<ProfileLoop>{loops.front()}, depth, symmetric, extent, tool_volume, message);
-        if (tool.IsNull()) {
-            error = message;
+    if (extent.has_up_to && groups.size() > 1) {
+        error = "An extrude up to a face takes one outline. Give each outline its own extrude.";
+        return {};
+    }
+    if (extent.has_up_to) {
+        const std::vector<ProfileLoop>& group = groups.front();
+        return extent_from_face(
+            current,
+            before,
+            which,
+            frame,
+            [&](double lift, std::string& message) { return group_face(frame, group, lift, message); },
+            [&](double) { return false; },
+            depth,
+            symmetric,
+            extent,
+            volume,
+            error);
+    }
+    if (which != "fuse" && which != "cut" && which != "common") {
+        error = "The boolean is fuse, cut, or common";
+        return {};
+    }
+    std::vector<TopoDS_Shape> tools;
+    tools.reserve(groups.size());
+    for (const std::vector<ProfileLoop>& group : groups) {
+        const TopoDS_Face face = group_face(frame, group, 0.0, error);
+        if (face.IsNull()) {
             return {};
         }
-        ExtrudeExtent inward = extent;
-        inward.draft_deg = -extent.draft_deg;
-        for (size_t i = 1; i < loops.size(); ++i) {
-            double hole_volume = 0.0;
-            const TopoDS_Shape hole = build_extrude_loops_extent(
-                TopoDS_Shape(), 0.0, "fuse", origin, turn, std::vector<ProfileLoop>{loops[i]}, depth, symmetric, inward, hole_volume, message);
-            if (hole.IsNull()) {
-                error = message == closes_profile ? "This draft closes a hole before the depth. Use a smaller angle or a shorter depth." : message;
+        const TopoDS_Shape tool = face_tool(frame, face, depth, symmetric, extent, error);
+        if (tool.IsNull()) {
+            if (error.empty()) {
+                error = "This draft closes the profile before the depth. Use a smaller angle or a shorter depth.";
+            }
+            return {};
+        }
+        tools.push_back(tool);
+    }
+    return combine_profile_tools(current, before, which, tools, "extrude", volume, error);
+}
+
+namespace {
+
+/// The unit tangent of `edge` leaving `vertex`, and the edge's length. False when the vertex is not one of its ends.
+bool leaving(const TopoDS_Edge& edge, const TopoDS_Vertex& vertex, gp_Vec& along, double& length) {
+    BRepAdaptor_Curve curve(edge);
+    const double t0 = curve.FirstParameter();
+    const double t1 = curve.LastParameter();
+    if (!std::isfinite(t0) || !std::isfinite(t1)) {
+        return false;
+    }
+    const double t = BRep_Tool::Parameter(vertex, edge);
+    gp_Pnt point;
+    gp_Vec d1;
+    curve.D1(t, point, d1);
+    if (!(d1.SquareMagnitude() > 1e-18)) {
+        return false;
+    }
+    along = std::abs(t - t0) <= std::abs(t - t1) ? d1 : -d1;
+    along.Normalize();
+    GProp_GProps props;
+    BRepGProp::LinearProperties(edge, props);
+    length = props.Mass();
+    return true;
+}
+
+/// The face with every corner rounded to `radius`. A corner whose edges are too short for it gets the largest radius
+/// that leaves 10 % of the shorter edge straight on each side, and one that still does not fit stays sharp. Each
+/// corner is counted in `counts`. A rounding the kernel cannot build gives the face back as it was.
+TopoDS_Face round_corners(const TopoDS_Face& face, double radius, CellCounts& counts) {
+    TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+    TopExp::MapShapesAndAncestors(face, TopAbs_VERTEX, TopAbs_EDGE, ancestors);
+    BRepFilletAPI_MakeFillet2d maker;
+    try {
+        maker.Init(face);
+    } catch (const Standard_Failure&) {
+        return face;
+    }
+    int full = 0;
+    int reduced = 0;
+    int sharp = 0;
+    for (int i = 1; i <= ancestors.Extent(); ++i) {
+        const TopoDS_Vertex vertex = TopoDS::Vertex(ancestors.FindKey(i));
+        const TopTools_ListOfShape& edges = ancestors.FindFromIndex(i);
+        if (edges.Extent() != 2) {
+            continue;
+        }
+        const TopoDS_Edge a = TopoDS::Edge(edges.First());
+        const TopoDS_Edge b = TopoDS::Edge(edges.Last());
+        gp_Vec da;
+        gp_Vec db;
+        double la = 0.0;
+        double lb = 0.0;
+        if (!leaving(a, vertex, da, la) || !leaving(b, vertex, db, lb)) {
+            continue;
+        }
+        const double angle = da.Angle(db);
+        if (angle > kPi - 1e-3) {
+            continue;
+        }
+        double r = std::min(radius, 0.45 * std::min(la, lb) * std::tan(angle / 2.0));
+        bool done = false;
+        for (int attempt = 0; attempt < 3 && r >= 0.05; ++attempt) {
+            try {
+                maker.AddFillet(vertex, r);
+                if (maker.Status() == ChFi2d_IsDone) {
+                    done = true;
+                    break;
+                }
+            } catch (const Standard_Failure&) {
+            }
+            r *= 0.5;
+        }
+        if (!done) {
+            sharp += 1;
+        } else if (r < radius - 1e-9) {
+            reduced += 1;
+        } else {
+            full += 1;
+        }
+    }
+    if (full + reduced == 0) {
+        counts.sharp += sharp;
+        return face;
+    }
+    TopoDS_Face rounded;
+    try {
+        maker.Build();
+        if (maker.IsDone()) {
+            for (TopExp_Explorer it(maker.Shape(), TopAbs_FACE); it.More(); it.Next()) {
+                rounded = TopoDS::Face(it.Current());
+                break;
+            }
+        }
+    } catch (const Standard_Failure&) {
+        rounded.Nullify();
+    }
+    if (rounded.IsNull() || !BRepCheck_Analyzer(rounded).IsValid()) {
+        counts.sharp += full + reduced + sharp;
+        return face;
+    }
+    counts.full += full;
+    counts.reduced += reduced;
+    counts.sharp += sharp;
+    return rounded;
+}
+
+/// The face turned so its normal points along W, as a profile's face does.
+TopoDS_Face facing(const TopoDS_Face& face, const gp_Dir& w) {
+    TopoDS_Face out = face;
+    BRepAdaptor_Surface surface(out);
+    if (surface.GetType() == GeomAbs_Plane) {
+        gp_Dir normal = surface.Plane().Axis().Direction();
+        if (out.Orientation() == TopAbs_REVERSED) {
+            normal.Reverse();
+        }
+        if (normal.Dot(w) < 0.0) {
+            out.Reverse();
+        }
+    }
+    return out;
+}
+
+double face_area(const TopoDS_Shape& face) {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(face, props);
+    return std::abs(props.Mass());
+}
+
+}  // namespace
+
+TopoDS_Shape build_extrude_cells(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const double origin[3],
+    const double turn[3],
+    const std::vector<ProfileLoop>& loops,
+    const std::vector<ProfileLoop>& clip,
+    double depth,
+    bool symmetric,
+    const ExtrudeExtent& extent,
+    double corner_radius,
+    double min_area,
+    CellCounts& counts,
+    double& volume,
+    std::string& error) {
+    counts = CellCounts();
+    if (extent.has_up_to) {
+        error = "Cells stop at a depth, not at a face.";
+        return {};
+    }
+    if (!std::isfinite(corner_radius) || corner_radius < 0.0 || !std::isfinite(min_area) || min_area < 0.0) {
+        error = "A cell's corner radius and smallest area are 0 or more.";
+        return {};
+    }
+    if (which != "fuse" && which != "cut" && which != "common") {
+        error = "The boolean is fuse, cut, or common";
+        return {};
+    }
+    const ProfileFrame frame = frame_from(origin, turn);
+    std::vector<std::vector<ProfileLoop>> groups;
+    int deepest = 0;
+    if (!group_loops(frame, loops, groups, deepest, error)) {
+        return {};
+    }
+    // The region the cells are clipped to: its faces, and the box of each of its edges, so a cell well inside or well
+    // outside is told by one point and only a cell across the boundary is clipped.
+    std::vector<TopoDS_Face> region;
+    std::vector<Bnd_Box> boundary;
+    TopTools_ListOfShape region_list;
+    if (!clip.empty()) {
+        std::vector<std::vector<ProfileLoop>> clip_groups;
+        int clip_deepest = 0;
+        std::string message;
+        if (!group_loops(frame, clip, clip_groups, clip_deepest, message)) {
+            error = "The region to clip to: " + message;
+            return {};
+        }
+        for (const std::vector<ProfileLoop>& group : clip_groups) {
+            const TopoDS_Face face = group_face(frame, group, 0.0, message);
+            if (face.IsNull()) {
+                error = "The region to clip to: " + message;
                 return {};
             }
-            double cut_volume = 0.0;
-            tool = combine_profile(tool, tool_volume, "cut", hole, "extrude", cut_volume, message);
+            region.push_back(face);
+            region_list.Append(face);
+            for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+                Bnd_Box box;
+                BRepBndLib::Add(it.Current(), box);
+                box.Enlarge(1e-5);
+                boundary.push_back(box);
+            }
+        }
+    }
+    const auto in_region = [&](const gp_Pnt& at) {
+        for (const TopoDS_Face& face : region) {
+            BRepClass_FaceClassifier inside(face, at, 1e-7);
+            if (inside.State() == TopAbs_IN) {
+                return true;
+            }
+        }
+        return false;
+    };
+    std::vector<TopoDS_Shape> tools;
+    tools.reserve(groups.size());
+    for (const std::vector<ProfileLoop>& group : groups) {
+        const TopoDS_Face face = group_face(frame, group, 0.0, error);
+        if (face.IsNull()) {
+            return {};
+        }
+        std::vector<TopoDS_Face> pieces;
+        bool clipped = false;
+        if (region.empty()) {
+            pieces.push_back(face);
+        } else {
+            Bnd_Box box;
+            BRepBndLib::Add(face, box);
+            const bool across = std::any_of(boundary.begin(), boundary.end(), [&](const Bnd_Box& edge) { return !edge.IsOut(box); });
+            if (!across) {
+                if (in_region(frame.at(group.front().start[0], group.front().start[1]))) {
+                    pieces.push_back(face);
+                } else {
+                    counts.outside += 1;
+                }
+            } else {
+                BRepAlgoAPI_Common common;
+                TopTools_ListOfShape objects;
+                objects.Append(face);
+                common.SetArguments(objects);
+                common.SetTools(region_list);
+                common.SetFuzzyValue(1.0e-7);
+                common.SetNonDestructive(Standard_True);
+                common.Build();
+                if (common.IsDone() && !common.HasErrors()) {
+                    for (TopExp_Explorer it(common.Shape(), TopAbs_FACE); it.More(); it.Next()) {
+                        pieces.push_back(TopoDS::Face(it.Current()));
+                    }
+                }
+                clipped = true;
+                if (pieces.empty()) {
+                    counts.outside += 1;
+                }
+            }
+        }
+        for (const TopoDS_Face& piece : pieces) {
+            if (face_area(piece) < std::max(min_area, 1e-6)) {
+                counts.small += 1;
+                continue;
+            }
+            TopoDS_Face shaped = corner_radius > 0.0 ? round_corners(piece, corner_radius, counts) : piece;
+            shaped = facing(shaped, frame.w);
+            std::string message;
+            const TopoDS_Shape tool = face_tool(frame, shaped, depth, symmetric, extent, message);
             if (tool.IsNull()) {
-                error = message;
-                return {};
-            }
-            tool_volume = cut_volume;
-        }
-        return combine_profile(current, before, which, tool, "extrude", volume, error);
-    }
-    // The outline's box on the plane, from its drawn curves, as the point profile's check reads its corners.
-    std::vector<double> outline;
-    if (!loops.empty()) {
-        const ProfileLoop& outer = loops.front();
-        double from[2] = {outer.start[0], outer.start[1]};
-        for (const ProfileSeg& seg : outer.segments) {
-            std::string ignored;
-            const TopoDS_Edge edge = loop_edge(frame, from, seg, 0.0, ignored);
-            from[0] = seg.to[0];
-            from[1] = seg.to[1];
-            if (edge.IsNull()) {
+                counts.failed += 1;
+                if (counts.first_failure.empty()) {
+                    counts.first_failure = message.empty() ? "Open CASCADE did not build the cell." : message;
+                }
                 continue;
             }
-            BRepAdaptor_Curve curve(edge);
-            GCPnts_QuasiUniformDeflection sampler(curve, 0.01);
-            if (!sampler.IsDone()) {
-                continue;
-            }
-            for (int i = 1; i <= sampler.NbPoints(); ++i) {
-                const gp_Vec at(frame.origin, sampler.Value(i));
-                outline.push_back(at.Dot(gp_Vec(frame.u)));
-                outline.push_back(at.Dot(gp_Vec(frame.v)));
+            tools.push_back(tool);
+            counts.cells += 1;
+            if (clipped) {
+                counts.clipped += 1;
             }
         }
     }
-    return extent_from_face(
-        current,
-        before,
-        which,
-        frame,
-        [&](double lift, std::string& message) { return profile_loops_face(frame, loops, lift, message); },
-        [&](double shrink) { return outline.size() >= 2 && k3_draft_closes(outline, shrink); },
-        depth,
-        symmetric,
-        extent,
-        volume,
-        error);
+    if (tools.empty()) {
+        error = counts.failed > 0 ? "No cell could be built: " + counts.first_failure
+                                  : "No cell is left inside the region. Use smaller cells, a smaller margin, or a smaller minArea.";
+        return {};
+    }
+    return combine_profile_tools(current, before, which, tools, "extrude", volume, error);
 }
 
 TopoDS_Shape build_revolve_loops(
@@ -6771,7 +7339,399 @@ void write_point(std::ostream& out, const gp_Pnt2d& point) {
     out << '[' << point.X() << ',' << point.Y() << ']';
 }
 
+/// One loop as `extrude.loops` takes it: `{start, segments}`.
+void write_loop(std::ostream& out, const gp_Pnt2d& start, const std::vector<LoopSeg>& segs) {
+    out << "{\"start\":";
+    write_point(out, start);
+    out << ",\"segments\":[";
+    for (size_t s = 0; s < segs.size(); ++s) {
+        const LoopSeg& seg = segs[s];
+        if (s > 0) {
+            out << ',';
+        }
+        const char* kind = seg.kind == 1 ? "arc" : seg.kind == 2 ? "spline" : "line";
+        out << "{\"kind\":\"" << kind << '"';
+        if (seg.kind == 1 && !seg.through.empty()) {
+            out << ",\"through\":";
+            write_point(out, seg.through[0]);
+        } else if (seg.kind == 2 && !seg.through.empty()) {
+            out << ",\"through\":[";
+            for (size_t p = 0; p < seg.through.size(); ++p) {
+                if (p > 0) {
+                    out << ',';
+                }
+                write_point(out, seg.through[p]);
+            }
+            out << ']';
+        }
+        out << ",\"to\":";
+        write_point(out, seg.to);
+        out << '}';
+    }
+    out << "]}";
+}
+
+/// The wire as points on the frame's plane, each curve sampled to `chord` mm, without the closing point.
+std::vector<gp_Pnt2d> sampled_wire(
+    const TopoDS_Wire& wire,
+    const TopoDS_Face& face,
+    const gp_Pnt& origin,
+    const gp_Vec& u,
+    const gp_Vec& v,
+    double chord) {
+    std::vector<gp_Pnt2d> out;
+    for (BRepTools_WireExplorer explorer(wire, face); explorer.More(); explorer.Next()) {
+        const TopoDS_Edge edge = explorer.Current();
+        if (BRep_Tool::Degenerated(edge)) {
+            continue;
+        }
+        BRepAdaptor_Curve curve(edge);
+        std::vector<gp_Pnt2d> points;
+        const double t0 = curve.FirstParameter();
+        const double t1 = curve.LastParameter();
+        if (curve.GetType() == GeomAbs_Line) {
+            points.push_back(project_point(curve.Value(t0), origin, u, v));
+            points.push_back(project_point(curve.Value(t1), origin, u, v));
+        } else {
+            GCPnts_QuasiUniformDeflection sampler(curve, chord);
+            if (sampler.IsDone() && sampler.NbPoints() >= 2) {
+                for (int i = 1; i <= sampler.NbPoints(); ++i) {
+                    points.push_back(project_point(sampler.Value(i), origin, u, v));
+                }
+            } else {
+                for (int i = 0; i <= 16; ++i) {
+                    points.push_back(project_point(curve.Value(t0 + (t1 - t0) * i / 16.0), origin, u, v));
+                }
+            }
+        }
+        if (edge.Orientation() == TopAbs_REVERSED) {
+            std::reverse(points.begin(), points.end());
+        }
+        for (const gp_Pnt2d& point : points) {
+            if (!out.empty() && out.back().Distance(point) < 1e-7) {
+                continue;
+            }
+            out.push_back(point);
+        }
+    }
+    if (out.size() > 1 && out.front().Distance(out.back()) < 1e-6) {
+        out.pop_back();
+    }
+    return out;
+}
+
+double polygon_area(const std::vector<gp_Pnt2d>& points) {
+    double area = 0.0;
+    for (size_t i = 0; i < points.size(); ++i) {
+        const gp_Pnt2d& a = points[i];
+        const gp_Pnt2d& b = points[(i + 1) % points.size()];
+        area += a.X() * b.Y() - b.X() * a.Y();
+    }
+    return area * 0.5;
+}
+
+/// Faces on one plane in the frame (`origin`, `u`, `v`): the frame and the `extrude` origin and turn that draw in it,
+/// each face's loops as `extrude.loops` takes them (outline counter-clockwise, then its holes), each face as sampled
+/// points (`regions`: an outer loop and its holes), and the area.
+std::string region_json(
+    const std::vector<TopoDS_Face>& faces,
+    const gp_Pnt& origin,
+    const gp_Vec& u,
+    const gp_Vec& v,
+    double chord,
+    std::string& error) {
+    const gp_Vec w = u.Crossed(v);
+    double turn[3] = {0, 0, 0};
+    euler_of(u, v, w, turn);
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out.precision(9);
+    const auto vec = [&](const gp_XYZ& p, bool point) {
+        out << '[' << (point ? clean_mm(p.X()) : p.X()) << ',' << (point ? clean_mm(p.Y()) : p.Y()) << ','
+            << (point ? clean_mm(p.Z()) : p.Z()) << ']';
+    };
+    out << "{\"frame\":{\"origin\":";
+    vec(origin.XYZ(), true);
+    out << ",\"u\":";
+    vec(u.XYZ(), false);
+    out << ",\"v\":";
+    vec(v.XYZ(), false);
+    out << ",\"w\":";
+    vec(w.XYZ(), false);
+    out << "},\"origin\":";
+    vec(origin.XYZ(), true);
+    out << ",\"turn\":[" << turn[0] << ',' << turn[1] << ',' << turn[2] << "]";
+    std::ostringstream loops;
+    loops.imbue(std::locale::classic());
+    loops.precision(9);
+    std::ostringstream regions;
+    regions.imbue(std::locale::classic());
+    regions.precision(9);
+    double total = 0.0;
+    size_t loop_count = 0;
+    size_t region_count = 0;
+    try {
+        for (const TopoDS_Face& face : faces) {
+            const TopoDS_Wire outer = BRepTools::OuterWire(face);
+            if (outer.IsNull()) {
+                continue;
+            }
+            std::vector<TopoDS_Wire> wires{outer};
+            for (TopExp_Explorer it(face, TopAbs_WIRE); it.More(); it.Next()) {
+                const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+                if (!wire.IsSame(outer)) {
+                    wires.push_back(wire);
+                }
+            }
+            if (region_count++ > 0) {
+                regions << ',';
+            }
+            regions << "{\"outer\":";
+            for (size_t i = 0; i < wires.size(); ++i) {
+                gp_Pnt2d start;
+                std::vector<LoopSeg> segs;
+                if (!wire_segments(wires[i], face, origin, u, v, start, segs)) {
+                    error = "Open CASCADE could not read this outline.";
+                    return {};
+                }
+                const bool hole = i > 0;
+                const double area = loop_area(start, segs);
+                if ((hole && area > 0.0) || (!hole && area < 0.0)) {
+                    reverse_loop(start, segs);
+                }
+                if (loop_count++ > 0) {
+                    loops << ',';
+                }
+                write_loop(loops, start, segs);
+                std::vector<gp_Pnt2d> points = sampled_wire(wires[i], face, origin, u, v, chord);
+                const double sampled = polygon_area(points);
+                if ((hole && sampled > 0.0) || (!hole && sampled < 0.0)) {
+                    std::reverse(points.begin(), points.end());
+                }
+                if (i == 1) {
+                    regions << ",\"holes\":[";
+                } else if (i > 1) {
+                    regions << ',';
+                }
+                regions << '[';
+                for (size_t p = 0; p < points.size(); ++p) {
+                    if (p > 0) {
+                        regions << ',';
+                    }
+                    regions << '[' << clean_mm(points[p].X()) << ',' << clean_mm(points[p].Y()) << ']';
+                }
+                regions << ']';
+            }
+            regions << (wires.size() > 1 ? "]}" : ",\"holes\":[]}");
+            total += face_area(face);
+        }
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE could not read this outline.";
+        return {};
+    }
+    out << ",\"loops\":[" << loops.str() << "],\"regions\":[" << regions.str() << "],\"areaMm2\":" << total << '}';
+    return out.str();
+}
+
+/// Origin, U and V from nine numbers, U and V made unit and V square to U. False when they are not a frame.
+bool frame_from_numbers(const double* frame, gp_Pnt& origin, gp_Vec& u, gp_Vec& v) {
+    for (int i = 0; i < 9; ++i) {
+        if (!std::isfinite(frame[i])) {
+            return false;
+        }
+    }
+    origin = gp_Pnt(frame[0], frame[1], frame[2]);
+    u = gp_Vec(frame[3], frame[4], frame[5]);
+    v = gp_Vec(frame[6], frame[7], frame[8]);
+    if (!(u.Magnitude() > 1e-9) || !(v.Magnitude() > 1e-9)) {
+        return false;
+    }
+    u.Normalize();
+    v -= u * v.Dot(u);
+    if (!(v.Magnitude() > 1e-9)) {
+        return false;
+    }
+    v.Normalize();
+    return true;
+}
+
 }  // namespace
+
+std::string face_region_json(const TopoDS_Face& face, const double* frame, double inset, double chord, std::string& error) {
+    if (!face_is_plane(face)) {
+        error = "A face outline is for a flat face. Section the part with a plane instead.";
+        return {};
+    }
+    gp_Dir normal;
+    if (!outward_normal(face, normal)) {
+        error = "Open CASCADE could not read this face's outline.";
+        return {};
+    }
+    if (!std::isfinite(inset) || inset < 0.0 || !std::isfinite(chord)) {
+        error = "An inset is 0 or more millimetres.";
+        return {};
+    }
+    chord = chord > 0.0 ? std::min(std::max(chord, 0.001), 5.0) : 0.05;
+    gp_Pnt origin;
+    gp_Vec u;
+    gp_Vec v;
+    if (frame != nullptr) {
+        if (!frame_from_numbers(frame, origin, u, v)) {
+            error = "The frame needs an origin and two directions.";
+            return {};
+        }
+        if (std::abs(u.Dot(gp_Vec(normal))) > 1e-6 || std::abs(v.Dot(gp_Vec(normal))) > 1e-6) {
+            error = "The frame does not lie in the face's plane.";
+            return {};
+        }
+        if (u.Crossed(v).Dot(gp_Vec(normal)) < 0.0) {
+            v.Reverse();
+        }
+    } else {
+        GProp_GProps props;
+        BRepGProp::SurfaceProperties(face, props);
+        origin = props.CentreOfMass();
+        const bool looking_up = std::abs(normal.Z()) >= std::abs(normal.X()) && std::abs(normal.Z()) >= std::abs(normal.Y());
+        if (looking_up) {
+            in_plane_axes(normal, u, v);
+        } else {
+            side_axes(normal, u, v);
+        }
+    }
+    std::vector<TopoDS_Face> faces;
+    if (inset <= 1e-9) {
+        faces.push_back(face);
+    } else {
+        // The face's own boundary offset inward. An inset that leaves nothing is an empty region, not a refusal.
+        TopoDS_Shape offset;
+        try {
+            BRepOffsetAPI_MakeOffset maker(face, GeomAbs_Arc);
+            maker.Perform(-inset);
+            if (maker.IsDone()) {
+                offset = maker.Shape();
+            }
+        } catch (const Standard_Failure&) {
+            offset.Nullify();
+        }
+        if (!offset.IsNull()) {
+            ProfileFrame plane;
+            plane.origin = origin;
+            plane.u = gp_Dir(u);
+            plane.v = gp_Dir(v);
+            plane.w = gp_Dir(u.Crossed(v));
+            const gp_Pln base(gp_Ax3(origin, plane.w, plane.u));
+            std::vector<ProfileLoop> loops;
+            for (TopExp_Explorer it(offset, TopAbs_WIRE); it.More(); it.Next()) {
+                const TopoDS_Wire wire = TopoDS::Wire(it.Current());
+                BRepBuilderAPI_MakeFace on(base, wire, Standard_True);
+                if (!on.IsDone()) {
+                    continue;
+                }
+                gp_Pnt2d start;
+                std::vector<LoopSeg> segs;
+                if (!wire_segments(wire, on.Face(), origin, u, v, start, segs)) {
+                    continue;
+                }
+                ProfileLoop loop;
+                loop.start[0] = start.X();
+                loop.start[1] = start.Y();
+                for (const LoopSeg& seg : segs) {
+                    ProfileSeg out;
+                    out.kind = seg.kind == 1 ? ProfileSegKind::Arc : seg.kind == 2 ? ProfileSegKind::Spline : ProfileSegKind::Line;
+                    out.to[0] = seg.to.X();
+                    out.to[1] = seg.to.Y();
+                    for (const gp_Pnt2d& p : seg.through) {
+                        out.through.push_back(p.X());
+                        out.through.push_back(p.Y());
+                    }
+                    loop.segments.push_back(std::move(out));
+                }
+                loops.push_back(std::move(loop));
+            }
+            std::vector<std::vector<ProfileLoop>> groups;
+            int deepest = 0;
+            std::string ignored;
+            if (!loops.empty() && group_loops(plane, loops, groups, deepest, ignored)) {
+                for (const std::vector<ProfileLoop>& group : groups) {
+                    const TopoDS_Face inner = group_face(plane, group, 0.0, ignored);
+                    if (!inner.IsNull()) {
+                        faces.push_back(inner);
+                    }
+                }
+            }
+        }
+    }
+    return region_json(faces, origin, u, v, chord, error);
+}
+
+std::string section_json(const TopoDS_Shape& shape, const double* plane, const double* frame, double chord, std::string& error) {
+    for (int i = 0; i < 6; ++i) {
+        if (!std::isfinite(plane[i])) {
+            error = "A section needs an origin and a normal.";
+            return {};
+        }
+    }
+    gp_Vec normal(plane[3], plane[4], plane[5]);
+    if (!(normal.Magnitude() > 1e-9)) {
+        error = "A section's normal needs a length.";
+        return {};
+    }
+    normal.Normalize();
+    chord = std::isfinite(chord) && chord > 0.0 ? std::min(std::max(chord, 0.001), 5.0) : 0.05;
+    gp_Pnt origin;
+    gp_Vec u;
+    gp_Vec v;
+    if (!frame_from_numbers(frame, origin, u, v)) {
+        error = "The frame needs an origin and two directions.";
+        return {};
+    }
+    if (std::abs(u.Dot(normal)) > 1e-6 || std::abs(v.Dot(normal)) > 1e-6) {
+        error = "The frame does not lie in the section's plane.";
+        return {};
+    }
+    if (u.Crossed(v).Dot(normal) < 0.0) {
+        v.Reverse();
+    }
+    Bnd_Box box;
+    BRepBndLib::Add(shape, box);
+    if (box.IsVoid()) {
+        error = "This solid has no size.";
+        return {};
+    }
+    double lo[3];
+    double hi[3];
+    box.Get(lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    const gp_Pnt centre((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0);
+    const gp_Pnt at(plane[0], plane[1], plane[2]);
+    const double reach = gp_Pnt(lo[0], lo[1], lo[2]).Distance(gp_Pnt(hi[0], hi[1], hi[2])) + at.Distance(centre) + 10.0;
+    const gp_Pln cut(gp_Ax3(at, gp_Dir(normal), gp_Dir(u)));
+    std::vector<TopoDS_Face> faces;
+    try {
+        const TopoDS_Face sheet = BRepBuilderAPI_MakeFace(cut, -reach, reach, -reach, reach).Face();
+        TopTools_ListOfShape objects;
+        objects.Append(shape);
+        TopTools_ListOfShape tools;
+        tools.Append(sheet);
+        BRepAlgoAPI_Common common;
+        common.SetArguments(objects);
+        common.SetTools(tools);
+        common.SetFuzzyValue(1.0e-7);
+        common.SetNonDestructive(Standard_True);
+        common.SetRunParallel(Standard_True);
+        common.Build();
+        if (!common.IsDone() || common.HasErrors()) {
+            error = "Open CASCADE did not cut this section.";
+            return {};
+        }
+        for (TopExp_Explorer it(common.Shape(), TopAbs_FACE); it.More(); it.Next()) {
+            faces.push_back(facing(TopoDS::Face(it.Current()), gp_Dir(normal)));
+        }
+    } catch (const Standard_Failure&) {
+        error = "Open CASCADE did not cut this section.";
+        return {};
+    }
+    return region_json(faces, origin, u, v, chord, error);
+}
 
 std::string face_loops_json(const TopoDS_Face& face, std::string& error) {
     if (!face_is_plane(face)) {

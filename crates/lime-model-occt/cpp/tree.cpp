@@ -2121,6 +2121,114 @@ LimeShape* lime_tree_extrude_loops_extent(
     }
 }
 
+/// I20: cells, each outline in `loops` one cell, clipped to `clip` (an encode_loops blob, `clip_len` 0 for none), in
+/// one boolean. `p` and `flags` match lime_tree_extrude_loops_extent, with `p[8]` the corner radius and `p[9]` the
+/// smallest area. `from` is null for a new solid. `counts` gets cells, clipped, outside, small, failed, and corners
+/// full, reduced, and sharp; `note` the first cell that failed, when one did.
+LimeShape* lime_tree_extrude_cells(
+    const LimeShape* from,
+    const char* op,
+    const double* p,
+    const double* loops,
+    int loops_len,
+    const double* clip,
+    int clip_len,
+    double depth2,
+    double draft_deg,
+    int flags,
+    double* counts,
+    char** note,
+    char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<ProfileLoop> decoded;
+        std::vector<ProfileLoop> region;
+        int used = 0;
+        std::string message;
+        if (!decode_profile_loops(loops, loops_len, decoded, used, message) || used != loops_len) {
+            set_error(error, message.empty() ? "A loop is incomplete." : message);
+            return nullptr;
+        }
+        if (clip_len > 0 && (!decode_profile_loops(clip, clip_len, region, used, message) || used != clip_len)) {
+            set_error(error, "The region to clip to: " + (message.empty() ? std::string("a loop is incomplete.") : message));
+            return nullptr;
+        }
+        ExtrudeExtent extent;
+        extent.has_depth2 = (flags & 1) != 0;
+        extent.depth2 = depth2;
+        extent.has_draft = (flags & 2) != 0;
+        extent.draft_deg = draft_deg;
+        extent.has_up_to = (flags & 4) != 0;
+        double volume = 0.0;
+        CellCounts made;
+        const TopoDS_Shape none;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_extrude_cells(
+            from == nullptr ? none : from->held.shape,
+            from == nullptr ? 0.0 : from->held.volume,
+            op == nullptr ? "" : op,
+            origin,
+            turn,
+            decoded,
+            region,
+            p[6],
+            p[7] != 0.0,
+            extent,
+            p[8],
+            p[9],
+            made,
+            volume,
+            message);
+        const int numbers[8] = {made.cells, made.clipped, made.outside, made.small, made.failed, made.full, made.reduced, made.sharp};
+        for (int i = 0; i < 8; ++i) {
+            counts[i] = numbers[i];
+        }
+        if (!made.first_failure.empty()) {
+            set_error(note, made.first_failure);
+        }
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The extrude removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// I19: `count` tools, each a solid built on its own, meet `from` in one boolean by `op`.
+LimeShape* lime_tree_combine(const LimeShape* from, const char* op, const LimeShape* const* tools, int count, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::vector<TopoDS_Shape> shapes;
+        for (int i = 0; i < count; ++i) {
+            if (tools[i] != nullptr) {
+                shapes.push_back(tools[i]->held.shape);
+            }
+        }
+        double volume = 0.0;
+        std::string message;
+        const TopoDS_Shape result = combine_profile_tools(
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, shapes, "batch", volume, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return adopt(result, volume, "The batch removed the solid", error, from).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `p` is the plane's origin and turn, the axis point (u, v) and direction (u, v), and the angle in degrees.
 LimeShape* lime_tree_revolve_loops(const LimeShape* from, const char* op, const double* p, const double* loops, int loops_len, char** error) {
     try {
@@ -2550,6 +2658,53 @@ char* lime_tree_face_loops(const LimeShape* shape, int face, char** error) {
         return nullptr;
     }
 }
+
+// --- Recipe reads (I5–I7). Keep this block together. ---
+/// I5: `face`'s outline inset `inset` mm, sampled to `chord` mm, in the frame `frame` (origin, U, V), or the face's
+/// own when `frame` is null.
+char* lime_tree_face_region(const LimeShape* shape, int face, const double* frame, double inset, double chord, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        if (face < 0 || face >= shape->held.faces.Extent()) {
+            set_error(error, "That face is not on this solid.");
+            return nullptr;
+        }
+        std::string message;
+        const std::string text = face_region_json(TopoDS::Face(shape->held.faces(face + 1)), frame, inset, chord, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return alloc(text);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// I6: the solid cut by `plane` (origin, normal), in the frame `frame` (origin, U, V) on that plane.
+char* lime_tree_section(const LimeShape* shape, const double* plane, const double* frame, double chord, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string message;
+        const std::string text = section_json(shape->held.shape, plane, frame, chord, message);
+        if (!message.empty()) {
+            set_error(error, message);
+            return nullptr;
+        }
+        return alloc(text);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+// --- end recipe reads ---
 
 int lime_tree_write_step(const LimeShape* shape, const char* path, char** error) {
     try {
