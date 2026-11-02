@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 and 2 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 4 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -533,11 +533,68 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    replayed, one undo goes back), save and reopen (nothing replays, stamp intact), rebuild after reopen with
    unchanged values lands on the same fingerprint; the stand-in engine for the tree, real OCCT and lust in CI.
 
+   **As built (milestone 3, branch `claude/plugin-steps`):**
+   - **No second store.** D8's `PluginStamp` and `run` are fields of `ModelNode` (`src/model-tree.ts`), read and written
+     by `model-tree-file.ts` (a damaged one is left out and the step opens plain) and never sent to the engine. Drafts
+     stay #527's `rustRecipes`: a draft's stamp names the recipe with `version: 0` and the hash its entry already
+     keeps, and `project_save` now keeps every entry a stamp names. D7's `plugins` map holds library plugins only
+     (with their inlined ingredients, #541), keyed by the body's hash; a draft's ingredient copies stay in its entry.
+     Keeping a draft (`keep`, `save {from}`) turns the stamps it left on its own parts into the plugin's.
+   - **Which runs are stamped.** Every apply that made or changed one part, plugin or not, so `{object, params}` can
+     rebuild a draft too. O4's several-part run keeps plain steps and the session's undo group, with a note.
+   - **Undo.** Found from the run id (`src/plugin-step.ts`), replacing `obj.groups` for stamped runs; the reply's
+     `group` still reads `recipe <name>`. A run's rollback now also drops the steps it added, which before stayed as a
+     branch `model_redo` could walk into (a `keep`'s check run did).
+   - **Rebuild.** `recipe_run {plugin, object}` rebuilds the newest stamped run of that plugin on the shown path,
+     instead of running it again on top; with no stamped run it runs on the part as before. The later steps are the
+     ones on the way to the shown step (not the redo tail), replayed in one engine `edit` with step ids renamed when
+     the new run has as many steps. A rebuild is one undo step back to the old branch through the session's group (not
+     saved; after a reopen, undo at the tip steps back through the replayed steps one by one, then the run). A part
+     the plugin made is rebuilt through #527's rerun, with the later steps replayed onto the new tree; the old object
+     is kept for one `model_undo` (not saved).
+   - **D9 over MCP.** No copy anywhere and a newer API refuse with the plan's sentences. The edited project copy
+     refuses ("asks first" needs the app's dialog, milestone 6). A newer library version is a note; "Use vN" is the
+     app's row menu (milestone 7), and over MCP a new run of the new version replaces nothing. Fingerprint drift is a
+     note and `rebuilt.sameSolid: false`, not stored on the row.
+   - **Not built:** `exprs` (a number typed as a project expression) waits for the form (milestone 6); a split to
+     print after the run refuses the rebuild.
+   - Tests: `mcp/plugin-step.test.ts` (real lust; real OCCT in CI's OCCT job, the stand-in engine in the MCP jobs):
+     stamp and run marks, two later steps, one undo and redo of the run, a rebuild with a new value (later steps
+     replayed, one undo back to the old branch, redo), save (stamps in the tree, the file in `plugins`), reopen with
+     the library file gone (nothing built on open, stamp intact, rebuild from the project's copy with the same
+     fingerprint, one undo), an edited copy and no copy refused, and a part the plugin made rebuilt with its later
+     step and undone. `src/plugin-step.test.ts` (unit chain): marks, runs, redo, a cut chain, save and read back, a
+     damaged stamp, the `plugins` map reader.
+
 4. **The app reads plugin steps.** History folds a run into one row with the plugin's name and version; the row shows
    the form read-only and View source; the D9 cases as row messages; the app keeps the `plugins` map on save.
    *Ships:* an MCP-built plugin part opens in the app as one readable row, and every no-rebuild case is explained.
    *Tested by:* `src/model-history.test.ts` for folding and each D9 case on fixture trees; a Playwright spec opening a
    fixture `.lime` with a plugin step (row, form read-only, source view), screenshots in the owner's theme.
+
+   **As built (milestone 4, branch `claude/plugin-steps-app`):**
+   - **The row.** `historyFolds` folds a run by its run id ahead of `prefix k/n` names; the label is "<title> · plugin
+     vN" (title from the project's copy, else the id), "<recipe> · draft" for a draft, and a one-step run keeps its
+     single row under that name. `foldEndingAt` and `foldRedoFrom` read run ids too, so the app's Undo and Redo take
+     the whole run, as the MCP's do.
+   - **The form, read-only.** The row's pencil (folded runs show it, since the run is one step) or "Plugin values…"
+     opens a card above the rows: description, author, made-by, then each declared parameter as a disabled control
+     with its unit and "default" when the run was not given it; values the header does not declare (a draft) show by
+     name. "View source" opens a read-only sheet with the file or the draft's source. UX decisions: a card above the
+     rows rather than a second line per row, because rows are a fixed-height git graph; a sheet for the source, since
+     a recipe is wider than the dock; the card says plainly that values change over MCP until milestone 6.
+   - **D9 in the app.** The app reads only the project: an edited copy (its body hashed with Web Crypto against its key),
+     a newer API (`RECIPE_API` in `src/plugin-step.ts`, tested equal to the crate's), no copy and no draft ("not in
+     this project", since the app does not read the library yet), and macOS. The library cases wait for the Plugins
+     panel (milestone 7). The sentence is the row's tip and description, with a warning mark, and the card's note.
+   - **Kept on save.** `session.plugins` is the project's map as it opened, written back by the app's Save.
+   - Tests: `src/model-history.test.ts` (a run folds under its title, without the file under its id, one row between
+     its neighbours, one undo and redo, a one-step draft, the card's fields with defaults, and each D9 case),
+     `src/plugin-step.test.ts` (copies hashed as the server does, an edit seen, the API level),
+     `e2e/model-plugin-step.spec.ts` (in `test:smoke`: a project saved by the app with a stamped run written in opens
+     as one row; undo and redo the run; the card's read-only values; View source and Esc; the menu; save keeps the
+     map, the stamp and the run; an edited copy's sentence on the row and the card). Screenshots in
+     `test-results/plugin-step/`.
 
 5. **The shared host and the Tauri runner.** `src/recipe/host.ts` out of `mcp/recipe.ts` (no behaviour change for
    MCP); `src-tauri/src/recipe.rs` with build, start, send, kill, limits and the memory cap; finding the bundled lust

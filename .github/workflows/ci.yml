@@ -172,6 +172,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-session.test.ts
           # Recipes read real geometry (section, face frames) and build lattices in one boolean, the honeycomb floor too.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-reads.test.ts
+          # Plugin steps on real OCCT: a rebuild with the later steps replayed, save and reopen, the same fingerprint.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -366,6 +368,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 
@@ -439,6 +442,13 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/plugin.test.ts
+
+      # Plugin steps: stamped runs, the project's own copy, a rebuild as one undo step (stand-in engine).
+      - name: Recipe plugin steps
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/plugin-step.test.ts
 
       # Ingredients: imported by name, the same calls under lust and rustc, carried inside a kept plugin.
       - name: Recipe ingredients

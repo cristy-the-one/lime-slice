@@ -141,10 +141,11 @@ import {
   type PlacePhase,
 } from "../ui/model-chrome";
 import { mountDockPanes } from "../ui/dock-panes";
-import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, syncModelRecipe, syncTransitionStale } from "../ui/model-history";
+import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosition, pluginStepTitle, syncModelRecipe, syncPluginSteps, syncTransitionStale } from "../ui/model-history";
+import { checkedCopies } from "../plugin-file";
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
 import { canExplode, explodeContext, heldParts, heldPiece } from "./model-explode";
-import { dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
+import { draftSources, dropRefusal, foldEndingAt, foldRedoFrom, foldedRedoTarget, foldedUndoTarget, readRow, recipeNote, rowKey, rowStep, stepLabel, type RowKey } from "../model-history";
 import { addedSolid, addedSplit, arrangedObjects, freshPlateId, meshSeat, meshToModel, meshTokenOf, modelPoseOf, setMeshSeat, withBrepFor, withFrame, withModelPose, withPieceMesh, withStudy, withWorkplane, withoutObject, type PlateObject } from "../plate";
 import type { ContextPart } from "../model-context";
 import { authHeaders } from "../ui/api-base";
@@ -2710,8 +2711,8 @@ async function step(way: "undo" | "redo") {
   const viaEdit = !!back && node === (way === "undo" ? back.back : back.tip) && tree.current === (way === "undo" ? back.tip : back.back) && back.undone === (way === "redo");
   if (!viaEdit) editBack = null;
   // --- A8. One undo from the last step of a folded composite, and one redo, take the whole run. ---
-  const undone = !viaEdit && way === "undo" ? foldEndingAt(tree, tree.current, modelTrees) : null;
-  const redone = !viaEdit && way === "redo" ? foldRedoFrom(tree, modelTrees) : null;
+  const undone = !viaEdit && way === "undo" ? foldEndingAt(tree, tree.current, modelTrees, pluginStepTitle) : null;
+  const redone = !viaEdit && way === "redo" ? foldRedoFrom(tree, modelTrees, pluginStepTitle) : null;
   const viaFold = (!!undone && node === undone.before) || (!!redone && node === redone.last);
   const foldLabel = undone?.label ?? redone?.label;
   const done = viaEdit ? (way === "undo" ? "Edit of the step undone." : "Edit of the step redone.") : viaFold && foldLabel ? `${foldLabel} ${way === "undo" ? "undone" : "redone"}.` : way === "undo" ? "Edit undone." : "Edit redone.";
@@ -5311,6 +5312,21 @@ function syncUndo() {
   syncPosition();
   // --- A8. A recipe saved with this object, read-only under the History header. ---
   syncModelRecipe(open ? recipeNote(session.mcpModel, open.objectId) : null);
+  syncPluginEnv();
+}
+
+/** --- Plugin steps (D9). The project's plugin copies, checked against their hashes once per opened project. */
+let pluginEnvFor: [Record<string, string> | undefined, Record<string, unknown> | undefined] | null = null;
+function syncPluginEnv() {
+  const plugins = session.plugins;
+  const mcpModel = session.mcpModel;
+  if (pluginEnvFor && pluginEnvFor[0] === plugins && pluginEnvFor[1] === mcpModel) return;
+  pluginEnvFor = [plugins, mcpModel];
+  const mac = /Mac/i.test(navigator.platform || navigator.userAgent);
+  void checkedCopies(plugins).then((copies) => {
+    if (pluginEnvFor?.[0] !== plugins || pluginEnvFor?.[1] !== mcpModel) return;
+    syncPluginSteps({ copies, drafts: draftSources(mcpModel), mac });
+  });
 }
 
 /** The Position row, from the pose the plate object holds and the solid's own box, read once per solid. */

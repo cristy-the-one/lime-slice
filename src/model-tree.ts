@@ -389,6 +389,38 @@ export interface ModelNode {
   pins?: string | null;
   keep?: PrepareKeep;
   mesh?: PlateMesh;
+  /** --- Plugin steps (docs/plan-recipe-plugins.md D8). On a recipe run's first node: what ran, with what. */
+  plugin?: PluginStamp;
+  /** On every node of a recipe run: the run's id, this node's place in it (1-based) and its length. */
+  run?: RunMark;
+}
+
+/**
+ * The recipe a run of steps came from. A library plugin's run names the plugin and its version; a draft (a run kept only
+ * with the project) names the recipe and has version 0. The engine never sees it.
+ */
+export interface PluginStamp {
+  /** The plugin's id, or the recipe's name for a draft. */
+  plugin: string;
+  /** Counts up from 1; 0 for a draft. */
+  version: number;
+  /** SHA-256 of the body that ran: the key of the project's copy. */
+  sha256: string;
+  /** The recipe API level it was built against, as "1.1". */
+  api: string;
+  params: Record<string, number | boolean | string>;
+  /** A number typed as an expression of project parameters. */
+  exprs?: Record<string, string>;
+  /** What the run read of the printer. */
+  context: { bedMm: [number, number, number]; nozzleMm: number };
+  /** The run's last node's, so a rebuild with the same values can say when it drifted. */
+  fingerprint: Fingerprint | null;
+}
+
+export interface RunMark {
+  id: string;
+  k: number;
+  n: number;
 }
 
 /** An extrude, a revolve, or a loft that can start a solid on its own (K2). */

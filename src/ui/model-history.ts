@@ -4,10 +4,10 @@
  * after a typing pause, Left and Right switch branches. Rows are rebuilt only when the tree changes,
  * and only while the panel can be seen. Nothing here asks the engine anything.
  */
-import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, RotateCcw, TriangleAlert, createElement, type IconNode } from "lucide";
-import { historyFolds, historyKey, historyLayout, positionText, presentedRows, readRow, rowCount, rowKey, type HistoryLayout, type HistoryRow, type RecipeNote, type RowKey } from "../model-history";
+import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, Puzzle, RotateCcw, TriangleAlert, X, createElement, type IconNode } from "lucide";
+import { historyFolds, historyKey, historyLayout, pluginStepView, positionText, presentedRows, readRow, rowCount, rowKey, type HistoryLayout, type HistoryRow, type PluginEnv, type PluginStepView, type PluginTitle, type RecipeNote, type RowKey } from "../model-history";
 import type { ObjectFrame, PlaceFields } from "../model-space";
-import { toolKeys, type ModelTree } from "../model-tree";
+import { toolKeys, type ModelTree, type PluginStamp } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
 import { openDock } from "./dock-reveal";
@@ -91,6 +91,14 @@ let raw: HistoryLayout | null = null;
 const foldOpen = new Set<string>();
 const foldShut = new Set<string>();
 let recipeEl: HTMLElement | null = null;
+/** --- Plugin steps (D8, D9). What the project carries of its plugins' code, the titles it gives their rows, and the card. */
+let pluginEnv: PluginEnv | null = null;
+let pluginTitle: PluginTitle | undefined;
+let pluginEnvKey = 0;
+let pluginCard: HTMLElement | null = null;
+let pluginCardRow: RowKey | null = null;
+let sourceSheet: HTMLElement | null = null;
+let sourceReturn: HTMLElement | null = null;
 let focusId: RowKey | null = null;
 let jumpTimer = 0;
 let collapsed = readCollapsed();
@@ -224,6 +232,10 @@ export function mountModelHistory(next: ModelHistoryHooks) {
   reaim.addEventListener("click", () => hooks?.reaim?.());
   keep.addEventListener("click", () => hooks?.keepPose?.());
   list.before(staleEl);
+  pluginCard = buildPluginCard();
+  list.before(pluginCard);
+  sourceSheet = buildSourceSheet();
+  document.body.append(sourceSheet);
   note = document.createElement("p");
   note.className = "mh-note";
   note.setAttribute("role", "status");
@@ -430,7 +442,7 @@ function render() {
   drawn = inputs();
   raw = historyLayout(tree, raw && working(document.activeElement) ? raw.main : undefined, trees, shownKey());
   const open = openFolds(raw);
-  layout = { ...raw, rows: presentedRows(raw.rows, open) };
+  layout = { ...raw, rows: presentedRows(raw.rows, open, pluginTitle) };
   const ids = new Set(layout.rows.map((row) => row.key));
   for (const id of [...rowEls.keys()]) {
     if (ids.has(id)) continue;
@@ -451,7 +463,7 @@ function render() {
       rowEls.set(row.key, el);
     }
     // --- A10. The swatch colour is part of the signature, so turning colour by step on repaints the rows.
-    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? "", staleRow(row)]);
+    const sig = JSON.stringify([row, layout!.lanes, ownColour(row) ?? "", staleRow(row), row.plugin ? pluginEnvKey : 0]);
     // A row being renamed keeps its field; it is painted when the name is done.
     if (row.key !== renaming && rowSigs.get(row.key) !== sig) {
       paintRow(el, row, layout!.lanes);
@@ -461,6 +473,7 @@ function render() {
   });
   const order = [...list.children];
   if (order.length !== els.length || els.some((el, i) => order[i] !== el)) list.replaceChildren(...els);
+  refreshPluginCard();
   applyTabIndex();
   const onScreen = rowEls.get(hadFocus ? focusId ?? shownRow() : shownRow());
   if (hadFocus) onScreen?.focus({ preventScroll: true });
@@ -538,13 +551,16 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   if (owned.length > 0) el.setAttribute("aria-owns", owned.map(rowElementId).join(" "));
   else el.removeAttribute("aria-owns");
   el.toggleAttribute("data-tool", row.tool != null);
-  const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", staleRow(row) ? "made for another pose" : "", row.plate ? "on the plate" : ""].filter(Boolean);
+  // --- Plugin steps (D9). A plugin step's row says, in one sentence, why it cannot be rebuilt.
+  const view = pluginView(row);
+  el.toggleAttribute("data-plugin", !!view);
+  const notes = [row.broken ? "cannot be rebuilt" : "", row.blocked ? "after a step that cannot be rebuilt" : "", staleRow(row) ? "made for another pose" : "", row.plate ? "on the plate" : "", view ? `${view.kind}` : ""].filter(Boolean);
   const called = row.tool != null ? `${row.tool}: ${row.label}` : row.label;
   el.setAttribute("aria-label", [called, ...notes].join(", "));
   // A label can be longer than the row, which ellipsizes it: the tip has it whole. The description adds
   // only what the name does not say: a renamed step's op, why a step is broken, and whose step a tool's is.
   const whose = row.tool != null ? `A step of ${row.tool}, as this part's join takes it. Click to look at it; Edit step changes it here` : "";
-  const extra = [row.opLabel, row.broken, staleRow(row) ? "Made for another pose: the layers have turned since. Re-aim or Keep it in the note above" : "", whose].filter(Boolean).join(". ");
+  const extra = [row.opLabel, row.broken, staleRow(row) ? "Made for another pose: the layers have turned since. Re-aim or Keep it in the note above" : "", whose, view?.note?.replace(/\.$/, "") ?? ""].filter(Boolean).join(". ");
   el.dataset.tip = [row.label, extra].filter(Boolean).join(". ");
   if (extra) el.setAttribute("aria-description", extra);
   else el.removeAttribute("aria-description");
@@ -590,7 +606,14 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
   // A folded run is not one step. A step that cannot be edited shows no pencil; its menu says why.
   edit.hidden = (!!row.fold && !row.fold.expanded) || !!hooks?.editRefusal(row.key);
   edit.setAttribute("aria-label", `Edit step: ${row.label}`);
-  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool, :scope > .mh-swatch").forEach((node) => node.remove());
+  edit.dataset.tip = "Edit step";
+  // A plugin step's pencil opens its values: the run is one step, whether folded or not.
+  if (view) {
+    edit.hidden = false;
+    edit.setAttribute("aria-label", `Plugin values: ${row.label}`);
+    edit.dataset.tip = "Plugin values";
+  }
+  el.querySelectorAll(":scope > .mh-rail, :scope > .mh-warn, :scope > .mh-plate, :scope > .mh-tool, :scope > .mh-swatch, :scope > .mh-plugin-mark").forEach((node) => node.remove());
   label.before(railSvg(row, lanes));
   // --- A10. The swatch sits after the rail and before the label, and only while colour by step is on.
   const colour = ownColour(row);
@@ -609,10 +632,18 @@ function paintRow(el: HTMLElement, row: HistoryRow, lanes: number) {
     chip.setAttribute("aria-hidden", "true");
     label.before(chip);
   }
-  if (row.broken || staleRow(row)) {
+  if (view) {
+    const mark = document.createElement("span");
+    mark.className = "mh-plugin-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.append(icon(Puzzle, 12));
+    label.before(mark);
+  }
+  if (row.broken || staleRow(row) || view?.note) {
     const warn = document.createElement("span");
     warn.className = "mh-warn";
     warn.append(icon(TriangleAlert, 12));
+    if (view?.note && !row.broken) warn.dataset.tip = view.note;
     edit.before(warn);
   }
   if (row.plate) {
@@ -834,7 +865,12 @@ export function editModelStep() {
 
 /** Edit `id`: its tool opens in the panel above, prefilled; a refusal is said in the readout, and in the sheet at phone width. */
 function editStep(id: RowKey) {
-  const folded = layout?.rows.find((row) => row.key === id)?.fold;
+  const own = layout?.rows.find((row) => row.key === id);
+  if (own && pluginView(own)) {
+    openPluginCard(id);
+    return;
+  }
+  const folded = own?.fold;
   if (folded && !folded.expanded) {
     showNote("Expand the group to change one of its steps.");
     return;
@@ -918,6 +954,8 @@ function buildMenu(): HTMLElement {
   root.hidden = true;
   root.innerHTML = `
     <button type="button" role="menuitem" data-act="edit"><span>Edit step</span><kbd>Shift+E</kbd><small class="mh-why"></small></button>
+    <button type="button" role="menuitem" data-act="values" hidden><span>Plugin values…</span></button>
+    <button type="button" role="menuitem" data-act="source" hidden><span>View source</span><small class="mh-why"></small></button>
     <button type="button" role="menuitem" data-act="rename"><span>Rename</span><kbd>F2</kbd></button>
     <button type="button" role="menuitem" data-act="export" hidden><span>Export…</span></button>
     <button type="button" role="menuitem" data-act="drop"><span>Delete branch</span><kbd>Del</kbd><small class="mh-why"></small></button>`;
@@ -928,6 +966,8 @@ function buildMenu(): HTMLElement {
     if (item.getAttribute("aria-disabled") === "true") return;
     closeMenu(false);
     if (item.dataset.act === "edit") editStep(id);
+    else if (item.dataset.act === "values") openPluginCard(id);
+    else if (item.dataset.act === "source") openSource(id);
     else if (item.dataset.act === "export") hooks?.exportPieces?.(id);
     else if (item.dataset.act === "rename") startRename(id);
     else dropBranch(id);
@@ -964,6 +1004,14 @@ function openMenu(id: RowKey, at?: { x: number; y: number }) {
   const rename = menu.querySelector<HTMLElement>('[data-act="rename"]')!;
   rename.setAttribute("aria-disabled", held ? "true" : "false");
   menu.querySelector<HTMLElement>('[data-act="export"]')!.hidden = !hooks.exportable?.(id);
+  // --- Plugin steps: the values and the code. Edit step is for one op, so a folded plugin run offers these instead.
+  const view = pluginView(layout?.rows.find((row) => row.key === id));
+  menu.querySelector<HTMLElement>('[data-act="values"]')!.hidden = !view;
+  const source = menu.querySelector<HTMLElement>('[data-act="source"]')!;
+  source.hidden = !view;
+  source.setAttribute("aria-disabled", view && !view.source ? "true" : "false");
+  source.querySelector(".mh-why")!.textContent = view && !view.source ? "This project does not carry the code." : "";
+  menu.querySelector<HTMLElement>('[data-act="edit"]')!.hidden = !!view && !!folded && !folded.expanded;
   for (const [act, refusal] of [["edit", held ?? hooks.editRefusal(id)], ["drop", held ?? hooks.dropRefusal(id)]] as const) {
     const item = menu.querySelector<HTMLElement>(`[data-act="${act}"]`)!;
     item.setAttribute("aria-disabled", refusal ? "true" : "false");
@@ -987,4 +1035,184 @@ function closeMenu(refocus: boolean) {
   if (id == null) return;
   rowEls.get(id)?.querySelector(".mh-more")?.setAttribute("aria-expanded", "false");
   if (refocus) focusRow(id);
+}
+
+/**
+ * --- Plugin steps (D8, D9). What the open project carries of its plugins: their checked copies, its drafts, and
+ * whether this app could run them. Rows of plugin steps are painted again with their titles and sentences.
+ */
+export function syncPluginSteps(env: PluginEnv | null) {
+  pluginEnv = env;
+  pluginEnvKey += 1;
+  pluginTitle = env ? (stamp) => env.copies.get(stamp.sha256)?.file?.title : undefined;
+  drawn = null;
+  sync();
+  refreshPluginCard();
+}
+
+/** The title the project's copy gives a plugin step, for the readout's "Stud row · plugin v3 undone." */
+export function pluginStepTitle(stamp: PluginStamp): string | undefined {
+  return pluginTitle?.(stamp);
+}
+
+/** A plugin run's own row (folded, a one-step run, or the first step of an open run): its card's contents. */
+function pluginView(row: HistoryRow | undefined): PluginStepView | null {
+  if (!row?.plugin || row.via.length > 0) return null;
+  if (row.run?.n !== 1 && !row.fold?.head) return null;
+  return pluginStepView(row.plugin, pluginEnv ?? { copies: new Map(), drafts: new Map(), mac: false });
+}
+
+function buildPluginCard(): HTMLElement {
+  const card = document.createElement("section");
+  card.className = "mh-plugin";
+  card.id = "modelPluginCard";
+  card.setAttribute("aria-labelledby", "modelPluginTitle");
+  card.hidden = true;
+  const head = document.createElement("div");
+  head.className = "mh-plugin-head";
+  const title = Object.assign(document.createElement("h3"), { id: "modelPluginTitle", className: "mh-plugin-title" });
+  const kind = Object.assign(document.createElement("span"), { className: "mh-plugin-kind" });
+  const close = Object.assign(document.createElement("button"), { type: "button", className: "mh-plugin-close" });
+  close.setAttribute("aria-label", "Close plugin values");
+  close.append(icon(X, 14));
+  close.addEventListener("click", () => closePluginCard(true));
+  head.append(icon(Puzzle, 14), title, kind, close);
+  const meta = Object.assign(document.createElement("p"), { className: "mh-plugin-meta" });
+  const note = Object.assign(document.createElement("p"), { className: "mh-plugin-note" });
+  note.setAttribute("role", "status");
+  const fields = Object.assign(document.createElement("div"), { className: "mh-plugin-fields" });
+  fields.setAttribute("role", "group");
+  fields.setAttribute("aria-label", "Values this step was built with");
+  const hint = Object.assign(document.createElement("p"), { className: "mh-plugin-hint" });
+  const actions = Object.assign(document.createElement("div"), { className: "mh-plugin-actions" });
+  const view = Object.assign(document.createElement("button"), { type: "button", className: "btn", id: "modelPluginSourceOpen", textContent: "View source" });
+  view.addEventListener("click", () => {
+    if (pluginCardRow) openSource(pluginCardRow);
+  });
+  actions.append(view);
+  card.append(head, meta, note, fields, hint, actions);
+  card.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closePluginCard(true);
+  });
+  return card;
+}
+
+function openPluginCard(id: RowKey) {
+  pluginCardRow = id;
+  refreshPluginCard();
+  if (isMobileLayout()) setSheet(true, false);
+  pluginCard?.querySelector<HTMLElement>(".mh-plugin-close")?.focus({ preventScroll: true });
+}
+
+function closePluginCard(refocus: boolean) {
+  const id = pluginCardRow;
+  pluginCardRow = null;
+  if (pluginCard) pluginCard.hidden = true;
+  if (refocus && id != null && rowEls.has(id)) focusRow(id);
+}
+
+/** The card follows its row: new values after a rebuild, gone when the row is. */
+function refreshPluginCard() {
+  if (!pluginCard) return;
+  const row = pluginCardRow == null ? undefined : layout?.rows.find((item) => item.key === pluginCardRow);
+  const view = pluginView(row);
+  if (!view || !visible()) {
+    pluginCard.hidden = true;
+    if (!view) pluginCardRow = null;
+    return;
+  }
+  pluginCard.hidden = false;
+  pluginCard.querySelector(".mh-plugin-title")!.textContent = view.title;
+  pluginCard.querySelector(".mh-plugin-kind")!.textContent = view.kind;
+  const meta = pluginCard.querySelector<HTMLElement>(".mh-plugin-meta")!;
+  meta.textContent = [view.description, view.author ? `By ${view.author}` : "", view.madeBy ? `made with ${view.madeBy}` : ""].filter(Boolean).join(" · ");
+  meta.hidden = !meta.textContent;
+  const note = pluginCard.querySelector<HTMLElement>(".mh-plugin-note")!;
+  note.textContent = view.note ?? "";
+  note.hidden = !view.note;
+  const fields = pluginCard.querySelector<HTMLElement>(".mh-plugin-fields")!;
+  fields.replaceChildren(...view.fields.map(pluginField));
+  if (view.fields.length === 0) fields.append(Object.assign(document.createElement("p"), { className: "mh-plugin-empty", textContent: "This plugin takes no values." }));
+  const hint = pluginCard.querySelector<HTMLElement>(".mh-plugin-hint")!;
+  hint.textContent = view.note
+    ? "The part stays as it was built, with every step after it."
+    : "Read-only for now. An agent can change these values over MCP (recipe_run with this part), and the step rebuilds with the steps after it.";
+  const source = pluginCard.querySelector<HTMLButtonElement>("#modelPluginSourceOpen")!;
+  source.disabled = !view.source;
+  source.dataset.tip = view.source ? "The plugin's code, read-only" : "This project does not carry the code.";
+}
+
+/** One value, as the form will take it: read-only until the app rebuilds plugin steps itself (milestone 6). */
+function pluginField(field: PluginStepView["fields"][number]): HTMLElement {
+  const row = document.createElement("label");
+  row.className = "mh-plugin-field";
+  if (field.help) row.dataset.tip = field.help;
+  const name = Object.assign(document.createElement("span"), { className: "mh-plugin-name", textContent: field.label });
+  let control: HTMLElement;
+  if (field.kind === "toggle") {
+    const box = Object.assign(document.createElement("input"), { type: "checkbox", checked: field.value === true, disabled: true });
+    control = box;
+  } else if (field.kind === "choice") {
+    const select = document.createElement("select");
+    select.disabled = true;
+    for (const option of field.options?.length ? field.options : [String(field.value)]) select.append(new Option(option, option, false, option === String(field.value)));
+    control = select;
+  } else {
+    const input = Object.assign(document.createElement("input"), { type: "text", readOnly: true, value: String(field.value) });
+    input.inputMode = field.kind === "number" || field.kind === "count" ? "decimal" : "text";
+    control = input;
+  }
+  control.classList.add("mh-plugin-control");
+  const tail = Object.assign(document.createElement("span"), { className: "mh-plugin-unit", textContent: [field.unit ?? "", field.isDefault ? "default" : ""].filter(Boolean).join(" · ") });
+  row.append(name, control, tail);
+  return row;
+}
+
+function buildSourceSheet(): HTMLElement {
+  const sheet = document.createElement("div");
+  sheet.id = "modelPluginSource";
+  sheet.className = "sheet";
+  sheet.hidden = true;
+  sheet.setAttribute("role", "dialog");
+  sheet.setAttribute("aria-modal", "true");
+  sheet.setAttribute("aria-labelledby", "modelPluginSourceTitle");
+  sheet.innerHTML = `
+    <div class="sheet-card mh-source-card">
+      <div class="sheet-head"><h2 id="modelPluginSourceTitle"></h2><button class="btn" type="button" data-act="close">Close</button></div>
+      <p class="mh-source-sub"></p>
+      <pre class="mh-source" tabindex="0"><code></code></pre>
+    </div>`;
+  sheet.querySelector('[data-act="close"]')!.addEventListener("click", () => closeSource());
+  sheet.addEventListener("pointerdown", (ev) => {
+    if (ev.target === sheet) closeSource();
+  });
+  sheet.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeSource();
+  });
+  return sheet;
+}
+
+/** The plugin's code in a read-only sheet: the file as the project carries it, or a draft's source. */
+function openSource(id: RowKey) {
+  const view = pluginView(layout?.rows.find((row) => row.key === id));
+  if (!sourceSheet || !view?.source) return;
+  sourceReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  sourceSheet.querySelector("#modelPluginSourceTitle")!.textContent = `${view.title} · ${view.kind}`;
+  sourceSheet.querySelector(".mh-source-sub")!.textContent = "Read-only. This is the code the step was built with, as the project carries it.";
+  sourceSheet.querySelector(".mh-source code")!.textContent = view.source;
+  sourceSheet.hidden = false;
+  sourceSheet.querySelector<HTMLElement>('[data-act="close"]')?.focus();
+}
+
+function closeSource() {
+  if (!sourceSheet || sourceSheet.hidden) return;
+  sourceSheet.hidden = true;
+  if (sourceReturn?.isConnected) sourceReturn.focus({ preventScroll: true });
+  sourceReturn = null;
 }

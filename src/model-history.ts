@@ -6,7 +6,9 @@
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
-import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId } from "./model-tree.ts";
+import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type RunMark } from "./model-tree.ts";
+import { RECIPE_API, runEndingAt, runRedoFrom } from "./plugin-step.ts";
+import type { CheckedCopy, PluginParamInfo } from "./plugin-file.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
 export type RowState = "past" | "current" | "redo" | "other";
@@ -75,6 +77,9 @@ export interface HistoryRow {
   plate: boolean;
   /** The step this row was built on. The root has none. */
   parent: NodeId | null;
+  /** --- Plugin steps (D8). The recipe run this step is part of, and on its first step what ran. */
+  run?: RunMark;
+  plugin?: PluginStamp;
   /**
    * Set when this row is part of a folded MCP composite (`prefix k/n`).
    * A collapsed run is one row; an expanded run marks its first step so it can fold again.
@@ -328,6 +333,8 @@ export function historyLayout(tree: ModelTree, keep?: ReadonlyMap<NodeId, NodeId
       blocked: brokenAbove.has(id),
       plate: id === tree.committed && key !== shownKey,
       parent: node.parent,
+      ...(node.run ? { run: node.run } : {}),
+      ...(node.plugin ? { plugin: node.plugin } : {}),
     });
   }
   return { rows, lanes, main };
@@ -504,13 +511,46 @@ export interface HistoryFold {
   keys: RowKey[];
   first: NodeId;
   last: NodeId;
+  /** A recipe run's fold: what ran, from its first step. */
+  plugin?: PluginStamp;
 }
 
-/** Consecutive rows on one chain whose names run `prefix 1/n` … `prefix n/n`. */
-export function historyFolds(rows: readonly HistoryRow[]): HistoryFold[] {
+/** --- Plugin steps (D8). The title a plugin step's row shows: the plugin's own title when the project has its file. */
+export type PluginTitle = (stamp: PluginStamp) => string | undefined;
+
+/** "Bolt-circle flange · plugin v3", or "studs · draft" for a run kept only with the project. */
+export function pluginRowLabel(stamp: PluginStamp, title?: string): string {
+  return `${title?.trim() || stamp.plugin} · ${stamp.version > 0 ? `plugin v${stamp.version}` : "draft"}`;
+}
+
+/** Rows `i` … `i + n - 1` are one chain: each built on the one before, in one tree, reached the same way. */
+function chained(rows: readonly HistoryRow[], i: number, n: number): boolean {
+  for (let k = 1; k < n; k += 1) {
+    const row = rows[i + k]!;
+    const prev = rows[i + k - 1]!;
+    if (row.parent !== prev.id || row.tree !== prev.tree || row.via.join("/") !== prev.via.join("/")) return false;
+  }
+  return true;
+}
+
+/**
+ * Consecutive rows on one chain that are one recipe run (`run` 1/n … n/n), and rows whose names run `prefix 1/n` …
+ * `prefix n/n`. A run of two or more steps folds under its plugin's name; a stamped run of one step is one row already.
+ */
+export function historyFolds(rows: readonly HistoryRow[], title?: PluginTitle): HistoryFold[] {
   const folds: HistoryFold[] = [];
   let i = 0;
   while (i < rows.length) {
+    const head = rows[i]!;
+    if (head.run && head.run.k === 1 && head.plugin && head.run.n >= 2 && i + head.run.n <= rows.length) {
+      const n = head.run.n;
+      const members = rows.slice(i, i + n);
+      if (members.every((row, k) => row.run?.id === head.run!.id && row.run.k === k + 1 && row.run.n === n) && chained(rows, i, n)) {
+        folds.push({ id: `fold:${head.key}`, prefix: head.plugin.plugin, n, label: pluginRowLabel(head.plugin, title?.(head.plugin)), keys: members.map((row) => row.key), first: head.id, last: members[n - 1]!.id, plugin: head.plugin });
+        i += n;
+        continue;
+      }
+    }
     const start = pieceLabel(rows[i]!.label);
     if (!start || start.k !== 1) {
       i += 1;
@@ -558,8 +598,8 @@ export function historyFolds(rows: readonly HistoryRow[]): HistoryFold[] {
 }
 
 /** The rows to draw: a collapsed run is one row, an open run keeps its steps and marks the first. */
-export function presentedRows(rows: readonly HistoryRow[], open: ReadonlySet<string>): HistoryRow[] {
-  const folds = historyFolds(rows);
+export function presentedRows(rows: readonly HistoryRow[], open: ReadonlySet<string>, title?: PluginTitle): HistoryRow[] {
+  const folds = historyFolds(rows, title);
   const out: HistoryRow[] = [];
   const hidden = new Set<RowKey>();
   for (const fold of folds) if (!open.has(fold.id)) for (const key of fold.keys) hidden.add(key);
@@ -570,6 +610,11 @@ export function presentedRows(rows: readonly HistoryRow[], open: ReadonlySet<str
       continue;
     }
     if (hidden.has(row.key)) continue;
+    // A one-step plugin run is one row already: it takes the plugin's name, its op beside it.
+    if (row.plugin && row.run?.n === 1) {
+      out.push({ ...row, label: pluginRowLabel(row.plugin, title?.(row.plugin)), opLabel: row.label });
+      continue;
+    }
     if (fold && open.has(fold.id)) out.push({ ...row, fold: { id: fold.id, head: true, expanded: true, keys: fold.keys, lastKey: fold.keys[fold.keys.length - 1]! } });
     else out.push(row);
   }
@@ -613,7 +658,10 @@ function toolLaneOpen(node: ModelNode, trees: ReadonlyMap<string, ModelTree> | u
  * The run of `prefix 1/n` … `prefix n/n` that ends at `id`, when those steps are one chain with nothing drawn
  * between them. Null when `id` is not the last step of such a run.
  */
-export function foldEndingAt(tree: ModelTree, id: NodeId, trees?: ReadonlyMap<string, ModelTree>): { label: string; first: NodeId; last: NodeId; before: NodeId | null } | null {
+export function foldEndingAt(tree: ModelTree, id: NodeId, trees?: ReadonlyMap<string, ModelTree>, title?: PluginTitle): { label: string; first: NodeId; last: NodeId; before: NodeId | null } | null {
+  // --- Plugin steps (D8). A stamped recipe run on a part it was given is one undo step, by its run id.
+  const run = runEndingAt(tree, id);
+  if (run?.stamp && run.before !== null) return { label: pluginRowLabel(run.stamp, title?.(run.stamp)), first: run.first, last: run.last, before: run.before };
   const node = tree.nodes.get(id);
   const piece = node ? pieceLabel(stepLabel(node)) : null;
   if (!node || !piece || piece.k !== piece.n) return null;
@@ -638,7 +686,9 @@ export function foldEndingAt(tree: ModelTree, id: NodeId, trees?: ReadonlyMap<st
  * The run Redo would walk whole, when the next step is its `prefix 1/n` and the followed children run to `n/n`
  * with nothing drawn between them.
  */
-export function foldRedoFrom(tree: ModelTree, trees?: ReadonlyMap<string, ModelTree>): { label: string; last: NodeId } | null {
+export function foldRedoFrom(tree: ModelTree, trees?: ReadonlyMap<string, ModelTree>, title?: PluginTitle): { label: string; last: NodeId } | null {
+  const run = runRedoFrom(tree);
+  if (run?.stamp && run.before !== null) return { label: pluginRowLabel(run.stamp, title?.(run.stamp)), last: run.last };
   const next = redoTarget(tree);
   if (next == null) return null;
   let at = tree.nodes.get(next);
@@ -700,4 +750,96 @@ export function recipeNote(mcpModel: unknown, objectId: string): RecipeNote | nu
     }
   }
   return { title: "Built by a recipe", detail: bits.join(" · ") };
+}
+
+/** --- Plugin steps (D5, D9). What a plugin step's card shows: one value per declared parameter, read-only. */
+export interface PluginField {
+  name: string;
+  label: string;
+  kind: PluginParamInfo["kind"];
+  value: number | boolean | string;
+  unit?: string;
+  options?: string[];
+  help?: string;
+  /** The value is the parameter's default: the run was not given one. */
+  isDefault: boolean;
+}
+
+export interface PluginStepView {
+  title: string;
+  /** "plugin v3", or "draft". */
+  kind: string;
+  author?: string;
+  madeBy?: string;
+  description?: string;
+  fields: PluginField[];
+  /** The D9 sentence when the step cannot be rebuilt as it is, else null. */
+  note: string | null;
+  /** The code, read-only, when the project has it. */
+  source: string | null;
+}
+
+/** What the app knows of a step's code: the project's checked copies, the drafts it carries, and where it runs. */
+export interface PluginEnv {
+  copies: ReadonlyMap<string, CheckedCopy>;
+  /** Draft sources by hash, from `mcpModel.rustRecipes`. */
+  drafts: ReadonlyMap<string, string>;
+  /** The macOS app ships no lust. */
+  mac: boolean;
+}
+
+/** The project's drafts by hash: each `mcpModel.rustRecipes` entry's source. */
+export function draftSources(mcpModel: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  const rust = mcpModel && typeof mcpModel === "object" ? (mcpModel as { rustRecipes?: unknown }).rustRecipes : undefined;
+  if (!rust || typeof rust !== "object") return out;
+  for (const row of Object.values(rust as Record<string, unknown>)) {
+    const entry = row as { sha256?: unknown; source?: unknown } | null;
+    if (entry && typeof entry.sha256 === "string" && typeof entry.source === "string") out.set(entry.sha256, entry.source);
+  }
+  return out;
+}
+
+function apiNewer(api: string): string | null {
+  const m = /^(\d+)\.(\d+)$/.exec(api.trim());
+  if (!m) return null;
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  return major > RECIPE_API[0] || (major === RECIPE_API[0] && minor > RECIPE_API[1]) ? `${major}.${minor}` : null;
+}
+
+/**
+ * --- D9. A plugin step as its card shows it: the stamped values over the declared defaults, the code when the project
+ * carries it, and the one sentence that says why it cannot be rebuilt, if one does. The app reads only the project's
+ * copies here; the library's are the MCP server's to read.
+ */
+export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepView {
+  const copy = env.copies.get(stamp.sha256);
+  const file = copy?.file ?? null;
+  const draft = env.drafts.get(stamp.sha256) ?? null;
+  const declared = file?.params ?? [];
+  const fields: PluginField[] = declared.map((p) => {
+    const given = stamp.params[p.name];
+    return { name: p.name, label: p.label?.trim() || p.name, kind: p.kind, value: given ?? p.default, ...(p.unit ? { unit: p.unit } : {}), ...(p.options ? { options: p.options } : {}), ...(p.help ? { help: p.help } : {}), isDefault: given === undefined };
+  });
+  // A value the header does not declare (a draft, or a parameter declared without a builder) still shows.
+  for (const [name, value] of Object.entries(stamp.params)) {
+    if (declared.some((p) => p.name === name)) continue;
+    fields.push({ name, label: name, kind: typeof value === "boolean" ? "toggle" : typeof value === "number" ? "number" : "text", value, isDefault: false });
+  }
+  const newer = apiNewer(file?.api ?? stamp.api);
+  let note: string | null = null;
+  if (copy && !copy.intact) note = "This project's copy of the plugin was changed outside the app.";
+  else if (newer) note = `This plugin needs recipe API ${newer}, from a newer Lime Slice; this app has ${RECIPE_API[0]}.${RECIPE_API[1]}.`;
+  else if (!copy && !draft) note = "The plugin source is not in this project. The part is kept as built; its values cannot change.";
+  else if (env.mac) note = "Rebuilding needs lust, which the macOS app does not ship yet.";
+  return {
+    title: file?.title || stamp.plugin,
+    kind: stamp.version > 0 ? `plugin v${stamp.version}` : "draft",
+    ...(file?.author && file.author !== "unknown" ? { author: file.author } : {}),
+    ...(file?.madeBy ? { madeBy: file.madeBy } : {}),
+    ...(file?.description ? { description: file.description } : {}),
+    fields,
+    note,
+    source: file?.text ?? draft,
+  };
 }
