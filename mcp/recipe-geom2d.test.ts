@@ -120,6 +120,13 @@ if (lib.status === 0) {
   const floor = await sameUnderBoth("guide_floor", example);
   check("the guide's example cuts cells", floor.filter((c) => c.tool === "model_apply").length > 100, floor.length);
 
+  // The recipes guide's example, as it stands (typed parameters since API 1.1).
+  const recipes = GUIDES.find((g) => g.uri === "lime://guide/recipes")!.text.split("\n");
+  const at = recipes.indexOf("use lime_recipe::{ops, Json, Session};");
+  const end = recipes.indexOf("}", at);
+  const bar = await sameUnderBoth("guide_recipes", `${recipes.slice(at, end + 1).join("\n")}\n`);
+  check("the recipes guide's example drills its holes", bar.filter((c) => c.tool === "model_apply").length === 4, bar.map((c) => c.tool));
+
   // The typed wrappers for section and combine: a honeycomb clipped to the floor's real outline, cut in one boolean.
   const wrapped = [
     "use lime_recipe::lattice::{hex, Orient};",

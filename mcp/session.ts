@@ -6,6 +6,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning, meshKeyHex } from "../src/slice-action.ts";
@@ -111,6 +113,7 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "./plugins.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
@@ -401,6 +404,14 @@ export interface RustRecipe {
   data?: Record<string, RecipeData>;
   /** The workspace file the source was read from, when it came from one. */
   path?: string;
+  /** SHA-256 of the source as it built: the draft's identity (docs/plan-recipe-plugins.md D1). */
+  sha256?: string;
+  /** The session's order of applies, so plugin save {from} keeps the latest run of a name. */
+  at?: number;
+  /** Parts already on the plate that the run changed. */
+  changed?: string[];
+  /** The plugin this run came from, or was kept as. */
+  plugin?: { id: string; version: number; sha256: string };
 }
 
 /** A model_build's base, ops, parameters, and name, as typed. */
@@ -1070,6 +1081,12 @@ export class Session {
   private rustRecipes = new Map<string, RustRecipe>();
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   private recipeDepth = 0;
+  /** The MCP client's name from initialize: a kept plugin's made-by. */
+  clientName: string | undefined;
+  /** Applies of recipe_run in this session, counted: a draft's `at`. */
+  private recipeSeq = 0;
+  private recipeApi: [number, number] | null = null;
+  private lustId: string | undefined;
   /** I21: each recipe name's call count on its last run, for "call N of about M". */
   private readonly recipeCallCounts = new Map<string, number>();
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
@@ -1317,9 +1334,25 @@ export class Session {
     if (maxSteps !== undefined && mode !== "dry") return { ok: false, reason: "maxSteps is for mode:\"dry\": a run stopped part way is always taken back." };
     // --- R-A. The source from a .rs file in the workspace, so an edit and rerun sends only the path.
     if (typeof input.path === "string" && typeof input.source === "string") return { ok: false, reason: "Pass source or path, not both." };
+    // --- Plugins (D14): a library plugin by id, built against this API level, under its id as the recipe name.
+    let plugin: { id: string; version: number; sha256: string; title: string; target: PluginTarget; note?: string } | null = null;
+    let pluginBody: string | null = null;
+    if (typeof input.plugin === "string") {
+      if (typeof input.source === "string" || typeof input.path === "string") return { ok: false, reason: "Pass plugin, source, or path: one of them." };
+      if (input.plugin.startsWith("draft:")) return { ok: false, reason: `A draft runs again from its object (recipe_run {object, params}), or keep it first: plugin {action:"save", from:"${input.plugin.slice(6)}", title, description}.` };
+      const got = await this.pluginFile(input.plugin);
+      if ("reason" in got) return { ok: false, reason: got.reason };
+      const h = got.file.header;
+      const tooNew = apiRefusal(h.api, this.crateApi());
+      if (tooNew) return { ok: false, reason: tooNew };
+      if (h.target === "object" && typeof input.object !== "string") return { ok: false, reason: `${h.title} needs a part: pass object, the part to run it on.` };
+      plugin = { id: h.plugin, version: h.version, sha256: got.file.sha256, title: h.title, target: h.target, ...(got.note ? { note: got.note } : {}) };
+      pluginBody = got.file.body;
+    }
+    if (input.keep !== undefined && mode !== "apply") return { ok: false, reason: "keep keeps an apply that reached done; a check or dry run is never kept." };
     const file = typeof input.path === "string" ? recipeSourceFile(input.path) : null;
     if (file && "reason" in file) return { ok: false, reason: file.reason };
-    const typed = file ? file.text : typeof input.source === "string" ? input.source : null;
+    const typed = pluginBody ?? (file ? file.text : typeof input.source === "string" ? input.source : null);
     // --- A rerun: no source, and an object a recipe_run made. Its stored source runs again with the stored
     // parameters under the new ones.
     let rerun: { name: string; stored: RustRecipe } | null = null;
@@ -1329,7 +1362,7 @@ export class Session {
       if (!key || !stored) return { ok: false, reason: "Pass source or path, or the object of an earlier recipe_run to run its recipe again." };
       rerun = { name: key, stored };
     }
-    const given = typeof input.name === "string" ? input.name : file ? file.stem : "recipe";
+    const given = plugin ? plugin.id : typeof input.name === "string" ? input.name : file ? file.stem : "recipe";
     const name = rerun ? rerun.name : given.replace(/[^A-Za-z0-9_-]/g, "_");
     // --- I22. New source for an object an earlier run of this name made: the run makes the part again and replaces
     // that run's objects, as a rerun does. Any other object is a part for the recipe to work on.
@@ -1395,6 +1428,14 @@ export class Session {
         }
         placed.add(target);
       }
+      // --- O8 (D11.1). A recipe touches only the part it was given and the parts it made, so a plugin from someone
+      // else cannot reach the user's other parts.
+      if (site.tool !== "solid_new") {
+        const target = typeof site.args.object === "string" ? site.args.object : this.selected;
+        if (target && target !== objectArg && !created.includes(target)) {
+          return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${target} is neither. Pass it as object to run on it.` };
+        }
+      }
       if (site.tool !== "solid_new") touch(typeof site.args.object === "string" ? site.args.object : this.selected);
       // --- I21. How far along: the call count of the last run of this name stands in for the total.
       const about = this.recipeCallCounts.get(name);
@@ -1429,7 +1470,9 @@ export class Session {
       this.recipeDepth -= 1;
     }
     if (out.calls > 0) this.recipeCallCounts.set(name, out.calls);
-    const report = { calls: out.calls, ...(out.refused.length ? { refused: out.refused } : {}), ...(notes.length ? { notes } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms };
+    for (const note of out.notes ?? []) if (notes.length < 200) notes.push(note);
+    if (plugin?.note) notes.unshift(plugin.note);
+    const report = { calls: out.calls, ...(out.refused.length ? { refused: out.refused } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
     // --- I23. What the parts measured when a partial run stopped, before it is taken back.
     if (out.halted) {
       const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {
@@ -1506,7 +1549,19 @@ export class Session {
       }
     }
     const data = dataUsed.size ? Object.fromEntries(dataUsed) : undefined;
-    if (created.length) this.rustRecipes.set(key, { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}) });
+    // --- D1. Every apply that reached done is a draft: kept under its name with its source's hash and order, and the
+    // parts it changed. One that made parts is the entry those parts name; one that only changed parts is kept beside
+    // an entry whose parts are still on the plate, as `<name>@<part>`.
+    const sha256 = bodyHash(built.source);
+    const changed = [...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id);
+    const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}) };
+    let entryKey: string | null = null;
+    if (created.length) entryKey = key;
+    else if (changed.length) {
+      const live = this.rustRecipes.get(key)?.objects.some((id) => this.find(id)?.rustRecipe === key);
+      entryKey = live ? `${key}@${changed[0]}` : key;
+    }
+    if (entryKey && name !== "plugin_check") this.rustRecipes.set(entryKey, entry);
     // Only what the run made names it: a rerun replaces those. A part it changed keeps the steps as one undo step.
     for (const id of created) {
       const obj = this.find(id);
@@ -1523,8 +1578,281 @@ export class Session {
       ...(earlier ? { earlier } : {}),
       recipe: key,
       ...report,
+      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg)),
     };
   }
+
+  /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
+  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined): Promise<Record<string, unknown>> {
+    if (keep === undefined) return {};
+    const k = (keep && typeof keep === "object" ? keep : {}) as { title?: unknown; description?: unknown };
+    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg });
+    if ("reason" in saved) return { keepRefused: saved.reason };
+    const row = entryKey ? this.rustRecipes.get(entryKey) : undefined;
+    if (row) row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
+    return { kept: saved };
+  }
+
+  /** --- Plugins (docs/plan-recipe-plugins.md D12). This host's crate API, read from the crate the recipes build against. */
+  private crateApi(): [number, number] {
+    if (this.recipeApi) return this.recipeApi;
+    let found: [number, number] = [1, 1];
+    try {
+      const lib = readFileSync(join(recipeCrateDir(import.meta.url), "src", "lib.rs"), "utf8");
+      const m = /pub const API: \(u32, u32\) = \((\d+), (\d+)\);/.exec(lib);
+      if (m) found = [Number(m[1]), Number(m[2])];
+    } catch {
+      // The crate's absence is recipe_run's sentence; the level stays the one this server shipped with.
+    }
+    this.recipeApi = found;
+    return found;
+  }
+
+  /**
+   * --- D4. Describe mode: the recipe built and run with `describe: true`. Each typed parameter is declared and gets its
+   * default; the run ends at its first call, so nothing reaches the engine. A recipe that read its object and then
+   * stopped (an unwrap of None) needs a part.
+   */
+  private async recipeDescribe(body: string): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
+    if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
+    const host = this.recipeHost;
+    const ready = host.available();
+    if (!ready.ok) return { reason: ready.reason };
+    const built = await host.build("plugin_check", body, true);
+    if (!built.ok || !built.exe) {
+      const first = built.diagnostics[0];
+      return { reason: built.reason ?? (first ? `line ${first.line}: ${first.message}` : "The recipe did not build.") };
+    }
+    const printer = this.printer();
+    const start = { describe: true, params: {}, context: { units: "mm", bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
+    const out = await host.run(built.exe, start, async () => ({ ok: false, error: "Describe mode makes no calls." }), { ...DEFAULT_LIMITS, timeoutS: 15 });
+    if (!out.ok || !out.described) return { reason: out.reason ?? "The recipe did not describe its parameters." };
+    const params = out.described.params.map((row) => {
+      const { line: _line, ...param } = row;
+      return param as unknown as PluginParam;
+    });
+    const target: PluginTarget = !out.described.readObject ? "new" : out.described.ended ? "either" : "object";
+    return { params, target };
+  }
+
+  /**
+   * --- D3. Saving checks the plugin once more: a describe run for its parameters, then a dry run with its defaults
+   * (on `objectHint`, or on a test block when it needs a part and none is given). Late parameters are refused.
+   */
+  private async pluginCheck(body: string, objectHint: string | undefined): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
+    const described = await this.recipeDescribe(body);
+    if ("reason" in described) return { reason: `This plugin does not build with its own defaults: ${described.reason} Change the defaults or the code, then keep it.` };
+    let object = described.target === "new" ? undefined : objectHint && this.find(objectHint) ? objectHint : undefined;
+    let block: string | undefined;
+    if (described.target === "object" && !object) {
+      const made = await this.runCall("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 20 }, {}, true);
+      if (typeof made.object !== "string") return { reason: "The test block for a plugin that needs a part could not be made." };
+      block = object = made.object;
+    }
+    const selected = this.selected;
+    let dry: Record<string, unknown>;
+    try {
+      dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", ...(object ? { object } : {}) });
+    } finally {
+      if (block) await this.objectRemove(block).catch(() => ({ ok: false }));
+      this.selected = selected;
+    }
+    if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.` };
+    const late = (dry.lateParams as { name: string; line: number }[] | undefined)?.[0];
+    if (late) return { reason: `Declare ${late.name} before the first call (line ${late.line}), so the form can show it.` };
+    return described;
+  }
+
+  /**
+   * --- D1–D3, D6–D7. Keeps `source` as a plugin in the library. The id is the title's slug. A plugin of that id with
+   * the same body keeps its version (new words only); with another body it is the next version when the run was of
+   * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
+   */
+  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string }): Promise<{ id: string; version: number; sha256: string } | { reason: string }> {
+    const title = oneLine(opts.title, TITLE_MAX);
+    if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
+    let body = lfOnly(opts.source);
+    const framed = body.startsWith("//! ---") ? parsePlugin(body) : null;
+    if (framed && !("reason" in framed)) body = framed.body;
+    const bad = body.split("\n").findIndex((line) => /^\s*(mod\s+\w+\s*;|#\s*\[\s*path\b|extern\s+crate\s+(?!lime_recipe\b))/.test(line));
+    if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
+    const sha256 = bodyHash(body);
+    const checked = await this.pluginCheck(body, opts.objectHint);
+    if ("reason" in checked) return checked;
+    const dir = pluginsDir();
+    let id = slugOf(title) || slugOf(opts.name ?? "") || "plugin";
+    let version = 1;
+    const same = (found: ReturnType<typeof readPlugin>) => !!found && !("reason" in found) && found.sha256 === sha256;
+    const existing = readPlugin(id, dir);
+    if (existing && !("reason" in existing)) {
+      if (same(existing)) version = existing.header.version;
+      else if (opts.name !== undefined && opts.name === id) version = existing.header.version + 1;
+      else {
+        for (let n = 2; ; n += 1) {
+          const candidate = `${id.slice(0, 45).replace(/-+$/, "")}-${n}`;
+          const there = readPlugin(candidate, dir);
+          if (!there || "reason" in there || same(there)) {
+            id = candidate;
+            version = there && !("reason" in there) ? there.header.version : 1;
+            break;
+          }
+        }
+      }
+    }
+    const header: PluginHeader = {
+      plugin: id,
+      title,
+      version,
+      description: oneLine(opts.description, DESCRIPTION_MAX),
+      author: oneLine(process.env.LIME_PLUGIN_AUTHOR || "unknown", AUTHOR_MAX),
+      ...(this.clientName ? { "made-by": oneLine(this.clientName, AUTHOR_MAX) } : {}),
+      api: this.crateApi().join("."),
+      ...(this.lustBuild() ? { lust: this.lustBuild() } : {}),
+      "source-sha256": sha256,
+      created: new Date().toISOString().slice(0, 10),
+      target: checked.target,
+      params: checked.params,
+    };
+    try {
+      writePlugin(header, body, dir);
+    } catch (err) {
+      return { reason: `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    return { id, version, sha256 };
+  }
+
+  /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
+  private lustBuild(): string | undefined {
+    if (this.lustId !== undefined) return this.lustId || undefined;
+    const ready = this.recipeHost?.available();
+    let id = "";
+    if (ready?.ok) {
+      const r = spawnSync(ready.lust, ["--version"], { encoding: "utf8", timeout: 10_000 });
+      id = /build ([0-9a-f]+)/.exec(r.stdout ?? "")?.[1]?.slice(0, 8) ?? "";
+    }
+    this.lustId = id;
+    return id || undefined;
+  }
+
+  /**
+   * A library plugin ready to run or show. A file whose body no longer matches its hash was edited by hand: its
+   * parameters are read again (one describe run), its version goes up, and it is written back, with a note once.
+   */
+  private async pluginFile(id: string): Promise<{ file: PluginFile; note?: string } | { reason: string }> {
+    const dir = pluginsDir();
+    const found = readPlugin(id, dir);
+    if (!found) {
+      const names = listLibrary(dir).map((row) => row.header.plugin);
+      return { reason: `No plugin is named ${id}.${names.length ? ` The library has: ${names.slice(0, 20).join(", ")}.` : " The library is empty."} plugin {action:"list"} lists them.` };
+    }
+    if ("reason" in found) return found;
+    if (found.matches) return { file: found };
+    const described = await this.recipeDescribe(found.body);
+    if ("reason" in described) return { reason: `${id}.rs was changed outside the app and no longer builds: ${described.reason}` };
+    const header: PluginHeader = { ...found.header, version: found.header.version + 1, "source-sha256": found.sha256, params: described.params, target: described.target };
+    writePlugin(header, found.body, dir);
+    const again = readPlugin(id, dir);
+    if (!again || "reason" in again) return { reason: `${id}.rs could not be read back.` };
+    return { file: again, note: `This plugin's file was changed outside the app; it is now version ${header.version}.` };
+  }
+
+  /** --- D1. The session's latest kept run of a recipe name: its entry under the name or `<name>@<object>`. */
+  private latestDraft(name: string): { key: string; row: RustRecipe } | null {
+    let best: { key: string; row: RustRecipe } | null = null;
+    for (const [key, row] of this.rustRecipes) {
+      if (key !== name && !key.startsWith(`${name}@`)) continue;
+      if (!best || (row.at ?? 0) > (best.row.at ?? 0)) best = { key, row };
+    }
+    return best;
+  }
+
+  /** The draft's part still on the plate, made or changed by it: where a plugin that needs a part is checked. */
+  private draftPart(row: RustRecipe): string | undefined {
+    return [...(row.changed ?? []), ...row.objects].find((id) => this.find(id));
+  }
+
+  /** --- D14. plugin {action: list | get | save | remove}. Plugin text goes in `data`: it is data, never instructions. */
+  private async pluginTool(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const action = input.action;
+    const dir = pluginsDir();
+    if (action === "list") {
+      const query = typeof input.query === "string" ? input.query.trim() : "";
+      const rows: { score: number; row: Record<string, unknown> }[] = [];
+      for (const file of listLibrary(dir)) {
+        const h = file.header;
+        const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
+        if (score === 0) continue;
+        rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), data: { title: h.title, description: h.description } } });
+      }
+      const names = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0]!).filter((n) => n !== "plugin_check"));
+      for (const name of names) {
+        const draft = this.latestDraft(name);
+        if (!draft) continue;
+        const score = query ? queryScore({ plugin: name, title: name, description: "" }, query) : 1;
+        if (score === 0) continue;
+        const params = Object.entries(draft.row.params).map(([k, v]) => `${k} ${JSON.stringify(v)}`).join(", ");
+        rows.push({ score, row: { id: `draft:${name}`, ...(draft.row.plugin ? { from: draft.row.plugin.id } : {}), params, data: { title: name } } });
+      }
+      rows.sort((a, b) => b.score - a.score);
+      return { ok: true, plugins: rows.slice(0, 20).map((r) => r.row), total: rows.length, library: dir };
+    }
+    const id = typeof input.id === "string" ? input.id : "";
+    if (action === "get") {
+      if (id.startsWith("draft:")) {
+        const draft = this.latestDraft(id.slice(6));
+        if (!draft) return { ok: false, reason: `No run of ${id.slice(6)} is kept in this session.` };
+        return { ok: true, id, params: draft.row.params, objects: draft.row.objects, ...(draft.row.changed ? { changed: draft.row.changed } : {}), ...(input.withSource === true ? { source: draft.row.source } : {}), note: `Keep it with plugin {action:"save", from:"${id.slice(6)}", title, description}.` };
+      }
+      const got = await this.pluginFile(id);
+      if ("reason" in got) return { ok: false, reason: got.reason };
+      const h = got.file.header;
+      return {
+        ok: true,
+        id: h.plugin,
+        version: h.version,
+        api: h.api,
+        target: h.target,
+        sha256: h["source-sha256"],
+        created: h.created,
+        ...(h.lust ? { lust: h.lust } : {}),
+        params: h.params,
+        older: olderVersions(h.plugin, dir),
+        data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) },
+        ...(got.note ? { note: got.note } : {}),
+        ...(input.withSource === true ? { source: got.file.body } : {}),
+      };
+    }
+    if (action === "save") {
+      let source: string;
+      let name: string | undefined;
+      let objectHint: string | undefined;
+      if (typeof input.from === "string") {
+        const draft = this.latestDraft(input.from);
+        if (!draft) return { ok: false, reason: `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.` };
+        source = draft.row.source;
+        name = input.from;
+        objectHint = this.draftPart(draft.row);
+      } else if (typeof input.source === "string") {
+        source = input.source;
+        name = typeof input.id === "string" ? input.id : undefined;
+      } else return { ok: false, reason: "Give from (a recipe name this session ran) or source." };
+      const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint });
+      if ("reason" in saved) return { ok: false, reason: saved.reason };
+      if (typeof input.from === "string") {
+        const draft = this.latestDraft(input.from);
+        if (draft) draft.row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
+      }
+      return { ok: true, ...saved, path: join(dir, `${saved.id}.rs`) };
+    }
+    if (action === "remove") {
+      if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin." };
+      const files = removePlugin(id, dir);
+      if (files === 0) return { ok: false, reason: `No plugin is named ${id}.` };
+      return { ok: true, id, files, note: "Parts built with it keep their recipe in the project." };
+    }
+    return { ok: false, reason: "action is list, get, save, or remove." };
+  }
+
 
   /**
    * --- I22. The object `newId` takes the handle `oldId`: the old one leaves the plate, and the new one takes its handle,
@@ -1872,6 +2200,7 @@ export class Session {
       case "object_place": return this.objectPlace(input);
       case "object_remove": return this.objectRemove(String(input.object));
       case "recipe_run": return this.recipeRun(input, meta);
+      case "plugin": return this.pluginTool(input);
       case "object_duplicate": return this.objectDuplicate(input);
       case "object_split_shells": return this.splitShells(String(input.object));
       case "plate_arrange": return this.plateArrange(input);
@@ -1956,6 +2285,7 @@ export class Session {
       filament: this.filament().name,
       ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object) })) } : {}),
       printerSend: false,
+      plugins: this.pluginsLine(),
       model: {
         ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
         composite: [...COMPOSITE_KINDS],
@@ -1968,6 +2298,18 @@ export class Session {
         guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
       },
     };
+  }
+
+  /** "Plugins: N in your library; M drafts in this session." for session_info. */
+  private pluginsLine(): string {
+    let count = 0;
+    try {
+      count = listLibrary(pluginsDir()).length;
+    } catch {
+      count = 0;
+    }
+    const drafts = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0])).size;
+    return `Plugins: ${count} in your library (${pluginsDir()}); ${drafts} draft${drafts === 1 ? "" : "s"} in this session. plugin {action:"list", query} finds one.`;
   }
 
   /** The worked guides as a tool, for clients that do not read resources. */
@@ -6797,6 +7139,7 @@ export class Session {
     // A recipe_run source is kept once, by name; each object names it.
     for (const obj of this.objects) if (obj.rustRecipe && this.rustRecipes.has(obj.rustRecipe)) recipes[obj.id] = { ...(recipes[obj.id] as object | undefined), rust: obj.rustRecipe };
     const used = new Set(this.objects.map((obj) => obj.rustRecipe).filter((key): key is string => !!key));
+    for (const [key, row] of this.rustRecipes) if (row.changed?.some((id) => this.find(id))) used.add(key);
     const rustRecipes = Object.fromEntries([...this.rustRecipes].filter(([key]) => used.has(key)));
     const workplanes = Object.fromEntries(this.objects.filter((obj) => obj.workplaneTyped).map((obj) => [obj.id, obj.workplaneTyped]));
     const record = {
@@ -6820,7 +7163,9 @@ export class Session {
         if (!row || typeof row.source !== "string") continue;
         const objects = Array.isArray(row.objects) ? row.objects.filter((id): id is string => typeof id === "string") : [];
         const data = row.data && typeof row.data === "object" ? Object.fromEntries(Object.entries(row.data).filter(([, kept]) => !!kept && typeof kept === "object" && typeof kept.sha256 === "string" && "value" in kept)) : {};
-        this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects, ...(Object.keys(data).length ? { data } : {}), ...(typeof row.path === "string" ? { path: row.path } : {}) });
+        const changed = Array.isArray(row.changed) ? row.changed.filter((id): id is string => typeof id === "string") : [];
+        const stamp = row.plugin && typeof row.plugin === "object" && typeof row.plugin.id === "string" && typeof row.plugin.version === "number" && typeof row.plugin.sha256 === "string" ? { plugin: { id: row.plugin.id, version: row.plugin.version, sha256: row.plugin.sha256 } } : {};
+        this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects, ...(Object.keys(data).length ? { data } : {}), ...(typeof row.path === "string" ? { path: row.path } : {}), ...(typeof row.sha256 === "string" ? { sha256: row.sha256 } : {}), ...(typeof row.at === "number" ? { at: row.at } : {}), ...(changed.length ? { changed } : {}), ...stamp });
       }
     }
     const parts = value.parts;

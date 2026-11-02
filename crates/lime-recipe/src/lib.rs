@@ -424,11 +424,19 @@ pub struct Part {
     pub object: String,
 }
 
+/// This crate's recipe API level, `(major, minor)` (docs/plan-recipe-plugins.md D12). A plugin records it when it
+/// is saved. A minor level only adds; a plugin of a higher level than the host's crate is not built.
+/// 1.0: the calls, `param_*`, `geom2d`, `lattice`, and the `section` and `apply_many` wrappers. 1.1: typed
+/// parameters (`number`, `count`, `toggle`, `choice`, `text`) and describe mode.
+pub const API: (u32, u32) = (1, 1);
+
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
     params: Json,
     context: Json,
     next_id: u64,
+    /// Describe mode: the host asked only for the parameters (D4). No call reaches the engine.
+    describe: bool,
 }
 
 fn read_line() -> String {
@@ -437,8 +445,284 @@ fn read_line() -> String {
     line.trim_end().to_string()
 }
 
+/// A line to the host that is not a call: it takes no reply.
+fn tell(msg: Json) {
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{msg}").unwrap();
+    out.flush().unwrap();
+}
+
+/// A declared parameter: what the host's form and `plugin list` show.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamSpec {
+    pub name: String,
+    pub kind: String,
+    pub default: Json,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub unit: Option<String>,
+    pub label: Option<String>,
+    pub help: Option<String>,
+    pub options: Vec<String>,
+    pub max_len: Option<u32>,
+}
+
+impl ParamSpec {
+    fn new(name: &str, kind: &str, default: Json) -> ParamSpec {
+        ParamSpec { name: name.to_string(), kind: kind.to_string(), default, min: None, max: None, step: None, unit: None, label: None, help: None, options: Vec::new(), max_len: None }
+    }
+
+    /// The JSON the host keeps in a plugin's header: only the settings that were given.
+    pub fn to_json(&self) -> Json {
+        let mut j = Json::obj().set("name", self.name.as_str()).set("kind", self.kind.as_str()).set("default", self.default.clone());
+        if let Some(v) = self.min {
+            j = j.set("min", v);
+        }
+        if let Some(v) = self.max {
+            j = j.set("max", v);
+        }
+        if let Some(v) = self.step {
+            j = j.set("step", v);
+        }
+        if let Some(v) = &self.unit {
+            j = j.set("unit", v.as_str());
+        }
+        if let Some(v) = &self.label {
+            j = j.set("label", v.as_str());
+        }
+        if let Some(v) = &self.help {
+            j = j.set("help", v.as_str());
+        }
+        if !self.options.is_empty() {
+            j = j.set("options", Json::Arr(self.options.iter().map(|o| Json::from(o.as_str())).collect()));
+        }
+        if let Some(v) = self.max_len {
+            j = j.set("maxLen", v);
+        }
+        j
+    }
+}
+
+/// A parameter builder's view of the run, taken when the builder is made.
+struct Reader {
+    given: Option<Json>,
+    describe: bool,
+    late: bool,
+}
+
+impl Reader {
+    /// Tells the host about a parameter as it is read, and gives the value the host sent for it. In describe mode
+    /// that is the declaration and nothing is sent back; after the first call it is a late declaration, which the
+    /// host notes, since a form drawn before the run could not show it.
+    fn declare(&self, spec: &ParamSpec, line: u32) -> Option<Json> {
+        if self.describe {
+            tell(Json::obj().set("describe", Json::obj().set("param", spec.to_json()).set("line", line)));
+            return None;
+        }
+        if self.late {
+            tell(Json::obj().set("late_param", Json::obj().set("name", spec.name.as_str()).set("line", line)));
+        }
+        self.given.clone()
+    }
+
+    /// A line for the run's notes that is not a call.
+    fn note(&self, text: &str) {
+        if !self.describe {
+            tell(Json::obj().set("note", text));
+        }
+    }
+
+    fn note_held(&self, name: &str, given: f64, held: f64) {
+        let side = if given < held { "below its minimum" } else { "above its maximum" };
+        self.note(&format!("{name} {given} is {side}; the run used {held}."));
+    }
+}
+
+/// `s.number(name, default)`: a length, angle or ratio. Then `range`, `step`, `unit`, `label`, `help`, and `get()`.
+pub struct Number {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+/// `s.count(name, default)`: a whole number. Then `range`, `label`, `help`, and `get()`.
+pub struct Count {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+/// `s.toggle(name, default)`: on or off. Then `label`, `help`, and `get()`.
+pub struct Toggle {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+/// `s.choice(name, options, default)`: one of a few words. Then `label`, `help`, and `get()`.
+pub struct Choice {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+/// `s.text(name, default)`: a line of text (embossed lettering, say). Then `max_len`, `label`, `help`, and `get()`.
+pub struct Text {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+impl Number {
+    pub fn range(mut self, min: f64, max: f64) -> Number {
+        self.spec.min = Some(min);
+        self.spec.max = Some(max);
+        self
+    }
+    pub fn step(mut self, step: f64) -> Number {
+        self.spec.step = Some(step);
+        self
+    }
+    /// `mm`, `deg`, `%`, or none.
+    pub fn unit(mut self, unit: &str) -> Number {
+        self.spec.unit = Some(unit.to_string());
+        self
+    }
+    pub fn label(mut self, label: &str) -> Number {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> Number {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    /// The value the host passed, held inside the range, or the default.
+    #[track_caller]
+    pub fn get(self) -> f64 {
+        let line = std::panic::Location::caller().line();
+        let default = self.spec.default.as_f64().unwrap_or(0.0);
+        let given = self.r.declare(&self.spec, line).and_then(|j| j.as_f64());
+        let v = given.unwrap_or(default);
+        let held = hold(v, self.spec.min, self.spec.max);
+        if held != v {
+            self.r.note_held(&self.spec.name, v, held);
+        }
+        held
+    }
+}
+
+impl Count {
+    pub fn range(mut self, min: u32, max: u32) -> Count {
+        self.spec.min = Some(min as f64);
+        self.spec.max = Some(max as f64);
+        self
+    }
+    pub fn label(mut self, label: &str) -> Count {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> Count {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    /// The value the host passed (rounded down), held inside the range, or the default.
+    #[track_caller]
+    pub fn get(self) -> u32 {
+        let line = std::panic::Location::caller().line();
+        let default = self.spec.default.as_f64().unwrap_or(0.0);
+        let v = self.r.declare(&self.spec, line).and_then(|j| j.as_f64()).map_or(default, |n| n.floor());
+        let held = hold(v.max(0.0), self.spec.min, self.spec.max);
+        if held != v {
+            self.r.note_held(&self.spec.name, v, held);
+        }
+        held as u32
+    }
+}
+
+impl Toggle {
+    pub fn label(mut self, label: &str) -> Toggle {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> Toggle {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    #[track_caller]
+    pub fn get(self) -> bool {
+        let line = std::panic::Location::caller().line();
+        let default = self.spec.default.as_bool().unwrap_or(false);
+        self.r.declare(&self.spec, line).and_then(|j| j.as_bool()).unwrap_or(default)
+    }
+}
+
+impl Choice {
+    pub fn label(mut self, label: &str) -> Choice {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> Choice {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    /// The option the host passed, or the default when it passed none or one not in the list.
+    #[track_caller]
+    pub fn get(self) -> String {
+        let line = std::panic::Location::caller().line();
+        let default = self.spec.default.as_str().unwrap_or("").to_string();
+        match self.r.declare(&self.spec, line).and_then(|j| j.as_str().map(|t| t.to_string())) {
+            Some(v) if self.spec.options.contains(&v) => v,
+            Some(v) => {
+                self.r.note(&format!("{} has no option {}; the run used {}.", self.spec.name, v, default));
+                default
+            }
+            None => default,
+        }
+    }
+}
+
+impl Text {
+    pub fn max_len(mut self, n: u32) -> Text {
+        self.spec.max_len = Some(n);
+        self
+    }
+    pub fn label(mut self, label: &str) -> Text {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> Text {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    /// The text the host passed, cut to `max_len` characters, or the default.
+    #[track_caller]
+    pub fn get(self) -> String {
+        let line = std::panic::Location::caller().line();
+        let default = self.spec.default.as_str().unwrap_or("").to_string();
+        let v = self.r.declare(&self.spec, line).and_then(|j| j.as_str().map(|t| t.to_string())).unwrap_or(default);
+        match self.spec.max_len {
+            Some(n) if v.chars().count() > n as usize => {
+                self.r.note(&format!("{} is longer than {} characters; the run used the first {}.", self.spec.name, n, n));
+                v.chars().take(n as usize).collect()
+            }
+            _ => v,
+        }
+    }
+}
+
+fn hold(v: f64, min: Option<f64>, max: Option<f64>) -> f64 {
+    let mut v = v;
+    if let Some(lo) = min {
+        if v < lo {
+            v = lo;
+        }
+    }
+    if let Some(hi) = max {
+        if v > hi {
+            v = hi;
+        }
+    }
+    v
+}
+
 impl Session {
-    /// Reads the start line: `{"v":1,"params":{...},"context":{...}}`.
+    /// Reads the start line: `{"v":1,"params":{...},"context":{...}}`, with `"describe":true` for describe mode.
     pub fn start() -> Session {
         let start = Json::parse(&read_line()).unwrap_or(Json::Null);
         Session::from_start(&start)
@@ -450,25 +734,68 @@ impl Session {
             params: start.get("params").cloned().unwrap_or(Json::obj()),
             context: start.get("context").cloned().unwrap_or(Json::obj()),
             next_id: 1,
+            describe: start.get("describe").and_then(Json::as_bool) == Some(true),
         }
     }
 
-    /// A number parameter, or `default` when the host did not send it.
+    /// True in describe mode: every parameter gives its default and the run ends at its first call.
+    pub fn describing(&self) -> bool {
+        self.describe
+    }
+
+    /// What a parameter builder needs of the run: the value the host sent, describe mode, and whether a call came first.
+    fn reader(&self, name: &str) -> Reader {
+        Reader { given: self.params.get(name).cloned(), describe: self.describe, late: self.next_id > 1 }
+    }
+
+    /// A number parameter: `s.number("diameter", 80.0).range(20.0, 250.0).unit("mm").label("Outer diameter").get()`.
+    /// Declare every parameter before the first call, so a form can show it.
+    pub fn number(&self, name: &str, default: f64) -> Number {
+        Number { r: self.reader(name), spec: ParamSpec::new(name, "number", Json::from(default)) }
+    }
+
+    /// A whole-number parameter: `s.count("holes", 6).range(3, 24).get()`.
+    pub fn count(&self, name: &str, default: u32) -> Count {
+        Count { r: self.reader(name), spec: ParamSpec::new(name, "count", Json::from(default)) }
+    }
+
+    /// An on-or-off parameter: `s.toggle("bore", true).get()`.
+    pub fn toggle(&self, name: &str, default: bool) -> Toggle {
+        Toggle { r: self.reader(name), spec: ParamSpec::new(name, "toggle", Json::from(default)) }
+    }
+
+    /// One of `options`: `s.choice("edge", &["fillet", "chamfer", "sharp"], "fillet").get()`.
+    pub fn choice(&self, name: &str, options: &[&str], default: &str) -> Choice {
+        let mut spec = ParamSpec::new(name, "choice", Json::from(default));
+        spec.options = options.iter().map(|o| o.to_string()).collect();
+        Choice { r: self.reader(name), spec }
+    }
+
+    /// A text parameter: `s.text("label", "LIME").max_len(20).get()`.
+    pub fn text(&self, name: &str, default: &str) -> Text {
+        Text { r: self.reader(name), spec: ParamSpec::new(name, "text", Json::from(default)) }
+    }
+
+    /// A number parameter, or `default` when the host did not send it: `number(name, default).get()`.
+    #[track_caller]
     pub fn param_f64(&self, name: &str, default: f64) -> f64 {
-        self.params.get(name).and_then(Json::as_f64).unwrap_or(default)
+        self.number(name, default).get()
     }
 
     /// A count parameter (a number the host sent, rounded down), or `default`.
+    #[track_caller]
     pub fn param_u32(&self, name: &str, default: u32) -> u32 {
-        self.params.get(name).and_then(Json::as_f64).map_or(default, |n| n.max(0.0) as u32)
+        self.count(name, default).get()
     }
 
+    #[track_caller]
     pub fn param_bool(&self, name: &str, default: bool) -> bool {
-        self.params.get(name).and_then(Json::as_bool).unwrap_or(default)
+        self.toggle(name, default).get()
     }
 
+    #[track_caller]
     pub fn param_str(&self, name: &str, default: &str) -> String {
-        self.params.get(name).and_then(Json::as_str).unwrap_or(default).to_string()
+        self.text(name, default).get()
     }
 
     /// The context the host sent: printer, material, units, a starting object.
@@ -478,6 +805,9 @@ impl Session {
 
     /// The object the run starts from, when the host named one.
     pub fn object(&self) -> Option<Part> {
+        if self.describe {
+            tell(Json::obj().set("describe", Json::obj().set("object", true)));
+        }
         self.context.get("object").and_then(Json::as_str).map(|o| Part { object: o.to_string() })
     }
 
@@ -487,6 +817,9 @@ impl Session {
     #[track_caller]
     pub fn call(&mut self, tool: &str, args: Json) -> Result<Json, Refusal> {
         let at = std::panic::Location::caller();
+        if self.describe {
+            self.end_describe(at.line());
+        }
         let id = self.next_id;
         self.next_id += 1;
         let msg = Json::obj()
@@ -600,6 +933,13 @@ impl Session {
         Ok(Combined::from_json(&r))
     }
 
+    /// Describe mode ends at the first call: the host has every declared parameter and stops the program here.
+    fn end_describe(&self, line: u32) {
+        tell(Json::obj().set("describe", Json::obj().set("end", true).set("line", line)));
+        while !read_line().is_empty() {}
+        panic!("describe mode ends before the first call");
+    }
+
     /// A note the host shows with the result.
     #[track_caller]
     pub fn log(&mut self, text: &str) {
@@ -613,6 +953,10 @@ impl Session {
 
     /// Ends the run with numbers for the caller (a search ranks by them).
     pub fn done_with(self, part: &Part, metrics: Json) {
+        if self.describe {
+            tell(Json::obj().set("describe", Json::obj().set("end", true)));
+            return;
+        }
         let msg = Json::obj().set("done", Json::obj().set("object", part.object.as_str()).set("metrics", metrics));
         let mut out = std::io::stdout().lock();
         writeln!(out, "{msg}").unwrap();
@@ -2399,6 +2743,36 @@ mod tests {
         let op = s.extrude("cut", -2.0, s.loops.clone());
         assert_eq!(op.get("turn").map(|t| t.to_string()), Some("[0,0,0]".to_string()));
         assert!(Section::all(&Json::obj()).is_empty());
+    }
+
+    #[test]
+    fn typed_params_json() {
+        let s = Session::from_start(&Json::obj());
+        let n = s.number("diameter", 80.0).range(20.0, 250.0).step(0.5).unit("mm").label("Outer diameter");
+        assert_eq!(n.spec.to_json().to_string(), r#"{"name":"diameter","kind":"number","default":80,"min":20,"max":250,"step":0.5,"unit":"mm","label":"Outer diameter"}"#);
+        let c = s.count("holes", 6).range(3, 24).help("Bolt holes");
+        assert_eq!(c.spec.to_json().to_string(), r#"{"name":"holes","kind":"count","default":6,"min":3,"max":24,"help":"Bolt holes"}"#);
+        assert_eq!(s.toggle("bore", true).spec.to_json().to_string(), r#"{"name":"bore","kind":"toggle","default":true}"#);
+        assert_eq!(
+            s.choice("edge", &["fillet", "chamfer"], "fillet").spec.to_json().to_string(),
+            r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
+        );
+        assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
+        assert_eq!(API, (1, 1));
+    }
+
+    #[test]
+    fn typed_params_values() {
+        let s = Session::from_start(&Json::parse(r#"{"params":{"d":300,"n":4.7,"m":1,"b":false,"e":"round","t":"abcdef","old":2.5}}"#).unwrap());
+        assert_eq!(s.number("d", 80.0).range(20.0, 250.0).get(), 250.0);
+        assert_eq!(s.number("missing", 80.0).range(20.0, 250.0).get(), 80.0);
+        assert_eq!(s.count("n", 6).range(3, 24).get(), 4);
+        assert_eq!(s.count("m", 6).range(3, 24).get(), 3);
+        assert!(!s.toggle("b", true).get());
+        assert_eq!(s.choice("e", &["fillet", "chamfer"], "fillet").get(), "fillet");
+        assert_eq!(s.text("t", "x").max_len(3).get(), "abc");
+        assert_eq!(s.param_f64("old", 1.0), 2.5);
+        assert_eq!(s.param_u32("n", 1), 4);
     }
 
     #[test]

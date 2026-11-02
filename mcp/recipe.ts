@@ -94,6 +94,15 @@ export interface RunOutcome {
   exitCode?: number | null;
   stderr: string;
   ms: number;
+  /** The recipe's own notes that are not calls: a value held inside its range, say (lime-recipe 1.1). */
+  notes?: string[];
+  /** Parameters declared after the first call, with their lines: a form drawn before the run could not show them. */
+  lateParams?: { name: string; line: number }[];
+  /**
+   * Describe mode (`start.describe`): the parameters in declared order, whether the recipe read its object, and the
+   * line of the first call, where describe mode ended.
+   */
+  described?: { params: Record<string, unknown>[]; readObject: boolean; ended: boolean; line?: number };
 }
 
 const SLOTS = 4;
@@ -261,6 +270,9 @@ export class RecipeHost {
     let failure: { reason: string; line?: number } | null = null;
     let halted: RunOutcome["halted"];
     let done: RunOutcome["done"];
+    const notes: string[] = [];
+    const lateParams: { name: string; line: number }[] = [];
+    const described: NonNullable<RunOutcome["described"]> | undefined = start.describe === true ? { params: [], readObject: false, ended: false } : undefined;
     let queue: Promise<void> = Promise.resolve();
     return new Promise((resolve) => {
       const finish = (code: number | null) => {
@@ -270,6 +282,12 @@ export class RecipeHost {
         const lastRefused = refused[refused.length - 1];
         let reason = failure?.reason ?? halted?.reason;
         let line = failure?.line ?? halted?.line;
+        const extra = { ...(notes.length ? { notes } : {}), ...(lateParams.length ? { lateParams } : {}), ...(described ? { described } : {}) };
+        // Describe mode ends at the first call or at done; a panic after the recipe read its object means it needs one.
+        if (described && !failure && (described.ended || (described.readObject && panic))) {
+          resolve({ ok: true, calls, refused, exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started, ...extra });
+          return;
+        }
         if (!reason && !done) {
           if (panic) {
             reason = `The recipe panicked at line ${panic.line}: ${panic.message}`;
@@ -281,7 +299,7 @@ export class RecipeHost {
           }
           if (line === undefined && lastRefused) line = lastRefused.line;
         }
-        resolve({ ok: !reason && !!done, ...(done ? { done } : {}), calls, refused, ...(reason ? { reason } : {}), ...(line !== undefined ? { line } : {}), ...(halted && !failure ? { halted } : {}), exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started });
+        resolve({ ok: !reason && !!done, ...(done ? { done } : {}), calls, refused, ...(reason ? { reason } : {}), ...(line !== undefined ? { line } : {}), ...(halted && !failure ? { halted } : {}), exitCode: code, stderr: stderr.slice(-4000), ms: Date.now() - started, ...extra });
       };
       const stop = (reason: string, line?: number) => {
         if (!failure) failure = { reason, ...(line !== undefined ? { line } : {}) };
@@ -318,6 +336,28 @@ export class RecipeHost {
           msg = JSON.parse(line) as Record<string, unknown>;
         } catch {
           return stop(`The recipe wrote a line that is not JSON: ${line.slice(0, 120)}`);
+        }
+        // Lines that are not calls take no reply (lime-recipe 1.1): describe mode, notes, late parameters.
+        if (msg.describe && typeof msg.describe === "object") {
+          const d = msg.describe as Record<string, unknown>;
+          if (!described) return stop("The recipe wrote a describe line outside describe mode.");
+          if (d.param && typeof d.param === "object") described.params.push({ ...(d.param as Record<string, unknown>), ...(typeof d.line === "number" ? { line: d.line } : {}) });
+          if (d.object === true) described.readObject = true;
+          if (d.end === true) {
+            described.ended = true;
+            if (typeof d.line === "number") described.line = d.line;
+            child.kill();
+          }
+          return;
+        }
+        if (typeof msg.note === "string") {
+          if (notes.length < 200) notes.push(msg.note.slice(0, 400));
+          return;
+        }
+        if (msg.late_param && typeof msg.late_param === "object") {
+          const late = msg.late_param as { name?: unknown; line?: unknown };
+          if (lateParams.length < 50) lateParams.push({ name: String(late.name ?? ""), line: typeof late.line === "number" ? late.line : 0 });
+          return;
         }
         if (msg.done && typeof msg.done === "object") {
           const d = msg.done as Record<string, unknown>;

@@ -173,6 +173,20 @@ let bar = "";
   check("a fillet aimed at the top applies and says the face it picked", rim.ok === true && picked?.length === 1 && picked[0]!.areaMm2 === 1500 && picked[0]!.distanceMm === 0 && picked[0]!.centre[2] === 10, rim);
 }
 
+// --- Plugins (milestones 1–2): keep the bar as a plugin, then run it by id: the same solid, fingerprint for fingerprint.
+{
+  process.env.LIME_PLUGINS_DIR = mkdtempSync(join(tmpdir(), "lime-plugins-real-"));
+  const typed = example.replace('let width = s.param_f64("width", 60.0);', 'let width = s.number("width", 60.0).range(50.0, 120.0).unit("mm").get();');
+  const kept = await call("recipe_run", { source: typed, name: "bar_typed", keep: { title: "Mounting bar", description: "A bar with a row of holes." } });
+  check("the bar is kept as a plugin", kept.ok === true && (kept.kept as { id?: string } | undefined)?.id === "mounting-bar", kept);
+  const listed = await call("plugin", { action: "list", query: "bar" });
+  check("plugin list shows its typed width", JSON.stringify(listed.plugins).includes("width mm 60 [50-120]"), listed);
+  const byId = await call("recipe_run", { plugin: "mounting-bar" });
+  const a = await call("model_describe", { object: String(kept.object) });
+  const b = await call("model_describe", { object: String(byId.object) });
+  check("run by id, it builds the same solid", byId.ok === true && !!a.fingerprint && JSON.stringify(a.fingerprint) === JSON.stringify(b.fingerprint), { a: a.fingerprint, b: b.fingerprint, byId });
+}
+
 if (failed > 0) {
   console.error(`recipe-session: ${failed} failed`);
   process.exit(1);

@@ -101,7 +101,11 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // about 5,000 tokens a call for the groovi skin) and maxSteps (a partial dry run) add 50 more (16,710 together), in the model group as well.
 // section's saveAs (the answer written as recipe data, so a mesh's measured sections, tens of kilobytes, never pass
 // through the model) adds 29 to a list at 16,710, in the model group.
-const TOTAL_BUDGET = 16_740;
+// Plugins (docs/plan-recipe-plugins.md D14, milestones 1–2): the plugin tool (list, get, save, remove: one tool with an
+// action, as the plan chose over four) and recipe_run's plugin and keep add 281 to a list at 16,740 (the plan estimated
+// about 260). Both are in the model group, so the first list with groups on does not grow, and one plugin list plus a
+// recipe_run {plugin} replaces writing and sending a recipe again: thousands of tokens a reuse.
+const TOTAL_BUDGET = 17_030;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
