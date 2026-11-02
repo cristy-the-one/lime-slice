@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { addArc, addCircle, addLine, emptySketch, type SketchData } from "./model.ts";
-import { axisCrossings, blockedTip, EDIT_BUTTONS, endsWithAction, MAKE_BUTTONS, noShapeReason, openEnds, PURPOSE, REASON, sharpCorners } from "./reasons.ts";
+import { ASSIST_PURPOSE, axisCrossings, namesOpenEnds, blockedTip, EDIT_BUTTONS, endsWithAction, MAKE_BUTTONS, noShapeReason, openEnds, PURPOSE, REASON, sharpCorners } from "./reasons.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -40,6 +40,10 @@ eq("a greyed tip keeps the purpose and adds the reason", blockedTip("Spin a shap
 check("an action ending passes", endsWithAction("Your lines don't close. Drag one end onto the other."));
 check("a statement ending fails", !endsWithAction("Pick a line. A sweep that follows the corner is not available yet."));
 check("a bare statement fails", !endsWithAction("The loft has no volume: its sections lie in one plane."));
+
+// E1 and L1: the buttons that come only when they help have a purpose too.
+for (const [name, line] of Object.entries(ASSIST_PURPOSE)) check(`${name} assist purpose is a short line`, line.length > 10 && line.length <= 90 && line.endsWith(".") && !line.includes("\n"));
+check("both open-ends reasons mark the red ends", namesOpenEnds(REASON.openEnds) && namesOpenEnds(REASON.openEndsClose) && !namesOpenEnds(REASON.noShape));
 
 for (const [name, text] of Object.entries(REASON)) check(`REASON.${name} ends with an action: ${text}`, endsWithAction(text));
 

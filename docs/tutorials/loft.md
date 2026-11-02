@@ -8,6 +8,24 @@ To raise a section before any solid exists, type an **Offset** on the "Sketch on
 
 A circle is Draw, then Circle. Click the centre and type the diameter.
 
+## The quick way: Add a shape above
+
+For two sections, the second sketch doesn't need setting up by hand.
+
+**Sketch on the bed**, **Rectangle**, Ctrl on the first click, type 10 and 10. Click **Loft** (Shift+L). The square is section 1, and the card shows **Height** and **Add a shape above**. Type a height, or drag the word Height sideways (1 mm for every 4 px). Here it is 30.
+
+![Loft with one section. Height 30, then Add a shape above.](../screenshots/tutorials/loft/above-01-height.png)
+
+Click **Add a shape above**. The square is kept as Sketch 1, and a copy opens 30 mm above it. Change the copy (drag it, set its sizes), or draw another shape. Here a circle of diameter 6 goes in the middle.
+
+![The shape above: the copy of the square and a Ø6 mm circle, 30 mm up.](../screenshots/tutorials/loft/above-02-circle.png)
+
+Click **Back to loft**. Because the copy was left as it came and a circle was drawn beside it, the copy becomes helper lines and the circle is the top. Both sections are picked.
+
+![Back in the loft: the square below, the circle above, the ghost between them.](../screenshots/tutorials/loft/above-03-back.png)
+
+**Apply**. History reads "Loft Sketch 1 → Sketch 2", the same loft a second sketch on XY with Offset 30 makes. **Cancel** on the shape above drops it and goes back to the loft with its one section.
+
 ## A square-to-round duct
 
 A 40 mm square on the bed, a Ø22 mm circle 50 mm above it, ruled.

@@ -31,7 +31,7 @@ export const STATUS_HINTS: readonly StatusHint[] = [
     id: "loft",
     feature: true,
     title: "Loft {detail}",
-    steps: ["Pick sections in order.", "R rules the loft.", "Enter applies, Esc cancels."],
+    steps: ["Pick sections in order, or click Add a shape above.", "R rules the loft.", "Enter applies, Esc cancels."],
   },
   {
     id: "sweep",

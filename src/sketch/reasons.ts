@@ -38,6 +38,21 @@ export const PURPOSE: Readonly<Record<CardButton, string>> = {
   holes: "Drill a hole at each point or circle you drew on a face.",
 };
 
+/**
+ * R4 for the buttons that appear only when they help: Close the gap beside a drawing with open ends, and Add a shape
+ * above in a loft with one section.
+ */
+export const ASSIST_PURPOSE = {
+  closeGap: "Join the red open ends, so the lines close a shape. Ctrl+Z undoes it.",
+  above: "Start the next section on a plane above, with a copy of this shape to edit.",
+  backToLoft: "Keep this shape and go back to the loft, with both sections picked.",
+} as const;
+
+/** True for either open-ends reason: both mark the red ends. */
+export function namesOpenEnds(reason: string | undefined): boolean {
+  return reason === REASON.openEnds || reason === REASON.openEndsClose;
+}
+
 /** A greyed button's tip: what it is for, then why it is greyed. */
 export function blockedTip(idle: string, why: string): string {
   if (!why) return idle;
@@ -49,6 +64,8 @@ export const REASON = {
   noSketch: "There is no open sketch. Click Sketch, then a face or a plane.",
   empty: "Nothing is drawn yet. Draw a closed shape: a rectangle (R), a circle (C), or lines that end where they started (L).",
   openEnds: "Your lines don't close a shape yet, so the red ends need to meet. Drag one onto the other, or trim the overhang (T).",
+  /** E1: the same, when Close the gap can join them. */
+  openEndsClose: "Your lines don't close a shape yet, so the red ends need to meet. Click Close the gap, or drag one end onto the other.",
   onlyHelpers: "Only helper lines are drawn, and they aren't part of a shape. Draw the outline with solid lines, or press X on a helper line to make it solid.",
   noShape: "Your lines cross but don't close one shape. Trim the pieces that stick out (T), so one outline is left.",
   pickExtrude: "Click inside the shape to extrude.",
@@ -56,6 +73,10 @@ export const REASON = {
   pickRevolve: "Click the shape to spin, then the line to spin it around.",
   crossAxis: "The shape crosses the axis. Pick a line beside the shape, or move the shape off it.",
   loftSecond: "A loft needs a second shape at another height. Click another sketch's card, or a flat face of the part.",
+  /** L1: the same, when the open sketch's one shape can be copied up. */
+  loftAbove: "A loft needs a second shape at another height. Click Add a shape above, or another sketch's card.",
+  /** L1: the many-shapes refusal for the shape above, which names what to delete. */
+  manyRegionsAbove: "The sketch above has more than one shape. Delete the ones the loft shouldn't use, then click Back to loft.",
   sweepNothing: "A sweep needs a shape and a route. Draw a closed shape to carry and an open line for it to follow.",
   sweepProfile: "The sweep has no shape to carry yet. Click a closed shape, here or on another sketch's card.",
   sweepRoute: "The sweep has no route yet. Draw an open line for the shape to follow, or Shift-click edges of the part.",
