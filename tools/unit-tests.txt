@@ -169,6 +169,7 @@ src/sketch/revolve.test.ts
 src/sketch/loft.test.ts
 src/sketch/loops.test.ts
 src/sketch/sweep.test.ts
+src/sketch/round-route.test.ts
 src/sketch/edit.test.ts
 src/sketch/solve.test.ts
 src/sketch/session.test.ts

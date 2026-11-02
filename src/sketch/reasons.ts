@@ -46,6 +46,8 @@ export const ASSIST_PURPOSE = {
   closeGap: "Join the red open ends, so the lines close a shape. Ctrl+Z undoes it.",
   above: "Start the next section on a plane above, with a copy of this shape to edit.",
   backToLoft: "Keep this shape and go back to the loft, with both sections picked.",
+  roundCorners: "Round the route's sharp corners on Apply, so the shape can follow them.",
+  faceStart: "Keep this sketch as a card and pick a face of the part for the holes.",
 } as const;
 
 /** True for either open-ends reason: both mark the red ends. */
@@ -84,6 +86,12 @@ export const REASON = {
   manyRegionsSweep: "That sketch has more than one shape. Click the one to sweep in the view.",
   noRegionLoft: "That sketch has no closed shape. Close its lines, or click another sketch.",
   nothingToSweep: "That sketch has no closed shape and no open line. Click another sketch, or draw one here.",
+  /** S3: a sharp route corner, when Round corners can round it. */
+  sharpRound: "The route turns sharply at the red dot, and a sweep can't follow a sharp corner. Click Round corners, or draw the bend as an arc.",
+  /** H1: Holes off a face, when the part has a face to start on. */
+  holesFace: "Holes go into a face. Click Start on a face, then draw points or circles where the holes go.",
+  /** V1: an axis the picked shape crosses. */
+  axisCrosses: "The shape crosses this line. Pick an axis beside the shape.",
 } as const;
 
 /** Why a sketch with no shape has none: nothing drawn, ends that don't meet, only helper lines, or crossings. */

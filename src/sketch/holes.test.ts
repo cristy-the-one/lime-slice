@@ -10,8 +10,10 @@ import { eulerOrient } from "../mesh-place.ts";
 import { addCircle, addLine, addPoint, emptySketch, type SketchData } from "./model.ts";
 import { frameOf, planeOf } from "./frame.ts";
 import {
+  DRILL_ALL_QUESTION,
   FACE_REFUSAL,
   POINT_REFUSAL,
+  everyHoleSelection,
   holeMarks,
   holePointsSentence,
   holeTargets,
@@ -173,6 +175,27 @@ const holeContext = {
   pull: null,
   sketchHoles: true,
 };
+// --- H1. With nothing selected, H drills at every point and circle centre: the same group as picking them by hand. ---
+{
+  let drawn = addCircle(onFace, [0, 0], 1.5).sketch;
+  drawn = addCircle(drawn, [6, 0], 1.5).sketch;
+  drawn = addCircle(drawn, [3, 5], 1.5).sketch;
+  // A helper bolt circle, a solid line and a lone point: the bolt circle and the line's ends are not holes.
+  drawn = addCircle(drawn, [3, 2], 8, true).sketch;
+  drawn = addLine(drawn, [-8, -8], [12, -8]).sketch;
+  drawn = addPoint(drawn, [3, -4], true).sketch;
+  const circles = drawn.entities.filter((entity) => entity.kind === "circle" && !entity.construction).map((entity) => entity.id);
+  const lone = drawn.points.at(-1)!.id;
+  const every = everyHoleSelection(drawn);
+  eq("every solid circle and the lone point, not the helper circle or the line's ends", every, { entities: circles, points: [lone] });
+  const byHand = holesInModel({ sketch: drawn, points: holeTargets(drawn, { entities: circles, points: [lone] }), pose: IDENTITY_POSE, sizes });
+  const asked = holesInModel({ sketch: drawn, points: holeTargets(drawn, every), pose: IDENTITY_POSE, sizes });
+  check("four holes", "op" in asked && asked.op.steps.length === 4);
+  eq("Yes stores the group a hand-picked selection stores", "op" in asked ? asked.op : null, "op" in byHand ? byHand.op : null);
+  eq("the question", DRILL_ALL_QUESTION, "Drill at every point and circle centre in this sketch?");
+  eq("nothing to drill in a sketch of lines", holeTargets(addLine(onFace, [0, 0], [5, 0]).sketch, everyHoleSelection(addLine(onFace, [0, 0], [5, 0]).sketch)), []);
+}
+
 const knobs = handlesFor("hole", holeContext).map((handle) => handle.id);
 eq("one hole per point drags radius and depth, not the origin", knobs, ["hole-radius", "hole-depth"]);
 

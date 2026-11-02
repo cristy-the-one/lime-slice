@@ -298,6 +298,50 @@ closes this sketch (keeping it) and arms face picking. On a face sketch with not
 Stores: the same hole group. **Done when** H on a face sketch with three circles, nothing selected, drills
 three holes after one Yes.
 
+**As built (milestone 4, S3 + H1 + V1).**
+- S3 is `routeCornerLines`, `roundRouteCorners` and `smallestRouteRadius` in `src/sketch/round-route.ts`. The sharp
+  corners are milestone 1's (`sharpCorners`, the sweep's own 25° rule); each must be two solid lines ending at the same
+  spot, or nothing is offered and the sharp-corner reason stays. Rounding is `filletCorner` at each corner, then
+  `carryDims`, which is what Fillet corner (G) does. The radius on offer starts at the profile's own radius (its reach
+  from its centre), rounded up to 0.5 mm, and grows by a quarter until the sweep builds (12 tries); in practice it is
+  the profile's radius (3 for a 6 mm circle, 4 for an 8 mm pipe).
+- The card shows **Round corners** (pressed) and **Radius** whenever it can help, for S1, Pipe, and a two-sketch sweep
+  whose route is the open sketch. The sweep's fields then come from the rounded copy, so the ghost, the route drawn over
+  the sketch, and Apply all use it, and the sketch itself is untouched until Apply. Off brings the red dot and the
+  reason back, now "… Click Round corners, or draw the bend as an arc." (`REASON.sharpRound`). A typed radius is kept
+  (a pipe made wider then still uses it); a cleared field goes back to the smallest. The field takes each keystroke,
+  and the size box leaves its keys alone (`data-own-keys` in `src/interact/hud.ts`), so Enter applies what it says.
+- Apply sends the sweep of the rounded drawing, and only when the modeler takes it are the arcs written into the open
+  sketch (`editActiveSketch`), so the sketch card keeps them and History Edit reopens them. Deviation: "one undo step"
+  is one Apply. After Apply the sketch is closed, so Ctrl+Z takes the sweep back and the card keeps its arcs, as Fillet
+  corner then Sweep would leave it.
+- Bug fixed on the way: Fillet corner on two lines whose ends sit on one spot without sharing a point trimmed the first
+  line from its start, not from the corner (`filletCorner` passed the line's first point as the corner). Lines drawn as
+  one chain share the point and were never affected.
+- H1: off a face, while the part has faces, Holes keeps its place greyed with "Holes go into a face. Click Start on a
+  face, then draw points or circles where the holes go." (`REASON.holesFace`; with no part, milestone 1's sentence
+  stays) and **Start on a face** sits after it. It keeps the sketch as a card (`beginChoose`) and the chooser opens
+  with "Your sketch is kept as a card. Click a face of the part to draw the holes on."
+- On a face sketch with nothing selected, H asks "Drill at every point and circle centre in this sketch?" in place of
+  the Make row, with **Yes, drill 3 holes** (focused; Enter, or H again) and **No, I'll pick** (Esc, which says
+  `POINT_REFUSAL`). "Every point and circle centre" is `everyHoleSelection`: each solid circle and each point no line
+  uses. A helper circle (a bolt circle the holes sit on) and the ends of lines are left out. Yes selects them and opens
+  the Hole panel, exactly as H on that selection does, so the group stored is the same. Deviation: the done-when
+  "drills three holes after one Yes" is Yes, then the Hole panel's Apply with its sizes, since a hole needs a diameter
+  and a depth; Yes replaces the three Shift-clicks.
+- V1 is `axisChoices` in `src/sketch/revolve.ts`: "Spin around:" then helper lines ("your helper line", or numbered),
+  "this line" for a picked axis that is none of the others, the straight sides that bound the picked shape ("the
+  shape's left side", right side, bottom, top), and "the vertical axis (Y)", "the horizontal axis (X)" named by the
+  model axis they run along. A line is listed once; a side on a plane axis is listed as that axis. A listed axis the
+  shape crosses is greyed with "The shape crosses this line. Pick an axis beside the shape." The pressed one is the
+  axis in use, none while the axis still follows the pointer. The list wraps above Flip and the angle; at 1440 x 1000
+  the revolve card keeps its Apply on screen with room to spare.
+- Section 7 tests: `src/sketch/round-route.test.ts` (the rounded drawing equals Fillet corner's; the S1 sweep of it
+  equals the two-sketch sweep of a circle drawn by hand facing the route and the route rounded by hand; a pipe; what
+  isn't offered), `holes.test.ts` (Yes stores the hand-picked group), `revolve.test.ts` (a listed helper line and a
+  listed side store the hovered revolve). `e2e/model-sketch-anywhere.spec.ts` drives all three. Nothing under `mcp/`
+  changed, and no saved field.
+
 ## 6. Edit tools, done the natural way
 
 ### T1. Trim shows its pieces

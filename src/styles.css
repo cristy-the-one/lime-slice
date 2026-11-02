@@ -926,6 +926,9 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-prompt-text { flex: 1 1 100%; margin: 0; }
 .sketch-value { display: inline-flex; align-items: center; gap: 4px; }
 .sketch-value input { width: 6ch; }
+/* V1 and H1: the revolve's listed axes, and the question H asks, read as part of the strip. */
+.sketch-axes-lead { color: var(--text-dim); margin: 0 4px 0 0; }
+.sketch-drill-note { margin: 0; color: var(--text-dim); }
 .sketch-scrub { cursor: ew-resize; user-select: none; touch-action: none; }
 .sketch-how { position: relative; flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
 .sketch-how-open { width: 28px; min-width: 28px; padding: 0; }

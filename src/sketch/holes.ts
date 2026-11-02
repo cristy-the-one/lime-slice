@@ -78,6 +78,30 @@ export function holeTargets(sketch: SketchData, selection: { entities: readonly 
   return out;
 }
 
+/** --- H1. The question H asks on a face sketch with nothing selected. --- */
+export const DRILL_ALL_QUESTION = "Drill at every point and circle centre in this sketch?";
+
+/**
+ * H1: what "every point and circle centre" picks, as the selection H would have needed: each solid circle (its
+ * centre), and each point no line, arc or spline uses. A helper circle is left out, since it is usually a bolt circle
+ * that the holes sit on, not a hole. `holeTargets` of the result is where the holes go.
+ */
+export function everyHoleSelection(sketch: SketchData): { entities: number[]; points: number[] } {
+  const used = new Set<number>();
+  const entities: number[] = [];
+  for (const entity of sketch.entities) {
+    if (entity.kind === "circle") {
+      used.add(entity.centre);
+      if (!entity.construction) entities.push(entity.id);
+    } else if (entity.kind === "spline") for (const id of entity.through) used.add(id);
+    else {
+      used.add(entity.a);
+      used.add(entity.b);
+    }
+  }
+  return { entities, points: sketch.points.filter((point) => !used.has(point.id)).map((point) => point.id) };
+}
+
 /**
  * Why these sizes cannot drill, checked here rather than sent for the engine to refuse. Null when they can: a size
  * above 0, a depth above 0 unless the hole goes through, and a counterbore wider than the hole and deeper than 0.

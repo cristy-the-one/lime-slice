@@ -25,7 +25,7 @@ export const STATUS_HINTS: readonly StatusHint[] = [
     id: "revolve",
     feature: true,
     title: "Revolve {detail}",
-    steps: ["Click a region.", "Drag the ring or type the angle.", "Enter applies, Esc cancels."],
+    steps: ["Click a region.", "Pick an axis under Spin around, or click a line.", "Drag the ring or type the angle.", "Enter applies, Esc cancels."],
   },
   {
     id: "loft",
@@ -37,7 +37,7 @@ export const STATUS_HINTS: readonly StatusHint[] = [
     id: "sweep",
     feature: true,
     title: "Sweep {detail}",
-    steps: ["Click a region for the profile.", "Pick a path.", "Drag or type the end scale. Enter applies."],
+    steps: ["Click a region for the profile.", "Pick a path. Round corners rounds a sharp one.", "Drag or type the end scale. Enter applies."],
   },
   {
     id: "sweep-one",

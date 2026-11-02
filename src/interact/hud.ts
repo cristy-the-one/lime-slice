@@ -313,6 +313,9 @@ export function mountHud(parent: HTMLElement): HudMount {
     if (parent.closest("[hidden]") || !element.isConnected) return;
     // --- S4. A driving-dimension label is its own editor. Leave its keys alone. ---
     if (ev.target instanceof HTMLElement && ev.target.dataset.sketchDimInput != null) return;
+    // A card field marked `data-own-keys` (the sweep's corner radius) keeps its typing; Enter and Esc still apply or
+    // cancel through the box, so they act on what the field says.
+    if (ev.target instanceof HTMLElement && ev.target.dataset.ownKeys != null && ev.key !== "Enter" && ev.key !== "Escape") return;
     const key = keyName(ev.key);
     const held = ev.ctrlKey || ev.metaKey || ev.altKey;
     // Ctrl snaps and Alt adds material through a drag, so Esc, Enter and a typed number still reach the box.
