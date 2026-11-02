@@ -298,7 +298,9 @@ jobs:
           deb=$(ls target/release/bundle/deb/*.deb | head -n 1)
           listing=$(dpkg-deb -c "$deb")
           for f in mcp/lust/bin/lust mcp/lust/bin/lust-core mcp/lust/lib/lust/tcc/bin/tcc; do
-            echo "$listing" | grep -E "^-rwxr-xr-x .*/$f\$" || { echo "$f is missing or not executable in $deb"; exit 1; }
+            grep -qE "^-rwxr-xr-x .*/$f\$" <<< "$listing" || { echo "$f is missing or not executable in $deb"; exit 1; }
           done
-          echo "$listing" | grep -q "mcp/lust/COPYING-tinycc" || { echo "tinycc's licence is missing in $deb"; exit 1; }
-          dpkg-deb -f "$deb" Depends | grep -q libc6-dev || { echo "$deb does not depend on libc6-dev"; exit 1; }
+          # Here-strings, not `echo | grep -q`: grep -q stops reading early, echo then fails with a broken pipe, and
+          # pipefail turns that into a false "missing" (the v4.8.0 release run).
+          grep -q "mcp/lust/COPYING-tinycc" <<< "$listing" || { echo "tinycc's licence is missing in $deb"; exit 1; }
+          grep -q libc6-dev <<< "$(dpkg-deb -f "$deb" Depends)" || { echo "$deb does not depend on libc6-dev"; exit 1; }
