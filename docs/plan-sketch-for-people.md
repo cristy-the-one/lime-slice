@@ -227,6 +227,24 @@ hollow tube). The circle is generated at the start, facing the route.
 Stores: the same sweep, with a circle profile (and a second circle as a hole for Wall). **Done when** the
 tutorial's bent pipe takes: line, tangent arc, W, type 8, Apply.
 
+**As built (milestone 2, S1 + S2).**
+- `oneSketchSweep`, `standUpProfile` and `pipeProfile` in `src/sketch/sweep.ts`. The drawing splits by what its lines
+  join: a piece with a loose end is the route, the rest is the shape. S1 needs exactly one shape (holes allowed) and an
+  open route. The stood-up plane is the drawing's plane turned so its normal runs along the route's start, so the
+  shape keeps its points, lines and ids; only `on` and its constraints are dropped from the stood-up copy.
+- The route's start direction is the first piece's own direction, or the three-point tangent where the start is a
+  sampled arc. A three-point tangent over a line then an arc's samples tilted the plane by a few degrees.
+- Stored op: `drawing.sweep.profile` is the stood-up shape and `pathSketch` is the route alone, which is exactly a
+  two-sketch sweep. `src/sketch/sweep.test.ts` checks the whole op against a circle drawn by hand on a plane facing
+  the start (`{u: -Z, v: Y, w: X}` at the route's start). History Edit reopens it as a two-sketch sweep.
+- The card's toggle is one button, **Profile: stood up at the start** / **Profile: as drawn** (`data-sketch-stance`).
+  "As drawn" gives #529's same-plane refusal.
+- Pipe opens at 5 mm with Wall 0. Diameter and Wall are in the heads-up box, and Diameter is also on the card. A drag
+  doesn't scale a pipe. History Edit of a pipe reopens it as an ordinary sweep of its circle sketch, not as Pipe.
+- A click on another shape leaves S1 or Pipe for the ordinary sweep. How steps exist for both (`sweep-one`, `pipe`).
+- No route arrow (R2) yet: the stood-up ghost shows which end was taken. `e2e/model-sweep-one-sketch.spec.ts` sweeps
+  a circle and a route with W, Enter, and a route alone as an 8 mm tube.
+
 ### S3. Round sharp corners for me
 
 A route with a corner over 25° is no longer only refused: the card shows **Round corners** with a radius

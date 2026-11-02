@@ -147,7 +147,7 @@ export function axisCrossings(samples: readonly Pt[], axis: RevolveAxis): Pt[] {
 }
 
 const ACTION_VERBS = new Set([
-  "add", "click", "close", "copy", "delete", "drag", "draw", "drop", "extend", "finish", "give", "keep", "move", "open", "pick",
+  "add", "click", "close", "copy", "delete", "drag", "draw", "drop", "extend", "finish", "give", "keep", "make", "move", "open", "pick",
   "press", "put", "round", "select", "set", "shift-click", "split", "start", "trim", "type", "use",
 ]);
 

@@ -140,6 +140,10 @@ import {
 } from "../sketch/loft";
 import {
   EDGE_MEET,
+  PIPE_DIAMETER_REFUSAL,
+  oneSketchSweep,
+  pipeProfile,
+  standUpProfile,
   buildSketchSweep,
   extendPath,
   openChain,
@@ -430,6 +434,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     note: string;
     /** The scale as typed, when it was an expression. */
     scaleText?: string;
+    /** S1: a shape and a route drawn in this one sketch. `up` stands the shape up at the route's start. */
+    oneSketch?: { split: NonNullable<ReturnType<typeof oneSketchSweep>>; stance: "up" | "drawn"; drawnProfile: Region; sketch: SketchData };
+    /** S2: a route and no shape, swept as a pipe of this diameter, hollow when `wall` is above 0. */
+    pipe?: { route: SketchData; chain: { path: Vec3[]; check: boolean[] }; diameter: number; wall: number };
   }
   let loft: LoftGesture | null = null;
   let sweep: SweepGesture | null = null;
@@ -472,6 +480,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   box.hidden = true;
   document.body.append(box);
   hud.onCommit((commit) => {
+    if (sweep?.pipe) {
+      const wall = commit.values[1];
+      sweep = madeSweep({ ...sweep, pipe: { ...sweep.pipe, diameter: commit.values[0] ?? Number.NaN, wall: wall != null && Number.isFinite(wall) ? wall : sweep.pipe.wall } });
+      if (sweep.note) {
+        publish("skip");
+        host.readout(sweep.note);
+        return;
+      }
+      void commitSweep();
+      return;
+    }
     if (sweep) {
       const value = commit.values[0] ?? Number.NaN;
       if (!(value > 0)) {
@@ -526,6 +545,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     leaveEditing(next);
   });
   hud.onEdit((values) => {
+    if (sweep?.pipe) {
+      const diameter = values[0];
+      const wall = values[1];
+      if (diameter != null && Number.isFinite(diameter)) sweep = madeSweep({ ...sweep, pipe: { ...sweep.pipe, diameter, wall: wall != null && Number.isFinite(wall) ? wall : sweep.pipe.wall } });
+      publish("skip");
+      armSweepProbe();
+      return;
+    }
     if (sweep) {
       const value = values[0];
       if (value != null && value > 0) sweep = { ...sweep, scale: value, note: "" };
@@ -756,6 +783,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       armRevolveProbe();
       return;
     }
+    // --- S1. Stand the shape up at the route's start, or keep it as drawn. ---
+    if (target.dataset.sketchStance != null && sweep?.oneSketch) {
+      const stance = sweep.oneSketch.stance === "up" ? "drawn" : "up";
+      sweep = madeSweep({ ...sweep, oneSketch: { ...sweep.oneSketch, stance } });
+      cardFocus = ["[data-sketch-stance]"];
+      publish("open");
+      armSweepProbe();
+      return;
+    }
     if (target.dataset.sketchRuled != null && loft) {
       loft = { ...loft, ruled: !loft.ruled, note: "" };
       publish("open");
@@ -957,6 +993,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sweepScale = "";
   host.canvas.dataset.sweepPath = "0";
   host.canvas.dataset.sweepProfile = "0";
+  host.canvas.dataset.sweepMade = "";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : offsetFrame(originFrame(name, host.origin()));
@@ -1196,7 +1233,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     hud.setParams(host.parameters());
     if (mode === "skip") return;
     if (sweep && editor.phase === "editing") {
-      const fields: HudField[] = [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
+      const fields: HudField[] = sweep.pipe
+        ? [
+            { id: "diameter", label: "Diameter", unit: "mm", value: sweep.pipe.diameter },
+            { id: "wall", label: "Wall", unit: "mm", value: sweep.pipe.wall },
+          ]
+        : [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
       const anchor = featureAnchor();
       const at = anchor?.at ?? pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
@@ -1333,6 +1375,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sweepScale = sweeping ? String(scaleOf(sweeping.scale)) : "";
     host.canvas.dataset.sweepPath = sweeping && sweeping.path.length >= 2 ? "1" : "0";
     host.canvas.dataset.sweepProfile = sweeping?.profile ? "1" : "0";
+    host.canvas.dataset.sweepMade = sweeping?.pipe ? "pipe" : sweeping?.oneSketch ? sweeping.oneSketch.stance : "";
     host.canvas.dataset.sketchMarks = String(redShown.count);
     host.canvas.dataset.sketchMarksKind = redShown.kind;
     // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
@@ -1382,7 +1425,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (gesture || revolve || loft || sweep) {
         const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
         const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
-        parts.push(mode, choice, loft ? (loft.ruled ? "ruled" : "smooth") : "");
+        parts.push(mode, choice, loft ? (loft.ruled ? "ruled" : "smooth") : "", sweep?.oneSketch?.stance ?? "", sweep?.pipe ? "pipe" : "");
       }
     }
     return parts.join("|");
@@ -1439,7 +1482,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const value = cards?.querySelector<HTMLInputElement>("[data-sketch-value]");
     if (value && document.activeElement !== value) {
-      const shown = gesture ? String(gesture.distance) : revolve ? String(revolve.angle) : sweep ? String(scaleOf(sweep.scale)) : "";
+      const shown = gesture ? String(gesture.distance) : revolve ? String(revolve.angle) : sweep?.pipe ? String(sweep.pipe.diameter) : sweep ? String(scaleOf(sweep.scale)) : "";
       if (shown && value.value !== shown) value.value = shown;
     }
   }
@@ -1523,7 +1566,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return "";
     }
     if (sweep) {
-      if (!sweep.profile || !sweep.profileSketch) return REASON.sweepProfile;
+      if (!sweep.profile || !sweep.profileSketch) return sweep.pipe ? sweep.note || PIPE_DIAMETER_REFUSAL : REASON.sweepProfile;
       if (sweep.path.length < 2) return REASON.sweepRoute;
       return "";
     }
@@ -1714,13 +1757,23 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     prompt.toggleAttribute("hidden", sentence === "");
     const name = document.createElement("p");
     name.className = "sketch-feature-name";
-    name.textContent = gesture ? "Extrude" : revolve ? "Revolve" : loft ? "Loft" : "Sweep";
+    name.textContent = gesture ? "Extrude" : revolve ? "Revolve" : loft ? "Loft" : sweep?.pipe ? "Pipe" : "Sweep";
     const head = document.createElement("div");
     head.className = "sketch-feature-row";
     head.append(name, modeControl());
     const options = document.createElement("div");
     options.className = "sketch-feature-row";
     if (revolve) options.append(textButton("Flip", { sketchFlip: "" }));
+    if (sweep?.oneSketch) {
+      const up = sweep.oneSketch.stance === "up";
+      const stance = textButton(up ? "Profile: stood up at the start" : "Profile: as drawn", { sketchStance: sweep.oneSketch.stance });
+      stance.setAttribute("aria-pressed", up ? "true" : "false");
+      stance.dataset.tip = up
+        ? "The shape is turned to face along the route and moved to its start. Click to keep it where you drew it."
+        : "The shape stays where you drew it, flat beside the route. Click to stand it up at the route's start.";
+      stance.title = stance.dataset.tip;
+      options.append(stance);
+    }
     if (loft) {
       const ruled = textButton(loft.ruled ? "Ruled (R)" : "Smooth (R)", { sketchRuled: loft.ruled ? "1" : "0" });
       ruled.dataset.tip = "R toggles smooth and ruled.";
@@ -1729,7 +1782,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const value = featureValue();
     if (value) options.append(value);
-    const kind = gesture ? "extrude" : revolve ? "revolve" : loft ? "loft" : "sweep";
+    const kind = gesture ? "extrude" : revolve ? "revolve" : loft ? "loft" : sweep?.pipe ? "pipe" : sweep?.oneSketch ? "sweep-one" : "sweep";
     options.append(howControl(kind));
     const apply = textButton("Apply", { sketchApply: "" });
     apply.classList.add("primary");
@@ -1769,7 +1822,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   /** Numbered steps beside the feature strip. Open the first three times, then a ? button. */
-  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep" | "profile"): HTMLElement {
+  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep" | "sweep-one" | "pipe" | "profile"): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "sketch-how";
     const button = document.createElement("button");
@@ -1847,6 +1900,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       input.value = String(revolve.angle);
       input.setAttribute("aria-label", "Angle");
       unit.textContent = "°";
+    } else if (sweep?.pipe) {
+      input.value = String(sweep.pipe.diameter);
+      input.setAttribute("aria-label", "Diameter");
+      unit.textContent = "mm";
     } else if (sweep) {
       input.value = String(scaleOf(sweep.scale));
       input.setAttribute("aria-label", "End scale");
@@ -1857,6 +1914,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (!Number.isFinite(value)) return;
       if (gesture) gesture = { ...gesture, distance: value, upTo: null, guide: null };
       else if (revolve) revolve = { ...revolve, angle: value, follow: false };
+      else if (sweep?.pipe) sweep = madeSweep({ ...sweep, pipe: { ...sweep.pipe, diameter: value } });
       else if (sweep) sweep = { ...sweep, scale: value, note: "" };
       publish("values");
     });
@@ -3392,8 +3450,25 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (loft) endLoft();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
+    const choice: ModeChoice = host.featureEdit() === "root" ? "new" : "auto";
+    const blank = { scale: 1, edges: [], choice, dragging: false, down: null, note: "" };
+    // S1: a shape and a route in this one sketch stand the shape up at the route's start.
+    const split = oneSketchSweep(sketch);
+    if (split) {
+      sweep = madeSweep({ ...blank, profileSketch: null, profile: null, pathSketch: null, path: [], check: [], oneSketch: { split, stance: "up", drawnProfile: split.profile, sketch } });
+      publish("open");
+      armSweepProbe();
+      return;
+    }
     const region = chooseRegions(sketch, editor.selection.entities, editor.cursor)[0] ?? null;
     const chain = openChain(sketch);
+    // S2: a route with no shape anywhere is a pipe.
+    if (!region && chain && !pinnedRegion()) {
+      sweep = madeSweep({ ...blank, profileSketch: null, profile: null, pathSketch: null, path: [], check: [], pipe: { route: sketch, chain, diameter: PIPE_DIAMETER_MM, wall: 0 } });
+      publish("open");
+      armSweepProbe();
+      return;
+    }
     let profileSketch: SketchData | null = region ? sketch : null;
     let profile = region;
     let pathSketch: SketchData | null = chain ? sketch : null;
@@ -3436,6 +3511,31 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     publish("open");
     armSweepProbe();
+  }
+
+  /**
+   * S1 and S2: the profile, route and sketches a one-sketch sweep or a pipe stands for, worked out again from its
+   * stance or sizes. The fields are the strict sweep's, so the builder, the ghost and Apply don't tell them apart.
+   */
+  function madeSweep(next: SweepGesture): SweepGesture {
+    const mode = host.featureEdit() === "root" ? "new" : "fuse";
+    let made: SweepGesture = next;
+    if (next.oneSketch) {
+      const { split, stance, drawnProfile, sketch } = next.oneSketch;
+      const stood = stance === "up" ? standUpProfile(split) : null;
+      made = stood
+        ? { ...next, ...stood, note: "" }
+        : { ...next, profileSketch: sketch, profile: drawnProfile, pathSketch: sketch, path: split.chain.path, check: split.chain.check, note: "" };
+    } else if (next.pipe) {
+      const pipe = pipeProfile(next.pipe.route, next.pipe.chain, next.pipe.diameter, next.pipe.wall);
+      if ("error" in pipe) return { ...next, profileSketch: null, profile: null, pathSketch: next.pipe.route, path: next.pipe.chain.path, check: next.pipe.chain.check, note: pipe.error };
+      made = { ...next, ...pipe, note: "" };
+    } else return next;
+    if (made.profile && made.profileSketch && made.path.length >= 2) {
+      const built = buildSketchSweep({ profileSketch: made.profileSketch, profile: made.profile, path: made.path, check: made.check, pathSketch: made.pathSketch, scale: made.scale, mode });
+      if ("error" in built) made = { ...made, note: built.error };
+    }
+    return made;
   }
 
   function endSweep() {
@@ -3496,7 +3596,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       return;
     }
     let next = sweep;
-    if (region) next = { ...next, profile: region, profileSketch: item.sketch, note: "" };
+    if (region) next = { ...next, profile: region, profileSketch: item.sketch, note: "", oneSketch: undefined, pipe: undefined };
     if (chain && (!region || next.path.length < 2)) next = { ...next, path: chain.path, check: chain.check, pathSketch: item.sketch, edges: [], note: "" };
     sweep = next;
     publish("open");
@@ -3710,7 +3810,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (!sweep || (applying || holding)) return;
     if (!sweep.profile || !sweep.profileSketch) {
-      sweep = { ...sweep, note: "Pick a region to sweep." };
+      sweep = { ...sweep, note: REASON.sweepProfile };
       host.readout(sweep.note);
       return;
     }
@@ -3774,7 +3874,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (ev.phase === "move" && sweep.down) {
       const moved = Math.hypot(ev.x - sweep.down.x, ev.y - sweep.down.y);
-      if (moved < 4 && !sweep.dragging) return;
+      // A pipe's size is its diameter, typed in the box; a drag doesn't scale it.
+      if ((moved < 4 && !sweep.dragging) || sweep.pipe) return;
       let scale = sweep.down.scale + (sweep.down.y - ev.y) / 100;
       if (ev.ctrl) scale = Math.round(scale * 10) / 10;
       else scale = Math.round(scale * 100) / 100;
@@ -3856,8 +3957,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const pinned = pinnedRegionAt(x, y);
     const hit = own && (!pinned || plane!.t <= pinned.t) ? { sketch, region: own } : pinned;
     const chain = openChain(sketch);
+    // A click on the shape a one-sketch sweep already stands up keeps it; any other shape ends Pipe and the stand-up.
+    if (hit && sweep.oneSketch && hit.sketch === sketch) {
+      publish("open");
+      return;
+    }
     if (hit) {
-      sweep = { ...sweep, profile: hit.region, profileSketch: hit.sketch, note: "" };
+      sweep = { ...sweep, profile: hit.region, profileSketch: hit.sketch, note: "", oneSketch: undefined, pipe: undefined };
     } else if (chain && sweep.path.length < 2) {
       sweep = { ...sweep, path: chain.path, check: chain.check, pathSketch: sketch, edges: [], note: "" };
     }
@@ -3922,6 +4028,9 @@ function unit3(value: Vec3): Vec3 | null {
   if (!(length > 1e-9)) return null;
   return [value[0] / length, value[1] / length, value[2] / length];
 }
+
+/** S2: a pipe opens at this diameter, a size people type over (the tutorial's bent pipe is 8). */
+const PIPE_DIAMETER_MM = 5;
 
 /** The Edit row's labels and commands. The tool value is the button's `data-sketch-tool`. */
 const EDIT_LABELS: Record<Exclude<EditButton, "constrain">, { label: string; command: string | null }> = {
