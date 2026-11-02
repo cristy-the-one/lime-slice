@@ -1429,6 +1429,7 @@ export const TOOLS: ToolSpec[] = [
         resample: { type: "integer", minimum: 3, maximum: 2000, description: "Mesh: points a loop." },
         startAngleDeg: { type: "number", description: "Mesh: loop start." },
         chordMm: { type: "number", minimum: 0.001, maximum: 5, description: "Default 0.05." },
+        saveAs: { type: "string", minLength: 1, maxLength: 120, description: "Write it as recipe data; reply counts only." },
       },
     },
   },

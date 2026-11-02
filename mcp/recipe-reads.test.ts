@@ -205,6 +205,34 @@ fn main() {
   check("the recipe read the floor's outline, inset 3 mm, through section", near(metrics.floorArea, (290 - 6) * (110 - 6), 1), metrics);
   // CI machines are slower and build debug: the 10 s target is this machine's; the bound here only catches a regression to per-cell steps.
   check("the floor builds in one step, far under the old per-cell 40 s", Number(run.runMs) < (ci ? 30_000 : 10_000), run.runMs);
+
+  // The typed wrappers on the real kernel: face_outline gives a Region in the face's frame, lattice cells clipped to it
+  // go in as one apply_many, and section reads the cut floor back.
+  const typed = `use lime_recipe::lattice::{hex, Orient};
+use lime_recipe::{ops, Json, Session};
+
+fn main() {
+    let mut s = Session::start();
+    let part = s.solid_new(ops::cuboid(120.0, 80.0, 10.0)).unwrap();
+    let top = Json::obj().set("normal", [0.0, 0.0, 1.0]).set("nearPoint", [0.0, 0.0, 10.0]);
+    let floor = s.face_outline(&part, top, 4.0).unwrap();
+    let mut cuts: Vec<Json> = Vec::new();
+    for c in hex(8.0, Orient::Pointy).rib(2.0).cells(&floor.region, 10.0) {
+        for lp in c.region.to_loops() {
+            cuts.push(floor.extrude("cut", -3.0, lp));
+        }
+    }
+    let n = cuts.len();
+    let done = s.apply_many(&part, "cut", cuts).unwrap();
+    let mid = s.section(&part, [0.0, 0.0, 8.5], [0.0, 0.0, 1.0]).unwrap();
+    s.done_with(&part, Json::obj().set("cells", n).set("applied", done.applied).set("outline", floor.region.area()).set("midRegion", mid.region.area()).set("midArea", mid.area).set("w", floor.frame.w));
+}
+`;
+  const wrapped = await call("recipe_run", { source: typed, name: "typed_wrappers", timeoutS: 120 });
+  const wm = (wrapped.metrics ?? {}) as { cells?: number; applied?: number; outline?: number; midRegion?: number; midArea?: number; w?: number[] };
+  check("face_outline's region is the top inset 4 mm", near(wm.outline, 112 * 72, 1), wm);
+  check("apply_many cuts every cell in one step", wrapped.ok === true && Number(wm.cells) > 50 && wm.applied === wm.cells, wrapped);
+  check("section reads the cut back: the cells are gone at 8.5 mm, as region and as area", 120 * 80 - Number(wm.midArea) > 1000 && near(wm.midRegion, Number(wm.midArea), 1) && JSON.stringify(wm.w) === "[0,0,1]", wm);
 }
 
 if (failed) {

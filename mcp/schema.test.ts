@@ -99,7 +99,9 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // list with groups on does not grow; one section call replaces an outside script that read the STL by hand.
 // recipe_run's path (the source read from a workspace file, so an edit and rerun sends a path instead of the source:
 // about 5,000 tokens a call for the groovi skin) and maxSteps (a partial dry run) add 50 more (16,710 together), in the model group as well.
-const TOTAL_BUDGET = 16_710;
+// section's saveAs (the answer written as recipe data, so a mesh's measured sections, tens of kilobytes, never pass
+// through the model) adds 29 to a list at 16,710, in the model group.
+const TOTAL_BUDGET = 16_740;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");

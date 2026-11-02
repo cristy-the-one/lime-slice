@@ -11,9 +11,9 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, type Dirent } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { workspaceRoot } from "./workspace.ts";
@@ -469,6 +469,29 @@ export function recipeDataFile(name: string): RecipeData | { reason: string } | 
     return { sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength, value };
   }
   return null;
+}
+
+/**
+ * Writes recipe data: `<name>.json` in the MCP workspace (parent folders made), through a temporary file and a rename.
+ * The same names and limit as `data {name}` reads. The reply is its path in the workspace, size, and SHA-256.
+ */
+export function writeRecipeData(name: string, value: unknown): { path: string; bytes: number; sha256: string } | { reason: string } {
+  const bare = name.toLowerCase().endsWith(".json") ? name.slice(0, -5) : name;
+  if (!DATA_NAME.test(bare) || bare.split("/").includes("..") || bare.toLowerCase().endsWith(".csv")) return { reason: `${name || "(no name)"} is not a data name: letters, digits, _ . - and / between parts.` };
+  const root = workspaceRoot();
+  if (!root) return { reason: "Recipe data is written to LIME_MCP_WORKSPACE, which this server does not have." };
+  const text = JSON.stringify(value);
+  const bytes = Buffer.byteLength(text);
+  if (bytes > RECIPE_FILE_MAX_BYTES) return { reason: `This answer is ${Math.round(bytes / 1024)} KB, over the ${RECIPE_FILE_MAX_BYTES / (1024 * 1024)} MB a recipe can read. Cut fewer planes, pass resample, or a larger chordMm.` };
+  const rel = `${bare}.json`;
+  const full = resolve(root, rel);
+  const back = relative(root, full);
+  if (back.startsWith("..") || isAbsolute(back)) return { reason: `${name} leaves the workspace.` };
+  mkdirSync(dirname(full), { recursive: true });
+  const tmp = `${full}.${process.pid}.tmp`;
+  writeFileSync(tmp, text);
+  renameSync(tmp, full);
+  return { path: rel, bytes, sha256: createHash("sha256").update(text).digest("hex") };
 }
 
 /** The refusal for a data name with no file: the names the workspace has, at most 20. */
