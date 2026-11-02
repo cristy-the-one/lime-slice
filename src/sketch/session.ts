@@ -125,7 +125,8 @@ export interface SketchEditor {
   /** 1 after Esc ended the gesture. The next Esc finishes the sketch. */
   esc: 0 | 1;
   /** Where the button went down, for a press, drag, release that draws from the press to the release. */
-  press: { at: Pt; sx: number; sy: number } | null;
+  /** Where the button went down. `opened` is set when that press placed a click tool's first point. */
+  press: { at: Pt; sx: number; sy: number; opened?: boolean; undo?: number } | null;
   undo: Mark[];
   redo: Mark[];
   refs: RefGeom;
@@ -413,7 +414,11 @@ export function previewSizes(editor: SketchEditor, values: readonly number[]): S
   return editor;
 }
 
-/** Tools that place a point on each click. A press, drag, release with one of these clicks at the press first. */
+/**
+ * Tools that place a point on each click. The press places the first point, as Rectangle's does, so a drag shows
+ * the shape and its size box while the button is held, and the release places the next point. A press and release
+ * on one spot only places the first point, so click, move, click still works.
+ */
 const CLICK_TOOLS = new Set<SketchTool>(["line", "circle", "arc", "polygon", "slot"]);
 
 export function sketchPointer(editor: SketchEditor, ev: SketchPointer, env: SketchEnv): SketchEditor {
@@ -421,6 +426,20 @@ export function sketchPointer(editor: SketchEditor, ev: SketchPointer, env: Sket
   const sketch = activeSketch(editor);
   if (!sketch) return editor;
   const press = editor.press;
+  if (ev.phase === "down" && CLICK_TOOLS.has(editor.tool) && !gestureOpen(editor) && !editor.lookAround) {
+    const pressed = pointerStep(editor, sketch, ev, env);
+    const live = activeSketch(pressed);
+    const started = live ? pointerStep(pressed, live, { ...ev, phase: "up", double: false }, env) : pressed;
+    return { ...started, press: { at: started.cursor ?? ev.uv, sx: ev.sx, sy: ev.sy, opened: gestureOpen(started), undo: started.undo.length } };
+  }
+  if (ev.phase === "up" && press?.opened && editor.undo.length !== press.undo) {
+    // A size typed while the button was held already placed the shape. The release adds nothing.
+    return { ...editor, press: null };
+  }
+  if (ev.phase === "up" && press?.opened && (ev.sx - press.sx) ** 2 + (ev.sy - press.sy) ** 2 <= 16) {
+    // A click: the press already placed the first point. The shape stays open for the next click.
+    return { ...editor, press: null };
+  }
   if (ev.phase === "up" && press && CLICK_TOOLS.has(editor.tool) && !gestureOpen(editor) && (ev.sx - press.sx) ** 2 + (ev.sy - press.sy) ** 2 > 16) {
     // Pressed on one spot and let go on another, with nothing drawn yet: the press is the first point, the release the next.
     const first = pointerStep({ ...editor, press: null }, sketch, { ...ev, uv: press.at, sx: press.sx, sy: press.sy, double: false }, env);
