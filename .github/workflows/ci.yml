@@ -366,6 +366,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
 
   mcp-windows:
     name: MCP server (Windows)
@@ -437,6 +438,13 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/plugin.test.ts
+
+      # Ingredients: imported by name, the same calls under lust and rustc, carried inside a kept plugin.
+      - name: Recipe ingredients
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/ingredient.test.ts
 
   mcp-macos:
     name: MCP server (macOS)

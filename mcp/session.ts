@@ -114,6 +114,7 @@ import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOption
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
 import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "./plugins.ts";
+import { builtText, carriedIngredients, keptIngredient, lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "./ingredients.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
 import { printFrame } from "../src/model-check.ts";
 import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
@@ -412,6 +413,11 @@ export interface RustRecipe {
   changed?: string[];
   /** The plugin this run came from, or was kept as. */
   plugin?: { id: string; version: number; sha256: string };
+  /**
+   * --- I10. The ingredients the source imported, as they built, by `ingredients::<name>` (`<name>@<N>` when pinned):
+   * a rerun builds these, and a plugin kept from this run carries them (I11).
+   */
+  ingredients?: Record<string, KeptIngredient>;
 }
 
 /** A model_build's base, ops, parameters, and name, as typed. */
@@ -1374,10 +1380,16 @@ export class Session {
     const key = replacing?.name ?? name;
     const source = rerun ? rerun.stored.source : lfOnly(typed!);
     const params = { ...(replacing?.stored.params ?? {}), ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
+    // --- I10. The ingredients the source imports, from the library (a rerun: the copies its last apply built), built
+    // after the recipe as inline modules, the same text under lust and rustc.
+    const resolved = resolveIngredients(source, { kept: replacing?.stored.ingredients, preferKept: !!rerun });
+    if ("reason" in resolved) return { ok: false, reason: resolved.reason };
+    const usedIngredients = Object.values(resolved.used);
     this.noteStage(`building recipe ${name}`, 0);
-    const built = await host.build(name, source, input.autofix !== false);
+    const built = await host.build(name, source, input.autofix !== false, resolved.suffix);
+    const map = lineMap(built.source, resolved);
     const fixed = built.source !== source ? { fixedSource: built.source, fixRounds: built.fixRounds } : {};
-    const diagnostics = built.diagnostics.map((d) => ({ code: d.code, line: d.line, col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
+    const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
     if (!built.ok || !built.exe) {
       return { ok: false, reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms };
     }
@@ -1439,7 +1451,7 @@ export class Session {
       if (site.tool !== "solid_new") touch(typeof site.args.object === "string" ? site.args.object : this.selected);
       // --- I21. How far along: the call count of the last run of this name stands in for the total.
       const about = this.recipeCallCounts.get(name);
-      this.noteStage(`recipe ${name}: call ${site.id}${about !== undefined ? ` of about ${Math.max(about, site.id)}` : ""}, line ${site.line} (${site.tool})`);
+      this.noteStage(`recipe ${name}: call ${site.id}${about !== undefined ? ` of about ${Math.max(about, site.id)}` : ""}, ${lineText(map, site.line)} (${site.tool})`);
       let value: Record<string, unknown>;
       try {
         value = await this.runCall(site.tool, site.args, ctx, true);
@@ -1472,7 +1484,13 @@ export class Session {
     if (out.calls > 0) this.recipeCallCounts.set(name, out.calls);
     for (const note of out.notes ?? []) if (notes.length < 200) notes.push(note);
     if (plugin?.note) notes.unshift(plugin.note);
-    const report = { calls: out.calls, ...(out.refused.length ? { refused: out.refused } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
+    // A line in an ingredient is reported as that ingredient's line, not the built file's.
+    if (map && out.line !== undefined && out.line > map.recipeLines) {
+      if (out.reason) out.reason = out.reason.replace(`at line ${out.line}`, `at ${lineText(map, out.line)}`);
+      out.line = locate(map, out.line).line;
+    }
+    const refused = out.refused.map((row) => ({ ...row, ...locate(map, row.line) }));
+    const report = { calls: out.calls, ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
     // --- I23. What the parts measured when a partial run stopped, before it is taken back.
     if (out.halted) {
       const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {
@@ -1554,7 +1572,7 @@ export class Session {
     // an entry whose parts are still on the plate, as `<name>@<part>`.
     const sha256 = bodyHash(built.source);
     const changed = [...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id);
-    const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}) };
+    const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}), ...(usedIngredients.length ? { ingredients: resolved.used } : {}) };
     let entryKey: string | null = null;
     if (created.length) entryKey = key;
     else if (changed.length) {
@@ -1578,15 +1596,15 @@ export class Session {
       ...(earlier ? { earlier } : {}),
       recipe: key,
       ...report,
-      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg)),
+      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used)),
     };
   }
 
   /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
-  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined): Promise<Record<string, unknown>> {
+  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>): Promise<Record<string, unknown>> {
     if (keep === undefined) return {};
     const k = (keep && typeof keep === "object" ? keep : {}) as { title?: unknown; description?: unknown };
-    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg });
+    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, ingredients });
     if ("reason" in saved) return { keepRefused: saved.reason };
     const row = entryKey ? this.rustRecipes.get(entryKey) : undefined;
     if (row) row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
@@ -1618,7 +1636,9 @@ export class Session {
     const host = this.recipeHost;
     const ready = host.available();
     if (!ready.ok) return { reason: ready.reason };
-    const built = await host.build("plugin_check", body, true);
+    const resolved = resolveIngredients(body);
+    if ("reason" in resolved) return resolved;
+    const built = await host.build("plugin_check", body, true, resolved.suffix);
     if (!built.ok || !built.exe) {
       const first = built.diagnostics[0];
       return { reason: built.reason ?? (first ? `line ${first.line}: ${first.message}` : "The recipe did not build.") };
@@ -1668,12 +1688,17 @@ export class Session {
    * the same body keeps its version (new words only); with another body it is the next version when the run was of
    * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
    */
-  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string }): Promise<{ id: string; version: number; sha256: string } | { reason: string }> {
+  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; ingredients?: Record<string, KeptIngredient> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[] } | { reason: string }> {
     const title = oneLine(opts.title, TITLE_MAX);
     if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
     let body = lfOnly(opts.source);
     const framed = body.startsWith("//! ---") ? parsePlugin(body) : null;
     if (framed && !("reason" in framed)) body = framed.body;
+    // --- I11. A plugin stays one file: the ingredients it imports go inside it, as the run built them, each stamped
+    // with its name, version and hash, so it builds where the library lacks them.
+    const resolved = resolveIngredients(body, { kept: opts.ingredients, preferKept: true });
+    if ("reason" in resolved) return resolved;
+    body = builtText(body, resolved.suffix);
     const bad = body.split("\n").findIndex((line) => /^\s*(mod\s+\w+\s*;|#\s*\[\s*path\b|extern\s+crate\s+(?!lime_recipe\b))/.test(line));
     if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
     const sha256 = bodyHash(body);
@@ -1718,7 +1743,8 @@ export class Session {
     } catch (err) {
       return { reason: `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
     }
-    return { id, version, sha256 };
+    const carried = carriedIngredients(body).map((row) => `${row.id} v${row.version}`);
+    return { id, version, sha256, ...(carried.length ? { ingredients: carried } : {}) };
   }
 
   /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
@@ -1816,6 +1842,7 @@ export class Session {
         created: h.created,
         ...(h.lust ? { lust: h.lust } : {}),
         params: h.params,
+        ...(carriedIngredients(got.file.body).length ? { ingredients: carriedIngredients(got.file.body) } : {}),
         older: olderVersions(h.plugin, dir),
         data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) },
         ...(got.note ? { note: got.note } : {}),
@@ -1826,17 +1853,19 @@ export class Session {
       let source: string;
       let name: string | undefined;
       let objectHint: string | undefined;
+      let ingredients: Record<string, KeptIngredient> | undefined;
       if (typeof input.from === "string") {
         const draft = this.latestDraft(input.from);
         if (!draft) return { ok: false, reason: `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.` };
         source = draft.row.source;
         name = input.from;
         objectHint = this.draftPart(draft.row);
+        ingredients = draft.row.ingredients;
       } else if (typeof input.source === "string") {
         source = input.source;
         name = typeof input.id === "string" ? input.id : undefined;
       } else return { ok: false, reason: "Give from (a recipe name this session ran) or source." };
-      const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint });
+      const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients });
       if ("reason" in saved) return { ok: false, reason: saved.reason };
       if (typeof input.from === "string") {
         const draft = this.latestDraft(input.from);
@@ -7165,6 +7194,11 @@ export class Session {
         const data = row.data && typeof row.data === "object" ? Object.fromEntries(Object.entries(row.data).filter(([, kept]) => !!kept && typeof kept === "object" && typeof kept.sha256 === "string" && "value" in kept)) : {};
         const changed = Array.isArray(row.changed) ? row.changed.filter((id): id is string => typeof id === "string") : [];
         const stamp = row.plugin && typeof row.plugin === "object" && typeof row.plugin.id === "string" && typeof row.plugin.version === "number" && typeof row.plugin.sha256 === "string" ? { plugin: { id: row.plugin.id, version: row.plugin.version, sha256: row.plugin.sha256 } } : {};
+        const ingredients = row.ingredients && typeof row.ingredients === "object" ? Object.fromEntries(Object.entries(row.ingredients).flatMap(([ref, kept]) => {
+          const ok = keptIngredient(kept);
+          return ok ? [[ref, ok]] : [];
+        })) : {};
+        if (Object.keys(ingredients).length) Object.assign(stamp, { ingredients });
         this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects, ...(Object.keys(data).length ? { data } : {}), ...(typeof row.path === "string" ? { path: row.path } : {}), ...(typeof row.sha256 === "string" ? { sha256: row.sha256 } : {}), ...(typeof row.at === "number" ? { at: row.at } : {}), ...(changed.length ? { changed } : {}), ...stamp });
       }
     }

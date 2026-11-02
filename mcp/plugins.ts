@@ -38,9 +38,17 @@ export interface PluginParam {
 
 export type PluginTarget = "new" | "object" | "either";
 
+/**
+ * What a library file is: a plugin (a whole recipe), or an ingredient (docs/plan-recipe-ingredients.md I9), a module
+ * of functions recipes import, written with `ingredient: <id>` in place of `plugin: <id>` and no target or params.
+ */
+export type NuggetFileKind = "plugin" | "ingredient";
+
 /** The front matter fields, in file order. `params` is one line of JSON. */
 export interface PluginHeader {
+  /** The id, under the key its kind names (`plugin:` or `ingredient:`). */
   plugin: string;
+  kind?: NuggetFileKind;
   title: string;
   version: number;
   description: string;
@@ -99,8 +107,9 @@ const FENCE = "//! ---";
 
 /** The file text: the front matter as inner doc comments, so the file is a valid main.rs as it stands. */
 export function pluginText(header: PluginHeader, body: string): string {
+  const ingredient = header.kind === "ingredient";
   const fields: [string, unknown][] = [
-    ["plugin", header.plugin],
+    [ingredient ? "ingredient" : "plugin", header.plugin],
     ["title", header.title],
     ["version", header.version],
     ["description", header.description],
@@ -110,8 +119,8 @@ export function pluginText(header: PluginHeader, body: string): string {
     ["lust", header.lust],
     ["source-sha256", header["source-sha256"]],
     ["created", header.created],
-    ["target", header.target],
-    ["params", JSON.stringify(header.params)],
+    ["target", ingredient ? undefined : header.target],
+    ["params", ingredient ? undefined : JSON.stringify(header.params)],
   ];
   const lines = fields.filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => `//! ${key}: ${value}`);
   const rest = lfOnly(body).replace(/^\n+/, "");
@@ -131,8 +140,9 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
     if (m) fields.set(m[1]!, m[2]!.trim());
   }
   const body = lines.slice(end + 1).join("\n");
-  const plugin = fields.get("plugin") ?? "";
-  if (!isSlug(plugin)) return { reason: `The plugin's id "${plugin}" is not lower-case letters, digits, and dashes (at most ${SLUG_MAX}).` };
+  const kind: NuggetFileKind = fields.has("ingredient") && !fields.has("plugin") ? "ingredient" : "plugin";
+  const plugin = fields.get(kind) ?? "";
+  if (!isSlug(plugin)) return { reason: `The ${kind}'s id "${plugin}" is not lower-case letters, digits, and dashes (at most ${SLUG_MAX}).` };
   let params: PluginParam[] = [];
   try {
     const parsed = JSON.parse(fields.get("params") ?? "[]") as unknown;
@@ -143,6 +153,7 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
   const target = fields.get("target");
   const header: PluginHeader = {
     plugin,
+    ...(kind === "ingredient" ? { kind } : {}),
     title: oneLine(fields.get("title") ?? plugin, TITLE_MAX),
     version: Math.max(1, Math.floor(Number(fields.get("version")) || 1)),
     description: oneLine(fields.get("description"), DESCRIPTION_MAX),
@@ -188,26 +199,27 @@ export function paramSummary(params: PluginParam[]): string {
 }
 
 /** The library's plugins, current versions only (`<plugin>.rs`), each read and parsed. Unreadable files are skipped. */
-export function listLibrary(dir = pluginsDir()): PluginFile[] {
+export function listLibrary(dir = pluginsDir(), kind: NuggetFileKind = "plugin"): PluginFile[] {
   if (!existsSync(dir)) return [];
   const out: PluginFile[] = [];
   for (const name of readdirSync(dir).sort()) {
     const m = /^([a-z0-9-]+)\.rs$/.exec(name);
     if (!m || !isSlug(m[1]!)) continue;
-    const read = readPlugin(m[1]!, dir);
+    const read = readPlugin(m[1]!, dir, undefined, kind);
     if (read && !("reason" in read)) out.push(read);
   }
   return out;
 }
 
 /** `<id>.rs` from the library, or `<id>.v<version>.rs` for an older version. Null when there is no such file. */
-export function readPlugin(id: string, dir = pluginsDir(), version?: number): PluginFile | { reason: string } | null {
+export function readPlugin(id: string, dir = pluginsDir(), version?: number, kind: NuggetFileKind = "plugin"): PluginFile | { reason: string } | null {
   if (!isSlug(id)) return null;
   const path = join(dir, version === undefined ? `${id}.rs` : `${id}.v${version}.rs`);
   if (!existsSync(path)) return null;
   const parsed = parsePlugin(readFileSync(path, "utf8"));
   if ("reason" in parsed) return parsed;
   if (parsed.header.plugin !== id) return { reason: `${id}.rs names itself ${parsed.header.plugin}.` };
+  if ((parsed.header.kind ?? "plugin") !== kind) return { reason: `${id}.rs is ${kind === "plugin" ? "an ingredient, not a plugin" : "a plugin, not an ingredient"}.` };
   return parsed;
 }
 
@@ -226,7 +238,7 @@ export function writePlugin(header: PluginHeader, body: string, dir = pluginsDir
   if (!isSlug(header.plugin)) throw new Error(`Not a plugin id: ${header.plugin}`);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${header.plugin}.rs`);
-  const old = readPlugin(header.plugin, dir);
+  const old = readPlugin(header.plugin, dir, undefined, header.kind ?? "plugin");
   if (old && !("reason" in old) && old.header.version !== header.version) writeWhole(join(dir, `${header.plugin}.v${old.header.version}.rs`), old.text);
   writeWhole(path, pluginText(header, body));
   const older = olderVersions(header.plugin, dir).filter((v) => v < header.version);
