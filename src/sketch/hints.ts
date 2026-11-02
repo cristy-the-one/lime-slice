@@ -39,6 +39,16 @@ export const STATUS_HINTS: readonly StatusHint[] = [
     title: "Sweep {detail}",
     steps: ["Click a region for the profile.", "Pick a path.", "Drag or type the end scale. Enter applies."],
   },
+  {
+    id: "sweep-one",
+    title: "Sweep. The shape stands up at the route's start.",
+    steps: ["The shape stands up at the route's nearer end.", "The Profile button keeps it where you drew it.", "Drag or type the end scale. Enter applies."],
+  },
+  {
+    id: "pipe",
+    title: "Pipe. Type the diameter.",
+    steps: ["Type the diameter.", "Tab to Wall for a tube. 0 is a solid rod.", "Enter applies, Esc cancels."],
+  },
   { id: "choose", title: "Click a flat face, an origin plane, or the workplane.", steps: ["Esc cancels."] },
   { id: "pinned", title: "Sketch kept. A feature can use it.", steps: ["Discard drops the sketch."] },
   { id: "look", title: "Look around is on. O locks the view.", steps: ["O locks the view for drawing."] },

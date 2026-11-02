@@ -124,10 +124,10 @@ else {
   near("the arc passes closest to the corner on the bisector", fillet.through, [2 - Math.SQRT2, 2 - Math.SQRT2]);
   check("and that point is on the circle", Math.abs(dist(fillet.through, fillet.centre) - 2) < 1e-8);
 }
-eq("a radius of 0 is refused", cornerFillet([0, 0], [1, 0], [0, 0], [0, 1], 0), { error: "A corner round needs a radius above 0." });
-eq("parallel lines are refused", "error" in cornerFillet([0, 0], [1, 0], [0, 2], [1, 2], 1) && (cornerFillet([0, 0], [1, 0], [0, 2], [1, 2], 1) as { error: string }).error, "These lines do not meet, so there is no corner to round.");
+eq("a radius of 0 is refused", cornerFillet([0, 0], [1, 0], [0, 0], [0, 1], 0), { error: "Type a corner radius above 0." });
+eq("parallel lines are refused", "error" in cornerFillet([0, 0], [1, 0], [0, 2], [1, 2], 1) && (cornerFillet([0, 0], [1, 0], [0, 2], [1, 2], 1) as { error: string }).error, "These lines do not meet, so there is no corner to round. Pick two lines that share an end.");
 eq("a radius larger than the lines is refused", cornerFillet([0, 0], [1, 0], [0, 0], [0, 1], 5), { error: "That radius does not fit these two lines. Use a smaller one." });
-eq("a straight pair is refused", cornerFillet([0, 0], [2, 0], [2, 0], [4, 0], 0.5), { error: "These lines are straight, so there is no corner to round." });
+eq("a straight pair is refused", cornerFillet([0, 0], [2, 0], [2, 0], [4, 0], 0.5), { error: "These lines are straight, so there is no corner to round. Pick two lines at an angle." });
 
 near("a point mirrors across a vertical axis", mirrorPoint([0, 1], [2, 0], [2, 5]) ?? [], [4, 1]);
 eq("an axis with no length does not mirror", mirrorPoint([0, 0], [1, 1], [1, 1]), null);

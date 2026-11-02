@@ -185,7 +185,7 @@ test("three sketch points become one group of holes, and History Edit changes th
   // A size that cannot drill is said in the app, and the modeler is not asked.
   const before = tree.calls.length;
   await page.locator("#modelHoleR").fill("0");
-  await expect(page.locator("#modelReadout")).toContainText("A hole needs a diameter above 0.");
+  await expect(page.locator("#modelReadout")).toContainText("Type a hole diameter above 0.");
   await page.waitForTimeout(500);
   expect(tree.calls.slice(before).filter((call) => call.call === "probe")).toHaveLength(0);
   await page.locator("#modelHoleR").fill("4");
@@ -238,9 +238,9 @@ test("H on a bed sketch refuses, and the toolbar still fits", async ({ page }) =
   const canvas = page.locator("#model");
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
   await expect(canvas).toHaveAttribute("data-sketch-plane", "XY");
-  await expect(page.getByRole("button", { name: "Holes (H)" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Holes (H)" }), "off a face Holes stays, greyed with the reason").toHaveAttribute("aria-disabled", "true");
   await page.keyboard.press("H");
-  await expect(page.locator("#modelReadout")).toContainText("Sketch on a face to place a hole at each point.");
+  await expect(page.locator("#modelReadout")).toContainText("Holes go into a face. Start the sketch on a face of the part, then draw points where the holes go.");
   await expect(page.locator("#modelPanel")).toBeHidden();
   await expect(canvas).toHaveAttribute("data-sketch", "editing");
   await expect(canvas).toHaveAttribute("data-sketch-holes", "off");

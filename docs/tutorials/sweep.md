@@ -1,10 +1,16 @@
 # Sweep
 
-Sweep carries one closed profile along an open path. Draw the profile and the path as two sketches. The open sketch supplies whichever of the two it is, and a pinned card supplies the other. **Sweep** (W) is on the sketch card.
+Sweep carries one closed profile along an open path. **Sweep** (W) is on the sketch card.
+
+The quick ways, in one sketch:
+- **A shape and a route together.** Draw the closed shape (a circle, say) and the open route in the same sketch, then press W and Enter. The shape stands up at the route's nearer end, facing along it. **Profile: stood up at the start** on the card switches to **as drawn**.
+- **A pipe.** Draw only the route and press W: Sweep opens as **Pipe**. Type the diameter, Tab to **Wall** for a tube (0 is a solid rod), and press Enter. The bent pipe below is: line, tangent arc, W, type 8, Enter.
+
+The strict way, which the examples below use: draw the profile and the path as two sketches. The open sketch supplies whichever of the two it is, and a pinned card supplies the other.
 
 The profile plane has to face the start of the path. A profile whose plane lies along the path is refused, and the sentence names the plane to use instead ("The profile and the path are on the same plane, so there is nothing to sweep. Finish this sketch, then draw the profile in a new sketch on the YZ plane, which faces where the path starts."). These examples draw the profile on YZ, whose normal is +X, and start the path on XY along +X (a line at 0°).
 
-A corner that turns more than 25° is refused ("This path has a sharp corner"). Fillet the corner, or draw the bend as a tangent arc. Shift+A starts an arc tangent to the last line: type a radius and a sweep angle. G is Fillet corner: click the two lines and type a radius.
+A corner that turns more than 25° is refused, and a red dot marks it ("The route turns sharply at the red dot"). Fillet the corner, or draw the bend as a tangent arc. Shift+A starts an arc tangent to the last line: type a radius and a sweep angle. G is Fillet corner: click the two lines and type a radius.
 
 End scale is the profile's size at the end of the path. It opens at 1. Drag up to grow it, drag down to shrink it. 100 pixels is a factor of 1. Ctrl snaps to 0.1. Type the number in the same field.
 

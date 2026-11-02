@@ -11,15 +11,15 @@ import type { LoftOp, LoftSection, ProfileLoop, Vec3 } from "../model-tree.ts";
 import { sweepSections } from "../modeling/sweep.ts";
 import { frameOf, planeOf, toWorld, type SketchFrame } from "./frame.ts";
 import { arcPoint, curveOf, sampleSpline, type Curve } from "./geom.ts";
-import { sketchJson, type Pt, type SketchData } from "./model.ts";
-import { toLoops, type Region } from "./regions.ts";
+import { addCircle, emptySketch, sketchJson, type Pt, type SketchData } from "./model.ts";
+import { loopSignedArea, sketchRegions, toLoops, type Region } from "./regions.ts";
 import { regionCentroid, sampleLoop, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import { buildSketchLoft, type LoftPickInput } from "./loft.ts";
 import { sentence } from "./loops.ts";
 
 /** A turn steeper than this, at a corner the path actually bends, is refused. */
 export const SHARP_DEG = 25;
-export const SHARP_CORNER = "This path has a sharp corner. Fillet the corner, or draw a smooth arc. A sweep that follows the corner is not available yet.";
+export const SHARP_CORNER = "The route turns sharply at the red dot, and a sweep can't follow a sharp corner yet. Round that corner with Fillet corner (G), or draw the bend as an arc.";
 export const EDGE_MEET = "Pick an edge that meets the path.";
 export const PATH_REFUSAL = "Pick an open path: a chain in a sketch, or solid edges with Shift.";
 export const PROFILE_REFUSAL = "Pick a region to sweep.";
@@ -221,6 +221,178 @@ export function extendPath(path: readonly Vec3[], check: readonly boolean[], edg
     if (flags.length > 0) flags[0] = true;
     return { path: [...extra.map(copy), ...path.map(copy)], check: [...extra.map(() => true), ...flags] };
   }
+}
+
+/** S1 and S2: a profile made for a route, on its own plane square to the route's start, and the route it is for. */
+export interface MadeProfile {
+  profileSketch: SketchData;
+  profile: Region;
+  path: Vec3[];
+  check: boolean[];
+  /** The route's own sketch: the drawing without the shape, as a two-sketch sweep keeps it. */
+  pathSketch: SketchData;
+}
+
+export const PIPE_DIAMETER_REFUSAL = "Type a pipe diameter above 0.";
+export const PIPE_WALL_REFUSAL = "Make the wall thinner than half the diameter, or set it to 0 for a solid rod.";
+
+/**
+ * --- S1. One closed shape and one open route drawn in the same sketch. ---
+ *
+ * The drawing splits by what its lines join: pieces with a loose end are the route, the rest the shape. Null unless
+ * the closed pieces make exactly one shape (holes allowed) and the loose ones make an open route.
+ */
+export function oneSketchSweep(sketch: SketchData): { shape: SketchData; route: SketchData; profile: Region; chain: OpenChain } | null {
+  const { closed, open } = splitByEnds(sketch);
+  if (closed.size === 0 || open.size === 0) return null;
+  const shape = keepEntities(sketch, closed);
+  const route = keepEntities(sketch, open);
+  const outer = onlyShape(shape);
+  if (!outer) return null;
+  const chain = openChain(route);
+  if (!chain) return null;
+  return { shape, route, profile: outer, chain };
+}
+
+/**
+ * S1: the shape stood up at the route's start, facing along it. The route starts at its end nearer the shape. The
+ * shape's plane is the drawing's, turned so its normal runs along the route's start, and moved so the shape's centre
+ * sits on that start. The points and lines are the drawing's own, so History Edit reopens the same shape.
+ */
+export function standUpProfile(split: { shape: SketchData; route: SketchData; profile: Region; chain: OpenChain }): MadeProfile | null {
+  const drawn = frameOf(split.shape.plane);
+  const centre = regionCentroid(split.profile);
+  const middle = toWorld(drawn, centre);
+  const ahead = dist(split.chain.path[0]!, middle) <= dist(split.chain.path[split.chain.path.length - 1]!, middle);
+  const path = ahead ? split.chain.path.map(copy) : [...split.chain.path].reverse().map(copy);
+  const check = ahead ? [...split.chain.check] : [...split.chain.check].reverse();
+  const turned = squareAt(drawn, path, centre);
+  if (!turned) return null;
+  const { on: _on, dims: _dims, ...rest } = split.shape;
+  const profileSketch: SketchData = { ...rest, plane: turned };
+  const profile = onlyShape(profileSketch);
+  if (!profile) return null;
+  return { profileSketch, profile, path, check, pathSketch: split.route };
+}
+
+/**
+ * --- S2. Pipe mode: a circle of `diameter` at the route's start, facing along it, with a hole for `wall` above 0. ---
+ * The circle's plane is the route sketch's, turned as S1 turns a drawn shape.
+ */
+export function pipeProfile(route: SketchData, chain: OpenChain, diameter: number, wall: number): MadeProfile | { error: string } {
+  if (!(diameter > 0) || !Number.isFinite(diameter)) return { error: PIPE_DIAMETER_REFUSAL };
+  if (!(wall >= 0) || !Number.isFinite(wall) || (wall > 0 && wall >= diameter / 2)) return { error: PIPE_WALL_REFUSAL };
+  const path = chain.path.map(copy);
+  const turned = squareAt(frameOf(route.plane), path, [0, 0]);
+  if (!turned) return { error: PATH_REFUSAL };
+  let profileSketch = addCircle(emptySketch(turned), [0, 0], round(diameter / 2)).sketch;
+  if (wall > 0) profileSketch = addCircle(profileSketch, [0, 0], round(diameter / 2 - wall)).sketch;
+  const profile = onlyShape(profileSketch);
+  if (!profile) return { error: PIPE_DIAMETER_REFUSAL };
+  return { profileSketch, profile, path, check: [...chain.check], pathSketch: route };
+}
+
+/** The one shape of `sketch`: the region with the largest outline, when every other region fills one of its holes. Null otherwise. */
+function onlyShape(sketch: SketchData): Region | null {
+  const regions = sketchRegions(sketch);
+  if (regions.length === 0) return null;
+  const span = (region: Region) => Math.abs(loopSignedArea(region.outer));
+  const outer = regions.reduce((big, region) => (span(region) > span(big) ? region : big));
+  return regions.length === 1 + outer.holes.length ? outer : null;
+}
+
+/** The drawing's plane turned so its normal runs along the route's start, with `centre` (sketch space) on that start. */
+function squareAt(drawn: SketchFrame, path: readonly Vec3[], centre: Pt): SketchData["plane"] | null {
+  if (path.length < 2) return null;
+  const t = startTangent(path);
+  const axis = cross3(drawn.w, t);
+  const size = Math.hypot(...axis);
+  const angle = Math.atan2(size, dot(drawn.w, t));
+  if (!(size > 1e-9) && angle < 1) return planeAt(drawn, path[0]!, centre);
+  const k: Vec3 = size > 1e-9 ? [axis[0] / size, axis[1] / size, axis[2] / size] : unit3(drawn.u);
+  const spin = (x: Vec3): Vec3 => rotate(x, k, angle);
+  return planeAt({ origin: drawn.origin, u: spin(drawn.u), v: spin(drawn.v), w: spin(drawn.w) }, path[0]!, centre);
+}
+
+function planeAt(frame: SketchFrame, start: Vec3, centre: Pt): SketchData["plane"] {
+  const origin: Vec3 = [0, 1, 2].map((i) => start[i]! - frame.u[i]! * centre[0] - frame.v[i]! * centre[1]) as Vec3;
+  const plane = planeOf({ ...frame, origin });
+  return { origin: plane.origin.map(round) as Vec3, turn: plane.turn.map(round) as Vec3 };
+}
+
+/**
+ * The route's direction at its start. Three evenly spaced points (a sampled arc) give the tangent, as the sweep's frames
+ * take it; otherwise the first piece is straight and its own direction is exact.
+ */
+function startTangent(path: readonly Vec3[]): Vec3 {
+  const p0 = path[0]!;
+  const p1 = path[1]!;
+  if (path.length < 3) return unit3(sub(p1, p0));
+  const p2 = path[2]!;
+  const first = dist(p0, p1);
+  if (Math.abs(dist(p1, p2) - first) > 0.01 * first) return unit3(sub(p1, p0));
+  return unit3([-3 * p0[0] + 4 * p1[0] - p2[0], -3 * p0[1] + 4 * p1[1] - p2[1], -3 * p0[2] + 4 * p1[2] - p2[2]]);
+}
+
+function rotate(x: Vec3, k: Vec3, angle: number): Vec3 {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const kx = cross3(k, x);
+  const along = dot(k, x) * (1 - c);
+  return [x[0] * c + kx[0] * s + k[0] * along, x[1] * c + kx[1] * s + k[1] * along, x[2] * c + kx[2] * s + k[2] * along];
+}
+
+/** Entities split by whether the piece they belong to has a loose end. Helper lines are in neither. */
+function splitByEnds(sketch: SketchData): { closed: Set<number>; open: Set<number> } {
+  const keyOf = (point: Pt) => `${Math.round(point[0] * 1e3)}_${Math.round(point[1] * 1e3)}`;
+  const items: { id: number; ends: string[] }[] = [];
+  for (const entity of sketch.entities) {
+    if (entity.construction) continue;
+    const curve = curveOf(sketch, entity);
+    if (!curve) continue;
+    if (curve.kind === "circle" || (curve.kind === "spline" && curve.closed)) {
+      items.push({ id: entity.id, ends: [] });
+      continue;
+    }
+    const seg = segmentOf(curve);
+    items.push({ id: entity.id, ends: [keyOf(seg.pts[0]!), keyOf(seg.pts[seg.pts.length - 1]!)] });
+  }
+  const degree = new Map<string, number>();
+  for (const item of items) for (const end of item.ends) degree.set(end, (degree.get(end) ?? 0) + 1);
+  const parent = items.map((_, index) => index);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  const owner = new Map<string, number>();
+  items.forEach((item, index) => {
+    for (const end of item.ends) {
+      const seen = owner.get(end);
+      if (seen == null) owner.set(end, index);
+      else parent[find(index)] = find(seen);
+    }
+  });
+  const loose = new Set<number>();
+  items.forEach((item, index) => {
+    if (item.ends.some((end) => degree.get(end) === 1)) loose.add(find(index));
+  });
+  const closed = new Set<number>();
+  const open = new Set<number>();
+  items.forEach((item, index) => (loose.has(find(index)) ? open : closed).add(item.id));
+  return { closed, open };
+}
+
+/** `sketch` with only `ids` and the points they use. */
+function keepEntities(sketch: SketchData, ids: ReadonlySet<number>): SketchData {
+  const entities = sketch.entities.filter((entity) => ids.has(entity.id));
+  const used = new Set<number>();
+  for (const entity of entities) {
+    if (entity.kind === "circle") used.add(entity.centre);
+    else if (entity.kind === "spline") for (const id of entity.through) used.add(id);
+    else {
+      used.add(entity.a);
+      used.add(entity.b);
+    }
+  }
+  const { dims: _dims, ...rest } = sketch;
+  return { ...rest, points: sketch.points.filter((point) => used.has(point.id)), entities };
 }
 
 /** A loft through copies of the profile carried along `path`. A sharp corner is refused and nothing is sent. */

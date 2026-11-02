@@ -159,6 +159,27 @@ where the reason is geometric:
 **Done when** every reason string in `src/sketch/` and `featureBlocked()` passes a unit test that it ends with
 an action, and an open-ends sketch shows its red dots in an e2e screenshot.
 
+**As built (milestone 1, P1 + P3).**
+- `src/sketch/reasons.ts` holds the purpose lines (`PURPOSE`), the card's Edit and Make rows (`EDIT_BUTTONS`,
+  `MAKE_BUTTONS`), every card reason (`REASON`), and the marks: `openEnds`, `sharpCorners` (the sweep's own 25° rule),
+  `axisCrossings`. The card builds both rows from those lists, so a button with no purpose can't be drawn.
+- Tips: the purpose line with the key. A greyed button keeps it and adds the reason on a second line (the tooltip
+  shows the reason in the warning colour); the reason alone is `data-reason`, which a click or the key says in the
+  status line. The Construction and Use lines don't name the button, so they read the same after C1 and U1 rename it.
+- Reasons by cause, not one sentence per button: nothing drawn, open ends, only helper lines, crossings that close
+  nothing, or a shape not picked. Open ends get red dots when the greyed button is hovered or focused, or its key is
+  pressed, and keep them until the drawing changes, so they don't sit on an intended sweep route while drawing. A sharp
+  sweep corner and a revolve-axis crossing are marked whenever the feature is open. The canvas carries
+  `data-sketch-marks` and `data-sketch-marks-kind`.
+- Holes stays on the Make row off a face, greyed with the face reason, instead of being hidden.
+- Wording that differs from the table above: "Add a shape above" (L1) isn't built, so the loft reasons point to
+  another sketch's card or a face; the sharp-corner reason points to Fillet corner (G), since S3's radius isn't on the
+  card yet. Builder refusals that already ended with an action kept their words, including the revolve builder's
+  `CROSS_REFUSAL`, which a parameter rebuild through the MCP can return; the card shows the table's sentence.
+- `src/sketch/reasons.test.ts` checks every `*_REFUSAL`, `SHARP_CORNER`, `EDGE_MEET`, `error:` and `note:` sentence in
+  `src/sketch/` and `src/app/sketch.ts` ends with an action verb; `e2e/model-sketch-reasons.spec.ts` checks the tips
+  and the open-ends dots. Nothing under `mcp/` changed, and no saved field.
+
 ## 5. Make operations, done the natural way
 
 ### E1. Extrude: close the shape for me
@@ -205,6 +226,24 @@ hollow tube). The circle is generated at the start, facing the route.
 
 Stores: the same sweep, with a circle profile (and a second circle as a hole for Wall). **Done when** the
 tutorial's bent pipe takes: line, tangent arc, W, type 8, Apply.
+
+**As built (milestone 2, S1 + S2).**
+- `oneSketchSweep`, `standUpProfile` and `pipeProfile` in `src/sketch/sweep.ts`. The drawing splits by what its lines
+  join: a piece with a loose end is the route, the rest is the shape. S1 needs exactly one shape (holes allowed) and an
+  open route. The stood-up plane is the drawing's plane turned so its normal runs along the route's start, so the
+  shape keeps its points, lines and ids; only `on` and its constraints are dropped from the stood-up copy.
+- The route's start direction is the first piece's own direction, or the three-point tangent where the start is a
+  sampled arc. A three-point tangent over a line then an arc's samples tilted the plane by a few degrees.
+- Stored op: `drawing.sweep.profile` is the stood-up shape and `pathSketch` is the route alone, which is exactly a
+  two-sketch sweep. `src/sketch/sweep.test.ts` checks the whole op against a circle drawn by hand on a plane facing
+  the start (`{u: -Z, v: Y, w: X}` at the route's start). History Edit reopens it as a two-sketch sweep.
+- The card's toggle is one button, **Profile: stood up at the start** / **Profile: as drawn** (`data-sketch-stance`).
+  "As drawn" gives #529's same-plane refusal.
+- Pipe opens at 5 mm with Wall 0. Diameter and Wall are in the heads-up box, and Diameter is also on the card. A drag
+  doesn't scale a pipe. History Edit of a pipe reopens it as an ordinary sweep of its circle sketch, not as Pipe.
+- A click on another shape leaves S1 or Pipe for the ordinary sweep. How steps exist for both (`sweep-one`, `pipe`).
+- No route arrow (R2) yet: the stood-up ghost shows which end was taken. `e2e/model-sweep-one-sketch.spec.ts` sweeps
+  a circle and a route with W, Enter, and a route alone as an 8 mm tube.
 
 ### S3. Round sharp corners for me
 

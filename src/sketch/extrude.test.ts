@@ -163,7 +163,7 @@ const upTo: { index: number; mid: Vec3; areaMm2: number } = { index: 3, mid: [0,
 const stopped = buildSketchExtrude({ sketch: bed, regions, distance: 10, depth2: null, draftDeg: 4, upTo, mode: "fuse" });
 eq("a draft up to a face is refused", "error" in stopped ? stopped.error : "", "A draft up to a face is not available yet. Drop the draft, or drop the face and set a depth.");
 const zero = buildSketchExtrude({ sketch: bed, regions, distance: 0, depth2: null, draftDeg: null, upTo: null, mode: "fuse" });
-eq("a zero depth is refused", "error" in zero ? zero.error : "", "An extrude needs a depth other than 0.");
+eq("a zero depth is refused", "error" in zero ? zero.error : "", "Set a depth other than 0 for the extrude.");
 
 const box = { min: [0, 0, 0] as Vec3, max: [20, 20, 10] as Vec3 };
 const ground = frameOf(bed.plane);

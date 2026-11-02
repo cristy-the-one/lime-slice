@@ -85,6 +85,7 @@ import {
 } from "../sketch/session";
 import { isDrawTool } from "../sketch/tools";
 import { featureTitle, fitStatus, hintSteps } from "../sketch/hints";
+import { axisCrossings, blockedTip, EDIT_BUTTONS, MAKE_BUTTONS, noShapeReason, openEnds, PURPOSE, REASON, sharpCorners, type EditButton, type MakeButton } from "../sketch/reasons";
 // --- S4. Constraints live in the sketch card menu, not on the Model toolbar. ---
 import { CONSTRAIN_MENU, constraintGlyphs, dimensionLabels, firstLineMeasure, type ConstraintGlyph, isConstrainTool, placedStatus, plainDrivingValue, setDrivingEvaluator } from "../sketch/constrain";
 import { evaluate, ExprError } from "../modeling/expr.ts";
@@ -112,7 +113,6 @@ import {
 } from "../sketch/extrude";
 import { regionAt, sketchRegions, toLoops, type Region } from "../sketch/regions";
 import {
-  CROSS_REFUSAL,
   axisWorld,
   buildSketchRevolve,
   clipAxis,
@@ -140,6 +140,10 @@ import {
 } from "../sketch/loft";
 import {
   EDGE_MEET,
+  PIPE_DIAMETER_REFUSAL,
+  oneSketchSweep,
+  pipeProfile,
+  standUpProfile,
   buildSketchSweep,
   extendPath,
   openChain,
@@ -357,7 +361,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!trimmed) return null;
     try {
       const value = evaluate(trimmed, host.parameters());
-      if (!Number.isFinite(value)) return { error: `"${trimmed}" is not a finite number.` };
+      if (!Number.isFinite(value)) return { error: `"${trimmed}" is not a finite number. Type a number, or a formula that gives one.` };
       return value;
     } catch (err) {
       const message = err instanceof ExprError || err instanceof Error ? err.message : String(err);
@@ -430,9 +434,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     note: string;
     /** The scale as typed, when it was an expression. */
     scaleText?: string;
+    /** S1: a shape and a route drawn in this one sketch. `up` stands the shape up at the route's start. */
+    oneSketch?: { split: NonNullable<ReturnType<typeof oneSketchSweep>>; stance: "up" | "drawn"; drawnProfile: Region; sketch: SketchData };
+    /** S2: a route and no shape, swept as a pipe of this diameter, hollow when `wall` is above 0. */
+    pipe?: { route: SketchData; chain: { path: Vec3[]; check: boolean[] }; diameter: number; wall: number };
   }
   let loft: LoftGesture | null = null;
   let sweep: SweepGesture | null = null;
+  /** R2: open ends asked for by a greyed reason, for the drawing they were asked for. Any edit of it clears them. */
+  let redMarks: { kind: "open"; drawing: string } | null = null;
+  /** What the last draw marked in red, for the canvas dataset. */
+  let redShown: { kind: string; count: number } = { kind: "", count: 0 };
   let editSession = false;
   /** The outlines a History Edit's feature was applied to: Extrude or Revolve again in the edit picks those regions. */
   let editOutlines: ProfileLoop[] = [];
@@ -468,6 +480,17 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   box.hidden = true;
   document.body.append(box);
   hud.onCommit((commit) => {
+    if (sweep?.pipe) {
+      const wall = commit.values[1];
+      sweep = madeSweep({ ...sweep, pipe: { ...sweep.pipe, diameter: commit.values[0] ?? Number.NaN, wall: wall != null && Number.isFinite(wall) ? wall : sweep.pipe.wall } });
+      if (sweep.note) {
+        publish("skip");
+        host.readout(sweep.note);
+        return;
+      }
+      void commitSweep();
+      return;
+    }
     if (sweep) {
       const value = commit.values[0] ?? Number.NaN;
       if (!(value > 0)) {
@@ -522,6 +545,14 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     leaveEditing(next);
   });
   hud.onEdit((values) => {
+    if (sweep?.pipe) {
+      const diameter = values[0];
+      const wall = values[1];
+      if (diameter != null && Number.isFinite(diameter)) sweep = madeSweep({ ...sweep, pipe: { ...sweep.pipe, diameter, wall: wall != null && Number.isFinite(wall) ? wall : sweep.pipe.wall } });
+      publish("skip");
+      armSweepProbe();
+      return;
+    }
     if (sweep) {
       const value = values[0];
       if (value != null && value > 0) sweep = { ...sweep, scale: value, note: "" };
@@ -647,13 +678,22 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
   });
 
+  // R2: a greyed button whose reason is about the drawing marks the place while its tip is read.
+  const markFromButton = (ev: Event) => {
+    const target = ev.target instanceof Element ? ev.target.closest("button") : null;
+    if (target instanceof HTMLButtonElement && target.dataset.reason === REASON.openEnds) showMarks("open");
+  };
+  cards?.addEventListener("mouseover", markFromButton);
+  cards?.addEventListener("focusin", markFromButton);
+
   cards?.addEventListener("click", (ev) => {
     // The card waits while an Apply is on its way, as the keys do.
     if (applying || holding) return;
     const target = ev.target instanceof Element ? ev.target.closest("button") : null;
     if (!(target instanceof HTMLButtonElement)) return;
     if (target.getAttribute("aria-disabled") === "true") {
-      const why = target.dataset.tip || target.title;
+      const why = target.dataset.reason || target.dataset.tip || target.title;
+      if (why === REASON.openEnds) showMarks("open");
       if (why) {
         host.readout(why);
         pushToast(why, "info");
@@ -741,6 +781,15 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       revolve = { ...revolve, axis: flipAxis(revolve.axis), follow: false };
       publish("open");
       armRevolveProbe();
+      return;
+    }
+    // --- S1. Stand the shape up at the route's start, or keep it as drawn. ---
+    if (target.dataset.sketchStance != null && sweep?.oneSketch) {
+      const stance = sweep.oneSketch.stance === "up" ? "drawn" : "up";
+      sweep = madeSweep({ ...sweep, oneSketch: { ...sweep.oneSketch, stance } });
+      cardFocus = ["[data-sketch-stance]"];
+      publish("open");
+      armSweepProbe();
       return;
     }
     if (target.dataset.sketchRuled != null && loft) {
@@ -944,6 +993,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   host.canvas.dataset.sweepScale = "";
   host.canvas.dataset.sweepPath = "0";
   host.canvas.dataset.sweepProfile = "0";
+  host.canvas.dataset.sweepMade = "";
 
   function enterNamed(name: "XY" | "XZ" | "YZ" | "workplane") {
     const frame = name === "workplane" ? frameFromWorkplane(host.workplane()) : offsetFrame(originFrame(name, host.origin()));
@@ -1113,7 +1163,49 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (gesture?.guide) mesh.strokes.push({ xyz: [...gesture.guide[0], ...gesture.guide[1]], role: "hint" });
     if (revolve && frame) mesh.strokes.push(...revolveStrokes(frame));
     if ((loft || sweep) && frame) mesh.strokes.push(...pinnedStrokes());
+    const red = frame ? redDots(frame) : { kind: "", at: [] };
+    for (const at of red.at) mesh.dots.push({ at, role: "refuse" });
+    redShown = { kind: red.kind, count: red.at.length };
     host.view.setSketchDraw(mesh);
+  }
+
+  function drawingKey(sketch: SketchData): string {
+    return JSON.stringify([sketch.points, sketch.entities]);
+  }
+
+  /** R2: mark open ends after a reason named them; a refused crossing of the revolve axis; a sweep's sharp corners. */
+  function showMarks(kind: "open") {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing") return;
+    const drawing = drawingKey(sketch);
+    if (redMarks?.kind === kind && redMarks.drawing === drawing) return;
+    redMarks = { kind, drawing };
+    publish("skip");
+  }
+
+  function redDots(frame: SketchFrame): { kind: string; at: Vec3[] } {
+    const sketch = activeSketch(editor);
+    if (!sketch || editor.phase !== "editing") {
+      redMarks = null;
+      return { kind: "", at: [] };
+    }
+    if (sweep && sweep.path.length >= 3) {
+      const corners = sharpCorners(sweep.path, sweep.check);
+      if (corners.length > 0) return { kind: "sharp", at: corners.map((point) => applyPose(host.pose(), point)) };
+    }
+    if (revolve?.crossing) {
+      const at: Vec3[] = [];
+      for (const region of revolve.regions) {
+        if (!regionCrossesAxis(region, revolve.axis)) continue;
+        for (const loop of toLoops(region)) for (const point of axisCrossings(sampleLoop(loop), revolve.axis)) at.push(toWorld(frame, point));
+      }
+      if (at.length > 0) return { kind: "cross", at };
+    }
+    if (redMarks && redMarks.drawing !== drawingKey(sketch)) redMarks = null;
+    if (redMarks?.kind === "open" && !(gesture || revolve || loft || sweep)) {
+      return { kind: "open", at: openEnds(sketch).map((point) => toWorld(frame, point)) };
+    }
+    return { kind: "", at: [] };
   }
 
   function gridFor(frame: SketchFrame) {
@@ -1141,7 +1233,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     hud.setParams(host.parameters());
     if (mode === "skip") return;
     if (sweep && editor.phase === "editing") {
-      const fields: HudField[] = [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
+      const fields: HudField[] = sweep.pipe
+        ? [
+            { id: "diameter", label: "Diameter", unit: "mm", value: sweep.pipe.diameter },
+            { id: "wall", label: "Wall", unit: "mm", value: sweep.pipe.wall },
+          ]
+        : [{ id: "scale", label: "End scale", unit: "×", value: scaleOf(sweep.scale) }];
       const anchor = featureAnchor();
       const at = anchor?.at ?? pointerAt();
       if (mode === "open" || !hud.shown) hud.open(fields, at, host.parameters());
@@ -1278,6 +1375,9 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     host.canvas.dataset.sweepScale = sweeping ? String(scaleOf(sweeping.scale)) : "";
     host.canvas.dataset.sweepPath = sweeping && sweeping.path.length >= 2 ? "1" : "0";
     host.canvas.dataset.sweepProfile = sweeping?.profile ? "1" : "0";
+    host.canvas.dataset.sweepMade = sweeping?.pipe ? "pipe" : sweeping?.oneSketch ? sweeping.oneSketch.stance : "";
+    host.canvas.dataset.sketchMarks = String(redShown.count);
+    host.canvas.dataset.sketchMarksKind = redShown.kind;
     // --- F4. Off unless the Hole panel is placing one hole per point. Hits are client pixels, for tests. ---
     const holeCount = host.sketchHoleCount();
     host.canvas.dataset.sketchHoles = holeCount == null ? "off" : String(holeCount);
@@ -1325,7 +1425,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (gesture || revolve || loft || sweep) {
         const mode = sweep ? resolvedSweepMode() : loft ? resolvedLoftMode() : revolve ? resolvedRevolveMode() : resolvedMode();
         const choice = sweep ? sweep.choice : loft ? loft.choice : revolve ? revolve.choice : gesture?.choice ?? "auto";
-        parts.push(mode, choice, loft ? (loft.ruled ? "ruled" : "smooth") : "");
+        parts.push(mode, choice, loft ? (loft.ruled ? "ruled" : "smooth") : "", sweep?.oneSketch?.stance ?? "", sweep?.pipe ? "pipe" : "");
       }
     }
     return parts.join("|");
@@ -1368,13 +1468,6 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   /** Apply and Holes follow the selection without rebuilding the card, so a typed field keeps its focus. */
   function refreshBlocked() {
-    const holes = cards?.querySelector<HTMLButtonElement>("[data-sketch-holes]");
-    if (holes) {
-      const sketch = activeSketch(editor);
-      const why = !sketch || holeTargets(sketch, editor.selection).length === 0 ? POINT_REFUSAL : "";
-      holes.dataset.tipIdle ??= "Drill a hole at each selected point";
-      markBlocked(holes, why);
-    }
     const apply = cards?.querySelector<HTMLButtonElement>("[data-sketch-apply]");
     if (apply) {
       apply.dataset.tipIdle ??= "Keep this feature";
@@ -1389,7 +1482,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const value = cards?.querySelector<HTMLInputElement>("[data-sketch-value]");
     if (value && document.activeElement !== value) {
-      const shown = gesture ? String(gesture.distance) : revolve ? String(revolve.angle) : sweep ? String(scaleOf(sweep.scale)) : "";
+      const shown = gesture ? String(gesture.distance) : revolve ? String(revolve.angle) : sweep?.pipe ? String(sweep.pipe.diameter) : sweep ? String(scaleOf(sweep.scale)) : "";
       if (shown && value.value !== shown) value.value = shown;
     }
   }
@@ -1405,7 +1498,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   /** A selector for the button with the same data attributes as `node`, or null when it has none. */
   function sameButton(node: HTMLElement): string | null {
     // The tip text changes with a button's blocked state, so it cannot name the button.
-    const data = Object.entries(node.dataset).filter(([name]) => name !== "tip" && name !== "tipIdle").map(([name, value]) => `[data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(value ?? "")}"]`);
+    const data = Object.entries(node.dataset).filter(([name]) => name !== "tip" && name !== "tipIdle" && name !== "reason").map(([name, value]) => `[data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}="${CSS.escape(value ?? "")}"]`);
     return data.length > 0 ? `button${data.join("")}` : null;
   }
 
@@ -1464,70 +1557,79 @@ export function mountSketch(host: SketchHost): { sync(): void } {
    */
   function featureBlocked(): string {
     if (revolve) {
-      if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
-      if (revolve.regions.length === 0) return "Select a region to revolve.";
+      if (revolve.crossing) return REASON.crossAxis;
+      if (revolve.regions.length === 0) return REASON.pickRevolve;
       return "";
     }
     if (loft) {
-      if (loft.picks.length < 2) return "Pick at least two sections to loft.";
+      if (loft.picks.length < 2) return REASON.loftSecond;
       return "";
     }
     if (sweep) {
-      if (!sweep.profile || !sweep.profileSketch) return "Pick a region to sweep.";
-      if (sweep.path.length < 2) return "Pick a path to sweep along.";
+      if (!sweep.profile || !sweep.profileSketch) return sweep.pipe ? sweep.note || PIPE_DIAMETER_REFUSAL : REASON.sweepProfile;
+      if (sweep.path.length < 2) return REASON.sweepRoute;
       return "";
     }
-    if (gesture && gesture.regions.length === 0) return "Select a region to extrude.";
+    if (gesture && gesture.regions.length === 0) return REASON.pickExtrude;
     return "";
   }
 
+  /** P1: a greyed button keeps its purpose line, and the reason goes under it. */
   function markBlocked(button: HTMLButtonElement, why: string) {
     button.setAttribute("aria-disabled", why ? "true" : "false");
     button.classList.toggle("is-disabled", why !== "");
-    if (why) {
-      button.dataset.tip = why;
-      button.title = why;
+    const tip = blockedTip(button.dataset.tipIdle ?? "", why);
+    if (tip) {
+      button.dataset.tip = tip;
+      button.title = tip;
     } else {
-      if (button.dataset.tipIdle) button.dataset.tip = button.dataset.tipIdle;
-      else delete button.dataset.tip;
+      delete button.dataset.tip;
       button.removeAttribute("title");
     }
+    if (why) button.dataset.reason = why;
+    else delete button.dataset.reason;
   }
 
-  type StartKind = "extrude" | "revolve" | "loft" | "sweep";
+  type StartKind = "extrude" | "revolve" | "loft" | "sweep" | "holes";
 
   /** Why Extrude, Revolve, Loft or Sweep cannot start. Empty when a click is the right next step. */
   function startWhy(kind: StartKind, hover = false): string {
     const sketch = activeSketch(editor);
-    if (!sketch || editor.phase !== "editing") return "Open a sketch first.";
+    if (!sketch || editor.phase !== "editing") return REASON.noSketch;
     const regions = sketchRegions(sketch);
     // A key press also takes the region under the pointer, as beginExtrude and beginRevolve do. The button cannot.
     const chosen = hover
       ? editedRegions(sketch) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor)
       : chooseRegions(sketch, editor.selection.entities, null);
     if (kind === "extrude") {
-      if (regions.length === 0) return "Draw a closed profile to extrude.";
-      if (chosen.length === 0) return "Select a region to extrude.";
+      if (regions.length === 0) return noShapeReason(sketch);
+      if (chosen.length === 0) return REASON.pickExtrude;
       return "";
     }
     if (kind === "revolve") {
-      if (regions.length === 0) return "Draw a closed profile to revolve.";
-      if (chosen.length === 0) return "Select a region to revolve.";
+      if (regions.length === 0) return noShapeReason(sketch);
+      if (chosen.length === 0) return REASON.pickRevolveStart;
       return "";
     }
     if (kind === "loft") {
       const elsewhere = editor.pinned.some((item) => item.id !== editor.active && sketchRegions(item.sketch).length > 0);
-      if (regions.length === 0 && !elsewhere) return "Draw a closed profile to loft.";
+      if (regions.length === 0 && !elsewhere) return noShapeReason(sketch);
+      return "";
+    }
+    if (kind === "holes") {
+      if (!sketchOnFace(sketch)) return FACE_REFUSAL;
+      if (holeTargets(sketch, editor.selection).length === 0) return POINT_REFUSAL;
       return "";
     }
     const path = openChain(sketch) ?? pinnedChain();
-    if (chosen.length === 0 && !pinnedRegion() && !path) return "Draw a closed profile or an open path to sweep.";
+    if (chosen.length === 0 && !pinnedRegion() && !path) return sketch.entities.length === 0 ? REASON.sweepNothing : noShapeReason(sketch);
     return "";
   }
 
   function blockedStart(kind: StartKind): boolean {
     const why = startWhy(kind, true);
     if (!why) return false;
+    if (why === REASON.openEnds) showMarks("open");
     host.readout(why);
     pushToast(why, "info");
     return true;
@@ -1537,6 +1639,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (kind === "extrude") return gesture != null;
     if (kind === "revolve") return revolve != null;
     if (kind === "loft") return loft != null;
+    if (kind === "holes") return host.sketchHolesArmed();
     return sweep != null;
   }
 
@@ -1546,6 +1649,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       ["revolve", "[data-sketch-revolve]"],
       ["loft", "[data-sketch-loft]"],
       ["sweep", "[data-sketch-sweep]"],
+      ["holes", "[data-sketch-holes]"],
     ];
     for (const [kind, selector] of kinds) {
       const button = cards?.querySelector<HTMLButtonElement>(selector);
@@ -1557,7 +1661,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   /** The pick the open feature is still waiting for, shown on the card with Cancel. */
   function pickPrompt(): string {
     const why = featureBlocked();
-    return why.startsWith("Select ") || why.startsWith("Pick ") ? why : "";
+    return revolve?.crossing ? "" : why;
   }
 
   function editingRow(): Node[] {
@@ -1620,34 +1724,24 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     return tools.map((item) => iconTool(item.tool, item.label, keyOf(item.id) ?? "", item.icon));
   }
 
+  /** P1: the Edit row comes from `EDIT_BUTTONS`, so a button cannot ship without its purpose line. */
   function editTools(): Node[] {
-    return [
-      namedTool("select", "Select", "Select. Click a line or a point."),
-      namedTool("trim", "Trim", tipWithShortcut("Trim", keyOf("sketch-trim"))),
-      namedTool("offset", "Offset", tipWithShortcut("Offset", keyOf("sketch-offset"))),
-      constrainMenu(),
-      namedTool("construction", "Construction", tipWithShortcut("Construction", keyOf("sketch-construction"))),
-      namedTool("fillet", "Fillet corner", tipWithShortcut("Fillet corner", keyOf("sketch-fillet"))),
-      namedTool("use", "Use", tipWithShortcut("Use. Click a faint edge to copy it.", keyOf("sketch-use"))),
-    ];
+    return EDIT_BUTTONS.map((id) => {
+      if (id === "constrain") return constrainMenu();
+      const { label, command } = EDIT_LABELS[id];
+      return namedTool(id, label, tipWithShortcut(PURPOSE[id], command ? keyOf(command) : undefined));
+    });
   }
 
+  /** P1: the Make row comes from `MAKE_BUTTONS`. Holes stays on the row off a face, greyed with the reason. */
   function makeTools(): Node[] {
-    const row: Node[] = [
-      textButton(sketchKeyLabel("Extrude", "sketch-extrude"), { sketchExtrude: "" }),
-      textButton(sketchKeyLabel("Revolve", "sketch-revolve"), { sketchRevolve: "" }),
-      textButton(sketchKeyLabel("Loft", "sketch-loft"), { sketchLoft: "" }),
-      textButton(sketchKeyLabel("Sweep", "sketch-sweep"), { sketchSweep: "" }),
-    ];
-    if (activeSketch(editor)?.on?.kind === "face") {
-      const holes = textButton(sketchKeyLabel("Holes", "sketch-holes"), { sketchHoles: "" });
-      const sketch = activeSketch(editor);
-      const why = !sketch || holeTargets(sketch, editor.selection).length === 0 ? POINT_REFUSAL : "";
-      holes.dataset.tipIdle = "Drill a hole at each selected point";
-      markBlocked(holes, why);
-      row.push(holes);
-    }
-    return row;
+    return MAKE_BUTTONS.map((id) => {
+      const { label, command, data } = MAKE_LABELS[id];
+      const button = textButton(sketchKeyLabel(label, command), { [data]: "" });
+      button.dataset.tipIdle = tipWithShortcut(PURPOSE[id], keyOf(command));
+      markBlocked(button, startActive(id) ? "" : startWhy(id));
+      return button;
+    });
   }
 
   /** Replaces Make while Extrude, Revolve, Loft or Sweep is open. */
@@ -1663,13 +1757,23 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     prompt.toggleAttribute("hidden", sentence === "");
     const name = document.createElement("p");
     name.className = "sketch-feature-name";
-    name.textContent = gesture ? "Extrude" : revolve ? "Revolve" : loft ? "Loft" : "Sweep";
+    name.textContent = gesture ? "Extrude" : revolve ? "Revolve" : loft ? "Loft" : sweep?.pipe ? "Pipe" : "Sweep";
     const head = document.createElement("div");
     head.className = "sketch-feature-row";
     head.append(name, modeControl());
     const options = document.createElement("div");
     options.className = "sketch-feature-row";
     if (revolve) options.append(textButton("Flip", { sketchFlip: "" }));
+    if (sweep?.oneSketch) {
+      const up = sweep.oneSketch.stance === "up";
+      const stance = textButton(up ? "Profile: stood up at the start" : "Profile: as drawn", { sketchStance: sweep.oneSketch.stance });
+      stance.setAttribute("aria-pressed", up ? "true" : "false");
+      stance.dataset.tip = up
+        ? "The shape is turned to face along the route and moved to its start. Click to keep it where you drew it."
+        : "The shape stays where you drew it, flat beside the route. Click to stand it up at the route's start.";
+      stance.title = stance.dataset.tip;
+      options.append(stance);
+    }
     if (loft) {
       const ruled = textButton(loft.ruled ? "Ruled (R)" : "Smooth (R)", { sketchRuled: loft.ruled ? "1" : "0" });
       ruled.dataset.tip = "R toggles smooth and ruled.";
@@ -1678,7 +1782,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     const value = featureValue();
     if (value) options.append(value);
-    const kind = gesture ? "extrude" : revolve ? "revolve" : loft ? "loft" : "sweep";
+    const kind = gesture ? "extrude" : revolve ? "revolve" : loft ? "loft" : sweep?.pipe ? "pipe" : sweep?.oneSketch ? "sweep-one" : "sweep";
     options.append(howControl(kind));
     const apply = textButton("Apply", { sketchApply: "" });
     apply.classList.add("primary");
@@ -1718,7 +1822,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
   }
 
   /** Numbered steps beside the feature strip. Open the first three times, then a ? button. */
-  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep" | "profile"): HTMLElement {
+  function howControl(kind: "extrude" | "revolve" | "loft" | "sweep" | "sweep-one" | "pipe" | "profile"): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "sketch-how";
     const button = document.createElement("button");
@@ -1796,6 +1900,10 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       input.value = String(revolve.angle);
       input.setAttribute("aria-label", "Angle");
       unit.textContent = "°";
+    } else if (sweep?.pipe) {
+      input.value = String(sweep.pipe.diameter);
+      input.setAttribute("aria-label", "Diameter");
+      unit.textContent = "mm";
     } else if (sweep) {
       input.value = String(scaleOf(sweep.scale));
       input.setAttribute("aria-label", "End scale");
@@ -1806,6 +1914,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
       if (!Number.isFinite(value)) return;
       if (gesture) gesture = { ...gesture, distance: value, upTo: null, guide: null };
       else if (revolve) revolve = { ...revolve, angle: value, follow: false };
+      else if (sweep?.pipe) sweep = madeSweep({ ...sweep, pipe: { ...sweep.pipe, diameter: value } });
       else if (sweep) sweep = { ...sweep, scale: value, note: "" };
       publish("values");
     });
@@ -1857,6 +1966,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     open.type = "button";
     open.className = "btn";
     open.dataset.sketchMenu = "constrain";
+    open.dataset.tip = PURPOSE.constrain;
+    open.title = PURPOSE.constrain;
     open.textContent = current?.label ?? "Constrain";
     open.setAttribute("aria-haspopup", "menu");
     open.setAttribute("aria-expanded", menuOpen === "constrain" ? "true" : "false");
@@ -2467,6 +2578,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (id === "sketch-holes") {
       if (gesture || host.sketchHolesArmed()) return true;
+      if (blockedStart("holes")) return true;
       if (revolve) endRevolve();
       if (loft) endLoft();
       if (sweep) endSweep();
@@ -2627,7 +2739,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!sketch || editor.phase !== "editing") return;
     const chosen = editedRegions(sketch) ?? chooseRegions(sketch, editor.selection.entities, editor.cursor);
     if (chosen.length === 0) {
-      host.readout("Select a region to extrude.");
+      host.readout(REASON.pickExtrude);
       return;
     }
     gesture = {
@@ -3149,7 +3261,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
 
   function revolveReadout(): string {
     if (!revolve) return "";
-    if (revolve.crossing) return `${CROSS_REFUSAL} Move the axis, or pick a region on one side of it.`;
+    if (revolve.crossing) return REASON.crossAxis;
     const mode = modeLabel(resolvedRevolveMode());
     return featureTitle("revolve", `${revolve.angle}° · ${mode}`);
   }
@@ -3338,8 +3450,25 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (loft) endLoft();
     const sketch = activeSketch(editor);
     if (!sketch || editor.phase !== "editing") return;
+    const choice: ModeChoice = host.featureEdit() === "root" ? "new" : "auto";
+    const blank = { scale: 1, edges: [], choice, dragging: false, down: null, note: "" };
+    // S1: a shape and a route in this one sketch stand the shape up at the route's start.
+    const split = oneSketchSweep(sketch);
+    if (split) {
+      sweep = madeSweep({ ...blank, profileSketch: null, profile: null, pathSketch: null, path: [], check: [], oneSketch: { split, stance: "up", drawnProfile: split.profile, sketch } });
+      publish("open");
+      armSweepProbe();
+      return;
+    }
     const region = chooseRegions(sketch, editor.selection.entities, editor.cursor)[0] ?? null;
     const chain = openChain(sketch);
+    // S2: a route with no shape anywhere is a pipe.
+    if (!region && chain && !pinnedRegion()) {
+      sweep = madeSweep({ ...blank, profileSketch: null, profile: null, pathSketch: null, path: [], check: [], pipe: { route: sketch, chain, diameter: PIPE_DIAMETER_MM, wall: 0 } });
+      publish("open");
+      armSweepProbe();
+      return;
+    }
     let profileSketch: SketchData | null = region ? sketch : null;
     let profile = region;
     let pathSketch: SketchData | null = chain ? sketch : null;
@@ -3384,6 +3513,31 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     armSweepProbe();
   }
 
+  /**
+   * S1 and S2: the profile, route and sketches a one-sketch sweep or a pipe stands for, worked out again from its
+   * stance or sizes. The fields are the strict sweep's, so the builder, the ghost and Apply don't tell them apart.
+   */
+  function madeSweep(next: SweepGesture): SweepGesture {
+    const mode = host.featureEdit() === "root" ? "new" : "fuse";
+    let made: SweepGesture = next;
+    if (next.oneSketch) {
+      const { split, stance, drawnProfile, sketch } = next.oneSketch;
+      const stood = stance === "up" ? standUpProfile(split) : null;
+      made = stood
+        ? { ...next, ...stood, note: "" }
+        : { ...next, profileSketch: sketch, profile: drawnProfile, pathSketch: sketch, path: split.chain.path, check: split.chain.check, note: "" };
+    } else if (next.pipe) {
+      const pipe = pipeProfile(next.pipe.route, next.pipe.chain, next.pipe.diameter, next.pipe.wall);
+      if ("error" in pipe) return { ...next, profileSketch: null, profile: null, pathSketch: next.pipe.route, path: next.pipe.chain.path, check: next.pipe.chain.check, note: pipe.error };
+      made = { ...next, ...pipe, note: "" };
+    } else return next;
+    if (made.profile && made.profileSketch && made.path.length >= 2) {
+      const built = buildSketchSweep({ profileSketch: made.profileSketch, profile: made.profile, path: made.path, check: made.check, pathSketch: made.pathSketch, scale: made.scale, mode });
+      if ("error" in built) made = { ...made, note: built.error };
+    }
+    return made;
+  }
+
   function endSweep() {
     if (!sweep) return;
     sweep = null;
@@ -3417,7 +3571,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     if (!item) return;
     const region = chooseRegions(item.sketch, [], null)[0];
     if (!region) {
-      loft = { ...loft, note: sketchRegions(item.sketch).length > 1 ? "That sketch has more than one region. Click the one to loft in the view." : "That sketch has no region to loft." };
+      loft = { ...loft, note: sketchRegions(item.sketch).length > 1 ? REASON.manyRegionsLoft : REASON.noRegionLoft };
       publish("open");
       return;
     }
@@ -3437,12 +3591,12 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const region = chooseRegions(item.sketch, [], null)[0] ?? null;
     const chain = openChain(item.sketch);
     if (!region && !chain) {
-      sweep = { ...sweep, note: sketchRegions(item.sketch).length > 1 ? "That sketch has more than one region. Click the one to sweep in the view." : "That sketch needs a region or an open path." };
+      sweep = { ...sweep, note: sketchRegions(item.sketch).length > 1 ? REASON.manyRegionsSweep : REASON.nothingToSweep };
       publish("open");
       return;
     }
     let next = sweep;
-    if (region) next = { ...next, profile: region, profileSketch: item.sketch, note: "" };
+    if (region) next = { ...next, profile: region, profileSketch: item.sketch, note: "", oneSketch: undefined, pipe: undefined };
     if (chain && (!region || next.path.length < 2)) next = { ...next, path: chain.path, check: chain.check, pathSketch: item.sketch, edges: [], note: "" };
     sweep = next;
     publish("open");
@@ -3656,7 +3810,7 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (!sweep || (applying || holding)) return;
     if (!sweep.profile || !sweep.profileSketch) {
-      sweep = { ...sweep, note: "Pick a region to sweep." };
+      sweep = { ...sweep, note: REASON.sweepProfile };
       host.readout(sweep.note);
       return;
     }
@@ -3720,7 +3874,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (ev.phase === "move" && sweep.down) {
       const moved = Math.hypot(ev.x - sweep.down.x, ev.y - sweep.down.y);
-      if (moved < 4 && !sweep.dragging) return;
+      // A pipe's size is its diameter, typed in the box; a drag doesn't scale it.
+      if ((moved < 4 && !sweep.dragging) || sweep.pipe) return;
       let scale = sweep.down.scale + (sweep.down.y - ev.y) / 100;
       if (ev.ctrl) scale = Math.round(scale * 10) / 10;
       else scale = Math.round(scale * 100) / 100;
@@ -3802,8 +3957,13 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     const pinned = pinnedRegionAt(x, y);
     const hit = own && (!pinned || plane!.t <= pinned.t) ? { sketch, region: own } : pinned;
     const chain = openChain(sketch);
+    // A click on the shape a one-sketch sweep already stands up keeps it; any other shape ends Pipe and the stand-up.
+    if (hit && sweep.oneSketch && hit.sketch === sketch) {
+      publish("open");
+      return;
+    }
     if (hit) {
-      sweep = { ...sweep, profile: hit.region, profileSketch: hit.sketch, note: "" };
+      sweep = { ...sweep, profile: hit.region, profileSketch: hit.sketch, note: "", oneSketch: undefined, pipe: undefined };
     } else if (chain && sweep.path.length < 2) {
       sweep = { ...sweep, path: chain.path, check: chain.check, pathSketch: sketch, edges: [], note: "" };
     }
@@ -3868,6 +4028,28 @@ function unit3(value: Vec3): Vec3 | null {
   if (!(length > 1e-9)) return null;
   return [value[0] / length, value[1] / length, value[2] / length];
 }
+
+/** S2: a pipe opens at this diameter, a size people type over (the tutorial's bent pipe is 8). */
+const PIPE_DIAMETER_MM = 5;
+
+/** The Edit row's labels and commands. The tool value is the button's `data-sketch-tool`. */
+const EDIT_LABELS: Record<Exclude<EditButton, "constrain">, { label: string; command: string | null }> = {
+  select: { label: "Select", command: null },
+  trim: { label: "Trim", command: "sketch-trim" },
+  offset: { label: "Offset", command: "sketch-offset" },
+  construction: { label: "Construction", command: "sketch-construction" },
+  fillet: { label: "Fillet corner", command: "sketch-fillet" },
+  use: { label: "Use", command: "sketch-use" },
+};
+
+/** The Make row's labels, commands and data attributes. */
+const MAKE_LABELS: Record<MakeButton, { label: string; command: string; data: string }> = {
+  extrude: { label: "Extrude", command: "sketch-extrude", data: "sketchExtrude" },
+  revolve: { label: "Revolve", command: "sketch-revolve", data: "sketchRevolve" },
+  loft: { label: "Loft", command: "sketch-loft", data: "sketchLoft" },
+  sweep: { label: "Sweep", command: "sketch-sweep", data: "sketchSweep" },
+  holes: { label: "Holes", command: "sketch-holes", data: "sketchHoles" },
+};
 
 /** The card's label, with the registry's chord: "Loft (⇧L)". */
 function sketchKeyLabel(name: string, id: string): string {

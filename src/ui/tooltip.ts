@@ -41,14 +41,30 @@ export function mountTooltips(root: ParentNode = document) {
     const owned = command ? shortcutOf(command) ?? "" : "";
     const shortcut = owned && !shortcutShadowed(owned) ? owned : "";
     // A stored sentence may already end with the chord. The open tip shows that chord once, as a key cap.
-    let text = tipWithShortcut(el.dataset.tip ?? command?.label ?? "", undefined);
-    if (shortcut && text.endsWith(` (${shortcut})`)) text = text.slice(0, -(` (${shortcut})`.length)).trim();
-    if (!text && !shortcut) {
+    // A greyed button's tip is its purpose, then the reason on a line of its own.
+    const lines = (el.dataset.tip ?? command?.label ?? "")
+      .split("\n")
+      .map((line) => {
+        const text = tipWithShortcut(line, undefined);
+        return shortcut && text.endsWith(` (${shortcut})`) ? text.slice(0, -(` (${shortcut})`.length)).trim() : text;
+      })
+      .filter((line) => line !== "");
+    if (lines.length === 0 && !shortcut) {
       hide();
       return;
     }
     tip.replaceChildren();
-    if (text) tip.append(document.createTextNode(text));
+    if (lines.length === 1) tip.append(document.createTextNode(lines[0]!));
+    else if (lines.length > 1) {
+      const body = document.createElement("span");
+      body.className = "lime-tip-lines";
+      for (const line of lines) {
+        const row = document.createElement("span");
+        row.textContent = line;
+        body.append(row);
+      }
+      tip.append(body);
+    }
     if (shortcut) {
       const kbd = document.createElement("kbd");
       kbd.textContent = shortcut;
