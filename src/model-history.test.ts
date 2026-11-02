@@ -1,5 +1,7 @@
-import { dropRefusal, foldEndingAt, foldedRedoTarget, foldedUndoTarget, historyFolds, historyKey, historyLayout, pieceLabel, presentedRows, readRow, recipeNote, rowCount, rowStep, siblingBranch, stepLabel, type HistoryRow } from "./model-history.ts";
-import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree } from "./model-tree.ts";
+import { draftSources, dropRefusal, foldEndingAt, foldedRedoTarget, foldedUndoTarget, historyFolds, historyKey, historyLayout, pieceLabel, pluginStepView, presentedRows, readRow, recipeNote, rowCount, rowStep, siblingBranch, stepLabel, type HistoryRow, type PluginEnv } from "./model-history.ts";
+import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree, type PluginStamp } from "./model-tree.ts";
+import { markedRun } from "./plugin-step.ts";
+import type { CheckedCopy } from "./plugin-file.ts";
 import { loadedTree, savedTree, withSavedNames } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
 
@@ -360,6 +362,65 @@ eq("a recipe with no name still counts", recipeNote({ recipes: { part: { recipe:
 eq("Space picks while picking", historyKey({ key: " " }, forked, layout, "1", true), { kind: "pick", id: "1" });
 eq("Enter picks while picking", historyKey({ key: "Enter" }, forked, layout, "1", true), { kind: "pick", id: "1" });
 eq("Up still moves while picking", historyKey({ key: "ArrowUp" }, forked, layout, "1", true), { kind: "move", to: "0" });
+
+// --- Plugin steps (docs/plan-recipe-plugins.md D8, D9) ---------------------------------------------------------
+const stamp: PluginStamp = {
+  plugin: "stud-row",
+  version: 3,
+  sha256: "a".repeat(64),
+  api: "1.1",
+  params: { studs: 5 },
+  context: { bedMm: [250, 210, 220], nozzleMm: 0.4 },
+  fingerprint: { volumeMm3: 8100, faces: 30, edges: 60 },
+};
+let studTree = apply(newTree("studs", { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [40, 20, 10], radius: 0, height: 0, turn: [0, 0, 0] } }, "Box", null), box(4));
+for (const dx of [1, 2, 3]) studTree = apply(studTree, box(dx));
+studTree = markedRun(studTree, [2, 3, 4], "r1", stamp);
+studTree = apply(studTree, box(9));
+const studRows = historyLayout(studTree).rows;
+const titled = (s: PluginStamp) => (s.plugin === "stud-row" ? "Stud row" : undefined);
+const studFolds = historyFolds(studRows, titled);
+eq("a plugin run folds into one row with its title and version", studFolds.map((fold) => [fold.label, fold.first, fold.last]), [["Stud row · plugin v3", 2, 4]]);
+eq("without the project's file the row names the plugin's id", historyFolds(studRows)[0]?.label, "stud-row · plugin v3");
+const studShown = presentedRows(studRows, new Set(), titled);
+eq("folded, the run is one row between the steps around it", studShown.map((row) => row.label), ["Box", "Cut box 4×10×10", "Stud row · plugin v3", "Cut box 9×10×10"]);
+check("the folded row keeps the stamp, for its card", studShown[2]?.plugin?.sha256 === stamp.sha256 && studShown[2]?.fold?.expanded === false);
+eq("one undo from the run's last step goes before it", foldedUndoTarget(jumped(studTree, 4)), 1);
+eq("one redo from before it walks it whole", foldedRedoTarget(jumped(studTree, 1)), 4);
+eq("the run ending at its last step is the fold", foldEndingAt(studTree, 4), { label: "stud-row · plugin v3", first: 2, last: 4, before: 1 });
+const draftStamp: PluginStamp = { ...stamp, plugin: "studs", version: 0, sha256: "b".repeat(64) };
+let oneStep = apply(newTree("one", { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [10, 10, 10], radius: 0, height: 0, turn: [0, 0, 0] } }, "Box", null), box(2));
+oneStep = markedRun(oneStep, [1], "r2", draftStamp);
+eq("a one-step draft is one row named for its recipe, its op beside it", presentedRows(historyLayout(oneStep).rows, new Set()).map((row) => [row.label, row.opLabel]), [["Box", null], ["studs · draft", "Cut box 2×10×10"]]);
+
+const header = (api = "1.1") => [
+  "//! ---",
+  "//! plugin: stud-row",
+  "//! title: Stud row",
+  "//! version: 3",
+  "//! description: A row of studs along the top.",
+  "//! author: Marius",
+  "//! made-by: claude-code",
+  `//! api: ${api}`,
+  `//! params: [{"name":"studs","kind":"count","default":3,"min":1,"max":10,"label":"Studs"},{"name":"radius","kind":"number","default":1,"unit":"mm"},{"name":"edge","kind":"choice","default":"fillet","options":["fillet","sharp"]}]`,
+  "//! ---",
+  "fn main() {}",
+].join("\n");
+const copyOf = (api?: string, intact = true): CheckedCopy => {
+  const text = header(api);
+  return { file: { plugin: "stud-row", title: "Stud row", version: 3, description: "A row of studs along the top.", author: "Marius", madeBy: "claude-code", api: api ?? "1.1", params: JSON.parse(text.split("\n")[8]!.slice("//! params: ".length)), body: "fn main() {}", text }, intact };
+};
+const env = (over: Partial<PluginEnv> = {}): PluginEnv => ({ copies: new Map([[stamp.sha256, copyOf()]]), drafts: new Map(), mac: false, ...over });
+const view = pluginStepView(stamp, env());
+eq("the card shows each declared value: given ones as stamped, the rest at their defaults", view.fields.map((f) => [f.label, f.value, f.unit ?? "", f.isDefault]), [["Studs", 5, "", false], ["radius", 1, "mm", true], ["edge", "fillet", "", true]]);
+eq("and the plugin's own words, with the code", [view.title, view.kind, view.author, view.madeBy, view.source?.startsWith("//! ---")], ["Stud row", "plugin v3", "Marius", "claude-code", true]);
+eq("D9: the project's copy matches the stamp, nothing extra", view.note, null);
+eq("D9: an edited copy", pluginStepView(stamp, env({ copies: new Map([[stamp.sha256, copyOf("1.1", false)]]) })).note, "This project's copy of the plugin was changed outside the app.");
+eq("D9: no copy anywhere", pluginStepView(stamp, env({ copies: new Map() })).note, "The plugin source is not in this project. The part is kept as built; its values cannot change.");
+eq("D9: no lust here (macOS)", pluginStepView(stamp, env({ mac: true })).note, "Rebuilding needs lust, which the macOS app does not ship yet.");
+eq("D9: a newer recipe API", pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) })).note, "This plugin needs recipe API 2.0, from a newer Lime Slice; this app has 1.1.");
+const draftView = pluginStepView(draftStamp, env({ copies: new Map(), drafts: draftSources({ rustRecipes: { studs: { source: "fn main() {}\n", sha256: draftStamp.sha256, params: {}, objects: [] } } }) }));
+eq("a draft's code is its kept source, and its values are the stamped ones", [draftView.note, draftView.kind, draftView.source, draftView.fields.map((f) => [f.name, f.value])], [null, "draft", "fn main() {}\n", [["studs", 5]]]);
 
 if (failed) {
   console.error(`${failed} failed`);

@@ -5,6 +5,9 @@
  */
 import { pathTo, redoTarget, type ModelNode, type ModelTree, type NodeId, type PluginStamp } from "./model-tree.ts";
 
+/** The recipe API level this app's plugins are built against: `lime_recipe::API` (checked by `src/plugin-step.test.ts`). */
+export const RECIPE_API: readonly [number, number] = [1, 1];
+
 /** A whole run on one chain: its first and last nodes, the step before it (null when it starts at the root) and its stamp. */
 export interface StampedRun {
   id: string;

@@ -1191,6 +1191,78 @@ html:not(.layout-compact) .model-history[data-collapsed="1"] .mh-position { bord
 }
 .mh-recipe[hidden] { display: none; }
 .mh-recipe strong { color: var(--text); font-weight: 600; }
+/* --- Plugin steps (D8, D9). A plugin run's row carries a mark; its card, above the rows, holds its values read-only. */
+.mh-plugin-mark { display: inline-flex; flex: 0 0 auto; color: var(--accent); }
+.mh-plugin {
+  margin: 0 4px 4px;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--fs-1);
+}
+.mh-plugin[hidden] { display: none; }
+.mh-plugin-head { display: flex; align-items: center; gap: 6px; color: var(--accent); }
+.mh-plugin-title { flex: 0 1 auto; min-width: 0; margin: 0; overflow: hidden; color: var(--text); font-size: var(--fs-2); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.mh-plugin-kind { flex: 1 1 auto; color: var(--text-dim); font: 500 10px / 1 var(--font-mono); white-space: nowrap; }
+.mh-plugin-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+}
+.mh-plugin-close:hover { background: var(--surface-3); color: var(--text); }
+.mh-plugin-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mh-plugin-meta { margin: 4px 0 0; color: var(--text-dim); line-height: 1.35; }
+.mh-plugin-meta[hidden], .mh-plugin-note[hidden] { display: none; }
+.mh-plugin-note {
+  margin: 6px 0 0;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  color: var(--text);
+  line-height: 1.35;
+}
+.mh-plugin-fields { display: grid; grid-template-columns: minmax(0, 1fr) 72px auto; gap: 4px 6px; margin-top: 6px; align-items: center; }
+.mh-plugin-field { display: contents; }
+.mh-plugin-name { min-width: 0; color: var(--text); line-height: 1.25; overflow-wrap: anywhere; }
+.mh-plugin-control { justify-self: stretch; min-width: 0; height: 22px; font: inherit; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+input[type="checkbox"].mh-plugin-control { justify-self: start; width: 14px; height: 14px; margin: 0; }
+input.mh-plugin-control[readonly], select.mh-plugin-control:disabled {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text);
+  opacity: 1;
+}
+.mh-plugin-unit { color: var(--text-faint); font: 500 10px / 1 var(--font-mono); white-space: nowrap; }
+.mh-plugin-empty { grid-column: 1 / -1; margin: 0; color: var(--text-dim); }
+.mh-plugin-hint { margin: 6px 0 0; color: var(--text-dim); line-height: 1.35; }
+.mh-plugin-actions { display: flex; gap: var(--space-2); margin-top: 6px; }
+.mh-source-card { width: min(880px, calc(100% - 32px)); }
+.mh-source-sub { margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--fs-1); }
+.mh-source {
+  max-height: min(70vh, 640px);
+  margin: 0;
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font: 12px / 1.5 var(--font-mono);
+  white-space: pre;
+  tab-size: 4;
+}
+.mh-source:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .mh-warn { display: inline-flex; flex: 0 0 auto; color: var(--warn); }
 .mh-plate {
   flex: 0 0 auto;

@@ -79,6 +79,7 @@ export async function saveCurrentProject() {
   if (state.layerActions.length > 0) project.layerActions = state.layerActions.map((action) => ({ ...action }));
   // --- A8. The record opened with the project, so a later save still carries its recipes. ---
   if (session.mcpModel) project.mcpModel = session.mcpModel;
+  if (session.plugins) project.plugins = session.plugins;
   if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
   if (project.version === 2 && session.assemblies.length > 0) project.assemblies = structuredClone(session.assemblies);
   if (project.version === 2 && state.printOrder === "sequential") {
@@ -164,6 +165,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   clearStressCells();
   // --- A8. Kept before the meshes load, and still there if that load is replaced by a later open. ---
   session.mcpModel = project.mcpModel;
+  session.plugins = project.plugins;
   session.parameters = project.parameters ? { ...project.parameters } : {};
   session.assemblies = project.assemblies ? structuredClone(project.assemblies) : [];
   const unread = [...(project.unreadHistory ?? [])];

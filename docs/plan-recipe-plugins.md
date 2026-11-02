@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 3 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 4 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -571,6 +571,30 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    *Ships:* an MCP-built plugin part opens in the app as one readable row, and every no-rebuild case is explained.
    *Tested by:* `src/model-history.test.ts` for folding and each D9 case on fixture trees; a Playwright spec opening a
    fixture `.lime` with a plugin step (row, form read-only, source view), screenshots in the owner's theme.
+
+   **As built (milestone 4, branch `claude/plugin-steps-app`):**
+   - **The row.** `historyFolds` folds a run by its run id ahead of `prefix k/n` names; the label is "<title> · plugin
+     vN" (title from the project's copy, else the id), "<recipe> · draft" for a draft, and a one-step run keeps its
+     single row under that name. `foldEndingAt` and `foldRedoFrom` read run ids too, so the app's Undo and Redo take
+     the whole run, as the MCP's do.
+   - **The form, read-only.** The row's pencil (folded runs show it, since the run is one step) or "Plugin values…"
+     opens a card above the rows: description, author, made-by, then each declared parameter as a disabled control
+     with its unit and "default" when the run was not given it; values the header does not declare (a draft) show by
+     name. "View source" opens a read-only sheet with the file or the draft's source. UX decisions: a card above the
+     rows rather than a second line per row, because rows are a fixed-height git graph; a sheet for the source, since
+     a recipe is wider than the dock; the card says plainly that values change over MCP until milestone 6.
+   - **D9 in the app.** The app reads only the project: an edited copy (its body hashed with Web Crypto against its key),
+     a newer API (`RECIPE_API` in `src/plugin-step.ts`, tested equal to the crate's), no copy and no draft ("not in
+     this project", since the app does not read the library yet), and macOS. The library cases wait for the Plugins
+     panel (milestone 7). The sentence is the row's tip and description, with a warning mark, and the card's note.
+   - **Kept on save.** `session.plugins` is the project's map as it opened, written back by the app's Save.
+   - Tests: `src/model-history.test.ts` (a run folds under its title, without the file under its id, one row between
+     its neighbours, one undo and redo, a one-step draft, the card's fields with defaults, and each D9 case),
+     `src/plugin-step.test.ts` (copies hashed as the server does, an edit seen, the API level),
+     `e2e/model-plugin-step.spec.ts` (in `test:smoke`: a project saved by the app with a stamped run written in opens
+     as one row; undo and redo the run; the card's read-only values; View source and Esc; the menu; save keeps the
+     map, the stamp and the run; an edited copy's sentence on the row and the card). Screenshots in
+     `test-results/plugin-step/`.
 
 5. **The shared host and the Tauri runner.** `src/recipe/host.ts` out of `mcp/recipe.ts` (no behaviour change for
    MCP); `src-tauri/src/recipe.rs` with build, start, send, kill, limits and the memory cap; finding the bundled lust

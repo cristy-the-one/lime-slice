@@ -414,6 +414,11 @@ export const session = {
    */
   mcpModel: undefined as Record<string, unknown> | undefined,
   /**
+   * --- Plugin steps (D7). The project's own copy of each plugin its parts' steps name, by hash, as the file carried it.
+   * History reads it for the steps' titles, values and code; a save writes it back. Cleared with `mcpModel`.
+   */
+  plugins: undefined as Record<string, string> | undefined,
+  /**
    * --- A6. The open project's parameters, name → number or expression, in evaluation order.
    * Empty when the project has none. File > New and a mesh that replaces the plate clear it.
    */
