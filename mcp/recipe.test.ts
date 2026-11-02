@@ -2,7 +2,7 @@
  * recipe_run's host (mcp/recipe.ts) against real lust, with a scripted stand-in for the session's calls.
  * Skips without lust (LIME_LUST, or lust on PATH); LIME_RECIPE_REQUIRED=1 (the CI job that builds lust) makes that a failure.
  */
-import { mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -200,11 +200,116 @@ function stub(log: RecipeCallSite[]) {
   const reopened = new Session(fakeEngine());
   await reopened.call("project_open", { path: "recipes.lime" });
   const three = await reopened.call("recipe_run", { object: made[0], params: { n: 3 } });
-  const after3 = ((await reopened.call("plate_list", {})).objects as { object: string }[]).map((r) => r.object);
-  check("session: a rerun from the object makes the new set and takes the old one off", three.ok === true && (three.created as string[]).length === 3 && JSON.stringify(three.replaced) === JSON.stringify(made) && made.every((oid) => !after3.includes(oid)), { three, after3 });
+  const after3 = ((await reopened.call("plate_list", {})).objects as { object: string; centreMm: number[] }[]);
+  const third = (three.created as string[] | undefined) ?? [];
+  // --- I22. The old handles hold the new parts; the run placed them, so they stand where it put them.
+  check("session: a rerun from the object keeps the handles and adds the new one", three.ok === true && JSON.stringify(three.replaced) === JSON.stringify(made) && third.length === 1 && made.every((oid) => after3.some((r) => r.object === oid)) && after3.length === 4, { three, after3 });
+  const xs3 = [...made, ...third].map((oid) => after3.find((r) => r.object === oid)?.centreMm[0]);
+  check("session: the rerun's parts stand where it placed them", xs3[1]! - xs3[0]! === 10 && xs3[2]! - xs3[1]! === 10, xs3);
   const plain = String((await reopened.call("solid_new", { primitive: "box", dx: 3, dy: 3, dz: 3 })).object);
   const none = await reopened.call("recipe_run", { object: plain });
   check("session: a rerun needs an object a recipe_run made", none.ok === false && /Pass source/.test(String(none.reason)), none);
+
+  // --- I22. New source for an object an earlier run of the same name made: the part is made again under its handle,
+  // where the person left it. Never a second copy.
+  const sizes = async (who: InstanceType<typeof Session>) => Object.fromEntries(((await who.call("plate_list", {})).objects as { object: string; centreMm: number[]; bboxMm: { min: number[]; max: number[] } }[]).map((r) => [r.object, { x: r.centreMm[0], y: r.centreMm[1], dx: Math.round(r.bboxMm.max[0]! - r.bboxMm.min[0]!) }]));
+  const cubeSrc = (mm: number) => src([`    let p = s.solid_new(ops::cuboid(${mm.toFixed(1)}, ${mm.toFixed(1)}, ${mm.toFixed(1)})).unwrap();`, "    s.done(&p);"]);
+  const one = await reopened.call("recipe_run", { source: cubeSrc(10), name: "cube" });
+  const cube = String(one.object);
+  await reopened.call("object_place", { object: cube, centreX: 60, centreY: 70 });
+  const count = Object.keys(await sizes(reopened)).length;
+  const swapped = await reopened.call("recipe_run", { source: cubeSrc(12), name: "cube", object: cube });
+  const now = await sizes(reopened);
+  check("session: new source on the run's object replaces it in place", swapped.ok === true && swapped.object === cube && JSON.stringify(swapped.replaced) === JSON.stringify([cube]) && swapped.created === undefined, swapped);
+  check("session: one part, same handle, where it was, the new size", Object.keys(now).length === count && now[cube]?.x === 60 && now[cube]?.y === 70 && now[cube]?.dx === 12, now);
+  const rerunCube = await reopened.call("recipe_run", { object: cube, params: {} });
+  check("session: a rerun of the replaced part replaces it again", rerunCube.ok === true && rerunCube.object === cube && Object.keys(await sizes(reopened)).length === count, rerunCube);
+  // The same name without object makes another part, and says how to replace the earlier one instead.
+  const second = await reopened.call("recipe_run", { source: cubeSrc(8), name: "cube" });
+  check("session: the same name without object says the earlier part is still there", second.ok === true && second.object !== cube && String(second.earlier).includes(`${cube} from an earlier run of cube is still on the plate`), second);
+  const firstAgain = await reopened.call("recipe_run", { object: cube });
+  const both = await sizes(reopened);
+  check("session: the earlier part keeps its own recipe", firstAgain.ok === true && firstAgain.object === cube && both[cube]?.dx === 12 && both[String(second.object)]?.dx === 8, { firstAgain, both });
+  const asTold = await reopened.call("recipe_run", { source: cubeSrc(14), name: "cube", object: cube });
+  const told = await sizes(reopened);
+  check("session: new source on the earlier part, as the reply said, replaces only it", asTold.ok === true && asTold.object === cube && JSON.stringify(asTold.replaced) === JSON.stringify([cube]) && told[cube]?.dx === 14 && told[String(second.object)]?.dx === 8, { asTold, told });
+
+  // --- I23. A dry run stopped after N applied ops: the measures so far, then taken back.
+  const plateBefore = Object.keys(await sizes(reopened)).join(",");
+  const partial = await reopened.call("recipe_run", { source: example, name: "bar", mode: "dry", maxSteps: 2, params: { holes: 4 } });
+  const partialMetrics = partial.metrics as Record<string, { volumeMm3: number; sizeMm: number[] }> | undefined;
+  check("session: maxSteps stops a dry run after two applied ops", partial.ok === true && partial.partial === true && partial.applied === 2 && /after 2 applied ops/.test(String(partial.stopped)) && partial.line === 17, partial);
+  check("session: the partial run reports what it built so far", !!partialMetrics && Object.values(partialMetrics).some((row) => row.volumeMm3 > 0 && row.sizeMm.length === 3), partialMetrics);
+  check("session: the partial run is taken back", Object.keys(await sizes(reopened)).join(",") === plateBefore && (partial.rolledBack as { removed: string[] }).removed.length === 1, partial.rolledBack);
+  const notDry = await reopened.call("recipe_run", { source: example, name: "bar", maxSteps: 2 });
+  check("session: maxSteps is for dry runs only", notDry.ok === false && /maxSteps is for mode:"dry"/.test(String(notDry.reason)), notDry);
+
+  // --- R-A. The source from a workspace file and data by name: a rerun sends a path, never the numbers.
+  const ws = process.env.LIME_MCP_WORKSPACE!;
+  mkdirSync(join(ws, "tray"), { recursive: true });
+  writeFileSync(join(ws, "tray", "cells.json"), JSON.stringify({ xs: [1.5, 2.5, 3.5] }));
+  writeFileSync(join(ws, "pts.csv"), ["1,2", "3,4", ""].join("\n"));
+  const trayRs = src([
+    '    let d = s.call("data", lime_recipe::Json::obj().set("name", "tray/cells")).unwrap();',
+    '    let xs = d.get("xs").unwrap().as_array().unwrap().clone();',
+    "    let n = xs.len();",
+    "    let p = s.solid_new(ops::cuboid(xs[n - 1].as_f64().unwrap() * 4.0, 5.0, 5.0)).unwrap();",
+    '    let c = s.call("data", lime_recipe::Json::obj().set("name", "pts")).unwrap();',
+    "    let rows = c.as_array().unwrap().len();",
+    '    s.done_with(&p, lime_recipe::Json::obj().set("n", n as f64).set("rows", rows as f64));',
+  ]);
+  writeFileSync(join(ws, "tray.rs"), trayRs);
+  const viaPath = await reopened.call("recipe_run", { path: "tray.rs" });
+  const trayMetrics = viaPath.metrics as { n?: number; rows?: number } | undefined;
+  const kept = viaPath.data as Record<string, { sha256: string; bytes: number }> | undefined;
+  check("session: path runs a workspace .rs, named after the file", viaPath.ok === true && viaPath.recipe === "tray" && trayMetrics?.n === 3 && trayMetrics?.rows === 2, viaPath);
+  check("session: the data it read is listed with a hash", !!kept && /^[0-9a-f]{64}$/.test(kept["tray/cells"]?.sha256 ?? "") && kept.pts?.bytes === 8, kept);
+  const trayId = String(viaPath.object);
+  const both2 = await reopened.call("recipe_run", { path: "tray.rs", source: trayRs });
+  check("session: source and path together are refused", both2.ok === false && /not both/.test(String(both2.reason)), both2);
+  const outside = await reopened.call("recipe_run", { path: "../tray.rs" });
+  check("session: a path out of the workspace is refused", outside.ok === false && String(outside.reason).startsWith("There is no ../tray.rs in the workspace"), outside);
+  const missing = await reopened.call("recipe_run", { source: src(['    s.call("data", lime_recipe::Json::obj().set("name", "nope")).unwrap();']), name: "nodata" });
+  const missingText = String(missing.reason);
+  check("session: a missing data name is refused with the names there are", missing.ok === false && missingText.includes("No recipe data is named nope") && missingText.includes("tray/cells") && missingText.includes("pts"), missing);
+  // Kept with the project: a rerun elsewhere, without the files, builds the same part.
+  await reopened.call("project_save", { name: "tray.lime" });
+  const elsewhere = mkdtempSync(join(tmpdir(), "lime-recipe-elsewhere-"));
+  copyFileSync(join(ws, "tray.lime"), join(elsewhere, "tray.lime"));
+  process.env.LIME_MCP_WORKSPACE = elsewhere;
+  const there = new Session(fakeEngine());
+  await there.call("project_open", { path: "tray.lime" });
+  const rebuilt = await there.call("recipe_run", { object: trayId });
+  check("session: the project carries the data, so a rerun builds without the files", rebuilt.ok === true && rebuilt.object === trayId && (rebuilt.metrics as { n?: number }).n === 3, rebuilt);
+  process.env.LIME_MCP_WORKSPACE = ws;
+
+  // --- R-C. A loft that stops the kernel is a refusal the recipe handles: it cuts in pieces of four sections.
+  process.env.LIME_MCP_FAKE_STOP_LOFT = "1";
+  const chunked = src([
+    "    let p = s.solid_new(ops::cuboid(40.0, 40.0, 40.0)).unwrap();",
+    "    let mut secs: Vec<lime_recipe::Json> = Vec::new();",
+    "    for i in 0..7 {",
+    '        secs.push(lime_recipe::Json::obj().set("origin", [0.0, 0.0, 2.0 + 4.0 * i as f64]).set("turn", [0.0, 0.0, 0.0]).set("profile", vec![[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]));',
+    "    }",
+    "    let mut pieces = 0;",
+    '    let whole = lime_recipe::Json::obj().set("kind", "loft").set("op", "cut").set("sections", lime_recipe::Json::from(secs.clone()));',
+    "    if let Err(e) = s.apply(&p, whole) {",
+    "        s.log(&e.reason);",
+    "        let mut i = 0;",
+    "        while i + 1 < secs.len() {",
+    "            let j = (i + 4).min(secs.len());",
+    '            let piece = lime_recipe::Json::obj().set("kind", "loft").set("op", "cut").set("sections", lime_recipe::Json::from(secs[i..j].to_vec()));',
+    "            s.apply(&p, piece).unwrap();",
+    "            pieces += 1;",
+    "            i = j - 1;",
+    "        }",
+    "    }",
+    '    s.done_with(&p, lime_recipe::Json::obj().set("pieces", pieces as f64));',
+  ]);
+  const fell = await reopened.call("recipe_run", { source: chunked, name: "chunks" });
+  check("session: the stopped loft reaches the recipe as a refusal, and its pieces apply", fell.ok === true && (fell.metrics as { pieces?: number }).pieces === 2 && JSON.stringify(fell.refused).includes("The loft stopped the kernel"), fell);
+  check("session: the server goes on after it", (await reopened.call("plate_list", {})).ok === true);
+  delete process.env.LIME_MCP_FAKE_STOP_LOFT;
 }
 
 if (failed > 0) {

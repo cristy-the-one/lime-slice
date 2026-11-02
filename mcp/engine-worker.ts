@@ -3,24 +3,46 @@
  * The parent sends `{id, method, arg, bytes}` and receives `{id, ok, result}`.
  * A load failure is sent as id -1. The parent kills this process to stop a call that runs too long.
  */
+import { writeSync } from "node:fs";
 import { Worker } from "node:worker_threads";
 
-import { type Engine, loadNativeEngine, withMesh } from "./engine.ts";
+import { type Engine, loadNativeEngine, MEMORY_CAP_MARK, withMesh } from "./engine.ts";
 import { appVersion } from "./version.ts";
 
 if (!process.send) throw new Error("The engine process needs an IPC channel.");
 const send = (msg: unknown) => process.send?.(msg);
 
 // A native call blocks this thread, so a closed channel cannot be noticed here.
-// This thread checks that the server is still alive and ends the process when it is not.
+// This thread checks that the server is still alive and ends the process when it is not. --- R-C. It also ends the
+// process when its memory passes the cap the server set (LIME_MCP_ENGINE_CAP_MB), after one line on stdout that names
+// it: a kernel call that eats the machine's memory stops here, and the server and its plate stay.
 const parent = process.ppid;
+const capMb = Number(process.env.LIME_MCP_ENGINE_CAP_MB) || 0;
 new Worker(`
   const { workerData } = require("node:worker_threads");
+  const { writeSync } = require("node:fs");
+  const capped = () => {
+    if (workerData.capMb > 0 && process.memoryUsage.rss() / 1048576 > workerData.capMb) {
+      try { writeSync(1, workerData.mark + Math.round(workerData.capMb) + "\\n"); } catch {}
+      process.kill(workerData.self, "SIGKILL");
+    }
+  };
+  capped();
+  let tick = 0;
   setInterval(() => {
-    try { process.kill(workerData.parent, 0); } catch { process.kill(workerData.self, "SIGKILL"); }
-  }, 1000);
-`, { eval: true, workerData: { parent, self: process.pid } }).unref();
+    tick += 1;
+    if (tick % 4 === 0) {
+      try { process.kill(workerData.parent, 0); } catch { process.kill(workerData.self, "SIGKILL"); }
+    }
+    capped();
+  }, 250);
+`, { eval: true, workerData: { parent, self: process.pid, capMb, mark: MEMORY_CAP_MARK } }).unref();
 process.on("disconnect", () => process.exit(0));
+// A cap below what the engine needs before its first call is met here, before any call is taken.
+if (capMb > 0 && process.memoryUsage.rss() / 1048576 > capMb) {
+  writeSync(1, `${MEMORY_CAP_MARK}${Math.round(capMb)}\n`);
+  process.exit(1);
+}
 
 let engine: Engine & { path: string; installed: boolean };
 try {

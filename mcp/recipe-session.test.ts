@@ -143,6 +143,36 @@ let bar = "";
   check("the part is back at its step", Math.abs(v1 - v0) < 0.01 && (r.rolledBack as { restored: string[] }).restored.includes(bar), { v0, v1, rolledBack: r.rolledBack });
 }
 
+// --- I8. A selector says which face it picked. nearPoint over a pocket falls to the pocket floor; the refusal says so
+// and names the top, level with the point, so the recipe can aim at material.
+{
+  const src = [
+    "use lime_recipe::{ops, Json, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    "    let p = s.solid_new(ops::cuboid(40.0, 40.0, 10.0)).unwrap();",
+    "    s.apply(&p, ops::boolean(\"cut\", ops::cuboid(10.0, 10.0, 5.0), [-5.0, -5.0, 7.0])).unwrap();",
+    "    let top = Json::obj().set(\"normal\", [0.0, 0.0, 1.0]).set(\"nearPoint\", [0.0, 0.0, 10.0]);",
+    "    let edges = Json::obj().set(\"select\", Json::obj().set(\"onFace\", top).set(\"convex\", true));",
+    "    if let Err(e) = s.apply(&p, ops::fillet(edges, 0.5)) {",
+    "        s.log(&e.reason);",
+    "    }",
+    "    s.done(&p);",
+    "}",
+  ].join("\n");
+  const r = await call("recipe_run", { source: src, name: "pocket" });
+  const said = (r.notes as string[] | undefined)?.[0] ?? "";
+  check("the pocket recipe applies", r.ok === true, r);
+  check("the refusal names the floor it fell to and the point over empty space", said.includes("No edge matches that filter.") && /picked face \d+ \(normal \[0, 0, 1\], centre \[0, 0, 7\]/.test(said) && said.includes("3 mm from nearPoint [0, 0, 10]") && said.includes("over empty space"), said);
+  check("and names the top, level with the point, 5 mm away", /level with the point is face \d+ \(centre \[[^\]]+\], 1500 mm², 5 mm away\)/.test(said), said);
+  const part = String(r.object);
+  const found = await call("faces_find", { object: part, normal: [0, 0, 1], nearPoint: [0, 0, 10] });
+  check("faces_find says the point is on no face, and which face is level with it", found.ok === true && String(found.note).startsWith("The nearest face is face") && String(found.note).includes("over empty space"), found);
+  const rim = await call("model_apply", { object: part, op: { kind: "fillet", size: 0.5, edges: { select: { onFace: { normal: [0, 0, 1], nearPoint: [12, 0, 10] }, convex: true } } }, probe: true });
+  const picked = rim.picked as { index: number; areaMm2: number; distanceMm: number; centre: number[] }[] | undefined;
+  check("a fillet aimed at the top applies and says the face it picked", rim.ok === true && picked?.length === 1 && picked[0]!.areaMm2 === 1500 && picked[0]!.distanceMm === 0 && picked[0]!.centre[2] === 10, rim);
+}
+
 if (failed > 0) {
   console.error(`recipe-session: ${failed} failed`);
   process.exit(1);

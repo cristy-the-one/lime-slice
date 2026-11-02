@@ -315,6 +315,20 @@ export interface StandRegion {
   has(u: number, v: number): boolean | null;
 }
 
+/**
+ * The flat face a selector resolved to. With nearPoint: how far the point is from that face, and when it is off it,
+ * the nearest matching face whose plane passes through the point (`level`): a point over a pocket or a hole has the
+ * rib or rim beside it there, while the selector fell to the floor or another face below.
+ */
+export interface FacePick {
+  index: number;
+  normal: Vec3;
+  centre: Vec3;
+  areaMm2: number;
+  distanceMm?: number;
+  level?: { index: number; centre: Vec3; areaMm2: number; distanceMm: number } | null;
+}
+
 /** The U and V box of one face, in a workplane on that face. */
 export interface FaceExtent {
   u: [number, number];
@@ -336,6 +350,8 @@ export interface ExpandContext {
   face(index: number, coplanar?: boolean): { plane: Workplane; extent: FaceExtent } | { reason: string };
   /** The flat face a selector names: {normal, withinDeg, nearPoint}. Read when the op expands, so faces earlier steps made count. */
   faceBy(selector: Record<string, unknown>): number | { reason: string };
+  /** faceBy with what it found: the face's normal, centre and area, and where nearPoint lies against it. */
+  faceByDetail?(selector: Record<string, unknown>): FacePick | { reason: string };
   /** Rays through the part's surface, for a pocket's wall check. Absent when the context has no mesh. */
   rays?(): Rays;
 }

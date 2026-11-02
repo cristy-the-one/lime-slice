@@ -287,6 +287,38 @@ The first entries, from the session in section 2. The source recipe is kept at
 Each is one PR to `main`, smallest useful first. Each updates `docs/mcp-server.md` for MCP behaviour.
 
 1. **I8 + I22 + I23.** Selector reports, replace on rerun, `maxSteps`. Small and removes rebuilds.
+
+   **As built (milestone 1, branch `claude/recipe-host-fixes`),** with the groovi session's R-A and R-C:
+   - **I8.** The face selector's resolver (`faceByDetail`, `src/modeling/frames.ts`) returns the face's index, normal,
+     centre and area, and for `nearPoint` its distance to the face. Off the face by more than 0.05 mm, the nearest
+     matching face whose plane runs through the point is named as `level`: "the face with material level with the
+     point". Every MCP call lists its picks as `picked`; a refusal adds one sentence per pick, so a recipe's `e.reason`
+     carries it. `faces_find {nearPoint}` adds the same as `note`. The honeycomb case (a pocket floor picked from a
+     point over the cell) reads: "No edge matches that filter. The face selector picked face 10 (normal [0, 0, 1],
+     centre [0, 0, 7], 100 mm²), 3 mm from nearPoint [0, 0, 10]: the point lies over empty space (a pocket or a
+     hole), ... The face with material level with the point is face 2 (..., 5 mm away); aim nearPoint at material."
+   - **I22.** New `source` (or `path`) under the same name with an `object` that name made reruns it, as
+     `{object, params}` does. Both now hand each old object's handle, list place and name to the new object in turn,
+     and its plate and model place unless the recipe placed it (`replaced`); old objects left over leave (`removed`).
+     A run of the same name without `object` keeps the earlier parts under their own entry and says so (`earlier`).
+   - **I23.** `maxSteps` on a dry run stops after N applied ops (a batch counts its ops) and reports each part's
+     `volumeMm3` and `sizeMm` so far (`partial`), then takes the run back. A recipe's own `done_with` metrics do not
+     exist at that point, so those are the host's measures. On an apply it is refused.
+   - **R-A (data once).** Lean form, no new tool: `recipe_run {path}` reads the source from a `.rs` in the MCP
+     workspace, and the host's own recipe call `data {name}` reads `<name>.json` or `.csv` from it. The agent writes
+     both with its own tools; nothing passes through the model twice. The data a run read is kept with its recipe in
+     the project (hash and value), so a rerun from the object builds where the files are missing. The groovi skin's
+     rerun costs 37 bytes of arguments instead of 19,390. A typed `s.data_f64(...)` helper belongs to `lime-recipe`
+     (milestone 2's crate) and is left to it; until then `s.call("data", ...)` with `as_array` reads the numbers.
+   - **R-C (crash to refusal).** The modeler already ran in its own process, so the server never went down with it;
+     what failed was the session afterwards: the call threw, the trees were gone but taken as open, the next edit and
+     commit answered `unknown`, and the plate's part became a 1 mm speck. Reproduced by stopping the modeler under a
+     60-section loft cut. An engine process that ends under a call is now a refusal with a sentence ("The loft
+     stopped the kernel (...). Nothing changed. Make it in shorter pieces: at most 4 sections each, ..."), the trees
+     rebuild on next use, and a recipe gets `Err` and can fall back to pieces. The modeler and the preview end
+     themselves past a memory cap (70 % of the machine's memory), so a runaway kernel stops there. `slice_wait` on a
+     job a restarted server never had reopens the last autosave. The exact groovi cut (19 sections) did not stop the
+     kernel on this build: it is refused ("The boolean removed the solid."), and the chunked hollow finishes in 30 s.
 2. **I1–I4.** `geom2d` and `lattice` in `lime-recipe`, with the guide topic and tests.
 3. **I5–I7.** Face outline, section, frames.
 4. **I18–I21.** Loops limit, `apply_many`, `array` cells, progress.

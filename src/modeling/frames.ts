@@ -6,7 +6,7 @@
 import { orientEuler } from "../mesh-place.ts";
 import { facePlane } from "../model-plane.ts";
 import { CURVED_FACE, localPoint, workplaneOnFace, type Workplane } from "../workplane.ts";
-import { readVec3, type ExpandContext, type FaceExtent, type Rays, type StandRegion } from "./compose.ts";
+import { readVec3, type ExpandContext, type FaceExtent, type FacePick, type Rays, type StandRegion } from "./compose.ts";
 import { meshRays } from "./thin.ts";
 
 /** A flat face the way the session stores one: array index is the face index. */
@@ -141,24 +141,86 @@ export function expandContextFromSolid(solid: FramedSolid | null, plane: Workpla
       return { plane: frame, extent };
     },
     faceBy: (selector: Record<string, unknown>) => {
-      const unknown = Object.keys(selector).find((key) => key !== "normal" && key !== "withinDeg" && key !== "nearPoint");
-      if (unknown) return { reason: `face.${unknown} is not a selector field. Use normal, withinDeg, and nearPoint.` };
-      const matched = deps.matchFaces(solid.faces, { kind: "plane", ...(selector.normal !== undefined ? { normal: selector.normal } : {}), ...(selector.withinDeg !== undefined ? { withinDeg: selector.withinDeg } : {}) });
-      if ("reason" in matched) return matched;
-      if (matched.length === 0) return { reason: "No flat face matches that selector." };
-      const near = readVec3(selector.nearPoint, [NaN, NaN, NaN]);
-      if (Number.isNaN(near[0])) return [...matched].sort((x, y) => y.areaMm2 - x.areaMm2)[0]!.index;
-      // Nearest by the face itself, not its centre: a long thin rib top's centre can sit nearer than the floor beside it.
-      const { positions, triangles } = solid;
-      const gap = new Map<number, number>();
-      for (let tri = 0; tri < triangles.length; tri += 1) {
-        const index = triangles[tri]!;
-        if (!matched.some((row) => row.index === index)) continue;
-        const at = tri * 9;
-        const d = pointTriangleDistance(near, [positions[at]!, positions[at + 1]!, positions[at + 2]!], [positions[at + 3]!, positions[at + 4]!, positions[at + 5]!], [positions[at + 6]!, positions[at + 7]!, positions[at + 8]!]);
-        gap.set(index, Math.min(gap.get(index) ?? Infinity, d));
-      }
-      return [...matched].sort((x, y) => (gap.get(x.index) ?? Infinity) - (gap.get(y.index) ?? Infinity) || y.areaMm2 - x.areaMm2)[0]!.index;
+      const pick = faceByDetail(selector);
+      return "reason" in pick ? pick : pick.index;
     },
+    faceByDetail: (selector: Record<string, unknown>) => faceByDetail(selector),
   };
+
+  function faceByDetail(selector: Record<string, unknown>): FacePick | { reason: string } {
+    const unknown = Object.keys(selector).find((key) => key !== "normal" && key !== "withinDeg" && key !== "nearPoint");
+    if (unknown) return { reason: `face.${unknown} is not a selector field. Use normal, withinDeg, and nearPoint.` };
+    const matched = deps.matchFaces(solid!.faces, { kind: "plane", ...(selector.normal !== undefined ? { normal: selector.normal } : {}), ...(selector.withinDeg !== undefined ? { withinDeg: selector.withinDeg } : {}) });
+    if ("reason" in matched) return matched;
+    if (matched.length === 0) return { reason: "No flat face matches that selector." };
+    const near = readVec3(selector.nearPoint, [NaN, NaN, NaN]);
+    const faces = solid!.faces;
+    if (Number.isNaN(near[0])) return facePick(faces, [...matched].sort((x, y) => y.areaMm2 - x.areaMm2)[0]!.index);
+    // Nearest by the face itself, not its centre: a long thin rib top's centre can sit nearer than the floor beside it.
+    const gap = faceGaps(near, solid!, new Set(matched.map((row) => row.index)));
+    const index = [...matched].sort((x, y) => (gap.get(x.index) ?? Infinity) - (gap.get(y.index) ?? Infinity) || y.areaMm2 - x.areaMm2)[0]!.index;
+    return nearPick(faces, index, near, gap);
+  }
+}
+
+/** How far off a face nearPoint may be and still count as on it, in mm. */
+export const ON_FACE_MM = 0.05;
+
+const round2 = (value: number) => Math.round(value * 100) / 100;
+const round3 = (values: readonly number[]): [number, number, number] => [round2(values[0] ?? 0), round2(values[1] ?? 0), round2(values[2] ?? 0)];
+
+/** The nearest distance from `point` to each wanted face's triangles, in mm. */
+export function faceGaps(point: readonly number[], mesh: { positions: ArrayLike<number>; triangles: ArrayLike<number> }, wanted: ReadonlySet<number>): Map<number, number> {
+  const { positions, triangles } = mesh;
+  const gap = new Map<number, number>();
+  const count = Math.min(triangles.length, Math.floor(positions.length / 9));
+  for (let tri = 0; tri < count; tri += 1) {
+    const index = triangles[tri]!;
+    if (!wanted.has(index)) continue;
+    const at = tri * 9;
+    const d = pointTriangleDistance(point, [positions[at]!, positions[at + 1]!, positions[at + 2]!], [positions[at + 3]!, positions[at + 4]!, positions[at + 5]!], [positions[at + 6]!, positions[at + 7]!, positions[at + 8]!]);
+    if (d < (gap.get(index) ?? Infinity)) gap.set(index, d);
+  }
+  return gap;
+}
+
+/** A face as a pick reports it, numbers to 0.01. */
+export function facePick(faces: readonly FrameFace[], index: number): FacePick {
+  const face = faces[index] ?? faces.find((row) => row.index === index);
+  const n = face?.normal ?? [0, 0, 0];
+  return { index, normal: round3(n), centre: round3(face?.centre ?? [0, 0, 0]), areaMm2: round2(face?.areaMm2 ?? 0) };
+}
+
+/**
+ * The pick for nearPoint: its distance to the chosen face and, when the point is off that face, the nearest face of
+ * `gap` (the matching faces) whose plane runs through the point. That one has material level with the point, where the
+ * point itself is over empty space (a pocket, a hole) or off the part.
+ */
+export function nearPick(faces: readonly FrameFace[], index: number, near: readonly number[], gap: ReadonlyMap<number, number>): FacePick {
+  const distanceMm = Math.round((gap.get(index) ?? Infinity) * 1000) / 1000;
+  const pick: FacePick = { ...facePick(faces, index), distanceMm };
+  if (!(distanceMm > ON_FACE_MM)) return pick;
+  let level: FacePick["level"] = null;
+  for (const [other, d] of gap) {
+    if (other === index) continue;
+    const face = faces[other] ?? faces.find((row) => row.index === other);
+    const n = face?.normal;
+    if (!face || !n) continue;
+    const len = Math.hypot(n[0]!, n[1]!, n[2]!) || 1;
+    const off = ((near[0]! - face.centre[0]!) * n[0]! + (near[1]! - face.centre[1]!) * n[1]! + (near[2]! - face.centre[2]!) * n[2]!) / len;
+    if (Math.abs(off) > ON_FACE_MM) continue;
+    if (!level || d < level.distanceMm) level = { index: other, centre: round3(face.centre), areaMm2: round2(face.areaMm2), distanceMm: Math.round(d * 1000) / 1000 };
+  }
+  return { ...pick, level };
+}
+
+/** One sentence naming the face a selector picked, and where nearPoint was against it. */
+export function pickSentence(pick: FacePick, near?: readonly number[]): string {
+  const face = `face ${pick.index} (normal [${pick.normal.join(", ")}], centre [${pick.centre.join(", ")}], ${pick.areaMm2} mm²)`;
+  if (pick.distanceMm === undefined || !(pick.distanceMm > ON_FACE_MM)) return `The face selector picked ${face}.`;
+  const at = near ? `nearPoint [${round3(near).join(", ")}]` : "nearPoint";
+  if (pick.level) {
+    return `The face selector picked ${face}, ${pick.distanceMm} mm from ${at}: the point lies over empty space (a pocket or a hole), so the nearest face was below or beside it. The face with material level with the point is face ${pick.level.index} (centre [${pick.level.centre.join(", ")}], ${pick.level.areaMm2} mm², ${pick.level.distanceMm} mm away); aim nearPoint at material.`;
+  }
+  return `The face selector picked ${face}, ${pick.distanceMm} mm from ${at}, which is on no matching face.`;
 }
