@@ -2,7 +2,7 @@
  * The check list names a size and a place, and a refused probe's boxes survive a bad reply.
  * --- A7 model check ---
  */
-import { printCheck } from "../mcp/inspect.ts";
+import { printCheck } from "./modeling/inspect.ts";
 import { assembleCheck, ceilingBox, checkSummary, defaultThinMm, locatedBoxes, partBox, thinWarning } from "./model-check.ts";
 import type { ThinRegion } from "./modeling/thin.ts";
 

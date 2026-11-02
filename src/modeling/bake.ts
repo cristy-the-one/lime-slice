@@ -14,7 +14,10 @@ import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
 import { rootSpec } from "../model-primitive.ts";
 import { extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, type ProfileShape } from "../model-request.ts";
-import { toSolidOp, type Affine } from "../model-space.ts";
+import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
+import { formatMm } from "../model-plane.ts";
+import { transitionAngleLimit, transitionBuild, transitionFloorMm, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM } from "../model-transition.ts";
+import type { BeltSettings } from "../belt.ts";
 import type { EdgePick, LoftSection, ModelOp, ProfileLoop, ProfileSegment, Vec2 } from "../model-tree.ts";
 import { drillDown, isGlobalFrame, planePoint, planePrimitive, type Workplane } from "../workplane.ts";
 
@@ -484,3 +487,62 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
   return { reason: "That edit is not one of hole, fillet, chamfer, transition, split, partition, scale, boolean, extrude, revolve, loft, sweep, shell, faceExtrude, moveFaces, join, or root." };
 }
 
+
+/** What a print transition reads of the plate: the support limit, the nozzle, the printer, and the part's pose on it. */
+export interface TransitionEnv {
+  supportAngle: number;
+  nozzleMm: number;
+  printer: { id: string; belt: BeltSettings | null };
+  /** The part's plate orientation, row-major. */
+  orient: readonly number[];
+}
+
+/**
+ * --- Print transitions (docs/plan-belt-transitions.md, step 2). The op in the solid's frame, and as typed with every
+ * default filled, so a model_edit of the echo keeps the build direction it was made for; `build: null` aims it from
+ * this pose again. The MCP session and the app's recipe calls both bake it here.
+ */
+export function bakeTransition(spec: Record<string, unknown>, ctx: BakeContext, env: TransitionEnv): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
+  const edges = resolveEdges(spec, ctx);
+  if ("reason" in edges) return edges;
+  const limit = transitionAngleLimit(env.supportAngle);
+  const angleDeg = spec.angleDeg === undefined ? limit : spec.angleDeg;
+  if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > TRANSITION_MAX_DEG) return { reason: `angleDeg is the new face's angle to the layers, at most ${TRANSITION_MAX_DEG}°.` };
+  if (angleDeg < limit - 1e-9) return { reason: `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.` };
+  const size = spec.size === undefined ? TRANSITION_SIZE_MM : spec.size;
+  if (size !== "face" && (typeof size !== "number" || !(size > 0))) return { reason: "size is millimetres along the flatter face, or \"face\" to its end." };
+  const mode = spec.mode === undefined ? "auto" : spec.mode;
+  if (mode !== "auto" && mode !== "add" && mode !== "cut") return { reason: "mode is auto, add, or cut." };
+  const maxMm = spec.maxMm;
+  if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return { reason: "maxMm must be above 0 mm." };
+  const kase = spec.case;
+  if (kase !== undefined && kase !== "lip" && kase !== "corner") return { reason: "case is lip or corner; left out, each edge's case is found." };
+  // --- Step 4. A lip's ramp keeps the wall floor at its first edge: twice the plate machine's nozzle, unless typed.
+  const floorMm = spec.floorMm === undefined ? transitionFloorMm(env.nozzleMm) : spec.floorMm;
+  if (typeof floorMm !== "number" || !(floorMm > 0)) return { reason: "floorMm must be above 0 mm." };
+  const belt = env.printer.belt;
+  const pose = ctx.pose;
+  let build: [number, number, number];
+  if (Array.isArray(spec.build)) {
+    const typed = spec.build.slice(0, 3).map(Number);
+    if (typed.length !== 3 || !typed.every(Number.isFinite) || Math.hypot(...typed) < 1e-9) return { reason: "build is a direction, three numbers not all 0." };
+    build = typed as [number, number, number];
+  } else if (spec.build === undefined || spec.build === null) {
+    build = turnDir(pose, transitionBuild({ orient: env.orient as never, belt })).map((value) => Math.round(value * 1e9) / 1e9 + 0) as [number, number, number];
+  } else return { reason: "build is a direction, or null to aim from this pose." };
+  const made = {
+    kind: "transition" as const,
+    edges,
+    build,
+    angleDeg,
+    size: size as number | "face",
+    ...(mode !== "auto" ? { mode: mode as "add" | "cut" } : {}),
+    ...(maxMm !== undefined ? { maxMm: maxMm as number } : {}),
+    ...(kase !== undefined ? { case: kase as "lip" | "corner" } : {}),
+    ...(mode === "cut" ? { floorMm } : {}),
+    ...(belt ? { beltDeg: belt.angleDeg } : {}),
+    orient: [...env.orient],
+    printer: env.printer.id,
+  };
+  return { op: toSolidOp(made as ModelOp, pose), typed: { ...made } };
+}

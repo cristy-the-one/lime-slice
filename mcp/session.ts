@@ -17,9 +17,7 @@ import { humanEngineError } from "../src/engine-wording.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../src/foreign-3mf.ts";
 import { meshWarningText, type MeshRepair } from "../src/app/mesh-warning.ts";
 import { plainModelError } from "../src/app/model-error.ts";
-import { hullOf, layFlatMatrix, restPose } from "../src/bed-rest.ts";
-import { align, centeringShift, encode3mf, ID_MATRIX, matMul, offBed, placeMesh, rotX, rotY, rotZ, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
-import { alignDelta, bedBox, isAlignRelation } from "../src/place-snap.ts";
+import { encode3mf, ID_MATRIX, offBed, placeMesh, scaledCanonical, settleBy, type Bounds, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { disjointBoolean, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
 import { FIT_ROWS, clampPieces, clearanceKey, enterMeasured, fitResultsRefusal, resetMeasured, type FillContext, type FitResults, type Target } from "../src/modeling/partition.ts";
@@ -28,17 +26,20 @@ import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../src/modeli
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
 import { partStem, pieceNames, SUPPORT_NOTE } from "../src/modeling/partition-export.ts";
 import { dropRefusal } from "../src/model-history.ts";
-import { extentAlong, facePlane, formatMm, splitBase, splitNote, tiltRings, type SplitPlan, type Vec3 as PlaneVec } from "../src/model-plane.ts";
+import { facePlane, formatMm } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, keepSketch, newSolidRequest, openRequest, probeRequest, solidFileName, wholeTreeRequest } from "../src/model-request.ts";
 import { appliedReply, boundsOf, readBroken, readBuilt, solidSections, partExpandContext, typedPlaneOf, typedPointIn, describeReply, disjointRefusal, stepGuard, storedOp, probeEcho, probeVerdict, edgesReply, facesReply, nodeHandle, page, parseNode, solidView, type SolidView } from "../src/modeling/model-calls.ts";
-import { bakeOp, EDGES_SHAPE, onFaceIndex, profilePlane, readLoopsField, resolveEdges, type BakeContext, type Baked } from "../src/modeling/bake.ts";
+import { bakeOp, bakeTransition, EDGES_SHAPE, onFaceIndex, profilePlane, type BakeContext, type Baked } from "../src/modeling/bake.ts";
 import { thinWalls } from "../src/modeling/thin.ts";
-import { AnchorError, anchorRow, hasAnchor, movedBox, opBox, resolveAnchors, unionBox, type Box } from "../src/modeling/anchors.ts";
+import { bakeCells, runComposite, storeGroup } from "../src/modeling/composite-apply.ts";
+import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep } from "../src/modeling/part-reads.ts";
+import { frameNote, placeFree, placeNumbers, placeOnPlate } from "../src/modeling/placing.ts";
+import { AnchorError, anchorRow, hasAnchor, resolveAnchors, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, relativePose, seatLift, thenPose, toSolidOp, turnDir, typedPoseOf, type Affine, type ObjectFrame } from "../src/model-space.ts";
-import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type EdgePick, type Fingerprint, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PluginStamp, type ProfileLoop } from "../src/model-tree.ts";
+import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type Fingerprint, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PluginStamp, type ProfileLoop } from "../src/model-tree.ts";
 import { replayedTree, replayOps } from "../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, type StampedRun } from "../src/plugin-step.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
@@ -63,7 +64,7 @@ import { resolved } from "../src/strategy.ts";
 import { ARRANGE_GAP_MM, arrangedObjects, sourceFrame, slicePlateFields, settingsEmpty, type PlateObject as SliceObject, type PlateObjectSettings } from "../src/plate.ts";
 import { recipeRefusal, simRecipe } from "../src/sim/recipe.ts";
 import { chooseStudyMesh, STUDY_MESH_REFUSAL, type StudyMesh } from "../src/sim/study-mesh.ts";
-import { checkAgainstSlice, findingSummary, fixableEdges, readFinding, readHoldPatches, readTransitionRows, sliceCheckSummary, type Finding, type SlicedPose, transitionAngleLimit, transitionFindRequest, transitionFloorMm, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE, type TransitionFix } from "../src/model-transition.ts";
+import { checkAgainstSlice, findingSummary, fixableEdges, readFinding, readHoldPatches, readTransitionRows, sliceCheckSummary, type Finding, type SlicedPose, transitionAngleLimit, transitionFindRequest, transitionStaleBy, transitionBuild, transitionSentence, transitionSkinWarns, TRANSITION_MAX_DEG, TRANSITION_SIZE_MM, TRANSITION_SKIN_NOTE, type TransitionFix } from "../src/model-transition.ts";
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
@@ -97,9 +98,8 @@ import {
 } from "./sim.ts";
 import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
-import { CURVED_FACE, GLOBAL_WORKPLANE, workplaneOwn, isGlobalFrame, localPoint, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
-import { cellExtent, latticeLoops } from "./cells.ts";
-import { cutPlanes, frameNumbers, MAX_SECTION_POINTS, meshSection, pointsIn } from "./sections.ts";
+import { CURVED_FACE, GLOBAL_WORKPLANE, workplaneOwn, isGlobalFrame, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
+import { cutPlanes, MAX_SECTION_POINTS, meshSection, pointsIn } from "./sections.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
 import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setMeasuredFits, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
@@ -117,8 +117,7 @@ import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, l
 import { bodyProblem, builtText, carriedIngredients, ingredientsDir, isIngredientId, keptIngredient, lineMap, lineText, locate, moduleOf, resolveIngredients, type KeptIngredient } from "./ingredients.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, seenInPractice, writePreset } from "./nuggets.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
-import { printFrame } from "../src/model-check.ts";
-import { checkInSource, printCheck, probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
+import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
 import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "./shell-solids.ts";
@@ -132,13 +131,13 @@ import { notClosedReason } from "./step-guard.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, shortenedBoxes, TOUCH_TRIM, readVec3, type ExpandContext, type FacePick, type Piece } from "../src/modeling/compose.ts";
+import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type FacePick, type Piece } from "../src/modeling/compose.ts";
 import { pickSentence } from "../src/modeling/frames.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
 import { assemblyOf, attached, exportParts, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
-import { featureLabel, featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
-import { followRepeatSources, repeatLabel } from "../src/model-repeat.ts";
+import { featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
+import { followRepeatSources } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
@@ -173,11 +172,6 @@ function posedPositions(positions: ArrayLike<number>, pose: Affine): Float32Arra
 }
 
 /** What model_place says about the frame later Model numbers are read in. */
-function frameNote(frame: ObjectFrame): string {
-  return frame === "part"
-    ? "Numbers in later model_probe, model_apply and model_edit calls are still read in the part's own frame."
-    : "Numbers in later model_probe, model_apply and model_edit calls are read in model space, so they move with the pose; frame:\"part\" keeps them in the part's own frame.";
-}
 /** --- D25. Expression text, so an MCP step keeps the expressions it was typed with, as an app step keeps a field's. */
 function exprText(value: unknown): string | null {
   return typeof value === "string" && value.trim() && !isPlainNumber(value) ? value.trim() : null;
@@ -692,16 +686,6 @@ function edgePicksAsTyped(args: unknown): { args: unknown } | { reason: string }
     out = { ...out, ops };
   }
   return { args: out };
-}
-
-/** The history row for a composite: the label that was typed, else the feature's name, else Pattern or Mirror. */
-function compositeGroupLabel(raw: Record<string, unknown>, given?: string): string {
-  const typed = given?.trim();
-  if (typed) return typed.slice(0, 80);
-  // --- D39. The app's own row labels: "Pattern × 6 around Z", "Mirror across X".
-  if (raw.kind === "pattern" || raw.kind === "mirror") return repeatLabel(raw);
-  if (isFeatureTool(raw.kind)) return featureLabel(raw).slice(0, 80);
-  return "Group";
 }
 
 /** The first node on the path from `from` down to `to`: the child of `from` that `to` descends from. */
@@ -1373,9 +1357,10 @@ export class Session {
     }
     // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
     // what, every node carries the run's id, and that run is one undo step, in the project too. A run over several
-    // parts keeps plain steps, each part's as one undo step for this session (O4).
+    // parts keeps plain steps, each part's as one undo step for this session (O4). A part the run made and then joined
+    // into another (a tool, keepTool false) left the plate: it is no part of its own, so the run still stamps.
     const label = `recipe ${name}`;
-    const parts = [...created, ...[...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id)];
+    const parts = [...created.filter((id) => this.find(id)), ...[...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id)];
     const api = this.crateApi();
     const stampFields: Omit<PluginStamp, "fingerprint"> = {
       plugin: plugin?.id ?? name.split("@")[0]!,
@@ -3539,105 +3524,16 @@ export class Session {
     const obj = this.find(String(input.object));
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     this.remember("Place");
-    let reslice = false;
-    if (typeof input.scalePercent === "number") {
-      obj.scale = input.scalePercent / 100;
-      reslice = true;
-    }
-    if (input.layFlat === true) {
-      obj.orient = layFlatMatrix(obj.source, obj.orient, obj.scale);
-      reslice = true;
-    }
-    const turn = input.turn as { axis?: string; degrees?: number } | undefined;
-    if (turn && typeof turn.degrees === "number") {
-      const rot = turn.axis === "x" ? rotX(turn.degrees) : turn.axis === "y" ? rotY(turn.degrees) : rotZ(turn.degrees);
-      obj.orient = matMul(rot, obj.orient);
-      reslice = true;
-    }
-    if (input.centreOnBed === true) {
-      obj.centered = true;
-      obj.offset = { x: 0, y: 0, z: 0 };
-    }
-    if (typeof input.rotX === "number" || typeof input.rotY === "number" || typeof input.rotZ === "number") {
-      const current = orientEuler(obj.orient);
-      obj.orient = eulerOrient(
-        typeof input.rotX === "number" ? input.rotX : current.rx,
-        typeof input.rotY === "number" ? input.rotY : current.ry,
-        typeof input.rotZ === "number" ? input.rotZ : current.rz,
-      );
-      reslice = true;
-    }
-    if (typeof input.faceDown === "number") {
-      const face = obj.solid?.faces[input.faceDown];
-      if (!face?.normal) return { ok: false, reason: "That face is not a flat face on this solid." };
-      obj.orient = align(face.normal, [0, 0, -1]);
-      reslice = true;
-    }
-    let rest: Record<string, unknown> = {};
-    if (input.settle === true) {
-      const hull = hullOf(obj.source);
-      if (hull) {
-        const found = restPose(hull, obj.orient, obj.scale);
-        obj.orient = found.orient;
-        rest = { settled: found.snapped, contactMm2: Math.round(found.areaMm2 * 10) / 10 };
-      } else {
-        rest = { settled: false, contactMm2: 0 };
-      }
-      const turned = orientEuler(obj.orient);
-      rest.rotationDeg = { x: Math.round(turned.rx * 100) / 100, y: Math.round(turned.ry * 100) / 100, z: Math.round(turned.rz * 100) / 100 };
-      reslice = true;
-    }
-    if (typeof input.z === "number") {
-      if (obj.centered) {
-        const printer = this.printer();
-        obj.offset = centeringShift(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY);
-        obj.centered = false;
-      }
-      obj.offset = { ...obj.offset, z: input.z };
-    }
-    if (typeof input.centreX === "number" || typeof input.centreY === "number") {
-      const current = this.placed(obj);
-      const cx = (current.bounds.min[0] + current.bounds.max[0]) / 2;
-      const cy = (current.bounds.min[1] + current.bounds.max[1]) / 2;
-      if (obj.centered) {
-        const printer = this.printer();
-        obj.offset = centeringShift(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY);
-        obj.centered = false;
-      }
-      const dx = typeof input.centreX === "number" ? input.centreX - cx : 0;
-      const dy = typeof input.centreY === "number" ? input.centreY - cy : 0;
-      obj.offset = { x: obj.offset.x + dx, y: obj.offset.y + dy, z: obj.offset.z };
-    }
-    const alignSpec = input.align as { to?: unknown; how?: unknown } | undefined;
-    if (alignSpec) {
-      if (!isAlignRelation(alignSpec.how)) return { ok: false, reason: "align.how is not a relation." };
-      const toBed = alignSpec.to === "bed";
-      const other = toBed ? undefined : this.find(String(alignSpec.to));
-      if (!toBed && (!other || other.id === obj.id)) return { ok: false, reason: UNKNOWN_OBJECT };
-      const printer = this.printer();
-      const box = other ? this.placed(other).bounds : bedBox(printer.bedX, printer.bedY, printer.bedZ);
-      const delta = alignDelta(this.placed(obj).bounds, box, alignSpec.how, toBed);
-      if (!delta) return { ok: false, reason: "The bed has no side to touch or stack on. Use flush or centre." };
-      if (obj.centered) {
-        obj.offset = centeringShift(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY);
-        obj.centered = false;
-      }
-      obj.offset = { x: obj.offset.x + delta[0], y: obj.offset.y + delta[1], z: obj.offset.z + delta[2] };
-    }
-    const placed = this.placed(obj);
-    return {
-      ok: true,
-      centreMm: [
-        (placed.bounds.min[0] + placed.bounds.max[0]) / 2,
-        (placed.bounds.min[1] + placed.bounds.max[1]) / 2,
-        (placed.bounds.min[2] + placed.bounds.max[2]) / 2,
-      ],
-      scalePercent: obj.scale * 100,
-      orient: [...obj.orient],
-      ...rest,
-      reslice,
-      label: "Place",
-    };
+    const printer = this.printer();
+    // The place itself is the shared one (src/modeling/placing.ts), as the app's recipe calls set it.
+    return placeOnPlate(obj, input, {
+      bedMm: [printer.bedX, printer.bedY, printer.bedZ],
+      ...(obj.solid ? { faces: obj.solid.faces } : {}),
+      boundsOf: (id) => {
+        const other = this.find(id);
+        return other && other.id !== obj.id ? this.placed(other).bounds : null;
+      },
+    });
   }
 
   /** Older jobs keep z and seconds. Only the latest job keeps layer paths. */
@@ -5105,40 +5001,7 @@ export class Session {
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
     const printer = this.printer();
-    // As it prints: the plate's turn and scale, lowest point on the bed. Places come back in the solid's frame.
-    const printed = printFrame(obj.solid.positions, obj.orient, obj.scale);
-    const checked = checkInSource(printCheck({ positions: printed.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: [printer.bedX, printer.bedY, printer.bedZ] }), printed.toSource);
-    // Two lines of the nozzle's width is the thinnest wall a slicer fills; thinner prints as one line or not at all.
-    const nozzle = this.library.nozzleMm || 0.4;
-    const minWallMm = typeof input.minWallMm === "number" ? input.minWallMm : Math.round(nozzle * 2 * 100) / 100;
-    const thin = thinWalls(obj.solid.positions, minWallMm);
-    // In the solid's frame, as the overhang regions are.
-    const regions = thin.regions;
-    const warnings = [...(checked.warnings as string[])];
-    if (regions.length) {
-      const worst = regions.reduce((a, b) => (b.thinnestMm < a.thinnestMm ? b : a));
-      warnings.push(`Walls thinner than ${minWallMm} mm cover ${thin.areaMm2} mm², thinnest ${worst.thinnestMm} mm at (${worst.centre.join(", ")})${worst.thinnestMm < nozzle ? ": thinner than the nozzle, so it will not print" : ""}.`);
-    }
-    // Edges, as the plate mesh would have them: cracks a commit mends are counted apart from what stays open.
-    const raw = edgeReport(obj.solid.positions, 8);
-    const mended = raw.open === 0 && raw.degenerate === 0 ? raw : edgeReport(closeCracks(obj.solid.positions), 8);
-    const closedEdges = {
-      open: mended.open,
-      nonManifold: mended.nonManifold,
-      ...(mended.openAt.length ? { openAt: mended.openAt } : {}),
-      ...(mended.nonManifoldAt.length ? { nonManifoldAt: mended.nonManifoldAt } : {}),
-      ...(raw.open > mended.open ? { crackEdgesMended: raw.open - mended.open } : {}),
-    };
-    if (mended.open > 0) warnings.push(`The mesh has ${mended.open} open edges, the first at (${mended.openAt[0]!.at.join(", ")}). model_commit refuses it until they close.`);
-    if (mended.nonManifold > 0) warnings.push(`${mended.nonManifold} edges are where pieces meet only along a line, the first at (${mended.nonManifoldAt[0]!.at.join(", ")}). model_commit refuses it until they overlap or part.`);
-    return {
-      ...checked,
-      edges: closedEdges,
-      thinWalls: { minWallMm, nozzleMm: nozzle, areaMm2: thin.areaMm2, regions, sampledPoints: thin.sampled },
-      warnings,
-      notChecked: [],
-      printer: printer.name,
-    };
+    return checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm }, input);
   }
 
   /** A probe, and what the edit would do to the solid when the modeler sent the result back. */
@@ -5590,11 +5453,6 @@ export class Session {
   }
 
 
-  /** Indexes from a list, or from the same filter `edges_find` uses. */
-  private resolveEdges(obj: PlateObject, spec: Record<string, unknown>): EdgePick[] | { reason: string } {
-    return resolveEdges(spec, this.bakeContext(obj));
-  }
-
 
   /**
    * --- D24. A frame is typed and answered in model space, and kept in the part's own frame, as the app and the file keep
@@ -5721,14 +5579,11 @@ export class Session {
 
   /** A part's own pose in model space: a part outside every assembly, or a root, whose members then follow it (D9). */
   private placeFree(obj: PlateObject, input: Record<string, unknown>, mine: Assembly | undefined, named: string | undefined): Record<string, unknown> {
-    const current = orientEuler(obj.modelPose.m);
-    const where = this.placeNumbers(input, ["x", "y", "z"], [...obj.modelPose.t] as [number, number, number]);
-    if ("reason" in where) return { ok: false, reason: where.reason };
-    const turned = this.placeNumbers(input, ["turnX", "turnY", "turnZ"], [current.rx, current.ry, current.rz]);
-    if ("reason" in turned) return { ok: false, reason: turned.reason };
-    const frame: ObjectFrame = input.frame === "part" || input.frame === "model" ? input.frame : obj.frame ?? "model";
-    obj.modelPose = { m: eulerOrient(turned.values[0], turned.values[1], turned.values[2]), t: where.values };
-    if (frame === "part") obj.frame = "part";
+    // The pose itself is the shared one (src/modeling/placing.ts), as the app's recipe calls set it.
+    const free = placeFree(obj, input, this.params);
+    if ("reason" in free) return { ok: false, reason: free.reason };
+    obj.modelPose = free.pose.modelPose;
+    if (free.pose.frame === "part") obj.frame = "part";
     else delete obj.frame;
     let moved = {};
     if (mine) {
@@ -5736,23 +5591,18 @@ export class Session {
       this.assemblies = this.assemblies.map((row) => (row.id === mine.id ? renamed : row));
       moved = this.writeSolved(renamed, obj.id);
     }
-    const turn = orientEuler(obj.modelPose.m);
     const box = this.assembledBox(obj);
-    const once = where.texts || turned.texts ? " An expression here is read once; an offset from another part (to) follows the parameters." : "";
+    const once = free.texts ? " An expression here is read once; an offset from another part (to) follows the parameters." : "";
+    const { ok: _ok, pose: _pose, frame, ...where } = free.reply;
     return {
       ok: true,
       pose: "assembled",
       ...(mine ? { assembly: named ?? mine.name, root: true } : {}),
-      x: obj.modelPose.t[0],
-      y: obj.modelPose.t[1],
-      z: obj.modelPose.t[2],
-      turnX: turn.rx,
-      turnY: turn.ry,
-      turnZ: turn.rz,
+      ...where,
       frame,
       ...(box ? { assembledMm: box } : {}),
       ...moved,
-      note: `Assembled pose set.${mine ? " The assembly moves with its root." : ""} The print layout is unchanged.${once} ${frameNote(frame)}`,
+      note: `Assembled pose set.${mine ? " The assembly moves with its root." : ""} The print layout is unchanged.${once} ${frameNote(frame as ObjectFrame)}`,
     };
   }
 
@@ -5761,26 +5611,7 @@ export class Session {
    * `values` and its text in `texts`; a number drops the text. `texts` is undefined when no number has one.
    */
   private placeNumbers(input: Record<string, unknown>, keys: [string, string, string], values: [number, number, number], texts?: MemberExprs["offset"]): { values: [number, number, number]; texts?: [string | null, string | null, string | null] } | { reason: string } {
-    const out: [number, number, number] = [...values];
-    const kept: [string | null, string | null, string | null] = texts ? [...texts] : [null, null, null];
-    for (let axis = 0; axis < 3; axis += 1) {
-      const raw = input[keys[axis]!];
-      if (raw === undefined) continue;
-      if (typeof raw === "number") {
-        if (!Number.isFinite(raw)) return { reason: `${keys[axis]} is a number or an expression.` };
-        out[axis] = raw;
-        kept[axis] = null;
-        continue;
-      }
-      if (typeof raw !== "string" || !raw.trim()) return { reason: `${keys[axis]} is a number or an expression.` };
-      try {
-        out[axis] = evaluate(raw, this.params);
-      } catch (err) {
-        return { reason: `${keys[axis]}: ${err instanceof Error ? err.message : String(err)}` };
-      }
-      kept[axis] = isPlainNumber(raw) ? null : raw.trim();
-    }
-    return { values: out, ...(kept.some((text) => text !== null) ? { texts: kept } : {}) };
+    return placeNumbers(input, keys, values, this.params, texts);
   }
 
   /** Each member of `assembly` at its solved pose. Returns the members other than `except` that moved, with their boxes. */
@@ -5868,49 +5699,8 @@ export class Session {
    * this pose again.
    */
   private bakeTransition(obj: PlateObject, spec: Record<string, unknown>): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
-    const edges = this.resolveEdges(obj, spec);
-    if ("reason" in edges) return edges;
-    const limit = transitionAngleLimit(this.settings.supportAngle);
-    const angleDeg = spec.angleDeg === undefined ? limit : spec.angleDeg;
-    if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > TRANSITION_MAX_DEG) return { reason: `angleDeg is the new face's angle to the layers, at most ${TRANSITION_MAX_DEG}°.` };
-    if (angleDeg < limit - 1e-9) return { reason: `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.` };
-    const size = spec.size === undefined ? TRANSITION_SIZE_MM : spec.size;
-    if (size !== "face" && (typeof size !== "number" || !(size > 0))) return { reason: "size is millimetres along the flatter face, or \"face\" to its end." };
-    const mode = spec.mode === undefined ? "auto" : spec.mode;
-    if (mode !== "auto" && mode !== "add" && mode !== "cut") return { reason: "mode is auto, add, or cut." };
-    const maxMm = spec.maxMm;
-    if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return { reason: "maxMm must be above 0 mm." };
-    const kase = spec.case;
-    if (kase !== undefined && kase !== "lip" && kase !== "corner") return { reason: "case is lip or corner; left out, each edge's case is found." };
-    // --- Step 4. A lip's ramp keeps the wall floor at its first edge: twice the plate machine's nozzle, unless typed.
-    const floorMm = spec.floorMm === undefined ? transitionFloorMm(this.library.nozzleMm) : spec.floorMm;
-    if (typeof floorMm !== "number" || !(floorMm > 0)) return { reason: "floorMm must be above 0 mm." };
     const printer = this.printer();
-    const belt = printer.kind === "belt" ? printer.belt : null;
-    const pose = typedPoseOf(obj);
-    let build: [number, number, number];
-    if (Array.isArray(spec.build)) {
-      const typed = spec.build.slice(0, 3).map(Number);
-      if (typed.length !== 3 || !typed.every(Number.isFinite) || Math.hypot(...typed) < 1e-9) return { reason: "build is a direction, three numbers not all 0." };
-      build = typed as [number, number, number];
-    } else if (spec.build === undefined || spec.build === null) {
-      build = turnDir(pose, transitionBuild({ orient: obj.orient, belt })).map((value) => Math.round(value * 1e9) / 1e9 + 0) as [number, number, number];
-    } else return { reason: "build is a direction, or null to aim from this pose." };
-    const made = {
-      kind: "transition" as const,
-      edges,
-      build,
-      angleDeg,
-      size: size as number | "face",
-      ...(mode !== "auto" ? { mode: mode as "add" | "cut" } : {}),
-      ...(maxMm !== undefined ? { maxMm: maxMm as number } : {}),
-      ...(kase !== undefined ? { case: kase as "lip" | "corner" } : {}),
-      ...(mode === "cut" ? { floorMm } : {}),
-      ...(belt ? { beltDeg: belt.angleDeg } : {}),
-      orient: [...obj.orient],
-      printer: printer.id,
-    };
-    return { op: toSolidOp(made, pose), typed: { ...made } };
+    return bakeTransition(spec, this.bakeContext(obj), { supportAngle: this.settings.supportAngle, nozzleMm: this.library.nozzleMm, printer: { id: printer.id, belt: printer.kind === "belt" ? printer.belt : null }, orient: obj.orient });
   }
 
   /**
@@ -5936,36 +5726,7 @@ export class Session {
 
 
   private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
-    const positions = obj.solid?.positions;
-    const box = obj.solid?.bounds;
-    if (!positions || !box) return splitNote({ why: "This solid is too thin to split.", wait: false });
-    const length = Math.hypot(op.normal[0], op.normal[1], op.normal[2]) || 1;
-    const normal: PlaneVec = [op.normal[0] / length, op.normal[1] / length, op.normal[2] / length];
-    const extent = extentAlong(positions, normal);
-    if (!extent || !(extent.max > extent.min)) return splitNote({ why: "This solid is too thin to split.", wait: false });
-    const center: PlaneVec = [
-      (box.min[0] + box.max[0]) / 2,
-      (box.min[1] + box.max[1]) / 2,
-      (box.min[2] + box.max[2]) / 2,
-    ];
-    const axis = Math.abs(normal[0]) >= Math.abs(normal[1]) && Math.abs(normal[0]) >= Math.abs(normal[2]) ? 0 : Math.abs(normal[1]) >= Math.abs(normal[2]) ? 1 : 2;
-    const mode = axis === 0 ? "x" : axis === 1 ? "y" : "z";
-    const base = splitBase(mode, center, null);
-    if (!base) return splitNote({ why: "This solid is too thin to split.", wait: false });
-    const depth = op.origin[0] * normal[0] + op.origin[1] * normal[1] + op.origin[2] * normal[2];
-    const margin = 1e-4;
-    const range = { min: extent.min, max: extent.max, mid: (extent.min + extent.max) / 2 };
-    const inside = extent.min + margin < depth && depth < extent.max - margin;
-    const plan: SplitPlan = {
-      base,
-      value: depth,
-      origin: [...op.origin] as PlaneVec,
-      normal,
-      range,
-      inside,
-      rings: tiltRings(base.normal, 0),
-    };
-    return splitNote({ plan });
+    return splitCheck(obj.solid, op);
   }
 
   private async openJoinTool(raw: unknown): Promise<string | null> {
@@ -6477,18 +6238,11 @@ export class Session {
         continue;
       }
       // --- 3.1 F15. A pattern or mirror of an extrude or a revolve repeats that whole step on moved planes; other
-      // composites expand to Boolean pieces. Expanded now, on the solid as the steps before it left it, so a face
-      // selector sees faces they made.
+      // composites expand to Boolean pieces (src/modeling/composite-apply.ts, shared with the app's recipe calls).
       const context = this.expandContext(obj);
       const copies = featureCopies(raw, context.plane, (spec) => this.profilePlane(obj, spec));
       const expanded = copies === null ? expand(raw, context, (op) => this.pieceOf(obj, op)) : copies;
-      if ("reason" in expanded) {
-        const ended = await refuse({ reason: expanded.reason });
-        if (ended) return ended;
-        continue;
-      }
-      const pieces = copies === null ? expanded as Piece[] : [];
-      const count = expanded.length;
+      const count = "reason" in expanded ? 0 : expanded.length;
       // --- Gaps A3. A pattern's or mirror's steps link one by one, read now on the solid they expanded on. A feature
       // re-expands from its source in the app, so it links its source's fields instead (typedExprs).
       const feature = isFeatureTool(raw.kind);
@@ -6509,81 +6263,39 @@ export class Session {
         if ("reason" in parts) return null;
         return parts.map((piece) => toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose));
       };
-      const planned = twin === undefined || feature ? null : make(structuredClone(raw));
+      const planned = twin === undefined || feature || "reason" in expanded ? null : make(structuredClone(raw));
       const links = planned ? this.linksOf(obj, raw, twin, make, planned) : [];
       if ((made += count) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
-      let refused: Record<string, unknown> | null = null;
-      const touchingBefore = touching;
-      // --- A9. The pieces that landed, in the solid's frame, become the group's steps. ---
-      const steps: ModelOp[] = [];
-      const stepPieces: number[] = [];
-      for (let k = 0; k < count; k += 1) {
-        if (meta?.signal?.aborted) return cancelled();
-        progress(index, k, count);
-        if (copies !== null && !("reason" in copies)) {
-          const copy = copies[k]!;
+      const ran = await runComposite(raw, {
+        pose: () => typedPoseOf(obj),
+        context: () => context,
+        profilePlane: (spec) => this.profilePlane(obj, spec),
+        pieceOf: (op) => this.pieceOf(obj, op),
+        applyCopy: async (copy) => {
           const probed = await this.probe(obj, copy);
-          const done = probed.ok === true ? await this.apply(obj, copy) : probed;
-          if (done.ok !== true) {
-            refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(copy), step: k + 1, of: count, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
-            break;
-          }
-          const node = parseNode(done.node);
-          const op = node === null ? null : obj.tree?.nodes.get(node)?.op;
-          if (node === null || !op) continue;
-          nodes.push(node);
-          ownNodes.push(node);
-          steps.push(op);
-          stepPieces.push(k);
-          continue;
-        }
-        const piece = pieces[k]!;
-        const attempt = async (spec: PrimitiveSpec): Promise<{ probed: Record<string, unknown>; done: Record<string, unknown>; typed: Record<string, unknown>; op: ModelOp | null }> => {
+          return probed.ok === true ? this.apply(obj, copy) : probed;
+        },
+        applyPiece: async (baked) => {
           const at = await this.opened(obj);
           if ("reason" in at) {
             const missed = { ok: false, reason: at.reason };
-            return { probed: missed, done: missed, typed: {}, op: null };
+            return { probed: missed, done: missed };
           }
-          const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
-          const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, typedPoseOf(obj)), typed };
           const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
           const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}) : probed;
-          return { probed, done, typed, op: baked.op };
-        };
-        let { probed, done, typed, op } = await attempt(piece.spec);
-        if (probed.ok !== true && probed.missed === true) {
-          skipped += 1;
-          continue;
-        }
-        // A step that leaves pieces meeting along an edge is tried once a little shorter, then left out.
-        if (done.ok !== true && done.touching === true) {
-          for (const shorter of shortenedBoxes(piece.spec, TOUCH_TRIM)) {
-            ({ probed, done, typed, op } = await attempt(shorter));
-            if (done.ok === true || (done.touching !== true && probed.missed !== true)) break;
-          }
-          if (done.ok !== true && (done.touching === true || probed.missed === true)) {
-            touching += 1;
-            touchingAt ??= String(done.reason ?? "");
-            continue;
-          }
-        }
-        if (done.ok !== true) {
-          // --- A9. failedStep is the piece, counting from 1, including a located refusal. ---
-          refused = { reason: String(done.reason ?? "This edit did not apply."), piece: cleanOp(typed), step: k + 1, of: count, failedStep: k + 1, ...(done.where ? { where: done.where } : {}) };
-          break;
-        }
-        const node = parseNode(done.node);
-        if (node === null || !op) continue;
-        nodes.push(node);
-        ownNodes.push(node);
-        steps.push(op);
-        stepPieces.push(k);
-      }
-      // --- D20. A composite whose every step missed changes nothing: refused, as the engine refuses such a group.
-      // A step left out because it would only touch along an edge is reported as leftOut instead.
-      if (!refused && ownNodes.length === 0 && count > 0 && touching === touchingBefore) {
-        refused = { reason: count === 1 ? "Its one step does not change the part." : `None of its ${count} steps changes the part.` };
-      }
+          return { probed, done };
+        },
+        nodeOp: (node) => obj.tree?.nodes.get(node)?.op ?? undefined,
+        aborted: () => meta?.signal?.aborted === true,
+        progress: (k, steps) => progress(index, k, steps),
+      });
+      ownNodes.push(...ran.ownNodes);
+      nodes.push(...ran.ownNodes);
+      if ("aborted" in ran) return cancelled();
+      skipped += ran.skipped;
+      touching += ran.touching;
+      if (ran.touchingAt !== undefined) touchingAt ??= ran.touchingAt;
+      const refused = "refused" in ran ? ran.refused : null;
       if (refused) {
         const ended = await refuse(refused);
         if (ended) return ended;
@@ -6592,7 +6304,7 @@ export class Session {
       // --- A9. Replace the piece chain with one group. A composite that applied nothing stays as it was. ---
       if (ownNodes.length > 0) {
         progress(index, count - 1, count, `gathering its ${ownNodes.length} steps into one group`);
-        const linked = steps.map((step, j) => this.inDateExprs(step, links[stepPieces[j]!]));
+        const linked = "steps" in ran ? ran.steps.map((step, j) => this.inDateExprs(step, links[ran.stepPieces[j]!])) : [];
         const stored = await this.storeGroup(obj, before, ownNodes[0]!, linked, label, raw);
         if (stored.ok !== true) {
           // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.
@@ -6664,36 +6376,26 @@ export class Session {
    * The probe and the apply share a budget that grows with the step count, so one composite is not cut off at the per-call limit.
    */
   private async storeGroup(obj: PlateObject, before: number, firstPiece: number, steps: ModelOp[], label: string | undefined, raw: Record<string, unknown>): Promise<{ ok: true; node: number } | { ok: false; failed: Record<string, unknown> }> {
-    let source: unknown = raw;
-    try {
-      source = JSON.parse(JSON.stringify(raw)) as unknown;
-    } catch {
-      source = raw;
-    }
-    const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps };
-    // --- 3.1 F1. The pieces are built and checked already: they fold into the group, which builds nothing again. Only
-    // an engine that cannot fold them (an old one, or a run whose last solid it let go) builds the group from the start.
-    const folded = await this.foldGroup(obj, before, firstPiece, group);
-    if (typeof folded === "number") return { ok: true, node: folded };
-    if (folded) return { ok: false, failed: folded };
-    const back = await this.gotoNode(obj, before);
-    if (back.ok !== true) return { ok: false, failed: { reason: String(back.reason ?? "The steps could not be gathered into one.") } };
-    if (obj.tree?.nodes.has(firstPiece)) this.drop(obj, firstPiece);
-    const at = await this.opened(obj);
-    if ("reason" in at) return { ok: false, failed: { reason: at.reason } };
-    const baked = { op: group as ModelOp, typed: group as unknown as Record<string, unknown> };
-    const budget = Math.max(this.modelTimeoutMs(), Math.max(1, steps.length) * 5000);
-    const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budget);
-    if (probed.ok !== true) {
-      return { ok: false, failed: { reason: String(probed.reason ?? "These steps did not fit."), ...(typeof probed.failedStep === "number" ? { failedStep: probed.failedStep } : {}), ...(probed.where ? { where: probed.where } : {}) } };
-    }
-    const done = await this.applyBaked(obj, at, baked, {}, budget);
-    if (done.ok !== true) {
-      return { ok: false, failed: { reason: String(done.reason ?? "These steps did not apply."), ...(typeof done.failedStep === "number" ? { failedStep: done.failedStep } : {}), ...(done.where ? { where: done.where } : {}) } };
-    }
-    const node = parseNode(done.node);
-    if (node === null) return { ok: false, failed: { reason: "These steps did not apply." } };
-    return { ok: true, node };
+    return storeGroup({
+      fold: (from, first, group) => this.foldGroup(obj, from, first, group),
+      back: async (from, first) => {
+        const back = await this.gotoNode(obj, from);
+        if (back.ok !== true) return String(back.reason ?? "The steps could not be gathered into one.");
+        if (obj.tree?.nodes.has(first)) this.drop(obj, first);
+        return null;
+      },
+      probeApply: async (baked, budget) => {
+        const at = await this.opened(obj);
+        if ("reason" in at) {
+          const missed = { ok: false, reason: at.reason };
+          return { probed: missed, done: missed };
+        }
+        const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budget);
+        const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}, budget) : probed;
+        return { probed, done };
+      },
+      budgetMs: this.modelTimeoutMs(),
+    }, before, firstPiece, steps, label, raw);
   }
 
   /** A baked op probed, then applied: the kernel keeps the probe's build, so it is built once. */
@@ -6771,52 +6473,11 @@ export class Session {
   private async bakeCells(obj: PlateObject, raw: Record<string, unknown>): Promise<{ op: ModelOp; typed: Record<string, unknown> } | { reason: string }> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { reason: tree.reason };
-    const cell = (raw.cell ?? {}) as Record<string, unknown>;
-    if (cell.shape !== undefined) return { reason: "A cell is a shape or loops, not both." };
-    if (raw.region !== undefined || raw.from !== undefined || raw.fit !== undefined) return { reason: "A loops cell is clipped to the face itself: region, from, and fit are for shape cells." };
-    const loops = readLoopsField(cell.loops);
-    if ("reason" in loops) return loops;
-    const ctx = this.expandContext(obj);
-    const index = raw.faceIndex !== undefined ? Math.round(Number(raw.faceIndex)) : raw.face && typeof raw.face === "object" ? ctx.faceBy(raw.face as Record<string, unknown>) : { reason: "An array of loops needs a face or faceIndex to clip its cells to." };
-    if (typeof index !== "number") return { reason: index.reason };
-    const framed = ctx.face(index);
-    if ("reason" in framed) return framed;
-    const pitch = Array.isArray(raw.pitch) && raw.pitch.length === 2 && raw.pitch.every((n) => typeof n === "number" && n > 0) ? raw.pitch as [number, number] : typeof raw.pitch === "number" && raw.pitch > 0 ? [raw.pitch, raw.pitch] as [number, number] : null;
-    if (!pitch) return { reason: "An array needs a pitch [u, v] in millimetres, each above 0." };
-    const depth = typeof raw.depth === "number" ? raw.depth : 0;
-    if (!(depth > 0)) return { reason: "An array needs a depth: how far out of the face, or into it for a cut." };
-    const op = raw.op === "cut" ? "cut" : "fuse";
-    const laid = latticeLoops({
-      cell: loops.loops!,
-      extent: framed.extent,
-      pitch,
-      stagger: raw.stagger === true,
-      angleDeg: typeof raw.angleDeg === "number" ? raw.angleDeg : 0,
-      turnDeg: typeof cell.turnDeg === "number" ? cell.turnDeg : 0,
+    return bakeCells(raw, this.expandContext(obj), typedPoseOf(obj), async (face, insetMm, frame) => {
+      const outline = await this.treeCall({ call: "faceOutline", key: tree.key, node: tree.current, face, insetMm, chordMm: 0.05, frame }, "array");
+      if (typeof outline.error === "string" && outline.error) return { reason: plainModelError(outline.error) };
+      return Array.isArray(outline.loops) ? (outline.loops as ProfileLoop[]) : [];
     });
-    if ("reason" in laid) return laid;
-    // The region the cells keep to: the face's own outline, inset by the margin, in the array's frame.
-    const margin = typeof raw.margin === "number" ? raw.margin : 0;
-    const own = workplaneOwn(framed.plane, typedPoseOf(obj));
-    const outline = await this.treeCall({ call: "faceOutline", key: tree.key, node: tree.current, face: index, insetMm: margin, chordMm: 0.05, frame: frameNumbers(own) }, "array");
-    if (typeof outline.error === "string" && outline.error) return { reason: plainModelError(outline.error) };
-    const clip = Array.isArray(outline.loops) ? outline.loops as ProfileLoop[] : [];
-    if (clip.length === 0) return { reason: `A margin of ${margin} mm leaves nothing of that face.` };
-    const extent = cellExtent(op, depth, typeof cell.draftDeg === "number" ? cell.draftDeg : 0);
-    const made: ModelOp = {
-      kind: "extrude",
-      op,
-      origin: [...framed.plane.origin],
-      turn: [...framed.plane.turn],
-      depth: extent.depth,
-      depth2: extent.depth2,
-      ...(extent.draftDeg !== undefined ? { draftDeg: extent.draftDeg } : {}),
-      loops: laid,
-      clip,
-      ...(typeof cell.cornerRadius === "number" && cell.cornerRadius > 0 ? { cornerRadius: cell.cornerRadius } : {}),
-      minArea: typeof cell.minArea === "number" ? cell.minArea : 0,
-    };
-    return { op: toSolidOp(made, typedPoseOf(obj)), typed: cleanOp(raw) };
   }
 
   private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -6974,28 +6635,7 @@ export class Session {
     const tree = obj.tree;
     if (!tree) return null;
     const toTyped = solidFrame ? (p: [number, number, number]) => p : (p: [number, number, number]) => this.typedPoint(obj, applyPose(typedPoseOf(obj), p));
-    if (label.trim().toLowerCase() === "part") return obj.solid ? movedBox(obj.solid.bounds as Box, toTyped) : null;
-    const wanted = label.trim().toLowerCase();
-    const path: number[] = [];
-    for (let node: number | null = tree.current; node !== null; node = tree.nodes.get(node)?.parent ?? null) path.push(node);
-    const onPath = new Set(path);
-    const grouped = new Set<number>();
-    for (const group of this.stepGroups(obj)) {
-      if (group.label.toLowerCase() !== wanted || !onPath.has(group.end) || !onPath.has(group.start)) continue;
-      for (let node: number | null = group.end; node !== null && node !== group.start; node = tree.nodes.get(node)?.parent ?? null) grouped.add(node);
-    }
-    let box: Box | null = null;
-    for (const node of path) {
-      const row = tree.nodes.get(node);
-      if (!row?.op) continue;
-      const name = row.label.toLowerCase();
-      // "fish 0" names "fish 0 body" and "fish 0 tail". An older file's "label k/n" still matches; a group matches its own label.
-      const piece = name.startsWith(`${wanted} `);
-      if (name !== wanted && !piece && !grouped.has(node)) continue;
-      const own = opBox(row.op);
-      if (own) box = unionBox(box, movedBox(own, toTyped));
-    }
-    return box;
+    return labelBox(tree, (obj.solid?.bounds as Box | undefined) ?? null, label, this.stepGroups(obj), toTyped);
   }
 
   /**
@@ -7355,20 +6995,12 @@ export class Session {
   }
 
   private splitKeep(raw: unknown): "both" | "above" | "below" {
-    if (!raw || typeof raw !== "object") return "both";
-    const keep = (raw as { keep?: unknown }).keep;
-    return keep === "above" || keep === "below" ? keep : "both";
+    return splitKeep(raw);
   }
 
   /** The half whose centre is on the positive side of the plane is above. */
   private keptSide(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): "above" | "below" {
-    const box = obj.solid?.bounds;
-    if (!box) return "above";
-    const length = Math.hypot(op.normal[0], op.normal[1], op.normal[2]) || 1;
-    const centre = [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2];
-    const depth = centre[0] * op.normal[0] + centre[1] * op.normal[1] + centre[2] * op.normal[2];
-    const plane = op.origin[0] * op.normal[0] + op.origin[1] * op.normal[1] + op.origin[2] * op.normal[2];
-    return depth / length >= plane / length ? "above" : "below";
+    return keptSide(obj.solid?.bounds, op);
   }
 
   private keepOtherHalf(obj: PlateObject, otherKey: string, other: unknown, node: number): string | undefined {
@@ -8178,20 +7810,7 @@ export class Session {
   private async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const opened = obj.tree ?? await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
-    const tree = opened;
-    const rows = [...tree.nodes.values()].sort((a, b) => a.id - b.id).map((node) => ({
-      id: nodeHandle(node.id),
-      parent: node.parent === null ? null : nodeHandle(node.parent),
-      label: node.label,
-      current: node.id === tree.current,
-      committed: node.id === tree.committed,
-      broken: node.broken ?? false,
-      // --- Plugin steps (D8): the run a step belongs to, and on its first step what ran with which values.
-      ...(node.plugin ? { plugin: { id: node.plugin.plugin, version: node.plugin.version, params: node.plugin.params } } : {}),
-      ...(node.run ? { run: `${node.run.id} ${node.run.k}/${node.run.n}` } : {}),
-    }));
-    const listed = page(rows, input.cursor, input.limit);
-    return { ok: true, nodes: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+    return historyReply(opened, input);
   }
 
   private async gotoNode(obj: PlateObject, node: number | null): Promise<Record<string, unknown>> {
@@ -8684,50 +8303,23 @@ export class Session {
   }
 
   private async measure(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (typeof input.faceA === "number" || typeof input.faceB === "number") {
-      if (typeof input.faceA !== "number" || typeof input.faceB !== "number") return { ok: false, reason: "Name both faces." };
+    const faces = typeof input.faceA === "number" || typeof input.faceB === "number";
+    if (faces && typeof input.faceA === "number" && typeof input.faceB === "number") {
       const tree = await this.opened(obj);
       if ("reason" in tree) return { ok: false, reason: tree.reason };
-      const solid = obj.solid;
-      if (!solid) return { ok: false, reason: "This solid could not be read." };
-      if (!solid.faces[input.faceA] || !solid.faces[input.faceB]) return { ok: false, reason: "That face is not on this solid." };
-      let reply: Record<string, unknown>;
+    }
+    return measureReply(obj.solid, this.typedPlane(obj), input, async (faceA, faceB) => {
+      const tree = obj.tree!;
       try {
-        reply = await this.treeCall({
-          call: "distance",
-          key: tree.key,
-          node: tree.current,
-          aKind: "face",
-          aIndex: input.faceA,
-          bKind: "face",
-          bIndex: input.faceB,
-        }, "measure");
+        return await this.treeCall({ call: "distance", key: tree.key, node: tree.current, aKind: "face", aIndex: faceA, bKind: "face", bIndex: faceB }, "measure");
       } catch (err) {
         const lost = this.lostReply(err);
         if (lost) return lost;
         throw err;
       }
-      if (typeof reply.distanceMm !== "number") return { ok: false, reason: "Could not measure that distance." };
-      return { ok: true, distanceMm: reply.distanceMm, frame: "model" };
-    }
-    const a = input.a;
-    const b = input.b;
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length < 3 || b.length < 3) {
-      return { ok: false, reason: "Name two points, or two faces from the solid." };
-    }
-    const frame = input.frame === "workplane" ? "workplane" : "model";
-    const plane = this.typedPlane(obj);
-    const left = frame === "workplane" ? localPoint(plane, a as [number, number, number]) : a as [number, number, number];
-    const right = frame === "workplane" ? localPoint(plane, b as [number, number, number]) : b as [number, number, number];
-    return this.span(left, right, frame);
+    });
   }
 
-  private span(left: [number, number, number], right: [number, number, number], frame: string): Record<string, unknown> {
-    const dx = right[0] - left[0];
-    const dy = right[1] - left[1];
-    const dz = right[2] - left[2];
-    return { ok: true, distanceMm: Math.hypot(dx, dy, dz), dx, dy, dz, frame };
-  }
 
   private wanted(input: Record<string, unknown>): PlateObject | { ok: false; reason: string } {
     if (typeof input.object === "string" && input.object !== "") {
