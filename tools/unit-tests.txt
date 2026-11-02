@@ -117,6 +117,7 @@ mcp/request.test.ts
 mcp/recipe-find.test.ts
 mcp/plugins-file.test.ts
 mcp/ingredients-file.test.ts
+mcp/nuggets-file.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts

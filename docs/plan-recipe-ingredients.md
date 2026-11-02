@@ -439,6 +439,30 @@ Each is one PR to `main`, smallest useful first. Each updates `docs/mcp-server.m
      library and is unchanged by a library update. `plugin get` lists them (`ingredients`). The hash covers the
      inlined block too, so a plugin re-kept with another ingredient version is a new version.
 6. **I12–I17.** Saving ingredients, presets, lessons, harvest suggestions, `nugget find`.
+
+   **As built (milestone 6, branch `claude/nuggets-find`, `mcp/nuggets.ts`):**
+   - **Q2, one tool.** `nugget {action: find | get | save | remove, kind: plugin | ingredient | preset | lesson}`.
+     `find` searches every kind and the session's drafts; the rest take `kind`, and for plugins they are the plugin
+     tool's own. The `plugin` tool keeps answering (clients and notes written for 4.10.0) but is no longer listed: the
+     list grows by 102 tokens (to 17,123), where `plugin` beside three more tools would have cost about 700. A lesson
+     names what it is about in `id`, which saved a field. `recipe_run {plugin, preset}` is the one new run field.
+   - **I12.** `save {kind: "ingredient", from, items}` lifts the items and what they name, made public, with the
+     recipe's `use` lines; `source` saves a whole module. It must build alone under lust or it is not kept, with the
+     line. Not built: running doc examples as tests (a lifted helper has none; an ingredient with examples can be
+     tested by a recipe that imports it). The app's History menu entry is plugin milestone 7's panel.
+   - **I13.** `nuggets` on an apply's reply, at most three, each with its ready-made call: functions over 10 lines that
+     never name `Session`, a refused call the run got past (the lesson's text is left for the agent to write: only it
+     knows what got past the refusal), and a plugin run's own values. Never on a rerun or a `keep`.
+   - **I14.** Presets per plugin in `presets/<plugin>.json`, checked against the declared parameters at save and at
+     use. Presets are for library plugins only: a draft has no declared ranges to check them against.
+   - **I15.** `lessons.json` in the library (Q3); `guide {kind}` answers `data.seenInPractice`, newest five first.
+   - **I16.** `session_info.nuggets`; the server instructions and the recipes guide say `nugget find` first.
+   - **I17.** `get` of an ingredient lists the plugins that carry it and, from two, proposes promotion. The PR to
+     `lime-recipe` stays a person's (or an agent's, asked) decision.
+   - **Section 9.** No seeds ship now: they come from the honeycomb tray, a sample for a later release (Q4).
+   - **Done when** (section 13, adapted), `mcp/nugget.test.ts`: a session's run offers its `cells` helper, the offered
+     call keeps it as `honeycomb`, and a fresh session's `nugget find honeycomb` returns it with its `use` line, and a
+     recipe importing it runs.
 7. **I24–I25.** Process-aware checks.
 
 ## 13. Done for the whole plan

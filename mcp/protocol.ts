@@ -17,7 +17,7 @@ const INSTRUCTIONS = [
   "slice_wait returns within about 20 seconds. When the status is running, call it again with the same job.",
   "A Model call that runs past about 45 seconds answers with a job instead: slice_wait on it returns the call's result.",
   "For a Model edit: faces_find, workplane_set, model_probe, model_apply, then model_commit so the plate uses the new solid.",
-  "Before writing a recipe, plugin {action:\"list\", query} with a word or two of what you need.",
+  "Before writing a recipe, nugget {action:\"find\", query} with a word or two of what you need.",
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");
 
