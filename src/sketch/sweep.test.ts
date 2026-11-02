@@ -4,10 +4,10 @@
 import { keepSketch, withoutSketch } from "../model-request.ts";
 import { opLabel } from "../model-tree.ts";
 import type { LoftSection, ProfileLoop, Vec3 } from "../model-tree.ts";
-import { frameOf, toWorld } from "./frame.ts";
-import { addArc, addLine, emptySketch, type SketchData } from "./model.ts";
+import { frameOf, planeOf, toWorld } from "./frame.ts";
+import { addArc, addCircle, addLine, emptySketch, type SketchData } from "./model.ts";
 import { sketchRegions, toLoops } from "./regions.ts";
-import { SHARP_CORNER, alongRefusal, buildSketchSweep, extendPath, openChain, sharpCorner, sweepEditOf, turningDeg } from "./sweep.ts";
+import { PIPE_DIAMETER_REFUSAL, PIPE_WALL_REFUSAL, SHARP_CORNER, alongRefusal, oneSketchSweep, pipeProfile, standUpProfile, buildSketchSweep, extendPath, openChain, sharpCorner, sweepEditOf, turningDeg } from "./sweep.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -158,6 +158,65 @@ const met = extendPath([[0, 0, 0], [10, 0, 0]], [true, true], [[10, 0, 0], [10, 
 check("an edge that meets is appended", "path" in met && met.path.length === 3 && met.path[2]![1] === 8);
 const missed = extendPath([[0, 0, 0], [10, 0, 0]], [true, true], [[0, 5, 0], [0, 9, 0]]);
 eq("an edge that misses says so", "error" in missed ? missed.error : "", "Pick an edge that meets the path.");
+
+// --- S1. A circle and a route in one sketch on the bed: the circle stands up at the route's nearer end. ---
+{
+  let one = addCircle(emptySketch(), [0, 0], 3).sketch;
+  one = addLine(one, [40, 0], [10, 0]).sketch;
+  one = addArc(one, [40, 0], [60, 20], [54.142136, 5.857864]).sketch;
+  const split = oneSketchSweep(one);
+  check("a circle and an open route split into shape and route", !!split && split.shape.entities.length === 1 && split.route.entities.length === 2);
+  const stood = split ? standUpProfile(split) : null;
+  check("the shape stands up", !!stood);
+  if (stood) {
+    eq("the route starts at the end nearer the circle", stood.path[0], [10, 0, 0]);
+    const frame = frameOf(stood.profileSketch.plane);
+    check("the stood-up plane faces along the route's start", near(frame.w[0], 1) && near(frame.w[1], 0) && near(frame.w[2], 0));
+    check("the circle's centre sits on the start", sectionPointsNear(toWorld(frame, [0, 0]), [10, 0, 0]));
+    eq("the route sketch keeps only the route", stood.pathSketch.entities.map((entity) => entity.kind), ["line", "arc"]);
+
+    // The same sweep made the strict way: the circle drawn by hand on a plane facing +X at the start, and the route alone.
+    const byHandPlane = planeOf({ origin: [10, 0, 0], u: [0, 0, -1], v: [0, 1, 0], w: [1, 0, 0] });
+    const byHand = addCircle(emptySketch(byHandPlane), [0, 0], 3).sketch;
+    let routeOnly = emptySketch();
+    routeOnly = { ...routeOnly, points: stood.pathSketch.points, entities: stood.pathSketch.entities };
+    const strictChain = openChain(routeOnly)!;
+    const forward = strictChain.path[0]![0] === 10 ? strictChain : { path: [...strictChain.path].reverse(), check: [...strictChain.check].reverse() };
+    const strict = buildSketchSweep({ profileSketch: byHand, profile: sketchRegions(byHand)[0]!, path: forward.path, check: forward.check, pathSketch: routeOnly, scale: 1, mode: "new" });
+    const easy = buildSketchSweep({ profileSketch: stood.profileSketch, profile: stood.profile, path: stood.path, check: stood.check, pathSketch: stood.pathSketch, scale: 1, mode: "new" });
+    check("both ways build", "op" in strict && "op" in easy);
+    eq("the one-sketch sweep stores the same op as the two-sketch sweep", "op" in easy ? easy.op : null, "op" in strict ? strict.op : null);
+  }
+  const asDrawn = split ? buildSketchSweep({ profileSketch: one, profile: split.profile, path: split.chain.path, check: split.chain.check, pathSketch: one, scale: 1, mode: "new" }) : null;
+  check("as drawn, the flat circle is still refused", !!asDrawn && "error" in asDrawn && asDrawn.error.startsWith("The profile and the path are on the same plane"));
+  eq("a closed shape alone is not a one-sketch sweep", oneSketchSweep(squareSketch()), null);
+  eq("a route alone is not one either", oneSketchSweep(addLine(emptySketch(), [0, 0], [10, 0]).sketch), null);
+}
+
+// --- S2. Pipe mode: a circle at the route's start, with a hole for a wall. ---
+{
+  const route = addLine(emptySketch(), [0, 0], [30, 0]).sketch;
+  const chain = openChain(route)!;
+  const rod = pipeProfile(route, chain, 8, 0);
+  check("a pipe makes a profile", "profile" in rod);
+  if ("profile" in rod) {
+    eq("a rod is one circle", rod.profileSketch.entities.map((entity) => entity.kind), ["circle"]);
+    eq("of the typed diameter", (rod.profileSketch.entities[0] as { radius: number }).radius, 4);
+    const frame = frameOf(rod.profileSketch.plane);
+    check("facing along the route", near(Math.abs(frame.w[0]), 1));
+    const built = buildSketchSweep({ ...rod, scale: 1, mode: "new" });
+    check("a rod sweeps", "op" in built && built.op.kind === "loft" && !!built.op.drawing?.sweep);
+  }
+  const tube = pipeProfile(route, chain, 8, 1);
+  check("a wall makes a hole", "profile" in tube && tube.profile.holes.length === 1);
+  if ("profile" in tube) check("a tube sweeps with its hole", (() => { const built = buildSketchSweep({ ...tube, scale: 1, mode: "new" }); return "op" in built && built.op.sections.every((section) => section.loops?.length === 2); })());
+  eq("no diameter is refused", "error" in pipeProfile(route, chain, 0, 0) ? (pipeProfile(route, chain, 0, 0) as { error: string }).error : "", PIPE_DIAMETER_REFUSAL);
+  eq("a wall as thick as the radius is refused", "error" in pipeProfile(route, chain, 8, 4) ? (pipeProfile(route, chain, 8, 4) as { error: string }).error : "", PIPE_WALL_REFUSAL);
+}
+
+function sectionPointsNear(a: Vec3, b: Vec3): boolean {
+  return near(a[0], b[0]) && near(a[1], b[1]) && near(a[2], b[2]);
+}
 
 if (failed) {
   console.error(`${failed} failed`);
