@@ -95,6 +95,7 @@ src/model-context.test.ts
 src/model-space.test.ts
 src/model-tree.test.ts
 src/model-history.test.ts
+src/plugin-step.test.ts
 src/model-hole.test.ts
 src/model-primitive.test.ts
 src/model-request.test.ts

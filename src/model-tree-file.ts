@@ -10,7 +10,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
@@ -32,6 +32,9 @@ interface SavedNode {
   pieces?: (string | null)[];
   /** A split to print with dowels: its pins' plate object's id, or null when not saved. */
   pins?: string | null;
+  /** --- Plugin steps (D8). The recipe a run of steps came from, on its first node, and the run on each of its nodes. */
+  plugin?: PluginStamp;
+  run?: RunMark;
 }
 
 /**
@@ -85,6 +88,8 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
         ...(piece ? { piece } : {}),
         ...(pieces && pieces.length > 0 ? { pieces } : {}),
         ...(pins !== undefined ? { pins } : {}),
+        ...(node.plugin ? { plugin: node.plugin } : {}),
+        ...(node.run ? { run: node.run } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
@@ -161,6 +166,8 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
       ...(piece ? { piece } : {}),
       ...(pieces ? { pieces } : {}),
       ...(pins !== undefined ? { pins } : {}),
+      ...(node.plugin ? { plugin: node.plugin } : {}),
+      ...(node.run ? { run: node.run } : {}),
       ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
@@ -225,6 +232,9 @@ function readNode(value: unknown): SavedNode | null {
   if (pieces === null) return null;
   if (value.pins !== undefined && value.pins !== null && (typeof value.pins !== "string" || !value.pins)) return null;
   const name = typeof value.name === "string" ? value.name.trim() : "";
+  // A damaged stamp or run mark is left out: the step still opens as built, only as a plain step.
+  const plugin = value.plugin === undefined ? undefined : readStamp(value.plugin);
+  const run = value.run === undefined ? undefined : readRun(value.run);
   return {
     id: value.id,
     parent,
@@ -234,7 +244,34 @@ function readNode(value: unknown): SavedNode | null {
     ...(typeof value.piece === "string" ? { piece: value.piece } : {}),
     ...(pieces ? { pieces } : {}),
     ...(value.pins !== undefined ? { pins: value.pins as string | null } : {}),
+    ...(plugin ? { plugin } : {}),
+    ...(run ? { run } : {}),
   };
+}
+
+/** --- Plugin steps (D8). A stamp as saved; undefined when any field is damaged. */
+export function readStamp(value: unknown): PluginStamp | undefined {
+  if (!isRecord(value) || typeof value.plugin !== "string" || !value.plugin || value.plugin.length > 80) return undefined;
+  if (!isId(value.version) || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.sha256) || typeof value.api !== "string" || !/^\d+\.\d+$/.test(value.api)) return undefined;
+  if (!isRecord(value.params) || !isRecord(value.context)) return undefined;
+  const params: Record<string, number | boolean | string> = {};
+  for (const [key, raw] of Object.entries(value.params)) {
+    if (typeof raw === "boolean" || typeof raw === "string" || finite(raw)) params[key] = raw as number | boolean | string;
+    else return undefined;
+  }
+  const bed = vec(value.context.bedMm);
+  if (!bed || !finite(value.context.nozzleMm)) return undefined;
+  const fingerprint = value.fingerprint === null || value.fingerprint === undefined ? null : readFingerprint(value.fingerprint);
+  if (fingerprint === undefined) return undefined;
+  const exprs = readExprs(value.exprs);
+  return { plugin: value.plugin, version: value.version, sha256: value.sha256, api: value.api, params, ...(exprs ? { exprs } : {}), context: { bedMm: bed, nozzleMm: value.context.nozzleMm as number }, fingerprint };
+}
+
+function readRun(value: unknown): RunMark | undefined {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id || value.id.length > 64 || !isId(value.k) || !isId(value.n)) return undefined;
+  const k = value.k as number;
+  const n = value.n as number;
+  return k >= 1 && k <= n ? { id: value.id, k, n } : undefined;
 }
 
 /** A split to print's pieces: one object id, or null, for each piece after the first. Null when damaged. */

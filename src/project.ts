@@ -121,6 +121,12 @@ export interface LimeProject {
    */
   mcpModel?: Record<string, unknown>;
   /**
+   * --- Plugin steps (docs/plan-recipe-plugins.md D7). The project's own copy of each plugin its parts' stamped steps
+   * name, by the SHA-256 of the code: the whole `.rs` file. So the project rebuilds where the library lacks the plugin.
+   * Omitted when there are none.
+   */
+  plugins?: Record<string, string>;
+  /**
    * --- A6. Named parameters, in evaluation order: a number, or an expression such as "wallH / 2".
    * Omitted when there are none. Older files keep the numbers under `mcpModel.params`; the MCP
    * still reads that, and writes this field.
@@ -216,6 +222,8 @@ export function projectWire(project: LimeProject): Record<string, unknown> {
   if (assemblies.length > 0) wire.assemblies = assemblies;
   // --- A8. The MCP record rides along, including each object's recipe. ---
   if (project.mcpModel) wire.mcpModel = project.mcpModel;
+  const plugins = readPlugins(project.plugins);
+  if (plugins) wire.plugins = plugins;
   const parameters = parametersForWire(project.parameters);
   if (parameters) wire.parameters = parameters;
   if (project.overrides) wire.overrides = project.overrides;
@@ -439,6 +447,8 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
   if (assemblies.length > 0) project.assemblies = assemblies;
   if (unreadHistory.length > 0) project.unreadHistory = unreadHistory;
   if (doc.mcpModel && typeof doc.mcpModel === "object" && !Array.isArray(doc.mcpModel)) project.mcpModel = doc.mcpModel as Record<string, unknown>;
+  const plugins = readPlugins(doc.plugins);
+  if (plugins) project.plugins = plugins;
   const parameters = readParameters(doc.parameters);
   if (parameters) project.parameters = parameters;
   if (doc.overrides !== undefined) {
@@ -869,4 +879,20 @@ function readPair(value: unknown): [number, number] | null {
 
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+/** The largest plugin file a project carries: a recipe is one `main.rs`, so this is generous. */
+const PLUGIN_FILE_MAX = 1 << 20;
+
+/**
+ * --- Plugin steps (D7). A project's plugin copies, checked: a SHA-256 to the file's text. A damaged entry is left out,
+ * so the project still opens; its steps then say their code is missing. Undefined when none is left.
+ */
+export function readPlugins(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [sha, text] of Object.entries(value as Record<string, unknown>)) {
+    if (/^[0-9a-f]{64}$/.test(sha) && typeof text === "string" && text.length > 0 && text.length <= PLUGIN_FILE_MAX) out[sha] = text;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
