@@ -48,6 +48,12 @@ export const ASSIST_PURPOSE = {
   backToLoft: "Keep this shape and go back to the loft, with both sections picked.",
   roundCorners: "Round the route's sharp corners on Apply, so the shape can follow them.",
   faceStart: "Keep this sketch as a card and pick a face of the part for the holes.",
+  /** O1: Offset's wall options, shown under the Edit row while Offset is on. */
+  wallBoth: "Offset each side of the line by the distance, for a wall around it.",
+  wallClose: "Join the ends of the new lines, so the wall is a shape you can extrude.",
+  wallHelper: "Keep the line you offset as a helper line, so it guides without splitting the wall.",
+  /** P2 for the Edit tools: the ? at the end of the Edit row. */
+  editHow: "Show me how each Edit tool works, on a small ready-made sketch.",
 } as const;
 
 /** True for either open-ends reason: both mark the red ends. */

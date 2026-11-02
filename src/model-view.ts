@@ -3304,6 +3304,8 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
   function sketchStrokeStyle(role: string): { width: number; opacity: number; color: number } {
     if (role === "grid") return { width: 1, opacity: 0.35, color: 0x8a93a3 };
     if (role === "ref") return { width: 1, opacity: 0.55, color: hexToThree(colors.teal) };
+    // U1: the edge Copy edge would copy, brighter and wider under the pointer.
+    if (role === "refHot") return { width: 2.5, opacity: 1, color: hexToThree(colors.teal) };
     if (role === "selected") return { width: 2.5, opacity: 1, color: 0xffd166 };
     if (role === "construction") return { width: 1, opacity: 0.7, color: 0x8a93a3 };
     if (role === "rubber") return { width: 1.5, opacity: 0.95, color: accent };
