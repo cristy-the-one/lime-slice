@@ -44,7 +44,7 @@ jobs:
               *) code=true ;;
             esac
             case "$file" in
-              crates/*|src-tauri/*|Cargo.toml|Cargo.lock|rust-toolchain*|.cargo/*|tools/occt/*|tools/mcp/*|mcp/native*|mcp/engine*|package.json|package-lock.json|.github/workflows/ci.yml) macos=true ;;
+              crates/*|src-tauri/*|Cargo.toml|Cargo.lock|rust-toolchain*|.cargo/*|tools/occt/*|tools/mcp/*|mcp/native*|mcp/engine*|package-lock.json|.github/workflows/ci.yml) macos=true ;;
             esac
           done < <(git diff --name-only "$BASE...$HEAD")
           echo "code=$code" >> "$GITHUB_OUTPUT"
