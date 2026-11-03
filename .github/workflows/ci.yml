@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      macos: ${{ steps.diff.outputs.macos }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,17 +30,26 @@ jobs:
         run: |
           if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "code=true" >> "$GITHUB_OUTPUT"
+            echo "macos=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           code=false
+          # The macOS jobs run only when something that can behave differently on macOS changed: native code,
+          # the build, the engine's loading, or CI itself. macOS runners are scarce, and queued macOS jobs were
+          # cancelled with no runner several times on 2026-11-02 while TypeScript-only PRs waited on them.
+          macos=false
           while IFS= read -r file; do
             case "$file" in
               docs/*|*.md|"") ;;
               *) code=true ;;
             esac
+            case "$file" in
+              crates/*|src-tauri/*|Cargo.toml|Cargo.lock|rust-toolchain*|.cargo/*|tools/occt/*|tools/mcp/*|mcp/native*|mcp/engine*|package.json|package-lock.json|.github/workflows/ci.yml) macos=true ;;
+            esac
           done < <(git diff --name-only "$BASE...$HEAD")
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "Code changed: $code"
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          echo "Code changed: $code, macOS-relevant: $macos"
 
   rust:
     name: test, clippy, and Tauri
@@ -499,7 +509,7 @@ jobs:
   mcp-macos:
     name: MCP server (macOS)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -756,7 +766,7 @@ jobs:
   occt-macos:
     name: OCCT dynamic link (macOS)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     timeout-minutes: 360
     env:
