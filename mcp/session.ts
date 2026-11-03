@@ -34,7 +34,7 @@ import { bakeOp, bakeTransition, EDGES_SHAPE, onFaceIndex, profilePlane, type Ba
 import { thinWalls } from "../src/modeling/thin.ts";
 import { bakeCells, runComposite, storeGroup } from "../src/modeling/composite-apply.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep } from "../src/modeling/part-reads.ts";
-import { frameNote, placeFree, placeNumbers, placeOnPlate } from "../src/modeling/placing.ts";
+import { frameNote, placeFree, placeNumbers, placeOnPlate, placedBounds } from "../src/modeling/placing.ts";
 import { AnchorError, anchorRow, hasAnchor, resolveAnchors, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
@@ -110,6 +110,7 @@ import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { EngineStopped, occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
 import { appVersion, exportGcode, mass } from "./export-gcode.ts";
 import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts";
+import { replyOffset } from "../src/bed-offset.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
@@ -1235,8 +1236,9 @@ export class Session {
       if (back.ok === false) return { ok: false, reason: `The step before the plugin's run could not be shown: ${String(back.reason ?? "the engine refused it.")}` };
     }
     const created: string[] = [];
-    /** Objects the run placed itself: a replace keeps the old part's place for the others. */
+    /** Print and assembly poses are independent; a replace preserves each unless the run set it. */
     const placed = new Set<string>();
+    const modelPlaced = new Set<string>();
     /** Parts that were on the plate before the run, with the step each stood at. */
     const touched = new Map<string, number | null>();
     const notes: string[] = [];
@@ -1279,7 +1281,6 @@ export class Session {
         if (!created.includes(target) || others.some((id) => !created.includes(id))) {
           return { ok: false, error: `${site.tool} in a recipe places only the objects this run made (solid_new), relative to each other or the bed.` };
         }
-        placed.add(target);
       }
       // --- O8 (D11.1). A recipe touches only the part it was given and the parts it made, so a plugin from someone
       // else cannot reach the user's other parts.
@@ -1305,6 +1306,9 @@ export class Session {
         if (refusedArgs.size < 50) refusedArgs.set(site.id, site.args);
         return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
       }
+      const target = typeof site.args.object === "string" ? site.args.object : this.selected;
+      if (site.tool === "object_place") placed.add(target);
+      if (site.tool === "model_place") modelPlaced.add(target);
       if (site.tool === "model_apply") applied += 1;
       if (site.tool === "model_apply_batch") applied += Array.isArray(site.args.ops) ? site.args.ops.length : 1;
       if (maxSteps !== undefined && applied >= maxSteps) return { ok: true, result: value, halt: `The run stopped after ${applied} applied op${applied === 1 ? "" : "s"} (maxSteps ${maxSteps}), at line ${site.line}.` };
@@ -1431,7 +1435,7 @@ export class Session {
           if ((await this.objectRemove(oldId).catch(() => ({ ok: false }))).ok !== false) removed.push(oldId);
           continue;
         }
-        await this.takeOver(oldId, newId, !placed.has(newId), rebuild?.run.before === null && rebuild.obj.id === oldId);
+        await this.takeOver(oldId, newId, !placed.has(newId), !modelPlaced.has(newId), rebuild?.run.before === null && rebuild.obj.id === oldId);
         created[i] = oldId;
         if (object === newId) object = oldId;
         replaced.push(oldId);
@@ -2031,7 +2035,7 @@ export class Session {
    * --- I22. The object `newId` takes the handle `oldId`: the old one leaves the plate, and the new one takes its handle,
    * its place in the list, its name and, unless the run placed it, its place on the plate and in the model.
    */
-  private async takeOver(oldId: string, newId: string, keepPlace: boolean, keepOld = false): Promise<void> {
+  private async takeOver(oldId: string, newId: string, keepPlace: boolean, keepModelPlace: boolean, keepOld = false): Promise<void> {
     const old = this.find(oldId);
     const made = this.find(newId);
     if (!old || !made) return;
@@ -2048,6 +2052,8 @@ export class Session {
       made.scale = old.scale;
       made.centered = old.centered;
       made.offset = { ...old.offset };
+    }
+    if (keepModelPlace) {
       made.modelPose = { m: [...old.modelPose.m] as PlateObject["modelPose"]["m"], t: [...old.modelPose.t] as PlateObject["modelPose"]["t"] };
       if (old.frame !== undefined) made.frame = old.frame;
     }
@@ -3537,14 +3543,25 @@ export class Session {
     this.remember("Place");
     const printer = this.printer();
     // The place itself is the shared one (src/modeling/placing.ts), as the app's recipe calls set it.
-    return placeOnPlate(obj, input, {
-      bedMm: [printer.bedX, printer.bedY, printer.bedZ],
+    // A recipe has a current solid before it has a committed plate mesh. Use that solid for the
+    // bounds, including alignment targets, without committing geometry partway through the run.
+    const place = { ...obj, source: obj.solid?.positions ?? obj.source };
+    const bedMm: [number, number, number] = [printer.bedX, printer.bedY, printer.bedZ];
+    const reply = placeOnPlate(place, input, {
+      bedMm,
       ...(obj.solid ? { faces: obj.solid.faces } : {}),
       boundsOf: (id) => {
         const other = this.find(id);
-        return other && other.id !== obj.id ? this.placed(other).bounds : null;
+        return other && other.id !== obj.id ? placedBounds({ ...other, source: other.solid?.positions ?? other.source }, bedMm) : null;
       },
     });
+    if (reply.ok === true) {
+      obj.orient = place.orient;
+      obj.scale = place.scale;
+      obj.centered = place.centered;
+      obj.offset = place.offset;
+    }
+    return reply;
   }
 
   /** Older jobs keep z and seconds. Only the latest job keeps layer paths. */
@@ -8665,7 +8682,7 @@ export class Session {
     };
   }
 
-  private layerColumns(input: Record<string, unknown>): { paths: PathColumns; z: number; index: number } | { reason: string } {
+  private layerColumns(input: Record<string, unknown>): { paths: PathColumns; z: number; index: number; offsets: [number, number][] } | { reason: string } {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     if (!job?.wire) return { reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -8674,7 +8691,9 @@ export class Session {
     const index = typeof input.layer === "number" ? input.layer : 0;
     const layer = layers[index];
     if (!layer?.paths || !Array.isArray(layer.paths.xy)) return { reason: "That layer has no paths." };
-    return { paths: layer.paths, z: layer.z ?? 0, index };
+    const objects = job.wire.objects as { offset?: [number, number] }[] | undefined;
+    const offsets = Array.isArray(objects) ? objects.map((obj) => replyOffset(obj.offset)) : [replyOffset(job.wire.offset as [number, number] | undefined)];
+    return { paths: layer.paths, z: layer.z ?? 0, index, offsets };
   }
 
   private layerDetail(input: Record<string, unknown>): Record<string, unknown> {
@@ -8701,7 +8720,7 @@ export class Session {
   private layerPathsFile(input: Record<string, unknown>): Record<string, unknown> {
     const layer = this.layerColumns(input);
     if ("reason" in layer) return { ok: false, reason: layer.reason };
-    const paths = layerPaths(layer.paths, layer.z, typeof input.simplifyMm === "number" ? input.simplifyMm : 0.05);
+    const paths = layerPaths(layer.paths, layer.z, typeof input.simplifyMm === "number" ? input.simplifyMm : 0.05, layer.offsets);
     const text = pathsSvg(paths);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `layer-${layer.index}.svg`, ".svg");
     writeFileSync(path, text);
@@ -8722,7 +8741,7 @@ export class Session {
       const studied = (object: number) => !ids || cells.objectId === null || ids[object] === cells.objectId;
       stress = { cells, studied, layerZ: layer.z };
     }
-    const paths = layerPaths(layer.paths, layer.z, 0.05);
+    const paths = layerPaths(layer.paths, layer.z, 0.05, layer.offsets);
     const png = pathsPng(paths, typeof input.longEdge === "number" ? input.longEdge : 256, colourBy, stress);
     const path = resolveWrite(typeof input.name === "string" ? input.name : `layer-${layer.index}.png`, ".png");
     writeFileSync(path, png);

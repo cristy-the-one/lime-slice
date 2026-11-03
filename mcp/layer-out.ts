@@ -8,11 +8,19 @@ import { cellPieces, type StressCells } from "../src/sim/stress-cells.ts";
 import { decodePaths, type PreviewPath } from "../src/preview-wire.ts";
 import type { PathColumns } from "../src/preview-wire.ts";
 
-export function layerPaths(columns: PathColumns, layerZ: number, simplifyMm: number): PreviewPath[] {
+/** Keep sampling in the part frame; only drawing adds the sliced bed offset. */
+type LayerPath = PreviewPath & { offset?: readonly [number, number] };
+
+export function layerPaths(columns: PathColumns, layerZ: number, simplifyMm: number, offsets: readonly (readonly [number, number])[] = []): LayerPath[] {
   return decodePaths(columns, layerZ).map((path) => ({
     ...path,
     pts: simplify(path.pts, simplifyMm),
+    offset: offsets[path.object ?? 0],
   }));
+}
+
+function bedPoint(path: LayerPath, [x, y]: readonly [number, number]): [number, number] {
+  return [x + (path.offset?.[0] ?? 0), y + (path.offset?.[1] ?? 0)];
 }
 
 function simplify(pts: [number, number][], tol: number): [number, number][] {
@@ -27,13 +35,14 @@ function simplify(pts: [number, number][], tol: number): [number, number][] {
   return out;
 }
 
-export function pathsSvg(paths: readonly PreviewPath[]): string {
+export function pathsSvg(paths: readonly LayerPath[]): string {
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (const path of paths) {
-    for (const [x, y] of path.pts) {
+    for (const point of path.pts) {
+      const [x, y] = bedPoint(path, point);
       if (x < minX) minX = x;
       if (y < minY) minY = y;
       if (x > maxX) maxX = x;
@@ -48,7 +57,7 @@ export function pathsSvg(paths: readonly PreviewPath[]): string {
   }
   const pad = 1;
   const lines = paths.map((path) => {
-    const points = path.pts.map(([x, y]) => `${x},${y}`).join(" ");
+    const points = path.pts.map((point) => bedPoint(path, point).join(",")).join(" ");
     return `<polyline data-kind="${path.kind}" fill="none" stroke="${colorForPath(path.kind, "feature")}" stroke-width="0.45" points="${points}" />`;
   });
   return [
@@ -100,7 +109,7 @@ export interface LayerStress {
   layerZ: number;
 }
 
-export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colourBy: ColorMode, stress?: LayerStress): Uint8Array {
+export function pathsPng(paths: readonly LayerPath[], longEdge: number, colourBy: ColorMode, stress?: LayerStress): Uint8Array {
   const edge = Math.max(32, Math.min(1024, Math.round(longEdge)));
   const width = edge;
   const height = edge;
@@ -109,7 +118,8 @@ export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colour
   let maxX = -Infinity;
   let maxY = -Infinity;
   for (const path of paths) {
-    for (const [x, y] of path.pts) {
+    for (const point of path.pts) {
+      const [x, y] = bedPoint(path, point);
       if (x < minX) minX = x;
       if (y < minY) minY = y;
       if (x > maxX) maxX = x;
@@ -124,7 +134,7 @@ export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colour
   }
   const span = Math.max(maxX - minX, maxY - minY, 1e-6);
   const fit = (edge - 8) / span;
-  const px = (x: number, y: number): [number, number] => [
+  const pixel = (x: number, y: number): [number, number] => [
     Math.round(4 + (x - minX) * fit),
     Math.round(edge - 4 - (y - minY) * fit),
   ];
@@ -145,6 +155,7 @@ export function pathsPng(paths: readonly PreviewPath[], longEdge: number, colour
     }
   };
   for (const path of paths) {
+    const px = (x: number, y: number) => pixel(...bedPoint(path, [x, y]));
     if (stress && readsStress(colourBy) && path.kind !== "travel" && stress.studied(path.object ?? 0)) {
       // Each bead cut where it crosses a cell line, each piece by its own cell.
       const z = stress.layerZ - (path.beadHeight || 0.2) / 2;

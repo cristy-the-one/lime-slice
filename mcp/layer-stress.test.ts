@@ -86,6 +86,8 @@ const bead = (y: number): PreviewPath => ({
   beadHeight: 0.2,
 });
 const png = pathsPng([bead(5), bead(15)], 256, "stress", { cells, studied: () => true, layerZ: 0.2 });
+const shifted = pathsPng([bead(5), bead(15)].map((path) => ({ ...path, offset: [80, 120] as const })), 256, "stress", { cells, studied: () => true, layerZ: 0.2 });
+assert.deepEqual(shifted, png, "moving a part on the bed must not change which stress cells its beads sample");
 const { width, height, rgb } = pixels(png);
 const hex = (h: string) => [1, 3, 5].map((o) => parseInt(h.slice(o, o + 2), 16));
 const near = (x: number, y: number, h: string) => {
