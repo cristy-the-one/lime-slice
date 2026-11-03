@@ -329,15 +329,21 @@ function paintCalibrate() {
   if (typing) document.querySelector<HTMLInputElement>(`#${typing}`)?.focus({ preventScroll: true });
 }
 
+let calibrateOpener: HTMLElement | null = null;
+
 export function setCalibrate(open: boolean) {
   const sheet = document.querySelector<HTMLElement>("#calibrate");
   if (!sheet) return;
+  if (open && sheet.hidden) calibrateOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const wasOpen = !sheet.hidden;
   sheet.hidden = !open;
   if (open) {
     document.documentElement.dataset.overlay = "calibrate";
     sheet.querySelector<HTMLElement>("input, button")?.focus();
-  } else if (document.documentElement.dataset.overlay === "calibrate") {
-    delete document.documentElement.dataset.overlay;
+  } else {
+    if (document.documentElement.dataset.overlay === "calibrate") delete document.documentElement.dataset.overlay;
+    if (wasOpen && calibrateOpener?.isConnected) calibrateOpener.focus();
+    calibrateOpener = null;
   }
 }
 
@@ -509,7 +515,7 @@ export function paintBanner() {
     const sample = sliceSample();
     const indeterminate = !(sample.fraction > 0 && sample.fraction < 1);
     const pct = indeterminate ? 30 : Math.max(4, sample.fraction * 100);
-    bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing" role="progressbar" aria-label="Slice progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(sample.fraction * 100)}"><span style="width:${pct}%"></span></div>`);
+    bits.push(`<div class="progress${indeterminate ? " indeterminate" : ""}" data-state="slicing" role="progressbar" aria-label="Slice progress" aria-valuemin="0" aria-valuemax="100"${indeterminate ? "" : ` aria-valuenow="${Math.round(sample.fraction * 100)}"`}><span style="width:${pct}%"></span></div>`);
   }
   rail.innerHTML = bits.join("");
   const meter = document.querySelector<HTMLElement>("#sliceMeter");

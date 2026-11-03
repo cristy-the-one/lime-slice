@@ -255,7 +255,7 @@ const SCOPES: Record<KeyScope, (c: KeyContext) => boolean> = {
   workspace: (c) => !c.helpOpen && !c.sketchOpen,
 };
 
-export type KeyEventLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "repeat">;
+export type KeyEventLike = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey" | "repeat"> & Partial<Pick<KeyboardEvent, "getModifierState">>;
 
 const KEY_NAMES: Record<string, string> = {
   Esc: "Escape",
@@ -268,6 +268,8 @@ const KEY_NAMES: Record<string, string> = {
 
 /** Does `chord` ("Ctrl+Shift+Z", "Shift+1", "]") describe this key press? Ctrl also stands for Cmd. */
 export function chordMatches(chord: string, ev: KeyEventLike): boolean {
+  // On Windows and Linux AltGr can report Ctrl+Alt while entering text.
+  if (ev.getModifierState?.("AltGraph")) return false;
   const parts = chord.split("+");
   const name = parts[parts.length - 1] ?? "";
   const mods = parts.slice(0, -1);

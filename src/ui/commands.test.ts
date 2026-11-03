@@ -95,6 +95,13 @@ for (const chord of chords) {
 const ctrlK = COMMANDS.filter((command) => command.keys?.includes("Ctrl+K"));
 eq("exactly one Ctrl+K", ctrlK.map((command) => command.id), ["palette"]);
 
+// AltGr is used to type characters on many Windows and Linux layouts.
+for (const chord of ["Ctrl+Alt+P", "Ctrl+Alt+B"]) {
+  const ev = { ...eventFor(chord), getModifierState: (name: string) => name === "AltGraph" };
+  eq(`${chord} does not intercept AltGr`, resolveKey(ev, { ...BASE, stage: "model", typing: true }), null);
+}
+eq("Ctrl+Alt+P still opens Parameters", press("Ctrl+Alt+P", { stage: "model", typing: true }), "model-parameters");
+
 // Bindings ---------------------------------------------------------------------------------------------------
 
 eq("1 is Prepare", press("1"), "tab-prepare");

@@ -54,7 +54,17 @@ export function pushToast(message: string, tone: ToastTone = "info", action?: To
   toast.append(close);
   rail.prepend(toast);
   while (rail.children.length > 4) rail.lastElementChild?.remove();
-  window.setTimeout(() => {
-    if (toast.isConnected) toast.remove();
-  }, HOLD_MS);
+  let timer: number | undefined;
+  let hovering = false;
+  const pause = () => { window.clearTimeout(timer); timer = undefined; };
+  const resume = () => {
+    if (hovering || toast.contains(document.activeElement)) return;
+    pause();
+    timer = window.setTimeout(() => toast.remove(), HOLD_MS);
+  };
+  toast.addEventListener("mouseenter", () => { hovering = true; pause(); });
+  toast.addEventListener("mouseleave", () => { hovering = false; resume(); });
+  toast.addEventListener("focusin", pause);
+  toast.addEventListener("focusout", () => queueMicrotask(resume));
+  resume();
 }

@@ -13,7 +13,7 @@ interface Calls {
 }
 
 /** `/api/slice` answers with the cube at once. With `hold`, the job route never finishes, so a slice stays running. */
-async function mockEngine(page: Page, hold = false): Promise<Calls> {
+async function mockEngine(page: Page, hold = false, fraction = 0.4): Promise<Calls> {
   const calls: Calls = { slices: [], cancels: 0 };
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/slice", (route) => {
@@ -23,7 +23,7 @@ async function mockEngine(page: Page, hold = false): Promise<Calls> {
   await page.route("**/api/jobs**", (route) => {
     const url = new URL(route.request().url());
     if (!hold) return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
-    const running = { id: "7", stage: "part", done: 2, total: 4, fraction: 0.4, status: "running" };
+    const running = { id: "7", stage: "part", done: 2, total: 4, fraction, status: "running" };
     if (route.request().method() === "POST" && /\/api\/jobs\/?$/.test(url.pathname)) return route.fulfill({ status: 202, json: { id: "7" } });
     if (url.pathname.endsWith("/cancel")) {
       calls.cancels += 1;
@@ -152,6 +152,7 @@ test("Esc cancels a running slice", async ({ page }) => {
   // The button is shown as soon as the slice is marked busy, before POST /api/jobs
   // returns. Escape in that gap posts /api/cancel and does not cancel the job.
   await expect(page.locator("#sliceMeter")).toContainText("Walls and infill");
+  await expect(page.locator('[data-state="slicing"]')).toHaveAttribute("aria-valuenow", "40");
   await page.keyboard.press("Escape");
   await expect(page.locator("#cancel")).toBeHidden();
   await expect.poll(() => calls.cancels).toBe(1);
@@ -307,4 +308,14 @@ test("the shortcut sheet and tooltips come from the registry", async ({ page }) 
   await expect(page.locator(".lime-tip[data-open=true] kbd")).toHaveText("Ctrl+E");
   await page.locator("#plateArrange").hover({ force: true });
   await expect(page.locator(".lime-tip[data-open=true] kbd")).toHaveText("A");
+});
+
+test("unknown slice progress is announced as indeterminate", async ({ page }) => {
+  await mockEngine(page, true, 0);
+  await openCube(page);
+  await page.locator("#slice").click();
+  const progress = page.locator('[data-state="slicing"]');
+  await expect(progress).toHaveClass(/indeterminate/);
+  await expect(progress).not.toHaveAttribute("aria-valuenow");
+  await page.keyboard.press("Escape");
 });

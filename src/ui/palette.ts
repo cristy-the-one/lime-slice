@@ -172,6 +172,11 @@ export function mountPalette() {
       close();
       return;
     }
+    // Keep the input's native editing keys, including AltGr on Windows/Linux.
+    if (document.activeElement === input && (ev.getModifierState("AltGraph") ||
+        ((ev.ctrlKey || ev.metaKey) && /^[acvxyz]$/i.test(ev.key)))) return;
+    // A focused Close button must receive its native Enter/Space activation.
+    if (document.activeElement === closeBtn && (ev.key === "Enter" || ev.key === " ")) return;
     if (ev.key === "ArrowDown") {
       ev.preventDefault();
       ev.stopPropagation();

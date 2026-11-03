@@ -55,7 +55,8 @@ export function applySliceProgress(sample: SliceProgress, stage = "") {
   if (bar) {
     const known = sample.fraction > 0 && sample.fraction < 1;
     bar.classList.toggle("indeterminate", !known);
-    bar.setAttribute("aria-valuenow", known ? String(Math.round(sample.fraction * 100)) : "0");
+    if (known) bar.setAttribute("aria-valuenow", String(Math.round(sample.fraction * 100)));
+    else bar.removeAttribute("aria-valuenow");
     const span = bar.querySelector<HTMLElement>("span");
     if (span && known) span.style.width = `${Math.max(4, sample.fraction * 100)}%`;
     if (span && !known) span.style.width = "";

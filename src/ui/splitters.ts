@@ -255,17 +255,29 @@ function bindDrag(ws: HTMLElement, handle: HTMLElement, side: DockSide) {
     handle.classList.add("is-drag");
     handle.setPointerCapture(ev.pointerId);
     const other = side === "left" ? "right" : "left";
-    const move = (e: PointerEvent) => {
+    let pendingX: number | null = null;
+    let frame = 0;
+    const applyDrag = () => {
+      frame = 0;
+      if (pendingX === null) return;
+      const x = pendingX;
+      pendingX = null;
       const rect = ws.getBoundingClientRect();
       const dock = document.querySelector<HTMLElement>(DOCK_ID[side])?.getBoundingClientRect();
-      const raw = side === "left" ? e.clientX - (dock?.left ?? rect.left) : rect.right - e.clientX;
+      const raw = side === "left" ? x - (dock?.left ?? rect.left) : rect.right - x;
       const shownOther = dockShown(other) ? (document.querySelector<HTMLElement>(DOCK_ID[other])?.offsetWidth ?? 0) : 0;
       const max = dragMax(side, window.innerWidth, shownOther);
       const px = Math.round(Math.min(max, Math.max(side === "left" ? LEFT_MIN : RIGHT_MIN, raw)));
       write(WIDTH_KEY[side], String(px));
       applyFit();
     };
+    const move = (e: PointerEvent) => {
+      pendingX = e.clientX;
+      if (!frame) frame = requestAnimationFrame(applyDrag);
+    };
     const up = () => {
+      if (frame) cancelAnimationFrame(frame);
+      applyDrag();
       handle.classList.remove("is-drag");
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);

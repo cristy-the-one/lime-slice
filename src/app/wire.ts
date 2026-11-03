@@ -434,7 +434,10 @@ export function wireApp() {
     else if (button.dataset.sample) void loadNamed(button.dataset.sample).catch(fail);
     else if (button.id === "export3mf") void export3mf();
     else if (button.id === "machineOpen") revealPrinterDetails();
-    else if (button.id === "calibrateOpen") document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
+    else if (button.id === "calibrateOpen") {
+      fileMenu.querySelector<HTMLElement>("summary")?.focus();
+      document.dispatchEvent(new CustomEvent("lime-open-calibrate"));
+    }
   });
   mountProjectFiles();
   document.querySelector("#file")!.addEventListener("change", (ev) => {
