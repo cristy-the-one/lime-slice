@@ -4,7 +4,9 @@
 //! The folder is `LIME_PLUGINS_DIR`, else `plugins` in the app's data folder (`%APPDATA%\com.limeslice.slicer` on
 //! Windows, `$XDG_DATA_HOME/com.limeslice.slicer` on Linux, `~/Library/Application Support/com.limeslice.slicer` on
 //! macOS), the same place `mcp/plugins.ts` finds. These commands touch only the names the library uses: `<id>.rs`,
-//! `<id>.vN.rs`, `presets/<id>.json` and `settings.json`, each written whole through a temporary file and a rename.
+//! `<id>.vN.rs`, `presets/<id>.json`, `settings.json`, `lessons.json` and the ingredients (`ingredients/<id>.rs` and
+//! `ingredients/<id>.vN.rs`, docs/plan-recipe-ingredients.md I9), each written whole through a temporary file and a
+//! rename.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,8 +87,8 @@ fn older_versions(dir: &Path, id: &str) -> Vec<u32> {
     out
 }
 
-/// Every `.rs` file, the presets and the settings of the library.
-pub fn list_in(dir: &Path) -> Value {
+/// The `.rs` files of one folder whose id (the name before `.rs` or `.vN.rs`) is a slug, name order.
+fn rs_files(dir: &Path) -> Vec<Value> {
     let mut files = Vec::new();
     if let Ok(entries) = fs::read_dir(dir) {
         let mut names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -102,6 +104,12 @@ pub fn list_in(dir: &Path) -> Value {
             }
         }
     }
+    files
+}
+
+/// Every plugin and ingredient file, the presets, the lessons and the settings of the library.
+pub fn list_in(dir: &Path) -> Value {
+    let files = rs_files(dir);
     let mut presets = Vec::new();
     if let Ok(entries) = fs::read_dir(dir.join("presets")) {
         let mut names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -117,6 +125,8 @@ pub fn list_in(dir: &Path) -> Value {
         "dir": dir.to_string_lossy(),
         "files": files,
         "presets": presets,
+        "ingredients": rs_files(&dir.join("ingredients")),
+        "lessons": read_small(&dir.join("lessons.json")),
         "settings": read_small(&dir.join("settings.json")),
     })
 }
@@ -143,9 +153,9 @@ pub fn save_in(dir: &Path, id: &str, text: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Writes `settings.json` or `presets/<id>.json`; any other name is refused.
+/// Writes `settings.json`, `lessons.json` or `presets/<id>.json`; any other name is refused.
 pub fn write_in(dir: &Path, name: &str, text: &str) -> Result<(), String> {
-    let allowed = name == "settings.json" || name.strip_prefix("presets/").and_then(|n| n.strip_suffix(".json")).is_some_and(is_slug);
+    let allowed = name == "settings.json" || name == "lessons.json" || name.strip_prefix("presets/").and_then(|n| n.strip_suffix(".json")).is_some_and(is_slug);
     if !allowed {
         return Err(format!("The library does not keep a file named {name}."));
     }
@@ -185,15 +195,24 @@ pub fn plugin_library_write(app: AppHandle, name: String, text: String) -> Resul
     write_in(&library_dir(&app)?, &name, &text)
 }
 
+/// The folder a kind's files are in: plugins at the library's top, ingredients in `ingredients`.
+fn kind_dir(dir: PathBuf, kind: Option<&str>) -> Result<PathBuf, String> {
+    match kind {
+        None | Some("plugin") => Ok(dir),
+        Some("ingredient") => Ok(dir.join("ingredients")),
+        Some(other) => Err(format!("The library keeps no {other} files.")),
+    }
+}
+
 #[tauri::command]
-pub fn plugin_library_remove(app: AppHandle, id: String) -> Result<usize, String> {
-    remove_in(&library_dir(&app)?, &id)
+pub fn plugin_library_remove(app: AppHandle, id: String, kind: Option<String>) -> Result<usize, String> {
+    remove_in(&kind_dir(library_dir(&app)?, kind.as_deref())?, &id)
 }
 
 /// Shows `<id>.rs` selected in the system's file manager, or the folder when there is no id or no such file.
 #[tauri::command]
-pub fn plugin_library_reveal(app: AppHandle, id: Option<String>) -> Result<(), String> {
-    let dir = library_dir(&app)?;
+pub fn plugin_library_reveal(app: AppHandle, id: Option<String>, kind: Option<String>) -> Result<(), String> {
+    let dir = kind_dir(library_dir(&app)?, kind.as_deref())?;
     fs::create_dir_all(&dir).map_err(|e| format!("The plugin folder could not be made: {e}"))?;
     let file = id.filter(|id| is_slug(id)).map(|id| dir.join(format!("{id}.rs"))).filter(|p| p.is_file());
     let mut command;
@@ -277,11 +296,28 @@ mod tests {
         assert!(write_in(&dir, "presets/tiny.json", "{}").is_ok());
         assert!(write_in(&dir, "settings.json", "{\"author\":\"Marius\"}").is_ok());
         assert!(write_in(&dir, "presets/../x.json", "{}").is_err());
-        assert!(write_in(&dir, "lessons.json", "[]").is_err());
+        assert!(write_in(&dir, "lessons.json", "[]").is_ok());
+        assert!(write_in(&dir, "ingredients/x.rs", "pub fn a() {}").is_err());
         assert!(write_in(&dir, "settings.json", "not json").is_err());
         let listed = list_in(&dir);
+        assert_eq!(listed["lessons"], "[]");
         assert_eq!(listed["presets"][0]["plugin"], "tiny");
         assert_eq!(listed["settings"], "{\"author\":\"Marius\"}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ingredients_are_listed_and_removed_in_their_folder() {
+        let dir = scratch("ingredients");
+        let ing = |v: u32| format!("//! ---\n//! ingredient: honeycomb\n//! title: Honeycomb\n//! version: {v}\n//! ---\npub fn cells() {{}}\n");
+        save_in(&dir.join("ingredients"), "honeycomb", &ing(1)).unwrap();
+        save_in(&dir.join("ingredients"), "honeycomb", &ing(2)).unwrap();
+        let listed = list_in(&dir);
+        let names: Vec<&str> = listed["ingredients"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["honeycomb.rs", "honeycomb.v1.rs"]);
+        assert_eq!(listed["files"].as_array().unwrap().len(), 0, "ingredients are not plugins");
+        assert_eq!(remove_in(&kind_dir(dir.clone(), Some("ingredient")).unwrap(), "honeycomb").unwrap(), 2);
+        assert!(kind_dir(dir.clone(), Some("lesson")).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

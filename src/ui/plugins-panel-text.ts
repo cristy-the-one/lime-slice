@@ -16,6 +16,13 @@ export const PURPOSE = {
   back: "Back to the list of plugins.",
   how: "How plugins work, and a demo to try.",
   presets: "Fill the form with values kept under a name.",
+  savePreset: "Keep the form's values under a name, for this plugin and for agents (nugget find).",
+  removePreset: "Take this preset out of your library. Parts built with it keep their values.",
+  openPreset: "Open its plugin with these values in the form.",
+  removeLesson: "Take this lesson out of your library. Agents and the op's card stop showing it.",
+  ingredientSource: "Read the ingredient's code. It cannot be changed here.",
+  removeIngredient: "Take the ingredient out of your library. Plugins that carry a copy keep building.",
+  ingredientHow: "Recipes share helpers through ingredients. Agents keep one from a run and find it with nugget find.",
 } as const;
 
 /** R1: why Apply or Preview is greyed, each ending with what to do. */
@@ -24,4 +31,15 @@ export const REASON = {
   needsPart: "This plugin changes a part, and none is open. Select a part in the objects list, then open it in Model.",
   busy: "A plugin is running. Wait a moment for it to finish.",
   demoApply: "This is a demo, so nothing is added to your part. Click Back to my plugins.",
+  demoPreset: "This is a demo, so it keeps no presets. Click Back to my plugins.",
+  presetNeedsLibrary: "Presets are kept for the plugins in your library. Use Add to library in the ⋯ menu first.",
+} as const;
+
+/** R4: what each kind chip of the list shows. */
+export const KIND_PURPOSE = {
+  all: "Every kind of nugget your library keeps.",
+  plugin: "Whole recipes with a form: pick one to preview and apply.",
+  ingredient: "Modules of helpers that recipes import.",
+  preset: "Named values for a plugin's form.",
+  lesson: "Sentences learned from runs, about an op. Each op's card shows its own.",
 } as const;

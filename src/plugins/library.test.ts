@@ -11,6 +11,20 @@ import { DEMO_BODY, DEMO_PLUGIN, DEMO_TRY } from "./demo.ts";
 import {
   carriedValues,
   droppedSentence,
+  ingredientUse,
+  ingredientUsers,
+  lessonsAbout,
+  lessonsWithout,
+  pluginIngredients,
+  presetParams,
+  presetProblem,
+  presetsWithout,
+  publicItems,
+  readLessons,
+  searchedIngredients,
+  searchedLessons,
+  searchedPresets,
+  toolLessonKinds,
   formParams,
   formProblem,
   newerInLibrary,
@@ -26,7 +40,7 @@ import {
   stampedShas,
   type LibraryListing,
 } from "./library.ts";
-import { PURPOSE, REASON } from "../ui/plugins-panel-text.ts";
+import { KIND_PURPOSE, PURPOSE, REASON } from "../ui/plugins-panel-text.ts";
 
 let failed = 0;
 function eq<T>(name: string, actual: T, expected: T): void {
@@ -115,10 +129,53 @@ eq("the demo reads as a plugin that makes a new part", [DEMO_PLUGIN.file.target,
 const declared = [...DEMO_BODY.matchAll(/s\.(number|count)\("(\w+)", ([\d.]+)\)/g)].map((m) => [m[2], Number(m[3])]);
 eq("the demo's header declares what its code does", declared, DEMO_PLUGIN.file.params.map((p) => [p.name, p.default]));
 
+// --- Nuggets (docs/plan-recipe-ingredients.md I9–I16): ingredients, lessons, presets kept from the form, one search.
+const ingredient = (v: number, extra = "") => `//! ---\n//! ingredient: honeycomb\n//! title: Honeycomb cells\n//! version: ${v}\n//! description: Hex pockets clipped to a region, with rounded nodes.\n//! author: Marius\n//! ---\nuse lime_recipe::geom2d::*;\n/// Cells.\npub fn cells(side: f64) -> Vec<Poly> { Vec::new() }\npub const RIB: f64 = 2.4;\npub struct Cell { pub x: f64 }\nfn helper() {}\n${extra}`;
+const nugListing: LibraryListing = {
+  dir: "C:/plugins",
+  files: [{ name: "tray.rs", text: header("tray", "Honeycomb tray", 2, `${body(5)}\nmod ingredients {\n// ingredient: honeycomb v2 sha256:${"a".repeat(64)}\npub mod honeycomb {}\n}\n`) }],
+  presets: [{ plugin: "tray", text: JSON.stringify({ "pp-5mm-wall": { params: { studs: 4 }, created: "x" } }) }],
+  ingredients: [
+    { name: "honeycomb.rs", text: ingredient(2) },
+    { name: "honeycomb.v1.rs", text: ingredient(1) },
+    { name: "moulded-tray.rs", text: "//! ---\n//! ingredient: moulded-tray\n//! title: Moulded tray\n//! version: 1\n//! ---\npub fn drafted_body() {}\n" },
+    { name: "wrong.rs", text: "//! ---\n//! ingredient: other\n//! ---\npub fn a() {}\n" },
+    { name: "plain.rs", text: "pub fn a() {}" },
+  ],
+  lessons: JSON.stringify([
+    { n: 1, about: "fillet", text: "select.onFace with nearPoint over a pocket picks the pocket floor; aim at material.", created: "a" },
+    { n: 2, about: "extrude", text: "At most 1000 loops in one extrude.", created: "b" },
+    { n: 3, about: "fillet", text: "A 2 mm fillet on a 1.5 mm rib is refused; use 0.7.", created: "c" },
+    { bad: true },
+  ]),
+  settings: null,
+};
+const nug = await readLibrary(nugListing);
+eq("ingredients: current versions by id, older ones beside, a mismatched or plain file left out", [...nug.ingredients.keys()], ["honeycomb", "moulded-tray"]);
+const honey = nug.ingredients.get("honeycomb")!;
+eq("an ingredient reads its header, older versions and public items", [honey.title, honey.version, honey.older, honey.author, honey.items], ["Honeycomb cells", 2, [1], "Marius", [{ kind: "fn", name: "cells" }, { kind: "const", name: "RIB" }, { kind: "struct", name: "Cell" }]]);
+eq("public items skip private ones and read const fn as fn", publicItems("pub const fn a() {}\nfn b() {}\npub(crate) fn c() {}\npub enum E {}\n"), [{ kind: "fn", name: "a" }, { kind: "enum", name: "E" }]);
+eq("the import line names the module", [ingredientUse("honeycomb"), ingredientUse("moulded-tray")], ["use ingredients::honeycomb::*;", "use ingredients::moulded_tray::*;"]);
+eq("a plugin lists the ingredients it carries", pluginIngredients(nug.plugins.get("tray")!.file), [{ id: "honeycomb", version: 2 }]);
+eq("an ingredient lists the plugins that carry it", [ingredientUsers(nug, "honeycomb"), ingredientUsers(nug, "moulded-tray")], [[{ title: "Honeycomb tray", version: 2 }], []]);
+eq("lessons: damaged rows left out, oldest first", nug.lessons.map((l) => l.n), [1, 2, 3]);
+eq("a damaged lessons file is no lessons", [readLessons("not json"), readLessons(null), readLessons("{}")], [[], [], []]);
+eq("an op's lessons: its kinds, newest first", lessonsAbout(nug.lessons, toolLessonKinds("fillet")).map((l) => l.n), [3, 1]);
+eq("Push/pull's card reads extrude lessons too", lessonsAbout(nug.lessons, toolLessonKinds("pushpull")).map((l) => l.n), [2]);
+eq("removing a lesson keeps the rest as written", JSON.parse(lessonsWithout(nugListing.lessons!, 1)).map((l: { n?: number }) => l.n), [2, 3, undefined]);
+eq("search: an ingredient by a function it gives", searchedIngredients(nug, "cells").map((r) => r.id), ["honeycomb"]);
+eq("search: no word lists every ingredient", searchedIngredients(nug, "").map((r) => r.id), ["honeycomb", "moulded-tray"]);
+eq("search: a preset by its plugin's title", searchedPresets(nug, "honeycomb").map((r) => `${r.plugin}/${r.preset.name}`), ["tray/pp-5mm-wall"]);
+eq("search: a lesson by a word of it", searchedLessons(nug, "pocket").map((l) => l.n), [1]);
+eq("a preset's name is a slug, and its values fit", [presetProblem("Thick Wall", params, {}), presetProblem("thick", params, { studs: 40 }), presetProblem("thick", params, { studs: 4 })], ["A preset's name is lower-case letters, digits and dashes, for example pp-5mm-wall. Type one like that.", "Studs is 1 to 10. Type a value in that range.", null]);
+eq("a preset keeps every declared value, typed or default", presetParams(params, { studs: "4", radius: "1,5" }), { studs: 4, radius: 1.5, edge: "fillet" });
+eq("removing the last preset leaves an empty file", [JSON.parse(presetsWithout(nugListing.presets[0]!.text, "pp-5mm-wall")), JSON.parse(presetsWithout("{\"a\":{\"params\":{}},\"b\":{\"params\":{}}}", "a"))], [{}, { b: { params: {} } }]);
+eq("a shell from before nuggets lists none", [(await readLibrary({ dir: "", files: [], presets: [], settings: null })).ingredients.size, (await readLibrary({ dir: "", files: [], presets: [], settings: null })).lessons.length], [0, 0]);
+
 // --- R1, R4: every reason ends with what to do, every purpose says what it is for.
 const actions = /\b(click|select|type|wait|open|change|press|update|run|save|keep|clear|try|use)\b[^.]*\.$/i;
 for (const [name, text] of [...Object.entries(REASON), ["demo", DEMO_TRY]]) eq(`reason ${name} ends with an action`, actions.test(String(text)), true);
-for (const [name, text] of Object.entries(PURPOSE)) eq(`purpose ${name} is one sentence or two`, /^[A-Z].*\.$/.test(text) && text.length <= 120, true);
+for (const [name, text] of [...Object.entries(PURPOSE), ...Object.entries(KIND_PURPOSE)]) eq(`purpose ${name} is one sentence or two`, /^[A-Z].*\.$/.test(text) && text.length <= 120, true);
 
 if (failed) {
   console.error(`plugins library: ${failed} failed`);
