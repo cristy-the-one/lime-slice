@@ -146,6 +146,11 @@ import { mountModelHistory, paintRepeatSources, syncModelHistory, syncModelPosit
 import { bodySha256, checkedCopies } from "../plugin-file";
 import { runsOnPath } from "../plugin-step";
 import { freshRunId, rebuildPluginStep } from "../recipe/rebuild";
+import type { AppRunEnv, RunPart } from "../recipe/app-calls";
+import { inlineIngredients, keptCopy, type KeptIngredient } from "../recipe/ingredients";
+import type { PlatePlace } from "../modeling/placing";
+import { cleanOp } from "../modeling/compose";
+import { readPartition } from "../../mcp/partition";
 import { recipeRuntime, recipesUnavailable, RECIPES_NEED_APP } from "../recipe/runtime";
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
 import { canExplode, explodeContext, heldParts, heldPiece } from "./model-explode";
@@ -1086,11 +1091,6 @@ export function bindModelView() {
     keepPose: () => keepStale(open?.objectId ?? null),
     // --- Plugin steps (milestone 6): a plugin step's values change in the card and rebuild here.
     pluginRunner: recipesUnavailable,
-    pluginMade(row) {
-      const tree = treeOf(open);
-      const step = readRow(foldHead(row));
-      return !!tree && !!step && runsOnPath(tree).some((run) => run.ids.includes(step.id) && run.before === null);
-    },
     async pluginRebuild(row, changes, edited) {
       const next = await rebuildPluginRow(row, changes, edited);
       return next ? { row: next } : { reason: readoutText || "The step was not rebuilt." };
@@ -2716,7 +2716,7 @@ function redoNode(tree: ModelTree): NodeId | null {
 
 /** Undo is the parent, Redo the child last applied or jumped through, but for an edit, which Undo takes back whole. */
 async function step(way: "undo" | "redo") {
-  if (!busy && !jumping && !editing && !sketchRootEdit && newObjectStep(way)) return;
+  if (!busy && !jumping && !editing && !sketchRootEdit && (swapStep(way) || newObjectStep(way))) return;
   const at = open;
   const tree = treeOf(at);
   const node = tree ? (way === "undo" ? undoNode(tree) : redoNode(tree)) : null;
@@ -5281,8 +5281,8 @@ function syncUndo() {
   const framing = openModelTool() === "workplane";
   // While a step is edited, Cancel is the way back.
   const held = busy || jumping || !tree || !!editing;
-  const unmake = !busy && !jumping && !editing && canUnmake();
-  const remake = !busy && !jumping && !editing && canRemake();
+  const unmake = !busy && !jumping && !editing && (canUnmake() || canSwapBack("undo"));
+  const remake = !busy && !jumping && !editing && (canRemake() || canSwapBack("redo"));
   // --- S2: Undo and Redo step the sketch while one is open. ---
   const sketchHist = sketchHistoryButtons();
   const stressHist = stressOpen() && !openModelTool() ? stressUndoState() : { undo: false, redo: false };
@@ -5389,9 +5389,12 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
     readout("The plugin source is not in this project. The part is kept as built; its values cannot change.");
     return null;
   }
-  // A draft's ingredients are the library's: the MCP builds them in (a kept plugin carries its own).
-  if (/\bingredients::/.test(body) && !/\bmod\s+ingredients\b/.test(body)) {
-    readout(`${title} imports ingredients from the library, which the app does not read yet. Change its values over MCP (recipe_run with this part).`);
+  // --- I10. A draft's ingredients: the copies its last apply built, which the project keeps with it, inlined as the
+  // MCP host inlines them (a kept plugin carries its own `mod ingredients`).
+  const kept = keptIngredients(stamp.sha256);
+  const resolved = inlineIngredients(body, (ref, key) => kept[key] ?? { reason: `${title} imports the ingredient ${ref.module}${ref.version !== undefined ? ` v${ref.version}` : ""}, and this project keeps no copy of it. Change its values over MCP (recipe_run with this part), where the library is read.` });
+  if ("reason" in resolved) {
+    readout(resolved.reason);
     return null;
   }
   const recipes = await recipeRuntime();
@@ -5403,21 +5406,22 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
   if (!obj) return null;
   const from = tree.current;
   const mine = ticket;
+  const madeIt = run.before === null;
   busy = true;
   syncUndo();
   readout(`Rebuilding ${title}…`);
   let result: Awaited<ReturnType<typeof rebuildPluginStep>>;
   try {
     result = await rebuildPluginStep({
-      part: { id: at.objectId, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model" },
+      part: { id: at.objectId, name: obj.name, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), modelPose: modelPoseOf(obj), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model", place: platePlaceOf(obj) },
       run: { ...run, stamp },
       body,
+      suffix: resolved.suffix,
       params: { ...stamp.params, ...changes },
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
-      data: keptRecipeData(stamp.sha256),
       recipes,
-      engine: (node, request) => treeCall(at.key, node, request),
-      chordMm: state.stepTolerance,
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      env: recipeEnv(at.objectId, madeIt, stamp.sha256),
       runId: freshRunId(),
     });
   } finally {
@@ -5425,10 +5429,11 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
     syncUndo();
   }
   if (!result.ok) {
-    // The attempt's steps leave the engine, and their ids stay taken, as a cancelled edit's do.
+    // The attempt's steps leave the engine, and their ids stay taken, as a cancelled edit's do; its new trees close.
     const now = modelTrees.get(at.key);
     if (now && result.nextId !== undefined && result.nextId > now.nextId) modelTrees.set(at.key, { ...now, nextId: result.nextId });
     if (result.dropFrom !== undefined) await dropInEngine(at.key, result.dropFrom);
+    for (const key of result.close ?? []) void post({ call: "close", key });
   }
   if (mine !== ticket || open?.key !== at.key || state.stage !== "model") return null;
   if (!result.ok) {
@@ -5449,10 +5454,15 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
     if (first?.plugin) next = withNode(next, first.id, { plugin: { ...first.plugin, sha256: sha } });
     session.plugins = { ...(session.plugins ?? {}), [sha]: copy.file.text.replace(/^\/\/! source-sha256: .*$/m, `//! source-sha256: ${sha}`) };
   }
-  modelTrees.set(at.key, next);
-  keepSolid(at.key, parsed.id, state.stepTolerance, parsed);
-  open = { ...at, solid: parsed };
-  editBack = { key: at.key, tip: parsed.id, back: from, undone: false };
+  // Trees the new run's steps name (a split's half, a split to print's pieces, a joined tool) stay, as an Apply's do.
+  keepRunTrees(at, result.others);
+  if (result.made) swapMadeTree(at, result.made, next, parsed);
+  else {
+    modelTrees.set(at.key, next);
+    keepSolid(at.key, parsed.id, state.stepTolerance, parsed);
+    open = { ...at, solid: parsed };
+    editBack = { key: at.key, tip: parsed.id, back: from, undone: false };
+  }
   markProjectDirty();
   const label = (id: NodeId) => stepLabel(next.nodes.get(id)!);
   const after = result.replayed === 0 ? "" : result.replayed === 1 ? " and rebuilt the step after it" : ` and rebuilt ${result.replayed} steps after it`;
@@ -5465,6 +5475,133 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
   // The run's own row: folded under its first step's key, or that step's row when it is one step.
   const head = rowKey([], result.ids[0]!);
   return result.ids.length > 1 ? `fold:${head}` : head;
+}
+
+/** What a plugin run in the window reads besides its part: the printer, the settings, and ids for what it makes. */
+function recipeEnv(objectId: string, madeIt: boolean, sha256: string): AppRunEnv {
+  const picked = selection(loadMachineLibrary());
+  const printer = picked?.printer;
+  // A part the plugin made is made again under its own plate id, so its replies name the part they always named.
+  let own = madeIt;
+  return {
+    chordMm: state.stepTolerance,
+    ...(keptRecipeData(sha256) ? { data: keptRecipeData(sha256)! } : {}),
+    params: evaluateTable(session.parameters).values,
+    printer: { id: printer?.id ?? "plate", name: printer?.name ?? state.profile.name, bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter, belt: printer?.kind === "belt" ? printer.belt : null },
+    supportAngle: state.supportAngle,
+    newPart: () => {
+      const id = own ? objectId : freshPlateId();
+      own = false;
+      return { id, key: freshTreeKey(id) };
+    },
+    pieceKey: (owner, _node, piece) => freshTreeKey(`${owner}-${piece === "half" ? "piece" : piece === "pins" ? "pins" : "part"}`),
+    partition: (spec, part) => {
+      const typed = readPartition(spec, (id) => {
+        const row = targetPrinter(loadMachineLibrary(), id);
+        return row ? printerTarget(row) : null;
+      });
+      if ("reason" in typed) return typed;
+      if (!part.solid) return { reason: "This solid could not be read." };
+      const stored = storedPartition(typed, partitionContext(part.solid as unknown as ParsedSolid), typedPoseOf(part), { positions: part.solid.positions, up: plateUp(part.place.orient) });
+      if ("reason" in stored) return stored;
+      return { op: stored.op, typed: cleanOp(spec), ...(stored.notes ? { notes: stored.notes } : {}) };
+    },
+  };
+}
+
+/** The plate place a run reads of `obj`: its mesh, turn, scale and spot. */
+function platePlaceOf(obj: PlateObject): PlatePlace {
+  const selected = obj.id === state.plate.selectedId;
+  return {
+    source: new Float32Array(selected && state.sourcePos ? state.sourcePos : obj.sourcePos),
+    orient: [...(selected ? state.orient : obj.orient)] as Mat3,
+    scale: selected ? state.partScale : obj.partScale,
+    centered: obj.centered,
+    offset: { ...obj.offset },
+  };
+}
+
+/** The copies of the ingredients a draft of this code built with, by key, as the project keeps them. */
+function keptIngredients(sha256: string): Record<string, KeptIngredient> {
+  const rust = (session.mcpModel as { rustRecipes?: Record<string, { sha256?: unknown; ingredients?: unknown }> } | undefined)?.rustRecipes;
+  const row = rust ? Object.values(rust).find((entry) => entry?.sha256 === sha256 && entry.ingredients && typeof entry.ingredients === "object") : undefined;
+  const out: Record<string, KeptIngredient> = {};
+  for (const [key, value] of Object.entries((row?.ingredients ?? {}) as Record<string, unknown>)) {
+    const copy = keptCopy(value);
+    if (copy) out[key] = copy;
+  }
+  return out;
+}
+
+/**
+ * Trees a rebuilt run left that its steps name: a split's other half goes on the plate as a split's does; a split to
+ * print's pieces wait in their trees with their meshes, and the plate takes them when the commit crosses the cut, as
+ * after an edit; a joined tool's tree stays for the join, off the plate.
+ */
+function keepRunTrees(at: Opened, others: readonly RunPart[]) {
+  for (const part of others) {
+    const solid = part.body ? decodeSolid(part.body) : null;
+    if (!solid || typeof solid === "string") {
+      modelTrees.set(part.tree.key, part.tree);
+      continue;
+    }
+    if (part.origin === "half" && part.cut && addPiece(at, solid, part.tree.key, part.cut.node)) continue;
+    const held = part.origin === "piece" || part.origin === "pins" || part.origin === "half";
+    modelTrees.set(part.tree.key, held ? { ...withNode(part.tree, part.tree.current, { mesh: meshOf(solid, `${part.name}.stl`) }), committed: part.tree.current } : part.tree);
+    keepSolid(part.tree.key, part.tree.current, state.stepTolerance, solid);
+  }
+}
+
+/** --- A part a plugin made, rebuilt: its new tree, and the Prepare step that put it on the plate, for one Undo back. */
+let swapBack: { id: string; key: string; tip: NodeId; step: object | null; undone: boolean } | null = null;
+
+/**
+ * A part the plugin made, rebuilt: the plate object keeps its id, name and place, and takes the new tree, shown at its
+ * tip and on the plate in one Prepare step, so one Undo goes back to the old tree and its values (D8).
+ */
+function swapMadeTree(at: Opened, made: RunPart, next: ModelTree, parsed: ParsedSolid) {
+  const key = next.key;
+  commitModel();
+  const mesh = meshOf(parsed);
+  modelTrees.set(key, { ...withNode(next, next.current, { mesh }), committed: next.current });
+  keepSolid(key, parsed.id, state.stepTolerance, parsed);
+  noteEdit();
+  syncPlateFromState();
+  setTreeKey(at.objectId, key);
+  if (made.posed) state.plate = withModelPose(state.plate, at.objectId, made.modelPose);
+  state.mesh = { name: mesh.name, bytes: mesh.bytes };
+  state.sourcePos = new Float32Array(mesh.sourcePos);
+  state.supportEdits = [];
+  state.supportPaint = [];
+  state.seamPaint = [];
+  state.reinforcement = [];
+  setBrep(at.objectId, mesh.step);
+  syncPlateFromState();
+  place();
+  flushEdit();
+  markModelEdit();
+  editBack = null;
+  open = { objectId: at.objectId, key, solid: parsed };
+  swapBack = { id: at.objectId, key, tip: next.current, step: newestEdits().undo, undone: false };
+}
+
+/** Whether Undo (or Redo) is the swap back to a rebuilt part's old tree (or forward to its new one). */
+function canSwapBack(way: "undo" | "redo"): boolean {
+  const swap = swapBack;
+  const edits = newestEdits();
+  if (!swap || edits.pending || open?.objectId !== swap.id) return false;
+  if (way === "undo") return !swap.undone && open.key === swap.key && treeOf(open)?.current === swap.tip && edits.undo === swap.step;
+  return swap.undone && edits.redo === swap.step;
+}
+
+function swapStep(way: "undo" | "redo"): boolean {
+  if (!canSwapBack(way)) return false;
+  const swap = swapBack!;
+  if (!(way === "undo" ? undoUserEdit() : redoUserEdit())) return false;
+  const edits = newestEdits();
+  swapBack = { ...swap, undone: way === "undo", step: way === "undo" ? edits.redo : edits.undo };
+  showModel();
+  return true;
 }
 
 /** A folded run's row is keyed `fold:` and its first step's key: that step's row. */

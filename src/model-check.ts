@@ -3,7 +3,7 @@
  * The same print check and thin-wall pass as MCP `model_check`, mapped for the panel.
  * --- A7 model check ---
  */
-import { boxOf } from "../mcp/inspect.ts";
+import { boxOf } from "./modeling/inspect.ts";
 import type { Mat3 } from "./mesh-place.ts";
 import { inversePose, type Affine } from "./model-space.ts";
 import type { ThinRegion } from "./modeling/thin.ts";

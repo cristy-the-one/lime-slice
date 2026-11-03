@@ -683,6 +683,55 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
      keeping both stamps, and an edited copy that asks then runs. `src/model-history.test.ts` for which steps can
      change. Screenshots in `test-results/plugin-rebuild/`.
 
+   **As built (every plugin rebuilds in the app, branch `claude/plugin-app-all`):** the gap milestone 6 left is closed;
+   the app answers every allowlisted recipe call the MCP does, through the same code.
+   - **A run holds its own small plate.** `src/recipe/app-calls.ts` keeps the part a run was given (if any) and every
+     part it makes (`RunPart`): solid_new makes a tree in the engine, model_place and object_place move a part the run
+     made (`src/modeling/placing.ts`, which the session's model_place and object_place now run too), and each call goes
+     to the part it names, own parts only (O8, as the session refuses it). `parts` hands the caller what the run left.
+   - **Shared, not copied.** What the session did on its own moved to `src/modeling/` and the session calls it:
+     `composite-apply.ts` (a composite's expansion and pieces, a piece that misses or only touches, the fold into one
+     group, an array of loops cells), `part-reads.ts` (model_history, model_check, measure, the box an anchor's label
+     names, a split's check and kept side), `bakeTransition` in `bake.ts`, and `inspect.ts` and `cells.ts` moved from
+     `mcp/` (which re-exports them). `src/recipe/ingredients.ts` is the ingredient inliner with no file system; the MCP
+     host reads the library into it, the app the copies a draft kept.
+   - **Every kind of call.** Composite ops (pattern, mirror, pocket, boss, texture, ribs, text, arrays of shapes or of
+     loops cells), a split (keep above, below, or both: the other half is a piece on the plate, as the split tool puts
+     one), a join of a part the run made (it leaves the plate), a split to print (its pieces wait in their trees and
+     come on the plate as a commit across the cut places them), a print transition (aimed from the part's turn on the
+     plate's printer), model_check, measure, model_history, and anchors on any step's label. A step a run labels keeps
+     the label as the session's does (the app set the step's name before, so an anchor on it missed).
+   - **A part the plugin made** rebuilds in place (`rebuildPluginStep` with the stamp on the root): the plugin runs with
+     no part, as it first did, and makes the part again as a new tree; the later steps are replayed on it; the plate
+     object keeps its id, name and place (a run that placed it with model_place keeps that pose) and takes the new tree
+     and mesh in one Prepare step. One Undo goes back to the old tree and its values, Redo forward (`swapBack` in
+     `src/app/model.ts`, the way Undo takes back a new object). The made part takes its plate id back, so its replies
+     name what they named.
+   - **Drafts that import ingredients.** The card's Rebuild inlines the copies the draft's `rustRecipes` entry kept,
+     exactly as the MCP host does on a rebuild (`preferKept`); the same text either way. A copy that is missing is one
+     sentence. A kept plugin carries its own `mod ingredients` and builds as it stands.
+   - **MCP change.** A run whose made tool was joined into the part (keepTool false) is now stamped: the tool left the
+     plate, so the run made or changed one part (O4). Before, it counted the tool and kept plain steps. And
+     `recipe_run {keep}` now checks the plugin (D3's dry run with its defaults) on its part as it stood before the run,
+     not on the part the run had just changed: there, pegs fused again changed nothing, a split's default plane was
+     already the part's edge, and the keep was refused on the real kernel (the stand-in engine did not show it).
+   - **Refused in the window, one sentence each, because the window has no place for them yet:** a fit coupon
+     (`solid_new {coupon}`, two parts with pins), an assembly (`model_place {to}` or `{assembly}`: the plate's assembly
+     table), `model_check {interference}` (it reads every part on the plate), and the planners (`model_probe {plan}`).
+     A rebuild that would now make more than the one part, or a second part beside the given one, is refused: a
+     plugin step stands for one part (O4); the Plugins panel (milestone 7) runs such plugins as new runs.
+   - **Deviations.** object_place in a run moves a made part's plate turn and spot for the run's own reads (model_check,
+     a transition's aim), but a rebuilt part keeps its plate place; the probe's transition rows and a too-thick shell's
+     advice are worded more briefly in the window than over MCP; the solids, stored ops and fingerprints are the same.
+   - Tests: `mcp/plugin-app.test.ts`, one plugin per kind, each rebuilt with new values through the MCP and through the
+     app on two engines built the same way: plain steps; a part the plugin makes (a new tree, the stamp on its root);
+     a draft that imports a library ingredient (the app's inlined text equal to the host's); a pattern, an anchor on a
+     labelled step, a made, placed and joined tab and a split; model_check, measure, model_history and a print
+     transition; a split to print in a draft (the other piece a tree of its own). Each compares the stamp values, the run's fingerprint, the stored ops of the shown path, the final
+     solid and the run's log lines. `src/recipe/ingredients.test.ts` (unit chain). `e2e/model-plugin-made.spec.ts` (in
+     `test:smoke`): a part the plugin made rebuilds in History, one object stays on the plate, Undo back to the old
+     tree and values, Redo, and the save keeps the new stamp on the root. Screenshots in `test-results/plugin-made/`.
+
 7. **The Plugins panel.** (Designed after `plan-sketch-for-people.md` milestones 1 and 5, so it follows the sketch
    card's tips, demos and 1440 px layout; see that plan's section 7a.) D13: list, search, sections, form, Preview with Live, Apply, Save as plugin… from History,
    Use vN, Reveal in folder, Remove; the "Plugin author" setting; macOS read-only state (D15).

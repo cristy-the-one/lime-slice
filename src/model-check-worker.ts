@@ -3,7 +3,7 @@
  * The caller copies the mesh before transferring it, so the solid on screen keeps its buffer.
  * --- A7 model check ---
  */
-import { printCheck } from "../mcp/inspect.ts";
+import { printCheck } from "./modeling/inspect.ts";
 import { OVERHANG_DEG, assembleCheck, partBox, thinWarning, type ModelCheckReport, type Vec3 } from "./model-check.ts";
 import { thinWalls } from "./modeling/thin.ts";
 

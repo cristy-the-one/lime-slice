@@ -51,8 +51,6 @@ interface ModelHistoryHooks {
   keepPose?(): void;
   /** --- Plugin steps (milestone 6). Null when plugins run here, else the sentence that says why not. */
   pluginRunner?(): Promise<string | null>;
-  /** Whether the row's run made its part: the app rebuilds plugin steps on a part it was given. */
-  pluginMade?(row: RowKey): boolean;
   /**
    * Rebuild the row's plugin step with these values changed (and the code changed outside the app, when `edited`): the
    * row of the new run, or null when nothing was rebuilt (the readout says why).
@@ -1200,8 +1198,7 @@ function refreshPluginCard() {
   const note = pluginCard.querySelector<HTMLElement>(".mh-plugin-note")!;
   note.textContent = view.note ?? "";
   note.hidden = !view.note;
-  const made = !!(row && hooks?.pluginMade?.(row.key));
-  const editable = view.rebuild !== "no" && pluginRunnerNote === null && !made && !!hooks?.pluginRebuild;
+  const editable = view.rebuild !== "no" && pluginRunnerNote === null && !!hooks?.pluginRebuild;
   const fields = pluginCard.querySelector<HTMLElement>(".mh-plugin-fields")!;
   const focused = document.activeElement instanceof HTMLElement && fields.contains(document.activeElement) ? document.activeElement.dataset.name : undefined;
   fields.replaceChildren(...view.fields.map((field) => pluginField(field, editable && !pluginBusy)));
@@ -1217,9 +1214,7 @@ function refreshPluginCard() {
         ? problem
         : view.rebuild === "no"
           ? "The part stays as it was built, with every step after it."
-          : made
-            ? "This part was made by the plugin. Its values change over MCP for now (recipe_run with this part); the app rebuilds plugin steps on a part it was given."
-            : pluginRunnerNote === undefined
+          : pluginRunnerNote === undefined
               ? "Checking whether plugins run here…"
               : pluginRunnerNote
                 ? `${pluginRunnerNote} The part stays as it was built.`
