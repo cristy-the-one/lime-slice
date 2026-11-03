@@ -598,7 +598,7 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-plugins .pp-section { margin: 0 0 var(--space-3); }
 .model-plugins .pp-section-title { margin: 0 0 var(--space-1); color: var(--text-dim); font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
 .model-plugins .pp-rows { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 420px; overflow-y: auto; }
-.model-plugins .pp-pick {
+.model-plugins .pp-pick, .model-plugins .pp-nugget-pick {
   display: grid;
   gap: 1px;
   width: 100%;
@@ -611,8 +611,8 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
   text-align: left;
   cursor: pointer;
 }
-.model-plugins .pp-pick:hover { border-color: var(--line); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.model-plugins .pp-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.model-plugins .pp-pick:hover, .model-plugins .pp-nugget-pick:hover { border-color: var(--line); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.model-plugins .pp-pick:focus-visible, .model-plugins .pp-nugget-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .model-plugins .pp-row-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; }
 .model-plugins .pp-title { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--fs-2); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .model-plugins .pp-version { color: var(--text-dim); font: 500 10px / 1 var(--font-mono); white-space: nowrap; }
@@ -629,8 +629,28 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-plugins .pp-menu-item { padding: 5px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .model-plugins .pp-menu-item:hover, .model-plugins .pp-menu-item:focus-visible { background: var(--surface-3); outline: none; }
 .model-plugins .pp-menu-item[aria-disabled="true"] { color: var(--text-faint); cursor: not-allowed; }
-.model-plugins .pp-preset { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: center; gap: 6px; margin: 0 0 var(--space-1); }
+.model-plugins .pp-preset { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 var(--space-1); }
+.model-plugins .pp-preset-pick { display: grid; flex: 1 1 100%; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: center; gap: 6px; }
 .model-plugins .pp-preset select { min-width: 0; height: 22px; font: inherit; }
+.model-plugins .pp-preset-save[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+/* --- Nuggets (docs/plan-recipe-ingredients.md I16): one list, filtered by kind. */
+.model-plugins .pp-kinds { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 var(--space-2); }
+.model-plugins .pp-kind { height: 22px; padding: 0 8px; border-radius: 999px; font-size: var(--fs-1); }
+.model-plugins .pp-kind[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--text); }
+.model-plugins .pp-lesson { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 6px; padding: 4px 6px; }
+.model-plugins .pp-lesson-text { color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
+.model-plugins .pp-lesson-remove { width: 22px; min-width: 22px; height: 22px; padding: 0; }
+.model-plugins .pp-lesson-remove[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
+.model-plugins .pp-about { font-family: var(--font-mono); }
+.model-plugins .pp-use code { padding: 1px 4px; border-radius: var(--radius-sm); background: var(--surface-3); font: 11px / 1.4 var(--font-mono); user-select: all; }
+.model-plugins .pp-items { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 var(--space-2); padding: 0; list-style: none; }
+.model-plugins .pp-items li { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-dim); font: 11px / 1.4 var(--font-mono); }
+.model-plugins .pp-carried, .model-plugins .pp-used-by, .model-plugins .pp-ingredient-how { color: var(--text-dim); line-height: 1.35; }
+/* Lessons on an op's card: what runs learned about this kind of step. */
+.model-lessons { margin: var(--space-1) 0; padding: 4px 6px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: var(--fs-1); }
+.model-lessons[hidden] { display: none; }
+.model-lessons h4 { margin: 0 0 2px; color: var(--text-dim); font-size: var(--fs-1); font-weight: 600; }
+.model-lessons ul { margin: 0; padding-left: 16px; color: var(--text); line-height: 1.35; }
 .model-plugins .pp-fields { margin: 0 0 var(--space-2); }
 .model-plugins .pp-actions { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-1); }
 .model-plugins .pp-live { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); cursor: pointer; }

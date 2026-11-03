@@ -34,12 +34,24 @@ export const FILE_FLANGE = header(
   "use lime_recipe::{ops, Session};\nfn main() {\n    let mut s = Session::start();\n    let d = s.number(\"diameter\", 80.0).range(20.0, 250.0).unit(\"mm\").label(\"Outer diameter\").get();\n    let p = s.solid_new(ops::cylinder(d / 2.0, 6.0)).unwrap();\n    s.done(&p);\n}\n",
 );
 
-/** The library's files as the shell lists them: stud-row at v4 with v3 kept beside it, a notch plugin, a flange. */
-export async function scriptedLibrary(page: Page) {
+/** A honeycomb ingredient at v2 with v1 kept beside it (docs/plan-recipe-ingredients.md I9). */
+export const INGREDIENT_V2 = "//! ---\n//! ingredient: honeycomb\n//! title: Honeycomb cells\n//! version: 2\n//! description: Hex pockets clipped to a region, with rounded nodes.\n//! author: Marius\n//! ---\nuse lime_recipe::geom2d::*;\npub fn cells(side: f64, rib: f64) -> Vec<Poly> { let _ = (side, rib); Vec::new() }\npub const NODE_R: f64 = 2.0;\nfn helper() {}\n";
+export const LESSONS = JSON.stringify([
+  { n: 1, about: "fillet", text: "select.onFace with nearPoint over a pocket picks the pocket floor; aim at material, such as a rib node.", created: "2026-11-02" },
+  { n: 2, about: "boolean", text: "A cut tool flush with a face leaves a skin; make it 0.1 mm longer.", created: "2026-11-03" },
+]);
+
+/**
+ * The library's files as the shell lists them: stud-row at v4 with v3 kept beside it, a notch plugin, a flange. With
+ * `nuggets`, also an ingredient (and its v1) and two lessons, as a shell with nuggets lists them.
+ */
+export async function scriptedLibrary(page: Page, nuggets = false) {
   const files: Record<string, string> = { "stud-row.rs": FILE_V4, "stud-row.v3.rs": FILE, "corner-notch.rs": FILE_NOTCH, "bolt-flange.rs": FILE_FLANGE };
   const presets = { "stud-row": JSON.stringify({ dense: { params: { studs: 6, radius: 0.8 }, created: "2026-11-02" } }) };
-  await page.addInitScript(({ files, presets }) => {
-    const store = { files: { ...files } as Record<string, string>, presets: { ...presets } as Record<string, string>, settings: null as string | null };
+  const ingredients: Record<string, string> = nuggets ? { "honeycomb.rs": INGREDIENT_V2, "honeycomb.v1.rs": INGREDIENT_V2.replace("version: 2", "version: 1") } : {};
+  const lessons = nuggets ? LESSONS : null;
+  await page.addInitScript(({ files, presets, ingredients, lessons, nuggets }) => {
+    const store = { files: { ...files } as Record<string, string>, presets: { ...presets } as Record<string, string>, ingredients: { ...ingredients } as Record<string, string>, lessons: lessons as string | null, settings: null as string | null };
     const log: { command: string; args: Record<string, unknown> }[] = [];
     (window as unknown as { __libraryLog: typeof log; __libraryStore: typeof store }).__libraryLog = log;
     (window as unknown as { __libraryStore: typeof store }).__libraryStore = store;
@@ -48,7 +60,8 @@ export async function scriptedLibrary(page: Page) {
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         log.push({ command, args });
         if (command === "plugin_library_list") {
-          return { dir: "C:\\Users\\test\\AppData\\Roaming\\com.limeslice.slicer\\plugins", files: Object.entries(store.files).map(([name, text]) => ({ name, text })), presets: Object.entries(store.presets).map(([plugin, text]) => ({ plugin, text })), settings: store.settings };
+          const listed = { dir: "C:\\Users\\test\\AppData\\Roaming\\com.limeslice.slicer\\plugins", files: Object.entries(store.files).map(([name, text]) => ({ name, text })), presets: Object.entries(store.presets).map(([plugin, text]) => ({ plugin, text })), settings: store.settings };
+          return nuggets ? { ...listed, ingredients: Object.entries(store.ingredients).map(([name, text]) => ({ name, text })), lessons: store.lessons } : listed;
         }
         if (command === "plugin_library_save") {
           const id = String(args.id);
@@ -61,20 +74,22 @@ export async function scriptedLibrary(page: Page) {
         if (command === "plugin_library_write") {
           const name = String(args.name);
           if (name === "settings.json") store.settings = String(args.text);
+          else if (name === "lessons.json") store.lessons = String(args.text);
           else store.presets[name.replace(/^presets\//, "").replace(/\.json$/, "")] = String(args.text);
           return null;
         }
         if (command === "plugin_library_remove") {
           const id = String(args.id);
-          const names = Object.keys(store.files).filter((name) => name === `${id}.rs` || name.startsWith(`${id}.v`));
-          for (const name of names) delete store.files[name];
+          const where = args.kind === "ingredient" ? store.ingredients : store.files;
+          const names = Object.keys(where).filter((name) => name === `${id}.rs` || name.startsWith(`${id}.v`));
+          for (const name of names) delete where[name];
           return names.length;
         }
         if (command === "plugin_library_reveal") return null;
         throw new Error(`no command ${command}`);
       },
     };
-  }, { files, presets });
+  }, { files, presets, ingredients, lessons, nuggets });
 }
 
 /**

@@ -21,8 +21,20 @@ import { blockedTip } from "../sketch/reasons";
 import type { PluginFileInfo, PluginParamInfo } from "../plugin-file";
 import {
   EMPTY_LIBRARY,
+  KIND_TITLE,
   LIBRARY_NEEDS_APP,
   SECTION_TITLE,
+  ingredientUse,
+  ingredientUsers,
+  lessonsWithout,
+  pluginIngredients,
+  presetParams,
+  presetProblem,
+  presetsText,
+  presetsWithout,
+  searchedIngredients,
+  searchedLessons,
+  searchedPresets,
   formNumber,
   formParams,
   formProblem,
@@ -35,16 +47,27 @@ import {
   searched,
   settingsText,
   type FormValue,
+  type LibraryIngredient,
   type LibraryListing,
+  type NuggetKind,
   type PanelPlugin,
   type PanelSection,
   type PluginLibrary,
 } from "../plugins/library";
 import { DEMO_PLUGIN, DEMO_TRY } from "../plugins/demo";
 import { RECIPE_API } from "../plugin-step";
-import { PURPOSE, REASON } from "./plugins-panel-text";
+import { KIND_PURPOSE, PURPOSE, REASON } from "./plugins-panel-text";
+import { setLessons } from "./lessons-note";
 
 const CARD_ID = "plugins";
+const KIND_NOUN: Readonly<Record<Exclude<NuggetKind, "all">, string>> = { plugin: "plugin", ingredient: "ingredient", preset: "preset", lesson: "lesson" };
+/** What an empty kind says, with where its nuggets come from. */
+const EMPTY_KIND: Readonly<Record<Exclude<NuggetKind, "all">, string>> = {
+  plugin: "No plugins yet. Keep a recipe from a chat with keep {title, description}, or use Save as plugin… on a recipe's step in History.",
+  ingredient: "No ingredients yet. An agent keeps a recipe's helpers as one with nugget {action: \"save\", kind: \"ingredient\", from, items}; the recipe_run reply offers the call.",
+  preset: "No presets yet. Open a plugin, set its values, and press Save as preset….",
+  lesson: "No lessons yet. An agent keeps one when a run got past a refusal; the recipe_run reply offers the call.",
+};
 export const PLUGINS_TITLE = "Plugins";
 const USED_KEY = "lime-slice-plugins-used";
 const LIVE_KEY = "lime-slice-plugins-live";
@@ -79,6 +102,9 @@ let library: PluginLibrary = EMPTY_LIBRARY;
 let libraryNote: string | null = "loading";
 let runnerNote: string | null | undefined;
 let query = "";
+/** Which nuggets the list shows (I16): every kind, or one. */
+let kind: NuggetKind = "all";
+const KIND_KEY = "lime-slice-plugins-kind";
 let selected: string | null = null;
 let demo = false;
 const values = new Map<string, FormValue>();
@@ -98,6 +124,12 @@ const $ = <T extends HTMLElement>(selector: string) => root()?.querySelector<T>(
 
 export function mountPluginsPanel(next: PluginsHost) {
   host = next;
+  try {
+    const saved = localStorage.getItem(KIND_KEY);
+    if (saved === "all" || saved === "plugin" || saved === "ingredient" || saved === "preset" || saved === "lesson") kind = saved;
+  } catch {
+    // Every kind is shown.
+  }
   document.addEventListener("click", (ev) => {
     if (ev.target instanceof Element && ev.target.closest("#modelMenuPlugins")) openPluginsPanel();
   });
@@ -131,6 +163,7 @@ export async function loadLibrary(): Promise<PluginLibrary> {
     }
   }
   syncAuthorField();
+  setLessons(library.lessons);
   host?.libraryChanged(library);
   if (pluginsPanelOpen()) paint();
   return library;
@@ -196,20 +229,113 @@ function current(): PanelPlugin | null {
   return rows().find((row) => row.key === selected) ?? null;
 }
 
+/** The ingredient open in the card, when one is. */
+function currentIngredient(): LibraryIngredient | null {
+  return selected?.startsWith("ingredient:") ? library.ingredients.get(selected.slice("ingredient:".length)) ?? null : null;
+}
+
 function paint() {
   const body = root();
   if (!body || !pluginsPanelOpen()) return;
-  const plugin = current();
-  if (selected && !plugin) selected = null;
-  body.replaceChildren(plugin ? detail(plugin) : list());
+  const ingredient = currentIngredient();
+  const plugin = ingredient ? null : current();
+  if (selected && !plugin && !ingredient) selected = null;
+  body.replaceChildren(ingredient ? ingredientDetail(ingredient) : plugin ? detail(plugin) : list());
   paintFoot();
+}
+
+function shownKind(): NuggetKind {
+  return kind;
+}
+
+function setKind(next: NuggetKind) {
+  kind = next;
+  try {
+    localStorage.setItem(KIND_KEY, next);
+  } catch {
+    // The filter still holds for this visit.
+  }
+}
+
+/** All · Plugins · Ingredients · Presets · Lessons, each with its count. */
+function kindChips(counts: Record<Exclude<NuggetKind, "all">, number>): HTMLElement {
+  const bar = el("div", "pp-kinds");
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Show");
+  const chip = (k: NuggetKind, label: string, n?: number) => {
+    const b = button("pp-kind", n === undefined ? label : `${label} ${n}`, KIND_PURPOSE[k]);
+    b.dataset.kind = k;
+    b.setAttribute("aria-pressed", kind === k ? "true" : "false");
+    bar.append(b);
+  };
+  chip("all", "All");
+  for (const k of ["plugin", "ingredient", "preset", "lesson"] as const) chip(k, KIND_TITLE[k], counts[k]);
+  return bar;
+}
+
+function section(title: string, label: string): { group: HTMLElement; ul: HTMLElement } {
+  const group = el("section", "pp-section");
+  group.setAttribute("aria-label", label);
+  group.append(Object.assign(el("h4", "pp-section-title"), { textContent: title }));
+  const ul = el("ul", "pp-rows");
+  ul.setAttribute("role", "list");
+  group.append(ul);
+  return { group, ul };
+}
+
+function ingredientRow(row: LibraryIngredient): HTMLElement {
+  const li = el("li", "pp-row");
+  const pick = el("button", "pp-pick-ingredient pp-nugget-pick") as HTMLButtonElement;
+  pick.type = "button";
+  pick.dataset.ingredient = row.id;
+  pick.dataset.tip = row.description || row.title;
+  const top = el("span", "pp-row-top");
+  top.append(Object.assign(el("span", "pp-title"), { textContent: row.title }), Object.assign(el("span", "pp-version"), { textContent: `v${row.version}` }), Object.assign(el("span", "pp-badge"), { textContent: "ingredient" }));
+  const desc = Object.assign(el("span", "pp-desc"), { textContent: row.description || "No description." });
+  const gives = Object.assign(el("span", "pp-by"), { textContent: row.items.length ? `Gives ${row.items.slice(0, 4).map((i) => i.name).join(", ")}${row.items.length > 4 ? `, and ${row.items.length - 4} more` : ""}` : "Gives nothing public yet" });
+  pick.append(top, desc, gives);
+  li.append(pick);
+  return li;
+}
+
+function presetRow(item: { plugin: string; title: string; preset: { name: string; params: Record<string, unknown> } }): HTMLElement {
+  const li = el("li", "pp-row");
+  const pick = el("button", "pp-pick-preset pp-nugget-pick") as HTMLButtonElement;
+  pick.type = "button";
+  pick.dataset.key = `library:${item.plugin}`;
+  pick.dataset.preset = item.preset.name;
+  pick.dataset.tip = PURPOSE.openPreset;
+  const top = el("span", "pp-row-top");
+  top.append(Object.assign(el("span", "pp-title"), { textContent: item.preset.name }), Object.assign(el("span", "pp-badge"), { textContent: "preset" }));
+  const values = Object.entries(item.preset.params).slice(0, 4).map(([k, v]) => `${k} ${String(v)}`).join(" · ");
+  const desc = Object.assign(el("span", "pp-desc"), { textContent: `For ${item.title}${values ? `: ${values}` : ""}` });
+  pick.append(top, desc);
+  li.append(pick);
+  return li;
+}
+
+function lessonRow(lesson: { n: number; about: string; text: string }): HTMLElement {
+  const li = el("li", "pp-row pp-lesson");
+  const about = Object.assign(el("span", "pp-badge pp-about"), { textContent: lesson.about });
+  const text = Object.assign(el("span", "pp-lesson-text"), { textContent: lesson.text });
+  const remove = button("pp-lesson-remove", "×", PURPOSE.removeLesson);
+  remove.dataset.lesson = String(lesson.n);
+  remove.setAttribute("aria-label", `Remove the lesson about ${lesson.about}`);
+  const noLibrary = libraryNote && libraryNote !== "loading" ? "Lessons are kept by the desktop app. Open this project there." : "";
+  if (noLibrary) {
+    remove.setAttribute("aria-disabled", "true");
+    remove.dataset.reason = noLibrary;
+    remove.dataset.tip = blockedTip(PURPOSE.removeLesson, noLibrary);
+  }
+  li.append(about, text, remove);
+  return li;
 }
 
 function list(): HTMLElement {
   const wrap = el("div", "pp-list-view");
   const head = el("div", "pp-head");
-  const search = Object.assign(document.createElement("input"), { type: "search", id: "modelPluginsSearch", className: "pp-search", value: query, placeholder: "Search plugins", spellcheck: false });
-  search.setAttribute("aria-label", "Search plugins");
+  const search = Object.assign(document.createElement("input"), { type: "search", id: "modelPluginsSearch", className: "pp-search", value: query, placeholder: "Search plugins, ingredients, presets, lessons", spellcheck: false });
+  search.setAttribute("aria-label", "Search plugins, ingredients, presets and lessons");
   search.dataset.tip = PURPOSE.search;
   search.dataset.ownEnter = "";
   head.append(search, howButton());
@@ -218,27 +344,52 @@ function list(): HTMLElement {
   if (libraryNote && libraryNote !== "loading") wrap.append(note(libraryNote, "pp-library-note"));
   const all = rows();
   const shown = searched(all, query);
-  const sections: PanelSection[] = ["project", "library", "samples"];
+  const ingredients = searchedIngredients(library, query);
+  const presets = searchedPresets(library, query);
+  const lessons = searchedLessons(library, query);
+  wrap.append(kindChips({ plugin: shown.length, ingredient: ingredients.length, preset: presets.length, lesson: lessons.length }));
+  const k = shownKind();
   let any = false;
-  for (const section of sections) {
-    const items = shown.filter((row) => row.section === section);
-    if (items.length === 0) continue;
-    any = true;
-    const group = el("section", "pp-section");
-    group.setAttribute("aria-label", SECTION_TITLE[section]);
-    group.append(Object.assign(el("h4", "pp-section-title"), { textContent: SECTION_TITLE[section] }));
-    const ul = el("ul", "pp-rows");
-    ul.setAttribute("role", "list");
-    for (const row of items) ul.append(listRow(row));
-    group.append(ul);
-    wrap.append(group);
+  if (k === "all" || k === "plugin") {
+    const sections: PanelSection[] = ["project", "library", "samples"];
+    for (const sec of sections) {
+      const items = shown.filter((row) => row.section === sec);
+      if (items.length === 0) continue;
+      any = true;
+      const { group, ul } = section(SECTION_TITLE[sec], SECTION_TITLE[sec]);
+      for (const row of items) ul.append(listRow(row));
+      wrap.append(group);
+    }
+  }
+  const more: [NuggetKind, number, () => HTMLElement][] = [
+    ["ingredient", ingredients.length, () => {
+      const { group, ul } = section(KIND_TITLE.ingredient, KIND_TITLE.ingredient);
+      for (const row of ingredients) ul.append(ingredientRow(row));
+      return group;
+    }],
+    ["preset", presets.length, () => {
+      const { group, ul } = section(KIND_TITLE.preset, KIND_TITLE.preset);
+      for (const item of presets) ul.append(presetRow(item));
+      return group;
+    }],
+    ["lesson", lessons.length, () => {
+      const { group, ul } = section(KIND_TITLE.lesson, KIND_TITLE.lesson);
+      for (const lesson of lessons) ul.append(lessonRow(lesson));
+      return group;
+    }],
+  ];
+  for (const [kk, n, make] of more) {
+    if ((k === "all" || k === kk) && n > 0) {
+      any = true;
+      wrap.append(make());
+    }
   }
   if (!any) {
-    if (all.length === 0) {
-      wrap.append(note(libraryNote === "loading" ? "Reading your plugin library…" : "No plugins yet. Keep a recipe from a chat with keep {title, description}, or use Save as plugin… on a recipe's step in History. Press ? and Show me to try a demo.", "pp-empty"));
-    } else {
-      wrap.append(note(`No plugin matches “${query.trim()}”. Try another word, or clear the search.`, "pp-empty"));
-    }
+    const total = all.length + library.ingredients.size + [...library.presets.values()].reduce((sum, p) => sum + p.length, 0) + library.lessons.length;
+    if (libraryNote === "loading") wrap.append(note("Reading your plugin library…", "pp-empty"));
+    else if (query.trim()) wrap.append(note(k === "all" ? `Nothing matches “${query.trim()}”. Try another word, or clear the search.` : `No ${KIND_NOUN[k]} matches “${query.trim()}”. Try another word, show All, or clear the search.`, "pp-empty"));
+    else if (k !== "all" && total > 0) wrap.append(note(EMPTY_KIND[k], "pp-empty"));
+    else wrap.append(note("No plugins yet. Keep a recipe from a chat with keep {title, description}, or use Save as plugin… on a recipe's step in History. Press ? and Show me to try a demo.", "pp-empty"));
   }
   return wrap;
 }
@@ -293,17 +444,35 @@ function detail(plugin: PanelPlugin): HTMLElement {
   wrap.append(Object.assign(note(targetLine(plugin), "pp-target"), { id: "modelPluginsTarget" }));
   const rest = readOnlyNote(plugin);
   if (rest) wrap.append(Object.assign(note(rest, "pp-readonly"), { id: "modelPluginsReadOnly" }));
+  const carried = demo ? [] : pluginIngredients(plugin.file);
+  if (carried.length) {
+    const line = note(`Carries ${carried.length === 1 ? "the ingredient" : "the ingredients"} ${carried.map((c) => `${c.id} v${c.version}`).join(", ")}: it builds the same even where your library has other versions.`, "pp-carried");
+    line.id = "modelPluginsCarried";
+    wrap.append(line);
+  }
   const presets = library.presets.get(plugin.file.plugin) ?? [];
-  if (presets.length > 0 && !demo) {
-    const row = el("label", "pp-preset");
-    row.append(Object.assign(el("span", "pp-name"), { textContent: "Preset" }));
-    const select = document.createElement("select");
-    select.id = "modelPluginsPreset";
-    select.dataset.tip = PURPOSE.presets;
-    select.append(new Option("Defaults", "", false, preset === ""));
-    for (const p of presets) select.append(new Option(p.name, p.name, false, p.name === preset));
-    select.disabled = busy;
-    row.append(select);
+  if (!demo) {
+    const row = el("div", "pp-preset");
+    if (presets.length > 0) {
+      const label = el("label", "pp-preset-pick");
+      label.append(Object.assign(el("span", "pp-name"), { textContent: "Preset" }));
+      const select = document.createElement("select");
+      select.id = "modelPluginsPreset";
+      select.dataset.tip = PURPOSE.presets;
+      select.append(new Option("Defaults", "", false, preset === ""));
+      for (const p of presets) select.append(new Option(p.name, p.name, false, p.name === preset));
+      select.disabled = busy;
+      label.append(select);
+      row.append(label);
+    }
+    const save = button("pp-preset-save", "Save as preset…", PURPOSE.savePreset);
+    save.id = "modelPluginsSavePreset";
+    row.append(save);
+    if (preset) {
+      const remove = button("pp-preset-remove", "Remove preset", PURPOSE.removePreset);
+      remove.id = "modelPluginsRemovePreset";
+      row.append(remove);
+    }
     wrap.append(row);
   }
   const fields = el("div", "pp-fields mh-plugin-fields");
@@ -436,6 +605,14 @@ function paintRun(scope: ParentNode | null = root(), plugin = current()) {
     if (why) preview.dataset.reason = why;
     else delete preview.dataset.reason;
   }
+  const save = scope.querySelector<HTMLButtonElement>("#modelPluginsSavePreset");
+  if (save) {
+    const whyNot = presetBlocked(plugin);
+    save.setAttribute("aria-disabled", whyNot ? "true" : "false");
+    save.dataset.tip = blockedTip(PURPOSE.savePreset, whyNot ?? "");
+    if (whyNot) save.dataset.reason = whyNot;
+    else delete save.dataset.reason;
+  }
   const line = scope.querySelector<HTMLElement>("#modelPluginsStatus");
   if (line) {
     const problem = formProblem(plugin.file.params, Object.fromEntries(values));
@@ -497,9 +674,49 @@ function howPop(): HTMLElement {
 function onClick(ev: MouseEvent) {
   const target = ev.target instanceof Element ? ev.target : null;
   if (!target || !host) return;
+  const chip = target.closest<HTMLElement>(".pp-kind");
+  if (chip?.dataset.kind) {
+    setKind(chip.dataset.kind as NuggetKind);
+    paint();
+    $<HTMLElement>(`.pp-kind[data-kind="${kind}"]`)?.focus({ preventScroll: true });
+    return;
+  }
+  const ing = target.closest<HTMLElement>(".pp-pick-ingredient");
+  if (ing?.dataset.ingredient) {
+    selectIngredient(ing.dataset.ingredient);
+    return;
+  }
+  const presetPick = target.closest<HTMLElement>(".pp-pick-preset");
+  if (presetPick?.dataset.key && presetPick.dataset.preset) {
+    select(presetPick.dataset.key);
+    usePreset(presetPick.dataset.preset);
+    return;
+  }
   const pick = target.closest<HTMLElement>(".pp-pick");
   if (pick?.dataset.key) {
     select(pick.dataset.key);
+    return;
+  }
+  const lessonButton = target.closest<HTMLElement>(".pp-lesson-remove");
+  if (lessonButton?.dataset.lesson) {
+    if (lessonButton.getAttribute("aria-disabled") === "true") {
+      host.readout(lessonButton.dataset.reason ?? "");
+      return;
+    }
+    void removeLessonNow(Number(lessonButton.dataset.lesson));
+    return;
+  }
+  if (target.closest("#modelPluginsSavePreset")) {
+    const b = target.closest<HTMLElement>("#modelPluginsSavePreset")!;
+    if (b.getAttribute("aria-disabled") === "true") {
+      host.readout(b.dataset.reason ?? "");
+      return;
+    }
+    void savePresetNow();
+    return;
+  }
+  if (target.closest("#modelPluginsRemovePreset")) {
+    void removePresetNow();
     return;
   }
   if (target.closest("#modelPluginsHowOpen")) {
@@ -539,7 +756,8 @@ function onClick(ev: MouseEvent) {
       return;
     }
     menuOpen = false;
-    void menuAction(item.dataset.act ?? "");
+    if (currentIngredient()) void ingredientAction(item.dataset.act ?? "");
+    else void menuAction(item.dataset.act ?? "");
     return;
   }
   if (target.closest("#modelPluginsPreview")) {
@@ -606,8 +824,27 @@ function onKeyDown(ev: KeyboardEvent) {
   if (ev.key === "Enter" && target instanceof HTMLInputElement && target.id === "modelPluginsSearch") {
     ev.preventDefault();
     ev.stopPropagation();
-    const first = searched(rows(), query)[0];
-    if (first) select(first.key);
+    if (kind === "all" || kind === "plugin") {
+      const first = searched(rows(), query)[0];
+      if (first) {
+        select(first.key);
+        return;
+      }
+    }
+    if (kind === "all" || kind === "ingredient") {
+      const first = searchedIngredients(library, query)[0];
+      if (first) {
+        selectIngredient(first.id);
+        return;
+      }
+    }
+    if (kind === "all" || kind === "preset") {
+      const first = searchedPresets(library, query)[0];
+      if (first) {
+        select(`library:${first.plugin}`);
+        usePreset(first.preset.name);
+      }
+    }
     return;
   }
   if (ev.key === "Escape" && menuOpen) {
@@ -639,6 +876,197 @@ function select(key: string) {
   lastMs = 0;
   paint();
   $<HTMLElement>("#modelPluginsFields .mh-plugin-control")?.focus({ preventScroll: true });
+}
+
+function selectIngredient(id: string) {
+  host?.clearPreview();
+  previewed = null;
+  stopLive();
+  selected = `ingredient:${id}`;
+  demo = false;
+  values.clear();
+  preset = "";
+  menuOpen = false;
+  status = null;
+  paint();
+  $<HTMLElement>("#modelPluginsBack")?.focus({ preventScroll: true });
+}
+
+/** An ingredient's card: what it gives, the line that imports it, which plugins carry it, and its menu. */
+function ingredientDetail(row: LibraryIngredient): HTMLElement {
+  const wrap = el("div", "pp-detail pp-ingredient");
+  const head = el("div", "pp-head");
+  const back = button("pp-back", "All nuggets", PURPOSE.back);
+  back.id = "modelPluginsBack";
+  const more = button("pp-more", "⋯", "Source, folder and library");
+  more.id = "modelPluginsMore";
+  more.setAttribute("aria-haspopup", "menu");
+  more.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+  more.setAttribute("aria-label", "More for this ingredient");
+  head.append(back, more);
+  wrap.append(head);
+  if (menuOpen) {
+    const box = el("div", "pp-menu");
+    box.setAttribute("role", "menu");
+    box.id = "modelPluginsMenu";
+    const noLibrary = libraryNote && libraryNote !== "loading" ? "Your library is read by the desktop app. Open this project there." : "";
+    for (const [act, label, tip, off] of [["source", "View source", PURPOSE.ingredientSource, ""], ["reveal", "Reveal in folder", PURPOSE.reveal, noLibrary], ["remove", "Remove from library…", PURPOSE.removeIngredient, noLibrary]] as const) {
+      const b = el("button", "pp-menu-item") as HTMLButtonElement;
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.dataset.act = act;
+      b.textContent = label;
+      b.dataset.tipIdle = tip;
+      b.dataset.tip = blockedTip(tip, off);
+      if (off) {
+        b.setAttribute("aria-disabled", "true");
+        b.dataset.reason = off;
+      }
+      box.append(b);
+    }
+    wrap.append(box);
+  }
+  const title = el("h4", "pp-detail-title");
+  title.id = "modelPluginsTitle";
+  title.textContent = row.title;
+  title.append(" ", Object.assign(el("span", "pp-version"), { textContent: `v${row.version}` }));
+  wrap.append(title);
+  const meta = [row.description, row.author && row.author !== "unknown" ? `By ${row.author}` : "", row.older.length ? `older versions kept: ${row.older.map((v) => `v${v}`).join(", ")}` : ""].filter(Boolean).join(" · ");
+  if (meta) wrap.append(note(meta, "pp-meta"));
+  const use = el("p", "model-note pp-use");
+  use.id = "modelIngredientUse";
+  use.append("A recipe imports it with ", Object.assign(el("code", ""), { textContent: ingredientUse(row.id) }), row.older.length ? `, or a kept version with ingredients::${row.id.replace(/-/g, "_")}::v${row.older.at(-1)}.` : ".");
+  wrap.append(use);
+  const gives = el("ul", "pp-items");
+  gives.id = "modelIngredientItems";
+  gives.setAttribute("aria-label", "What it gives");
+  for (const item of row.items) gives.append(Object.assign(el("li", ""), { textContent: `${item.kind} ${item.name}` }));
+  if (row.items.length === 0) gives.append(Object.assign(el("li", ""), { textContent: "Nothing public yet: a recipe sees only its pub items." }));
+  wrap.append(gives);
+  const users = ingredientUsers(library, row.id);
+  const usedBy = note(users.length ? `Carried by ${users.map((u) => `${u.title} (v${u.version})`).join(", ")}.` : "No plugin in your library carries it yet. A recipe that imports it and is kept as a plugin carries its own copy.", "pp-used-by");
+  usedBy.id = "modelIngredientUsers";
+  wrap.append(usedBy);
+  wrap.append(note(PURPOSE.ingredientHow, "pp-ingredient-how"));
+  return wrap;
+}
+
+async function ingredientAction(act: string) {
+  const row = currentIngredient();
+  if (!row || !host) return;
+  if (act === "source") {
+    void import("./model-history").then(({ showPluginSource }) => showPluginSource(`${row.title} · v${row.version}`, "Read-only. Reveal in folder opens the file, to edit it elsewhere.", row.text));
+    paint();
+    return;
+  }
+  const io = await libraryIo();
+  if (!io) {
+    host.readout(LIBRARY_NEEDS_APP);
+    paint();
+    return;
+  }
+  try {
+    if (act === "reveal") {
+      await io.reveal(row.id, "ingredient");
+      host.readout(`Showing ingredients/${row.id}.rs in ${library.dir || "your plugin folder"}.`);
+    } else if (act === "remove") {
+      const users = ingredientUsers(library, row.id);
+      const carried = users.length ? ` ${users.length === 1 ? "One plugin carries" : `${users.length} plugins carry`} a copy and keep building.` : "";
+      if (!window.confirm(`Remove the ingredient “${row.title}” and its older versions from your library? Recipes that import it stop building until it is kept again.${carried}`)) {
+        paint();
+        return;
+      }
+      const n = await io.remove(row.id, "ingredient");
+      host.readout(`Removed the ingredient “${row.title}” (${n} ${n === 1 ? "file" : "files"}).`);
+      selected = null;
+      await loadLibrary();
+    }
+  } catch (err) {
+    host.readout(err instanceof Error ? err.message : String(err));
+  }
+  paint();
+}
+
+/** Why the form's values cannot be kept as a preset now, ending with what to do, or null. */
+function presetBlocked(plugin: PanelPlugin): string | null {
+  if (demo) return REASON.demoPreset;
+  if (libraryNote && libraryNote !== "loading") return "Presets are kept by the desktop app. Open this project there.";
+  if (plugin.section !== "library") return REASON.presetNeedsLibrary;
+  if (busy) return REASON.busy;
+  return formProblem(plugin.file.params, Object.fromEntries(values));
+}
+
+async function savePresetNow() {
+  const plugin = current();
+  if (!plugin || !host || presetBlocked(plugin)) return;
+  const name = window.prompt(`A name for these values of “${plugin.file.title}”: lower-case letters, digits and dashes.`, preset || "");
+  if (name === null) return;
+  const trimmed = name.trim();
+  const problem = presetProblem(trimmed, plugin.file.params, Object.fromEntries(values));
+  if (problem) {
+    status = { text: problem, problem: true };
+    paintRun();
+    return;
+  }
+  const existing = library.presets.get(plugin.file.plugin)?.some((p) => p.name === trimmed);
+  if (existing && !window.confirm(`“${trimmed}” is already a preset of ${plugin.file.title}. Replace its values with these?`)) return;
+  const io = await libraryIo();
+  if (!io) {
+    host.readout(LIBRARY_NEEDS_APP);
+    return;
+  }
+  try {
+    const listing = await io.list();
+    const text = listing.presets.find((p) => p.plugin === plugin.file.plugin)?.text ?? null;
+    await io.writePresets(plugin.file.plugin, presetsText(text, { name: trimmed, params: presetParams(plugin.file.params, Object.fromEntries(values)) }, new Date().toISOString()));
+    const keep = new Map(values);
+    await loadLibrary();
+    values.clear();
+    for (const [k, v] of keep) values.set(k, v);
+    preset = trimmed;
+    status = { text: `Kept these values as the preset “${trimmed}”. An agent finds it with nugget {action: "find", query: "${trimmed}"}.`, problem: false };
+  } catch (err) {
+    status = { text: `The preset could not be kept: ${err instanceof Error ? err.message : String(err)}`, problem: true };
+  }
+  paint();
+}
+
+async function removePresetNow() {
+  const plugin = current();
+  if (!plugin || !host || !preset) return;
+  const name = preset;
+  if (!window.confirm(`Remove the preset “${name}” of ${plugin.file.title}? Parts built with it keep their values.`)) return;
+  const io = await libraryIo();
+  if (!io) {
+    host.readout(LIBRARY_NEEDS_APP);
+    return;
+  }
+  try {
+    const listing = await io.list();
+    const text = listing.presets.find((p) => p.plugin === plugin.file.plugin)?.text ?? null;
+    await io.writePresets(plugin.file.plugin, presetsWithout(text, name));
+    preset = "";
+    await loadLibrary();
+    status = { text: `Removed the preset “${name}”. The form keeps its values.`, problem: false };
+  } catch (err) {
+    status = { text: `The preset could not be removed: ${err instanceof Error ? err.message : String(err)}`, problem: true };
+  }
+  paint();
+}
+
+async function removeLessonNow(n: number) {
+  const lesson = library.lessons.find((row) => row.n === n);
+  const io = await libraryIo();
+  if (!lesson || !io || !host) return;
+  try {
+    const listing = await io.list();
+    await io.writeLessons(lessonsWithout(listing.lessons ?? null, n));
+    host.readout(`Removed the lesson about ${lesson.about}. Agents and the ${lesson.about} card no longer show it.`);
+    await loadLibrary();
+  } catch (err) {
+    host.readout(`The lesson could not be removed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  paint();
 }
 
 function startDemo() {

@@ -11,6 +11,7 @@ import { setSettleOn, settleOn } from "../bed-rest-pref";
 import { isAlignRelation, type AlignRelation } from "../place-snap";
 import { alignHowHtml, modelAlignPick, modelAlignToHtml } from "../app/align-ui";
 import { paintGrabHint } from "../app/grab-hint";
+import { showLessonsFor } from "./lessons-note";
 import { endsText, type PickedPoint } from "../measure-points";
 import { isProbed, probeAllowsApply, probeNote, toolAvailable, toolBlockedTip, type ProbeView } from "../model-feasibility";
 import { pushToast } from "./toasts";
@@ -243,6 +244,8 @@ function paintOpenTool(next: string | null, cardTitle?: string) {
   }
   const title = document.querySelector("#modelPanelTitle");
   if (title) title.textContent = next ? cardTitle ?? toolTitle(next as ModelTool) : "";
+  // A tool's card shows the lessons about its kind of step; a card that is not a tool shows none.
+  showLessonsFor(next && cardTitle === undefined ? next : null);
   if (next) {
     releaseDock ??= revealDock("left");
     // On the phone's strip the open tool scrolls into sight.

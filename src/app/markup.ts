@@ -476,6 +476,8 @@ export function mountMarkup(root: HTMLElement) {
               </div>
               <!-- --- end A4 --- -->
               <p class="model-note" id="modelNote" hidden role="status"></p>
+              <!-- --- Lessons (I15): what runs learned about the open tool's kind of step, from the library (ui/lessons-note.ts). -->
+              <div class="model-lessons" id="modelLessons" aria-label="Seen in practice" hidden></div>
               <!-- --- Split to print: the card's form, drawn by ui/split-print.ts while that card holds the pane. --- -->
               <div class="model-split-print" id="modelSplitPrint" data-card-for="split-print" hidden></div>
               <!-- --- Print transitions: the card's form, drawn by ui/transition-card.ts while that card holds the pane. --- -->

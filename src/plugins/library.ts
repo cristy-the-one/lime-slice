@@ -11,13 +11,42 @@
 import { isTauri } from "../platform.ts";
 import { bodySha256, readPluginFile, type PluginFileInfo, type PluginParamInfo } from "../plugin-file.ts";
 import type { PluginStamp } from "../model-tree.ts";
+import { carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
 
-/** What the shell lists: every `.rs` file of the folder (current and older versions), the presets, the settings. */
+/**
+ * What the shell lists: every plugin `.rs` file of the folder (current and older versions), the presets, the settings,
+ * and the other nuggets (docs/plan-recipe-ingredients.md I9–I15): the `ingredients/` files and `lessons.json`. A shell
+ * from before nuggets lists none of those.
+ */
 export interface LibraryListing {
   dir: string;
   files: { name: string; text: string }[];
   presets: { plugin: string; text: string }[];
+  ingredients?: { name: string; text: string }[];
+  lessons?: string | null;
   settings: string | null;
+}
+
+/** One ingredient of the library (I9): a module recipes import, at its current version. */
+export interface LibraryIngredient {
+  id: string;
+  title: string;
+  version: number;
+  description: string;
+  author: string;
+  /** Older versions kept beside it, lowest first. */
+  older: number[];
+  /** Its public items, in order: what a recipe gets from `use ingredients::<module>::*;`. */
+  items: { kind: string; name: string }[];
+  text: string;
+}
+
+/** One lesson (I15): a sentence about an op kind or helper, learned from a run. */
+export interface Lesson {
+  n: number;
+  about: string;
+  text: string;
+  created: string;
 }
 
 /** One plugin of the library, its current version, read and checked against its own header's hash. */
@@ -44,11 +73,21 @@ export interface PluginLibrary {
   /** Every version the folder holds, current and older, by its body's hash. */
   bySha: ReadonlyMap<string, PluginFileInfo>;
   presets: ReadonlyMap<string, Preset[]>;
+  /** Ingredients by id, current versions. */
+  ingredients: ReadonlyMap<string, LibraryIngredient>;
+  /** Lessons, oldest first, as `lessons.json` keeps them. */
+  lessons: readonly Lesson[];
   /** The "Plugin author" setting; empty when none is set. */
   author: string;
 }
 
-export const EMPTY_LIBRARY: PluginLibrary = { dir: "", plugins: new Map(), bySha: new Map(), presets: new Map(), author: "" };
+export const EMPTY_LIBRARY: PluginLibrary = { dir: "", plugins: new Map(), bySha: new Map(), presets: new Map(), ingredients: new Map(), lessons: [], author: "" };
+
+/** A preset's name: a slug, as `nugget save {kind: "preset"}` takes it. */
+export const PRESET_NAME = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
+export const LESSON_MAX = 200;
+/** The lessons an op's card shows, newest first: as many as `guide {kind}` gives an agent. */
+export const LESSONS_SHOWN = 5;
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
 export const AUTHOR_MAX = 60;
@@ -94,7 +133,160 @@ export async function readLibrary(listing: LibraryListing): Promise<PluginLibrar
   }
   const presets = new Map<string, Preset[]>();
   for (const { plugin, text } of listing.presets) presets.set(plugin, readPresets(text));
-  return { dir: listing.dir, plugins, bySha, presets, author: readAuthor(listing.settings) };
+  return { dir: listing.dir, plugins, bySha, presets, ingredients: readIngredients(listing.ingredients ?? []), lessons: readLessons(listing.lessons ?? null), author: readAuthor(listing.settings) };
+}
+
+/** The `//! key: value` lines of a `//! ---` header, or null when the text has none. */
+function headerFields(text: string): Map<string, string> | null {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (lines[0]?.trim() !== "//! ---") return null;
+  const end = lines.findIndex((line, i) => i > 0 && line.trim() === "//! ---");
+  if (end < 0) return null;
+  const fields = new Map<string, string>();
+  for (const line of lines.slice(1, end)) {
+    const m = /^\/\/!\s?([a-z0-9-]+):\s?(.*)$/.exec(line);
+    if (m) fields.set(m[1]!, m[2]!.trim());
+  }
+  return fields;
+}
+
+/** The public items of an ingredient's body, at its top level, in order. */
+export function publicItems(text: string): { kind: string; name: string }[] {
+  const out: { kind: string; name: string }[] = [];
+  for (const m of text.replace(/\r\n?/g, "\n").matchAll(/^pub\s+(?:const\s+fn|fn|struct|enum|const|static|type|trait|mod)\s+([A-Za-z_][A-Za-z0-9_]*)/gm)) {
+    const kind = /^pub\s+(const\s+fn|fn|struct|enum|const|static|type|trait|mod)/.exec(m[0])![1]!.replace(/^const\s+fn$/, "fn");
+    out.push({ kind, name: m[1]! });
+  }
+  return out;
+}
+
+/** The ingredients folder's files read: current versions by id, with the older versions kept beside each. */
+export function readIngredients(files: readonly { name: string; text: string }[]): Map<string, LibraryIngredient> {
+  const out = new Map<string, LibraryIngredient>();
+  const older = new Map<string, number[]>();
+  for (const { name, text } of files) {
+    const m = /^([a-z0-9-]+?)(?:\.v(\d+))?\.rs$/.exec(name);
+    if (!m || !isSlug(m[1]!)) continue;
+    const fields = headerFields(text);
+    if (!fields || fields.get("ingredient") !== m[1]) continue;
+    if (m[2]) {
+      older.set(m[1]!, [...(older.get(m[1]!) ?? []), Number(m[2])]);
+      continue;
+    }
+    out.set(m[1]!, {
+      id: m[1]!,
+      title: oneLine(fields.get("title") || m[1]!, TITLE_MAX),
+      version: Math.max(1, Math.floor(Number(fields.get("version")) || 1)),
+      description: oneLine(fields.get("description"), DESCRIPTION_MAX),
+      author: oneLine(fields.get("author") || "unknown", AUTHOR_MAX),
+      older: [],
+      items: publicItems(text),
+      text: text.replace(/\r\n?/g, "\n"),
+    });
+  }
+  for (const [id, versions] of older) {
+    const row = out.get(id);
+    if (row) out.set(id, { ...row, older: versions.sort((a, b) => a - b) });
+  }
+  return out;
+}
+
+/** `lessons.json` as `mcp/nuggets.ts` writes it, oldest first; a damaged file is no lessons. */
+export function readLessons(text: string | null): Lesson[] {
+  if (!text) return [];
+  try {
+    const rows = JSON.parse(text) as unknown;
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((row) => {
+      const r = row as Partial<Lesson> | null;
+      if (!r || typeof r.n !== "number" || typeof r.about !== "string" || typeof r.text !== "string") return [];
+      return [{ n: r.n, about: r.about, text: oneLine(r.text, LESSON_MAX), created: String(r.created ?? "") }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** `lessons.json` without lesson `n`, as `nugget remove {kind: "lesson"}` writes it. */
+export function lessonsWithout(existing: string | null, n: number): string {
+  let rows: unknown[] = [];
+  try {
+    const parsed = existing ? (JSON.parse(existing) as unknown) : [];
+    if (Array.isArray(parsed)) rows = parsed;
+  } catch {
+    rows = [];
+  }
+  return `${JSON.stringify(rows.filter((row) => (row as { n?: unknown } | null)?.n !== n), null, 2)}\n`;
+}
+
+/** The lessons about any of `about`, newest first, at most `LESSONS_SHOWN` (`guide {kind}`'s "Seen in practice"). */
+export function lessonsAbout(lessons: readonly Lesson[], about: readonly string[]): Lesson[] {
+  return lessons.filter((row) => about.includes(row.about)).slice(-LESSONS_SHOWN).reverse();
+}
+
+/** The op kinds (and helpers) whose lessons a Model tool's card shows: the tool's own kind, and the ops it applies. */
+export const TOOL_LESSONS: Readonly<Record<string, readonly string[]>> = {
+  create: ["root", "solid_new", "extrude", "revolve", "loft", "sweep"],
+  boolean: ["boolean", "join"],
+  pushpull: ["faceExtrude", "moveFaces", "extrude"],
+  ribs: ["ribs", "rib"],
+};
+
+export function toolLessonKinds(tool: string): readonly string[] {
+  return TOOL_LESSONS[tool] ?? [tool];
+}
+
+/** The ingredients a plugin file carries inline (I11): id and version, from the stamps a save writes. */
+export function pluginIngredients(file: Pick<PluginFileInfo, "text">): { id: string; version: number }[] {
+  return carriedIngredients(file.text).map(({ id, version }) => ({ id, version }));
+}
+
+/** The library's plugins that carry ingredient `id`, by title, at the version each carries. */
+export function ingredientUsers(library: PluginLibrary, id: string): { title: string; version: number }[] {
+  const out: { title: string; version: number }[] = [];
+  for (const row of library.plugins.values()) {
+    const carried = pluginIngredients(row.file).find((c) => c.id === id);
+    if (carried) out.push({ title: row.file.title, version: carried.version });
+  }
+  return out.sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/** The line a recipe writes to import an ingredient: the latest version. */
+export function ingredientUse(id: string): string {
+  return `use ingredients::${moduleOf(id)}::*;`;
+}
+
+/** The presets file without preset `name`; `{}` when it was the last (the MCP server removes the file then). */
+export function presetsWithout(existing: string | null, name: string): string {
+  let rows: Record<string, unknown> = {};
+  try {
+    const parsed = existing ? (JSON.parse(existing) as unknown) : {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) rows = parsed as Record<string, unknown>;
+  } catch {
+    rows = {};
+  }
+  delete rows[name];
+  return `${JSON.stringify(rows, null, 2)}\n`;
+}
+
+/**
+ * Why `name` cannot be a new preset for these values, ending with what to do, or null: a slug, and every value one
+ * the plugin's declared ranges allow (D4, as `nugget save` checks it).
+ */
+export function presetProblem(name: string, params: readonly PluginParamInfo[], values: Readonly<Record<string, FormValue>>): string | null {
+  if (!PRESET_NAME.test(name)) return "A preset's name is lower-case letters, digits and dashes, for example pp-5mm-wall. Type one like that.";
+  return formProblem(params, values);
+}
+
+/** Every declared value as the form holds it now (typed or default): what a preset keeps. */
+export function presetParams(params: readonly PluginParamInfo[], values: Readonly<Record<string, FormValue>>): Preset["params"] {
+  const out: Preset["params"] = {};
+  for (const param of params) {
+    const raw = param.name in values ? values[param.name]! : param.default;
+    const value = param.kind === "number" || param.kind === "count" ? formNumber(param, raw) : raw;
+    if (value !== null && (typeof value === "number" || typeof value === "boolean" || typeof value === "string")) out[param.name] = value;
+  }
+  return out;
 }
 
 /** `{ "<name>": {params, created} }`, as `mcp/nuggets.ts` writes it; a damaged file is no presets. */
@@ -283,6 +475,50 @@ export function searched(rows: readonly PanelPlugin[], query: string): PanelPlug
 export const SECTION_TITLE: Readonly<Record<PanelSection, string>> = { project: "In this project", library: "Your plugins", samples: "Samples" };
 
 // ---------------------------------------------------------------------------
+// The other nuggets in the panel's list (docs/plan-recipe-ingredients.md I16: one place to look).
+// ---------------------------------------------------------------------------
+
+export type NuggetKind = "all" | "plugin" | "ingredient" | "preset" | "lesson";
+
+export const KIND_TITLE: Readonly<Record<Exclude<NuggetKind, "all">, string>> = { plugin: "Plugins", ingredient: "Ingredients", preset: "Presets", lesson: "Lessons" };
+
+/** How many words of `query` the text holds; every row matches a query with no word. */
+export function wordsIn(hay: string, query: string): number {
+  const words = query.toLowerCase().split(/[\s,/]+/).filter((word) => word.length > 1);
+  if (words.length === 0) return 1;
+  const text = hay.toLowerCase();
+  return words.filter((word) => text.includes(word)).length;
+}
+
+/** The ingredients a search keeps, best first, then by title. */
+export function searchedIngredients(library: PluginLibrary, query: string): LibraryIngredient[] {
+  return [...library.ingredients.values()]
+    .map((row) => ({ row, score: wordsIn(`${row.id} ${row.title} ${row.description} ${row.items.map((i) => i.name).join(" ")}`, query) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.row.title.localeCompare(b.row.title))
+    .map((x) => x.row);
+}
+
+/** The presets a search keeps, each with its plugin's title, for the library's plugins. */
+export function searchedPresets(library: PluginLibrary, query: string): { plugin: string; title: string; preset: Preset }[] {
+  const out: { plugin: string; title: string; preset: Preset; score: number }[] = [];
+  for (const [plugin, presets] of library.presets) {
+    const row = library.plugins.get(plugin);
+    if (!row) continue;
+    for (const preset of presets) {
+      const score = wordsIn(`${plugin} ${row.file.title} ${preset.name} ${Object.keys(preset.params).join(" ")}`, query);
+      if (score > 0) out.push({ plugin, title: row.file.title, preset, score });
+    }
+  }
+  return out.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title) || a.preset.name.localeCompare(b.preset.name)).map(({ score: _s, ...rest }) => rest);
+}
+
+/** The lessons a search keeps, newest first. */
+export function searchedLessons(library: PluginLibrary, query: string): Lesson[] {
+  return [...library.lessons].reverse().filter((row) => wordsIn(`${row.about} ${row.text}`, query) > 0);
+}
+
+// ---------------------------------------------------------------------------
 // The form's values.
 // ---------------------------------------------------------------------------
 
@@ -360,11 +596,12 @@ export interface LibraryIo {
   /** Writes `<id>.rs`, keeping a different version there as `<id>.v<N>.rs` (at most five). The path written. */
   save(id: string, text: string): Promise<string>;
   writePresets(id: string, text: string): Promise<void>;
+  writeLessons(text: string): Promise<void>;
   writeSettings(text: string): Promise<void>;
-  /** Removes `<id>.rs` and its older versions; the number of files removed. */
-  remove(id: string): Promise<number>;
-  /** Shows the plugin's file, or the folder, in the system's file manager. */
-  reveal(id: string | null): Promise<void>;
+  /** Removes `<id>.rs` and its older versions (an ingredient's, in `ingredients/`); the number of files removed. */
+  remove(id: string, kind?: "plugin" | "ingredient"): Promise<number>;
+  /** Shows the plugin's (or ingredient's) file, or the folder, in the system's file manager. */
+  reveal(id: string | null, kind?: "plugin" | "ingredient"): Promise<void>;
 }
 
 let tauriInvoke: Promise<Invoke | null> | null = null;
@@ -390,9 +627,10 @@ export async function libraryIo(): Promise<LibraryIo | null> {
     list: () => invoke<LibraryListing>("plugin_library_list"),
     save: (id, text) => invoke<string>("plugin_library_save", { id, text }),
     writePresets: (id, text) => invoke<void>("plugin_library_write", { name: `presets/${id}.json`, text }),
+    writeLessons: (text) => invoke<void>("plugin_library_write", { name: "lessons.json", text }),
     writeSettings: (text) => invoke<void>("plugin_library_write", { name: "settings.json", text }),
-    remove: (id) => invoke<number>("plugin_library_remove", { id }),
-    reveal: (id) => invoke<void>("plugin_library_reveal", { id }),
+    remove: (id, kind) => invoke<number>("plugin_library_remove", kind && kind !== "plugin" ? { id, kind } : { id }),
+    reveal: (id, kind) => invoke<void>("plugin_library_reveal", kind && kind !== "plugin" ? { id, kind } : { id }),
   };
 }
 

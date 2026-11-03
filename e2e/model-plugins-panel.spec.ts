@@ -40,9 +40,9 @@ test("the Plugins panel lists and searches the library, checks the form, preview
   await openPanel(page);
 
   // The library: one section, each row its title, version, description, author and badges.
+  // All: the plugins, then the library's other nuggets (here stud-row's preset).
   const list = card(page).locator(".pp-section");
-  await expect(list).toHaveCount(1);
-  await expect(list.locator(".pp-section-title")).toHaveText("Your plugins");
+  await expect(list.locator(".pp-section-title")).toHaveText(["Your plugins", "Presets"]);
   await expect(card(page).locator(".pp-pick")).toHaveCount(3);
   const studRow = card(page).locator('.pp-pick[data-key="library:stud-row"]');
   await expect(studRow.locator(".pp-version")).toHaveText("v4");
@@ -57,7 +57,7 @@ test("the Plugins panel lists and searches the library, checks the form, preview
   await expect(card(page).locator(".pp-pick .pp-title")).toHaveText("Corner notch");
   await search.fill("zebra");
   await expect(card(page).locator(".pp-pick")).toHaveCount(0);
-  await expect(card(page).locator(".pp-empty")).toHaveText("No plugin matches “zebra”. Try another word, or clear the search.");
+  await expect(card(page).locator(".pp-empty")).toHaveText("Nothing matches “zebra”. Try another word, or clear the search.");
   await search.fill("studs");
   await search.press("Enter");
 

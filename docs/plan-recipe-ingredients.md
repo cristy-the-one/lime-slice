@@ -463,6 +463,12 @@ Each is one PR to `main`, smallest useful first. Each updates `docs/mcp-server.m
    - **Done when** (section 13, adapted), `mcp/nugget.test.ts`: a session's run offers its `cells` helper, the offered
      call keeps it as `honeycomb`, and a fresh session's `nugget find honeycomb` returns it with its `use` line, and a
      recipe importing it runs.
+   - **As built in the window (branch `claude/nuggets-gui`).** The Plugins panel lists ingredients, presets and lessons
+     beside the plugins, with kind chips and one search (I16 for a person); an ingredient opens to what it gives, its
+     import line and the plugins that carry it, with Reveal and Remove; the form has Save as preset… and Remove preset
+     (I14); a lesson is removed with its ×, and each Model tool's card shows its kind's lessons as "Seen in practice"
+     (I15). I12's "Save parts as ingredient…" from a History row is not built: lifting items needs the MCP's build
+     check (`nugget save` builds the ingredient alone under lust), which the window does not run yet.
 7. **I24–I25.** Process-aware checks.
 
 ## 13. Done for the whole plan
