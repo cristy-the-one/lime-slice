@@ -216,3 +216,31 @@ test("after a slice the stage tabs stay whole beside the estimate, from 961 to 1
     expect(bar.overflow, `${width}: the page scrolls sideways`).toBe(0);
   }
 });
+
+
+test("resizing a dock coalesces a burst of pointer moves and saves the final width", async ({ page }) => {
+  await quiet(page);
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await page.goto("/");
+  const handle = page.locator(".splitter-left");
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + 20);
+  await page.mouse.down();
+  const result = await page.evaluate(async ({ x, y }) => {
+    const handle = document.querySelector<HTMLElement>(".splitter-left")!;
+    let resizes = 0;
+    const count = () => { resizes += 1; };
+    window.addEventListener("resize", count);
+    for (let i = 1; i <= 30; i++) handle.dispatchEvent(new PointerEvent("pointermove", { pointerId: 1, clientX: x + i, clientY: y, bubbles: true }));
+    const during = resizes;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    window.removeEventListener("resize", count);
+    return { during, resizes };
+  }, { x: box.x + box.width / 2, y: box.y + 20 });
+  await page.mouse.up();
+  expect(result.during, "a burst should not synchronously resize the canvas for each event").toBe(0);
+  expect(result.resizes).toBeLessThanOrEqual(1);
+  const width = await page.locator("#leftDock").evaluate(el => el.getBoundingClientRect().width);
+  await page.reload();
+  await expect.poll(() => page.locator("#leftDock").evaluate(el => el.getBoundingClientRect().width)).toBeCloseTo(width, 0);
+});
