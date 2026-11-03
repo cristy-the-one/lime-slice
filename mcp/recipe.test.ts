@@ -188,6 +188,10 @@ function stub(log: RecipeCallSite[]) {
   const made = (two.created as string[] | undefined) ?? [];
   const xs = made.map((oid) => listed.find((row) => row.object === oid)?.centreMm[0]);
   check("session: a recipe places the objects it made", two.ok === true && made.length === 2 && xs[1]! - xs[0]! === 10 && two.recipe === "row", { two, xs });
+  check("session: recipe placement uses the solid's bounds before commit", JSON.stringify(xs) === "[20,30]" && made.every((oid) => {
+    const centre = listed.find((row) => row.object === oid)?.centreMm;
+    return centre?.[1] === 30 && centre[2] === 2;
+  }), listed);
   check("session: Json::arr takes an outline", JSON.stringify((two.metrics as { outline?: unknown }).outline) === "[[0,0],[1,0],[0,1]]", two.metrics);
   const moveOther = await call("recipe_run", { source: src([`    s.call("object_place", lime_recipe::Json::obj().set("object", "${id}").set("centreX", 5.0)).unwrap();`]), name: "nudge" });
   check("session: placing a part the run did not make is refused", moveOther.ok === false && /places only the objects this run made/.test(JSON.stringify(moveOther.refused)), moveOther);
@@ -224,6 +228,29 @@ function stub(log: RecipeCallSite[]) {
   check("session: one part, same handle, where it was, the new size", Object.keys(now).length === count && now[cube]?.x === 60 && now[cube]?.y === 70 && now[cube]?.dx === 12, now);
   const rerunCube = await reopened.call("recipe_run", { object: cube, params: {} });
   check("session: a rerun of the replaced part replaces it again", rerunCube.ok === true && rerunCube.object === cube && Object.keys(await sizes(reopened)).length === count, rerunCube);
+  const assembledSrc = src([
+    '    let x = s.param_f64("x", 15.0);',
+    '    let p = s.solid_new(ops::cuboid(8.0, 8.0, 8.0)).unwrap();',
+    '    s.call("model_place", lime_recipe::Json::obj().set("object", p.object.as_str()).set("x", x)).unwrap();',
+    '    s.done(&p);',
+  ]);
+  const assembled = await reopened.call("recipe_run", { source: assembledSrc, name: "assembled" });
+  const assembledId = String(assembled.object);
+  await reopened.call("object_place", { object: assembledId, centreX: 42, centreY: 67 });
+  const assembledAgain = await reopened.call("recipe_run", { object: assembledId, params: { x: 25 } });
+  const assembledAfter = await sizes(reopened);
+  const assembledPose = await reopened.call("model_place", { object: assembledId });
+  check("session: model_place on rerun preserves the print layout", assembledAgain.ok === true && assembledAfter[assembledId]?.x === 42 && assembledAfter[assembledId]?.y === 67, { assembledAgain, assembledAfter });
+  check("session: model_place on rerun updates the assembly pose", assembledPose.x === 25, assembledPose);
+  const printSrc = src([
+    '    let p = s.solid_new(ops::cuboid(8.0, 8.0, 8.0)).unwrap();',
+    '    s.call("object_place", lime_recipe::Json::obj().set("object", p.object.as_str()).set("centreX", 80.0).set("centreY", 90.0)).unwrap();',
+    '    s.done(&p);',
+  ]);
+  const printAgain = await reopened.call("recipe_run", { object: assembledId, name: "assembled", source: printSrc });
+  const printAfter = await sizes(reopened);
+  const keptPose = await reopened.call("model_place", { object: assembledId });
+  check("session: object_place on rerun changes only the print pose", printAgain.ok === true && printAfter[assembledId]?.x === 80 && printAfter[assembledId]?.y === 90 && keptPose.x === 25, { printAgain, printAfter, keptPose });
   // The same name without object makes another part, and says how to replace the earlier one instead.
   const second = await reopened.call("recipe_run", { source: cubeSrc(8), name: "cube" });
   check("session: the same name without object says the earlier part is still there", second.ok === true && second.object !== cube && String(second.earlier).includes(`${cube} from an earlier run of cube is still on the plate`), second);
