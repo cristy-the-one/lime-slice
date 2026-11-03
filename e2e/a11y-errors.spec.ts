@@ -38,7 +38,12 @@ test("an unreachable engine toasts Retry and a second probe connects", async ({ 
   const toast = page.locator("#toasts").getByRole("alert").filter({ hasText: "Slicer engine not running" });
   await expect(toast).toBeVisible();
   await expect(page.locator("#engineLink")).toHaveText("Engine unreachable");
-  await toast.getByRole("button", { name: "Retry" }).click();
+  await page.clock.install();
+  const retry = toast.getByRole("button", { name: "Retry" });
+  await retry.focus();
+  await page.clock.fastForward(7000);
+  await expect(toast).toBeVisible();
+  await retry.click();
   await expect(page.locator("#engineLink")).toHaveText("Engine connected");
   await expect(page.locator("#toasts").getByRole("alert").filter({ hasText: "Slicer engine not running" })).toHaveCount(0);
 });
@@ -220,4 +225,17 @@ test("a focused model field names its axis for assistive tech", async ({ page })
   });
   for (const row of ratios) expect(row.ratio, `${row.scheme} ${row.axis} on ${row.against}`).toBeGreaterThanOrEqual(3);
   if (process.env.UPDATE_SCREENSHOTS === "1") await page.screenshot({ path: "docs/screenshots/ui-review-3-1/ph08-after-badge.png" });
+});
+
+test("the command palette keeps text editing keys and Enter closes a focused Close button", async ({ page }) => {
+  await page.goto("/");
+  await page.keyboard.press("Control+k");
+  const input = page.locator("#paletteInput");
+  await input.fill("slice");
+  await page.keyboard.press("Control+a");
+  await page.keyboard.type("preview");
+  await expect(input).toHaveValue("preview");
+  await page.locator("#paletteClose").focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#palette")).toBeHidden();
 });

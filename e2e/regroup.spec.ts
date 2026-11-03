@@ -87,6 +87,7 @@ test("the Calibrate sheet opens from the File menu and closes on Escape", async 
   await expect(page.locator("#calibrate #retractcal")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator("#calibrate")).toBeHidden();
+  await expect(page.locator("#fileMenu > summary")).toBeFocused();
 });
 
 test("no setting appears twice, and a tier hides the groups with nothing to show", async ({ page }) => {
