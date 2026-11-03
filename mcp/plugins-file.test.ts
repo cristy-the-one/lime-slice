@@ -6,7 +6,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { apiRefusal, bodyHash, listLibrary, oneLine, paramSummary, parsePlugin, pluginText, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "./plugins.ts";
+import { pluginFileText } from "../src/plugin-file.ts";
+import { apiRefusal, bodyHash, listLibrary, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginText, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "./plugins.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail: unknown = "") {
@@ -71,6 +72,24 @@ writeFileSync(join(dir, "notes.txt"), "not a plugin");
 writeFileSync(join(dir, "broken.rs"), "fn main() {}\n");
 check("other files and broken plugins are not listed", listLibrary(dir).map((p) => p.header.plugin).join() === "bolt-circle-flange");
 check("remove takes the plugin and its older versions", removePlugin("bolt-circle-flange", dir) === 6 && !readdirSync(dir).some((n) => n.startsWith("bolt-circle-flange")) && readFileSync(join(dir, "notes.txt"), "utf8") === "not a plugin");
+
+// The app's Save as plugin… writes the same bytes as the MCP server (src/plugin-file.ts `pluginFileText`).
+const h = header(3);
+const appText = pluginFileText({ plugin: h.plugin, title: h.title, version: h.version, description: h.description, author: h.author, madeBy: h["made-by"], api: h.api, sha256: h["source-sha256"], created: h.created, target: h.target, params: h.params }, `\n\n${body}`);
+check("the app writes a plugin file byte for byte as the server does", appText === pluginText(h, `\n\n${body}`));
+
+// The "Plugin author" setting: the app writes settings.json in the library; LIME_PLUGIN_AUTHOR still wins when set.
+const named = process.env.LIME_PLUGIN_AUTHOR;
+delete process.env.LIME_PLUGIN_AUTHOR;
+check("no setting is unknown", pluginAuthor(dir) === "unknown");
+writeFileSync(join(dir, "settings.json"), JSON.stringify({ author: "  Marius\tC.  " }));
+check("the app's setting is the author, on one line", pluginAuthor(dir) === "Marius C.", pluginAuthor(dir));
+process.env.LIME_PLUGIN_AUTHOR = "CI";
+check("LIME_PLUGIN_AUTHOR overrides the setting", pluginAuthor(dir) === "CI");
+writeFileSync(join(dir, "settings.json"), "not json");
+delete process.env.LIME_PLUGIN_AUTHOR;
+check("a damaged settings file is unknown", pluginAuthor(dir) === "unknown");
+if (named !== undefined) process.env.LIME_PLUGIN_AUTHOR = named;
 
 if (failed > 0) {
   console.error(`plugins-file: ${failed} failed`);

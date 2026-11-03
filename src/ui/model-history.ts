@@ -56,6 +56,19 @@ interface ModelHistoryHooks {
    * row of the new run, or null when nothing was rebuilt (the readout says why).
    */
   pluginRebuild?(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean): Promise<{ row: RowKey } | { reason: string }>;
+  /** --- Milestone 7, D9. Use vN: rebuild the row's plugin step with the library's newer version, values carried by name. */
+  pluginUseVersion?(row: RowKey): Promise<{ row: RowKey } | { reason: string }>;
+  /** --- Milestone 7, D1. Save as plugin…: keep the row's draft in the library with these words. */
+  pluginSave?(row: RowKey, words: PluginSaveWords): Promise<{ text: string } | { reason: string }>;
+  /** The "Plugin author" setting, to fill the dialog. */
+  pluginAuthor?(): string;
+}
+
+/** What the Save as plugin… dialog asks for (D1). */
+export interface PluginSaveWords {
+  title: string;
+  description: string;
+  author: string;
 }
 
 /** --- A10. Colour by step paints a swatch on each row. Off, the swatches go and the rows repaint. */
@@ -257,6 +270,8 @@ export function mountModelHistory(next: ModelHistoryHooks) {
   list.before(pluginCard);
   sourceSheet = buildSourceSheet();
   document.body.append(sourceSheet);
+  saveSheet = buildSaveSheet();
+  document.body.append(saveSheet);
   note = document.createElement("p");
   note.className = "mh-note";
   note.setAttribute("role", "status");
@@ -977,6 +992,8 @@ function buildMenu(): HTMLElement {
     <button type="button" role="menuitem" data-act="edit"><span>Edit step</span><kbd>Shift+E</kbd><small class="mh-why"></small></button>
     <button type="button" role="menuitem" data-act="values" hidden><span>Plugin values…</span></button>
     <button type="button" role="menuitem" data-act="source" hidden><span>View source</span><small class="mh-why"></small></button>
+    <button type="button" role="menuitem" data-act="use" hidden data-tip="Rebuild this step with the newer version in your library. Values carry over by name; Undo goes back."><span>Use v2</span><small class="mh-why"></small></button>
+    <button type="button" role="menuitem" data-act="save" hidden data-tip="Keep this recipe in your plugin library, with a title and a description, to run it on other parts."><span>Save as plugin…</span><small class="mh-why"></small></button>
     <button type="button" role="menuitem" data-act="rename"><span>Rename</span><kbd>F2</kbd></button>
     <button type="button" role="menuitem" data-act="export" hidden><span>Export…</span></button>
     <button type="button" role="menuitem" data-act="drop"><span>Delete branch</span><kbd>Del</kbd><small class="mh-why"></small></button>`;
@@ -989,6 +1006,8 @@ function buildMenu(): HTMLElement {
     if (item.dataset.act === "edit") editStep(id);
     else if (item.dataset.act === "values") openPluginCard(id);
     else if (item.dataset.act === "source") openSource(id);
+    else if (item.dataset.act === "use") void useNewer(id);
+    else if (item.dataset.act === "save") openSaveDialog(id);
     else if (item.dataset.act === "export") hooks?.exportPieces?.(id);
     else if (item.dataset.act === "rename") startRename(id);
     else dropBranch(id);
@@ -1032,6 +1051,18 @@ function openMenu(id: RowKey, at?: { x: number; y: number }) {
   source.hidden = !view;
   source.setAttribute("aria-disabled", view && !view.source ? "true" : "false");
   source.querySelector(".mh-why")!.textContent = view && !view.source ? "This project does not carry the code." : "";
+  // --- Milestone 7: Use vN for a newer library version (D9), Save as plugin… for a draft (D1).
+  const use = menu.querySelector<HTMLElement>('[data-act="use"]')!;
+  use.hidden = !view?.newer;
+  use.querySelector("span")!.textContent = view?.newer ? `Use v${view.newer.version}` : "Use";
+  const useWhy = view?.newer ? useRefusal(view) : null;
+  use.setAttribute("aria-disabled", useWhy ? "true" : "false");
+  use.querySelector(".mh-why")!.textContent = useWhy ?? "";
+  const save = menu.querySelector<HTMLElement>('[data-act="save"]')!;
+  save.hidden = !view?.draft || !hooks.pluginSave;
+  const saveWhy = view?.draft ? saveRefusal(view) : null;
+  save.setAttribute("aria-disabled", saveWhy ? "true" : "false");
+  save.querySelector(".mh-why")!.textContent = saveWhy ?? "";
   menu.querySelector<HTMLElement>('[data-act="edit"]')!.hidden = !!view && !!folded && !folded.expanded;
   for (const [act, refusal] of [["edit", held ?? hooks.editRefusal(id)], ["drop", held ?? hooks.dropRefusal(id)]] as const) {
     const item = menu.querySelector<HTMLElement>(`[data-act="${act}"]`)!;
@@ -1121,7 +1152,16 @@ function buildPluginCard(): HTMLElement {
   });
   const rebuild = Object.assign(document.createElement("button"), { type: "button", className: "btn primary", id: "modelPluginRebuild", textContent: "Rebuild" });
   rebuild.addEventListener("click", () => void rebuildFromCard());
-  actions.append(view, reset, rebuild);
+  // --- Milestone 7. Use vN (a newer version in the library, D9) and Save as plugin… (a draft, D1).
+  const use = Object.assign(document.createElement("button"), { type: "button", className: "btn", id: "modelPluginUse", textContent: "Use v2", hidden: true });
+  use.addEventListener("click", () => {
+    if (pluginCardRow) void useNewer(pluginCardRow);
+  });
+  const save = Object.assign(document.createElement("button"), { type: "button", className: "btn", id: "modelPluginSave", textContent: "Save as plugin…", hidden: true });
+  save.addEventListener("click", () => {
+    if (pluginCardRow) openSaveDialog(pluginCardRow);
+  });
+  actions.append(view, use, save, reset, rebuild);
   card.append(head, meta, note, fields, hint, actions);
   card.addEventListener("keydown", (ev) => {
     if (ev.key !== "Escape") return;
@@ -1234,6 +1274,179 @@ function refreshPluginCard() {
   const source = pluginCard.querySelector<HTMLButtonElement>("#modelPluginSourceOpen")!;
   source.disabled = !view.source;
   source.dataset.tip = view.source ? "The plugin's code, read-only" : "This project does not carry the code.";
+  // --- Milestone 7, D9: "v5 is in your library", with Use v5. Never automatic.
+  note.classList.toggle("is-info", !!view.newer && !view.note);
+  if (view.newer && !view.note) {
+    note.textContent = `v${view.newer.version} is in your library.`;
+    note.hidden = false;
+  }
+  const use = pluginCard.querySelector<HTMLButtonElement>("#modelPluginUse")!;
+  use.hidden = !view.newer;
+  use.textContent = view.newer ? `Use v${view.newer.version}` : "Use";
+  const useWhy = view.newer ? useRefusal(view) : null;
+  use.disabled = pluginBusy || !!useWhy;
+  use.dataset.tip = useWhy ?? `Rebuild this step with v${view.newer?.version ?? ""} from your library. Values carry over by name; one Undo goes back.`;
+  const save = pluginCard.querySelector<HTMLButtonElement>("#modelPluginSave")!;
+  save.hidden = !view.draft || !hooks?.pluginSave;
+  const saveWhy = saveRefusal(view);
+  save.disabled = pluginBusy || !!saveWhy;
+  save.dataset.tip = saveWhy ?? "Keep this recipe in your plugin library, with a title and a description, to run it on other parts.";
+}
+
+/** Why Use vN cannot run here, naming what to do, or null. */
+function useRefusal(view: PluginStepView): string | null {
+  if (!view.newer) return null;
+  if (!hooks?.pluginUseVersion) return "Using another version needs the desktop app.";
+  if (pluginRunnerNote) return `${pluginRunnerNote} The step stays as built.`;
+  return null;
+}
+
+/** Why Save as plugin… cannot run here, naming what to do, or null. */
+function saveRefusal(view: PluginStepView): string | null {
+  if (!view.draft) return null;
+  if (!hooks?.pluginSave) return "Saving a plugin needs the desktop app, which reads your plugin library.";
+  if (pluginRunnerNote) return `${pluginRunnerNote} A save checks the plugin once with lust, so it waits for an app that has it.`;
+  if (!view.source) return "This project does not carry the recipe's code, so it cannot be kept.";
+  return null;
+}
+
+/** Use vN: the step rebuilds with the library's version; the card follows the new run. */
+async function useNewer(id: RowKey) {
+  const row = layout?.rows.find((item) => item.key === id);
+  const view = pluginView(row);
+  if (!view?.newer || !hooks?.pluginUseVersion || pluginBusy || useRefusal(view)) return;
+  pluginBusy = true;
+  refreshPluginCard();
+  let done: { row: RowKey } | { reason: string } = { reason: "The step was not rebuilt." };
+  try {
+    done = await hooks.pluginUseVersion(id);
+  } finally {
+    pluginBusy = false;
+  }
+  if ("row" in done) {
+    pluginDraft.clear();
+    pluginFailure = null;
+    if (pluginCardRow != null) pluginCardRow = done.row;
+  } else pluginFailure = done.reason;
+  refreshPluginCard();
+}
+
+// ---------------------------------------------------------------------------
+// --- Milestone 7, D1. Save as plugin…: a small dialog, title, description and author, then the save's checks.
+// ---------------------------------------------------------------------------
+
+let saveSheet: HTMLElement | null = null;
+let saveRow: RowKey | null = null;
+let saveReturn: HTMLElement | null = null;
+
+function buildSaveSheet(): HTMLElement {
+  const sheet = document.createElement("div");
+  sheet.id = "modelPluginSaveSheet";
+  sheet.className = "sheet";
+  sheet.hidden = true;
+  sheet.setAttribute("role", "dialog");
+  sheet.setAttribute("aria-modal", "true");
+  sheet.setAttribute("aria-labelledby", "modelPluginSaveTitle");
+  sheet.innerHTML = `
+    <form class="sheet-card mh-save-card" novalidate>
+      <div class="sheet-head"><h2 id="modelPluginSaveTitle">Save as plugin</h2></div>
+      <p class="mh-save-sub">Keeps this recipe in your plugin library, so the Plugins panel and agents can run it on other parts. Saving builds it once with its own defaults.</p>
+      <label class="mh-save-field"><span>Title</span><input id="modelPluginSaveName" type="text" maxlength="60" required spellcheck="false" autocomplete="off"></label>
+      <label class="mh-save-field"><span>Description</span><textarea id="modelPluginSaveDesc" maxlength="280" rows="3"></textarea></label>
+      <label class="mh-save-field"><span>Author</span><input id="modelPluginSaveAuthor" type="text" maxlength="60" placeholder="unknown" spellcheck="false" autocomplete="off"></label>
+      <p class="mh-save-status" id="modelPluginSaveStatus" role="status" hidden></p>
+      <div class="mh-save-actions"><button class="btn" type="button" data-act="cancel">Cancel</button><button class="btn primary" type="submit" id="modelPluginSaveGo">Save</button></div>
+    </form>`;
+  const form = sheet.querySelector("form")!;
+  sheet.querySelector('[data-act="cancel"]')!.addEventListener("click", () => closeSaveDialog());
+  sheet.addEventListener("pointerdown", (ev) => {
+    if (ev.target === sheet) closeSaveDialog();
+  });
+  sheet.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeSaveDialog();
+  });
+  sheet.querySelector("#modelPluginSaveName")!.addEventListener("input", () => paintSaveStatus(null));
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    void submitSave();
+  });
+  return sheet;
+}
+
+function openSaveDialog(id: RowKey) {
+  const view = pluginView(layout?.rows.find((row) => row.key === id));
+  if (!saveSheet || !view?.draft || saveRefusal(view)) return;
+  saveRow = id;
+  saveReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const name = saveSheet.querySelector<HTMLInputElement>("#modelPluginSaveName")!;
+  name.value = view.title.replace(/[-_]+/g, " ").replace(/^\w/, (c) => c.toUpperCase()).slice(0, 60);
+  saveSheet.querySelector<HTMLTextAreaElement>("#modelPluginSaveDesc")!.value = view.description ?? "";
+  saveSheet.querySelector<HTMLInputElement>("#modelPluginSaveAuthor")!.value = hooks?.pluginAuthor?.() ?? "";
+  paintSaveStatus(null);
+  saveSheet.hidden = false;
+  name.focus();
+  name.select();
+}
+
+function closeSaveDialog() {
+  if (!saveSheet || saveSheet.hidden) return;
+  saveSheet.hidden = true;
+  saveRow = null;
+  if (saveReturn?.isConnected) saveReturn.focus({ preventScroll: true });
+  saveReturn = null;
+}
+
+function paintSaveStatus(text: string | null, problem = false) {
+  const status = saveSheet?.querySelector<HTMLElement>("#modelPluginSaveStatus");
+  if (!status) return;
+  status.textContent = text ?? "";
+  status.hidden = !text;
+  status.classList.toggle("is-problem", problem);
+}
+
+async function submitSave() {
+  if (!saveSheet || saveRow == null || !hooks?.pluginSave) return;
+  const title = saveSheet.querySelector<HTMLInputElement>("#modelPluginSaveName")!.value.trim();
+  if (!title) {
+    paintSaveStatus("A plugin needs a title. Type one line, at most 60 characters.", true);
+    saveSheet.querySelector<HTMLInputElement>("#modelPluginSaveName")!.focus();
+    return;
+  }
+  const go = saveSheet.querySelector<HTMLButtonElement>("#modelPluginSaveGo")!;
+  go.disabled = true;
+  paintSaveStatus("Checking the plugin: one describe run, then one run with its defaults…");
+  let done: { text: string } | { reason: string };
+  try {
+    done = await hooks.pluginSave(saveRow, {
+      title,
+      description: saveSheet.querySelector<HTMLTextAreaElement>("#modelPluginSaveDesc")!.value,
+      author: saveSheet.querySelector<HTMLInputElement>("#modelPluginSaveAuthor")!.value,
+    });
+  } catch (err) {
+    done = { reason: err instanceof Error ? err.message : String(err) };
+  } finally {
+    go.disabled = false;
+  }
+  if ("reason" in done) {
+    paintSaveStatus(done.reason, true);
+    return;
+  }
+  closeSaveDialog();
+  refreshPluginCard();
+}
+
+/** A plugin's code, read-only, in the source sheet: the Plugins panel's View source. */
+export function showPluginSource(title: string, sub: string, text: string) {
+  if (!sourceSheet) return;
+  sourceReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  sourceSheet.querySelector("#modelPluginSourceTitle")!.textContent = title;
+  sourceSheet.querySelector(".mh-source-sub")!.textContent = sub;
+  sourceSheet.querySelector(".mh-source code")!.textContent = text;
+  sourceSheet.hidden = false;
+  sourceSheet.querySelector<HTMLElement>('[data-act="close"]')?.focus();
 }
 
 /** One value: the one typed and not rebuilt yet, else the one the step was built with. Read-only where it cannot change. */

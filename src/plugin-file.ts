@@ -27,10 +27,18 @@ export interface PluginFileInfo {
   madeBy: string;
   api: string;
   params: PluginParamInfo[];
+  /** Whether a run needs a part (`object`), may take one (`either`), or makes its own (`new`). */
+  target: PluginTarget;
+  /** The header's `source-sha256`: the body the header was written for. */
+  headerSha: string;
+  created: string;
+  lust: string;
   body: string;
   /** The whole file, LF line ends. */
   text: string;
 }
+
+export type PluginTarget = "new" | "object" | "either";
 
 /** A project's copy, read and checked: `intact` when its body hashes to the key it is kept under. */
 export interface CheckedCopy {
@@ -66,6 +74,7 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
   } catch {
     params = [];
   }
+  const target = fields.get("target");
   return {
     plugin,
     title: oneLine(fields.get("title") ?? plugin, 60),
@@ -75,9 +84,49 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
     madeBy: oneLine(fields.get("made-by"), 60),
     api: fields.get("api") ?? "1.0",
     params,
+    target: target === "object" || target === "either" ? target : "new",
+    headerSha: fields.get("source-sha256") ?? "",
+    created: fields.get("created") ?? "",
+    lust: fields.get("lust") ?? "",
     body: lines.slice(end + 1).join("\n"),
     text,
   };
+}
+
+/** A plugin's header as it is written (D6), in the MCP server's field order (`pluginText` in `mcp/plugins.ts`). */
+export interface PluginHeaderOut {
+  plugin: string;
+  title: string;
+  version: number;
+  description: string;
+  author: string;
+  madeBy?: string;
+  api: string;
+  lust?: string;
+  sha256: string;
+  created: string;
+  target: PluginTarget;
+  params: PluginParamInfo[];
+}
+
+/** The file text: the front matter as inner doc comments, then the body, so the file is a valid main.rs as it stands. */
+export function pluginFileText(header: PluginHeaderOut, body: string): string {
+  const fields: [string, unknown][] = [
+    ["plugin", header.plugin],
+    ["title", header.title],
+    ["version", header.version],
+    ["description", header.description],
+    ["author", header.author],
+    ["made-by", header.madeBy],
+    ["api", header.api],
+    ["lust", header.lust],
+    ["source-sha256", header.sha256],
+    ["created", header.created],
+    ["target", header.target],
+    ["params", JSON.stringify(header.params)],
+  ];
+  const lines = fields.filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => `//! ${key}: ${value}`);
+  return [FENCE, ...lines, FENCE, body.replace(/\r\n?/g, "\n").replace(/^\n+/, "")].join("\n");
 }
 
 /** SHA-256 of a body as the MCP server hashes it (`bodyHash`): UTF-8, LF line ends, lower-case hex. */

@@ -78,7 +78,7 @@ export interface Doc { plugins?: Record<string, string>; objects: { modelTree: {
  * writes a plugin run: the first three cuts are the run. `copy` changes the project's copy of the plugin; `before`
  * runs before the page loads (a scripted recipe runner, say).
  */
-export async function pluginProject(page: Page, opts: { copy?: (file: string) => string; after?: number[]; before?: (page: Page) => Promise<void>; made?: boolean } = {}): Promise<Doc> {
+export async function pluginProject(page: Page, opts: { copy?: (file: string) => string; after?: number[]; before?: (page: Page) => Promise<void>; made?: boolean; edit?: (doc: Doc & Record<string, unknown>) => void } = {}): Promise<Doc> {
   const copy = opts.copy ?? ((file: string) => file);
   const readout = page.locator("#modelReadout");
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -116,6 +116,7 @@ export async function pluginProject(page: Page, opts: { copy?: (file: string) =>
     if (i === 0) node.plugin = { plugin: "stud-row", version: 3, sha256: SHA, api: "1.1", params: { studs: 5 }, context: { bedMm: [250, 210, 220], nozzleMm: 0.4 }, fingerprint: { volumeMm3: 1600, faces: 6, edges: 12 } };
   });
   doc.plugins = { [SHA]: copy(FILE) };
+  opts.edit?.(doc as Doc & Record<string, unknown>);
   await page.reload();
   await page.locator("#projectFile").setInputFiles({ name: "studs.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
   await expect(page.locator("#objectList .obj").first()).toBeVisible();

@@ -113,7 +113,7 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
-import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "./plugins.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "./plugins.ts";
 import { bodyProblem, builtText, carriedIngredients, ingredientsDir, isIngredientId, keptIngredient, lineMap, lineText, locate, moduleOf, resolveIngredients, type KeptIngredient } from "./ingredients.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, seenInPractice, writePreset } from "./nuggets.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
@@ -1648,7 +1648,7 @@ export class Session {
       title,
       version,
       description: oneLine(opts.description, DESCRIPTION_MAX),
-      author: oneLine(process.env.LIME_PLUGIN_AUTHOR || "unknown", AUTHOR_MAX),
+      author: pluginAuthor(),
       ...(this.clientName ? { "made-by": oneLine(this.clientName, AUTHOR_MAX) } : {}),
       api: this.crateApi().join("."),
       ...(this.lustBuild() ? { lust: this.lustBuild() } : {}),
@@ -1982,7 +1982,7 @@ export class Session {
       title,
       version,
       description: input.description === undefined && existing && !("reason" in existing) ? existing.header.description : oneLine(input.description, DESCRIPTION_MAX),
-      author: oneLine(process.env.LIME_PLUGIN_AUTHOR || "unknown", AUTHOR_MAX),
+      author: pluginAuthor(),
       ...(this.clientName ? { "made-by": oneLine(this.clientName, AUTHOR_MAX) } : {}),
       api: this.crateApi().join("."),
       ...(this.lustBuild() ? { lust: this.lustBuild() } : {}),

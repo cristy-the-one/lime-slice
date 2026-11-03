@@ -6,6 +6,7 @@ import { escapeModel, openJoinTool } from "./model-chrome";
 import { editModelStep, toggleModelHistoryFocus } from "./model-history";
 import { toggleParameters } from "./parameters";
 import { revealStress } from "./stress.ts";
+import { togglePluginsPanel } from "./plugins-panel.ts";
 import { openSplitPrint } from "./split-print.ts";
 import {
   askProfileName,
@@ -398,6 +399,9 @@ export function runCommand(id: string) {
       return;
     case "model-stress":
       revealStress();
+      return;
+    case "model-plugins":
+      togglePluginsPanel();
       return;
     case "model-split-print":
       openSplitPrint();

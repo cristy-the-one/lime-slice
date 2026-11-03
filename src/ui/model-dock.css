@@ -586,6 +586,58 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-split-print .sp-done-head { margin: 0 0 var(--space-2); color: var(--text); font-size: var(--fs-2); }
 .model-split-print .sp-done .model-note { margin-top: var(--space-2); }
 
+/* --- Plugins (plugin milestone 7): the library's list and a plugin's form, a card like Split to print's. --- */
+.model-plugins[hidden] { display: none !important; }
+.model-plugins { font-size: var(--fs-1); }
+.model-plugins .model-note { margin: 0 0 var(--space-2); }
+.model-plugins .pp-head { display: flex; align-items: center; gap: var(--space-1); margin: 0 0 var(--space-2); }
+.model-plugins .pp-search { flex: 1 1 auto; min-width: 0; height: 26px; font: inherit; }
+.model-plugins .pp-head .pp-back { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-plugins .pp-head .pp-more { margin-left: auto; width: 28px; min-width: 28px; padding: 0; }
+.model-plugins .pp-how-pop { margin: 0 0 var(--space-2); font-size: var(--fs-2); }
+.model-plugins .pp-section { margin: 0 0 var(--space-3); }
+.model-plugins .pp-section-title { margin: 0 0 var(--space-1); color: var(--text-dim); font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+.model-plugins .pp-rows { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; max-height: 420px; overflow-y: auto; }
+.model-plugins .pp-pick {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.model-plugins .pp-pick:hover { border-color: var(--line); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.model-plugins .pp-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.model-plugins .pp-row-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; }
+.model-plugins .pp-title { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--fs-2); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.model-plugins .pp-version { color: var(--text-dim); font: 500 10px / 1 var(--font-mono); white-space: nowrap; }
+.model-plugins .pp-badge { padding: 1px 5px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-dim); font-size: 10px; line-height: 1.3; white-space: nowrap; }
+.model-plugins .pp-desc { overflow: hidden; color: var(--text-dim); text-overflow: ellipsis; white-space: nowrap; }
+.model-plugins .pp-by { color: var(--text-faint); font-size: 10px; }
+.model-plugins .pp-empty { color: var(--text-dim); line-height: 1.4; }
+.model-plugins .pp-detail-title { margin: 0 0 var(--space-1); color: var(--text); font-size: var(--fs-2); font-weight: 600; overflow-wrap: anywhere; }
+.model-plugins .pp-meta { color: var(--text-dim); line-height: 1.35; }
+.model-plugins .pp-target { color: var(--text); }
+.model-plugins .pp-readonly { padding: 4px 6px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--text); line-height: 1.35; }
+.model-plugins .pp-demo-strip { padding: 4px 6px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--text); line-height: 1.35; }
+.model-plugins .pp-menu { display: grid; margin: 0 0 var(--space-2); padding: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--panel); }
+.model-plugins .pp-menu-item { padding: 5px 8px; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.model-plugins .pp-menu-item:hover, .model-plugins .pp-menu-item:focus-visible { background: var(--surface-3); outline: none; }
+.model-plugins .pp-menu-item[aria-disabled="true"] { color: var(--text-faint); cursor: not-allowed; }
+.model-plugins .pp-preset { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); align-items: center; gap: 6px; margin: 0 0 var(--space-1); }
+.model-plugins .pp-preset select { min-width: 0; height: 22px; font: inherit; }
+.model-plugins .pp-fields { margin: 0 0 var(--space-2); }
+.model-plugins .pp-actions { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-1); }
+.model-plugins .pp-live { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); cursor: pointer; }
+.model-plugins .pp-status { margin: 0; color: var(--text-dim); line-height: 1.35; }
+.model-plugins .pp-status[hidden] { display: none; }
+.model-plugins .pp-status.is-problem { color: var(--warn); }
+
 /* --- Print transitions: the card in the tool pane, built like Split to print's. --- */
 .model-transition[hidden] { display: none !important; }
 .model-transition .model-note { margin: 0 0 var(--space-2); }

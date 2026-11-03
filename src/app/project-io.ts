@@ -27,6 +27,8 @@ import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from 
 import { adoptHeldPieces, adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt, warmHeldPieces, type HeldToSave } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
+import { projectCopies, stampedShas } from "../plugins/library.ts";
+import { pluginLibrary } from "../ui/plugins-panel.ts";
 import { cloneStudy } from "../sim/study.ts";
 import { solidFileName } from "../model-request.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
@@ -79,7 +81,9 @@ export async function saveCurrentProject() {
   if (state.layerActions.length > 0) project.layerActions = state.layerActions.map((action) => ({ ...action }));
   // --- A8. The record opened with the project, so a later save still carries its recipes. ---
   if (session.mcpModel) project.mcpModel = session.mcpModel;
-  if (session.plugins) project.plugins = session.plugins;
+  // --- Plugins (D9): a stamp whose code only the library holds gets a copy here, so the project rebuilds anywhere.
+  const plugins = projectCopies(session.plugins, stampedShas(project.objects), pluginLibrary());
+  if (plugins) project.plugins = plugins;
   if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
   if (project.version === 2 && session.assemblies.length > 0) project.assemblies = structuredClone(session.assemblies);
   if (project.version === 2 && state.printOrder === "sequential") {
