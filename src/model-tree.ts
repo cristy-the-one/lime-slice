@@ -399,6 +399,9 @@ export interface ModelNode {
  * The recipe a run of steps came from. A library plugin's run names the plugin and its version; a draft (a run kept only
  * with the project) names the recipe and has version 0. The engine never sees it.
  */
+/** A plugin step's value: a number, toggle, choice or text, or a picked face or outline as a JSON object (API 1.2). */
+export type PluginValue = number | boolean | string | { [key: string]: unknown };
+
 export interface PluginStamp {
   /** The plugin's id, or the recipe's name for a draft. */
   plugin: string;
@@ -408,7 +411,8 @@ export interface PluginStamp {
   sha256: string;
   /** The recipe API level it was built against, as "1.1". */
   api: string;
-  params: Record<string, number | boolean | string>;
+  /** A picked face or outline (API 1.2) is a JSON object: `src/recipe/picks.ts`. */
+  params: Record<string, PluginValue>;
   /** A number typed as an expression of project parameters. */
   exprs?: Record<string, string>;
   /** What the run read of the printer. */

@@ -8,7 +8,7 @@ export interface MockSolid {
   volumeMm3: number;
   positions: number[];
   triangles: number[];
-  faces: { id: number; areaMm2: number }[];
+  faces: { id: number; areaMm2: number; normal?: [number, number, number] }[];
   edges: { id: number; lengthMm: number; points: number[] }[];
   solid?: boolean;
   /** --- A10. The node that made each face, when a test wants colour by step. */
@@ -285,6 +285,9 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         return handlers.transitionFind?.(request, base.solid, node) ?? { id: node, rows: [], curvedSkipped: 0 };
       case "edgeChain":
         return handlers.edgeChain?.(request, base.solid, node) ?? { id: node, edge: request.edge, edges: [request.edge], closed: false };
+      // --- Recipe API 1.2 (and I5): a face's outline, the box of its corners in the frame asked for.
+      case "faceOutline":
+        return { id: node, ...faceOutline(request, base.solid) };
       case "drop": {
         const gone = subtree(doc, node);
         for (const id of gone) doc.delete(id);
@@ -360,6 +363,29 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
       waiting.clear();
     },
   };
+}
+
+/** A face's outline as the engine answers `faceOutline`: here the box of its triangles' corners in the request's frame. */
+export function faceOutline(request: Body, solid: MockSolid): Body {
+  const face = Number(request.face);
+  const f = (Array.isArray(request.frame) ? request.frame : [0, 0, 0, 1, 0, 0, 0, 1, 0]).map(Number);
+  const inset = Number(request.insetMm ?? 0) || 0;
+  const us: number[] = [];
+  const vs: number[] = [];
+  solid.triangles.forEach((owner, tri) => {
+    if (owner !== face) return;
+    for (let k = 0; k < 3; k += 1) {
+      const d = [0, 1, 2].map((axis) => solid.positions[tri * 9 + k * 3 + axis]! - f[axis]!);
+      us.push(d[0]! * f[3]! + d[1]! * f[4]! + d[2]! * f[5]!);
+      vs.push(d[0]! * f[6]! + d[1]! * f[7]! + d[2]! * f[8]!);
+    }
+  });
+  if (us.length === 0) return { error: "That face is not on this solid." };
+  const r = (n: number) => Math.round(n * 1e6) / 1e6;
+  const [u0, u1, v0, v1] = [Math.min(...us) + inset, Math.max(...us) - inset, Math.min(...vs) + inset, Math.max(...vs) - inset].map(r) as [number, number, number, number];
+  if (u1 <= u0 || v1 <= v0) return { loops: [], regions: [], areaMm2: 0 };
+  const outer = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+  return { loops: [{ start: outer[0], segments: [...outer.slice(1), outer[0]].map((to) => ({ kind: "line", to })) }], regions: [{ outer, holes: [] }], areaMm2: r((u1 - u0) * (v1 - v0)) };
 }
 
 /**

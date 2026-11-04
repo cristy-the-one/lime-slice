@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { codeOnly } from "./ingredients.ts";
 import { oneLine, pluginsDir, type PluginParam } from "./plugins.ts";
 import { lfOnly } from "./recipe.ts";
+import { pickProblem } from "../src/recipe/picks.ts";
 
 export const LESSON_MAX = 200;
 /** Lessons shown per op kind in guide {kind}, newest first. */
@@ -100,6 +101,9 @@ export function presetProblem(plugin: string, params: Record<string, unknown>, d
       if (typeof value !== "number" || !Number.isFinite(value)) return `${name} is a number.`;
       if (p.kind === "count" && !Number.isInteger(value)) return `${name} is a whole number.`;
       if ((p.min !== undefined && value < p.min) || (p.max !== undefined && value > p.max)) return `${name} ${value} is outside ${p.min ?? ""}-${p.max ?? ""}${p.unit ? ` ${p.unit}` : ""}.`;
+    } else if (p.kind === "face" || p.kind === "outline") {
+      const problem = pickProblem(p.kind, value, name);
+      if (problem) return problem;
     } else if (p.kind === "toggle") {
       if (typeof value !== "boolean") return `${name} is true or false.`;
     } else if (p.kind === "choice") {

@@ -41,7 +41,8 @@ import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
 import { applyPose, IDENTITY_POSE, inversePose, isIdentity, posedBounds, relativePose, seatLift, thenPose, toSolidOp, turnDir, typedPoseOf, type Affine, type ObjectFrame } from "../src/model-space.ts";
 import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renumberedSteps, reserveId, rootLabel, undoTarget, withChild, withNode, type PartitionModelOp, type Fingerprint, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PluginStamp, type ProfileLoop } from "../src/model-tree.ts";
 import { replayedTree, replayOps } from "../src/recipe/rebuild.ts";
-import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, type StampedRun } from "../src/plugin-step.ts";
+import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../src/plugin-step.ts";
+import { answerPick, sketchOutline, type PickReads } from "../src/recipe/picks.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
@@ -1240,6 +1241,9 @@ export class Session {
     // A rerun's or replace's object names the recipe, not a part for it to change.
     const objectArg = typeof input.object === "string" && !replacing ? input.object : undefined;
     if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
+    // --- API 1.2. A face index names a face of the part as shown now, as faces_find lists it; a rebuild starts from an
+    // earlier step whose faces are numbered otherwise, so the pick reads the index on this solid.
+    const shownSolid = objectArg !== undefined ? this.find(objectArg)?.solid ?? null : null;
     // --- Plugin steps (D8). A rebuild runs on the part as it stood before the run: a new branch from there.
     if (rebuild && branchRebuild) {
       const back = await this.gotoNode(rebuild.obj, rebuild.run.before!);
@@ -1280,7 +1284,16 @@ export class Session {
     };
     if (objectArg) touch(objectArg);
     const ctx: CallMeta = { progressToken: meta?.progressToken, signal: meta?.signal };
+    /** --- API 1.2. What each given face or outline resolved to, kept in the step's stamp in its place. */
+    const picked: Record<string, unknown> = {};
     const call = async (site: RecipeCallSite): Promise<RecipeReply> => {
+      if (site.tool === "pick") {
+        const on = typeof site.args.object === "string" ? site.args.object : undefined;
+        if (site.args.kind === "face" && on !== undefined && on !== objectArg && !created.includes(on)) {
+          return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${on} is neither. Pass it as object to run on it.` };
+        }
+        return answerPick(site.args, params, { ...this.pickReads(ctx), shownFaces: (id) => (id === objectArg ? shownSolid : null) }, picked);
+      }
       if (site.tool === "log") {
         if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);
         return { ok: true, result: { ok: true } };
@@ -1398,7 +1411,7 @@ export class Session {
       version: plugin?.version ?? 0,
       sha256: plugin?.sha256 ?? bodyHash(built.source),
       api: plugin?.api ?? `${api[0]}.${api[1]}`,
-      params: Object.fromEntries(Object.entries(params).filter(([, v]) => typeof v === "boolean" || typeof v === "string" || (typeof v === "number" && Number.isFinite(v)))) as PluginStamp["params"],
+      params: Object.fromEntries(Object.entries({ ...params, ...picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"],
       context: { bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
     };
     const only = parts.length === 1 && name !== "plugin_check" ? this.find(parts[0]!) : undefined;
@@ -5719,6 +5732,31 @@ export class Session {
     const cut = await solidSections(input, chordMm, cuts, typedPoseOf(obj), this.expandContext(obj), (request) => this.treeCall({ ...request, key: tree.key, node: tree.current }, "section"));
     if ("reason" in cut) return { ok: false, reason: cut.reason };
     return answer(cut.sections, cut.extra);
+  }
+
+  /** --- API 1.2. What a recipe's pick reads: any part's faces, sections and sketches (the person named them), and recipe data. */
+  private pickReads(ctx: CallMeta): PickReads {
+    return {
+      faces: async (id) => {
+        const obj = this.find(id);
+        if (!obj) return { reason: UNKNOWN_OBJECT };
+        if (this.meshBlock(obj)) return { reason: "a mesh has no faces to pick." };
+        const tree = await this.opened(obj);
+        if ("reason" in tree) return tree;
+        return obj.solid ?? { reason: "This solid could not be read." };
+      },
+      section: (id, args) => this.runCall("section", { ...args, object: id }, ctx, true),
+      sketch: (id, step) => {
+        const obj = this.find(id);
+        if (!obj?.tree) return { reason: `${id} is not a part with a history.` };
+        return sketchOutline(obj.tree, step, typedPoseOf(obj));
+      },
+      data: async (name) => {
+        const found = recipeDataFile(name);
+        if (!found) return { reason: recipeDataMissing(name) };
+        return found;
+      },
+    };
   }
 
   private async edgesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {

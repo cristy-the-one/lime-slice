@@ -21,6 +21,8 @@
  */
 import { codeOnly, carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
 import { carriedData } from "../recipe/plugin-data.ts";
+import { isPickValue } from "../recipe/picks.ts";
+import type { PluginValue } from "../model-tree.ts";
 
 export const SHARE_SUFFIX = ".lime-plugin.rs";
 
@@ -46,7 +48,7 @@ const BIDI = /[‪-‮⁦-⁩]/;
 
 /** A preset as a shared file carries it: the values, and when it was kept. */
 export interface SharedPreset {
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
   created: string;
 }
 
@@ -246,7 +248,7 @@ export function checkImport(raw: string, have: readonly [number, number], sha256
       if (!SLUG.test(name)) return { reason: `Its preset "${name.slice(0, 40)}" is not named in lower-case letters, digits and dashes. It was not imported.` };
       const values = (row as { params?: unknown } | null)?.params;
       if (!values || typeof values !== "object" || Array.isArray(values)) return { reason: `Its preset ${name} has no values. It was not imported.` };
-      const kept = Object.entries(values as Record<string, unknown>).filter(([, v]) => typeof v === "number" || typeof v === "boolean" || (typeof v === "string" && [...v].length <= HELP_MAX));
+      const kept = Object.entries(values as Record<string, unknown>).filter(([, v]) => typeof v === "number" || typeof v === "boolean" || (typeof v === "string" && [...v].length <= HELP_MAX) || (isPickValue(v) && JSON.stringify(v).length <= 20_000));
       presets[name] = { params: Object.fromEntries(kept) as SharedPreset["params"], created: String((row as { created?: unknown }).created ?? "").slice(0, 32) };
     }
   }

@@ -6,7 +6,7 @@
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
-import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type RunMark } from "./model-tree.ts";
+import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type PluginValue, type RunMark } from "./model-tree.ts";
 import { RECIPE_API, runEndingAt, runRedoFrom } from "./plugin-step.ts";
 import type { CheckedCopy, PluginFileInfo, PluginParamInfo } from "./plugin-file.ts";
 
@@ -757,7 +757,7 @@ export interface PluginField {
   name: string;
   label: string;
   kind: PluginParamInfo["kind"];
-  value: number | boolean | string;
+  value: PluginValue;
   unit?: string;
   options?: string[];
   help?: string;
@@ -767,6 +767,8 @@ export interface PluginField {
   step?: number;
   /** The value is the parameter's default: the run was not given one. */
   isDefault: boolean;
+  /** A face or an outline (API 1.2): the declared default (a rule, loops), or null when the person must pick one. */
+  fallback?: PluginValue | null;
 }
 
 export interface PluginStepView {
@@ -839,12 +841,13 @@ export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepVi
   const declared = file?.params ?? [];
   const fields: PluginField[] = declared.map((p) => {
     const given = stamp.params[p.name];
-    return { name: p.name, label: p.label?.trim() || p.name, kind: p.kind, value: given ?? p.default, ...(p.unit ? { unit: p.unit } : {}), ...(p.options ? { options: p.options } : {}), ...(p.help ? { help: p.help } : {}), ...(typeof p.min === "number" ? { min: p.min } : {}), ...(typeof p.max === "number" ? { max: p.max } : {}), ...(typeof p.step === "number" ? { step: p.step } : {}), isDefault: given === undefined };
+    return { name: p.name, label: p.label?.trim() || p.name, kind: p.kind, value: (given ?? p.default) as PluginValue, ...(p.kind === "face" || p.kind === "outline" ? { fallback: p.default } : {}), ...(p.unit ? { unit: p.unit } : {}), ...(p.options ? { options: p.options } : {}), ...(p.help ? { help: p.help } : {}), ...(typeof p.min === "number" ? { min: p.min } : {}), ...(typeof p.max === "number" ? { max: p.max } : {}), ...(typeof p.step === "number" ? { step: p.step } : {}), isDefault: given === undefined };
   });
   // A value the header does not declare (a draft, or a parameter declared without a builder) still shows.
   for (const [name, value] of Object.entries(stamp.params)) {
     if (declared.some((p) => p.name === name)) continue;
-    fields.push({ name, label: name, kind: typeof value === "boolean" ? "toggle" : typeof value === "number" ? "number" : "text", value, isDefault: false });
+    const kind = typeof value === "boolean" ? "toggle" : typeof value === "number" ? "number" : typeof value === "object" ? ("normal" in value ? "face" : "outline") : "text";
+    fields.push({ name, label: name, kind, value, isDefault: false });
   }
   const newer = apiNewer(file?.api ?? stamp.api);
   let note: string | null = null;

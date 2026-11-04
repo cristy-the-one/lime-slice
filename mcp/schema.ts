@@ -1543,7 +1543,7 @@ export const TOOLS: ToolSpec[] = [
         source: { type: "string", minLength: 1, maxLength: 100000, description: "Rust main; omit, with object, to rerun." },
         path: { type: "string", minLength: 1, maxLength: 260, description: "Workspace .rs instead of source." },
         name: { type: "string", minLength: 1, maxLength: 60, description: "Same name rebuilds warm." },
-        params: { type: "object", description: "Session::param_* reads them." },
+        params: { type: "object", description: "By name; face, outline: guide recipes." },
         object: handle,
         mode: { enum: ["check", "dry", "apply"], description: "Default apply; dry undoes." },
         maxSteps: { type: "integer", minimum: 1, maximum: 1000, description: "Dry: stop after N ops." },

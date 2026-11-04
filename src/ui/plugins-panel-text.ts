@@ -36,6 +36,7 @@ export const REASON = {
   demoApply: "This is a demo, so nothing is added to your part. Click Back to my plugins.",
   demoPreset: "This is a demo, so it keeps no presets. Click Back to my plugins.",
   presetNeedsLibrary: "Presets are kept for the plugins in your library. Use Add to library in the ⋯ menu first.",
+  noPartToPick: "No part is open to pick a face on. Select a part in the objects list, then open it in Model.",
 } as const;
 
 /** R4: what each kind chip of the list shows. */

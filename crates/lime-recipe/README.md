@@ -37,3 +37,15 @@ arctangent, so a recipe sends the same bytes under lust and rustc, whose
 libm differ in the last bit on Windows (`mcp/recipe-geom2d.test.ts`).
 `tests/kernel_reference.rs` checks the booleans against Open CASCADE.
 Everything stays in `src/lib.rs`: the recipe host copies only that file.
+
+## Values a person picks (API 1.2)
+
+`s.face("face").rule("largest_up").get()` declares a face of the part and
+`s.outline("shape").default_poly(&geom2d::rect(80.0, 60.0)).get()` a closed
+outline; `s.pick_face(&part, &face)` and `s.pick_outline(&shape)` resolve them
+through the host's `pick` call, giving the face's index, normal, point, area
+and outline, or the outline as a `Section`. The person picks them in the
+Plugins panel and History (a face clicked in the view, a sketch, a face's
+outline); an agent passes an index, `{normal, nearPoint}`, `{sketch}`,
+`{face}`, `{loops}` or `{data}`. `s.refuse(sentence)` ends a run with a plain
+reason; `s.bounds(&part)` is the part's box.

@@ -41,7 +41,7 @@ import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type
 import { locatedBoxes, printFrame } from "../model-check.ts";
 import { emptyFeature, expandFeature, featureSource, forgetFeatureContext, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
-import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
+import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, formatMm, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
   ROOT,
   childWithOp,
@@ -81,6 +81,7 @@ import {
   type TransitionOp,
   type Vec3,
 } from "../model-tree";
+import type { PluginValue } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
@@ -154,6 +155,9 @@ import { cleanOp } from "../modeling/compose";
 import { readPartition } from "../../mcp/partition";
 import { recipeRuntime, recipesUnavailable, RECIPES_NEED_APP } from "../recipe/runtime";
 import { runPluginFresh } from "../recipe/apply";
+import { axisWord, faceValueOf, sketchOutline, type FaceValue } from "../recipe/picks";
+import { faceRows as geometryFaceRows } from "../modeling/solid-geometry";
+import type { SketchChoice } from "../ui/pick-field";
 import { applyPluginsPanel, loadLibrary, mountPluginAuthor, mountPluginsPanel, pluginAuthor, pluginLibrary, pluginsPanelOpen, refreshPluginsPanel, setPluginAuthor, type PluginRunResult } from "../ui/plugins-panel";
 import { approveFirstRun, needsFirstRun } from "../ui/plugin-import";
 import { carriedValues, droppedSentence, libraryIo, oneLine, savePlan, DESCRIPTION_MAX, TITLE_MAX, type FormValue, type PanelPlugin, type PluginLibrary } from "../plugins/library";
@@ -756,6 +760,9 @@ export function bindModelView() {
       pluginEnvFor = null;
       syncPluginEnv();
     },
+    sketches: () => plateSketches(),
+    pickFace: (done) => startPluginFacePick(done),
+    cancelPick: () => cancelPluginFacePick(false),
   });
   mountPluginAuthor();
   mountTransitionCard({
@@ -1115,6 +1122,9 @@ export function bindModelView() {
       const next = await rebuildPluginRow(row, changes, edited);
       return next ? { row: next } : { reason: readoutText || "The step was not rebuilt." };
     },
+    pluginSketches: () => plateSketches(),
+    pluginPickFace: (done) => startPluginFacePick(done),
+    pluginCancelPick: () => cancelPluginFacePick(false),
     // --- Milestone 7: Use vN from the library, Save as plugin… for a draft, and the author the dialog starts with.
     async pluginUseVersion(row) {
       const next = await useLibraryVersion(row);
@@ -5398,7 +5408,7 @@ function projectPluginFiles(): Map<string, PluginFileInfo> {
  * and the part shows the new branch. The old branch stays as it was, so one Undo goes back to the old values. A run
  * that fails leaves the part as it was and says why.
  */
-async function rebuildPluginRow(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean, swap?: LibrarySwap): Promise<RowKey | null> {
+async function rebuildPluginRow(row: RowKey, changes: Record<string, PluginValue | null>, edited: boolean, swap?: LibrarySwap): Promise<RowKey | null> {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return null;
@@ -5473,7 +5483,8 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, number | bo
       run: { ...run, stamp },
       body,
       suffix: resolved.suffix,
-      params: swap ? swap.params : { ...stamp.params, ...changes },
+      // A null change drops a picked face or outline back to the plugin's default (API 1.2).
+      params: swap ? swap.params : (Object.fromEntries(Object.entries({ ...stamp.params, ...changes }).filter(([, v]) => v !== null)) as Record<string, PluginValue>),
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
       recipes,
       engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
@@ -5559,6 +5570,12 @@ function recipeEnv(objectId: string, madeIt: boolean, sha256: string): AppRunEnv
       const id = own ? objectId : freshPlateId();
       own = false;
       return { id, key: freshTreeKey(id) };
+    },
+    otherPart: (id) => {
+      const obj = state.plate.objects.find((row) => row.id === id);
+      const tree = obj?.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+      if (!obj || !tree) return null;
+      return { id: obj.id, name: obj.name, tree, pose: typedPoseOf({ modelPose: modelPoseOf(obj), frame: obj.frame }), modelPose: modelPoseOf(obj), workplane: obj.workplane ?? GLOBAL_WORKPLANE, frame: "model", place: platePlaceOf(obj) };
     },
     pieceKey: (owner, _node, piece) => freshTreeKey(`${owner}-${piece === "half" ? "piece" : piece === "pins" ? "pins" : "part"}`),
     partition: (spec, part) => {
@@ -5683,7 +5700,7 @@ function foldHead(row: RowKey): RowKey {
 interface LibrarySwap {
   file: PluginFileInfo;
   sha256: string;
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
   /** Which values the new version no longer takes, for the readout. */
   note: string;
 }
@@ -6190,9 +6207,77 @@ async function pickTransitionChain(key: string, node: NodeId, edge: number) {
 let contextClick: { x: number; y: number; empty: boolean } | null = null;
 let contextFromPick = false;
 
+// --- Recipe API 1.2. A plugin's face or outline value waits for the next face click on the open part.
+let pluginFacePick: ((picked: { object: string; face: FaceValue } | null) => void) | null = null;
+
+/** Arm a face pick for a plugin's form; the sentence that says why it cannot start, or null. */
+function startPluginFacePick(done: (picked: { object: string; face: FaceValue } | null) => void): string | null {
+  if (state.stage !== "model" || !open || !viewed()) return "No part is open to pick a face on. Select a part in the objects list, then open it in Model.";
+  if (lens) return "History shows an earlier step. Click the last step in History, then pick the face.";
+  cancelPluginFacePick(true);
+  pluginFacePick = done;
+  document.addEventListener("keydown", escPluginFacePick, true);
+  setMode("face");
+  readout(`Click a flat face of ${openObject()?.name ?? "the part"}. Esc cancels.`);
+  return null;
+}
+
+/** Stop waiting for a face click; `tell` hands the form a cancel, so it stops showing the wait. */
+function cancelPluginFacePick(tell: boolean) {
+  const done = pluginFacePick;
+  pluginFacePick = null;
+  document.removeEventListener("keydown", escPluginFacePick, true);
+  if (tell) done?.(null);
+}
+
+/** Esc while a plugin's form waits for a face: the wait ends, and nothing else takes the key. */
+function escPluginFacePick(ev: KeyboardEvent) {
+  if (ev.key !== "Escape" || !pluginFacePick) return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  cancelPluginFacePick(true);
+  readout("No face was picked.");
+}
+
+/** The face click a plugin's form waits for: a flat face of the open part, kept as {normal, nearPoint, areaMm2}. */
+function takePluginFacePick(pick: ModelPick | null): boolean {
+  if (!pluginFacePick || pick?.kind !== "face" || !open) return false;
+  const solid = viewed();
+  const face = solid ? faceValueOf({ faces: geometryFaceRows(solid.positions, solid.triangles, solid.faces), positions: solid.positions, triangles: solid.triangles }, pick.index) : null;
+  if (!face) {
+    readout("That face is not flat. Click a flat face, or press Esc.");
+    return true;
+  }
+  const done = pluginFacePick;
+  cancelPluginFacePick(false);
+  picks = [{ kind: "face", index: pick.index }];
+  fx.model?.highlight(picks);
+  syncModelChrome(picks);
+  done({ object: open.objectId, face });
+  readout(`Picked the face facing ${axisWord(face.normal)}, ${formatMm(face.areaMm2 ?? 0)} mm².`);
+  return true;
+}
+
+/** The sketches a plugin's outline may use: each extrude's or revolve's step with an outline, on the shown path of each part. */
+function plateSketches(): SketchChoice[] {
+  const out: SketchChoice[] = [];
+  for (const obj of state.plate.objects) {
+    const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+    if (!tree) continue;
+    for (const id of pathTo(tree, tree.current)) {
+      const node = tree.nodes.get(id);
+      if (!node?.op || (node.op.kind !== "extrude" && node.op.kind !== "revolve")) continue;
+      if ("reason" in sketchOutline(tree, id, IDENTITY_POSE)) continue;
+      out.push({ object: obj.id, step: id, label: `${obj.name} · ${node.name ?? node.label}` });
+    }
+  }
+  return out;
+}
+
 async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: number; y: number }) {
   // --- B13. A loft or sweep in Look around takes the click as a section or a profile. ---
   if (sketchTakesPick(pointer.x, pointer.y)) return;
+  if (takePluginFacePick(pick)) return;
   // A Stress pick mode takes face clicks as holds or loads; the selection stays as it was.
   if (stressPicking()) {
     if (pick?.kind === "face") stressPickFace(pick.index);

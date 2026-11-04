@@ -7,10 +7,12 @@
 import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, Puzzle, RotateCcw, TriangleAlert, X, createElement, type IconNode } from "lucide";
 import { historyFolds, historyKey, historyLayout, pluginStepView, positionText, presentedRows, readRow, rowCount, rowKey, type HistoryLayout, type HistoryRow, type PluginEnv, type PluginStepView, type PluginTitle, type RecipeNote, type RowKey } from "../model-history";
 import type { ObjectFrame, PlaceFields } from "../model-space";
-import { toolKeys, type ModelTree, type PluginStamp } from "../model-tree";
+import { toolKeys, type ModelTree, type PluginStamp, type PluginValue } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
 import { openDock } from "./dock-reveal";
+import { pickField, sketchValue, type SketchChoice } from "./pick-field";
+import type { FaceValue } from "../recipe/picks";
 import { elideData } from "../recipe/plugin-data";
 
 /** Rows are named by `RowKey`: an open solid's step, or a step of a tool one of its joins takes ("Booleans between objects"). */
@@ -56,7 +58,12 @@ interface ModelHistoryHooks {
    * Rebuild the row's plugin step with these values changed (and the code changed outside the app, when `edited`): the
    * row of the new run, or null when nothing was rebuilt (the readout says why).
    */
-  pluginRebuild?(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean): Promise<{ row: RowKey } | { reason: string }>;
+  pluginRebuild?(row: RowKey, changes: Record<string, PluginValue | null>, edited: boolean): Promise<{ row: RowKey } | { reason: string }>;
+  /** --- API 1.2. The sketches on the plate a person may pick as an outline. */
+  pluginSketches?(): SketchChoice[];
+  /** Wait for a click on a flat face of the part on screen; null when cancelled. The sentence why it cannot start, or null. */
+  pluginPickFace?(done: (picked: { object: string; face: FaceValue } | null) => void): string | null;
+  pluginCancelPick?(): void;
   /** --- Milestone 7, D9. Use vN: rebuild the row's plugin step with the library's newer version, values carried by name. */
   pluginUseVersion?(row: RowKey): Promise<{ row: RowKey } | { reason: string }>;
   /** --- Milestone 7, D1. Save as plugin…: keep the row's draft in the library with these words. */
@@ -123,7 +130,10 @@ let pluginCardPlugin: string | null = null;
 /** The card's step was on the way to the step shown, so the card moves with the part when an Undo changes branch. */
 let pluginCardFollows = false;
 /** The values typed into the card and not rebuilt yet, by name; kept while History repaints. */
-const pluginDraft = new Map<string, number | boolean | string>();
+/** Typed values not rebuilt yet; null drops a picked face or outline back to its default (API 1.2). */
+const pluginDraft = new Map<string, PluginValue | null>();
+/** --- API 1.2. The face or outline field that waits for a face click in the view. */
+let pluginPicking: string | null = null;
 /** Why plugins cannot run here (null: they can; undefined: not asked yet). */
 let pluginRunnerNote: string | null | undefined;
 /** A rebuild on its way: the card's controls wait for it. */
@@ -1450,8 +1460,76 @@ export function showPluginSource(title: string, sub: string, text: string) {
   sourceSheet.querySelector<HTMLElement>('[data-act="close"]')?.focus();
 }
 
+/** --- API 1.2. A face or an outline: what the step was built with, a new pick, Pick face, Pick a sketch, Use default. */
+function pluginPickField(field: PluginStepView["fields"][number], editable: boolean): HTMLElement {
+  const drafted = pluginDraft.has(field.name);
+  const value = drafted ? pluginDraft.get(field.name) : field.isDefault ? undefined : field.value;
+  const row = pickField({
+    name: field.name,
+    label: field.label,
+    kind: field.kind as "face" | "outline",
+    ...(field.help ? { help: field.help } : {}),
+    value: value ?? undefined,
+    fallback: field.fallback ?? (field.isDefault ? field.value : null),
+    editable: editable && !!hooks?.pluginPickFace,
+    picking: pluginPicking === field.name,
+    typed: drafted,
+    sketches: hooks?.pluginSketches?.() ?? [],
+  });
+  const set = (next: PluginValue | null) => {
+    pluginPicking = null;
+    pluginAsking = false;
+    pluginFailure = null;
+    pluginDraft.set(field.name, next);
+    refreshPluginCard();
+  };
+  row.addEventListener("click", (ev) => {
+    const b = ev.target instanceof Element ? ev.target.closest<HTMLButtonElement>("button[data-pick-act]") : null;
+    if (!b || b.disabled) return;
+    ev.preventDefault();
+    const act = b.dataset.pickAct;
+    if (act === "clear") {
+      stopPluginPick();
+      set(null);
+      return;
+    }
+    if (pluginPicking === field.name) {
+      stopPluginPick();
+      refreshPluginCard();
+      return;
+    }
+    stopPluginPick();
+    const why = hooks?.pluginPickFace ? hooks.pluginPickFace((got) => {
+      if (pluginPicking !== field.name) return;
+      pluginPicking = null;
+      if (got) set((act === "face" ? { ...got.face } : { face: { ...got.face }, object: got.object }) as PluginValue);
+      else refreshPluginCard();
+    }) ?? null : "Picking a face needs the Model view.";
+    if (why) {
+      pluginFailure = why;
+      refreshPluginCard();
+      return;
+    }
+    pluginPicking = field.name;
+    refreshPluginCard();
+  });
+  row.addEventListener("change", (ev) => {
+    const select = ev.target instanceof HTMLSelectElement && ev.target.dataset.pickAct === "sketch" ? ev.target : null;
+    const chosen = select ? sketchValue(select.value) : null;
+    if (chosen) set(chosen);
+  });
+  return row;
+}
+
+function stopPluginPick() {
+  if (pluginPicking === null) return;
+  pluginPicking = null;
+  hooks?.pluginCancelPick?.();
+}
+
 /** One value: the one typed and not rebuilt yet, else the one the step was built with. Read-only where it cannot change. */
 function pluginField(field: PluginStepView["fields"][number], editable: boolean): HTMLElement {
+  if (field.kind === "face" || field.kind === "outline") return pluginPickField(field, editable);
   const row = document.createElement("label");
   row.className = "mh-plugin-field";
   if (field.help) row.dataset.tip = field.help;
@@ -1539,7 +1617,7 @@ function syncRebuildButton() {
 }
 
 /** A typed number read as one, or null. Counts are whole. */
-function draftNumber(field: PluginStepView["fields"][number], raw: number | boolean | string): number | null {
+function draftNumber(field: PluginStepView["fields"][number], raw: PluginValue | null): number | null {
   const n = typeof raw === "number" ? raw : Number(String(raw).replace(",", "."));
   if (String(raw).trim() === "" || !Number.isFinite(n)) return null;
   return field.kind === "count" && !Number.isInteger(n) ? null : n;
@@ -1558,11 +1636,16 @@ function draftProblem(view: PluginStepView): string | null {
 }
 
 /** The typed values that differ from the step's, as the plugin takes them. */
-function draftChanges(view: PluginStepView): Record<string, number | boolean | string> {
-  const out: Record<string, number | boolean | string> = {};
+function draftChanges(view: PluginStepView): Record<string, PluginValue | null> {
+  const out: Record<string, PluginValue | null> = {};
   for (const field of view.fields) {
     if (!pluginDraft.has(field.name)) continue;
     const raw = pluginDraft.get(field.name)!;
+    if (field.kind === "face" || field.kind === "outline") {
+      if (raw === null ? !field.isDefault : JSON.stringify(raw) !== JSON.stringify(field.value)) out[field.name] = raw;
+      continue;
+    }
+    if (raw === null) continue;
     const value = field.kind === "number" || field.kind === "count" ? draftNumber(field, raw) : raw;
     if (value === null || value === field.value) continue;
     out[field.name] = value;

@@ -35,6 +35,7 @@ import { dropped, jumped, newTree, opLabel, pathTo, reserveId, withChild, withNo
 import { runEndingAt } from "../plugin-step.ts";
 import { GLOBAL_WORKPLANE, planePrimitive, type Workplane } from "../workplane.ts";
 import type { RecipeCall, RecipeCallSite, RecipeReply } from "./host.ts";
+import { answerPick, sketchOutline, type PickReads } from "./picks.ts";
 
 type Body = Record<string, unknown>;
 
@@ -90,6 +91,8 @@ export interface AppRunEnv {
   pieceKey?(owner: string, node: NodeId, piece: number | "half" | "pins"): string;
   /** A split to print as stored, read from the window's printers and settings. Without it, one is refused. */
   partition?(spec: Record<string, unknown>, part: RunPart): Baked | { reason: string };
+  /** Another part on the plate at its shown step, for a picked outline that names it (API 1.2). */
+  otherPart?(id: string): Omit<AppRecipePart, "solid"> | null;
 }
 
 /** One part in a run: the one it was given, one it made, or a piece a split cut off. */
@@ -120,6 +123,28 @@ export interface RunPart {
   consumed: boolean;
   /** The part and step a split or a split to print cut it off at. */
   cut?: { key: string; node: NodeId; index?: number };
+}
+
+/** A part the app holds, as a run holds it from its shown step. */
+function runPartOf(part: Omit<AppRecipePart, "solid"> & { solid: SolidView | null }, origin: RunPart["origin"]): RunPart {
+  return {
+    id: part.id,
+    name: part.name ?? part.id,
+    origin,
+    tree: part.tree,
+    solid: part.solid,
+    body: null,
+    modelPose: part.modelPose ?? part.pose,
+    ...(part.modelPose && part.pose !== part.modelPose && isIdentityPose(part.pose) ? { frame: "part" as const } : {}),
+    workplane: part.workplane,
+    place: part.place ? { ...part.place, offset: { ...part.place.offset }, orient: [...part.place.orient] as Mat3 } : IDENTITY_PLACE(),
+    start: part.tree.current,
+    firstReserved: null,
+    groups: [],
+    posed: false,
+    placed: false,
+    consumed: false,
+  };
 }
 
 const IDENTITY_PLACE = (): PlatePlace => ({ source: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), orient: [...ID_MATRIX] as Mat3, scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 } });
@@ -153,27 +178,13 @@ export class AppRecipeCalls {
     this.env = env;
     this.givenId = part?.id ?? null;
     this.selected = this.givenId;
-    if (part) {
-      this.add({
-        id: part.id,
-        name: part.name ?? part.id,
-        origin: "given",
-        tree: part.tree,
-        solid: part.solid,
-        body: null,
-        modelPose: part.modelPose ?? part.pose,
-        ...(part.modelPose && part.pose !== part.modelPose && isIdentityPose(part.pose) ? { frame: "part" as const } : {}),
-        workplane: part.workplane,
-        place: part.place ? { ...part.place, offset: { ...part.place.offset }, orient: [...part.place.orient] as Mat3 } : IDENTITY_PLACE(),
-        start: part.tree.current,
-        firstReserved: null,
-        groups: [],
-        posed: false,
-        placed: false,
-        consumed: false,
-      });
-    }
+    if (part) this.add(runPartOf(part, "given"));
   }
+
+  /** The values the run was given: what a `pick` resolves (API 1.2). */
+  params: Record<string, unknown> = {};
+  /** What each given face or outline resolved to, for the step's stamp in its place. */
+  readonly picked: Record<string, unknown> = {};
 
   /** Every part of the run, in the order it was given or made. */
   get all(): RunPart[] {
@@ -211,6 +222,11 @@ export class AppRecipeCalls {
       if (this.notes.length < 200) this.notes.push(`line ${site.line}: ${String(args.message ?? args.text ?? "").slice(0, 400)}`);
       return { ok: true, result: { ok: true } };
     }
+    if (site.tool === "pick") {
+      const on = typeof args.object === "string" ? args.object : undefined;
+      if (args.kind === "face" && on !== undefined && !this.addressable(on)) return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${on} is neither. Pass it as object to run on it.` };
+      return answerPick(args, this.params, this.pickReads(), this.picked);
+    }
     if (site.tool === "data") {
       const name = typeof args.name === "string" ? args.name : "";
       // The step's kept data, then the data the plugin carries; the workspace's files are the MCP's alone.
@@ -240,6 +256,55 @@ export class AppRecipeCalls {
       return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
     }
     return { ok: true, result: value };
+  }
+
+  /** A part a pick reads: one of the run's, or another on the plate the person named (read only). */
+  private readable(id: string): RunPart | null {
+    const own = this.parts.get(id);
+    if (own) return own;
+    let other = this.others.get(id);
+    if (!other) {
+      const found = this.env.otherPart?.(id);
+      if (!found) return null;
+      other = runPartOf({ ...found, solid: null }, "half");
+      this.others.set(id, other);
+    }
+    return other;
+  }
+
+  /** Parts a pick read that are not the run's, at their shown steps. */
+  private readonly others = new Map<string, RunPart>();
+
+  /** A part's shown solid for a pick: another part's is read from the engine once. */
+  private async solidFor(p: RunPart): Promise<SolidView | null> {
+    if (p.solid) return p.solid;
+    const reply = await this.engine.tree(p.tree.key, p.tree.current, gotoRequest(p.tree.key, p.tree.current, this.env.chordMm));
+    p.solid = typeof reply.error === "string" && reply.error ? null : solidView(reply);
+    return p.solid;
+  }
+
+  /** --- API 1.2. What a pick reads, through this run's own answers. */
+  private pickReads(): PickReads {
+    return {
+      faces: async (id) => {
+        const p = this.readable(id);
+        if (!p) return { reason: `${id} is not a part on the plate.` };
+        return (await this.solidFor(p)) ?? { reason: "This solid could not be read." };
+      },
+      section: async (id, args) => {
+        const p = this.readable(id);
+        if (p) await this.solidFor(p);
+        return p?.solid ? this.section(p, args) : { ok: false, reason: `${id} is not a part on the plate.` };
+      },
+      sketch: (id, step) => {
+        const p = this.readable(id);
+        return p ? sketchOutline(p.tree, step, this.typed(p)) : { reason: `${id} is not a part on the plate.` };
+      },
+      data: async (name) => {
+        const kept = this.env.data?.[name];
+        return kept ? { value: kept.value } : { reason: `No recipe data named ${name} is kept with this step. Pick a sketch or a face's outline instead.` };
+      },
+    };
   }
 
   private async partCall(p: RunPart, tool: string, args: Body): Promise<Body> {

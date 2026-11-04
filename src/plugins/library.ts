@@ -10,7 +10,8 @@
  */
 import { isTauri } from "../platform.ts";
 import { bodySha256, readPluginFile, type PluginFileInfo, type PluginParamInfo } from "../plugin-file.ts";
-import type { PluginStamp } from "../model-tree.ts";
+import type { PluginStamp, PluginValue } from "../model-tree.ts";
+import { isPickValue, pickProblem } from "../recipe/picks.ts";
 import { carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
 import { carriedData } from "../recipe/plugin-data.ts";
 import { readMarks, type ImportMark } from "./share.ts";
@@ -66,7 +67,7 @@ export interface LibraryPlugin {
 
 export interface Preset {
   name: string;
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
 }
 
 /** The library as the app last read it. */
@@ -294,8 +295,9 @@ export function presetParams(params: readonly PluginParamInfo[], values: Readonl
   const out: Preset["params"] = {};
   for (const param of params) {
     const raw = param.name in values ? values[param.name]! : param.default;
+    if (raw === null) continue;
     const value = param.kind === "number" || param.kind === "count" ? formNumber(param, raw) : raw;
-    if (value !== null && (typeof value === "number" || typeof value === "boolean" || typeof value === "string")) out[param.name] = value;
+    if (value !== null && (typeof value === "number" || typeof value === "boolean" || typeof value === "string" || isPickValue(value))) out[param.name] = value;
   }
   return out;
 }
@@ -307,7 +309,7 @@ export function readPresets(text: string): Preset[] {
     if (!rows || typeof rows !== "object") return [];
     return Object.entries(rows).flatMap(([name, row]) => {
       if (!row || typeof row.params !== "object" || row.params === null) return [];
-      const params = Object.fromEntries(Object.entries(row.params as Record<string, unknown>).filter(([, v]) => typeof v === "number" || typeof v === "boolean" || typeof v === "string")) as Preset["params"];
+      const params = Object.fromEntries(Object.entries(row.params as Record<string, unknown>).filter(([, v]) => typeof v === "number" || typeof v === "boolean" || typeof v === "string" || isPickValue(v))) as Preset["params"];
       return [{ name, params }];
     });
   } catch {
@@ -383,8 +385,8 @@ export function newerInLibrary(stamp: PluginStamp, library: PluginLibrary): Libr
  * D9's Use vN: the stamped values carried by name into the new version's parameters. A new parameter takes its
  * default (left out); a removed one is named.
  */
-export function carriedValues(values: Record<string, number | boolean | string>, declared: readonly PluginParamInfo[]): { params: Record<string, number | boolean | string>; dropped: string[]; added: string[] } {
-  const params: Record<string, number | boolean | string> = {};
+export function carriedValues(values: Record<string, PluginValue>, declared: readonly PluginParamInfo[]): { params: Record<string, PluginValue>; dropped: string[]; added: string[] } {
+  const params: Record<string, PluginValue> = {};
   const dropped: string[] = [];
   for (const [name, value] of Object.entries(values)) {
     if (declared.some((p) => p.name === name)) params[name] = value;
@@ -533,7 +535,7 @@ export function searchedLessons(library: PluginLibrary, query: string): Lesson[]
 // The form's values.
 // ---------------------------------------------------------------------------
 
-export type FormValue = number | boolean | string;
+export type FormValue = PluginValue;
 
 /** A typed value read for the plugin: a number for number and count (null when it is not one), else as is. */
 export function formNumber(param: PluginParamInfo, raw: FormValue): number | null {
@@ -557,6 +559,15 @@ export function paramLabel(param: PluginParamInfo): string {
 /** The first value that cannot be built, said in one sentence that names the fix; null when they all can. */
 export function formProblem(params: readonly PluginParamInfo[], values: Readonly<Record<string, FormValue>>): string | null {
   for (const param of params) {
+    // --- API 1.2. A face or an outline with no default rule needs a pick before a run.
+    if (param.kind === "face" || param.kind === "outline") {
+      const value = param.name in values ? values[param.name] : param.default;
+      const label = paramLabel(param);
+      if (value === null || value === undefined) return param.kind === "face" ? `${label} needs a face. Press Pick face, then click a flat face of the part.` : `${label} needs an outline. Pick a sketch, or use a face's outline.`;
+      const problem = pickProblem(param.kind, value, label);
+      if (problem) return problem;
+      continue;
+    }
     if (!(param.name in values) || (param.kind !== "number" && param.kind !== "count")) continue;
     const n = formNumber(param, values[param.name]!);
     const label = paramLabel(param);
@@ -575,6 +586,7 @@ export function formParams(params: readonly PluginParamInfo[], values: Readonly<
     const raw = values[param.name]!;
     const value = param.kind === "number" || param.kind === "count" ? formNumber(param, raw) : raw;
     if (value === null || value === param.default) continue;
+    if (typeof value === "object" && JSON.stringify(value) === JSON.stringify(param.default)) continue;
     out[param.name] = value;
   }
   return out;
@@ -588,6 +600,7 @@ export function presetValues(preset: Preset, params: readonly PluginParamInfo[])
     const param = params.find((p) => p.name === name);
     const fits = !!param && (param.kind === "number" || param.kind === "count"
       ? typeof value === "number" && formProblem([param], { [name]: value }) === null
+      : param.kind === "face" || param.kind === "outline" ? pickProblem(param.kind, value, name) === null
       : param.kind === "toggle" ? typeof value === "boolean" : param.kind === "choice" ? typeof value === "string" && (param.options ?? []).includes(value) : typeof value === "string");
     if (fits) values[name] = value;
     else skipped.push(name);

@@ -6,10 +6,10 @@
  * keeps it as one History row (or one new object) and one undo step.
  */
 import { gotoRequest } from "../model-request.ts";
-import type { ModelTree, NodeId, PluginStamp } from "../model-tree.ts";
+import type { ModelTree, NodeId, PluginStamp, PluginValue } from "../model-tree.ts";
 import { plainModelError } from "../app/model-error.ts";
 import { solidView, type SolidView } from "../modeling/model-calls.ts";
-import { markedRun } from "../plugin-step.ts";
+import { markedRun, stampValue } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { DEFAULT_LIMITS, type RecipeLimits } from "./host.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
@@ -24,7 +24,7 @@ export interface PluginRunInput {
   /** Its ingredients, built after it (`inlineIngredients`). */
   suffix?: string;
   /** The values the run is given (the form's, where they differ from the defaults). */
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
   context: { bedMm: [number, number, number]; nozzleMm: number };
   recipes: RecipeRunner;
   engine: AppEngine;
@@ -83,6 +83,7 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
     if (!startSolid) return { ok: false, reason: `The part could not be shown: ${typeof startReply.error === "string" ? plainModelError(startReply.error) : "the engine did not answer."}`, notes: [] };
     calls = new AppRecipeCalls({ ...part, solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
+  calls.params = input.params;
   const start = { params: input.params, context: { units: "mm", ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   const notes = [...calls.notes, ...(out.notes ?? [])];
@@ -108,7 +109,7 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
   const ids = runSteps(target);
   if (ids.length === 0) return refuse("With these values the plugin changed nothing. Change a value, then run it again.");
   if (!target.solid) return refuse("The solid the plugin built could not be read. Run it again.");
-  const params = Object.fromEntries(Object.entries(input.params).filter(([, v]) => typeof v === "boolean" || typeof v === "string" || (typeof v === "number" && Number.isFinite(v)))) as PluginStamp["params"];
+  const params = Object.fromEntries(Object.entries({ ...input.params, ...calls.picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"];
   const stamp: PluginStamp = { plugin: input.plugin.id, version: input.plugin.version, sha256: input.plugin.sha256, api: input.plugin.api, params, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, fingerprint: target.solid.fingerprint ?? null };
   const others = calls.all.filter((row) => row !== target && row.origin !== "given" && (row.origin !== "made" || row.consumed));
   return { ok: true, tree: markedRun(target.tree, ids, input.runId, stamp), body: target.body ?? {}, solid: target.solid, stamp, ids, made: made[0] ?? null, others, notes, ...trace };

@@ -3,12 +3,13 @@
  * front matter and its body, and whether the body is still the code its hash names. Browser-safe: the hash is Web
  * Crypto's. The MCP server writes these files (`mcp/plugins.ts`); this reads the same format.
  */
+import type { PluginValue } from "./model-tree.ts";
 
 /** One declared parameter, as the header's `params` caches it. */
 export interface PluginParamInfo {
   name: string;
-  kind: "number" | "count" | "toggle" | "choice" | "text";
-  default: number | boolean | string;
+  kind: "number" | "count" | "toggle" | "choice" | "text" | "face" | "outline";
+  default: PluginValue | null;
   min?: number;
   max?: number;
   step?: number;

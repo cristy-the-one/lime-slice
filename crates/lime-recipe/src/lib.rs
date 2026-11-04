@@ -427,8 +427,9 @@ pub struct Part {
 /// This crate's recipe API level, `(major, minor)` (docs/plan-recipe-plugins.md D12). A plugin records it when it
 /// is saved. A minor level only adds; a plugin of a higher level than the host's crate is not built.
 /// 1.0: the calls, `param_*`, `geom2d`, `lattice`, and the `section` and `apply_many` wrappers. 1.1: typed
-/// parameters (`number`, `count`, `toggle`, `choice`, `text`) and describe mode.
-pub const API: (u32, u32) = (1, 1);
+/// parameters (`number`, `count`, `toggle`, `choice`, `text`) and describe mode. 1.2: `face` and `outline` parameters
+/// a person picks (`pick_face`, `pick_outline`), `refuse`, and `bounds`.
+pub const API: (u32, u32) = (1, 2);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -706,6 +707,119 @@ impl Text {
     }
 }
 
+/// `s.face(name)`: a flat face of the part, picked by the person (API 1.2). Then `rule` or `facing`, `label`, `help`,
+/// and `get()`; `s.pick_face(&part, &value)` resolves it on the part as it stands.
+pub struct FaceBuilder {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+/// `s.outline(name)`: a closed region the person supplies: a sketch, a face's outline, or loops (API 1.2). Then a
+/// default (`default_poly`, `default_loops`, `default_face`), `label`, `help`, and `get()`; `s.pick_outline(&value)`
+/// delivers it as a `Section`.
+pub struct OutlineBuilder {
+    r: Reader,
+    spec: ParamSpec,
+}
+
+/// A face or outline parameter's value as the run was given it (or its default): what the host resolves at a pick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickParam {
+    pub name: String,
+    pub kind: String,
+    pub value: Json,
+}
+
+/// A face the host resolved: its index on the part now, its outward normal, a point on it, its area, and its outline in
+/// its own frame (`outline.frame`, `outline.region`, `outline.loops`), as `face_outline` gives it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PickedFace {
+    pub index: u32,
+    pub normal: [f64; 3],
+    pub point: [f64; 3],
+    pub area: f64,
+    pub outline: Section,
+}
+
+/// The rules a face parameter may fall back on when the person picked none.
+pub const FACE_RULES: [&str; 5] = ["largest", "largest_up", "largest_down", "top", "bottom"];
+
+impl FaceBuilder {
+    /// The face taken when the person picked none: `largest`, `largest_up`, `largest_down`, `top` or `bottom`.
+    pub fn rule(mut self, rule: &str) -> FaceBuilder {
+        let facing = self.spec.default.get("facing").cloned();
+        let mut d = Json::obj().set("rule", rule);
+        if let Some(f) = facing {
+            d = d.set("facing", f);
+        }
+        self.spec.default = d;
+        self
+    }
+    /// With `largest`: the largest flat face facing `dir` (within 5°). `rule("largest").facing([0,0,1])` is `largest_up`.
+    pub fn facing(mut self, dir: [f64; 3]) -> FaceBuilder {
+        let rule = self.spec.default.get("rule").and_then(Json::as_str).unwrap_or("largest").to_string();
+        self.spec.default = Json::obj().set("rule", rule.as_str()).set("facing", dir);
+        self
+    }
+    pub fn label(mut self, label: &str) -> FaceBuilder {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> FaceBuilder {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    /// The face the host was given (an index, or `{normal, nearPoint}`), else the default rule. Nothing is resolved
+    /// yet: `s.pick_face` does that.
+    #[track_caller]
+    pub fn get(self) -> PickParam {
+        let line = std::panic::Location::caller().line();
+        let given = self.r.declare(&self.spec, line);
+        let value = match given {
+            Some(Json::Null) | None => self.spec.default.clone(),
+            Some(v) => v,
+        };
+        PickParam { name: self.spec.name.clone(), kind: "face".to_string(), value }
+    }
+}
+
+impl OutlineBuilder {
+    /// A default outline: this polygon, drawn on the part's workplane (or the bed for a new part).
+    pub fn default_poly(mut self, poly: &geom2d::Poly) -> OutlineBuilder {
+        self.spec.default = Json::obj().set("loops", Json::Arr(vec![poly.to_loop()]));
+        self
+    }
+    /// A default outline: `extrude` loops (`Profile::to_loops()`, `Poly::to_loop()`), an outline then its holes.
+    pub fn default_loops(mut self, loops: Vec<Json>) -> OutlineBuilder {
+        self.spec.default = Json::obj().set("loops", Json::Arr(loops));
+        self
+    }
+    /// A default outline: the outline of the part's face the rule names (`largest_up`, say).
+    pub fn default_face(mut self, rule: &str) -> OutlineBuilder {
+        self.spec.default = Json::obj().set("face", Json::obj().set("rule", rule));
+        self
+    }
+    pub fn label(mut self, label: &str) -> OutlineBuilder {
+        self.spec.label = Some(label.to_string());
+        self
+    }
+    pub fn help(mut self, help: &str) -> OutlineBuilder {
+        self.spec.help = Some(help.to_string());
+        self
+    }
+    /// The outline the host was given (`{sketch}`, `{face}` or `{loops}`), else the default.
+    #[track_caller]
+    pub fn get(self) -> PickParam {
+        let line = std::panic::Location::caller().line();
+        let given = self.r.declare(&self.spec, line);
+        let value = match given {
+            Some(Json::Null) | None => self.spec.default.clone(),
+            Some(v) => v,
+        };
+        PickParam { name: self.spec.name.clone(), kind: "outline".to_string(), value }
+    }
+}
+
 fn hold(v: f64, min: Option<f64>, max: Option<f64>) -> f64 {
     let mut v = v;
     if let Some(lo) = min {
@@ -774,6 +888,68 @@ impl Session {
     /// A text parameter: `s.text("label", "LIME").max_len(20).get()`.
     pub fn text(&self, name: &str, default: &str) -> Text {
         Text { r: self.reader(name), spec: ParamSpec::new(name, "text", Json::from(default)) }
+    }
+
+    /// A face of the part the person picks (API 1.2): `s.face("face").rule("largest_up").label("Face to cut").get()`.
+    pub fn face(&self, name: &str) -> FaceBuilder {
+        FaceBuilder { r: self.reader(name), spec: ParamSpec::new(name, "face", Json::Null) }
+    }
+
+    /// A closed outline the person supplies (API 1.2): `s.outline("shape").default_poly(&geom2d::rect(80.0, 60.0)).get()`.
+    pub fn outline(&self, name: &str) -> OutlineBuilder {
+        OutlineBuilder { r: self.reader(name), spec: ParamSpec::new(name, "outline", Json::Null) }
+    }
+
+    /// The face a `face` parameter names, resolved on `part` as it stands now. A face the person picked is found again
+    /// by its normal and a point on it, so it survives a change to the steps before it; when it is gone the host
+    /// refuses with a sentence naming the parameter.
+    #[track_caller]
+    pub fn pick_face(&mut self, part: &Part, face: &PickParam) -> Result<PickedFace, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let args = Json::obj().set("param", face.name.as_str()).set("kind", "face").set("object", part.object.as_str()).set("value", face.value.clone());
+        let r = self.call("pick", args)?;
+        let outline = Section::all(&r).into_iter().next().ok_or(Refusal { reason: "pick gave no face".to_string(), line })?;
+        Ok(PickedFace {
+            index: r.get("face").and_then(Json::as_f64).unwrap_or(0.0) as u32,
+            normal: vec3(r.get("normal")),
+            point: vec3(r.get("nearPoint")),
+            area: r.get("areaMm2").and_then(Json::as_f64).unwrap_or(0.0),
+            outline,
+        })
+    }
+
+    /// The region an `outline` parameter names, with the frame it lies in. A face's outline is read on the run's part
+    /// unless the value names another; a sketch is read from the step it names.
+    #[track_caller]
+    pub fn pick_outline(&mut self, outline: &PickParam) -> Result<Section, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let mut args = Json::obj().set("param", outline.name.as_str()).set("kind", "outline").set("value", outline.value.clone());
+        if let Some(o) = self.context.get("object").and_then(Json::as_str) {
+            args = args.set("object", o);
+        }
+        let r = self.call("pick", args)?;
+        Section::all(&r).into_iter().next().ok_or(Refusal { reason: "pick gave no outline".to_string(), line })
+    }
+
+    /// The part's bounding box in its frame, `(min, max)` in mm (API 1.2).
+    #[track_caller]
+    pub fn bounds(&mut self, part: &Part) -> Result<([f64; 3], [f64; 3]), Refusal> {
+        let line = std::panic::Location::caller().line();
+        let r = self.call("model_describe", Json::obj().set("object", part.object.as_str()).set("limit", 1u32))?;
+        match r.get("bounds") {
+            Some(b) => Ok((vec3(b.get("min")), vec3(b.get("max")))),
+            None => Err(Refusal { reason: "model_describe gave no bounds".to_string(), line }),
+        }
+    }
+
+    /// Ends the run with `sentence` as its plain refusal (API 1.2): nothing the run did is kept, and the person or the
+    /// agent reads the sentence as the reason, with no panic line around it.
+    #[track_caller]
+    pub fn refuse(&self, sentence: &str) -> ! {
+        let line = std::panic::Location::caller().line();
+        tell(Json::obj().set("refuse", Json::obj().set("reason", sentence).set("line", line)));
+        while !read_line().is_empty() {}
+        panic!("{}", sentence);
     }
 
     /// A number parameter, or `default` when the host did not send it: `number(name, default).get()`.
@@ -2758,7 +2934,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 1));
+        assert_eq!(API, (1, 2));
     }
 
     #[test]
@@ -2773,6 +2949,35 @@ mod tests {
         assert_eq!(s.text("t", "x").max_len(3).get(), "abc");
         assert_eq!(s.param_f64("old", 1.0), 2.5);
         assert_eq!(s.param_u32("n", 1), 4);
+    }
+
+    #[test]
+    fn picked_params_json() {
+        let s = Session::from_start(&Json::obj());
+        let f = s.face("face").rule("largest_up").label("Face to cut");
+        assert_eq!(f.spec.to_json().to_string(), r#"{"name":"face","kind":"face","default":{"rule":"largest_up"},"label":"Face to cut"}"#);
+        let g = s.face("side").facing([1.0, 0.0, 0.0]).rule("largest");
+        assert_eq!(g.spec.to_json().to_string(), r#"{"name":"side","kind":"face","default":{"rule":"largest","facing":[1,0,0]}}"#);
+        assert_eq!(s.face("any").spec.to_json().to_string(), r#"{"name":"any","kind":"face","default":null}"#);
+        let o = s.outline("shape").default_poly(&geom2d::rect(4.0, 2.0)).help("A sketch or a face");
+        assert_eq!(
+            o.spec.to_json().to_string(),
+            r#"{"name":"shape","kind":"outline","default":{"loops":[{"start":[-2,-1],"segments":[{"kind":"line","to":[2,-1]},{"kind":"line","to":[2,1]},{"kind":"line","to":[-2,1]},{"kind":"line","to":[-2,-1]}]}]},"help":"A sketch or a face"}"#
+        );
+        assert_eq!(s.outline("rim").default_face("top").spec.to_json().to_string(), r#"{"name":"rim","kind":"outline","default":{"face":{"rule":"top"}}}"#);
+        assert_eq!(FACE_RULES.len(), 5);
+    }
+
+    #[test]
+    fn picked_params_values() {
+        let s = Session::from_start(&Json::parse(r#"{"params":{"face":{"normal":[0,0,1],"nearPoint":[1,2,3]},"n":4,"shape":{"sketch":7}}}"#).unwrap());
+        let f = s.face("face").rule("largest").get();
+        assert_eq!(f.kind, "face");
+        assert_eq!(f.value.to_string(), r#"{"normal":[0,0,1],"nearPoint":[1,2,3]}"#);
+        assert_eq!(s.face("n").get().value.to_string(), "4");
+        assert_eq!(s.face("missing").rule("top").get().value.to_string(), r#"{"rule":"top"}"#);
+        assert_eq!(s.outline("shape").get().value.to_string(), r#"{"sketch":7}"#);
+        assert_eq!(s.outline("none").get().value, Json::Null);
     }
 
     #[test]

@@ -60,6 +60,8 @@ import { DEMO_PLUGIN, DEMO_TRY } from "../plugins/demo";
 import { RECIPE_API } from "../plugin-step";
 import { KIND_PURPOSE, PURPOSE, REASON } from "./plugins-panel-text";
 import { setLessons } from "./lessons-note";
+import { pickField, sketchValue, type SketchChoice } from "./pick-field";
+import type { FaceValue } from "../recipe/picks";
 import { approveFirstRun, exportPluginFile, importPluginText, mountPluginShare, needsFirstRun, pickPluginFiles } from "./plugin-import";
 
 const CARD_ID = "plugins";
@@ -95,6 +97,14 @@ export interface PluginsHost {
   readout(text: string): void;
   /** The library was read again: History's rows follow (Use vN, a copy found in the library). */
   libraryChanged(library: PluginLibrary): void;
+  /** --- API 1.2. The sketches on the plate a person may pick as an outline. */
+  sketches?(): SketchChoice[];
+  /**
+   * Wait for a click on a flat face of the part on screen, highlighted as it is picked; `done` gets it with its part, or
+   * null when the pick is cancelled. The sentence that says why it cannot start, or null.
+   */
+  pickFace?(done: (picked: { object: string; face: FaceValue } | null) => void): string | null;
+  cancelPick?(): void;
 }
 
 export type PluginRunResult = { ok: true; ms: number; text: string } | { ok: false; reason: string; line?: number };
@@ -121,6 +131,14 @@ let howOpen = false;
 let menuOpen = false;
 /** The values the preview on screen was built from, so Apply says whether it matches. */
 let previewed: string | null = null;
+/** --- API 1.2. The face or outline field that waits for a face click in the view. */
+let picking: string | null = null;
+
+function stopPicking() {
+  if (picking === null) return;
+  picking = null;
+  host?.cancelPick?.();
+}
 
 const root = () => document.querySelector<HTMLElement>("#modelPlugins");
 const $ = <T extends HTMLElement>(selector: string) => root()?.querySelector<T>(selector) ?? null;
@@ -216,6 +234,7 @@ export function openPluginsPanel() {
 }
 
 function closed() {
+  stopPicking();
   stopLive();
   host?.clearPreview();
   previewed = null;
@@ -617,6 +636,22 @@ function runnable(plugin: PanelPlugin): string | null {
 }
 
 function field(param: PluginParamInfo, editable: boolean): HTMLElement {
+  if (param.kind === "face" || param.kind === "outline") {
+    const ro = !editable || readOnlyNote(current()!) !== null;
+    return pickField({
+      name: param.name,
+      label: paramLabel(param),
+      kind: param.kind,
+      ...(param.help ? { help: param.help } : {}),
+      value: values.get(param.name),
+      fallback: param.default,
+      editable: !ro,
+      picking: picking === param.name,
+      typed: values.has(param.name),
+      sketches: host?.sketches?.() ?? [],
+      ...(host?.partName() ? {} : { blocked: REASON.noPartToPick }),
+    });
+  }
   const row = el("label", "mh-plugin-field");
   if (param.help) row.dataset.tip = param.help;
   const name = Object.assign(el("span", "mh-plugin-name"), { textContent: paramLabel(param) });
@@ -799,7 +834,17 @@ function onClick(ev: MouseEvent) {
     startDemo();
     return;
   }
+  const pickButton = target.closest<HTMLButtonElement>("button[data-pick-act]");
+  if (pickButton?.dataset.name) {
+    if (pickButton.disabled) {
+      if (pickButton.dataset.reason) host.readout(pickButton.dataset.reason);
+      return;
+    }
+    pickAct(pickButton.dataset.pickAct ?? "", pickButton.dataset.name);
+    return;
+  }
   if (target.closest("#modelPluginsBack")) {
+    stopPicking();
     host.clearPreview();
     previewed = null;
     stopLive();
@@ -880,6 +925,11 @@ function onChange(ev: Event) {
     usePreset(target.value);
     return;
   }
+  if (target instanceof HTMLSelectElement && target.dataset.pickAct === "sketch" && target.dataset.name) {
+    const chosen = sketchValue(target.value);
+    if (chosen) setPicked(target.dataset.name, chosen);
+    return;
+  }
   if (target.dataset.name && !(target instanceof HTMLInputElement && target.type === "text")) {
     values.set(target.dataset.name, target instanceof HTMLInputElement && target.type === "checkbox" ? target.checked : target.value);
     unsetPreset();
@@ -926,6 +976,47 @@ function onKeyDown(ev: KeyboardEvent) {
   }
 }
 
+/** --- API 1.2. A pick button: wait for a face click (a face, or a face's outline), or drop the pick. */
+function pickAct(act: string, name: string) {
+  if (!host) return;
+  if (act === "clear") {
+    stopPicking();
+    values.delete(name);
+    unsetPreset();
+    status = null;
+    paint();
+    queueLive();
+    return;
+  }
+  if (act !== "face" && act !== "outline-face") return;
+  if (picking === name) {
+    stopPicking();
+    paint();
+    return;
+  }
+  stopPicking();
+  const why = host.pickFace ? host.pickFace((got) => {
+    if (picking !== name) return;
+    picking = null;
+    if (got) setPicked(name, (act === "face" ? { ...got.face } : { face: { ...got.face }, object: got.object }) as FormValue);
+    else paint();
+  }) ?? null : "Picking a face needs the Model view.";
+  if (why) {
+    host.readout(why);
+    return;
+  }
+  picking = name;
+  paint();
+}
+
+function setPicked(name: string, value: FormValue) {
+  values.set(name, value);
+  unsetPreset();
+  status = null;
+  paint();
+  queueLive();
+}
+
 /** A value typed by hand: the form no longer holds the preset's values. */
 function unsetPreset() {
   preset = "";
@@ -934,6 +1025,7 @@ function unsetPreset() {
 }
 
 function select(key: string) {
+  stopPicking();
   host?.clearPreview();
   previewed = null;
   stopLive();
