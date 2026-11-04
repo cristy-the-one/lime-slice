@@ -70,18 +70,26 @@ pub(super) fn build(from: &mut Shape, op: Op) -> Result<Built, BuildFail> {
     let cut = match which {
         BooleanOp::Fuse => false,
         BooleanOp::Cut => true,
-        BooleanOp::Common => return Err(BuildFail::plain("Text is raised (fuse) or engraved (cut).")),
+        BooleanOp::Common => {
+            return Err(BuildFail::plain("Text is raised (fuse) or engraved (cut)."))
+        }
     };
     if !(depth.is_finite() && *depth >= MIN_DEPTH_MM) {
-        return Err(BuildFail::plain("Text needs a depth above 0, in millimetres."));
+        return Err(BuildFail::plain(
+            "Text needs a depth above 0, in millimetres.",
+        ));
     }
     let spec = spec_of(&op).expect("a text op");
     let laid = text::lay_out(&spec).map_err(BuildFail::plain)?;
     if laid.faces.is_empty() {
-        return Err(BuildFail::plain("The text has no letters to build. Spaces leave no ink."));
+        return Err(BuildFail::plain(
+            "The text has no letters to build. Spaces leave no ink.",
+        ));
     }
     let blob = text::encode(&laid.faces);
-    let p = [origin[0], origin[1], origin[2], turn[0], turn[1], turn[2], *depth];
+    let p = [
+        origin[0], origin[1], origin[2], turn[0], turn[1], turn[2], *depth,
+    ];
     let mut path: c_int = 0;
     let mut note: *mut c_char = std::ptr::null_mut();
     let built = Shape::made(|error| unsafe {
@@ -169,7 +177,12 @@ pub(super) fn fonts_reply() -> String {
     let rows: Vec<Value> = fonts::FAMILIES
         .iter()
         .map(|family| {
-            let has = |bold: bool, italic: bool| family.styles.iter().any(|file| file.bold == bold && file.italic == italic);
+            let has = |bold: bool, italic: bool| {
+                family
+                    .styles
+                    .iter()
+                    .any(|file| file.bold == bold && file.italic == italic)
+            };
             json!({
                 "id": fonts::versioned(family),
                 "name": family.name,

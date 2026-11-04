@@ -1,6 +1,7 @@
 import { SCREWS } from "../model-hole";
 import { SPLIT_TILT_MAX_DEG } from "../model-plane";
 import { PRIMITIVES } from "../model-primitive";
+import { DEFAULT_TEXT_FONT, TEXT_FONTS } from "../modeling/text-fonts";
 
 export function mountMarkup(root: HTMLElement) {
   root.innerHTML = `
@@ -348,8 +349,10 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="ribs" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelRibAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Rib angle, degrees"></label>
                 <label data-for="ribs" data-snap="1" data-tip="Kept from the face's edges."><span class="scrub-label" data-scrub>Margin</span><input id="modelRibMargin" type="number" step="0.1" min="0" max="100" value="0" aria-label="Margin from the face's edges"></label>
                 <label data-for="text" data-snap="1" data-tip="Capitals, mm."><span class="scrub-label" data-scrub>Height</span><input id="modelTextHeight" type="number" step="0.1" min="0.1" max="500" value="6" aria-label="Capitals, mm"></label>
-                <label data-for="text" data-snap="1" data-tip="Default height × 0.15."><span class="scrub-label" data-scrub>Stroke</span><input id="modelTextStroke" type="number" step="0.1" min="0.1" max="100" value="0.9" aria-label="Stroke width, default height × 0.15"></label>
-                <label data-for="text" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
+                <label data-for="text" data-fontkind="stroke" data-snap="1" data-tip="Default height × 0.15."><span class="scrub-label" data-scrub>Stroke</span><input id="modelTextStroke" type="number" step="0.1" min="0.1" max="100" value="0.9" aria-label="Stroke width, default height × 0.15"></label>
+                <label data-for="text" data-fontkind="stroke" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
+                <label data-for="text" data-fontkind="outline" data-snap="0.1" data-tip="Added after every letter, on top of the font's own kerning."><span class="scrub-label" data-scrub>Letter spacing</span><input id="modelTextTrack" type="number" step="0.1" min="-50" max="100" value="0" aria-label="Letter spacing, mm after every letter"></label>
+                <label data-for="text" data-fontkind="outline" data-snap="0.1" data-tip="Capital heights between lines. Default 1.3."><span class="scrub-label" data-scrub>Line spacing</span><input id="modelTextLines" type="number" step="0.1" min="0" max="10" value="1.3" aria-label="Line spacing, capital heights between lines"></label>
                 <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
                 <!-- end A3 -->
                 <!-- --- A4 pattern and mirror. Each number is one line: the drag checklist reads it that way. --- -->
@@ -439,15 +442,29 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
                 <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Cut</button>
               </div>
-              <label data-for="text" data-tip="A-Z, 0-9, space, -+.,:!?/'&amp;."><span class="scrub-label">Text</span><input id="modelFeatText" type="text" maxlength="80" value="A" aria-label="Text"></label>
-              <div class="modes" id="modelTextAlign" data-for="text" role="group" aria-label="Align" data-tip="at is the middle or start.">
+              <!-- Text with real fonts: the font picker draws each name in its own font; the bold, italic and size follow it. -->
+              <div class="model-fonts" id="modelTextFont" data-for="text" role="group" aria-label="Font" data-tip="Stroke is the single-stroke grid font. The others are real outline fonts.">
+                <button class="btn mode font-pick" type="button" data-font="stroke" aria-pressed="false" data-tip="Single-stroke capitals and digits, for engraving.">Stroke</button>
+                ${TEXT_FONTS.map((font) => `<button class="btn mode font-pick${font.id === DEFAULT_TEXT_FONT ? " on" : ""}" type="button" data-font="${font.id}@${font.version}" aria-pressed="${font.id === DEFAULT_TEXT_FONT}" style="font-family: '${font.family}', sans-serif" data-tip="${font.about}">${font.name}</button>`).join("\n                ")}
+              </div>
+              <p class="model-font-sample" id="modelTextSample" data-for="text" data-fontkind="outline" aria-hidden="true"></p>
+              <div class="modes" id="modelTextStyle" data-for="text" data-fontkind="outline" role="group" aria-label="Style" data-tip="Regular, bold, italic. A font with no italic is slanted; one with no bold is refused.">
+                <button class="btn mode" type="button" data-style="regular" aria-pressed="false">Regular</button>
+                <button class="btn mode on" type="button" data-style="bold" aria-pressed="true">Bold</button>
+                <button class="btn mode" type="button" data-style="italic" aria-pressed="false">Italic</button>
+                <button class="btn mode" type="button" data-style="bold-italic" aria-pressed="false">Bold italic</button>
+              </div>
+              <label class="model-text-box" data-for="text" data-tip="Any letters the font has. Enter starts a new line; Ctrl+Enter applies. The stroke font takes A-Z, 0-9, space, -+.,:!?/'&amp; up to 80."><span class="scrub-label">Text</span><textarea id="modelFeatText" rows="2" maxlength="400" spellcheck="false" aria-label="Text, Enter for a new line, Ctrl+Enter to apply">A</textarea></label>
+              <div class="modes" id="modelTextAlign" data-for="text" role="group" aria-label="Align" data-tip="Each line: at is its middle, start or end.">
                 <button class="btn mode on" type="button" data-align="centre" aria-pressed="true">Centre</button>
-                <button class="btn mode" type="button" data-align="left" aria-pressed="false">Start</button>
+                <button class="btn mode" type="button" data-align="left" aria-pressed="false">Left</button>
+                <button class="btn mode" type="button" data-align="right" data-fontkind="outline" aria-pressed="false">Right</button>
               </div>
               <div class="modes" id="modelTextOp" data-for="text" role="group" aria-label="Raise or engrave" data-tip="fuse raises (default); cut recesses.">
                 <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
                 <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>
               </div>
+              <p class="model-note model-text-thin" id="modelTextThin" data-for="text" data-fontkind="outline" role="status" hidden></p>
               <!-- end A3 -->
               <!-- --- A4 pattern and mirror --- -->
               <p class="model-note" id="modelRepeatOf" data-for="pattern mirror"></p>

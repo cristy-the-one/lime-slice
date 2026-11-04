@@ -38,7 +38,16 @@ fn with(mut op: Value, field: &str, value: Value) -> Value {
 /// The ink the laid-out text covers, mm2, as the engine's own layout call reports it.
 fn ink(op: &Value) -> f64 {
     let mut request = json!({ "call": "textLayout" });
-    for key in ["text", "font", "style", "height", "spacing", "lineSpacing", "align", "angleDeg"] {
+    for key in [
+        "text",
+        "font",
+        "style",
+        "height",
+        "spacing",
+        "lineSpacing",
+        "align",
+        "angleDeg",
+    ] {
         if let Some(value) = op.get(key) {
             request[key] = value.clone();
         }
@@ -54,14 +63,24 @@ fn probe(key: &str, op: &Value) -> Value {
 
 #[track_caller]
 fn near(actual: f64, expected: f64, tolerance: f64) {
-    assert!((actual - expected).abs() <= tolerance, "{actual} is not within {tolerance} of {expected}");
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "{actual} is not within {tolerance} of {expected}"
+    );
 }
 
 #[test]
 fn raised_letters_are_a_valid_closed_solid_whose_volume_is_ink_times_depth() {
     let Some(_) = block("lt-raise") else { return };
     // The letters with holes: A, O, 8, g, B, e. Every bundled family.
-    for (font, style) in [("sans", None), ("sans", Some("bold")), ("sans", Some("italic")), ("mono", None), ("serif", Some("bold")), ("stencil", None)] {
+    for (font, style) in [
+        ("sans", None),
+        ("sans", Some("bold")),
+        ("sans", Some("italic")),
+        ("mono", None),
+        ("serif", Some("bold")),
+        ("stencil", None),
+    ] {
         let mut op = lettering("fuse", "AO8gBe", font, 5.0, 0.8);
         if let Some(style) = style {
             op = with(op, "style", json!(style));
@@ -70,7 +89,11 @@ fn raised_letters_are_a_valid_closed_solid_whose_volume_is_ink_times_depth() {
         assert_eq!(reply["ok"], json!(true), "{font} {style:?}: {reply}");
         assert_eq!(reply["solids"], json!(1), "{font} {style:?}: {reply}");
         assert_eq!(reply["shells"], json!(1), "{font} {style:?}: {reply}");
-        assert_eq!(reply["text"]["build"], json!("direct"), "{font} {style:?} is built without a boolean: {reply}");
+        assert_eq!(
+            reply["text"]["build"],
+            json!("direct"),
+            "{font} {style:?} is built without a boolean: {reply}"
+        );
         let added = reply["volumeMm3"].as_f64().unwrap() - 8000.0;
         near(added, ink(&op) * 0.8, 0.01);
     }
@@ -93,12 +116,17 @@ fn engraved_letters_take_ink_times_depth_out() {
 fn the_direct_build_leaves_every_other_face_the_face_it_was() {
     let Some(_) = block("lt-faces") else { return };
     let op = lettering("fuse", "LIME", "sans", 6.0, 1.0);
-    let applied = call(json!({ "call": "apply", "key": "lt-faces", "parent": 0, "node": 1, "op": op }));
+    let applied =
+        call(json!({ "call": "apply", "key": "lt-faces", "parent": 0, "node": 1, "op": op }));
     assert!(applied.get("error").is_none(), "{applied}");
     assert_eq!(applied["text"]["build"], json!("direct"));
     let owners = applied["stepFaces"].as_array().expect("stepFaces");
     // The five faces the text is not on, and the top it replaced, are the block's; every letter face is this step's.
-    assert_eq!(owners.iter().filter(|o| o.as_u64() == Some(0)).count(), 6, "{owners:?}");
+    assert_eq!(
+        owners.iter().filter(|o| o.as_u64() == Some(0)).count(),
+        6,
+        "{owners:?}"
+    );
     assert!(owners.iter().filter(|o| o.as_u64() == Some(1)).count() > 20);
     let faces = applied["faces"].as_array().unwrap();
     for (face, owner) in faces.iter().zip(owners) {
@@ -138,8 +166,14 @@ fn lines_alignment_spacing_and_angle_all_build() {
         near(added, ink(&op) * 0.6, 0.01);
     }
     // Two lines turned a quarter are still one solid.
-    let turned = with(lettering("fuse", "AB
-CD", "sans", 4.0, 0.6), "angleDeg", json!(90.0));
+    let turned = with(
+        lettering(
+            "fuse", "AB
+CD", "sans", 4.0, 0.6,
+        ),
+        "angleDeg",
+        json!(90.0),
+    );
     let reply = probe("lt-layout", &turned);
     assert_eq!(reply["solids"], json!(1), "{reply}");
 }
@@ -153,8 +187,18 @@ fn a_cut_through_the_wall_goes_through_where_no_letter_would_lose_its_middle() {
     assert_eq!(reply["ok"], json!(true), "{reply}");
     assert_eq!(reply["text"]["build"], json!("boolean"), "{reply}");
     assert_eq!(reply["solids"], json!(1), "{reply}");
-    assert!(reply["text"]["booleanBecause"].as_str().unwrap().contains("through the wall"), "{reply}");
-    near(8000.0 - reply["volumeMm3"].as_f64().unwrap(), ink(&op) * 10.0, 0.05);
+    assert!(
+        reply["text"]["booleanBecause"]
+            .as_str()
+            .unwrap()
+            .contains("through the wall"),
+        "{reply}"
+    );
+    near(
+        8000.0 - reply["volumeMm3"].as_f64().unwrap(),
+        ink(&op) * 10.0,
+        0.05,
+    );
     // An O would lose its middle: refused, pointing at Stencil.
     let refused = probe("lt-through", &lettering("cut", "O", "sans", 6.0, 12.0));
     assert_eq!(refused["ok"], json!(false), "{refused}");
@@ -176,27 +220,68 @@ fn a_cut_through_the_wall_goes_through_where_no_letter_would_lose_its_middle() {
 #[test]
 fn text_that_runs_off_the_face_is_refused_in_a_sentence() {
     let Some(_) = block("lt-off") else { return };
-    let op = with(lettering("fuse", "LONG TEXT RUNS OFF", "sans", 6.0, 1.0), "origin", json!([36.0, 10.0, 10.0]));
+    let op = with(
+        lettering("fuse", "LONG TEXT RUNS OFF", "sans", 6.0, 1.0),
+        "origin",
+        json!([36.0, 10.0, 10.0]),
+    );
     let reply = probe("lt-off", &op);
     assert_eq!(reply["ok"], json!(false), "{reply}");
-    assert_eq!(reply["error"], json!("The text runs off this face. Move it, make it smaller, or put it on one face."), "{reply}");
+    assert_eq!(
+        reply["error"],
+        json!("The text runs off this face. Move it, make it smaller, or put it on one face."),
+        "{reply}"
+    );
 }
 
 #[test]
 fn a_letter_the_font_lacks_a_bad_font_and_a_missing_bold_are_sentences() {
     let Some(_) = block("lt-refuse") else { return };
     let reply = probe("lt-refuse", &lettering("fuse", "Lime 日", "sans", 6.0, 1.0));
-    assert_eq!(reply["error"], json!("This font has no ‘日’. Pick another font, or take it out."), "{reply}");
+    assert_eq!(
+        reply["error"],
+        json!("This font has no ‘日’. Pick another font, or take it out."),
+        "{reply}"
+    );
     let reply = probe("lt-refuse", &lettering("fuse", "Lime", "comic", 6.0, 1.0));
-    assert!(reply["error"].as_str().unwrap().contains("There is no font called ‘comic’"), "{reply}");
-    let reply = probe("lt-refuse", &with(lettering("fuse", "Lime", "stencil", 6.0, 1.0), "style", json!("bold")));
-    assert_eq!(reply["error"], json!("‘Allerta Stencil’ has no bold. Pick Regular, or another font."), "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("There is no font called ‘comic’"),
+        "{reply}"
+    );
+    let reply = probe(
+        "lt-refuse",
+        &with(
+            lettering("fuse", "Lime", "stencil", 6.0, 1.0),
+            "style",
+            json!("bold"),
+        ),
+    );
+    assert_eq!(
+        reply["error"],
+        json!("‘Allerta Stencil’ has no bold. Pick Regular, or another font."),
+        "{reply}"
+    );
     let reply = probe("lt-refuse", &lettering("fuse", "   ", "sans", 6.0, 1.0));
-    assert!(reply["error"].as_str().unwrap().contains("no letters"), "{reply}");
+    assert!(
+        reply["error"].as_str().unwrap().contains("no letters"),
+        "{reply}"
+    );
     let reply = probe("lt-refuse", &lettering("fuse", "Lime", "sans", 6.0, 0.0));
-    assert!(reply["error"].as_str().unwrap().contains("depth"), "{reply}");
+    assert!(
+        reply["error"].as_str().unwrap().contains("depth"),
+        "{reply}"
+    );
     let reply = probe("lt-refuse", &lettering("common", "Lime", "sans", 6.0, 1.0));
-    assert!(reply["error"].as_str().unwrap().contains("raised (fuse) or engraved (cut)"), "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("raised (fuse) or engraved (cut)"),
+        "{reply}"
+    );
 }
 
 #[test]
@@ -210,7 +295,11 @@ fn text_on_a_side_face_follows_the_face_turn() {
     let reply = probe("lt-side", &op);
     assert_eq!(reply["ok"], json!(true), "{reply}");
     assert_eq!(reply["text"]["build"], json!("direct"), "{reply}");
-    near(reply["volumeMm3"].as_f64().unwrap() - 8000.0, ink(&op) * 0.5, 0.01);
+    near(
+        reply["volumeMm3"].as_f64().unwrap() - 8000.0,
+        ink(&op) * 0.5,
+        0.01,
+    );
 }
 
 #[test]
@@ -218,7 +307,8 @@ fn a_text_step_replays_from_a_saved_node_to_the_same_solid() {
     let Some(_) = block("lt-replay") else { return };
     let source = json!({ "kind": "text", "text": "LIME", "font": "sans" });
     let group = json!({ "kind": "group", "label": "Text LIME", "source": source, "steps": [lettering("fuse", "LIME", "sans@4.0", 6.0, 1.0)] });
-    let applied = call(json!({ "call": "apply", "key": "lt-replay", "parent": 0, "node": 1, "op": group }));
+    let applied =
+        call(json!({ "call": "apply", "key": "lt-replay", "parent": 0, "node": 1, "op": group }));
     assert!(applied.get("error").is_none(), "{applied}");
     assert_eq!(applied["op"]["source"], source);
     let reopened = call(json!({
@@ -226,11 +316,18 @@ fn a_text_step_replays_from_a_saved_node_to_the_same_solid() {
         "nodes": [{ "id": 1, "parent": 0, "op": applied["op"], "fingerprint": applied["fingerprint"] }],
     }));
     assert!(reopened.get("error").is_none(), "{reopened}");
-    assert_eq!(reopened["fingerprint"], applied["fingerprint"], "{reopened}");
+    assert_eq!(
+        reopened["fingerprint"], applied["fingerprint"],
+        "{reopened}"
+    );
     // Again with the font named without its version: the same bytes, the same solid.
     let bare = json!({ "kind": "group", "label": "Text LIME", "steps": [lettering("fuse", "LIME", "sans", 6.0, 1.0)] });
     let again = call(json!({ "call": "probe", "key": "lt-replay", "node": 0, "op": bare }));
-    near(again["volumeMm3"].as_f64().unwrap(), applied["volumeMm3"].as_f64().unwrap(), 1e-6);
+    near(
+        again["volumeMm3"].as_f64().unwrap(),
+        applied["volumeMm3"].as_f64().unwrap(),
+        1e-6,
+    );
 }
 
 #[test]
@@ -246,19 +343,44 @@ fn the_layout_call_answers_outlines_and_the_letters_too_thin_for_the_nozzle() {
     // H, i (stem and dot), 8.
     assert_eq!(faces.len(), 4, "{reply}");
     let eight = faces.iter().find(|f| f["ch"] == "8").expect("an 8");
-    assert_eq!(eight["loops"].as_array().unwrap().len(), 3, "an 8 is an outline and two counters");
+    assert_eq!(
+        eight["loops"].as_array().unwrap().len(),
+        3,
+        "an 8 is an outline and two counters"
+    );
     assert!(reply["thin"].as_array().unwrap().is_empty());
     assert!(reply["thinNote"].is_null());
     assert!(reply["bounds"].as_array().unwrap().len() == 4);
     // The same text far smaller names the letters that will not print.
-    let small = call(json!({ "call": "textLayout", "text": "Lime", "font": "serif", "height": 1.5, "lineMm": 0.4 }));
-    let names: Vec<&str> = small["thin"].as_array().unwrap().iter().map(|t| t["ch"].as_str().unwrap()).collect();
+    let small = call(
+        json!({ "call": "textLayout", "text": "Lime", "font": "serif", "height": 1.5, "lineMm": 0.4 }),
+    );
+    let names: Vec<&str> = small["thin"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["ch"].as_str().unwrap())
+        .collect();
     assert!(!names.is_empty(), "{small}");
-    assert!(small["thinNote"].as_str().unwrap().contains("thinner than your 0.4 mm line"), "{small}");
-    assert!(small["faces"].as_array().unwrap().iter().any(|f| f["thin"] == json!(true)));
+    assert!(
+        small["thinNote"]
+            .as_str()
+            .unwrap()
+            .contains("thinner than your 0.4 mm line"),
+        "{small}"
+    );
+    assert!(small["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["thin"] == json!(true)));
     // A letter the font lacks is the same sentence.
-    let missing = call(json!({ "call": "textLayout", "text": "日", "font": "sans", "height": 6.0 }));
-    assert_eq!(missing["error"], json!("This font has no ‘日’. Pick another font, or take it out."));
+    let missing =
+        call(json!({ "call": "textLayout", "text": "日", "font": "sans", "height": 6.0 }));
+    assert_eq!(
+        missing["error"],
+        json!("This font has no ‘日’. Pick another font, or take it out.")
+    );
 }
 
 #[test]
@@ -271,7 +393,15 @@ fn the_font_list_names_every_bundled_font_and_its_styles() {
     let ids: Vec<&str> = fonts.iter().map(|f| f["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["sans@4.0", "mono@1", "serif@1", "stencil@1"]);
     let sans = &fonts[0];
-    assert_eq!((sans["regular"].as_bool(), sans["bold"].as_bool(), sans["italic"].as_bool(), sans["boldItalic"].as_bool()), (Some(true), Some(true), Some(true), Some(true)));
+    assert_eq!(
+        (
+            sans["regular"].as_bool(),
+            sans["bold"].as_bool(),
+            sans["italic"].as_bool(),
+            sans["boldItalic"].as_bool()
+        ),
+        (Some(true), Some(true), Some(true), Some(true))
+    );
     let stencil = &fonts[3];
     assert_eq!(stencil["bold"], json!(false));
 }
@@ -282,16 +412,26 @@ fn letters_from_a_cff_font_build_valid_and_closed_too() {
     let Some(_) = block("lt-cff") else { return };
     let probe_cff = |op: &str| probe("lt-cff", &lettering(op, "AO8gBe", "test-cff", 5.0, 0.8));
     let raised = probe_cff("fuse");
-    if raised["error"].as_str().is_some_and(|e| e.contains("There is no font called")) {
+    if raised["error"]
+        .as_str()
+        .is_some_and(|e| e.contains("There is no font called"))
+    {
         // A release build ships no test font.
         return;
     }
-    for (name, reply, sign) in [("raised", raised, 1.0), ("engraved", probe_cff("cut"), -1.0)] {
+    for (name, reply, sign) in [
+        ("raised", raised, 1.0),
+        ("engraved", probe_cff("cut"), -1.0),
+    ] {
         assert_eq!(reply["ok"], json!(true), "{name}: {reply}");
         assert_eq!(reply["solids"], json!(1), "{name}: {reply}");
         assert_eq!(reply["shells"], json!(1), "{name}: {reply}");
         assert_eq!(reply["text"]["build"], json!("direct"), "{name}: {reply}");
         let ink = ink(&lettering("fuse", "AO8gBe", "test-cff", 5.0, 0.8));
-        near(reply["volumeMm3"].as_f64().unwrap() - 8000.0, sign * ink * 0.8, 0.01);
+        near(
+            reply["volumeMm3"].as_f64().unwrap() - 8000.0,
+            sign * ink * 0.8,
+            0.01,
+        );
     }
 }

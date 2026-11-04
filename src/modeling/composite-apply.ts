@@ -105,8 +105,9 @@ export async function runComposite(raw: Record<string, unknown>, port: Composite
     }
     const piece = pieces[k]!;
     const attempt = async (spec: PrimitiveSpec) => {
-      const typed = { kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>;
-      const baked = { op: toSolidOp({ kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, port.pose()), typed };
+      // --- Text with real fonts: the piece is a step of its own, typed in the part's frame, not a primitive boolean.
+      const typed = piece.step ?? ({ kind: "boolean", op: piece.op, ...spec } as Record<string, unknown>);
+      const baked = { op: toSolidOp(piece.step ? (piece.step as unknown as ModelOp) : { kind: "boolean", op: piece.op, ...spec, ...(piece.merge ? { merge: true as const } : {}) }, port.pose()), typed };
       const { probed, done } = await port.applyPiece(baked);
       return { probed, done, typed, op: baked.op as ModelOp };
     };
@@ -116,7 +117,7 @@ export async function runComposite(raw: Record<string, unknown>, port: Composite
       continue;
     }
     // A step that leaves pieces meeting along an edge is tried once a little shorter, then left out.
-    if (done.ok !== true && done.touching === true) {
+    if (done.ok !== true && done.touching === true && !piece.step) {
       for (const shorter of shortenedBoxes(piece.spec, TOUCH_TRIM)) {
         ({ probed, done, typed, op } = await attempt(shorter));
         if (done.ok === true || (done.touching !== true && probed.missed !== true)) break;

@@ -65,7 +65,10 @@ pub struct Contour {
 
 impl Contour {
     fn map(&self, f: &impl Fn(P) -> P) -> Contour {
-        Contour { start: f(self.start), segs: self.segs.iter().map(|seg| seg.map(f)).collect() }
+        Contour {
+            start: f(self.start),
+            segs: self.segs.iter().map(|seg| seg.map(f)).collect(),
+        }
     }
 
     /// The loop walked the other way, curves and all.
@@ -81,7 +84,10 @@ impl Contour {
                 Seg::Cubic(a, b, _) => Seg::Cubic(b, a, to),
             });
         }
-        Contour { start: *ends.last().expect("a start"), segs }
+        Contour {
+            start: *ends.last().expect("a start"),
+            segs,
+        }
     }
 
     /// Points along the loop, about `step` mm apart on a curve, without repeating the start.
@@ -100,7 +106,10 @@ impl Contour {
                     for i in 1..=n {
                         let t = i as f64 / n as f64;
                         let m = 1.0 - t;
-                        pts.push([m * m * p0[0] + 2.0 * m * t * a[0] + t * t * p[0], m * m * p0[1] + 2.0 * m * t * a[1] + t * t * p[1]]);
+                        pts.push([
+                            m * m * p0[0] + 2.0 * m * t * a[0] + t * t * p[0],
+                            m * m * p0[1] + 2.0 * m * t * a[1] + t * t * p[1],
+                        ]);
                     }
                     p0 = p;
                 }
@@ -126,7 +135,15 @@ impl Contour {
 
     /// A loop of straight lines through `pts`.
     fn polygon(pts: &[P]) -> Contour {
-        Contour { start: pts[0], segs: pts[1..].iter().copied().chain(std::iter::once(pts[0])).map(Seg::Line).collect() }
+        Contour {
+            start: pts[0],
+            segs: pts[1..]
+                .iter()
+                .copied()
+                .chain(std::iter::once(pts[0]))
+                .map(Seg::Line)
+                .collect(),
+        }
     }
 }
 
@@ -208,7 +225,10 @@ impl OutlineBuilder for Collector {
     fn move_to(&mut self, x: f32, y: f32) {
         self.finish();
         self.last = [f64::from(x), f64::from(y)];
-        self.cur = Some(Contour { start: self.last, segs: Vec::new() });
+        self.cur = Some(Contour {
+            start: self.last,
+            segs: Vec::new(),
+        });
     }
     fn line_to(&mut self, x: f32, y: f32) {
         let p = [f64::from(x), f64::from(y)];
@@ -229,7 +249,11 @@ impl OutlineBuilder for Collector {
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
         let p = [f64::from(x), f64::from(y)];
         if let Some(c) = self.cur.as_mut() {
-            c.segs.push(Seg::Cubic([f64::from(x1), f64::from(y1)], [f64::from(x2), f64::from(y2)], p));
+            c.segs.push(Seg::Cubic(
+                [f64::from(x1), f64::from(y1)],
+                [f64::from(x2), f64::from(y2)],
+                p,
+            ));
             self.last = p;
         }
     }
@@ -254,7 +278,10 @@ impl Collector {
 /// `contour` without segments under 2 µm (CFF fonts carry a few), closed exactly on its start.
 fn clean(contour: &Contour) -> Contour {
     let near = |a: P, b: P| (a[0] - b[0]).hypot(a[1] - b[1]) < TINY_MM;
-    let mut out = Contour { start: contour.start, segs: Vec::new() };
+    let mut out = Contour {
+        start: contour.start,
+        segs: Vec::new(),
+    };
     let mut at = contour.start;
     for seg in &contour.segs {
         let tiny = match *seg {
@@ -293,7 +320,9 @@ fn inside(poly: &[P], p: P) -> bool {
     let mut j = n - 1;
     for i in 0..n {
         let (a, b) = (poly[i], poly[j]);
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0] {
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
             c = !c;
         }
         j = i;
@@ -327,11 +356,21 @@ fn segments_meet(a: P, b: P, c: P, d: P) -> bool {
     let d3 = cross(c, d, a);
     let d4 = cross(c, d, b);
     let eps = 1e-9;
-    if ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps)) && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps)) {
+    if ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps))
+        && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps))
+    {
         return true;
     }
-    let on = |p: P, q: P, r: P| r[0] >= p[0].min(q[0]) - 1e-9 && r[0] <= p[0].max(q[0]) + 1e-9 && r[1] >= p[1].min(q[1]) - 1e-9 && r[1] <= p[1].max(q[1]) + 1e-9;
-    (d1.abs() <= eps && on(a, b, c)) || (d2.abs() <= eps && on(a, b, d)) || (d3.abs() <= eps && on(c, d, a)) || (d4.abs() <= eps && on(c, d, b))
+    let on = |p: P, q: P, r: P| {
+        r[0] >= p[0].min(q[0]) - 1e-9
+            && r[0] <= p[0].max(q[0]) + 1e-9
+            && r[1] >= p[1].min(q[1]) - 1e-9
+            && r[1] <= p[1].max(q[1]) + 1e-9
+    };
+    (d1.abs() <= eps && on(a, b, c))
+        || (d2.abs() <= eps && on(a, b, d))
+        || (d3.abs() <= eps && on(c, d, a))
+        || (d4.abs() <= eps && on(c, d, b))
 }
 
 /// Whether two closed polylines cross or touch.
@@ -341,7 +380,12 @@ fn rings_meet(a: &[P], b: &[P]) -> bool {
     }
     for i in 0..a.len() {
         let (p, q) = (a[i], a[(i + 1) % a.len()]);
-        let seg = [p[0].min(q[0]), p[1].min(q[1]), p[0].max(q[0]), p[1].max(q[1])];
+        let seg = [
+            p[0].min(q[0]),
+            p[1].min(q[1]),
+            p[0].max(q[0]),
+            p[1].max(q[1]),
+        ];
         if !boxes_meet(&seg, &bbox(b)) {
             continue;
         }
@@ -373,7 +417,13 @@ fn faces_of(ch: char, contours: &[Contour]) -> Vec<GlyphFace> {
             }
         }
     }
-    let turned = |c: &Contour, poly: &[P], ccw: bool| if (area(poly) > 0.0) == ccw { c.clone() } else { c.reversed() };
+    let turned = |c: &Contour, poly: &[P], ccw: bool| {
+        if (area(poly) > 0.0) == ccw {
+            c.clone()
+        } else {
+            c.reversed()
+        }
+    };
     let mut out = Vec::new();
     for i in 0..n {
         if depth[i] % 2 != 0 {
@@ -383,7 +433,11 @@ fn faces_of(ch: char, contours: &[Contour]) -> Vec<GlyphFace> {
             .filter(|&k| depth[k] % 2 == 1 && parent[k] == i)
             .map(|k| turned(&contours[k], &polys[k], false))
             .collect();
-        out.push(GlyphFace { ch, outer: turned(&contours[i], &polys[i], true), holes });
+        out.push(GlyphFace {
+            ch,
+            outer: turned(&contours[i], &polys[i], true),
+            holes,
+        });
     }
     out
 }
@@ -398,7 +452,9 @@ fn contours_overlap(contours: &[Contour]) -> bool {
                 return true;
             }
             let (ai, aj) = (area(&polys[i]), area(&polys[j]));
-            if (ai > 0.0) == (aj > 0.0) && (inside(&polys[i], polys[j][0]) || inside(&polys[j], polys[i][0])) {
+            if (ai > 0.0) == (aj > 0.0)
+                && (inside(&polys[i], polys[j][0]) || inside(&polys[j], polys[i][0]))
+            {
                 return true;
             }
         }
@@ -409,7 +465,10 @@ fn contours_overlap(contours: &[Contour]) -> bool {
 /// A glyph's contours united by the nonzero rule: those that run the way the biggest does are filled, the others cut out.
 fn union_contours(ch: char, contours: &[Contour]) -> Vec<GlyphFace> {
     let polys: Vec<Vec<P>> = contours.iter().map(|c| c.flatten(0.1)).collect();
-    let main = polys.iter().map(|p| area(p)).fold(0.0f64, |m, a| if a.abs() > m.abs() { a } else { m });
+    let main = polys
+        .iter()
+        .map(|p| area(p))
+        .fold(0.0f64, |m, a| if a.abs() > m.abs() { a } else { m });
     let mut fill = Region::empty();
     let mut holes = Region::empty();
     for poly in &polys {
@@ -440,7 +499,11 @@ fn faces_of_region(ch: char, region: &Region) -> Vec<GlyphFace> {
             (first.pts.len() >= 3).then(|| GlyphFace {
                 ch,
                 outer: ring(first, true),
-                holes: loops[1..].iter().filter(|l| l.pts.len() >= 3).map(|l| ring(l, false)).collect(),
+                holes: loops[1..]
+                    .iter()
+                    .filter(|l| l.pts.len() >= 3)
+                    .map(|l| ring(l, false))
+                    .collect(),
             })
         })
         .collect()
@@ -451,7 +514,10 @@ fn faces_of_region(ch: char, region: &Region) -> Vec<GlyphFace> {
 /// place of its first.
 pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
     let n = faces.len();
-    let rings: Vec<Vec<Vec<P>>> = faces.iter().map(|f| f.loops().map(|c| c.flatten(FLAT_MM)).collect()).collect();
+    let rings: Vec<Vec<Vec<P>>> = faces
+        .iter()
+        .map(|f| f.loops().map(|c| c.flatten(FLAT_MM)).collect())
+        .collect();
     let boxes: Vec<[f64; 4]> = rings.iter().map(|r| bbox(&r[0])).collect();
     let mut group: Vec<usize> = (0..n).collect();
     fn find(group: &mut [usize], mut i: usize) -> usize {
@@ -467,8 +533,17 @@ pub fn merge_overlaps(faces: Vec<GlyphFace>) -> Vec<GlyphFace> {
                 continue;
             }
             // A letter wholly inside another's body touches no outline of it; one in a hole of it (the small a of an @) is apart.
-            let covers = |a: usize, b: usize| inside(&rings[a][0], rings[b][0][0]) && !rings[a][1..].iter().any(|hole| inside(hole, rings[b][0][0]));
-            let meet = rings[i].iter().any(|a| rings[j].iter().any(|b| rings_meet(a, b))) || covers(i, j) || covers(j, i);
+            let covers = |a: usize, b: usize| {
+                inside(&rings[a][0], rings[b][0][0])
+                    && !rings[a][1..]
+                        .iter()
+                        .any(|hole| inside(hole, rings[b][0][0]))
+            };
+            let meet = rings[i]
+                .iter()
+                .any(|a| rings[j].iter().any(|b| rings_meet(a, b)))
+                || covers(i, j)
+                || covers(j, i);
             if meet {
                 let (a, b) = (find(&mut group, i), find(&mut group, j));
                 group[b.max(a)] = a.min(b);
@@ -514,18 +589,31 @@ fn kerning(face: &Face, left: GlyphId, right: GlyphId) -> f64 {
             }
         }
         for index in lookups {
-            let Some(lookup) = gpos.lookups.get(index) else { continue };
-            for subtable in lookup.subtables.into_iter::<ttf_parser::gpos::PositioningSubtable>() {
-                let ttf_parser::gpos::PositioningSubtable::Pair(pair) = subtable else { continue };
+            let Some(lookup) = gpos.lookups.get(index) else {
+                continue;
+            };
+            for subtable in lookup
+                .subtables
+                .into_iter::<ttf_parser::gpos::PositioningSubtable>()
+            {
+                let ttf_parser::gpos::PositioningSubtable::Pair(pair) = subtable else {
+                    continue;
+                };
                 let adjust = match pair {
                     ttf_parser::gpos::PairAdjustment::Format1 { coverage, sets } => coverage
                         .get(left)
                         .and_then(|at| sets.get(at))
                         .and_then(|set| set.get(right))
                         .map(|(first, _)| first.x_advance),
-                    ttf_parser::gpos::PairAdjustment::Format2 { coverage, classes, matrix } => {
+                    ttf_parser::gpos::PairAdjustment::Format2 {
+                        coverage,
+                        classes,
+                        matrix,
+                    } => {
                         if coverage.get(left).is_some() {
-                            matrix.get((classes.0.get(left), classes.1.get(right))).map(|(first, _)| first.x_advance)
+                            matrix
+                                .get((classes.0.get(left), classes.1.get(right)))
+                                .map(|(first, _)| first.x_advance)
                         } else {
                             None
                         }
@@ -569,12 +657,14 @@ fn cap_height(face: &Face) -> f64 {
 
 /// Lay out `spec`: its characters as faces, centred on (0, 0) and turned by `angle_deg`.
 pub fn lay_out(spec: &Spec) -> Result<Laid, String> {
-    if !(spec.height > 0.0) || !spec.height.is_finite() {
+    if !spec.height.is_finite() || spec.height <= 0.0 {
         return Err("Text needs a height (the capitals') above 0, in millimetres.".into());
     }
     let count = spec.text.chars().count();
     if count > MAX_CHARS {
-        return Err(format!("Text takes at most {MAX_CHARS} characters a step; use several."));
+        return Err(format!(
+            "Text takes at most {MAX_CHARS} characters a step; use several."
+        ));
     }
     let family = fonts::family(&spec.font)?;
     let (bold, italic) = fonts::style_flags(spec.style.as_deref())?;
@@ -589,10 +679,20 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
     let spacing = spec.spacing.unwrap_or(0.0);
     let pitch = spec.line_spacing.unwrap_or(DEFAULT_LINE_SPACING) * spec.height;
     if !(spacing.is_finite() && pitch.is_finite() && pitch >= 0.0) {
-        return Err("Letter spacing and line spacing are numbers; line spacing is not negative.".into());
+        return Err(
+            "Letter spacing and line spacing are numbers; line spacing is not negative.".into(),
+        );
     }
-    let lines: Vec<&str> = spec.text.split('\n').map(|line| line.strip_suffix('\r').unwrap_or(line)).collect();
-    let shear = if slant { fonts::SLANT_DEG.to_radians().tan() } else { 0.0 };
+    let lines: Vec<&str> = spec
+        .text
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
+    let shear = if slant {
+        fonts::SLANT_DEG.to_radians().tan()
+    } else {
+        0.0
+    };
     let block_mid = (spec.height - (lines.len() as f64 - 1.0) * pitch) / 2.0;
     let turn = spec.angle_deg.to_radians();
     let (sin, cos) = turn.sin_cos();
@@ -606,7 +706,10 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
         let mut prev: Option<GlyphId> = None;
         for ch in line.chars() {
             if ch.is_control() {
-                return Err(format!("Text takes letters, digits and symbols, not the control character U+{:04X}.", ch as u32));
+                return Err(format!(
+                    "Text takes letters, digits and symbols, not the control character U+{:04X}.",
+                    ch as u32
+                ));
             }
             let gid = face.glyph_index(ch).ok_or_else(|| lacks(ch))?;
             if let Some(prev) = prev {
@@ -616,7 +719,11 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
             pen += f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) * k + spacing;
             prev = Some(gid);
         }
-        let width = if placed.is_empty() { 0.0 } else { pen - spacing };
+        let width = if placed.is_empty() {
+            0.0
+        } else {
+            pen - spacing
+        };
         widths.push(width);
         let x0 = match spec.align {
             Align::Left => 0.0,
@@ -626,7 +733,11 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
         let y0 = -(row as f64) * pitch - block_mid;
         for (gid, at, ch) in placed {
             if !cache.iter().any(|(g, _)| *g == gid) {
-                let mut collector = Collector { cur: None, out: Vec::new(), last: [0.0; 2] };
+                let mut collector = Collector {
+                    cur: None,
+                    out: Vec::new(),
+                    last: [0.0; 2],
+                };
                 if face.outline_glyph(gid, &mut collector).is_some() {
                     collector.finish();
                 }
@@ -665,10 +776,21 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
         let b = bbox(&glyph.outer.flatten(FLAT_MM));
         bounds = Some(match bounds {
             None => b,
-            Some(o) => [o[0].min(b[0]), o[1].min(b[1]), o[2].max(b[2]), o[3].max(b[3])],
+            Some(o) => [
+                o[0].min(b[0]),
+                o[1].min(b[1]),
+                o[2].max(b[2]),
+                o[3].max(b[3]),
+            ],
         });
     }
-    Ok(Laid { faces, widths, bounds, ink_mm2: ink, font })
+    Ok(Laid {
+        faces,
+        widths,
+        bounds,
+        ink_mm2: ink,
+        font,
+    })
 }
 
 /// One letter too thin for the line width.
@@ -683,7 +805,7 @@ pub struct Thin {
 /// The letters that lose more than a tenth of their area to an opening by `line_mm` (shrink by half the line, grow back):
 /// the places a nozzle that wide cannot print (D8). Each distinct letter once, in order of first appearance.
 pub fn thin_letters(laid: &Laid, line_mm: f64) -> Vec<Thin> {
-    if !(line_mm > 0.0) {
+    if line_mm.is_nan() || line_mm <= 0.0 {
         return Vec::new();
     }
     let mut seen: Vec<char> = Vec::new();
@@ -697,17 +819,28 @@ pub fn thin_letters(laid: &Laid, line_mm: f64) -> Vec<Thin> {
         let mut region = Region::empty();
         for same in laid.faces.iter().filter(|other| other.ch == glyph.ch) {
             let outer = Poly::new(same.outer.flatten(FLAT_MM));
-            let holes: Vec<Poly> = same.holes.iter().map(|h| Poly::new(h.flatten(FLAT_MM))).collect();
+            let holes: Vec<Poly> = same
+                .holes
+                .iter()
+                .map(|h| Poly::new(h.flatten(FLAT_MM)))
+                .collect();
             region = region.union(&Region::with_holes(&outer, &holes));
         }
         let total = region.area();
-        if !(total > 1e-9) {
+        if total.is_nan() || total <= 1e-9 {
             continue;
         }
-        let opened = region.offset(-line_mm / 2.0).to_region(0.005).offset(line_mm / 2.0).to_region(0.005);
+        let opened = region
+            .offset(-line_mm / 2.0)
+            .to_region(0.005)
+            .offset(line_mm / 2.0)
+            .to_region(0.005);
         let lost = (total - opened.area()).max(0.0);
         if lost > THIN_SHARE * total {
-            out.push(Thin { ch: glyph.ch, lost_pct: (100.0 * lost / total).round().min(100.0) });
+            out.push(Thin {
+                ch: glyph.ch,
+                lost_pct: (100.0 * lost / total).round().min(100.0),
+            });
         }
     }
     out

@@ -83,7 +83,11 @@ static TEST_CFF: Family = Family {
     version: "1",
     name: "Source Code Pro",
     about: "A test font.",
-    styles: &[StyleFile { bold: false, italic: false, bytes: include_bytes!("../../tests/fonts/SourceCodePro-Regular.otf") }],
+    styles: &[StyleFile {
+        bold: false,
+        italic: false,
+        bytes: include_bytes!("../../tests/fonts/SourceCodePro-Regular.otf"),
+    }],
 };
 
 /// The family `id` names, with or without its version (`sans`, `sans@4.0`), or a sentence.
@@ -106,7 +110,11 @@ pub fn family(id: &str) -> Result<&'static Family, String> {
         )),
         (None, _) => Err(format!(
             "There is no font called ‘{id}’. The fonts are {}.",
-            FAMILIES.iter().map(|family| family.id).collect::<Vec<_>>().join(", ")
+            FAMILIES
+                .iter()
+                .map(|family| family.id)
+                .collect::<Vec<_>>()
+                .join(", ")
         )),
     }
 }
@@ -118,17 +126,36 @@ pub fn versioned(family: &Family) -> String {
 
 /// The file for a style and whether the outline must be slanted to make it, or a sentence. A family without an italic gets
 /// a slant; one without a bold is refused for bold (D7).
-pub fn style_file(family: &Family, bold: bool, italic: bool) -> Result<(&'static StyleFile, bool), String> {
-    if let Some(exact) = family.styles.iter().find(|file| file.bold == bold && file.italic == italic) {
+pub fn style_file(
+    family: &Family,
+    bold: bool,
+    italic: bool,
+) -> Result<(&'static StyleFile, bool), String> {
+    if let Some(exact) = family
+        .styles
+        .iter()
+        .find(|file| file.bold == bold && file.italic == italic)
+    {
         return Ok((exact, false));
     }
     if bold && !family.styles.iter().any(|file| file.bold) {
-        return Err(format!("‘{}’ has no bold. Pick Regular, or another font.", family.name));
+        return Err(format!(
+            "‘{}’ has no bold. Pick Regular, or another font.",
+            family.name
+        ));
     }
     // No italic: the upright file of the same weight, slanted.
-    match family.styles.iter().find(|file| file.bold == bold && !file.italic) {
+    match family
+        .styles
+        .iter()
+        .find(|file| file.bold == bold && !file.italic)
+    {
         Some(upright) => Ok((upright, italic)),
-        None => Err(format!("‘{}’ has no {}. Pick another style.", family.name, if bold { "bold" } else { "regular" })),
+        None => Err(format!(
+            "‘{}’ has no {}. Pick another style.",
+            family.name,
+            if bold { "bold" } else { "regular" }
+        )),
     }
 }
 
@@ -142,6 +169,8 @@ pub fn style_flags(style: Option<&str>) -> Result<(bool, bool), String> {
         "bold" => Ok((true, false)),
         "italic" => Ok((false, true)),
         "bold-italic" | "bolditalic" => Ok((true, true)),
-        other => Err(format!("The style is regular, bold, italic or bold-italic, not ‘{other}’.")),
+        other => Err(format!(
+            "The style is regular, bold, italic or bold-italic, not ‘{other}’."
+        )),
     }
 }
