@@ -435,3 +435,206 @@ fn letters_from_a_cff_font_build_valid_and_closed_too() {
         );
     }
 }
+
+// --- Text milestone 4: the person's own fonts. The fonts are built in code (debug builds only), so no font file of anyone's is
+// in the repository.
+
+/// A font built in code and added to the engine, or None in a build that has no test fonts. Answers its info.
+fn added_font(family: &str, fs_type: u16, variable: Option<[f64; 2]>) -> Option<Value> {
+    let mut request = json!({ "call": "textTestFont", "family": family, "fsType": fs_type });
+    if let Some(range) = variable {
+        request["variable"] = json!(range);
+    }
+    let made = call(request);
+    let data = made.get("dataB64")?.as_str()?.to_string();
+    let info = call(json!({ "call": "textFontAdd", "dataB64": data }));
+    assert_eq!(info["ok"], json!(true), "{info}");
+    Some(info)
+}
+
+fn weighted_ink(op: &Value) -> f64 {
+    let mut request = json!({ "call": "textLayout" });
+    for key in [
+        "text",
+        "font",
+        "style",
+        "height",
+        "spacing",
+        "lineSpacing",
+        "align",
+        "angleDeg",
+        "weight",
+    ] {
+        if let Some(value) = op.get(key) {
+            request[key] = value.clone();
+        }
+    }
+    let reply = call(request);
+    assert_eq!(reply["ok"], json!(true), "{reply}");
+    reply["inkMm2"].as_f64().expect("inkMm2")
+}
+
+#[test]
+fn letters_from_a_font_the_person_added_build_valid_closed_and_direct() {
+    let Some(_) = block("lt-user") else { return };
+    let Some(info) = added_font("Integration Sans", 0, None) else {
+        return;
+    };
+    let id = info["id"].as_str().unwrap();
+    for op in ["fuse", "cut"] {
+        let letters = lettering(op, "H O", id, 5.0, 0.8);
+        let reply = probe("lt-user", &letters);
+        assert_eq!(reply["ok"], json!(true), "{op}: {reply}");
+        assert_eq!(reply["solids"], json!(1), "{op}: {reply}");
+        assert_eq!(reply["shells"], json!(1), "{op}: {reply}");
+        assert_eq!(reply["text"]["build"], json!("direct"), "{op}: {reply}");
+        // The font is stored by its id; the volume is the ink times the depth.
+        assert_eq!(reply["text"]["font"], json!(id));
+        let sign = if op == "fuse" { 1.0 } else { -1.0 };
+        near(
+            reply["volumeMm3"].as_f64().unwrap() - 8000.0,
+            sign * ink(&letters) * 0.8,
+            0.01,
+        );
+    }
+    // The stored step names the font by id, so a rebuild finds the same bytes.
+    let applied = call(
+        json!({ "call": "apply", "key": "lt-user", "parent": 0, "node": 1, "op": lettering("fuse", "HO", id, 5.0, 0.8) }),
+    );
+    assert!(applied.get("error").is_none(), "{applied}");
+    assert_eq!(applied["op"]["font"], json!(id));
+}
+
+#[test]
+fn a_restricted_font_rebuilds_from_the_pack_of_its_letters_to_the_same_solid() {
+    let Some(_) = block("lt-pack") else { return };
+    let Some(info) = added_font("Restricted Sans", 2, None) else {
+        return;
+    };
+    assert_eq!(info["restricted"], json!(true));
+    assert_eq!(info["embedding"], json!("outlines"));
+    let id = info["id"].as_str().unwrap();
+    let packed = call(json!({ "call": "textFontPack", "id": id, "uses": [{ "text": "HO-" }] }));
+    assert_eq!(packed["ok"], json!(true), "{packed}");
+    assert_eq!(packed["letters"], json!("-HO"));
+    // The pack as another computer would hold it: only the pack, under an id the engine has no file for.
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(packed["dataB64"].as_str().unwrap())
+        .unwrap();
+    let mut pack: Value = serde_json::from_slice(&bytes).unwrap();
+    pack["id"] = json!("user:00000000deadbeef");
+    pack["sha256"] = json!("0".repeat(64));
+    let added = call(
+        json!({ "call": "textFontAdd", "dataB64": base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&pack).unwrap()) }),
+    );
+    assert_eq!(added["ok"], json!(true), "{added}");
+    assert_eq!(added["pack"], json!(true));
+    assert_eq!(added["letters"], json!("-HO"));
+    let (whole, packed_op) = (
+        lettering("fuse", "H O-", id, 5.0, 0.8),
+        lettering("fuse", "H O-", "user:00000000deadbeef", 5.0, 0.8),
+    );
+    let (a, b) = (probe("lt-pack", &whole), probe("lt-pack", &packed_op));
+    assert_eq!(b["ok"], json!(true), "{b}");
+    near(
+        b["volumeMm3"].as_f64().unwrap(),
+        a["volumeMm3"].as_f64().unwrap(),
+        1e-6,
+    );
+    assert_eq!(
+        (b["solids"].clone(), b["shells"].clone()),
+        (json!(1), json!(1))
+    );
+    // A letter the pack does not hold is refused in a sentence naming it.
+    let more = probe(
+        "lt-pack",
+        &lettering("fuse", "HI", "user:00000000deadbeef", 5.0, 0.8),
+    );
+    let said = more["error"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("with only the letters it was used for") && said.contains("‘I’"),
+        "{more}"
+    );
+}
+
+#[test]
+fn a_variable_fonts_weight_changes_the_ink_and_the_solid() {
+    let Some(_) = block("lt-weight") else { return };
+    let Some(info) = added_font("Integration Variable", 0, Some([400.0, 800.0])) else {
+        return;
+    };
+    assert_eq!(info["weight"]["max"], json!(800.0));
+    let id = info["id"].as_str().unwrap();
+    let mut volumes = Vec::new();
+    for weight in [400.0, 600.0, 800.0] {
+        let op = with(
+            lettering("fuse", "HI", id, 5.0, 0.8),
+            "weight",
+            json!(weight),
+        );
+        let reply = probe("lt-weight", &op);
+        assert_eq!(reply["ok"], json!(true), "{weight}: {reply}");
+        near(
+            reply["volumeMm3"].as_f64().unwrap() - 8000.0,
+            weighted_ink(&op) * 0.8,
+            0.01,
+        );
+        volumes.push(reply["volumeMm3"].as_f64().unwrap());
+    }
+    assert!(
+        volumes[0] < volumes[1] && volumes[1] < volumes[2],
+        "{volumes:?}"
+    );
+    let applied = call(
+        json!({ "call": "apply", "key": "lt-weight", "parent": 0, "node": 1, "op": with(lettering("fuse", "HI", id, 5.0, 0.8), "weight", json!(700.0)) }),
+    );
+    assert_eq!(applied["op"]["weight"], json!(700.0), "{applied}");
+    let outside = probe(
+        "lt-weight",
+        &with(
+            lettering("fuse", "HI", id, 5.0, 0.8),
+            "weight",
+            json!(900.0),
+        ),
+    );
+    assert_eq!(
+        outside["error"],
+        json!("‘Integration Variable Regular’ takes weights 400 to 800.")
+    );
+}
+
+#[test]
+fn the_refusals_for_a_font_the_person_added_are_one_sentence_each() {
+    let Some(_) = block("lt-refuse") else { return };
+    let Some(info) = added_font("Refusal Sans", 0, None) else {
+        return;
+    };
+    let id = info["id"].as_str().unwrap();
+    let missing = probe("lt-refuse", &lettering("fuse", "HÑÉ", id, 5.0, 0.8));
+    assert_eq!(
+        missing["error"],
+        json!("This font has no ‘Ñ’ and ‘É’. Pick another font, or take them out.")
+    );
+    let bold = probe(
+        "lt-refuse",
+        &with(lettering("fuse", "H", id, 5.0, 0.8), "style", json!("bold")),
+    );
+    assert_eq!(
+        bold["error"],
+        json!("‘Refusal Sans Regular’ has no bold. Pick Regular, or another font.")
+    );
+    let gone = probe(
+        "lt-refuse",
+        &lettering("fuse", "H", "user:ffffffffffffffff", 5.0, 0.8),
+    );
+    assert!(
+        gone["error"]
+            .as_str()
+            .unwrap()
+            .contains("not on this computer"),
+        "{gone}"
+    );
+    let junk = call(json!({ "call": "textFontAdd", "dataB64": "aGVsbG8gd29ybGQ=" }));
+    assert_eq!(junk["error"], json!("This file is not a font Lime Slice can read. Use a TrueType (.ttf) or OpenType (.otf) file."));
+}

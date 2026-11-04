@@ -127,7 +127,7 @@ import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "./shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../src/step-solids.ts";
 import { reviewGcode } from "./review.ts";
-import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_REFUSALS } from "./guides.ts";
+import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "./guides.ts";
 import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
@@ -144,7 +144,8 @@ import { featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
 import { followRepeatSources } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
-import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
+import { resolveFont, resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
+import { textsNeedingFonts, UserFontShelf, userFontUses } from "../src/modeling/user-fonts.ts";
 
 const OVERLAP = "These parts overlap. Move one before slicing.";
 const CHORD = 0.05;
@@ -868,6 +869,12 @@ export class Session {
    * whole file as the project carried it. Read on open, written on save with the copies the library still has.
    */
   private projectPlugins = new Map<string, string>();
+  /**
+   * --- Text milestone 4. The fonts of the person's this project's texts use: added by a text's `fontFile`, or carried by the
+   * project that was opened (`projectFonts`, as its file held them). A text names one by id, or by its name.
+   */
+  private readonly fonts = new UserFontShelf(async (request) => JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as Record<string, unknown>);
+  private projectFonts: LimeProject["fonts"];
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   private recipeDepth = 0;
   /** The MCP client's name from initialize: a kept plugin's made-by. */
@@ -2718,7 +2725,68 @@ export class Session {
     return hash;
   }
 
+  /**
+   * --- Text milestone 4. A text op with `fontFile` has the file read and added to the project, and one whose `font` is a name
+   * is matched to a font already in the project; the op then names the font by id. Calls with no such text take the
+   * synchronous path they always did.
+   */
   private dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
+    const texts = textsNeedingFonts(input);
+    if (texts.length === 0) return this.dispatchNow(name, input, meta);
+    const copy = structuredClone(input);
+    return (async () => {
+      const refused = await this.resolveTextFonts(textsNeedingFonts(copy));
+      return refused ? { ok: false, reason: refused } : this.dispatchNow(name, copy, meta);
+    })();
+  }
+
+  /** The sentence for the first text whose font cannot be had, or null when every text names its font by id now. */
+  private async resolveTextFonts(texts: Record<string, unknown>[]): Promise<string | null> {
+    for (const op of texts) {
+      if (typeof op.fontFile === "string") {
+        const hashed = /^(.*)#(\d{1,3})$/.exec(op.fontFile);
+        let bytes: Buffer;
+        try {
+          bytes = readFileSync(resolveFont(hashed ? hashed[1]! : op.fontFile));
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        }
+        const added = await this.fonts.add(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), "added", hashed ? Number(hashed[2]) : 0);
+        if (!added.ok) return added.reason;
+        if (added.faces.length > 1 && !hashed) {
+          this.fonts.remove(added.font.id);
+          return `This file holds several fonts: ${added.faces.map((face) => `${face.index} ${face.name}`).join(", ")}. Name one as ${typeof op.fontFile === "string" ? op.fontFile : "file"}#<number>.`;
+        }
+        op.font = added.font.id;
+        delete op.fontFile;
+        await this.keepFontPack(added.font.id, op);
+      } else if (typeof op.font === "string") {
+        const found = this.fonts.find(op.font);
+        if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
+        op.font = found.id;
+        await this.keepFontPack(found.id, op);
+      }
+    }
+    return null;
+  }
+
+  /** A restricted font's pack, cut for this project's texts as they stand and this one, so a save that cannot wait has it. */
+  private async keepFontPack(id: string, op: Record<string, unknown>): Promise<void> {
+    const font = this.fonts.fonts.get(id);
+    if (!font?.restricted) return;
+    const uses = this.fontUses(id);
+    uses.push({ text: String(op.text ?? ""), ...(typeof op.style === "string" ? { style: op.style } : {}), ...(typeof op.weight === "number" ? { weight: op.weight } : {}) });
+    await this.fonts.refreshPack(id, uses);
+  }
+
+  /** The texts the project's histories set in a font of the person's. */
+  private fontUses(id: string): { text: string; style?: string; weight?: number }[] {
+    const owner = (key: string) => this.byTreeKey(key)?.id;
+    const objects = [...this.objects, ...this.toolsOffPlate].flatMap((obj) => (obj.tree ? [{ modelTree: savedTree(obj.tree, obj.tree.committed, owner) }] : []));
+    return userFontUses({ objects }).get(id) ?? [];
+  }
+
+  private dispatchNow(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
     switch (name) {
       case "session_info": return this.sessionInfo();
       case "project_open": return this.projectOpen(String(input.path));
@@ -2883,7 +2951,7 @@ export class Session {
     const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
     const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
     // --- Text with real fonts: the bundled fonts, one line each, and what a text refuses.
-    const fonts = kind === "text" ? { fonts: TEXT_FONT_LINES, refusals: TEXT_REFUSALS } : {};
+    const fonts = kind === "text" ? { fonts: [...TEXT_FONT_LINES, ...TEXT_OWN_FONT_LINES, ...this.fonts.list().map((font) => `${font.name}: your font, in this project. Id ${font.id}${font.weight ? `, weights ${font.weight.min} to ${font.weight.max}` : ""}${font.restricted ? ". Its licence forbids embedding, so the project keeps only the outlines of the letters used" : ""}.`)], refusals: TEXT_REFUSALS } : {};
     return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples, ...fonts };
   }
 
@@ -3104,6 +3172,9 @@ export class Session {
     this.assemblies = [];
     this.adoptMcpModel(undefined);
     this.projectPlugins.clear();
+    // --- Text milestone 4: a new project has none of the last one's fonts.
+    this.fonts.clear();
+    this.projectFonts = undefined;
     return { ok: true, project: "project", label: "New plate" };
   }
 
@@ -3113,6 +3184,10 @@ export class Session {
     const parsed = await decodeProject(text);
     if (!parsed.ok) return { ok: false, reason: parsed.message };
     this.remember("Open project");
+    // --- Text milestone 4. The project's fonts go to the engine first, so its text steps rebuild with the bytes they were made with.
+    this.fonts.clear();
+    this.projectFonts = parsed.project.fonts;
+    const fontNotes = await this.fonts.adopt(parsed.project.fonts);
     await this.forgetObjects();
     this.objects.length = 0;
     this.settings = { ...parsed.project.settings };
@@ -3237,6 +3312,7 @@ export class Session {
       objects,
       ...(parsed.project.unreadHistory?.length ? { unreadHistory: parsed.project.unreadHistory } : {}),
       ...(historyNotes.length ? { historyNotes } : {}),
+      ...(fontNotes.length ? { fontNotes } : {}),
       ...(offered.length ? { pluginsNotInLibrary: offered.map((row) => `${row.id} v${row.version}`), pluginsNote: `This project carries plugins your library does not have. Its parts rebuild from the project's copies; to add one to the library, ask the person first, then nugget {action:"save", kind:"plugin", from:"project:${offered[0]!.id}"}.` } : {}),
       ...(skipped.length ? { notSliced: skipped, note: `This project has ${skipped.join(", ")} that this server does not slice yet. The G-code will differ from the app's.` } : {}),
     };
@@ -3571,6 +3647,10 @@ export class Session {
       return modelTree ? [{ id: tool.id, name: tool.name, modelTree }] : [];
     });
     if (tools.length > 0) doc.modelTools = [...(doc.modelTools ?? []).filter((row) => !tools.some((tool) => tool.id === row.id)), ...tools];
+    // --- Text milestone 4 (D5): the fonts of the person's its texts use, as the packs made so far stand for restricted ones.
+    const fonts = this.fonts.recordsNow(doc, this.projectFonts);
+    if (fonts) doc.fonts = fonts;
+    else delete doc.fonts;
     return doc;
   }
 
@@ -3593,6 +3673,10 @@ export class Session {
       }
     }
     const doc = this.withKernelMeshes(this.saveDocument());
+    // A restricted font keeps the outlines of exactly the letters the texts use now.
+    const fonts = await this.fonts.recordsFor(doc, this.projectFonts);
+    if (fonts) doc.fonts = fonts;
+    else delete doc.fonts;
     this.attachPreview(doc, true);
     if (this.sourcePath && path === this.sourcePath) {
       const loss = this.lossy(doc);

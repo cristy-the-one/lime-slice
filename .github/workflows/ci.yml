@@ -179,6 +179,7 @@ jobs:
           node --experimental-strip-types mcp/kernel-gaps.test.ts
           # Text in real fonts (docs/plan-text-on-curves-and-fonts.md): the engine's fonts are the app's, one lettering step, the refusals.
           node --experimental-strip-types mcp/text-fonts.test.ts
+          node --experimental-strip-types mcp/text-user-fonts.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts

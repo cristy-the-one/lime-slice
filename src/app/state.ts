@@ -419,6 +419,12 @@ export const session = {
    */
   plugins: undefined as Record<string, string> | undefined,
   /**
+   * --- Text milestone 4. The open project's own copies of the fonts its texts use, as the file carried them (a font file, or
+   * the pack of a restricted font's letters), by SHA-256. A save keeps one a pack-only computer cannot make again.
+   * Cleared with `mcpModel`.
+   */
+  fonts: undefined as Record<string, { name: string; bytesBase64: string; byteLength: number; hash: string }> | undefined,
+  /**
    * --- A6. The open project's parameters, name → number or expression, in evaluation order.
    * Empty when the project has none. File > New and a mesh that replaces the plate clear it.
    */

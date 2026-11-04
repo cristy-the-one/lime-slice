@@ -151,7 +151,7 @@ GUIDES.push(
       "  Floor reinforcement after a shell: {kind:\"ribs\", face:{normal:[0, 0, 1], nearPoint:[0, 0, 2]}, along:\"v\", width:1.5, pitch:15, depth:6, margin:0}.",
       "pattern: {kind:\"pattern\", op:{...}, linear:{step:[x, y, z], count, step2, count2} | polar:{count, axis, centre, angleDeg} | path:{points, count, align, closed}}. count includes the original.",
       "  path spaces copies evenly along a smooth curve through the points, the op typed at the first point; align (default) turns each copy with the curve, as scales along a body.",
-      "text: {kind:\"text\", text:\"LIME\", height, depth, face, at:{u, v}, from, op:\"fuse\"|\"cut\", font, style, strokeWidth, spacing, lineSpacing, align, angleDeg}. With no font: the single-stroke font (capitals, digits, and - + . , : ! ? / ' &), each stroke a checked step. With font:\"sans\"|\"mono\"|\"serif\"|\"stencil\": real letters, any the font has, \\n for a new line, up to 400 characters, built as one step on a flat face (guide {kind:\"text\"}).",
+      "text: {kind:\"text\", text:\"LIME\", height, depth, face, at:{u, v}, from, op:\"fuse\"|\"cut\", font, fontFile, style, weight, strokeWidth, spacing, lineSpacing, align, angleDeg}. With no font: the single-stroke font (capitals, digits, and - + . , : ! ? / ' &), each stroke a checked step. With font:\"sans\"|\"mono\"|\"serif\"|\"stencil\": real letters, any the font has, \\n for a new line, up to 400 characters, built as one step on a flat face (guide {kind:\"text\"}).",
       "Anchors: any [x, y, z] may be {anchor:\"bowl\", point:\"top\", offset:[0, 0, -1]}, a point of the box of what that label's steps applied, read when the op's turn comes. point: centre, top, bottom, min, max, left, right, front, back. anchor:\"part\" is the whole solid. model_anchors lists the boxes.",
       "  A label names its own step and every step named under it: \"fish 0\" covers \"fish 0 body\" and \"fish 0 tail\".",
       "mirror: {kind:\"mirror\", op:{...}, plane:\"x\"|\"y\"|\"z\", origin}. It applies the op and its mirror image; keepOriginal:false applies only the image. No step already in the history is removed.",
@@ -275,6 +275,18 @@ export const TEXT_REFUSALS: string[] = [
   "‘Allerta Stencil’ has no bold. Pick Regular, or another font.",
   "There is no font called ‘comic’. The fonts are stroke, sans, mono, serif, stencil.",
   "Text takes at most 400 characters a step; use several.",
+  "This font has no ‘ñ’ and ‘é’. Pick another font, or take them out. (every letter the font lacks, once)",
+  "This file is not a font Lime Slice can read. Use a TrueType (.ttf) or OpenType (.otf) file. (fontFile)",
+  "‘X’ has only bitmap letters and no outlines. Pick an outline font (TrueType or OpenType).",
+  "‘X’ takes weights 300 to 800. / ‘X’ is not a variable font, so it has one weight. Leave the weight out, or pick a variable font.",
+  "‘X’ is saved in this project with only the letters it was used for, so it has no ‘z’. Add the font file again to type more. (a font whose licence forbids embedding)",
+];
+
+/** guide {kind:"text"}: how a text takes a font of the person's. */
+export const TEXT_OWN_FONT_LINES: string[] = [
+  "fontFile: \"fonts/my.ttf\" (a .ttf, .otf or .ttc in the workspace; \"my.ttc#2\" for the third font of a collection) adds a font to the project; the op then stores font:\"user:<16 hex>\". Later texts name it: font:\"My Font Regular\" (its name, its family, or its id).",
+  "weight 100-900 is a variable font's weight (bold is 700). A static font has the style its file has: bold only if the file is bold, an italic slanted 12° if it is upright.",
+  "The project keeps the file, so project_save and project_open carry it. A font whose licence (OS/2 fsType) forbids embedding keeps only the outlines of the letters its texts use; typing another letter needs the file again.",
 ];
 
 export const KIND_GUIDES: Record<string, string> = {

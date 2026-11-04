@@ -118,7 +118,7 @@ export function evaluate(text: string, params: Params): number {
  * words the caller passes (every enum value in the op schema), so a new text field does not need listing here.
  */
 export const TEXT_FIELDS: ReadonlySet<string> = new Set([
-  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit", "anchor", "point", "part", "var", "text", "align", "caps", "capStart", "capEnd",
+  "kind", "op", "primitive", "label", "keep", "screw", "toolObject", "shape", "pattern", "plane", "onError", "filter", "object", "name", "from", "fromNode", "along", "fit", "anchor", "point", "part", "var", "text", "font", "fontFile", "align", "caps", "capStart", "capEnd",
   // --- Split to print: the target printer's id and process, the orientation, and a connector's type.
   "printer", "process", "orient", "type",
 ]);

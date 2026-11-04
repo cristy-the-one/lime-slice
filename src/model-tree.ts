@@ -167,6 +167,8 @@ export interface LetteringOp {
   lineSpacing?: number;
   align?: "left" | "centre" | "right";
   angleDeg?: number;
+  /** A variable font's weight, 100 to 900 (milestone 4). Absent: the font's own, or 700 for a bold style. */
+  weight?: number;
 }
 
 export interface PartitionModelOp {

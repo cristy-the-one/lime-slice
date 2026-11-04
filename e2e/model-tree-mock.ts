@@ -60,6 +60,10 @@ interface Handlers {
   fitCoupon?(request: Body): Body;
   /** The answer to a `textLayout` call (a text laid out as outlines, for the Text card's preview). Absent refuses. */
   textLayout?(request: Body): Body;
+  /** The answer to a `textFontAdd` call (a font file of the person's, base64: what it is). Absent refuses. */
+  textFontAdd?(request: Body): Body;
+  /** The answer to a `textFontPack` call (the outlines of the letters a restricted font's texts use, base64). Absent refuses. */
+  textFontPack?(request: Body): Body;
 }
 
 interface MockNode {
@@ -354,6 +358,17 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     if (request.call === "textLayout") {
       calls.push(request);
       await route.fulfill({ json: handlers.textLayout?.(request) ?? { error: "The mock lays out no text." } });
+      return;
+    }
+    // Text milestone 4: the person's fonts, likewise stateless.
+    if (request.call === "textFontAdd") {
+      calls.push(request);
+      await route.fulfill({ json: handlers.textFontAdd?.(request) ?? { error: "The mock reads no fonts." } });
+      return;
+    }
+    if (request.call === "textFontPack") {
+      calls.push(request);
+      await route.fulfill({ json: handlers.textFontPack?.(request) ?? { error: "The mock packs no fonts." } });
       return;
     }
     calls.push(request);
