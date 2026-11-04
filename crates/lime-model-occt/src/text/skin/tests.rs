@@ -13,6 +13,7 @@ fn laid(text: &str, height: f64) -> Vec<GlyphFace> {
         align: Align::Centre,
         angle_deg: 0.0,
         weight: None,
+        stroke_mm: None,
     })
     .unwrap()
     .faces

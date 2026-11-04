@@ -652,6 +652,10 @@ pub enum Op {
         /// A variable font's weight, 100 to 900 (milestone 4).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<f64>,
+        /// A pen font's line width, mm (milestone 5). Absent: 0.15 of the height.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(rename = "strokeWidth")]
+        stroke_mm: Option<f64>,
         /// --- Milestone 2, a cylinder or a cone. Which way the baseline runs: `around` (the default) or `axis`; `u` and `v`
         /// are the same two. Not read on a flat face.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1890,6 +1894,9 @@ enum Request {
         #[serde(default)]
         weight: Option<f64>,
         #[serde(default)]
+        #[serde(rename = "strokeWidth")]
+        stroke_mm: Option<f64>,
+        #[serde(default)]
         line_mm: Option<f64>,
         #[serde(default)]
         step_mm: Option<f64>,
@@ -1943,6 +1950,9 @@ enum Request {
         wrap: Option<String>,
         #[serde(default)]
         weight: Option<f64>,
+        #[serde(default)]
+        #[serde(rename = "strokeWidth")]
+        stroke_mm: Option<f64>,
         #[serde(default)]
         line_mm: Option<f64>,
         #[serde(default)]
@@ -2790,6 +2800,7 @@ impl Store {
                 flip,
                 wrap,
                 weight,
+                stroke_mm,
                 line_mm,
                 step_mm,
             } => {
@@ -2805,6 +2816,7 @@ impl Store {
                     align: align.unwrap_or_default(),
                     angle_deg: angle_deg.unwrap_or(0.0),
                     weight,
+                    stroke_mm,
                 };
                 Ok(Answer::Plain(
                     lettering::curved_reply(
@@ -2832,6 +2844,7 @@ impl Store {
                 align,
                 angle_deg,
                 weight,
+                stroke_mm,
                 line_mm,
                 step_mm,
             } => {
@@ -2845,6 +2858,7 @@ impl Store {
                     align: align.unwrap_or_default(),
                     angle_deg: angle_deg.unwrap_or(0.0),
                     weight,
+                    stroke_mm,
                 };
                 Ok(Answer::Plain(
                     lettering::layout_reply(&spec, line_mm.unwrap_or(0.4), step_mm.unwrap_or(0.05))
