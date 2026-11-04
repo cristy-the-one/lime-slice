@@ -14,13 +14,10 @@
 
 pub mod fit;
 pub mod fonts;
-<<<<<<< HEAD
 pub mod skin;
-=======
 #[cfg(any(test, lime_occt_test_hooks))]
 pub mod synth;
 pub mod user;
->>>>>>> origin/main
 pub mod wrap;
 
 use lime_recipe::geom2d::{Poly, Region};

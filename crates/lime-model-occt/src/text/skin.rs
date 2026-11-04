@@ -176,7 +176,11 @@ impl<'a> Ground<'a> {
         let c = cross(su, sv);
         // A pole or a pinch: a partial of no length, or two that lie on each other. A sphere's pole is where one of them shrinks
         // to a hair of the other.
-        if a < 1e-6 || b < 1e-6 || len(c) < 1e-6 * a * b || (self.sphere && a.min(b) < 0.01 * a.max(b)) {
+        if a < 1e-6
+            || b < 1e-6
+            || len(c) < 1e-6 * a * b
+            || (self.sphere && a.min(b) < 0.01 * a.max(b))
+        {
             return Err(Fail::Sharp);
         }
         Ok(Frame {
@@ -339,7 +343,11 @@ impl<'a> Placer<'a> {
                 if half_round.is_none() {
                     let (c0, c1, c2) = (chords[peak - 1], chords[peak], chords[peak + 1]);
                     let bend = c0 - 2.0 * c1 + c2;
-                    let shift = if bend.abs() > 1e-12 { 0.5 * (c0 - c2) / bend } else { 0.0 };
+                    let shift = if bend.abs() > 1e-12 {
+                        0.5 * (c0 - c2) / bend
+                    } else {
+                        0.0
+                    };
                     half_round = Some((peak as f64 + shift.clamp(-1.0, 1.0)) * STEP_MM);
                 }
             }
@@ -468,7 +476,12 @@ impl<'a> Placer<'a> {
 
 /// The middle of a piece from `from`.
 fn mid_of(from: P, seg: &Seg) -> P {
-    let at = |a: P, b: P, c: P, d: P, w: [f64; 4]| [w[0] * a[0] + w[1] * b[0] + w[2] * c[0] + w[3] * d[0], w[0] * a[1] + w[1] * b[1] + w[2] * c[1] + w[3] * d[1]];
+    let at = |a: P, b: P, c: P, d: P, w: [f64; 4]| {
+        [
+            w[0] * a[0] + w[1] * b[0] + w[2] * c[0] + w[3] * d[0],
+            w[0] * a[1] + w[1] * b[1] + w[2] * c[1] + w[3] * d[1],
+        ]
+    };
     match *seg {
         Seg::Line(p) => [(from[0] + p[0]) / 2.0, (from[1] + p[1]) / 2.0],
         Seg::Quad(c, p) => at(from, c, p, p, [0.25, 0.5, 0.25, 0.0]),
@@ -651,7 +664,8 @@ pub fn lay_placed<'a>(
     depth: f64,
     cut: bool,
 ) -> Result<(Wrapped, Placer<'a>), String> {
-    let layout = bounds_of(faces).ok_or("The text has no letters to build. Spaces leave no ink.")?;
+    let layout =
+        bounds_of(faces).ok_or("The text has no letters to build. Spaces leave no ink.")?;
     let placer = Placer::new(surf, info, how, layout[0] - 1.0, layout[2] + 1.0)?;
     if !how.project {
         if let Some(half) = placer.half_round {
@@ -704,8 +718,24 @@ pub fn lay_placed<'a>(
         .frame(info.u0, info.v0)
         .map_err(|f| sentence(f, &info.kind))?;
     let (mu, mv) = (0.05 / len(a.su), 0.05 / len(a.sv));
-    let crosses_u = range(bounds[0], bounds[2], info.u_min, info.u_max, info.full_u, info.u_period, mu)?;
-    let crosses_v = range(bounds[1], bounds[3], info.v_min, info.v_max, info.full_v, info.v_period, mv)?;
+    let crosses_u = range(
+        bounds[0],
+        bounds[2],
+        info.u_min,
+        info.u_max,
+        info.full_u,
+        info.u_period,
+        mu,
+    )?;
+    let crosses_v = range(
+        bounds[1],
+        bounds[3],
+        info.v_min,
+        info.v_max,
+        info.full_v,
+        info.v_period,
+        mv,
+    )?;
     // The walls of the letters, and the points the fold check looks at.
     let mut pts: Vec<P> = Vec::new();
     for face in &out {

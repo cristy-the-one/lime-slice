@@ -12,6 +12,7 @@ fn laid(text: &str, height: f64) -> Vec<GlyphFace> {
         line_spacing: None,
         align: Align::Centre,
         angle_deg: 0.0,
+        weight: None,
     })
     .unwrap()
     .faces
@@ -50,7 +51,11 @@ impl Surf for Ring {
         let reach = self.major + self.minor * cv;
         let p = [reach * cu, reach * su, self.minor * sv];
         let du = [-reach * su, reach * cu, 0.0];
-        let dv = [-self.minor * sv * cu, -self.minor * sv * su, self.minor * cv];
+        let dv = [
+            -self.minor * sv * cu,
+            -self.minor * sv * su,
+            self.minor * cv,
+        ];
         Some((p, du, dv))
     }
 }
@@ -179,7 +184,10 @@ fn size_error_of(layout: &[GlyphFace], placer: &Placer, surf: &dyn Surf) -> f64 
     let mut worst = 0.0f64;
     for face in layout {
         let flat = face.outer.flatten(0.5);
-        let on: Vec<V3> = flat.iter().map(|p| at(surf, placer.map(*p).unwrap())).collect();
+        let on: Vec<V3> = flat
+            .iter()
+            .map(|p| at(surf, placer.map(*p).unwrap()))
+            .collect();
         for i in 0..flat.len() {
             for j in (i + 1)..flat.len() {
                 let d = (flat[i][0] - flat[j][0]).hypot(flat[i][1] - flat[j][1]);
@@ -201,14 +209,20 @@ fn extent(layout: &[GlyphFace]) -> (f64, f64) {
 #[test]
 fn the_baseline_keeps_its_length_on_a_sphere() {
     // Walking x along the baseline is x of arc on the surface: the chord is 2 R sin(x / 2R).
-    let ball = Ball { c: [5.0, -3.0, 2.0], r: 30.0 };
+    let ball = Ball {
+        c: [5.0, -3.0, 2.0],
+        r: 30.0,
+    };
     let info = ball_info(1.0, 0.4);
     let placer = Placer::new(&ball, &info, SkinHow::default(), -60.0, 60.0).unwrap();
     let origin = at(&ball, placer.map([0.0, 0.0]).unwrap());
     for x in [-55.0, -20.0, -3.3, 7.0, 40.0, 58.0] {
         let chord = len(sub(at(&ball, placer.map([x, 0.0]).unwrap()), origin));
         let arc = 2.0 * 30.0 * (x.abs() / 60.0).sin();
-        assert!((chord - arc).abs() < 1e-3 * arc.max(1.0), "x {x}: {chord} vs {arc}");
+        assert!(
+            (chord - arc).abs() < 1e-3 * arc.max(1.0),
+            "x {x}: {chord} vs {arc}"
+        );
     }
     // And square to the baseline, y of arc as well.
     for y in [-9.0, 4.0, 12.0] {
@@ -220,7 +234,10 @@ fn the_baseline_keeps_its_length_on_a_sphere() {
 
 #[test]
 fn the_baseline_starts_along_u_or_v_and_turns_with_the_angle() {
-    let ball = Ball { c: [0.0; 3], r: 30.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 30.0,
+    };
     let info = ball_info(0.0, 0.0);
     let dir = |how: SkinHow| {
         let placer = Placer::new(&ball, &info, how, -5.0, 5.0).unwrap();
@@ -231,20 +248,35 @@ fn the_baseline_starts_along_u_or_v_and_turns_with_the_angle() {
     // along u goes towards +Y and along v would read sideways-up: turned so that the text's up is +Z-ish or kept.
     let u = dir(SkinHow::default());
     assert!(u[1].abs() > 0.99, "{u:?}");
-    let v = dir(SkinHow { v_first: true, ..SkinHow::default() });
+    let v = dir(SkinHow {
+        v_first: true,
+        ..SkinHow::default()
+    });
     assert!(v[2].abs() > 0.99, "{v:?}");
     // A flip reverses it, 90 degrees turns it to the surface's other way.
-    let flipped = dir(SkinHow { flip: true, ..SkinHow::default() });
+    let flipped = dir(SkinHow {
+        flip: true,
+        ..SkinHow::default()
+    });
     assert!((dot(u, flipped) + 1.0).abs() < 2e-3);
-    let turned_up = dir(SkinHow { angle_deg: 90.0, ..SkinHow::default() });
-    assert!(dot(u, turned_up).abs() < 1e-3 && turned_up[2].abs() > 0.99, "{turned_up:?}");
+    let turned_up = dir(SkinHow {
+        angle_deg: 90.0,
+        ..SkinHow::default()
+    });
+    assert!(
+        dot(u, turned_up).abs() < 1e-3 && turned_up[2].abs() > 0.99,
+        "{turned_up:?}"
+    );
 }
 
 #[test]
 fn the_letters_read_from_the_side_the_face_looks_to_whichever_way_it_was_made() {
     // sigma -1 is a face whose normal is the other way: a bowl, read from inside.
     for sigma in [1.0, -1.0] {
-        let ball = Ball { c: [0.0; 3], r: 25.0 };
+        let ball = Ball {
+            c: [0.0; 3],
+            r: 25.0,
+        };
         let mut info = ball_info(0.7, 0.2);
         info.sigma = sigma;
         let placer = Placer::new(&ball, &info, SkinHow::default(), -10.0, 10.0).unwrap();
@@ -262,7 +294,10 @@ fn the_letters_read_from_the_side_the_face_looks_to_whichever_way_it_was_made() 
 fn letters_keep_their_size_within_two_percent_on_a_sphere() {
     // 6 mm capitals, two lines, on a sphere of R 30 away from the equator: the plan's tolerance.
     let layout = laid("HAg", 6.0);
-    let ball = Ball { c: [0.0; 3], r: 30.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 30.0,
+    };
     let info = ball_info(2.0, 0.7);
     let (lo, hi) = extent(&layout);
     let placer = Placer::new(&ball, &info, SkinHow::default(), lo, hi).unwrap();
@@ -276,7 +311,10 @@ fn letters_keep_their_size_within_two_percent_on_a_sphere() {
 fn letters_keep_their_size_on_a_torus_outside_and_inside() {
     // Capitals only: a descender sits 4.5 mm from the baseline, where a tube of radius 10 has shrunk the line by 2.5 %.
     let layout = laid("HAE", 6.0);
-    let ring = Ring { major: 30.0, minor: 10.0 };
+    let ring = Ring {
+        major: 30.0,
+        minor: 10.0,
+    };
     // The outer equator (v = 0), the top of the tube (v = pi/2) and the inner side (v = pi), where the surface is a saddle.
     for v0 in [0.0, FRAC_PI_2, PI] {
         let info = ring_info(1.0, v0);
@@ -302,7 +340,10 @@ fn letters_keep_their_size_on_a_wavy_sheet() {
 #[test]
 fn mapped_loops_are_closed_and_run_the_right_way_round() {
     let layout = laid("AO8", 6.0);
-    let ball = Ball { c: [0.0; 3], r: 30.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 30.0,
+    };
     for sigma in [1.0, -1.0] {
         let mut info = ball_info(2.0, 0.3);
         info.sigma = sigma;
@@ -325,7 +366,10 @@ fn mapped_loops_are_closed_and_run_the_right_way_round() {
 fn a_second_line_stands_square_to_the_first_by_arc_length() {
     // The lines of a text are equidistant curves of the baseline: every point of line 2 is as far from the baseline as the layout
     // says, along a geodesic square to it.
-    let ball = Ball { c: [0.0; 3], r: 30.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 30.0,
+    };
     let info = ball_info(0.0, 0.0);
     let placer = Placer::new(&ball, &info, SkinHow::default(), -20.0, 20.0).unwrap();
     for x in [-15.0, 0.0, 12.0] {
@@ -340,22 +384,50 @@ fn a_second_line_stands_square_to_the_first_by_arc_length() {
 #[test]
 fn a_text_across_a_pole_is_refused() {
     let layout = laid("LIME", 6.0);
-    let ball = Ball { c: [0.0; 3], r: 30.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 30.0,
+    };
     // The anchor is a hair from the north pole.
     let info = ball_info(1.0, FRAC_PI_2 - 0.01);
     let err = lay(&layout, &info, &ball, SkinHow::default(), 0.8, false).unwrap_err();
     assert!(err.contains("pole of this sphere"), "{err}");
     // A text whose baseline runs over the pole from a little way off is refused too.
     let info = ball_info(1.0, FRAC_PI_2 - 0.12);
-    let err = lay(&laid("LIME SLICE", 6.0), &info, &ball, SkinHow { v_first: true, ..SkinHow::default() }, 0.8, false).unwrap_err();
-    assert!(err.contains("pole") || err.contains("longer") || err.contains("runs off"), "{err}");
+    let err = lay(
+        &laid("LIME SLICE", 6.0),
+        &info,
+        &ball,
+        SkinHow {
+            v_first: true,
+            ..SkinHow::default()
+        },
+        0.8,
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("pole") || err.contains("longer") || err.contains("runs off"),
+        "{err}"
+    );
 }
 
 #[test]
 fn a_text_longer_than_the_way_round_is_refused_with_the_length() {
-    let ball = Ball { c: [0.0; 3], r: 10.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 10.0,
+    };
     let info = ball_info(0.0, 0.0);
-    let err = lay(&laid("LIME SLICE 2026 LIME SLICE 2026", 6.0), &info, &ball, SkinHow::default(), 0.5, false).unwrap_err();
+    let err = lay(
+        &laid("LIME SLICE 2026 LIME SLICE 2026", 6.0),
+        &info,
+        &ball,
+        SkinHow::default(),
+        0.5,
+        false,
+    )
+    .unwrap_err();
     assert!(
         err.starts_with("The text is longer than the way round this sphere (62.8 mm)."),
         "{err}"
@@ -378,7 +450,9 @@ fn text_off_the_edge_of_a_freeform_face_is_refused() {
     }
     for x in [-20.0, 0.0, 20.0] {
         for y in [-3.0, 0.0, 3.0] {
-            placer.stretch(x, y).unwrap_or_else(|e| panic!("stretch {x} {y}: {e:?}"));
+            placer
+                .stretch(x, y)
+                .unwrap_or_else(|e| panic!("stretch {x} {y}: {e:?}"));
         }
     }
     lay(&layout, &inside, &Wavy, SkinHow::default(), 0.8, false).unwrap();
@@ -387,12 +461,24 @@ fn text_off_the_edge_of_a_freeform_face_is_refused() {
 #[test]
 fn a_letter_too_deep_for_the_curve_is_refused_with_the_depth_that_works() {
     let layout = laid("I", 3.0);
-    let ball = Ball { c: [0.0; 3], r: 20.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 20.0,
+    };
     let info = ball_info(1.0, 0.1);
     // An engraving 19 deep into R 20 folds over; the sentence names a depth under it.
     let err = lay(&layout, &info, &ball, SkinHow::default(), 19.0, true).unwrap_err();
-    assert!(err.starts_with("Letters this deep would fold over inside this curve. Use a depth under "), "{err}");
-    let depth: f64 = err.rsplit("under ").next().unwrap().trim_end_matches(" mm.").parse().unwrap();
+    assert!(
+        err.starts_with("Letters this deep would fold over inside this curve. Use a depth under "),
+        "{err}"
+    );
+    let depth: f64 = err
+        .rsplit("under ")
+        .next()
+        .unwrap()
+        .trim_end_matches(" mm.")
+        .parse()
+        .unwrap();
     assert!(depth > 10.0 && depth < 19.0, "{depth}");
     lay(&layout, &info, &ball, SkinHow::default(), depth, true).unwrap();
     // Raised on the outside of the same ball is fine at any depth; on the inside of a bowl (the face looks in) it folds.
@@ -406,18 +492,59 @@ fn a_letter_too_deep_for_the_curve_is_refused_with_the_depth_that_works() {
 #[test]
 fn a_text_across_the_seam_is_flagged() {
     let layout = laid("LIME", 6.0);
-    let ball = Ball { c: [0.0; 3], r: 30.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 30.0,
+    };
     // The seam of a sphere is u = 0 (= 2 pi).
-    let across = lay(&layout, &ball_info(0.02, 0.0), &ball, SkinHow::default(), 0.8, false).unwrap();
+    let across = lay(
+        &layout,
+        &ball_info(0.02, 0.0),
+        &ball,
+        SkinHow::default(),
+        0.8,
+        false,
+    )
+    .unwrap();
     assert!(across.crosses_seam);
-    let clear = lay(&layout, &ball_info(PI, 0.0), &ball, SkinHow::default(), 0.8, false).unwrap();
+    let clear = lay(
+        &layout,
+        &ball_info(PI, 0.0),
+        &ball,
+        SkinHow::default(),
+        0.8,
+        false,
+    )
+    .unwrap();
     assert!(!clear.crosses_seam);
     // A torus has a seam in v too: a baseline along v over v = 0.
-    let ring = Ring { major: 30.0, minor: 10.0 };
-    let along_v = SkinHow { v_first: true, ..SkinHow::default() };
-    let across = lay(&laid("LIME", 4.0), &ring_info(2.0, 0.05), &ring, along_v, 0.5, false).unwrap();
+    let ring = Ring {
+        major: 30.0,
+        minor: 10.0,
+    };
+    let along_v = SkinHow {
+        v_first: true,
+        ..SkinHow::default()
+    };
+    let across = lay(
+        &laid("LIME", 4.0),
+        &ring_info(2.0, 0.05),
+        &ring,
+        along_v,
+        0.5,
+        false,
+    )
+    .unwrap();
     assert!(across.crosses_seam);
-    let clear = lay(&laid("LIME", 4.0), &ring_info(2.0, FRAC_PI_2), &ring, along_v, 0.5, false).unwrap();
+    let clear = lay(
+        &laid("LIME", 4.0),
+        &ring_info(2.0, FRAC_PI_2),
+        &ring,
+        along_v,
+        0.5,
+        false,
+    )
+    .unwrap();
     assert!(!clear.crosses_seam);
 }
 
@@ -426,7 +553,10 @@ fn project_keeps_the_view_from_above_and_stretches_on_slopes() {
     // On the crest of the wavy sheet the surface is level, so a projection straight down keeps (x, y) exactly.
     let layout = laid("LIME", 6.0);
     let crest = wavy_info(50.0, 10.0);
-    let how = SkinHow { project: true, ..SkinHow::default() };
+    let how = SkinHow {
+        project: true,
+        ..SkinHow::default()
+    };
     let placer = Placer::new(&Wavy, &crest, how, -20.0, 20.0).unwrap();
     let o = at(&Wavy, placer.map([0.0, 0.0]).unwrap());
     // (u0, v0) = (50, 10) is where sin(w u) = sin(w v) = 1: a peak, z = 2, level.
@@ -443,38 +573,111 @@ fn project_keeps_the_view_from_above_and_stretches_on_slopes() {
     let wrapped = lay(&layout, &wavy_info(50.0, 10.0), &Wavy, how, 0.8, false).unwrap();
     assert!(wrapped.faces.len() == 4);
     // A steep wall turns away: projecting onto a sphere from a point near its horizon is refused.
-    let ball = Ball { c: [0.0; 3], r: 10.0 };
-    let err = lay(&laid("LIME SLICE", 8.0), &ball_info(0.0, 0.0), &ball, how, 0.5, false).unwrap_err();
-    assert!(err.contains("leans too far") || err.contains("miss this face"), "{err}");
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 10.0,
+    };
+    let err = lay(
+        &laid("LIME SLICE", 8.0),
+        &ball_info(0.0, 0.0),
+        &ball,
+        how,
+        0.5,
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("leans too far") || err.contains("miss this face"),
+        "{err}"
+    );
 }
 
 #[test]
 fn outline_pieces_are_cut_only_where_the_surface_bends_them() {
-    let segs = |faces: &[GlyphFace]| -> usize { faces.iter().map(|f| std::iter::once(&f.outer).chain(f.holes.iter()).map(|c| c.segs.len()).sum::<usize>()).sum() };
+    let segs = |faces: &[GlyphFace]| -> usize {
+        faces
+            .iter()
+            .map(|f| {
+                std::iter::once(&f.outer)
+                    .chain(f.holes.iter())
+                    .map(|c| c.segs.len())
+                    .sum::<usize>()
+            })
+            .sum()
+    };
     let layout = laid("LIME", 3.0);
     // On a ball of R 8 a straight stroke is curved by the map and is cut; the loops stay closed.
-    let tight = Ball { c: [0.0; 3], r: 8.0 };
-    let on_tight = lay(&layout, &ball_info(2.0, 0.9), &tight, SkinHow::default(), 0.2, false).unwrap();
-    assert!(segs(&on_tight.faces) > segs(&layout), "{} vs {}", segs(&on_tight.faces), segs(&layout));
+    let tight = Ball {
+        c: [0.0; 3],
+        r: 8.0,
+    };
+    let on_tight = lay(
+        &layout,
+        &ball_info(2.0, 0.9),
+        &tight,
+        SkinHow::default(),
+        0.2,
+        false,
+    )
+    .unwrap();
+    assert!(
+        segs(&on_tight.faces) > segs(&layout),
+        "{} vs {}",
+        segs(&on_tight.faces),
+        segs(&layout)
+    );
     // On a ball of R 200 the same letters keep the pieces they have, or nearly.
-    let wide = Ball { c: [0.0; 3], r: 200.0 };
-    let on_wide = lay(&layout, &ball_info(2.0, 0.9), &wide, SkinHow::default(), 0.2, false).unwrap();
-    assert!(segs(&on_wide.faces) <= segs(&layout) + 4, "{} vs {}", segs(&on_wide.faces), segs(&layout));
+    let wide = Ball {
+        c: [0.0; 3],
+        r: 200.0,
+    };
+    let on_wide = lay(
+        &layout,
+        &ball_info(2.0, 0.9),
+        &wide,
+        SkinHow::default(),
+        0.2,
+        false,
+    )
+    .unwrap();
+    assert!(
+        segs(&on_wide.faces) <= segs(&layout) + 4,
+        "{} vs {}",
+        segs(&on_wide.faces),
+        segs(&layout)
+    );
 }
 
 #[test]
 fn letters_too_big_for_the_curve_are_refused_by_the_measured_size() {
     // 14 mm capitals on a ball of R 12 are squeezed much more than the tolerance.
     let layout = laid("LIME", 14.0);
-    let ball = Ball { c: [0.0; 3], r: 20.0 };
-    let err = lay(&layout, &ball_info(2.0, 0.9), &ball, SkinHow::default(), 0.8, false).unwrap_err();
-    assert!(err.contains("too big for this curve") || err.contains("longer"), "{err}");
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 20.0,
+    };
+    let err = lay(
+        &layout,
+        &ball_info(2.0, 0.9),
+        &ball,
+        SkinHow::default(),
+        0.8,
+        false,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("too big for this curve") || err.contains("longer"),
+        "{err}"
+    );
 }
 
 #[test]
 fn the_pairs_helper_matches_loops_to_the_layout() {
     let layout = laid("HE", 6.0);
-    let ball = Ball { c: [0.0; 3], r: 40.0 };
+    let ball = Ball {
+        c: [0.0; 3],
+        r: 40.0,
+    };
     let info = ball_info(2.0, 0.2);
     let wrapped = lay(&layout, &info, &ball, SkinHow::default(), 0.8, false).unwrap();
     let paired = pairs(&layout, &wrapped.faces, &ball);

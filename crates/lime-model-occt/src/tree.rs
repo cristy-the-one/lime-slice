@@ -2788,11 +2788,8 @@ impl Store {
                 angle_deg,
                 along,
                 flip,
-<<<<<<< HEAD
                 wrap,
-=======
                 weight,
->>>>>>> origin/main
                 line_mm,
                 step_mm,
             } => {

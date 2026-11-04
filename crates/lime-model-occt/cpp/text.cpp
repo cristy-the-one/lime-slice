@@ -13,9 +13,7 @@
 // letter. Otherwise the boolean build runs, or the text is refused with a sentence.
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -24,6 +22,8 @@
 #include <vector>
 
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
@@ -133,15 +133,6 @@ struct SkinHandle {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-
-// TEMP-TRACE
-inline void trace(const char* what) {
-    static auto last = std::chrono::steady_clock::now();
-    const auto now = std::chrono::steady_clock::now();
-    std::fprintf(stderr, "TRACE %-28s %8.3f s\n", what, std::chrono::duration<double>(now - last).count());
-    last = now;
-}
-// END-TEMP
 
 /// The glyph's character as the sentence shows it.
 std::string utf8(unsigned code) {
@@ -513,7 +504,6 @@ TopoDS_Shape build_direct(
             counters.push_back(fix.Face());
         }
     }
-    trace("counters+rest built");
     ShapeFix_Face fix_rest(rest.Face());
     fix_rest.Perform();
     TopoDS_Face rest_face = fix_rest.Face();
@@ -527,9 +517,7 @@ TopoDS_Shape build_direct(
     for (const TopoDS_Face& glyph : glyph_faces) {
         add_walls_and_cap(glyph, top, sewing);
     }
-    trace("walls+caps added");
     sewing.Perform();
-    trace("sewing");
     TopoDS_Shape sewn = sewing.SewedShape();
     std::vector<TopoDS_Face> fresh;
     for (TopExp_Explorer f(sewn, TopAbs_FACE); f.More(); f.Next()) {
@@ -550,7 +538,6 @@ TopoDS_Shape build_direct(
         why = "The face the text is on is not part of the solid.";
         return TopoDS_Shape();
     }
-    trace("spliced");
     if (!closed_shape(spliced)) {
         why = "The letters did not sew onto the face.";
         return TopoDS_Shape();
@@ -561,7 +548,6 @@ TopoDS_Shape build_direct(
         BRepLib::OrientClosedSolid(solid);
         result = solid;
     }
-    trace("orient");
     if (!BRepCheck_Analyzer(result).IsValid()) {
         why = "The letters did not make a valid solid.";
         return TopoDS_Shape();
@@ -873,15 +859,28 @@ TopoDS_Shape build_on_ground(
                 builder.Add(inks, w.Current());
             }
         }
+        // Only the edges whose box comes near the ink's can be within 0.02 mm of it: the rest (a sphere's seam, a torus's seams) are not
+        // measured, which is most of the time of a text on a face with long edges.
+        Bnd_Box ink_box;
+        BRepBndLib::Add(inks, ink_box);
         TopoDS_Compound edges;
         builder.MakeCompound(edges);
-        for (TopExp_Explorer w(ground.face, TopAbs_WIRE); w.More(); w.Next()) {
-            builder.Add(edges, w.Current());
+        bool any_near = false;
+        for (TopExp_Explorer e(ground.face, TopAbs_EDGE); e.More(); e.Next()) {
+            Bnd_Box edge_box;
+            BRepBndLib::Add(e.Current(), edge_box);
+            edge_box.Enlarge(0.05);
+            if (!edge_box.IsOut(ink_box)) {
+                builder.Add(edges, e.Current());
+                any_near = true;
+            }
         }
-        BRepExtrema_DistShapeShape distance(inks, edges);
-        if (distance.IsDone() && distance.Value() < 0.02) {
-            direct_ok = false;
-            note = "The text is within 0.02 mm of the face's edge.";
+        if (any_near) {
+            BRepExtrema_DistShapeShape distance(inks, edges);
+            if (distance.IsDone() && distance.Value() < 0.02) {
+                direct_ok = false;
+                note = "The text is within 0.02 mm of the face's edge.";
+            }
         }
     }
     if (cut) {
@@ -941,9 +940,7 @@ TopoDS_Shape build_on_ground(
             why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
         }
         if (!result.IsNull()) {
-            trace("analyzer");
             volume = volume_of(result);
-            trace("volume");
             if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
                 path = 1;
                 return result;
@@ -1196,9 +1193,7 @@ TopoDS_Shape build_lettering(
             why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
         }
         if (!result.IsNull()) {
-            trace("analyzer");
             volume = volume_of(result);
-            trace("volume");
             if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
                 path = 1;
                 return result;

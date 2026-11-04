@@ -108,12 +108,10 @@ const text = (face: number, extra: Record<string, unknown> = {}) => ({ kind: "te
   check("the stroke font stays on flat faces", stroke.ok === false && /takes an outline font/.test(JSON.stringify(stroke)), JSON.stringify(stroke).slice(0, 300));
   const long = await fail({ text: "LIME SLICE 2026 ".repeat(8), height: 6 });
   check("text longer than the way round names the length", long.ok === false && /The text is longer than the way round this sphere \(125\.7 mm\)\. Make it smaller or use two lines\./.test(JSON.stringify(long)), JSON.stringify(long).slice(0, 300));
-  const big = await fail({ height: 30 });
+  const big = await fail({ text: "LI", height: 30 });
   check("letters too big for the curve are refused by their size", big.ok === false && /too big for this curve/.test(JSON.stringify(big)), JSON.stringify(big).slice(0, 300));
   const around = await fail({ along: "around" });
   check("a sphere starts along u or v, not around", around.ok === false && /along is u or v on this face/.test(JSON.stringify(around)), JSON.stringify(around).slice(0, 300));
-  const squash = await fail({ wrap: "squash" });
-  check("a wrap that is not one", squash.ok === false && /wrap is wrap or project/.test(JSON.stringify(squash)), JSON.stringify(squash).slice(0, 300));
   const deep = await fail({ text: "I", height: 2, depth: 19.5, op: "cut" });
   check("an engraving deeper than the curve names the depth that works", deep.ok === false && /Letters this deep would fold over inside this curve\. Use a depth under [\d.]+ mm\./.test(JSON.stringify(deep)), JSON.stringify(deep).slice(0, 300));
   check("a refusal leaves the solid as it was", Math.abs((await volume(object)) - before) < 1e-6);

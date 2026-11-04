@@ -207,10 +207,22 @@ fn cap_area(points: &[[f64; 3]], off: impl Fn([f64; 3]) -> f64, lift: f64, tol: 
             continue;
         }
         let (a, b) = (
-            [tri[1][0] - tri[0][0], tri[1][1] - tri[0][1], tri[1][2] - tri[0][2]],
-            [tri[2][0] - tri[0][0], tri[2][1] - tri[0][1], tri[2][2] - tri[0][2]],
+            [
+                tri[1][0] - tri[0][0],
+                tri[1][1] - tri[0][1],
+                tri[1][2] - tri[0][2],
+            ],
+            [
+                tri[2][0] - tri[0][0],
+                tri[2][1] - tri[0][1],
+                tri[2][2] - tri[0][2],
+            ],
         );
-        let c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let c = [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ];
         area += 0.5 * (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
     }
     area
@@ -256,7 +268,8 @@ fn letters_keep_their_size_on_the_sphere() {
         .filter(|p| off_ball(*p).abs() < 2e-3)
         .collect();
     let zs: Vec<f64> = on.iter().map(|p| p[2]).collect();
-    let height = zs.iter().cloned().fold(f64::MIN, f64::max) - zs.iter().cloned().fold(f64::MAX, f64::min);
+    let height =
+        zs.iter().cloned().fold(f64::MIN, f64::max) - zs.iter().cloned().fold(f64::MAX, f64::min);
     // 6 mm of arc on R 30 is 2 R sin(3 / 30) = 5.99 of height.
     near(height, 2.0 * 30.0 * (3.0f64 / 30.0).sin(), 0.03);
     // The two letters' advance along the baseline is the font's: their centres are an advance apart.
@@ -269,7 +282,8 @@ fn letters_keep_their_size_on_the_sphere() {
             .iter()
             .map(|p| p[0].as_f64().unwrap())
             .collect();
-        (xs.iter().cloned().fold(f64::MIN, f64::max) + xs.iter().cloned().fold(f64::MAX, f64::min)) / 2.0
+        (xs.iter().cloned().fold(f64::MIN, f64::max) + xs.iter().cloned().fold(f64::MAX, f64::min))
+            / 2.0
     };
     let gap = centre(&faces[1]) - centre(&faces[0]);
     // On the equator the baseline runs along Y: the two letters' middles are `gap` of arc apart.
@@ -278,7 +292,10 @@ fn letters_keep_their_size_on_the_sphere() {
     let (lo, hi) = (by_y[0], by_y[by_y.len() - 1]);
     let arc = |a: f64, b: f64| 2.0 * 30.0 * ((b - a).abs() / 60.0).asin();
     let width = arc(lo, hi);
-    assert!(width > gap && width < gap + 3.0, "{width} for a gap of {gap}");
+    assert!(
+        width > gap && width < gap + 3.0,
+        "{width} for a gap of {gap}"
+    );
 }
 
 #[test]
@@ -307,11 +324,17 @@ fn text_across_a_pole_is_refused() {
     let reply = probe("b-pole", &op);
     assert_eq!(reply["ok"], json!(false), "{reply}");
     assert!(
-        reply["error"].as_str().unwrap().contains("pole of this sphere"),
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("pole of this sphere"),
         "{reply}"
     );
     // A little way from it, a short text is fine.
-    let near_it = probe("b-pole", &lettering("fuse", "I", [-12.0, 0.0, 27.5], 3.0, DEPTH));
+    let near_it = probe(
+        "b-pole",
+        &lettering("fuse", "I", [-12.0, 0.0, 27.5], 3.0, DEPTH),
+    );
     assert_eq!(near_it["ok"], json!(true), "{near_it}");
 }
 
@@ -354,7 +377,9 @@ fn letters_on_the_inside_of_a_torus_where_the_surface_is_a_saddle_are_valid() {
 
 #[test]
 fn text_across_a_torus_seam_builds_with_the_boolean() {
-    let Some(opened) = torus("t-seam") else { return };
+    let Some(opened) = torus("t-seam") else {
+        return;
+    };
     let before = volume_of(&opened);
     // At the tube's top where the ring's seam runs (u = 0): (30, 0, 10).
     let op = lettering("fuse", "LIME", [30.0, 0.0, 10.0], 4.0, DEPTH);
@@ -363,7 +388,11 @@ fn text_across_a_torus_seam_builds_with_the_boolean() {
     assert_eq!(reply["text"]["build"], json!("boolean"), "{reply}");
     assert_eq!(reply["text"]["crossesSeam"], json!(true));
     let grew = volume_of(&reply) - before;
-    near(grew, ink(&op) * DEPTH * (1.0 + DEPTH / 20.0), 0.05 * ink(&op) * DEPTH);
+    near(
+        grew,
+        ink(&op) * DEPTH * (1.0 + DEPTH / 20.0),
+        0.05 * ink(&op) * DEPTH,
+    );
 }
 
 #[test]
@@ -398,7 +427,9 @@ fn text_off_the_edge_of_a_trimmed_freeform_face_is_refused() {
     }));
     assert!(cut.get("error").is_none(), "{cut}");
     let probe_at = |at: [f64; 3], text: &str| {
-        call(json!({ "call": "probe", "key": "e-trim", "node": 1, "op": lettering("fuse", text, at, 5.0, DEPTH) }))
+        call(
+            json!({ "call": "probe", "key": "e-trim", "node": 1, "op": lettering("fuse", text, at, 5.0, DEPTH) }),
+        )
     };
     // The edge is the circle where the ellipsoid meets x = -30 (at y = 19.8 on z = 0): a text centred 1.4 mm from it runs off.
     let off = probe_at([-28.566, 21.0, 0.0], "LIME");
@@ -415,29 +446,58 @@ fn text_off_the_edge_of_a_trimmed_freeform_face_is_refused() {
 
 #[test]
 fn project_pushes_the_letters_onto_the_sphere_along_the_normal() {
-    let Some(opened) = ball("b-project") else { return };
+    let Some(opened) = ball("b-project") else {
+        return;
+    };
     let before = volume_of(&opened);
-    let op = with(lettering("fuse", "LIME 42", BALL_AT, 5.0, DEPTH), "wrap", json!("project"));
+    let op = with(
+        lettering("fuse", "LIME 42", BALL_AT, 5.0, DEPTH),
+        "wrap",
+        json!("project"),
+    );
     let reply = apply("b-project", &op);
     assert!(reply.get("error").is_none(), "{reply}");
     assert_eq!(reply["text"]["build"], json!("direct"), "{reply}");
     // Viewed square to the sphere at the anchor, the letters are the layout: the x of the points is -30 to within the sag.
     let points = letter_points(&reply);
-    let on: Vec<[f64; 3]> = points.into_iter().filter(|p| off_ball(*p).abs() < 2e-3).collect();
+    let on: Vec<[f64; 3]> = points
+        .into_iter()
+        .filter(|p| off_ball(*p).abs() < 2e-3)
+        .collect();
     let ys: Vec<f64> = on.iter().map(|p| p[1]).collect();
     let zs: Vec<f64> = on.iter().map(|p| p[2]).collect();
-    let spread = |v: &[f64]| v.iter().cloned().fold(f64::MIN, f64::max) - v.iter().cloned().fold(f64::MAX, f64::min);
+    let spread = |v: &[f64]| {
+        v.iter().cloned().fold(f64::MIN, f64::max) - v.iter().cloned().fold(f64::MAX, f64::min)
+    };
     // The layout's box is what the projection keeps: (y, z) are the layout's (x, y) at the anchor on the equator.
-    let flat = call(json!({ "call": "textLayout", "text": "LIME 42", "font": "sans", "height": 5.0 }));
+    let flat =
+        call(json!({ "call": "textLayout", "text": "LIME 42", "font": "sans", "height": 5.0 }));
     let b = &flat["bounds"];
-    near(spread(&ys), b[2].as_f64().unwrap() - b[0].as_f64().unwrap(), 0.05);
-    near(spread(&zs), b[3].as_f64().unwrap() - b[1].as_f64().unwrap(), 0.05);
+    near(
+        spread(&ys),
+        b[2].as_f64().unwrap() - b[0].as_f64().unwrap(),
+        0.05,
+    );
+    near(
+        spread(&zs),
+        b[3].as_f64().unwrap() - b[1].as_f64().unwrap(),
+        0.05,
+    );
     let grew = volume_of(&reply) - before;
-    assert!(grew > ink(&op) * DEPTH * 0.97 && grew < ink(&op) * DEPTH * 1.1, "{grew}");
+    assert!(
+        grew > ink(&op) * DEPTH * 0.97 && grew < ink(&op) * DEPTH * 1.1,
+        "{grew}"
+    );
     // An unknown mode is a sentence.
     let bad = probe("b-project", &with(op, "wrap", json!("squash")));
     assert_eq!(bad["ok"], json!(false), "{bad}");
-    assert!(bad["error"].as_str().unwrap().starts_with("wrap is wrap or project"), "{bad}");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("wrap is wrap or project"),
+        "{bad}"
+    );
 }
 
 #[test]
@@ -446,16 +506,30 @@ fn the_baseline_along_v_and_a_flip_and_an_angle_all_build() {
     let op = lettering("fuse", "LIME 42", BALL_AT, 4.0, DEPTH);
     let plain = probe("b-dir", &op);
     assert_eq!(plain["ok"], json!(true), "{plain}");
-    for (field, value) in [("along", json!("v")), ("flip", json!(true)), ("angleDeg", json!(30.0))] {
+    for (field, value) in [
+        ("along", json!("v")),
+        ("flip", json!(true)),
+        ("angleDeg", json!(30.0)),
+    ] {
         let reply = probe("b-dir", &with(op.clone(), field, value));
         assert_eq!(reply["ok"], json!(true), "{field}: {reply}");
         assert_eq!(reply["text"]["build"], json!("direct"), "{field}: {reply}");
         // The same letters are the same ink on a sphere, wherever they point.
-        near(volume_of(&reply), volume_of(&plain), 0.04 * ink(&op) * DEPTH);
+        near(
+            volume_of(&reply),
+            volume_of(&plain),
+            0.04 * ink(&op) * DEPTH,
+        );
     }
     let bad = probe("b-dir", &with(op, "along", json!("sideways")));
     assert_eq!(bad["ok"], json!(false), "{bad}");
-    assert!(bad["error"].as_str().unwrap().starts_with("along is u or v"), "{bad}");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("along is u or v"),
+        "{bad}"
+    );
 }
 
 #[test]
@@ -468,13 +542,25 @@ fn the_refusals_are_one_sentence_each() {
     );
     assert_eq!(long["ok"], json!(false), "{long}");
     assert!(
-        long["error"].as_str().unwrap().starts_with("The text is longer than the way round this sphere (188.5 mm)."),
+        long["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("The text is longer than the way round this sphere (188.5 mm)."),
         "{long}"
     );
     // Too big for the curve to keep its size.
-    let big = probe("b-no", &lettering("fuse", "LIME", [-30.0, 0.0, 0.0], 40.0, DEPTH));
+    let big = probe(
+        "b-no",
+        &lettering("fuse", "LIME", [-30.0, 0.0, 0.0], 40.0, DEPTH),
+    );
     assert_eq!(big["ok"], json!(false), "{big}");
-    assert!(big["error"].as_str().unwrap().contains("too big for this curve"), "{big}");
+    assert!(
+        big["error"]
+            .as_str()
+            .unwrap()
+            .contains("too big for this curve"),
+        "{big}"
+    );
     // An engraving deeper than the curve allows.
     let Some(_) = open(
         "b-small",
@@ -482,16 +568,32 @@ fn the_refusals_are_one_sentence_each() {
     ) else {
         return;
     };
-    let deep = probe("b-small", &lettering("cut", "I", [-12.0, 0.0, 0.0], 2.0, 11.5));
+    let deep = probe(
+        "b-small",
+        &lettering("cut", "I", [-12.0, 0.0, 0.0], 2.0, 11.5),
+    );
     assert_eq!(deep["ok"], json!(false), "{deep}");
     assert!(
-        deep["error"].as_str().unwrap().starts_with("Letters this deep would fold over inside this curve. Use a depth under "),
+        deep["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Letters this deep would fold over inside this curve. Use a depth under "),
         "{deep}"
     );
     // The stroke font stays on flat faces; other fonts are the same as ever.
-    let missing = probe("b-no", &with(lettering("fuse", "Ñ", BALL_AT, 4.0, DEPTH), "font", json!("sans")));
+    let missing = probe(
+        "b-no",
+        &with(
+            lettering("fuse", "☃", BALL_AT, 4.0, DEPTH),
+            "font",
+            json!("sans"),
+        ),
+    );
     assert_eq!(missing["ok"], json!(false), "{missing}");
-    assert_eq!(missing["error"], json!("This font has no ‘Ñ’. Pick another font, or take it out."));
+    assert_eq!(
+        missing["error"],
+        json!("This font has no ‘☃’. Pick another font, or take it out.")
+    );
     // A refusal leaves the solid as it was.
     let again = probe("b-no", &lettering("fuse", "I", BALL_AT, 4.0, DEPTH));
     assert_eq!(again["ok"], json!(true), "{again}");
@@ -514,7 +616,10 @@ fn a_sphere_text_step_replays_from_a_saved_node_to_the_same_solid() {
         "nodes": [{ "id": 1, "parent": 0, "op": applied["op"], "fingerprint": applied["fingerprint"] }],
     }));
     assert!(reopened.get("error").is_none(), "{reopened}");
-    assert_eq!(reopened["fingerprint"], applied["fingerprint"], "{reopened}");
+    assert_eq!(
+        reopened["fingerprint"], applied["fingerprint"],
+        "{reopened}"
+    );
 }
 
 #[test]
@@ -533,11 +638,20 @@ fn the_preview_call_answers_the_letters_on_the_sphere_and_on_their_top() {
     assert!(faces.len() >= 3);
     for face in faces {
         for lp in face["loops"].as_array().unwrap() {
-            let (base, top) = (lp["base"].as_array().unwrap(), lp["top"].as_array().unwrap());
+            let (base, top) = (
+                lp["base"].as_array().unwrap(),
+                lp["top"].as_array().unwrap(),
+            );
             assert_eq!(base.len(), top.len());
             assert_eq!(base.len(), lp["uv"].as_array().unwrap().len());
             for (b, t) in base.iter().zip(top) {
-                let p = |v: &Value| [v[0].as_f64().unwrap(), v[1].as_f64().unwrap(), v[2].as_f64().unwrap()];
+                let p = |v: &Value| {
+                    [
+                        v[0].as_f64().unwrap(),
+                        v[1].as_f64().unwrap(),
+                        v[2].as_f64().unwrap(),
+                    ]
+                };
                 near(off_ball(p(b)), 0.0, 1e-3);
                 near(off_ball(p(t)), DEPTH, 1e-3);
             }
@@ -553,7 +667,10 @@ fn the_preview_call_answers_the_letters_on_the_sphere_and_on_their_top() {
         "call": "textCurved", "key": "b-preview", "node": 0, "point": [0.0, 0.0, 30.0],
         "text": "LIME", "font": "sans", "height": 6.0, "depth": DEPTH,
     }));
-    assert!(refused["error"].as_str().unwrap().contains("pole"), "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("pole"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -575,7 +692,9 @@ fn the_display_mesh_around_the_letters_has_no_long_thin_triangles() {
             continue;
         }
         let p = &points[tri * 3..tri * 3 + 3];
-        let d = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        let d = |a: [f64; 3], b: [f64; 3]| {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+        };
         let (a, b, c) = (d(p[0], p[1]), d(p[1], p[2]), d(p[2], p[0]));
         let s = (a + b + c) / 2.0;
         let area = (s * (s - a) * (s - b) * (s - c)).max(0.0).sqrt();
@@ -596,16 +715,60 @@ fn timings_for_the_spike_text_on_a_sphere_a_torus_and_a_freeform_face() {
     let dir = std::env::var("LIME_TEXT_SKIN_OBJ").ok();
     let spike = "Lime Slice gAO8 2026";
     let jobs: Vec<(&str, &str, Value)> = vec![
-        ("sphere-raise", "ball", lettering("fuse", spike, BALL_AT, 6.0, DEPTH)),
-        ("sphere-cut", "ball", lettering("cut", spike, BALL_AT, 6.0, DEPTH)),
-        ("sphere-seam", "ball", lettering("fuse", spike, [30.0, 0.0, 0.0], 6.0, DEPTH)),
-        ("sphere-project", "ball", with(lettering("fuse", "Lime 42 gA8", BALL_AT, 6.0, DEPTH), "wrap", json!("project"))),
-        ("sphere-two-lines", "ball", lettering("fuse", "Lime 42\nAO8 gB", BALL_AT, 5.0, DEPTH)),
-        ("torus-raise", "torus", lettering("fuse", "Lime 42 gA8", TORUS_AT, 4.0, DEPTH)),
-        ("torus-cut", "torus", lettering("cut", "Lime 42 gA8", TORUS_AT, 4.0, DEPTH)),
-        ("torus-seam", "torus", lettering("fuse", "Lime 42", [30.0, 0.0, 10.0], 4.0, DEPTH)),
-        ("ellipsoid-raise", "ellipsoid", lettering("fuse", spike, ELLIPSOID_AT, 5.0, DEPTH)),
-        ("ellipsoid-cut", "ellipsoid", lettering("cut", spike, ELLIPSOID_AT, 5.0, DEPTH)),
+        (
+            "sphere-raise",
+            "ball",
+            lettering("fuse", spike, BALL_AT, 6.0, DEPTH),
+        ),
+        (
+            "sphere-cut",
+            "ball",
+            lettering("cut", spike, BALL_AT, 6.0, DEPTH),
+        ),
+        (
+            "sphere-seam",
+            "ball",
+            lettering("fuse", spike, [30.0, 0.0, 0.0], 6.0, DEPTH),
+        ),
+        (
+            "sphere-project",
+            "ball",
+            with(
+                lettering("fuse", "Lime 42 gA8", BALL_AT, 6.0, DEPTH),
+                "wrap",
+                json!("project"),
+            ),
+        ),
+        (
+            "sphere-two-lines",
+            "ball",
+            lettering("fuse", "Lime 42\nAO8 gB", BALL_AT, 5.0, DEPTH),
+        ),
+        (
+            "torus-raise",
+            "torus",
+            lettering("fuse", "Lime 42 gA8", TORUS_AT, 4.0, DEPTH),
+        ),
+        (
+            "torus-cut",
+            "torus",
+            lettering("cut", "Lime 42 gA8", TORUS_AT, 4.0, DEPTH),
+        ),
+        (
+            "torus-seam",
+            "torus",
+            lettering("fuse", "Lime 42", [30.0, 0.0, 10.0], 4.0, DEPTH),
+        ),
+        (
+            "ellipsoid-raise",
+            "ellipsoid",
+            lettering("fuse", spike, ELLIPSOID_AT, 5.0, DEPTH),
+        ),
+        (
+            "ellipsoid-cut",
+            "ellipsoid",
+            lettering("cut", spike, ELLIPSOID_AT, 5.0, DEPTH),
+        ),
     ];
     let only = std::env::var("LIME_TEXT_ONLY").ok();
     for (name, part, op) in jobs {
@@ -645,7 +808,8 @@ fn timings_for_the_spike_text_on_a_sphere_a_torus_and_a_freeform_face() {
                     obj.push_str(&format!("f {} {} {}\n", i - 1, i, i + 1));
                 }
             }
-            std::fs::write(std::path::Path::new(dir).join(format!("{name}.obj")), obj).expect("write obj");
+            std::fs::write(std::path::Path::new(dir).join(format!("{name}.obj")), obj)
+                .expect("write obj");
         }
         println!(
             "{name}: preview {:.3} s, probe {:.2} s, apply {:.2} s, build {}",
