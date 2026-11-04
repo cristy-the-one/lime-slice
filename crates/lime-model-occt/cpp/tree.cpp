@@ -2994,6 +2994,21 @@ LimeShape* lime_tree_test_nurbs(const LimeShape* shape, char** error) {
     }
 }
 
+/// Debug builds only, for tests: the cheap checks of a text build against the exact ones, on the face nearest `point`, as JSON text.
+char* lime_tree_test_text(const LimeShape* shape, const double* point, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        const double at[3] = {point[0], point[1], point[2]};
+        return alloc(text_checks_json(shape->held.shape, at));
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// Debug builds only, for tests: a curve read off a null edge on the shape's first face. That is the access violation
 /// inside TKBRep (BRep_Tool::CurveOnSurface) a wall push beside raised lettering hit, so a test can prove the guard.
 int lime_tree_test_fault(const LimeShape* shape, char** error) {

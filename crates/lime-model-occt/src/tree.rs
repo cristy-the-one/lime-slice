@@ -1962,6 +1962,14 @@ enum Request {
     /// for a test that opens a flat face stored as a B-spline.
     #[cfg(lime_occt_test_hooks)]
     TestNurbs { key: String, node: NodeId },
+    /// Debug builds only: the cheap checks of a text build next to the exact calls they stand in for, on the face of step `node`'s solid
+    /// nearest `point`: the classifier, the edge gap, the validity checks, and the whole solid's volume.
+    #[cfg(lime_occt_test_hooks)]
+    TestText {
+        key: String,
+        node: NodeId,
+        point: [f64; 3],
+    },
     /// `format` is `step` (the default, for a file to hand on) or `brep` (the binary a project keeps).
     Export {
         key: String,
@@ -3081,6 +3089,13 @@ impl Store {
                 Ok(Answer::Plain(
                     json!({ "dataB64": base64::engine::general_purpose::STANDARD.encode(bytes) }).to_string(),
                 ))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::TestText { key, node, point } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let text = shape.test_text(point).map_err(Failure::Message)?;
+                Ok(Answer::Plain(text))
             }
             // --- A5. Edges step `node` made, found on the solid the tree is showing. ---
             Request::StepEdges { key, node, filter } => self.step_edge_indexes(key, node, filter),
@@ -6537,6 +6552,12 @@ extern "C" {
     fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     #[cfg(lime_occt_test_hooks)]
     fn lime_tree_test_nurbs(shape: *const RawShape, error: *mut *mut c_char) -> *mut RawShape;
+    #[cfg(lime_occt_test_hooks)]
+    fn lime_tree_test_text(
+        shape: *const RawShape,
+        point: *const f64,
+        error: *mut *mut c_char,
+    ) -> *mut c_char;
     fn lime_tree_created(shape: *const RawShape, out: *mut *const c_int) -> c_int;
     // --- A10.
     fn lime_tree_face_from(shape: *const RawShape, out: *mut *const c_int) -> c_int;
@@ -7667,6 +7688,16 @@ impl Shape {
     fn test_nurbs(&self) -> Result<Vec<u8>, String> {
         // SAFETY: `self` is held for this call; the kernel returns a new shape or an error.
         Shape::made(|error| unsafe { lime_tree_test_nurbs(self.raw(), error) })?.brep_bytes()
+    }
+
+    /// Debug builds only: the cheap checks of a text build against the exact ones, on the face nearest `point`.
+    #[cfg(lime_occt_test_hooks)]
+    fn test_text(&self, point: [f64; 3]) -> Result<String, String> {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        // SAFETY: `self` is held for this call; `point` holds the three numbers the kernel reads.
+        let raw = unsafe { lime_tree_test_text(self.raw(), point.as_ptr(), &mut error) };
+        let message = take_text(error);
+        take_text(raw).ok_or_else(|| message.unwrap_or_else(|| "Open CASCADE failed".into()))
     }
 
     /// --- Print transitions, step 6. The tangent chain through `edge`, the edge first, and whether it closes.

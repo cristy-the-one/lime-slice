@@ -110,6 +110,9 @@ void set_deadline(long long budget_ms);
 bool past_deadline();
 std::string deadline_message();
 double volume_of(const TopoDS_Shape& shape);
+/// Each face integrated about `about` (in parallel), added in order: a part's volume is the sum over its faces, so a swap of faces moves it by the
+/// difference of those faces' volumes about one point.
+double faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& about);
 /// Mesh the faces unless they are meshed at this chord already, and read the mesh out.
 Mesh tessellate(Held& held, double chord);
 /// What a reply says of the shape whatever the chord, as a JSON object: `volumeMm3`, `solid`,
@@ -784,5 +787,11 @@ TopoDS_Shape build_lettering_skin(
     Handle(BRepTools_History)& history,
     std::string& note,
     std::string& error);
+
+#ifdef LIME_OCCT_TEST_HOOKS
+/// Debug builds only, for tests: the cheap checks of a text build next to the exact calls they stand in for, on the face nearest
+/// `point`, as JSON.
+std::string text_checks_json(const TopoDS_Shape& shape, const double point[3]);
+#endif
 
 }  // namespace lime_occt
