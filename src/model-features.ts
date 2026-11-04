@@ -9,7 +9,7 @@ import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
 import { anchorOf, expand, type Piece, type RoundSurface } from "./modeling/compose.ts";
-import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, STROKE_FONT, styleOf, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
+import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, isUserFont, STROKE_FONT, styleOf, userFontView, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
 import type { GroupOp, LetteringOp, ModelOp } from "./model-tree.ts";
@@ -134,6 +134,7 @@ export const FEATURE_FIELD_DEFAULTS: Record<string, number> = {
   modelTextAngle: 0,
   modelTextTrack: 0,
   modelTextLines: 1.3,
+  modelTextWeight: 400,
 };
 
 /** The choices the panel is showing. `tool` picks which Raise/Cut group is read; text has its own. */
@@ -163,7 +164,7 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
     stagger: document.querySelector<HTMLInputElement>("#modelArrStagger")?.checked ?? false,
     align: align === "left" || align === "right" ? align : "centre",
     text: document.querySelector<HTMLInputElement | HTMLTextAreaElement>("#modelFeatText")?.value ?? FEATURE_CHOICE_DEFAULTS.text,
-    font: font === STROKE_FONT || fontById(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
+    font: font === STROKE_FONT || fontById(font) || isUserFont(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
     style: style ? styleOf(style) : FEATURE_CHOICE_DEFAULTS.style,
     way: way === "axis" ? "axis" : "around",
     dir: dir === "v" ? "v" : "u",
@@ -256,7 +257,12 @@ export function readFeatureSpec(tool: FeatureTool, read: (id: string) => number,
   if (isOutlineFont(choices.font)) {
     // --- Text with real fonts. Spacing is after each letter (0 is the font's own), lines are capital heights apart (1.3).
     spec.font = choices.font;
-    if (choices.style !== "regular") spec.style = choices.style;
+    // --- Text milestone 4: a variable font takes its weight from the slider, so only its italic is a style.
+    const variable = userFontView(choices.font)?.weight;
+    if (variable) {
+      spec.weight = read("modelTextWeight");
+      if (choices.style === "italic" || choices.style === "bold-italic") spec.style = "italic";
+    } else if (choices.style !== "regular") spec.style = choices.style;
     const track = read("modelTextTrack");
     if (track !== 0) spec.spacing = track;
     const lines = read("modelTextLines");
@@ -395,6 +401,7 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
     put("modelTextSpace", isOutlineFont(source.font) ? undefined : source.spacing, height / 3);
     put("modelTextTrack", isOutlineFont(source.font) ? source.spacing : undefined, 0);
     put("modelTextLines", source.lineSpacing, 1.3);
+    put("modelTextWeight", source.weight, userFontView(source.font)?.weight?.default ?? 400);
     put("modelTextAngle", source.angleDeg, 0);
     put("modelFeatDepth", source.depth, 1);
     put("modelFeatU", at.u, 0);

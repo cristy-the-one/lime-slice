@@ -201,6 +201,7 @@ fn spec_of(op: &Op) -> Option<text::Spec> {
         line_spacing,
         align,
         angle_deg,
+        weight,
         ..
     } = op
     else {
@@ -215,6 +216,7 @@ fn spec_of(op: &Op) -> Option<text::Spec> {
         line_spacing: *line_spacing,
         align: align.unwrap_or_default(),
         angle_deg: angle_deg.unwrap_or(0.0),
+        weight: *weight,
     })
 }
 

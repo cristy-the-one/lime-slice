@@ -127,6 +127,13 @@ export interface LimeProject {
    */
   plugins?: Record<string, string>;
   /**
+   * --- Text milestone 4 (docs/plan-text-on-curves-and-fonts.md D5). The project's own copy of each font of the person's that
+   * its text steps use, by the SHA-256 of the file (`.n` after it for the n-th face of a collection), so the project rebuilds
+   * and edits on a computer that does not have the font. A font whose licence forbids embedding holds a pack instead: the
+   * outlines, advances and kerning of the letters its texts use. Omitted when no text uses a font of the person's.
+   */
+  fonts?: Record<string, ProjectMesh>;
+  /**
    * --- A6. Named parameters, in evaluation order: a number, or an expression such as "wallH / 2".
    * Omitted when there are none. Older files keep the numbers under `mcpModel.params`; the MCP
    * still reads that, and writes this field.
@@ -224,6 +231,7 @@ export function projectWire(project: LimeProject): Record<string, unknown> {
   if (project.mcpModel) wire.mcpModel = project.mcpModel;
   const plugins = readPlugins(project.plugins);
   if (plugins) wire.plugins = plugins;
+  if (project.fonts && Object.keys(project.fonts).length > 0) wire.fonts = project.fonts;
   const parameters = parametersForWire(project.parameters);
   if (parameters) wire.parameters = parameters;
   if (project.overrides) wire.overrides = project.overrides;
@@ -449,6 +457,8 @@ function readPlate(doc: Record<string, unknown>): ProjectResult {
   if (doc.mcpModel && typeof doc.mcpModel === "object" && !Array.isArray(doc.mcpModel)) project.mcpModel = doc.mcpModel as Record<string, unknown>;
   const plugins = readPlugins(doc.plugins);
   if (plugins) project.plugins = plugins;
+  const fonts = readFonts(doc.fonts);
+  if (fonts) project.fonts = fonts;
   const parameters = readParameters(doc.parameters);
   if (parameters) project.parameters = parameters;
   if (doc.overrides !== undefined) {
@@ -879,6 +889,26 @@ function readPair(value: unknown): [number, number] | null {
 
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+/** The largest font record a project carries, bytes: a font file or a pack of its letters. */
+const FONT_RECORD_MAX = 48 << 20;
+
+/**
+ * --- Text milestone 4. A project's font records, checked: a key (a SHA-256, `.n` for a collection's face) to a record with
+ * its bytes and their hash. A damaged record is left out, so the project still opens; the steps that used it then say the
+ * font is not on this computer. Undefined when none is left.
+ */
+export function readFonts(value: unknown): Record<string, ProjectMesh> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, ProjectMesh> = {};
+  for (const [key, record] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[0-9a-f]{64}(\.\d{1,3})?$/.test(key)) continue;
+    const mesh = readMesh(record);
+    if (typeof mesh === "string" || mesh.byteLength > FONT_RECORD_MAX) continue;
+    out[key] = mesh;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** The largest plugin file a project carries: a recipe is one `main.rs`, so this is generous. */

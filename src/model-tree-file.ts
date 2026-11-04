@@ -548,7 +548,8 @@ function readOpBody(value: unknown): SavedOp | undefined {
       const turn = value.turn === undefined ? ([0, 0, 0] as Vec3) : vec(value.turn);
       if ((value.op !== "fuse" && value.op !== "cut") || !origin || !turn) return undefined;
       if (typeof value.text !== "string" || !value.text || typeof value.font !== "string" || !value.font || !finite(value.height) || !finite(value.depth)) return undefined;
-      const { style, spacing, lineSpacing, align, angleDeg } = value;
+      const { style, spacing, lineSpacing, align, angleDeg, weight } = value;
+      if (weight !== undefined && !finite(weight)) return undefined;
       if (style !== undefined && style !== "regular" && style !== "bold" && style !== "italic" && style !== "bold-italic") return undefined;
       if (align !== undefined && align !== "left" && align !== "centre" && align !== "right") return undefined;
       if ((spacing !== undefined && !finite(spacing)) || (lineSpacing !== undefined && !finite(lineSpacing)) || (angleDeg !== undefined && !finite(angleDeg))) return undefined;
@@ -566,6 +567,7 @@ function readOpBody(value: unknown): SavedOp | undefined {
         ...(lineSpacing !== undefined ? { lineSpacing } : {}),
         ...(align !== undefined ? { align } : {}),
         ...(angleDeg !== undefined ? { angleDeg } : {}),
+        ...(weight !== undefined ? { weight } : {}),
       };
     }
     // --- K4: faceExtrude and moveFaces. Optional fields stay absent when unset. ---

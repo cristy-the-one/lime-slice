@@ -40,6 +40,7 @@ import { customGcodeNotice } from "../layer-actions.ts";
 import { setProjectTitle } from "./project-title.ts";
 import { projectFileName } from "../project-file-name.ts";
 import { session, state } from "./state.ts";
+import { dropProjectFonts, shelf } from "./user-fonts.ts";
 import { closeStress } from "../ui/stress.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
 
@@ -87,6 +88,10 @@ export async function saveCurrentProject() {
   // --- Plugins (D9): a stamp whose code only the library holds gets a copy here, so the project rebuilds anywhere.
   const plugins = projectCopies(session.plugins, stampedShas(project.objects), pluginLibrary());
   if (plugins) project.plugins = plugins;
+  // --- Text milestone 4 (D5): the fonts of the person's that texts use go in the project, whole, or as the outlines of the
+  // letters used when the font's licence forbids embedding it.
+  const fonts = await shelf.recordsFor(project, session.fonts);
+  if (fonts) project.fonts = fonts;
   if (Object.keys(session.parameters).length > 0) project.parameters = { ...session.parameters };
   if (project.version === 2 && session.assemblies.length > 0) project.assemblies = structuredClone(session.assemblies);
   if (project.version === 2 && state.printOrder === "sequential") {
@@ -173,6 +178,10 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   // --- A8. Kept before the meshes load, and still there if that load is replaced by a later open. ---
   session.mcpModel = project.mcpModel;
   session.plugins = project.plugins;
+  // --- Text milestone 4: the project's fonts go to the engine before its history is rebuilt from them.
+  session.fonts = project.fonts;
+  dropProjectFonts();
+  const fontNotes = await shelf.adopt(project.fonts);
   session.parameters = project.parameters ? { ...project.parameters } : {};
   session.assemblies = project.assemblies ? structuredClone(project.assemblies) : [];
   const unread = [...(project.unreadHistory ?? [])];
@@ -228,6 +237,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     if (unread.length > 0) {
       pushToast(`The Model history of ${unread.join(", ")} could not be read, so it starts again from the saved part.`, "info");
     }
+    if (fontNotes.length > 0) pushToast(fontNotes.join(" "), "info");
     const custom = customGcodeNotice(state.layerActions);
     if (custom) pushToast(custom, "info");
     noteParametersBuilt();

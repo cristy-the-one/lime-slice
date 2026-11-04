@@ -2852,6 +2852,7 @@ dependencies = [
  "lime-recipe",
  "serde",
  "serde_json",
+ "sha2",
  "ttf-parser",
 ]
 

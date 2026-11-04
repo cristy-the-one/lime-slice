@@ -649,6 +649,9 @@ pub enum Op {
         align: Option<crate::text::Align>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         angle_deg: Option<f64>,
+        /// A variable font's weight, 100 to 900 (milestone 4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
         /// --- Milestone 2, a cylinder or a cone. Which way the baseline runs: `around` (the default) or `axis`; `u` and `v`
         /// are the same two. Not read on a flat face.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -662,6 +665,16 @@ pub enum Op {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wrap: Option<String>,
     },
+}
+
+/// One text a project sets in a font, for the pack of the letters it needs.
+#[derive(Debug, Deserialize)]
+struct TextUse {
+    text: String,
+    #[serde(default)]
+    style: Option<String>,
+    #[serde(default)]
+    weight: Option<f64>,
 }
 
 /// --- Split to print, part numbers (plan sections 2 and 10). Each piece's number as `textStrokes` draws it, centred
@@ -1605,6 +1618,8 @@ pub fn call(request: &str) -> String {
             | Request::FitCoupon { .. }
             | Request::TextLayout { .. }
             | Request::TextFonts
+            | Request::TextFontAdd { .. }
+            | Request::TextFontPack { .. }
     );
     let answer = store.handle(request);
     if !transient {
@@ -1815,6 +1830,17 @@ enum Request {
     /// refusal any such crash gets (`tests/kernel_fault.rs`).
     #[cfg(lime_occt_test_hooks)]
     TestFault { key: String, node: NodeId },
+    /// Debug builds only (text milestone 4): a font file built in code, base64, for a test that adds it. `variable` is the
+    /// weight axis's minimum and maximum.
+    #[cfg(lime_occt_test_hooks)]
+    #[serde(rename_all = "camelCase")]
+    TextTestFont {
+        family: String,
+        #[serde(default)]
+        fs_type: u16,
+        #[serde(default)]
+        variable: Option<[f32; 2]>,
+    },
     /// --- A5. The edges step `node` made, as indexes on the tree's current solid. ---
     StepEdges {
         key: String,
@@ -1862,12 +1888,28 @@ enum Request {
         #[serde(default)]
         angle_deg: Option<f64>,
         #[serde(default)]
+        weight: Option<f64>,
+        #[serde(default)]
         line_mm: Option<f64>,
         #[serde(default)]
         step_mm: Option<f64>,
     },
     /// The bundled fonts, for the font picker and the guide.
     TextFonts,
+    /// --- Text milestone 4. Give the engine a font file (or the pack of a restricted font's letters), base64, and answer what it
+    /// is; `face` picks one of a collection's fonts. The font is kept by id for the life of the engine.
+    #[serde(rename_all = "camelCase")]
+    TextFontAdd {
+        data_b64: String,
+        #[serde(default)]
+        face: Option<u32>,
+    },
+    /// The pack of a font's letters for the texts a project sets in it, as base64 of its JSON.
+    #[serde(rename_all = "camelCase")]
+    TextFontPack {
+        id: String,
+        uses: Vec<TextUse>,
+    },
     /// A text laid out on the cylinder or cone under `point` (milestone 2), for the card's live preview: each letter's loops as
     /// 3D polylines on the face and on the top (or floor), the layout points they come from, and the refusal when the text
     /// would not build (too long, off the face, too deep).
@@ -1899,6 +1941,8 @@ enum Request {
         /// --- Milestone 3: `wrap` or `project`, on a sphere, a torus or a freeform face.
         #[serde(default)]
         wrap: Option<String>,
+        #[serde(default)]
+        weight: Option<f64>,
         #[serde(default)]
         line_mm: Option<f64>,
         #[serde(default)]
@@ -2716,6 +2760,18 @@ impl Store {
                 Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
             }
             Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
+            Request::TextFontAdd { data_b64, face } => Ok(Answer::Plain(
+                crate::text::user::add_reply(&data_b64, face).map_err(Failure::Message)?,
+            )),
+            Request::TextFontPack { id, uses } => {
+                let uses: Vec<crate::text::user::Use> = uses
+                    .into_iter()
+                    .map(|u| crate::text::user::Use { text: u.text, style: u.style, weight: u.weight })
+                    .collect();
+                Ok(Answer::Plain(
+                    crate::text::user::pack_reply(&id, &uses).map_err(Failure::Message)?,
+                ))
+            }
             Request::TextCurved {
                 key,
                 node,
@@ -2732,7 +2788,11 @@ impl Store {
                 angle_deg,
                 along,
                 flip,
+<<<<<<< HEAD
                 wrap,
+=======
+                weight,
+>>>>>>> origin/main
                 line_mm,
                 step_mm,
             } => {
@@ -2747,6 +2807,7 @@ impl Store {
                     line_spacing,
                     align: align.unwrap_or_default(),
                     angle_deg: angle_deg.unwrap_or(0.0),
+                    weight,
                 };
                 Ok(Answer::Plain(
                     lettering::curved_reply(
@@ -2773,6 +2834,7 @@ impl Store {
                 line_spacing,
                 align,
                 angle_deg,
+                weight,
                 line_mm,
                 step_mm,
             } => {
@@ -2785,6 +2847,7 @@ impl Store {
                     line_spacing,
                     align: align.unwrap_or_default(),
                     angle_deg: angle_deg.unwrap_or(0.0),
+                    weight,
                 };
                 Ok(Answer::Plain(
                     lettering::layout_reply(&spec, line_mm.unwrap_or(0.4), step_mm.unwrap_or(0.05))
@@ -2986,6 +3049,17 @@ impl Store {
                     .ok_or_else(|| Failure::Message("That edge is not on this solid".into()))?;
                 Ok(Answer::Plain(
                     json!({ "id": node, "edge": edge, "edges": edges, "closed": closed }).to_string(),
+                ))
+            }
+            #[cfg(lime_occt_test_hooks)]
+            Request::TextTestFont { family, fs_type, variable } => {
+                use crate::text::synth::Synth;
+                let mut font = Synth::simple(&family).with_fs_type(fs_type);
+                if let Some([min, max]) = variable {
+                    font = font.variable(min, max);
+                }
+                Ok(Answer::Plain(
+                    json!({ "dataB64": base64::engine::general_purpose::STANDARD.encode(font.bytes()) }).to_string(),
                 ))
             }
             #[cfg(lime_occt_test_hooks)]

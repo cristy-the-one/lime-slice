@@ -28,6 +28,39 @@ export interface TextFont {
 
 export const STROKE_FONT = "stroke";
 
+/** --- Text milestone 4. A font the person added has an id of its own: `user:` and 16 hex digits of the file's SHA-256. */
+export const USER_FONT_PREFIX = "user:";
+
+/** Whether a step's `font` names a font the person added. */
+export function isUserFont(font: unknown): font is string {
+  return typeof font === "string" && font.startsWith(USER_FONT_PREFIX);
+}
+
+/** What the card needs to know of a font the person added: its name, which styles it has, its weight axis, its licence. */
+export interface UserFontView {
+  id: string;
+  name: string;
+  family: string;
+  bold: boolean;
+  italic: boolean;
+  weight: { min: number; default: number; max: number } | null;
+  restricted: boolean;
+  pack: boolean;
+  /** The CSS family the picker draws the name in. */
+  cssFamily?: string;
+}
+
+let userFontLookup: (id: string) => UserFontView | undefined = () => undefined;
+
+/** The app gives its shelf of fonts here, so the pure card code can ask about one. */
+export function setUserFontLookup(lookup: (id: string) => UserFontView | undefined): void {
+  userFontLookup = lookup;
+}
+
+export function userFontView(id: unknown): UserFontView | undefined {
+  return isUserFont(id) ? userFontLookup(id) : undefined;
+}
+
 /** The font a new text step starts in (D4): a clear sans that prints at 3 mm, in bold. */
 export const DEFAULT_TEXT_FONT = "sans";
 export const DEFAULT_TEXT_STYLE: TextStyle = "bold";
@@ -90,6 +123,11 @@ export function versionedId(font: TextFont): string {
 /** Whether a step's font is an outline font. A step with no font, or `stroke`, is the old stroke font. */
 export function isOutlineFont(font: unknown): boolean {
   return typeof font === "string" && font !== "" && font !== STROKE_FONT;
+}
+
+/** Bold, italic or neither, as the style words say. */
+export function styleFlags(style: TextStyle): { bold: boolean; italic: boolean } {
+  return { bold: style === "bold" || style === "bold-italic", italic: style === "italic" || style === "bold-italic" };
 }
 
 export function styleOf(value: unknown): TextStyle {

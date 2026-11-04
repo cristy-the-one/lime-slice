@@ -571,6 +571,76 @@ Deviations from this plan, each on purpose or forced:
 10. **The cone's tip.** Text that would run past the apex is refused ("The text runs past the tip of the cone. Move it, or make it smaller."), a sentence
     the plan did not list.
 
+### As built (milestone 4)
+
+Built on `main` after milestone 1 (PR "Your own fonts for text (text milestone 4)"). What a person can do now: on the Text card's font
+picker, **Add font file…** takes a `.ttf`, `.otf` or `.ttc` from disk (a collection asks which font of it), the font is listed under the
+bundled ones with its name drawn in itself, and a text can be set in it like in a bundled font, with a Weight field when the font is variable.
+The font stays in the person's font library for every project and can be removed from it with the × beside it. A project that uses it
+carries it, so it opens, rebuilds and edits on a computer that does not have the font; if the font's licence forbids embedding it, the
+project carries only the outlines of the letters used, and the card says so in one sentence. Over MCP a `text` op takes `fontFile` (a path
+in the workspace) or `font` by the name already in the project, and `weight`.
+
+- **Reading.** A font file is data, read by `ttf-parser` (`crates/lime-model-occt/src/text/user.rs`): its names, whether it has outlines
+  (`glyf`, `CFF` or `CFF2`; a bitmap-only font is refused), its `wght` axis, its collection's faces and `OS/2 fsType`. The engine keeps the
+  fonts it is given in a table by id, `user:` and the first 16 hex digits of the file's SHA-256 (`.n` after it for the n-th face of a
+  collection), in `textFontAdd`; a text step names its font by that id, so a rebuild finds the same bytes. The layout reads glyphs through a
+  small trait (`Glyphs`), which a parsed face and a pack both fill, so a user font lays out, builds, thin-checks and previews exactly as a
+  bundled one does.
+- **Embedding (D5).** `fsType` installable (0) or editable (8) with outline embedding allowed, or no `OS/2` table: the project keeps the file
+  whole, in a `fonts` map of binary records (packed like a solid, `gzip+base64`) under its SHA-256. Restricted (2), preview and print (4), bitmap
+  embedding only (0x200) or a value that cannot be read: the project keeps a **pack**, JSON of the outlines, advances and kerning of the letters
+  its texts use, per weight (a space always), cut by `textFontPack` when the project is saved; the "no subsetting" bit (0x100) changes nothing
+  because a restricted font is subset anyway. A pack never takes the place of the whole file when this computer has the file (the engine and
+  the shelf keep the file), and the font library (the person's own computer) keeps the file as it was added.
+- **Variable fonts.** `weight` joins the op, the card (a Weight field in place of Bold and Bold italic) and `textLayout`; bold on a variable
+  font is 700 clamped to the axis; a weight outside the axis is refused with its range; a weight on a static font is refused. A glyph drawn from
+  overlapping contours is united in 2D and now **refitted to curves** (`text/fit.rs`: corners found where the polyline turns more than 40°, a
+  run with no bend becomes one line, a bent run is fitted with cubic Béziers by Schneider's method within 0.004 mm; the polyline stays when the
+  area moved more than 0.3 %). A circle of 314 lines becomes 4 to 8 curves. Touching letters (milestone 1's union, bundled fonts too) are refitted
+  the same way, so they no longer fall back to polylines about 0.1 mm apart.
+- **Where the fonts live.** The library is `~/.lime-slice/fonts/` (or `LIME_FONTS_DIR`), read and written by `src-tauri/src/fonts.rs`
+  (`font_library_list`, `font_library_add`, `font_library_remove`); the browser build has none. The project's copies are `LimeProject.fonts`.
+  The MCP server keeps the fonts of its project in the same shelf class (`src/modeling/user-fonts.ts`) the app uses, adds them from `fontFile`
+  and from `project_open`, and writes them in `project_save` and in the autosave.
+- **Schema budget.** `tools/list` is byte for byte what it was (about 17,186 tokens, 17,190 allowed): the three new fields (`fontFile`,
+  `weight`, and `font` now a string) live in the full op schema and `guide {kind: "text"}`, as milestone 1's did. No budget changed.
+- **Tests.** Rust unit tests with no kernel (`text/user_tests.rs`, 20): the reading, the licence rule for every `fsType` case, unreadable
+  files, bitmap-only, missing letters, styles of a static font, a variable font's weight, a collection, a pack that lays out exactly like its
+  font (Inter, kerning included), a pack's weights, a pack never replacing the file, a refit circle and a refit rounded box, glyphs from
+  overlapping curves; the fonts are built in code (`text/synth.rs`: TrueType with `OS/2`, `name`, `fvar`, `gvar`, collections), plus the bundled
+  Inter read as if added. Rust with the kernel (`tests/lettering.rs`, 4 more): a user font builds valid, closed, direct, volume = ink × depth; a
+  restricted font's pack rebuilds the same solid; a variable font's weight changes the solid; the refusals. TypeScript:
+  `src/modeling/user-fonts.test.ts` (the shelf, what a project keeps, the project file round trip with a font), `src/modeling/lettering-user.test.ts`
+  (the step, the weight in the file and the card), `mcp/text-user-fonts.test.ts` (real engine: `fontFile`, a copy of Plex Mono builds the bundled
+  solid, the font by name and family, save and open in a new session, a restricted font packed and rebuilt from the pack alone, the refusals),
+  `e2e/model-text-user-fonts.spec.ts` (in `test:smoke`). No font of anyone's is in the repository: the test fonts are built in code, or are
+  copies of bundled fonts with one table changed in the copy.
+
+Deviations from this plan, each on purpose or forced:
+
+1. **A variable font's "instance" is its weight.** Only the `wght` axis is offered (the Weight field, `weight` on the op); named instances and
+   other axes (`wdth`, `slnt`, `ital`) are not. A font with no `wght` axis is a static font.
+2. **`.otc`, `.woff` and `.woff2` are not accepted.** They are the same one sentence as any file that is not a font ("Use a TrueType (.ttf) or
+   OpenType (.otf) file."); a `.ttc` is.
+3. **`font` on the MCP op is a free string**, no longer an enum of the bundled ids: it takes a project font's name. So `font` and `fontFile` are
+   text fields the parameter evaluator leaves alone (`TEXT_FIELDS`). A name that is neither bundled nor in the project is the evaluator's
+   sentence for fonts, not the schema's.
+4. **Missing letters are all named in one sentence** ("This font has no ‘ñ’ and ‘é’. Pick another font, or take them out."); one missing letter
+   is the sentence milestone 1 had.
+5. **MCP library.** `fontFile` reads a file path the way a mesh path is read (a relative path in the workspace, or an absolute one); the MCP server
+   has no font library of its own, the plan's library being the desktop app's. A font reaches a project over MCP only through `fontFile`, or by
+   already being in the project.
+6. **Autosave and packs.** A restricted font's pack is cut when a text names it and again when the project is saved; the autosave writes the pack
+   made so far, and `project_save` writes exactly the letters the texts use now.
+7. **A collection is registered by face.** The whole `.ttc` is what the project and the library keep, with the face number in the key and the id.
+8. **The test fonts.** The plan's "freely licensed test fonts" are a synthetic font built in code (it has to have a variable axis, which no free
+   font in the repository has) and copies of the bundled OFL fonts; the e2e spec marks copies of bundled fonts and has the mock engine read
+   the mark.
+9. **Not done.** Reading `.woff2`, named instances, a font library the MCP server reads, `hershey` and the stroke fonts through the outline
+   pipeline (milestone 5), and curved faces (milestones 2 and 3). An engine that restarts while the app runs is given the fonts again before a
+   tree is rebuilt (`restore`); the MCP server runs one engine and has no restart to cover.
+
 ## 11. Done for the whole plan
 
 - A person types two lines in Sans Bold, puts them round a Ø 40 cup and on a wavy freeform lid, raised and

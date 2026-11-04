@@ -33,7 +33,7 @@ const MAX_HELD = 24;
 
 /** What the layout depends on: the same fields the engine reads, and the nozzle the thin letters are judged against. */
 function keyOf(step: LetteringOp, nozzleMm: number): string {
-  return JSON.stringify([step.text, step.font, step.style, step.height, step.spacing, step.lineSpacing, step.align, step.angleDeg, nozzleMm]);
+  return JSON.stringify([step.text, step.font, step.style, step.height, step.spacing, step.lineSpacing, step.align, step.angleDeg, step.weight, nozzleMm]);
 }
 
 /** The engine's layout of `step`, or null until it answers (`ready` is called then); an error is a sentence. */
@@ -62,6 +62,7 @@ export function layoutOf(step: LetteringOp, nozzleMm: number, ready: () => void)
     ...(step.lineSpacing !== undefined ? { lineSpacing: step.lineSpacing } : {}),
     ...(step.align ? { align: step.align } : {}),
     ...(step.angleDeg ? { angleDeg: step.angleDeg } : {}),
+    ...(step.weight !== undefined ? { weight: step.weight } : {}),
     lineMm: nozzleMm,
     stepMm: 0.1,
   }).then((reply) => {
@@ -167,7 +168,7 @@ type HeldCurved = CurvedLayout | { error: string } | "pending";
 const heldCurved = new Map<string, HeldCurved>();
 
 function curvedKey(step: LetteringOp, on: Anchored, nozzleMm: number): string {
-  return JSON.stringify([on.key, on.node, step.origin, step.text, step.font, step.style, step.height, step.depth, step.op, step.spacing, step.lineSpacing, step.align, step.angleDeg, step.along, step.flip, step.wrap, nozzleMm]);
+  return JSON.stringify([on.key, on.node, step.origin, step.text, step.font, step.style, step.height, step.depth, step.op, step.spacing, step.lineSpacing, step.align, step.angleDeg, step.along, step.flip, step.weight, step.wrap, nozzleMm]);
 }
 
 /** The engine's layout of `step` on the cylinder or cone under its origin, or null until it answers (`ready` is called then). */
@@ -202,6 +203,7 @@ export function curvedLayoutOf(step: LetteringOp, on: Anchored, nozzleMm: number
     ...(step.angleDeg ? { angleDeg: step.angleDeg } : {}),
     ...(step.along ? { along: step.along } : {}),
     ...(step.flip ? { flip: true } : {}),
+    ...(step.weight !== undefined ? { weight: step.weight } : {}),
     ...(step.wrap ? { wrap: step.wrap } : {}),
     lineMm: nozzleMm,
     stepMm: 0.4,
