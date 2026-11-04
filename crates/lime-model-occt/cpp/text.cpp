@@ -1617,7 +1617,8 @@ TopoDS_Solid solid_of_faces(const TopoDS_Shape& solid, const TopoDS_Face* skip, 
         if (skip != nullptr && face.IsSame(*skip)) {
             continue;
         }
-        builder.Add(shell, flip != nullptr && face.IsSame(*flip) ? face.Reversed() : face);
+        const TopoDS_Shape kept = flip != nullptr && face.IsSame(*flip) ? face.Reversed() : TopoDS_Shape(face);
+        builder.Add(shell, kept);
     }
     TopoDS_Solid made;
     builder.MakeSolid(made);
