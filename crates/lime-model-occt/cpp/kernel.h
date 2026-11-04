@@ -744,4 +744,23 @@ TopoDS_Shape build_lettering(
     std::string& note,
     std::string& error);
 
+/// Lettering on a cylinder or a cone (milestone 2). `text_face_json` says which face the point is on: a flat one, a cylinder or a
+/// cone (with its surface, the anchor's parameters and the face's box), another kind, or none. `build_lettering_curved` takes the
+/// letters already mapped into that surface's (u, v) (`text::wrap`); `force_boolean` is set when they cross the face's seam.
+std::string text_face_json(const TopoDS_Shape& current, const double point[3]);
+TopoDS_Shape build_lettering_curved(
+    const TopoDS_Shape& current,
+    double before,
+    bool cut,
+    const double point[3],
+    double depth,
+    bool force_boolean,
+    const double* data,
+    int len,
+    double& volume,
+    int& path,
+    Handle(BRepTools_History)& history,
+    std::string& note,
+    std::string& error);
+
 }  // namespace lime_occt

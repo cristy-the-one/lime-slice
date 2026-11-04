@@ -138,7 +138,7 @@ eq("the stroke font is the same boxes", JSON.stringify(stroked), JSON.stringify(
 check("a text of 80 characters still expands", !("reason" in expand(text({ text: "I".repeat(40) }), ctx, nothing)));
 
 // --- The card: what it writes, and what a saved step reopens as.
-const choices: FeatureChoices = { shape: "rect", from: "centre", pattern: "lines", cell: "rect", along: "u", op: "fuse", fit: "inside", stagger: false, align: "centre", text: "Hi", font: "sans@4.0", style: "bold" };
+const choices: FeatureChoices = { shape: "rect", from: "centre", pattern: "lines", cell: "rect", along: "u", op: "fuse", fit: "inside", stagger: false, align: "centre", text: "Hi", font: "sans@4.0", style: "bold", way: "around", flip: false };
 const read = (id: string) => ({ modelTextHeight: 6, modelTextTrack: 0, modelTextLines: 1.3, modelTextAngle: 0, modelFeatDepth: 1, modelFeatU: 0, modelFeatV: 0, modelTextStroke: 0.9, modelTextSpace: 2 })[id] ?? 0;
 const outline = readFeatureSpec("text", read, choices, 1);
 eq("an outline font writes its font and style, and no stroke fields", outline, { kind: "text", faceIndex: 1, text: "Hi", height: 6, font: "sans@4.0", style: "bold", depth: 1, at: { u: 0, v: 0 } });

@@ -8,7 +8,7 @@ export interface MockSolid {
   volumeMm3: number;
   positions: number[];
   triangles: number[];
-  faces: { id: number; areaMm2: number; normal?: [number, number, number] }[];
+  faces: { id: number; areaMm2: number; normal?: [number, number, number]; surface?: "cylinder" | "cone" | "sphere"; radiusMm?: number; axisPoint?: [number, number, number]; axis?: [number, number, number] }[];
   edges: { id: number; lengthMm: number; points: number[] }[];
   solid?: boolean;
   /** --- A10. The node that made each face, when a test wants colour by step. */
@@ -60,6 +60,8 @@ interface Handlers {
   fitCoupon?(request: Body): Body;
   /** The answer to a `textLayout` call (a text laid out as outlines, for the Text card's preview). Absent refuses. */
   textLayout?(request: Body): Body;
+  /** The answer to a `textCurved` call (a text laid out on the cylinder or cone under `point`, for the Text card's preview). Absent refuses. */
+  textCurved?(request: Body): Body;
 }
 
 interface MockNode {
@@ -354,6 +356,12 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     if (request.call === "textLayout") {
       calls.push(request);
       await route.fulfill({ json: handlers.textLayout?.(request) ?? { error: "The mock lays out no text." } });
+      return;
+    }
+    // Text on a cylinder or a cone: the layout on the face under the anchor, read on the node's solid.
+    if (request.call === "textCurved") {
+      calls.push(request);
+      await route.fulfill({ json: handlers.textCurved?.(request) ?? { error: "The mock lays out no text on a curve." } });
       return;
     }
     calls.push(request);

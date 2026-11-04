@@ -71,6 +71,8 @@ const choices: FeatureChoices = {
   text: "A",
   font: "sans@4.0",
   style: "bold",
+  way: "around",
+  flip: false,
 };
 const read = (id: string) => ({ modelFeatW: 10, modelFeatH: 10, modelFeatDepth: 2, modelFeatU: 0, modelFeatV: 0, modelFeatBarsV: 2, modelFeatBarsH: 0, modelFeatBarW: 1 })[id] ?? 0;
 const spec = readFeatureSpec("pocket", read, choices, 1);
