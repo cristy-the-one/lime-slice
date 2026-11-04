@@ -94,6 +94,11 @@ await (async () => {
   const picked: Record<string, unknown> = {};
   const given = await answerPick({ param: "face", kind: "face", object: "obj_1", value: { rule: "largest_down" } }, { face: 5 }, reads, picked);
   check("a given face wins over the recipe's value, and is kept as a reference", given.ok && (given.result as { face: number }).face === 5 && JSON.stringify((picked.face as { normal: number[] }).normal) === "[1,0,0]", { given, picked });
+  // A rebuild starts from an earlier step whose faces are numbered otherwise: the index is read on the shown solid.
+  const renumbered = { ...low, faces: low.faces.map((f) => ({ ...f, index: 5 - f.index })), triangles: low.triangles.map((t) => 5 - t) };
+  const shownPick: Record<string, unknown> = {};
+  const viaShown = await answerPick({ param: "face", kind: "face", object: "obj_1" }, { face: 0 }, { ...reads, shownFaces: () => renumbered }, shownPick);
+  check("an index names the shown step's face, found on the run's start by reference", viaShown.ok && (viaShown.result as { face: number }).face === 5 && JSON.stringify((shownPick.face as { normal: number[] }).normal) === "[1,0,0]", { viaShown, shownPick });
   const byDefault: Record<string, unknown> = {};
   const dflt = await answerPick({ param: "face", kind: "face", object: "obj_1", value: { rule: "largest_down" } }, {}, reads, byDefault);
   check("a default rule resolves and is not kept", dflt.ok && (dflt.result as { face: number }).face === 0 && Object.keys(byDefault).length === 0, dflt);

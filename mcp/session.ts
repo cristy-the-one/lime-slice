@@ -1241,6 +1241,9 @@ export class Session {
     // A rerun's or replace's object names the recipe, not a part for it to change.
     const objectArg = typeof input.object === "string" && !replacing ? input.object : undefined;
     if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
+    // --- API 1.2. A face index names a face of the part as shown now, as faces_find lists it; a rebuild starts from an
+    // earlier step whose faces are numbered otherwise, so the pick reads the index on this solid.
+    const shownSolid = objectArg !== undefined ? this.find(objectArg)?.solid ?? null : null;
     // --- Plugin steps (D8). A rebuild runs on the part as it stood before the run: a new branch from there.
     if (rebuild && branchRebuild) {
       const back = await this.gotoNode(rebuild.obj, rebuild.run.before!);
@@ -1289,7 +1292,7 @@ export class Session {
         if (site.args.kind === "face" && on !== undefined && on !== objectArg && !created.includes(on)) {
           return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${on} is neither. Pass it as object to run on it.` };
         }
-        return answerPick(site.args, params, this.pickReads(ctx), picked);
+        return answerPick(site.args, params, { ...this.pickReads(ctx), shownFaces: (id) => (id === objectArg ? shownSolid : null) }, picked);
       }
       if (site.tool === "log") {
         if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);

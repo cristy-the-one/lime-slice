@@ -44,6 +44,12 @@ export interface PickReads {
   sketch(object: string, step: number): { loops: ProfileLoop[]; plane: Workplane } | { reason: string };
   /** data {name}, where the run can read recipe data. */
   data?(name: string): Promise<{ value: unknown } | { reason: string }>;
+  /**
+   * The part's faces as the caller saw them when it named a face by index: a rebuild runs from the step before the
+   * plugin's run, whose faces are numbered otherwise than the shown step's that `faces_find` listed. Absent, an index
+   * names a face of the part the run starts from.
+   */
+  shownFaces?(object: string): FaceSet | null;
 }
 
 const round = (n: number, k = 1e4) => Math.round(n * k) / k;
@@ -380,7 +386,15 @@ export async function answerPick(args: Body, given: Body, reads: PickReads, pick
 async function pickFace(reads: PickReads, object: string, value: unknown, label: string, insetMm: number): Promise<{ index: number; kept: FaceValue; rule: boolean; row: Body } | { reason: string }> {
   const set = await reads.faces(object);
   if ("reason" in set) return { reason: `${label}: ${set.reason}` };
-  const found = resolveFace(set, value, label);
+  // An index is the shown step's face, as faces_find listed it: kept as a reference, then found on the run's start.
+  const shown = typeof value === "number" ? reads.shownFaces?.(object) ?? null : null;
+  let named: unknown = value;
+  if (shown) {
+    const kept = Number.isInteger(value) ? faceValueOf(shown, value as number) : null;
+    if (!kept) return { reason: `${label}: face ${String(value)} is not a flat face of this part. Pick a flat face.` };
+    named = kept;
+  }
+  const found = resolveFace(set, named, label);
   if ("reason" in found) return found;
   const reply = await reads.section(object, { object, face: found.index, insetMm });
   const rows = Array.isArray(reply.sections) ? reply.sections : [];

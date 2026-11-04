@@ -181,7 +181,8 @@ kinds a person picks in the form and the host resolves on the part as it stands.
   null). The answer is read through the run's own `faces_find` and `section` answers, in `src/recipe/picks.ts`, which
   the MCP session and the app share, so both resolve the same face.
 - **What is kept.** The stamp, a preset and the form keep a face as `{normal, nearPoint, areaMm2}` (an index is turned
-  into that at its run), a sketch as `{sketch, object}`, a face's outline as `{face, object}`, loops as given, and data as
+  into that on the part as shown when the call came, since a rebuild starts from an earlier step whose faces are
+  numbered otherwise), a sketch as `{sketch, object}`, a face's outline as `{face, object}`, loops as given, and data as
   the loops it held, so a project carries no file. A rule is the default and is never kept: a step built with the
   default follows the rule on each rebuild.
 - **Replay.** Each run resolves again: the kept face is the flat face with its normal (within 5°) under the kept point,
