@@ -84,6 +84,11 @@ test("the IR3 V2 with ABS asks for a 90 C bed, says so, and exports a file that 
   expect(lines).toContain("; bed capped at 90 C (filament 100 C)");
   expect(lines).toContain("G28 Y");
   expect(lines).not.toContain("G28");
+  // The purge: two lines across the belt, then the zig-zag at the left edge.
+  const across = lines.indexOf("G1 X250 E25 F2000");
+  expect(across).toBeGreaterThan(lines.indexOf("FMS_on"));
+  expect(lines.slice(across + 1, across + 3)).toEqual(["G1 Z0.8 F900", "G1 X0 E25 F2000"]);
+  expect(lines.indexOf("G1 X6.67 Z7.4 E1.85")).toBeGreaterThan(across);
   expect(lines.some((line) => /^M1[49]0 S100$/.test(line))).toBe(false);
   expect(lines.slice(lines.indexOf("PRINT_START"), lines.indexOf("PRINT_START") + 4)).toEqual(["PRINT_START", "M140 S90", "M104 S250", "M109 S250"]);
   const afterStart = lines.indexOf("M82", lines.indexOf("G28 Y"));
