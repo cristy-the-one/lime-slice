@@ -104,8 +104,8 @@ const text = (face: number, extra: Record<string, unknown> = {}) => ({ kind: "te
 {
   const { object, face, before } = await ball();
   const fail = async (extra: Record<string, unknown>) => (await call("model_apply", { object, op: text(face, extra) }).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, any>;
-  const stroke = await fail({ font: "stroke" });
-  check("the stroke font stays on flat faces", stroke.ok === false && /takes an outline font/.test(JSON.stringify(stroke)), JSON.stringify(stroke).slice(0, 300));
+  const stroke = await fail({ font: "stroke", style: "bold" });
+  check("the pen fonts take no style", stroke.ok === false && /one style/.test(JSON.stringify(stroke)), JSON.stringify(stroke).slice(0, 300));
   const long = await fail({ text: "LIME SLICE 2026 ".repeat(8), height: 6 });
   check("text longer than the way round names the length", long.ok === false && /The text is longer than the way round this sphere \(125\.7 mm\)\. Make it smaller or use two lines\./.test(JSON.stringify(long)), JSON.stringify(long).slice(0, 300));
   const big = await fail({ text: "LI", height: 30 });

@@ -100,12 +100,13 @@ test("the Text card starts in Sans Bold, and the picker draws each font's name i
   await openModel(page);
   await openText(page);
   const buttons = page.locator("#modelTextFont [data-font]");
-  await expect(buttons).toHaveCount(5);
+  await expect(buttons).toHaveCount(6);
   await expect(buttons.nth(0)).toHaveText("Stroke");
-  await expect(buttons.nth(1)).toHaveText("Inter");
-  expect(await buttons.evaluateAll((nodes) => nodes.map((n) => (n as HTMLElement).dataset.font))).toEqual(["stroke", "sans@4.0", "mono@1", "serif@1", "stencil@1"]);
+  await expect(buttons.nth(1)).toHaveText("Line");
+  await expect(buttons.nth(2)).toHaveText("Inter");
+  expect(await buttons.evaluateAll((nodes) => nodes.map((n) => (n as HTMLElement).dataset.font))).toEqual(["stroke", "line", "sans@4.0", "mono@1", "serif@1", "stencil@1"]);
   expect(await buttons.evaluateAll((nodes) => nodes.map((n) => getComputedStyle(n).fontFamily.replace(/["']/g, "").split(",")[0]))).toEqual([
-    expect.any(String), "Lime Model Sans", "Lime Model Mono", "Lime Model Serif", "Lime Model Stencil",
+    expect.any(String), expect.any(String), "Lime Model Sans", "Lime Model Mono", "Lime Model Serif", "Lime Model Stencil",
   ]);
   // D4: a new text starts in Sans Bold.
   await expect(page.locator("#modelTextFont [data-font='sans@4.0']")).toHaveAttribute("aria-pressed", "true");
@@ -144,9 +145,13 @@ test("a font with no bold greys Bold and says why, and the stroke font has its o
   await expect(page.locator("#modelTextStroke")).toBeVisible();
   await expect(page.locator("#modelTextSpace")).toBeVisible();
   await expect(page.locator("#modelTextTrack")).toBeHidden();
-  await expect(page.locator("#modelTextLines")).toBeHidden();
+  // Text milestone 5: a pen font is one lettering step like any font, so it has lines and a right edge too, and no style.
+  await expect(page.locator("#modelTextLines")).toBeVisible();
   await expect(page.locator("#modelTextStyle")).toBeHidden();
-  await expect(page.locator("#modelTextAlign [data-align=right]")).toBeHidden();
+  await expect(page.locator("#modelTextAlign [data-align=right]")).toBeVisible();
+  await page.locator("#modelTextFont [data-font=line]").click();
+  await expect(page.locator("#modelTextStroke")).toBeVisible();
+  await expect(page.locator("#modelTextStyle")).toBeHidden();
 });
 
 test("two lines in a font are one lettering step, one history row, and Edit reopens the card", async ({ page }) => {
@@ -214,7 +219,7 @@ test("the card names the letters too thin for the nozzle and draws the preview",
   await expect(page.locator("#modelApply")).toBeEnabled();
 });
 
-test("the stroke font still builds the boxes it always did, from the same card", async ({ page }) => {
+test("the stroke font is one lettering step now, with its pen width and gap", async ({ page }) => {
   const tree = await openModel(page);
   await openText(page);
   await page.locator("#modelTextFont [data-font=stroke]").click();
@@ -223,8 +228,22 @@ test("the stroke font still builds the boxes it always did, from the same card",
   await page.locator("#modelApply").click();
   await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
   const op = tree.of("apply").at(-1)!.op as { steps: Body[]; source: Body };
-  expect(op.steps.length).toBeGreaterThan(8);
-  expect(op.steps.every((step) => step.kind === "boolean" && step.primitive === "box")).toBe(true);
-  expect(op.source.font, "an old text step has no font").toBeUndefined();
-  expect(op.source.strokeWidth).toBe(0.9);
+  expect(op.steps, "one step, not a box per stroke").toHaveLength(1);
+  expect(op.steps[0]).toMatchObject({ kind: "lettering", font: "stroke@1", text: "LIME", strokeWidth: 0.9, spacing: 2 });
+  expect(op.source).toMatchObject({ font: "stroke", strokeWidth: 0.9, spacing: 2 });
+});
+
+test("Line takes lowercase and builds it in one step", async ({ page }) => {
+  const tree = await openModel(page);
+  await openText(page);
+  await page.locator("#modelTextFont [data-font=line]").click();
+  await typeText(page, "Lime gy");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: "test-results/text-pen/card-line.png" });
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  const op = tree.of("apply").at(-1)!.op as { steps: Body[]; source: Body };
+  expect(op.steps).toHaveLength(1);
+  expect(op.steps[0]).toMatchObject({ kind: "lettering", font: "line@1", text: "Lime gy" });
 });

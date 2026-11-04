@@ -72,7 +72,11 @@ fn check(key: &str, at: [f64; 3], base: f64, surface: &str, share: f64) {
         for (op, sign) in [("fuse", 1.0), ("cut", -1.0)] {
             let step = lettering(font, op, text, at, 3.5);
             let reply = apply(key, &step);
-            assert_eq!(reply["text"]["build"], json!("direct"), "{font} {op}: {reply}");
+            assert_eq!(
+                reply["text"]["build"],
+                json!("direct"),
+                "{font} {op}: {reply}"
+            );
             assert_eq!(reply["text"]["surface"], json!(surface), "{font} {op}");
             assert_eq!(
                 reply["text"]["font"],

@@ -24,7 +24,11 @@ fn the_stroke_font_lays_out_as_outlines_with_holes() {
     assert_eq!(laid.faces.len(), 3);
     let holes: Vec<usize> = laid.faces.iter().map(|f| f.holes.len()).collect();
     assert_eq!(holes, vec![1, 2, 1]);
-    assert!(laid.ink_mm2 > 5.0 && laid.ink_mm2 < 60.0, "{}", laid.ink_mm2);
+    assert!(
+        laid.ink_mm2 > 5.0 && laid.ink_mm2 < 60.0,
+        "{}",
+        laid.ink_mm2
+    );
 }
 
 #[test]
@@ -65,7 +69,9 @@ fn stroke_has_capitals_and_line_has_lowercase() {
     assert!(b[1] < -3.0, "g and y hang below the baseline: {b:?}");
     let err = lay_out(&pen("stroke", "a日")).unwrap_err();
     assert!(err.contains("‘日’") && err.contains("A-Z"), "{err}");
-    assert!(lay_out(&pen("line", "日")).unwrap_err().contains("letters, digits"));
+    assert!(lay_out(&pen("line", "日"))
+        .unwrap_err()
+        .contains("letters, digits"));
 }
 
 #[test]
@@ -76,7 +82,9 @@ fn a_pen_font_refuses_styles_and_weights() {
     s.style = None;
     s.weight = Some(500.0);
     assert!(lay_out(&s).unwrap_err().contains("one weight"));
-    assert!(lay_out(&pen("stroke@2", "A")).unwrap_err().contains("stroke@1"));
+    assert!(lay_out(&pen("stroke@2", "A"))
+        .unwrap_err()
+        .contains("stroke@1"));
 }
 
 #[test]

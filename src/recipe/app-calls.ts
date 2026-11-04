@@ -256,7 +256,8 @@ export class AppRecipeCalls {
     }
     if (value.ok === false) {
       const { ok: _ok, reason, ...extra } = value;
-      return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
+      const failedStep = (extra as { failed?: { reason?: unknown } }).failed?.reason;
+      return { ok: false, error: typeof reason === "string" ? reason : typeof failedStep === "string" ? failedStep : `${site.tool} was refused.`, extra };
     }
     return { ok: true, result: value };
   }

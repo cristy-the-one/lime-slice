@@ -102,8 +102,8 @@ const cone = () => round("cone", { radius: 25, topRadius: 15, height: 40 }, "con
 {
   const { object, face, before } = await cylinder();
   const text = (extra: Record<string, unknown>) => ({ kind: "text", faceIndex: face, text: "Lime", height: 4, depth: 0.5, font: "sans", ...extra });
-  const stroke = await call("model_apply", { object, op: text({ font: "stroke" }) });
-  check("the stroke font stays on flat faces", stroke.ok === false && /takes an outline font/.test(JSON.stringify(stroke)), JSON.stringify(stroke).slice(0, 300));
+  const stroke = await call("model_apply", { object, op: text({ font: "stroke", style: "bold" }) });
+  check("the stroke font is a pen font on a cylinder too, and takes no style", stroke.ok === false && /one style/.test(JSON.stringify(stroke)), JSON.stringify(stroke).slice(0, 300));
   const long = await call("model_apply", { object, op: text({ text: "LIME SLICE 2026 ".repeat(5) }) });
   check("text longer than the way round names the length", long.ok === false && /The text is longer than the way round this cylinder \(125\.7 mm\)\. Make it smaller or use two lines\./.test(JSON.stringify(long)), JSON.stringify(long).slice(0, 300));
   const off = await call("model_apply", { object, op: text({ point: [-20, 0, 39], height: 6 }) });
