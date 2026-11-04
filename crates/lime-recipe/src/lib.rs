@@ -428,8 +428,10 @@ pub struct Part {
 /// is saved. A minor level only adds; a plugin of a higher level than the host's crate is not built.
 /// 1.0: the calls, `param_*`, `geom2d`, `lattice`, and the `section` and `apply_many` wrappers. 1.1: typed
 /// parameters (`number`, `count`, `toggle`, `choice`, `text`) and describe mode. 1.2: `face` and `outline` parameters
-/// a person picks (`pick_face`, `pick_outline`), `refuse`, and `bounds`.
-pub const API: (u32, u32) = (1, 2);
+/// a person picks (`pick_face`, `pick_outline`), `refuse`, and `bounds`. 1.3: `face(..).curved()` parameters and what a
+/// picked face is (`kind`, `axis`, `radius`), `lettering` (text on a face, flat or curved) and `text_outline` (the letters
+/// as a `Section`).
+pub const API: (u32, u32) = (1, 3);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -467,11 +469,13 @@ pub struct ParamSpec {
     pub help: Option<String>,
     pub options: Vec<String>,
     pub max_len: Option<u32>,
+    /// A face parameter that takes a curved face too (API 1.3).
+    pub curved: bool,
 }
 
 impl ParamSpec {
     fn new(name: &str, kind: &str, default: Json) -> ParamSpec {
-        ParamSpec { name: name.to_string(), kind: kind.to_string(), default, min: None, max: None, step: None, unit: None, label: None, help: None, options: Vec::new(), max_len: None }
+        ParamSpec { name: name.to_string(), kind: kind.to_string(), default, min: None, max: None, step: None, unit: None, label: None, help: None, options: Vec::new(), max_len: None, curved: false }
     }
 
     /// The JSON the host keeps in a plugin's header: only the settings that were given.
@@ -500,6 +504,9 @@ impl ParamSpec {
         }
         if let Some(v) = self.max_len {
             j = j.set("maxLen", v);
+        }
+        if self.curved {
+            j = j.set("curved", true);
         }
         j
     }
@@ -728,10 +735,16 @@ pub struct PickParam {
     pub name: String,
     pub kind: String,
     pub value: Json,
+    /// A face parameter declared `.curved()` (API 1.3).
+    pub curved: bool,
 }
 
 /// A face the host resolved: its index on the part now, its outward normal, a point on it, its area, and its outline in
 /// its own frame (`outline.frame`, `outline.region`, `outline.loops`), as `face_outline` gives it.
+///
+/// API 1.3: `kind` is `plane`, `cylinder`, `cone`, `sphere` or `other` (a torus or a freeform face; the part's face list does
+/// not tell those apart), and for a cylinder or a cone `axis` and `radius`. A curved face has no one normal (`normal` is
+/// zero) and no outline (`outline` is empty); `point` is a point on it, which `lettering` anchors the text at.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PickedFace {
     pub index: u32,
@@ -739,6 +752,9 @@ pub struct PickedFace {
     pub point: [f64; 3],
     pub area: f64,
     pub outline: Section,
+    pub kind: String,
+    pub axis: Option<[f64; 3]>,
+    pub radius: Option<f64>,
 }
 
 /// The rules a face parameter may fall back on when the person picked none.
@@ -769,6 +785,12 @@ impl FaceBuilder {
         self.spec.help = Some(help.to_string());
         self
     }
+    /// The parameter takes a curved face too (API 1.3): a cylinder, a cone, a sphere, a torus or a freeform face. `pick_face`
+    /// then says which (`kind`) and, for a cylinder or a cone, its `axis` and `radius`. Without it only a flat face is taken.
+    pub fn curved(mut self) -> FaceBuilder {
+        self.spec.curved = true;
+        self
+    }
     /// The face the host was given (an index, or `{normal, nearPoint}`), else the default rule. Nothing is resolved
     /// yet: `s.pick_face` does that.
     #[track_caller]
@@ -779,7 +801,7 @@ impl FaceBuilder {
             Some(Json::Null) | None => self.spec.default.clone(),
             Some(v) => v,
         };
-        PickParam { name: self.spec.name.clone(), kind: "face".to_string(), value }
+        PickParam { name: self.spec.name.clone(), kind: "face".to_string(), value, curved: self.spec.curved }
     }
 }
 
@@ -816,7 +838,172 @@ impl OutlineBuilder {
             Some(Json::Null) | None => self.spec.default.clone(),
             Some(v) => v,
         };
-        PickParam { name: self.spec.name.clone(), kind: "outline".to_string(), value }
+        PickParam { name: self.spec.name.clone(), kind: "outline".to_string(), value, curved: false }
+    }
+}
+
+/// Text on a face (API 1.3), the `text` op as a typed call: `s.lettering(&part, &face, "LOT 42", &Lettering::new(6.0, 0.8).font("mono").around())`.
+/// `height` is the capitals' and `depth` how far the letters stand off the surface (raised) or go into it (`.engrave()`), square to
+/// it, both in mm. `font` is a bundled id (`sans`, `mono`, `serif`, `stencil`, `stroke`, `line`) or a font already in the project;
+/// no font is the single-stroke grid font on a flat face. On a cylinder or a cone `.around()` (the default) reads round the part and
+/// `.axis()` up it; on a sphere, a torus or a freeform face `.u()` or `.v()` is the face's direction the baseline starts in, and
+/// `.project()` pushes the letters on along the face's normal instead of wrapping them at true size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lettering {
+    height: f64,
+    depth: f64,
+    font: Option<String>,
+    style: Option<String>,
+    weight: Option<f64>,
+    spacing: Option<f64>,
+    line_spacing: Option<f64>,
+    align: Option<String>,
+    angle: Option<f64>,
+    along: Option<String>,
+    wrap: Option<String>,
+    flip: bool,
+    cut: bool,
+    stroke_width: Option<f64>,
+}
+
+impl Lettering {
+    /// Capitals `height` mm tall, standing `depth` mm off the surface.
+    pub fn new(height: f64, depth: f64) -> Lettering {
+        Lettering { height, depth, font: None, style: None, weight: None, spacing: None, line_spacing: None, align: None, angle: None, along: None, wrap: None, flip: false, cut: false, stroke_width: None }
+    }
+    pub fn font(mut self, font: &str) -> Lettering {
+        self.font = Some(font.to_string());
+        self
+    }
+    /// `regular`, `bold`, `italic` or `bold-italic`.
+    pub fn style(mut self, style: &str) -> Lettering {
+        self.style = Some(style.to_string());
+        self
+    }
+    /// A variable font's weight, 100 to 900.
+    pub fn weight(mut self, weight: f64) -> Lettering {
+        self.weight = Some(weight);
+        self
+    }
+    /// Added after every letter, mm.
+    pub fn spacing(mut self, mm: f64) -> Lettering {
+        self.spacing = Some(mm);
+        self
+    }
+    /// Capital heights between lines (1.3 by default).
+    pub fn line_spacing(mut self, heights: f64) -> Lettering {
+        self.line_spacing = Some(heights);
+        self
+    }
+    /// `left`, `centre` or `right`, for each line.
+    pub fn align(mut self, align: &str) -> Lettering {
+        self.align = Some(align.to_string());
+        self
+    }
+    /// The layout turned this much, degrees.
+    pub fn angle(mut self, deg: f64) -> Lettering {
+        self.angle = Some(deg);
+        self
+    }
+    /// A pen font's line width, mm.
+    pub fn stroke_width(mut self, mm: f64) -> Lettering {
+        self.stroke_width = Some(mm);
+        self
+    }
+    /// Round a cylinder or a cone (the default there).
+    pub fn around(mut self) -> Lettering {
+        self.along = Some("around".to_string());
+        self
+    }
+    /// Up a cylinder's or a cone's axis.
+    pub fn axis(mut self) -> Lettering {
+        self.along = Some("axis".to_string());
+        self
+    }
+    /// Along the face's U (a sphere, a torus or a freeform face).
+    pub fn u(mut self) -> Lettering {
+        self.along = Some("u".to_string());
+        self
+    }
+    /// Along the face's V.
+    pub fn v(mut self) -> Lettering {
+        self.along = Some("v".to_string());
+        self
+    }
+    /// Push the letters onto a sphere, a torus or a freeform face along its normal, like a slide, instead of wrapping them.
+    pub fn project(mut self) -> Lettering {
+        self.wrap = Some("project".to_string());
+        self
+    }
+    /// Read the other way round, upside down.
+    pub fn flip(mut self) -> Lettering {
+        self.flip = true;
+        self
+    }
+    /// Cut the letters into the part instead of raising them.
+    pub fn engrave(mut self) -> Lettering {
+        self.cut = true;
+        self
+    }
+
+    /// The fields both the op and the outline call share.
+    fn common(&self, text: &str, mut j: Json) -> Json {
+        j = j.set("text", text).set("height", self.height);
+        if let Some(v) = &self.font {
+            j = j.set("font", v.as_str());
+        }
+        if let Some(v) = &self.style {
+            j = j.set("style", v.as_str());
+        }
+        if let Some(v) = self.weight {
+            j = j.set("weight", v);
+        }
+        if let Some(v) = self.spacing {
+            j = j.set("spacing", v);
+        }
+        if let Some(v) = self.line_spacing {
+            j = j.set("lineSpacing", v);
+        }
+        if let Some(v) = &self.align {
+            j = j.set("align", v.as_str());
+        }
+        if let Some(v) = self.stroke_width {
+            j = j.set("strokeWidth", v);
+        }
+        j
+    }
+
+    /// The `text` op for `face`: `faceIndex`, and for a curved face the `point` the text is centred on.
+    pub fn op(&self, text: &str, face: &PickedFace) -> Json {
+        let mut j = self.common(text, Json::obj().set("kind", "text").set("faceIndex", face.index)).set("depth", self.depth);
+        if face.kind != "plane" {
+            j = j.set("point", face.point);
+        }
+        if self.cut {
+            j = j.set("op", "cut");
+        }
+        if let Some(v) = self.angle {
+            j = j.set("angleDeg", v);
+        }
+        if let Some(v) = &self.along {
+            j = j.set("along", v.as_str());
+        }
+        if let Some(v) = &self.wrap {
+            j = j.set("wrap", v.as_str());
+        }
+        if self.flip {
+            j = j.set("flip", true);
+        }
+        j
+    }
+
+    /// The arguments of the host's `text_outline` call.
+    fn outline_args(&self, text: &str) -> Json {
+        let mut j = self.common(text, Json::obj());
+        if let Some(v) = self.angle {
+            j = j.set("angleDeg", v);
+        }
+        j
     }
 }
 
@@ -906,7 +1093,10 @@ impl Session {
     #[track_caller]
     pub fn pick_face(&mut self, part: &Part, face: &PickParam) -> Result<PickedFace, Refusal> {
         let line = std::panic::Location::caller().line();
-        let args = Json::obj().set("param", face.name.as_str()).set("kind", "face").set("object", part.object.as_str()).set("value", face.value.clone());
+        let mut args = Json::obj().set("param", face.name.as_str()).set("kind", "face").set("object", part.object.as_str()).set("value", face.value.clone());
+        if face.curved {
+            args = args.set("curved", true);
+        }
         let r = self.call("pick", args)?;
         let outline = Section::all(&r).into_iter().next().ok_or(Refusal { reason: "pick gave no face".to_string(), line })?;
         Ok(PickedFace {
@@ -915,6 +1105,9 @@ impl Session {
             point: vec3(r.get("nearPoint")),
             area: r.get("areaMm2").and_then(Json::as_f64).unwrap_or(0.0),
             outline,
+            kind: r.get("surface").and_then(Json::as_str).unwrap_or("plane").to_string(),
+            axis: r.get("axis").map(|a| vec3(Some(a))),
+            radius: r.get("radiusMm").and_then(Json::as_f64),
         })
     }
 
@@ -929,6 +1122,28 @@ impl Session {
         }
         let r = self.call("pick", args)?;
         Section::all(&r).into_iter().next().ok_or(Refusal { reason: "pick gave no outline".to_string(), line })
+    }
+
+    /// Text on `face` (API 1.3), one history step: the `text` op built from `how`. `face` is what `pick_face` gave, flat or curved.
+    #[track_caller]
+    pub fn lettering(&mut self, part: &Part, face: &PickedFace, text: &str, how: &Lettering) -> Result<Json, Refusal> {
+        self.apply(part, how.op(text, face))
+    }
+
+    /// The letters of `text` in `font` at capitals `height` mm as a flat outline (API 1.3): `.region` for `geom2d`, `.loops` for
+    /// `extrude`. The host lays it out, since the recipe crate reads no fonts. It is centred on the origin of a frame with U right
+    /// and V up, so `.extrude("fuse", depth, section.loops.clone())` raises it, and a stencil or a fit test can use the region.
+    #[track_caller]
+    pub fn text_outline(&mut self, text: &str, font: &str, height: f64) -> Result<Section, Refusal> {
+        self.text_outline_with(text, &Lettering::new(height, 0.0).font(font))
+    }
+
+    /// `text_outline` with the style, weight, spacing, line spacing, alignment, angle and pen width of `how` (its depth is not used).
+    #[track_caller]
+    pub fn text_outline_with(&mut self, text: &str, how: &Lettering) -> Result<Section, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let r = self.call("text_outline", how.outline_args(text))?;
+        Section::all(&r).into_iter().next().ok_or(Refusal { reason: "text_outline gave no outline".to_string(), line })
     }
 
     /// The part's bounding box in its frame, `(min, max)` in mm (API 1.2).
@@ -2934,7 +3149,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 2));
+        assert_eq!(API, (1, 3));
     }
 
     #[test]
@@ -2966,6 +3181,59 @@ mod tests {
         );
         assert_eq!(s.outline("rim").default_face("top").spec.to_json().to_string(), r#"{"name":"rim","kind":"outline","default":{"face":{"rule":"top"}}}"#);
         assert_eq!(FACE_RULES.len(), 5);
+    }
+
+    #[test]
+    fn a_curved_face_parameter_says_so_and_a_flat_one_does_not() {
+        let s = Session::from_start(&Json::obj());
+        assert_eq!(
+            s.face("wall").curved().label("Wall").spec.to_json().to_string(),
+            r#"{"name":"wall","kind":"face","default":null,"label":"Wall","curved":true}"#
+        );
+        assert_eq!(s.face("top").rule("top").spec.to_json().to_string(), r#"{"name":"top","kind":"face","default":{"rule":"top"}}"#);
+        let p = s.face("wall").curved().get();
+        assert!(p.curved);
+        assert!(!s.face("top").get().curved);
+        // A curved face is kept by its surface and a point.
+        let given = Session::from_start(&Json::parse(r#"{"params":{"wall":{"surface":"cylinder","nearPoint":[-20,0,20]}}}"#).unwrap());
+        assert_eq!(given.face("wall").curved().get().value.to_string(), r#"{"surface":"cylinder","nearPoint":[-20,0,20]}"#);
+    }
+
+    fn face_of(kind: &str, index: u32) -> PickedFace {
+        PickedFace {
+            index,
+            normal: if kind == "plane" { [0.0, 0.0, 1.0] } else { [0.0; 3] },
+            point: [-20.0, 0.0, 20.0],
+            area: 10.0,
+            outline: Section::from_json(&Json::obj()),
+            kind: kind.to_string(),
+            axis: None,
+            radius: None,
+        }
+    }
+
+    #[test]
+    fn lettering_is_the_text_op_with_the_fields_given() {
+        let flat = Lettering::new(6.0, 0.8).font("mono").style("bold").align("left").spacing(0.2).op("LOT 42", &face_of("plane", 3));
+        assert_eq!(
+            flat.to_string(),
+            r#"{"kind":"text","faceIndex":3,"text":"LOT 42","height":6,"font":"mono","style":"bold","spacing":0.2,"align":"left","depth":0.8}"#
+        );
+        let round = Lettering::new(5.0, 0.6).font("line").around().flip().engrave().angle(10.0).op("Lime", &face_of("cylinder", 1));
+        assert_eq!(
+            round.to_string(),
+            r#"{"kind":"text","faceIndex":1,"text":"Lime","height":5,"font":"line","depth":0.6,"point":[-20,0,20],"op":"cut","angleDeg":10,"along":"around","flip":true}"#
+        );
+        let sphere = Lettering::new(4.0, 0.5).u().project().stroke_width(0.5).op("A", &face_of("sphere", 2));
+        assert_eq!(sphere.get("wrap").and_then(Json::as_str), Some("project"));
+        assert_eq!(sphere.get("strokeWidth").and_then(Json::as_f64), Some(0.5));
+        assert_eq!(sphere.get("along").and_then(Json::as_str), Some("u"));
+    }
+
+    #[test]
+    fn the_outline_call_takes_the_layout_fields_and_no_depth() {
+        let how = Lettering::new(10.0, 0.0).font("sans").style("bold").line_spacing(1.5);
+        assert_eq!(how.outline_args("LIME").to_string(), r#"{"text":"LIME","height":10,"font":"sans","style":"bold","lineSpacing":1.5}"#);
     }
 
     #[test]

@@ -352,7 +352,7 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="text" data-fontkind="stroke" data-snap="1" data-tip="Default height × 0.15."><span class="scrub-label" data-scrub>Stroke</span><input id="modelTextStroke" type="number" step="0.1" min="0.1" max="100" value="0.9" aria-label="Stroke width, default height × 0.15"></label>
                 <label data-for="text" data-fontkind="stroke" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
                 <label data-for="text" data-fontkind="outline" data-snap="0.1" data-tip="Added after every letter, on top of the font's own kerning."><span class="scrub-label" data-scrub>Letter spacing</span><input id="modelTextTrack" type="number" step="0.1" min="-50" max="100" value="0" aria-label="Letter spacing, mm after every letter"></label>
-                <label data-for="text" data-fontkind="outline" data-snap="0.1" data-tip="Capital heights between lines. Default 1.3."><span class="scrub-label" data-scrub>Line spacing</span><input id="modelTextLines" type="number" step="0.1" min="0" max="10" value="1.3" aria-label="Line spacing, capital heights between lines"></label>
+                <label data-for="text" data-fontkind="lines" data-snap="0.1" data-tip="Capital heights between lines. Default 1.3."><span class="scrub-label" data-scrub>Line spacing</span><input id="modelTextLines" type="number" step="0.1" min="0" max="10" value="1.3" aria-label="Line spacing, capital heights between lines"></label>
                 <label data-for="text" data-fontkind="variable" data-snap="10" data-tip="The weight of a variable font: 100 light, 400 regular, 700 bold, 900 black."><span class="scrub-label" data-scrub>Weight</span><input id="modelTextWeight" type="number" step="10" min="1" max="1000" value="400" aria-label="Weight of the variable font"></label>
                 <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
                 <!-- end A3 -->
@@ -444,8 +444,9 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Cut</button>
               </div>
               <!-- Text with real fonts: the font picker draws each name in its own font; the bold, italic and size follow it. -->
-              <div class="model-fonts" id="modelTextFont" data-for="text" role="group" aria-label="Font" data-tip="Stroke is the single-stroke grid font. The others are real outline fonts.">
-                <button class="btn mode font-pick" type="button" data-font="stroke" aria-pressed="false" data-tip="Single-stroke capitals and digits, for engraving.">Stroke</button>
+              <div class="model-fonts" id="modelTextFont" data-for="text" role="group" aria-label="Font" data-tip="Stroke and Line are single-stroke fonts. The others are real outline fonts.">
+                <button class="btn mode font-pick" type="button" data-font="stroke" aria-pressed="false" data-tip="Single-stroke capitals and digits on a 4 × 6 grid, for engraving. A lowercase letter is drawn as its capital.">Stroke</button>
+                <button class="btn mode font-pick" type="button" data-font="line" aria-pressed="false" data-tip="Single-stroke letters with lowercase, for engraving and pen-like text.">Line</button>
                 ${TEXT_FONTS.map((font) => `<button class="btn mode font-pick${font.id === DEFAULT_TEXT_FONT ? " on" : ""}" type="button" data-font="${font.id}@${font.version}" aria-pressed="${font.id === DEFAULT_TEXT_FONT}" style="font-family: '${font.family}', sans-serif" data-tip="${font.about}">${font.name}</button>`).join("\n                ")}
                 <span class="font-user-host" id="modelTextUserFonts" role="presentation"></span>
               </div>
@@ -463,11 +464,11 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode" type="button" data-style="italic" aria-pressed="false">Italic</button>
                 <button class="btn mode" type="button" data-style="bold-italic" aria-pressed="false">Bold italic</button>
               </div>
-              <label class="model-text-box" data-for="text" data-tip="Any letters the font has. Enter starts a new line; Ctrl+Enter applies. The stroke font takes A-Z, 0-9, space, -+.,:!?/'&amp; up to 80."><span class="scrub-label">Text</span><textarea id="modelFeatText" rows="2" maxlength="400" spellcheck="false" aria-label="Text, Enter for a new line, Ctrl+Enter to apply">A</textarea></label>
+              <label class="model-text-box" data-for="text" data-tip="Any letters the font has. Enter starts a new line; Ctrl+Enter applies. Stroke takes A-Z, 0-9, space, -+.,:!?/'&amp;; Line adds lowercase."><span class="scrub-label">Text</span><textarea id="modelFeatText" rows="2" maxlength="400" spellcheck="false" aria-label="Text, Enter for a new line, Ctrl+Enter to apply">A</textarea></label>
               <div class="modes" id="modelTextAlign" data-for="text" role="group" aria-label="Align" data-tip="Each line: at is its middle, start or end.">
                 <button class="btn mode on" type="button" data-align="centre" aria-pressed="true">Centre</button>
                 <button class="btn mode" type="button" data-align="left" aria-pressed="false">Left</button>
-                <button class="btn mode" type="button" data-align="right" data-fontkind="outline" aria-pressed="false">Right</button>
+                <button class="btn mode" type="button" data-align="right" aria-pressed="false">Right</button>
               </div>
               <!-- Text on a curved face: shown while one is picked. U and V (the flat face's position) are hidden then; a click places the text.
                    Around and Along are for a cylinder or a cone; U, V, Wrap and Project for a sphere, a torus or a freeform face. -->
@@ -489,7 +490,7 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
                 <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>
               </div>
-              <p class="model-note model-text-thin" id="modelTextThin" data-for="text" data-fontkind="outline" role="status" hidden></p>
+              <p class="model-note model-text-thin" id="modelTextThin" data-for="text" data-fontkind="lines" role="status" hidden></p>
               <!-- end A3 -->
               <!-- --- A4 pattern and mirror --- -->
               <p class="model-note" id="modelRepeatOf" data-for="pattern mirror"></p>

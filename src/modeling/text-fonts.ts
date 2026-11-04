@@ -120,9 +120,46 @@ export function versionedId(font: TextFont): string {
   return `${font.id}@${font.version}`;
 }
 
-/** Whether a step's font is an outline font. A step with no font, or `stroke`, is the old stroke font. */
+/**
+ * --- Text milestone 5. The pen fonts: letters drawn as lines with a pen width, built through the same step as an outline font. The
+ * engine reads their strokes (`crates/lime-model-occt/src/text/pen.rs`, which `mcp/text-fonts.test.ts` compares this list with).
+ * `stroke` is the 4 × 6 grid font (a lowercase letter is drawn as its capital); `line` has lowercase of its own.
+ */
+export interface PenFont {
+  id: "stroke" | "line";
+  version: string;
+  name: string;
+  about: string;
+}
+
+export const PEN_FONTS: readonly PenFont[] = [
+  { id: "stroke", version: "1", name: "Stroke", about: "Single-stroke capitals and digits on a 4 × 6 grid, for engraving. A lowercase letter is drawn as its capital." },
+  { id: "line", version: "1", name: "Line", about: "Single-stroke letters with lowercase, for engraving and pen-like text." },
+];
+
+/** The pen font a font id names (`stroke`, `line@1`), or undefined. */
+export function penFontOf(font: unknown): PenFont | undefined {
+  if (typeof font !== "string") return undefined;
+  const [name, version] = font.split("@");
+  return PEN_FONTS.find((pen) => pen.id === name && (version === undefined || version === pen.version));
+}
+
+/** The pen font's id as a step stores it, with its version: `stroke@1`. */
+export function penVersionedId(pen: PenFont): string {
+  return `${pen.id}@${pen.version}`;
+}
+
+/** Whether a step's font is a pen font. */
+export function isPenFont(font: unknown): boolean {
+  return penFontOf(font) !== undefined;
+}
+
+/**
+ * Whether a step's font is drawn from outlines, not strokes. A step with no font is the old stroke font's boxes; `stroke` and
+ * `line` are pen fonts, which a card step and an MCP op may name and which build as one lettering step.
+ */
 export function isOutlineFont(font: unknown): boolean {
-  return typeof font === "string" && font !== "" && font !== STROKE_FONT;
+  return typeof font === "string" && font !== "" && !isPenFont(font);
 }
 
 /** Bold, italic or neither, as the style words say. */

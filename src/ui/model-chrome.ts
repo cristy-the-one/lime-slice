@@ -525,8 +525,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
           const field = document.querySelector<HTMLInputElement>("#modelTextWeight");
           if (field && !(Number(field.value) >= user.weight.min && Number(field.value) <= user.weight.max)) field.value = String(user.weight.default);
         }
-        // The stroke font has no right-aligned lines.
-        if (!isOutlineFont(featureMode.dataset.font) && panelChoices("text").align === "right") paintNamed("modelTextAlign", "align", "centre");
+
         paintTextFont();
       }
       syncFields();
@@ -2998,8 +2997,8 @@ function paintTextFont() {
 /** Which kinds of field the Text card shows now: `stroke`, or `outline`, and `variable` too for a variable font. */
 function fontKindsNow(): string[] {
   const font = panelChoices("text").font;
-  if (!isOutlineFont(font)) return ["stroke"];
-  return userFontView(font)?.weight ? ["outline", "variable"] : ["outline"];
+  if (!isOutlineFont(font)) return ["stroke", "lines"];
+  return userFontView(font)?.weight ? ["outline", "lines", "variable"] : ["outline", "lines"];
 }
 
 /**

@@ -8,7 +8,7 @@ import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type 
 import { framePose, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
 import { pathSamples } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
-import { fontById, isOutlineFont, isUserFont, MAX_OUTLINE_CHARS, styleOf, styleRefusal, versionedId } from "./text-fonts.ts";
+import { fontById, isOutlineFont, isPenFont, isUserFont, MAX_OUTLINE_CHARS, penFontOf, penVersionedId, STROKE_FONT, styleOf, styleRefusal, versionedId, type PenFont } from "./text-fonts.ts";
 
 type Vec3 = [number, number, number];
 export type BooleanKind = "cut" | "fuse" | "common";
@@ -269,7 +269,7 @@ function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] 
   const text = typeof spec.text === "string" ? spec.text : "";
   if (!text.trim()) return { reason: "Text needs text." };
   // --- Text with real fonts: one lettering step, built in one kernel call. No font, or `stroke`, is the old font below.
-  if (isOutlineFont(spec.font)) return letteringPiece(spec, frame, text);
+  if (isOutlineFont(spec.font) || isPenFont(spec.font)) return letteringPiece(spec, frame, text);
   if ([...text].length > 80) return { reason: "Text takes at most 80 characters a step; use several." };
   const height = numOr(spec.height, 0);
   const depth = numOr(spec.depth, 0);
@@ -305,7 +305,14 @@ function roundTextFace(spec: Record<string, unknown>, ctx: ExpandContext): { sur
 /** What a curved face is for lettering: `other` is a torus or a freeform face. */
 export type RoundSurface = "cylinder" | "cone" | "sphere" | "other";
 
-export const ROUND_TEXT_FONT = "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.";
+/** A pen font's own fields on its lettering step (milestone 5), or the sentence for what it does not take. */
+function penStep(spec: Record<string, unknown>, pen: PenFont, height: number): { reason: string } | { fields: Record<string, unknown> } {
+  if (spec.style !== undefined && styleOf(spec.style) !== "regular") return { reason: `${pen.name} has one style. Make the line heavier with strokeWidth, or pick an outline font for bold and italic.` };
+  if (spec.weight !== undefined) return { reason: `${pen.name} has one weight. Set strokeWidth instead.` };
+  const width = spec.strokeWidth === undefined ? undefined : numOr(spec.strokeWidth, NaN);
+  if (width !== undefined && !(width > 0 && width <= height / 2)) return { reason: "strokeWidth is above 0 and at most half the height." };
+  return { fields: width !== undefined ? { strokeWidth: width } : {} };
+}
 
 /**
  * Text on a curved face (milestones 2 and 3): the fields of a flat text plus `point` (a model-space point on the face the text is
@@ -318,16 +325,19 @@ export const ROUND_TEXT_FONT = "Text on a curved face takes an outline font: san
 function roundLettering(spec: Record<string, unknown>, ctx: ExpandContext, round: { surface: RoundSurface; point: Vec3 }): Piece[] | { reason: string } {
   const text = typeof spec.text === "string" ? spec.text : "";
   if (!text.trim()) return { reason: "Text needs text." };
-  if (!isOutlineFont(spec.font)) return { reason: ROUND_TEXT_FONT };
-  const font = fontById(spec.font);
-  if (!font) return { reason: `There is no font called ‘${String(spec.font)}’. The fonts are stroke, sans, mono, serif, stencil.` };
+  // --- Milestone 5: a text with no font on a curved face is the stroke font, as a pen font; `stroke` and `line` are named the same way.
+  const pen = penFontOf(spec.font === undefined || spec.font === "" ? STROKE_FONT : spec.font);
+  const font = pen ? undefined : fontById(spec.font);
+  if (!pen && !font) return { reason: `There is no font called ‘${String(spec.font)}’. The fonts are stroke, line, sans, mono, serif, stencil.` };
   if ([...text].length > MAX_OUTLINE_CHARS) return { reason: `Text takes at most ${MAX_OUTLINE_CHARS} characters a step; use several.` };
   const height = numOr(spec.height, 0);
   const depth = numOr(spec.depth, 0);
   if (!(height > 0) || !(depth > 0)) return { reason: "Text needs a height (the capitals') and a depth, in millimetres." };
   const style = styleOf(spec.style);
-  const missing = styleRefusal(font, style);
+  const missing = font ? styleRefusal(font, style) : null;
   if (missing) return { reason: missing };
+  const penFields = pen ? penStep(spec, pen, height) : null;
+  if (penFields && "reason" in penFields) return penFields;
   const spacing = spec.spacing === undefined ? undefined : numOr(spec.spacing, NaN);
   const lineSpacing = spec.lineSpacing === undefined ? undefined : numOr(spec.lineSpacing, NaN);
   if ((spacing !== undefined && !Number.isFinite(spacing)) || (lineSpacing !== undefined && !(lineSpacing >= 0))) return { reason: "Letter spacing and line spacing are numbers; line spacing is not negative." };
@@ -349,11 +359,12 @@ function roundLettering(spec: Record<string, unknown>, ctx: ExpandContext, round
     origin: point,
     turn: [0, 0, 0],
     text,
-    font: versionedId(font),
+    font: pen ? penVersionedId(pen) : versionedId(font!),
     ...(style !== "regular" ? { style } : {}),
+    ...(penFields && "fields" in penFields ? penFields.fields : {}),
     height,
     depth,
-    ...(spacing !== undefined && spacing !== 0 ? { spacing } : {}),
+    ...(spacing !== undefined && (pen || spacing !== 0) ? { spacing } : {}),
     ...(lineSpacing !== undefined ? { lineSpacing } : {}),
     ...(spec.align !== undefined && spec.align !== "centre" ? { align: spec.align } : {}),
     ...(angle !== 0 ? { angleDeg: angle } : {}),
@@ -374,10 +385,12 @@ function roundLettering(spec: Record<string, unknown>, ctx: ExpandContext, round
 function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane; extent: FaceExtent | null }, text: string): Piece[] | { reason: string } {
   // --- Text milestone 4: a font the person added is named by its id; the engine knows its styles, weights and letters.
   const userId = isUserFont(spec.font) ? spec.font : null;
-  const font = userId ? undefined : fontById(spec.font);
-  if (!font && !userId) {
+  // --- Milestone 5: `stroke` and `line` are pen fonts, the same one step.
+  const pen = penFontOf(spec.font);
+  const font = userId || pen ? undefined : fontById(spec.font);
+  if (!font && !userId && !pen) {
     const name = typeof spec.font === "string" ? spec.font : "";
-    return { reason: `There is no font called ‘${name}’. The fonts are stroke, ${["sans", "mono", "serif", "stencil"].join(", ")}.` };
+    return { reason: `There is no font called ‘${name}’. The fonts are stroke, line, ${["sans", "mono", "serif", "stencil"].join(", ")}.` };
   }
   const weight = spec.weight === undefined ? undefined : numOr(spec.weight, NaN);
   if (weight !== undefined && !(weight >= 100 && weight <= 900)) return { reason: "weight is a number from 100 to 900." };
@@ -388,6 +401,8 @@ function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane
   const style = styleOf(spec.style);
   const missing = font ? styleRefusal(font, style) : null;
   if (missing) return { reason: missing };
+  const penFields = pen ? penStep(spec, pen, height) : null;
+  if (penFields && "reason" in penFields) return penFields;
   const spacing = spec.spacing === undefined ? undefined : numOr(spec.spacing, NaN);
   const lineSpacing = spec.lineSpacing === undefined ? undefined : numOr(spec.lineSpacing, NaN);
   if ((spacing !== undefined && !Number.isFinite(spacing)) || (lineSpacing !== undefined && !(lineSpacing >= 0))) return { reason: "Letter spacing and line spacing are numbers; line spacing is not negative." };
@@ -405,12 +420,13 @@ function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane
     origin: planePoint(frame.plane, [u0, v0, 0]).map(round6),
     turn: [...frame.plane.turn],
     text,
-    font: userId ?? versionedId(font!),
+    font: userId ?? (pen ? penVersionedId(pen) : versionedId(font!)),
     ...(style !== "regular" ? { style } : {}),
     ...(weight !== undefined ? { weight } : {}),
+    ...(penFields && "fields" in penFields ? penFields.fields : {}),
     height,
     depth,
-    ...(spacing !== undefined && spacing !== 0 ? { spacing } : {}),
+    ...(spacing !== undefined && (pen || spacing !== 0) ? { spacing } : {}),
     ...(lineSpacing !== undefined ? { lineSpacing } : {}),
     ...(spec.align !== undefined && spec.align !== "centre" ? { align: spec.align } : {}),
     ...(angle !== 0 ? { angleDeg: angle } : {}),

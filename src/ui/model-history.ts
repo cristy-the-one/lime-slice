@@ -12,7 +12,7 @@ import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
 import { openDock } from "./dock-reveal";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
-import type { FaceValue } from "../recipe/picks";
+import type { PickedFaceValue } from "../recipe/picks";
 import { elideData } from "../recipe/plugin-data";
 
 /** Rows are named by `RowKey`: an open solid's step, or a step of a tool one of its joins takes ("Booleans between objects"). */
@@ -62,7 +62,7 @@ interface ModelHistoryHooks {
   /** --- API 1.2. The sketches on the plate a person may pick as an outline. */
   pluginSketches?(): SketchChoice[];
   /** Wait for a click on a flat face of the part on screen; null when cancelled. The sentence why it cannot start, or null. */
-  pluginPickFace?(done: (picked: { object: string; face: FaceValue } | null) => void): string | null;
+  pluginPickFace?(done: (picked: { object: string; face: PickedFaceValue } | null) => void): string | null;
   pluginCancelPick?(): void;
   /** --- Milestone 7, D9. Use vN: rebuild the row's plugin step with the library's newer version, values carried by name. */
   pluginUseVersion?(row: RowKey): Promise<{ row: RowKey } | { reason: string }>;

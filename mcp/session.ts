@@ -43,6 +43,8 @@ import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renum
 import { replayedTree, replayOps } from "../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../src/plugin-step.ts";
 import { answerPick, sketchOutline, type PickReads } from "../src/recipe/picks.ts";
+import { answerTextOutline } from "../src/recipe/text-outline.ts";
+import { fontById, isPenFont, isUserFont } from "../src/modeling/text-fonts.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
@@ -1300,6 +1302,16 @@ export class Session {
           return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${on} is neither. Pass it as object to run on it.` };
         }
         return answerPick(site.args, params, { ...this.pickReads(ctx), shownFaces: (id) => (id === objectArg ? shownSolid : null) }, picked);
+      }
+      // --- API 1.3. The letters of a text as a flat outline, laid out by the engine. A font of the project is named as the texts name it.
+      if (site.tool === "text_outline") {
+        const args = { ...site.args };
+        if (typeof args.font === "string" && !isPenFont(args.font) && !fontById(args.font) && !isUserFont(args.font)) {
+          const found = this.fonts.find(args.font);
+          if (!found) return { ok: false, error: `There is no font called ‘${args.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.` };
+          args.font = found.id;
+        }
+        return answerTextOutline(args, async (request) => JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as Record<string, unknown>);
       }
       if (site.tool === "log") {
         if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);
@@ -2762,7 +2774,7 @@ export class Session {
         await this.keepFontPack(added.font.id, op);
       } else if (typeof op.font === "string") {
         const found = this.fonts.find(op.font);
-        if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
+        if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
         op.font = found.id;
         await this.keepFontPack(found.id, op);
       }

@@ -34,6 +34,22 @@ export interface FaceValue {
   areaMm2?: number;
 }
 
+/** The surfaces a curved face may be (API 1.3): `other` is a torus or a freeform face, which the part's face list does not tell apart. */
+export const CURVED_SURFACES = ["cylinder", "cone", "sphere", "other"] as const;
+
+/**
+ * A curved face as it is kept (API 1.3, `s.face(name).curved()`): its surface, a point on it and its area when picked. A curved face
+ * has no one normal, so it is found again as the face of that surface under the point, not by a normal.
+ */
+export interface CurvedFaceValue {
+  surface: (typeof CURVED_SURFACES)[number];
+  nearPoint: Vec3;
+  areaMm2?: number;
+}
+
+/** A face a person picked: a flat one by its normal, a curved one by its surface. */
+export type PickedFaceValue = FaceValue | CurvedFaceValue;
+
 /** What a run reads to answer a pick. */
 export interface PickReads {
   /** A part's faces as faces_find reads them, with its mesh for distances; or why it cannot be read. */
@@ -71,7 +87,7 @@ function unit(v: Vec3): Vec3 | null {
 
 /** Whether `value` is a kept face, rule or outline (an object a stamp, a preset or a form may hold as a value). */
 export function isPickValue(value: unknown): value is Body {
-  return isRecord(value) && (("normal" in value && "nearPoint" in value) || "rule" in value || "sketch" in value || "face" in value || "loops" in value || "data" in value);
+  return isRecord(value) && (("normal" in value && "nearPoint" in value) || ("surface" in value && "nearPoint" in value) || "rule" in value || "sketch" in value || "face" in value || "loops" in value || "data" in value);
 }
 
 /** Why `value` is not a value of a `face` or `outline` parameter, or null when it is (the shape only). */
@@ -80,6 +96,7 @@ export function pickProblem(kind: "face" | "outline", value: unknown, label: str
     if (typeof value === "number") return Number.isInteger(value) && value >= 0 ? null : `${label} is a face index (0 or more), or {normal, nearPoint}.`;
     if (!isRecord(value)) return `${label} is a face: an index, or {normal, nearPoint}.`;
     if (typeof value.rule === "string") return (FACE_RULES as readonly string[]).includes(value.rule) ? null : `${label}'s rule is one of ${FACE_RULES.join(", ")}.`;
+    if (value.surface !== undefined) return (CURVED_SURFACES as readonly unknown[]).includes(value.surface) && vec3(value.nearPoint) ? null : `${label} is a curved face: {surface: ${CURVED_SURFACES.join(" | ")}, nearPoint}.`;
     if (!vec3(value.normal) || !vec3(value.nearPoint)) return `${label} is a face: an index, or {normal, nearPoint} with three numbers each.`;
     return null;
   }
@@ -109,6 +126,7 @@ export function pickText(value: unknown): string {
     const facing = vec3(value.facing);
     return facing ? `${value.rule.replace("_", " ")} facing ${facing.join(", ")}` : value.rule.replace("_", " ");
   }
+  if (typeof value.surface === "string") return value.surface === "other" ? "curved face" : `${value.surface} face`;
   const normal = vec3(value.normal);
   if (normal) return `face facing ${axisWord(normal)}`;
   const where = typeof value.object === "string" ? ` of ${value.object}` : "";
@@ -159,6 +177,16 @@ export function faceValueOf(set: FaceSet, index: number): FaceValue | null {
   return { normal: roundV(n), nearPoint: roundV(pointOn(set, face)), areaMm2: round(face.areaMm2, 100) };
 }
 
+/** Face `index` as a curved face is kept (API 1.3). Null when it is a flat face or not on the part. */
+export function curvedValueOf(set: FaceSet, index: number): CurvedFaceValue | null {
+  const face = set.faces.find((row) => row.index === index);
+  if (!face || face.kind === "plane") return null;
+  return { surface: face.kind, nearPoint: roundV(pointOn(set, face)), areaMm2: round(face.areaMm2, 100) };
+}
+
+/** How far a kept point may lie from a curved face's mesh and still be on it, mm: the mesh's chord sags under the true surface. */
+const CURVED_ACROSS_MM = 0.6;
+
 const UP: Vec3 = [0, 0, 1];
 
 function facingWithin(face: FaceRow, dir: Vec3, deg = 5): boolean {
@@ -174,28 +202,43 @@ function facingWithin(face: FaceRow, dir: Vec3, deg = 5): boolean {
  * along the normal when several are: an earlier step may move it along its normal or grow it, and it is still the face.
  * It is gone when no such face lies under the point (half a millimetre of slack).
  */
-export function resolveFace(set: FaceSet, value: unknown, label: string): { index: number; kept: FaceValue; rule: boolean } | { reason: string } {
+export function resolveFace(set: FaceSet, value: unknown, label: string, curved = false): { index: number; kept: PickedFaceValue; rule: boolean } | { reason: string } {
   const flat = set.faces.filter((face) => face.kind === "plane" && face.normal);
+  // --- API 1.3: a parameter declared `.curved()` takes any face; a flat face is kept as ever, a curved one by its surface and a point.
+  const keep = (index: number): PickedFaceValue | null => faceValueOf(set, index) ?? (curved ? curvedValueOf(set, index) : null);
+  const what = curved ? "a face of this part. Pick a face" : "a flat face of this part. Pick a flat face";
   if (typeof value === "number") {
-    const kept = Number.isInteger(value) ? faceValueOf(set, value) : null;
-    if (!kept) return { reason: `${label}: face ${value} is not a flat face of this part. Pick a flat face.` };
+    const kept = Number.isInteger(value) ? keep(value) : null;
+    if (!kept) return { reason: `${label}: face ${value} is not ${what}.` };
     return { index: value, kept, rule: false };
   }
-  if (!isRecord(value)) return { reason: `${label} needs a face. Pick a flat face of the part.` };
+  if (!isRecord(value)) return { reason: `${label} needs a face. Pick ${curved ? "a face" : "a flat face"} of the part.` };
+  if (typeof value.surface === "string") {
+    const near = vec3(value.nearPoint);
+    if (!curved) return { reason: `${label} takes a flat face, and this one is curved. Pick a flat face.` };
+    if (!near || !(CURVED_SURFACES as readonly string[]).includes(value.surface)) return { reason: `${label} is a curved face: {surface, nearPoint}.` };
+    const found = set.faces
+      .filter((face) => face.kind === value.surface)
+      .map((face) => ({ face, across: acrossFace(set, face, near) }))
+      .filter((row) => row.across <= CURVED_ACROSS_MM)
+      .sort((x, y) => x.across - y.across)[0];
+    if (!found) return { reason: `The ${value.surface === "other" ? "curved" : value.surface} face picked for ${label} (near ${near.map((v) => round(v, 100)).join(", ")}) is no longer on the part. Pick it again; the part is kept as it was.` };
+    return { index: found.face.index, kept: { surface: found.face.kind as CurvedFaceValue["surface"], nearPoint: near, areaMm2: round(found.face.areaMm2, 100) }, rule: false };
+  }
   if (typeof value.rule === "string") {
     const rule = value.rule;
     const facing = vec3(value.facing);
     const larger = (a: FaceRow, b: FaceRow) => b.areaMm2 - a.areaMm2 || a.index - b.index;
     let rows: FaceRow[];
-    if (rule === "largest") rows = flat.filter((f) => !facing || facingWithin(f, facing)).sort(larger);
+    if (rule === "largest") rows = (curved && !facing ? [...set.faces] : flat).filter((f) => !facing || facingWithin(f, facing)).sort(larger);
     else if (rule === "largest_up" || rule === "largest_down") rows = flat.filter((f) => facingWithin(f, rule === "largest_up" ? UP : [0, 0, -1])).sort(larger);
     else if (rule === "top" || rule === "bottom") {
       const sign = rule === "top" ? 1 : -1;
       rows = flat.filter((f) => facingWithin(f, [0, 0, sign])).sort((a, b) => sign * (b.centre[2] - a.centre[2]) || larger(a, b));
     } else return { reason: `${label}'s rule is one of ${FACE_RULES.join(", ")}.` };
     const first = rows[0];
-    const kept = first ? faceValueOf(set, first.index) : null;
-    if (!first || !kept) return { reason: `${label}: this part has no flat face for the rule ${pickText(value)}. Pick a face.` };
+    const kept = first ? keep(first.index) : null;
+    if (!first || !kept) return { reason: `${label}: this part has no ${curved ? "" : "flat "}face for the rule ${pickText(value)}. Pick a face.` };
     return { index: first.index, kept, rule: true };
   }
   const normal = vec3(value.normal);
@@ -347,10 +390,27 @@ export async function answerPick(args: Body, given: Body, reads: PickReads, pick
   if (value === null || value === undefined) return { ok: false, error: `${param} needs ${kind === "face" ? "a face. Pick a flat face of the part" : "an outline. Pick a sketch or a face's outline"}.` };
   if (kind === "face") {
     if (!object) return { ok: false, error: `${param} is a face of the part the plugin runs on; pass object.` };
-    const faced = await pickFace(reads, object, value, param, 0);
+    const faced = await pickFace(reads, object, value, param, 0, args.curved === true);
     if ("reason" in faced) return { ok: false, error: faced.reason };
     if (isGiven && !faced.rule) picked[param] = faced.kept;
-    return { ok: true, result: { ok: true, object, face: faced.index, normal: faced.kept.normal, nearPoint: faced.kept.nearPoint, areaMm2: faced.kept.areaMm2, sections: [faced.row] } };
+    // --- API 1.3: the surface of the face, and for a cylinder or a cone its axis and radius. A curved face has no one normal: it is zero.
+    const normal = "normal" in faced.kept ? faced.kept.normal : [0, 0, 0];
+    const surface = faced.face.kind === "plane" ? "plane" : faced.face.kind;
+    return {
+      ok: true,
+      result: {
+        ok: true,
+        object,
+        face: faced.index,
+        surface,
+        normal,
+        nearPoint: faced.kept.nearPoint,
+        areaMm2: faced.kept.areaMm2,
+        ...(faced.face.axis ? { axis: roundV(faced.face.axis) } : {}),
+        ...(typeof faced.face.radiusMm === "number" ? { radiusMm: round(faced.face.radiusMm, 1e4) } : {}),
+        sections: [faced.row],
+      },
+    };
   }
   const problem = pickProblem("outline", value, param);
   if (problem) return { ok: false, error: problem };
@@ -383,21 +443,26 @@ export async function answerPick(args: Body, given: Body, reads: PickReads, pick
   return { ok: true, result: { ok: true, sections: [outlineRow(loops, { source: "global", origin: vec3(v.origin) ?? [0, 0, 0], turn: vec3(v.turn) ?? [0, 0, 0] })] } };
 }
 
-async function pickFace(reads: PickReads, object: string, value: unknown, label: string, insetMm: number): Promise<{ index: number; kept: FaceValue; rule: boolean; row: Body } | { reason: string }> {
+/** The section row of a curved face: it has no outline to give (a curved face is not a plane), so the row is empty. */
+const NO_OUTLINE: Body = { frame: { origin: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0], w: [0, 0, 1] }, origin: [0, 0, 0], turn: [0, 0, 0], loops: [], regions: [], areaMm2: 0 };
+
+async function pickFace(reads: PickReads, object: string, value: unknown, label: string, insetMm: number, curved = false): Promise<{ index: number; kept: PickedFaceValue; rule: boolean; row: Body; face: FaceRow } | { reason: string }> {
   const set = await reads.faces(object);
   if ("reason" in set) return { reason: `${label}: ${set.reason}` };
   // An index is the shown step's face, as faces_find listed it: kept as a reference, then found on the run's start.
   const shown = typeof value === "number" ? reads.shownFaces?.(object) ?? null : null;
   let named: unknown = value;
   if (shown) {
-    const kept = Number.isInteger(value) ? faceValueOf(shown, value as number) : null;
-    if (!kept) return { reason: `${label}: face ${String(value)} is not a flat face of this part. Pick a flat face.` };
+    const kept = Number.isInteger(value) ? faceValueOf(shown, value as number) ?? (curved ? curvedValueOf(shown, value as number) : null) : null;
+    if (!kept) return { reason: `${label}: face ${String(value)} is not ${curved ? "a face" : "a flat face"} of this part. Pick ${curved ? "a face" : "a flat face"}.` };
     named = kept;
   }
-  const found = resolveFace(set, named, label);
+  const found = resolveFace(set, named, label, curved);
   if ("reason" in found) return found;
+  const face = set.faces.find((row) => row.index === found.index)!;
+  if ("surface" in found.kept) return { ...found, row: NO_OUTLINE, face };
   const reply = await reads.section(object, { object, face: found.index, insetMm });
   const rows = Array.isArray(reply.sections) ? reply.sections : [];
   if (reply.ok === false || !isRecord(rows[0])) return { reason: `${label}: ${String(reply.reason ?? "the face's outline could not be read.")}` };
-  return { ...found, row: rows[0] };
+  return { ...found, row: rows[0], face };
 }

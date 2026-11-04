@@ -169,6 +169,8 @@ export interface LetteringOp {
   angleDeg?: number;
   /** A variable font's weight, 100 to 900 (milestone 4). Absent: the font's own, or 700 for a bold style. */
   weight?: number;
+  /** --- Milestone 5, a pen font (`stroke`, `line`): the pen's width, mm. Absent: 0.15 of the height. */
+  strokeWidth?: number;
   /**
    * --- Milestone 2, text on a cylinder or a cone. `origin` is then the point on the face the text is centred on and `turn` is
    * not read. `axis` runs the baseline up the part instead of round it; `flip` turns the text half way about its anchor.

@@ -12,7 +12,7 @@
  */
 import { base64ToBytes, bytesToBase64 } from "../base64.ts";
 import { meshRecord, type ProjectMesh } from "../project.ts";
-import { fontById, isUserFont, STROKE_FONT } from "./text-fonts.ts";
+import { fontById, isPenFont, isUserFont } from "./text-fonts.ts";
 
 export { isUserFont, USER_FONT_PREFIX } from "./text-fonts.ts";
 
@@ -127,7 +127,7 @@ export function textsNeedingFonts(input: unknown): Record<string, unknown>[] {
       return;
     }
     const row = value as Row;
-    if (row.kind === "text" && (typeof row.fontFile === "string" || (typeof row.font === "string" && row.font !== STROKE_FONT && !fontById(row.font) && !isUserFont(row.font)))) out.push(row);
+    if (row.kind === "text" && (typeof row.fontFile === "string" || (typeof row.font === "string" && !isPenFont(row.font) && !fontById(row.font) && !isUserFont(row.font)))) out.push(row);
     for (const child of Object.values(row)) walk(child, depth + 1);
   };
   walk(input, 0);

@@ -9,7 +9,7 @@ import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
 import { anchorOf, expand, type Piece, type RoundSurface } from "./modeling/compose.ts";
-import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, isUserFont, STROKE_FONT, styleOf, userFontView, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
+import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, isPenFont, isUserFont, penFontOf, STROKE_FONT, styleOf, userFontView, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
 import type { GroupOp, LetteringOp, ModelOp } from "./model-tree.ts";
@@ -164,7 +164,7 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
     stagger: document.querySelector<HTMLInputElement>("#modelArrStagger")?.checked ?? false,
     align: align === "left" || align === "right" ? align : "centre",
     text: document.querySelector<HTMLInputElement | HTMLTextAreaElement>("#modelFeatText")?.value ?? FEATURE_CHOICE_DEFAULTS.text,
-    font: font === STROKE_FONT || fontById(font) || isUserFont(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
+    font: isPenFont(font) || fontById(font) || isUserFont(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
     style: style ? styleOf(style) : FEATURE_CHOICE_DEFAULTS.style,
     way: way === "axis" ? "axis" : "around",
     dir: dir === "v" ? "v" : "u",
@@ -269,10 +269,14 @@ export function readFeatureSpec(tool: FeatureTool, read: (id: string) => number,
     if (lines !== FEATURE_FIELD_DEFAULTS.modelTextLines) spec.lineSpacing = lines;
     if (choices.align !== "centre") spec.align = choices.align;
   } else {
-    // The stroke font, as every text was before fonts: no font in the source.
+    // --- Text milestone 5: Stroke and Line are pen fonts, one lettering step like any font. Their spacing is the whole gap after a
+    // letter (a third of the height as typed since text began), the pen's width is the Stroke field.
+    spec.font = penFontOf(choices.font)?.id ?? STROKE_FONT;
     spec.strokeWidth = read("modelTextStroke");
     spec.spacing = read("modelTextSpace");
-    if (choices.align === "left") spec.align = "left";
+    const lines = read("modelTextLines");
+    if (lines !== FEATURE_FIELD_DEFAULTS.modelTextLines) spec.lineSpacing = lines;
+    if (choices.align !== "centre") spec.align = choices.align;
   }
   const angle = read("modelTextAngle");
   if (angle !== 0) spec.angleDeg = angle;
@@ -420,8 +424,8 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
     stagger: source.stagger === true,
     align: source.align === "left" || source.align === "right" ? source.align : "centre",
     text: typeof source.text === "string" ? source.text : "A",
-    // A text step saved before fonts has none: it is the stroke font, and stays so until another is picked.
-    font: isOutlineFont(source.font) ? (fontById(source.font) ? versionedId(fontById(source.font)!) : String(source.font)) : STROKE_FONT,
+    // A text step saved before fonts has none: it opens as Stroke (milestone 5: pressing Update makes it a one-step pen text).
+    font: isOutlineFont(source.font) ? (fontById(source.font) ? versionedId(fontById(source.font)!) : String(source.font)) : penFontOf(source.font)?.id ?? STROKE_FONT,
     style: styleOf(source.style),
     way: source.along === "axis" ? "axis" : "around",
     dir: source.along === "v" ? "v" : "u",
