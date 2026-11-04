@@ -89,7 +89,7 @@ garbled.nodes.find((node) => node.id === 1)!.op!.steps![0]!.weight = "heavy";
 check("a weight the file garbled drops the tree, as any garbled step does", readSavedTree(file) !== null && readSavedTree(garbled) === null);
 
 // --- The card: a variable font writes the weight and only its italic as a style; a plain one writes its style as ever.
-const choices: FeatureChoices = { shape: "rect", from: "centre", pattern: "lines", cell: "rect", along: "u", op: "fuse", fit: "inside", stagger: false, align: "centre", text: "Hi", font: VARIABLE, style: "bold" };
+const choices: FeatureChoices = { shape: "rect", from: "centre", pattern: "lines", cell: "rect", along: "u", op: "fuse", fit: "inside", stagger: false, align: "centre", text: "Hi", font: VARIABLE, style: "bold", way: "around", flip: false };
 const read = (id: string) => ({ modelTextHeight: 6, modelTextTrack: 0, modelTextLines: 1.3, modelTextAngle: 0, modelFeatDepth: 1, modelFeatU: 0, modelFeatV: 0, modelTextWeight: 520 })[id] ?? 0;
 eq("a variable font writes its weight, and its bold is the weight", readFeatureSpec("text", read, choices, 1), { kind: "text", faceIndex: 1, text: "Hi", height: 6, font: VARIABLE, weight: 520, depth: 1, at: { u: 0, v: 0 } });
 eq("an italic stays a style", readFeatureSpec("text", read, { ...choices, style: "bold-italic" }, 1).style, "italic");

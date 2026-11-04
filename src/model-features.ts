@@ -21,6 +21,8 @@ export type FeatureTool = (typeof FEATURE_TOOLS)[number];
 
 /** Shown when the selection is not exactly one flat face. */
 export const PICK_ONE_FLAT_FACE = "Pick one flat face.";
+/** Text also goes on a cylinder or a cone. */
+export const PICK_ONE_FACE = "Pick one face.";
 
 export function isFeatureTool(tool: unknown): tool is FeatureTool {
   return typeof tool === "string" && (FEATURE_TOOLS as readonly string[]).includes(tool);
@@ -64,7 +66,12 @@ export interface FeatureChoices {
   font: string;
   /** The outline font's style. The stroke font has one. */
   style: TextStyle;
+  /** --- Text on a cylinder or a cone: the baseline runs `around` the part (default) or up its `axis`; `flip` turns it half way. */
+  way: "around" | "axis";
+  flip: boolean;
   face?: number;
+  /** A saved text on a cylinder or a cone reopens with the point it sits on. */
+  point?: [number, number, number];
 }
 
 export const FEATURE_CHOICE_DEFAULTS: FeatureChoices = {
@@ -81,6 +88,8 @@ export const FEATURE_CHOICE_DEFAULTS: FeatureChoices = {
   // --- Text with real fonts (D4): a new text starts in Sans Bold. A step saved before fonts reopens as `stroke`.
   font: versionedId(fontById(DEFAULT_TEXT_FONT)!),
   style: DEFAULT_TEXT_STYLE,
+  way: "around",
+  flip: false,
 };
 
 /** Number fields a fresh tool starts from. Shared ids keep the last typed value when the tool changes. */
@@ -134,6 +143,7 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
   const align = pressed("modelTextAlign", "align");
   const font = pressed("modelTextFont", "font");
   const style = pressed("modelTextStyle", "style");
+  const way = pressed("modelTextWay", "way");
   const op = pressed(tool === "text" ? "modelTextOp" : "modelFeatOp", "op");
   return {
     shape: shape === "circle" || shape === "arch" ? shape : "rect",
@@ -148,6 +158,8 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
     text: document.querySelector<HTMLInputElement | HTMLTextAreaElement>("#modelFeatText")?.value ?? FEATURE_CHOICE_DEFAULTS.text,
     font: font === STROKE_FONT || fontById(font) || isUserFont(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
     style: style ? styleOf(style) : FEATURE_CHOICE_DEFAULTS.style,
+    way: way === "axis" ? "axis" : "around",
+    flip: document.querySelector<HTMLInputElement>("#modelTextFlip")?.checked ?? false,
   };
 }
 
@@ -401,6 +413,9 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
     // A text step saved before fonts has none: it is the stroke font, and stays so until another is picked.
     font: isOutlineFont(source.font) ? (fontById(source.font) ? versionedId(fontById(source.font)!) : String(source.font)) : STROKE_FONT,
     style: styleOf(source.style),
+    way: source.along === "axis" ? "axis" : "around",
+    flip: source.flip === true,
+    ...(Array.isArray(source.point) && source.point.length === 3 && source.point.every((n) => typeof n === "number") ? { point: [source.point[0], source.point[1], source.point[2]] as [number, number, number] } : {}),
     ...(typeof source.faceIndex === "number" ? { face: source.faceIndex } : {}),
   };
   return { tool, fields, feature };
@@ -409,7 +424,15 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
 export interface FeatureSolid {
   positions: ArrayLike<number>;
   triangles: ArrayLike<number>;
-  faces: readonly { areaMm2: number; normal?: readonly [number, number, number] | readonly number[] }[];
+  faces: readonly {
+    areaMm2: number;
+    normal?: readonly [number, number, number] | readonly number[];
+    /** --- Text on a cylinder or a cone: what the engine says the face is, with its axis. */
+    surface?: "cylinder" | "cone" | "sphere";
+    radiusMm?: number;
+    axis?: readonly number[];
+    axisPoint?: readonly number[];
+  }[];
 }
 
 /** The same deps the session passes, so the two contexts select and stand the same way. */
@@ -428,7 +451,14 @@ function featureDeps() {
 export function featureExpandContext(solid: FeatureSolid, plane: Workplane) {
   const faces = solid.faces.map((face, index) => {
     const recovered = face.normal ?? outwardFromMesh(solid.positions, solid.triangles, index);
-    return { areaMm2: face.areaMm2, ...(recovered ? { normal: [recovered[0]!, recovered[1]!, recovered[2]!] as [number, number, number] } : {}) };
+    return {
+      areaMm2: face.areaMm2,
+      ...(recovered ? { normal: [recovered[0]!, recovered[1]!, recovered[2]!] as [number, number, number] } : {}),
+      ...(face.surface ? { surface: face.surface } : {}),
+      ...(face.radiusMm !== undefined ? { radiusMm: face.radiusMm } : {}),
+      ...(face.axis ? { axis: [face.axis[0]!, face.axis[1]!, face.axis[2]!] as [number, number, number] } : {}),
+      ...(face.axisPoint ? { axisPoint: [face.axisPoint[0]!, face.axisPoint[1]!, face.axisPoint[2]!] as [number, number, number] } : {}),
+    };
   });
   const rows = faceRows(solid.positions, solid.triangles, faces);
   return expandContextFromSolid({ positions: solid.positions, triangles: solid.triangles, faces: rows as FrameFace[] }, plane, featureDeps());
@@ -446,7 +476,14 @@ export function featureSolidInModel(solid: FeatureSolid, pose: Affine): FeatureS
   }
   const faces = solid.faces.map((face, index) => {
     const normal = face.normal ? turnDir(pose, face.normal) : outwardFromMesh(positions, solid.triangles, index);
-    return { areaMm2: face.areaMm2, ...(normal ? { normal } : {}) };
+    return {
+      areaMm2: face.areaMm2,
+      ...(normal ? { normal } : {}),
+      ...(face.surface ? { surface: face.surface } : {}),
+      ...(face.radiusMm !== undefined ? { radiusMm: face.radiusMm } : {}),
+      ...(face.axis ? { axis: turnDir(pose, face.axis) } : {}),
+      ...(face.axisPoint ? { axisPoint: applyPose(pose, [face.axisPoint[0]!, face.axisPoint[1]!, face.axisPoint[2]!]) } : {}),
+    };
   });
   return { positions, triangles: solid.triangles, faces };
 }
@@ -463,10 +500,12 @@ export interface ExpandedFeature {
    * live preview instead of boxes (`pieces` is null then). Null for every other feature.
    */
   letters: LetteringOp | null;
+  /** --- Text on a cylinder or a cone: the surface and the point the text sits on, or null on a flat face. */
+  round: { surface: "cylinder" | "cone"; point: [number, number, number] } | null;
 }
 
 export function emptyFeature(note: string): ExpandedFeature {
-  return { note, pieces: null, group: null, frame: null, outward: null, letters: null };
+  return { note, pieces: null, group: null, frame: null, outward: null, letters: null, round: null };
 }
 
 function trimmed(value: number): string {
@@ -537,10 +576,21 @@ export function posedContext(solid: FeatureSolid, pose: Affine): ReturnType<type
  * Other refusals keep the expander's own sentence.
  */
 export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid | null, pose: Affine, faceIndex: number | null): ExpandedFeature {
-  if (!solid || faceIndex == null || faceIndex < 0 || faceIndex >= solid.faces.length) return emptyFeature(PICK_ONE_FLAT_FACE);
+  const text = spec.kind === "text";
+  if (!solid || faceIndex == null || faceIndex < 0 || faceIndex >= solid.faces.length) return emptyFeature(text ? PICK_ONE_FACE : PICK_ONE_FLAT_FACE);
   const ctx = posedContext(solid, pose);
+  // --- Text on a cylinder or a cone: one lettering step anchored at a point on the face, with no frame for a position dot.
+  const round = text ? ctx.round?.(faceIndex) : null;
+  if (round) {
+    if ("reason" in round) return emptyFeature(round.reason);
+    const typed = { ...spec, faceIndex };
+    const pieces = expand(typed, ctx, noNestedPart);
+    if ("reason" in pieces) return emptyFeature(pieces.reason);
+    const letters = pieces.length === 1 && pieces[0]!.step ? (pieces[0]!.step as unknown as LetteringOp) : null;
+    return { note: null, pieces: null, group: groupFromPieces(featureLabel(typed), typed, pieces), frame: null, outward: null, letters, round: { surface: round.surface, point: letters ? [...letters.origin] as [number, number, number] : round.point } };
+  }
   const face = ctx.face(faceIndex);
-  if ("reason" in face) return emptyFeature(PICK_ONE_FLAT_FACE);
+  if ("reason" in face) return emptyFeature(text ? PICK_ONE_FACE : PICK_ONE_FLAT_FACE);
   const typed = { ...spec, faceIndex };
   const pieces = expand(typed, ctx, noNestedPart);
   if ("reason" in pieces) return emptyFeature(pieces.reason);
@@ -551,5 +601,5 @@ export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid
   const frame = shift && !("reason" in shift) ? { ...face.plane, origin: planePoint(face.plane, [shift[0], shift[1], 0]) } : face.plane;
   // --- Text with real fonts: one lettering step, drawn as outlines, not as the boxes of a piece.
   const lettering = pieces.length === 1 && pieces[0]!.step ? (pieces[0]!.step as unknown as LetteringOp) : null;
-  return { note: null, pieces: lettering ? null : pieces, group: groupFromPieces(label, typed, pieces), frame, outward, letters: lettering };
+  return { note: null, pieces: lettering ? null : pieces, group: groupFromPieces(label, typed, pieces), frame, outward, letters: lettering, round: null };
 }

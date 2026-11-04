@@ -190,9 +190,9 @@ const thereFaces = (await elsewhere.call("faces_find", { object: thereObject, no
 const thereTop = (thereFaces.faces as { index: number; areaMm2: number }[]).reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a)).index;
 const nameThere = /Id user:0000cafe0000cafe/.test(JSON.stringify(await elsewhere.call("guide", { kind: "text" })));
 check("the font is listed by its id in the project", nameThere);
-const sameLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "42 LOT", height: 3, at: { u: -12, v: 0 } }) })) as Record<string, any>;
+const sameLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "42 LOT", height: 3, at: { u: 0, v: -6.5 } }) })) as Record<string, any>;
 check("the same letters can be typed again", sameLetters.ok === true, JSON.stringify(sameLetters));
-const otherLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "LOT 4X", height: 3, at: { u: -12, v: 0 } }) })) as Record<string, any>;
+const otherLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "LOT 4X", height: 3, at: { u: 0, v: 6.5 } }) })) as Record<string, any>;
 check("a letter the project never used is named, with why", otherLetters.ok === false && /with only the letters it was used for/.test(JSON.stringify(otherLetters)) && /‘X’/.test(JSON.stringify(otherLetters)), JSON.stringify(otherLetters));
 
 // --- Refusals are sentences, and change nothing.

@@ -325,8 +325,8 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="pocket boss" data-shape="rect" data-snap="0.5" data-tip="Rounds the four corners. 0 is sharp."><span class="scrub-label" data-scrub>Corner r</span><input id="modelFeatR" type="number" step="0.1" min="0" max="500" value="0" aria-label="Corner radius"></label>
                 <label data-for="pocket boss" data-shape="circle" data-snap="1" data-tip="Circle."><span class="scrub-label" data-scrub>Diameter</span><input id="modelFeatDia" type="number" step="0.1" min="0.1" max="1000" value="10" aria-label="Circle"></label>
                 <label data-for="pocket boss texture array ribs text" data-snap="1"><span class="scrub-label" data-scrub>Depth</span><input id="modelFeatDepth" type="number" step="0.1" min="0.1" max="1000" value="2" aria-label="Depth"></label>
-                <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>U</span><input id="modelFeatU" type="number" step="0.1" value="0" aria-label="Position along U"></label>
-                <label data-for="pocket boss text" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>V</span><input id="modelFeatV" type="number" step="0.1" value="0" aria-label="Position along V"></label>
+                <label data-for="pocket boss text" data-flat="1" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>U</span><input id="modelFeatU" type="number" step="0.1" value="0" aria-label="Position along U"></label>
+                <label data-for="pocket boss text" data-flat="1" data-snap="1" data-tip="Centre on the face."><span class="scrub-label" data-scrub>V</span><input id="modelFeatV" type="number" step="0.1" value="0" aria-label="Position along V"></label>
                 <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars across</span><input id="modelFeatBarsV" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Vertical bars"></label>
                 <label data-for="pocket" data-snap="1" data-tip="Count."><span class="scrub-label" data-scrub>Bars along</span><input id="modelFeatBarsH" type="number" step="1" min="0" max="20" value="0" data-whole aria-label="Horizontal bars"></label>
                 <label data-for="pocket" data-snap="1" data-tip="Default 1."><span class="scrub-label" data-scrub>Bar width</span><input id="modelFeatBarW" type="number" step="0.1" min="0.1" max="50" value="1" aria-label="Bar width, default 1"></label>
@@ -469,6 +469,13 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode" type="button" data-align="left" aria-pressed="false">Left</button>
                 <button class="btn mode" type="button" data-align="right" data-fontkind="outline" aria-pressed="false">Right</button>
               </div>
+              <!-- Text on a cylinder or a cone: shown while one is picked. U and V (the flat face's position) are hidden then; a click places the text. -->
+              <div class="modes" id="modelTextWay" data-for="text" data-round="1" role="group" aria-label="Direction" data-tip="Around reads round the part, like a label. Along runs the letters up the part.">
+                <button class="btn mode on" type="button" data-way="around" aria-pressed="true">Around</button>
+                <button class="btn mode" type="button" data-way="axis" aria-pressed="false">Along</button>
+              </div>
+              <label class="model-keep" data-for="text" data-round="1" data-tip="Turns the text half way about its anchor: it reads the other way round, upside down."><input id="modelTextFlip" type="checkbox"> Flip</label>
+              <p class="model-note model-text-anchor" id="modelTextAnchor" data-for="text" data-round="1" role="status"><span id="modelTextAnchorText">In the middle of the face. Click the face to place the text.</span> <button class="btn" id="modelTextCentre" type="button" data-tip="Put the text in the middle of the face, across from its seam.">Centre on the face</button></p>
               <div class="modes" id="modelTextOp" data-for="text" role="group" aria-label="Raise or engrave" data-tip="fuse raises (default); cut recesses.">
                 <button class="btn mode on" type="button" data-op="fuse" aria-pressed="true">Raise</button>
                 <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Engrave</button>

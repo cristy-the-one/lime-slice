@@ -151,7 +151,7 @@ GUIDES.push(
       "  Floor reinforcement after a shell: {kind:\"ribs\", face:{normal:[0, 0, 1], nearPoint:[0, 0, 2]}, along:\"v\", width:1.5, pitch:15, depth:6, margin:0}.",
       "pattern: {kind:\"pattern\", op:{...}, linear:{step:[x, y, z], count, step2, count2} | polar:{count, axis, centre, angleDeg} | path:{points, count, align, closed}}. count includes the original.",
       "  path spaces copies evenly along a smooth curve through the points, the op typed at the first point; align (default) turns each copy with the curve, as scales along a body.",
-      "text: {kind:\"text\", text:\"LIME\", height, depth, face, at:{u, v}, from, op:\"fuse\"|\"cut\", font, fontFile, style, weight, strokeWidth, spacing, lineSpacing, align, angleDeg}. With no font: the single-stroke font (capitals, digits, and - + . , : ! ? / ' &), each stroke a checked step. With font:\"sans\"|\"mono\"|\"serif\"|\"stencil\": real letters, any the font has, \\n for a new line, up to 400 characters, built as one step on a flat face (guide {kind:\"text\"}).",
+      "text: {kind:\"text\", text:\"LIME\", height, depth, face, at:{u, v}, from, op:\"fuse\"|\"cut\", font, fontFile, style, weight, along, flip, strokeWidth, spacing, lineSpacing, align, angleDeg}. With no font: the single-stroke font (capitals, digits, and - + . , : ! ? / ' &), each stroke a checked step. With font:\"sans\"|\"mono\"|\"serif\"|\"stencil\": real letters, any the font has, \\n for a new line, up to 400 characters, built as one step on a flat face, a cylinder or a cone (guide {kind:\"text\"}).",
       "Anchors: any [x, y, z] may be {anchor:\"bowl\", point:\"top\", offset:[0, 0, -1]}, a point of the box of what that label's steps applied, read when the op's turn comes. point: centre, top, bottom, min, max, left, right, front, back. anchor:\"part\" is the whole solid. model_anchors lists the boxes.",
       "  A label names its own step and every step named under it: \"fish 0\" covers \"fish 0 body\" and \"fish 0 tail\".",
       "mirror: {kind:\"mirror\", op:{...}, plane:\"x\"|\"y\"|\"z\", origin}. It applies the op and its mirror image; keepOriginal:false applies only the image. No step already in the history is removed.",
@@ -265,12 +265,18 @@ export const TEXT_FONT_LINES: string[] = [
   "stroke: the single-stroke font, capitals, digits and - + . , : ! ? / ' & only; each stroke a box. The default with no font, and what every text saved before fonts is.",
   ...TEXT_FONTS.map((font) => `${font.id}: ${font.name}. ${font.about} Id ${font.id}@${font.version}.`),
   "style regular|bold|italic|bold-italic picks the font's own file. A font with no italic is slanted 12°; a font with no bold is refused for bold.",
+  "On a cylinder or a cone (outline fonts): find the face with faces_find {kind:\"cylinder\"} (or \"cone\"), then text {faceIndex, text, font, height, depth}. The letters wrap along the surface at true size and stand depth off it, square to it, centred on the face's middle (across from its seam) or on point [x, y, z], a point on the face. along:\"around\" (default) reads round the part; along:\"axis\" runs up it; flip turns the text half way; angleDeg turns it about its anchor. at and from are for flat faces.",
+  "Built without a boolean when the text stays clear of the seam and the face's edges (about 0.2 s for 20 letters); across the seam it uses the boolean (about 0.6 s). A sphere, a torus or a freeform face is refused for now.",
 ];
 
 /** guide {kind:"text"}: what a text in a font refuses, one sentence each. */
 export const TEXT_REFUSALS: string[] = [
   "This font has no ‘ñ’. Pick another font, or take it out.",
   "The text runs off this face. Move it, make it smaller, or put it on one face.",
+  "The text is longer than the way round this cylinder (126 mm). Make it smaller or use two lines.",
+  "Letters this deep would fold over inside this curve. Use a depth under 4.5 mm.",
+  "Text goes on a flat face, a cylinder or a cone for now. This face is curved another way.",
+  "Text on a cylinder or a cone takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.",
   "The middle of ‘O’ would fall out. Use the Stencil font, or engrave less deep. (an engraving through the wall drops the middle of O, A, B, D, P, Q, R, 4, 6, 8, 9)",
   "‘Allerta Stencil’ has no bold. Pick Regular, or another font.",
   "There is no font called ‘comic’. The fonts are stroke, sans, mono, serif, stencil.",

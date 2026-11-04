@@ -261,6 +261,9 @@ function turnBetween(a: Vec3, b: Vec3): Mat3 {
  * `at` {u, v} from where `from` puts U, V = 0, reading along U. Raised `depth` (op fuse, the default) or cut.
  */
 function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] | { reason: string } {
+  // --- Text on a cylinder or a cone: one lettering step anchored at a point on the face, wrapped at true size.
+  const round = roundTextFace(spec, ctx);
+  if (round) return "reason" in round ? round : roundLettering(spec, ctx, round);
   const frame = faceFrame(spec, ctx);
   if ("reason" in frame) return frame;
   const text = typeof spec.text === "string" ? spec.text : "";
@@ -291,6 +294,63 @@ function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] 
     };
   });
   return pieces.length > MAX_PIECES ? { reason: `This text makes more than ${MAX_PIECES} strokes. Split it.` } : pieces;
+}
+
+/** The cylinder or cone a text names, with the point it sits on; a sentence for another curved face; null when it is a flat face. */
+function roundTextFace(spec: Record<string, unknown>, ctx: ExpandContext): { surface: "cylinder" | "cone"; point: Vec3 } | { reason: string } | null {
+  if (!ctx.round || spec.face !== undefined || spec.faceIndex === undefined) return null;
+  return ctx.round(Math.round(numOr(spec.faceIndex, -1)));
+}
+
+export const ROUND_TEXT_FONT = "Text on a cylinder or a cone takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.";
+
+/**
+ * Text on a cylinder's or a cone's side (milestone 2): the fields of a flat text plus `point` (a model-space point on the face
+ * the text is centred on; the face's middle when absent), `along` (`around`, the default, runs the baseline round the part;
+ * `axis` runs it up the part) and `flip` (a half turn: reads the other way round). `at` and `from` are for flat faces. The
+ * letters keep their true size on the surface and stand `depth` off it, square to it.
+ */
+function roundLettering(spec: Record<string, unknown>, ctx: ExpandContext, round: { surface: "cylinder" | "cone"; point: Vec3 }): Piece[] | { reason: string } {
+  const text = typeof spec.text === "string" ? spec.text : "";
+  if (!text.trim()) return { reason: "Text needs text." };
+  if (!isOutlineFont(spec.font)) return { reason: ROUND_TEXT_FONT };
+  const font = fontById(spec.font);
+  if (!font) return { reason: `There is no font called ‘${String(spec.font)}’. The fonts are stroke, sans, mono, serif, stencil.` };
+  if ([...text].length > MAX_OUTLINE_CHARS) return { reason: `Text takes at most ${MAX_OUTLINE_CHARS} characters a step; use several.` };
+  const height = numOr(spec.height, 0);
+  const depth = numOr(spec.depth, 0);
+  if (!(height > 0) || !(depth > 0)) return { reason: "Text needs a height (the capitals') and a depth, in millimetres." };
+  const style = styleOf(spec.style);
+  const missing = styleRefusal(font, style);
+  if (missing) return { reason: missing };
+  const spacing = spec.spacing === undefined ? undefined : numOr(spec.spacing, NaN);
+  const lineSpacing = spec.lineSpacing === undefined ? undefined : numOr(spec.lineSpacing, NaN);
+  if ((spacing !== undefined && !Number.isFinite(spacing)) || (lineSpacing !== undefined && !(lineSpacing >= 0))) return { reason: "Letter spacing and line spacing are numbers; line spacing is not negative." };
+  if (spec.align !== undefined && spec.align !== "left" && spec.align !== "centre" && spec.align !== "right") return { reason: "align is left, centre, or right." };
+  if (spec.along !== undefined && spec.along !== "around" && spec.along !== "axis") return { reason: "along is around or axis. Around reads round the part; axis runs it up the part." };
+  if (spec.point !== undefined && (!Array.isArray(spec.point) || spec.point.length !== 3 || !spec.point.every((n) => typeof n === "number" && Number.isFinite(n)))) return { reason: "point is [x, y, z]: a point on the face." };
+  const point = (spec.point === undefined ? round.point : (spec.point as Vec3)).map(round6) as Vec3;
+  const op: BooleanKind = spec.op === "cut" ? "cut" : "fuse";
+  const angle = numOr(spec.angleDeg, 0);
+  const step: Record<string, unknown> = {
+    kind: "lettering",
+    op,
+    origin: point,
+    turn: [0, 0, 0],
+    text,
+    font: versionedId(font),
+    ...(style !== "regular" ? { style } : {}),
+    height,
+    depth,
+    ...(spacing !== undefined && spacing !== 0 ? { spacing } : {}),
+    ...(lineSpacing !== undefined ? { lineSpacing } : {}),
+    ...(spec.align !== undefined && spec.align !== "centre" ? { align: spec.align } : {}),
+    ...(angle !== 0 ? { angleDeg: angle } : {}),
+    ...(spec.along === "axis" ? { along: "axis" } : {}),
+    ...(spec.flip === true ? { flip: true } : {}),
+  };
+  const anchor = planePrimitive({ primitive: "box", origin: [0, 0, 0], size: [1, 1, 1], radius: 0, height: 0, turn: [0, 0, 0] }, ctx.plane);
+  return [{ op, spec: anchor, step }];
 }
 
 /**
@@ -416,6 +476,12 @@ export interface ExpandContext {
   faceByDetail?(selector: Record<string, unknown>): FacePick | { reason: string };
   /** Rays through the part's surface, for a pocket's wall check. Absent when the context has no mesh. */
   rays?(): Rays;
+  /**
+   * --- Text on a cylinder or a cone (docs/plan-text-on-curves-and-fonts.md, milestone 2). What a face is for lettering: null for a
+   * flat face (or no such face), the surface and the point the text sits on when none is given (the face's middle, across from
+   * its seam) for a cylinder or a cone, or why the text cannot go there for any other curved face.
+   */
+  round?(index: number): { surface: "cylinder" | "cone"; point: Vec3 } | { reason: string } | null;
 }
 
 /** The first surface a ray meets, how far along, and whether the ray leaves the part there (it started inside). */

@@ -15,12 +15,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepGProp_Face.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -34,8 +39,12 @@
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BOPTools_AlgoTools3D.hxx>
+#include <ElSLib.hxx>
 #include <GCE2d_MakeSegment.hxx>
 #include <Geom2d_BezierCurve.hxx>
+#include <Geom_ConicalSurface.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom_OffsetSurface.hxx>
 #include <Geom_Plane.hxx>
 #include <IntCurvesFace_ShapeIntersector.hxx>
 #include <IntTools_Context.hxx>
@@ -50,6 +59,8 @@
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
+#include <gp_Cone.hxx>
+#include <gp_Cylinder.hxx>
 #include <gp_Lin.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
@@ -371,20 +382,48 @@ bool closed_shape(const TopoDS_Shape& shape) {
     return true;
 }
 
+/// A letter's walls and its top: every outline edge of `glyph` (on its surface) gets a wall, ruled to the same (u, v) curve on
+/// `top`, and the loops on `top` close in a cap. Everything goes into `sewing`.
+void add_walls_and_cap(const TopoDS_Face& glyph, const Handle(Geom_Surface)& top, BRepBuilderAPI_Sewing& sewing) {
+    std::vector<TopoDS_Wire> tops;
+    for (TopExp_Explorer w(glyph, TopAbs_WIRE); w.More(); w.Next()) {
+        BRepBuilderAPI_MakeWire top_wire;
+        for (BRepTools_WireExplorer we(TopoDS::Wire(w.Current()), glyph); we.More(); we.Next()) {
+            const TopoDS_Edge edge = we.Current();
+            double first = 0.0;
+            double last = 0.0;
+            const Handle(Geom2d_Curve) curve = BRep_Tool::CurveOnSurface(edge, glyph, first, last);
+            TopoDS_Edge up = BRepBuilderAPI_MakeEdge(curve, top, first, last).Edge();
+            BRepLib::BuildCurves3d(up, 1e-5, GeomAbs_C1, 14, 200);
+            up.Orientation(edge.Orientation());
+            top_wire.Add(up);
+            TopoDS_Edge below = edge;
+            TopoDS_Edge above = up;
+            below.Orientation(TopAbs_FORWARD);
+            above.Orientation(TopAbs_FORWARD);
+            sewing.Add(BRepFill::Face(below, above));
+        }
+        tops.push_back(top_wire.Wire());
+    }
+    BRepBuilderAPI_MakeFace cap(top, tops[0], Standard_True);
+    for (size_t k = 1; k < tops.size(); ++k) {
+        cap.Add(tops[k]);
+    }
+    ShapeFix_Face fix_cap(cap.Face());
+    fix_cap.Perform();
+    sewing.Add(fix_cap.Face());
+}
+
 /// The direct build. Null shape, with `why` set, when the text does not suit it.
 TopoDS_Shape build_direct(
     const TopoDS_Shape& current,
     const TopoDS_Face& target,
     const std::vector<TopoDS_Face>& glyph_faces,
     const Handle(Geom_Surface)& plane,
-    const Frame& frame,
-    bool cut,
-    double depth,
+    const Handle(Geom_Surface)& top,
+    const std::function<bool(const TopoDS_Face&)>& looks_wrong,
     Handle(BRepTools_History)& history,
     std::string& why) {
-    gp_Trsf lift;
-    lift.SetTranslation(gp_Vec(frame.w) * (cut ? -depth : depth));
-    const Handle(Geom_Surface) top = Handle(Geom_Surface)::DownCast(plane->Transformed(lift));
     BRepBuilderAPI_Sewing sewing(1e-4);
     // The face the text is on keeps every letter's outer loop as a hole; each counter is a face of its own.
     const TopoDS_Face base = TopoDS::Face(target.Oriented(TopAbs_FORWARD));
@@ -415,33 +454,7 @@ TopoDS_Shape build_direct(
         sewing.Add(counter);
     }
     for (const TopoDS_Face& glyph : glyph_faces) {
-        std::vector<TopoDS_Wire> tops;
-        for (TopExp_Explorer w(glyph, TopAbs_WIRE); w.More(); w.Next()) {
-            BRepBuilderAPI_MakeWire top_wire;
-            for (BRepTools_WireExplorer we(TopoDS::Wire(w.Current()), glyph); we.More(); we.Next()) {
-                const TopoDS_Edge edge = we.Current();
-                double first = 0.0;
-                double last = 0.0;
-                const Handle(Geom2d_Curve) curve = BRep_Tool::CurveOnSurface(edge, glyph, first, last);
-                TopoDS_Edge up = BRepBuilderAPI_MakeEdge(curve, top, first, last).Edge();
-                BRepLib::BuildCurves3d(up, 1e-5, GeomAbs_C1, 14, 200);
-                up.Orientation(edge.Orientation());
-                top_wire.Add(up);
-                TopoDS_Edge below = edge;
-                TopoDS_Edge above = up;
-                below.Orientation(TopAbs_FORWARD);
-                above.Orientation(TopAbs_FORWARD);
-                sewing.Add(BRepFill::Face(below, above));
-            }
-            tops.push_back(top_wire.Wire());
-        }
-        BRepBuilderAPI_MakeFace cap(top, tops[0], Standard_True);
-        for (size_t k = 1; k < tops.size(); ++k) {
-            cap.Add(tops[k]);
-        }
-        ShapeFix_Face fix_cap(cap.Face());
-        fix_cap.Perform();
-        sewing.Add(fix_cap.Face());
+        add_walls_and_cap(glyph, top, sewing);
     }
     sewing.Perform();
     TopoDS_Shape sewn = sewing.SewedShape();
@@ -452,13 +465,7 @@ TopoDS_Shape build_direct(
     // The sewn faces face the way the first one did. The part's face looks along W, so the one standing in its place must.
     TopoDS_Shape rest_sewn = sewing.IsModified(rest_face) ? sewing.Modified(rest_face) : static_cast<TopoDS_Shape>(rest_face);
     for (TopExp_Explorer f(rest_sewn, TopAbs_FACE); f.More(); f.Next()) {
-        const TopoDS_Face one = TopoDS::Face(f.Current());
-        BRepAdaptor_Surface surface(one);
-        gp_Dir normal = surface.Plane().Axis().Direction();
-        if (one.Orientation() == TopAbs_REVERSED) {
-            normal.Reverse();
-        }
-        if (normal.Dot(frame.w) < 0.0) {
+        if (looks_wrong(TopoDS::Face(f.Current()))) {
             for (TopoDS_Face& other : fresh) {
                 other.Reverse();
             }
@@ -514,6 +521,224 @@ TopoDS_Shape build_boolean(
         tools.push_back(prism.Shape());
     }
     return combine_profile_tools(current, before, cut ? "cut" : "fuse", tools, "text", volume, error);
+}
+
+// --- Lettering on a cylinder or a cone (milestone 2). The loops arrive already mapped into the surface's (u, v) (src/text/wrap.rs),
+// so every letter is a face on the surface itself; its top (or the floor of a cut) is the same (u, v) loop on the surface moved
+// the depth along the normal. Depth is constant, square to the surface, by construction.
+
+/// The round face under the anchor, with the surface it lies on.
+struct Curved {
+    TopoDS_Face face;
+    GeomAbs_SurfaceType type = GeomAbs_Cylinder;
+    gp_Cylinder cylinder;
+    gp_Cone cone;
+    gp_Ax3 pos;
+    double radius = 0.0;
+    double semi = 0.0;
+    double u0 = 0.0;
+    double v0 = 0.0;
+    double umin = 0.0;
+    double umax = 0.0;
+    double vmin = 0.0;
+    double vmax = 0.0;
+    bool full_ring = false;
+    double sigma = 1.0;
+    double distance = 0.0;
+    Handle(Geom_Surface) surface;
+
+    /// The point and Su, Sv at (u, v).
+    void d1(double u, double v, gp_Pnt& p, gp_Vec& su, gp_Vec& sv) const {
+        if (type == GeomAbs_Cone) {
+            ElSLib::ConeD1(u, v, pos, radius, semi, p, su, sv);
+        } else {
+            ElSLib::CylinderD1(u, v, pos, radius, p, su, sv);
+        }
+    }
+
+    /// The face's outward normal at (u, v), unit.
+    gp_Dir outward(double u, double v) const {
+        gp_Pnt p;
+        gp_Vec su;
+        gp_Vec sv;
+        d1(u, v, p, su, sv);
+        gp_Vec n = su.Crossed(sv);
+        if (sigma < 0.0) {
+            n.Reverse();
+        }
+        return gp_Dir(n);
+    }
+
+    /// (u, v) of the point of the surface nearest `p`.
+    void parameters(const gp_Pnt& p, double& u, double& v) const {
+        if (type == GeomAbs_Cone) {
+            ElSLib::Parameters(cone, p, u, v);
+        } else {
+            ElSLib::Parameters(cylinder, p, u, v);
+        }
+    }
+};
+
+const char* surface_name(GeomAbs_SurfaceType type) {
+    switch (type) {
+        case GeomAbs_Plane: return "plane";
+        case GeomAbs_Cylinder: return "cylinder";
+        case GeomAbs_Cone: return "cone";
+        case GeomAbs_Sphere: return "sphere";
+        case GeomAbs_Torus: return "torus";
+        default: return "freeform";
+    }
+}
+
+/// Which face of `shape` the point is on: 1 a flat one (within a micron), 2 a cylinder or a cone within `tol` (`out` filled),
+/// 3 a face of another kind (named in `what`), 0 none.
+int find_face(const TopoDS_Shape& shape, const gp_Pnt& p, double tol, Curved& out, std::string& what) {
+    double best = 1e30;
+    double best_other = 1e30;
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+        const TopoDS_Face face = TopoDS::Face(it.Current());
+        BRepAdaptor_Surface surface(face);
+        const GeomAbs_SurfaceType type = surface.GetType();
+        if (type == GeomAbs_Plane) {
+            const gp_Pln plane = surface.Plane();
+            if (std::abs(gp_Vec(plane.Location(), p).Dot(gp_Vec(plane.Axis().Direction()))) > 1e-6) {
+                continue;
+            }
+            BRepClass_FaceClassifier classify(face, p, 1e-6);
+            if (classify.State() == TopAbs_IN || classify.State() == TopAbs_ON) {
+                return 1;
+            }
+            continue;
+        }
+        if (type != GeomAbs_Cylinder && type != GeomAbs_Cone) {
+            BRepBuilderAPI_MakeVertex vertex(p);
+            BRepExtrema_DistShapeShape distance(vertex.Vertex(), face);
+            if (distance.IsDone() && distance.Value() <= tol && distance.Value() < best_other) {
+                best_other = distance.Value();
+                what = surface_name(type);
+            }
+            continue;
+        }
+        double u = 0.0;
+        double v = 0.0;
+        gp_Cylinder cylinder;
+        gp_Cone cone;
+        gp_Pnt on;
+        if (type == GeomAbs_Cone) {
+            cone = surface.Cone();
+            ElSLib::Parameters(cone, p, u, v);
+            on = ElSLib::Value(u, v, cone);
+        } else {
+            cylinder = surface.Cylinder();
+            ElSLib::Parameters(cylinder, p, u, v);
+            on = ElSLib::Value(u, v, cylinder);
+        }
+        const double distance = p.Distance(on);
+        if (distance > tol || distance >= best) {
+            continue;
+        }
+        BRepClass_FaceClassifier classify(face, on, 1e-6);
+        if (classify.State() != TopAbs_IN && classify.State() != TopAbs_ON) {
+            continue;
+        }
+        best = distance;
+        out.face = face;
+        out.type = type;
+        out.cylinder = cylinder;
+        out.cone = cone;
+        out.pos = type == GeomAbs_Cone ? cone.Position() : cylinder.Position();
+        out.radius = type == GeomAbs_Cone ? cone.RefRadius() : cylinder.Radius();
+        out.semi = type == GeomAbs_Cone ? cone.SemiAngle() : 0.0;
+        out.u0 = u;
+        out.v0 = v;
+        out.distance = distance;
+    }
+    if (best < 1e29) {
+        BRepTools::UVBounds(out.face, out.umin, out.umax, out.vmin, out.vmax);
+        const double turn = 2.0 * kPi;
+        while (out.u0 < out.umin - 1e-9) {
+            out.u0 += turn;
+        }
+        while (out.u0 > out.umax + 1e-9) {
+            out.u0 -= turn;
+        }
+        out.full_ring = out.umax - out.umin >= turn - 1e-6;
+        out.sigma = out.face.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+        if (out.type == GeomAbs_Cone) {
+            out.surface = new Geom_ConicalSurface(out.pos, out.semi, out.radius);
+        } else {
+            out.surface = new Geom_CylindricalSurface(out.pos, out.radius);
+        }
+        return 2;
+    }
+    return best_other < 1e29 ? 3 : 0;
+}
+
+/// The surface moved `out` along the face's outward normal, with the same (u, v), so a loop in (u, v) is the same loop on it.
+Handle(Geom_Surface) offset_surface(const Curved& c, double out) {
+    const double d = out * c.sigma;  // along Su x Sv
+    gp_Pnt p;
+    gp_Vec su;
+    gp_Vec sv;
+    c.d1(c.u0, c.v0, p, su, sv);
+    const gp_Vec normal = su.Crossed(sv);
+    const gp_Vec radial = gp_Vec(c.pos.XDirection()) * std::cos(c.u0) + gp_Vec(c.pos.YDirection()) * std::sin(c.u0);
+    if (c.type == GeomAbs_Cylinder) {
+        const double along = normal.Dot(radial) >= 0.0 ? 1.0 : -1.0;
+        const double radius = c.radius + d * along;
+        if (radius > 1e-6) {
+            return new Geom_CylindricalSurface(c.pos, radius);
+        }
+    } else {
+        const double sin_a = std::sin(c.semi);
+        const double cos_a = std::cos(c.semi);
+        const gp_Vec across = radial * cos_a - gp_Vec(c.pos.Direction()) * sin_a;
+        const double along = normal.Dot(across) >= 0.0 ? 1.0 : -1.0;
+        const double radius = c.radius + d * along * cos_a;
+        if (radius >= 0.0) {
+            gp_Ax3 moved = c.pos;
+            moved.Translate(gp_Vec(c.pos.Direction()) * (-d * along * sin_a));
+            return new Geom_ConicalSurface(moved, c.semi, radius);
+        }
+    }
+    // The offset would turn the surface inside out (an engraving past the axis): leave it to Open CASCADE.
+    return new Geom_OffsetSurface(c.surface, d);
+}
+
+/// A letter as a solid between two surfaces with the same (u, v): its face on `low`, walls, its cap on `high`.
+TopoDS_Shape glyph_tool(const GlyphIn& glyph, const Handle(Geom_Surface)& low, const Handle(Geom_Surface)& high) {
+    const TopoDS_Face bottom = glyph_face(glyph, low);
+    BRepBuilderAPI_Sewing sewing(1e-4);
+    sewing.Add(bottom);
+    add_walls_and_cap(bottom, high, sewing);
+    sewing.Perform();
+    BRepBuilderAPI_MakeSolid make;
+    int shells = 0;
+    for (TopExp_Explorer e(sewing.SewedShape(), TopAbs_SHELL); e.More(); e.Next()) {
+        make.Add(TopoDS::Shell(e.Current()));
+        ++shells;
+    }
+    if (shells != 1) {
+        throw Standard_Failure("A letter did not close into a solid.");
+    }
+    TopoDS_Solid solid = make.Solid();
+    BRepLib::OrientClosedSolid(solid);
+    return solid;
+}
+
+/// A letter's points in (u, v): the starts and ends of its pieces, for the in-face and the material checks.
+std::vector<gp_Pnt2d> uv_points(const std::vector<GlyphIn>& glyphs) {
+    std::vector<gp_Pnt2d> out;
+    for (const GlyphIn& glyph : glyphs) {
+        for (const LoopIn& loop : glyph.loops) {
+            out.emplace_back(loop.start[0], loop.start[1]);
+            for (const Seg& seg : loop.segs) {
+                const int n = static_cast<int>(seg.kind);
+                out.emplace_back(seg.p[2 * n - 2], seg.p[2 * n - 1]);
+            }
+        }
+    }
+    return out;
 }
 
 }  // namespace
@@ -617,7 +842,18 @@ TopoDS_Shape build_lettering(
         std::string why;
         TopoDS_Shape result;
         try {
-            result = build_direct(current, target, faces, plane, frame, cut, depth, history, why);
+            gp_Trsf lift;
+            lift.SetTranslation(gp_Vec(frame.w) * (cut ? -depth : depth));
+            const Handle(Geom_Surface) top = Handle(Geom_Surface)::DownCast(plane->Transformed(lift));
+            const auto looks_wrong = [&](const TopoDS_Face& one) {
+                BRepAdaptor_Surface surface(one);
+                gp_Dir normal = surface.Plane().Axis().Direction();
+                if (one.Orientation() == TopAbs_REVERSED) {
+                    normal.Reverse();
+                }
+                return normal.Dot(frame.w) < 0.0;
+            };
+            result = build_direct(current, target, faces, plane, top, looks_wrong, history, why);
         } catch (const Standard_Failure& failure) {
             why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
         }
@@ -633,6 +869,196 @@ TopoDS_Shape build_lettering(
     }
     path = 2;
     return build_boolean(current, before, faces, frame, cut, depth, volume, error);
+}
+
+std::string text_face_json(const TopoDS_Shape& current, const double point[3]) {
+    Curved c;
+    std::string what;
+    const int found = find_face(current, gp_Pnt(point[0], point[1], point[2]), 0.5, c, what);
+    std::ostringstream out;
+    out.precision(17);
+    if (found == 1) {
+        out << "{\"kind\":\"plane\"}";
+        return out.str();
+    }
+    if (found == 3) {
+        out << "{\"kind\":\"other\",\"surface\":\"" << what << "\"}";
+        return out.str();
+    }
+    if (found == 0) {
+        out << "{\"kind\":\"none\"}";
+        return out.str();
+    }
+    out << "{\"kind\":\"" << (c.type == GeomAbs_Cone ? "cone" : "cylinder") << "\"";
+    const auto at = [&](const char* name, double x, double y, double z) { out << ",\"" << name << "\":[" << x << "," << y << "," << z << "]"; };
+    const gp_Pnt o = c.pos.Location();
+    at("origin", o.X(), o.Y(), o.Z());
+    at("xdir", c.pos.XDirection().X(), c.pos.XDirection().Y(), c.pos.XDirection().Z());
+    at("ydir", c.pos.YDirection().X(), c.pos.YDirection().Y(), c.pos.YDirection().Z());
+    at("zdir", c.pos.Direction().X(), c.pos.Direction().Y(), c.pos.Direction().Z());
+    out << ",\"radius\":" << c.radius << ",\"semiAngle\":" << c.semi << ",\"sigma\":" << c.sigma << ",\"u0\":" << c.u0 << ",\"v0\":" << c.v0
+        << ",\"uMin\":" << c.umin << ",\"uMax\":" << c.umax << ",\"vMin\":" << c.vmin << ",\"vMax\":" << c.vmax
+        << ",\"fullRing\":" << (c.full_ring ? "true" : "false") << ",\"distance\":" << c.distance << "}";
+    return out.str();
+}
+
+TopoDS_Shape build_lettering_curved(
+    const TopoDS_Shape& current,
+    double before,
+    bool cut,
+    const double point[3],
+    double depth,
+    bool force_boolean,
+    const double* data,
+    int len,
+    double& volume,
+    int& path,
+    Handle(BRepTools_History)& history,
+    std::string& note,
+    std::string& error) {
+    path = 0;
+    if (!std::isfinite(depth) || !(depth > 1e-6)) {
+        error = "Text needs a depth above 0, in millimetres.";
+        return TopoDS_Shape();
+    }
+    std::vector<GlyphIn> glyphs;
+    if (!decode(data, len, glyphs, error)) {
+        return TopoDS_Shape();
+    }
+    if (glyphs.empty()) {
+        error = "The text has no letters to build. Spaces leave no ink.";
+        return TopoDS_Shape();
+    }
+    Curved round;
+    std::string what;
+    if (find_face(current, gp_Pnt(point[0], point[1], point[2]), 0.5, round, what) != 2) {
+        error = "The anchor is not on a cylinder or a cone face.";
+        return TopoDS_Shape();
+    }
+    const Handle(Geom_Surface) surface = round.surface;
+    std::vector<TopoDS_Face> faces;
+    faces.reserve(glyphs.size());
+    for (const GlyphIn& glyph : glyphs) {
+        faces.push_back(glyph_face(glyph, surface));
+    }
+    const std::vector<gp_Pnt2d> marks = uv_points(glyphs);
+    bool direct_ok = !force_boolean;
+    if (force_boolean) {
+        note = "The text crosses the seam of the face.";
+    }
+    for (const gp_Pnt2d& uv : marks) {
+        BRepClass_FaceClassifier classify(round.face, surface->Value(uv.X(), uv.Y()), 1e-6);
+        const bool off = classify.State() == TopAbs_OUT || (direct_ok && classify.State() != TopAbs_IN);
+        if (off) {
+            error = "The text runs off this face. Move it, make it smaller, or put it on one face.";
+            return TopoDS_Shape();
+        }
+    }
+    if (direct_ok && !round.face.Location().IsIdentity()) {
+        direct_ok = false;
+        note = "The face carries a location.";
+    }
+    if (direct_ok) {
+        TopoDS_Compound inks;
+        BRep_Builder builder;
+        builder.MakeCompound(inks);
+        for (const TopoDS_Face& face : faces) {
+            for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
+                builder.Add(inks, w.Current());
+            }
+        }
+        TopoDS_Compound edges;
+        builder.MakeCompound(edges);
+        for (TopExp_Explorer w(round.face, TopAbs_WIRE); w.More(); w.Next()) {
+            builder.Add(edges, w.Current());
+        }
+        BRepExtrema_DistShapeShape distance(inks, edges);
+        if (distance.IsDone() && distance.Value() < 0.02) {
+            direct_ok = false;
+            note = "The text is within 0.02 mm of the face's edge.";
+        }
+    }
+    if (cut) {
+        // The material under every letter, along the normal where it stands.
+        for (size_t g = 0; g < glyphs.size(); ++g) {
+            std::vector<gp_Pnt2d> mine;
+            Handle(IntTools_Context) context = new IntTools_Context;
+            gp_Pnt inside;
+            gp_Pnt2d uv;
+            if (BOPTools_AlgoTools3D::PointInFace(faces[g], inside, uv, context) == 0) {
+                mine.push_back(uv);
+            }
+            for (const LoopIn& loop : glyphs[g].loops) {
+                mine.emplace_back(loop.start[0], loop.start[1]);
+            }
+            double thickness = 1e9;
+            for (const gp_Pnt2d& at : mine) {
+                const gp_Pnt on = surface->Value(at.X(), at.Y());
+                const gp_Dir down = round.outward(at.X(), at.Y()).Reversed();
+                thickness = std::min(thickness, reach(current, on, down));
+            }
+            if (thickness <= depth + 1e-6) {
+                direct_ok = false;
+                note = "The cut goes through the wall.";
+                if (glyphs[g].loops.size() > 1) {
+                    error = "The middle of ‘" + utf8(glyphs[g].code) + "’ would fall out. Use the Stencil font, or engrave less deep.";
+                    return TopoDS_Shape();
+                }
+            }
+        }
+    }
+    if (direct_ok) {
+        std::string why;
+        TopoDS_Shape result;
+        try {
+            const Handle(Geom_Surface) top = offset_surface(round, cut ? -depth : depth);
+            const auto looks_wrong = [&](const TopoDS_Face& one) {
+                double u_lo = 0.0;
+                double u_hi = 0.0;
+                double v_lo = 0.0;
+                double v_hi = 0.0;
+                BRepTools::UVBounds(one, u_lo, u_hi, v_lo, v_hi);
+                BRepAdaptor_Surface adaptor(one);
+                const double um = (u_lo + u_hi) / 2.0;
+                const double vm = (v_lo + v_hi) / 2.0;
+                const gp_Pnt p = adaptor.Value(um, vm);
+                gp_Pnt on;
+                gp_Vec n;
+                BRepGProp_Face(one).Normal(um, vm, on, n);
+                double u = 0.0;
+                double v = 0.0;
+                round.parameters(p, u, v);
+                return n.Dot(gp_Vec(round.outward(u, v))) < 0.0;
+            };
+            result = build_direct(current, round.face, faces, surface, top, looks_wrong, history, why);
+        } catch (const Standard_Failure& failure) {
+            why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
+        }
+        if (!result.IsNull()) {
+            volume = volume_of(result);
+            if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
+                path = 1;
+                return result;
+            }
+        }
+        history.Nullify();
+        note = why;
+    }
+    path = 2;
+    // The boolean build: a solid for every letter from a little inside the part (a raise) or past its face (a cut) to the depth.
+    const double sink = 0.2;
+    std::vector<TopoDS_Shape> tools;
+    try {
+        const Handle(Geom_Surface) low = offset_surface(round, cut ? sink : -sink);
+        const Handle(Geom_Surface) high = offset_surface(round, cut ? -depth : depth);
+        for (const GlyphIn& glyph : glyphs) {
+            tools.push_back(glyph_tool(glyph, low, high));
+        }
+    } catch (const Standard_Failure& failure) {
+        error = failure.GetMessageString() == nullptr ? "Open CASCADE did not build a letter." : failure.GetMessageString();
+        return TopoDS_Shape();
+    }
+    return combine_profile_tools(current, before, cut ? "cut" : "fuse", tools, "text", volume, error);
 }
 
 }  // namespace lime_occt

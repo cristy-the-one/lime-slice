@@ -75,6 +75,7 @@ export function layoutOf(step: LetteringOp, nozzleMm: number, ready: () => void)
 /** Forget every layout, as when the engine restarts. */
 export function forgetLayouts() {
   held.clear();
+  heldCurved.clear();
 }
 
 /** Triangles of a face: its outline and holes, flat on the plane at height `w`, facing +W. */
@@ -133,5 +134,123 @@ export function lettersGhost(step: LetteringOp, nozzleMm: number, ready: () => v
 /** The letters of `step` too thin for the nozzle, as the sentence under Apply; null when none, or not laid out yet. */
 export function thinNoteOf(step: LetteringOp, nozzleMm: number, ready: () => void): string | null {
   const laid = layoutOf(step, nozzleMm, ready);
+  return laid && !("error" in laid) ? laid.thinNote : null;
+}
+
+// --- Milestone 2: text on a cylinder or a cone. The engine lays the letters out on the face under the anchor (`textCurved`): each
+// loop's points in the layout, on the face, and on the top (or the floor), all in the solid's own frame.
+
+export interface CurvedLoop {
+  uv: [number, number][];
+  base: [number, number, number][];
+  top: [number, number, number][];
+}
+
+export interface CurvedLayout {
+  ok: true;
+  font: string;
+  surface: string;
+  faces: { ch: string; thin: boolean; loops: CurvedLoop[] }[];
+  thin: { ch: string; lostPct: number }[];
+  thinNote: string | null;
+  crossesSeam: boolean;
+  wayRoundMm: number;
+}
+
+/** Which solid and node the engine reads the anchor on. */
+export interface Anchored {
+  key: string;
+  node: number;
+}
+
+type HeldCurved = CurvedLayout | { error: string } | "pending";
+const heldCurved = new Map<string, HeldCurved>();
+
+function curvedKey(step: LetteringOp, on: Anchored, nozzleMm: number): string {
+  return JSON.stringify([on.key, on.node, step.origin, step.text, step.font, step.style, step.height, step.depth, step.op, step.spacing, step.lineSpacing, step.align, step.angleDeg, step.along, step.flip, step.weight, nozzleMm]);
+}
+
+/** The engine's layout of `step` on the cylinder or cone under its origin, or null until it answers (`ready` is called then). */
+export function curvedLayoutOf(step: LetteringOp, on: Anchored, nozzleMm: number, ready: () => void): CurvedLayout | { error: string } | null {
+  const key = curvedKey(step, on, nozzleMm);
+  const known = heldCurved.get(key);
+  if (known && known !== "pending") {
+    heldCurved.delete(key);
+    heldCurved.set(key, known);
+    return known;
+  }
+  if (known === "pending") return null;
+  heldCurved.set(key, "pending");
+  if (heldCurved.size > MAX_HELD) {
+    const oldest = heldCurved.keys().next().value;
+    if (oldest !== undefined) heldCurved.delete(oldest);
+  }
+  void treeCall({
+    call: "textCurved",
+    key: on.key,
+    node: on.node,
+    point: step.origin,
+    text: step.text,
+    font: step.font,
+    ...(step.style ? { style: step.style } : {}),
+    height: step.height,
+    depth: step.depth,
+    cut: step.op === "cut",
+    ...(step.spacing !== undefined ? { spacing: step.spacing } : {}),
+    ...(step.lineSpacing !== undefined ? { lineSpacing: step.lineSpacing } : {}),
+    ...(step.align ? { align: step.align } : {}),
+    ...(step.angleDeg ? { angleDeg: step.angleDeg } : {}),
+    ...(step.along ? { along: step.along } : {}),
+    ...(step.flip ? { flip: true } : {}),
+    ...(step.weight !== undefined ? { weight: step.weight } : {}),
+    lineMm: nozzleMm,
+    stepMm: 0.4,
+  }).then((reply) => {
+    heldCurved.set(key, reply.ok === true && Array.isArray(reply.faces) ? (reply as unknown as CurvedLayout) : { error: typeof reply.error === "string" ? reply.error : "The letters could not be laid out." });
+    ready();
+  });
+  return null;
+}
+
+/** Forget every curved layout (the solid changed, or the engine restarted). */
+export function forgetCurvedLayouts() {
+  heldCurved.clear();
+}
+
+/** The ghost of text on a cylinder or a cone: the letters' walls and caps between the face and the top (or the floor). */
+export function curvedLettersGhost(step: LetteringOp, on: Anchored, nozzleMm: number, ready: () => void): ModelGhost | null {
+  const laid = curvedLayoutOf(step, on, nozzleMm, ready);
+  if (!laid || "error" in laid) return null;
+  const ok: number[] = [];
+  const flagged: number[] = [];
+  for (const face of laid.faces) {
+    const out = face.thin ? flagged : ok;
+    const [outer, ...holes] = face.loops;
+    if (!outer || outer.uv.length < 3) continue;
+    const contour = outer.uv.map(([u, v]) => new Vector2(u, v));
+    const inner = holes.map((hole) => hole.uv.map(([u, v]) => new Vector2(u, v)));
+    const tops = [...outer.top, ...holes.flatMap((hole) => hole.top)];
+    const points = [...contour, ...inner.flat()];
+    for (const [a, b, c] of ShapeUtils.triangulateShape(contour, inner)) {
+      const [p, q, r] = [points[a!]!, points[b!]!, points[c!]!];
+      // Counter-clockwise from outside: the layout is right-handed with the outward normal; the triangulator does not promise a winding.
+      const flip = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x) < 0;
+      for (const index of flip ? [a!, c!, b!] : [a!, b!, c!]) out.push(...tops[index]!);
+    }
+    for (const loop of face.loops) {
+      for (let i = 0; i < loop.base.length; i += 1) {
+        const j = (i + 1) % loop.base.length;
+        const [a, b, c, d] = [loop.base[i]!, loop.base[j]!, loop.top[j]!, loop.top[i]!];
+        out.push(...a, ...b, ...c, ...a, ...c, ...d);
+      }
+    }
+  }
+  if (ok.length + flagged.length < 9) return null;
+  return { kind: "soup", positions: Float32Array.from(ok), tone: step.op === "cut" ? "cut" : "add", ...(flagged.length >= 9 ? { flagged: Float32Array.from(flagged) } : {}) };
+}
+
+/** The letters of a curved `step` too thin for the nozzle, as the sentence under Apply; null when none, or not laid out yet. */
+export function curvedThinNoteOf(step: LetteringOp, on: Anchored, nozzleMm: number, ready: () => void): string | null {
+  const laid = curvedLayoutOf(step, on, nozzleMm, ready);
   return laid && !("error" in laid) ? laid.thinNote : null;
 }

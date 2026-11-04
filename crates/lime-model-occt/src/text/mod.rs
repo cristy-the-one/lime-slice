@@ -17,6 +17,7 @@ pub mod fonts;
 #[cfg(any(test, lime_occt_test_hooks))]
 pub mod synth;
 pub mod user;
+pub mod wrap;
 
 use lime_recipe::geom2d::{Poly, Region};
 use serde::{Deserialize, Serialize};
