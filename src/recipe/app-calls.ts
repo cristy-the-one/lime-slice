@@ -23,6 +23,7 @@ import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck,
 import { assembledBox, frameNote, placeFree, placeOnPlate, placedBounds, type PlatePlace } from "../modeling/placing.ts";
 import { cutPlanes, MAX_SECTION_POINTS, pointsIn } from "../modeling/sections.ts";
 import { plainModelError } from "../app/model-error.ts";
+import { dataMissingInApp } from "./plugin-data.ts";
 import { probeKey } from "../model-feasibility.ts";
 import type { BeltSettings } from "../belt.ts";
 import { isFeatureTool } from "../model-features.ts";
@@ -73,7 +74,10 @@ export type KeptData = Record<string, { value: unknown }>;
 /** What a run reads of the window besides its parts. */
 export interface AppRunEnv {
   chordMm: number;
+  /** The step's kept data (a draft's run, from the project's `rustRecipes`): read first. */
   data?: KeptData;
+  /** The data a kept plugin's file carries (`./plugin-data.ts`): read when the step kept none. Set for a kept plugin's run. */
+  carried?: KeptData;
   /** The project's parameters, for numbers typed as expressions (model_place). */
   params?: Record<string, number>;
   /** The plate's printer: model_check, a print transition, object_place. */
@@ -209,8 +213,9 @@ export class AppRecipeCalls {
     }
     if (site.tool === "data") {
       const name = typeof args.name === "string" ? args.name : "";
-      const kept = this.env.data?.[name];
-      if (!kept) return { ok: false, error: `No recipe data named ${name || "(no name)"} is kept with this step. Rebuild it over MCP (recipe_run {object, params}), where the workspace's file is read.` };
+      // The step's kept data, then the data the plugin carries; the workspace's files are the MCP's alone.
+      const kept = this.env.data?.[name] ?? this.env.carried?.[name];
+      if (!kept) return { ok: false, error: this.env.carried ? dataMissingInApp(name) : `No recipe data named ${name || "(no name)"} is kept with this step. Rebuild it over MCP (recipe_run {object, params}), where the workspace's file is read.` };
       return { ok: true, result: kept.value };
     }
     let value: Body;

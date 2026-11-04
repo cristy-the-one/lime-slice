@@ -10,9 +10,9 @@
  * LIME_OCCT_BRIDGE and the MCP addon are there (CI's OCCT job), else the stand-in engine. Skips without lust;
  * LIME_RECIPE_REQUIRED=1 makes that a failure.
  */
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { engineCandidates, fakeEngine, loadEngineWorker, type Engine } from "./engine.ts";
@@ -55,6 +55,8 @@ const { typedPoseOf } = await import("../src/model-space.ts");
 const { pathTo } = await import("../src/model-tree.ts");
 const { runsOnPath } = await import("../src/plugin-step.ts");
 const { rebuildPluginStep } = await import("../src/recipe/rebuild.ts");
+const { runPluginFresh } = await import("../src/recipe/apply.ts");
+const { splitPluginData } = await import("../src/recipe/plugin-data.ts");
 const { inlineIngredients } = await import("../src/recipe/ingredients.ts");
 const { solidView } = await import("../src/modeling/model-calls.ts");
 const { cleanOp } = await import("../src/modeling/compose.ts");
@@ -126,6 +128,8 @@ interface Kind {
   params: Record<string, number | boolean | string>;
   /** A later step of the person's own on the part, replayed by both rebuilds. */
   later: Record<string, unknown>;
+  /** Recipe data written to the workspace for the first run only, then deleted: the rebuilds read what was kept. */
+  data?: Record<string, unknown>;
 }
 
 /** The part as both paths start from it: the plugin run (on a block, or making its part), then a step of the person's own. */
@@ -134,7 +138,14 @@ async function setUp(engine: Engine, kind: Kind) {
   session.clientName = "plugin-app-test";
   const call = (name: string, args: unknown = {}) => session.call(name, args);
   const block = kind.given ? String((await call("solid_new", { primitive: "box", dx: 40, dy: 20, dz: 10 })).object) : undefined;
+  const files = Object.entries(kind.data ?? {}).map(([name, value]) => {
+    const path = join(process.env.LIME_MCP_WORKSPACE!, `${name}.json`);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(value));
+    return path;
+  });
   const first = await call("recipe_run", { source: kind.source, name: kind.id, ...(block ? { object: block } : {}), ...(kind.keep ? { keep: { title: kind.name, description: `The ${kind.name} test plugin.` } } : {}) });
+  for (const path of files) unlinkSync(path);
   check(`${kind.name}: the plugin runs${kind.keep ? " and is kept" : ""}`, first.ok === true, first);
   const part = block ?? String(first.object);
   const later = await call("model_apply", { object: part, op: kind.later, probe: true });
@@ -398,6 +409,60 @@ const cut = await compare({
   ].join("\n"),
 });
 if (cut) check("cut in two: the other piece is a tree of its own, rooted at the cut", cut.viaApp.others.some((row) => row.origin === "piece" && row.tree.root.kind === "piece"), cut.viaApp.others.map((row) => [row.origin, row.tree.root]));
+
+// --- 7. A plugin that reads recipe data (data {name}): kept with the data it read, the workspace's file deleted after
+// the first run. The app's rebuild reads only what the plugin's file carries; a fresh run from the library (the Plugins
+// panel's Preview and Apply) builds the same solid as recipe_run {plugin}; the same plugin kept without its data is
+// refused in the window with a sentence naming the data. Synthetic data only.
+const outline = { points: [[-15, -6], [15, -6], [15, 6], [-15, 6]], height: 4 };
+const dataPlate: Kind = {
+  name: "outline plate",
+  id: "outline-plate",
+  given: false,
+  keep: true,
+  params: { scale: 1.5 },
+  later: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 20, origin: [0, 0, -5] },
+  data: { "shapes/outline": outline },
+  source: [
+    "use lime_recipe::{ops, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let k = s.number("scale", 1.0).range(0.5, 3.0).get();',
+    '    let d = s.data("shapes/outline").unwrap();',
+    '    let pts = d.get("points").and_then(|p| p.as_array()).map(|p| p.len()).unwrap_or(0);',
+    '    let h = d.get("height").and_then(|v| v.as_f64()).unwrap();',
+    '    let p = s.solid_new(ops::cuboid(30.0 * k, 12.0, h).set("name", "outline")).unwrap();',
+    "    let v = s.volume(&p).unwrap();",
+    '    s.log(&format!("{pts} points, volume {v:.3}"));',
+    "    s.done(&p);",
+    "}",
+    "",
+  ].join("\n"),
+};
+const viaData = await compare(dataPlate);
+if (viaData) {
+  check("outline plate: the rebuild read the carried data (its log names the points)", logs(viaData.viaApp.notes).some((line) => line.startsWith("4 points")), viaData.viaApp.notes);
+  const file = readPlugin("outline-plate");
+  if (file && !("reason" in file)) {
+    const h = file.header;
+    const ctx = { bedMm: viaData.runB.stamp!.context.bedMm, nozzleMm: viaData.runB.stamp!.context.nozzleMm } as { bedMm: [number, number, number]; nozzleMm: number };
+    // The MCP's fresh run from the library, in a session of its own, with no workspace file.
+    const engineC = real ? loadEngineWorker(root) : fakeEngine();
+    const c = new Session(engineC);
+    const mcpRun = await c.call("recipe_run", { plugin: "outline-plate", params: { scale: 2 } });
+    const mcpSolid = mcpRun.ok === true ? await c.call("model_describe", { object: String(mcpRun.object) }) : {};
+    check("outline plate: recipe_run {plugin} runs from its carried data", mcpRun.ok === true, mcpRun);
+    // The window's fresh run (Preview, Live and Apply build the same run) from the same file.
+    const engineD = real ? loadEngineWorker(root) : fakeEngine();
+    const d = new Session(engineD);
+    const fresh = await runPluginFresh({ part: null, plugin: { id: h.plugin, version: h.version, sha256: file.sha256, api: h.api }, body: file.body, params: { scale: 2 }, context: ctx, recipes: host, engine: appEngine(engineD), env: envOf(d, "fresh"), runId: "f1e2d3c4" });
+    check("outline plate: the window's fresh run reads the carried data", fresh.ok === true && logs(fresh.notes).some((line) => line.startsWith("4 points")), fresh);
+    check("outline plate: the same solid either way", fresh.ok === true && JSON.stringify(fresh.solid.fingerprint) === JSON.stringify(mcpSolid.fingerprint), { app: fresh.ok ? fresh.solid.fingerprint : null, mcp: mcpSolid.fingerprint });
+    // Kept before plugins carried data: the code alone, as the owner's older plugin.
+    const bare = await runPluginFresh({ part: null, plugin: { id: h.plugin, version: h.version, sha256: file.sha256, api: h.api }, body: splitPluginData(file.body).code, params: {}, context: ctx, recipes: host, engine: appEngine(engineD), env: envOf(d, "bare"), runId: "0a0b0c0d" });
+    check("outline plate: without carried data the window names the data and how to carry it", bare.ok === false && /This plugin reads recipe data shapes\/outline, which was not kept with it\./.test(bare.reason) && /data:\[\\?"shapes\/outline\\?"\]/.test(bare.reason), bare);
+  } else check("outline plate: the library holds the plugin", false, file);
+}
 
 if (failed) {
   console.error(`plugin-app: ${failed} failed`);

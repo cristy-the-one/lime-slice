@@ -221,3 +221,4 @@ src/modeling/face-pick.test.ts
 src/recipe/host.test.ts
 src/recipe/tauri.test.ts
 src/recipe/ingredients.test.ts
+src/recipe/plugin-data.test.ts

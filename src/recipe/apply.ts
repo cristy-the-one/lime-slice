@@ -12,6 +12,7 @@ import { solidView, type SolidView } from "../modeling/model-calls.ts";
 import { markedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { DEFAULT_LIMITS, type RecipeLimits } from "./host.ts";
+import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import type { RecipeRunner } from "./rebuild.ts";
 
 export interface PluginRunInput {
@@ -62,7 +63,11 @@ export type PluginRunOutcome =
 export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOutcome> {
   const { part, engine } = input;
   const chordMm = input.env.chordMm;
-  const built = await input.recipes.build(input.plugin.id, input.body, false, input.suffix ?? "");
+  // The host builds the code; the data a kept plugin carries answers `data {name}` after the step's own.
+  const split = splitPluginData(input.body);
+  if (split.problem) return { ok: false, reason: split.problem, notes: [] };
+  const env = carriedEnv(input.env, input.plugin.version, split.data);
+  const built = await input.recipes.build(input.plugin.id, split.code, false, input.suffix ?? "");
   if (!built.ok || !built.exe) {
     const first = built.diagnostics[0];
     return { ok: false, reason: built.reason ?? (first ? `The plugin did not build: line ${first.line}: ${first.message}` : "The plugin did not build."), ...(first ? { line: first.line } : {}), notes: [] };
@@ -76,8 +81,8 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
     const startReply = await engine.tree(part.tree.key, from!, gotoRequest(part.tree.key, from!, chordMm));
     const startSolid = typeof startReply.error === "string" && startReply.error ? null : solidView(startReply);
     if (!startSolid) return { ok: false, reason: `The part could not be shown: ${typeof startReply.error === "string" ? plainModelError(startReply.error) : "the engine did not answer."}`, notes: [] };
-    calls = new AppRecipeCalls({ ...part, solid: startSolid }, engine, input.env);
-  } else calls = new AppRecipeCalls(null, engine, input.env);
+    calls = new AppRecipeCalls({ ...part, solid: startSolid }, engine, env);
+  } else calls = new AppRecipeCalls(null, engine, env);
   const start = { params: input.params, context: { units: "mm", ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   const notes = [...calls.notes, ...(out.notes ?? [])];

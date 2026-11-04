@@ -11,6 +11,7 @@ import { toolKeys, type ModelTree, type PluginStamp } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
 import { openDock } from "./dock-reveal";
+import { elideData } from "../recipe/plugin-data";
 
 /** Rows are named by `RowKey`: an open solid's step, or a step of a tool one of its joins takes ("Booleans between objects"). */
 interface ModelHistoryHooks {
@@ -1444,7 +1445,7 @@ export function showPluginSource(title: string, sub: string, text: string) {
   sourceReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   sourceSheet.querySelector("#modelPluginSourceTitle")!.textContent = title;
   sourceSheet.querySelector(".mh-source-sub")!.textContent = sub;
-  sourceSheet.querySelector(".mh-source code")!.textContent = text;
+  sourceSheet.querySelector(".mh-source code")!.textContent = elideData(text);
   sourceSheet.hidden = false;
   sourceSheet.querySelector<HTMLElement>('[data-act="close"]')?.focus();
 }
@@ -1634,7 +1635,7 @@ function openSource(id: RowKey) {
   sourceReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   sourceSheet.querySelector("#modelPluginSourceTitle")!.textContent = `${view.title} · ${view.kind}`;
   sourceSheet.querySelector(".mh-source-sub")!.textContent = "Read-only. This is the code the step was built with, as the project carries it.";
-  sourceSheet.querySelector(".mh-source code")!.textContent = view.source;
+  sourceSheet.querySelector(".mh-source code")!.textContent = elideData(view.source);
   sourceSheet.hidden = false;
   sourceSheet.querySelector<HTMLElement>('[data-act="close"]')?.focus();
 }

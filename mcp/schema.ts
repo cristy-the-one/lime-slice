@@ -1570,6 +1570,7 @@ export const TOOLS: ToolSpec[] = [
         withSource: { type: "boolean", description: "Get: code." },
         from: { type: "string", maxLength: 60, description: "Save: a recipe run here." },
         items: { type: "array", maxItems: 40, items: { type: "string" }, description: "Ingredient: fns to lift." },
+        data: { type: "array", maxItems: 20, items: { type: "string" }, description: "Save plugin id: carry workspace data." },
         source: { type: "string", maxLength: 100000, description: "Save: Rust instead." },
         title: { type: "string", maxLength: 60, description: "Save." },
         description: { type: "string", maxLength: 280, description: "Save." },

@@ -16,8 +16,9 @@ use tauri::{AppHandle, Manager};
 
 /// Older versions kept beside a plugin as `<id>.vN.rs`, as the MCP server keeps them.
 const KEEP_VERSIONS: usize = 5;
-/// A library file larger than this is not listed (a plugin is one source file).
-const MAX_FILE: u64 = 1 << 20;
+/// A library file larger than this is not listed: a plugin is one source file, with the recipe data it carries (at
+/// most 4 MB a name and 12 MB together, `src/recipe/plugin-data.ts`) after its code.
+const MAX_FILE: u64 = 16 << 20;
 
 /// `[a-z0-9-]`, at most 48 characters, starting and ending with a letter or digit.
 fn is_slug(id: &str) -> bool {
