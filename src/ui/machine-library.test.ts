@@ -352,11 +352,19 @@ check("a stored IR3 V2 whose start text was edited keeps its text and flag", edi
 const userCopy = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, id: "copy", name: "IR3 mine", builtin: false } : printer) }));
 const copyKept = ensureBuiltins(userCopy).printers.find((printer) => printer.id === "copy");
 check("a user copy of the IR3 V2 is left alone", copyKept?.maxBedC === 120 && copyKept.startGcode === "" && copyKept.startOwnsHoming === false);
-const across = ["; two lines across the belt, there and back, 25 mm of filament each", "G1 X250 E25 F2000", "G1 Z0.8 F900", "G1 X0 E25 F2000"];
-const zigzagOnly = (refreshed?.startGcode ?? "").split("\n").filter((line) => !across.includes(line)).join("\n");
-const oldStart = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, startGcode: zigzagOnly, endGcode: "PRINT_END" } : printer) }));
-const upgraded = ensureBuiltins(oldStart).printers.find((printer) => printer.id === "ideaformer-ir3-v2");
-check("a stored IR3 V2 still on the old zig-zag-only start takes the lines across the belt", upgraded !== undefined && upgraded.startGcode === refreshed?.startGcode && upgraded.startGcode.includes("G1 X250 E25 F2000\nG1 Z0.8 F900\nG1 X0 E25 F2000") && upgraded.startGcode.includes("G1 X6.67 Z7.4 E1.85"));
+const start = (refreshed?.startGcode ?? "").split("\n");
+check(
+  "the IR3 V2 zig-zag cleans the nozzle first, then the lines across the belt end where Z is zeroed, so the part starts against them",
+  start.includes("G1 X6.67 Z23.4 E1.85") && start.indexOf("G1 X6.67 Z23.4 E1.85") < start.indexOf("G1 X250 E25 F2000") && start.indexOf("G1 X0 E25 F2000") + 1 === start.indexOf("G92 E0 Z0"),
+);
+const across = ["; two lines across the belt, there and back, 25 mm of filament each. Z is zeroed on the", "; second, so the part's first layer starts against it and the line holds it to the belt.", "G1 X0 F6000", "G1 X250 E25 F2000", "G1 Z28.8 F900", "G1 X0 E25 F2000"];
+const zigzagOnly = start.filter((line) => !across.includes(line)).join("\n");
+const linesFirst = zigzagOnly.replace("G1 X0 Z0.4 F6000\n", "G1 X0 Z0.4 F6000\n; two lines across the belt, there and back, 25 mm of filament each\nG1 X250 E25 F2000\nG1 Z0.8 F900\nG1 X0 E25 F2000\n");
+for (const [name, old] of [["the old zig-zag-only start", zigzagOnly], ["#564's lines-first start", linesFirst]] as const) {
+  const stored = parseLibrary(JSON.stringify({ ...before, printers: before.printers.map((printer) => printer.id === "ideaformer-ir3-v2" ? { ...printer, startGcode: old, endGcode: "PRINT_END" } : printer) }));
+  const upgraded = ensureBuiltins(stored).printers.find((printer) => printer.id === "ideaformer-ir3-v2");
+  check(`a stored IR3 V2 still on ${name} takes the current one`, upgraded !== undefined && old !== refreshed?.startGcode && upgraded.startGcode === refreshed?.startGcode);
+}
 check("refreshing twice changes nothing", JSON.stringify(ensureBuiltins(ensureBuiltins(beforeRead))) === JSON.stringify(ensureBuiltins(beforeRead)));
 
 const restored = ensureBuiltins(parseLibrary("nope"));

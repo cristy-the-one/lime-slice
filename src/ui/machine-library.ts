@@ -1186,8 +1186,10 @@ function uniqueName(rows: { name: string }[], name: string): string {
 
 /**
  * The IR3 V2's start sequence. PRINT_START is the printer's own macro. The belt has no Z endstop,
- * so only Y homes. The purge draws two lines across the whole belt, as Ideaformer's own start does,
- * then a Z-shaped line up the belt at the left edge, then Z is zeroed at the nozzle.
+ * so only Y homes. The purge first draws a Z-shaped line up the belt at the left edge, which
+ * cleans the nozzle, then two lines across the whole belt, as Ideaformer's own start does. Z is
+ * zeroed on the second line, so the part's first layer touches it and the line holds the part
+ * to the belt.
  * It ends in absolute extrusion because the engine's body is absolute.
  */
 const IR3_V2_START = [
@@ -1206,10 +1208,6 @@ const IR3_V2_START = [
   "G92 Z0",
   "G1 Z0.4 F900",
   "G1 X0 Z0.4 F6000",
-  "; two lines across the belt, there and back, 25 mm of filament each",
-  "G1 X250 E25 F2000",
-  "G1 Z0.8 F900",
-  "G1 X0 E25 F2000",
   "G1 Z5.4 E1. F1200",
   "; 8-fold Z-shaped purge line: 6.67 mm wide, 2 mm per segment",
   "G1 X6.67 Z7.4 E1.85",
@@ -1222,18 +1220,38 @@ const IR3_V2_START = [
   "G1 X0 Z21.4 E1.85",
   "G1 X6.67 Z23.4 E1.85",
   "G1 Z28.4 E0.50",
+  "; two lines across the belt, there and back, 25 mm of filament each. Z is zeroed on the",
+  "; second, so the part's first layer starts against it and the line holds it to the belt.",
+  "G1 X0 F6000",
+  "G1 X250 E25 F2000",
+  "G1 Z28.8 F900",
+  "G1 X0 E25 F2000",
   "G92 E0 Z0",
   "M82",
 ].join("\n");
 
-/** The IR3 V2 start before the lines across the belt (until 5.1.0). A stored copy still equal to it was never edited, so it takes the new one. */
-const IR3_V2_START_ZIGZAG_ONLY = IR3_V2_START.split("\n")
-  .filter((line) => !["; two lines across the belt, there and back, 25 mm of filament each", "G1 X250 E25 F2000", "G1 Z0.8 F900", "G1 X0 E25 F2000"].includes(line))
-  .join("\n");
+/** The IR3 V2 purge lines across the belt, as they stand now (last, against the part). */
+const IR3_V2_ACROSS = [
+  "; two lines across the belt, there and back, 25 mm of filament each. Z is zeroed on the",
+  "; second, so the part's first layer starts against it and the line holds it to the belt.",
+  "G1 X0 F6000",
+  "G1 X250 E25 F2000",
+  "G1 Z28.8 F900",
+  "G1 X0 E25 F2000",
+];
+
+/** Until 5.1.0: the zig-zag only. */
+const IR3_V2_START_ZIGZAG_ONLY = IR3_V2_START.split("\n").filter((line) => !IR3_V2_ACROSS.includes(line)).join("\n");
+
+/** #564 on main: the lines across came before the zig-zag, so the part started far from them. */
+const IR3_V2_START_LINES_FIRST = IR3_V2_START_ZIGZAG_ONLY.replace(
+  "G1 X0 Z0.4 F6000\n",
+  "G1 X0 Z0.4 F6000\n; two lines across the belt, there and back, 25 mm of filament each\nG1 X250 E25 F2000\nG1 Z0.8 F900\nG1 X0 E25 F2000\n",
+);
 
 /** Built-in start G-code the catalog shipped earlier, by printer id. */
 const PAST_STARTS: Record<string, string[]> = {
-  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY],
+  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST],
 };
 
 const IR3_V2_LIMITS: KlipperLimits = {
