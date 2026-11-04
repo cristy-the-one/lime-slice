@@ -59,6 +59,7 @@ const { inlineIngredients } = await import("../src/recipe/ingredients.ts");
 const { solidView } = await import("../src/modeling/model-calls.ts");
 const { cleanOp } = await import("../src/modeling/compose.ts");
 const { plateUp, readPartition, storedPartition } = await import("./partition.ts");
+type PluginValue = import("../src/model-tree.ts").PluginValue;
 type ModelTree = import("../src/model-tree.ts").ModelTree;
 type AppEngine = import("../src/recipe/app-calls.ts").AppEngine;
 type AppRunEnv = import("../src/recipe/app-calls.ts").AppRunEnv;
@@ -123,7 +124,7 @@ interface Kind {
   given: boolean;
   /** Kept as a plugin; else the run stays a draft. */
   keep: boolean;
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
   /** A later step of the person's own on the part, replayed by both rebuilds. */
   later: Record<string, unknown>;
 }

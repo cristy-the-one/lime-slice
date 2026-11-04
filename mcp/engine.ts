@@ -1008,6 +1008,31 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         wire.id = req.node ?? 1;
         return JSON.stringify(wire);
       }
+      // --- A face's outline (I5, picked faces of API 1.2): the box of that face's corners in the asked frame.
+      if (req.call === "faceOutline") {
+        const solid = (typeof req.node === "number" ? atNode.get(key)?.get(req.node) : undefined) ?? kept.get(key) ?? fallback();
+        const face = Number((req as { face?: unknown }).face);
+        const frame = ((req as { frame?: number[] }).frame ?? [0, 0, 0, 1, 0, 0, 0, 1, 0]).map(Number);
+        const inset = Number((req as { insetMm?: unknown }).insetMm ?? 0) || 0;
+        const us: number[] = [];
+        const vs: number[] = [];
+        for (let tri = 0; tri < 12; tri += 1) {
+          if (Math.floor(tri / 2) !== face) continue;
+          for (let k = 0; k < 3; k += 1) {
+            const at = tri * 9 + k * 3;
+            const d = [0, 1, 2].map((axis) => (solid.positions[at + axis] ?? 0) - frame[axis]!);
+            us.push(d[0]! * frame[3]! + d[1]! * frame[4]! + d[2]! * frame[5]!);
+            vs.push(d[0]! * frame[6]! + d[1]! * frame[7]! + d[2]! * frame[8]!);
+          }
+        }
+        if (us.length === 0) return JSON.stringify({ error: "That face is not on this solid." });
+        const r = (n: number) => Math.round(n * 1e6) / 1e6;
+        const [u0, u1, v0, v1] = [Math.min(...us) + inset, Math.max(...us) - inset, Math.min(...vs) + inset, Math.max(...vs) - inset].map(r) as [number, number, number, number];
+        if (u1 <= u0 || v1 <= v0) return JSON.stringify({ loops: [], regions: [], areaMm2: 0 });
+        const outer = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+        const loop = { start: outer[0], segments: [...outer.slice(1), outer[0]].map((to) => ({ kind: "line", to })) };
+        return JSON.stringify({ loops: [loop], regions: [{ outer, holes: [] }], areaMm2: r((u1 - u0) * (v1 - v0)) });
+      }
       // --- A9. goto returns the solid that node held. A node with no snapshot keeps the current solid. ---
       if (req.call === "goto") {
         const id = typeof req.node === "number" ? req.node : 0;

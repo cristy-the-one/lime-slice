@@ -81,6 +81,7 @@ import {
   type TransitionOp,
   type Vec3,
 } from "../model-tree";
+import type { PluginValue } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
@@ -5396,7 +5397,7 @@ function projectPluginFiles(): Map<string, PluginFileInfo> {
  * and the part shows the new branch. The old branch stays as it was, so one Undo goes back to the old values. A run
  * that fails leaves the part as it was and says why.
  */
-async function rebuildPluginRow(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean, swap?: LibrarySwap): Promise<RowKey | null> {
+async function rebuildPluginRow(row: RowKey, changes: Record<string, PluginValue>, edited: boolean, swap?: LibrarySwap): Promise<RowKey | null> {
   const at = open;
   const tree = treeOf(at);
   if (!at || !tree || state.stage !== "model") return null;
@@ -5674,7 +5675,7 @@ function foldHead(row: RowKey): RowKey {
 interface LibrarySwap {
   file: PluginFileInfo;
   sha256: string;
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
   /** Which values the new version no longer takes, for the readout. */
   note: string;
 }

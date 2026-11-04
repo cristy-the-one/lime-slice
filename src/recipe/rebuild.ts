@@ -9,10 +9,10 @@
  */
 import { editRequest, gotoRequest, keepSketch } from "../model-request.ts";
 import { forked, stepIds, type ForkStep } from "../model-edit.ts";
-import { jumped, pathTo, renumberedSteps, reserveId, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp } from "../model-tree.ts";
+import { jumped, pathTo, renumberedSteps, reserveId, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp, type PluginValue } from "../model-tree.ts";
 import { plainModelError } from "../app/model-error.ts";
 import { readBroken, readBuilt, solidView, type SolidView } from "../modeling/model-calls.ts";
-import { markedRun, sameFingerprint, sameValues, type StampedRun } from "../plugin-step.ts";
+import { markedRun, sameFingerprint, sameValues, stampValue, type StampedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { DEFAULT_LIMITS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
 
@@ -64,7 +64,7 @@ export interface RebuildInput {
   body: string;
   suffix?: string;
   /** Every value the run is given: the stamped ones with the person's changes over them. */
-  params: Record<string, number | boolean | string>;
+  params: Record<string, PluginValue>;
   /** What the run reads of the printer now. */
   context: { bedMm: [number, number, number]; nozzleMm: number };
   recipes: RecipeRunner;
@@ -152,6 +152,7 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
     }
     calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, input.env);
   } else calls = new AppRecipeCalls(null, engine, input.env);
+  calls.params = input.params;
   const start = { params: input.params, context: { units: "mm", ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   const notes = [...calls.notes, ...(out.notes ?? [])];
@@ -181,7 +182,7 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
   const ids = runSteps(target);
   if (ids.length === 0) return refuse("With these values the plugin changed nothing, so the step was left as it was.");
   if (!target.solid) return refuse("The solid the plugin built could not be read.");
-  const values = Object.fromEntries(Object.entries(input.params).filter(([, v]) => typeof v === "boolean" || typeof v === "string" || (typeof v === "number" && Number.isFinite(v)))) as PluginStamp["params"];
+  const values = Object.fromEntries(Object.entries({ ...input.params, ...calls.picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"];
   const stamp: PluginStamp = { ...run.stamp, params: values, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, fingerprint: target.solid.fingerprint ?? run.stamp.fingerprint };
   let next = markedRun(target.tree, ids, input.runId, stamp);
   const sameSolid = sameValues(run.stamp.params, values) ? sameFingerprint(target.solid.fingerprint ?? null, run.stamp.fingerprint) : undefined;

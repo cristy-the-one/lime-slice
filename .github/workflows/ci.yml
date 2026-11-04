@@ -193,6 +193,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
           # The app's rebuild of a plugin step against the MCP's on real OCCT: the same stamp, steps and solid.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
+          # Recipe API 1.2 on real OCCT: a picked face found again after an earlier step moved it, outlines, refuse.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -390,6 +392,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 

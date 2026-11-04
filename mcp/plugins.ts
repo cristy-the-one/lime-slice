@@ -9,6 +9,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { lfOnly } from "./recipe.ts";
+import type { PluginValue } from "../src/model-tree.ts";
+import { pickText } from "../src/recipe/picks.ts";
 
 /** The app's identifier (src-tauri/tauri.conf.json): the library sits in its data folder. */
 const APP_ID = "com.limeslice.slicer";
@@ -24,8 +26,8 @@ const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
 /** One declared parameter, as the crate's describe mode writes it (D4). */
 export interface PluginParam {
   name: string;
-  kind: "number" | "count" | "toggle" | "choice" | "text";
-  default: number | boolean | string;
+  kind: "number" | "count" | "toggle" | "choice" | "text" | "face" | "outline";
+  default: PluginValue | null;
   min?: number;
   max?: number;
   step?: number;
@@ -209,6 +211,8 @@ export function paramSummary(params: PluginParam[]): string {
     const unit = p.unit ? ` ${p.unit}` : "";
     const range = p.min !== undefined || p.max !== undefined ? ` [${p.min ?? ""}-${p.max ?? ""}]` : "";
     const options = p.options?.length ? ` (${p.options.join("|")})` : "";
+    // --- API 1.2. `face [largest up]`, `outline [none]`: a value the person picks, with its default.
+    if (p.kind === "face" || p.kind === "outline") return `${p.name} ${p.kind} [${p.default === null || p.default === undefined ? "pick" : pickText(p.default)}]`;
     const value = typeof p.default === "string" ? JSON.stringify(p.default) : String(p.default);
     return `${p.name}${unit} ${value}${range}${options}`;
   }).join(", ");

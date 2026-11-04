@@ -7,7 +7,7 @@
 import { ChevronDown, ChevronRight, Ellipsis, History, Move3d, Pencil, Puzzle, RotateCcw, TriangleAlert, X, createElement, type IconNode } from "lucide";
 import { historyFolds, historyKey, historyLayout, pluginStepView, positionText, presentedRows, readRow, rowCount, rowKey, type HistoryLayout, type HistoryRow, type PluginEnv, type PluginStepView, type PluginTitle, type RecipeNote, type RowKey } from "../model-history";
 import type { ObjectFrame, PlaceFields } from "../model-space";
-import { toolKeys, type ModelTree, type PluginStamp } from "../model-tree";
+import { toolKeys, type ModelTree, type PluginStamp, type PluginValue } from "../model-tree";
 import { isMobileLayout } from "../platform";
 import { state } from "../app/state";
 import { openDock } from "./dock-reveal";
@@ -55,7 +55,7 @@ interface ModelHistoryHooks {
    * Rebuild the row's plugin step with these values changed (and the code changed outside the app, when `edited`): the
    * row of the new run, or null when nothing was rebuilt (the readout says why).
    */
-  pluginRebuild?(row: RowKey, changes: Record<string, number | boolean | string>, edited: boolean): Promise<{ row: RowKey } | { reason: string }>;
+  pluginRebuild?(row: RowKey, changes: Record<string, PluginValue>, edited: boolean): Promise<{ row: RowKey } | { reason: string }>;
   /** --- Milestone 7, D9. Use vN: rebuild the row's plugin step with the library's newer version, values carried by name. */
   pluginUseVersion?(row: RowKey): Promise<{ row: RowKey } | { reason: string }>;
   /** --- Milestone 7, D1. Save as plugin…: keep the row's draft in the library with these words. */
@@ -122,7 +122,7 @@ let pluginCardPlugin: string | null = null;
 /** The card's step was on the way to the step shown, so the card moves with the part when an Undo changes branch. */
 let pluginCardFollows = false;
 /** The values typed into the card and not rebuilt yet, by name; kept while History repaints. */
-const pluginDraft = new Map<string, number | boolean | string>();
+const pluginDraft = new Map<string, PluginValue>();
 /** Why plugins cannot run here (null: they can; undefined: not asked yet). */
 let pluginRunnerNote: string | null | undefined;
 /** A rebuild on its way: the card's controls wait for it. */
@@ -1538,7 +1538,7 @@ function syncRebuildButton() {
 }
 
 /** A typed number read as one, or null. Counts are whole. */
-function draftNumber(field: PluginStepView["fields"][number], raw: number | boolean | string): number | null {
+function draftNumber(field: PluginStepView["fields"][number], raw: PluginValue): number | null {
   const n = typeof raw === "number" ? raw : Number(String(raw).replace(",", "."));
   if (String(raw).trim() === "" || !Number.isFinite(n)) return null;
   return field.kind === "count" && !Number.isInteger(n) ? null : n;
@@ -1557,8 +1557,8 @@ function draftProblem(view: PluginStepView): string | null {
 }
 
 /** The typed values that differ from the step's, as the plugin takes them. */
-function draftChanges(view: PluginStepView): Record<string, number | boolean | string> {
-  const out: Record<string, number | boolean | string> = {};
+function draftChanges(view: PluginStepView): Record<string, PluginValue> {
+  const out: Record<string, PluginValue> = {};
   for (const field of view.fields) {
     if (!pluginDraft.has(field.name)) continue;
     const raw = pluginDraft.get(field.name)!;

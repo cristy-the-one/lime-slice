@@ -254,9 +254,10 @@ export function readStamp(value: unknown): PluginStamp | undefined {
   if (!isRecord(value) || typeof value.plugin !== "string" || !value.plugin || value.plugin.length > 80) return undefined;
   if (!isId(value.version) || typeof value.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(value.sha256) || typeof value.api !== "string" || !/^\d+\.\d+$/.test(value.api)) return undefined;
   if (!isRecord(value.params) || !isRecord(value.context)) return undefined;
-  const params: Record<string, number | boolean | string> = {};
+  const params: PluginStamp["params"] = {};
   for (const [key, raw] of Object.entries(value.params)) {
-    if (typeof raw === "boolean" || typeof raw === "string" || finite(raw)) params[key] = raw as number | boolean | string;
+    // A picked face or outline (API 1.2) is kept as its JSON object.
+    if (typeof raw === "boolean" || typeof raw === "string" || finite(raw) || (isRecord(raw) && JSON.stringify(raw).length <= 200_000)) params[key] = raw as PluginStamp["params"][string];
     else return undefined;
   }
   const bed = vec(value.context.bedMm);

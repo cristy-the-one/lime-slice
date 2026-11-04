@@ -6,7 +6,7 @@
 import { formatMm } from "./model-plane.ts";
 import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
-import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type RunMark } from "./model-tree.ts";
+import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type PluginValue, type RunMark } from "./model-tree.ts";
 import { RECIPE_API, runEndingAt, runRedoFrom } from "./plugin-step.ts";
 import type { CheckedCopy, PluginFileInfo, PluginParamInfo } from "./plugin-file.ts";
 
@@ -757,7 +757,7 @@ export interface PluginField {
   name: string;
   label: string;
   kind: PluginParamInfo["kind"];
-  value: number | boolean | string;
+  value: PluginValue;
   unit?: string;
   options?: string[];
   help?: string;

@@ -6,7 +6,7 @@
 import { pathTo, redoTarget, type ModelNode, type ModelTree, type NodeId, type PluginStamp } from "./model-tree.ts";
 
 /** The recipe API level this app's plugins are built against: `lime_recipe::API` (checked by `src/plugin-step.test.ts`). */
-export const RECIPE_API: readonly [number, number] = [1, 1];
+export const RECIPE_API: readonly [number, number] = [1, 2];
 
 /** A whole run on one chain: its first and last nodes, the step before it (null when it starts at the root) and its stamp. */
 export interface StampedRun {
@@ -83,9 +83,22 @@ export function sameFingerprint(a: { volumeMm3: number; faces: number; edges: nu
   return a.faces === b.faces && a.edges === b.edges && Math.abs(a.volumeMm3 - b.volumeMm3) <= 1e-6 * Math.max(1, Math.abs(b.volumeMm3));
 }
 
-/** Whether two parameter sets hold the same values, by name. */
+/** Whether two parameter sets hold the same values, by name. A picked face or outline (API 1.2) compares by its JSON. */
 export function sameValues(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) if (a[key] !== b[key]) return false;
+  for (const key of keys) {
+    const x = a[key];
+    const y = b[key];
+    if (x === y) continue;
+    if (x && y && typeof x === "object" && typeof y === "object" && JSON.stringify(x) === JSON.stringify(y)) continue;
+    return false;
+  }
   return true;
+}
+
+/** A stamp's value: a number, toggle, choice or text, or a picked face or outline as JSON (API 1.2). */
+export function stampValue(value: unknown): boolean {
+  if (typeof value === "boolean" || typeof value === "string") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  return !!value && typeof value === "object" && !Array.isArray(value) && JSON.stringify(value).length <= 200_000;
 }

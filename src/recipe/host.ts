@@ -9,12 +9,12 @@
  */
 
 /**
- * The MCP tools a recipe may call (S4). Each goes to the function its tool uses. `log` and `data` (recipe data by name,
- * R-A) are the host's own.
+ * The MCP tools a recipe may call (S4). Each goes to the function its tool uses. `log`, `data` (recipe data by name,
+ * R-A) and `pick` (a face or outline parameter resolved on the part, API 1.2, `src/recipe/picks.ts`) are the host's own.
  */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data",
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick",
 ]);
 
 export interface RecipeLimits {
@@ -219,7 +219,11 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
         return;
       }
       if (!reason && !done) {
-        if (panic) {
+        if (panic && lastRefused?.tool === "pick" && lastRefused.line === panic.line) {
+          // --- API 1.2. A pick the recipe unwrapped: the pick's own sentence is the reason, not the panic around it.
+          reason = lastRefused.reason;
+          line = panic.line;
+        } else if (panic) {
           reason = `The recipe panicked at line ${panic.line}: ${panic.message}`;
           line = panic.line;
         } else if (/error\[L0532\]/.test(stderr)) {
@@ -261,6 +265,12 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
           kill();
         }
         return;
+      }
+      // --- API 1.2. `s.refuse(sentence)`: the recipe ends the run with its own plain reason, taken back like a refusal.
+      if (msg.refuse && typeof msg.refuse === "object") {
+        const r = msg.refuse as { reason?: unknown; line?: unknown };
+        const text = String(r.reason ?? "").trim().slice(0, 400) || "The recipe refused.";
+        return stop(text, typeof r.line === "number" ? r.line : undefined);
       }
       if (typeof msg.note === "string") {
         if (notes.length < 200) notes.push(msg.note.slice(0, 400));
