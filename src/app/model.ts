@@ -149,6 +149,7 @@ import { RECIPE_API, runsOnPath } from "../plugin-step";
 import { freshRunId, rebuildPluginStep } from "../recipe/rebuild";
 import type { AppRunEnv, RunPart } from "../recipe/app-calls";
 import { builtText, inlineIngredients, keptCopy, type KeptIngredient } from "../recipe/ingredients";
+import { carriedDataProblem, splitPluginData, withPluginData, type CarriedData } from "../recipe/plugin-data";
 import type { PlatePlace } from "../modeling/placing";
 import { cleanOp } from "../modeling/compose";
 import { readPartition } from "../../mcp/partition";
@@ -5449,7 +5450,7 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, PluginValue
   // --- I10. A draft's ingredients: the copies its last apply built, which the project keeps with it, inlined as the
   // MCP host inlines them (a kept plugin carries its own `mod ingredients`).
   const kept = keptIngredients(stamp.sha256);
-  const resolved = inlineIngredients(body, (ref, key) => kept[key] ?? { reason: `${title} imports the ingredient ${ref.module}${ref.version !== undefined ? ` v${ref.version}` : ""}, and this project keeps no copy of it. Change its values over MCP (recipe_run with this part), where the library is read.` });
+  const resolved = inlineIngredients(splitPluginData(body).code, (ref, key) => kept[key] ?? { reason: `${title} imports the ingredient ${ref.module}${ref.version !== undefined ? ` v${ref.version}` : ""}, and this project keeps no copy of it. Change its values over MCP (recipe_run with this part), where the library is read.` });
   if ("reason" in resolved) {
     readout(resolved.reason);
     return null;
@@ -5742,7 +5743,7 @@ async function runPanelPlugin(plugin: PanelPlugin, params: Record<string, FormVa
   if (onPart && !at!.solid.editable) return { ok: false, reason: VIEW_ONLY };
   if (onPart && lens) return { ok: false, reason: "History shows an earlier step. Click the last step in History, then run the plugin." };
   // A kept plugin carries its ingredients inside (`mod ingredients`); one that imports them from the library runs over MCP.
-  const resolved = inlineIngredients(plugin.file.body, (ref) => ({ reason: `${plugin.file.title} imports the ingredient ${ref.module} from your library, which the window does not build in yet. Run it over MCP (recipe_run {plugin}).` }));
+  const resolved = inlineIngredients(splitPluginData(plugin.file.body).code, (ref) => ({ reason: `${plugin.file.title} imports the ingredient ${ref.module} from your library, which the window does not build in yet. Run it over MCP (recipe_run {plugin}).` }));
   if ("reason" in resolved) return { ok: false, reason: resolved.reason };
   const recipes = await recipeRuntime();
   if (!recipes) return { ok: false, reason: RECIPES_NEED_APP };
@@ -5952,12 +5953,17 @@ async function savePluginRow(row: RowKey, words: { title: string; description: s
   }
   for (const key of dry.close ?? []) void post({ call: "close", key });
   if (!dry.ok) return { reason: `This plugin does not build with its own defaults: ${sentence(dry.reason)} Change the defaults or the code, then keep it.` };
-  const sha256 = await bodySha256(body);
+  // A plugin carries the recipe data its draft read, as the MCP's keep carries it, so it runs where the workspace is not.
+  const data = keptDataRows(stamp.sha256);
+  const tooLarge = carriedDataProblem(data);
+  if (tooLarge) return { reason: tooLarge };
+  const file = withPluginData(body, data);
+  const sha256 = await bodySha256(file);
   const library = await loadLibrary();
   const plan = savePlan(library, title, sha256, stamp.plugin);
   const author = oneLine(words.author, 60) || pluginAuthor() || "unknown";
   if (words.author.trim() && !pluginAuthor()) await setPluginAuthor(words.author.trim());
-  const text = pluginFileText({ plugin: plan.id, title, version: plan.version, description: oneLine(words.description, DESCRIPTION_MAX), author, api: RECIPE_API.join("."), sha256, created: new Date().toISOString().slice(0, 10), target, params }, body);
+  const text = pluginFileText({ plugin: plan.id, title, version: plan.version, description: oneLine(words.description, DESCRIPTION_MAX), author, api: RECIPE_API.join("."), sha256, created: new Date().toISOString().slice(0, 10), target, params }, file);
   let path: string;
   try {
     path = await io.save(plan.id, text);
@@ -5979,6 +5985,16 @@ async function savePluginRow(row: RowKey, words: { title: string; description: s
   const said = `Saved “${title}” as plugin ${plan.id} v${plan.version}${plan.same ? " (the library already had this code)" : ""}: ${path}. The Plugins panel lists it, and agents find it with plugin list.`;
   readout(said);
   return { text: said };
+}
+
+/** The recipe data a draft of this code kept, with each file's hash and size: what a plugin saved from it carries. */
+function keptDataRows(sha256: string): Record<string, CarriedData> {
+  const out: Record<string, CarriedData> = {};
+  for (const [name, row] of Object.entries(keptRecipeData(sha256) ?? {})) {
+    const r = row as { value: unknown; sha256?: unknown; bytes?: unknown };
+    if (typeof r.sha256 === "string" && /^[0-9a-f]{64}$/.test(r.sha256) && typeof r.bytes === "number") out[name] = { sha256: r.sha256, bytes: r.bytes, value: r.value };
+  }
+  return out;
 }
 
 /** Recipe data a draft of this code kept (`data {name}`), for the plugin to read again. */

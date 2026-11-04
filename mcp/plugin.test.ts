@@ -4,11 +4,13 @@
  * parameters, defaults that do not build), the API level, and own parts only for every recipe_run. Real lust, the
  * stand-in engine. Skips without lust; LIME_RECIPE_REQUIRED=1 makes that a failure.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { bodyHash, parsePlugin, writePlugin, type PluginHeader } from "./plugins.ts";
 import { findLust } from "./recipe.ts";
+import { splitPluginData } from "../src/recipe/plugin-data.ts";
 
 const lust = findLust();
 if (!lust) {
@@ -200,6 +202,79 @@ check("session_info counts the library", String(info.plugins).startsWith("Plugin
 const removed = await call("plugin", { action: "remove", id: "bolt-circle-flange" });
 check("remove takes the plugin and its older versions", removed.ok === true && removed.files === 2 && !readdirSync(library).some((n) => n.startsWith("bolt-circle-flange.")), { removed, left: readdirSync(library) });
 check("the part built with it stays", (await volume(String(byId.object))) > 0);
+
+// --- Plugin data: a kept plugin carries the recipe data its run read, inside its one file, and runs from the library
+// with the workspace's file gone. Synthetic data only.
+{
+  const ws = process.env.LIME_MCP_WORKSPACE!;
+  mkdirSync(join(ws, "shapes"), { recursive: true });
+  const outlineFile = join(ws, "shapes", "outline.json");
+  writeFileSync(outlineFile, JSON.stringify({ width: 30, depth: 12 }));
+  const plate = [
+    "use lime_recipe::{ops, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let t = s.number("thickness", 3.0).range(1.0, 10.0).unit("mm").get();',
+    '    let d = s.data("shapes/outline").unwrap();',
+    '    let w = d.get("width").and_then(|v| v.as_f64()).unwrap();',
+    '    let h = d.get("depth").and_then(|v| v.as_f64()).unwrap();',
+    "    let p = s.solid_new(ops::cuboid(w, h, t)).unwrap();",
+    "    s.done(&p);",
+    "}",
+    "",
+  ].join("\n");
+  const keptData = await call("recipe_run", { source: plate, name: "outline_plate", keep: { title: "Outline plate", description: "A plate from a measured outline." } });
+  const keptPlate = keptData.kept as { id: string; version: number; recipeData?: { name: string; bytes: number }[] } | undefined;
+  check("data: keep carries the data the run read, with its size", keptData.ok === true && keptPlate?.id === "outline-plate" && JSON.stringify(keptPlate.recipeData) === JSON.stringify([{ name: "shapes/outline", bytes: readFileSync(outlineFile).byteLength }]), keptData);
+  const plateText = readFileSync(join(library, "outline-plate.rs"), "utf8");
+  check("data: it is inside the one file, after the code, and nothing beside it", plateText.includes('// data: shapes/outline sha256:') && plateText.includes('{"width":30,"depth":12}') && plateText.indexOf("fn main()") < plateText.indexOf("// data: ") && !readdirSync(library).some((n) => n.startsWith("outline-plate") && n !== "outline-plate.rs"), plateText.slice(-400));
+  const got = await call("nugget", { action: "get", kind: "plugin", id: "outline-plate", withSource: true });
+  check("data: get lists the data it carries, and its source is the code alone", JSON.stringify(got.recipeData) === JSON.stringify(keptPlate?.recipeData) && typeof got.source === "string" && !String(got.source).includes("// data: "), got);
+
+  unlinkSync(outlineFile);
+  const fromLibrary = await call("recipe_run", { plugin: "outline-plate", params: { thickness: 4 } });
+  check("data: a run from the library works with the workspace's file gone", fromLibrary.ok === true && Math.abs((await volume(String(fromLibrary.object))) - 30 * 12 * 4) < 1e-6, fromLibrary);
+  const rebuilt = await call("recipe_run", { plugin: "outline-plate", object: String(fromLibrary.object), params: { thickness: 5 } });
+  check("data: its step rebuilds with the file gone", rebuilt.ok === true && Math.abs((await volume(String(fromLibrary.object))) - 30 * 12 * 5) < 1e-6, rebuilt);
+
+  // A plugin kept before plugins carried data, as the owner's was: the code alone. The library run still reads the
+  // workspace (MCP only); without the file it says what is missing; nugget save {id, data} carries it without a run.
+  const bare = splitPluginData((parsePlugin(plateText) as { body: string }).body).code;
+  const oldHeader = { ...(parsePlugin(plateText) as { header: PluginHeader }).header, plugin: "old-plate", title: "Old plate", version: 1, "source-sha256": bodyHash(bare) };
+  writePlugin(oldHeader, bare, library);
+  const missing = await call("recipe_run", { plugin: "old-plate" });
+  check("data: an old plugin without its data and without the file names the data", missing.ok === false && /shapes\/outline/.test(JSON.stringify(missing)), missing);
+  writeFileSync(outlineFile, JSON.stringify({ width: 20, depth: 10 }));
+  const attached = await call("nugget", { action: "save", kind: "plugin", id: "old-plate", data: ["shapes/outline"] });
+  check("data: save {id, data} carries the workspace file as the next version", attached.ok === true && attached.version === 2 && JSON.stringify(attached.recipeData) === JSON.stringify([{ name: "shapes/outline", bytes: readFileSync(outlineFile).byteLength }]) && existsSync(join(library, "old-plate.v1.rs")), attached);
+  const again = await call("nugget", { action: "save", kind: "plugin", id: "old-plate", data: ["shapes/outline"] });
+  check("data: the same data again changes nothing", again.ok === true && again.version === 2 && /nothing changed/.test(String(again.note)), again);
+  unlinkSync(outlineFile);
+  const oldRun = await call("recipe_run", { plugin: "old-plate", params: { thickness: 2 } });
+  check("data: the old plugin now runs from its carried data", oldRun.ok === true && Math.abs((await volume(String(oldRun.object))) - 20 * 10 * 2) < 1e-6, oldRun);
+  const edit = await call("recipe_run", { source: bare.replace("3.0).range", "2.5).range"), name: "old-plate" });
+  check("data: an edit run under the plugin's id reads the data its library file carries", edit.ok === true && Math.abs((await volume(String(edit.object))) - 20 * 10 * 2.5) < 1e-6, edit);
+  const noFile = await call("nugget", { action: "save", kind: "plugin", id: "old-plate", data: ["shapes/nothing"] });
+  check("data: carrying a file the workspace lacks is refused with the names it has", noFile.ok === false && /No recipe data is named shapes\/nothing/.test(String(noFile.reason)), noFile);
+
+  // Too large: a CSV under the 4 MB read limit whose rows are over 4 MB as kept JSON.
+  const rows: string[] = [];
+  for (let i = 0; i < 760_000; i += 1) rows.push(`${i % 10},${i % 7}`);
+  writeFileSync(join(ws, "shapes", "dense.csv"), rows.join("\n"));
+  const dense = [
+    "use lime_recipe::{ops, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let d = s.data("shapes/dense").unwrap();',
+    '    let n = d.as_array().map(|r| r.len()).unwrap_or(0) as f64;',
+    "    let p = s.solid_new(ops::cuboid(10.0, 10.0, 1.0 + n / 1.0e6)).unwrap();",
+    "    s.done(&p);",
+    "}",
+    "",
+  ].join("\n");
+  const big = await call("recipe_run", { source: dense, name: "dense", keep: { title: "Dense plate", description: "Reads a large table." } });
+  check("data: keeping a plugin whose data is too large is refused in one sentence", big.ok === true && typeof big.keepRefused === "string" && /^The recipe data shapes\/dense is [\d.]+ MB as kept, over the 4 MB a plugin carries per name;/.test(String(big.keepRefused)) && !existsSync(join(library, "dense-plate.rs")), { keepRefused: big.keepRefused, ok: big.ok, reason: big.reason });
+}
 
 if (failed > 0) {
   console.error(`plugin: ${failed} failed`);

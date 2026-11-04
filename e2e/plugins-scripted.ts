@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Page } from "@playwright/test";
 import { BODY, FILE } from "./plugin-fixture";
+import { withPluginData } from "../src/recipe/plugin-data";
 
 /**
  * --- The Plugins panel's specs (plugin milestone 7) share these: a plugin library in the page standing in for the
@@ -34,6 +35,14 @@ export const FILE_FLANGE = header(
   "use lime_recipe::{ops, Session};\nfn main() {\n    let mut s = Session::start();\n    let d = s.number(\"diameter\", 80.0).range(20.0, 250.0).unit(\"mm\").label(\"Outer diameter\").get();\n    let p = s.solid_new(ops::cylinder(d / 2.0, 6.0)).unwrap();\n    s.done(&p);\n}\n",
 );
 
+/** A plugin that reads recipe data (`data {name}`): the code, then the data it carries, as a keep writes it. */
+const OUTLINE_CODE = "use lime_recipe::{ops, Session};\nfn main() {\n    let mut s = Session::start();\n    let d = s.data(\"shapes/outline\").unwrap();\n    let n = d.get(\"studs\").and_then(|v| v.as_f64()).unwrap();\n    let p = s.solid_new(ops::cuboid(20.0, 20.0, 10.0)).unwrap();\n    let _ = n;\n    s.done(&p);\n}\n";
+const OUTLINE_DATA = { "shapes/outline": { sha256: "5".repeat(64), bytes: 11, value: { studs: 3 } } };
+const outlineFile = (id: string, title: string, body: string) => header({ plugin: id, title, version: 1, description: "A bar cut from a measured outline.", author: "Marius", api: "1.1", target: "new" }, [], body);
+export const FILE_OUTLINE = outlineFile("outline-bar", "Outline bar", withPluginData(OUTLINE_CODE, OUTLINE_DATA));
+/** The same plugin kept before plugins carried their data: the code alone. */
+export const FILE_OUTLINE_BARE = outlineFile("outline-bar-old", "Outline bar (old)", OUTLINE_CODE);
+
 /** A honeycomb ingredient at v2 with v1 kept beside it (docs/plan-recipe-ingredients.md I9). */
 export const INGREDIENT_V2 = "//! ---\n//! ingredient: honeycomb\n//! title: Honeycomb cells\n//! version: 2\n//! description: Hex pockets clipped to a region, with rounded nodes.\n//! author: Marius\n//! ---\nuse lime_recipe::geom2d::*;\npub fn cells(side: f64, rib: f64) -> Vec<Poly> { let _ = (side, rib); Vec::new() }\npub const NODE_R: f64 = 2.0;\nfn helper() {}\n";
 export const LESSONS = JSON.stringify([
@@ -45,8 +54,8 @@ export const LESSONS = JSON.stringify([
  * The library's files as the shell lists them: stud-row at v4 with v3 kept beside it, a notch plugin, a flange. With
  * `nuggets`, also an ingredient (and its v1) and two lessons, as a shell with nuggets lists them.
  */
-export async function scriptedLibrary(page: Page, nuggets = false) {
-  const files: Record<string, string> = { "stud-row.rs": FILE_V4, "stud-row.v3.rs": FILE, "corner-notch.rs": FILE_NOTCH, "bolt-flange.rs": FILE_FLANGE };
+export async function scriptedLibrary(page: Page, nuggets = false, extra: Record<string, string> = {}) {
+  const files: Record<string, string> = { "stud-row.rs": FILE_V4, "stud-row.v3.rs": FILE, "corner-notch.rs": FILE_NOTCH, "bolt-flange.rs": FILE_FLANGE, ...extra };
   const presets = { "stud-row": JSON.stringify({ dense: { params: { studs: 6, radius: 0.8 }, created: "2026-11-02" } }) };
   const ingredients: Record<string, string> = nuggets ? { "honeycomb.rs": INGREDIENT_V2, "honeycomb.v1.rs": INGREDIENT_V2.replace("version: 2", "version: 1") } : {};
   const lessons = nuggets ? LESSONS : null;
@@ -108,6 +117,9 @@ export async function scriptedRunner(page: Page, available = true) {
     let object = "";
     let studs = 0;
     let made = 0;
+    /** The recipe data the last built source reads (`s.data("name")`): the run asks for it first, and takes its studs. */
+    let dataName = "";
+    let waitingData = false;
     const say = (line: unknown) => emit("recipe-line", { run, line: JSON.stringify(line) });
     const cut = (n: number) => say({ id: n + 1, call: "model_apply", args: { object, op: { kind: "boolean", op: "cut", primitive: "box", dx: 2 * studs, dy: 20, dz: 20, origin: [0, 0, 0] }, probe: true }, at: { line: 10 } });
     (window as unknown as { __recipeLog: typeof log }).__recipeLog = log;
@@ -115,6 +127,7 @@ export async function scriptedRunner(page: Page, available = true) {
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         log.push({ command, args });
         if (command === "recipe_available") return available ? { ok: true, lust: "scripted" } : { ok: false, reason: "Running plugins needs lust, which the macOS app does not ship yet." };
+        if (command === "recipe_build") dataName = /s\.data\("([^"]+)"\)/.exec(String(args.source ?? ""))?.[1] ?? "";
         if (command === "recipe_build") return { code: 0, stdout: "", stderr: "", exe: "/scripted/slot-0/recipe", main: "/scripted/slot-0/src/main.rs" };
         if (command === "recipe_start") {
           run = String(args.run);
@@ -132,6 +145,12 @@ export async function scriptedRunner(page: Page, available = true) {
             object = String(msg.context?.object ?? "");
             studs = Number(msg.params?.studs ?? msg.params?.notches ?? msg.params?.holes ?? 3);
             made = 0;
+            // A recipe that reads data asks for it before anything else, as `s.data(name).unwrap()` does.
+            if (dataName) {
+              waitingData = true;
+              say({ id: 100, call: "data", args: { name: dataName }, at: { line: 6 } });
+              return null;
+            }
             // With no part, the recipe makes its own first (a plugin that builds a new part).
             if (!object) {
               say({ id: 1, call: "solid_new", args: { primitive: "box", dx: 20, dy: 20, dz: 10, name: "bar" }, at: { line: 8 } });
@@ -143,6 +162,16 @@ export async function scriptedRunner(page: Page, available = true) {
           }
           if (msg.ok === false) {
             emit("recipe-exit", { run, code: 101, reason: null, stderr: `thread 'main' (7) panicked at src/main.rs:10:5:\n${msg.error}\n` });
+            return null;
+          }
+          if (waitingData) {
+            waitingData = false;
+            studs = Number((msg as { result?: { studs?: number } }).result?.studs ?? studs);
+            if (!object) say({ id: 1, call: "solid_new", args: { primitive: "box", dx: 20, dy: 20, dz: 10, name: "bar" }, at: { line: 8 } });
+            else {
+              made = 1;
+              cut(made);
+            }
             return null;
           }
           if (!object) object = String((msg as { result?: { object?: string } }).result?.object ?? "");

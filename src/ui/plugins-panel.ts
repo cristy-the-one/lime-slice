@@ -19,6 +19,7 @@ import { closeModelCard, modelCardOpen, openModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
 import { blockedTip } from "../sketch/reasons";
 import type { PluginFileInfo, PluginParamInfo } from "../plugin-file";
+import { dataSize, elideData } from "../recipe/plugin-data";
 import {
   EMPTY_LIBRARY,
   KIND_TITLE,
@@ -27,6 +28,7 @@ import {
   ingredientUse,
   ingredientUsers,
   lessonsWithout,
+  pluginData,
   pluginIngredients,
   presetParams,
   presetProblem,
@@ -467,6 +469,12 @@ function detail(plugin: PanelPlugin): HTMLElement {
   if (carried.length) {
     const line = note(`Carries ${carried.length === 1 ? "the ingredient" : "the ingredients"} ${carried.map((c) => `${c.id} v${c.version}`).join(", ")}: it builds the same even where your library has other versions.`, "pp-carried");
     line.id = "modelPluginsCarried";
+    wrap.append(line);
+  }
+  const data = demo ? [] : pluginData(plugin.file);
+  if (data.length) {
+    const line = note(`Carries the recipe data ${data.map((d) => `${d.name} (${dataSize(d.bytes)})`).join(", ")}: it runs the same without the files it was made from.`, "pp-carried");
+    line.id = "modelPluginsData";
     wrap.append(line);
   }
   const presets = library.presets.get(plugin.file.plugin) ?? [];
@@ -1234,7 +1242,7 @@ async function menuAction(act: string) {
 
 /** The plugin's code, read-only, in History's source sheet. */
 function showSource(plugin: PanelPlugin) {
-  void import("./model-history").then(({ showPluginSource }) => showPluginSource(`${plugin.file.title} · v${plugin.file.version}`, "Read-only. Reveal in folder opens the file, to edit it elsewhere.", plugin.file.text));
+  void import("./model-history").then(({ showPluginSource }) => showPluginSource(`${plugin.file.title} · v${plugin.file.version}`, "Read-only. Reveal in folder opens the file, to edit it elsewhere.", elideData(plugin.file.text)));
 }
 
 // ---------------------------------------------------------------------------

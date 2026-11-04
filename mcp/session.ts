@@ -116,6 +116,7 @@ import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOption
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
 import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
 import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "./plugins.ts";
+import { carriedData, carriedDataProblem, splitPluginData, withPluginData } from "../src/recipe/plugin-data.ts";
 import { bodyProblem, builtText, carriedIngredients, ingredientsDir, isIngredientId, keptIngredient, lineMap, lineText, locate, moduleOf, resolveIngredients, type KeptIngredient } from "./ingredients.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, seenInPractice, writePreset } from "./nuggets.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
@@ -1187,7 +1188,13 @@ export class Session {
     if (input.keep !== undefined && rebuild) return { ok: false, reason: "keep keeps a new run; a rebuild of a plugin step runs the code the step already names." };
     const file = typeof input.path === "string" ? recipeSourceFile(input.path) : null;
     if (file && "reason" in file) return { ok: false, reason: file.reason };
-    const typed = pluginBody ?? (file ? file.text : typeof input.source === "string" ? input.source : null);
+    const framed = pluginBody ?? (file ? file.text : typeof input.source === "string" ? input.source : null);
+    // --- Plugin data. A kept plugin's body carries the recipe data its run read after its code: the host builds the
+    // code, and the data answers `data {name}` after the step's own kept data and before the workspace's files.
+    const split = framed === null ? null : splitPluginData(framed);
+    if (split?.problem) return { ok: false, reason: split.problem };
+    const typed = split ? split.code : null;
+    const carried: Record<string, RecipeData> = split?.data ?? {};
     // --- A rerun: no source, and an object a recipe_run made. Its stored source runs again with the stored
     // parameters under the new ones.
     let rerun: { name: string; stored: RustRecipe } | null = null;
@@ -1245,6 +1252,19 @@ export class Session {
     const notes: string[] = [];
     /** --- R-A. Recipe data the run read, by name: kept with the recipe so a rerun builds the same elsewhere. */
     const dataUsed = new Map<string, RecipeData>();
+    /**
+     * New source run under a library plugin's id (an edit of that plugin, to keep as its next version): the data the
+     * library's file carries, when the workspace lacks the file. Read once, on the first miss.
+     */
+    let libraryCarried: Record<string, RecipeData> | null = null;
+    const libraryData = (wanted: string): RecipeData | undefined => {
+      if (plugin || rebuild || rerun || !isSlug(given)) return undefined;
+      if (libraryCarried === null) {
+        const found = readPlugin(given, pluginsDir());
+        libraryCarried = found && !("reason" in found) ? splitPluginData(found.body).data : {};
+      }
+      return libraryCarried[wanted];
+    };
     /** The arguments of each refused call, by call id: what a harvested lesson is about (I13). */
     const refusedArgs = new Map<number, Record<string, unknown>>();
     let applied = 0;
@@ -1276,10 +1296,14 @@ export class Session {
         const wanted = typeof site.args.name === "string" ? site.args.name : "";
         const held = dataUsed.get(wanted);
         if (held) return { ok: true, result: held.value };
-        // A rerun reads what its last apply kept; a run with source reads the workspace's file, so an edited file counts.
+        // A rerun or a rebuild reads what its last apply kept; a kept plugin, the data it carries; a run with source
+        // reads the workspace's file, so an edited file counts, and falls back on what the run it replaces kept.
         const kept = replacing?.stored.data?.[wanted];
-        const found = rerun && kept ? kept : recipeDataFile(wanted) ?? (kept ? kept : null);
-        if (!found || "reason" in found) return { ok: false, error: found && "reason" in found ? found.reason : recipeDataMissing(wanted) };
+        const stepKept = rerun || rebuild ? kept : undefined;
+        const inWorkspace = stepKept || carried[wanted] ? null : recipeDataFile(wanted);
+        const refused = inWorkspace && "reason" in inWorkspace ? inWorkspace.reason : null;
+        const found: RecipeData | undefined = stepKept ?? carried[wanted] ?? (inWorkspace && !refused ? (inWorkspace as RecipeData) : kept ?? libraryData(wanted));
+        if (!found) return { ok: false, error: refused ?? recipeDataMissing(wanted) };
         dataUsed.set(wanted, found);
         return { ok: true, result: found.value };
       }
@@ -1500,15 +1524,15 @@ export class Session {
       ...(rebuilt ? { rebuilt } : {}),
       ...report,
       ...(nuggets.length && input.keep === undefined ? { nuggets } : {}),
-      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null)),
+      ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null, data)),
     };
   }
 
   /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
-  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null): Promise<Record<string, unknown>> {
+  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null, data?: Record<string, RecipeData>): Promise<Record<string, unknown>> {
     if (keep === undefined) return {};
     const k = (keep && typeof keep === "object" ? keep : {}) as { title?: unknown; description?: unknown };
-    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, objectFrom, ingredients });
+    const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, objectFrom, ingredients, ...(data ? { data } : {}) });
     if ("reason" in saved) return { keepRefused: saved.reason };
     const row = entryKey ? this.rustRecipes.get(entryKey) : undefined;
     if (row) row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
@@ -1558,9 +1582,11 @@ export class Session {
     const host = this.recipeHost;
     const ready = host.available();
     if (!ready.ok) return { reason: ready.reason };
-    const resolved = resolveIngredients(body);
+    // The code alone: the data a plugin carries is never built.
+    const code = splitPluginData(body).code;
+    const resolved = resolveIngredients(code);
     if ("reason" in resolved) return resolved;
-    const built = await host.build("plugin_check", body, true, resolved.suffix);
+    const built = await host.build("plugin_check", code, true, resolved.suffix);
     if (!built.ok || !built.exe) {
       const first = built.diagnostics[0];
       return { reason: built.reason ?? (first ? `line ${first.line}: ${first.message}` : "The recipe did not build.") };
@@ -1621,12 +1647,20 @@ export class Session {
    * the same body keeps its version (new words only); with another body it is the next version when the run was of
    * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
    */
-  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[] } | { reason: string }> {
+  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[] } | { reason: string }> {
     const title = oneLine(opts.title, TITLE_MAX);
     if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
     let body = lfOnly(opts.source);
     const framed = body.startsWith("//! ---") ? parsePlugin(body) : null;
     if (framed && !("reason" in framed)) body = framed.body;
+    // --- Plugin data. The recipe data the run read goes inside the file after the code, as its ingredients do, so the
+    // plugin runs the same from the library, in the window, and where the workspace's files are not.
+    const split = splitPluginData(body);
+    if (split.problem) return { reason: split.problem };
+    body = split.code;
+    const data: Record<string, RecipeData> = { ...split.data, ...(opts.data ?? {}) };
+    const tooLarge = carriedDataProblem(data);
+    if (tooLarge) return { reason: tooLarge };
     // --- I11. A plugin stays one file: the ingredients it imports go inside it, as the run built them, each stamped
     // with its name, version and hash, so it builds where the library lacks them.
     const resolved = resolveIngredients(body, { kept: opts.ingredients, preferKept: true });
@@ -1634,6 +1668,7 @@ export class Session {
     body = builtText(body, resolved.suffix);
     const bad = body.split("\n").findIndex((line) => /^\s*(mod\s+\w+\s*;|#\s*\[\s*path\b|extern\s+crate\s+(?!lime_recipe\b))/.test(line));
     if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
+    body = withPluginData(body, data);
     const sha256 = bodyHash(body);
     const checked = await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null);
     if ("reason" in checked) return checked;
@@ -1676,8 +1711,9 @@ export class Session {
     } catch (err) {
       return { reason: `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
     }
-    const carried = carriedIngredients(body).map((row) => `${row.id} v${row.version}`);
-    return { id, version, sha256, ...(carried.length ? { ingredients: carried } : {}) };
+    const carried = carriedIngredients(splitPluginData(body).code).map((row) => `${row.id} v${row.version}`);
+    const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
+    return { id, version, sha256, ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}) };
   }
 
   /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
@@ -1765,6 +1801,8 @@ export class Session {
       const got = await this.pluginFile(id);
       if ("reason" in got) return { ok: false, reason: got.reason };
       const h = got.file.header;
+      const code = splitPluginData(got.file.body).code;
+      const recipeData = carriedData(got.file.body).map(({ name, bytes }) => ({ name, bytes }));
       return {
         ok: true,
         id: h.plugin,
@@ -1775,18 +1813,24 @@ export class Session {
         created: h.created,
         ...(h.lust ? { lust: h.lust } : {}),
         params: h.params,
-        ...(carriedIngredients(got.file.body).length ? { ingredients: carriedIngredients(got.file.body) } : {}),
+        ...(carriedIngredients(code).length ? { ingredients: carriedIngredients(code) } : {}),
+        ...(recipeData.length ? { recipeData } : {}),
         older: olderVersions(h.plugin, dir),
         data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) },
         ...(got.note ? { note: got.note } : {}),
-        ...(input.withSource === true ? { source: got.file.body } : {}),
+        // The code; the carried data is listed in recipeData, never sent back whole.
+        ...(input.withSource === true ? { source: code } : {}),
       };
     }
+    // --- Plugin data. Carry workspace files in a library plugin without running it again: the code stays, the data
+    // is replaced by name, and a change is the next version.
+    if (action === "save" && Array.isArray(input.data) && typeof input.from !== "string" && typeof input.source !== "string") return this.pluginAttachData(id, input.data);
     if (action === "save") {
       let source: string;
       let name: string | undefined;
       let objectHint: string | undefined;
       let ingredients: Record<string, KeptIngredient> | undefined;
+      let data: Record<string, RecipeData> | undefined;
       if (typeof input.from === "string") {
         const draft = this.latestDraft(input.from);
         if (!draft) return { ok: false, reason: `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.` };
@@ -1794,11 +1838,12 @@ export class Session {
         name = input.from;
         objectHint = this.draftPart(draft.row);
         ingredients = draft.row.ingredients;
+        data = draft.row.data;
       } else if (typeof input.source === "string") {
         source = input.source;
         name = typeof input.id === "string" ? input.id : undefined;
       } else return { ok: false, reason: "Give from (a recipe name this session ran) or source." };
-      const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients });
+      const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients, ...(data ? { data } : {}) });
       if ("reason" in saved) return { ok: false, reason: saved.reason };
       if (typeof input.from === "string") {
         const draft = this.latestDraft(input.from);
@@ -1814,6 +1859,43 @@ export class Session {
       return { ok: true, id, files, note: "Parts built with it keep their recipe in the project." };
     }
     return { ok: false, reason: "action is list, get, save, or remove." };
+  }
+
+  /**
+   * --- Plugin data. nugget {action:"save", kind:"plugin", id, data:[names]}: the workspace's files of these names go
+   * into the library plugin's file, by name, over what it carried; its code stays as it is, so its parameters do too.
+   * New data is the next version (the older one is kept beside it, as any version is); the same data changes nothing.
+   */
+  private async pluginAttachData(id: string, names: unknown[]): Promise<Record<string, unknown>> {
+    if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin, and data: the names of the workspace's recipe data it reads." };
+    const wanted = [...new Set(names.filter((n): n is string => typeof n === "string" && n.trim() !== "").map((n) => n.trim()))];
+    if (wanted.length === 0) return { ok: false, reason: "data names the workspace's recipe data to carry, like data:[\"skull/outline\"]." };
+    const got = await this.pluginFile(id);
+    if ("reason" in got) return { ok: false, reason: got.reason };
+    const split = splitPluginData(got.file.body);
+    const data: Record<string, RecipeData> = { ...split.data };
+    for (const name of wanted) {
+      const found = recipeDataFile(name);
+      if (!found) return { ok: false, reason: recipeDataMissing(name) };
+      if ("reason" in found) return { ok: false, reason: found.reason };
+      // Kept under the name as given: the name the recipe's `data {name}` call asks for.
+      data[name] = found;
+    }
+    const tooLarge = carriedDataProblem(data);
+    if (tooLarge) return { ok: false, reason: tooLarge };
+    const body = withPluginData(split.code, data);
+    const sha256 = bodyHash(body);
+    const h = got.file.header;
+    const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
+    const dir = pluginsDir();
+    if (sha256 === got.file.sha256) return { ok: true, id, version: h.version, sha256, recipeData, note: "The plugin already carried this data; nothing changed." };
+    const header: PluginHeader = { ...h, version: h.version + 1, "source-sha256": sha256 };
+    try {
+      writePlugin(header, body, dir);
+    } catch (err) {
+      return { ok: false, reason: `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    return { ok: true, id, version: header.version, sha256, recipeData, path: join(dir, `${id}.rs`) };
   }
 
   /**
