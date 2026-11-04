@@ -187,6 +187,7 @@ src/model-loops.test.ts
 src/model-check.test.ts
 src/model-features.test.ts
 src/modeling/lettering.test.ts
+src/modeling/lettering-round.test.ts
 src/model-repeat.test.ts
 src/model-look.test.ts
 src/section-cap.test.ts

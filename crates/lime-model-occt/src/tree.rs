@@ -649,6 +649,13 @@ pub enum Op {
         align: Option<crate::text::Align>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         angle_deg: Option<f64>,
+        /// --- Milestone 2, a cylinder or a cone. Which way the baseline runs: `around` (the default) or `axis`; `u` and `v`
+        /// are the same two. Not read on a flat face.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        along: Option<String>,
+        /// The text turned half a turn about its anchor: reads the other way round, upside down.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flip: Option<bool>,
     },
 }
 
@@ -1856,6 +1863,39 @@ enum Request {
     },
     /// The bundled fonts, for the font picker and the guide.
     TextFonts,
+    /// A text laid out on the cylinder or cone under `point` (milestone 2), for the card's live preview: each letter's loops as
+    /// 3D polylines on the face and on the top (or floor), the layout points they come from, and the refusal when the text
+    /// would not build (too long, off the face, too deep).
+    #[serde(rename_all = "camelCase")]
+    TextCurved {
+        key: String,
+        node: NodeId,
+        point: [f64; 3],
+        text: String,
+        font: String,
+        #[serde(default)]
+        style: Option<String>,
+        height: f64,
+        depth: f64,
+        #[serde(default)]
+        cut: bool,
+        #[serde(default)]
+        spacing: Option<f64>,
+        #[serde(default)]
+        line_spacing: Option<f64>,
+        #[serde(default)]
+        align: Option<crate::text::Align>,
+        #[serde(default)]
+        angle_deg: Option<f64>,
+        #[serde(default)]
+        along: Option<String>,
+        #[serde(default)]
+        flip: Option<bool>,
+        #[serde(default)]
+        line_mm: Option<f64>,
+        #[serde(default)]
+        step_mm: Option<f64>,
+    },
     /// Debug builds only: step `node`'s solid with every face and edge converted to NURBS, as BinTools bytes in base64,
     /// for a test that opens a flat face stored as a B-spline.
     #[cfg(lime_occt_test_hooks)]
@@ -2668,6 +2708,52 @@ impl Store {
                 Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
             }
             Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
+            Request::TextCurved {
+                key,
+                node,
+                point,
+                text,
+                font,
+                style,
+                height,
+                depth,
+                cut,
+                spacing,
+                line_spacing,
+                align,
+                angle_deg,
+                along,
+                flip,
+                line_mm,
+                step_mm,
+            } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let spec = crate::text::Spec {
+                    text,
+                    font,
+                    style,
+                    height,
+                    spacing,
+                    line_spacing,
+                    align: align.unwrap_or_default(),
+                    angle_deg: angle_deg.unwrap_or(0.0),
+                };
+                Ok(Answer::Plain(
+                    lettering::curved_reply(
+                        shape,
+                        &spec,
+                        point,
+                        depth,
+                        cut,
+                        along.as_deref(),
+                        flip.unwrap_or(false),
+                        line_mm.unwrap_or(0.4),
+                        step_mm.unwrap_or(0.5),
+                    )
+                    .map_err(Failure::Message)?,
+                ))
+            }
             Request::TextLayout {
                 text,
                 font,

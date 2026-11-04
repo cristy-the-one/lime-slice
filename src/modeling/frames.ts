@@ -15,6 +15,10 @@ export interface FrameFace {
   areaMm2: number;
   normal?: readonly number[];
   centre: readonly number[];
+  /** What the face is when the engine said: a plane, a cylinder, a cone, a sphere, or other. */
+  kind?: string;
+  axis?: readonly number[];
+  axisPoint?: readonly number[];
 }
 
 /** The open solid's mesh, in the frame the composite is expanded in. */
@@ -145,6 +149,14 @@ export function expandContextFromSolid(solid: FramedSolid | null, plane: Workpla
       return "reason" in pick ? pick : pick.index;
     },
     faceByDetail: (selector: Record<string, unknown>) => faceByDetail(selector),
+    // --- Text on a cylinder or a cone: only these two take lettering besides a flat face.
+    round: (index: number) => {
+      const face = solid.faces[index];
+      if (!face || face.kind === undefined || face.kind === "plane") return null;
+      if (face.kind !== "cylinder" && face.kind !== "cone") return { reason: TEXT_FACE_KIND };
+      const point = roundMiddle(solid, index, face);
+      return point ? { surface: face.kind, point } : { reason: "That face could not be read." };
+    },
   };
 
   function faceByDetail(selector: Record<string, unknown>): FacePick | { reason: string } {
@@ -223,4 +235,63 @@ export function pickSentence(pick: FacePick, near?: readonly number[]): string {
     return `The face selector picked ${face}, ${pick.distanceMm} mm from ${at}: the point lies over empty space (a pocket or a hole), so the nearest face was below or beside it. The face with material level with the point is face ${pick.level.index} (centre [${pick.level.centre.join(", ")}], ${pick.level.areaMm2} mm², ${pick.level.distanceMm} mm away); aim nearPoint at material.`;
   }
   return `The face selector picked ${face}, ${pick.distanceMm} mm from ${at}, which is on no matching face.`;
+}
+
+/** Why a text cannot go on a sphere, a torus or a freeform face. */
+export const TEXT_FACE_KIND = "Text goes on a flat face, a cylinder or a cone for now. This face is curved another way.";
+
+/**
+ * A point on a cylinder's or a cone's face where text sits when none is given: the middle of the face, which for a wall that goes
+ * all the way round is across from its seam, so the text clears it. It is the centre of the face's triangle that looks the way the
+ * face's own normal (the engine gives it at the middle) does, nearest the middle of the face along its axis.
+ */
+export function roundMiddle(solid: FramedSolid, index: number, face: FrameFace): [number, number, number] | null {
+  const { positions, triangles } = solid;
+  const n = face.normal;
+  const axis = face.axis;
+  const origin = face.axisPoint ?? face.centre;
+  const count = Math.min(triangles.length, Math.floor(positions.length / 9));
+  const heights: number[] = [];
+  const along = (x: number, y: number, z: number) => (axis ? (x - origin[0]!) * axis[0]! + (y - origin[1]!) * axis[1]! + (z - origin[2]!) * axis[2]! : z);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let tri = 0; tri < count; tri += 1) {
+    if (triangles[tri] !== index) continue;
+    for (let corner = 0; corner < 3; corner += 1) {
+      const at = tri * 9 + corner * 3;
+      const h = along(positions[at]!, positions[at + 1]!, positions[at + 2]!);
+      lo = Math.min(lo, h);
+      hi = Math.max(hi, h);
+    }
+    heights.push(tri);
+  }
+  if (!heights.length) return null;
+  const mid = (lo + hi) / 2;
+  const length = n ? Math.hypot(n[0]!, n[1]!, n[2]!) : 0;
+  let best: [number, number, number] | null = null;
+  let bestScore = Infinity;
+  for (const tri of heights) {
+    const a = tri * 9;
+    const [ax, ay, az, bx, by, bz, cx, cy, cz] = [0, 1, 2, 3, 4, 5, 6, 7, 8].map((k) => positions[a + k]!) as [number, number, number, number, number, number, number, number, number];
+    const ux = bx - ax;
+    const uy = by - ay;
+    const uz = bz - az;
+    const vx = cx - ax;
+    const vy = cy - ay;
+    const vz = cz - az;
+    const nx = uy * vz - uz * vy;
+    const ny = uz * vx - ux * vz;
+    const nz = ux * vy - uy * vx;
+    const size = Math.hypot(nx, ny, nz);
+    if (size < 1e-12) continue;
+    const centre: [number, number, number] = [(ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3];
+    // How far this triangle's normal is from the face's middle normal, then how far from the middle of its height.
+    const cos = length > 0 ? (nx * n![0]! + ny * n![1]! + nz * n![2]!) / (size * length) : 1;
+    const score = (1 - cos) * 1e6 + Math.abs(along(centre[0], centre[1], centre[2]) - mid);
+    if (score < bestScore) {
+      bestScore = score;
+      best = centre;
+    }
+  }
+  return best;
 }

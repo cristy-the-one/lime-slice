@@ -505,6 +505,72 @@ Deviations from this plan, each on purpose or forced:
 10. **Not done.** A `.lime` fixture with a text group: the repo has none, so "every fixture rebuilds" is the save/load round trip and the replay test above.
     The About licences list does not exist, so the licences are `third_party/fonts/NOTICE.md` and the files beside the fonts.
 
+### As built (milestone 2)
+
+Built on `main` after milestone 1 (PR "Text on cylinders and cones (text milestone 2)"). What a person can do now: pick the side of a cylinder or a
+cone (a tube's bore too), open Text, click where the text should sit (or leave it in the middle of the face, across from its seam), choose
+**Around** (the default: reads round the part like a label) or **Along** (runs up the axis), **Flip** (a half turn), an angle, a depth, raised or
+engraved, and see the letters on the surface as they type; Apply is one history step. The MCP `text` op takes the same on `faceIndex` of a
+cylinder or cone, with `point`, `along` and `flip`. A text longer than the way round, running off the face, or too deep for the curve is refused in
+one sentence before anything is built.
+
+- **Mapping** (`crates/lime-model-occt/src/text/wrap.rs`, no kernel needed). The layout (mm, centred on the anchor) goes into the face's own `(u, v)`
+  through the surface's unrolling, so letters keep their true size. A cylinder is exact and affine in `(u, v)`: lines stay lines and Béziers stay
+  Béziers. A cone is not, so each outline piece is first cut to at most `sqrt(8 ρ 0.004)` mm (ρ the anchor's distance from the apex), which keeps the
+  bend under 4 µm, then every point goes through the exact polar map (checked: every pairwise distance between mapped points equals the layout's to
+  1e-9). Right, up and the outward normal are a right-handed set, so the text reads from outside on a cylinder, a bore (a reversed face) and a
+  cone, and "up" is the way the axis runs up in the world even if the face was made pointing down.
+- **Depth.** Constant and square to the surface by construction: the top (or floor) is the same `(u, v)` loops on an offset surface, which for a
+  cylinder is a cylinder of radius R ± depth and for a cone a cone with the reference radius moved by depth × cos(half angle) and its origin
+  slid along the axis (`Geom_OffsetSurface` only when the offset would turn a cone inside out). Measured on the kernel's own mesh at every cap
+  vertex, cylinder R 20 and cone R 25 to R 15, raised and engraved 0.8 mm: every point of every letter is between the surface and the cap, and the cap
+  is at 0.800 mm to 2 µm.
+- **Builds.** `lime_tree_text_face` finds the face under the anchor (a flat face within a micron wins, so a flat text is unchanged; else a cylinder or
+  cone within 0.5 mm that contains the point; else "other"), `lime_tree_text_curved` builds. The direct build is milestone 1's sewing, generalized to
+  take the surface and its offset (`add_walls_and_cap`, the orientation test as a function), and needs the text wholly inside the face and 0.02 mm
+  clear of its edges and its seam. Across the seam of a face that goes all the way round, the boolean build runs: a solid for each letter between two
+  offset surfaces (0.2 mm inside the part, or past it for a cut, to the depth), one boolean. Both are valid, closed and one solid on cylinder, cone and
+  tube, raised and engraved, with letters that have holes (A, O, B, 8, g, e), and add or take ink × depth × (1 ± depth / 2R) of volume: to 0.2 % on a
+  cylinder, 2 % across the seam, 4 % on the cone (the cone's patch is not a prism).
+- **Measured** (release build, this machine, shared with other sessions so ±30 %, "Lime Slice gAO8 2026", 6 mm, 0.8 deep, including the reply's
+  mesh): cylinder R 20 raised 0.61 s, engraved 0.65 s; cone R 25 to 15 raised 0.67 s, all direct; across the seam by the boolean 1.27 s. The
+  preview's `textCurved` call, with the thin-letter analysis, 0.4 s for those 20 letters, 0.02 to 0.2 s for a label.
+- **Tests.** Rust, no kernel (`src/text/wrap/tests.rs`, 12): every length kept on a cylinder (exact) and on a cone (to 1e-9), cone strokes cut short,
+  loop orientation for both face directions, the right-handed set for around, along, flip, an axis pointing down and a bore, the seam flag, and the
+  refusals (the way round with its length, off the face, too deep with the depth that works, past a cone's tip). Rust with the kernel
+  (`tests/lettering_curved.rs`, 12): valid closed one-shell solids and measured depth on a cylinder and a cone raised and engraved, letters with
+  holes, a seam crossing (boolean) raised and engraved, along and flipped, the inside of a tube, the refusals, a cut through a thin wall, a replay
+  from a saved node, and the preview call; a test that writes OBJ files for a render when `LIME_TEXT_CURVES_OBJ` is set. TypeScript:
+  `src/modeling/lettering-round.test.ts` (the middle of a face, the step, every refusal, the card's reopening, the pose), `mcp/text-curves.test.ts`
+  (real engine: raised, engraved, cone, point, along, flip, the refusals, the guide), `e2e/model-text-curves.spec.ts` (in `test:smoke`; the mocked
+  engine: Direction, Flip, the anchor and its note, a second click, Centre on the face, the preview, the refusal, Edit, "Pick one face." for Text and
+  "Pick one flat face." for Pocket).
+
+Deviations from this plan, each on purpose or forced:
+
+1. **Show me is not built.** Section 4.8's demo (a Ø 30 cylinder beside the part with "Lime 42" wrapped on it, Apply on the demo only) needs a way to open a
+   demo solid from the Features card; the Show me mechanism that exists (`src/sketch/demos.ts`) opens a demo sketch in the sketch editor, not a demo
+   part. It is left for a later milestone with that mechanism, not faked with a sketch.
+2. **The anchor is the op's `origin`, found again by the nearest cylinder or cone, not a point and a normal.** The step stores `origin` (a point on the
+   face; `turn` is not read) and the kernel looks for the face within 0.5 mm of it on rebuild, which survives the mesh's chord (a clicked point lies a
+   few hundredths inside the true surface) and costs no normal to store. The plan's `nearPoint` with its normal would tell two coincident faces apart;
+   the nearest one wins here.
+3. **The op fields are `along: "axis"` and `flip: true`**, absent for around and no flip (section 4.5's `along?`, `flip?`); the engine also reads
+   `"around"`, `"u"` and `"v"`. The MCP schema offers `around` and `axis` (the plan listed `u` and `v` for sphere, torus and freeform faces, which are
+   milestone 3). The schema's three new fields cost 0 tokens in `tools/list` (the op's fields are served by `guide {kind}`).
+4. **Flip is a half turn about the anchor**, which is what "reads the other way round, upside down" asks for on a cup or a ring; it is not a mirror.
+5. **A seam is crossed by the boolean, not moved away from the text.** The default anchor sits across from the seam, which is where a click-less text
+   goes, so the boolean is for a text the person puts on the seam. Section 6's "moves the seam out of the way when the surface allows it" is not done.
+6. **Not measured on the owner's housing and Telo parts**, only on synthetic cylinders and cones (the brief for this milestone allows synthetic parts only).
+7. **The card has no position dot or depth arrow on a round face**; a click places the text and Depth, Height and the other numbers stay on the card
+   (and their docked knobs are hidden for a round face, as an arrow on a flat plane would be wrong on a wall). U and V are hidden then.
+8. **Only a cylinder or a cone, and only an outline font.** A sphere, torus or freeform face says "Text goes on a flat face, a cylinder or a cone for now.
+   This face is curved another way." (milestone 3); the stroke font stays on flat faces ("Text on a cylinder or a cone takes an outline font ...").
+9. **"Too deep" is 0.9 of the smallest ring radius** (divided by the cone's cosine), on the side the letters grow towards the axis: an engraving on a
+   convex face or a raised letter on a concave one. The plan's example number (4.5 mm for R 5) is exactly that.
+10. **The cone's tip.** Text that would run past the apex is refused ("The text runs past the tip of the cone. Move it, or make it smaller."), a sentence
+    the plan did not list.
+
 ## 11. Done for the whole plan
 
 - A person types two lines in Sans Bold, puts them round a Ø 40 cup and on a wavy freeform lid, raised and

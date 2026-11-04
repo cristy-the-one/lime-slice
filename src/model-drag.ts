@@ -141,6 +141,8 @@ export interface DragContext {
     outward?: Vec3;
     /** Ribs run this way; the pitch knob steps across them. Absent is along U, so pitch follows V. */
     along?: "u" | "v";
+    /** --- Text on a cylinder or a cone: no flat frame to put a dot or an arrow on, so its handles are the card's numbers. */
+    round?: boolean;
   };
   /**
    * P1. Where the push/pull arrow sits, in model space, and the outward normal it points along.
@@ -474,6 +476,7 @@ function dockKnobs(knobs: readonly FeatureKnob[]): Spec[] {
  * The other sizes are docked knobs, one direction each, so they can be dragged as well as typed.
  */
 function featureHandles(tool: "pocket" | "boss" | "texture" | "array" | "ribs" | "text", ctx: DragContext): Spec[] {
+  if (tool === "text" && ctx.feature?.round) return [];
   const shape = ctx.feature?.shape ?? "rect";
   const cell = ctx.feature?.cell ?? "rect";
   const outward = ctx.feature?.outward ?? Z;

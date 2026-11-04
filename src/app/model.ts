@@ -641,13 +641,24 @@ export function bindModelView() {
     editJoinGhost,
     editUnchanged: editUntouched,
     // --- A3 composite features ---
+    pickedRound: () => isRoundFace(oneFeatureFace()),
+    centreText() {
+      textAnchor = null;
+      featureMemo = null;
+      paintTextAnchor();
+    },
     featureView() {
       const current = openModelTool();
-      if (!isFeatureTool(current)) return { note: null, pieces: null, frame: null, outward: null, letters: null };
+      if (!isFeatureTool(current)) return { note: null, pieces: null, frame: null, outward: null, letters: null, round: null };
       const expanded = featureNow(current);
       // --- Text with real fonts: the lettering step, in the solid's own frame, which the card draws as outlines.
       const letters = expanded.letters ? (toSolidOp(expanded.letters, openPose()) as LetteringOp) : null;
-      return { note: expanded.note, pieces: expanded.pieces, frame: expanded.frame, outward: expanded.outward, letters };
+      // --- Text on a cylinder or a cone: the engine lays the letters out on the face under the anchor, on the solid on screen.
+      const at = open;
+      const tree = treeOf(at);
+      const on = at && tree ? (lens ? { key: lens.key, node: lens.node } : { key: at.key, node: tree.current }) : null;
+      const round = expanded.round && on ? { surface: expanded.round.surface, ...on } : null;
+      return { note: expanded.note, pieces: expanded.pieces, frame: expanded.frame, outward: expanded.outward, letters, round };
     },
     // --- end A3 ---
     // --- A4 pattern and mirror ---
@@ -1884,11 +1895,36 @@ function oneFeatureFace(): number | null {
   return faces.length === 1 ? faces[0]!.index : null;
 }
 
+/**
+ * --- Text on a cylinder or a cone. Where the person clicked on the face, in model space: the text is centred there. Null puts it in
+ * the middle of the face, across from its seam. It belongs to one face and is dropped when another is picked.
+ */
+let textAnchor: { face: number; point: Vec3 } | null = null;
+
+/** Whether the face is a cylinder or a cone, which take lettering besides a flat face. */
+function isRoundFace(face: number | null): boolean {
+  if (face == null) return false;
+  const surface = viewed()?.faces.find((item) => item.id === face)?.surface;
+  return surface === "cylinder" || surface === "cone";
+}
+
+function paintTextAnchor() {
+  const note = document.querySelector<HTMLElement>("#modelTextAnchorText");
+  if (note) note.textContent = textAnchor ? "Placed where you clicked. Click the face to move it." : "In the middle of the face. Click the face to place the text.";
+}
+
 /** The open feature, expanded on the solid on screen. Memoized across the ghost, the note, and Apply. */
 function featureNow(tool: FeatureTool) {
   const solid = viewed();
   const face = oneFeatureFace();
   const typed = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
+  // --- Text on a cylinder or a cone: the direction, the flip and the point the text is centred on.
+  if (tool === "text" && isRoundFace(face)) {
+    const choices = panelChoices("text");
+    if (choices.way === "axis") typed.along = "axis";
+    if (choices.flip) typed.flip = true;
+    if (textAnchor && textAnchor.face === face) typed.point = textAnchor.point;
+  }
   // --- D28. An edit keeps the region its step was typed with, which the panel has no field for.
   const spec = { ...typed, ...keptFeatureFields(editing ? featureSource(editing.op) : null, tool) };
   const pose = openPose();
@@ -3640,7 +3676,11 @@ function openEditPanel(run: Editing, head: string) {
     if (panel.feature.face >= 0 && panel.feature.face < solid.faces.length) {
       picks = [{ kind: "face", index: panel.feature.face }];
       fx.model?.highlight(picks);
-    } else said = `${about(solid)} Pick one flat face.`;
+      // --- Text on a cylinder or a cone reopens with the point it sat on.
+      textAnchor = panel.feature.point ? { face: panel.feature.face, point: panel.feature.point } : null;
+      featureMemo = null;
+      paintTextAnchor();
+    } else said = `${about(solid)} ${panel.tool === "text" ? "Pick one face." : "Pick one flat face."}`;
   }
   // --- end A3 ---
   // --- A2 shell: stored face refs are picked again before the opened snapshot, so Update stays off. ---
@@ -6298,6 +6338,14 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   // click on one edge of that chain takes it alone.
   const chainAsk = !shift && pick?.kind === "edge" ? transitionChainClick(pick.index) : null;
   picks = nextModelPicks(picks, pick, shift);
+  // --- Text on a cylinder or a cone: the click is where the text goes. Another face takes the anchor away.
+  if (openModelTool() === "text") {
+    const clicked = pick?.kind === "face" && pick.at && isRoundFace(pick.index) ? pick : null;
+    if (clicked?.at) textAnchor = { face: clicked.index, point: [clicked.at[0], clicked.at[1], clicked.at[2]] };
+    else if (picks.length !== 1 || picks[0]!.kind !== "face" || textAnchor?.face !== picks[0]!.index) textAnchor = null;
+    featureMemo = null;
+    paintTextAnchor();
+  }
   paintBlendHighlight();
   // --- A10. Right after the section axis became Face, the pick is that plane too, kept in the solid's frame. A curved face is refused in the menu.
   if (pick?.kind === "face") {

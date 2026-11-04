@@ -30,7 +30,7 @@ import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
 import { fontById, isOutlineFont, styleHasFile, styleOf, styleRefusal } from "../modeling/text-fonts";
 import type { LetteringOp } from "../model-tree";
-import { lettersGhost, thinNoteOf } from "./text-preview";
+import { curvedLettersGhost, curvedThinNoteOf, lettersGhost, thinNoteOf } from "./text-preview";
 import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -129,8 +129,20 @@ interface ModelChromeHooks {
   /** While a step is edited: the panel still says the step as it is, so Update would change nothing. */
   editUnchanged(): boolean;
   // --- A3 composite features ---
+  /** --- Text on a cylinder or a cone: one is picked, so the card shows Direction and Flip and hides U and V. */
+  pickedRound(): boolean;
+  /** --- Text on a cylinder or a cone: forget the clicked anchor, so the text sits in the middle of the face again. */
+  centreText(): void;
   /** The open feature, expanded on the solid on screen. Null pieces until one flat face is picked and the spec fits. */
-  featureView(): { note: string | null; pieces: Piece[] | null; frame: Workplane | null; outward: [number, number, number] | null; letters: LetteringOp | null };
+  featureView(): {
+    note: string | null;
+    pieces: Piece[] | null;
+    frame: Workplane | null;
+    outward: [number, number, number] | null;
+    letters: LetteringOp | null;
+    /** --- Text on a cylinder or a cone: the surface, and which solid and node the engine reads its anchor on. */
+    round: { surface: "cylinder" | "cone"; key: string; node: number } | null;
+  };
   // --- end A3 ---
   // --- A4. The open pattern or mirror. `repeating` names the history steps. A note is why it cannot build yet. ---
   repeatView(): { note: string | null; pieces: Piece[] | null; repeating: string };
@@ -412,6 +424,13 @@ export function mountModelChrome(next: ModelChromeHooks) {
       alignNow();
       return;
     }
+    // --- Text on a cylinder or a cone: back to the middle of the face.
+    if (target.closest("#modelTextCentre")) {
+      hooks?.centreText();
+      refreshGhost();
+      hooks?.paramsChanged();
+      return;
+    }
     // --- A3 composite features ---
     if (target?.closest("#modelFeatureMore")) {
       toggleFeatureMenu();
@@ -466,7 +485,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
     if (featureMode) {
       // --- Text with real fonts: a style the font cannot make says why, and changes nothing.
       if (featureMode.getAttribute("aria-disabled") === "true") {
@@ -760,6 +779,8 @@ export function syncModelChrome(next: readonly ModelPickRef[]) {
   // A new face to cut from: the plane starts in the middle of the part behind it.
   if (tool === "split" && splitMode() === "face" && lastFace(picks) !== seatedFace) applySplitDefaults();
   if (tool === "workplane" && wpMode() === "face" && lastFace(picks) !== seatedWpFace) applyWpFace();
+  // --- Text on a cylinder or a cone: Direction, Flip and the anchor show for a round face, U and V for a flat one.
+  if (tool === "text") syncFields();
   refreshTools();
   refreshApply();
   refreshNote();
@@ -1260,6 +1281,10 @@ function syncFields() {
     // --- Text with real fonts: the stroke font keeps its Stroke and Spacing; an outline font has its style, letter and line spacing.
     const fontOk = !node.dataset.fontkind || tool !== "text" || node.dataset.fontkind === (isOutlineFont(panelChoices("text").font) ? "outline" : "stroke");
     const cellOk = !node.dataset.cell || node.dataset.cell.split(" ").includes(panelChoices().cell);
+    // --- Text on a cylinder or a cone: Direction, Flip and the anchor's line show for one; the flat face's U and V do not.
+    const roundNow = tool === "text" && !!hooks?.pickedRound();
+    const roundOk = node.dataset.round === undefined || roundNow;
+    const flatOk = node.dataset.flat === undefined || tool !== "text" || !roundNow;
     // --- end A3 ---
     const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
@@ -1271,7 +1296,7 @@ function syncFields() {
     const holeOk = !node.dataset.hole || (node.dataset.hole === "points" ? pointsHoles : !pointsHoles);
     // --- Assemblies M11. The frame switch is for a member of an assembly.
     const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk));
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk));
   });
   // --- A3 composite features ---
   // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
@@ -2418,7 +2443,8 @@ function ghostFor(current: ModelTool): ModelGhost | null {
     const view = hooks?.featureView();
     // --- Text with real fonts: the letters' outlines, raised or cut by the depth, in place of the boxes of a piece.
     const letters = current === "text" ? view?.letters ?? null : null;
-    paintTextThin(letters);
+    paintTextThin(letters, view?.round ?? null);
+    if (letters && view?.round) return curvedLettersGhost(letters, view.round, nozzleMm(), refreshGhost);
     if (letters) return lettersGhost(letters, nozzleMm(), refreshGhost);
     if (!view?.pieces?.length) return null;
     const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
@@ -2859,6 +2885,9 @@ function paintFeature(choices: FeatureChoices) {
   paintNamed("modelTextOp", "op", choices.op);
   paintNamed("modelTextFont", "font", choices.font);
   paintNamed("modelTextStyle", "style", choices.style);
+  paintNamed("modelTextWay", "way", choices.way);
+  const flip = document.querySelector<HTMLInputElement>("#modelTextFlip");
+  if (flip) flip.checked = choices.flip;
   const stagger = document.querySelector<HTMLInputElement>("#modelArrStagger");
   if (stagger) stagger.checked = choices.stagger;
   const text = document.querySelector<HTMLInputElement | HTMLTextAreaElement>("#modelFeatText");
@@ -2878,10 +2907,10 @@ function nozzleMm(): number {
 }
 
 /** The sentence under Apply that names the letters too thin for the nozzle: "e, m and 2 are thinner than your 0.4 mm line." */
-function paintTextThin(letters: LetteringOp | null) {
+function paintTextThin(letters: LetteringOp | null, round: { key: string; node: number } | null = null) {
   const note = document.querySelector<HTMLElement>("#modelTextThin");
   if (!note) return;
-  const said = letters ? thinNoteOf(letters, nozzleMm(), refreshGhost) : null;
+  const said = letters ? (round ? curvedThinNoteOf(letters, round, nozzleMm(), refreshGhost) : thinNoteOf(letters, nozzleMm(), refreshGhost)) : null;
   note.textContent = said ?? "";
   note.hidden = !said;
 }
@@ -2916,6 +2945,7 @@ function featureDrag(current: FeatureTool): NonNullable<DragContext["feature"]> 
     along: choices.along,
     ...(view?.frame ? { frame: view.frame } : {}),
     ...(view?.outward ? { outward: view.outward } : {}),
+    ...(view?.round ? { round: true } : {}),
   };
 }
 

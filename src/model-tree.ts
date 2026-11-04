@@ -167,6 +167,12 @@ export interface LetteringOp {
   lineSpacing?: number;
   align?: "left" | "centre" | "right";
   angleDeg?: number;
+  /**
+   * --- Milestone 2, text on a cylinder or a cone. `origin` is then the point on the face the text is centred on and `turn` is
+   * not read. `axis` runs the baseline up the part instead of round it; `flip` turns the text half way about its anchor.
+   */
+  along?: "around" | "axis";
+  flip?: true;
 }
 
 export interface PartitionModelOp {
