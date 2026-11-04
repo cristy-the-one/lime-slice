@@ -13,6 +13,7 @@
 #![cfg_attr(not(lime_occt), allow(dead_code))]
 
 pub mod fonts;
+pub mod skin;
 pub mod wrap;
 
 use lime_recipe::geom2d::{Poly, Region};

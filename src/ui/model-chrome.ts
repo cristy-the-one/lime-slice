@@ -27,7 +27,7 @@ import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type Pr
 import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
-import type { Piece } from "../modeling/compose";
+import type { Piece, RoundSurface } from "../modeling/compose";
 import { fontById, isOutlineFont, styleHasFile, styleOf, styleRefusal } from "../modeling/text-fonts";
 import type { LetteringOp } from "../model-tree";
 import { curvedLettersGhost, curvedThinNoteOf, lettersGhost, thinNoteOf } from "./text-preview";
@@ -129,8 +129,11 @@ interface ModelChromeHooks {
   /** While a step is edited: the panel still says the step as it is, so Update would change nothing. */
   editUnchanged(): boolean;
   // --- A3 composite features ---
-  /** --- Text on a cylinder or a cone: one is picked, so the card shows Direction and Flip and hides U and V. */
-  pickedRound(): boolean;
+  /**
+   * --- Text on a curved face: one is picked, so the card shows Direction and Flip and hides U and V. `round` is a cylinder or a
+   * cone (Around or Along), `skin` a sphere, a torus or a freeform face (U or V, Wrap or Project).
+   */
+  pickedCurved(): "round" | "skin" | null;
   /** --- Text on a cylinder or a cone: forget the clicked anchor, so the text sits in the middle of the face again. */
   centreText(): void;
   /** The open feature, expanded on the solid on screen. Null pieces until one flat face is picked and the spec fits. */
@@ -141,7 +144,7 @@ interface ModelChromeHooks {
     outward: [number, number, number] | null;
     letters: LetteringOp | null;
     /** --- Text on a cylinder or a cone: the surface, and which solid and node the engine reads its anchor on. */
-    round: { surface: "cylinder" | "cone"; key: string; node: number } | null;
+    round: { surface: RoundSurface; key: string; node: number } | null;
   };
   // --- end A3 ---
   // --- A4. The open pattern or mirror. `repeating` names the history steps. A note is why it cannot build yet. ---
@@ -485,7 +488,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextWay [data-way], #modelTextDir [data-dir], #modelTextWrap [data-wrap], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
     if (featureMode) {
       // --- Text with real fonts: a style the font cannot make says why, and changes nothing.
       if (featureMode.getAttribute("aria-disabled") === "true") {
@@ -1281,10 +1284,11 @@ function syncFields() {
     // --- Text with real fonts: the stroke font keeps its Stroke and Spacing; an outline font has its style, letter and line spacing.
     const fontOk = !node.dataset.fontkind || tool !== "text" || node.dataset.fontkind === (isOutlineFont(panelChoices("text").font) ? "outline" : "stroke");
     const cellOk = !node.dataset.cell || node.dataset.cell.split(" ").includes(panelChoices().cell);
-    // --- Text on a cylinder or a cone: Direction, Flip and the anchor's line show for one; the flat face's U and V do not.
-    const roundNow = tool === "text" && !!hooks?.pickedRound();
-    const roundOk = node.dataset.round === undefined || roundNow;
-    const flatOk = node.dataset.flat === undefined || tool !== "text" || !roundNow;
+    // --- Text on a curved face: Direction, Flip and the anchor's line show for one; the flat face's U and V do not. Around and Along are
+    // for a cylinder or a cone, U, V, Wrap and Project for a sphere, a torus or a freeform face.
+    const curvedNow = tool === "text" ? hooks?.pickedCurved() ?? null : null;
+    const roundOk = (node.dataset.round === undefined || curvedNow !== null) && (node.dataset.curved === undefined || node.dataset.curved === curvedNow);
+    const flatOk = node.dataset.flat === undefined || tool !== "text" || curvedNow === null;
     // --- end A3 ---
     const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
     // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
@@ -2886,6 +2890,8 @@ function paintFeature(choices: FeatureChoices) {
   paintNamed("modelTextFont", "font", choices.font);
   paintNamed("modelTextStyle", "style", choices.style);
   paintNamed("modelTextWay", "way", choices.way);
+  paintNamed("modelTextDir", "dir", choices.dir ?? "u");
+  paintNamed("modelTextWrap", "wrap", choices.project === true ? "project" : "wrap");
   const flip = document.querySelector<HTMLInputElement>("#modelTextFlip");
   if (flip) flip.checked = choices.flip;
   const stagger = document.querySelector<HTMLInputElement>("#modelArrStagger");

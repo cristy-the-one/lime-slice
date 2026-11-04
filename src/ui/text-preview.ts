@@ -136,7 +136,7 @@ export function thinNoteOf(step: LetteringOp, nozzleMm: number, ready: () => voi
   return laid && !("error" in laid) ? laid.thinNote : null;
 }
 
-// --- Milestone 2: text on a cylinder or a cone. The engine lays the letters out on the face under the anchor (`textCurved`): each
+// --- Milestones 2 and 3: text on a cylinder, a cone, a sphere, a torus or a freeform face. The engine lays the letters out on the face under the anchor (`textCurved`): each
 // loop's points in the layout, on the face, and on the top (or the floor), all in the solid's own frame.
 
 export interface CurvedLoop {
@@ -153,7 +153,8 @@ export interface CurvedLayout {
   thin: { ch: string; lostPct: number }[];
   thinNote: string | null;
   crossesSeam: boolean;
-  wayRoundMm: number;
+  /** The way round along the baseline, when the walk was long enough to find it. */
+  wayRoundMm: number | null;
 }
 
 /** Which solid and node the engine reads the anchor on. */
@@ -166,7 +167,7 @@ type HeldCurved = CurvedLayout | { error: string } | "pending";
 const heldCurved = new Map<string, HeldCurved>();
 
 function curvedKey(step: LetteringOp, on: Anchored, nozzleMm: number): string {
-  return JSON.stringify([on.key, on.node, step.origin, step.text, step.font, step.style, step.height, step.depth, step.op, step.spacing, step.lineSpacing, step.align, step.angleDeg, step.along, step.flip, nozzleMm]);
+  return JSON.stringify([on.key, on.node, step.origin, step.text, step.font, step.style, step.height, step.depth, step.op, step.spacing, step.lineSpacing, step.align, step.angleDeg, step.along, step.flip, step.wrap, nozzleMm]);
 }
 
 /** The engine's layout of `step` on the cylinder or cone under its origin, or null until it answers (`ready` is called then). */
@@ -201,6 +202,7 @@ export function curvedLayoutOf(step: LetteringOp, on: Anchored, nozzleMm: number
     ...(step.angleDeg ? { angleDeg: step.angleDeg } : {}),
     ...(step.along ? { along: step.along } : {}),
     ...(step.flip ? { flip: true } : {}),
+    ...(step.wrap ? { wrap: step.wrap } : {}),
     lineMm: nozzleMm,
     stepMm: 0.4,
   }).then((reply) => {

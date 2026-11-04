@@ -344,6 +344,8 @@ bool planar_within(const TopoDS_Face& face, double tol) {
 
 }  // namespace
 
+struct LimeSkin;
+
 extern "C" {
 
 void lime_tree_free(LimeShape* shape) { delete shape; }
@@ -2127,6 +2129,71 @@ LimeShape* lime_tree_text_curved(const LimeShape* from, int cut, const double* p
         std::string note;
         const double point[3] = {p[0], p[1], p[2]};
         const TopoDS_Shape result = build_lettering_curved(
+            from->held.shape, from->held.volume, cut != 0, point, p[3], p[4] > 0.5, data, data_len, volume, how, replaced, note, message);
+        if (!message.empty() || result.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE did not build the text." : message);
+            return nullptr;
+        }
+        if (path != nullptr) {
+            *path = how;
+        }
+        if (note_out != nullptr && !note.empty()) {
+            *note_out = alloc(note);
+        }
+        return adopt(result, volume, "The text removed the solid", error, from, replaced).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+// --- Text on a sphere, a torus or a freeform face (milestone 3), cpp/text.cpp. The face under a point, held while Rust lays the text out:
+// its JSON description, its surface's point and partials, and the build.
+LimeSkin* lime_tree_skin_open(const LimeShape* from, const double* point, char** info, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        std::string described;
+        const double at[3] = {point[0], point[1], point[2]};
+        SkinHandle* skin = skin_open(from->held.shape, at, described);
+        if (skin == nullptr) {
+            return nullptr;
+        }
+        if (info != nullptr) {
+            *info = alloc(described);
+        }
+        return reinterpret_cast<LimeSkin*>(skin);
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// The surface's point, then Su, then Sv at (u, v) into `out` (9 numbers). 0 outside the surface.
+int lime_tree_skin_d1(const LimeSkin* skin, double u, double v, double* out) {
+    return skin_d1(reinterpret_cast<const SkinHandle*>(skin), u, v, out) ? 1 : 0;
+}
+
+void lime_tree_skin_free(LimeSkin* skin) {
+    skin_close(reinterpret_cast<SkinHandle*>(skin));
+}
+
+/// Lettering on a sphere, a torus or a freeform face: as lime_tree_text_curved, on the face `lime_tree_skin_open` finds.
+LimeShape* lime_tree_text_skin(const LimeShape* from, int cut, const double* p, const double* data, int data_len, int* path, char** note_out, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        double volume = 0.0;
+        std::string message;
+        int how = 0;
+        Handle(BRepTools_History) replaced;
+        std::string note;
+        const double point[3] = {p[0], p[1], p[2]};
+        const TopoDS_Shape result = build_lettering_skin(
             from->held.shape, from->held.volume, cut != 0, point, p[3], p[4] > 0.5, data, data_len, volume, how, replaced, note, message);
         if (!message.empty() || result.IsNull()) {
             set_error(error, message.empty() ? "Open CASCADE did not build the text." : message);

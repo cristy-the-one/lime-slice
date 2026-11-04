@@ -763,4 +763,26 @@ TopoDS_Shape build_lettering_curved(
     std::string& note,
     std::string& error);
 
+/// Lettering on a sphere, a torus or a freeform face (milestone 3). `skin_open` finds the face under the point (null with none) and
+/// says what it is as JSON; `skin_d1` is its surface's point and partials at (u, v), false outside it; `skin_close` frees it.
+/// `build_lettering_skin` takes the letters already mapped into the surface's (u, v) (`text::skin`).
+struct SkinHandle;
+SkinHandle* skin_open(const TopoDS_Shape& current, const double point[3], std::string& info);
+bool skin_d1(const SkinHandle* skin, double u, double v, double out[9]);
+void skin_close(SkinHandle* skin);
+TopoDS_Shape build_lettering_skin(
+    const TopoDS_Shape& current,
+    double before,
+    bool cut,
+    const double point[3],
+    double depth,
+    bool force_boolean,
+    const double* data,
+    int len,
+    double& volume,
+    int& path,
+    Handle(BRepTools_History)& history,
+    std::string& note,
+    std::string& error);
+
 }  // namespace lime_occt

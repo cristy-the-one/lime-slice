@@ -385,24 +385,7 @@ fn a_text_that_cannot_be_built_is_refused_in_one_sentence_before_building() {
         json!("The text runs off this face. Move it, make it smaller, or put it on one face."),
         "{reply}"
     );
-    // Not on a face at all: the flat way, as before.
-    let sphere = open(
-        "s-no",
-        json!({ "primitive": "sphere", "origin": [0.0, 0.0, 0.0], "radius": 20.0 }),
-    );
-    if sphere.is_some() {
-        let reply = probe(
-            "s-no",
-            &lettering("fuse", "LIME", [0.0, 0.0, 20.0], 4.0, DEPTH),
-        );
-        assert_eq!(reply["ok"], json!(false), "{reply}");
-        assert!(
-            reply["error"].as_str().unwrap().starts_with(
-                "Text goes on a flat face, a cylinder or a cone for now; this is a sphere"
-            ),
-            "{reply}"
-        );
-    }
+    // A sphere is no longer turned away: it takes text since milestone 3 (tests/lettering_skin.rs).
 }
 
 #[test]

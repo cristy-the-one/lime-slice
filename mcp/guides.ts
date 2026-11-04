@@ -266,7 +266,9 @@ export const TEXT_FONT_LINES: string[] = [
   ...TEXT_FONTS.map((font) => `${font.id}: ${font.name}. ${font.about} Id ${font.id}@${font.version}.`),
   "style regular|bold|italic|bold-italic picks the font's own file. A font with no italic is slanted 12°; a font with no bold is refused for bold.",
   "On a cylinder or a cone (outline fonts): find the face with faces_find {kind:\"cylinder\"} (or \"cone\"), then text {faceIndex, text, font, height, depth}. The letters wrap along the surface at true size and stand depth off it, square to it, centred on the face's middle (across from its seam) or on point [x, y, z], a point on the face. along:\"around\" (default) reads round the part; along:\"axis\" runs up it; flip turns the text half way; angleDeg turns it about its anchor. at and from are for flat faces.",
-  "Built without a boolean when the text stays clear of the seam and the face's edges (about 0.2 s for 20 letters); across the seam it uses the boolean (about 0.6 s). A sphere, a torus or a freeform face is refused for now.",
+  "Built without a boolean when the text stays clear of the seam and the face's edges (about 0.2 s for 20 letters); across the seam it uses the boolean (about 0.6 s).",
+  "On a sphere, a torus or a freeform (B-spline or other) face: faces_find {kind:\"sphere\"} (a torus and a freeform face are kind \"other\"), then the same text {faceIndex, text, font, height, depth, point}. The baseline is a geodesic from the anchor, walked along the surface, and every point of the layout is where you arrive by walking x along it and then y square to it, so the letters keep their size along both and stand depth off the surface, square to it. along:\"u\" (default) or \"v\" starts it along the face's own U or V, flip turns it half way, angleDeg turns it about the anchor. wrap:\"project\" instead lays the text on the plane square to the anchor's normal and pushes each point onto the surface along it, like a slide, which stretches the letters on slopes. A line away from the baseline is shorter on a ball (a line of latitude): the step measures it and refuses letters that would stray from their size by more than 2 %.",
+  "A sphere, a torus or a freeform face is built without a boolean when the text is wholly inside the face, clear of its seam and edges; across a seam, by the boolean. A text on a freeform face that crosses the face's own edge is refused.",
 ];
 
 /** guide {kind:"text"}: what a text in a font refuses, one sentence each. */
@@ -275,8 +277,11 @@ export const TEXT_REFUSALS: string[] = [
   "The text runs off this face. Move it, make it smaller, or put it on one face.",
   "The text is longer than the way round this cylinder (126 mm). Make it smaller or use two lines.",
   "Letters this deep would fold over inside this curve. Use a depth under 4.5 mm.",
-  "Text goes on a flat face, a cylinder or a cone for now. This face is curved another way.",
-  "Text on a cylinder or a cone takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.",
+  "The text crosses the pole of this sphere. Move it away from the pole, or make it smaller.",
+  "The text crosses a point where this face pinches or folds. Move it, or make it smaller.",
+  "The letters are too big for this curve to keep their size within 2 %. Make the text smaller than 4.8 mm across.",
+  "Part of the text would miss this face when projected onto it. Use wrap, move the text, or make it smaller.",
+  "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.",
   "The middle of ‘O’ would fall out. Use the Stencil font, or engrave less deep. (an engraving through the wall drops the middle of O, A, B, D, P, Q, R, 4, 6, 8, 9)",
   "‘Allerta Stencil’ has no bold. Pick Regular, or another font.",
   "There is no font called ‘comic’. The fonts are stroke, sans, mono, serif, stencil.",

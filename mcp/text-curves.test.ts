@@ -114,9 +114,6 @@ const cone = () => round("cone", { radius: 25, topRadius: 15, height: 40 }, "con
   const thin = await round("cylinder", { radius: 5, height: 20 }, "cylinder");
   const deep = await call("model_apply", { object: thin.object, op: { kind: "text", faceIndex: thin.face, text: "I", font: "sans", height: 3, depth: 4.6, op: "cut" } });
   check("letters too deep for a small cylinder name the depth that works", deep.ok === false && /Letters this deep would fold over inside this curve\. Use a depth under 4\.5 mm\./.test(JSON.stringify(deep)), JSON.stringify(deep).slice(0, 300));
-  const ball = await round("sphere", { radius: 20 }, "sphere");
-  const sphere = await call("model_apply", { object: ball.object, op: { kind: "text", faceIndex: ball.face, text: "Lime", font: "sans", height: 4, depth: 0.5 } });
-  check("a sphere is turned away for now", sphere.ok === false && /Text goes on a flat face, a cylinder or a cone for now/.test(JSON.stringify(sphere)), JSON.stringify(sphere).slice(0, 300));
 }
 
 // --- The guide says how.

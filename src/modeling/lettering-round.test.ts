@@ -1,8 +1,9 @@
 // Text on a cylinder or a cone (docs/plan-text-on-curves-and-fonts.md, milestone 2) expands to one lettering step anchored on the
-// face: at the face's middle across from its seam, or at the point given; round the part or up it, flipped or not. A sphere, a
-// freeform face and the stroke font are turned away in a sentence.
+// face: at the face's middle across from its seam, or at the point given; round the part or up it, flipped or not. A sphere, a torus
+// or a freeform face (milestone 3) takes the same, starting along its own U or V, wrapped or projected. The stroke font is turned
+// away in a sentence.
 import { expand, type ExpandContext } from "./compose.ts";
-import { roundMiddle, TEXT_FACE_KIND, type FramedSolid } from "./frames.ts";
+import { roundMiddle, type FramedSolid } from "./frames.ts";
 import { expandFeature, featureExpandContext, featurePanel, groupFromPieces, PICK_ONE_FACE, readFeatureSpec, type FeatureChoices } from "../model-features.ts";
 import { toSolidOp, type Affine } from "../model-space.ts";
 import type { GroupOp, LetteringOp } from "../model-tree.ts";
@@ -72,8 +73,8 @@ function refusal(spec: Record<string, unknown>): string {
 const kinds = [0, 1, 2, 3, 4].map((index) => ctx.round?.(index));
 check("the wall is a cylinder", kinds[0] !== null && kinds[0] !== undefined && !("reason" in kinds[0]) && kinds[0].surface === "cylinder", kinds[0]);
 eq("a flat face is not round", kinds[1], null);
-eq("a sphere is turned away", kinds[2], { reason: TEXT_FACE_KIND });
-eq("so is a freeform face", kinds[3], { reason: TEXT_FACE_KIND });
+check("a sphere takes text", kinds[2] !== null && kinds[2] !== undefined && !("reason" in kinds[2]) && kinds[2].surface === "sphere", kinds[2]);
+check("so does a freeform or torus face (other)", kinds[3] !== null && kinds[3] !== undefined && !("reason" in kinds[3]) && kinds[3].surface === "other", kinds[3]);
 eq("a flat patch is flat", kinds[4], null);
 
 // --- The middle: across from the seam (-X), halfway up, on the wall.
@@ -98,12 +99,24 @@ eq("a point, along the axis, flipped, engraved", given, {
 });
 eq("around is the default and is not stored", step(text({ along: "around", flip: false })).along, undefined);
 
+// --- A sphere, a torus or a freeform face: the baseline starts along U or V; wrap is the default and project is stored.
+const onSphere = step(text({ faceIndex: 2, point: [30, 0.2, 0.2], along: "v", wrap: "project", flip: true, angleDeg: 15 }));
+eq("a sphere: along v, projected, flipped, turned", onSphere, {
+  kind: "lettering", op: "fuse", origin: [30, 0.2, 0.2], turn: [0, 0, 0], text: "LIME 42", font: "sans@4.0", height: 6, depth: 0.8, angleDeg: 15, along: "v", flip: true, wrap: "project",
+});
+const onFree = step(text({ faceIndex: 3, point: [40, 1, 1], along: "u", wrap: "wrap" }));
+eq("u and wrap are the defaults and are not stored", [onFree.along, onFree.wrap], [undefined, undefined]);
+eq("a sphere refuses around", refusal(text({ faceIndex: 2, along: "around" })), "along is u or v on this face. U runs the baseline along the face's U, v along its V.");
+eq("a cylinder refuses u", refusal(text({ along: "u" })), "along is around or axis. Around reads round the part; axis runs it up the part.");
+eq("a wrap that is not one", refusal(text({ faceIndex: 2, wrap: "squash" })), "wrap is wrap or project. Wrap keeps the letters' size on the surface; project pushes them onto it along the face's normal.");
+eq("project is not for a cylinder", refusal(text({ wrap: "project" })), "Project is for a sphere, a torus or a freeform face; a cylinder and a cone wrap at true size.");
+eq("the stroke font stays on flat faces here too", refusal(text({ faceIndex: 3, font: "stroke" })), "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
+
 // --- Refusals are sentences.
-eq("the stroke font goes on flat faces", refusal(text({ font: "stroke" })), "Text on a cylinder or a cone takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
-eq("no font is the stroke font", refusal(text({ font: undefined })), "Text on a cylinder or a cone takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
+eq("the stroke font goes on flat faces", refusal(text({ font: "stroke" })), "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
+eq("no font is the stroke font", refusal(text({ font: undefined })), "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
 eq("a direction that is not one", refusal(text({ along: "sideways" })), "along is around or axis. Around reads round the part; axis runs it up the part.");
 eq("a point that is not a point", refusal(text({ point: [1, 2] })), "point is [x, y, z]: a point on the face.");
-eq("a sphere", refusal(text({ faceIndex: 2 })), TEXT_FACE_KIND);
 eq("a bold the font lacks", refusal(text({ font: "stencil", style: "bold" })), "Allerta Stencil has no bold. Pick Regular, or another font.");
 eq("no depth", refusal(text({ depth: 0 })), "Text needs a height (the capitals') and a depth, in millimetres.");
 eq("too much text", refusal(text({ text: "A".repeat(401) })), "Text takes at most 400 characters a step; use several.");
@@ -125,7 +138,7 @@ eq("and its letters are the step", expanded.letters?.origin, [-20, 0, 15]);
 eq("it knows it is a cylinder, and where", expanded.round, { surface: "cylinder", point: [-20, 0, 15] });
 eq("the group is one lettering step", expanded.group?.steps.map((s) => s.kind), ["lettering"]);
 const sphere = expandFeature(spec, solid, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] } as Affine, 2);
-eq("a sphere says why", sphere.note, TEXT_FACE_KIND);
+check("a sphere expands to one step like a cylinder", sphere.note === null && sphere.letters !== null && sphere.round?.surface === "sphere", sphere.note);
 const nothingPicked = expandFeature(spec, solid, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] } as Affine, null);
 eq("with no face, text says to pick one face", nothingPicked.note, PICK_ONE_FACE);
 const pocketNothing = expandFeature({ ...spec, kind: "pocket" }, solid, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] } as Affine, null);
