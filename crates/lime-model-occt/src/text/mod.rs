@@ -14,6 +14,7 @@
 
 pub mod fit;
 pub mod fonts;
+pub mod skin;
 #[cfg(any(test, lime_occt_test_hooks))]
 pub mod synth;
 pub mod user;

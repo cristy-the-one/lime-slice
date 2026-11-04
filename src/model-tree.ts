@@ -173,8 +173,10 @@ export interface LetteringOp {
    * --- Milestone 2, text on a cylinder or a cone. `origin` is then the point on the face the text is centred on and `turn` is
    * not read. `axis` runs the baseline up the part instead of round it; `flip` turns the text half way about its anchor.
    */
-  along?: "around" | "axis";
+  along?: "around" | "axis" | "u" | "v";
   flip?: true;
+  /** --- Milestone 3, a sphere, a torus or a freeform face: `project` pushes the layout onto the surface along its normal. */
+  wrap?: "project";
 }
 
 export interface PartitionModelOp {

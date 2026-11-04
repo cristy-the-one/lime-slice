@@ -469,10 +469,19 @@ export function mountMarkup(root: HTMLElement) {
                 <button class="btn mode" type="button" data-align="left" aria-pressed="false">Left</button>
                 <button class="btn mode" type="button" data-align="right" data-fontkind="outline" aria-pressed="false">Right</button>
               </div>
-              <!-- Text on a cylinder or a cone: shown while one is picked. U and V (the flat face's position) are hidden then; a click places the text. -->
-              <div class="modes" id="modelTextWay" data-for="text" data-round="1" role="group" aria-label="Direction" data-tip="Around reads round the part, like a label. Along runs the letters up the part.">
+              <!-- Text on a curved face: shown while one is picked. U and V (the flat face's position) are hidden then; a click places the text.
+                   Around and Along are for a cylinder or a cone; U, V, Wrap and Project for a sphere, a torus or a freeform face. -->
+              <div class="modes" id="modelTextWay" data-for="text" data-round="1" data-curved="round" role="group" aria-label="Direction" data-tip="Around reads round the part, like a label. Along runs the letters up the part.">
                 <button class="btn mode on" type="button" data-way="around" aria-pressed="true">Around</button>
                 <button class="btn mode" type="button" data-way="axis" aria-pressed="false">Along</button>
+              </div>
+              <div class="modes" id="modelTextDir" data-for="text" data-round="1" data-curved="skin" role="group" aria-label="Direction" data-tip="Which way the first line runs from the anchor: along the face's U or along its V.">
+                <button class="btn mode on" type="button" data-dir="u" aria-pressed="true">Along U</button>
+                <button class="btn mode" type="button" data-dir="v" aria-pressed="false">Along V</button>
+              </div>
+              <div class="modes" id="modelTextWrap" data-for="text" data-round="1" data-curved="skin" role="group" aria-label="Wrap or project" data-tip="Wrap lays the letters along the surface and keeps their size. Project pushes them straight onto it from the front, like a slide, and stretches them on slopes.">
+                <button class="btn mode on" type="button" data-wrap="wrap" aria-pressed="true">Wrap</button>
+                <button class="btn mode" type="button" data-wrap="project" aria-pressed="false">Project</button>
               </div>
               <label class="model-keep" data-for="text" data-round="1" data-tip="Turns the text half way about its anchor: it reads the other way round, upside down."><input id="modelTextFlip" type="checkbox"> Flip</label>
               <p class="model-note model-text-anchor" id="modelTextAnchor" data-for="text" data-round="1" role="status"><span id="modelTextAnchorText">In the middle of the face. Click the face to place the text.</span> <button class="btn" id="modelTextCentre" type="button" data-tip="Put the text in the middle of the face, across from its seam.">Centre on the face</button></p>

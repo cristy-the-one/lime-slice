@@ -149,13 +149,13 @@ export function expandContextFromSolid(solid: FramedSolid | null, plane: Workpla
       return "reason" in pick ? pick : pick.index;
     },
     faceByDetail: (selector: Record<string, unknown>) => faceByDetail(selector),
-    // --- Text on a cylinder or a cone: only these two take lettering besides a flat face.
+    // --- Text on a curved face: a cylinder, a cone, a sphere, or a torus or freeform face (`other`) takes lettering besides a flat one.
     round: (index: number) => {
       const face = solid.faces[index];
       if (!face || face.kind === undefined || face.kind === "plane") return null;
-      if (face.kind !== "cylinder" && face.kind !== "cone") return { reason: TEXT_FACE_KIND };
+      const surface = face.kind === "cylinder" || face.kind === "cone" || face.kind === "sphere" ? face.kind : "other";
       const point = roundMiddle(solid, index, face);
-      return point ? { surface: face.kind, point } : { reason: "That face could not be read." };
+      return point ? { surface, point } : { reason: "That face could not be read." };
     },
   };
 
@@ -237,12 +237,9 @@ export function pickSentence(pick: FacePick, near?: readonly number[]): string {
   return `The face selector picked ${face}, ${pick.distanceMm} mm from ${at}, which is on no matching face.`;
 }
 
-/** Why a text cannot go on a sphere, a torus or a freeform face. */
-export const TEXT_FACE_KIND = "Text goes on a flat face, a cylinder or a cone for now. This face is curved another way.";
-
 /**
- * A point on a cylinder's or a cone's face where text sits when none is given: the middle of the face, which for a wall that goes
- * all the way round is across from its seam, so the text clears it. It is the centre of the face's triangle that looks the way the
+ * A point on a curved face where text sits when none is given: the middle of the face, which for a wall that goes all the way
+ * round is across from its seam, so the text clears it. It is the centre of the face's triangle that looks the way the
  * face's own normal (the engine gives it at the middle) does, nearest the middle of the face along its axis.
  */
 export function roundMiddle(solid: FramedSolid, index: number, face: FrameFace): [number, number, number] | null {

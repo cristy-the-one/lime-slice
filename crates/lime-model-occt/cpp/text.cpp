@@ -16,11 +16,14 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepBndLib.hxx>
+#include <Bnd_Box.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
@@ -44,8 +47,11 @@
 #include <Geom2d_BezierCurve.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_OffsetSurface.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_SphericalSurface.hxx>
+#include <Geom_ToroidalSurface.hxx>
 #include <IntCurvesFace_ShapeIntersector.hxx>
 #include <IntTools_Context.hxx>
 #include <ShapeFix_Face.hxx>
@@ -63,11 +69,66 @@
 #include <gp_Cylinder.hxx>
 #include <gp_Lin.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Sphere.hxx>
+#include <gp_Torus.hxx>
 #include <gp_Trsf.hxx>
 
 #include "kernel.h"
 
 namespace lime_occt {
+
+/// The face a text is on when it is a sphere, a torus or a freeform face, held while the text is laid out so Rust can ask the surface for
+/// points (`skin_d1`) (milestone 3).
+struct SkinHandle {
+    TopoDS_Face face;
+    Handle(Geom_Surface) surface;
+    GeomAbs_SurfaceType type = GeomAbs_OtherSurface;
+    double u0 = 0.0;
+    double v0 = 0.0;
+    double umin = 0.0;
+    double umax = 0.0;
+    double vmin = 0.0;
+    double vmax = 0.0;
+    double sigma = 1.0;
+    double distance = 0.0;
+    /// 0 when the surface is not periodic that way.
+    double u_period = 0.0;
+    double v_period = 0.0;
+    bool full_u = false;
+    bool full_v = false;
+    /// The surface's own parameter box.
+    double bu1 = 0.0;
+    double bu2 = 0.0;
+    double bv1 = 0.0;
+    double bv2 = 0.0;
+
+    /// The point and Su, Sv at (u, v); false outside a non-periodic surface's box.
+    bool d1(double u, double v, gp_Pnt& p, gp_Vec& su, gp_Vec& sv) const {
+        const double slack = 1e-9;
+        if (u_period <= 0.0 && (u < bu1 - slack || u > bu2 + slack)) {
+            return false;
+        }
+        if (v_period <= 0.0 && (v < bv1 - slack || v > bv2 + slack)) {
+            return false;
+        }
+        surface->D1(u_period > 0.0 ? u : std::min(std::max(u, bu1), bu2), v_period > 0.0 ? v : std::min(std::max(v, bv1), bv2), p, su, sv);
+        return true;
+    }
+
+    gp_Dir outward(double u, double v) const {
+        gp_Pnt p;
+        gp_Vec su;
+        gp_Vec sv;
+        if (!d1(u, v, p, su, sv)) {
+            throw Standard_Failure("The text runs off this face.");
+        }
+        gp_Vec n = su.Crossed(sv);
+        if (sigma < 0.0) {
+            n.Reverse();
+        }
+        return gp_Dir(n);
+    }
+};
 
 namespace {
 
@@ -741,6 +802,280 @@ std::vector<gp_Pnt2d> uv_points(const std::vector<GlyphIn>& glyphs) {
     return out;
 }
 
+/// What the direct and the boolean build need of the face the text is on: the face, its surface, which way is out, the surface moved
+/// out by a distance (with the same (u, v)), and the (u, v) of a point on it.
+struct Ground {
+    TopoDS_Face face;
+    Handle(Geom_Surface) surface;
+    std::function<gp_Dir(double, double)> outward;
+    std::function<Handle(Geom_Surface)(double)> offset;
+    std::function<void(const gp_Pnt&, double&, double&)> parameters;
+};
+
+/// Lettering on a curved face, the letters already in its (u, v): the direct build when the text lies inside the face, the boolean
+/// build otherwise or when `force_boolean` says the text crosses a seam.
+TopoDS_Shape build_on_ground(
+    const Ground& ground,
+    const TopoDS_Shape& current,
+    double before,
+    bool cut,
+    double depth,
+    bool force_boolean,
+    const std::vector<GlyphIn>& glyphs,
+    double& volume,
+    int& path,
+    Handle(BRepTools_History)& history,
+    std::string& note,
+    std::string& error) {
+    const Handle(Geom_Surface) surface = ground.surface;
+    std::vector<TopoDS_Face> faces;
+    faces.reserve(glyphs.size());
+    for (const GlyphIn& glyph : glyphs) {
+        faces.push_back(glyph_face(glyph, surface));
+    }
+    const std::vector<gp_Pnt2d> marks = uv_points(glyphs);
+    bool direct_ok = !force_boolean;
+    if (force_boolean) {
+        note = "The text crosses the seam of the face.";
+    }
+    for (const gp_Pnt2d& uv : marks) {
+        BRepClass_FaceClassifier classify(ground.face, surface->Value(uv.X(), uv.Y()), 1e-6);
+        const bool off = classify.State() == TopAbs_OUT || (direct_ok && classify.State() != TopAbs_IN);
+        if (off) {
+            error = "The text runs off this face. Move it, make it smaller, or put it on one face.";
+            return TopoDS_Shape();
+        }
+    }
+    if (direct_ok && !ground.face.Location().IsIdentity()) {
+        direct_ok = false;
+        note = "The face carries a location.";
+    }
+    if (direct_ok) {
+        TopoDS_Compound inks;
+        BRep_Builder builder;
+        builder.MakeCompound(inks);
+        for (const TopoDS_Face& face : faces) {
+            for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
+                builder.Add(inks, w.Current());
+            }
+        }
+        // Only the edges whose box comes near the ink's can be within 0.02 mm of it: the rest (a sphere's seam, a torus's seams) are not
+        // measured, which is most of the time of a text on a face with long edges.
+        Bnd_Box ink_box;
+        BRepBndLib::Add(inks, ink_box);
+        TopoDS_Compound edges;
+        builder.MakeCompound(edges);
+        bool any_near = false;
+        for (TopExp_Explorer e(ground.face, TopAbs_EDGE); e.More(); e.Next()) {
+            Bnd_Box edge_box;
+            BRepBndLib::Add(e.Current(), edge_box);
+            edge_box.Enlarge(0.05);
+            if (!edge_box.IsOut(ink_box)) {
+                builder.Add(edges, e.Current());
+                any_near = true;
+            }
+        }
+        if (any_near) {
+            BRepExtrema_DistShapeShape distance(inks, edges);
+            if (distance.IsDone() && distance.Value() < 0.02) {
+                direct_ok = false;
+                note = "The text is within 0.02 mm of the face's edge.";
+            }
+        }
+    }
+    if (cut) {
+        // The material under every letter, along the normal where it stands.
+        for (size_t g = 0; g < glyphs.size(); ++g) {
+            std::vector<gp_Pnt2d> mine;
+            Handle(IntTools_Context) context = new IntTools_Context;
+            gp_Pnt inside;
+            gp_Pnt2d uv;
+            if (BOPTools_AlgoTools3D::PointInFace(faces[g], inside, uv, context) == 0) {
+                mine.push_back(uv);
+            }
+            for (const LoopIn& loop : glyphs[g].loops) {
+                mine.emplace_back(loop.start[0], loop.start[1]);
+            }
+            double thickness = 1e9;
+            for (const gp_Pnt2d& at : mine) {
+                const gp_Pnt on = surface->Value(at.X(), at.Y());
+                const gp_Dir down = ground.outward(at.X(), at.Y()).Reversed();
+                thickness = std::min(thickness, reach(current, on, down));
+            }
+            if (thickness <= depth + 1e-6) {
+                direct_ok = false;
+                note = "The cut goes through the wall.";
+                if (glyphs[g].loops.size() > 1) {
+                    error = "The middle of ‘" + utf8(glyphs[g].code) + "’ would fall out. Use the Stencil font, or engrave less deep.";
+                    return TopoDS_Shape();
+                }
+            }
+        }
+    }
+    if (direct_ok) {
+        std::string why;
+        TopoDS_Shape result;
+        try {
+            const Handle(Geom_Surface) top = ground.offset(cut ? -depth : depth);
+            const auto looks_wrong = [&](const TopoDS_Face& one) {
+                double u_lo = 0.0;
+                double u_hi = 0.0;
+                double v_lo = 0.0;
+                double v_hi = 0.0;
+                BRepTools::UVBounds(one, u_lo, u_hi, v_lo, v_hi);
+                BRepAdaptor_Surface adaptor(one);
+                const double um = (u_lo + u_hi) / 2.0;
+                const double vm = (v_lo + v_hi) / 2.0;
+                const gp_Pnt p = adaptor.Value(um, vm);
+                gp_Pnt on;
+                gp_Vec n;
+                BRepGProp_Face(one).Normal(um, vm, on, n);
+                double u = 0.0;
+                double v = 0.0;
+                ground.parameters(p, u, v);
+                return n.Dot(gp_Vec(ground.outward(u, v))) < 0.0;
+            };
+            result = build_direct(current, ground.face, faces, surface, top, looks_wrong, history, why);
+        } catch (const Standard_Failure& failure) {
+            why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
+        }
+        if (!result.IsNull()) {
+            volume = volume_of(result);
+            if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
+                path = 1;
+                return result;
+            }
+        }
+        history.Nullify();
+        note = why;
+    }
+    path = 2;
+    // The boolean build: a solid for every letter from a little inside the part (a raise) or past its face (a cut) to the depth.
+    const double sink = 0.2;
+    std::vector<TopoDS_Shape> tools;
+    try {
+        const Handle(Geom_Surface) low = ground.offset(cut ? sink : -sink);
+        const Handle(Geom_Surface) high = ground.offset(cut ? -depth : depth);
+        for (const GlyphIn& glyph : glyphs) {
+            tools.push_back(glyph_tool(glyph, low, high));
+        }
+    } catch (const Standard_Failure& failure) {
+        error = failure.GetMessageString() == nullptr ? "Open CASCADE did not build a letter." : failure.GetMessageString();
+        return TopoDS_Shape();
+    }
+    return combine_profile_tools(current, before, cut ? "cut" : "fuse", tools, "text", volume, error);
+}
+
+
+
+// --- Lettering on a sphere, a torus or a freeform face (milestone 3). The same builds as the cylinder and the cone (`build_on_ground`),
+// on a face whose surface is read through Geom_Surface: the letters arrive in its (u, v) already (src/text/skin.rs, which asks
+// `skin_d1` for the surface's points as it walks), and the top is the surface moved by the depth along its normal.
+
+/// The face under the anchor when it is a sphere, a torus or any other curved face that is not a plane, a cylinder or a cone.
+bool find_skin(const TopoDS_Shape& shape, const gp_Pnt& p, double tol, SkinHandle& out) {
+    double best = 1e30;
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+        const TopoDS_Face face = TopoDS::Face(it.Current());
+        BRepAdaptor_Surface adaptor(face);
+        const GeomAbs_SurfaceType type = adaptor.GetType();
+        if (type == GeomAbs_Plane || type == GeomAbs_Cylinder || type == GeomAbs_Cone) {
+            continue;
+        }
+        const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+        if (surface.IsNull()) {
+            continue;
+        }
+        GeomAPI_ProjectPointOnSurf project(p, surface);
+        if (project.NbPoints() < 1) {
+            continue;
+        }
+        const double distance = project.LowerDistance();
+        if (!(distance <= tol) || distance >= best) {
+            continue;
+        }
+        double u = 0.0;
+        double v = 0.0;
+        project.LowerDistanceParameters(u, v);
+        BRepClass_FaceClassifier classify(face, project.NearestPoint(), 1e-6);
+        if (classify.State() != TopAbs_IN && classify.State() != TopAbs_ON) {
+            continue;
+        }
+        best = distance;
+        out.face = face;
+        out.surface = surface;
+        out.type = type;
+        out.u0 = u;
+        out.v0 = v;
+        out.distance = distance;
+    }
+    if (best >= 1e29) {
+        return false;
+    }
+    BRepTools::UVBounds(out.face, out.umin, out.umax, out.vmin, out.vmax);
+    out.u_period = out.surface->IsUPeriodic() ? out.surface->UPeriod() : 0.0;
+    out.v_period = out.surface->IsVPeriodic() ? out.surface->VPeriod() : 0.0;
+    if (out.u_period > 0.0) {
+        while (out.u0 < out.umin - 1e-9) {
+            out.u0 += out.u_period;
+        }
+        while (out.u0 > out.umax + 1e-9) {
+            out.u0 -= out.u_period;
+        }
+    }
+    if (out.v_period > 0.0) {
+        while (out.v0 < out.vmin - 1e-9) {
+            out.v0 += out.v_period;
+        }
+        while (out.v0 > out.vmax + 1e-9) {
+            out.v0 -= out.v_period;
+        }
+    }
+    out.full_u = out.u_period > 0.0 && out.umax - out.umin >= out.u_period - 1e-6;
+    out.full_v = out.v_period > 0.0 && out.vmax - out.vmin >= out.v_period - 1e-6;
+    out.sigma = out.face.Orientation() == TopAbs_REVERSED ? -1.0 : 1.0;
+    out.surface->Bounds(out.bu1, out.bu2, out.bv1, out.bv2);
+    return true;
+}
+
+/// The surface moved `out` along the face's outward normal, with the same (u, v): a sphere and a torus stay one, another surface is
+/// an offset surface.
+Handle(Geom_Surface) skin_offset(const SkinHandle& c, double out) {
+    const double d = out * c.sigma;  // along Su x Sv
+    gp_Pnt p;
+    gp_Vec su;
+    gp_Vec sv;
+    if (!c.d1(c.u0, c.v0, p, su, sv)) {
+        throw Standard_Failure("The anchor is off the surface.");
+    }
+    const gp_Vec normal = su.Crossed(sv);
+    BRepAdaptor_Surface adaptor(c.face);
+    if (c.type == GeomAbs_Sphere) {
+        const gp_Sphere sphere = adaptor.Sphere();
+        const double along = normal.Dot(gp_Vec(sphere.Location(), p)) >= 0.0 ? 1.0 : -1.0;
+        const double radius = sphere.Radius() + d * along;
+        if (radius > 1e-6) {
+            return new Geom_SphericalSurface(sphere.Position(), radius);
+        }
+    } else if (c.type == GeomAbs_Torus) {
+        const gp_Torus torus = adaptor.Torus();
+        // The tube's centre under (u, v): the major circle's point in the direction of u.
+        const gp_Ax3 pos = torus.Position();
+        const gp_Vec radial = gp_Vec(pos.XDirection()) * std::cos(c.u0) + gp_Vec(pos.YDirection()) * std::sin(c.u0);
+        const gp_Pnt centre = pos.Location().Translated(radial * torus.MajorRadius());
+        const double along = normal.Dot(gp_Vec(centre, p)) >= 0.0 ? 1.0 : -1.0;
+        const double minor = torus.MinorRadius() + d * along;
+        if (minor > 1e-6) {
+            return new Geom_ToroidalSurface(pos, torus.MajorRadius(), minor);
+        }
+    }
+    return new Geom_OffsetSurface(c.surface, d);
+}
+
+const char* skin_kind(GeomAbs_SurfaceType type) {
+    return type == GeomAbs_Sphere ? "sphere" : (type == GeomAbs_Torus ? "torus" : "freeform");
+}
+
 }  // namespace
 
 TopoDS_Shape build_lettering(
@@ -935,130 +1270,101 @@ TopoDS_Shape build_lettering_curved(
         error = "The anchor is not on a cylinder or a cone face.";
         return TopoDS_Shape();
     }
-    const Handle(Geom_Surface) surface = round.surface;
-    std::vector<TopoDS_Face> faces;
-    faces.reserve(glyphs.size());
-    for (const GlyphIn& glyph : glyphs) {
-        faces.push_back(glyph_face(glyph, surface));
+    Ground ground;
+    ground.face = round.face;
+    ground.surface = round.surface;
+    ground.outward = [&](double u, double v) { return round.outward(u, v); };
+    ground.offset = [&](double out) { return offset_surface(round, out); };
+    ground.parameters = [&](const gp_Pnt& p, double& u, double& v) { round.parameters(p, u, v); };
+    return build_on_ground(ground, current, before, cut, depth, force_boolean, glyphs, volume, path, history, note, error);
+}
+
+SkinHandle* skin_open(const TopoDS_Shape& current, const double point[3], std::string& info) {
+    std::unique_ptr<SkinHandle> skin(new SkinHandle);
+    if (!find_skin(current, gp_Pnt(point[0], point[1], point[2]), 0.5, *skin)) {
+        return nullptr;
     }
-    const std::vector<gp_Pnt2d> marks = uv_points(glyphs);
-    bool direct_ok = !force_boolean;
-    if (force_boolean) {
-        note = "The text crosses the seam of the face.";
-    }
-    for (const gp_Pnt2d& uv : marks) {
-        BRepClass_FaceClassifier classify(round.face, surface->Value(uv.X(), uv.Y()), 1e-6);
-        const bool off = classify.State() == TopAbs_OUT || (direct_ok && classify.State() != TopAbs_IN);
-        if (off) {
-            error = "The text runs off this face. Move it, make it smaller, or put it on one face.";
-            return TopoDS_Shape();
-        }
-    }
-    if (direct_ok && !round.face.Location().IsIdentity()) {
-        direct_ok = false;
-        note = "The face carries a location.";
-    }
-    if (direct_ok) {
-        TopoDS_Compound inks;
-        BRep_Builder builder;
-        builder.MakeCompound(inks);
-        for (const TopoDS_Face& face : faces) {
-            for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
-                builder.Add(inks, w.Current());
-            }
-        }
-        TopoDS_Compound edges;
-        builder.MakeCompound(edges);
-        for (TopExp_Explorer w(round.face, TopAbs_WIRE); w.More(); w.Next()) {
-            builder.Add(edges, w.Current());
-        }
-        BRepExtrema_DistShapeShape distance(inks, edges);
-        if (distance.IsDone() && distance.Value() < 0.02) {
-            direct_ok = false;
-            note = "The text is within 0.02 mm of the face's edge.";
-        }
-    }
-    if (cut) {
-        // The material under every letter, along the normal where it stands.
-        for (size_t g = 0; g < glyphs.size(); ++g) {
-            std::vector<gp_Pnt2d> mine;
-            Handle(IntTools_Context) context = new IntTools_Context;
-            gp_Pnt inside;
-            gp_Pnt2d uv;
-            if (BOPTools_AlgoTools3D::PointInFace(faces[g], inside, uv, context) == 0) {
-                mine.push_back(uv);
-            }
-            for (const LoopIn& loop : glyphs[g].loops) {
-                mine.emplace_back(loop.start[0], loop.start[1]);
-            }
-            double thickness = 1e9;
-            for (const gp_Pnt2d& at : mine) {
-                const gp_Pnt on = surface->Value(at.X(), at.Y());
-                const gp_Dir down = round.outward(at.X(), at.Y()).Reversed();
-                thickness = std::min(thickness, reach(current, on, down));
-            }
-            if (thickness <= depth + 1e-6) {
-                direct_ok = false;
-                note = "The cut goes through the wall.";
-                if (glyphs[g].loops.size() > 1) {
-                    error = "The middle of ‘" + utf8(glyphs[g].code) + "’ would fall out. Use the Stencil font, or engrave less deep.";
-                    return TopoDS_Shape();
-                }
-            }
-        }
-    }
-    if (direct_ok) {
-        std::string why;
-        TopoDS_Shape result;
-        try {
-            const Handle(Geom_Surface) top = offset_surface(round, cut ? -depth : depth);
-            const auto looks_wrong = [&](const TopoDS_Face& one) {
-                double u_lo = 0.0;
-                double u_hi = 0.0;
-                double v_lo = 0.0;
-                double v_hi = 0.0;
-                BRepTools::UVBounds(one, u_lo, u_hi, v_lo, v_hi);
-                BRepAdaptor_Surface adaptor(one);
-                const double um = (u_lo + u_hi) / 2.0;
-                const double vm = (v_lo + v_hi) / 2.0;
-                const gp_Pnt p = adaptor.Value(um, vm);
-                gp_Pnt on;
-                gp_Vec n;
-                BRepGProp_Face(one).Normal(um, vm, on, n);
-                double u = 0.0;
-                double v = 0.0;
-                round.parameters(p, u, v);
-                return n.Dot(gp_Vec(round.outward(u, v))) < 0.0;
-            };
-            result = build_direct(current, round.face, faces, surface, top, looks_wrong, history, why);
-        } catch (const Standard_Failure& failure) {
-            why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
-        }
-        if (!result.IsNull()) {
-            volume = volume_of(result);
-            if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
-                path = 1;
-                return result;
-            }
-        }
-        history.Nullify();
-        note = why;
-    }
-    path = 2;
-    // The boolean build: a solid for every letter from a little inside the part (a raise) or past its face (a cut) to the depth.
-    const double sink = 0.2;
-    std::vector<TopoDS_Shape> tools;
+    std::ostringstream out;
+    out.precision(17);
+    out << "{\"kind\":\"" << skin_kind(skin->type) << "\",\"sigma\":" << skin->sigma << ",\"u0\":" << skin->u0 << ",\"v0\":" << skin->v0
+        << ",\"uMin\":" << skin->umin << ",\"uMax\":" << skin->umax << ",\"vMin\":" << skin->vmin << ",\"vMax\":" << skin->vmax
+        << ",\"uPeriod\":" << skin->u_period << ",\"vPeriod\":" << skin->v_period << ",\"fullU\":" << (skin->full_u ? "true" : "false")
+        << ",\"fullV\":" << (skin->full_v ? "true" : "false") << ",\"distance\":" << skin->distance << "}";
+    info = out.str();
+    return skin.release();
+}
+
+bool skin_d1(const SkinHandle* skin, double u, double v, double out[9]) {
     try {
-        const Handle(Geom_Surface) low = offset_surface(round, cut ? sink : -sink);
-        const Handle(Geom_Surface) high = offset_surface(round, cut ? -depth : depth);
-        for (const GlyphIn& glyph : glyphs) {
-            tools.push_back(glyph_tool(glyph, low, high));
+        gp_Pnt p;
+        gp_Vec su;
+        gp_Vec sv;
+        if (!skin->d1(u, v, p, su, sv)) {
+            return false;
         }
-    } catch (const Standard_Failure& failure) {
-        error = failure.GetMessageString() == nullptr ? "Open CASCADE did not build a letter." : failure.GetMessageString();
+        const double values[9] = {p.X(), p.Y(), p.Z(), su.X(), su.Y(), su.Z(), sv.X(), sv.Y(), sv.Z()};
+        for (int k = 0; k < 9; ++k) {
+            if (!std::isfinite(values[k])) {
+                return false;
+            }
+            out[k] = values[k];
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void skin_close(SkinHandle* skin) {
+    delete skin;
+}
+
+TopoDS_Shape build_lettering_skin(
+    const TopoDS_Shape& current,
+    double before,
+    bool cut,
+    const double point[3],
+    double depth,
+    bool force_boolean,
+    const double* data,
+    int len,
+    double& volume,
+    int& path,
+    Handle(BRepTools_History)& history,
+    std::string& note,
+    std::string& error) {
+    path = 0;
+    if (!std::isfinite(depth) || !(depth > 1e-6)) {
+        error = "Text needs a depth above 0, in millimetres.";
         return TopoDS_Shape();
     }
-    return combine_profile_tools(current, before, cut ? "cut" : "fuse", tools, "text", volume, error);
+    std::vector<GlyphIn> glyphs;
+    if (!decode(data, len, glyphs, error)) {
+        return TopoDS_Shape();
+    }
+    if (glyphs.empty()) {
+        error = "The text has no letters to build. Spaces leave no ink.";
+        return TopoDS_Shape();
+    }
+    SkinHandle skin;
+    if (!find_skin(current, gp_Pnt(point[0], point[1], point[2]), 0.5, skin)) {
+        error = "The anchor is not on a sphere, a torus or a freeform face.";
+        return TopoDS_Shape();
+    }
+    Ground ground;
+    ground.face = skin.face;
+    ground.surface = skin.surface;
+    ground.outward = [&](double u, double v) { return skin.outward(u, v); };
+    ground.offset = [&](double out) { return skin_offset(skin, out); };
+    ground.parameters = [&](const gp_Pnt& p, double& u, double& v) {
+        GeomAPI_ProjectPointOnSurf project(p, skin.surface);
+        if (project.NbPoints() < 1) {
+            throw Standard_Failure("A point of the text is off the surface.");
+        }
+        project.LowerDistanceParameters(u, v);
+    };
+    return build_on_ground(ground, current, before, cut, depth, force_boolean, glyphs, volume, path, history, note, error);
 }
+
 
 }  // namespace lime_occt

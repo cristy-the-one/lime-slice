@@ -260,7 +260,7 @@ fn dist(a: P, b: P) -> f64 {
 }
 
 /// `seg` (from `from`) in `n` pieces of the same curve, de Casteljau.
-fn split(from: P, seg: Seg, n: usize) -> Vec<(P, Seg)> {
+pub(super) fn split(from: P, seg: Seg, n: usize) -> Vec<(P, Seg)> {
     let mut out = Vec::with_capacity(n);
     let mut start = from;
     for i in 0..n {
@@ -322,7 +322,7 @@ fn sub2(a: P, b: P) -> P {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn piece_len(from: P, seg: &Seg) -> f64 {
+pub(super) fn piece_len(from: P, seg: &Seg) -> f64 {
     match *seg {
         Seg::Line(p) => dist(from, p),
         Seg::Quad(c, p) => dist(from, c) + dist(c, p),
@@ -372,7 +372,7 @@ fn map_contour(contour: &Contour, mapper: &Mapper) -> Option<Contour> {
 }
 
 /// `contour` running the way `ccw` says, as `(u, v)` points read it.
-fn turned(contour: Contour, ccw: bool) -> Contour {
+pub(super) fn turned(contour: Contour, ccw: bool) -> Contour {
     if (area(&contour.flatten(0.05)) > 0.0) == ccw {
         contour
     } else {
@@ -380,7 +380,7 @@ fn turned(contour: Contour, ccw: bool) -> Contour {
     }
 }
 
-fn bounds_of(faces: &[GlyphFace]) -> Option<[f64; 4]> {
+pub(super) fn bounds_of(faces: &[GlyphFace]) -> Option<[f64; 4]> {
     let mut b: Option<[f64; 4]> = None;
     for face in faces {
         for c in std::iter::once(&face.outer).chain(face.holes.iter()) {
@@ -409,7 +409,7 @@ fn bounds_of(faces: &[GlyphFace]) -> Option<[f64; 4]> {
     b
 }
 
-fn mm(value: f64) -> String {
+pub(super) fn mm(value: f64) -> String {
     let rounded = (value * 10.0).round() / 10.0;
     if rounded.fract() == 0.0 {
         format!("{rounded:.0}")

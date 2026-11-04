@@ -8,7 +8,7 @@ import { standRegion } from "../mcp/plane-region.ts";
 import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
-import { anchorOf, expand, type Piece } from "./modeling/compose.ts";
+import { anchorOf, expand, type Piece, type RoundSurface } from "./modeling/compose.ts";
 import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, isUserFont, STROKE_FONT, styleOf, userFontView, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
@@ -68,6 +68,10 @@ export interface FeatureChoices {
   style: TextStyle;
   /** --- Text on a cylinder or a cone: the baseline runs `around` the part (default) or up its `axis`; `flip` turns it half way. */
   way: "around" | "axis";
+  /** --- Text on a sphere, a torus or a freeform face: the baseline starts along the face's `u` (default) or `v`. */
+  dir?: "u" | "v";
+  /** The same, projected onto the surface along its normal instead of wrapped at true size. */
+  project?: boolean;
   flip: boolean;
   face?: number;
   /** A saved text on a cylinder or a cone reopens with the point it sits on. */
@@ -89,6 +93,8 @@ export const FEATURE_CHOICE_DEFAULTS: FeatureChoices = {
   font: versionedId(fontById(DEFAULT_TEXT_FONT)!),
   style: DEFAULT_TEXT_STYLE,
   way: "around",
+  dir: "u",
+  project: false,
   flip: false,
 };
 
@@ -144,6 +150,8 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
   const font = pressed("modelTextFont", "font");
   const style = pressed("modelTextStyle", "style");
   const way = pressed("modelTextWay", "way");
+  const dir = pressed("modelTextDir", "dir");
+  const wrap = pressed("modelTextWrap", "wrap");
   const op = pressed(tool === "text" ? "modelTextOp" : "modelFeatOp", "op");
   return {
     shape: shape === "circle" || shape === "arch" ? shape : "rect",
@@ -159,6 +167,8 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
     font: font === STROKE_FONT || fontById(font) || isUserFont(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
     style: style ? styleOf(style) : FEATURE_CHOICE_DEFAULTS.style,
     way: way === "axis" ? "axis" : "around",
+    dir: dir === "v" ? "v" : "u",
+    project: wrap === "project",
     flip: document.querySelector<HTMLInputElement>("#modelTextFlip")?.checked ?? false,
   };
 }
@@ -414,6 +424,8 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
     font: isOutlineFont(source.font) ? (fontById(source.font) ? versionedId(fontById(source.font)!) : String(source.font)) : STROKE_FONT,
     style: styleOf(source.style),
     way: source.along === "axis" ? "axis" : "around",
+    dir: source.along === "v" ? "v" : "u",
+    project: source.wrap === "project",
     flip: source.flip === true,
     ...(Array.isArray(source.point) && source.point.length === 3 && source.point.every((n) => typeof n === "number") ? { point: [source.point[0], source.point[1], source.point[2]] as [number, number, number] } : {}),
     ...(typeof source.faceIndex === "number" ? { face: source.faceIndex } : {}),
@@ -501,7 +513,7 @@ export interface ExpandedFeature {
    */
   letters: LetteringOp | null;
   /** --- Text on a cylinder or a cone: the surface and the point the text sits on, or null on a flat face. */
-  round: { surface: "cylinder" | "cone"; point: [number, number, number] } | null;
+  round: { surface: RoundSurface; point: [number, number, number] } | null;
 }
 
 export function emptyFeature(note: string): ExpandedFeature {

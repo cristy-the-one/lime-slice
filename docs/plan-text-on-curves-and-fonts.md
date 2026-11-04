@@ -641,6 +641,67 @@ Deviations from this plan, each on purpose or forced:
    pipeline (milestone 5), and curved faces (milestones 2 and 3). An engine that restarts while the app runs is given the fonts again before a
    tree is rebuilt (`restore`); the MCP server runs one engine and has no restart to cover.
 
+### As built (milestone 3)
+
+Built on `main` after milestone 4 (PR "Text on spheres, tori and freeform faces (text milestone 3)"). What a person can do now: pick a sphere, a torus or a freeform
+(B-spline or other) face, open Text, click where the text goes (or leave it in the middle of the face), choose **Along U** or **Along V**, **Wrap** (the
+default: true size on the surface) or **Project** (pushed straight on, like a slide), **Flip**, an angle, a depth, raised or engraved, a font (a person's
+own font and a weight go through the same path as on a cylinder), and see the letters on the surface as they type; Apply is one history step. The MCP `text`
+op takes the same on `faceIndex` with `point`, `along` (`u`, `v`), `wrap` and `flip`. A text too long for the way round, off the face, across a pole, too
+big for the curve to keep its size, or too deep for it is refused in one sentence before anything is built.
+
+- **Mapping** (`crates/lime-model-occt/src/text/skin.rs`, no kernel needed: the kernel only answers the surface's points, `Surf`). The baseline is a geodesic from
+  the anchor (midpoint steps of 0.5 mm along the tangent, the direction carried by projection onto each new tangent plane); a layout point `(x, y)` is where
+  you arrive by walking `x` along it and then `y` square to it, so lengths along the baseline and along every square line are kept exactly. Each outline
+  piece is mapped by its control points and cut in two (and again) only where the mapped Bézier's middle strays more than 20 µm from where the map puts the
+  layout's middle, so a letter keeps about the pieces it has. `project` solves, by Newton's method, for the point of the surface that lies along the
+  anchor's normal from each point of the layout plane.
+- **Distortion.** A ball cannot be unrolled: a line of latitude is shorter than the equator, so a line away from the baseline is stretched by `1 - K y²/2`
+  (K the Gaussian curvature). The step measures it per letter (the stretch along the baseline at the letter's bottom, middle and top, averaged) and refuses
+  letters off by more than **2 %** ("The letters are too big for this curve to keep their size within 2 %. Make the text smaller than N mm across."). Measured:
+  6 mm capitals on a sphere of R 30 at 40° latitude, and on a torus 30 / 10 on its tube's top, outside and on the inner saddle, are within 2 % of size;
+  the kernel test reads 5.99 mm of arc for a 6 mm I on R 30.
+- **Depth.** Constant and square to the surface: the top is the surface moved by `depth` along its normal, a sphere of radius R ± depth, a torus with the tube
+  radius ± depth, and an offset surface for a freeform face. Letters that would fold are found by the area of the offset surface against the surface's at
+  every outline point (below 2 % is a fold), with the depth that works named: "Letters this deep would fold over inside this curve. Use a depth under N mm."
+- **Builds.** `lime_tree_skin_open` finds the face (any face that is not a plane, a cylinder or a cone, within 0.5 mm of the anchor), `lime_tree_text_skin` builds
+  with the same direct build and boolean fallback as a cylinder (the code is shared: `build_on_ground`). Across the seam of a periodic face (a sphere's `u`, a
+  torus's `u` and `v`) the boolean builds; a freeform face that is cut off (a text crossing its own edge) is refused with "The text runs off this face".
+- **Measured** (release build, this machine, shared with other sessions so ±30 %, "Lime Slice gAO8 2026", 6 mm, 0.8 deep, probe or apply including the reply's
+  mesh): sphere R 30 raised 0.67 s, engraved 0.67 s, projected ("Lime 42 gA8") 0.36 s, across the seam by the boolean 1.6 s; torus 30 / 10 ("Lime 42 gA8", 4 mm) 0.4 s
+  raised and engraved, across a seam 0.9 s; an 80 × 60 × 50 ellipsoid (rational B-spline faces, 5 mm) 2.0 s raised, 3.2 s engraved. The preview's `textCurved` call 0.1 to 0.6 s.
+  Before one fix the sphere took 7 to 10 s: the distance of every letter from the face's edges was measured against the sphere's long seam; now only the edges
+  whose box comes near the text are measured.
+- **Tests.** Rust, no kernel (`src/text/skin/tests.rs`, 17): baseline lengths, direction, flip, angle, reading from the side the face looks to (either way
+  round), size within 2 % on a sphere, on a torus (outside, top, inner saddle) and on a wavy sheet, loop closing and orientation, a second line square to the
+  first, the pole, the way round, the edge of a freeform face, the fold depth, the seam, project, the cut pieces, letters too big. Rust with the kernel
+  (`tests/lettering_skin.rs`, 16): valid closed one-shell solids and measured depth on a sphere, a torus and an ellipsoid raised and engraved, the size of letters
+  on the sphere, seams by the boolean, a pole, a trimmed freeform face, project, along v / flip / angle, every refusal, replay from a saved node, the preview
+  call, the display mesh, and the timings above (`LIME_TEXT_SKIN_OBJ` writes OBJ files). TypeScript: `src/modeling/lettering-round.test.ts` (extended),
+  `mcp/text-skin.test.ts` (real engine, in the CI list), `e2e/model-text-skin.spec.ts` (in `test:smoke`; the mocked engine).
+
+Deviations from this plan, each on purpose or forced:
+
+1. **Show me is not built** (the owner deferred it).
+2. **Pole and fold are measured, not listed.** The plan's refusals for a pole and a fold are found by the geometry (`|Su|` or `|Sv|` shrinking to nothing, the
+   walk's chord leaving its step), so a freeform face that pinches says "a point where this face pinches or folds" and a sphere says "the pole of this sphere".
+3. **The tolerance is on the letter's average stretch, not its worst point.** A descender sits 4.5 mm below the baseline, where a tube of radius 10 shrinks a
+   line by 2.5 %; averaged over the letter's height it is 1.1 %. A text of 6 mm capitals with two lines on such a torus is refused.
+4. **The way round is known only if the walk gets there.** `wayRoundMm` in the preview is null for a short text (the walk does not go half way round); a text
+   longer than the way round names it ("(188.5 mm)").
+5. **The torus and the freeform face are one `other` kind in the card and the face list**; the engine tells them apart (`surface` in the apply reply is `torus` or `freeform`).
+   The plan's "U or V and the angle" is the card's Along U / Along V and the angle field.
+6. **Project uses the anchor's normal only** (the plan allowed a chosen direction), and is refused when the surface leans more than about 78° from it or when part of
+   the text misses the surface.
+7. **Seams are crossed by the boolean, not moved away** (as in milestone 2), and a text over a freeform face's own edge is refused.
+8. **The preview does not know a trimmed freeform face's cut edge**: it checks the face's `(u, v)` box, the build checks the real edge, so a text near a cut edge previews
+   and then Apply says "The text runs off this face".
+9. **A click on earlier raised letters** lands on the letters' own faces (a small cap, a wall): it gets the same sentence ("The text runs off this face ...") or builds on the
+   cap if it fits, no longer "freeform face".
+10. **The display mesh** around many holes still has long thin triangles (worst longest edge 5.9 mm, a needle of aspect about 85 on the ball with 20 letters); the B-rep is valid and
+    the mesher's settings were left as they are.
+11. **Not measured on the owner's parts**, only on synthetic spheres, tori and ellipsoids.
+
 ## 11. Done for the whole plan
 
 - A person types two lines in Sans Bold, puts them round a Ø 40 cup and on a wavy freeform lid, raised and

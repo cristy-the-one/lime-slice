@@ -39,7 +39,7 @@ import { faceBoundarySegments, lastEdge, nextModelPicks, selectionCountLabel } f
 import { contextParts } from "../model-context";
 import { PROBE_WAIT_MS, disjointBoolean, isProbed, probeFromBody, probeKey, type ProbeView } from "../model-feasibility";
 import { locatedBoxes, printFrame } from "../model-check.ts";
-import { emptyFeature, expandFeature, featureSource, forgetFeatureContext, isFeatureTool, keptFeatureFields, panelChoices, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
+import { emptyFeature, expandFeature, featureSource, forgetFeatureContext, isFeatureTool, keptFeatureFields, panelChoices, posedContext, rangeNote, readFeatureSpec, type FeatureTool } from "../model-features";
 import { expandRepeat, followRepeatSources, isRepeatTool, lockMirrorFace, panelRepeatChoices, pushPathPoint, readRepeatSpec, repeatSourceIds, repeatTargets, repeatingText, setHeldAxis, setRepeatSources, toggleRepeatSource, REPEAT_ONLY, REPEAT_PICK, type RepeatChoices, type RepeatTool } from "../model-repeat";
 import { boxExtentAlong, extentAlong, extentMemo, faceCentre, facePlane, formatMm, planeFor, splitBase, splitNote, type AxisExtent, type FacePlane, type SplitState } from "../model-plane";
 import {
@@ -646,7 +646,7 @@ export function bindModelView() {
     editJoinGhost,
     editUnchanged: editUntouched,
     // --- A3 composite features ---
-    pickedRound: () => isRoundFace(oneFeatureFace()),
+    pickedCurved: () => curvedKind(oneFeatureFace()),
     centreText() {
       textAnchor = null;
       featureMemo = null;
@@ -1906,11 +1906,22 @@ function oneFeatureFace(): number | null {
  */
 let textAnchor: { face: number; point: Vec3 } | null = null;
 
-/** Whether the face is a cylinder or a cone, which take lettering besides a flat face. */
-function isRoundFace(face: number | null): boolean {
-  if (face == null) return false;
-  const surface = viewed()?.faces.find((item) => item.id === face)?.surface;
-  return surface === "cylinder" || surface === "cone";
+/**
+ * What the face is for lettering besides a flat one (text milestones 2 and 3): `round` for a cylinder or a cone (Around or Along),
+ * `skin` for a sphere, a torus or a freeform face (U or V, Wrap or Project), null for a flat face or none. Kept for the next call
+ * with the same solid, pose and face.
+ */
+let curvedMemo: { solid: unknown; pose: string; face: number; kind: "round" | "skin" | null } | null = null;
+function curvedKind(face: number | null): "round" | "skin" | null {
+  const solid = viewed();
+  if (face == null || !solid) return null;
+  const pose = openPose();
+  const key = JSON.stringify(pose);
+  if (curvedMemo?.solid === solid && curvedMemo.face === face && curvedMemo.pose === key) return curvedMemo.kind;
+  const found = posedContext(solid, pose).round?.(face);
+  const kind = found && !("reason" in found) ? (found.surface === "cylinder" || found.surface === "cone" ? "round" : "skin") : null;
+  curvedMemo = { solid, pose: key, face, kind };
+  return kind;
 }
 
 function paintTextAnchor() {
@@ -1923,10 +1934,13 @@ function featureNow(tool: FeatureTool) {
   const solid = viewed();
   const face = oneFeatureFace();
   const typed = readFeatureSpec(tool, (id) => num(`#${id}`), panelChoices(tool), face ?? 0);
-  // --- Text on a cylinder or a cone: the direction, the flip and the point the text is centred on.
-  if (tool === "text" && isRoundFace(face)) {
+  // --- Text on a curved face: the direction, the flip, wrap or project, and the point the text is centred on.
+  const curved = tool === "text" ? curvedKind(face) : null;
+  if (curved) {
     const choices = panelChoices("text");
-    if (choices.way === "axis") typed.along = "axis";
+    if (curved === "round" && choices.way === "axis") typed.along = "axis";
+    if (curved === "skin" && choices.dir === "v") typed.along = "v";
+    if (curved === "skin" && choices.project) typed.wrap = "project";
     if (choices.flip) typed.flip = true;
     if (textAnchor && textAnchor.face === face) typed.point = textAnchor.point;
   }
@@ -6352,7 +6366,7 @@ async function onPick(pick: ModelPick | null, shift: boolean, pointer: { x: numb
   picks = nextModelPicks(picks, pick, shift);
   // --- Text on a cylinder or a cone: the click is where the text goes. Another face takes the anchor away.
   if (openModelTool() === "text") {
-    const clicked = pick?.kind === "face" && pick.at && isRoundFace(pick.index) ? pick : null;
+    const clicked = pick?.kind === "face" && pick.at && curvedKind(pick.index) !== null ? pick : null;
     if (clicked?.at) textAnchor = { face: clicked.index, point: [clicked.at[0], clicked.at[1], clicked.at[2]] };
     else if (picks.length !== 1 || picks[0]!.kind !== "face" || textAnchor?.face !== picks[0]!.index) textAnchor = null;
     featureMemo = null;

@@ -9,6 +9,7 @@ use std::os::raw::{c_char, c_int};
 use serde_json::{json, Value};
 
 use super::{take_text, BooleanOp, BuildFail, Built, Op, RawShape, Shape};
+use crate::text::skin::{self, SkinHow, SkinInfo, Surf, V3};
 use crate::text::wrap::{self, How, SurfaceInfo};
 use crate::text::{self, fonts};
 
@@ -19,6 +20,25 @@ extern "C" {
         error: *mut *mut c_char,
     ) -> *mut c_char;
     fn lime_tree_text_curved(
+        from: *const RawShape,
+        cut: c_int,
+        p: *const f64,
+        data: *const f64,
+        data_len: c_int,
+        path: *mut c_int,
+        note: *mut *mut c_char,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
+    // --- Milestone 3: the face under a point when it is a sphere, a torus or a freeform face, held while the text is laid out.
+    fn lime_tree_skin_open(
+        from: *const RawShape,
+        point: *const f64,
+        info: *mut *mut c_char,
+        error: *mut *mut c_char,
+    ) -> *mut RawSkin;
+    fn lime_tree_skin_d1(skin: *const RawSkin, u: f64, v: f64, out: *mut f64) -> c_int;
+    fn lime_tree_skin_free(skin: *mut RawSkin);
+    fn lime_tree_text_skin(
         from: *const RawShape,
         cut: c_int,
         p: *const f64,
@@ -43,16 +63,74 @@ extern "C" {
 /// The least depth a letter takes, mm.
 const MIN_DEPTH_MM: f64 = 0.001;
 
+/// A face held by the kernel (cpp/text.cpp `SkinHandle`).
+#[repr(C)]
+struct RawSkin {
+    _private: [u8; 0],
+}
+
+/// The face under an anchor, asked for its surface's points as the text is laid out.
+struct SkinFace(*mut RawSkin);
+
+impl Surf for SkinFace {
+    fn d1(&self, u: f64, v: f64) -> Option<(V3, V3, V3)> {
+        let mut out = [0.0f64; 9];
+        // SAFETY: the handle lives until `drop`; `out` holds the nine numbers the kernel writes.
+        let ok = unsafe { lime_tree_skin_d1(self.0, u, v, out.as_mut_ptr()) };
+        (ok == 1).then(|| {
+            (
+                [out[0], out[1], out[2]],
+                [out[3], out[4], out[5]],
+                [out[6], out[7], out[8]],
+            )
+        })
+    }
+}
+
+impl Drop for SkinFace {
+    fn drop(&mut self) {
+        // SAFETY: the handle came from `lime_tree_skin_open` and is freed once.
+        unsafe { lime_tree_skin_free(self.0) };
+    }
+}
+
+/// A sphere, a torus or a freeform face with what the kernel says of it.
+struct Skinned {
+    face: SkinFace,
+    info: SkinInfo,
+}
+
 /// What is under the anchor of a text.
 enum Under {
     /// A flat face, or no face at all (a bare workplane): the frame the op carries builds it.
     Flat,
     /// A cylinder or a cone.
     Round(SurfaceInfo),
+    /// A sphere, a torus or a freeform face.
+    Skin(Skinned),
 }
 
-/// The face of `from` under `point`: a cylinder or a cone with its surface, or the flat way. A face of another kind is a
-/// sentence.
+/// The sphere, torus or freeform face of `from` under `point`, held.
+fn skin_under(from: &Shape, point: [f64; 3]) -> Result<Skinned, String> {
+    let mut info: *mut c_char = std::ptr::null_mut();
+    let mut error: *mut c_char = std::ptr::null_mut();
+    let raw = unsafe { lime_tree_skin_open(from.raw(), point.as_ptr(), &mut info, &mut error) };
+    let message = take_text(error);
+    let described = take_text(info);
+    if raw.is_null() {
+        return Err(message.unwrap_or_else(|| {
+            "Text could not be placed on this face. Pick a point on it, or another face.".into()
+        }));
+    }
+    let face = SkinFace(raw);
+    let text = described.ok_or_else(|| "Open CASCADE described the face badly".to_string())?;
+    let info: SkinInfo = serde_json::from_str(&text)
+        .map_err(|err| format!("Open CASCADE described the face badly: {err}"))?;
+    Ok(Skinned { face, info })
+}
+
+/// The face of `from` under `point`: a cylinder or a cone with its surface, a sphere, a torus or a freeform face held, or the flat
+/// way.
 fn under(from: &Shape, point: [f64; 3]) -> Result<Under, String> {
     let mut error: *mut c_char = std::ptr::null_mut();
     let raw = unsafe { lime_tree_text_face(from.raw(), point.as_ptr(), &mut error) };
@@ -66,10 +144,7 @@ fn under(from: &Shape, point: [f64; 3]) -> Result<Under, String> {
         Some("cylinder") | Some("cone") => serde_json::from_value(value)
             .map(Under::Round)
             .map_err(|err| format!("Open CASCADE described the face badly: {err}")),
-        Some("other") => Err(format!(
-            "Text goes on a flat face, a cylinder or a cone for now; this is a {} face.",
-            value["surface"].as_str().unwrap_or("curved")
-        )),
+        Some("other") => skin_under(from, point).map(Under::Skin),
         _ => Ok(Under::Flat),
     }
 }
@@ -84,6 +159,35 @@ fn how_of(along: Option<&str>, flip: bool) -> Result<How, String> {
         )),
     };
     Ok(How { along, flip })
+}
+
+/// The way the baseline starts on a sphere, a torus or a freeform face, from the op's `along`, `flip`, `wrap` and angle.
+fn skin_how_of(
+    along: Option<&str>,
+    flip: bool,
+    wrap: Option<&str>,
+    angle_deg: f64,
+) -> Result<SkinHow, String> {
+    let v_first = match along {
+        None | Some("u") | Some("around") => false,
+        Some("v") | Some("axis") => true,
+        Some(other) => return Err(format!(
+            "along is u or v on this face, not ‘{other}’. U runs the baseline along the face's U, v along its V."
+        )),
+    };
+    let project = match wrap {
+        None | Some("wrap") => false,
+        Some("project") => true,
+        Some(other) => return Err(format!(
+            "wrap is wrap or project, not ‘{other}’. Wrap keeps the letters' size on the surface; project pushes them onto it along the anchor's normal."
+        )),
+    };
+    Ok(SkinHow {
+        v_first,
+        flip,
+        angle_deg,
+        project,
+    })
 }
 
 /// The layout a text op is typed as.
@@ -140,31 +244,39 @@ pub(super) fn build(from: &mut Shape, op: Op) -> Result<Built, BuildFail> {
             "Text needs a depth above 0, in millimetres.",
         ));
     }
-    let spec = spec_of(&op).expect("a text op");
+    let target = under(from, *origin).map_err(BuildFail::plain)?;
+    let mut spec = spec_of(&op).expect("a text op");
+    // On a sphere, a torus or a freeform face the angle turns the baseline at the anchor, not the layout.
+    let angle_deg = spec.angle_deg;
+    if matches!(target, Under::Skin(_)) {
+        spec.angle_deg = 0.0;
+    }
     let laid = text::lay_out(&spec).map_err(BuildFail::plain)?;
     if laid.faces.is_empty() {
         return Err(BuildFail::plain(
             "The text has no letters to build. Spaces leave no ink.",
         ));
     }
-    let (along, flip) = match &op {
-        Op::Lettering { along, flip, .. } => (along.clone(), flip.unwrap_or(false)),
+    let (along, flip, wrap_mode) = match &op {
+        Op::Lettering {
+            along, flip, wrap, ..
+        } => (along.clone(), flip.unwrap_or(false), wrap.clone()),
         _ => unreachable!("matched a text op"),
     };
     let mut path: c_int = 0;
     let mut note: *mut c_char = std::ptr::null_mut();
     let mut crossed = false;
-    let mut surface = "plane";
-    let built = match under(from, *origin).map_err(BuildFail::plain)? {
+    let mut surface = "plane".to_string();
+    let built = match target {
         Under::Round(info) => {
             let how = how_of(along.as_deref(), flip).map_err(BuildFail::plain)?;
             let wrapped =
                 wrap::wrap(&laid.faces, &info, how, *depth, cut).map_err(BuildFail::plain)?;
             crossed = wrapped.crosses_seam;
             surface = if info.kind == "cone" {
-                "cone"
+                "cone".into()
             } else {
-                "cylinder"
+                "cylinder".into()
             };
             let blob = text::encode(&wrapped.faces);
             let p = [
@@ -176,6 +288,35 @@ pub(super) fn build(from: &mut Shape, op: Op) -> Result<Built, BuildFail> {
             ];
             Shape::made(|error| unsafe {
                 lime_tree_text_curved(
+                    from.raw(),
+                    c_int::from(cut),
+                    p.as_ptr(),
+                    blob.as_ptr(),
+                    blob.len() as c_int,
+                    &mut path,
+                    &mut note,
+                    error,
+                )
+            })
+        }
+        Under::Skin(skinned) => {
+            let how = skin_how_of(along.as_deref(), flip, wrap_mode.as_deref(), angle_deg)
+                .map_err(BuildFail::plain)?;
+            let wrapped = skin::lay(&laid.faces, &skinned.info, &skinned.face, how, *depth, cut)
+                .map_err(BuildFail::plain)?;
+            crossed = wrapped.crosses_seam;
+            surface = skinned.info.kind.clone();
+            let blob = text::encode(&wrapped.faces);
+            let p = [
+                origin[0],
+                origin[1],
+                origin[2],
+                *depth,
+                f64::from(u8::from(crossed)),
+            ];
+            drop(skinned);
+            Shape::made(|error| unsafe {
+                lime_tree_text_skin(
                     from.raw(),
                     c_int::from(cut),
                     p.as_ptr(),
@@ -276,39 +417,15 @@ fn round(v: f64) -> f64 {
     (v * 1e4).round() / 1e4
 }
 
-/// A text laid out on the cylinder or cone under `point`, for the card's live preview: each letter's loops as polylines about
-/// `step_mm` apart, with the layout point, the point on the face and the point on the top (or floor) of each. A text that would
-/// not build (too long, off the face, too deep) is the sentence.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn curved_reply(
-    from: &Shape,
-    spec: &text::Spec,
-    point: [f64; 3],
-    depth: f64,
-    cut: bool,
-    along: Option<&str>,
-    flip: bool,
-    line_mm: f64,
-    step_mm: f64,
-) -> Result<String, String> {
-    let laid = text::lay_out(spec)?;
-    if laid.faces.is_empty() {
-        return Err("The text has no letters to build. Spaces leave no ink.".into());
-    }
-    let Under::Round(info) = under(from, point)? else {
-        return Err("Pick a point on a cylinder or a cone face.".into());
-    };
-    let how = how_of(along, flip)?;
-    if !(depth.is_finite() && depth >= MIN_DEPTH_MM) {
-        return Err("Text needs a depth above 0, in millimetres.".into());
-    }
-    let wrapped = wrap::wrap(&laid.faces, &info, how, depth, cut)?;
-    let mapper = wrap::Mapper::new(&info, how);
-    let thin = text::thin_letters(&laid, line_mm);
-    let step = step_mm.clamp(0.05, 2.0);
-    let lift = if cut { -depth } else { depth };
-    let faces: Vec<Value> = laid
-        .faces
+/// The loops of each letter for the preview: the layout point, the point on the face and the point on the top (or floor), each
+/// about `step` mm apart on a curve. `place` takes a layout point to the face's point and the top's.
+fn preview_faces(
+    laid: &text::Laid,
+    thin: &[text::Thin],
+    step: f64,
+    place: &dyn Fn([f64; 2]) -> Option<(V3, V3)>,
+) -> Vec<Value> {
+    laid.faces
         .iter()
         .map(|face| {
             let loops: Vec<Value> = std::iter::once(&face.outer)
@@ -318,9 +435,7 @@ pub(super) fn curved_reply(
                     let mut base = Vec::new();
                     let mut top = Vec::new();
                     for p in contour.flatten(step) {
-                        let Some([u, v]) = mapper.map(p) else { continue };
-                        let on = info.point(u, v);
-                        let up = info.lifted(u, v, lift);
+                        let Some((on, up)) = place(p) else { continue };
                         layout.push([round(p[0]), round(p[1])]);
                         base.push([round(on[0]), round(on[1]), round(on[2])]);
                         top.push([round(up[0]), round(up[1]), round(up[2])]);
@@ -330,20 +445,88 @@ pub(super) fn curved_reply(
                 .collect();
             json!({ "ch": face.ch.to_string(), "loops": loops, "thin": thin.iter().any(|t| t.ch == face.ch) })
         })
-        .collect();
-    Ok(json!({
-        "ok": true,
-        "font": laid.font,
-        "surface": info.kind,
-        "faces": faces,
-        "inkMm2": laid.ink_mm2,
-        "thin": thin,
-        "thinNote": text::thin_sentence(&thin, line_mm),
-        "crossesSeam": wrapped.crosses_seam,
-        "bounds": wrapped.bounds,
-        "wayRoundMm": round(info.way_round(info.v0)),
-    })
-    .to_string())
+        .collect()
+}
+
+/// A text laid out on the curved face under `point` (a cylinder, a cone, a sphere, a torus or a freeform face), for the card's live
+/// preview: each letter's loops as polylines about `step_mm` apart, with the layout point, the point on the face and the point on
+/// the top (or floor) of each. A text that would not build (too long, off the face, too deep, across a pole) is the sentence.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn curved_reply(
+    from: &Shape,
+    spec: &text::Spec,
+    point: [f64; 3],
+    depth: f64,
+    cut: bool,
+    along: Option<&str>,
+    flip: bool,
+    wrap_mode: Option<&str>,
+    line_mm: f64,
+    step_mm: f64,
+) -> Result<String, String> {
+    let target = under(from, point)?;
+    let mut spec = spec.clone();
+    let angle_deg = spec.angle_deg;
+    if matches!(target, Under::Skin(_)) {
+        spec.angle_deg = 0.0;
+    }
+    let laid = text::lay_out(&spec)?;
+    if laid.faces.is_empty() {
+        return Err("The text has no letters to build. Spaces leave no ink.".into());
+    }
+    if !(depth.is_finite() && depth >= MIN_DEPTH_MM) {
+        return Err("Text needs a depth above 0, in millimetres.".into());
+    }
+    let thin = text::thin_letters(&laid, line_mm);
+    let step = step_mm.clamp(0.05, 2.0);
+    let lift = if cut { -depth } else { depth };
+    match target {
+        Under::Round(info) => {
+            let how = how_of(along, flip)?;
+            let wrapped = wrap::wrap(&laid.faces, &info, how, depth, cut)?;
+            let mapper = wrap::Mapper::new(&info, how);
+            let faces = preview_faces(&laid, &thin, step, &|p| {
+                let [u, v] = mapper.map(p)?;
+                Some((info.point(u, v), info.lifted(u, v, lift)))
+            });
+            Ok(json!({
+                "ok": true,
+                "font": laid.font,
+                "surface": info.kind,
+                "faces": faces,
+                "inkMm2": laid.ink_mm2,
+                "thin": thin,
+                "thinNote": text::thin_sentence(&thin, line_mm),
+                "crossesSeam": wrapped.crosses_seam,
+                "bounds": wrapped.bounds,
+                "wayRoundMm": round(info.way_round(info.v0)),
+            })
+            .to_string())
+        }
+        Under::Skin(skinned) => {
+            let how = skin_how_of(along, flip, wrap_mode, angle_deg)?;
+            let (wrapped, placer) =
+                skin::lay_placed(&laid.faces, &skinned.info, &skinned.face, how, depth, cut)?;
+            let faces = preview_faces(&laid, &thin, step, &|p| {
+                let [u, v] = placer.map(p).ok()?;
+                placer.base_and_top(u, v, lift)
+            });
+            Ok(json!({
+                "ok": true,
+                "font": laid.font,
+                "surface": skinned.info.kind,
+                "faces": faces,
+                "inkMm2": laid.ink_mm2,
+                "thin": thin,
+                "thinNote": text::thin_sentence(&thin, line_mm),
+                "crossesSeam": wrapped.crosses_seam,
+                "bounds": wrapped.bounds,
+                "wayRoundMm": placer.way_round().map(round),
+            })
+            .to_string())
+        }
+        Under::Flat => Err("Pick a point on a curved face.".into()),
+    }
 }
 
 /// The bundled fonts: id with its version, name, what it is for, and the styles its files have.

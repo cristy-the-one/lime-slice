@@ -659,6 +659,11 @@ pub enum Op {
         /// The text turned half a turn about its anchor: reads the other way round, upside down.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         flip: Option<bool>,
+        /// --- Milestone 3, a sphere, a torus or a freeform face. `wrap` (the default) walks the baseline along the surface and
+        /// keeps the letters' size; `project` pushes the layout onto the surface along the anchor's normal. `along` is then `u`
+        /// (the default) or `v`: the surface's own direction the baseline starts in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wrap: Option<String>,
     },
 }
 
@@ -1933,6 +1938,9 @@ enum Request {
         along: Option<String>,
         #[serde(default)]
         flip: Option<bool>,
+        /// --- Milestone 3: `wrap` or `project`, on a sphere, a torus or a freeform face.
+        #[serde(default)]
+        wrap: Option<String>,
         #[serde(default)]
         weight: Option<f64>,
         #[serde(default)]
@@ -2780,6 +2788,7 @@ impl Store {
                 angle_deg,
                 along,
                 flip,
+                wrap,
                 weight,
                 line_mm,
                 step_mm,
@@ -2806,6 +2815,7 @@ impl Store {
                         cut,
                         along.as_deref(),
                         flip.unwrap_or(false),
+                        wrap.as_deref(),
                         line_mm.unwrap_or(0.4),
                         step_mm.unwrap_or(0.5),
                     )
