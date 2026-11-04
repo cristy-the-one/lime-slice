@@ -16,33 +16,41 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <locale>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <Bnd_Box.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepGProp_Face.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepCheck_Shell.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFill.hxx>
 #include <BRepLib.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <BOPTools_AlgoTools3D.hxx>
 #include <ElSLib.hxx>
+#include <Extrema_ExtPC.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <GCPnts_UniformAbscissa.hxx>
 #include <GCE2d_MakeSegment.hxx>
 #include <Geom2d_BezierCurve.hxx>
 #include <Geom_ConicalSurface.hxx>
@@ -60,11 +68,14 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
 #include <gp_Lin.hxx>
@@ -76,6 +87,7 @@
 #include "kernel.h"
 
 namespace lime_occt {
+
 
 /// The face a text is on when it is a sphere, a torus or a freeform face, held while the text is laid out so Rust can ask the surface for
 /// points (`skin_d1`) (milestone 3).
@@ -357,17 +369,24 @@ std::vector<gp_Pnt> outline_points(const std::vector<GlyphIn>& glyphs, const Fra
     return out;
 }
 
-/// How far from `from` along `dir` the part's surface is, with the ray starting `nudge` off the plane. A large number when
-/// the ray meets nothing.
-double reach(const TopoDS_Shape& current, const gp_Pnt& from, const gp_Dir& dir) {
+/// Rays from inside the part to its surface, the part loaded once for all of them (loading it costs more than a ray does).
+struct Rays {
     IntCurvesFace_ShapeIntersector hit;
-    hit.Load(current, 1e-7);
-    hit.PerformNearest(gp_Lin(from.Translated(gp_Vec(dir) * 1e-3), dir), 0.0, 1e6);
-    if (hit.NbPnt() < 1) {
-        return 1e9;
+
+    explicit Rays(const TopoDS_Shape& current) {
+        hit.Load(current, 1e-7);
     }
-    return hit.WParameter(1) + 1e-3;
-}
+
+    /// How far from `from` along `dir` the part's surface is, with the ray starting `nudge` off the plane. A large number when the
+    /// ray meets nothing.
+    double reach(const gp_Pnt& from, const gp_Dir& dir) {
+        hit.PerformNearest(gp_Lin(from.Translated(gp_Vec(dir) * 1e-3), dir), 0.0, 1e6);
+        if (hit.NbPnt() < 1) {
+            return 1e9;
+        }
+        return hit.WParameter(1) + 1e-3;
+    }
+};
 
 /// The part with `face` taken out and `fresh` put in its place, every other face the same face as before.
 TopoDS_Shape splice(const TopoDS_Shape& current, const TopoDS_Face& face, const std::vector<TopoDS_Face>& fresh) {
@@ -475,9 +494,194 @@ void add_walls_and_cap(const TopoDS_Face& glyph, const Handle(Geom_Surface)& top
     sewing.Add(fix_cap.Face());
 }
 
+// --- The checks around a build, kept cheap on a large part. Each one answers what the exact whole-part call answered, and hands over
+// to it when the cheap answer cannot be trusted.
+
+/// How close the ink may come to a face's edge before the direct build gives way to the boolean, mm.
+constexpr double kEdgeLimit = 0.02;
+/// The spacing of the sampled ink points along an outline, mm. A sampled gap is at most half of it above the exact one.
+constexpr double kInkStep = 0.25;
+/// Below this sampled gap the exact distance decides: the limit, what the spacing can hide, and a margin.
+constexpr double kEdgeHandOver = kEdgeLimit + 0.5 * kInkStep + 0.01;
+
+/// Points along every outline of `inks`, about `kInkStep` apart, the ends of each edge included.
+std::vector<gp_Pnt> sample_ink(const std::vector<TopoDS_Face>& inks) {
+    std::vector<gp_Pnt> out;
+    for (const TopoDS_Face& face : inks) {
+        for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+            const TopoDS_Edge edge = TopoDS::Edge(e.Current());
+            if (BRep_Tool::Degenerated(edge)) {
+                continue;
+            }
+            BRepAdaptor_Curve curve(edge, face);
+            const double first = curve.FirstParameter();
+            const double last = curve.LastParameter();
+            out.push_back(curve.Value(first));
+            out.push_back(curve.Value(last));
+            const GCPnts_UniformAbscissa spread(curve, kInkStep, first, last, 1e-6);
+            if (spread.IsDone()) {
+                for (int i = 1; i <= spread.NbPoints(); ++i) {
+                    out.push_back(curve.Value(spread.Parameter(i)));
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/// The least distance from any of `points` to any of `edges`, mm; `ceiling` when it is no less than that. Zero when an edge cannot be
+/// measured, so the caller falls back to the exact call.
+double sampled_gap(const std::vector<gp_Pnt>& points, const std::vector<TopoDS_Edge>& edges, double ceiling) {
+    struct Nearby {
+        BRepAdaptor_Curve curve;
+        Extrema_ExtPC ext;
+        Bnd_Box box;
+        gp_Pnt first;
+        gp_Pnt last;
+        explicit Nearby(const TopoDS_Edge& edge) : curve(edge) {
+            ext.Initialize(curve, curve.FirstParameter(), curve.LastParameter());
+            first = curve.Value(curve.FirstParameter());
+            last = curve.Value(curve.LastParameter());
+        }
+    };
+    std::vector<std::unique_ptr<Nearby>> nearby;
+    for (const TopoDS_Edge& edge : edges) {
+        if (BRep_Tool::Degenerated(edge)) {
+            continue;
+        }
+        nearby.emplace_back(new Nearby(edge));
+        BRepBndLib::Add(edge, nearby.back()->box);
+        nearby.back()->box.Enlarge(ceiling);
+    }
+    double best = ceiling;
+    for (const gp_Pnt& point : points) {
+        for (const std::unique_ptr<Nearby>& one : nearby) {
+            if (one->box.IsOut(point)) {
+                continue;
+            }
+            best = std::min(best, std::min(point.Distance(one->first), point.Distance(one->last)));
+            one->ext.Perform(point);
+            if (!one->ext.IsDone()) {
+                return 0.0;
+            }
+            for (int i = 1; i <= one->ext.NbExt(); ++i) {
+                best = std::min(best, std::sqrt(one->ext.SquareDistance(i)));
+            }
+        }
+    }
+    return best;
+}
+
+/// The edges of `face` whose box comes near the ink's: only those can be within the limit of it. The rest (a sphere's seam, a torus's
+/// seams) are not measured, which is most of the time of a text on a face with long edges.
+std::vector<TopoDS_Edge> edges_near_ink(const std::vector<TopoDS_Face>& inks, const TopoDS_Face& face) {
+    Bnd_Box ink_box;
+    for (const TopoDS_Face& ink : inks) {
+        for (TopExp_Explorer w(ink, TopAbs_WIRE); w.More(); w.Next()) {
+            BRepBndLib::Add(w.Current(), ink_box);
+        }
+    }
+    std::vector<TopoDS_Edge> nearby;
+    for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+        Bnd_Box edge_box;
+        BRepBndLib::Add(e.Current(), edge_box);
+        edge_box.Enlarge(0.05);
+        if (!edge_box.IsOut(ink_box)) {
+            nearby.push_back(TopoDS::Edge(e.Current()));
+        }
+    }
+    return nearby;
+}
+
+/// The exact distance from the ink to those edges is under the limit.
+bool exactly_near(const std::vector<TopoDS_Face>& inks, const std::vector<TopoDS_Edge>& nearby) {
+    BRep_Builder builder;
+    TopoDS_Compound wires;
+    builder.MakeCompound(wires);
+    for (const TopoDS_Face& ink : inks) {
+        for (TopExp_Explorer w(ink, TopAbs_WIRE); w.More(); w.Next()) {
+            builder.Add(wires, w.Current());
+        }
+    }
+    TopoDS_Compound edges;
+    builder.MakeCompound(edges);
+    for (const TopoDS_Edge& edge : nearby) {
+        builder.Add(edges, edge);
+    }
+    BRepExtrema_DistShapeShape distance(wires, edges);
+    return distance.IsDone() && distance.Value() < kEdgeLimit;
+}
+
+/// Whether any outline of `inks` comes within `kEdgeLimit` of an edge of `face`. Ink points sampled along the outlines are measured
+/// against only the edges that come near the ink; the exact distance runs only when a sampled point is within `kEdgeHandOver`.
+bool ink_near_edges(const std::vector<TopoDS_Face>& inks, const TopoDS_Face& face) {
+    const std::vector<TopoDS_Edge> nearby = edges_near_ink(inks, face);
+    if (nearby.empty()) {
+        return false;
+    }
+    if (sampled_gap(sample_ink(inks), nearby, kEdgeHandOver) >= kEdgeHandOver) {
+        return false;
+    }
+    return exactly_near(inks, nearby);
+}
+
+/// Where a point in a face's (u, v) falls on the face, from the face's 2D classifier (the one that takes (u, v) as they are, so no point
+/// is projected back onto the surface). A point the 2D classifier does not put inside goes to the 3D one, which decides.
+class UvClassifier {
+public:
+    UvClassifier(const TopoDS_Face& face, const Handle(Geom_Surface)& surface) : face_(face), surface_(surface), flat_(face, 1e-6) {}
+
+    TopAbs_State at(double u, double v) {
+        if (flat_.Perform(gp_Pnt2d(u, v)) == TopAbs_IN) {
+            return TopAbs_IN;
+        }
+        return exact(u, v);
+    }
+
+    /// The 3D classifier's verdict, the slow way.
+    TopAbs_State exact(double u, double v) const {
+        BRepClass_FaceClassifier classify(face_, surface_->Value(u, v), 1e-6);
+        return classify.State();
+    }
+
+private:
+    TopoDS_Face face_;
+    Handle(Geom_Surface) surface_;
+    BRepTopAdaptor_FClass2d flat_;
+};
+
+/// Whether `result`, a part with one face replaced by `fresh`, is valid: each new face on its own, and the shells that hold them closed and
+/// consistently oriented. Every other face is the one the part had before, and was valid then. The part's whole-shape check costs seconds on
+/// a part of a hundred freeform faces.
+bool valid_after_splice(const TopoDS_Shape& result, const std::vector<TopoDS_Face>& fresh) {
+    TopTools_IndexedMapOfShape mine;
+    for (const TopoDS_Face& face : fresh) {
+        if (!BRepCheck_Analyzer(face).IsValid()) {
+            return false;
+        }
+        mine.Add(face);
+    }
+    for (TopExp_Explorer s(result, TopAbs_SHELL); s.More(); s.Next()) {
+        bool holds = false;
+        for (TopoDS_Iterator faces(s.Current()); faces.More() && !holds; faces.Next()) {
+            holds = mine.Contains(faces.Value());
+        }
+        if (!holds) {
+            continue;
+        }
+        BRepCheck_Shell check(TopoDS::Shell(s.Current()));
+        if (check.Closed() != BRepCheck_NoError || check.Orientation() != BRepCheck_NoError) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// The direct build. Null shape, with `why` set, when the text does not suit it.
 TopoDS_Shape build_direct(
     const TopoDS_Shape& current,
+    double before,
+    double& volume,
     const TopoDS_Face& target,
     const std::vector<TopoDS_Face>& glyph_faces,
     const Handle(Geom_Surface)& plane,
@@ -548,9 +752,28 @@ TopoDS_Shape build_direct(
         BRepLib::OrientClosedSolid(solid);
         result = solid;
     }
-    if (!BRepCheck_Analyzer(result).IsValid()) {
+    if (!valid_after_splice(result, fresh)) {
         why = "The letters did not make a valid solid.";
         return TopoDS_Shape();
+    }
+    // The volume the way the part's own is kept: the face that went out and the faces that came in, integrated about one point.
+    {
+        gp_Pnt about(0.0, 0.0, 0.0);
+        TopExp_Explorer corner(target, TopAbs_VERTEX);
+        if (corner.More()) {
+            about = BRep_Tool::Pnt(TopoDS::Vertex(corner.Current()));
+        }
+        TopTools_IndexedMapOfShape mine;
+        for (const TopoDS_Face& face : fresh) {
+            mine.Add(face);
+        }
+        std::vector<TopoDS_Face> in;
+        for (TopExp_Explorer f(result, TopAbs_FACE); f.More(); f.Next()) {
+            if (mine.Contains(f.Current())) {
+                in.push_back(TopoDS::Face(f.Current()));
+            }
+        }
+        volume = before - faces_volume({target}, about) + faces_volume(in, about);
     }
     history = new BRepTools_History();
     history->AddModified(target, rest_sewn);
@@ -651,6 +874,19 @@ const char* surface_name(GeomAbs_SurfaceType type) {
     }
 }
 
+/// Whether `p` can be on or near `face`: inside its box grown by `margin` (the mesh the box may come from is looser than the surface by a
+/// fraction of a millimetre, so the margin is generous). Most faces of a large part are nowhere near the anchor, and measuring each of them
+/// costs more than the build.
+bool box_holds(const TopoDS_Face& face, const gp_Pnt& p, double margin) {
+    Bnd_Box box;
+    BRepBndLib::Add(face, box);
+    if (box.IsVoid()) {
+        return true;
+    }
+    box.Enlarge(margin);
+    return !box.IsOut(p);
+}
+
 /// Which face of `shape` the point is on: 1 a flat one (within a micron), 2 a cylinder or a cone within `tol` (`out` filled),
 /// 3 a face of another kind (named in `what`), 0 none.
 int find_face(const TopoDS_Shape& shape, const gp_Pnt& p, double tol, Curved& out, std::string& what) {
@@ -672,6 +908,9 @@ int find_face(const TopoDS_Shape& shape, const gp_Pnt& p, double tol, Curved& ou
             continue;
         }
         if (type != GeomAbs_Cylinder && type != GeomAbs_Cone) {
+            if (!box_holds(face, p, tol + 1.0)) {
+                continue;
+            }
             BRepBuilderAPI_MakeVertex vertex(p);
             BRepExtrema_DistShapeShape distance(vertex.Vertex(), face);
             if (distance.IsDone() && distance.Value() <= tol && distance.Value() < best_other) {
@@ -838,9 +1077,10 @@ TopoDS_Shape build_on_ground(
     if (force_boolean) {
         note = "The text crosses the seam of the face.";
     }
+    UvClassifier on_face(ground.face, surface);
     for (const gp_Pnt2d& uv : marks) {
-        BRepClass_FaceClassifier classify(ground.face, surface->Value(uv.X(), uv.Y()), 1e-6);
-        const bool off = classify.State() == TopAbs_OUT || (direct_ok && classify.State() != TopAbs_IN);
+        const TopAbs_State state = on_face.at(uv.X(), uv.Y());
+        const bool off = state == TopAbs_OUT || (direct_ok && state != TopAbs_IN);
         if (off) {
             error = "The text runs off this face. Move it, make it smaller, or put it on one face.";
             return TopoDS_Shape();
@@ -851,40 +1091,14 @@ TopoDS_Shape build_on_ground(
         note = "The face carries a location.";
     }
     if (direct_ok) {
-        TopoDS_Compound inks;
-        BRep_Builder builder;
-        builder.MakeCompound(inks);
-        for (const TopoDS_Face& face : faces) {
-            for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
-                builder.Add(inks, w.Current());
-            }
-        }
-        // Only the edges whose box comes near the ink's can be within 0.02 mm of it: the rest (a sphere's seam, a torus's seams) are not
-        // measured, which is most of the time of a text on a face with long edges.
-        Bnd_Box ink_box;
-        BRepBndLib::Add(inks, ink_box);
-        TopoDS_Compound edges;
-        builder.MakeCompound(edges);
-        bool any_near = false;
-        for (TopExp_Explorer e(ground.face, TopAbs_EDGE); e.More(); e.Next()) {
-            Bnd_Box edge_box;
-            BRepBndLib::Add(e.Current(), edge_box);
-            edge_box.Enlarge(0.05);
-            if (!edge_box.IsOut(ink_box)) {
-                builder.Add(edges, e.Current());
-                any_near = true;
-            }
-        }
-        if (any_near) {
-            BRepExtrema_DistShapeShape distance(inks, edges);
-            if (distance.IsDone() && distance.Value() < 0.02) {
-                direct_ok = false;
-                note = "The text is within 0.02 mm of the face's edge.";
-            }
+        if (ink_near_edges(faces, ground.face)) {
+            direct_ok = false;
+            note = "The text is within 0.02 mm of the face's edge.";
         }
     }
     if (cut) {
         // The material under every letter, along the normal where it stands.
+        Rays rays(current);
         for (size_t g = 0; g < glyphs.size(); ++g) {
             std::vector<gp_Pnt2d> mine;
             Handle(IntTools_Context) context = new IntTools_Context;
@@ -900,7 +1114,7 @@ TopoDS_Shape build_on_ground(
             for (const gp_Pnt2d& at : mine) {
                 const gp_Pnt on = surface->Value(at.X(), at.Y());
                 const gp_Dir down = ground.outward(at.X(), at.Y()).Reversed();
-                thickness = std::min(thickness, reach(current, on, down));
+                thickness = std::min(thickness, rays.reach(on, down));
             }
             if (thickness <= depth + 1e-6) {
                 direct_ok = false;
@@ -935,12 +1149,11 @@ TopoDS_Shape build_on_ground(
                 ground.parameters(p, u, v);
                 return n.Dot(gp_Vec(ground.outward(u, v))) < 0.0;
             };
-            result = build_direct(current, ground.face, faces, surface, top, looks_wrong, history, why);
+            result = build_direct(current, before, volume, ground.face, faces, surface, top, looks_wrong, history, why);
         } catch (const Standard_Failure& failure) {
             why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
         }
         if (!result.IsNull()) {
-            volume = volume_of(result);
             if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
                 path = 1;
                 return result;
@@ -983,7 +1196,7 @@ bool find_skin(const TopoDS_Shape& shape, const gp_Pnt& p, double tol, SkinHandl
             continue;
         }
         const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
-        if (surface.IsNull()) {
+        if (surface.IsNull() || !box_holds(face, p, tol + 1.0)) {
             continue;
         }
         GeomAPI_ProjectPointOnSurf project(p, surface);
@@ -1125,21 +1338,7 @@ TopoDS_Shape build_lettering(
                 return TopoDS_Shape();
             }
         }
-        TopoDS_Compound inks;
-        BRep_Builder builder;
-        builder.MakeCompound(inks);
-        for (const TopoDS_Face& face : faces) {
-            for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
-                builder.Add(inks, w.Current());
-            }
-        }
-        TopoDS_Compound edges;
-        builder.MakeCompound(edges);
-        for (TopExp_Explorer w(target, TopAbs_WIRE); w.More(); w.Next()) {
-            builder.Add(edges, w.Current());
-        }
-        BRepExtrema_DistShapeShape distance(inks, edges);
-        if (distance.IsDone() && distance.Value() < 0.02) {
+        if (ink_near_edges(faces, target)) {
             direct_ok = false;
             note = "The text is within 0.02 mm of the face's edge.";
         }
@@ -1148,6 +1347,7 @@ TopoDS_Shape build_lettering(
         // The material under every letter: a deeper cut than the wall goes through, and a letter with a counter would lose the
         // middle of it.
         const gp_Dir down = frame.w.Reversed();
+        Rays rays(current);
         for (size_t g = 0; g < glyphs.size(); ++g) {
             std::vector<gp_Pnt> mine;
             Handle(IntTools_Context) context = new IntTools_Context;
@@ -1161,7 +1361,7 @@ TopoDS_Shape build_lettering(
             }
             double thickness = 1e9;
             for (const gp_Pnt& point : mine) {
-                thickness = std::min(thickness, reach(current, point, down));
+                thickness = std::min(thickness, rays.reach(point, down));
             }
             if (thickness <= depth + 1e-6) {
                 direct_ok = false;
@@ -1188,12 +1388,11 @@ TopoDS_Shape build_lettering(
                 }
                 return normal.Dot(frame.w) < 0.0;
             };
-            result = build_direct(current, target, faces, plane, top, looks_wrong, history, why);
+            result = build_direct(current, before, volume, target, faces, plane, top, looks_wrong, history, why);
         } catch (const Standard_Failure& failure) {
             why = failure.GetMessageString() == nullptr ? "Open CASCADE failed" : failure.GetMessageString();
         }
         if (!result.IsNull()) {
-            volume = volume_of(result);
             if (volume > 1e-6 && std::abs(volume - before) > 1e-9) {
                 path = 1;
                 return result;
@@ -1203,7 +1402,27 @@ TopoDS_Shape build_lettering(
         note = why;
     }
     path = 2;
-    return build_boolean(current, before, faces, frame, cut, depth, volume, error);
+    const TopoDS_Shape built = build_boolean(current, before, faces, frame, cut, depth, volume, error);
+    if (built.IsNull() && target.IsNull()) {
+        // No face of the part is under the anchor. When the text then adds a body of its own, or touches nothing, the anchor is off the
+        // part: say so, and by how much, not what the boolean made of the letters.
+        const bool floating = error.rfind("This would add a separate body", 0) == 0 || error.rfind("The text does not change the part", 0) == 0;
+        if (floating) {
+            try {
+                BRepExtrema_DistShapeShape gap(BRepBuilderAPI_MakeVertex(frame.origin).Vertex(), current);
+                if (gap.IsDone() && gap.NbSolution() > 0 && gap.Value() > 0.05) {
+                    std::ostringstream text;
+                    text.imbue(std::locale::classic());
+                    text.setf(std::ios::fixed);
+                    text.precision(1);
+                    text << "The point is " << gap.Value() << " mm off the part, not on the face you picked. Pick a point on the face.";
+                    error = text.str();
+                }
+            } catch (const Standard_Failure&) {
+            }
+        }
+    }
+    return built;
 }
 
 std::string text_face_json(const TopoDS_Shape& current, const double point[3]) {
@@ -1366,5 +1585,166 @@ TopoDS_Shape build_lettering_skin(
     return build_on_ground(ground, current, before, cut, depth, force_boolean, glyphs, volume, path, history, note, error);
 }
 
+
+
+#ifdef LIME_OCCT_TEST_HOOKS
+// --- Debug builds only, for tests: the cheap checks of a build next to the exact calls they stand in for, on the face nearest a point.
+
+namespace {
+
+/// The face of `shape` nearest `p`.
+TopoDS_Face nearest_face(const TopoDS_Shape& shape, const gp_Pnt& p) {
+    TopoDS_Face best;
+    double least = 1e30;
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+        const TopoDS_Face face = TopoDS::Face(it.Current());
+        BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(p).Vertex(), face);
+        if (distance.IsDone() && distance.Value() < least) {
+            least = distance.Value();
+            best = face;
+        }
+    }
+    return best;
+}
+
+/// A shell of the faces of `solid` with `skip` left out (when it is given) and `flip` turned over (when it is given).
+TopoDS_Solid solid_of_faces(const TopoDS_Shape& solid, const TopoDS_Face* skip, const TopoDS_Face* flip) {
+    BRep_Builder builder;
+    TopoDS_Shell shell;
+    builder.MakeShell(shell);
+    for (TopExp_Explorer f(solid, TopAbs_FACE); f.More(); f.Next()) {
+        const TopoDS_Face face = TopoDS::Face(f.Current());
+        if (skip != nullptr && face.IsSame(*skip)) {
+            continue;
+        }
+        builder.Add(shell, flip != nullptr && face.IsSame(*flip) ? face.Reversed() : face);
+    }
+    TopoDS_Solid made;
+    builder.MakeSolid(made);
+    builder.Add(made, shell);
+    return made;
+}
+
+}  // namespace
+
+std::string text_checks_json(const TopoDS_Shape& shape, const double point[3]) {
+    const gp_Pnt at(point[0], point[1], point[2]);
+    const TopoDS_Face face = nearest_face(shape, at);
+    std::ostringstream out;
+    out.precision(17);
+    out << "{\"fullVolumeMm3\":" << volume_of(shape);
+    if (face.IsNull()) {
+        out << "}";
+        return out.str();
+    }
+    // The (u, v) classifier against the 3D one, over the face's box grown by a quarter each way (so points outside it, and across a seam).
+    {
+        const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+        double u0 = 0.0;
+        double u1 = 0.0;
+        double v0 = 0.0;
+        double v1 = 0.0;
+        BRepTools::UVBounds(face, u0, u1, v0, v1);
+        const double du = (u1 - u0) / 4.0;
+        const double dv = (v1 - v0) / 4.0;
+        UvClassifier classifier(face, surface);
+        int total = 0;
+        int inside = 0;
+        int mismatches = 0;
+        const int n = 24;
+        for (int i = 0; i <= n; ++i) {
+            for (int j = 0; j <= n; ++j) {
+                const double u = (u0 - du) + (u1 - u0 + 2.0 * du) * i / n;
+                const double v = (v0 - dv) + (v1 - v0 + 2.0 * dv) * j / n;
+                TopAbs_State fast = TopAbs_UNKNOWN;
+                TopAbs_State slow = TopAbs_UNKNOWN;
+                try {
+                    fast = classifier.at(u, v);
+                    slow = classifier.exact(u, v);
+                } catch (const Standard_Failure&) {
+                    continue;
+                }
+                total += 1;
+                inside += slow == TopAbs_IN ? 1 : 0;
+                mismatches += fast != slow ? 1 : 0;
+            }
+        }
+        out << ",\"classify\":{\"points\":" << total << ",\"inside\":" << inside << ",\"mismatches\":" << mismatches << "}";
+    }
+    // The sampled edge gap against the exact one: a small circle of ink a known gap from the face's longest edge.
+    {
+        TopoDS_Edge longest;
+        double length = 0.0;
+        for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+            const TopoDS_Edge edge = TopoDS::Edge(e.Current());
+            if (BRep_Tool::Degenerated(edge)) {
+                continue;
+            }
+            const double here = GCPnts_AbscissaPoint::Length(BRepAdaptor_Curve(edge));
+            if (here > length) {
+                length = here;
+                longest = edge;
+            }
+        }
+        out << ",\"edges\":[";
+        if (!longest.IsNull()) {
+            BRepAdaptor_Curve curve(longest);
+            gp_Pnt on;
+            gp_Vec tangent;
+            curve.D1((curve.FirstParameter() + curve.LastParameter()) / 2.0, on, tangent);
+            const gp_Dir along(tangent);
+            const gp_Dir side = std::abs(along.Z()) < 0.9 ? along.Crossed(gp_Dir(0, 0, 1)) : along.Crossed(gp_Dir(1, 0, 0));
+            const double radius = 0.2;
+            const double gaps[] = {0.005, 0.015, 0.019, 0.021, 0.03, 0.05, 0.1, 0.17, 0.4, 3.0};
+            bool first = true;
+            for (const double gap : gaps) {
+                const gp_Pnt centre = on.Translated(gp_Vec(side) * (gap + radius));
+                const gp_Dir plane_normal = along.Crossed(side);
+                BRepBuilderAPI_MakeWire ring(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(centre, plane_normal), radius)).Edge());
+                const std::vector<TopoDS_Face> inks = {BRepBuilderAPI_MakeFace(ring.Wire(), Standard_True).Face()};
+                const bool fast = ink_near_edges(inks, face);
+                const std::vector<TopoDS_Edge> nearby = edges_near_ink(inks, face);
+                const bool exact = !nearby.empty() && exactly_near(inks, nearby);
+                out << (first ? "" : ",") << "{\"gap\":" << gap << ",\"fast\":" << (fast ? "true" : "false") << ",\"exact\":" << (exact ? "true" : "false") << "}";
+                first = false;
+            }
+        }
+        out << "]";
+    }
+    // Validity: the part as it is, the same part with a face turned over, with a face missing, and a face whose outline crosses itself.
+    {
+        TopoDS_Shape solid;
+        for (TopExp_Explorer s(shape, TopAbs_SOLID); s.More(); s.Next()) {
+            solid = s.Current();
+            break;
+        }
+        out << ",\"valid\":{";
+        if (!solid.IsNull()) {
+            std::vector<TopoDS_Face> mine;
+            for (TopExp_Explorer f(solid, TopAbs_FACE); f.More(); f.Next()) {
+                mine.push_back(TopoDS::Face(f.Current()));
+            }
+            const TopoDS_Solid intact = solid_of_faces(solid, nullptr, nullptr);
+            const TopoDS_Solid turned = solid_of_faces(solid, nullptr, &face);
+            const TopoDS_Solid open = solid_of_faces(solid, &face, nullptr);
+            BRepBuilderAPI_MakePolygon bow;
+            bow.Add(gp_Pnt(0, 0, 0));
+            bow.Add(gp_Pnt(1, 1, 0));
+            bow.Add(gp_Pnt(1, 0, 0));
+            bow.Add(gp_Pnt(0, 1, 0));
+            bow.Close();
+            const TopoDS_Face crossed = BRepBuilderAPI_MakeFace(bow.Wire(), Standard_True).Face();
+            out << "\"faces\":" << mine.size() << ",\"whole\":" << (BRepCheck_Analyzer(solid).IsValid() ? "true" : "false")
+                << ",\"intact\":" << (valid_after_splice(intact, mine) ? "true" : "false")
+                << ",\"turned\":" << (valid_after_splice(turned, {face}) ? "true" : "false")
+                << ",\"open\":" << (valid_after_splice(open, mine) ? "true" : "false")
+                << ",\"crossed\":" << (valid_after_splice(intact, {crossed}) ? "true" : "false");
+        }
+        out << "}";
+    }
+    out << "}";
+    return out.str();
+}
+#endif
 
 }  // namespace lime_occt
