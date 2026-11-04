@@ -195,7 +195,9 @@ export function toSolidOp(op: ModelOp, pose: Affine): ModelOp {
     case "partition":
       return { ...op, cuts: op.cuts.map((cut) => ({ ...cut, origin: point(cut.origin), normal: turnDir(back, cut.normal), ...(cut.u ? { u: turnDir(back, cut.u) } : {}) })) };
     case "extrude":
-    case "revolve": {
+    case "revolve":
+    // --- Text with real fonts: the plane is a frame, as a profile's is.
+    case "lettering": {
       // The profile's plane is a frame: its origin goes through the pose and its turn takes the pose's turn.
       if (moveOnly(back)) return { ...op, origin: point(op.origin) };
       const s = poseScale(back);

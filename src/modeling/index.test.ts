@@ -15,7 +15,7 @@ const dir = new URL(".", import.meta.url);
 const library = readdirSync(dir)
   .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
   .sort();
-const expected = ["anchors.ts", "bake.ts", "cells.ts", "compose.ts", "composite-apply.ts", "expr.ts", "fit-coupon.ts", "frames.ts", "inspect.ts", "joint-down.ts", "links.ts", "macro.ts", "mesh-section.ts", "model-calls.ts", "model-error.ts", "params.ts", "part-reads.ts", "partition-export.ts", "partition.ts", "placing.ts", "plane-region.ts", "profile-shift.ts", "sections.ts", "selectors.ts", "sketch-profile.ts", "solid-geometry.ts", "step-guard.ts", "sweep.ts", "text.ts", "thin.ts"];
+const expected = ["anchors.ts", "bake.ts", "cells.ts", "compose.ts", "composite-apply.ts", "expr.ts", "fit-coupon.ts", "frames.ts", "inspect.ts", "joint-down.ts", "links.ts", "macro.ts", "mesh-section.ts", "model-calls.ts", "model-error.ts", "params.ts", "part-reads.ts", "partition-export.ts", "partition.ts", "placing.ts", "plane-region.ts", "profile-shift.ts", "sections.ts", "selectors.ts", "sketch-profile.ts", "solid-geometry.ts", "step-guard.ts", "sweep.ts", "text-fonts.ts", "text.ts", "thin.ts"];
 if (library.join() !== expected.join()) {
   throw new Error(`src/modeling should be ${expected.join(", ")}, found ${library.join(", ")}`);
 }

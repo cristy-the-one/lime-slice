@@ -543,6 +543,31 @@ function readOpBody(value: unknown): SavedOp | undefined {
       }
       return { kind: "group", label: value.label, ...(value.source !== undefined ? { source: value.source } : {}), steps };
     }
+    // --- Text with real fonts: the letters of a text group's one step, the font with its version. Optional fields stay absent.
+    case "lettering": {
+      const turn = value.turn === undefined ? ([0, 0, 0] as Vec3) : vec(value.turn);
+      if ((value.op !== "fuse" && value.op !== "cut") || !origin || !turn) return undefined;
+      if (typeof value.text !== "string" || !value.text || typeof value.font !== "string" || !value.font || !finite(value.height) || !finite(value.depth)) return undefined;
+      const { style, spacing, lineSpacing, align, angleDeg } = value;
+      if (style !== undefined && style !== "regular" && style !== "bold" && style !== "italic" && style !== "bold-italic") return undefined;
+      if (align !== undefined && align !== "left" && align !== "centre" && align !== "right") return undefined;
+      if ((spacing !== undefined && !finite(spacing)) || (lineSpacing !== undefined && !finite(lineSpacing)) || (angleDeg !== undefined && !finite(angleDeg))) return undefined;
+      return {
+        kind: "lettering",
+        op: value.op,
+        origin,
+        turn,
+        text: value.text,
+        font: value.font,
+        ...(style !== undefined ? { style } : {}),
+        height: value.height,
+        depth: value.depth,
+        ...(spacing !== undefined ? { spacing } : {}),
+        ...(lineSpacing !== undefined ? { lineSpacing } : {}),
+        ...(align !== undefined ? { align } : {}),
+        ...(angleDeg !== undefined ? { angleDeg } : {}),
+      };
+    }
     // --- K4: faceExtrude and moveFaces. Optional fields stay absent when unset. ---
     case "faceExtrude": {
       const face = readFacePick(value.face);

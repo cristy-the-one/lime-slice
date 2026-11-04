@@ -58,6 +58,8 @@ interface Handlers {
   stepSolids?(request: Body): Body;
   /** The answer to a `fitCoupon` call: `{plate, pins, engravedMm3}`, each a STEP file in `stepB64`. Absent refuses. */
   fitCoupon?(request: Body): Body;
+  /** The answer to a `textLayout` call (a text laid out as outlines, for the Text card's preview). Absent refuses. */
+  textLayout?(request: Body): Body;
 }
 
 interface MockNode {
@@ -346,6 +348,12 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
     if (request.call === "fitCoupon") {
       calls.push(request);
       await route.fulfill({ json: handlers.fitCoupon?.(request) ?? { error: "The mock builds no coupon." } });
+      return;
+    }
+    // Text with real fonts: the card's layout is stateless too, outlines of the letters and the ones too thin for the nozzle.
+    if (request.call === "textLayout") {
+      calls.push(request);
+      await route.fulfill({ json: handlers.textLayout?.(request) ?? { error: "The mock lays out no text." } });
       return;
     }
     calls.push(request);

@@ -8,6 +8,7 @@ import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type 
 import { framePose, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
 import { pathSamples } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
+import { fontById, isOutlineFont, MAX_OUTLINE_CHARS, styleOf, styleRefusal, versionedId } from "./text-fonts.ts";
 
 type Vec3 = [number, number, number];
 export type BooleanKind = "cut" | "fuse" | "common";
@@ -18,6 +19,11 @@ export interface Piece {
   spec: PrimitiveSpec;
   /** The boolean merges the faces it leaves on one surface: a pad flush with a rim leaves one top face. */
   merge?: true;
+  /**
+   * A step that is not a primitive boolean: the lettering of a text in a bundled font, typed in the part's frame. When it is
+   * set, `spec` is a unit box at the letters' anchor that is never built, and `op` is the letters' fuse or cut.
+   */
+  step?: Record<string, unknown>;
 }
 
 /** The kinds that expand. A plain `boolean` is a piece of one. */
@@ -259,6 +265,8 @@ function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] 
   if ("reason" in frame) return frame;
   const text = typeof spec.text === "string" ? spec.text : "";
   if (!text.trim()) return { reason: "Text needs text." };
+  // --- Text with real fonts: one lettering step, built in one kernel call. No font, or `stroke`, is the old font below.
+  if (isOutlineFont(spec.font)) return letteringPiece(spec, frame, text);
   if ([...text].length > 80) return { reason: "Text takes at most 80 characters a step; use several." };
   const height = numOr(spec.height, 0);
   const depth = numOr(spec.depth, 0);
@@ -283,6 +291,55 @@ function textPieces(spec: Record<string, unknown>, ctx: ExpandContext): Piece[] 
     };
   });
   return pieces.length > MAX_PIECES ? { reason: `This text makes more than ${MAX_PIECES} strokes. Split it.` } : pieces;
+}
+
+/**
+ * Text in a bundled outline font on a flat face (docs/plan-text-on-curves-and-fonts.md, milestone 1): `font` (an id such as
+ * `sans`), `style` (regular, bold, italic, bold-italic), `height` the capitals', `depth`, `spacing` after each letter (mm),
+ * `lineSpacing` (capital heights between lines, 1.3), `align` (left, centre, right) for each line, `angleDeg`, and `\n` for a
+ * new line, up to 400 characters. Centred at `at` {u, v} from where `from` puts U, V = 0. One step, not a box per stroke.
+ */
+function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane; extent: FaceExtent | null }, text: string): Piece[] | { reason: string } {
+  const font = fontById(spec.font);
+  if (!font) {
+    const name = typeof spec.font === "string" ? spec.font : "";
+    return { reason: `There is no font called ‘${name}’. The fonts are stroke, ${["sans", "mono", "serif", "stencil"].join(", ")}.` };
+  }
+  if ([...text].length > MAX_OUTLINE_CHARS) return { reason: `Text takes at most ${MAX_OUTLINE_CHARS} characters a step; use several.` };
+  const height = numOr(spec.height, 0);
+  const depth = numOr(spec.depth, 0);
+  if (!(height > 0) || !(depth > 0)) return { reason: "Text needs a height (the capitals') and a depth, in millimetres." };
+  const style = styleOf(spec.style);
+  const missing = styleRefusal(font, style);
+  if (missing) return { reason: missing };
+  const spacing = spec.spacing === undefined ? undefined : numOr(spec.spacing, NaN);
+  const lineSpacing = spec.lineSpacing === undefined ? undefined : numOr(spec.lineSpacing, NaN);
+  if ((spacing !== undefined && !Number.isFinite(spacing)) || (lineSpacing !== undefined && !(lineSpacing >= 0))) return { reason: "Letter spacing and line spacing are numbers; line spacing is not negative." };
+  if (spec.align !== undefined && spec.align !== "left" && spec.align !== "centre" && spec.align !== "right") return { reason: "align is left, centre, or right." };
+  const shift = anchorOf(spec.from, frame.extent);
+  if ("reason" in shift) return shift;
+  const at = (spec.at ?? {}) as { u?: unknown; v?: unknown };
+  const u0 = numOr(at.u, 0) + shift[0];
+  const v0 = numOr(at.v, 0) + shift[1];
+  const op: BooleanKind = spec.op === "cut" ? "cut" : "fuse";
+  const angle = numOr(spec.angleDeg, 0);
+  const step: Record<string, unknown> = {
+    kind: "lettering",
+    op,
+    origin: planePoint(frame.plane, [u0, v0, 0]).map(round6),
+    turn: [...frame.plane.turn],
+    text,
+    font: versionedId(font),
+    ...(style !== "regular" ? { style } : {}),
+    height,
+    depth,
+    ...(spacing !== undefined && spacing !== 0 ? { spacing } : {}),
+    ...(lineSpacing !== undefined ? { lineSpacing } : {}),
+    ...(spec.align !== undefined && spec.align !== "centre" ? { align: spec.align } : {}),
+    ...(angle !== 0 ? { angleDeg: angle } : {}),
+  };
+  const anchor = planePrimitive({ primitive: "box", origin: [u0, v0, 0], size: [1, 1, 1], radius: 0, height: 0, turn: [0, 0, 0] }, frame.plane);
+  return [{ op, spec: anchor, step }];
 }
 
 /** The reflection a mirror makes: a plane through `origin` with `normal`, or "x", "y", "z" for the frame's planes. */
@@ -965,6 +1022,7 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
     if (!inner || typeof inner !== "object") return { reason: `A ${kind} needs the op it repeats.` };
     const pieces = expand(inner as Record<string, unknown>, ctx, toPart, depth + 1);
     if ("reason" in pieces) return pieces;
+    if (pieces.some((piece) => piece.step)) return { reason: `A ${kind} of text in a font is not supported yet. Place each text on its own, or use the stroke font.` };
     let motions: Motion[];
     if (kind === "pattern") {
       const made = patternMotions(raw, ctx.plane);
@@ -997,7 +1055,7 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
  */
 export const SEPARATE_PIECE = "This would add a separate piece, or seal off a hollow inside the part. Move or resize it so it overlaps the part without closing a gap.";
 export function addsPiece(op: { kind: string; op?: string }, measure: { shells: number; before: { shells: number } } | undefined): boolean {
-  const adds = (op.kind === "boolean" || op.kind === "join" || op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") && op.op === "fuse";
+  const adds = (op.kind === "boolean" || op.kind === "join" || op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft" || op.kind === "lettering") && op.op === "fuse";
   return adds && !!measure && measure.shells > measure.before.shells;
 }
 
@@ -1008,7 +1066,7 @@ export function addsPiece(op: { kind: string; op?: string }, measure: { shells: 
  */
 export const SPLIT_PIECE = "This step would cut a piece off the part. Move it, or make it shallower or narrower.";
 export function cutsOffPiece(op: { kind: string; op?: string }, measure: { solids: number; shells: number; before: { solids: number; shells: number } } | undefined): boolean {
-  return op.kind === "boolean" && op.op === "cut" && !!measure && (measure.solids > measure.before.solids || measure.shells > measure.before.shells);
+  return (op.kind === "boolean" || op.kind === "lettering") && op.op === "cut" && !!measure && (measure.solids > measure.before.solids || measure.shells > measure.before.shells);
 }
 
 /** Where a refused step's sealed hollows and loose pieces are, in the part's frame: each a centre and a size. */

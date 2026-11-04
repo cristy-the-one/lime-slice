@@ -106,7 +106,8 @@ type ModelOpBase =
   | FaceExtrudeOp
   | MoveFacesOp
   | PartitionModelOp
-  | TransitionOp;
+  | TransitionOp
+  | LetteringOp;
 
 /**
  * --- A6. `exprs` is the expression text for a panel field (`modelDz` → `"wallH / 2"`).
@@ -142,6 +143,30 @@ export interface TransitionOp {
   beltDeg?: number;
   orient?: number[];
   printer?: string;
+}
+
+/**
+ * --- Text with real fonts (docs/plan-text-on-curves-and-fonts.md, milestone 1). The letters of `text` in a bundled font,
+ * raised from the flat face at the plane `origin` and `turn` (fuse) or cut into it (cut), `depth` along the plane's normal.
+ * `height` is the capitals'. The layout is centred on `origin` (by line, for `align`) and turned `angleDeg` about it. The
+ * engine stores `font` with its version (`sans@4.0`), so a rebuild reads the bytes the step was made with.
+ */
+export interface LetteringOp {
+  kind: "lettering";
+  op: "fuse" | "cut";
+  origin: Vec3;
+  turn: Vec3;
+  text: string;
+  font: string;
+  style?: "regular" | "bold" | "italic" | "bold-italic";
+  height: number;
+  depth: number;
+  /** Added after every letter, mm. 0 when absent. */
+  spacing?: number;
+  /** Lines this many capital heights apart. 1.3 when absent. */
+  lineSpacing?: number;
+  align?: "left" | "centre" | "right";
+  angleDeg?: number;
 }
 
 export interface PartitionModelOp {
@@ -914,6 +939,11 @@ export function opLabel(op: ModelOp, parts?: number): string {
       const count = op.edges.length === 1 ? "1 edge" : `${op.edges.length} edges`;
       const size = op.size === "face" ? "to the face's end" : `${n(op.size ?? 2)} mm`;
       return `Print transition (${count}), ${n(op.angleDeg ?? 45)}°, ${size}`;
+    }
+    // --- Text with real fonts: a step of a text group; the group's own label is the row.
+    case "lettering": {
+      const shown = [...op.text.replace(/\s+/g, " ").trim()].slice(0, 24).join("");
+      return `${op.op === "cut" ? "Engrave" : "Raise"} ${shown ? `“${shown}”` : "text"}`;
     }
     case "moveFaces": {
       const count = op.faces.length;

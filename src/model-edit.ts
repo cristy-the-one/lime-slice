@@ -400,6 +400,8 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
     case "loft":
     case "partition":
     case "transition":
+    // --- Text with real fonts: a step of a text group; the group reopens the card.
+    case "lettering":
       // `editRefusal` turns a feature away before a panel opens; a split to print and a print transition reopen their own cards.
       throw new Error(`No edit panel for a ${op.kind} step`);
     case "group": {

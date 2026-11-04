@@ -13,6 +13,10 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 base64 = "0.22"
+# Glyph outlines from font files (docs/plan-text-on-curves-and-fonts.md D1). No dependencies, no unsafe code.
+ttf-parser = "0.25"
+# geom2d: a glyph that overlaps itself is united in 2D before it is built, and thin strokes are found by an opening.
+lime-recipe = { path = "../lime-recipe" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

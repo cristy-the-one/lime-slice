@@ -12,6 +12,17 @@
   font-display: swap;
   src: url("/fonts/IBMPlexMono-Medium.woff2") format("woff2");
 }
+/* The fonts text in Model is built from (docs/plan-text-on-curves-and-fonts.md D2), drawn by the picker and the sample line.
+   Inter, IBM Plex Mono and IBM Plex Serif, Allerta Stencil: SIL Open Font License, licences in public/fonts/model/. */
+@font-face { font-family: "Lime Model Sans"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/model/Inter-Regular.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Sans"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/model/Inter-Bold.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Sans"; font-weight: 400; font-style: italic; font-display: swap; src: url("/fonts/model/Inter-Italic.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Sans"; font-weight: 700; font-style: italic; font-display: swap; src: url("/fonts/model/Inter-BoldItalic.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Mono"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/model/IBMPlexMono-Regular.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Mono"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/model/IBMPlexMono-Bold.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Serif"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/model/IBMPlexSerif-Regular.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Serif"; font-weight: 700; font-style: normal; font-display: swap; src: url("/fonts/model/IBMPlexSerif-Bold.ttf") format("truetype"); }
+@font-face { font-family: "Lime Model Stencil"; font-weight: 400; font-style: normal; font-display: swap; src: url("/fonts/model/AllertaStencil-Regular.ttf") format("truetype"); }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body, #app { height: 100%; margin: 0; }
@@ -806,6 +817,19 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .model-object:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .model-objects-empty { margin: 0; color: var(--text-dim); font-size: var(--fs-2); }
 .model-keep { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); color: var(--text-dim); font-size: var(--fs-2); }
+/* Text with real fonts (docs/plan-text-on-curves-and-fonts.md): the picker draws each name in its own font, with a sample of the
+   person's own text under it; the text box grows with its lines; letters too thin for the nozzle are named under Apply. */
+.model-fonts { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 4px; margin-top: var(--space-2); }
+.model-fonts .font-pick { height: 30px; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: 6px; background: var(--surface-0); color: var(--text-dim); font-size: var(--fs-3); line-height: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-fonts .font-pick:hover { background: var(--surface-2); color: var(--text); }
+.model-fonts .font-pick[aria-pressed="true"] { border-color: var(--accent); background: var(--surface-2); color: var(--text); }
+.model-font-sample { margin: var(--space-2) 0 0; padding: 6px 8px; min-height: 34px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-0); color: var(--text); font-size: 20px; line-height: 1.25; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.model-text-box { display: grid; gap: 2px; margin-top: var(--space-2); color: var(--text-faint); font-size: var(--fs-1); }
+.model-text-box .scrub-label { width: fit-content; color: var(--text-dim); }
+.model-text-box textarea { width: 100%; min-height: 42px; max-height: 168px; resize: vertical; padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-0); color: var(--text); font: 500 var(--fs-2) / 1.3 var(--font-mono); field-sizing: content; }
+.model-fonts[hidden], .model-font-sample[hidden], .model-text-box[hidden], .modes .btn[hidden] { display: none !important; }
+.modes .btn.mode[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; }
+.model-text-thin { color: var(--warn); }
 /* Hole: Through all and Counterbore side by side under the fields. */
 .model-hole-opts { display: flex; flex-wrap: wrap; column-gap: var(--space-4); }
 .model-hole-opts[hidden] { display: none !important; }

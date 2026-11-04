@@ -81,7 +81,7 @@ import {
   type TransitionOp,
   type Vec3,
 } from "../model-tree";
-import type { PluginValue } from "../model-tree";
+import type { LetteringOp, PluginValue } from "../model-tree";
 import { loadedTree, savedTree, toolFirst, type SavedTree } from "../model-tree-file";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, faceLoopsRequest, gotoRequest, isBrep, joinOp, keepSketch, moveFacesOp, newSolidRequest, openRequest, probeRequest, shellOp, stepEdges, stepEdgesRequest, wholeTreeRequest } from "../model-request";
 import { edgeOfText, remapBlendFromNode, storedEdgeStep } from "../model-edge-step";
@@ -643,9 +643,11 @@ export function bindModelView() {
     // --- A3 composite features ---
     featureView() {
       const current = openModelTool();
-      if (!isFeatureTool(current)) return { note: null, pieces: null, frame: null, outward: null };
+      if (!isFeatureTool(current)) return { note: null, pieces: null, frame: null, outward: null, letters: null };
       const expanded = featureNow(current);
-      return { note: expanded.note, pieces: expanded.pieces, frame: expanded.frame, outward: expanded.outward };
+      // --- Text with real fonts: the lettering step, in the solid's own frame, which the card draws as outlines.
+      const letters = expanded.letters ? (toSolidOp(expanded.letters, openPose()) as LetteringOp) : null;
+      return { note: expanded.note, pieces: expanded.pieces, frame: expanded.frame, outward: expanded.outward, letters };
     },
     // --- end A3 ---
     // --- A4 pattern and mirror ---

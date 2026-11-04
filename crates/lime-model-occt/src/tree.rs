@@ -23,6 +23,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod lettering;
 mod transition;
 mod transition_find;
 
@@ -622,6 +623,32 @@ pub enum Op {
         orient: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         printer: Option<String>,
+    },
+    // --- Text with real fonts (docs/plan-text-on-curves-and-fonts.md, milestone 1). Keep this variant, and the arms marked
+    // the same way, in one block. ---
+    /// The letters of `text` in a bundled font, raised from the flat face at the plane `origin` and `turn` (fuse) or cut into it
+    /// (cut), `depth` deep along the plane's normal. `height` is the capitals'; the layout is centred on `origin` and turned
+    /// `angleDeg` about it. The font is stored with its version (`sans@4.0`), so a rebuild reads the bytes it was made with.
+    #[serde(rename = "lettering")]
+    Lettering {
+        op: BooleanOp,
+        origin: [f64; 3],
+        #[serde(default)]
+        turn: [f64; 3],
+        text: String,
+        font: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        style: Option<String>,
+        height: f64,
+        depth: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spacing: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_spacing: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        align: Option<crate::text::Align>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        angle_deg: Option<f64>,
     },
 }
 
@@ -1564,6 +1591,8 @@ pub fn call(request: &str) -> String {
             | Request::StepSolids { .. }
             | Request::ShapeSolids { .. }
             | Request::FitCoupon { .. }
+            | Request::TextLayout { .. }
+            | Request::TextFonts
     );
     let answer = store.handle(request);
     if !transient {
@@ -1802,6 +1831,31 @@ enum Request {
         node: NodeId,
         edge: c_int,
     },
+    // --- Text with real fonts (milestone 1). Stateless: they own no history. ---
+    /// A text laid out as outlines for the card's live preview: each letter's loops as polylines about `stepMm` apart in the
+    /// plane's own U and V, and the letters too thin for a `lineMm` line.
+    #[serde(rename_all = "camelCase")]
+    TextLayout {
+        text: String,
+        font: String,
+        #[serde(default)]
+        style: Option<String>,
+        height: f64,
+        #[serde(default)]
+        spacing: Option<f64>,
+        #[serde(default)]
+        line_spacing: Option<f64>,
+        #[serde(default)]
+        align: Option<crate::text::Align>,
+        #[serde(default)]
+        angle_deg: Option<f64>,
+        #[serde(default)]
+        line_mm: Option<f64>,
+        #[serde(default)]
+        step_mm: Option<f64>,
+    },
+    /// The bundled fonts, for the font picker and the guide.
+    TextFonts,
     /// Debug builds only: step `node`'s solid with every face and edge converted to NURBS, as BinTools bytes in base64,
     /// for a test that opens a flat face stored as a B-spline.
     #[cfg(lime_occt_test_hooks)]
@@ -2612,6 +2666,34 @@ impl Store {
                 }
                 let mut shape = root_shape(Some(data_b64), None, None, None, None)?;
                 Ok(Answer::Plain(shape.reply(ROOT, chord_mm)?))
+            }
+            Request::TextFonts => Ok(Answer::Plain(lettering::fonts_reply())),
+            Request::TextLayout {
+                text,
+                font,
+                style,
+                height,
+                spacing,
+                line_spacing,
+                align,
+                angle_deg,
+                line_mm,
+                step_mm,
+            } => {
+                let spec = crate::text::Spec {
+                    text,
+                    font,
+                    style,
+                    height,
+                    spacing,
+                    line_spacing,
+                    align: align.unwrap_or_default(),
+                    angle_deg: angle_deg.unwrap_or(0.0),
+                };
+                Ok(Answer::Plain(
+                    lettering::layout_reply(&spec, line_mm.unwrap_or(0.4), step_mm.unwrap_or(0.05))
+                        .map_err(Failure::Message)?,
+                ))
             }
             Request::FitCoupon { spec } => Ok(Answer::Plain(
                 fit_coupon_reply(&spec, true, false)
@@ -5076,6 +5158,8 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::Partition { .. } => Some("A group cannot contain a split to print."),
         // --- Print transitions.
         Op::Transition { .. } => Some("A group cannot contain a print transition."),
+        // --- Text with real fonts.
+        Op::Lettering { .. } => None,
     }
 }
 
@@ -5561,6 +5645,8 @@ fn build(
         }
         // --- Print transitions.
         Op::Transition { .. } => return transition::build(from, op, &picks),
+        // --- Text with real fonts.
+        Op::Lettering { .. } => return lettering::build(from, op),
         Op::Fillet { size, .. } | Op::Chamfer { size, .. } => {
             let chamfer = matches!(op, Op::Chamfer { .. });
             let indexes = &picks;

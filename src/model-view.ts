@@ -91,7 +91,7 @@ export type ModelGhost =
   /** A composite feature: every piece, or outlines only past the cap. `failed` (from 1) is the step a probe refused. */
   | { kind: "pieces"; parts: { spec: PrimitiveSpec; mesh: Float32Array }[]; outlines: boolean; failed?: number }
   /** P1. A face prism in the solid's own frame, drawn with the solid. `tone` "add" draws material to be added, green. */
-  | { kind: "soup"; positions: Float32Array; tone?: "add" | "cut" };
+  | { kind: "soup"; positions: Float32Array; tone?: "add" | "cut"; flagged?: Float32Array };
 
 /** P1. A pointer event on a face, in model space. `local` is the solid's own frame. `cancel` is a press the system took away. */
 export interface FacePointer {
@@ -1657,6 +1657,15 @@ export function createModelView(canvas: HTMLCanvasElement): ModelView {
     if (!current) return;
     // --- P1: the client prism, in the solid's frame. ---
     if (current.kind === "soup") {
+      // --- Text with real fonts: the letters too thin for the nozzle are drawn apart, in the refusal colour.
+      if (current.flagged && current.flagged.length >= 9) {
+        const thin = new THREE.BufferGeometry();
+        thin.setAttribute("position", new THREE.BufferAttribute(current.flagged, 3));
+        thin.computeVertexNormals();
+        const thinMesh = addFailedGhost(thin, new THREE.Vector3());
+        thinMesh.matrixAutoUpdate = false;
+        thinMesh.matrix.copy(posed.matrix);
+      }
       if (current.positions.length < 9) return;
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(current.positions, 3));

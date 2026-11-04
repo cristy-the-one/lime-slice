@@ -127,7 +127,7 @@ import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "./shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../src/step-solids.ts";
 import { reviewGcode } from "./review.ts";
-import { GUIDES, guideByUri, KIND_GUIDES } from "./guides.ts";
+import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_REFUSALS } from "./guides.ts";
 import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
@@ -2882,7 +2882,9 @@ export class Session {
     if (!schema) return { ok: false, reason: `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.` };
     const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
     const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
-    return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples };
+    // --- Text with real fonts: the bundled fonts, one line each, and what a text refuses.
+    const fonts = kind === "text" ? { fonts: TEXT_FONT_LINES, refusals: TEXT_REFUSALS } : {};
+    return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples, ...fonts };
   }
 
   private printer(): PrinterRecord {
@@ -6581,7 +6583,7 @@ export class Session {
         }
         const parts = expand(op, ctx, (piece) => this.pieceOf(obj, piece));
         if ("reason" in parts) return null;
-        return parts.map((piece) => toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose));
+        return parts.map((piece) => toSolidOp(piece.step ? (piece.step as unknown as ModelOp) : { kind: "boolean", op: piece.op, ...piece.spec }, obj.modelPose));
       };
       const planned = twin === undefined || feature || "reason" in expanded ? null : make(structuredClone(raw));
       const links = planned ? this.linksOf(obj, raw, twin, make, planned) : [];

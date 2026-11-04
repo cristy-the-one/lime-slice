@@ -2067,6 +2067,40 @@ LimeShape* lime_tree_extrude_loops(const LimeShape* from, const char* op, const 
     }
 }
 
+/// Lettering on a flat face (cpp/text.cpp). `p` is the plane's origin and turn, then the depth; `data` is the laid-out letters.
+/// `path` gets 1 for the direct build and 2 for the boolean build.
+LimeShape* lime_tree_text(const LimeShape* from, int cut, const double* p, const double* data, int data_len, int* path, char** note_out, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        double volume = 0.0;
+        std::string message;
+        int how = 0;
+        Handle(BRepTools_History) replaced;
+        std::string note;
+        const double origin[3] = {p[0], p[1], p[2]};
+        const double turn[3] = {p[3], p[4], p[5]};
+        const TopoDS_Shape result = build_lettering(
+            from->held.shape, from->held.volume, cut != 0, origin, turn, p[6], data, data_len, volume, how, replaced, note, message);
+        if (!message.empty() || result.IsNull()) {
+            set_error(error, message.empty() ? "Open CASCADE did not build the text." : message);
+            return nullptr;
+        }
+        if (path != nullptr) {
+            *path = how;
+        }
+        if (note_out != nullptr && !note.empty()) {
+            *note_out = alloc(note);
+        }
+        return adopt(result, volume, "The text removed the solid", error, from, replaced).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 // K3 on K1 loops: a second depth, a draft, or a face to stop at, on an outline with arcs, splines, or holes. `p` and
 // `loops` match lime_tree_extrude_loops; `flags` matches lime_tree_extrude_extent.
 LimeShape* lime_tree_extrude_loops_extent(

@@ -9,9 +9,10 @@ import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
 import { anchorOf, expand, type Piece } from "./modeling/compose.ts";
+import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, STROKE_FONT, styleOf, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
-import type { GroupOp, ModelOp } from "./model-tree.ts";
+import type { GroupOp, LetteringOp, ModelOp } from "./model-tree.ts";
 import { planePoint, axesOf, GLOBAL_WORKPLANE, type Workplane } from "./workplane.ts";
 
 /** One toolbar entry; the menu chooses which of these is on the button. */
@@ -45,7 +46,7 @@ export type FeaturePattern = "lines" | "grid" | "brick" | "shingle";
 export type FeatureCell = "rect" | "circle" | "polygon";
 export type FeatureAlong = "u" | "v";
 export type FeatureFit = "inside" | "centre";
-export type FeatureAlign = "centre" | "left";
+export type FeatureAlign = "centre" | "left" | "right";
 
 /** The panel's choices, which are not number fields. `face` is the picked face a saved step reopens on. */
 export interface FeatureChoices {
@@ -59,6 +60,10 @@ export interface FeatureChoices {
   stagger: boolean;
   align: FeatureAlign;
   text: string;
+  /** The text's font: `stroke` (the single-stroke grid font) or a bundled outline font with its version (`sans@4.0`). */
+  font: string;
+  /** The outline font's style. The stroke font has one. */
+  style: TextStyle;
   face?: number;
 }
 
@@ -73,6 +78,9 @@ export const FEATURE_CHOICE_DEFAULTS: FeatureChoices = {
   stagger: false,
   align: "centre",
   text: "A",
+  // --- Text with real fonts (D4): a new text starts in Sans Bold. A step saved before fonts reopens as `stroke`.
+  font: versionedId(fontById(DEFAULT_TEXT_FONT)!),
+  style: DEFAULT_TEXT_STYLE,
 };
 
 /** Number fields a fresh tool starts from. Shared ids keep the last typed value when the tool changes. */
@@ -109,6 +117,8 @@ export const FEATURE_FIELD_DEFAULTS: Record<string, number> = {
   modelTextStroke: 0.9,
   modelTextSpace: 2,
   modelTextAngle: 0,
+  modelTextTrack: 0,
+  modelTextLines: 1.3,
 };
 
 /** The choices the panel is showing. `tool` picks which Raise/Cut group is read; text has its own. */
@@ -121,6 +131,8 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
   const along = pressed("modelRibAlong", "along");
   const fit = pressed("modelArrFit", "fit");
   const align = pressed("modelTextAlign", "align");
+  const font = pressed("modelTextFont", "font");
+  const style = pressed("modelTextStyle", "style");
   const op = pressed(tool === "text" ? "modelTextOp" : "modelFeatOp", "op");
   return {
     shape: shape === "circle" || shape === "arch" ? shape : "rect",
@@ -131,8 +143,10 @@ export function panelChoices(tool?: FeatureTool): FeatureChoices {
     op: op === "cut" ? "cut" : "fuse",
     fit: fit === "centre" ? "centre" : "inside",
     stagger: document.querySelector<HTMLInputElement>("#modelArrStagger")?.checked ?? false,
-    align: align === "left" ? "left" : "centre",
-    text: document.querySelector<HTMLInputElement>("#modelFeatText")?.value ?? FEATURE_CHOICE_DEFAULTS.text,
+    align: align === "left" || align === "right" ? align : "centre",
+    text: document.querySelector<HTMLInputElement | HTMLTextAreaElement>("#modelFeatText")?.value ?? FEATURE_CHOICE_DEFAULTS.text,
+    font: font === STROKE_FONT || fontById(font) ? font! : FEATURE_CHOICE_DEFAULTS.font,
+    style: style ? styleOf(style) : FEATURE_CHOICE_DEFAULTS.style,
   };
 }
 
@@ -217,9 +231,21 @@ export function readFeatureSpec(tool: FeatureTool, read: (id: string) => number,
   }
   spec.text = choices.text;
   spec.height = read("modelTextHeight");
-  spec.strokeWidth = read("modelTextStroke");
-  spec.spacing = read("modelTextSpace");
-  if (choices.align !== "centre") spec.align = choices.align;
+  if (isOutlineFont(choices.font)) {
+    // --- Text with real fonts. Spacing is after each letter (0 is the font's own), lines are capital heights apart (1.3).
+    spec.font = choices.font;
+    if (choices.style !== "regular") spec.style = choices.style;
+    const track = read("modelTextTrack");
+    if (track !== 0) spec.spacing = track;
+    const lines = read("modelTextLines");
+    if (lines !== FEATURE_FIELD_DEFAULTS.modelTextLines) spec.lineSpacing = lines;
+    if (choices.align !== "centre") spec.align = choices.align;
+  } else {
+    // The stroke font, as every text was before fonts: no font in the source.
+    spec.strokeWidth = read("modelTextStroke");
+    spec.spacing = read("modelTextSpace");
+    if (choices.align === "left") spec.align = "left";
+  }
   const angle = read("modelTextAngle");
   if (angle !== 0) spec.angleDeg = angle;
   spec.depth = read("modelFeatDepth");
@@ -266,7 +292,7 @@ export function groupFromPieces(label: string, source: Record<string, unknown>, 
     kind: "group",
     label,
     source,
-    steps: pieces.map((piece) => ({ kind: "boolean", op: piece.op, ...piece.spec, ...(piece.merge ? { merge: true as const } : {}) })),
+    steps: pieces.map((piece) => (piece.step ? (piece.step as unknown as ModelOp) : { kind: "boolean", op: piece.op, ...piece.spec, ...(piece.merge ? { merge: true as const } : {}) })),
   };
 }
 
@@ -343,7 +369,10 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
   } else {
     put("modelTextHeight", source.height, 6);
     put("modelTextStroke", source.strokeWidth, height * 0.15);
-    put("modelTextSpace", source.spacing, height / 3);
+    // The stroke font's spacing defaults to a third of the height; an outline font's is added to the font's own, 0.
+    put("modelTextSpace", isOutlineFont(source.font) ? undefined : source.spacing, height / 3);
+    put("modelTextTrack", isOutlineFont(source.font) ? source.spacing : undefined, 0);
+    put("modelTextLines", source.lineSpacing, 1.3);
     put("modelTextAngle", source.angleDeg, 0);
     put("modelFeatDepth", source.depth, 1);
     put("modelFeatU", at.u, 0);
@@ -360,8 +389,11 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
     op: source.op === "cut" ? "cut" : "fuse",
     fit: source.fit === "centre" ? "centre" : "inside",
     stagger: source.stagger === true,
-    align: source.align === "left" ? "left" : "centre",
+    align: source.align === "left" || source.align === "right" ? source.align : "centre",
     text: typeof source.text === "string" ? source.text : "A",
+    // A text step saved before fonts has none: it is the stroke font, and stays so until another is picked.
+    font: isOutlineFont(source.font) ? (fontById(source.font) ? versionedId(fontById(source.font)!) : String(source.font)) : STROKE_FONT,
+    style: styleOf(source.style),
     ...(typeof source.faceIndex === "number" ? { face: source.faceIndex } : {}),
   };
   return { tool, fields, feature };
@@ -419,10 +451,15 @@ export interface ExpandedFeature {
   /** The face's workplane, with U, V = 0 where the spec's `at` is measured from (its From anchor). */
   frame: Workplane | null;
   outward: [number, number, number] | null;
+  /**
+   * --- Text with real fonts. The lettering step of a text in an outline font, in model space, which the card draws as its
+   * live preview instead of boxes (`pieces` is null then). Null for every other feature.
+   */
+  letters: LetteringOp | null;
 }
 
 export function emptyFeature(note: string): ExpandedFeature {
-  return { note, pieces: null, group: null, frame: null, outward: null };
+  return { note, pieces: null, group: null, frame: null, outward: null, letters: null };
 }
 
 function trimmed(value: number): string {
@@ -505,5 +542,7 @@ export function expandFeature(spec: Record<string, unknown>, solid: FeatureSolid
   // --- D16. The position dot and its drag measure `at` from where From puts U, V = 0, as the expansion does.
   const shift = spec.from === undefined ? null : anchorOf(spec.from, face.extent);
   const frame = shift && !("reason" in shift) ? { ...face.plane, origin: planePoint(face.plane, [shift[0], shift[1], 0]) } : face.plane;
-  return { note: null, pieces, group: groupFromPieces(label, typed, pieces), frame, outward };
+  // --- Text with real fonts: one lettering step, drawn as outlines, not as the boxes of a piece.
+  const lettering = pieces.length === 1 && pieces[0]!.step ? (pieces[0]!.step as unknown as LetteringOp) : null;
+  return { note: null, pieces: lettering ? null : pieces, group: groupFromPieces(label, typed, pieces), frame, outward, letters: lettering };
 }

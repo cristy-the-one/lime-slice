@@ -441,6 +441,70 @@ Each is one PR to `main`, smallest useful first. Each updates `docs/step-modeler
    (one step, curved faces), recipe API 1.3 (`curved()` faces, `model.text`, `text_outline`), `model_probe`'s `thin`
    and `inkMm2`, the guide's font list, a recipe sample.
 
+### As built (milestone 1)
+
+Built on `main` at v5.1.0, 2026-11-04 (PR "Text with real fonts on flat faces (text milestone 1)"). What a person can do now: open Features, pick
+Text, pick a flat face, choose a font (Stroke, Inter, IBM Plex Mono, IBM Plex Serif, Allerta Stencil, each drawn in itself), a style, type several
+lines, set size, letter spacing, line spacing, left, centre or right, an angle, a depth and raise or engrave, see the letters on the face as they
+type (green raised, red cut, letters too thin for the nozzle drawn apart in the refusal colour and named under Apply), and apply one history
+step. The MCP `text` op takes the same fields. A text with no font, or `stroke`, builds the boxes it always did.
+
+- **Reading and layout.** `ttf-parser` 0.25 in `lime-model-occt` (`src/text/`), no Open CASCADE needed: glyph outlines as Bézier pieces, kerning
+  from `GPOS` pair adjustments (`kern` feature, format 1 and 2) and the old `kern` table, no shaping. Segments under 2 µm dropped; a glyph that
+  overlaps itself, and letters that touch, united in 2D (`lime-recipe`'s `geom2d`, now a dependency of `lime-model-occt`) on polylines about 0.1 mm
+  apart, only for those faces. Size is the font's `OS/2` capital height (the height of an H without one).
+- **Fonts shipped** (`public/fonts/model/`, compiled in with `include_bytes!`, licences in `third_party/fonts/`, all SIL OFL 1.1): `sans@4.0` Inter 4.0
+  (Regular, Bold, Italic, Bold Italic), `mono@1` IBM Plex Mono (Regular, Bold), `serif@1` IBM Plex Serif (Regular, Bold), `stencil@1` Allerta Stencil
+  (Regular). 2.4 MB in all.
+- **The step.** `{kind: "lettering", op, origin, turn, text, font, style?, height, depth, spacing?, lineSpacing?, align?, angleDeg?}`, one step inside
+  the text group (so the row, the source and Edit are the group's, as for every feature), built by `lime_tree_text` (`cpp/text.cpp`). The direct build
+  sews the new faces among themselves and puts them where the old face was, so every other face of the part is still the same face (checked: the
+  five other faces and the replaced top keep the root as their owner); the boolean build is the fallback.
+- **Measured** (release build, this machine, a 200 × 40 × 20 block, "Lime Slice gAO8 2026", 6 mm, 0.8 deep, apply including the reply's mesh): Inter
+  raised 0.33 s, engraved 0.31 s; Plex Serif 0.51 s and 0.52 s; two lines of Plex Mono 0.53 s and 0.60 s; all direct. Layout with the thin-letter
+  analysis, for the live preview: 0.05 s (mono) to 0.29 s (Inter), the analysis dominating.
+- **Tests.** Rust, no kernel (`src/text/tests.rs`, 20): bundled fonts lay out, capital height, holes of A O 8 g B e, loops closed and oriented, kerning,
+  letter and line spacing, alignment, angle, missing glyph, style files and slant, overlap union, thin letters, the kernel blob, and a CFF font (Source
+  Code Pro OTF) read as cubic curves. Rust with the kernel (`tests/lettering.rs`, 12): raised and engraved letters in every bundled family and in the CFF
+  font are valid, one shell, built directly, volume = ink × depth to 0.01 mm³; every other face keeps its owner; lines, alignment, spacing and angle; a
+  side face; a cut through the wall (boolean build), an O that would lose its middle (refused), the stencil O (cuts through); text off the face; the
+  refusal sentences; replay from a saved group to the same fingerprint; the `textLayout` and `textFonts` calls. TypeScript: `src/modeling/lettering.test.ts`
+  (one step per text, the pose, the refusals, the old stroke boxes, the card's spec and what a saved step reopens as, the file round trip),
+  `mcp/text-fonts.test.ts` (real engine: the engine's fonts are the app's table, raise and engrave, every field, the refusals, the stroke volume),
+  `e2e/model-text-fonts.spec.ts` (in `test:smoke`).
+
+Deviations from this plan, each on purpose or forced:
+
+1. **The op is `lettering`, inside the text group,** not a new top-level node kind `text`. The composite `text` already names the group's source and reopens
+   the card; the group keeps the row, undo and Edit unchanged, and `lettering` is the one step it holds. A pattern or mirror of an outline-font text is
+   refused ("not supported yet") instead of half built.
+2. **Fonts.** The slab is IBM Plex Serif and its id is `serif` (not `slab`); it is not a true slab, so thin strokes still warn at small sizes (the plan allowed
+   "IBM Plex Serif or a slab serif"). The stencil is Allerta Stencil, not Big Shoulders Stencil, which ships only as a variable font. `hershey` is not
+   shipped: it needs the stroke pipeline, which is milestone 5. Inter ships four files (1.65 MB), so the set is 2.4 MB against "about 2 MB". The Plex files
+   were taken from the npm packages as WOFF and repacked as plain sfnt (zlib only, glyph data unchanged).
+3. **No weight, no variable fonts, no person's fonts** (milestone 4), and none of `fontFile`, `point`, `along`, `wrap`, `flip` on the MCP op (milestones 2 to 4).
+   `model_probe`'s `thin` and `inkMm2` are milestone 5: in milestone 1 the thin-stroke warning is the card's, from `textLayout`; an MCP client sees no thin
+   warning yet. The MCP reply of a text op is as before (the build path is in the engine's apply reply, which the MCP composite does not pass on).
+4. **The preview draws the letters, not outlines.** The live preview is a prism ghost on the face (the viewer's existing "soup" ghost): green when
+   raised, red when cut, and the letters that lose more than a tenth of their area to a nozzle-wide opening apart in the refusal colour, named under Apply.
+   Polyline outlines on the face are not drawn. A loop smaller than the line width squared is not left out and named (section 4.4): the warning names the
+   letter instead, and a dot that would be lost is a letter that is thin.
+5. **Anchor.** The layout block is centred on the anchor vertically for every alignment (the stroke font's `left` put the baseline there), and horizontally by
+   line: left starts at the anchor, right ends on it. The line spacing default of 1.3 capital heights is as the plan says; a descender of g then just touches the
+   next line's ascenders for some pairs, and touching letters are united in 2D (one solid) rather than refused.
+6. **Italic and bold in the card.** Bold and Bold italic are greyed (with the reason as the tip) for a font that would refuse them. Italic stays available for a
+   family with no italic file and says it is slanted 12° (D7); the plan's "greyed with a reason where the family lacks one" would have contradicted the slant.
+   Changing to a font that lacks the chosen style goes back to Regular.
+7. **Old text steps reopen as Stroke.** Edit on a step saved before fonts opens the card on the Stroke font, and Update keeps the boxes; it becomes a lettering
+   step once a font is picked (the plan said pressing Update makes a new text step).
+8. **What the direct build needs.** The text wholly inside the one coplanar face the anchor is on, 0.02 mm clear of its edges; for a cut, material under every
+   letter. A text partly off that face is refused ("The text runs off this face. ...") even where the boolean could build it, as section 6 says; a text on no
+   face of the part (a bare workplane) builds by the boolean. An engraving through the wall refuses only for a letter with a counter; letters without one cut
+   through (boolean). The wall under a letter is probed at its interior point and its loop starts, not everywhere.
+9. **CFF is tested with a debug-only font id** (`test-cff`, Source Code Pro OTF in `crates/lime-model-occt/tests/fonts/`): no CFF font ships in this milestone.
+10. **Not done.** A `.lime` fixture with a text group: the repo has none, so "every fixture rebuilds" is the save/load round trip and the replay test above.
+    The About licences list does not exist, so the licences are `third_party/fonts/NOTICE.md` and the files beside the fonts.
+
 ## 11. Done for the whole plan
 
 - A person types two lines in Sans Bold, puts them round a Ø 40 cup and on a wavy freeform lid, raised and

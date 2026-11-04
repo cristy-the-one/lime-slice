@@ -28,6 +28,9 @@ import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type Fea
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
+import { fontById, isOutlineFont, styleHasFile, styleOf, styleRefusal } from "../modeling/text-fonts";
+import type { LetteringOp } from "../model-tree";
+import { lettersGhost, thinNoteOf } from "./text-preview";
 import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from "../model-select";
 import { scrubIntent, scrubTarget, type ScrubIntent } from "./scrub";
 import { snapStep } from "../gizmo-math";
@@ -127,7 +130,7 @@ interface ModelChromeHooks {
   editUnchanged(): boolean;
   // --- A3 composite features ---
   /** The open feature, expanded on the solid on screen. Null pieces until one flat face is picked and the spec fits. */
-  featureView(): { note: string | null; pieces: Piece[] | null; frame: Workplane | null; outward: [number, number, number] | null };
+  featureView(): { note: string | null; pieces: Piece[] | null; frame: Workplane | null; outward: [number, number, number] | null; letters: LetteringOp | null };
   // --- end A3 ---
   // --- A4. The open pattern or mirror. `repeating` names the history steps. A note is why it cannot build yet. ---
   repeatView(): { note: string | null; pieces: Piece[] | null; repeating: string };
@@ -463,9 +466,24 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- end A4 ---
-    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op], #modelChamferForm [data-chamfer-form]");
+    const featureMode = target?.closest<HTMLButtonElement>("#modelFeatShape [data-shape], #modelFeatFrom [data-from], #modelTexPattern [data-pattern], #modelArrCell [data-cell], #modelArrFit [data-fit], #modelRibAlong [data-along], #modelFeatOp [data-op], #modelTextAlign [data-align], #modelTextOp [data-op], #modelTextFont [data-font], #modelTextStyle [data-style], #modelChamferForm [data-chamfer-form]");
     if (featureMode) {
+      // --- Text with real fonts: a style the font cannot make says why, and changes nothing.
+      if (featureMode.getAttribute("aria-disabled") === "true") {
+        const why = featureMode.dataset.tip || featureMode.title;
+        if (why) pushToast(why, "info");
+        return;
+      }
       paintModeGroup(featureMode);
+      // A new font changes which styles it allows and what the sample shows.
+      if (featureMode.closest("#modelTextFont")) {
+        // A style the new font cannot make (a bold the stencil lacks) goes back to Regular, not to a refusal.
+        const chosen = fontById(featureMode.dataset.font);
+        if (chosen && styleRefusal(chosen, panelChoices("text").style)) paintNamed("modelTextStyle", "style", "regular");
+        // The stroke font has no right-aligned lines.
+        if (!chosen && panelChoices("text").align === "right") paintNamed("modelTextAlign", "align", "centre");
+        paintTextFont();
+      }
       syncFields();
       refreshGhost();
       hooks?.paramsChanged();
@@ -591,6 +609,8 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
     if (tool === "split") syncSplitField();
     if (tool === "hole") paintScrew();
+    // --- Text with real fonts: the sample line under the picker follows the typing.
+    if (tool === "text" && typed === "modelFeatText") paintTextFont();
     // --- A5. A typed step number follows the list, and the line names that row. ---
     if (ev.target instanceof HTMLElement && ev.target.id === "modelEdgeNode") syncEdgeSelect();
     // --- A4. The path fields edit the last point. ---
@@ -1226,7 +1246,7 @@ function syncFields() {
   const kind = primitiveKind();
   const withMode = withObject ? "object" : "primitive";
   // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
-  document.querySelectorAll<HTMLElement>("#modelPanel [data-for], #modelPanel [data-when]").forEach((node) => {
+  document.querySelectorAll<HTMLElement>("#modelPanel [data-for], #modelPanel [data-when], #modelPanel [data-fontkind]").forEach((node) => {
     const forOk = !node.dataset.for || (!!tool && node.dataset.for.split(" ").includes(tool));
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
     // Only Boolean asks what it combines with: New solid and Hole show their fields whatever Boolean has picked.
@@ -1237,6 +1257,8 @@ function syncFields() {
     const boreOk = node.dataset.bore === undefined || holeBoxes().counterbore;
     // --- A3 composite features: a shape or a cell shows only its own sizes. ---
     const shapeOk = !node.dataset.shape || node.dataset.shape.split(" ").includes(panelChoices().shape);
+    // --- Text with real fonts: the stroke font keeps its Stroke and Spacing; an outline font has its style, letter and line spacing.
+    const fontOk = !node.dataset.fontkind || tool !== "text" || node.dataset.fontkind === (isOutlineFont(panelChoices("text").font) ? "outline" : "stroke");
     const cellOk = !node.dataset.cell || node.dataset.cell.split(" ").includes(panelChoices().cell);
     // --- end A3 ---
     const chamferOk = !node.dataset.chamfer || node.dataset.chamfer.split(" ").includes(chamferChoice().form);
@@ -1249,9 +1271,11 @@ function syncFields() {
     const holeOk = !node.dataset.hole || (node.dataset.hole === "points" ? pointsHoles : !pointsHoles);
     // --- Assemblies M11. The frame switch is for a member of an assembly.
     const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk));
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk));
   });
   // --- A3 composite features ---
+  // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
+  if (tool === "text") paintTextFont();
   if (isFeatureTool(tool)) {
     const depthAria: Record<FeatureTool, string> = {
       pocket: "Into the face",
@@ -2392,6 +2416,10 @@ function ghostFor(current: ModelTool): ModelGhost | null {
   // --- A3 composite features: every piece, shaded (expansion stops at 400, so no ghost needs outlines only). A failed step is named for the view. ---
   if (isFeatureTool(current)) {
     const view = hooks?.featureView();
+    // --- Text with real fonts: the letters' outlines, raised or cut by the depth, in place of the boxes of a piece.
+    const letters = current === "text" ? view?.letters ?? null : null;
+    paintTextThin(letters);
+    if (letters) return lettersGhost(letters, nozzleMm(), refreshGhost);
     if (!view?.pieces?.length) return null;
     const failed = probe?.phase === "done" && !probe.ok ? probe.failedStep : undefined;
     return {
@@ -2613,7 +2641,10 @@ function settleExpression(input: HTMLInputElement) {
 }
 
 function onEnter(ev: KeyboardEvent) {
-  if (ev.key !== "Enter" || ev.repeat || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.key !== "Enter" || ev.repeat || ev.altKey) return;
+  // --- Text with real fonts: in the text box Enter starts a new line and Ctrl+Enter applies; everywhere else Enter applies.
+  const typing = ev.target instanceof HTMLTextAreaElement && ev.target.id === "modelFeatText";
+  if (typing ? !(ev.ctrlKey || ev.metaKey) : ev.ctrlKey || ev.metaKey) return;
   if (state.stage !== "model" || (!tool && !card)) return;
   const target = ev.target instanceof Element ? ev.target : null;
   // A button in the panel (a primitive, Corners or Flats, Fuse) takes Enter as its own click.
@@ -2826,10 +2857,54 @@ function paintFeature(choices: FeatureChoices) {
   paintNamed("modelFeatOp", "op", choices.op);
   paintNamed("modelTextAlign", "align", choices.align);
   paintNamed("modelTextOp", "op", choices.op);
+  paintNamed("modelTextFont", "font", choices.font);
+  paintNamed("modelTextStyle", "style", choices.style);
   const stagger = document.querySelector<HTMLInputElement>("#modelArrStagger");
   if (stagger) stagger.checked = choices.stagger;
-  const text = document.querySelector<HTMLInputElement>("#modelFeatText");
+  const text = document.querySelector<HTMLInputElement | HTMLTextAreaElement>("#modelFeatText");
   if (text) text.value = choices.text;
+  paintTextFont();
+}
+
+/**
+ * --- Text with real fonts. What the font picked allows, and the sample line: a font with no bold greys Bold and Bold italic
+ * (a style it would refuse), one with no italic of its own says its Italic is slanted, and the line under the list is the
+ * person's own first line in the font, style and weight chosen. Hidden for the stroke font, which has one style.
+ */
+/** The nozzle the thin letters are judged against: the plate's machine, 0.4 mm without one. */
+function nozzleMm(): number {
+  const nozzle = state.profile?.nozzleDiameter;
+  return typeof nozzle === "number" && nozzle > 0 ? nozzle : 0.4;
+}
+
+/** The sentence under Apply that names the letters too thin for the nozzle: "e, m and 2 are thinner than your 0.4 mm line." */
+function paintTextThin(letters: LetteringOp | null) {
+  const note = document.querySelector<HTMLElement>("#modelTextThin");
+  if (!note) return;
+  const said = letters ? thinNoteOf(letters, nozzleMm(), refreshGhost) : null;
+  note.textContent = said ?? "";
+  note.hidden = !said;
+}
+
+function paintTextFont() {
+  const choices = panelChoices("text");
+  const font = fontById(choices.font);
+  document.querySelectorAll<HTMLButtonElement>("#modelTextStyle [data-style]").forEach((button) => {
+    const style = styleOf(button.dataset.style);
+    const refused = font ? styleRefusal(font, style) : null;
+    if (refused) button.setAttribute("aria-disabled", "true");
+    else button.removeAttribute("aria-disabled");
+    const slanted = !!font && !refused && !styleHasFile(font, style);
+    button.dataset.tip = refused ?? (slanted ? `${font!.name} has no italic of its own: the letters are slanted 12°.` : "");
+  });
+  const sample = document.querySelector<HTMLElement>("#modelTextSample");
+  if (sample && font) {
+    const first = choices.text.split("\n").find((line) => line.trim()) ?? "Lime Slice 2026";
+    sample.textContent = first;
+    sample.style.fontFamily = `'${font.family}', sans-serif`;
+    sample.style.fontWeight = choices.style === "bold" || choices.style === "bold-italic" ? "700" : "400";
+    sample.style.fontStyle = choices.style === "italic" || choices.style === "bold-italic" ? "italic" : "normal";
+  }
 }
 
 function featureDrag(current: FeatureTool): NonNullable<DragContext["feature"]> {

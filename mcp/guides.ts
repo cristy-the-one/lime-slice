@@ -2,6 +2,8 @@
  * Worked sequences. The prompts quote these, and a test checks the order,
  * so a tool rename cannot leave the prompt naming a field that is gone.
  */
+import { TEXT_FONTS } from "../src/modeling/text-fonts.ts";
+
 export interface Guide {
   uri: string;
   name: string;
@@ -149,7 +151,7 @@ GUIDES.push(
       "  Floor reinforcement after a shell: {kind:\"ribs\", face:{normal:[0, 0, 1], nearPoint:[0, 0, 2]}, along:\"v\", width:1.5, pitch:15, depth:6, margin:0}.",
       "pattern: {kind:\"pattern\", op:{...}, linear:{step:[x, y, z], count, step2, count2} | polar:{count, axis, centre, angleDeg} | path:{points, count, align, closed}}. count includes the original.",
       "  path spaces copies evenly along a smooth curve through the points, the op typed at the first point; align (default) turns each copy with the curve, as scales along a body.",
-      "text: {kind:\"text\", text:\"LIME\", height, depth, face, at:{u, v}, from, op:\"fuse\"|\"cut\", strokeWidth, spacing, align, angleDeg}. Single-stroke capitals, digits, and - + . , : ! ? / ' &; each stroke a checked step.",
+      "text: {kind:\"text\", text:\"LIME\", height, depth, face, at:{u, v}, from, op:\"fuse\"|\"cut\", font, style, strokeWidth, spacing, lineSpacing, align, angleDeg}. With no font: the single-stroke font (capitals, digits, and - + . , : ! ? / ' &), each stroke a checked step. With font:\"sans\"|\"mono\"|\"serif\"|\"stencil\": real letters, any the font has, \\n for a new line, up to 400 characters, built as one step on a flat face (guide {kind:\"text\"}).",
       "Anchors: any [x, y, z] may be {anchor:\"bowl\", point:\"top\", offset:[0, 0, -1]}, a point of the box of what that label's steps applied, read when the op's turn comes. point: centre, top, bottom, min, max, left, right, front, back. anchor:\"part\" is the whole solid. model_anchors lists the boxes.",
       "  A label names its own step and every step named under it: \"fish 0\" covers \"fish 0 body\" and \"fish 0 tail\".",
       "mirror: {kind:\"mirror\", op:{...}, plane:\"x\"|\"y\"|\"z\", origin}. It applies the op and its mirror image; keepOriginal:false applies only the image. No step already in the history is removed.",
@@ -258,6 +260,23 @@ GUIDES.push({
 });
 
 /** --- Assemblies M4. guide {kind} for the two words that are not op kinds: how parts sit on each other, and model_place. */
+/** guide {kind:"text"}: each font a text can name, with what it is for. `stroke` is what a text has with no font. */
+export const TEXT_FONT_LINES: string[] = [
+  "stroke: the single-stroke font, capitals, digits and - + . , : ! ? / ' & only; each stroke a box. The default with no font, and what every text saved before fonts is.",
+  ...TEXT_FONTS.map((font) => `${font.id}: ${font.name}. ${font.about} Id ${font.id}@${font.version}.`),
+  "style regular|bold|italic|bold-italic picks the font's own file. A font with no italic is slanted 12°; a font with no bold is refused for bold.",
+];
+
+/** guide {kind:"text"}: what a text in a font refuses, one sentence each. */
+export const TEXT_REFUSALS: string[] = [
+  "This font has no ‘ñ’. Pick another font, or take it out.",
+  "The text runs off this face. Move it, make it smaller, or put it on one face.",
+  "The middle of ‘O’ would fall out. Use the Stencil font, or engrave less deep. (an engraving through the wall drops the middle of O, A, B, D, P, Q, R, 4, 6, 8, 9)",
+  "‘Allerta Stencil’ has no bold. Pick Regular, or another font.",
+  "There is no font called ‘comic’. The fonts are stroke, sans, mono, serif, stencil.",
+  "Text takes at most 400 characters a step; use several.",
+];
+
 export const KIND_GUIDES: Record<string, string> = {
   assembly: [
     "An assembly holds plate objects at offsets from each other, so a parameter change moves them together.",
