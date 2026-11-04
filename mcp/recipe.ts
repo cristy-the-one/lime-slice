@@ -137,9 +137,10 @@ export class RecipeHost {
   /**
    * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
    * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
-   * it, and `source` in the result is the recipe without it.
+   * it, and `source` in the result is the recipe without it. `limitMs` stops one lust build that runs longer (D11.3: an
+   * imported plugin's build is held to 30 s).
    */
-  async build(name: string, source: string, autofix: boolean, suffix = ""): Promise<BuildResult> {
+  async build(name: string, source: string, autofix: boolean, suffix = "", limitMs = BUILD_LIMIT_MS): Promise<BuildResult> {
     // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
     // at the wrong place.
     source = lfOnly(source);
@@ -152,7 +153,7 @@ export class RecipeHost {
     const exe = join(slot, process.platform === "win32" ? "recipe.exe" : "recipe");
     return buildRecipe(async (text) => {
       writeFileSync(main, text);
-      const r = await run(avail.lust, ["build", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], this.lustEnv());
+      const r = await run(avail.lust, ["build", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], this.lustEnv(), limitMs);
       return { ...r, exe, main };
     }, source, autofix, suffix);
   }

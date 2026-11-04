@@ -60,7 +60,7 @@ export async function scriptedLibrary(page: Page, nuggets = false, extra: Record
   const ingredients: Record<string, string> = nuggets ? { "honeycomb.rs": INGREDIENT_V2, "honeycomb.v1.rs": INGREDIENT_V2.replace("version: 2", "version: 1") } : {};
   const lessons = nuggets ? LESSONS : null;
   await page.addInitScript(({ files, presets, ingredients, lessons, nuggets }) => {
-    const store = { files: { ...files } as Record<string, string>, presets: { ...presets } as Record<string, string>, ingredients: { ...ingredients } as Record<string, string>, lessons: lessons as string | null, settings: null as string | null };
+    const store = { files: { ...files } as Record<string, string>, presets: { ...presets } as Record<string, string>, ingredients: { ...ingredients } as Record<string, string>, lessons: lessons as string | null, settings: null as string | null, imported: null as string | null };
     const log: { command: string; args: Record<string, unknown> }[] = [];
     (window as unknown as { __libraryLog: typeof log; __libraryStore: typeof store }).__libraryLog = log;
     (window as unknown as { __libraryStore: typeof store }).__libraryStore = store;
@@ -69,7 +69,7 @@ export async function scriptedLibrary(page: Page, nuggets = false, extra: Record
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         log.push({ command, args });
         if (command === "plugin_library_list") {
-          const listed = { dir: "C:\\Users\\test\\AppData\\Roaming\\com.limeslice.slicer\\plugins", files: Object.entries(store.files).map(([name, text]) => ({ name, text })), presets: Object.entries(store.presets).map(([plugin, text]) => ({ plugin, text })), settings: store.settings };
+          const listed = { dir: "C:\\Users\\test\\AppData\\Roaming\\com.limeslice.slicer\\plugins", files: Object.entries(store.files).map(([name, text]) => ({ name, text })), presets: Object.entries(store.presets).map(([plugin, text]) => ({ plugin, text })), settings: store.settings, imported: store.imported };
           return nuggets ? { ...listed, ingredients: Object.entries(store.ingredients).map(([name, text]) => ({ name, text })), lessons: store.lessons } : listed;
         }
         if (command === "plugin_library_save") {
@@ -84,6 +84,7 @@ export async function scriptedLibrary(page: Page, nuggets = false, extra: Record
           const name = String(args.name);
           if (name === "settings.json") store.settings = String(args.text);
           else if (name === "lessons.json") store.lessons = String(args.text);
+          else if (name === "imported.json") store.imported = String(args.text);
           else store.presets[name.replace(/^presets\//, "").replace(/\.json$/, "")] = String(args.text);
           return null;
         }

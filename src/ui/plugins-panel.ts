@@ -60,6 +60,7 @@ import { DEMO_PLUGIN, DEMO_TRY } from "../plugins/demo";
 import { RECIPE_API } from "../plugin-step";
 import { KIND_PURPOSE, PURPOSE, REASON } from "./plugins-panel-text";
 import { setLessons } from "./lessons-note";
+import { approveFirstRun, exportPluginFile, importPluginText, mountPluginShare, needsFirstRun, pickPluginFiles } from "./plugin-import";
 
 const CARD_ID = "plugins";
 const KIND_NOUN: Readonly<Record<Exclude<NuggetKind, "all">, string>> = { plugin: "plugin", ingredient: "ingredient", preset: "preset", lesson: "lesson" };
@@ -141,7 +142,22 @@ export function mountPluginsPanel(next: PluginsHost) {
   body.addEventListener("input", onInput);
   body.addEventListener("change", onChange);
   body.addEventListener("keydown", onKeyDown);
+  mountPluginShare({ reload: loadLibrary, library: () => library, show: showImported });
   void loadLibrary();
+}
+
+/** An import landed: the panel opens on it (in Model), so its imported badge and code are one look away. */
+function showImported(id: string) {
+  if (!pluginsPanelOpen()) return;
+  kind = kind === "all" || kind === "plugin" ? kind : "all";
+  select(`library:${id}`);
+}
+
+/** The result of an import or export, said in the card's readout and as a toast (a drop may land outside Model). */
+function said(text: string | null) {
+  if (!text) return;
+  host?.readout(text);
+  pushToast(text, /not imported|could not|is not a plugin|not a plugin file|is an ingredient|larger than/.test(text) ? "error" : "info");
 }
 
 /** The library as last read, for History and the project's save. */
@@ -340,7 +356,9 @@ function list(): HTMLElement {
   search.setAttribute("aria-label", "Search plugins, ingredients, presets and lessons");
   search.dataset.tip = PURPOSE.search;
   search.dataset.ownEnter = "";
-  head.append(search, howButton());
+  const importButton = button("pp-import", "Import…", PURPOSE.importFile);
+  importButton.id = "modelPluginsImport";
+  head.append(search, importButton, howButton());
   wrap.append(head);
   if (howOpen) wrap.append(howPop());
   if (libraryNote && libraryNote !== "loading") wrap.append(note(libraryNote, "pp-library-note"));
@@ -408,7 +426,12 @@ function listRow(row: PanelPlugin): HTMLElement {
   version.textContent = `v${row.file.version}`;
   const top = el("span", "pp-row-top");
   top.append(title, version);
-  for (const badge of row.badges) top.append(Object.assign(el("span", "pp-badge"), { textContent: badge }));
+  for (const badge of row.badges) {
+    const tag = Object.assign(el("span", "pp-badge"), { textContent: badge });
+    tag.dataset.badge = badge;
+    if (badge === "imported") tag.dataset.tip = "Added from a file or a project. Its first run shows its code first.";
+    top.append(tag);
+  }
   const desc = el("span", "pp-desc");
   desc.textContent = row.file.description || "No description.";
   const by = el("span", "pp-by");
@@ -446,6 +469,10 @@ function detail(plugin: PanelPlugin): HTMLElement {
   wrap.append(Object.assign(note(targetLine(plugin), "pp-target"), { id: "modelPluginsTarget" }));
   const rest = readOnlyNote(plugin);
   if (rest) wrap.append(Object.assign(note(rest, "pp-readonly"), { id: "modelPluginsReadOnly" }));
+  if (!demo) {
+    const trust = trustBox(plugin);
+    if (trust) wrap.append(trust);
+  }
   const carried = demo ? [] : pluginIngredients(plugin.file);
   if (carried.length) {
     const line = note(`Carries ${carried.length === 1 ? "the ingredient" : "the ingredients"} ${carried.map((c) => `${c.id} v${c.version}`).join(", ")}: it builds the same even where your library has other versions.`, "pp-carried");
@@ -524,6 +551,7 @@ function menu(plugin: PanelPlugin): HTMLElement {
     box.append(b);
   };
   item("source", "View source", PURPOSE.source);
+  item("export", "Export…", PURPOSE.exportFile);
   const noLibrary = libraryNote && libraryNote !== "loading" ? "Your library is read by the desktop app. Open this project there." : "";
   if (plugin.section === "library") {
     item("reveal", "Reveal in folder", PURPOSE.reveal, noLibrary);
@@ -531,6 +559,27 @@ function menu(plugin: PanelPlugin): HTMLElement {
   } else {
     item("add", "Add to library", PURPOSE.add, noLibrary);
   }
+  return box;
+}
+
+/**
+ * D11.6: the trust shown on an imported plugin's page (marked imported, or a project's plugin not yet run here): where
+ * it came from, its hash, and its code one click away. Null for the library's own plugins.
+ */
+function trustBox(plugin: PanelPlugin): HTMLElement | null {
+  if (!needsFirstRun(plugin.file, plugin.sha256, library)) return null;
+  const mark = library.imported[plugin.file.plugin];
+  const box = el("div", "pp-trust");
+  box.id = "modelPluginsTrust";
+  const head = el("p", "model-note pp-trust-head");
+  head.append(Object.assign(el("span", "pp-badge pp-badge-imported"), { textContent: mark ? "imported" : "from this project" }), " ", mark
+    ? `Added from ${mark.from === "project" ? "a project" : mark.from === "mcp" ? "an MCP call" : "a file"}${mark.at ? ` on ${mark.at}` : ""}. Its first Preview or Apply shows its code, with Run and Cancel.`
+    : "Not in your library and not run here yet. Its first Preview or Apply shows its code, with Run and Cancel.");
+  const hash = Object.assign(el("code", "pp-trust-hash"), { textContent: plugin.sha256 });
+  hash.title = "SHA-256 of its code";
+  const view = button("pp-trust-source", "Read its code", PURPOSE.trustSource);
+  view.id = "modelPluginsTrustSource";
+  box.append(head, hash, view);
   return box;
 }
 
@@ -725,6 +774,19 @@ function onClick(ev: MouseEvent) {
   }
   if (target.closest("#modelPluginsRemovePreset")) {
     void removePresetNow();
+    return;
+  }
+  if (target.closest("#modelPluginsImport")) {
+    if (libraryNote && libraryNote !== "loading") {
+      host.readout(libraryNote);
+      return;
+    }
+    pickPluginFiles((text) => said(text));
+    return;
+  }
+  if (target.closest("#modelPluginsTrustSource")) {
+    const plugin = current();
+    if (plugin) showSource(plugin);
     return;
   }
   if (target.closest("#modelPluginsHowOpen")) {
@@ -1118,6 +1180,15 @@ async function menuAction(act: string) {
     paint();
     return;
   }
+  if (act === "export") {
+    try {
+      said(await exportPluginFile(plugin.file, plugin.section === "library"));
+    } catch (err) {
+      said(`The plugin could not be exported: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    paint();
+    return;
+  }
   if (!io) {
     host.readout(LIBRARY_NEEDS_APP);
     paint();
@@ -1128,10 +1199,8 @@ async function menuAction(act: string) {
       await io.reveal(plugin.file.plugin);
       host.readout(`Showing ${plugin.file.plugin}.rs in ${library.dir || "your plugin folder"}.`);
     } else if (act === "add") {
-      const path = await io.save(plugin.file.plugin, plugin.file.text);
-      host.readout(`Added “${plugin.file.title}” v${plugin.file.version} to your library: ${path}.`);
-      await loadLibrary();
-      selected = `library:${plugin.file.plugin}`;
+      // D10: a project's plugin joins the library as an import: its author, hash and code shown first.
+      said(await importPluginText(plugin.file.text, "project", "this project"));
     } else if (act === "remove") {
       if (!window.confirm(`Remove “${plugin.file.title}” and its older versions from your library? Parts built with it keep their code in their project.`)) {
         paint();
@@ -1179,6 +1248,8 @@ function queueLive(wait = LIVE_WAIT_MS) {
   stopLive();
   const plugin = current();
   if (!plugin || !liveOn() || lastMs >= LIVE_MAX_MS || runnable(plugin)) return;
+  // An imported plugin's first run is a person's choice (D11.6): Live never opens the first-run view by itself.
+  if (!demo && needsFirstRun(plugin.file, plugin.sha256, library)) return;
   liveTimer = setTimeout(() => {
     liveTimer = null;
     void runNow("preview");
@@ -1200,6 +1271,16 @@ async function runNow(mode: "preview" | "apply") {
   const plugin = current();
   if (!plugin || !host || runnable(plugin)) return;
   stopLive();
+  if (!demo && needsFirstRun(plugin.file, plugin.sha256, library)) {
+    const yes = await approveFirstRun(plugin.file, plugin.sha256, plugin.section === "project" ? "this project" : undefined);
+    if (!pluginsPanelOpen()) return;
+    if (!yes) {
+      status = { text: "Not run. It stays marked until you run it once; Read its code shows what it does.", problem: false };
+      paintRun();
+      return;
+    }
+    paint();
+  }
   const params = formParams(plugin.file.params, Object.fromEntries(values));
   const sig = signature(plugin);
   busy = true;

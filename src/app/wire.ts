@@ -53,6 +53,9 @@ import { setModifierOpen } from "../ui/overrides-panel";
 import { setInspectPlateActions } from "../ui/model-inspect";
 import { toggleDock } from "../ui/splitters";
 import { pushToast } from "../ui/toasts";
+import { importPluginFiles } from "../ui/plugin-import";
+import { openPluginsPanel } from "../ui/plugins-panel";
+import { isPluginFileName } from "../plugins/share";
 import { currentRules } from "./rules";
 import { turnOnSupports } from "./support-actions";
 import {
@@ -670,6 +673,16 @@ export function wireApp() {
     drop.preventDefault();
     document.querySelector(".app")!.classList.remove("dropping");
     const files = [...(drop.dataTransfer?.files ?? [])];
+    // --- Plugin milestone 8: a plugin file dropped anywhere is an import (its code is shown before it is added).
+    const plugins = files.filter((file) => isPluginFileName(file.name));
+    if (plugins.length) {
+      void importPluginFiles(plugins).then((text) => {
+        if (!text) return;
+        const bad = /not imported|could not|not a plugin|is an ingredient|larger than|read by the desktop app/.test(text);
+        pushToast(text, bad ? "error" : "info", bad ? undefined : { label: "Open Plugins", run: () => { setStage("model"); openPluginsPanel(); } });
+      });
+      return;
+    }
     // Plain drop replaces. Shift adds through Add when a mesh is already on the plate. docs/plate-distinct-objects.md
     const plan = planFileDrop(drop.shiftKey, plateHasMesh(), files.map((file) => file.name));
     if (!plan) return;

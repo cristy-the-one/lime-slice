@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 6 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 8 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -836,6 +836,45 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    *Ships:* plugins move between machines and people safely.
    *Tested by:* import fixtures (a clean plugin, one with `mod x;`, one with an over-long description carrying an
    instruction, one with a newer API); each answers with its sentence; Playwright for the first-run dialog.
+
+   **As built (milestone 8, branch `claude/plugin-sharing`):**
+   - **One file, and what is in it.** The shared file is the library's file (the code, the ingredients it carries
+     inline, I11, and the recipe data after its code) with two more header lines, `//! presets: {...}` and
+     `//! lessons: [...]`: its presets, and the lessons about its id or an ingredient it carries (lessons about op kinds
+     stay home). D10 said "the same bytes as the library file"; the header is outside the hash, so the `source-sha256`
+     is the library's, an import keeps the library file byte for byte, and presets and lessons still travel in one
+     file. Named `<id>-v<N>.lime-plugin.rs`: `.rs` keeps it a valid `main.rs` (O2), `.lime-plugin` says what it is to a
+     person, a file picker and a drop. A plain `<id>.rs` imports too. `src/plugins/share.ts` holds the format and every
+     import check, browser-safe, and the MCP and the app both use it.
+   - **Import checks nothing by running it first.** Header, text caps, API level, one file (D11.4), and one more: a
+     hidden text-direction character ("Trojan source") is refused with its line. Text over a cap is refused, not cut
+     (D11.5's caps, plus a value's label 60, help 280, unit 12, an option 60, and at most 64 values, 50 presets, 50
+     lessons): a 900-character "description" is not one. Over MCP the import then runs D3's describe and dry runs with
+     its build held to 30 s (D11.3; a person's own keep keeps 120 s, which a cold CI slot needs; the app's runner holds
+     every build to 30 s since milestone 5). **Deviation:** the app's import runs nothing (D10 said describe and a dry
+     run): D11.6 says nothing runs before a person has seen the code, so the header's `params` are used, as D15 does on
+     macOS, and the first run the person approves is the check.
+   - **Trust.** `imported.json` in the library marks a plugin imported (`{sha256, from, at}`), written by the MCP and
+     the app; the app clears it when the person presses Run in the first-run view (its first Preview, Apply or History
+     rebuild; Live never opens it). A project's plugin the library lacks is asked about the same way, once, approved by
+     its hash in the browser's storage (it is not in the library to mark). MCP runs are not gated: the agent imported
+     it, and the sandbox and own-parts-only hold for every run; `nugget get`/`find` say `imported: true`. The browser
+     build reads no library, so it cannot tell another's plugin from one's own and asks nothing.
+   - **Clash.** D10's keep-both is `<id>-2`, titled "(2)" so two rows never read the same; Replace (or **Update to vN**
+     when the file is newer, D10's update offer) writes it above the library's version so the old one stays as
+     `<id>.vN.rs`. Over MCP, keep both is the default and `replace: true` replaces. The safe choice leads in the view,
+     except for an update.
+   - **Projects.** The app says once after an open that the project carries plugins the library lacks, with Review
+     (the panel's "In this project"); Add to library goes through the import view and marks it `from: "project"`.
+     `project_open` names them (`pluginsNotInLibrary`) and `from: "project:<id>"` imports one; nothing is added by an
+     open. A drop of a `.rs` file anywhere on the window imports (D10 said on the panel), since the panel lives in Model.
+   - **Budget.** `export`, `from` naming a file or `project:<id>`, and `replace` add 31 tokens (17,183 of 17,190).
+   - Tests: `src/plugins/share.test.ts` (unit chain: the four fixtures in `mcp/fixtures/plugin-import/`, the round trip,
+     clash, merges, marks), `mcp/plugin-share.test.ts` (real lust: export, import into a second library with the same
+     hash, the library file byte for byte and the same solid without the ingredient or the data file, preset, mark,
+     same, keep both, replace, the fixtures over MCP with the instruction only in `data`, a project's copy),
+     `e2e/model-plugins-share.spec.ts` (Export, Import… with the import view and the first-run view, Cancel runs
+     nothing, clash, update, refusals, a drop, a project's offer). Screenshots in `test-results/plugins-share/`.
 
 9. **Versions in CI.** The fixtures corpus with one plugin per API level, the lust-bump and crate-change CI check, the
    "needs a newer API" path, and the slot-per-major plumbing ready for a first major bump (tested with a fake `2.0`

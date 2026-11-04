@@ -390,6 +390,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-share.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 
@@ -491,6 +492,13 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/plugin-app.test.ts
+
+      # Sharing: export one file, import it into another library (same hash, same solid), clashes, the fixtures' refusals.
+      - name: Plugin sharing
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/plugin-share.test.ts
 
       # Ingredients: imported by name, the same calls under lust and rustc, carried inside a kept plugin.
       - name: Recipe ingredients
