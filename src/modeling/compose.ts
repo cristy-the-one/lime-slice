@@ -8,7 +8,7 @@ import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type 
 import { framePose, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
 import { pathSamples } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
-import { fontById, isOutlineFont, MAX_OUTLINE_CHARS, styleOf, styleRefusal, versionedId } from "./text-fonts.ts";
+import { fontById, isOutlineFont, isUserFont, MAX_OUTLINE_CHARS, styleOf, styleRefusal, versionedId } from "./text-fonts.ts";
 
 type Vec3 = [number, number, number];
 export type BooleanKind = "cut" | "fuse" | "common";
@@ -360,17 +360,21 @@ function roundLettering(spec: Record<string, unknown>, ctx: ExpandContext, round
  * new line, up to 400 characters. Centred at `at` {u, v} from where `from` puts U, V = 0. One step, not a box per stroke.
  */
 function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane; extent: FaceExtent | null }, text: string): Piece[] | { reason: string } {
-  const font = fontById(spec.font);
-  if (!font) {
+  // --- Text milestone 4: a font the person added is named by its id; the engine knows its styles, weights and letters.
+  const userId = isUserFont(spec.font) ? spec.font : null;
+  const font = userId ? undefined : fontById(spec.font);
+  if (!font && !userId) {
     const name = typeof spec.font === "string" ? spec.font : "";
     return { reason: `There is no font called ‘${name}’. The fonts are stroke, ${["sans", "mono", "serif", "stencil"].join(", ")}.` };
   }
+  const weight = spec.weight === undefined ? undefined : numOr(spec.weight, NaN);
+  if (weight !== undefined && !(weight >= 100 && weight <= 900)) return { reason: "weight is a number from 100 to 900." };
   if ([...text].length > MAX_OUTLINE_CHARS) return { reason: `Text takes at most ${MAX_OUTLINE_CHARS} characters a step; use several.` };
   const height = numOr(spec.height, 0);
   const depth = numOr(spec.depth, 0);
   if (!(height > 0) || !(depth > 0)) return { reason: "Text needs a height (the capitals') and a depth, in millimetres." };
   const style = styleOf(spec.style);
-  const missing = styleRefusal(font, style);
+  const missing = font ? styleRefusal(font, style) : null;
   if (missing) return { reason: missing };
   const spacing = spec.spacing === undefined ? undefined : numOr(spec.spacing, NaN);
   const lineSpacing = spec.lineSpacing === undefined ? undefined : numOr(spec.lineSpacing, NaN);
@@ -389,8 +393,9 @@ function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane
     origin: planePoint(frame.plane, [u0, v0, 0]).map(round6),
     turn: [...frame.plane.turn],
     text,
-    font: versionedId(font),
+    font: userId ?? versionedId(font!),
     ...(style !== "regular" ? { style } : {}),
+    ...(weight !== undefined ? { weight } : {}),
     height,
     depth,
     ...(spacing !== undefined && spacing !== 0 ? { spacing } : {}),

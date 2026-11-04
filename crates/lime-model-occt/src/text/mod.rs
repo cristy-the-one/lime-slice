@@ -12,7 +12,11 @@
 
 #![cfg_attr(not(lime_occt), allow(dead_code))]
 
+pub mod fit;
 pub mod fonts;
+#[cfg(any(test, lime_occt_test_hooks))]
+pub mod synth;
+pub mod user;
 pub mod wrap;
 
 use lime_recipe::geom2d::{Poly, Region};
@@ -194,6 +198,8 @@ pub struct Spec {
     pub align: Align,
     /// The layout turned this much about its anchor, degrees.
     pub angle_deg: f64,
+    /// A variable font's weight, 100 to 900 (milestone 4). Absent: the font's own, or 700 for a bold style.
+    pub weight: Option<f64>,
 }
 
 pub const DEFAULT_LINE_SPACING: f64 = 1.3;
@@ -211,9 +217,71 @@ pub struct Laid {
     pub font: String,
 }
 
-/// The sentence for a character the font lacks.
-fn lacks(ch: char) -> String {
-    format!("This font has no ‘{ch}’. Pick another font, or take it out.")
+/// The sentence for the characters a font lacks, each named once.
+pub(crate) fn lacks(missing: &[char]) -> String {
+    let names: Vec<String> = missing.iter().map(|ch| format!("‘{ch}’")).collect();
+    match names.len() {
+        1 => format!(
+            "This font has no {}. Pick another font, or take it out.",
+            names[0]
+        ),
+        n => format!(
+            "This font has no {} and {}. Pick another font, or take them out.",
+            names[..n - 1].join(", "),
+            names[n - 1]
+        ),
+    }
+}
+
+/// What the layout reads from a font: a parsed face, or the letters a project saved of a font whose licence forbids
+/// embedding it (`user::Pack`). Glyphs are named by a number the font itself gives out.
+pub(crate) trait Glyphs {
+    fn glyph(&self, ch: char) -> Option<u32>;
+    /// The advance in font units.
+    fn advance(&self, glyph: u32) -> f64;
+    /// The gap after `left` before `right`, in font units.
+    fn kerning(&self, left: u32, right: u32) -> f64;
+    /// The glyph's closed outline pieces, in font units.
+    fn outline(&self, glyph: u32) -> Vec<Contour>;
+    /// The capitals' height, in font units.
+    fn cap_height(&self) -> f64;
+    /// The sentence for characters the font cannot draw.
+    fn lacks(&self, missing: &[char]) -> String {
+        lacks(missing)
+    }
+}
+
+/// A parsed font file, at whatever variation was set on the face.
+pub(crate) struct FaceGlyphs<'a>(pub Face<'a>);
+
+impl Glyphs for FaceGlyphs<'_> {
+    fn glyph(&self, ch: char) -> Option<u32> {
+        self.0.glyph_index(ch).map(|id| u32::from(id.0))
+    }
+    fn advance(&self, glyph: u32) -> f64 {
+        f64::from(self.0.glyph_hor_advance(GlyphId(glyph as u16)).unwrap_or(0))
+    }
+    fn kerning(&self, left: u32, right: u32) -> f64 {
+        kerning(&self.0, GlyphId(left as u16), GlyphId(right as u16))
+    }
+    fn outline(&self, glyph: u32) -> Vec<Contour> {
+        let mut collector = Collector {
+            cur: None,
+            out: Vec::new(),
+            last: [0.0; 2],
+        };
+        if self
+            .0
+            .outline_glyph(GlyphId(glyph as u16), &mut collector)
+            .is_some()
+        {
+            collector.finish();
+        }
+        collector.out
+    }
+    fn cap_height(&self) -> f64 {
+        cap_height(&self.0)
+    }
 }
 
 struct Collector {
@@ -483,6 +551,22 @@ fn union_contours(ch: char, contours: &[Contour]) -> Vec<GlyphFace> {
     faces_of_region(ch, &fill.difference(&holes))
 }
 
+/// How far a refitted loop may stray from the polyline it came from, mm.
+const FIT_TOL_MM: f64 = 0.004;
+
+/// The polyline loop `pts` as curves again (a united glyph is polylines about 0.1 mm apart, 7 to 10 times the edges of the
+/// font's own curves), unless the fit moved the area by more than a third of a percent, when the lines stay.
+fn refit(pts: &[P]) -> Contour {
+    let fitted = fit::fit_loop(pts, FIT_TOL_MM);
+    let before = area(pts).abs();
+    let after = area(&fitted.flatten(FLAT_MM / 2.0)).abs();
+    if before > 0.0 && (after - before).abs() <= 0.003 * before && fitted.segs.len() < pts.len() {
+        fitted
+    } else {
+        Contour::polygon(pts)
+    }
+}
+
 fn faces_of_region(ch: char, region: &Region) -> Vec<GlyphFace> {
     region
         .pieces()
@@ -495,7 +579,7 @@ fn faces_of_region(ch: char, region: &Region) -> Vec<GlyphFace> {
                 if (area(&pts) > 0.0) != ccw {
                     pts.reverse();
                 }
-                Contour::polygon(&pts)
+                refit(&pts)
             };
             (first.pts.len() >= 3).then(|| GlyphFace {
                 ch,
@@ -667,16 +751,36 @@ pub fn lay_out(spec: &Spec) -> Result<Laid, String> {
             "Text takes at most {MAX_CHARS} characters a step; use several."
         ));
     }
+    // --- A font the person added (milestone 4): found by its id among the fonts this engine was given.
+    if user::is_user_id(&spec.font) {
+        return user::lay_out(spec);
+    }
     let family = fonts::family(&spec.font)?;
     let (bold, italic) = fonts::style_flags(spec.style.as_deref())?;
+    if spec.weight.is_some() {
+        return Err(format!(
+            "‘{}’ has one weight. Use style bold, or a variable font to set a weight.",
+            family.name
+        ));
+    }
     let (file, slant) = fonts::style_file(family, bold, italic)?;
     lay_out_face(spec, file.bytes, slant, fonts::versioned(family))
 }
 
 /// `lay_out` for the font file in `bytes`, slanted to make an italic when `slant`. `font` is what the laid text names.
 pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Result<Laid, String> {
-    let face = Face::parse(bytes, 0).map_err(|_| "This file is not a font Lime Slice can read. Use a TrueType (.ttf) or OpenType (.otf) file.".to_string())?;
-    let k = spec.height / cap_height(&face);
+    let face = Face::parse(bytes, 0).map_err(|_| user::UNREADABLE.to_string())?;
+    lay_out_with(spec, &FaceGlyphs(face), slant, font)
+}
+
+/// `lay_out` over any source of glyphs.
+pub(crate) fn lay_out_with(
+    spec: &Spec,
+    glyphs: &dyn Glyphs,
+    slant: bool,
+    font: String,
+) -> Result<Laid, String> {
+    let k = spec.height / glyphs.cap_height();
     let spacing = spec.spacing.unwrap_or(0.0);
     let pitch = spec.line_spacing.unwrap_or(DEFAULT_LINE_SPACING) * spec.height;
     if !(spacing.is_finite() && pitch.is_finite() && pitch >= 0.0) {
@@ -697,27 +801,37 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
     let block_mid = (spec.height - (lines.len() as f64 - 1.0) * pitch) / 2.0;
     let turn = spec.angle_deg.to_radians();
     let (sin, cos) = turn.sin_cos();
+    // Every character the font lacks is named, once, before anything is laid out.
+    let mut missing: Vec<char> = Vec::new();
+    for ch in spec.text.chars().filter(|ch| *ch != '\n' && *ch != '\r') {
+        if ch.is_control() {
+            return Err(format!(
+                "Text takes letters, digits and symbols, not the control character U+{:04X}.",
+                ch as u32
+            ));
+        }
+        if glyphs.glyph(ch).is_none() && !missing.contains(&ch) {
+            missing.push(ch);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(glyphs.lacks(&missing));
+    }
     let mut faces = Vec::new();
     let mut widths = Vec::with_capacity(lines.len());
     // Outlines are read once per distinct letter: a glyph's contours do not depend on where it stands.
-    let mut cache: Vec<(GlyphId, Vec<Contour>)> = Vec::new();
+    let mut cache: Vec<(u32, Vec<Contour>)> = Vec::new();
     for (row, line) in lines.iter().enumerate() {
-        let mut placed: Vec<(GlyphId, f64, char)> = Vec::new();
+        let mut placed: Vec<(u32, f64, char)> = Vec::new();
         let mut pen = 0.0;
-        let mut prev: Option<GlyphId> = None;
+        let mut prev: Option<u32> = None;
         for ch in line.chars() {
-            if ch.is_control() {
-                return Err(format!(
-                    "Text takes letters, digits and symbols, not the control character U+{:04X}.",
-                    ch as u32
-                ));
-            }
-            let gid = face.glyph_index(ch).ok_or_else(|| lacks(ch))?;
+            let gid = glyphs.glyph(ch).expect("checked above");
             if let Some(prev) = prev {
-                pen += kerning(&face, prev, gid) * k;
+                pen += glyphs.kerning(prev, gid) * k;
             }
             placed.push((gid, pen, ch));
-            pen += f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) * k + spacing;
+            pen += glyphs.advance(gid) * k + spacing;
             prev = Some(gid);
         }
         let width = if placed.is_empty() {
@@ -734,15 +848,7 @@ pub fn lay_out_face(spec: &Spec, bytes: &[u8], slant: bool, font: String) -> Res
         let y0 = -(row as f64) * pitch - block_mid;
         for (gid, at, ch) in placed {
             if !cache.iter().any(|(g, _)| *g == gid) {
-                let mut collector = Collector {
-                    cur: None,
-                    out: Vec::new(),
-                    last: [0.0; 2],
-                };
-                if face.outline_glyph(gid, &mut collector).is_some() {
-                    collector.finish();
-                }
-                cache.push((gid, collector.out));
+                cache.push((gid, glyphs.outline(gid)));
             }
             let contours = &cache.iter().find(|(g, _)| *g == gid).expect("read above").1;
             if contours.is_empty() {
@@ -886,3 +992,6 @@ pub fn encode(faces: &[GlyphFace]) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod user_tests;

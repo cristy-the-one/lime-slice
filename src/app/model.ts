@@ -210,6 +210,8 @@ import { couponFileName, couponInputFor, fitCoupon, fitCouponRequest, readCoupon
 import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../modeling/joint-down.ts";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { closeCracks } from "../mesh-check";
+import { userFontIdsOf } from "../modeling/user-fonts";
+import { resyncFonts } from "./user-fonts";
 import { meshKeyHex } from "../slice-action";
 import { axesOf, drillDown, GLOBAL_WORKPLANE, isGlobalFrame, isIdentityFrame, planePoint, planePrimitive, printOrient, sameWorkplane, workplaneIn, workplaneOnFace, workplaneOwn, type Workplane } from "../workplane";
 
@@ -488,6 +490,9 @@ export function bindModelView() {
     },
     splitLegal() {
       return splitLegal();
+    },
+    usedFontIds() {
+      return userFontIdsOfTrees();
     },
     paramsChanged(typed) {
       if (openModelTool()) endStressPick();
@@ -2207,6 +2212,13 @@ type TreeToSave = SavedTree<{ name: string; bytes: ArrayBuffer }>;
  * saved, except a tool's that a saved join names (`tools`), under the object id the join gives, and
  * a tree whose join's tool tree could not be saved is left out too. Run after `captureOpenSolid`.
  */
+/** The ids of the fonts of the person's that any open history's text steps use (Text milestone 4). */
+function userFontIdsOfTrees(): Set<string> {
+  const ids = new Set<string>();
+  for (const tree of modelTrees.values()) for (const node of tree.nodes.values()) for (const id of userFontIdsOf(node.op)) ids.add(id);
+  return ids;
+}
+
 export async function historyToSave(): Promise<{ trees: Map<string, TreeToSave>; tools: { id: string; name: string; tree: TreeToSave }[]; pieces: HeldToSave[]; unsaved: string[] }> {
   const held = new Map<string, { name: string; key: string; node: NodeId }>();
   for (const obj of state.plate.objects) {
@@ -6834,6 +6846,8 @@ function closeLate(key: string): string {
 async function restore(key: string, node: NodeId, missing: NodeId[]): Promise<string | null> {
   const tree = modelTrees.get(key);
   if (!tree) return "This solid is no longer open.";
+  // --- Text milestone 4: a restarted engine has forgotten the fonts of the person's too; its text steps need them to build again.
+  await resyncFonts();
   const chord = state.stepTolerance;
   const seed = seeds.get(key);
   if (seed?.whole) return seed.whole;

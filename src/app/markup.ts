@@ -353,6 +353,7 @@ export function mountMarkup(root: HTMLElement) {
                 <label data-for="text" data-fontkind="stroke" data-snap="1" data-tip="Default height / 3."><span class="scrub-label" data-scrub>Spacing</span><input id="modelTextSpace" type="number" step="0.1" min="0" max="100" value="2" aria-label="Spacing, default height / 3"></label>
                 <label data-for="text" data-fontkind="outline" data-snap="0.1" data-tip="Added after every letter, on top of the font's own kerning."><span class="scrub-label" data-scrub>Letter spacing</span><input id="modelTextTrack" type="number" step="0.1" min="-50" max="100" value="0" aria-label="Letter spacing, mm after every letter"></label>
                 <label data-for="text" data-fontkind="outline" data-snap="0.1" data-tip="Capital heights between lines. Default 1.3."><span class="scrub-label" data-scrub>Line spacing</span><input id="modelTextLines" type="number" step="0.1" min="0" max="10" value="1.3" aria-label="Line spacing, capital heights between lines"></label>
+                <label data-for="text" data-fontkind="variable" data-snap="10" data-tip="The weight of a variable font: 100 light, 400 regular, 700 bold, 900 black."><span class="scrub-label" data-scrub>Weight</span><input id="modelTextWeight" type="number" step="10" min="1" max="1000" value="400" aria-label="Weight of the variable font"></label>
                 <label data-for="text" data-snap="15" data-tip="Turns the layout in the face."><span class="scrub-label" data-scrub>Angle</span><input id="modelTextAngle" type="number" step="1" min="-360" max="360" value="0" aria-label="Text angle, degrees"></label>
                 <!-- end A3 -->
                 <!-- --- A4 pattern and mirror. Each number is one line: the drag checklist reads it that way. --- -->
@@ -446,7 +447,15 @@ export function mountMarkup(root: HTMLElement) {
               <div class="model-fonts" id="modelTextFont" data-for="text" role="group" aria-label="Font" data-tip="Stroke is the single-stroke grid font. The others are real outline fonts.">
                 <button class="btn mode font-pick" type="button" data-font="stroke" aria-pressed="false" data-tip="Single-stroke capitals and digits, for engraving.">Stroke</button>
                 ${TEXT_FONTS.map((font) => `<button class="btn mode font-pick${font.id === DEFAULT_TEXT_FONT ? " on" : ""}" type="button" data-font="${font.id}@${font.version}" aria-pressed="${font.id === DEFAULT_TEXT_FONT}" style="font-family: '${font.family}', sans-serif" data-tip="${font.about}">${font.name}</button>`).join("\n                ")}
+                <span class="font-user-host" id="modelTextUserFonts" role="presentation"></span>
               </div>
+              <!-- Text milestone 4: the person's own fonts. Add font file… reads a TrueType or OpenType file; it is kept in the font library and saved in the project. -->
+              <div class="model-font-tools" data-for="text">
+                <button class="btn" type="button" id="modelTextAddFont" data-tip="Pick a TrueType (.ttf), OpenType (.otf) or collection (.ttc) file. It is kept in your font library and saved in the project, so the project opens the same on another computer.">Add font file…</button>
+                <input id="modelTextFontFile" type="file" accept=".ttf,.otf,.ttc,font/ttf,font/otf" hidden>
+                <select id="modelTextFace" aria-label="Which font of this collection" hidden></select>
+              </div>
+              <p class="model-note model-text-licence" id="modelTextLicence" data-for="text" data-fontkind="outline" role="status" hidden></p>
               <p class="model-font-sample" id="modelTextSample" data-for="text" data-fontkind="outline" aria-hidden="true"></p>
               <div class="modes" id="modelTextStyle" data-for="text" data-fontkind="outline" role="group" aria-label="Style" data-tip="Regular, bold, italic. A font with no italic is slanted; one with no bold is refused.">
                 <button class="btn mode" type="button" data-style="regular" aria-pressed="false">Regular</button>

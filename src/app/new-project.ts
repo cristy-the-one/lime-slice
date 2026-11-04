@@ -17,6 +17,7 @@ import { renderChrome } from "./settings.ts";
 import { setSettingsLevel } from "../ui/settings-panel.ts";
 import { session, state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 import { fx } from "./fx.ts";
+import { dropProjectFonts } from "./user-fonts.ts";
 import { dropShownPreview, setStage, stopPlay } from "./viewer.ts";
 import { closeStress } from "../ui/stress.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
@@ -75,6 +76,8 @@ export function blankProject() {
   // --- A8. File > New drops the previous project's MCP record. ---
   session.mcpModel = undefined;
   session.plugins = undefined;
+  session.fonts = undefined;
+  dropProjectFonts();
   session.parameters = {};
   session.assemblies = [];
   noteParametersBuilt();

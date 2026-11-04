@@ -10,6 +10,7 @@ fn spec(text: &str) -> Spec {
         line_spacing: None,
         align: Align::Centre,
         angle_deg: 0.0,
+        weight: None,
     }
 }
 

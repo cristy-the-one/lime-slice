@@ -4,7 +4,7 @@
  * these two functions, so they read and write the same bytes.
  *
  * A binary record is a plate object's `mesh`, its `brep` (the solid), and a `modelTree.rootStep` that carries its bytes,
- * and a held piece's `mesh` and `brep`.
+ * a held piece's `mesh` and `brep`, and each record of `fonts` (a font file of the person's, or the pack of its letters).
  * In `src/project.ts` such a record holds `bytesBase64`. On disk it keeps `name`, `byteLength`, and `hash` (of the
  * original bytes, as ever) and holds the bytes as
  *
@@ -40,6 +40,11 @@ async function through(bytes: Uint8Array, transform: CompressionStream | Decompr
 export const gzip = (bytes: Uint8Array) => through(bytes, new CompressionStream("gzip"));
 export const gunzip = (bytes: Uint8Array) => through(bytes, new DecompressionStream("gzip"));
 
+/** The font records of a wire document, in file order: `fonts` maps a font's SHA-256 to a binary record. */
+function fontRecords(wire: Row): Row[] {
+  return isRow(wire.fonts) ? Object.values(wire.fonts).filter(isRow) : [];
+}
+
 /** The lists of a wire document whose rows hold binary records. */
 const HOLDERS = ["objects", "modelTools", "heldPieces"] as const;
 
@@ -56,6 +61,7 @@ function binaryRecords(wire: Row): Row[] {
     take(holder.brep);
     if (isRow(holder.modelTree)) take(holder.modelTree.rootStep);
   }
+  for (const record of fontRecords(wire)) take(record);
   return out;
 }
 
@@ -107,6 +113,7 @@ export function prepareProject(project: LimeProject): PreparedProject {
     const rows = wire[key];
     if (Array.isArray(rows)) wire[key] = rows.map(swapHolder);
   }
+  if (isRow(wire.fonts)) wire.fonts = Object.fromEntries(Object.entries(wire.fonts).map(([key, record]) => [key, replaced(record)]));
   // The stand-ins hold no bytes, so copying the document now is cheap, and nothing in it can change afterwards.
   const copy = structuredClone(wire);
   // A record two objects share is one record in the copy too (a clone keeps shared references), packed once.

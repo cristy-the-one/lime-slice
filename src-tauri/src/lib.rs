@@ -16,6 +16,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 mod bridge;
+mod fonts;
 mod open_file;
 mod plugins;
 mod prusa_http;
@@ -515,7 +516,10 @@ pub fn run() {
             plugins::plugin_library_save,
             plugins::plugin_library_write,
             plugins::plugin_library_remove,
-            plugins::plugin_library_reveal
+            plugins::plugin_library_reveal,
+            fonts::font_library_list,
+            fonts::font_library_add,
+            fonts::font_library_remove
         ])
         .run(tauri::generate_context!())
         .expect("Lime Slice window failed to start");

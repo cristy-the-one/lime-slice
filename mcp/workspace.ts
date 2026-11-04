@@ -55,6 +55,23 @@ export function resolveRead(path: string, kind: "mesh" | "lime" | "profile" | "m
   return full;
 }
 
+/** A font file for a text: a .ttf, .otf or .ttc, at most 40 MB (the engine's own limit). Read like a mesh, not confined to the workspace. */
+export function resolveFont(path: string): string {
+  if (!path || path.includes("\0")) throw new ProtocolError("That path is not a file this server can read.");
+  const root = process.env.LIME_MCP_WORKSPACE;
+  const full = !isAbsolute(path) && root ? resolve(root, path) : resolve(path);
+  let stat;
+  try {
+    stat = statSync(full);
+  } catch {
+    throw new ProtocolError(`That file was not found: ${full}`);
+  }
+  if (!stat.isFile()) throw new ProtocolError("That path is not a regular file.");
+  if (![".ttf", ".otf", ".ttc"].includes(extensionOf(full))) throw new ProtocolError("This file is not a font Lime Slice can read. Use a TrueType (.ttf) or OpenType (.otf) file.");
+  if (stat.size > 40 * 1024 * 1024) throw new ProtocolError("This font file is larger than 40 MB. Pick a smaller one.");
+  return full;
+}
+
 /** A project or mesh already in the workspace, for the desktop app to open. A path that leaves it is refused. */
 export function resolveWorkspaceFile(path: string): string {
   const root = requireWorkspace();

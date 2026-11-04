@@ -24,11 +24,13 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
-import { featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
+import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece } from "../modeling/compose";
-import { fontById, isOutlineFont, styleHasFile, styleOf, styleRefusal } from "../modeling/text-fonts";
+import { fontById, isOutlineFont, isUserFont, styleHasFile, styleOf, styleRefusal, userFontView } from "../modeling/text-fonts";
+import { missingFontSentence, restrictedNote, userStyleRefusal } from "../modeling/user-fonts";
+import { addFontFile, ensureLibrary, listedFonts, onUserFontsChange, removeUserFont } from "../app/user-fonts";
 import type { LetteringOp } from "../model-tree";
 import { curvedLettersGhost, curvedThinNoteOf, lettersGhost, thinNoteOf } from "./text-preview";
 import { lastEdge, modelApplyReady, shellFacesLabel, type ModelPickRef } from "../model-select";
@@ -61,6 +63,8 @@ interface ModelChromeHooks {
   splitLegal(): boolean;
   /** A tool opened, the selection changed, or a number changed. `typed` while a number is still being typed or dragged. */
   paramsChanged(typed?: boolean): void;
+  /** --- Text milestone 4. The ids of the fonts of the person's that texts in the open project's histories use. */
+  usedFontIds(): Set<string>;
   /** --- A6. The project's parameters, evaluated, for every number field. */
   parameters(): Params;
   /** A typed or dragged number settled: ask the kernel now instead of after the typing wait. */
@@ -416,12 +420,23 @@ export function mountModelChrome(next: ModelChromeHooks) {
     }
   });
 
+  mountUserFontInputs();
   // E3. The tools sit in the rail, their panel in the Model dock and the pick filter over the view: one listener for all.
   document.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
     if (!target?.closest("[data-model-ui], #modelBar")) return;
     if (target.closest("#modelAlignGo")) {
       alignNow();
+      return;
+    }
+    // --- Text milestone 4: Add font file…, and taking an added font out of the list.
+    if (target?.closest("#modelTextAddFont")) {
+      document.querySelector<HTMLInputElement>("#modelTextFontFile")?.click();
+      return;
+    }
+    const removeFont = target?.closest<HTMLElement>("[data-remove-font]");
+    if (removeFont?.dataset.removeFont) {
+      void removeAddedFont(removeFont.dataset.removeFont);
       return;
     }
     // --- Text on a cylinder or a cone: back to the middle of the face.
@@ -498,9 +513,17 @@ export function mountModelChrome(next: ModelChromeHooks) {
       if (featureMode.closest("#modelTextFont")) {
         // A style the new font cannot make (a bold the stencil lacks) goes back to Regular, not to a refusal.
         const chosen = fontById(featureMode.dataset.font);
-        if (chosen && styleRefusal(chosen, panelChoices("text").style)) paintNamed("modelTextStyle", "style", "regular");
+        const user = userFontView(featureMode.dataset.font);
+        const style = panelChoices("text").style;
+        if (chosen && styleRefusal(chosen, style)) paintNamed("modelTextStyle", "style", "regular");
+        // --- Text milestone 4: a font of the person's has the styles its file has; a variable font takes its weight from the field.
+        if (user && (userStyleRefusal(user, style) || (user.weight && (style === "bold" || style === "bold-italic")))) paintNamed("modelTextStyle", "style", user.weight && style === "bold-italic" ? "italic" : "regular");
+        if (user?.weight) {
+          const field = document.querySelector<HTMLInputElement>("#modelTextWeight");
+          if (field && !(Number(field.value) >= user.weight.min && Number(field.value) <= user.weight.max)) field.value = String(user.weight.default);
+        }
         // The stroke font has no right-aligned lines.
-        if (!chosen && panelChoices("text").align === "right") paintNamed("modelTextAlign", "align", "centre");
+        if (!isOutlineFont(featureMode.dataset.font) && panelChoices("text").align === "right") paintNamed("modelTextAlign", "align", "centre");
         paintTextFont();
       }
       syncFields();
@@ -629,7 +652,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (tool === "split") syncSplitField();
     if (tool === "hole") paintScrew();
     // --- Text with real fonts: the sample line under the picker follows the typing.
-    if (tool === "text" && typed === "modelFeatText") paintTextFont();
+    if (tool === "text" && (typed === "modelFeatText" || typed === "modelTextWeight")) paintTextFont();
     // --- A5. A typed step number follows the list, and the line names that row. ---
     if (ev.target instanceof HTMLElement && ev.target.id === "modelEdgeNode") syncEdgeSelect();
     // --- A4. The path fields edit the last point. ---
@@ -1279,7 +1302,7 @@ function syncFields() {
     // --- A3 composite features: a shape or a cell shows only its own sizes. ---
     const shapeOk = !node.dataset.shape || node.dataset.shape.split(" ").includes(panelChoices().shape);
     // --- Text with real fonts: the stroke font keeps its Stroke and Spacing; an outline font has its style, letter and line spacing.
-    const fontOk = !node.dataset.fontkind || tool !== "text" || node.dataset.fontkind === (isOutlineFont(panelChoices("text").font) ? "outline" : "stroke");
+    const fontOk = !node.dataset.fontkind || tool !== "text" || fontKindsNow().includes(node.dataset.fontkind);
     const cellOk = !node.dataset.cell || node.dataset.cell.split(" ").includes(panelChoices().cell);
     // --- Text on a cylinder or a cone: Direction, Flip and the anchor's line show for one; the flat face's U and V do not.
     const roundNow = tool === "text" && !!hooks?.pickedRound();
@@ -1300,7 +1323,12 @@ function syncFields() {
   });
   // --- A3 composite features ---
   // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
-  if (tool === "text") paintTextFont();
+  if (tool === "text") {
+    // --- Text milestone 4: the person's fonts (the library, and this project's) list under the bundled ones.
+    void ensureLibrary();
+    paintUserFonts();
+    paintTextFont();
+  }
   if (isFeatureTool(tool)) {
     const depthAria: Record<FeatureTool, string> = {
       pocket: "Into the face",
@@ -2857,8 +2885,9 @@ function onFeatureMenuKey(ev: KeyboardEvent) {
 }
 
 function paintModeGroup(button: HTMLButtonElement) {
-  const group = button.parentElement;
-  group?.querySelectorAll<HTMLButtonElement>("button").forEach((item) => {
+  // The font picker's buttons of the person's sit one level in, each with its remove button: the group is the picker.
+  const group = button.closest<HTMLElement>("#modelTextFont") ?? button.parentElement;
+  group?.querySelectorAll<HTMLButtonElement>("button:not(.font-remove)").forEach((item) => {
     const on = item === button;
     item.setAttribute("aria-pressed", on ? "true" : "false");
     item.classList.toggle("on", on);
@@ -2883,6 +2912,7 @@ function paintFeature(choices: FeatureChoices) {
   paintNamed("modelFeatOp", "op", choices.op);
   paintNamed("modelTextAlign", "align", choices.align);
   paintNamed("modelTextOp", "op", choices.op);
+  paintUserFonts(choices.font);
   paintNamed("modelTextFont", "font", choices.font);
   paintNamed("modelTextStyle", "style", choices.style);
   paintNamed("modelTextWay", "way", choices.way);
@@ -2918,22 +2948,174 @@ function paintTextThin(letters: LetteringOp | null, round: { key: string; node: 
 function paintTextFont() {
   const choices = panelChoices("text");
   const font = fontById(choices.font);
+  const user = userFontView(choices.font);
   document.querySelectorAll<HTMLButtonElement>("#modelTextStyle [data-style]").forEach((button) => {
     const style = styleOf(button.dataset.style);
-    const refused = font ? styleRefusal(font, style) : null;
+    const bold = style === "bold" || style === "bold-italic";
+    const italic = style === "italic" || style === "bold-italic";
+    let refused = font ? styleRefusal(font, style) : null;
+    let slanted = !!font && !refused && !styleHasFile(font, style);
+    if (user) {
+      // A font of the person's: its file decides. A variable font's bold is its Weight field.
+      refused = user.weight && bold ? "A variable font takes its weight from the Weight field." : userStyleRefusal(user, style);
+      slanted = !refused && italic && !user.italic;
+    }
     if (refused) button.setAttribute("aria-disabled", "true");
     else button.removeAttribute("aria-disabled");
-    const slanted = !!font && !refused && !styleHasFile(font, style);
-    button.dataset.tip = refused ?? (slanted ? `${font!.name} has no italic of its own: the letters are slanted 12°.` : "");
+    const name = font?.name ?? user?.name ?? "";
+    button.dataset.tip = refused ?? (slanted ? `${name} has no italic of its own: the letters are slanted 12°.` : "");
   });
   const sample = document.querySelector<HTMLElement>("#modelTextSample");
-  if (sample && font) {
+  if (sample && (font || user)) {
     const first = choices.text.split("\n").find((line) => line.trim()) ?? "Lime Slice 2026";
     sample.textContent = first;
-    sample.style.fontFamily = `'${font.family}', sans-serif`;
-    sample.style.fontWeight = choices.style === "bold" || choices.style === "bold-italic" ? "700" : "400";
+    const weight = Number(document.querySelector<HTMLInputElement>("#modelTextWeight")?.value) || 400;
+    sample.style.fontFamily = font ? `'${font.family}', sans-serif` : user?.cssFamily ? `'${user.cssFamily}', sans-serif` : "";
+    sample.style.fontWeight = user?.weight ? String(weight) : choices.style === "bold" || choices.style === "bold-italic" ? "700" : "400";
     sample.style.fontStyle = choices.style === "italic" || choices.style === "bold-italic" ? "italic" : "normal";
   }
+  // The weight slider's range is the font's own axis.
+  const weightField = document.querySelector<HTMLInputElement>("#modelTextWeight");
+  if (weightField && user?.weight) {
+    weightField.min = String(user.weight.min);
+    weightField.max = String(user.weight.max);
+  }
+  // --- D5: the one sentence about a font whose licence does not allow embedding it, or one saved as letters only.
+  const licence = document.querySelector<HTMLElement>("#modelTextLicence");
+  if (licence) {
+    const said = !user ? null : user.pack ? `‘${user.name}’ is saved in this project with only the letters it was used for. Add the font file again to type others.` : restrictedNote(user);
+    licence.textContent = said ?? "";
+    licence.hidden = !said;
+  }
+}
+
+/** Which kinds of field the Text card shows now: `stroke`, or `outline`, and `variable` too for a variable font. */
+function fontKindsNow(): string[] {
+  const font = panelChoices("text").font;
+  if (!isOutlineFont(font)) return ["stroke"];
+  return userFontView(font)?.weight ? ["outline", "variable"] : ["outline"];
+}
+
+/**
+ * --- Text milestone 4. The person's own fonts under the bundled ones, each named in itself and with a way to take it out. A font
+ * a saved step names that this computer lacks is a disabled entry that says so.
+ */
+function paintUserFonts(select?: string) {
+  const host = document.querySelector<HTMLElement>("#modelTextUserFonts");
+  if (!host) return;
+  const pressed = select ?? document.querySelector<HTMLElement>("#modelTextFont [aria-pressed='true']")?.dataset.font;
+  const listed = listedFonts();
+  // The list is rebuilt only when it changed: this runs with every repaint of the card, and a button replaced under the pointer
+  // would lose the click.
+  const missing = isUserFont(pressed) && !listed.some((font) => font.id === pressed) ? pressed : "";
+  const signature = `${listed.map((font) => `${font.id}|${font.cssFamily ?? ""}|${font.pack}|${font.restricted}|${font.name}`).join(";")}#${missing}`;
+  if (host.dataset.signature === signature) {
+    if (pressed) paintNamed("modelTextFont", "font", pressed);
+    return;
+  }
+  host.dataset.signature = signature;
+  host.replaceChildren();
+  for (const font of listed) {
+    const wrap = document.createElement("div");
+    wrap.className = "font-user";
+    const pick = document.createElement("button");
+    pick.className = "btn mode font-pick";
+    pick.type = "button";
+    pick.dataset.font = font.id;
+    pick.setAttribute("aria-pressed", "false");
+    pick.textContent = font.name;
+    if (font.cssFamily) pick.style.fontFamily = `'${font.cssFamily}', sans-serif`;
+    pick.dataset.tip = font.pack ? `${font.name}: only the letters this project used.` : font.restricted ? (restrictedNote(font) ?? font.name) : font.name;
+    const remove = document.createElement("button");
+    remove.className = "font-remove";
+    remove.type = "button";
+    remove.dataset.removeFont = font.id;
+    remove.setAttribute("aria-label", `Remove ${font.name} from your fonts`);
+    remove.dataset.tip = `Remove ${font.name} from your fonts. A project that uses it keeps its copy.`;
+    remove.textContent = "×";
+    wrap.append(pick, remove);
+    host.append(wrap);
+  }
+  if (isUserFont(pressed) && !listed.some((font) => font.id === pressed)) {
+    const gone = document.createElement("button");
+    gone.className = "btn mode font-pick";
+    gone.type = "button";
+    gone.dataset.font = pressed;
+    gone.setAttribute("aria-pressed", "false");
+    gone.setAttribute("aria-disabled", "true");
+    gone.textContent = "Missing font";
+    gone.dataset.tip = missingFontSentence(pressed);
+    host.append(gone);
+  }
+  if (pressed) paintNamed("modelTextFont", "font", pressed);
+}
+
+async function removeAddedFont(id: string) {
+  const wasChosen = panelChoices("text").font === id;
+  await removeUserFont(id, hooks?.usedFontIds().has(id) ?? false);
+  if (wasChosen && !listedFonts().some((font) => font.id === id)) paintNamed("modelTextFont", "font", FEATURE_CHOICE_DEFAULTS.font);
+  paintUserFonts();
+  syncFields();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+/** A file the person picked on Add font file…: read by the engine, kept, and chosen in the card. */
+async function takeFontFile(file: File, face?: number) {
+  const faces = document.querySelector<HTMLSelectElement>("#modelTextFace");
+  const result = await addFontFile(file, face);
+  if (!result.ok) {
+    if ("collection" in result && faces) {
+      // A collection: the person picks which font of it.
+      faces.replaceChildren(...[{ index: -1, name: "Which font of this file?" }, ...result.collection].map((row) => {
+        const option = document.createElement("option");
+        option.value = String(row.index);
+        option.textContent = row.name;
+        return option;
+      }));
+      faces.hidden = false;
+      pendingFontFile = file;
+      return;
+    }
+    pushToast(result.reason, "error");
+    return;
+  }
+  if (faces) faces.hidden = true;
+  pendingFontFile = null;
+  const user = userFontView(result.font.id);
+  paintUserFonts(result.font.id);
+  // A style the new font cannot make goes back to Regular.
+  const style = panelChoices("text").style;
+  if (user && (userStyleRefusal(user, style) || (user.weight && (style === "bold" || style === "bold-italic")))) paintNamed("modelTextStyle", "style", user.weight && style === "bold-italic" ? "italic" : "regular");
+  if (user?.weight) {
+    const field = document.querySelector<HTMLInputElement>("#modelTextWeight");
+    if (field) field.value = String(user.weight.default);
+  }
+  syncFields();
+  refreshGhost();
+  hooks?.paramsChanged();
+}
+
+let pendingFontFile: File | null = null;
+
+/** Wire the card's file input and the collection picker. */
+function mountUserFontInputs() {
+  document.querySelector<HTMLInputElement>("#modelTextFontFile")?.addEventListener("change", (ev) => {
+    const input = ev.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (file) void takeFontFile(file);
+  });
+  document.querySelector<HTMLSelectElement>("#modelTextFace")?.addEventListener("change", (ev) => {
+    const index = Number((ev.target as HTMLSelectElement).value);
+    if (pendingFontFile && index >= 0) void takeFontFile(pendingFontFile, index);
+  });
+  onUserFontsChange(() => {
+    if (document.querySelector("#modelTextUserFonts")) {
+      paintUserFonts();
+      paintTextFont();
+    }
+  });
 }
 
 function featureDrag(current: FeatureTool): NonNullable<DragContext["feature"]> {

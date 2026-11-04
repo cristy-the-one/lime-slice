@@ -598,8 +598,10 @@ const surfaceOps = [
     properties: {
       kind: { const: "text" },
       text: { type: "string", minLength: 1, maxLength: 400, description: "Any letters the font has, \n for a new line. The stroke font takes 80 of A-Z, 0-9, space, -+.,:!?/'&." },
-      font: { enum: ["stroke", "sans", "mono", "serif", "stencil"], description: "Default stroke, the single-stroke font. The others are outline fonts (guide {kind:\"text\"})." },
+      font: { type: "string", maxLength: 120, description: "Default stroke, the single-stroke font. sans, mono, serif, stencil are outline fonts; so is a font already in the project, by name (guide {kind:\"text\"})." },
+      fontFile: { type: "string", maxLength: 400, description: "A .ttf, .otf or .ttc in the workspace (file.ttc#2 for its third font). Adds it to the project; later texts name it as font." },
       style: { enum: ["regular", "bold", "italic", "bold-italic"], description: "Outline fonts. A font with no italic is slanted; one with no bold is refused." },
+      weight: { type: "number", minimum: 100, maximum: 900, description: "A variable font's weight." },
       height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Capitals, mm." },
       strokeWidth: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Stroke font. Default height × 0.15." },
       spacing: { type: "number", minimum: -50, maximum: 100, description: "After each letter, mm. Default height / 3 for stroke, 0 for outline fonts." },
