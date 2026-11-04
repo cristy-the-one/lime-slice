@@ -773,6 +773,24 @@ Deviations from this plan, each on purpose or forced:
 8. **Not done.** Show me (deferred by the owner since milestone 2), measuring on the owner's housing and Telo parts, `hershey`, and the pen fonts on split-to-print numbers and fit coupon labels
    (the plan keeps those on `textStrokes`). A user font by name in `text_outline` works over MCP only (the project's fonts are the session's).
 
+### As built (speed, 5.2.1)
+
+A measurement run on real parts found the text build spending its time in checks, not in building. What changed, all in `cpp/text.cpp`, with the numbers in the PR:
+
+1. **Edge distance.** `ink_near_edges` samples the outlines every 0.25 mm and measures those points against only the edges whose box is near the ink (`Extrema_ExtPC`, ends included). The exact
+   `BRepExtrema_DistShapeShape` runs only when a sampled point is within 0.155 mm (0.02 + half the spacing + a margin: sampling can hide at most half the spacing), so the decisions are the
+   exact ones. The flat build uses it too.
+2. **Validity.** The direct build checks the new faces one by one (`BRepCheck_Analyzer` on each), and the shell that holds them for closure and orientation (`BRepCheck_Shell`), not the whole part. The
+   volume is the part's old volume less the replaced face plus the new faces, each integrated about one point (`faces_volume`), so a freeform part's whole-shape integral (good to a part in a thousand)
+   is no longer the noise on the letters' few cubic millimetres. The boolean build still checks the whole result.
+3. **Classification.** The letters' (u, v) go to `BRepTopAdaptor_FClass2d` as they are. A point it does not put inside goes to the 3D classifier, which decides, so a text across a seam is judged as it was.
+4. **The wrong refusal.** A text anchored where no face of the part is (a ball's centre-height point 12 mm off it) answered "This would add a separate body" (raised) or "The text does not change
+   the part" (engraved). It says "The point is 12.4 mm off the part, not on the face you picked. Pick a point on the face." (`build_lettering`, flat route only: the curved routes find their face or refuse).
+5. **Beyond the brief, same cause.** Finding the face under the anchor measured every freeform face of the part (three times a build, about 650 ms on a part of 200 faces): a face whose box is
+   not near the point is skipped now. The engraving's rays load the part once, not once per ray.
+6. **Test hooks.** `testText` (debug builds, like `testNurbs`) runs the cheap checks beside the exact ones on a part's face: classifier verdicts, edge gaps at known distances, and a face turned
+   over, a face missing and a face whose outline crosses itself, which must all be caught.
+
 ## 11. Done for the whole plan
 
 - A person types two lines in Sans Bold, puts them round a Ø 40 cup and on a wavy freeform lid, raised and
