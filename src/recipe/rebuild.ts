@@ -14,6 +14,7 @@ import { plainModelError } from "../app/model-error.ts";
 import { readBroken, readBuilt, solidView, type SolidView } from "../modeling/model-calls.ts";
 import { markedRun, sameFingerprint, sameValues, type StampedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
+import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import { DEFAULT_LIMITS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
 
 /** The steps on the way to the shown step that came after a run: what a rebuild of it replays. */
@@ -131,7 +132,11 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
   if (later.some((id) => tree.nodes.get(id)?.op?.kind === "partition")) {
     return { ok: false, reason: "A split to print follows this plugin step, and a rebuild cannot cut its pieces again. Undo to before the split, rebuild, then split again.", notes: [] };
   }
-  const built = await input.recipes.build(run.stamp.plugin, input.body, false, input.suffix ?? "");
+  // The host builds the code; the data a kept plugin carries answers `data {name}` after the step's own.
+  const split = splitPluginData(input.body);
+  if (split.problem) return { ok: false, reason: split.problem, notes: [] };
+  const env = carriedEnv(input.env, run.stamp.version, split.data);
+  const built = await input.recipes.build(run.stamp.plugin, split.code, false, input.suffix ?? "");
   if (!built.ok || !built.exe) {
     const first = built.diagnostics[0];
     return { ok: false, reason: built.reason ?? (first ? `The plugin did not build: line ${first.line}: ${first.message}` : "The plugin did not build."), ...(first ? { line: first.line } : {}), notes: [] };
@@ -150,8 +155,8 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
       await back();
       return { ok: false, reason: `The step before the plugin's run could not be shown: ${typeof startReply.error === "string" ? plainModelError(startReply.error) : "the engine did not answer."}`, notes: [] };
     }
-    calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, input.env);
-  } else calls = new AppRecipeCalls(null, engine, input.env);
+    calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, env);
+  } else calls = new AppRecipeCalls(null, engine, env);
   const start = { params: input.params, context: { units: "mm", ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   const notes = [...calls.notes, ...(out.notes ?? [])];

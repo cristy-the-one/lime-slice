@@ -193,6 +193,9 @@ fn main() { /* ... */ }
   editor highlights it, and it reads on GitHub or in a chat.
 - `key: value`, one per line; `params` is one line of JSON (it is a cache the host writes, not something to type).
 - The hash covers the body only, so editing the description does not make a new version; editing the code does.
+- The body ends with the recipe data the run read, when it read any (`data {name}`), one `// data:` line per name
+  after a fence line: plain comments, so the file still builds as it stands (As built, "plugins carry the recipe data
+  they read", milestone 7).
 - A file whose body does not match its hash is treated as edited by hand: the app recomputes the hash and `params`
   (one describe run), bumps `version`, and says so once.
 - Rejected: a folder with `manifest.json` and `main.rs` (two files to send, two to keep in step), and a JSON file with
@@ -796,6 +799,37 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
      `e2e/model-plugins-panel.spec.ts` and `e2e/model-plugins-mac.spec.ts` (in `test:smoke`, with a library and a
      scripted runner in the page). Screenshots in `test-results/plugins-panel/`. The desktop check with the installed
      app is the owner's.
+
+   **As built (plugins carry the recipe data they read, branch `claude/plugin-data`):** a data-driven plugin (R-A's
+   `data {name}`) ran only over MCP in the workspace that had its files: the window answered `data` only from a draft's
+   kept data, and the file did not carry what its run read. In 5.0.0 the owner's skull plate refused Preview, Live and
+   Apply with "No recipe data named skull/outline is kept with this step. Rebuild it over MCP ...".
+   - **Where (D6, O2).** Inside the one file, after the code and its `mod ingredients`: a fence line, then one plain
+     `//` comment line per name, `// data: <name> sha256:<file hash> bytes:<file size> <value as one line of JSON>`
+     (`src/recipe/plugin-data.ts`, shared by the app and the MCP). Rejected: a sidecar `<id>.data.json` the id owns in
+     the library, which would make a plugin two files to send (O2), need its own `.vN` copies, and not fit the
+     project's `plugins` map of one text per hash. The lines are in the body, so `source-sha256` covers them: other
+     data is another version, and the project's copy, keyed by that hash, carries the data with it. The host builds the
+     code above the fence only. A plugin that reads no data is written byte for byte as before.
+   - **Limits.** At most 4 MB a name as kept JSON (the workspace read limit) and 12 MB together; the app's library
+     listing (`src-tauri/src/plugins.rs`) now reads files up to 16 MB (was 1 MB). Over either, keeping is refused with
+     one sentence naming the data.
+   - **Lookup order**, every path: the step's kept data (rerun, rebuild) → the plugin's carried data → the workspace's
+     file (MCP only) → what the replaced run kept → for new source under a library plugin's id, the data that plugin
+     carries. In the window, `carriedEnv` adds the plugin's data for a kept plugin's run (version 1 and up) in
+     `runPluginFresh` and `rebuildPluginStep`; a draft keeps its own refusal.
+   - **Kept and attached.** `keep` and `save {from}` carry the run's data; `nugget save {kind: "plugin", id, data:
+     [names]}` carries workspace files into an existing library plugin without a run (code unchanged, the next version).
+     The window's Save as plugin… carries the draft's kept data. The window's refusal for a plugin without its data
+     names it and the fix.
+   - **Shown.** `nugget get` lists `recipeData: [{name, bytes}]` and returns the code alone with `withSource`; the
+     panel's plugin page says "Carries the recipe data <name> (<size>)"; View source hides each value.
+   - Tests: `src/recipe/plugin-data.test.ts` (unit chain), `mcp/plugins-file.test.ts` (round trip through the file, the
+     library and the app's reader), `mcp/plugin.test.ts` (keep carries, library run and rebuild with the file deleted,
+     an old plugin's refusal and attach, too large refused), `mcp/plugin-app.test.ts` (a data plugin's app rebuild and
+     fresh run against the MCP's, stand-in engine locally, real OCCT in CI), `e2e/model-plugins-panel.spec.ts` (a data
+     plugin's Preview and Apply, and the refusal of one kept without its data). The schema budget grows by 29 tokens
+     for nugget's `data`.
 
 8. **Import, export and trust.** D10 and D11.2 to D11.6: export, import (file, drop, MCP `save {source}`), name
    clash, first-run source view, `mod`/`#[path]`/`extern crate` refused, text caps, build time limit.

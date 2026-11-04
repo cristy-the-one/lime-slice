@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { BODY, pluginProject, SHA, type Doc } from "./plugin-fixture";
-import { scriptedLibrary, scriptedRunner, SHA_V4 } from "./plugins-scripted";
+import { FILE_OUTLINE, FILE_OUTLINE_BARE, scriptedLibrary, scriptedRunner, SHA_V4 } from "./plugins-scripted";
 
 /**
  * --- The Plugins panel (docs/plan-recipe-plugins.md D13, milestone 7). The library (a stand-in for the desktop
@@ -236,4 +236,48 @@ test("a plugin that builds a new part applies as a new object, stamped, and Undo
   await page.locator("#tabPrepare").click();
   await page.keyboard.press("Control+z");
   await expect(page.locator("#objectList .obj")).toHaveCount(objects);
+});
+
+test("a plugin that reads recipe data runs from the data it carries, and one kept without it says what is missing", async ({ page }) => {
+  mkdirSync(shots, { recursive: true });
+  await pluginProject(page, {
+    before: async (p) => {
+      await scriptedLibrary(p, false, { "outline-bar.rs": FILE_OUTLINE, "outline-bar-old.rs": FILE_OUTLINE_BARE });
+      await scriptedRunner(p);
+    },
+  });
+  const objects = await page.locator("#objectList .obj").count();
+  await openPanel(page);
+  await card(page).locator('.pp-pick[data-key="library:outline-bar"]').click();
+  await expect(card(page).locator("#modelPluginsData")).toHaveText("Carries the recipe data shapes/outline (11 B): it runs the same without the files it was made from.");
+  await card(page).locator("#modelPluginsLive").uncheck();
+
+  // Preview: the run asks for its data, and the window answers from what the plugin carries; only the code is built.
+  await card(page).locator("#modelPluginsPreview").click();
+  await expect(readout(page)).toContainText("Preview of “Outline bar”, a new part");
+  await page.screenshot({ path: `${shots}/panel-data-preview.png` });
+  const log = await page.evaluate(() => (window as unknown as { __recipeLog: { command: string; args: Record<string, unknown> }[] }).__recipeLog);
+  const sent = log.filter((row) => row.command === "recipe_send").map((row) => JSON.parse(String(row.args.line)) as { id?: number; ok?: boolean; result?: unknown });
+  expect(sent.find((msg) => msg.id === 100)).toEqual({ id: 100, ok: true, result: { studs: 3 } });
+  const built = log.filter((row) => row.command === "recipe_build").map((row) => String(row.args.source));
+  expect(built.at(-1)).toContain('s.data("shapes/outline")');
+  expect(built.at(-1)).not.toContain("// data: ");
+
+  // Apply: a new part, stamped with the plugin, as any plugin's.
+  await page.locator("#modelApply").click();
+  await expect(readout(page)).toContainText("Applied “Outline bar” v1");
+  await expect(page.locator("#objectList .obj")).toHaveCount(objects + 1);
+  await expect(page.getByRole("treeitem", { name: /^Outline bar · plugin v1/ })).toHaveCount(1);
+
+  // Kept before plugins carried their data: the window says which data is missing and how to carry it.
+  if (!(await card(page).isVisible())) await openPanel(page);
+  if (await card(page).locator("#modelPluginsBack").isVisible()) await card(page).locator("#modelPluginsBack").click();
+  await card(page).locator('.pp-pick[data-key="library:outline-bar-old"]').click();
+  await expect(card(page).locator("#modelPluginsTitle")).toContainText("Outline bar (old)");
+  await expect(card(page).locator("#modelPluginsData")).toHaveCount(0);
+  await card(page).locator("#modelPluginsLive").uncheck();
+  await card(page).locator("#modelPluginsPreview").click();
+  await expect(card(page).locator("#modelPluginsStatus")).toContainText("This plugin reads recipe data shapes/outline, which was not kept with it.");
+  await expect(card(page).locator("#modelPluginsStatus")).toContainText('nugget {action:"save", kind:"plugin", id, data:["shapes/outline"]}');
+  await page.screenshot({ path: `${shots}/panel-data-missing.png` });
 });

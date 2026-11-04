@@ -6,7 +6,8 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { pluginFileText } from "../src/plugin-file.ts";
+import { pluginFileText, readPluginFile } from "../src/plugin-file.ts";
+import { carriedData, splitPluginData, withPluginData } from "../src/recipe/plugin-data.ts";
 import { apiRefusal, bodyHash, listLibrary, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginText, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "./plugins.ts";
 
 let failed = 0;
@@ -77,6 +78,29 @@ check("remove takes the plugin and its older versions", removePlugin("bolt-circl
 const h = header(3);
 const appText = pluginFileText({ plugin: h.plugin, title: h.title, version: h.version, description: h.description, author: h.author, madeBy: h["made-by"], api: h.api, sha256: h["source-sha256"], created: h.created, target: h.target, params: h.params }, `\n\n${body}`);
 check("the app writes a plugin file byte for byte as the server does", appText === pluginText(h, `\n\n${body}`));
+
+// --- Plugin data: the recipe data a plugin carries round-trips through the file, the library, and the app's reader;
+// the hash covers it, so other data is another version. Synthetic data only.
+{
+  const data = { "shapes/outline": { sha256: "a".repeat(64), bytes: 33, value: [[0, 0], [12.5, 0], [12.5, 4]] } };
+  const carrying = withPluginData(body, data);
+  const h1: PluginHeader = { ...header(1, carrying) };
+  const file = pluginText(h1, carrying);
+  const read = parsePlugin(file);
+  check("data: the file reads back with its hash matching", !("reason" in read) && read.matches && read.body === carrying, read);
+  if (!("reason" in read)) {
+    const split = splitPluginData(read.body);
+    check("data: the code and the data split off whole", split.code === body && JSON.stringify(split.data) === JSON.stringify(data), split);
+  }
+  const app = readPluginFile(file);
+  check("data: the app's reader sees the same body, and lists the name and size", !!app && app.body === carrying && JSON.stringify(carriedData(app.body).map(({ name, bytes }) => ({ name, bytes }))) === JSON.stringify([{ name: "shapes/outline", bytes: 33 }]), app?.body);
+  check("data: other data is another hash", bodyHash(withPluginData(body, { "shapes/outline": { ...data["shapes/outline"], value: [[0, 0]] } })) !== bodyHash(carrying));
+  check("data: none keeps the code's hash", bodyHash(withPluginData(body, {})) === bodyHash(body));
+  const lib = mkdtempSync(join(tmpdir(), "lime-plugins-data-"));
+  writePlugin(h1, carrying, lib);
+  const back = readPlugin("bolt-circle-flange", lib);
+  check("data: the library keeps it in the one file", !!back && !("reason" in back) && back.matches && readdirSync(lib).join() === "bolt-circle-flange.rs" && JSON.stringify(splitPluginData(back.body).data) === JSON.stringify(data), back);
+}
 
 // The "Plugin author" setting: the app writes settings.json in the library; LIME_PLUGIN_AUTHOR still wins when set.
 const named = process.env.LIME_PLUGIN_AUTHOR;

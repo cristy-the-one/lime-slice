@@ -12,6 +12,7 @@ import { isTauri } from "../platform.ts";
 import { bodySha256, readPluginFile, type PluginFileInfo, type PluginParamInfo } from "../plugin-file.ts";
 import type { PluginStamp } from "../model-tree.ts";
 import { carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
+import { carriedData } from "../recipe/plugin-data.ts";
 
 /**
  * What the shell lists: every plugin `.rs` file of the folder (current and older versions), the presets, the settings,
@@ -239,6 +240,11 @@ export function toolLessonKinds(tool: string): readonly string[] {
 /** The ingredients a plugin file carries inline (I11): id and version, from the stamps a save writes. */
 export function pluginIngredients(file: Pick<PluginFileInfo, "text">): { id: string; version: number }[] {
   return carriedIngredients(file.text).map(({ id, version }) => ({ id, version }));
+}
+
+/** The recipe data a plugin file carries (`data {name}`): name and size, read without parsing the values. */
+export function pluginData(file: Pick<PluginFileInfo, "body">): { name: string; bytes: number }[] {
+  return carriedData(file.body).map(({ name, bytes }) => ({ name, bytes }));
 }
 
 /** The library's plugins that carry ingredient `id`, by title, at the version each carries. */

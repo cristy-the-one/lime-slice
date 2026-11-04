@@ -109,7 +109,10 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // in place of the plugin tool (which still answers, unlisted) and the three more tools the plan sketched, and
 // recipe_run's preset, add 102 to a list at 17,021. nugget is in the model group, so the first list with groups on does
 // not grow, and one find before writing replaces rewriting helpers a library already holds.
-const TOTAL_BUDGET = 17_130;
+// Plugin data (a kept plugin carries the recipe data it read): nugget's data, the names a library plugin carries from
+// the workspace without running it again, adds 29 to a list at 17,123, in the model group; the other way to carry it
+// is a whole recipe_run with keep.
+const TOTAL_BUDGET = 17_160;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
