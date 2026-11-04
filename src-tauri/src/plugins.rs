@@ -4,7 +4,7 @@
 //! The folder is `LIME_PLUGINS_DIR`, else `plugins` in the app's data folder (`%APPDATA%\com.limeslice.slicer` on
 //! Windows, `$XDG_DATA_HOME/com.limeslice.slicer` on Linux, `~/Library/Application Support/com.limeslice.slicer` on
 //! macOS), the same place `mcp/plugins.ts` finds. These commands touch only the names the library uses: `<id>.rs`,
-//! `<id>.vN.rs`, `presets/<id>.json`, `settings.json`, `lessons.json` and the ingredients (`ingredients/<id>.rs` and
+//! `<id>.vN.rs`, `presets/<id>.json`, `settings.json`, `lessons.json`, `imported.json` and the ingredients (`ingredients/<id>.rs` and
 //! `ingredients/<id>.vN.rs`, docs/plan-recipe-ingredients.md I9), each written whole through a temporary file and a
 //! rename.
 
@@ -129,6 +129,7 @@ pub fn list_in(dir: &Path) -> Value {
         "ingredients": rs_files(&dir.join("ingredients")),
         "lessons": read_small(&dir.join("lessons.json")),
         "settings": read_small(&dir.join("settings.json")),
+        "imported": read_small(&dir.join("imported.json")),
     })
 }
 
@@ -154,9 +155,10 @@ pub fn save_in(dir: &Path, id: &str, text: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Writes `settings.json`, `lessons.json` or `presets/<id>.json`; any other name is refused.
+/// Writes `settings.json`, `lessons.json`, `imported.json` (plugins added from a file or a project, until their first run
+/// is approved) or `presets/<id>.json`; any other name is refused.
 pub fn write_in(dir: &Path, name: &str, text: &str) -> Result<(), String> {
-    let allowed = name == "settings.json" || name == "lessons.json" || name.strip_prefix("presets/").and_then(|n| n.strip_suffix(".json")).is_some_and(is_slug);
+    let allowed = name == "settings.json" || name == "lessons.json" || name == "imported.json" || name.strip_prefix("presets/").and_then(|n| n.strip_suffix(".json")).is_some_and(is_slug);
     if !allowed {
         return Err(format!("The library does not keep a file named {name}."));
     }
@@ -298,12 +300,15 @@ mod tests {
         assert!(write_in(&dir, "settings.json", "{\"author\":\"Marius\"}").is_ok());
         assert!(write_in(&dir, "presets/../x.json", "{}").is_err());
         assert!(write_in(&dir, "lessons.json", "[]").is_ok());
+        assert!(write_in(&dir, "imported.json", "{\"tiny\":{\"sha256\":\"ab\",\"from\":\"file\"}}").is_ok());
+        assert!(write_in(&dir, "imported.rs", "{}").is_err());
         assert!(write_in(&dir, "ingredients/x.rs", "pub fn a() {}").is_err());
         assert!(write_in(&dir, "settings.json", "not json").is_err());
         let listed = list_in(&dir);
         assert_eq!(listed["lessons"], "[]");
         assert_eq!(listed["presets"][0]["plugin"], "tiny");
         assert_eq!(listed["settings"], "{\"author\":\"Marius\"}");
+        assert!(listed["imported"].as_str().unwrap().contains("tiny"));
         let _ = fs::remove_dir_all(&dir);
     }
 

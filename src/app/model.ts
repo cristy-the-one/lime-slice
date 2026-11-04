@@ -159,6 +159,7 @@ import { axisWord, faceValueOf, sketchOutline, type FaceValue } from "../recipe/
 import { faceRows as geometryFaceRows } from "../modeling/solid-geometry";
 import type { SketchChoice } from "../ui/pick-field";
 import { applyPluginsPanel, loadLibrary, mountPluginAuthor, mountPluginsPanel, pluginAuthor, pluginLibrary, pluginsPanelOpen, refreshPluginsPanel, setPluginAuthor, type PluginRunResult } from "../ui/plugins-panel";
+import { approveFirstRun, needsFirstRun } from "../ui/plugin-import";
 import { carriedValues, droppedSentence, libraryIo, oneLine, savePlan, DESCRIPTION_MAX, TITLE_MAX, type FormValue, type PanelPlugin, type PluginLibrary } from "../plugins/library";
 import { setModelCardPreview } from "../ui/model-chrome";
 import { explodeLook, lookPoseChanged, mountModelLook, onExplode, resetModelLook, sectionFacePicked, showExplode } from "../ui/model-look";
@@ -5445,6 +5446,13 @@ async function rebuildPluginRow(row: RowKey, changes: Record<string, PluginValue
     body = draft;
   } else {
     readout("The plugin source is not in this project. The part is kept as built; its values cannot change.");
+    return null;
+  }
+  // --- Milestone 8, D11.6: a plugin from someone else (marked imported, or a project's copy the library lacks) shows its
+  // code before its first run here.
+  const shown = swap ? { file: swap.file, sha: swap.sha256 } : copy?.file ? { file: copy.file, sha: stamp.sha256 } : null;
+  if (shown && needsFirstRun(shown.file, shown.sha, pluginLibrary()) && !(await approveFirstRun(shown.file, shown.sha, libraryCopy ? undefined : "this project"))) {
+    readout(`Not rebuilt: ${title} runs once you press Run in the view of its code.`);
     return null;
   }
   // --- I10. A draft's ingredients: the copies its last apply built, which the project keeps with it, inlined as the

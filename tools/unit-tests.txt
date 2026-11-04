@@ -97,6 +97,7 @@ src/model-tree.test.ts
 src/model-history.test.ts
 src/plugin-step.test.ts
 src/plugins/library.test.ts
+src/plugins/share.test.ts
 src/model-hole.test.ts
 src/model-primitive.test.ts
 src/model-request.test.ts

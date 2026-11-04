@@ -112,7 +112,10 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // Plugin data (a kept plugin carries the recipe data it read): nugget's data, the names a library plugin carries from
 // the workspace without running it again, adds 29 to a list at 17,123, in the model group; the other way to carry it
 // is a whole recipe_run with keep.
-const TOTAL_BUDGET = 17_160;
+// Sharing (docs/plan-recipe-plugins.md milestone 8): nugget's export action, from naming a plugin file or a project's
+// copy to import, and replace for a name clash add 31 to a list at 17,152, in the model group. One export or import call
+// moves a plugin with its ingredients, data, presets and lessons, in place of pasting its source into a chat.
+const TOTAL_BUDGET = 17_190;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
