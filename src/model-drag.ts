@@ -51,7 +51,7 @@ export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
   texture: ["modelFeatDepth", "modelTexPitchU", "modelTexPitchV", "modelTexGroove"],
   array: ["modelFeatDepth", "modelArrW", "modelArrH", "modelArrDia", "modelArrSides", "modelArrAcross", "modelArrTurn", "modelArrPitchU", "modelArrPitchV", "modelArrAngle", "modelArrMargin"],
   ribs: ["modelFeatDepth", "modelRibWidth", "modelRibPitch", "modelRibCount", "modelRibAngle", "modelRibMargin"],
-  text: ["modelFeatDepth", "modelFeatU", "modelFeatV", "modelTextHeight", "modelTextStroke", "modelTextSpace", "modelTextTrack", "modelTextLines", "modelTextAngle"],
+  text: ["modelFeatDepth", "modelFeatU", "modelFeatV", "modelTextHeight", "modelTextStroke", "modelTextSpace", "modelTextTrack", "modelTextLines", "modelTextAngle", "modelTextWeight"],
   // --- end A3 ---
   // --- A4 pattern and mirror. Every number the panel shows, whichever mode has it on screen. ---
   pattern: ["modelPatSx", "modelPatSy", "modelPatSz", "modelPatCount", "modelPatS2x", "modelPatS2y", "modelPatS2z", "modelPatCount2", "modelPatAngle", "modelPatCx", "modelPatCy", "modelPatCz", "modelPatPx", "modelPatPy", "modelPatPz"],
@@ -553,6 +553,8 @@ function featureHandles(tool: "pocket" | "boss" | "texture" | "array" | "ribs" |
     knobs.push(mm("feat-text-track", "modelTextTrack", "Letter spacing", 100, -50));
     knobs.push({ id: "feat-text-lines", field: "modelTextLines", label: "Line spacing", extra: { min: 0, max: 10, step: 0.1 } });
     knobs.push(deg("feat-text-angle", "modelTextAngle", "Angle"));
+    // Your own fonts (text milestone 4): a variable font's weight, 1 to 1000 in steps of 10.
+    knobs.push({ id: "feat-text-weight", field: "modelTextWeight", label: "Weight", extra: { min: 1, max: 1000, step: 10 } });
   }
   const placed = tool === "pocket" || tool === "boss" || tool === "text" ? [position] : [];
   return [...placed, ...dockKnobs(knobs)];
