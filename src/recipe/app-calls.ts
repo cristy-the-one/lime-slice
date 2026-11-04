@@ -88,7 +88,7 @@ export interface AppRunEnv {
   /** A split to print as stored, read from the window's printers and settings. Without it, one is refused. */
   partition?(spec: Record<string, unknown>, part: RunPart): Baked | { reason: string };
   /** Another part on the plate at its shown step, for a picked outline that names it (API 1.2). */
-  otherPart?(id: string): AppRecipePart | null;
+  otherPart?(id: string): Omit<AppRecipePart, "solid"> | null;
 }
 
 /** One part in a run: the one it was given, one it made, or a piece a split cut off. */
@@ -122,7 +122,7 @@ export interface RunPart {
 }
 
 /** A part the app holds, as a run holds it from its shown step. */
-function runPartOf(part: AppRecipePart, origin: RunPart["origin"]): RunPart {
+function runPartOf(part: Omit<AppRecipePart, "solid"> & { solid: SolidView | null }, origin: RunPart["origin"]): RunPart {
   return {
     id: part.id,
     name: part.name ?? part.id,
@@ -257,8 +257,25 @@ export class AppRecipeCalls {
   private readable(id: string): RunPart | null {
     const own = this.parts.get(id);
     if (own) return own;
-    const other = this.env.otherPart?.(id);
-    return other ? runPartOf(other, "half") : null;
+    let other = this.others.get(id);
+    if (!other) {
+      const found = this.env.otherPart?.(id);
+      if (!found) return null;
+      other = runPartOf({ ...found, solid: null }, "half");
+      this.others.set(id, other);
+    }
+    return other;
+  }
+
+  /** Parts a pick read that are not the run's, at their shown steps. */
+  private readonly others = new Map<string, RunPart>();
+
+  /** A part's shown solid for a pick: another part's is read from the engine once. */
+  private async solidFor(p: RunPart): Promise<SolidView | null> {
+    if (p.solid) return p.solid;
+    const reply = await this.engine.tree(p.tree.key, p.tree.current, gotoRequest(p.tree.key, p.tree.current, this.env.chordMm));
+    p.solid = typeof reply.error === "string" && reply.error ? null : solidView(reply);
+    return p.solid;
   }
 
   /** --- API 1.2. What a pick reads, through this run's own answers. */
@@ -267,11 +284,12 @@ export class AppRecipeCalls {
       faces: async (id) => {
         const p = this.readable(id);
         if (!p) return { reason: `${id} is not a part on the plate.` };
-        return p.solid ?? { reason: "This solid could not be read." };
+        return (await this.solidFor(p)) ?? { reason: "This solid could not be read." };
       },
       section: async (id, args) => {
         const p = this.readable(id);
-        return p ? this.section(p, args) : { ok: false, reason: `${id} is not a part on the plate.` };
+        if (p) await this.solidFor(p);
+        return p?.solid ? this.section(p, args) : { ok: false, reason: `${id} is not a part on the plate.` };
       },
       sketch: (id, step) => {
         const p = this.readable(id);

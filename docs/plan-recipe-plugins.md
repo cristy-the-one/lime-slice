@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 6 built (see their As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 7 built, and API 1.2 (D17, milestone 10; see the As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -164,6 +164,39 @@ label (else the name), the control, the unit, and `help` as the field's hint. Fi
 classes (D4 of `plan-gui-mcp-parity.md`), so the form needs no new look. A number field takes an expression of project
 parameters (`wallH / 2`), stored as text beside the value, the way an op's `exprs` are; changing that project
 parameter offers the plugin step's rebuild, as the Parameters panel does for other steps.
+
+### D17. API 1.2: values a person picks
+
+A plugin that works on a part needs to know *where* on it: which face, which outline. Before 1.2 it took a face as an
+index or `{normal, nearPoint}` typed by an agent, and an outline as a data file, both frozen into the step. 1.2 adds two
+kinds a person picks in the form and the host resolves on the part as it stands.
+
+| Builder | The recipe gets | A person supplies | An agent passes |
+|---|---|---|---|
+| `face(name)`, `.rule(r)` or `.rule("largest").facing(dir)` | `s.pick_face(&part, &f)`: index, normal, a point, area, and its outline (`Section`: frame, region, loops) | **Pick face**: a click on a flat face in the view | an index, or `{normal, nearPoint}` |
+| `outline(name)`, `.default_poly(p)`, `.default_loops(l)`, `.default_face(r)` | `s.pick_outline(&o)`: a `Section` (frame, region, loops, area) | **Pick a sketch** (an extrude's or revolve's step on the plate) or **Use a face's outline** | `{sketch: step, object?}`, `{face, object?, insetMm?}`, `{loops, origin?, turn?}`, `{data: name}` |
+
+- **Resolved by the host, through one call.** `pick` is the host's own call, like `log` and `data`; `get()` only declares
+  the parameter, so it stays before the first call and describe mode lists it (`kind: "face"`, `default: {rule}` or
+  null). The answer is read through the run's own `faces_find` and `section` answers, in `src/recipe/picks.ts`, which
+  the MCP session and the app share, so both resolve the same face.
+- **What is kept.** The stamp, a preset and the form keep a face as `{normal, nearPoint, areaMm2}` (an index is turned
+  into that at its run), a sketch as `{sketch, object}`, a face's outline as `{face, object}`, loops as given, and data as
+  the loops it held, so a project carries no file. A rule is the default and is never kept: a step built with the
+  default follows the rule on each rebuild.
+- **Replay.** Each run resolves again: the kept face is the flat face with its normal (within 5°) under the kept point,
+  the nearest along the normal, so an earlier step that moved or grew it does not lose it, and the stamp keeps the
+  point where the face now is. A sketch is read from its step as it is now.
+- **Refusals,** one sentence each, the part kept: a face with nothing under its point ("The face picked for face
+  (facing +Z, near 0, 900, 20) is no longer on the part. Pick it again; the part is kept as it was."), a curved face or
+  index ("face: face 7 is not a flat face of this part. Pick a flat face."), no face and no default, a sketch step that
+  is gone or is not an extrude or revolve, data that is not an outline. A recipe that unwraps a refused pick fails with
+  the pick's sentence, not the panic around it.
+- **Trust.** The value the run was given always wins over what the recipe sends in `pick`; a recipe's own default may
+  only be a rule or loops, so a plugin cannot name another part or a sketch by itself (O8 holds: a face is read on the
+  part given or made; an outline may come from any part the person named).
+- **Also in 1.2:** `s.refuse(sentence)` ends a run with that reason and nothing kept (no panic line), and
+  `s.bounds(&part)` reads the box `model_describe` now answers. Plugins of 1.0 and 1.1 build and run unchanged.
 
 ## 5. Where plugins live, and the file
 
@@ -808,6 +841,36 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    crate in the test only).
    *Ships:* old plugins keep building, or fail with one clear sentence.
    *Tested by:* the corpus job itself; a test that a plugin recording API 9.0 is refused without a build.
+
+10. **API 1.2: faces and outlines a person picks** (D17).
+   *Ships:* plugins take their input from the part (a clicked face, a sketch, a face's outline) instead of a frozen index
+   or a data file, in the Plugins panel, History and over MCP.
+
+   **As built (milestone 10, branch `claude/recipe-api-1-2`):**
+   - **The crate:** `face`, `outline`, `pick_face`, `pick_outline`, `PickedFace`, `FACE_RULES`, `refuse`, `bounds`;
+     `API = (1, 2)` and `RECIPE_API` with it. `refuse` writes a `refuse` line the host turns into the run's reason.
+   - **The host:** `pick` joins the allowlist; `answerPick` in `src/recipe/picks.ts` answers it for `mcp/session.ts` and
+     `src/recipe/app-calls.ts` from the same reads (`PickReads`: faces, section, a step's sketch, data), and hands back
+     what each given value resolved to, which both write into the stamp in its place. The app reads another part's
+     sketch or face (`AppRunEnv.otherPart`), the run's own parts first. `model_describe` answers `bounds`.
+   - **Stamps** (`PluginStamp.params`, presets, `model-tree-file.ts`) take a JSON object as a value; `sameValues`
+     compares them by JSON.
+   - **The form** (`src/ui/pick-field.ts`, in the Plugins panel and the History card): the value in words ("face facing
+     +Z", "largest up (default)", "sketch on step 4 of obj_2"), **Pick face** (or **Use a face's outline**), which arms a
+     face pick in Model (Face mode, the hovered face lit as Face mode lights it, Esc cancels, a curved face asks again),
+     **Pick a sketch** (a list of the extrude and revolve steps on the plate's parts), and **Use default**. A face with no
+     default and no pick greys Apply with the reason. In History, Use default drops the pick from the rebuilt run.
+   - **MCP:** `recipe_run {params}` takes the values above; the schema's `params` line points to the guide, so the tool
+     list stays at its budget (17,125 of 17,130 tokens). `plugin list` and `nugget find` show `face face [largest up]`.
+   - **Not done:** `s.context()` does not carry "the face last clicked" (a person picks it in the form instead); a
+     `face` outside the part a run was given or made stays refused to the recipe (O8).
+   - Tests: `cargo test -p lime-recipe` (builders' JSON and values), `src/recipe/picks.test.ts` (unit chain: an index
+     kept, rules, a moved face found, a gone face, outlines with holes, defaults that may not name a part, data kept as
+     loops), `mcp/plugin-picks.test.ts` (real lust; stand-in engine, real OCCT in CI: a rule, an index kept, the face
+     found after an earlier plugin step scaled the part, a gone face, `refuse`, outlines from the default, a sketch step,
+     data and a face), `mcp/plugin-app.test.ts` (a picked face rebuilt through the MCP and the app: the same stamp, ops
+     and solid), `e2e/model-plugin-picks.spec.ts` (in `test:smoke`: Pick face in the panel, Apply, Pick face in the
+     card, Rebuild on the other face, Undo). Screenshots in `test-results/plugin-picks/`.
 
 Milestones 1 and 2 are useful on their own and need no app change. 3 and 4 make plugin parts live through MCP and
 readable in the app. 5 to 7 bring running into the app. 8 and 9 make sharing and the long term safe; 8 may move ahead

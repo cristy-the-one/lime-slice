@@ -250,6 +250,31 @@ if (plain) {
   check("stud row: the part's step still builds after the failure", typeof back.error !== "string" && !!solidView(back), back.error);
 }
 
+// --- 1b. Recipe API 1.2: a face the person picks, given by {normal, nearPoint}, resolved by the host's pick on both paths
+// and kept in the stamp as the same reference.
+await compare({
+  name: "face mark",
+  id: "face-mark",
+  given: true,
+  keep: true,
+  params: { face: { normal: [1, 0, 0], nearPoint: [20, 0.5, 5] } },
+  later: { kind: "boolean", op: "cut", primitive: "box", dx: 4, dy: 4, dz: 20, origin: [-16, 0, -5] },
+  source: [
+    "use lime_recipe::{ops, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let f = s.face("face").rule("largest_up").label("Face").get();',
+    "    let p = s.object().unwrap();",
+    "    let pf = s.pick_face(&p, &f).unwrap();",
+    "    let at = pf.point;",
+    '    s.apply(&p, ops::boolean("cut", ops::cylinder(1.0, 2.0), [at[0], at[1], at[2] - 1.0])).unwrap();',
+    '    s.log(&format!("face {:?} at {:?} outline {:.3}", pf.normal, pf.point, pf.outline.area));',
+    "    s.done(&p);",
+    "}",
+    "",
+  ].join("\n"),
+});
+
 // --- 2. A part the plugin makes: rebuilt in place, a new tree for the same object, the later step replayed.
 const made = await compare({
   name: "drilled plate",
