@@ -702,6 +702,77 @@ Deviations from this plan, each on purpose or forced:
     the mesher's settings were left as they are.
 11. **Not measured on the owner's parts**, only on synthetic spheres, tori and ellipsoids.
 
+### As built (milestone 5)
+
+Built on `main` after milestones 1 to 4 (PR "Stroke fonts in the new text step, recipe API 1.3 and MCP text polish (text milestone 5)"). What a person can do now:
+the Text card's font picker starts with **Stroke** and **Line**, two single-stroke fonts that are one lettering step like any outline font, so they go on a
+flat face and on a cylinder, a cone, a sphere, a torus and a freeform face, raised or engraved, with Line spacing, Left, Centre and Right, and the thin-letter
+note under Apply. The MCP `text` op takes `font: "stroke"` or `"line"` the same way, and `model_probe` of a text (one with a font, or any text on a curved
+face) is checked like an apply and answers `inkMm2`, `thin` and how it was built. A recipe author gets recipe API 1.3: `s.face(..).curved()`, `s.lettering`
+and `s.text_outline`, and two samples in `samples/recipes/`. A project saved before this opens and rebuilds as it was.
+
+- **Pen fonts through the outline pipeline** (`crates/lime-model-occt/src/text/pen.rs`, no kernel needed). Each stroke of a letter becomes a capsule (a rectangle
+  with a half circle on each end, the pen's width, ten steps to an end) and the letter's capsules are united in 2D (`lime-recipe`'s `geom2d`, as overlapping
+  contours are) and refitted to curves (`fit.rs`). That is a plain outline glyph for the milestone 1 layout, so everything after it (the wrap onto a cylinder or
+  a cone, the geodesic on a sphere, the direct build and its boolean fallback, the thin-letter analysis, the preview) is the code the outline fonts use. The
+  pen fonts are a `Glyphs` source beside a parsed font and a pack. Size is the grid's 6 units for the capitals; the pen's width is `strokeWidth` on the op
+  (`Op::Lettering`, `TextLayout` and `TextCurved` each gain it), default 0.15 of the height. **`spacing` is the whole gap after a letter** (default a third of
+  the height), as the stroke font has always been typed, not "added to the font's own" as for an outline font.
+- **Old text steps.** A text with no `font` still expands to the boxes it always did on a flat face (`textStrokes`, 80 characters, `strokeWidth` read as before):
+  `mcp/text-pen.test.ts` opens a project saved by the code before this (`mcp/fixtures/text-stroke-boxes-5.1.lime`: a raised and an engraved stroke text, 300
+  faces, 710 edges, 18076.082766 mm³), steps its history back to the root and forward again (every box built again from the saved steps) and checks the same
+  volume, faces and edges, and that the history holds no lettering step. The group node stores its boxes, so a rebuild never re-expands the text; only Edit does.
+- **Recipe API 1.3** (`lime_recipe::API = (1, 3)`, `RECIPE_API` with it, kept equal by `src/plugin-step.test.ts`; 1.0 to 1.2 recipes build as before, and
+  `mcp/plugin-text.test.ts` runs a 1.0 one):
+  - `s.face(name).curved()` declares a face parameter that takes any face (`"curved": true` in the plugin's header). `s.pick_face` then gives `kind` (`plane`,
+    `cylinder`, `cone`, `sphere`, `other`) and for a cylinder or a cone `axis` and `radius`. A curved face is kept in a plugin step as `{surface, nearPoint,
+    areaMm2}` and found again as the face of that surface within 0.6 mm of the point (the mesh's chord sags under the true surface). `src/recipe/picks.ts`
+    carries it for the MCP and the app; the Plugins panel and History cards take a click on a curved face too. A parameter without `.curved()` refuses a curved
+    face in the sentence it always had.
+  - `s.lettering(&part, &face, "LOT 42", &Lettering::new(6.0, 0.8).font("mono").around())` is the `text` op as a typed call, one history step, flat or curved.
+  - `s.text_outline("LIME", "sans", 10.0)` (and `text_outline_with`) is the letters as a `Section`; the host's new `text_outline` call (`src/recipe/text-outline.ts`,
+    shared by the MCP session and the app's rebuild) lays the text out with the engine's `textLayout`. A letter the font lacks is the layout's own sentence.
+  - The samples `samples/recipes/label_a_face.rs` (letters on any face the person picks, with font, size, depth and engrave as parameters) and
+    `samples/recipes/text_plate.rs` (a name plate sized to the text, its letters extruded from the outline) run in `mcp/plugin-text.test.ts`.
+- **MCP.** `model_probe` accepts a `text` op (the schema turned it away as "several steps") and answers `inkMm2`, `thin: [{char, lostPct}]` (the engine's layout
+  judged against the session's nozzle, with the sentence added to `reason`) and `text: {font, letters, build, surface}`. `guide {kind:"text"}` lists `stroke`
+  and `line`, the pen refusals and the probe's answer, and the recipe guide has the 1.3 line. `tools/list` is byte for byte what it was (17,186 tokens of
+  17,190); the new words are in the op's own schema and the guides.
+- **Measured** (release build, this machine, shared so ±30 %): see the tests' own timings; nothing in this milestone changes the build path, only its input.
+- **Tests.** Rust, no kernel (`text/pen_tests.rs`, 6): stroke laid out as outlines with the holes of O 8 A, a letter as tall as the height plus a pen, the pen
+  and the gap as typed, lowercase for Line and capitals for Stroke, the refusals, overlapping strokes united, thin pens named. Rust with the kernel
+  (`tests/lettering_pen.rs`, 5): stroke and line raised and engraved on a flat face, a cylinder, a cone, a sphere, a torus and a freeform face, valid and
+  closed, direct, volume = ink × depth (to 0 % flat, 4 % cylinder, 6 % cone, 5 % sphere, 8 % torus). `lime-recipe` (4 new): the curved parameter's JSON, the
+  `Lettering` op's fields, the outline call's. TypeScript: `src/recipe/picks.test.ts` (curved faces kept, found again, refused by a flat parameter),
+  `src/modeling/lettering.test.ts` and `lettering-round.test.ts` (pen fonts by name, no font on a curved face), `mcp/text-pen.test.ts` (real engine: the fixture,
+  one step on every kind of face, `inkMm2` and `thin`, the refusals, the guide), `mcp/plugin-text.test.ts` (real lust and engine: the 1.3 calls, the samples),
+  `e2e/model-text-fonts.spec.ts` (Stroke and Line in the card). The older text tests changed where a refusal no longer holds (the stroke font on a curved face).
+
+Deviations from this plan, each on purpose or forced:
+
+1. **`hershey` is not shipped; `line` is.** The Hershey Simplex data is not in the repository or on this machine, and a table of its glyphs is not something to write
+   out from memory and call by its name. `line` is drawn for this app on the same 4 × 6 grid as Stroke (lowercase with x-height 4, ascenders to 6, descenders to -2, and
+   `( ) = _`); its about line and the guide say it is not the Hershey data. The real data can take the `hershey` id later: it needs only its table, the pipeline is this one.
+2. **Names in the recipe API.** The plan's `Text::new(..)` is `Lettering::new(..)`, because `lime_recipe::Text` is already the `s.text(..)` parameter builder; the plan's
+   `model.text(..)` and `model.text_outline(..)` are `s.lettering(..)` and `s.text_outline(..)`, because a recipe has no `model` and `s.text` is the parameter. `text_outline`
+   returns a `Section` (with `.region`, the plan's `Region`, and `.loops` for `extrude`), not a bare `Region`.
+3. **A curved pick is thinner than a flat one.** `kind` for a torus and a freeform face is `other`: the part's face list does not tell them apart (the engine does, in an apply
+   reply). A curved face has no one normal (`normal` is zero) and no outline (`outline` is empty). The plan's `pick_face` "returns its kind (plane, cylinder, cone, sphere,
+   torus, freeform)" is that, less the last distinction.
+4. **`font: "stroke"` is now the pen font, not the boxes.** Milestones 1 to 4 built `stroke` by name as the boxes (an old step has no font at all, and that is still the boxes). The pen
+   has round ends and the boxes square ones, so the same text has a few percent more ink; a text with no font stays as it was on a flat face. Milestone 1's deviation 7 (Update on
+   an old text keeps the boxes) is reversed as the plan said: opening an old step in the card shows Stroke and Update makes one pen step. On a curved face a text with no font is
+   the stroke pen (there was no old behaviour to keep).
+5. **`text_outline`'s loops are polylines**, thinned to 5 µm of the engine's outline (more for a loop that would still pass the 200 segments `extrude` takes), not curves; `.region`
+   and `.loops` agree. A recipe that needs the true curves reads the glyph through an `extrude` of a section it made itself.
+6. **The Plugins form takes any face on a pick**, and a parameter that is not `.curved()` refuses a curved one when the plugin runs, in a sentence; the form does not know which parameters
+   are curved before then.
+7. **Found on the way and fixed.** The reader of a saved history (`readOp` in `src/model-tree-file.ts`) kept none of a lettering step's `along`, `flip` and `wrap` (milestones 2 and 3), so a
+   saved text on a cylinder or a sphere would have come back with its direction lost; it keeps them now, and `strokeWidth`. A composite op that fails inside a recipe (a text) now gives the
+   failed step's own sentence as the `Refusal`, not "model_apply was refused." (the MCP session and the app's rebuild).
+8. **Not done.** Show me (deferred by the owner since milestone 2), measuring on the owner's housing and Telo parts, `hershey`, and the pen fonts on split-to-print numbers and fit coupon labels
+   (the plan keeps those on `textStrokes`). A user font by name in `text_outline` works over MCP only (the project's fonts are the session's).
+
 ## 11. Done for the whole plan
 
 - A person types two lines in Sans Bold, puts them round a Ø 40 cup and on a wavy freeform lid, raised and

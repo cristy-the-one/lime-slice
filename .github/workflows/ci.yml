@@ -182,6 +182,8 @@ jobs:
           node --experimental-strip-types mcp/text-user-fonts.test.ts
           node --experimental-strip-types mcp/text-curves.test.ts
           node --experimental-strip-types mcp/text-skin.test.ts
+          # Pen fonts (stroke, line) on every kind of face, a project saved with the old stroke text, model_probe's inkMm2 and thin.
+          node --experimental-strip-types mcp/text-pen.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
@@ -200,6 +202,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
           # Recipe API 1.2 on real OCCT: a picked face found again after an earlier step moved it, outlines, refuse.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
+          # Recipe API 1.3 on real OCCT: curved face parameters, lettering on a curved face, text_outline extruded.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-text.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -631,6 +635,8 @@ jobs:
           {
             echo "lime-slice $(git rev-parse --short HEAD)"
             for sample in samples/*; do
+              # Only mesh files: samples/recipes/ holds recipe sources, not models.
+              [[ -f "$sample" ]] || continue
               if [[ "$(basename "$sample")" == "dragon_2_5.stl" ]]; then
                 echo "skip ${sample}: checked-in mesh, Dragon audit is opt-in"
                 continue

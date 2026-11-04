@@ -88,7 +88,7 @@ async function block(): Promise<{ object: string; face: number; before: number }
   check("two lines, right-aligned, spaced, turned and slanted, build", reply.ok === true, JSON.stringify(reply));
   const guide = await call("guide", { kind: "text" });
   const text = JSON.stringify(guide);
-  check("guide {kind:\"text\"} lists the fonts and the stroke font", ["Inter", "IBM Plex Mono", "IBM Plex Serif", "Allerta Stencil", "stroke"].every((word) => text.includes(word)), text.slice(0, 300));
+  check("guide {kind:\"text\"} lists the fonts and the pen fonts", ["Inter", "IBM Plex Mono", "IBM Plex Serif", "Allerta Stencil", "stroke", "line"].every((word) => text.includes(word)), text.slice(0, 300));
   check("and says what a text refuses", /no bold/.test(text) && /fall out/.test(text) && /runs off/.test(text), text.slice(0, 300));
 }
 
@@ -115,7 +115,7 @@ async function block(): Promise<{ object: string; face: number; before: number }
   check("and the first block still has only the stencil cut", (await volume(object)) < before);
 }
 
-// --- A text with no font, or the stroke font, is the boxes it always was.
+// --- A text with no font is the boxes it always was. (font "stroke" is the one-step pen font since milestone 5: mcp/text-pen.test.ts.)
 {
   const { object, face, before } = await block();
   const old = await call("model_apply", { object, op: { kind: "text", faceIndex: face, text: "LIME", height: 6, depth: 1 } });
@@ -123,7 +123,8 @@ async function block(): Promise<{ object: string; face: number; before: number }
   const grew = (await volume(object)) - before;
   const stroked = await block();
   const explicit = await call("model_apply", { object: stroked.object, op: { kind: "text", faceIndex: stroked.face, text: "LIME", height: 6, depth: 1, font: "stroke" } });
-  check("font stroke is the same text", explicit.ok === true && near((await volume(stroked.object)) - stroked.before, grew, 1e-9), JSON.stringify(explicit));
+  const strokedRows = (await call("model_history", { object: stroked.object })).nodes as { label: string }[];
+  check("font stroke is the same letters as one step, round-ended, so a little more ink", explicit.ok === true && strokedRows.length === 2 && (await volume(stroked.object)) - stroked.before > grew * 0.8 && (await volume(stroked.object)) - stroked.before < grew * 1.3, JSON.stringify(explicit));
   // The boxes' volume, which no line of this change touches (textStrokes, the boolean pieces, the kernel's boolean).
   check("single-stroke LIME 6 mm × 1 mm adds the volume it always did", near(grew, 53.331247, 0.0005), String(grew));
   const many = await call("model_apply", { object: stroked.object, op: { kind: "text", faceIndex: stroked.face, text: "L".repeat(81), height: 3, depth: 1 } });

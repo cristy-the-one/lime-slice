@@ -14,7 +14,7 @@
  */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick",
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline",
 ]);
 
 export interface RecipeLimits {

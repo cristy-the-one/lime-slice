@@ -671,5 +671,6 @@ pub fn spec_for(id: &str, text: &str, height: f64) -> Spec {
         align: Align::Centre,
         angle_deg: 0.0,
         weight: None,
+        stroke_mm: None,
     }
 }

@@ -17,6 +17,8 @@ export interface PluginParamInfo {
   label?: string;
   help?: string;
   options?: string[];
+  /** A face parameter that takes a curved face too (recipe API 1.3). */
+  curved?: boolean;
 }
 
 export interface PluginFileInfo {

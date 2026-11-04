@@ -72,7 +72,7 @@ eq("a weight is written to the step", weighted.weight, 650);
 eq("and only when given", "weight" in (own as object), false);
 eq("a weight outside 100 to 900", refusal(text({ font: VARIABLE, weight: 1200 })), "weight is a number from 100 to 900.");
 eq("a weight that is not a number", refusal(text({ font: VARIABLE, weight: "heavy" })), "weight is a number from 100 to 900.");
-eq("a font name that is neither bundled nor an id is still refused here", refusal(text({ font: "Avenir Next" })), "There is no font called ‘Avenir Next’. The fonts are stroke, sans, mono, serif, stencil.");
+eq("a font name that is neither bundled nor an id is still refused here", refusal(text({ font: "Avenir Next" })), "There is no font called ‘Avenir Next’. The fonts are stroke, line, sans, mono, serif, stencil.");
 
 // --- The step and its weight survive the file.
 const typed = text({ font: VARIABLE, weight: 650, style: "italic" });

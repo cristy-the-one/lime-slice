@@ -3,7 +3,7 @@
  * {normal, nearPoint, areaMm2}, found again after it moved along its normal, gone when nothing lies under its point;
  * the default rules; an outline's regions and area from loops; what a default may name; what `pick` keeps.
  */
-import { answerPick, faceValueOf, isPickValue, outlineRow, pickProblem, pickText, resolveFace, type PickReads } from "./picks.ts";
+import { answerPick, curvedValueOf, faceValueOf, isPickValue, outlineRow, pickProblem, pickText, resolveFace, type PickReads } from "./picks.ts";
 import type { FaceRow } from "../modeling/solid-geometry.ts";
 
 let failed = 0;
@@ -50,7 +50,7 @@ const top = faceValueOf(low, 1)!;
 check("a face index is kept as its normal, a point on it and its area", JSON.stringify(top.normal) === "[0,0,1]" && top.nearPoint[2] === 10 && top.areaMm2 === 800, top);
 check("a curved or missing face is no face", faceValueOf(low, 9) === null && faceValueOf({ faces: [{ ...low.faces[0]!, kind: "cylinder" }] }, 0) === null);
 const byIndex = resolveFace(low, 5, "face");
-check("an index resolves to itself, kept as a reference", "index" in byIndex && byIndex.index === 5 && !byIndex.rule && JSON.stringify(byIndex.kept.normal) === "[1,0,0]", byIndex);
+check("an index resolves to itself, kept as a reference", "index" in byIndex && byIndex.index === 5 && !byIndex.rule && "normal" in byIndex.kept && JSON.stringify(byIndex.kept.normal) === "[1,0,0]", byIndex);
 const rule = resolveFace(low, { rule: "largest_up" }, "face");
 check("largest_up: the largest flat face facing up", "index" in rule && rule.index === 1 && rule.rule, rule);
 const facing = resolveFace(low, { rule: "largest", facing: [1, 0, 0] }, "face");
@@ -69,6 +69,36 @@ const gone = resolveFace(narrow, { normal: [0, 0, 1], nearPoint: [30, 10, 10] },
 check("a face with nothing under its point is gone, in one sentence", "reason" in gone && gone.reason === "The face picked for face (facing +Z, near 30, 10, 10) is no longer on the part. Pick it again; the part is kept as it was.", gone);
 const noMesh = resolveFace({ faces: tall.faces }, top, "face");
 check("without a mesh, the faces' boxes stand in", "index" in noMesh && noMesh.index === 1, noMesh);
+
+// --- Recipe API 1.3: a face parameter that takes a curved face too. A cylinder wall R 20 from z 0 to 30 joins the box's faces as face 6.
+const wall: FaceRow = { index: 6, areaMm2: 3770, centre: [-20, 0, 15], bbox: { min: [-20, -20, 0], max: [20, 20, 30] }, kind: "cylinder", radiusMm: 20, axis: [0, 0, 1], axisPoint: [0, 0, 0] };
+const withWall = { faces: [...low.faces, wall] };
+const cv = curvedValueOf(withWall, 6)!;
+check("a curved face is kept by its surface, a point and its area", cv.surface === "cylinder" && cv.areaMm2 === 3770 && cv.nearPoint.length === 3 && curvedValueOf(withWall, 1) === null && faceValueOf(withWall, 6) === null, cv);
+const curvedByIndex = resolveFace(withWall, 6, "wall", true);
+check("a curved parameter takes the cylinder by index", "index" in curvedByIndex && curvedByIndex.index === 6 && "surface" in curvedByIndex.kept, curvedByIndex);
+check("and still a flat face, kept as ever", (() => { const flat = resolveFace(withWall, 1, "wall", true); return "index" in flat && "normal" in flat.kept; })());
+check("a flat-only parameter refuses a curved index in the old sentence", (resolveFace(withWall, 6, "wall") as { reason: string }).reason === "wall: face 6 is not a flat face of this part. Pick a flat face.");
+const again13 = resolveFace(withWall, { surface: "cylinder", nearPoint: [-20, 0, 15] }, "wall", true);
+check("a kept curved face is found again under its point", "index" in again13 && again13.index === 6, again13);
+check("it is gone when no face of that surface is under the point", (resolveFace(withWall, { surface: "cylinder", nearPoint: [50, 0, 15] }, "wall", true) as { reason: string }).reason.startsWith("The cylinder face picked for wall (near 50, 0, 15) is no longer on the part."));
+check("a flat-only parameter refuses a kept curved face", (resolveFace(withWall, { surface: "cylinder", nearPoint: [-20, 0, 15] }, "wall") as { reason: string }).reason === "wall takes a flat face, and this one is curved. Pick a flat face.");
+check("the rule largest takes a curved face when the parameter does", (resolveFace(withWall, { rule: "largest" }, "wall", true) as { index: number }).index === 6 && (resolveFace(withWall, { rule: "largest" }, "wall") as { index: number }).index === 0);
+check("a curved value's shape, words and kind", pickProblem("face", { surface: "sphere", nearPoint: [1, 2, 3] }, "F") === null && pickProblem("face", { surface: "blob", nearPoint: [1, 2, 3] }, "F") !== null && isPickValue(cv) && pickText(cv) === "cylinder face" && pickText({ surface: "other", nearPoint: [0, 0, 0] }) === "curved face");
+await (async () => {
+  let sectionCalls = 0;
+  const curvedReads: PickReads = { sketch: () => ({ reason: "no sketch" }), faces: async () => withWall, section: async () => { sectionCalls += 1; return { ok: true, sections: [{ areaMm2: 1 }] }; } };
+  const kept: Record<string, unknown> = {};
+  const picked = await answerPick({ param: "wall", kind: "face", object: "obj_1", curved: true, value: null }, { wall: 6 }, curvedReads, kept);
+  const r = picked.ok ? (picked.result as { surface: string; radiusMm: number; axis: number[]; normal: number[]; sections: { areaMm2: number }[] }) : null;
+  check("a curved pick says its surface, radius and axis, has no normal, and asks no outline", !!r && r.surface === "cylinder" && r.radiusMm === 20 && JSON.stringify(r.axis) === "[0,0,1]" && JSON.stringify(r.normal) === "[0,0,0]" && r.sections[0]!.areaMm2 === 0 && sectionCalls === 0, picked);
+  check("and it is kept as its surface and a point", (kept.wall as { surface?: string })?.surface === "cylinder", kept);
+  const flatOnly = await answerPick({ param: "wall", kind: "face", object: "obj_1", value: null }, { wall: 6 }, curvedReads, {});
+  check("a flat-only parameter refuses the same pick in one sentence", !flatOnly.ok && flatOnly.error === "wall: face 6 is not a flat face of this part. Pick a flat face.", flatOnly);
+  const flatPick = await answerPick({ param: "top", kind: "face", object: "obj_1", curved: true, value: { rule: "top" } }, {}, curvedReads, {});
+  const f = flatPick.ok ? (flatPick.result as { surface: string; sections: unknown[] }) : null;
+  check("a flat face on a curved parameter says plane and gives its outline", !!f && f.surface === "plane" && sectionCalls === 1, flatPick);
+})();
 
 // Outlines: loops to the regions and the area section answers.
 const square = (s: number, at = 0) => ({ start: [at, at] as [number, number], segments: [[at + s, at], [at + s, at + s], [at, at + s], [at, at]].map((to) => ({ kind: "line" as const, to: to as [number, number] })) });

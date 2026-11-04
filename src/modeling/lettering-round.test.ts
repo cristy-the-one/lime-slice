@@ -110,11 +110,14 @@ eq("a sphere refuses around", refusal(text({ faceIndex: 2, along: "around" })), 
 eq("a cylinder refuses u", refusal(text({ along: "u" })), "along is around or axis. Around reads round the part; axis runs it up the part.");
 eq("a wrap that is not one", refusal(text({ faceIndex: 2, wrap: "squash" })), "wrap is wrap or project. Wrap keeps the letters' size on the surface; project pushes them onto it along the face's normal.");
 eq("project is not for a cylinder", refusal(text({ wrap: "project" })), "Project is for a sphere, a torus or a freeform face; a cylinder and a cone wrap at true size.");
-eq("the stroke font stays on flat faces here too", refusal(text({ faceIndex: 3, font: "stroke" })), "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
+// --- Milestone 5: the pen fonts go on every face, as one lettering step.
+eq("the stroke font goes on a freeform face too", [step(text({ faceIndex: 3, font: "stroke", point: [40, 1, 1] })).font, step(text({ faceIndex: 3, font: "line", point: [40, 1, 1] })).font], ["stroke@1", "line@1"]);
+eq("a pen's width and gap are on the step", [step(text({ font: "stroke", strokeWidth: 0.8, spacing: 0 })).strokeWidth, step(text({ font: "stroke", strokeWidth: 0.8, spacing: 0 })).spacing], [0.8, 0]);
+eq("a pen font takes no style", refusal(text({ font: "line", style: "bold" })).includes("one style"), true);
 
 // --- Refusals are sentences.
-eq("the stroke font goes on flat faces", refusal(text({ font: "stroke" })), "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
-eq("no font is the stroke font", refusal(text({ font: undefined })), "Text on a curved face takes an outline font: sans, mono, serif or stencil. The stroke font goes on flat faces.");
+eq("no font on a curved face is the stroke font as a pen", step(text({ font: undefined })).font, "stroke@1");
+eq("a font that is not one", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, line, sans, mono, serif, stencil.");
 eq("a direction that is not one", refusal(text({ along: "sideways" })), "along is around or axis. Around reads round the part; axis runs it up the part.");
 eq("a point that is not a point", refusal(text({ point: [1, 2] })), "point is [x, y, z]: a point on the face.");
 eq("a bold the font lacks", refusal(text({ font: "stencil", style: "bold" })), "Allerta Stencil has no bold. Pick Regular, or another font.");

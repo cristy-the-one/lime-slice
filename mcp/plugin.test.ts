@@ -71,7 +71,7 @@ const keptRow = kept.kept as { id: string; version: number; sha256: string } | u
 check("keep saves the run as a plugin", kept.ok === true && keptRow?.id === "bolt-circle-flange" && keptRow.version === 1 && /^[0-9a-f]{64}$/.test(keptRow.sha256), kept);
 const file = join(library, "bolt-circle-flange.rs");
 const text = existsSync(file) ? readFileSync(file, "utf8") : "";
-check("the file is the recipe after a //! header", text.startsWith("//! ---\n//! plugin: bolt-circle-flange\n") && text.endsWith(flange()) && text.includes("//! made-by: plugin-test") && text.includes("//! api: 1.2") && text.includes("//! target: new"), text.slice(0, 900));
+check("the file is the recipe after a //! header", text.startsWith("//! ---\n//! plugin: bolt-circle-flange\n") && text.endsWith(flange()) && text.includes("//! made-by: plugin-test") && text.includes("//! api: 1.3") && text.includes("//! target: new"), text.slice(0, 900));
 check("the header caches the declared parameters", text.includes('"name":"diameter","kind":"number","default":80,"min":20,"max":250,"step":0.5,"unit":"mm","label":"Outer diameter"') && text.includes('"options":["fillet","chamfer","sharp"]'), text.slice(0, 900));
 
 // --- Find it.
@@ -181,7 +181,7 @@ const reached = await call("recipe_run", { source: reach, name: "reach", object:
 check("a call on another part is refused", reached.ok === true && JSON.stringify(reached.refused).includes("A recipe can change only the part it was given and the parts it made") && (await volume(bystander)) === before, reached);
 
 // --- The API level: a plugin for a newer crate is refused without a build.
-writeFileSync(join(library, "future.rs"), readFileSync(file, "utf8").replace("plugin: bolt-circle-flange", "plugin: future").replace("api: 1.2", "api: 9.0"));
+writeFileSync(join(library, "future.rs"), readFileSync(file, "utf8").replace("plugin: bolt-circle-flange", "plugin: future").replace("api: 1.3", "api: 9.0"));
 const future = await call("recipe_run", { plugin: "future" });
 check("a plugin for a newer API is refused before it builds", future.ok === false && String(future.reason).includes("needs recipe API 9.0") && future.diagnostics === undefined, future);
 

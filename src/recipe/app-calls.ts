@@ -36,6 +36,7 @@ import { runEndingAt } from "../plugin-step.ts";
 import { GLOBAL_WORKPLANE, planePrimitive, type Workplane } from "../workplane.ts";
 import type { RecipeCall, RecipeCallSite, RecipeReply } from "./host.ts";
 import { answerPick, sketchOutline, type PickReads } from "./picks.ts";
+import { answerTextOutline } from "./text-outline.ts";
 
 type Body = Record<string, unknown>;
 
@@ -227,6 +228,8 @@ export class AppRecipeCalls {
       if (args.kind === "face" && on !== undefined && !this.addressable(on)) return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${on} is neither. Pass it as object to run on it.` };
       return answerPick(args, this.params, this.pickReads(), this.picked);
     }
+    // --- API 1.3: the letters of a text as a flat outline. The engine's stateless layout is asked as any request is.
+    if (site.tool === "text_outline") return answerTextOutline(args, (request) => this.engine.open(request));
     if (site.tool === "data") {
       const name = typeof args.name === "string" ? args.name : "";
       // The step's kept data, then the data the plugin carries; the workspace's files are the MCP's alone.
@@ -253,7 +256,8 @@ export class AppRecipeCalls {
     }
     if (value.ok === false) {
       const { ok: _ok, reason, ...extra } = value;
-      return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
+      const failedStep = (extra as { failed?: { reason?: unknown } }).failed?.reason;
+      return { ok: false, error: typeof reason === "string" ? reason : typeof failedStep === "string" ? failedStep : `${site.tool} was refused.`, extra };
     }
     return { ok: true, result: value };
   }

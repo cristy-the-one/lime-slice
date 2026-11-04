@@ -43,6 +43,8 @@ import { dropped, jumped, keptSteps, newTree, opLabel, pathTo, redoTarget, renum
 import { replayedTree, replayOps } from "../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runRedoFrom, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../src/plugin-step.ts";
 import { answerPick, sketchOutline, type PickReads } from "../src/recipe/picks.ts";
+import { answerTextOutline } from "../src/recipe/text-outline.ts";
+import { fontById, isPenFont, isUserFont } from "../src/modeling/text-fonts.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../src/presets.ts";
 import { meshRecord, readParameters, type LimeProject, type ProjectPlacement, type ProjectProfile } from "../src/project.ts";
 import { decodeProject, encodeProject, finishProject, prepareProject } from "../src/project-codec.ts";
@@ -1301,6 +1303,16 @@ export class Session {
         }
         return answerPick(site.args, params, { ...this.pickReads(ctx), shownFaces: (id) => (id === objectArg ? shownSolid : null) }, picked);
       }
+      // --- API 1.3. The letters of a text as a flat outline, laid out by the engine. A font of the project is named as the texts name it.
+      if (site.tool === "text_outline") {
+        const args = { ...site.args };
+        if (typeof args.font === "string" && !isPenFont(args.font) && !fontById(args.font) && !isUserFont(args.font)) {
+          const found = this.fonts.find(args.font);
+          if (!found) return { ok: false, error: `There is no font called ‘${args.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.` };
+          args.font = found.id;
+        }
+        return answerTextOutline(args, async (request) => JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as Record<string, unknown>);
+      }
       if (site.tool === "log") {
         if (notes.length < 200) notes.push(`line ${site.line}: ${String(site.args.message ?? site.args.text ?? "").slice(0, 400)}`);
         return { ok: true, result: { ok: true } };
@@ -1351,7 +1363,9 @@ export class Session {
       if (value.ok === false) {
         const { ok: _ok, reason, ...extra } = value;
         if (refusedArgs.size < 50) refusedArgs.set(site.id, site.args);
-        return { ok: false, error: typeof reason === "string" ? reason : `${site.tool} was refused.`, extra };
+        // A composite op (a text, a pocket) that fails answers with the failed step's sentence, not a reason of its own.
+        const failedStep = (extra as { failed?: { reason?: unknown } }).failed?.reason;
+        return { ok: false, error: typeof reason === "string" ? reason : typeof failedStep === "string" ? failedStep : `${site.tool} was refused.`, extra };
       }
       const target = typeof site.args.object === "string" ? site.args.object : this.selected;
       if (site.tool === "object_place") placed.add(target);
@@ -2762,7 +2776,7 @@ export class Session {
         await this.keepFontPack(added.font.id, op);
       } else if (typeof op.font === "string") {
         const found = this.fonts.find(op.font);
-        if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
+        if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
         op.font = found.id;
         await this.keepFontPack(found.id, op);
       }
@@ -6146,7 +6160,43 @@ export class Session {
     return "reason" in opened ? opened.reason : null;
   }
 
+  /**
+   * --- Text milestone 5. model_probe of a text op that is one lettering step (a font, or a curved face): the same check as an
+   * apply, with what the letters are: `inkMm2`, how they were built, and `thin`, the letters a nozzle-wide line cannot print.
+   * A text with no font is a box a stroke, which is several steps: it is applied, not probed.
+   */
+  private async probeText(obj: PlateObject, raw: Record<string, unknown>, nodeHandleValue: unknown): Promise<Record<string, unknown>> {
+    const tree = await this.opened(obj);
+    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    const asked = this.nodeOf(obj, nodeHandleValue);
+    const at = asked ?? tree.current;
+    if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
+    const work = async (): Promise<Record<string, unknown>> => {
+      const context = this.expandContext(obj);
+      const expanded = expand(this.withFaceIndex(obj, structuredClone(raw)), context, (op) => this.pieceOf(obj, op));
+      if ("reason" in expanded) return { ok: false, reason: expanded.reason };
+      const only = expanded.length === 1 ? expanded[0]! : null;
+      if (!only?.step) return { ok: false, reason: "model_probe checks one step, and a text with no font is a box for every stroke. Name a font (stroke is the single-stroke one) to probe it, or apply it with model_apply." };
+      const op = toSolidOp(only.step as unknown as ModelOp, obj.modelPose);
+      return this.probeBaked(obj, tree, at, { op, typed: raw }, true, true);
+    };
+    return at !== tree.current ? this.atStep(obj, tree, at, work) : work();
+  }
+
+  /** The letters a nozzle-wide line cannot print, for a lettering step: the engine's own layout, judged against the nozzle. */
+  private async thinLetters(op: Extract<ModelOp, { kind: "lettering" }>): Promise<{ char: string; lostPct: number }[]> {
+    const request: Record<string, unknown> = { call: "textLayout", text: op.text, font: op.font, height: op.height, lineMm: this.library.nozzleMm, stepMm: 0.5 };
+    for (const key of ["style", "spacing", "lineSpacing", "align", "angleDeg", "weight", "strokeWidth"] as const) if (op[key] !== undefined) request[key] = op[key];
+    try {
+      const reply = JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as { thin?: { ch?: string; lostPct?: number }[] };
+      return (reply.thin ?? []).map((t) => ({ char: String(t.ch ?? ""), lostPct: Number(t.lostPct ?? 0) }));
+    } catch {
+      return [];
+    }
+  }
+
   private async probe(obj: PlateObject, raw: unknown, nodeHandleValue?: unknown, measure = false): Promise<Record<string, unknown>> {
+    if (raw && typeof raw === "object" && (raw as { kind?: unknown }).kind === "text") return this.probeText(obj, raw as Record<string, unknown>, nodeHandleValue);
     if (raw && typeof raw === "object" && isComposite((raw as { kind?: unknown }).kind)) {
       return { ok: false, reason: "model_probe checks one step. Apply a pattern, mirror, pocket, boss, or texture with model_apply; it checks each step as it goes." };
     }
@@ -6244,6 +6294,19 @@ export class Session {
     if (verdict.ok === false) return answer(verdict.body);
     obj.probes.set(probeKey(String(at), baked.op), true);
     if (verdict.firstFaces) return answer({ ok: true, reason: verdict.text, firstFaces: verdict.firstFaces });
+    // --- Text milestone 5: what the letters are, from the engine's own report and layout.
+    if (baked.op.kind === "lettering") {
+      const built = (reply.text ?? {}) as Record<string, unknown>;
+      const thin = await this.thinLetters(baked.op);
+      const note = thin.length ? ` ${thin.map((t) => t.char).join(", ")} ${thin.length === 1 ? "is" : "are"} thinner than your ${formatMm(this.library.nozzleMm)} mm line.` : "";
+      return answer({
+        ok: true,
+        reason: `${verdict.text}${note}`,
+        inkMm2: typeof built.inkMm2 === "number" ? Math.round(built.inkMm2 * 100) / 100 : null,
+        thin,
+        text: { font: built.font, letters: built.letters, build: built.build, surface: built.surface, ...(built.crossesSeam ? { crossesSeam: true } : {}) },
+      });
+    }
     const wedges = this.transitionRows(obj, reply.transition);
     if (wedges) {
       const warn = transitionSkinWarns(this.settings.shallowSkins, wedges.reach) ? ` ${TRANSITION_SKIN_NOTE}` : "";

@@ -36,6 +36,8 @@ export interface PluginParam {
   help?: string;
   options?: string[];
   maxLen?: number;
+  /** A face parameter that takes a curved face too (recipe API 1.3). */
+  curved?: boolean;
 }
 
 export type PluginTarget = "new" | "object" | "either";

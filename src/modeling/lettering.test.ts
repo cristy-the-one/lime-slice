@@ -119,7 +119,7 @@ check("a file with its lettering step intact reads", readSavedTree(file) !== nul
 check("a garbled lettering step drops the tree, as any other garbled step does", readSavedTree(garbled) === null);
 
 // --- Refusals are sentences.
-eq("an unknown font", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, sans, mono, serif, stencil.");
+eq("an unknown font", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, line, sans, mono, serif, stencil.");
 eq("a bold the family lacks", refusal(text({ font: "stencil", style: "bold" })), "Allerta Stencil has no bold. Pick Regular, or another font.");
 check("an italic the family lacks is slanted, not refused", !refusal(text({ font: "mono", style: "italic" })).includes("no italic"));
 eq("too much text", refusal(text({ font: "sans", text: "A".repeat(401) })), "Text takes at most 400 characters a step; use several.");
@@ -129,12 +129,16 @@ eq("a depth of 0", refusal(text({ font: "sans", depth: 0 })), "Text needs a heig
 eq("an align that is not one", refusal(text({ font: "sans", align: "middle" })), "align is left, centre, or right.");
 check("a pattern of lettering is refused, not half built", refusal({ kind: "pattern", op: text({ font: "sans" }), linear: { step: [5, 0, 0], count: 2 } }).includes("not supported yet"));
 
-// --- No font, or the stroke font: the boxes it always built.
+// --- No font: the boxes it always built. The stroke font by name is a pen font, one lettering step (milestone 5).
 const strokes = textStrokes("LIME", 6, 0.9, undefined, "centre");
 const boxes = expand(text({}), ctx, nothing);
 check("a text with no font is a box a stroke", !("reason" in boxes) && Array.isArray(strokes) && boxes.length === strokes.length && boxes.every((p) => p.step === undefined && p.spec.primitive === "box"));
 const stroked = expand(text({ font: STROKE_FONT }), ctx, nothing);
-eq("the stroke font is the same boxes", JSON.stringify(stroked), JSON.stringify(boxes));
+check("the stroke font by name is one lettering step, as a pen font", !("reason" in stroked) && stroked.length === 1 && stroked[0]!.step?.font === "stroke@1" && stroked[0]!.step?.kind === "lettering");
+const lined = expand(text({ font: "line", strokeWidth: 0.7, spacing: 0, text: "Lime" }), ctx, nothing);
+check("Line keeps its pen width and a zero gap", !("reason" in lined) && lined[0]!.step?.font === "line@1" && lined[0]!.step?.strokeWidth === 0.7 && lined[0]!.step?.spacing === 0);
+check("a pen font has no bold", refusal(text({ font: "stroke", style: "bold" })).includes("one style"));
+eq("a pen's width is at most half the height", refusal(text({ font: "stroke", strokeWidth: 4 })), "strokeWidth is above 0 and at most half the height.");
 check("a text of 80 characters still expands", !("reason" in expand(text({ text: "I".repeat(40) }), ctx, nothing)));
 
 // --- The card: what it writes, and what a saved step reopens as.
@@ -143,7 +147,7 @@ const read = (id: string) => ({ modelTextHeight: 6, modelTextTrack: 0, modelText
 const outline = readFeatureSpec("text", read, choices, 1);
 eq("an outline font writes its font and style, and no stroke fields", outline, { kind: "text", faceIndex: 1, text: "Hi", height: 6, font: "sans@4.0", style: "bold", depth: 1, at: { u: 0, v: 0 } });
 const stroke = readFeatureSpec("text", read, { ...choices, font: STROKE_FONT, align: "right" }, 1);
-eq("the stroke font writes what it always did, with no font", stroke, { kind: "text", faceIndex: 1, text: "Hi", height: 6, strokeWidth: 0.9, spacing: 2, depth: 1, at: { u: 0, v: 0 } });
+eq("the stroke font writes its pen: font, width, the gap, the alignment", stroke, { kind: "text", faceIndex: 1, text: "Hi", height: 6, font: "stroke", strokeWidth: 0.9, spacing: 2, align: "right", depth: 1, at: { u: 0, v: 0 } });
 const spaced = readFeatureSpec("text", (id) => (id === "modelTextTrack" ? 0.4 : id === "modelTextLines" ? 1.6 : read(id)), { ...choices, align: "right", style: "regular" }, 1);
 eq("letter spacing, line spacing and align are written when they are not the default", [spaced.spacing, spaced.lineSpacing, spaced.align, spaced.style], [0.4, 1.6, "right", undefined]);
 

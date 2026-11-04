@@ -61,7 +61,7 @@ import { RECIPE_API } from "../plugin-step";
 import { KIND_PURPOSE, PURPOSE, REASON } from "./plugins-panel-text";
 import { setLessons } from "./lessons-note";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
-import type { FaceValue } from "../recipe/picks";
+import type { PickedFaceValue } from "../recipe/picks";
 import { approveFirstRun, exportPluginFile, importPluginText, mountPluginShare, needsFirstRun, pickPluginFiles } from "./plugin-import";
 
 const CARD_ID = "plugins";
@@ -103,7 +103,7 @@ export interface PluginsHost {
    * Wait for a click on a flat face of the part on screen, highlighted as it is picked; `done` gets it with its part, or
    * null when the pick is cancelled. The sentence that says why it cannot start, or null.
    */
-  pickFace?(done: (picked: { object: string; face: FaceValue } | null) => void): string | null;
+  pickFace?(done: (picked: { object: string; face: PickedFaceValue } | null) => void): string | null;
   cancelPick?(): void;
 }
 

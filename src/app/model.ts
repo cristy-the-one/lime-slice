@@ -155,7 +155,7 @@ import { cleanOp } from "../modeling/compose";
 import { readPartition } from "../../mcp/partition";
 import { recipeRuntime, recipesUnavailable, RECIPES_NEED_APP } from "../recipe/runtime";
 import { runPluginFresh } from "../recipe/apply";
-import { axisWord, faceValueOf, sketchOutline, type FaceValue } from "../recipe/picks";
+import { axisWord, curvedValueOf, faceValueOf, sketchOutline, type PickedFaceValue } from "../recipe/picks";
 import { faceRows as geometryFaceRows } from "../modeling/solid-geometry";
 import type { SketchChoice } from "../ui/pick-field";
 import { applyPluginsPanel, loadLibrary, mountPluginAuthor, mountPluginsPanel, pluginAuthor, pluginLibrary, pluginsPanelOpen, refreshPluginsPanel, setPluginAuthor, type PluginRunResult } from "../ui/plugins-panel";
@@ -6276,10 +6276,10 @@ let contextClick: { x: number; y: number; empty: boolean } | null = null;
 let contextFromPick = false;
 
 // --- Recipe API 1.2. A plugin's face or outline value waits for the next face click on the open part.
-let pluginFacePick: ((picked: { object: string; face: FaceValue } | null) => void) | null = null;
+let pluginFacePick: ((picked: { object: string; face: PickedFaceValue } | null) => void) | null = null;
 
 /** Arm a face pick for a plugin's form; the sentence that says why it cannot start, or null. */
-function startPluginFacePick(done: (picked: { object: string; face: FaceValue } | null) => void): string | null {
+function startPluginFacePick(done: (picked: { object: string; face: PickedFaceValue } | null) => void): string | null {
   if (state.stage !== "model" || !open || !viewed()) return "No part is open to pick a face on. Select a part in the objects list, then open it in Model.";
   if (lens) return "History shows an earlier step. Click the last step in History, then pick the face.";
   cancelPluginFacePick(true);
@@ -6311,9 +6311,11 @@ function escPluginFacePick(ev: KeyboardEvent) {
 function takePluginFacePick(pick: ModelPick | null): boolean {
   if (!pluginFacePick || pick?.kind !== "face" || !open) return false;
   const solid = viewed();
-  const face = solid ? faceValueOf({ faces: geometryFaceRows(solid.positions, solid.triangles, solid.faces), positions: solid.positions, triangles: solid.triangles }, pick.index) : null;
+  const set = solid ? { faces: geometryFaceRows(solid.positions, solid.triangles, solid.faces), positions: solid.positions, triangles: solid.triangles } : null;
+  // --- Recipe API 1.3: a curved face is kept by its surface and a point; a plugin whose parameter takes only flat faces says so when it runs.
+  const face: PickedFaceValue | null = set ? faceValueOf(set, pick.index) ?? curvedValueOf(set, pick.index) : null;
   if (!face) {
-    readout("That face is not flat. Click a flat face, or press Esc.");
+    readout("That face is not on the part. Click a face, or press Esc.");
     return true;
   }
   const done = pluginFacePick;
@@ -6322,7 +6324,7 @@ function takePluginFacePick(pick: ModelPick | null): boolean {
   fx.model?.highlight(picks);
   syncModelChrome(picks);
   done({ object: open.objectId, face });
-  readout(`Picked the face facing ${axisWord(face.normal)}, ${formatMm(face.areaMm2 ?? 0)} mm².`);
+  readout("normal" in face ? `Picked the face facing ${axisWord(face.normal)}, ${formatMm(face.areaMm2 ?? 0)} mm².` : `Picked a ${face.surface === "other" ? "curved" : face.surface} face, ${formatMm(face.areaMm2 ?? 0)} mm².`);
   return true;
 }
 

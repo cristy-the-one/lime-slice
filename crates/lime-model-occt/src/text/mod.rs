@@ -14,6 +14,7 @@
 
 pub mod fit;
 pub mod fonts;
+pub mod pen;
 pub mod skin;
 #[cfg(any(test, lime_occt_test_hooks))]
 pub mod synth;
@@ -201,6 +202,8 @@ pub struct Spec {
     pub angle_deg: f64,
     /// A variable font's weight, 100 to 900 (milestone 4). Absent: the font's own, or 700 for a bold style.
     pub weight: Option<f64>,
+    /// A pen font's line width, mm (milestone 5). Absent: 0.15 of the height.
+    pub stroke_mm: Option<f64>,
 }
 
 pub const DEFAULT_LINE_SPACING: f64 = 1.3;
@@ -752,6 +755,10 @@ pub fn lay_out(spec: &Spec) -> Result<Laid, String> {
             "Text takes at most {MAX_CHARS} characters a step; use several."
         ));
     }
+    // --- A pen font (milestone 5): stroke and line, drawn as lines with a pen width.
+    if pen::is_pen(&spec.font) {
+        return pen::lay_out(spec);
+    }
     // --- A font the person added (milestone 4): found by its id among the fonts this engine was given.
     if user::is_user_id(&spec.font) {
         return user::lay_out(spec);
@@ -996,3 +1003,6 @@ mod tests;
 
 #[cfg(test)]
 mod user_tests;
+
+#[cfg(test)]
+mod pen_tests;

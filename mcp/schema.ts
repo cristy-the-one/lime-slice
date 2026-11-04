@@ -361,9 +361,10 @@ addOpWords(op);
 const opPointer = (what: string) => ({ type: "object", description: `${what} Same shape as model_apply's op; guide {kind} has a kind's fields.` });
 
 /** An op and every op nested in it, against the op branches. `plain` refuses the composite kinds. */
-function checkOp(value: unknown, path: string, plain: boolean, depth = 0): string | null {
+function checkOp(value: unknown, path: string, plain: boolean, depth = 0, textOk = false): string | null {
   const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
-  if (plain && typeof kind === "string" && COMPOSITE.has(kind)) return `${path}.kind ${kind} is several steps. Use model_apply or model_apply_batch.`;
+  // A text with a font is one step: model_probe checks it (the session says when a text with no font is several).
+  if (plain && typeof kind === "string" && COMPOSITE.has(kind) && !(textOk && kind === "text")) return `${path}.kind ${kind} is several steps. Use model_apply or model_apply_batch.`;
   const problem = validate(op, value, path);
   if (problem) return problem;
   if ((kind === "pattern" || kind === "mirror") && depth < 4) {
@@ -597,16 +598,16 @@ const surfaceOps = [
     required: ["kind", "text", "height", "depth"],
     properties: {
       kind: { const: "text" },
-      text: { type: "string", minLength: 1, maxLength: 400, description: "Any letters the font has, \n for a new line. The stroke font takes 80 of A-Z, 0-9, space, -+.,:!?/'&." },
-      font: { type: "string", maxLength: 120, description: "Default stroke, the single-stroke font. sans, mono, serif, stencil are outline fonts; so is a font already in the project, by name (guide {kind:\"text\"})." },
+      text: { type: "string", minLength: 1, maxLength: 400, description: "Any letters the font has, \n for a new line. stroke has A-Z, 0-9, -+.,:!?/'&; line adds lowercase." },
+      font: { type: "string", maxLength: 120, description: "None: stroke as boxes. stroke, line: single-stroke. sans, mono, serif, stencil: outline. Or a project font by name (guide {kind:\"text\"})." },
       fontFile: { type: "string", maxLength: 400, description: "A .ttf, .otf or .ttc in the workspace (file.ttc#2 for its third font). Adds it to the project; later texts name it as font." },
       style: { enum: ["regular", "bold", "italic", "bold-italic"], description: "Outline fonts. A font with no italic is slanted; one with no bold is refused." },
       weight: { type: "number", minimum: 100, maximum: 900, description: "A variable font's weight." },
       height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "Capitals, mm." },
-      strokeWidth: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Stroke font. Default height × 0.15." },
-      spacing: { type: "number", minimum: -50, maximum: 100, description: "After each letter, mm. Default height / 3 for stroke, 0 for outline fonts." },
-      lineSpacing: { type: "number", minimum: 0, maximum: 10, description: "Outline fonts: capital heights between lines. Default 1.3." },
-      align: { enum: ["centre", "left", "right"], description: "Each line: at is its middle, start or end. Right is for outline fonts." },
+      strokeWidth: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "stroke, line. Default height × 0.15." },
+      spacing: { type: "number", minimum: -50, maximum: 100, description: "After each letter, mm. Default height / 3 for stroke and line, 0 for outline fonts." },
+      lineSpacing: { type: "number", minimum: 0, maximum: 10, description: "With a font: capital heights between lines. Default 1.3." },
+      align: { enum: ["centre", "left", "right"], description: "Each line: at is its middle, start or end." },
       at: { type: "object", description: "{u, v} on the face." },
       point: { ...vec3, description: "Curved face: where the text sits. Default the middle." },
       along: { enum: ["around", "axis", "u", "v"], description: "Cylinder, cone: around (default) or up it. Sphere, torus, freeform: u (default) or v." },
@@ -2448,7 +2449,7 @@ function checkTool(name: string, input: unknown): string | null {
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };
-  if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true);
+  if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true, 0, name === "model_probe");
   if (name === "render_view" && record.op !== undefined) return checkOp(record.op, "op", true);
   if (name === "model_apply") return checkOp(record.op, "op", false);
   if ((name === "model_apply_batch" || name === "model_build") && Array.isArray(record.ops)) {

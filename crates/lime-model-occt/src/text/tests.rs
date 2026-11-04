@@ -11,6 +11,7 @@ fn spec(text: &str) -> Spec {
         align: Align::Centre,
         angle_deg: 0.0,
         weight: None,
+        stroke_mm: None,
     }
 }
 

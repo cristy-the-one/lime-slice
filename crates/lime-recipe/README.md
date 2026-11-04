@@ -49,3 +49,21 @@ Plugins panel and History (a face clicked in the view, a sketch, a face's
 outline); an agent passes an index, `{normal, nearPoint}`, `{sketch}`,
 `{face}`, `{loops}` or `{data}`. `s.refuse(sentence)` ends a run with a plain
 reason; `s.bounds(&part)` is the part's box.
+
+## Text and curved faces (API 1.3)
+
+`s.face("wall").curved().get()` declares a face parameter that takes any face, not only a flat one. `s.pick_face` then says what it
+got: `kind` (`plane`, `cylinder`, `cone`, `sphere`, or `other` for a torus or a freeform face), and for a cylinder or a cone its
+`axis` and `radius`. A curved face has no one normal (`normal` is zero), no outline (`outline` is empty), and a point on it
+(`point`); it is kept in a plugin step as `{surface, nearPoint}` and found again by the face of that surface under the point. A
+parameter without `.curved()` refuses a curved face in the 1.2 sentence.
+
+`s.lettering(&part, &face, "LOT 42", &Lettering::new(6.0, 0.8).font("mono").around())` is the `text` op as a typed call, on the face
+`pick_face` gave, flat or curved (one history step; `Lettering` also takes `.style`, `.weight`, `.spacing`, `.line_spacing`,
+`.align`, `.angle`, `.stroke_width`, `.axis`, `.u`, `.v`, `.project`, `.flip`, `.engrave`). The plan called the struct `Text`,
+which `s.text(name, default)`'s parameter builder already is, and the method `model.text`, which a recipe has no `model` for.
+
+`s.text_outline("LIME", "sans", 10.0)` is the letters as a `Section`: `.region` for `geom2d`, `.loops` for `extrude`, centred on the
+origin with U right and V up. The host lays the text out, since this crate reads no fonts. `text_outline_with(text, &Lettering)` takes
+the style, weight, spacing, line spacing, alignment, angle and pen width too. A letter the font lacks is a `Refusal` with the
+layout's sentence.
