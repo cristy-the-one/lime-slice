@@ -28,7 +28,10 @@ import { adoptHeldPieces, adoptSavedTrees, captureOpenSolid, historyToSave, note
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
 import { projectCopies, stampedShas } from "../plugins/library.ts";
-import { pluginLibrary } from "../ui/plugins-panel.ts";
+import { loadLibrary, openPluginsPanel, pluginLibrary } from "../ui/plugins-panel.ts";
+import { projectPluginsOffer } from "../ui/plugin-import.ts";
+import { libraryIo } from "../plugins/library.ts";
+import { setStage } from "./viewer.ts";
 import { cloneStudy } from "../sim/study.ts";
 import { solidFileName } from "../model-request.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
@@ -228,6 +231,7 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     const custom = customGcodeNotice(state.layerActions);
     if (custom) pushToast(custom, "info");
     noteParametersBuilt();
+    void offerProjectPlugins(project.plugins, doc);
     // After the open, not in it: the held pieces' solids are cut again while the plate is already in use.
     window.setTimeout(() => {
       if (session.docEpoch === doc) warmHeldPieces();
@@ -236,6 +240,17 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
   } finally {
     session.projectRestoring = false;
   }
+}
+
+/**
+ * --- Plugin milestone 8 (D10): a project from someone else may carry plugins the library lacks. Say so once, with Review
+ * (the Plugins panel's "In this project", where Add to library shows each one's code first); never add them silently.
+ */
+async function offerProjectPlugins(plugins: Record<string, string> | undefined, doc: number) {
+  if (!plugins || Object.keys(plugins).length === 0 || !(await libraryIo())) return;
+  const offer = await projectPluginsOffer(plugins, await loadLibrary());
+  if (!offer || session.docEpoch !== doc) return;
+  pushToast(offer.text, "info", { label: "Review", run: () => { setStage("model"); openPluginsPanel(); } });
 }
 
 function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof historyToSave>>): { objects: PlateFileObject[]; tools: ToolTree[]; pieces: HeldPiece[] } {

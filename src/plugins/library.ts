@@ -13,6 +13,7 @@ import { bodySha256, readPluginFile, type PluginFileInfo, type PluginParamInfo }
 import type { PluginStamp } from "../model-tree.ts";
 import { carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
 import { carriedData } from "../recipe/plugin-data.ts";
+import { readMarks, type ImportMark } from "./share.ts";
 
 /**
  * What the shell lists: every plugin `.rs` file of the folder (current and older versions), the presets, the settings,
@@ -26,6 +27,8 @@ export interface LibraryListing {
   ingredients?: { name: string; text: string }[];
   lessons?: string | null;
   settings: string | null;
+  /** `imported.json` (milestone 8): plugins added from a file or a project, until their first run is approved. */
+  imported?: string | null;
 }
 
 /** One ingredient of the library (I9): a module recipes import, at its current version. */
@@ -80,9 +83,11 @@ export interface PluginLibrary {
   lessons: readonly Lesson[];
   /** The "Plugin author" setting; empty when none is set. */
   author: string;
+  /** Plugins marked imported (D11.6), by id, until a person approves their first run. */
+  imported: Readonly<Record<string, ImportMark>>;
 }
 
-export const EMPTY_LIBRARY: PluginLibrary = { dir: "", plugins: new Map(), bySha: new Map(), presets: new Map(), ingredients: new Map(), lessons: [], author: "" };
+export const EMPTY_LIBRARY: PluginLibrary = { dir: "", plugins: new Map(), bySha: new Map(), presets: new Map(), ingredients: new Map(), lessons: [], author: "", imported: {} };
 
 /** A preset's name: a slug, as `nugget save {kind: "preset"}` takes it. */
 export const PRESET_NAME = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
@@ -134,7 +139,7 @@ export async function readLibrary(listing: LibraryListing): Promise<PluginLibrar
   }
   const presets = new Map<string, Preset[]>();
   for (const { plugin, text } of listing.presets) presets.set(plugin, readPresets(text));
-  return { dir: listing.dir, plugins, bySha, presets, ingredients: readIngredients(listing.ingredients ?? []), lessons: readLessons(listing.lessons ?? null), author: readAuthor(listing.settings) };
+  return { dir: listing.dir, plugins, bySha, presets, ingredients: readIngredients(listing.ingredients ?? []), lessons: readLessons(listing.lessons ?? null), author: readAuthor(listing.settings), imported: readMarks(listing.imported) };
 }
 
 /** The `//! key: value` lines of a `//! ---` header, or null when the text has none. */
@@ -455,7 +460,7 @@ export function panelPlugins(library: PluginLibrary, project: ReadonlyMap<string
     rows.push({ key: `project:${sha}`, section: "project", file, sha256: sha, inLibrary: false, badges: badgesOf(file), usedAt: usedAt[file.plugin] ?? 0 });
   }
   for (const [id, row] of library.plugins) {
-    rows.push({ key: `library:${id}`, section: "library", file: row.file, sha256: row.sha256, inLibrary: true, badges: [...badgesOf(row.file), ...(row.intact ? [] : ["edited"])], usedAt: usedAt[id] ?? 0 });
+    rows.push({ key: `library:${id}`, section: "library", file: row.file, sha256: row.sha256, inLibrary: true, badges: [...(library.imported[id] ? ["imported"] : []), ...badgesOf(row.file), ...(row.intact ? [] : ["edited"])], usedAt: usedAt[id] ?? 0 });
   }
   const order: PanelSection[] = ["project", "library", "samples"];
   return rows.sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section) || b.usedAt - a.usedAt || a.file.title.localeCompare(b.file.title));
@@ -604,6 +609,8 @@ export interface LibraryIo {
   writePresets(id: string, text: string): Promise<void>;
   writeLessons(text: string): Promise<void>;
   writeSettings(text: string): Promise<void>;
+  /** Writes `imported.json`: the plugins marked imported. */
+  writeImported(text: string): Promise<void>;
   /** Removes `<id>.rs` and its older versions (an ingredient's, in `ingredients/`); the number of files removed. */
   remove(id: string, kind?: "plugin" | "ingredient"): Promise<number>;
   /** Shows the plugin's (or ingredient's) file, or the folder, in the system's file manager. */
@@ -635,6 +642,7 @@ export async function libraryIo(): Promise<LibraryIo | null> {
     writePresets: (id, text) => invoke<void>("plugin_library_write", { name: `presets/${id}.json`, text }),
     writeLessons: (text) => invoke<void>("plugin_library_write", { name: "lessons.json", text }),
     writeSettings: (text) => invoke<void>("plugin_library_write", { name: "settings.json", text }),
+    writeImported: (text) => invoke<void>("plugin_library_write", { name: "imported.json", text }),
     remove: (id, kind) => invoke<number>("plugin_library_remove", kind && kind !== "plugin" ? { id, kind } : { id }),
     reveal: (id, kind) => invoke<void>("plugin_library_reveal", kind && kind !== "plugin" ? { id, kind } : { id }),
   };

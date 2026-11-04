@@ -646,6 +646,13 @@ html[data-stage="model"] .status #statusText { position: absolute; width: 1px; h
 .model-plugins .pp-items { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 var(--space-2); padding: 0; list-style: none; }
 .model-plugins .pp-items li { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-dim); font: 11px / 1.4 var(--font-mono); }
 .model-plugins .pp-carried, .model-plugins .pp-used-by, .model-plugins .pp-ingredient-how { color: var(--text-dim); line-height: 1.35; }
+/* --- Sharing (plugin milestone 8): Import… beside the search, and an imported plugin's trust on its page. */
+.model-plugins .pp-head .pp-import { flex: 0 0 auto; height: 26px; padding: 0 8px; }
+.model-plugins .pp-trust { display: grid; gap: 4px; margin: 0 0 var(--space-2); padding: 4px 6px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.model-plugins .pp-trust .model-note { margin: 0; color: var(--text); line-height: 1.35; }
+.model-plugins .pp-trust-hash { color: var(--text-dim); font: 10px / 1.35 var(--font-mono); overflow-wrap: anywhere; user-select: all; }
+.model-plugins .pp-trust-source { justify-self: start; height: 22px; padding: 0 8px; }
+.model-plugins .pp-badge-imported, .model-plugins .pp-row-top .pp-badge:is([data-badge="imported"]) { border-color: var(--accent); color: var(--text); }
 /* Lessons on an op's card: what runs learned about this kind of step. */
 .model-lessons { margin: var(--space-1) 0; padding: 4px 6px; border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: var(--fs-1); }
 .model-lessons[hidden] { display: none; }

@@ -267,7 +267,11 @@ async fn save_text_file(
     extension: String,
     bytes_b64: Option<String>,
 ) -> Result<bool, String> {
-    let label = if extension == "3mf" { "3MF" } else { "G-code" };
+    let label = match extension.as_str() {
+        "3mf" => "3MF",
+        "rs" => "Lime Slice plugin",
+        _ => "G-code",
+    };
     let picked = app
         .dialog()
         .file()
