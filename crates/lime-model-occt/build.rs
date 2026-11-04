@@ -46,6 +46,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/kernel.cpp");
     println!("cargo:rerun-if-changed=cpp/tree.cpp");
     println!("cargo:rerun-if-changed=cpp/fault.cpp");
+    println!("cargo:rerun-if-changed=cpp/text.cpp");
     println!("cargo:rerun-if-changed=cpp/kernel.h");
     let Ok(root) = env::var("OCCT_ROOT") else {
         return;
@@ -87,6 +88,7 @@ fn main() {
         .file("cpp/kernel.cpp")
         .file("cpp/tree.cpp")
         .file("cpp/fault.cpp")
+        .file("cpp/text.cpp")
         .include(&include);
     if env::var("CARGO_CFG_TARGET_ENV").ok().as_deref() == Some("msvc") {
         // /EHa, as Open CASCADE itself is built: a hardware fault inside it is then thrown as a C++ exception

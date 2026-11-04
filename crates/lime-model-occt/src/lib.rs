@@ -10,6 +10,9 @@ use std::os::raw::c_char;
 #[cfg(lime_occt)]
 mod tree;
 
+// Text from real fonts: reading and layout need no Open CASCADE, so they are built and tested without it.
+mod text;
+
 #[cfg(not(lime_occt))]
 const MISSING: &str = "{\"error\":\"OCCT_ROOT is not set, so Open CASCADE is not linked\"}";
 

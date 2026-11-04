@@ -725,4 +725,23 @@ std::string face_region_json(const TopoDS_Face& face, const double* frame, doubl
 /// `face_region_json` answers.
 std::string section_json(const TopoDS_Shape& shape, const double* plane, const double* frame, double chord, std::string& error);
 
+/// Lettering on a flat face (docs/plan-text-on-curves-and-fonts.md, milestone 1; cpp/text.cpp). `data` is the laid-out glyph
+/// faces as `text::encode` writes them, in millimetres on the plane at `origin` turned by `turn`; raised `depth` from that
+/// plane, or cut `depth` into it with `cut`. `path` is 1 when built directly (no boolean) and 2 by the boolean build;
+/// `history` then names the face the letters replaced. The refusals are sentences.
+TopoDS_Shape build_lettering(
+    const TopoDS_Shape& current,
+    double before,
+    bool cut,
+    const double origin[3],
+    const double turn[3],
+    double depth,
+    const double* data,
+    int len,
+    double& volume,
+    int& path,
+    Handle(BRepTools_History)& history,
+    std::string& note,
+    std::string& error);
+
 }  // namespace lime_occt
