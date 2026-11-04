@@ -390,7 +390,9 @@ Updating `ttf-parser` is a reviewed change with an A/B of the text fixtures.
 - The stroke font's look, and every split number and coupon label.
 - Open CASCADE's build (no FreeType), unless D1 says otherwise.
 
-## 9. Open decisions for the owner
+## 9. Decisions
+
+The owner answered on 2026-11-04: the plan's choice for every decision below, and each milestone is built by the cheapest subagent that can do it.
 
 Each has the plan's choice; the plan goes ahead on it unless the owner says otherwise.
 
