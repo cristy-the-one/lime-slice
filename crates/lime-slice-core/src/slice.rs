@@ -7077,6 +7077,7 @@ fn object_layer(
         xy_hole_mm: settings.xy_hole_compensation_mm,
         xy_contour_mm: settings.xy_contour_compensation_mm,
         elephants_foot_mm: settings.elephants_foot_compensation_mm,
+        infill_nearest_first: settings.classic,
     };
     // The blend's plan of `region`, with `tweak` over every strategy it
     // prints, and the print speed the note names when the object's cap
