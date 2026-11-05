@@ -136,7 +136,7 @@ import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, setting
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
 import { notClosedReason } from "./step-guard.ts";
 import { settingsRangeError } from "./settings-check.ts";
-import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, validateTool } from "./schema.ts";
+import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type FacePick, type Piece } from "../src/modeling/compose.ts";
 import { pickSentence } from "../src/modeling/frames.ts";
@@ -839,7 +839,7 @@ export class Session {
   clearanceMm = 0;
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
-  /** The tool groups enabled, when the server lists groups (LIME_MCP_TOOL_GROUPS=1); null lists every tool. */
+  /** The tool groups enabled, when the server lists groups (the default; LIME_MCP_TOOL_GROUPS=0 lists every tool). */
   toolGroups: Set<string> | null = groupsOptedIn() ? new Set() : null;
   /** Called when tools_enable changes the tool list, so the client is told. */
   onToolsChanged: (() => void) | null = null;
@@ -942,8 +942,13 @@ export class Session {
    * it never detaches on its own (the plan does, as a whole) and is not refused for the plan's own background job.
    */
   private runCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
-    const hidden = this.groupRefusal(name);
-    if (hidden) return Promise.resolve(hidden);
+    const opened = this.openGroupFor(name);
+    const done = this.runOpenCall(name, args, meta, inPlan);
+    // The spread drops the non-enumerable inline images (layer_image, render_view), so carry them over.
+    return opened ? done.then((value) => withImages({ ...value, groupOpened: opened }, imagesOf(value))) : done;
+  }
+
+  private runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
     const picked = edgePicksAsTyped(numbered.args);
@@ -2454,11 +2459,17 @@ export class Session {
     return { removed, restored };
   }
 
-  /** With groups on, a tool of a group not enabled is refused with the call that enables it. */
-  private groupRefusal(name: string): Record<string, unknown> | null {
+  /**
+   * With groups on, a call to a tool of a group not enabled opens the group and runs. A client that never re-reads the
+   * tool list after list_changed can still reach the tool through plan_run, and one that does sees the tool from now on.
+   * Returns the group opened, or null.
+   */
+  private openGroupFor(name: string): string | null {
     const group = this.toolGroups && this.recipeDepth === 0 ? groupOf(name) : null;
     if (group === null || this.toolGroups!.has(group)) return null;
-    return { ok: false, group, reason: `${name} is in the ${group} group, which is not enabled. Call tools_enable {groups:["${group}"]}, then call ${name} again.` };
+    this.toolGroups!.add(group);
+    this.onToolsChanged?.();
+    return group;
   }
 
   /** tools_enable: adds groups to the list and tells the client it changed. With groups off, every tool is already listed. */
@@ -2468,7 +2479,15 @@ export class Session {
     const added = asked.filter((group) => !this.toolGroups!.has(group));
     for (const group of added) this.toolGroups.add(group);
     if (added.length > 0) this.onToolsChanged?.();
-    return { ok: true, enabled: GROUP_NAMES.filter((group) => this.toolGroups!.has(group)), added: added.flatMap((group) => TOOL_GROUPS[group]!.tools) };
+    const addedTools = asked.flatMap((group) => TOOL_GROUPS[group]!.tools);
+    const reply: Record<string, unknown> = {
+      ok: true,
+      enabled: GROUP_NAMES.filter((group) => this.toolGroups!.has(group)),
+      added: added.flatMap((group) => TOOL_GROUPS[group]!.tools),
+      note: "The tool list has changed. If these tools do not appear in yours, call them through plan_run {steps:[{tool, args}]}, or by name: a tool of any group opens its group.",
+    };
+    if (input.schemas === true) reply.schemas = addedTools.map((tool) => { const spec = toolByName(tool); return spec ? { name: tool, description: spec.description, inputSchema: spec.inputSchema } : { name: tool }; });
+    return reply;
   }
 
   /** What the call is doing now, for its progress notifications and its job's wait. */

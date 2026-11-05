@@ -21,7 +21,7 @@ const INSTRUCTIONS = [
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");
 
-const GROUPS_NOTE = `Only the core tools are listed. tools_enable {groups} adds a group: ${GROUP_NAMES.join(", ")}; a Model edit needs model.`;
+const GROUPS_NOTE = `Only the core tools are listed. tools_enable {groups} adds a group: ${GROUP_NAMES.join(", ")}; a Model edit needs model. Calling a tool of a closed group opens it.`;
 
 function guideText(name: "slice" | "model" | "paint" | "calibrate"): string {
   return GUIDES.find((guide) => guide.uri === `lime://guide/${name}`)?.text ?? "";
