@@ -588,6 +588,38 @@ fn lightning_saves_filament_without_dropping_toughness() {
     assert!(speed.score.efficiency > speed_old.score.efficiency);
 }
 
+/// The classic planner tours nothing, so its 2D gyroid waves are ordered as
+/// they are planned. Before that each row started back at the left edge: the
+/// cube travelled about 7x the toured 2D gyroid (25.6 m vs 3.6 m), now under 2x.
+#[test]
+fn classic_gyroid_travels_near_the_toured_one() {
+    let mesh = cube();
+    let tough = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    let toured = slice_configured(
+        &mesh,
+        &tough,
+        &profile(),
+        &SliceSettings {
+            gyroid_3d: lime_slice_core::Gyroid3d::Off,
+            ..SliceSettings::default()
+        },
+    )
+    .unwrap();
+    let old = slice_configured(&mesh, &tough, &profile(), &classic()).unwrap();
+    assert!(old.sanity.ok);
+    assert!(
+        old.sanity.travel_length_mm < toured.sanity.travel_length_mm * 3.0,
+        "classic travel {:.0} mm vs toured {:.0} mm",
+        old.sanity.travel_length_mm,
+        toured.sanity.travel_length_mm
+    );
+    // Same beads, only the hops between them moved.
+    let ratio = old.estimate.filament_mm / toured.estimate.filament_mm;
+    assert!((ratio - 1.0).abs() < 0.01, "filament ratio {ratio}");
+}
+
 #[test]
 fn thin_wall_uses_a_variable_bead() {
     let mesh = thin_fin();
