@@ -18,8 +18,8 @@ const flat: RuleInput = { kind: "cartesian", belt: { raftLayers: 0, maxLengthMm:
 const belt: RuleInput = { ...flat, kind: "belt" };
 const hidden = (input: RuleInput) => [...settingsRules(input).hidden].sort();
 
-eq("a flat printer with one object hides only the belt block, its length, its raft layers, and the belt's tip under every row", hidden(flat), ["beltFields", "beltMaxLength", "beltRaftLayers", "printOrder", "supportStrictStacking"]);
-eq("a flat printer with two objects shows the print order", hidden({ ...flat, objects: 2 }), ["beltFields", "beltMaxLength", "beltRaftLayers", "supportStrictStacking"]);
+eq("a flat printer with one object hides only the belt block, its length, its raft layers, and the belt's tip under every row", hidden(flat), ["beltFields", "beltMaxLength", "beltRaftLayers", "printOrder", "supportBeltAnchors", "supportStrictStacking"]);
+eq("a flat printer with two objects shows the print order", hidden({ ...flat, objects: 2 }), ["beltFields", "beltMaxLength", "beltRaftLayers", "supportBeltAnchors", "supportStrictStacking"]);
 
 // Ruling 1: a belt raft hides Adaptive and drops it from the request.
 check("a belt raft hides adaptive layers", settingsRules({ ...belt, belt: { raftLayers: 2, maxLengthMm: null } }).hidden.has("adaptive"));
@@ -59,6 +59,10 @@ eq("a flat printer shows it", settingsRules(flat).hidden.has("elephantsFoot"), f
 check("a belt shows the tip under every row", !settingsRules(belt).hidden.has("supportStrictStacking"));
 eq("a flat request does not carry the tip under every row", settingsRules(flat).coerce({ supportStrictStacking: true, mesh: "m" }), { mesh: "m" });
 eq("a belt request carries it", settingsRules(belt).coerce({ supportStrictStacking: true, mesh: "m" }), { supportStrictStacking: true, mesh: "m" });
+check("a belt shows the belt anchor lines", !settingsRules(belt).hidden.has("supportBeltAnchors"));
+check("a flat printer hides them", settingsRules(flat).hidden.has("supportBeltAnchors"));
+eq("a flat request carries no belt anchors", settingsRules(flat).coerce({ supportBeltAnchorMm: 10, supportBeltAnchors: true, mesh: "m" }), { mesh: "m" });
+eq("a belt request carries them", settingsRules(belt).coerce({ supportBeltAnchorMm: 10, mesh: "m" }), { supportBeltAnchorMm: 10, mesh: "m" });
 const firstLayer = { elephantsFootCompensationMm: 0.2, xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 };
 eq("a belt request carries the support brim but no elephant's foot", settingsRules(belt).coerce(firstLayer), { xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 });
 eq("a flat request carries both", settingsRules(flat).coerce(firstLayer), firstLayer);

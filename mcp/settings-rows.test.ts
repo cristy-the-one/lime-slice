@@ -48,6 +48,14 @@ check("gentle printing is a row", row("supportSlowFragile")?.label === "Print su
 check("the gentle speed is in mm/s and Auto by default", row("supportGentleSpeedMmS")?.unit === "mm/s" && row("supportGentleSpeedMmS")?.default === null, JSON.stringify(row("supportGentleSpeedMmS")));
 check("the gentle accel is in mm/s²", row("supportGentleAccelMmS2")?.unit === "mm/s²" && row("supportGentleAccelMmS2")?.label === "Gentle accel", JSON.stringify(row("supportGentleAccelMmS2")));
 check("the gentle values depend on gentle printing", row("supportGentleAccelMmS2")?.dependsOn === "supportSlowFragile");
+const beltRows = settingRows({ settings: on, ctx: { belt: true, lineWidth: 0.45 }, all: true });
+const beltRow = (key: string) => beltRows.find((r) => r.key === key);
+check("belt anchor lines are a row, on by default", beltRow("supportBeltAnchors")?.label === "Belt anchor lines" && beltRow("supportBeltAnchors")?.default === true, JSON.stringify(beltRow("supportBeltAnchors")));
+check("the anchor spacing is in mm, 10 by default", beltRow("supportBeltAnchorMm")?.unit === "mm" && beltRow("supportBeltAnchorMm")?.default === 10, JSON.stringify(beltRow("supportBeltAnchorMm")));
+const spaced = applySetting(on, "supportBeltAnchorMm", 15, { belt: true, lineWidth: 0.45 });
+check("an anchor spacing is taken", "settings" in spaced && spaced.settings.supportBeltAnchorMm === 15, JSON.stringify(spaced));
+const anchorsOff = applySetting(on, "supportBeltAnchors", false, { belt: true, lineWidth: 0.45 });
+check("belt anchors can be turned off", "settings" in anchorsOff && anchorsOff.settings.supportBeltAnchors === false, JSON.stringify(anchorsOff));
 check("the support brim is one row for every style", row("supportTreeBrimMm")?.label === "Support brim" && row("supportTreeBrimMm")?.unit === "mm");
 const gentle = set(on, "supportGentleAccelMmS2", 1500);
 check("a gentle accel is taken", "settings" in gentle && gentle.settings.supportGentleAccelMmS2 === 1500, JSON.stringify(gentle));

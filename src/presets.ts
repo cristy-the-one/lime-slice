@@ -60,6 +60,10 @@ export interface PresetSettings {
   supportGapsAuto: true;
   /** Millimetres of brim under the supports, on the bed or the belt, for every style. `0` is omitted. */
   supportTreeBrimMm: number;
+  /** Anchor lines across the belt where supports stand on it. On by default; only a belt sends it. */
+  supportBeltAnchors: boolean;
+  /** Millimetres along the belt between two anchor lines. */
+  supportBeltAnchorMm: number;
   infillCombine: boolean;
   /** Skin on slopes so shallow that each layer steps past the walls. Off unless asked, and omitted from the request while off. */
   shallowSkins: boolean;
@@ -155,6 +159,8 @@ export const DEFAULT_PRESET: PresetSettings = {
   supportInterfaceLayers: null,
   supportGapsAuto: true,
   supportTreeBrimMm: 0,
+  supportBeltAnchors: true,
+  supportBeltAnchorMm: 10,
   infillCombine: true,
   shallowSkins: false,
   solidUnderWalls: false,
@@ -200,7 +206,7 @@ export function presetKeys(): (keyof PresetSettings)[] {
 }
 
 /** Keys added after project and profile files were versioned. A file written before one reads its default. */
-export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportStrictStacking", "supportPaintJoin", "shallowSkins", "supportSlowFragile", "supportGentleSpeedMmS", "supportGentleAccelMmS2", "solidUnderWalls", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
+export const LATER_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["seam", "ironing", "ironingFlow", "ironingSpeed", "ironingSpacing", "fuzzySkin", "fuzzyThickness", "fuzzyPointDistance", "flow", "retractOn", "retractLength", "retractSpeed", "supportAvoidance", "supportStrictStacking", "supportPaintJoin", "shallowSkins", "supportSlowFragile", "supportGentleSpeedMmS", "supportGentleAccelMmS2", "solidUnderWalls", "supportSource", "minLayerTimeS", "minLayerSpeedMmS", "adhesion", "brimWidthMm", "brimGapMm", "skirtLoops", "topSurfacePattern", "xyHoleCompensationMm", "xyContourCompensationMm", "elephantsFootCompensationMm", "supportZGapMm", "supportXyGapMm", "supportInterfaceLayers", "supportTreeBrimMm", "supportBeltAnchors", "supportBeltAnchorMm", "bridgeFlowRatio", "bridgeSpeedMmS", "bridgeFanPercent"]);
 
 /** Settings that are Auto (`null`) until set. Before Auto existed they stored `0` for it, which `readPresetSettings` still reads that way. */
 const AUTO_KEYS: ReadonlySet<keyof PresetSettings> = new Set(["supportZGapMm", "supportXyGapMm", "supportInterfaceLayers"]);

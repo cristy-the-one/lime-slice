@@ -17,6 +17,7 @@ import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
 import { saveAutoSlice } from "../auto-slice-pref.ts";
 import { SUPPORT_MODES, supportModeOf, supportModeState, type SupportMode } from "../support-source.ts";
 import { interfaceLayersSent, SUPPORT_INTERFACE_LAYERS_MAX } from "../support-interface.ts";
+import { BELT_ANCHOR_LIMITS } from "../support-avoidance.ts";
 import { BRIDGE_LIMITS, type BridgeKey } from "../bridge-tune.ts";
 import { fanLayersValue, fanPercentValue, MAX_FAN_OFF_LAYERS } from "../fan.ts";
 
@@ -796,6 +797,31 @@ export const CONTROLS: ControlSpec[] = [
     when: (s) => s.supports,
     tip: "A brim under every support, grid or tree, where it stands on the bed or the belt, so a tall thin support has a wider foot and stays standing. 0 prints none; 3 mm is a good start. On a belt the brim lies on the belt around each support's foot, along the belt and across it. It keeps the XY gap from the part.",
     keywords: "support brim foot adhesion tree grid trunk bed belt knocked over",
+  }),
+  bound("supportBeltAnchors", {
+    id: "anchorlines",
+    label: "Belt anchor lines",
+    group: "supports",
+    tier: "simple",
+    kind: check,
+    parent: "supportTools",
+    when: (s) => s.supports,
+    rule: "supportBeltAnchors",
+    structural: true,
+    tip: "Lays a support line across the belt at the first and last support standing on it and every Anchor spacing between them, 5 mm past the outer supports and clear of the part, so supports hold to the belt instead of being knocked off.",
+    keywords: "belt anchor line adhesion support foot purge knocked over dragged spider web",
+  }),
+  bound("supportBeltAnchorMm", {
+    id: "anchorspacing",
+    label: "Anchor spacing mm",
+    group: "supports",
+    tier: "advanced",
+    kind: num(BELT_ANCHOR_LIMITS.min, BELT_ANCHOR_LIMITS.max, 1),
+    parent: "anchorlines",
+    when: (s) => s.supports && s.supportBeltAnchors,
+    rule: "supportBeltAnchors",
+    tip: "Millimetres along the belt between two anchor lines. 10 mm by default.",
+    keywords: "belt anchor spacing distance every",
   }),
 
   // Printer details
