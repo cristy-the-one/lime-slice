@@ -4272,3 +4272,58 @@ fn gcode_header_says_supports_off_unless_smart_supports_is_on() {
     assert!(line.contains("supports tree ("), "{line}");
     assert!(!line.contains("supports off"), "{line}");
 }
+
+/// Five posts in a row, the way a dragon's legs, tail and wings stand apart
+/// on a layer. Classic tours nothing, so it prints in planned order; it used
+/// to run each wall pass across every post before the next pass. Now each
+/// post prints whole before the nearest next one.
+#[test]
+fn classic_finishes_each_island_before_the_next() {
+    let xs = [0.0, 48.0, 12.0, 36.0, 24.0];
+    let mut tris = Vec::new();
+    for x in xs {
+        add_box(&mut tris, x, 0.0, 0.0, x + 8.0, 8.0, 6.0);
+    }
+    let mesh = Mesh { triangles: tris };
+    let tough = BlendMode::Single {
+        strategy: StrategyId::Toughness,
+    };
+    let response = slice_configured(&mesh, &tough, &profile(), &classic()).unwrap();
+    assert!(response.sanity.ok, "{:?}", response.sanity.notes);
+    // Each pass used to hop over all five posts and back; finished one by
+    // one, the posts travel within 2x the toured planner.
+    let toured = slice_configured(&mesh, &tough, &profile(), &SliceSettings::default()).unwrap();
+    assert!(
+        response.sanity.travel_length_mm < toured.sanity.travel_length_mm * 2.0,
+        "classic travel {:.0} mm vs toured {:.0} mm",
+        response.sanity.travel_length_mm,
+        toured.sanity.travel_length_mm
+    );
+    let mut layers = 0;
+    for layer in response.layers.iter().skip(1) {
+        let part: Vec<[f64; 2]> = layer
+            .paths
+            .iter()
+            .filter(|p| !matches!(p.kind.as_str(), "skirt" | "support" | "support-interface"))
+            .map(|p| p.pts[0])
+            .collect();
+        let Some(left) = part.iter().map(|p| p[0]).reduce(f64::min) else {
+            continue;
+        };
+        // Posts are 8 mm wide on a 12 mm pitch.
+        let mut visits: Vec<i64> = Vec::new();
+        for p in &part {
+            let k = ((p[0] - left + 2.0) / 12.0).floor() as i64;
+            if visits.last() != Some(&k) {
+                visits.push(k);
+            }
+        }
+        let mut once = visits.clone();
+        once.sort_unstable();
+        once.dedup();
+        assert_eq!(once.len(), 5, "layer {} visits {visits:?}", layer.index);
+        assert_eq!(visits.len(), 5, "layer {} visits {visits:?}", layer.index);
+        layers += 1;
+    }
+    assert!(layers > 20, "layers {layers}");
+}
