@@ -27,8 +27,9 @@ src/app/viewer.ts :: legend.innerHTML = legendMarkup(previewFeatureRows(), (stat
 src/app/viewer.ts :: if (readout) readout.innerHTML = layerReadout();
 # Measure callouts: SVG of coordinates and formatted lengths, no text from elsewhere.
 src/measure-overlay.ts :: root.innerHTML = html;
-# The command palette and the shortcut sheet: built-in command labels and keys, escaped (lane C owns this file).
+# The command palette and the shortcut sheet (#578): built-in command labels, keys, contexts and group names, and
+# the typed search text in the "no match" line, each through escapeHtml.
 src/ui/palette.ts :: list.innerHTML = shown.map((command, index) => {
-src/ui/palette.ts :: host.innerHTML = keys.join("") + mouse;
+src/ui/palette.ts :: host.innerHTML = groups.length
 # Support edits: edit kinds, counts and Z ranges from the engine's numbers.
 src/ui/support-edit-ui.ts :: panel.innerHTML = markup;
