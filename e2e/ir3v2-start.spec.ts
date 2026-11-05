@@ -84,12 +84,13 @@ test("the IR3 V2 with ABS asks for a 90 C bed, says so, and exports a file that 
   expect(lines).toContain("; bed capped at 90 C (filament 100 C)");
   expect(lines).toContain("G28 Y");
   expect(lines).not.toContain("G28");
-  // The purge: the zig-zag cleans the nozzle, then two lines across the belt; Z is zeroed on the
-  // second, so the part's first layer starts against it.
+  // The purge: the zig-zag cleans the nozzle, then two lines across the belt; the belt is zeroed
+  // so the line's far edge reaches the middle of the part's first wall. The fixture's first extrusion is at Z 0.283,
+  // and 1.75 mm ABS makes a 1.2026 mm line: 0.283 - 0.6013 = -0.318.
   const across = lines.indexOf("G1 X250 E25 F2000");
   expect(lines.indexOf("G1 X6.67 Z23.4 E1.85")).toBeGreaterThan(lines.indexOf("FMS_on"));
   expect(across).toBeGreaterThan(lines.indexOf("G1 X6.67 Z23.4 E1.85"));
-  expect(lines.slice(across + 1, across + 4)).toEqual(["G1 Z28.8 F900", "G1 X0 E25 F2000", "G92 E0 Z0"]);
+  expect(lines.slice(across + 1, across + 4)).toEqual(["G1 Z28.8 F900", "G1 X0 E25 F2000", "G92 E0 Z-0.318"]);
   expect(lines.some((line) => /^M1[49]0 S100$/.test(line))).toBe(false);
   expect(lines.slice(lines.indexOf("PRINT_START"), lines.indexOf("PRINT_START") + 4)).toEqual(["PRINT_START", "M140 S90", "M104 S250", "M109 S250"]);
   const afterStart = lines.indexOf("M82", lines.indexOf("G28 Y"));

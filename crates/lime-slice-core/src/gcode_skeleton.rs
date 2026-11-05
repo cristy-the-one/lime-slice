@@ -46,6 +46,54 @@ fn stamp_reads(line: &str) -> bool {
         || matches!(line, "G92 E0" | "G90" | "M82")
 }
 
+/// What a belt file's purge line reads from the body (`src/belt-purge.ts`):
+/// each `;TYPE:` line, and each extrusion that ends within the first layer's
+/// height of the belt (its `Y` is the nozzle's height). Everything else of a
+/// belt body is elided as before. Keep in step with `beltPurgeZ`.
+struct BeltReads {
+    belt: bool,
+    first_layer_h: Option<f64>,
+}
+
+impl BeltReads {
+    fn see(&mut self, line: &str) {
+        if line.starts_with("; belt: angle ") {
+            self.belt = true;
+        }
+        if self.first_layer_h.is_none() && line.starts_with(";LAYER:") {
+            self.first_layer_h = line
+                .split(' ')
+                .find_map(|word| word.strip_prefix("H:"))
+                .and_then(|h| h.parse().ok());
+        }
+    }
+
+    fn reads(&self, line: &str) -> bool {
+        if !self.belt {
+            return false;
+        }
+        if line.starts_with(";TYPE:") {
+            return true;
+        }
+        let Some(h) = self.first_layer_h else {
+            return false;
+        };
+        if !(line.starts_with("G1 ") || line.starts_with("G2 ") || line.starts_with("G3 ")) {
+            return false;
+        }
+        let mut has_e = false;
+        let mut y = None;
+        for word in line.split(' ').skip(1) {
+            match word.as_bytes().first() {
+                Some(b'E') => has_e = true,
+                Some(b'Y') => y = word[1..].parse::<f64>().ok(),
+                _ => {}
+            }
+        }
+        has_e && y.is_some_and(|y| y <= h + 0.01)
+    }
+}
+
 /// One piece of the source: a line the skeleton keeps, or a run of lines it
 /// elides. Each piece's text ends with `\n` unless it ends the file.
 enum Piece<'a> {
@@ -60,19 +108,22 @@ fn pieces(text: &str) -> impl Iterator<Item = Piece<'_>> {
     let mut lines = text.split_inclusive('\n').peekable();
     let mut layered = false;
     let mut commanded = false;
+    let mut belt = BeltReads { belt: false, first_layer_h: None };
     std::iter::from_fn(move || {
         let line = lines.next()?;
         let bare = line.strip_suffix('\n').unwrap_or(line);
         let open = layered && commanded;
         layered |= bare.starts_with(";LAYER:");
         commanded |= !bare.starts_with(';');
-        if !open || stamp_reads(bare) {
+        belt.see(bare);
+        if !open || stamp_reads(bare) || belt.reads(bare) {
             return Some(Piece::Kept(line));
         }
         let start = line.as_ptr() as usize - text.as_ptr() as usize;
         let mut end = start + line.len();
         while let Some(next) = lines.peek() {
-            if stamp_reads(next.strip_suffix('\n').unwrap_or(next)) {
+            let bare_next = next.strip_suffix('\n').unwrap_or(next);
+            if stamp_reads(bare_next) || belt.reads(bare_next) {
                 break;
             }
             end += next.len();
@@ -214,6 +265,36 @@ mod tests {
             assert!(write_filled(FILE, &bad, &mut out).is_err());
             assert!(out.is_empty());
         }
+    }
+
+    #[test]
+    fn a_belt_file_keeps_what_the_purge_line_reads() {
+        let file = "; generated
+G21
+G28
+; belt: angle 45 axis Z dir +1
+;LAYER:0 Z:0.283 H:0.200 
+G1 Z0.283 F7200
+;TYPE:SUPPORT
+G1 X1 Y0.100 F100
+G1 X2 Y0.199 E0.1 F100
+G1 X2 Y5.000 E0.2 F100
+;TYPE:OUTER
+G1 X3 Y0.150 E0.3 F100
+G1 X3 Y9 E0.4 F100
+M84
+";
+        let skel = skeleton(file);
+        assert!(skel.contains(";TYPE:SUPPORT
+") && skel.contains("G1 X2 Y0.199 E0.1 F100
+"), "{skel:?}");
+        assert!(skel.contains("G1 X3 Y0.150 E0.3 F100
+"), "{skel:?}");
+        assert!(!skel.contains("Y5.000") && !skel.contains("Y9") && !skel.contains("Y0.100"), "{skel:?}");
+        assert_eq!(filled(file, &skel), file);
+        let flat = file.replace("; belt: angle 45 axis Z dir +1
+", "");
+        assert!(!skeleton(&flat).contains("Y0.199"));
     }
 
     #[test]

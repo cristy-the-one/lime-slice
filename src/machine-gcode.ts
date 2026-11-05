@@ -3,9 +3,13 @@
  * file. The slice request does not carry them, and the engine preamble stays,
  * unless the start block owns heating and homing.
  *
+ * `{purge_line_z}` becomes where a belt printer's purge line sits so it touches the part (`src/belt-purge.ts`).
+ *
  * Blank text, and the old built-in comment templates (`; Name` and
  * `; end Name`), leave the engine file unchanged.
  */
+
+import { purgeLineZ } from "./belt-purge.ts";
 
 /** The comment a built-in printer used to store before the text was applied. */
 export function legacyStockStart(printerName: string): string {
@@ -32,6 +36,8 @@ export interface MachineOptions {
   startOwnsHoming?: boolean;
   /** Fills `{bed}` and `{nozzle}` in the start and end text. */
   heat?: { bedC: number; nozzleC: number };
+  /** The filament's diameter in mm, for the width of the purge line in `{purge_line_z}`. */
+  filamentDiameter?: number;
   /** Comment lines written after the file's leading comment header. */
   notes?: string[];
 }
@@ -54,9 +60,15 @@ export interface MachineOptions {
  */
 export function withMachineGcode(gcode: string, start: string, end: string, options: MachineOptions = {}): string {
   const heat = options.heat;
-  const fill = (text: string) => heat === undefined
-    ? text
-    : text.replaceAll("{bed}", String(heat.bedC)).replaceAll("{nozzle}", String(heat.nozzleC));
+  // `{purge_line_z}` reads the file's body, so it is only worked out when the text asks for it.
+  let purgeZ: string | undefined;
+  const purge = () => (purgeZ ??= String(purgeLineZ(gcode, options.filamentDiameter)));
+  const fill = (text: string) => {
+    const heated = heat === undefined
+      ? text
+      : text.replaceAll("{bed}", String(heat.bedC)).replaceAll("{nozzle}", String(heat.nozzleC));
+    return heated.includes("{purge_line_z}") ? heated.replaceAll("{purge_line_z}", purge()) : heated;
+  };
   const head = fill(start.trim());
   const tail = fill(end.trim());
   const notes = options.notes ?? [];

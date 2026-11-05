@@ -148,6 +148,15 @@ eq(
 );
 eq("an owning start block on a file that never homes goes after the header", withMachineGcode("; head\nG1 X1\n", "PRINT_START", "", { startOwnsHoming: true }), "; head\nPRINT_START\nG90\nM82\nG92 E0\nG1 X1\n");
 
+const purgeBody = ["; head", "G28", "; belt: angle 45 axis Z dir +1", ";LAYER:0 Z:0.283 H:0.200 ", ";TYPE:OUTER", "G1 X1 Y0.100 E1 F1800", ""].join("\n");
+eq(
+  "{purge_line_z} becomes the belt position against the part, in start and end text",
+  withMachineGcode(purgeBody, "G92 E0 Z{purge_line_z}", "; {purge_line_z}", { filamentDiameter: 1.75 }).split("\n").filter((line) => line.includes("-0.318")),
+  ["G92 E0 Z-0.318", "; -0.318"],
+);
+eq("an unknown filament diameter uses a 1.2 mm line", withMachineGcode(purgeBody, "G92 E0 Z{purge_line_z}", "").includes("G92 E0 Z-0.317\n"), true);
+eq("{purge_line_z} on a file that is not a belt file is 0", withMachineGcode(engine, "G92 E0 Z{purge_line_z}", "", { heat: { bedC: 60, nozzleC: 200 } }).includes("G92 E0 Z0\n"), true);
+
 if (failed > 0) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

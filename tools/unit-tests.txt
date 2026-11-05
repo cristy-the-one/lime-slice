@@ -59,6 +59,7 @@ src/belt.test.ts
 src/model-transition.test.ts
 src/model-transition-slice.test.ts
 src/machine-gcode.test.ts
+src/belt-purge.test.ts
 src/fuzzy-skin.test.ts
 src/base64.test.ts
 src/model-reply.test.ts
