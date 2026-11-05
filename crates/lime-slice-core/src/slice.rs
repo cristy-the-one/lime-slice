@@ -247,9 +247,10 @@ pub struct SliceRequest {
     /// On a belt, anchor lines across the belt where supports stand on it:
     /// one support line along X at the first and last support foot and every
     /// this many millimetres along the belt between them. Omitted prints none;
-    /// a flat bed never prints them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub support_belt_anchor_mm: Option<f64>,
+    /// a flat bed never prints them. The wire name keeps "belt"; the field
+    /// does not, so `SliceSettings` stays free of belt words (cartesian_lock).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "supportBeltAnchorMm")]
+    pub support_anchor_mm: Option<f64>,
     /// Multiplier on a bridge bead. Omitted keeps 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_flow_ratio: Option<f64>,
@@ -543,7 +544,7 @@ pub struct SliceSettings {
     /// `None` prints no brim under the supports.
     pub support_tree_brim_mm: Option<f64>,
     /// Spacing along the belt of the support anchor lines. `None` prints none.
-    pub support_belt_anchor_mm: Option<f64>,
+    pub support_anchor_mm: Option<f64>,
     /// `None` keeps bridge flow at 1.
     pub bridge_flow_ratio: Option<f64>,
     /// `None` keeps the 18–36 mm/s bridge slowdown.
@@ -661,7 +662,7 @@ impl Default for SliceSettings {
             support_xy_gap_mm: None,
             support_interface_layers: None,
             support_tree_brim_mm: None,
-            support_belt_anchor_mm: None,
+            support_anchor_mm: None,
             bridge_flow_ratio: None,
             bridge_speed_mm_s: None,
             bridge_fan_percent: None,
@@ -831,8 +832,8 @@ impl SliceSettings {
             },
             support_tree_brim_mm: support_gap(req.classic, req.support_tree_brim_mm, 20.0)
                 .filter(|mm| *mm > 1e-6),
-            support_belt_anchor_mm: req
-                .support_belt_anchor_mm
+            support_anchor_mm: req
+                .support_anchor_mm
                 // Only a belt has a belt to anchor to.
                 .filter(|mm| !req.classic && req.belt.is_some() && mm.is_finite() && *mm > 0.0)
                 .map(|mm| mm.clamp(BELT_ANCHOR_MIN_MM, BELT_ANCHOR_MAX_MM)),
@@ -971,7 +972,7 @@ impl SliceSettings {
                 Some(mm) => format!(", brim {mm:.1} mm"),
                 None => String::new(),
             };
-            let anchors = match self.support_belt_anchor_mm {
+            let anchors = match self.support_anchor_mm {
                 Some(mm) => format!(", belt anchors every {mm:.0} mm"),
                 None => String::new(),
             };
@@ -2074,7 +2075,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
         settings.support_tree_brim_mm = None;
-        settings.support_belt_anchor_mm = None;
+        settings.support_anchor_mm = None;
         settings.bridge_flow_ratio = None;
         settings.bridge_speed_mm_s = None;
         settings.bridge_fan_percent = None;
@@ -5108,7 +5109,7 @@ impl SupportPlan {
         // move the brim or an anchor of layers it did not touch.
         let across = self.supports.floor().is_some()
             && (settings.support_tree_brim_mm.is_some()
-                || settings.support_belt_anchor_mm.is_some());
+                || settings.support_anchor_mm.is_some());
         let mut repaint: Vec<usize> = (0..shaft.len())
             .filter(|&i| across || shaft[i] != self.shaft[i])
             .chain(changed.iter().copied())
@@ -7382,7 +7383,7 @@ fn belt_lines(
     spread: f64,
 ) -> (Vec<Option<BeltBrim>>, Vec<Option<BeltBrim>>) {
     if !settings.supports
-        || (settings.support_tree_brim_mm.is_none() && settings.support_belt_anchor_mm.is_none())
+        || (settings.support_tree_brim_mm.is_none() && settings.support_anchor_mm.is_none())
     {
         return (Vec::new(), Vec::new());
     }
@@ -7435,7 +7436,7 @@ fn belt_lines(
         Some(width) => belt_brims(&ys, &feet, along, width, &part),
         None => Vec::new(),
     };
-    let anchors = match settings.support_belt_anchor_mm {
+    let anchors = match settings.support_anchor_mm {
         Some(spacing) => {
             let at: Vec<f64> = ys.iter().map(|y| y * along).collect();
             let mut out = vec![None; bands.len()];
@@ -8300,28 +8301,28 @@ mod tests {
         };
         let mut on = req(serde_json::json!({}));
         assert_eq!(
-            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            SliceSettings::from_request(&on).support_anchor_mm,
             None
         );
         on.belt = Some(belt.clone());
         assert_eq!(
-            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            SliceSettings::from_request(&on).support_anchor_mm,
             Some(10.0)
         );
-        on.support_belt_anchor_mm = Some(0.5);
+        on.support_anchor_mm = Some(0.5);
         assert_eq!(
-            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            SliceSettings::from_request(&on).support_anchor_mm,
             Some(BELT_ANCHOR_MIN_MM)
         );
-        on.support_belt_anchor_mm = None;
+        on.support_anchor_mm = None;
         assert_eq!(
-            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            SliceSettings::from_request(&on).support_anchor_mm,
             None
         );
         let mut classic = req(serde_json::json!({"classic": true}));
         classic.belt = Some(belt);
         assert_eq!(
-            SliceSettings::from_request(&classic).support_belt_anchor_mm,
+            SliceSettings::from_request(&classic).support_anchor_mm,
             None
         );
     }

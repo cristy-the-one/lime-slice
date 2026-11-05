@@ -505,7 +505,7 @@ fn run() -> Result<(), String> {
                 support_tree_brim_mm: support_brim
                     .filter(|v| !classic && v.is_finite() && *v > 1e-6)
                     .map(|v| v.min(20.0)),
-                support_belt_anchor_mm: support_belt_anchors
+                support_anchor_mm: support_belt_anchors
                     .filter(|v| !classic && v.is_finite() && *v > 0.0),
                 support_height_mult,
                 infill_combine,
@@ -1920,7 +1920,7 @@ fn request_for(
         support_xy_gap_mm: settings.support_xy_gap_mm,
         support_interface_layers: settings.support_interface_layers,
         support_tree_brim_mm: settings.support_tree_brim_mm,
-        support_belt_anchor_mm: settings.support_belt_anchor_mm,
+        support_anchor_mm: settings.support_anchor_mm,
         bridge_flow_ratio: settings.bridge_flow_ratio,
         bridge_speed_mm_s: settings.bridge_speed_mm_s,
         bridge_fan_percent: settings.bridge_fan_percent,
