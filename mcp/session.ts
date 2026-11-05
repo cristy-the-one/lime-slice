@@ -4,7 +4,6 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
 import { bytesToBase64 } from "../src/base64.ts";
 import { fnv1aHex } from "../src/slice-action.ts";
 import { ID_MATRIX, placeMesh, type Mat3, type RigidPose } from "../src/mesh-place.ts";
@@ -25,10 +24,10 @@ import { readBeadSection, withBeads } from "../src/sim/cards.ts";
 import { BEAM_SIZE, OPEN_MESH, SLICED_FIELD, SLICED_SWEEP, RESLICE_BEAM, RESLICE_PARAMETERS, RESLICE_PATTERN_KEEP, SWEEP_CAP, SWEEP_REFUSAL, ZERO_AXIS, axisLength, boxPositions, constraintVerdict, elementRefusal, pageCursor, pageLimit, readLimits, readPatch, representationOf, runSolver, scaleLoads, setupSentence, solverJob, vec3Of, type ConstraintLimits, type SweepPatch } from "./sim.ts";
 import type { PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
-import { advanceFor, builtinLibrary, cardsOf, enginePrinter, saveMaterialCard, setAdvance, setFlow, setNozzleTemp, setRetract, type MachineLibrary } from "../src/ui/machine-library.ts";
+import { builtinLibrary, cardsOf, saveMaterialCard, type MachineLibrary } from "../src/ui/machine-library.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
-import { ProtocolError, withMesh, type Engine } from "./engine.ts";
+import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
 import { RecipeHost } from "./recipe.ts";
 import { blendOf, stlBytes } from "./request.ts";
@@ -41,9 +40,8 @@ import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
 import { expressionMentions, isPlainNumber } from "../src/modeling/params.ts";
 import type { Assembly } from "../src/assembly.ts";
 import { ExprError, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
-import { resolveWrite } from "./workspace.ts";
 import { textsNeedingFonts, UserFontShelf } from "../src/modeling/user-fonts.ts";
-import { BAND_KINDS, BEADS_REFUSAL, type CallMeta, DETACHABLE, type Job, LONG_CALLS, PLACE_ON_SMEAR, type PickRow, type PlateObject, type PlateSnap, REGION_SHAPE, type Recipe, type RustRecipe, STALE_FACES, STIFFNESS_KINDS, TARGET_KINDS, type ToolHandler, UNKNOWN_OBJECT, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, isObject, roundTo, shownName, slicedRunReply, stlFileName, withPicks } from "./session/shared.ts";
+import { BAND_KINDS, BEADS_REFUSAL, type CallMeta, DETACHABLE, type Job, LONG_CALLS, PLACE_ON_SMEAR, type PickRow, type PlateObject, type PlateSnap, REGION_SHAPE, type Recipe, type RustRecipe, STALE_FACES, STIFFNESS_KINDS, TARGET_KINDS, type ToolHandler, UNKNOWN_OBJECT, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, shownName, slicedRunReply, stlFileName, withPicks } from "./session/shared.ts";
 import { workMethods } from "./session/work.ts";
 import { recipeMethods, recipeHandlers } from "./session/recipe.ts";
 import { pluginMethods, pluginHandlers } from "./session/plugin.ts";
@@ -64,6 +62,7 @@ import { paramsMethods } from "./session/params.ts";
 import { historyMethods } from "./session/history.ts";
 import { splitMethods } from "./session/split.ts";
 import { paintMethods, paintHandlers } from "./session/paint.ts";
+import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -81,10 +80,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   ...layersHandlers,
   ...modelHandlers,
   ...paintHandlers,
-  calibration_tower: (s, input) => s.calibrationTower(input),
-  calibration_apply: (s, input) => s.calibrationApply(input),
-  blend_compare: (s, input) => s.blendCompare(input),
-  blend_apply: (s, input) => s.blendApply(input),
+  ...calibrationHandlers,
   sim_setup: (s, input) => s.simSetup(input),
   sim_run: (s, input) => s.simRun(input),
   sim_field: (s, input) => s.simField(input),
@@ -623,109 +619,6 @@ export class Session {
 
 
 
-
-  async calibrationTower(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const kind = input.kind === "pa" || input.kind === "flow" || input.kind === "temp" || input.kind === "retract" ? input.kind : null;
-    if (!kind) return { ok: false, reason: "kind is pa, flow, temp, or retract." };
-    const start = Number(input.start);
-    const end = Number(input.end);
-    const step = Number(input.step);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || !(step > 0) || end + 1e-9 < start) {
-      return { ok: false, reason: "The tower needs a start, an end, and a positive step." };
-    }
-    const bandHeight = typeof input.bandHeightMm === "number" && input.bandHeightMm > 0 ? input.bandHeightMm : kind === "pa" ? 2 : 5;
-    const bands = Math.floor((end - start) / step + 1e-9) + 1;
-    if (bands > 40) return { ok: false, reason: `That tower has ${bands} bands. The limit is 40.` };
-    const height = bands * bandHeight;
-    const printer = this.printer();
-    if (height > printer.bedZ) return { ok: false, reason: `That tower is ${roundTo(height, 1)} mm. The bed is ${printer.bedZ} mm tall.` };
-    if (kind === "pa" && !printer.firmware) return { ok: false, reason: "The PA tower needs a firmware." };
-    const body = {
-      kind,
-      firmware: printer.firmware,
-      start,
-      end,
-      step,
-      layerHeight: typeof input.layerHeight === "number" ? input.layerHeight : this.settings.layerHeight,
-      bandHeight,
-      slowMmS: 40,
-      fastMmS: 200,
-      accel: 3000,
-      speedMmS: kind === "retract" ? 30 : 40,
-      printer: enginePrinter(printer, this.filament(), this.library.nozzleMm),
-    };
-    if (input.dryRun === true) return { ok: true, dryRun: true, bands, heightMm: roundTo(height, 2) };
-    let reply: { bands?: { index?: number; value?: number; k?: number; flow?: number; temp?: number; length?: number; z0?: number; z1?: number }[]; gcode?: string; error?: string };
-    try {
-      reply = JSON.parse(await this.ask(this.engine.calibrate(JSON.stringify(body)))) as typeof reply;
-    } catch (err) {
-      return { ok: false, reason: err instanceof Error ? err.message : "The tower was not built." };
-    }
-    if (!reply.gcode || !Array.isArray(reply.bands)) return { ok: false, reason: reply.error ?? "The tower was not built." };
-    const path = resolveWrite(`${kind}-tower.gcode`, ".gcode");
-    writeFileSync(path, reply.gcode);
-    const listed = reply.bands.map((band, index) => ({
-      index: band.index ?? index,
-      value: band.value ?? band.k ?? band.flow ?? band.temp ?? band.length ?? 0,
-      z0: band.z0 ?? 0,
-      z1: band.z1 ?? 0,
-    }));
-    return { ok: true, bands: listed, gcodePath: path, bytes: Buffer.byteLength(reply.gcode) };
-  }
-
-  calibrationApply(input: Record<string, unknown>): Record<string, unknown> {
-    const kind = input.kind === "pa" || input.kind === "flow" || input.kind === "temp" || input.kind === "retract" ? input.kind : null;
-    if (!kind) return { ok: false, reason: "kind is pa, flow, temp, or retract." };
-    const value = Number(input.value);
-    if (!Number.isFinite(value)) return { ok: false, reason: "value is the number to save on the filament." };
-    const filament = this.filament();
-    this.remember("Calibration");
-    if (kind === "pa") this.library = setAdvance(this.library, value, advanceFor(filament.linearAdvance, this.library.nozzleMm));
-    else if (kind === "flow") this.library = setFlow(this.library, value);
-    else if (kind === "temp") this.library = setNozzleTemp(this.library, value);
-    else this.library = setRetract(this.library, value, null);
-    return { ok: true, kind, value, stale: true, label: "Calibration" };
-  }
-
-  async blendCompare(input: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const obj = this.wanted(input);
-    if (!isObject(obj)) return obj;
-    const committed = await this.commitObject(obj);
-    if (committed) return { ok: false, reason: committed };
-    const built = this.sliceBody(obj, "object");
-    let reply: { label?: string; toughness?: number; seconds?: number; filamentG?: number; score?: number; error?: string }[];
-    try {
-      const parsed = JSON.parse(await this.ask(this.engine.pareto(withMesh(JSON.stringify(built.body), built.mesh)))) as typeof reply | { error?: string };
-      if (!Array.isArray(parsed)) return { ok: false, reason: parsed.error ?? "The blends were not compared." };
-      reply = parsed;
-    } catch (err) {
-      return { ok: false, reason: err instanceof Error ? err.message : "The blends were not compared." };
-    }
-    this.pareto = reply.filter((point) => typeof point.toughness === "number").map((point) => ({
-      label: point.label ?? "",
-      toughness: point.toughness ?? 0,
-      seconds: point.seconds ?? 0,
-      grams: point.filamentG ?? 0,
-      score: point.score ?? 0,
-    }));
-    if (this.pareto.length === 0) return { ok: false, reason: "The blends were not compared." };
-    return { ok: true, points: this.pareto };
-  }
-
-  blendApply(input: Record<string, unknown>): Record<string, unknown> {
-    const index = typeof input.index === "number" ? input.index : -1;
-    const point = this.pareto[index];
-    if (!point) return { ok: false, reason: "Call blend_compare first, then pass a point index." };
-    this.remember("Blend");
-    if (point.toughness <= 0.001) {
-      this.settings = { ...this.settings, blendKind: "single", strategy: "speed" };
-    } else if (point.toughness >= 0.999) {
-      this.settings = { ...this.settings, blendKind: "single", strategy: "toughness" };
-    } else {
-      this.settings = { ...this.settings, blendKind: "weight", toughness: point.toughness };
-    }
-    return { ok: true, index, toughness: point.toughness, stale: true, label: "Blend" };
-  }
 
   /** The file Export writes, so the review sees the printer's start and end text. */
   printerBuildAxis(): SimVec {
@@ -1418,10 +1311,10 @@ export class Session {
 
 }
 
-type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods;
+type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods);
+Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods);
 
 export { blendOf };
