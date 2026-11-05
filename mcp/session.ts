@@ -14,7 +14,7 @@ import { plainModelError } from "../src/app/model-error.ts";
 import { encode3mf, ID_MATRIX, placeMesh, scaledCanonical, settleBy, type Mat3, type RigidPose } from "../src/mesh-place.ts";
 import { disjointBoolean, probeFromBody, probeKey, probeNote, type ProbedTool } from "../src/model-feasibility.ts";
 import { builtBranch, crossEdit, editRefusal, forked, replayChain, stepIds, type ForkStep, type ToolLink } from "../src/model-edit.ts";
-import { FIT_ROWS, clampPieces, clearanceKey, enterMeasured, fitResultsRefusal, resetMeasured, type FillContext, type FitResults, type Target } from "../src/modeling/partition.ts";
+import { clampPieces, type FillContext, type Target } from "../src/modeling/partition.ts";
 import { couponFileName, fitCoupon, fitCouponRequest, readCouponReply } from "../src/modeling/fit-coupon.ts";
 import { choiceAt, jointDown, jointPlanes, noJointSentence } from "../src/modeling/joint-down.ts";
 import { bedFrame, exportedCommit, exportedNote, exportsPieces, PLAN_KIND, planPartition, plateUp, readPartition, storedPartition } from "./partition.ts";
@@ -65,8 +65,8 @@ import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, workplaneOwn, isGlobalFrame, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
 import { cutPlanes, MAX_SECTION_POINTS, meshSection, pointsIn } from "./sections.ts";
 import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
-import { advanceFor, builtinLibrary, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setMeasuredFits, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
-import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
+import { advanceFor, builtinLibrary, cardsOf, enginePrinter, heatFor, printerTarget, targetPrinter, saveMaterialCard, setAdvance, setFlow, setNozzleTemp, setRetract, type MachineLibrary } from "../src/ui/machine-library.ts";
+import { parseSettingsProfile } from "../src/ui/settings-profiles.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { EngineStopped, occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
@@ -108,6 +108,7 @@ import { fontsMethods } from "./session/fonts.ts";
 import { infoMethods, infoHandlers } from "./session/info.ts";
 import { plateMethods, plateHandlers } from "./session/plate.ts";
 import { projectMethods, projectHandlers } from "./session/project.ts";
+import { machineMethods, machineHandlers } from "./session/machine.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -155,20 +156,14 @@ const HANDLERS: Record<string, ToolHandler> = {
   ...infoHandlers,
   ...plateHandlers,
   ...projectHandlers,
+  ...machineHandlers,
   solid_new: (s, input) => input.coupon !== undefined ? s.fitCouponNew(input) : s.solidNew(input),
   model_build: (s, input) => s.build(input),
   model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),
   model_define: (s, input) => s.defineTool(input),
-  machine_list: (s, input) => s.machineList(input),
-  machine_select: (s, input) => s.machineSelect(String(input.printerId), String(input.filamentId), input.nozzleMm),
-  machine_load: (s, input) => s.machineLoad(String(input.path)),
-  machine_get: (s) => s.machineGet(),
-  machine_set: (s, input) => s.machineSet(input),
-  machine_save: (s, input) => s.machineSave(String(input.name)),
   settings_apply: (s, input) => s.settingsApply(input),
   settings_schema: (s, input) => s.settingsSchema(input),
   settings_set: (s, input) => s.settingsSet(input),
-  profile_save: (s, input) => s.profileSave(String(input.name)),
   range_add: (s, input) => s.rangeAdd(input),
   modifier_add: (s, input) => s.modifierAdd(input),
   overrides_list: (s) => s.overridesList(),
@@ -704,132 +699,6 @@ export class Session {
     return handler ? handler(this, input, meta) : this.model(name, input);
   }
 
-  machineGet(): Record<string, unknown> {
-    const printer = this.printer();
-    const filament = this.filament();
-    const { host: _host, apiKey: _key, hostType: _kind, startPrint: _send, ...safe } = printer;
-    return {
-      ok: true,
-      printer: { ...safe, bedMm: [printer.bedX, printer.bedY, printer.bedZ] },
-      filament: {
-        id: filament.id,
-        name: filament.name,
-        material: filament.material,
-        nozzleTemp: filament.nozzleTemp,
-        bedTemp: filament.bedTemp,
-        flow: filament.flow,
-        pressureAdvance: filament.pressureAdvance,
-      },
-      ...(this.library.measuredFits ? { measuredFits: this.library.measuredFits } : {}),
-    };
-  }
-
-  machineSet(input: Record<string, unknown>): Record<string, unknown> {
-    const printerPatch = input.printer && typeof input.printer === "object" && !Array.isArray(input.printer) ? input.printer as Record<string, unknown> : {};
-    const filamentPatch = input.filament && typeof input.filament === "object" && !Array.isArray(input.filament) ? input.filament as Record<string, unknown> : {};
-    for (const key of [...Object.keys(printerPatch), ...Object.keys(filamentPatch)]) {
-      if (key === "host" || key === "apiKey" || key === "hostType" || key === "startPrint") {
-        return { ok: false, reason: "This server does not store a printer host or a key." };
-      }
-    }
-    const before = this.machineGet();
-    let library = this.library;
-    const printer = library.printers.find((row) => row.id === library.printerId);
-    const filament = library.filaments.find((row) => row.id === library.filamentId);
-    if (!printer || !filament) return { ok: false, reason: "Choose a printer and a filament first." };
-    if (typeof printerPatch.retractLength === "number" || typeof printerPatch.retractSpeed === "number") {
-      library = setRetract(library, typeof printerPatch.retractLength === "number" ? printerPatch.retractLength : null, typeof printerPatch.retractSpeed === "number" ? printerPatch.retractSpeed : null);
-    }
-    if (typeof filamentPatch.flow === "number") library = setFlow(library, filamentPatch.flow);
-    if (typeof filamentPatch.nozzleTemp === "number") library = setNozzleTemp(library, filamentPatch.nozzleTemp);
-    if (typeof filamentPatch.pressureAdvance === "number") {
-      const linear = typeof filamentPatch.linearAdvance === "number" ? filamentPatch.linearAdvance : filament.linearAdvance[String(library.nozzleMm)] ?? 0;
-      library = setAdvance(library, filamentPatch.pressureAdvance, linear);
-    }
-    let fitsSaid: string | undefined;
-    if (input.fits !== undefined) {
-      const entered = this.enterFits(library, input.fits);
-      if ("reason" in entered) return { ok: false, reason: entered.reason };
-      library = entered.library;
-      fitsSaid = entered.said;
-    }
-    const start = typeof printerPatch.startGcode === "string" ? printerPatch.startGcode : printer.startGcode;
-    const end = typeof printerPatch.endGcode === "string" ? printerPatch.endGcode : printer.endGcode;
-    if (start !== printer.startGcode || end !== printer.endGcode) library = setGcode(library, start, end);
-    library = {
-      ...library,
-      printers: library.printers.map((row) => {
-        if (row.id !== library.printerId) return row;
-        return {
-          ...row,
-          ...(typeof printerPatch.bedX === "number" ? { bedX: printerPatch.bedX } : {}),
-          ...(typeof printerPatch.bedY === "number" ? { bedY: printerPatch.bedY } : {}),
-          ...(typeof printerPatch.bedZ === "number" ? { bedZ: printerPatch.bedZ } : {}),
-        };
-      }),
-      filaments: library.filaments.map((row) => row.id === library.filamentId && typeof filamentPatch.bedTemp === "number" ? { ...row, bedTemp: filamentPatch.bedTemp } : row),
-    };
-    const review = reviewGcode(`${start}\n${end}`, { custom: [start, end] });
-    if (input.dryRun === true) {
-      return { ok: true, dryRun: true, ...(fitsSaid ? { fits: fitsSaid } : {}), review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text) };
-    }
-    this.remember("Machine");
-    this.library = library;
-    const after = this.machineGet();
-    return { ok: true, stale: true, ...(fitsSaid ? { fits: fitsSaid } : {}), from: before, to: after, review: review.review.map((line) => line.text), custom: review.custom.map((line) => line.text), label: "Machine" };
-  }
-
-  /**
-   * machine_set's `fits`: coupon results (plan section 28). `{material, process?, snug?, loose?, press?, wallMm?}` writes
-   * measured cells for that row into the library, `{material, reset: true}` puts its starting values back.
-   */
-  enterFits(library: MachineLibrary, value: unknown): { library: MachineLibrary; said: string } | { reason: string } {
-    const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-    if (!raw) return { reason: "fits is {material, process?, snug?, loose?, press?, wallMm?}, or {material, reset: true}." };
-    if (raw.process !== undefined && raw.process !== "fdm" && raw.process !== "resin") return { reason: "fits.process is fdm or resin." };
-    const process = raw.process === "resin" ? "resin" : "fdm";
-    const material = typeof raw.material === "string" ? raw.material : this.filament().material;
-    const key = clearanceKey(process, material);
-    if (!key) return { reason: `No fit row for ${material || "that material"}. The rows are PLA, PETG, ABS or ASA, TPU, and process resin for the Form 4's standard resin.` };
-    const name = FIT_ROWS.find((row) => row.key === key)?.name ?? key;
-    if (raw.reset === true) return { library: setMeasuredFits(library, resetMeasured(library.measuredFits, key)), said: `${name} is back to its starting values.` };
-    const results: FitResults = {};
-    for (const field of ["snug", "loose", "press", "wallMm"] as const) {
-      if (raw[field] === undefined) continue;
-      if (typeof raw[field] !== "number") return { reason: `fits.${field} is a number of millimetres.` };
-      results[field] = raw[field] as number;
-    }
-    if (results.wallMm !== undefined && key !== "resin") return { reason: "fits.wallMm is for the resin row." };
-    const refusal = fitResultsRefusal(results);
-    if (refusal) return { reason: `fits: ${refusal}` };
-    const said = [...(["snug", "loose", "press"] as const).filter((fit) => results[fit] !== undefined).map((fit) => `${fit} ${results[fit]} mm`), ...(results.wallMm !== undefined ? [`wall ${results.wallMm} mm`] : [])];
-    return { library: setMeasuredFits(library, enterMeasured(library.measuredFits, key, results)), said: `${name} measured: ${said.join(", ")} each side. New cuts use it; applied cuts keep theirs.` };
-  }
-
-  machineSave(name: string): Record<string, unknown> {
-    const file = fileFromSelection(this.library);
-    if (!file) return { ok: false, reason: "Choose a printer and a filament first." };
-    const doc = JSON.parse(serializeMachineFile(file)) as { printer?: Record<string, unknown> };
-    if (doc.printer) {
-      delete doc.printer.host;
-      delete doc.printer.apiKey;
-      delete doc.printer.hostType;
-      delete doc.printer.startPrint;
-    }
-    const text = JSON.stringify(doc, null, 2);
-    if (text.includes("apiKey") || text.includes("\"host\"")) return { ok: false, reason: "The machine file still names a host." };
-    const path = resolveWrite(name.endsWith(".json") ? name : `${name}.limemachine.json`, ".json");
-    writeFileSync(path, text);
-    return { ok: true, path, bytes: Buffer.byteLength(text) };
-  }
-
-  profileSave(name: string): Record<string, unknown> {
-    const text = serializeSettingsProfile({ version: 1, name, settings: this.settings, level: "expert" });
-    const path = resolveWrite(profileFileName(name), ".json");
-    writeFileSync(path, text);
-    return { ok: true, path, bytes: Buffer.byteLength(text) };
-  }
-
   overrideOf(input: Record<string, unknown>): SettingOverride | { reason: string } {
     const override: SettingOverride = {};
     if (typeof input.infillPercent === "number") {
@@ -940,69 +809,6 @@ export class Session {
     this.remember("Remove layer action");
     this.actions = next;
     return { ok: true, stale: true, label: "Remove layer action" };
-  }
-
-  machineList(input: Record<string, unknown>): Record<string, unknown> {
-    const printers = this.library.printers.map((row) => ({
-      id: row.id,
-      name: shownName(row.name),
-      kind: row.kind,
-      bedMm: [row.bedX, row.bedY, row.bedZ],
-      nozzlesMm: [0.4, 0.6, 0.8],
-    }));
-    const filaments = this.library.filaments.map((row) => ({
-      id: row.id,
-      name: shownName(row.name),
-      material: row.material,
-    }));
-    const printerPage = page(printers, input.printerCursor ?? input.cursor, input.limit);
-    const filamentPage = page(filaments, input.filamentCursor, input.limit);
-    return {
-      ok: true,
-      printers: printerPage.rows,
-      filaments: filamentPage.rows,
-      ...(printerPage.nextCursor ? { printersNextCursor: printerPage.nextCursor } : {}),
-      ...(filamentPage.nextCursor ? { filamentsNextCursor: filamentPage.nextCursor } : {}),
-    };
-  }
-
-  machineSelect(printerId: string, filamentId: string, nozzle: unknown): Record<string, unknown> {
-    // --- Split to print (D11). An export-only printer is a target for the pieces, never the plate's printer.
-    const exportOnly = exportOnlyRefusal(printerId);
-    if (exportOnly) return { ok: false, reason: exportOnly };
-    const printer = this.library.printers.find((row) => row.id === printerId);
-    const filament = this.library.filaments.find((row) => row.id === filamentId);
-    if (!printer || !filament) return { ok: false, reason: "That printer or filament is not in the library." };
-    this.library = { ...this.library, printerId, filamentId, nozzleMm: typeof nozzle === "number" ? nozzle : this.library.nozzleMm };
-    this.profileTouched = true;
-    const heat = heatFor(printer, filament.nozzleTemp, filament.bedTemp);
-    const start = printer.startGcode.trim() === "" ? "none" : "applied at export";
-    return {
-      ok: true,
-      printer: printer.name,
-      filament: filament.name,
-      bedMm: [printer.bedX, printer.bedY, printer.bedZ],
-      nozzleC: heat.nozzleC,
-      bedC: heat.bedC,
-      startGcode: start,
-    };
-  }
-
-  machineLoad(path: string): Record<string, unknown> {
-    const full = resolveRead(path, "machine");
-    const parsed = parseMachineFile(readFileSync(full, "utf8"));
-    if (!parsed.ok) return { ok: false, reason: parsed.message };
-    const printer: PrinterRecord = { ...parsed.file.printer, id: "loaded-printer", builtin: false };
-    const filament: FilamentRecord = { ...parsed.file.filament, id: "loaded-filament", builtin: false };
-    this.library = {
-      ...this.library,
-      printers: [...this.library.printers.filter((row) => row.id !== printer.id), printer],
-      filaments: [...this.library.filaments.filter((row) => row.id !== filament.id), filament],
-      printerId: printer.id,
-      filamentId: filament.id,
-      nozzleMm: parsed.file.nozzleMm,
-    };
-    return this.machineSelect(printer.id, filament.id, parsed.file.nozzleMm);
   }
 
   settingsApply(input: Record<string, unknown>): Record<string, unknown> {
@@ -6423,10 +6229,10 @@ export class Session {
   }
 }
 
-type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods;
+type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods);
+Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods);
 
 export { blendOf };
