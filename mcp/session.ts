@@ -34,7 +34,7 @@ import { bakeOp, bakeTransition, EDGES_SHAPE, onFaceIndex, profilePlane, type Ba
 import { thinWalls } from "../src/modeling/thin.ts";
 import { bakeCells, runComposite, storeGroup } from "../src/modeling/composite-apply.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep } from "../src/modeling/part-reads.ts";
-import { frameNote, placeFree, placeNumbers, placeOnPlate, placedBounds } from "../src/modeling/placing.ts";
+import { frameNote, frameWhere, placeFree, placeNumbers, placeOnPlate, placedBounds } from "../src/modeling/placing.ts";
 import { AnchorError, anchorRow, hasAnchor, resolveAnchors, type Box } from "../src/modeling/anchors.ts";
 import { expandOps, expandOpsWithTexts, type PartDef } from "../src/modeling/macro.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../src/modeling/links.ts";
@@ -140,6 +140,7 @@ import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSch
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
 import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type FacePick, type Piece } from "../src/modeling/compose.ts";
 import { pickSentence } from "../src/modeling/frames.ts";
+import { typedPoint, typedView } from "../src/modeling/typed-view.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
 import { assemblyOf, attached, exportParts, memberFields, resolveForParameters, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../src/assembly.ts";
@@ -5202,7 +5203,7 @@ export class Session {
     // ribs broke through its rounded outer edge by 0.2 mm at every rib end, which read as a drawing fault.
     const tiny = solidMesh ? obj.solid!.faces.filter((face) => face.areaMm2 < 0.1) : [];
     const slivers = tiny.length
-      ? { slivers: { count: tiny.length, frame: "part", at: tiny.slice(0, 3).map((face) => face.centre.map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one (part frame) names it.` } }
+      ? { slivers: { count: tiny.length, frame: obj.frame ?? "model", at: tiny.slice(0, 3).map((face) => typedPoint(typedPoseOf(obj), face.centre).map((v) => Math.round(v * 100) / 100)), note: `${tiny.length} face${tiny.length === 1 ? " is" : "s are"} under 0.1 mm², drawn as specks: the solid has them, often where a step breaks through a thin wall. faces_find {nearPoint} at one names it.` } }
       : {};
     const note = { ...(ghost ? { ghost: { colour: "orange", touchesSolid: ghost.touches } } : {}), ...(looks.legend.length ? { colours: looks.legend } : {}), ...slivers };
     const body = many ? { ok: true, views, ...note } : { ok: true, ...views[0]!, ...note };
@@ -5389,7 +5390,8 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
-    return surfaceAtSolid(obj.solid, input);
+    // The ray and the hit in the frame ops are typed in, so a cut at the hit point lands on it.
+    return { ...surfaceAtSolid(typedView(obj.solid, typedPoseOf(obj)), input), frame: obj.frame ?? "model" };
   }
 
   private async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -5767,7 +5769,7 @@ export class Session {
     const solid = obj.solid;
     if (!solid) return { ok: false, reason: "This solid could not be read." };
     const stale = this.staleTransitions(obj, tree);
-    return describeReply(solid, input, obj.frame ?? "model", stale.length > 0 ? { notes: stale.map((row) => row.note), staleTransitions: stale.map(({ note: _note, ...row }) => row) } : {});
+    return describeReply(solid, input, obj.frame ?? "model", stale.length > 0 ? { notes: stale.map((row) => row.note), staleTransitions: stale.map(({ note: _note, ...row }) => row) } : {}, typedPoseOf(obj));
   }
 
   /**
@@ -5793,7 +5795,7 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
-    return facesReply(obj.solid, input, this.expandContext(obj));
+    return facesReply(obj.solid, input, this.expandContext(obj), typedPoseOf(obj), obj.frame ?? "model");
   }
 
 
@@ -5848,6 +5850,10 @@ export class Session {
         return obj.solid ?? { reason: "This solid could not be read." };
       },
       section: (id, args) => this.runCall("section", { ...args, object: id }, ctx, true),
+      pose: (id) => {
+        const obj = this.find(id);
+        return obj ? typedPoseOf(obj) : IDENTITY_POSE;
+      },
       sketch: (id, step) => {
         const obj = this.find(id);
         if (!obj?.tree) return { reason: `${id} is not a part with a history.` };
@@ -5865,7 +5871,7 @@ export class Session {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
-    return edgesReply(obj.solid, input, (filter) => this.onFaceIndex(obj, filter));
+    return edgesReply(obj.solid, input, (filter) => this.onFaceIndex(obj, filter), typedPoseOf(obj), obj.frame ?? "model");
   }
 
 
@@ -6063,13 +6069,12 @@ export class Session {
     for (let n = 1; ; n += 1) if (!this.assemblies.some((row) => row.id === `asm_${n}`)) return `asm_${n}`;
   }
 
-  /** --- Assemblies M4. A refusal of a part away from model space's origin says which frame its numbers were read in. */
+  /**
+   * --- Assemblies M4. A refusal of a part away from model space's origin says which frame its numbers were read in,
+   * the frame the reads answer in too (`src/modeling/placing.ts`, shared with the app's recipe calls).
+   */
   private frameWhere(obj: PlateObject): string {
-    if (isIdentity(obj.modelPose)) return "";
-    const at = obj.modelPose.t.map((v) => Math.round(v * 100) / 100).join(", ");
-    return obj.frame === "part"
-      ? ` Numbers are read in the part frame. The part sits at (${at}) in the assembly.`
-      : ` Numbers are read in model space, where the part sits at (${at}); model_place {frame:"part"} reads them in the part's own frame.`;
+    return frameWhere(obj.modelPose, obj.frame);
   }
 
   /** The part's box in model space, where Model draws it: its solid (or else its plate mesh) under `modelPose`, to 0.01 mm. */

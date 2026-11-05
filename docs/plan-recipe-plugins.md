@@ -380,6 +380,16 @@ What this plan adds:
   catches a break.
 - **lust.** A `LUST_REV` bump runs the corpus too. lust changes that refuse code it used to accept fail CI on that
   bump, not on a user's machine.
+- **API 1.4 (one frame for reads and cuts).** `PickedFace` gains `centre` (a sphere's) and `axis_point` (a round face's
+  axis point), an addition, so the minor moves to 1.4 and a plugin that reads them says so in its header. The same
+  release fixes the reads for every level: `bounds`, `pick_face`, `faces_find`, `edges_find`, `surface_at` and
+  `model_describe` answer in the frame `apply` takes (model space for a part `model_place` moved or turned, the part's
+  own frame with `frame: "part"`), over MCP and in the app alike (`src/modeling/typed-view.ts`). Before, they answered in
+  the solid's own frame, so a recipe that measured a moved part and cut at the point missed by the pose. This is a
+  fix, not a changed meaning: on a part with no pose every answer is the same number, and a 1.0 to 1.3 plugin that
+  measured and cut now hits a moved part too. A plugin that worked around it by adding the pose (moon-crater-field v2
+  parsed "sits at (x, y, z)" from a probe's refusal) finds no such text any more, so it adds nothing. Kept faces in a
+  stamp stay in the part's own frame, so a move never loses a pick.
 
 ## 9. Library and discovery
 

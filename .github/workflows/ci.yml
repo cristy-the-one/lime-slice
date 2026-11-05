@@ -235,6 +235,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           # Recipe API 1.3 on real OCCT: curved face parameters, lettering on a curved face, text_outline extruded.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-text.test.ts
+          # Recipe API 1.4 on real OCCT: reads and cuts in one frame on a moved and a turned sphere, over MCP and in the app.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-frame.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

@@ -418,7 +418,7 @@ eq("D9: the project's copy matches the stamp, nothing extra", view.note, null);
 eq("D9: an edited copy", pluginStepView(stamp, env({ copies: new Map([[stamp.sha256, copyOf("1.1", false)]]) })).note, "This project's copy of the plugin was changed outside the app.");
 eq("D9: no copy anywhere", pluginStepView(stamp, env({ copies: new Map() })).note, "The plugin source is not in this project. The part is kept as built; its values cannot change.");
 eq("D9: no lust here (macOS)", pluginStepView(stamp, env({ mac: true })).note, "Rebuilding needs lust, which the macOS app does not ship yet.");
-eq("D9: a newer recipe API", pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) })).note, "This plugin needs recipe API 2.0, from a newer Lime Slice; this app has 1.3.");
+eq("D9: a newer recipe API", pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) })).note, "This plugin needs recipe API 2.0, from a newer Lime Slice; this app has 1.4.");
 const draftView = pluginStepView(draftStamp, env({ copies: new Map(), drafts: draftSources({ rustRecipes: { studs: { source: "fn main() {}\n", sha256: draftStamp.sha256, params: {}, objects: [] } } }) }));
 eq("a draft's code is its kept source, and its values are the stamped ones", [draftView.note, draftView.kind, draftView.source, draftView.fields.map((f) => [f.name, f.value])], [null, "draft", "fn main() {}\n", [["studs", 5]]]);
 

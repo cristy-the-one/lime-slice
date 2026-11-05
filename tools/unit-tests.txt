@@ -229,5 +229,6 @@ src/recipe/host.test.ts
 src/recipe/tauri.test.ts
 src/recipe/ingredients.test.ts
 src/recipe/picks.test.ts
+src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
 tools/ci/bump-only.test.mjs

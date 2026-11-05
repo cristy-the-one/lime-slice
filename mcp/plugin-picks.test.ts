@@ -123,7 +123,7 @@ let stamp = await stampOf(block, "face-mark");
 check("a rule is the default, so the stamp keeps no face", !!stamp && stamp.params.face === undefined, stamp);
 const got = await call("nugget", { action: "get", kind: "plugin", id: "face-mark" });
 const gotFace = ((got.params ?? []) as { name: string; kind: string; default: unknown }[]).find((p) => p.name === "face");
-check("nugget get shows the face parameter and its rule", gotFace?.kind === "face" && JSON.stringify(gotFace.default) === '{"rule":"largest_up"}' && got.api === "1.3", got);
+check("nugget get shows the face parameter and its rule", gotFace?.kind === "face" && JSON.stringify(gotFace.default) === '{"rule":"largest_up"}' && got.api === "1.4", got);
 const found = await call("nugget", { action: "find", query: "face mark" });
 check("nugget find sums it up as a face with its rule", JSON.stringify(found).includes("face face [largest up]"), found);
 

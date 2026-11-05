@@ -16,7 +16,8 @@ import type { FaceRow } from "../modeling/solid-geometry.ts";
 import { readLoopsField } from "../modeling/bake.ts";
 import { sampleLoopPoints, lineLoop } from "../sketch/loops.ts";
 import { typedPlaneOf } from "../modeling/model-calls.ts";
-import type { Affine } from "../model-space.ts";
+import { IDENTITY_POSE, type Affine } from "../model-space.ts";
+import { typedDir, typedPoint } from "../modeling/typed-view.ts";
 import type { ModelTree, ProfileLoop, Vec2 } from "../model-tree.ts";
 import type { Workplane } from "../workplane.ts";
 import type { RecipeReply } from "./host.ts";
@@ -56,6 +57,12 @@ export interface PickReads {
   faces(object: string): Promise<{ faces: readonly FaceRow[]; positions?: ArrayLike<number>; triangles?: ArrayLike<number> } | { reason: string }>;
   /** section {face, insetMm} on that part, as the run answers it. */
   section(object: string, args: Body): Promise<Body>;
+  /**
+   * --- API 1.4. The part's typed pose: what takes its solid's own frame, where `faces` reads and a kept face is stored
+   * (so it stays on the part when the part moves), into the frame ops are typed in, where the reply answers. Absent,
+   * the two are one.
+   */
+  pose?(object: string): Affine;
   /** The loops and plane (the part's typed frame) of the sketch on a step of that part. */
   sketch(object: string, step: number): { loops: ProfileLoop[]; plane: Workplane } | { reason: string };
   /** data {name}, where the run can read recipe data. */
@@ -394,8 +401,12 @@ export async function answerPick(args: Body, given: Body, reads: PickReads, pick
     if ("reason" in faced) return { ok: false, error: faced.reason };
     if (isGiven && !faced.rule) picked[param] = faced.kept;
     // --- API 1.3: the surface of the face, and for a cylinder or a cone its axis and radius. A curved face has no one normal: it is zero.
-    const normal = "normal" in faced.kept ? faced.kept.normal : [0, 0, 0];
+    // --- API 1.4: a sphere's centre, and a round face's axis point. Every point and direction is in the frame ops are typed
+    // in (model space for a moved part), as every other read answers; the kept value stays in the part's own frame.
+    const pose = reads.pose?.(object) ?? IDENTITY_POSE;
+    const normal = "normal" in faced.kept ? roundV(typedDir(pose, faced.kept.normal)) : [0, 0, 0];
     const surface = faced.face.kind === "plane" ? "plane" : faced.face.kind;
+    const axisPoint = faced.face.axisPoint && faced.face.kind !== "plane" ? roundV(typedPoint(pose, faced.face.axisPoint)) : null;
     return {
       ok: true,
       result: {
@@ -404,10 +415,11 @@ export async function answerPick(args: Body, given: Body, reads: PickReads, pick
         face: faced.index,
         surface,
         normal,
-        nearPoint: faced.kept.nearPoint,
+        nearPoint: roundV(typedPoint(pose, faced.kept.nearPoint)),
         areaMm2: faced.kept.areaMm2,
-        ...(faced.face.axis ? { axis: roundV(faced.face.axis) } : {}),
+        ...(faced.face.axis ? { axis: roundV(typedDir(pose, faced.face.axis)) } : {}),
         ...(typeof faced.face.radiusMm === "number" ? { radiusMm: round(faced.face.radiusMm, 1e4) } : {}),
+        ...(axisPoint ? { axisPoint, ...(surface === "sphere" ? { centre: axisPoint } : {}) } : {}),
         sections: [faced.row],
       },
     };
