@@ -12,3 +12,5 @@
 /playwright-report
 .DS_Store
 *.gcode
+/e2e/scratch/
+/e2e/zz-*
