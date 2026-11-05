@@ -3,15 +3,23 @@ import { CONTROLS } from "./settings-schema";
 import "./shell.css";
 import "./groups.css";
 
-export type SettingsLevel = "simple" | "advanced" | "expert";
+export type { SettingsLevel } from "./first-run";
+import { LEVEL_KEY, levelFromStored, type SettingsLevel } from "./first-run";
 
-const LEVEL_KEY = "lime-slice-settings-level";
 const CLOSED_KEY = "lime-slice-closed-groups";
 
+/** The saved level, or null on a first run. */
+export function storedSettingsLevel(): string | null {
+  try {
+    return localStorage.getItem(LEVEL_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** The saved level; a first run (nothing saved) starts at Simple. */
 export function loadSettingsLevel(): SettingsLevel {
-  const raw = localStorage.getItem(LEVEL_KEY);
-  if (raw === "simple" || raw === "advanced" || raw === "expert") return raw;
-  return "expert";
+  return levelFromStored(storedSettingsLevel());
 }
 
 export function applyStoredLevel() {

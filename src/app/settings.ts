@@ -446,14 +446,19 @@ export function markBusy(recompute: boolean) {
   session.busyPhase = recompute ? "" : "Loading…";
   session.liveProgress = false;
   const mine = session.busySince;
-  const tick = window.setInterval(() => {
-    if (!state.busy || session.busySince !== mine) {
-      window.clearInterval(tick);
-      return;
+  // Runs only while this job is busy, one frame at a time (so it pauses with a hidden window); the line and meter
+  // refresh at most every 100 ms. Nothing is scheduled once the job ends.
+  let last = 0;
+  const frame = (now: number) => {
+    if (!state.busy || session.busySince !== mine) return;
+    if (now - last >= 100) {
+      last = now;
+      document.querySelector("#timing")!.textContent = busyText();
+      applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
     }
-    document.querySelector("#timing")!.textContent = busyText();
-    applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
-  }, 100);
+    window.requestAnimationFrame(frame);
+  };
+  window.requestAnimationFrame(frame);
 }
 
 function sliceSample() {
