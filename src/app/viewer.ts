@@ -447,7 +447,7 @@ export function paintSpark() {
 
 export function stopPlay() {
   state.playing = false;
-  window.clearInterval(session.playTimer);
+  window.cancelAnimationFrame(session.playTimer);
   const play = document.querySelector<HTMLButtonElement>("#play");
   if (play) {
     play.textContent = "Play";
@@ -466,18 +466,30 @@ export function togglePlay() {
   if (state.move >= moves.length - 1) state.move = 0;
   state.playing = true;
   paintPlayback();
-  session.playTimer = window.setInterval(() => {
-    const n = movesNow().length;
-    if (state.move >= n - 1) {
-      stopPlay();
+  // One move per 40 ms as before, driven by animation frames so it stops while the window is hidden.
+  let last = performance.now();
+  let owed = 0;
+  const frame = (now: number) => {
+    if (!state.playing) return;
+    owed = Math.min(owed + (now - last), 200);
+    last = now;
+    const steps = Math.floor(owed / 40);
+    if (steps > 0) {
+      owed -= steps * 40;
+      const n = movesNow().length;
+      if (state.move >= n - 1) {
+        stopPlay();
+        paintPlayback();
+        return;
+      }
+      state.move = Math.min(n - 1, state.move + steps);
       paintPlayback();
-      return;
+      syncGcodeHighlight();
+      draw();
     }
-    state.move += 1;
-    paintPlayback();
-    syncGcodeHighlight();
-    draw();
-  }, 40);
+    session.playTimer = window.requestAnimationFrame(frame);
+  };
+  session.playTimer = window.requestAnimationFrame(frame);
 }
 
 export function scrub(next: number) {

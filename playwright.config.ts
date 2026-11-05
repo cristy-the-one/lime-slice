@@ -25,6 +25,7 @@ export function autoSliceOnState(origin: string) {
 
 export default defineConfig({
   testDir: "e2e",
+  testIgnore: ["scratch/**"],
   timeout: 90_000,
   use: { baseURL, viewport: { width: 1280, height: 800 }, storageState: autoSliceOffState(baseURL) },
   webServer: {
