@@ -232,3 +232,4 @@ src/recipe/picks.test.ts
 src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
 tools/ci/bump-only.test.mjs
+tools/ci/smoke-shards.test.mjs

@@ -82,8 +82,14 @@ jobs:
       - name: Cargo.lock is current
         run: cargo metadata --format-version 1 --locked > /dev/null
 
-  rust:
-    name: test, clippy, and Tauri
+  # The old "rust" job ran everything below in one sequence and took 20-29 minutes. Now the workspace tests, the
+  # lust and OCCT MCP tests, clippy and the Tauri build run side by side, and "test, clippy, and Tauri" (the check
+  # the ruleset requires) only waits for all four.
+  # Workspace tests with cargo-nextest: it runs the test binaries side by side, where `cargo test` ran them one
+  # after another (lettering_curved alone took 2.4 minutes with the other cores idle). It does not run doctests,
+  # so they follow.
+  rust-tests:
+    name: Rust tests
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
@@ -92,13 +98,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The debug build of the whole workspace, its tests, OCCT and lust fill the runner's disk: the Test step
-      # stopped on "No space left on device" three times on 2026-11-01. These preinstalled SDKs are not used here.
+      # The debug build of the workspace, its tests and OCCT fill the runner's disk: the old single Rust job stopped on
+      # "No space left on device" three times on 2026-11-01. These preinstalled SDKs are not used here. Deleting them
+      # takes one to two minutes, so it runs in the background while the packages and caches arrive.
       - name: Free disk space
         run: |
           df -h / | tail -1
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift
-          df -h / | tail -1
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
 
       # runner.temp is not available in a job-level env block.
       - name: Point at the OCCT install
@@ -138,10 +144,11 @@ jobs:
           sudo chown -R "$USER" ~/apt-archives
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
 
+      # One cache per job: the jobs build different things, and one shared cache was 3 GB of mixed targets.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-tests
 
       - name: Restore the OCCT shared libraries
         id: occt-cache
@@ -162,11 +169,83 @@ jobs:
           path: ${{ runner.temp }}/occt-7.9.2
           key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
+      - name: Wait for the disk space
+        run: |
+          while pgrep -x rm > /dev/null; do sleep 2; done
+          df -h / | tail -1
+
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
       - name: Test
         run: |
           cargo build -p lime-model-occt --locked
           export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
-          cargo test --workspace --locked
+          cargo nextest run --workspace --locked --profile ci
+
+      - name: Doctests
+        run: cargo test --workspace --doc --locked
+
+  # lust, the recipe runner and the MCP tests against real OCCT. They need the OCCT bridge and node, not GTK.
+  rust-mcp-occt:
+    name: MCP server against real Open CASCADE
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      LIME_REQUIRE_OCCT: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      # The debug build of the workspace, its tests and OCCT fill the runner's disk: the old single Rust job stopped on
+      # "No space left on device" three times on 2026-11-01. These preinstalled SDKs are not used here. Deleting them
+      # takes one to two minutes, so it runs in the background while the packages and caches arrive.
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+
+      # runner.temp is not available in a job-level env block.
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+
+      # CMake and Ninja build OCCT when the cache misses. The runner image already has the toolchain, so apt
+      # runs only when one is missing.
+      - name: Install the C++ toolchain Clipper2 links against
+        timeout-minutes: 10
+        run: |
+          command -v gcc g++ make pkg-config cmake ninja > /dev/null && exit 0
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config cmake ninja-build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # One cache per job: the jobs build different things, and one shared cache was 3 GB of mixed targets.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-mcp-occt
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
 
       - uses: actions/setup-node@v7
         with:
@@ -188,7 +267,7 @@ jobs:
         timeout-minutes: 20
         run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
 
-      # The app's recipe runner with a real recipe built by lust (the workspace test above skipped it without lust).
+      # The app's recipe runner with a real recipe built by lust (the workspace test skips it without lust).
       - name: Recipe runner with lust
         timeout-minutes: 10
         env:
@@ -238,6 +317,90 @@ jobs:
           # Recipe API 1.4 on real OCCT: reads and cuts in one frame on a moved and a turned sphere, over MCP and in the app.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-frame.test.ts
 
+  # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
+  rust-clippy:
+    name: clippy and GPU stress test
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      LIME_REQUIRE_OCCT: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      # The debug build of the workspace, its tests and OCCT fill the runner's disk: the old single Rust job stopped on
+      # "No space left on device" three times on 2026-11-01. These preinstalled SDKs are not used here. Deleting them
+      # takes one to two minutes, so it runs in the background while the packages and caches arrive.
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+
+      # runner.temp is not available in a job-level env block.
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+
+      # The packages download in about 30 s, but a crawling mirror has taken
+      # 29 minutes and a silent one over an hour. The downloaded packages are
+      # cached, so a slow mirror costs one run, and apt gives up on a silent
+      # one. The step fails at 40 minutes rather than holding the job for hours.
+      - name: Restore the downloaded GTK packages
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: apt-gtk-${{ runner.os }}-noble-v1
+
+      - name: Install GTK and WebKitGTK
+        timeout-minutes: 40
+        run: |
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            patchelf \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            cmake \
+            ninja-build
+          sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock
+          sudo chown -R "$USER" ~/apt-archives
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # One cache per job: the jobs build different things, and one shared cache was 3 GB of mixed targets.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-clippy
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -247,8 +410,105 @@ jobs:
       - name: Stress solver with the gpu feature
         run: cargo test -p lime-sim --features gpu --locked --test sliced_study
 
+  # The desktop crate builds on Linux (GTK and WebKitGTK).
+  rust-tauri:
+    name: Tauri build
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      LIME_REQUIRE_OCCT: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      # The debug build of the workspace, its tests and OCCT fill the runner's disk: the old single Rust job stopped on
+      # "No space left on device" three times on 2026-11-01. These preinstalled SDKs are not used here. Deleting them
+      # takes one to two minutes, so it runs in the background while the packages and caches arrive.
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift > /dev/null 2>&1 &
+
+      # runner.temp is not available in a job-level env block.
+      - name: Point at the OCCT install
+        run: |
+          echo "OCCT_ROOT=${{ runner.temp }}/occt-7.9.2" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${{ runner.temp }}/occt-7.9.2/lib" >> "$GITHUB_ENV"
+
+      # The packages download in about 30 s, but a crawling mirror has taken
+      # 29 minutes and a silent one over an hour. The downloaded packages are
+      # cached, so a slow mirror costs one run, and apt gives up on a silent
+      # one. The step fails at 40 minutes rather than holding the job for hours.
+      - name: Restore the downloaded GTK packages
+        uses: actions/cache@v6
+        with:
+          path: ~/apt-archives
+          key: apt-gtk-${{ runner.os }}-noble-v1
+
+      - name: Install GTK and WebKitGTK
+        timeout-minutes: 40
+        run: |
+          { echo 'Acquire::http::Timeout "30";'; echo 'Acquire::https::Timeout "30";'; echo 'Acquire::Retries "3";'; } | sudo tee /etc/apt/apt.conf.d/99ci-timeouts > /dev/null
+          mkdir -p ~/apt-archives/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
+            build-essential \
+            pkg-config \
+            libssl-dev \
+            patchelf \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            cmake \
+            ninja-build
+          sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock
+          sudo chown -R "$USER" ~/apt-archives
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # One cache per job: the jobs build different things, and one shared cache was 3 GB of mixed targets.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-tauri
+
+      - name: Restore the OCCT shared libraries
+        id: occt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
+      - name: Build OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 180
+        run: python3 tools/occt/install.py --prefix "$OCCT_ROOT"
+
+      - name: Save the OCCT shared libraries
+        if: steps.occt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/occt-7.9.2
+          key: occt-7.9.2-model-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/occt/install.py') }}
+
       - name: Build the Tauri crate
         run: cargo build -p lime-slice-desktop --locked
+
+  # The check the ruleset requires, under its old name. It runs nothing: it passes when the four jobs above pass,
+  # and it is skipped, like they are, when only docs or a version bump changed. Do not rename it.
+  rust:
+    name: test, clippy, and Tauri
+    needs: [changes, rust-tests, rust-mcp-occt, rust-clippy, rust-tauri]
+    if: always() && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All four Rust jobs passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e '[to_entries[] | select(.key != "changes") | .value.result] | all(. == "success")' > /dev/null
 
   ui:
     name: typecheck and frontend build
@@ -275,7 +535,7 @@ jobs:
       - name: Frontend build
         run: npx vite build
 
-  # The e2e specs split over four runners. Every shard builds the frontend
+  # The e2e specs split over four runners by time. Every shard builds the frontend
   # itself because `vite preview` serves dist/.
   smoke:
     name: Playwright smoke (shard ${{ matrix.shard }}/4)
@@ -328,9 +588,23 @@ jobs:
           sudo dpkg --configure -a || true
           timeout 300 npx playwright install chromium
 
-      # test:smoke leaves out the @perf specs, which run in perf.yml.
+      # test:smoke leaves out the @perf specs, which run in perf.yml. The shards are balanced by time, not by file
+      # count: tools/ci/smoke-shards.mjs splits the test:smoke list with the spec times in e2e/durations.json.
+      # Each shard writes a JSON report; to refresh the times, download the four artifacts and run
+      # `node tools/ci/smoke-shards.mjs --update smoke-1.json smoke-2.json smoke-3.json smoke-4.json`.
       - name: Playwright smoke
-        run: npm run test:smoke -- --shard=${{ matrix.shard }}/4
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ runner.temp }}/smoke-${{ matrix.shard }}.json
+        run: npm run test:smoke:${{ matrix.shard }} -- --reporter=dot,json
+
+      - name: Keep the spec times
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-times-${{ matrix.shard }}
+          path: ${{ runner.temp }}/smoke-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   mcp:
     name: MCP server
