@@ -1,5 +1,6 @@
 /** Whether the open mesh has changes that are not in a saved project. */
 import { session, state } from "./app/state.ts";
+import { confirmSheet } from "./ui/ask-sheet.ts";
 
 export function markProjectDirty() {
   if (session.projectRestoring || !state.mesh) return;
@@ -11,10 +12,16 @@ export function markProjectClean() {
 }
 
 /**
- * `true` when the user is willing to drop unsaved work, including when there is none.
- * New project uses this same `session.projectDirty` flag, with Save / Don't save / Cancel.
+ * `true` when the user is willing to drop unsaved work, including when there is none: the app's question sheet asks.
+ * New project uses this same `session.projectDirty` flag, with Save / Don't save / Cancel. Closing the window keeps
+ * the browser's own `beforeunload` prompt (project-io.ts), the only question a page may ask while it unloads.
  */
-export function confirmDiscard(): boolean {
+export async function confirmDiscard(): Promise<boolean> {
   if (!session.projectDirty) return true;
-  return window.confirm("This project has unsaved changes. Discard them?");
+  return confirmSheet({
+    title: "Discard unsaved changes?",
+    body: "This project has changes that are not saved. Opening another file drops them.",
+    confirmLabel: "Discard",
+    danger: true,
+  });
 }

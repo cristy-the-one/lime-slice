@@ -1634,6 +1634,16 @@ pub struct StageTimes {
     /// Sum of per-layer infill and gap-fill time inside `toolpath_ms`.
     #[serde(default)]
     pub infill_cpu_ms: f64,
+    /// Layer bands and cache keys of every object, before the cut. Inside `core_ms`.
+    #[serde(default)]
+    pub bands_ms: f64,
+    /// Serial pass before the parallel toolpaths: interior depths and the
+    /// lightning forest. Inside `core_ms`, outside `toolpath_ms`.
+    #[serde(default)]
+    pub prep_ms: f64,
+    /// Plate join, kept-plate stamps, layer actions, and the part audit, up to the emit. Inside `core_ms`.
+    #[serde(default)]
+    pub join_ms: f64,
     /// Stages taken from memory instead of computed, in pipeline order:
     /// `contours`, `toolpaths`, `order`, `comb`, `supports` (grown), and
     /// `supportPaths`. Their clocks above read zero.
@@ -2648,7 +2658,9 @@ fn slice_plate(
     let floor = belt_job.as_ref().and_then(|job| job.floor);
     let mut cuts: Vec<(Arc<Contours>, bool, Option<kept::Keys>)> =
         Vec::with_capacity(objects.len());
+    let mut bands_ms = 0.0;
     for (k, o) in objects.iter().enumerate() {
+        let bands_started = Instant::now();
         let bands = plan_plate_bands(&o.mesh, &meshes, &height_opts(&o.settings))?;
         let keys = kept_keys(
             &o.mesh,
@@ -2658,6 +2670,7 @@ fn slice_plate(
             profile.nozzle_diameter,
             floor,
         );
+        bands_ms += elapsed_ms(bands_started);
         let mut alone = None;
         let shared = if objects.len() == 1 {
             &mut *cut
@@ -2727,6 +2740,7 @@ fn slice_plate(
             &watches[a],
         )?);
     }
+    let join_started = Instant::now();
     let band_lists: Vec<&[LayerBand]> = plans.iter().map(|p| p.cut.bands.as_slice()).collect();
     let bands = match order {
         PlateOrder::AllAtOnce => plate::plate_bands(&band_lists),
@@ -2843,6 +2857,7 @@ fn slice_plate(
             slice_to_part(belt_job.as_ref(), offset),
         ))
     });
+    let join_ms = elapsed_ms(join_started);
     let emit_started = Instant::now();
     let (gcode, gcode_text) = if settings.include_gcode {
         let gcode = emit_gcode(
@@ -2913,6 +2928,9 @@ fn slice_plate(
         roof_ms: spent.roof_ms,
         wall_cpu_ms: spent.wall_cpu_ms,
         infill_cpu_ms: spent.infill_cpu_ms,
+        bands_ms,
+        prep_ms: spent.prep_ms,
+        join_ms,
         reused: plans
             .iter()
             .map(|p| p.reuse)
@@ -4104,6 +4122,7 @@ pub(crate) struct Spent {
     pub comb_ms: f64,
     pub wall_cpu_ms: f64,
     pub infill_cpu_ms: f64,
+    pub prep_ms: f64,
     pub edit_apply_ms: f64,
     pub edit_refresh_ms: f64,
 }
@@ -4121,6 +4140,7 @@ impl Spent {
         self.comb_ms += other.comb_ms;
         self.wall_cpu_ms += other.wall_cpu_ms;
         self.infill_cpu_ms += other.infill_cpu_ms;
+        self.prep_ms += other.prep_ms;
         self.edit_apply_ms += other.edit_apply_ms;
         self.edit_refresh_ms += other.edit_refresh_ms;
     }
@@ -4138,6 +4158,7 @@ impl Spent {
         self.toolpath_ms += part.toolpath_ms;
         self.wall_cpu_ms += part.wall_cpu_ms;
         self.infill_cpu_ms += part.infill_cpu_ms;
+        self.prep_ms += part.prep_ms;
     }
 
     fn supports(&mut self, plan: &SupportPlan) {
@@ -4964,6 +4985,8 @@ pub(crate) struct PartPaths {
     /// Layers taken from a kept plan instead of planned.
     reused: u32,
     toolpath_ms: f64,
+    /// The serial pass before the parallel layers.
+    prep_ms: f64,
     wall_cpu_ms: f64,
     infill_cpu_ms: f64,
 }
@@ -5233,8 +5256,10 @@ fn part_paths(
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }
+    let prep_started = Instant::now();
     let (remain_low, remain_high) = interior_remainings(blend, settings, bands, &cut.skins);
     let lightning = grow_lightning(cut, blend, settings);
+    let prep_ms = elapsed_ms(prep_started);
     let toolpath_started = Instant::now();
     let kept = kept.filter(|k| k.base == base);
     let planned: Vec<([u8; 32], Arc<ObjectLayer>, bool)> = bands
@@ -5320,6 +5345,7 @@ fn part_paths(
         layers: planned.into_iter().map(|p| p.1).collect(),
         base,
         toolpath_ms,
+        prep_ms,
     })
 }
 

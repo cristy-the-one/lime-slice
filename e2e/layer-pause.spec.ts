@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
@@ -76,6 +77,8 @@ test("a saved project keeps its layer actions, and a new mesh clears them", asyn
   expect((JSON.parse(saved.toString("utf8")) as { layerActions?: Action[] }).layerActions).toEqual(sent);
 
   page.on("dialog", (dialog) => void dialog.accept());
+
+  await acceptSheets(page);
   await loadCube();
   await expect(page.locator("#layerPins .layer-pin")).toHaveCount(0);
   await sliceMatching(page, bodies, (body) => body.layerActions === undefined);

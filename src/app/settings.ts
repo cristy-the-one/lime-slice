@@ -56,6 +56,8 @@ import {
   type Tier,
 } from "../ui/settings-schema";
 import { chordGlyphs, COMMANDS, keyOf, shortcutOf, tipWithShortcut } from "../ui/commands";
+import { escapeHtml, html, insertHtml, setHtml, type Html } from "../ui/html";
+import { profileOptionsHtml } from "../ui/name-lists";
 
 export function apiBase() {
   return currentApiTarget().base;
@@ -281,7 +283,7 @@ function paintTiming() {
     return;
   }
   const grams = shownGrams(result);
-  timing.innerHTML = `<span>${formatDuration(result.estimate?.seconds ?? 0)}</span><span class="est-mass"> · ${formatMass(grams)}</span><span class="est-cost"> · ${formatMoney(filamentCost(grams, state.profile))}</span>`;
+  setHtml(timing, html`<span>${formatDuration(result.estimate?.seconds ?? 0)}</span><span class="est-mass"> · ${formatMass(grams)}</span><span class="est-cost"> · ${formatMoney(filamentCost(grams, state.profile))}</span>`);
   timing.dataset.tip = `${timing.textContent} · Results panel`;
 }
 
@@ -352,7 +354,7 @@ function paintPrinterChip() {
   const label = document.querySelector("#printerChipLabel");
   if (label) label.textContent = machineChipLabel(library);
   const pick = document.querySelector("#printerPick");
-  if (pick) pick.innerHTML = machinePickHtml(library, activeHeat(library));
+  if (pick) setHtml(pick, machinePickHtml(library, activeHeat(library)));
 }
 
 /** Open the Printer details group and scroll to it. Simple has no such group, so it steps up to Advanced. */
@@ -444,14 +446,19 @@ export function markBusy(recompute: boolean) {
   session.busyPhase = recompute ? "" : "Loading…";
   session.liveProgress = false;
   const mine = session.busySince;
-  const tick = window.setInterval(() => {
-    if (!state.busy || session.busySince !== mine) {
-      window.clearInterval(tick);
-      return;
+  // Runs only while this job is busy, one frame at a time (so it pauses with a hidden window); the line and meter
+  // refresh at most every 100 ms. Nothing is scheduled once the job ends.
+  let last = 0;
+  const frame = (now: number) => {
+    if (!state.busy || session.busySince !== mine) return;
+    if (now - last >= 100) {
+      last = now;
+      document.querySelector("#timing")!.textContent = busyText();
+      applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
     }
-    document.querySelector("#timing")!.textContent = busyText();
-    applySliceProgress(sliceSample(), session.liveProgress ? session.busyPhase : "");
-  }, 100);
+    window.requestAnimationFrame(frame);
+  };
+  window.requestAnimationFrame(frame);
 }
 
 function sliceSample() {
@@ -549,7 +556,7 @@ const EDIT_TREES = { id: "editTreesBtn", tool: "supports", label: "Edit trees", 
 const CUSTOM: Record<string, () => string> = {
   strategyRows: strategyRowsHtml,
   objectTools: objectToolsHtml,
-  objectList: objectListHtml,
+  objectList: () => String(objectListHtml()),
   objectPlace: objectPlaceHtml,
   objectOverrides: () => {
     const selected = selectedObject(state.plate);
@@ -766,10 +773,10 @@ export function plateObjectSizes(): { id: string; name: string; size: string }[]
 export function refreshObjectList() {
   const slot = document.querySelector<HTMLElement>('[data-slot="objectList"]');
   if (!slot) return;
-  slot.innerHTML = objectListHtml();
+  setHtml(slot, html`${objectListHtml()}`);
 }
 
-function objectListHtml(): string {
+function objectListHtml(): Html | "" {
   if (!state.placed) return "";
   const { rows, limit } = plateRows();
   // --- Assemblies M5. In the assembly view the bed's XY overlap test does not apply: a lifted hook is not on the bed.
@@ -777,6 +784,7 @@ function objectListHtml(): string {
   const many = rows.length > 1;
   const assemblies = liveAssemblies();
   const selectedName = rows.find(({ obj }) => obj.id === state.plate.selectedId)?.obj.name ?? "";
+  // Object names come from files and MCP: every value below goes in through `html`, escaped.
   const row = ({ obj, part }: (typeof rows)[number]) => {
     const notes = limit(part.bounds);
     const marks = objectMarks(obj);
@@ -786,25 +794,25 @@ function objectListHtml(): string {
     const selected = obj.id === state.plate.selectedId;
     const group = assemblyOf(assemblies, obj.id);
     const attach = many && !selected && !group && state.plate.selectedId
-      ? `<button class="btn obj-attach" type="button" data-plate-attach="${escapeHtml(obj.id)}" aria-label="Attach ${escapeHtml(obj.name)} to ${escapeHtml(selectedName)}" data-tip="Attach to ${escapeHtml(selectedName)}: it keeps its place and moves with it in the assembly.">Attach</button>`
+      ? html`<button class="btn obj-attach" type="button" data-plate-attach="${obj.id}" aria-label="Attach ${obj.name} to ${selectedName}" data-tip="Attach to ${selectedName}: it keeps its place and moves with it in the assembly.">Attach</button>`
       : "";
-    return `
-      <div class="obj obj-row${group ? " obj-member" : ""}" role="listitem" data-plate-id="${escapeHtml(obj.id)}" data-selected="${selected ? "true" : "false"}"${group ? ` data-assembly="${escapeHtml(group.id)}"` : ""}>
-        <button class="obj-select" type="button" data-plate-select="${escapeHtml(obj.id)}" aria-pressed="${selected ? "true" : "false"}" data-tip="${escapeHtml(obj.name)} · ${triangleLine(obj.sourcePos.length / 9)}">
-          <b>${escapeHtml(obj.name)}</b>
+    return html`
+      <div class="obj obj-row${group ? " obj-member" : ""}" role="listitem" data-plate-id="${obj.id}" data-selected="${selected ? "true" : "false"}"${group ? html` data-assembly="${group.id}"` : ""}>
+        <button class="obj-select" type="button" data-plate-select="${obj.id}" aria-pressed="${selected ? "true" : "false"}" data-tip="${obj.name} · ${triangleLine(obj.sourcePos.length / 9)}">
+          <b>${obj.name}</b>
           <span>${boundsSize(part.bounds)} mm</span>
-          ${marks ? `<span class="obj-marks">${escapeHtml(marks)}</span>` : ""}
-          ${notes.length ? `<em class="obj-note">${escapeHtml(notes.join("; "))}</em>` : ""}        </button>
+          ${marks ? html`<span class="obj-marks">${marks}</span>` : ""}
+          ${notes.length ? html`<em class="obj-note">${notes.join("; ")}</em>` : ""}        </button>
         <div class="obj-actions">
           ${attach}
           <!-- --- A7 model check --- -->
-          ${obj.sim ? `<button class="btn obj-stress" type="button" data-plate-stress="${escapeHtml(obj.id)}">Stress</button>` : ""}
-          <button class="btn obj-check" type="button" data-plate-check="${escapeHtml(obj.id)}" aria-label="Check ${escapeHtml(obj.name)}">Check</button>
-          <button class="btn obj-frame" type="button" data-plate-frame="${escapeHtml(obj.id)}" aria-label="Frame ${escapeHtml(obj.name)}">Frame</button>
-          ${many ? `<button class="btn obj-remove" type="button" data-plate-remove="${escapeHtml(obj.id)}" aria-label="Remove ${escapeHtml(obj.name)}">Remove</button>` : ""}
+          ${obj.sim ? html`<button class="btn obj-stress" type="button" data-plate-stress="${obj.id}">Stress</button>` : ""}
+          <button class="btn obj-check" type="button" data-plate-check="${obj.id}" aria-label="Check ${obj.name}">Check</button>
+          <button class="btn obj-frame" type="button" data-plate-frame="${obj.id}" aria-label="Frame ${obj.name}">Frame</button>
+          ${many ? html`<button class="btn obj-remove" type="button" data-plate-remove="${obj.id}" aria-label="Remove ${obj.name}">Remove</button>` : ""}
         </div>
-        ${splitNote ? `<p class="obj-split">${escapeHtml(splitNote)}</p>` : ""}
-        ${stale ? `<div class="obj-stale" role="status" data-transition-stale="${escapeHtml(obj.id)}"><p>${escapeHtml(stale.text)}</p><div class="obj-stale-actions"><button class="btn" type="button" data-transition-reaim="${escapeHtml(obj.id)}" data-tip="Open Model and rebuild these steps with the build direction of this pose">Re-aim</button><button class="btn" type="button" data-transition-keep="${escapeHtml(obj.id)}" data-tip="Keep them as they are, made for the other pose">Keep</button></div></div>` : ""}
+        ${splitNote ? html`<p class="obj-split">${splitNote}</p>` : ""}
+        ${stale ? html`<div class="obj-stale" role="status" data-transition-stale="${obj.id}"><p>${stale.text}</p><div class="obj-stale-actions"><button class="btn" type="button" data-transition-reaim="${obj.id}" data-tip="Open Model and rebuild these steps with the build direction of this pose">Re-aim</button><button class="btn" type="button" data-transition-keep="${obj.id}" data-tip="Keep them as they are, made for the other pose">Keep</button></div></div>` : ""}
       </div>`;
   };
   // Each assembly's members follow its header where the first of them stands, root first; other objects keep their place.
@@ -815,27 +823,27 @@ function objectListHtml(): string {
     if (!group) return row(item);
     const members = group.members.flatMap((member) => rows.filter((other) => other.obj.id === member.object));
     for (const member of members) shown.add(member.obj.id);
-    return `
-      <div class="obj-group" role="listitem" data-assembly-head="${escapeHtml(group.id)}">
-        <div class="obj-group-name"><b>${escapeHtml(group.name)}</b><span>${members.length} parts</span></div>
+    return html`
+      <div class="obj-group" role="listitem" data-assembly-head="${group.id}">
+        <div class="obj-group-name"><b>${group.name}</b><span>${members.length} parts</span></div>
         <div class="obj-actions">
-          <button class="btn obj-layout" type="button" data-assembly-layout="${escapeHtml(group.id)}" aria-label="Lay out ${escapeHtml(group.name)}" data-tip="Lay out these parts on the bed for print, around the other objects. The assembly stays as it is.">Lay out</button>
-          <button class="btn obj-step" type="button" data-assembly-step="${escapeHtml(group.id)}" aria-label="Export ${escapeHtml(group.name)} as STEP" data-tip="Save one STEP file of the assembly: each part a named solid at its assembled pose.">STEP</button>
-          <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${escapeHtml(group.id)}" aria-label="Ungroup ${escapeHtml(group.name)}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
+          <button class="btn obj-layout" type="button" data-assembly-layout="${group.id}" aria-label="Lay out ${group.name}" data-tip="Lay out these parts on the bed for print, around the other objects. The assembly stays as it is.">Lay out</button>
+          <button class="btn obj-step" type="button" data-assembly-step="${group.id}" aria-label="Export ${group.name} as STEP" data-tip="Save one STEP file of the assembly: each part a named solid at its assembled pose.">STEP</button>
+          <button class="btn obj-ungroup" type="button" data-assembly-ungroup="${group.id}" aria-label="Ungroup ${group.name}" data-tip="Ungroup: every part keeps where it is.">Ungroup</button>
         </div>
-      </div>${members.map(row).join("")}`;
-  }).join("");
+      </div>${members.map(row)}`;
+  });
   const overlap = pairs.map((pair) => pair.line).join("; ");
   // --- Assemblies M6 (D5). In the assembly view the bed's row gives way to the parts that cross in an assembly.
   const clashRows = assemblyView.on ? assemblyClashes() : [];
   const clashes = clashRows.map((row) => (row.unmeasured ? `${row.line} (mesh only: ${row.unmeasured})` : row.line)).join("; ");
   const measure = clashRows.some((row) => row.volumeMm3 === undefined && row.unmeasured === undefined)
-    ? ` <button class="btn" type="button" data-assembly-measure data-tip="Ask the kernel for each pair's common volume. Under 0.01 mm³ is a touch.">Measure</button>`
+    ? html` <button class="btn" type="button" data-assembly-measure data-tip="Ask the kernel for each pair's common volume. Under 0.01 mm³ is a touch.">Measure</button>`
     : "";
-  return `
-    <div class="object-list" id="objectList"><div role="list">${list || `<div class="obj" role="listitem"><b>${escapeHtml(state.mesh?.name ?? "part")}</b><span>${boundsSize(state.placed.bounds)} mm</span></div>`}</div></div>
-    ${overlap ? `<div class="meta warn-text" id="plateOverlap">${escapeHtml(overlap)} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
-    ${clashes ? `<div class="meta warn-text" id="assemblyInterference" data-tip="Checked at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${escapeHtml(clashes)}${measure}</div>` : ""}`;
+  return html`
+    <div class="object-list" id="objectList"><div role="list">${rows.length ? list : html`<div class="obj" role="listitem"><b>${state.mesh?.name ?? "part"}</b><span>${boundsSize(state.placed.bounds)} mm</span></div>`}</div></div>
+    ${overlap ? html`<div class="meta warn-text" id="plateOverlap">${overlap} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
+    ${clashes ? html`<div class="meta warn-text" id="assemblyInterference" data-tip="Checked at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${clashes}${measure}</div>` : ""}`;
 }
 
 function objectPlaceHtml(): string {
@@ -1236,22 +1244,18 @@ export function signed(n: number) {
 function profileHeaderHtml() {
   const library = loadProfileLibrary();
   const selected = displayId(library, currentPreset(), loadSettingsLevel());
-  const options = library.profiles
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((profile) => `<option value="${escapeHtml(profile.id)}"${profile.id === selected ? " selected" : ""}>${escapeHtml(profile.name)}</option>`)
-    .join("");
+  const options = profileOptionsHtml(library.profiles, selected);
   return `
     <div class="profile-row">
       <select id="profilePick" aria-label="Settings profile">
         <option value="">Current</option>
         ${options}
       </select>
-      <button class="btn" id="profileSave" type="button">Save</button>
+      <button class="btn" id="profileSave" type="button" aria-label="Save settings profile" data-tip="Save these slicing settings as a settings profile. This is not the printer; the printer has its own Save printer lower down.">Save</button>
       <details class="profile-more menu" id="profileMore">
-        <summary class="btn" aria-label="Profile actions" data-tip="Rename, duplicate, delete, export or import a profile">More</summary>
+        <summary class="btn" aria-label="Settings profile actions" data-tip="Rename, duplicate, delete, export or import a settings profile (not a printer)">Profile…</summary>
         <div class="profile-actions">
-          <input id="profileName" type="text" aria-label="Profile name" placeholder="Profile name" />
+          <input id="profileName" type="text" aria-label="Settings profile name" placeholder="Profile name" />
           <button class="btn" id="profileRename" type="button">Rename</button>
           <button class="btn" id="profileDuplicate" type="button">Duplicate</button>
           <button class="btn" id="profileDelete" type="button">Delete</button>
@@ -1497,19 +1501,19 @@ function outOfRange(spec: ControlSpec, raw: string): boolean {
  */
 const refusedNotes = new Map<string, { text: string; kept: number | boolean | string }>();
 
-function refusedNoteHtml(spec: ControlSpec): string {
+function refusedNoteHtml(spec: ControlSpec): Html | "" {
   const note = refusedNotes.get(spec.id);
   if (!note || !spec.get || spec.get(state) !== note.kept) return "";
-  return `<span class="row-note" id="${spec.id}Note" role="status">${escapeHtml(note.text)}</span>`;
+  return html`<span class="row-note" id="${spec.id}Note" role="status">${note.text}</span>`;
 }
 
 function showRefusedNote(t: HTMLInputElement, spec: ControlSpec) {
   const row = t.closest(".row");
   if (!row) return;
   row.querySelector(".row-note")?.remove();
-  const html = refusedNoteHtml(spec);
-  if (html) {
-    row.insertAdjacentHTML("beforeend", html);
+  const note = refusedNoteHtml(spec);
+  if (note) {
+    insertHtml(row, "beforeend", note);
     t.setAttribute("aria-invalid", "true");
     t.setAttribute("aria-describedby", `${spec.id}Note`);
   } else {
@@ -1779,9 +1783,8 @@ function paintGroupSummaries() {
   }
 }
 
-export function escapeHtml(value: string) {
-  return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
-}
+/** Text safe in markup; the one escaper, in src/ui/html.ts. */
+export { escapeHtml };
 
 export async function probe() {
   if (fx.isTauri()) {

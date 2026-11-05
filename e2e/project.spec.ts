@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { askSheet, answerSheet } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
@@ -43,12 +44,23 @@ test("save a project, refuse a damaged file, and open it again", async ({ page }
   await page.screenshot({ path: path.join(out, "desktop-corrupt.png") });
 
   await page.locator("#lh").fill("0.28");
-  page.once("dialog", (dialog) => void dialog.accept());
+  // The edit is unsaved: the app's sheet asks first. Cancel keeps the project; Discard (Enter) opens the file.
   await page.locator("#projectFile").setInputFiles({
     name: "cube.lime",
     mimeType: "application/json",
     buffer: saved,
   });
+  await answerSheet(page, "Discard unsaved changes?", { cancel: true });
+  await expect(page.locator("#lh")).toHaveValue("0.28");
+  await page.locator("#projectFile").setInputFiles({
+    name: "cube.lime",
+    mimeType: "application/json",
+    buffer: saved,
+  });
+  await expect(askSheet(page)).toBeVisible();
+  await expect(askSheet(page).locator('[data-ask="confirm"]')).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(askSheet(page)).toBeHidden();
   await expect(page.locator("#objectList")).toContainText("calibration_cube");
   await expect(page.locator("#lh")).toHaveValue("0.2");
   await page.evaluate(() => document.querySelector("#toasts")?.replaceChildren());

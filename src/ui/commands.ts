@@ -46,7 +46,9 @@ export interface CommandSpec {
 export const COMMANDS: CommandSpec[] = [
   { id: "palette", label: "Command palette", group: "Window", keys: ["Ctrl+K"], typing: true, keywords: "search commands" },
   { id: "help", label: "Shortcut sheet", group: "Window", keys: ["?"], keywords: "help keys" },
-  { id: "help-close", label: "Close shortcut sheet", group: "Window", keys: ["Esc", "?"], when: "help", typing: true, show: "none" },
+  { id: "help-close", label: "Close shortcut sheet", group: "Window", keys: ["Esc"], when: "help", typing: true, show: "none" },
+  // ? is a character the sheet's search box takes, so it closes the sheet only outside a field.
+  { id: "help-close-key", label: "Close shortcut sheet", group: "Window", keys: ["?"], when: "help", show: "none" },
   { id: "panel-left", label: "Toggle settings panel", group: "Window", keys: ["Ctrl+B"], target: "#leftToggle", keywords: "left collapse dock model" },
   { id: "panel-right", label: "Toggle results panel", group: "Window", keys: ["Ctrl+Alt+B"], target: "#timing", layouts: ["desktop"], keywords: "right collapse estimate dock inspect" },
   { id: "restore-hidden", label: "Show hidden controls", group: "Window", keys: ["Ctrl+."], target: "#contextBarRestore, #compactChromeShow", keywords: "selection bar chrome phone show controls" },
@@ -137,7 +139,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "sketch-sweep", label: "Sweep", group: "Sketch", keys: ["W"], when: "sketch", show: "help", target: "[data-sketch-sweep]" },
   { id: "sketch-holes", label: "Holes", group: "Sketch", keys: ["H"], when: "sketch", show: "help", target: "[data-sketch-holes]" },
   { id: "sketch-mode", label: "Join, cut, or new object", group: "Sketch", keys: ["M"], when: "sketch-feature", show: "help" },
-  { id: "sketch-smooth", label: "Smooth loft", group: "Sketch", keys: ["R"], when: "sketch-loft", show: "help", target: "[data-sketch-ruled]" },
+  { id: "sketch-smooth", label: "Smooth loft", group: "Sketch", keys: ["S"], when: "sketch-loft", show: "help", target: "[data-sketch-ruled]" },
   { id: "sketch-enter", label: "Apply", group: "Sketch", keys: ["Enter"], when: "sketch", show: "help" },
   { id: "sketch-escape", label: "Cancel", group: "Sketch", keys: ["Esc"], when: "sketch", show: "help" },
   { id: "sketch-tab", label: "Next extrude distance", group: "Sketch", keys: ["Tab"], when: "sketch-feature", show: "help" },
@@ -170,8 +172,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "paint-reinforce", label: "Reinforce", group: "Tools", keys: ["N"], when: "prepare", target: '#toolRail [data-tool="reinforce"]', keywords: "brush infill solid density depth" },
   { id: "brush-smaller", label: "Smaller brush", group: "Tools", keys: ["["], when: "brush", repeat: true, show: "help" },
   { id: "brush-larger", label: "Larger brush", group: "Tools", keys: ["]"], when: "brush", repeat: true, show: "help" },
-  { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], typing: true, target: "#modelUndo", keywords: "placement settings revert" },
-  { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], typing: true, target: "#modelRedo", keywords: "placement settings model again" },
+  { id: "undo", label: "Undo", group: "Edit", keys: ["Ctrl+Z"], when: "workspace", typing: true, target: "#modelUndo", keywords: "placement settings revert" },
+  { id: "redo", label: "Redo", group: "Edit", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], when: "workspace", typing: true, target: "#modelRedo", keywords: "placement settings model again" },
   { id: "search", label: "Search settings", group: "Edit", keys: ["/", "Ctrl+F"], when: "find", keywords: "find filter" },
   { id: "search-clear", label: "Clear settings search", group: "Edit", keys: ["Esc"], when: "searching", typing: true, show: "none" },
   { id: "theme-system", label: "Theme: System", group: "Settings", keywords: "theme appearance" },
@@ -223,7 +225,7 @@ export interface KeyContext {
   sketchOpen: boolean;
   /** Extrude, revolve, loft, or sweep is the active sketch feature. */
   sketchFeature: boolean;
-  /** Loft is the active feature, so R toggles smooth instead of choosing Rectangle. */
+  /** Loft is the active feature, so S toggles smooth. */
   sketchLoft: boolean;
   /** Phone chrome hides the top tabs. A key fires only in layouts where one of its targets is shown. */
   layout: "desktop" | "compact";
@@ -294,8 +296,6 @@ export function fires(command: CommandSpec, ev: KeyEventLike, ctx: KeyContext): 
   if (!command.keys) return false;
   if (command.layouts && !command.layouts.includes(ctx.layout)) return false;
   if (!scopeAllows(command, ctx)) return false;
-  // The sketch has its own undo. A field that is not the sketch HUD keeps the browser's undo.
-  if ((command.id === "undo" || command.id === "redo") && ctx.sketchOpen) return false;
   if (ctx.typing && !command.typing) return false;
   if (ev.repeat && !command.repeat) return false;
   return command.keys.some((chord) => chordMatches(chord, ev));
@@ -349,24 +349,131 @@ export function paletteCommands(commands: CommandSpec[] = COMMANDS): CommandSpec
   return commands.filter((command) => (command.show ?? "both") === "both");
 }
 
-export interface HelpGroup {
-  group: string;
-  entries: { keys: string[]; label: string }[];
+export interface HelpEntry {
+  id: string;
+  keys: string[];
+  label: string;
+  /** Where the chord works, printed beside it when another sheet row uses the same chord elsewhere. */
+  context?: string;
+  /** What the sheet's search also matches: the chords and the command's keywords. */
+  keywords: string;
 }
 
-/** Keyed commands for the sheet, grouped in registry order. */
+export interface HelpGroup {
+  group: string;
+  entries: HelpEntry[];
+}
+
+const STAGE_LABEL: Record<StageName, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model" };
+
+/** Where a command's chord works, in the words a person uses. Empty when it works everywhere. */
+const SCOPE_CONTEXT: Record<KeyScope, string> = {
+  always: "",
+  help: "In this sheet",
+  prepare: "Prepare",
+  objects: "Prepare",
+  preview: "Preview",
+  running: "While slicing",
+  searching: "While searching settings",
+  brush: "While painting",
+  find: "",
+  model: "Model",
+  "model-any": "Model",
+  sketch: "Sketch",
+  "sketch-feature": "Sketch, with a feature open",
+  "sketch-draw": "Sketch",
+  "sketch-loft": "Sketch, in a loft",
+  workspace: "Outside a sketch",
+};
+
+export function contextOf(command: CommandSpec): string {
+  const when = command.when ?? "always";
+  return typeof when === "string" ? SCOPE_CONTEXT[when] : when.map((stage) => STAGE_LABEL[stage]).join(" or ");
+}
+
+/**
+ * The screens a command's chord can fire on, as a person tells them apart. A sketch is one screen however many of its
+ * scopes there are, so two sketch commands on one chord are a clash even when their scopes never overlap.
+ */
+const SCOPE_SCREENS: Record<KeyScope, readonly string[]> = {
+  always: ["prepare", "preview", "gcode", "model", "sketch"],
+  help: ["help"],
+  prepare: ["prepare"],
+  objects: ["prepare"],
+  preview: ["preview"],
+  running: ["running"],
+  searching: ["searching"],
+  brush: ["brush"],
+  find: ["prepare", "preview", "gcode"],
+  model: ["model"],
+  "model-any": ["model", "sketch"],
+  sketch: ["sketch"],
+  "sketch-feature": ["sketch"],
+  "sketch-draw": ["sketch"],
+  "sketch-loft": ["sketch"],
+  workspace: ["prepare", "preview", "gcode", "model"],
+};
+
+export function screensOf(command: CommandSpec): readonly string[] {
+  const when = command.when ?? "always";
+  return typeof when === "string" ? SCOPE_SCREENS[when] : when;
+}
+
+/** Keyed commands for the sheet, grouped in registry order. A chord that another sheet row shares carries its context. */
 export function helpGroups(commands: CommandSpec[] = COMMANDS): HelpGroup[] {
+  const shown = commands.filter((command) => command.keys && command.show !== "none");
+  const users = new Map<string, number>();
+  for (const command of shown) for (const chord of new Set(command.keys)) users.set(chord, (users.get(chord) ?? 0) + 1);
   const groups: HelpGroup[] = [];
-  for (const command of commands) {
-    if (!command.keys || command.show === "none") continue;
+  for (const command of shown) {
     let group = groups.find((g) => g.group === command.group);
     if (!group) {
       group = { group: command.group, entries: [] };
       groups.push(group);
     }
-    group.entries.push({ keys: command.keys, label: command.label });
+    const keys = command.keys!;
+    const shared = keys.some((chord) => (users.get(chord) ?? 0) > 1);
+    group.entries.push({
+      id: command.id,
+      keys,
+      label: command.label,
+      ...(shared ? { context: contextOf(command) } : {}),
+      keywords: `${keys.join(" ")} ${command.keywords ?? ""}`.trim(),
+    });
   }
   return groups;
+}
+
+/** Every group on the sheet: the keyed commands (palette-listed or help-only) and the mouse gestures, all searchable. */
+export function sheetGroups(commands: CommandSpec[] = COMMANDS): HelpGroup[] {
+  return [
+    ...helpGroups(commands),
+    { group: "Mouse", entries: MOUSE_HINTS.map((hint, index) => ({ id: `mouse-${index}`, keys: [hint.gesture], label: hint.label, keywords: `${hint.gesture} mouse` })) },
+  ];
+}
+
+/** The sheet groups that hold this workspace's keys: the ones that open by themselves. */
+export function groupsForStage(stage: StageName, sketchOpen = false): string[] {
+  if (stage === "prepare") return ["Plate", "Tools"];
+  if (stage === "preview") return ["Layers"];
+  if (stage === "gcode") return ["Slice"];
+  return sketchOpen ? ["Sketch"] : ["Model"];
+}
+
+/** The sheet's search: the palette's matching over each row's label, chords and group. A blank query keeps every group. */
+export function filterHelp(groups: HelpGroup[], query: string): HelpGroup[] {
+  if (!query.trim()) return groups;
+  const words = query.trim().toLowerCase().split(/\s+/);
+  const out: HelpGroup[] = [];
+  for (const group of groups) {
+    // The palette ranks; a row also has to hold every typed word whole, so a long mouse hint is not a scattered match.
+    const rows = rankCommands(group.entries.map((entry) => ({ ...entry, group: group.group })), query).filter((row) => {
+      const text = `${row.label} ${row.keywords} ${group.group}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
+    if (rows.length) out.push({ group: group.group, entries: rows.map((row) => ({ id: row.id, keys: row.keys, label: row.label, context: row.context, keywords: row.keywords })) });
+  }
+  return out;
 }
 
 /** The keyed command a button stands for, found through `target`. */

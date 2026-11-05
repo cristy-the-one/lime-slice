@@ -109,25 +109,38 @@ export function saveInto(library: ProfileLibrary, name: string, settings: Preset
   };
 }
 
+/**
+ * Why a profile cannot take this name, or null: the name sheet checks it as the person types. `renaming` is the id of
+ * the profile being renamed, which may not take another profile's name; a new save may, and replaces that profile.
+ */
+export function profileNameProblem(library: ProfileLibrary, name: string, renaming?: string): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "Name the profile first.";
+  if (renaming !== undefined && library.profiles.some((profile) => profile.id !== renaming && profile.name === trimmed)) return `A profile named ${trimmed} already exists.`;
+  return null;
+}
+
 export function renameIn(library: ProfileLibrary, id: string, name: string): ProfileLibrary | string {
   const trimmed = name.trim();
   if (!trimmed) return "Name the profile first.";
   if (!library.profiles.some((profile) => profile.id === id)) return "That profile is no longer saved.";
-  if (library.profiles.some((profile) => profile.id !== id && profile.name === trimmed)) return `A profile named ${trimmed} already exists.`;
+  const problem = profileNameProblem(library, trimmed, id);
+  if (problem) return problem;
   return {
     ...library,
     profiles: library.profiles.map((profile) => profile.id === id ? { ...profile, name: trimmed } : profile),
   };
 }
 
-export function duplicateIn(library: ProfileLibrary, id: string, newId: string): ProfileLibrary | string {
+/** Copy a profile and select the copy. A typed `name` names it (a taken name gets " 2"); with none it is "<name> copy". */
+export function duplicateIn(library: ProfileLibrary, id: string, newId: string, name = ""): ProfileLibrary | string {
   const source = library.profiles.find((profile) => profile.id === id);
   if (!source) return "That profile is no longer saved.";
-  const name = copyName(library, source.name);
+  const copy = name.trim() ? uniqueName(library, name.trim()) : copyName(library, source.name);
   return {
     version: 1,
     activeId: newId,
-    profiles: [...library.profiles, { id: newId, name, settings: cloneSettings(source.settings), level: source.level }],
+    profiles: [...library.profiles, { id: newId, name: copy, settings: cloneSettings(source.settings), level: source.level }],
   };
 }
 

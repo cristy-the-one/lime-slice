@@ -5,6 +5,7 @@ import { setSettleOn } from "../bed-rest-pref";
 import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, removePlateObject, selectPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
+import { setHtml } from "../ui/html";
 import { isAlignRelation } from "../place-snap";
 import { commonVolume, requestModelCheck } from "./model";
 import { measureClashes } from "./assemblies.ts";
@@ -70,6 +71,7 @@ import {
   chooseMachine,
   deleteMachine,
   duplicateMachine,
+  newMachinePrinter,
   machineExportFile,
   importMachineFile,
   saveMachine,
@@ -126,7 +128,7 @@ export function wireApp() {
         alignPick.to = value;
         (target as HTMLSelectElement).title = (target as HTMLSelectElement).selectedOptions[0]?.title || "Bed";
         const how = document.querySelector<HTMLSelectElement>("#alignHow");
-        if (how) how.innerHTML = alignHowHtml();
+        if (how) setHtml(how, alignHowHtml());
         if (how && isAlignRelation(how.value)) alignPick.how = how.value;
         fx.prepare.markAlignTarget(value === "bed" ? null : value);
       } else if (isAlignRelation(value)) {
@@ -231,8 +233,10 @@ export function wireApp() {
         pushToast("Choose a profile first.", "info");
         return;
       }
-      const name = askProfileName("");
-      if (name) renameSettingsProfile(id, name);
+      const current = document.querySelector<HTMLSelectElement>("#profilePick")?.selectedOptions[0]?.textContent ?? "";
+      void askProfileName(current === "Current" ? "" : current, id).then((name) => {
+        if (name) renameSettingsProfile(id, name);
+      });
       return;
     }
     if (t.id === "profileDuplicate") {
@@ -466,14 +470,43 @@ export function wireApp() {
     const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
     chooseMachine(printerId, filamentId, nozzleMm);
   });
+  const createPrinter = () => {
+    const input = document.querySelector<HTMLInputElement>("#newPrinterName");
+    if (!newMachinePrinter(input?.value ?? "")) {
+      input?.focus();
+      return;
+    }
+    const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
+    if (chip) chip.open = false;
+    revealPrinterDetails();
+  };
   document.addEventListener("click", (ev) => {
-    if (!(ev.target as HTMLElement).closest("#editPrinter")) return;
+    const target = ev.target as HTMLElement;
+    if (target.closest("#newPrinter")) {
+      const row = document.querySelector<HTMLElement>("#newPrinterRow");
+      if (!row) return;
+      row.hidden = !row.hidden;
+      document.querySelector("#newPrinter")?.setAttribute("aria-expanded", String(!row.hidden));
+      if (!row.hidden) document.querySelector<HTMLInputElement>("#newPrinterName")?.focus();
+      return;
+    }
+    if (target.closest("#newPrinterCreate")) {
+      createPrinter();
+      return;
+    }
+    if (!target.closest("#editPrinter")) return;
     const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
     if (chip) chip.open = false;
     revealPrinterDetails();
   });
   document.querySelector("#timing")!.addEventListener("click", () => toggleDock("right"));
   // A menu stays open until a click lands outside it, as its own summary toggles it.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && (ev.target as HTMLElement).id === "newPrinterName") {
+      ev.preventDefault();
+      createPrinter();
+    }
+  });
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target as Element | null;
     document.querySelectorAll<HTMLDetailsElement>("details.menu[open]").forEach((menu) => {

@@ -38,6 +38,7 @@ import {
   targetPrinter,
   targetPrinters,
   type MachineNumbers,
+  newPrinterFrom,
 } from "./machine-library.ts";
 import { defaultBelt } from "../belt.ts";
 
@@ -182,6 +183,30 @@ check("save writes the active printer", typeof saved !== "string" && selection(s
 
 const copied = typeof saved === "string" ? library : duplicateActive(saved, "p2", "f2");
 check("duplicate adds a user copy", typeof copied !== "string" && copied.printerId === "p2" && selection(copied)?.printer.name === "Shop copy" && selection(copied)?.printer.builtin === false);
+const typedDup = typeof saved === "string" ? library : duplicateActive(saved, "p3", "f3", "  Elegoo Centauri ");
+check("duplicate takes the typed name, trimmed", typeof typedDup !== "string" && selection(typedDup)?.printer.name === "Elegoo Centauri" && selection(typedDup)?.printer.bedX === 260);
+const clashDup = typeof saved === "string" ? library : duplicateActive(saved, "p4", "f4", "Shop");
+check("a typed duplicate name that is taken gets a number", typeof clashDup !== "string" && selection(clashDup)?.printer.name === "Shop 2");
+const blankDup = typeof saved === "string" ? library : duplicateActive(saved, "p5", "f5", "  ");
+check("a blank duplicate name falls back to copy", typeof blankDup !== "string" && selection(blankDup)?.printer.name === "Shop copy");
+
+const fresh = newPrinterFrom(library, "Elegoo Centauri", "cen");
+check(
+  "a new printer is added, selected and user-owned",
+  typeof fresh !== "string" && fresh.library.printerId === "cen" && fresh.name === "Elegoo Centauri" && !fresh.flattened && selection(fresh.library)?.printer.builtin === false && library.printers.length === fresh.library.printers.length - 1,
+);
+check("a new printer starts from the active flat-bed printer", typeof fresh !== "string" && fresh.from === "Lime 220" && selection(fresh.library)?.printer.bedX === 220 && selection(fresh.library)?.filament.id === library.filamentId);
+check("a new printer needs a name", newPrinterFrom(library, "  ", "x") === "Name the printer first.");
+const clashNew = newPrinterFrom(library, "Lime 220", "dup");
+check("a new printer name that is taken gets a number", typeof clashNew !== "string" && clashNew.name === "Lime 220 2");
+const onBeltLib = selectIn(library, "generic-belt-45", "lime-pla", 0.4);
+const fromBelt = typeof onBeltLib === "string" ? onBeltLib : newPrinterFrom(onBeltLib, "Elegoo Centauri", "cen2");
+check(
+  "a new printer from a belt starts from the first flat-bed printer",
+  typeof fromBelt !== "string" && fromBelt.flattened && fromBelt.from === "Lime 220" && selection(fromBelt.library)?.printer.kind === "cartesian",
+);
+const keyed = typeof saved === "string" ? "no" : newPrinterFrom(saved, "Keyless", "k");
+check("a new printer does not copy the host", typeof keyed !== "string" && selection(keyed.library)?.printer.host === "" && selection(keyed.library)?.printer.apiKey === "");
 check("a built-in pair cannot be deleted", deleteActive(library) === "Built-in profiles stay in the catalog. Duplicate one to change the copy.");
 const removed = typeof copied === "string" ? library : deleteActive(copied);
 check("delete drops the copy", typeof copied !== "string" && removed !== copied && typeof removed !== "string" && removed.printers.every((printer) => printer.id !== "p2"));

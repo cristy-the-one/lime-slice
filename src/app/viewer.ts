@@ -9,12 +9,13 @@ import { setPlateThumbnailCapture } from "./thumb-capture";
 import { FEATURE_LABEL, colorForPath, colorForReading, readsStress } from "../colors";
 import { cellPieces, onStressCells, STRESS_NEEDS_RESULT, stressCellsFor, type StressCells } from "../sim/stress-cells";
 import { legendMarkup } from "../ui/legend";
+import { html, setHtml } from "../ui/html";
 import { formatDuration } from "../format";
 import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { renderChrome, escapeHtml, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows, earlyOnScreen } from "./settings";
+import { renderChrome, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows, earlyOnScreen } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
 import { beginEdit, beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
 import { paintGrabHint } from "./grab-hint";
@@ -136,11 +137,11 @@ function paintLayerActions(max: number) {
     const z0 = layers[0]?.z ?? 0;
     const z1 = layers.length > 1 ? layers[layers.length - 1].z : z0 + 1;
     const span = Math.max(0.2, z1 - z0);
-    pins.innerHTML = state.layerActions.map((action) => {
+    setHtml(pins, html`${state.layerActions.map((action) => {
       const frac = 1 - Math.min(1, Math.max(0, (action.zMm - z0) / span));
       const kind = action.kind === "filamentChange" ? "is-filament" : "is-pause";
-      return `<i class="layer-pin ${kind}" style="top:${(frac * 100).toFixed(2)}%"></i>`;
-    }).join("");
+      return html`<i class="layer-pin ${kind}" style="top:${(frac * 100).toFixed(2)}%"></i>`;
+    })}`);
   }
 }
 
@@ -156,15 +157,15 @@ function paintRangeBands() {
   const layers = state.result?.layers;
   const z0 = layers && layers.length > 0 ? layers[0].z : 0;
   const z1 = layers && layers.length > 1 ? layers[layers.length - 1].z : Math.max(state.profile.bedZ, z0 + 1);
-  const html = state.overrides.ranges.map((range) => {
+  const bands = html`${state.overrides.ranges.map((range) => {
     const box = bandFractions(range.zFrom, range.zTo, z0, z1);
-    return `<div class="range-band" style="top:${(box.top * 100).toFixed(2)}%;height:${(box.height * 100).toFixed(2)}%"></div>`;
-  }).join("");
+    return html`<div class="range-band" style="top:${(box.top * 100).toFixed(2)}%;height:${(box.height * 100).toFixed(2)}%"></div>`;
+  })}`;
   const slider = document.querySelector("#rangeBands");
   const viewport = document.querySelector("#viewportBands");
-  if (slider) slider.innerHTML = html;
+  if (slider) setHtml(slider, bands);
   if (viewport) {
-    viewport.innerHTML = html;
+    setHtml(viewport, bands);
     viewport.toggleAttribute("hidden", state.overrides.ranges.length === 0);
   }
 }
@@ -364,7 +365,7 @@ export function paintGcode() {
   const point = movesNow()[state.move];
   const active = matchGcodeLine(lines, onBed(point));
   // One text block and one bar: a div per line cost 50-90 ms of layout per layer step on a 5k-line layer.
-  pane.innerHTML = `<div class="gcode-mark" hidden></div><pre class="gcode-text">${escapeHtml(lines.map((line) => line.text).join("\n"))}</pre>`;
+  setHtml(pane, html`<div class="gcode-mark" hidden></div><pre class="gcode-text">${lines.map((line) => line.text).join("\n")}</pre>`);
   markGcodeLine(pane as HTMLElement, active, "center");
 }
 
@@ -447,7 +448,7 @@ export function paintSpark() {
 
 export function stopPlay() {
   state.playing = false;
-  window.clearInterval(session.playTimer);
+  window.cancelAnimationFrame(session.playTimer);
   const play = document.querySelector<HTMLButtonElement>("#play");
   if (play) {
     play.textContent = "Play";
@@ -466,18 +467,30 @@ export function togglePlay() {
   if (state.move >= moves.length - 1) state.move = 0;
   state.playing = true;
   paintPlayback();
-  session.playTimer = window.setInterval(() => {
-    const n = movesNow().length;
-    if (state.move >= n - 1) {
-      stopPlay();
+  // One move per 40 ms as before, driven by animation frames so it stops while the window is hidden.
+  let last = performance.now();
+  let owed = 0;
+  const frame = (now: number) => {
+    if (!state.playing) return;
+    owed = Math.min(owed + (now - last), 200);
+    last = now;
+    const steps = Math.floor(owed / 40);
+    if (steps > 0) {
+      owed -= steps * 40;
+      const n = movesNow().length;
+      if (state.move >= n - 1) {
+        stopPlay();
+        paintPlayback();
+        return;
+      }
+      state.move = Math.min(n - 1, state.move + steps);
       paintPlayback();
-      return;
+      syncGcodeHighlight();
+      draw();
     }
-    state.move += 1;
-    paintPlayback();
-    syncGcodeHighlight();
-    draw();
-  }, 40);
+    session.playTimer = window.requestAnimationFrame(frame);
+  };
+  session.playTimer = window.requestAnimationFrame(frame);
 }
 
 export function scrub(next: number) {
@@ -589,7 +602,10 @@ export function setHelp(open: boolean) {
   state.help = open;
   const sheet = document.querySelector<HTMLElement>("#help")!;
   sheet.hidden = !open;
-  if (open) document.querySelector<HTMLButtonElement>("#helpClose")?.focus();
+  // The sheet resets to this workspace's groups and puts the cursor in its search box.
+  if (open) document.dispatchEvent(new CustomEvent("lime-help-opened"));
+  // A hidden search box must not keep the keyboard, or the next ? would be typed into it.
+  else if (sheet.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
 }
 
 /** By region is one plane across the plate: every object's box together, or the placed part's alone. */

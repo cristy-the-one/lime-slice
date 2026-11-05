@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { decodePaths, type PathColumns } from "../src/preview-wire";
@@ -75,7 +76,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await expect(page.locator("#help")).toBeVisible();
   await shot(page, "p1-shortcuts.png");
   await page.keyboard.press("Escape");
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   const dropped = fs.readFileSync(path.resolve("samples/calibration_cube_20mm.stl")).toString("base64");
   await page.evaluate(async (b64) => {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -143,7 +144,7 @@ test("ui states from real slice fixtures", async ({ page }) => {
   await page.getByRole("button", { name: /^Speed/ }).click();
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.getByRole("button", { name: "60 mm hull" }).click();
   // Loading a sample sends the app back to Prepare; under load that lands after a fast Preview click.
   await page.waitForTimeout(1500);

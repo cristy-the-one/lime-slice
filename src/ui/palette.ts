@@ -29,7 +29,8 @@ import { scrub, setStage, setView } from "../app/viewer";
 import { applyViewPreset } from "./viewport";
 import { pickModelFile } from "../platform";
 import { nudgeBrushRadius } from "./brush-radius";
-import { chordMatches, COMMANDS, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, shortcutOf, type CommandSpec } from "./commands";
+import { chordMatches, COMMANDS, filterHelp, groupsForStage, paletteCommands, rankCommands, shortcutOf, sheetGroups, type CommandSpec, type HelpGroup } from "./commands";
+import { loadRecent, pushRecent, withRecents } from "./palette-recent";
 import { toggleDock } from "./splitters";
 import { pushToast } from "./toasts";
 import "./phase2.css";
@@ -80,6 +81,7 @@ export function mountPalette() {
   const closeBtn = root.querySelector<HTMLButtonElement>("#paletteClose")!;
   let active = 0;
   let shown: CommandSpec[] = [];
+  let recentShown = 0;
   let restore: HTMLElement | null = null;
 
   function open() {
@@ -104,7 +106,16 @@ export function mountPalette() {
   }
 
   function render(query: string) {
-    shown = rankCommands(paletteCommands(), query).slice(0, MAX_ROWS);
+    // The palette's own row is not offered while it is open. With nothing typed, the last five commands lead.
+    const offered = paletteCommands().filter((command) => command.id !== "palette");
+    if (query.trim()) {
+      shown = rankCommands(offered, query).slice(0, MAX_ROWS);
+      recentShown = 0;
+    } else {
+      const { top, rest } = withRecents(offered, loadRecent());
+      shown = [...top, ...rest].slice(0, MAX_ROWS);
+      recentShown = top.length;
+    }
     active = 0;
     if (shown.length === 0) {
       list.innerHTML = `<li class="palette-empty" role="presentation">No matching commands</li>`;
@@ -114,7 +125,7 @@ export function mountPalette() {
     list.innerHTML = shown.map((command, index) => {
       const key = shortcutOf(command);
       const hint = key ? `<kbd>${escapeHtml(key)}</kbd>` : "";
-      return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"><span>${escapeHtml(command.label)}<small>${escapeHtml(command.group)}</small></span>${hint}</li>`;
+      return `<li id="paletteOpt${index}" role="option" aria-selected="${index === 0 ? "true" : "false"}" data-id="${command.id}"><span>${escapeHtml(command.label)}<small>${index < recentShown ? "Recent, " : ""}${escapeHtml(command.group)}</small></span>${hint}</li>`;
     }).join("");
     input.setAttribute("aria-activedescendant", "paletteOpt0");
   }
@@ -133,6 +144,7 @@ export function mountPalette() {
     const command = shown[active];
     if (!command) return;
     close();
+    pushRecent(command.id);
     runCommand(command.id);
   }
 
@@ -224,15 +236,50 @@ export function mountPalette() {
   }, true);
 }
 
-/** The whole shortcut sheet body, from the registry and the mouse gestures. */
+/**
+ * The shortcut sheet, from the registry and the mouse gestures. A group is a folded section; only this workspace's
+ * groups start open. The search box filters rows with the palette's matching and opens every group that has a hit.
+ */
 export function fillHelpShortcuts(host: HTMLElement) {
-  const section = (title: string, rows: { keys: string[]; label: string }[]) => {
-    const items = rows.map((row) => `<li><span class="help-keys">${row.keys.map((key) => `<kbd>${escapeHtml(key)}</kbd>`).join(" ")}</span><span>${escapeHtml(row.label)}</span></li>`);
-    return `<section class="help-group"><h3>${escapeHtml(title)}</h3><ul>${items.join("")}</ul></section>`;
+  const search = document.querySelector<HTMLInputElement>("#helpSearch");
+  const everything: HelpGroup[] = sheetGroups();
+  const open = new Set<string>();
+
+  const section = (group: HelpGroup, isOpen: boolean) => {
+    const rows = group.entries.map((entry) => {
+      const context = entry.context && entry.context !== group.group ? ` <small class="help-ctx">${escapeHtml(entry.context)}</small>` : "";
+      return `<li><span class="help-keys">${entry.keys.map((key) => `<kbd>${escapeHtml(key)}</kbd>`).join(" ")}</span><span class="help-what"><span class="help-label">${escapeHtml(entry.label)}</span>${context}</span></li>`;
+    });
+    return `<details class="help-group" data-group="${escapeHtml(group.group)}"${isOpen ? " open" : ""}><summary><h3>${escapeHtml(group.group)}</h3><span class="help-count">${group.entries.length}</span></summary><ul>${rows.join("")}</ul></details>`;
   };
-  const keys = helpGroups().map((group) => section(group.group, group.entries));
-  const mouse = section("Mouse", MOUSE_HINTS.map((hint) => ({ keys: [hint.gesture], label: hint.label })));
-  host.innerHTML = keys.join("") + mouse;
+
+  const paint = () => {
+    const query = search?.value ?? "";
+    const searching = query.trim() !== "";
+    const groups = filterHelp(everything, query);
+    host.innerHTML = groups.length
+      ? groups.map((group) => section(group, searching || open.has(group.group))).join("")
+      : `<p class="help-empty">No shortcut matches "${escapeHtml(query.trim())}".</p>`;
+  };
+
+  host.addEventListener("click", (ev) => {
+    const summary = (ev.target as Element | null)?.closest("summary");
+    const group = summary?.parentElement;
+    if (!(group instanceof HTMLDetailsElement) || !group.dataset.group || (search?.value.trim() ?? "") !== "") return;
+    // The browser flips `open` after this handler, so the old value says which way it is going.
+    if (group.open) open.delete(group.dataset.group);
+    else open.add(group.dataset.group);
+  });
+  search?.addEventListener("input", paint);
+  document.addEventListener("lime-help-opened", () => {
+    if (search) search.value = "";
+    open.clear();
+    const sketchPhase = document.querySelector("#model")?.getAttribute("data-sketch");
+    for (const name of groupsForStage(state.stage, state.stage === "model" && (sketchPhase === "editing" || sketchPhase === "choosing"))) open.add(name);
+    paint();
+    search?.focus();
+  });
+  paint();
 }
 
 function escapeHtml(text: string) {
@@ -285,6 +332,7 @@ export function runCommand(id: string) {
       document.dispatchEvent(new CustomEvent("lime-open-help"));
       return;
     case "help-close":
+    case "help-close-key":
       click("#helpClose");
       return;
     case "new-project":
@@ -449,8 +497,9 @@ export function runCommand(id: string) {
       if (typed) saveSettingsProfile(typed);
       else if (selectedProfileId()) overwriteSettingsProfile(selectedProfileId());
       else {
-        const name = askProfileName("");
-        if (name) saveSettingsProfile(name);
+        void askProfileName("").then((name) => {
+          if (name) saveSettingsProfile(name);
+        });
       }
       return;
     }
@@ -461,8 +510,9 @@ export function runCommand(id: string) {
         return;
       }
       const current = document.querySelector<HTMLSelectElement>("#profilePick")?.selectedOptions[0]?.textContent ?? "";
-      const name = askProfileName(current === "Current" ? "" : current);
-      if (name) renameSettingsProfile(id, name);
+      void askProfileName(current === "Current" ? "" : current, id).then((name) => {
+        if (name) renameSettingsProfile(id, name);
+      });
       return;
     }
     case "profile-duplicate": {
