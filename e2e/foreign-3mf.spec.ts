@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
@@ -41,6 +42,7 @@ function zipNamed(name: string): Buffer {
 
 async function quiet(page: Page) {
   page.on("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] } }));
 }

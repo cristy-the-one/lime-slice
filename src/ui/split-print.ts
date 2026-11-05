@@ -20,6 +20,7 @@ import { chainFromSketch, chainSummary, readChain, sketchFromChain, type Chain }
 import { emptySketch, type SketchData } from "../sketch/model.ts";
 import { planeOf } from "../sketch/frame.ts";
 import { pushToast } from "./toasts";
+import { html, setHtml, type Html } from "./html";
 
 const CARD_ID = "split-print";
 
@@ -169,7 +170,7 @@ export function mountSplitPrint(next: SplitPrintHost) {
   document.addEventListener("click", (ev) => {
     if (ev.target instanceof Element && ev.target.closest("#modelMenuSplitPrint")) openSplitPrint();
   });
-  body.innerHTML = `
+  setHtml(body, html`
     <div class="sp-done" id="modelPartDone" role="status" hidden>
       <p class="sp-done-head" id="modelPartDoneHead"></p>
       <ol class="sp-pieces" id="modelPartDonePieces" aria-label="Pieces left in Model"></ol>
@@ -274,7 +275,7 @@ export function mountSplitPrint(next: SplitPrintHost) {
     <label class="model-keep" data-tip="Each piece gets its number cut into a cut face."><input id="modelPartNumbers" type="checkbox" checked> Part numbers</label>
     <p class="model-note" id="modelPartNumbersNote">The number is cut into the part, so renaming the object does not change it.</p>
     <p class="model-note" id="modelPartNumberNotes" role="status" hidden></p>
-    </div>`;
+    </div>`);
   document.querySelector("#modelPartExport")?.addEventListener("click", () => host?.exportPieces());
   body.addEventListener("click", onClick);
   body.addEventListener("input", onInput);
@@ -303,14 +304,13 @@ export function mountSplitPrint(next: SplitPrintHost) {
 const FIT_WORDS: Record<Clearance, string> = { snug: "Snug", loose: "Loose", press: "Press" };
 
 /** Enter coupon results…: pick the row, then for each fit the label of the step that fitted (plan section 28). */
-function resultsMarkup(): string {
-  const rows = FIT_ROWS.map((row) => `<option value="${row.key}">${row.name}</option>`).join("");
+function resultsMarkup(): Html {
+  const rows = FIT_ROWS.map((row) => html`<option value="${row.key}">${row.name}</option>`);
   const fits = FIT_NAMES.map(
     (fit) =>
-      `<label class="sp-print"><span class="scrub-label">${FIT_WORDS[fit]}</span><select id="modelPartResult-${fit}" data-result="${fit}" aria-label="${FIT_WORDS[fit]}: the coupon step that fitted"></select></label>` +
-      `<label class="sp-print" id="modelPartResultOther-${fit}" hidden><span class="scrub-label">Label</span><input id="modelPartResultValue-${fit}" data-result-value="${fit}" type="number" step="0.01" min="0" max="2" aria-label="${FIT_WORDS[fit]}, the label each side, millimetres"></label>`,
-  ).join("");
-  return `<div class="sp-results" id="modelPartResults" hidden>
+      html`<label class="sp-print"><span class="scrub-label">${FIT_WORDS[fit]}</span><select id="modelPartResult-${fit}" data-result="${fit}" aria-label="${FIT_WORDS[fit]}: the coupon step that fitted"></select></label><label class="sp-print" id="modelPartResultOther-${fit}" hidden><span class="scrub-label">Label</span><input id="modelPartResultValue-${fit}" data-result-value="${fit}" type="number" step="0.01" min="0" max="2" aria-label="${FIT_WORDS[fit]}, the label each side, millimetres"></label>`,
+  );
+  return html`<div class="sp-results" id="modelPartResults" hidden>
           <label class="sp-print"><span class="scrub-label">Material</span><select id="modelPartResultsRow" aria-label="Material and process of the coupon">${rows}</select></label>
           <p class="model-note">For each fit, pick the label under the hole the pin pushed into by hand and stayed in.</p>
           ${fits}
@@ -423,9 +423,9 @@ function resetResults() {
   paintJoints();
 }
 
-function howMarkup(): string {
-  const steps = SPLIT_PRINT_STEPS.map((step) => `<li>${step}</li>`).join("");
-  return `<div class="sketch-how sp-how"><button class="btn sketch-how-open" id="modelPartHowOpen" type="button" aria-label="How" aria-expanded="false" aria-controls="modelPartHow">?</button><div class="sketch-how-pop" id="modelPartHow" role="dialog" aria-label="How" hidden><ol>${steps}</ol></div></div>`;
+function howMarkup(): Html {
+  const steps = SPLIT_PRINT_STEPS.map((step) => html`<li>${step}</li>`);
+  return html`<div class="sketch-how sp-how"><button class="btn sketch-how-open" id="modelPartHowOpen" type="button" aria-label="How" aria-expanded="false" aria-controls="modelPartHow">?</button><div class="sketch-how-pop" id="modelPartHow" role="dialog" aria-label="How" hidden><ol>${steps}</ol></div></div>`;
 }
 
 /** The Features menu's Split to print…: the card opens on the solid on screen, with the planner's cuts when it does not fit. */
