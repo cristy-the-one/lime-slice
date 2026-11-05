@@ -119,6 +119,11 @@ enum Cmd {
         /// Brim under every support where it stands on the bed or the belt, mm.
         #[arg(long)]
         support_brim: Option<f64>,
+        /// On a belt, an anchor line across the belt at the first and last
+        /// support foot and every this many mm along the belt between them.
+        /// Omitted prints none.
+        #[arg(long)]
+        support_belt_anchors: Option<f64>,
         /// Sparse support shaft height multiplier. `1` keeps the model layer height.
         #[arg(long, default_value_t = 1.0)]
         support_height_mult: f64,
@@ -408,6 +413,7 @@ fn run() -> Result<(), String> {
             support_gentle_speed,
             support_gentle_accel,
             support_brim,
+            support_belt_anchors,
             support_height_mult,
             infill_combine,
             shallow_skins,
@@ -499,6 +505,8 @@ fn run() -> Result<(), String> {
                 support_tree_brim_mm: support_brim
                     .filter(|v| !classic && v.is_finite() && *v > 1e-6)
                     .map(|v| v.min(20.0)),
+                support_belt_anchor_mm: support_belt_anchors
+                    .filter(|v| !classic && v.is_finite() && *v > 0.0),
                 support_height_mult,
                 infill_combine,
                 shallow_skins,
@@ -1912,6 +1920,7 @@ fn request_for(
         support_xy_gap_mm: settings.support_xy_gap_mm,
         support_interface_layers: settings.support_interface_layers,
         support_tree_brim_mm: settings.support_tree_brim_mm,
+        support_belt_anchor_mm: settings.support_belt_anchor_mm,
         bridge_flow_ratio: settings.bridge_flow_ratio,
         bridge_speed_mm_s: settings.bridge_speed_mm_s,
         bridge_fan_percent: settings.bridge_fan_percent,

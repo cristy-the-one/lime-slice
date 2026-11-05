@@ -244,6 +244,12 @@ pub struct SliceRequest {
     /// when only tree trunks had one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_tree_brim_mm: Option<f64>,
+    /// On a belt, anchor lines across the belt where supports stand on it:
+    /// one support line along X at the first and last support foot and every
+    /// this many millimetres along the belt between them. Omitted prints none;
+    /// a flat bed never prints them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_belt_anchor_mm: Option<f64>,
     /// Multiplier on a bridge bead. Omitted keeps 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_flow_ratio: Option<f64>,
@@ -536,6 +542,8 @@ pub struct SliceSettings {
     pub support_interface_layers: Option<u32>,
     /// `None` prints no brim under the supports.
     pub support_tree_brim_mm: Option<f64>,
+    /// Spacing along the belt of the support anchor lines. `None` prints none.
+    pub support_belt_anchor_mm: Option<f64>,
     /// `None` keeps bridge flow at 1.
     pub bridge_flow_ratio: Option<f64>,
     /// `None` keeps the 18–36 mm/s bridge slowdown.
@@ -653,6 +661,7 @@ impl Default for SliceSettings {
             support_xy_gap_mm: None,
             support_interface_layers: None,
             support_tree_brim_mm: None,
+            support_belt_anchor_mm: None,
             bridge_flow_ratio: None,
             bridge_speed_mm_s: None,
             bridge_fan_percent: None,
@@ -822,6 +831,11 @@ impl SliceSettings {
             },
             support_tree_brim_mm: support_gap(req.classic, req.support_tree_brim_mm, 20.0)
                 .filter(|mm| *mm > 1e-6),
+            support_belt_anchor_mm: req
+                .support_belt_anchor_mm
+                // Only a belt has a belt to anchor to.
+                .filter(|mm| !req.classic && req.belt.is_some() && mm.is_finite() && *mm > 0.0)
+                .map(|mm| mm.clamp(BELT_ANCHOR_MIN_MM, BELT_ANCHOR_MAX_MM)),
             bridge_flow_ratio: bridge_flow(req.classic, req.bridge_flow_ratio),
             bridge_speed_mm_s: bridge_speed(req.classic, req.bridge_speed_mm_s),
             bridge_fan_percent: bridge_fan(req.classic, req.bridge_fan_percent),
@@ -957,8 +971,12 @@ impl SliceSettings {
                 Some(mm) => format!(", brim {mm:.1} mm"),
                 None => String::new(),
             };
+            let anchors = match self.support_belt_anchor_mm {
+                Some(mm) => format!(", belt anchors every {mm:.0} mm"),
+                None => String::new(),
+            };
             format!(
-                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim})",
+                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim}{anchors})",
                 self.support_height_mult.max(1.0)
             )
         } else {
@@ -2056,6 +2074,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_xy_gap_mm = None;
         settings.support_interface_layers = None;
         settings.support_tree_brim_mm = None;
+        settings.support_belt_anchor_mm = None;
         settings.bridge_flow_ratio = None;
         settings.bridge_speed_mm_s = None;
         settings.bridge_fan_percent = None;
@@ -5085,9 +5104,11 @@ impl SupportPlan {
         }
         let layers = &self.supports.layers;
         let shaft = shaft_scales(layers, settings.support_height_mult);
-        // A belt brim reaches across layers, so an edit can move the brim of
-        // layers it did not touch.
-        let across = self.supports.floor().is_some() && settings.support_tree_brim_mm.is_some();
+        // A belt brim and the belt anchors reach across layers, so an edit can
+        // move the brim or an anchor of layers it did not touch.
+        let across = self.supports.floor().is_some()
+            && (settings.support_tree_brim_mm.is_some()
+                || settings.support_belt_anchor_mm.is_some());
         let mut repaint: Vec<usize> = (0..shaft.len())
             .filter(|&i| across || shaft[i] != self.shaft[i])
             .chain(changed.iter().copied())
@@ -5909,9 +5930,9 @@ fn paint(
     let layers = &supports.layers;
     // A belt foot spreads as wide as a trunk, as a trunk on the bed does.
     let spread = 0.5 * settings.trunk_diameter.max(settings.tip_diameter + 0.6) * 0.95;
-    let brims = match floor {
-        Some(floor) => belt_brims(cut, supports, floor, settings, spread),
-        None => Vec::new(),
+    let (brims, anchors) = match floor {
+        Some(floor) => belt_lines(cut, supports, floor, settings, spread),
+        None => (Vec::new(), Vec::new()),
     };
     which
         .par_iter()
@@ -5935,6 +5956,7 @@ fn paint(
                 floor,
                 &feet,
                 brims.get(i).and_then(Option::as_ref),
+                anchors.get(i).and_then(Option::as_ref),
             );
             if count {
                 watch.tick();
@@ -7243,6 +7265,7 @@ fn support_paths(
     floor: Option<FloorPlane>,
     feet: &[Foot],
     belt_brim: Option<&BeltBrim>,
+    belt_anchor: Option<&BeltBrim>,
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
     let (disks, foot) = belt_trunks(&layer.disks, feet, floor, z, contours, settings);
@@ -7296,6 +7319,25 @@ fn support_paths(
             );
         }
     }
+    if let Some(anchor) = belt_anchor {
+        // The anchor crosses the support beads on its line, which ties the
+        // feet to it; a bead that runs along the anchor is left to itself.
+        let along: Vec<[f64; 2]> = paths
+            .iter()
+            .flat_map(|p| p.points.windows(2))
+            .filter(|w| w.iter().all(|q| (q[1] - anchor.y).abs() < line_width))
+            .map(|w| [w[0][0].min(w[1][0]), w[0][0].max(w[1][0])])
+            .collect();
+        let spans = subtract_spans(&anchor.spans, &merge_spans(along));
+        let strategy = match blend {
+            BlendMode::ByRegion { .. } => resolve(pure(StrategyId::Toughness), settings),
+            other => layer_strategy(other, z, settings),
+        };
+        // The anchor goes down first, so the layer's feet print onto a line
+        // already stuck to the belt.
+        let lines = plan_brim_lines(&spans, anchor.y, &strategy, line_width);
+        paths.splice(0..0, lines);
+    }
     if brim_mm > 1e-6 || belt_brim.is_some() {
         let strategy = match blend {
             BlendMode::ByRegion { .. } => resolve(pure(StrategyId::Toughness), settings),
@@ -7328,23 +7370,22 @@ pub(crate) struct BeltBrim {
     pub spans: Vec<[f64; 2]>,
 }
 
-/// The brim each belt layer lays beside the supports that stand on the belt.
-/// A layer meets the belt along one line; where its supports cross that line
-/// they stand on the belt, and those pieces over every layer are the support
-/// feet on the belt. The brim is the belt within the brim width of a foot,
-/// measured on the belt, less the feet and the part, so it widens a foot
-/// across the belt on its own layer and along the belt on the layers before
-/// and after it. Empty unless a brim is asked for.
-fn belt_brims(
+/// The belt brim and the belt anchor of each layer, both empty unless asked
+/// for. A layer meets the belt along one line; where its supports cross that
+/// line they stand on the belt, and those pieces over every layer are the
+/// support feet on the belt.
+fn belt_lines(
     cut: &Contours,
     supports: &Supports,
     floor: FloorPlane,
     settings: &SliceSettings,
     spread: f64,
-) -> Vec<Option<BeltBrim>> {
-    let Some(width) = settings.support_tree_brim_mm.filter(|_| settings.supports) else {
-        return Vec::new();
-    };
+) -> (Vec<Option<BeltBrim>>, Vec<Option<BeltBrim>>) {
+    if !settings.supports
+        || (settings.support_tree_brim_mm.is_none() && settings.support_belt_anchor_mm.is_none())
+    {
+        return (Vec::new(), Vec::new());
+    }
     let line_width = settings.line_width;
     let bands = &cut.bands;
     let ys: Vec<f64> = bands
@@ -7376,14 +7417,59 @@ fn belt_brims(
         })
         .collect();
     if feet.iter().all(Vec::is_empty) {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     // Slice Y between two belt lines, measured along the belt.
     let along = (1.0 + floor.tan_a().powi(2)).sqrt();
     let gap = settings
         .support_xy_gap_mm
         .unwrap_or_else(|| SupportOpts::default().xy_gap);
-    (0..bands.len())
+    // The part where it lies on each belt line, grown by the XY gap.
+    let part = |j: usize| -> Vec<[f64; 2]> {
+        line_spans(&cut.contours[j], ys[j])
+            .into_iter()
+            .map(|s| [s[0] - gap, s[1] + gap])
+            .collect()
+    };
+    let brims = match settings.support_tree_brim_mm {
+        Some(width) => belt_brims(&ys, &feet, along, width, &part),
+        None => Vec::new(),
+    };
+    let anchors = match settings.support_belt_anchor_mm {
+        Some(spacing) => {
+            let at: Vec<f64> = ys.iter().map(|y| y * along).collect();
+            let mut out = vec![None; bands.len()];
+            for j in belt_anchor_layers(&at, &feet, spacing) {
+                // The anchor runs through the sparse support and the trees
+                // standing on its line, but not over a dense interface.
+                let mut taken = part(j);
+                if let Some(layer) = supports.layers.get(j) {
+                    taken.extend(line_spans(&layer.interface, ys[j]));
+                }
+                if let Some(Some(brim)) = brims.get(j) {
+                    taken.extend(brim.spans.iter().copied());
+                }
+                out[j] = belt_anchor(ys[j], &feet[j], &merge_spans(taken));
+            }
+            out
+        }
+        None => Vec::new(),
+    };
+    (brims, anchors)
+}
+
+/// The brim each belt layer lays beside the supports that stand on the belt.
+/// The brim is the belt within the brim width of a foot, measured on the
+/// belt, less the feet and the part, so it widens a foot across the belt on
+/// its own layer and along the belt on the layers before and after it.
+fn belt_brims(
+    ys: &[f64],
+    feet: &[Vec<[f64; 2]>],
+    along: f64,
+    width: f64,
+    part: &(dyn Fn(usize) -> Vec<[f64; 2]> + Sync),
+) -> Vec<Option<BeltBrim>> {
+    (0..ys.len())
         .into_par_iter()
         .map(|j| {
             let mut spans = Vec::new();
@@ -7401,7 +7487,7 @@ fn belt_brims(
                     break;
                 }
             }
-            for k in j + 1..bands.len() {
+            for k in j + 1..ys.len() {
                 if !reach_from(k) {
                     break;
                 }
@@ -7410,15 +7496,60 @@ fn belt_brims(
                 return None;
             }
             let mut taken = feet[j].clone();
-            taken.extend(
-                line_spans(&cut.contours[j], ys[j])
-                    .into_iter()
-                    .map(|s| [s[0] - gap, s[1] + gap]),
-            );
+            taken.extend(part(j));
             let spans = subtract_spans(&merge_spans(spans), &merge_spans(taken));
             (!spans.is_empty()).then_some(BeltBrim { y: ys[j], spans })
         })
         .collect()
+}
+
+/// How far a belt anchor runs past the outermost support foot on its line, mm.
+pub(crate) const BELT_ANCHOR_REACH_MM: f64 = 5.0;
+/// The anchor spacing a request may ask for, mm along the belt.
+pub(crate) const BELT_ANCHOR_MIN_MM: f64 = 2.0;
+pub(crate) const BELT_ANCHOR_MAX_MM: f64 = 200.0;
+
+/// The layers that lay a belt anchor: the first support foot along the belt,
+/// then the next foot at least `spacing` further along it than the anchor
+/// before, and the last foot. `at` is each layer's place along the belt, mm.
+/// A layer with no foot lays none, so a stretch of belt where no support
+/// stands gets none.
+fn belt_anchor_layers(at: &[f64], feet: &[Vec<[f64; 2]>], spacing: f64) -> Vec<usize> {
+    let mut footed: Vec<usize> = (0..at.len())
+        .filter(|&i| feet.get(i).is_some_and(|f| !f.is_empty()))
+        .collect();
+    footed.sort_by(|&a, &b| at[a].total_cmp(&at[b]));
+    let (Some(&first), Some(&last)) = (footed.first(), footed.last()) else {
+        return Vec::new();
+    };
+    let mut out = vec![first];
+    let mut from = at[first];
+    for &i in &footed[1..] {
+        if at[i] - from >= spacing - 1e-6 {
+            out.push(i);
+            from = at[i];
+        }
+    }
+    if out.last() != Some(&last) {
+        out.push(last);
+    }
+    out
+}
+
+/// One belt anchor: the line at `y` from the leftmost support foot on it to
+/// the rightmost, [`BELT_ANCHOR_REACH_MM`] past each, less `taken` (the part
+/// grown by the XY gap, a dense interface, and a brim already there).
+fn belt_anchor(y: f64, feet: &[[f64; 2]], taken: &[[f64; 2]]) -> Option<BeltBrim> {
+    let lo = feet.iter().map(|s| s[0]).fold(f64::INFINITY, f64::min);
+    let hi = feet.iter().map(|s| s[1]).fold(f64::NEG_INFINITY, f64::max);
+    if lo > hi {
+        return None;
+    }
+    let spans = subtract_spans(
+        &[[lo - BELT_ANCHOR_REACH_MM, hi + BELT_ANCHOR_REACH_MM]],
+        taken,
+    );
+    (!spans.is_empty()).then_some(BeltBrim { y, spans })
 }
 
 /// Where the line at `y` runs inside `loops`, by even-odd crossings.
@@ -8078,6 +8209,120 @@ mod tests {
                 1.0
             ),
             vec![[0.0, 4.0], [10.0, 12.0]]
+        );
+    }
+
+    /// Layers 0.5 mm apart along the belt, with a foot on each layer `footed` names.
+    fn belt_rows(n: usize, footed: impl Fn(usize) -> bool) -> (Vec<f64>, Vec<Vec<[f64; 2]>>) {
+        let at = (0..n).map(|i| i as f64 * 0.5).collect();
+        let feet = (0..n)
+            .map(|i| {
+                if footed(i) {
+                    vec![[10.0, 12.0]]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        (at, feet)
+    }
+
+    #[test]
+    fn belt_anchors_lie_every_spacing_along_the_belt_and_at_both_ends() {
+        // Feet from 2 mm to 34.5 mm along the belt.
+        let (at, feet) = belt_rows(80, |i| (4..=69).contains(&i));
+        let layers = belt_anchor_layers(&at, &feet, 10.0);
+        let along: Vec<f64> = layers.iter().map(|&i| at[i]).collect();
+        assert_eq!(along, vec![2.0, 12.0, 22.0, 32.0, 34.5]);
+        // A wider spacing, and one wider than all the feet: first and last only.
+        let wide = belt_anchor_layers(&at, &feet, 15.0);
+        assert_eq!(
+            wide.iter().map(|&i| at[i]).collect::<Vec<_>>(),
+            vec![2.0, 17.0, 32.0, 34.5]
+        );
+        let ends = belt_anchor_layers(&at, &feet, 100.0);
+        assert_eq!(ends, vec![4, 69]);
+        // The last foot on a grid line is not laid twice.
+        let (at, feet) = belt_rows(80, |i| (0..=40).contains(&i));
+        assert_eq!(belt_anchor_layers(&at, &feet, 10.0), vec![0, 20, 40]);
+        // A single foot is the first and the last.
+        let (at, feet) = belt_rows(10, |i| i == 3);
+        assert_eq!(belt_anchor_layers(&at, &feet, 10.0), vec![3]);
+    }
+
+    #[test]
+    fn belt_anchors_skip_belt_where_no_support_stands() {
+        // Feet at 0–5 mm and again at 30–40 mm; the part lies on the belt between.
+        let (at, feet) = belt_rows(81, |i| i <= 10 || (60..=80).contains(&i));
+        let layers = belt_anchor_layers(&at, &feet, 10.0);
+        let along: Vec<f64> = layers.iter().map(|&i| at[i]).collect();
+        // The next anchor after 0 mm is the first foot past the bare stretch.
+        assert_eq!(along, vec![0.0, 30.0, 40.0]);
+        assert!(layers.iter().all(|&i| !feet[i].is_empty()));
+        // No foot on the belt: no anchor.
+        let (at, feet) = belt_rows(20, |_| false);
+        assert!(belt_anchor_layers(&at, &feet, 10.0).is_empty());
+    }
+
+    #[test]
+    fn a_belt_anchor_spans_the_feet_plus_five_mm_and_keeps_clear_of_the_part() {
+        let feet = [[10.0, 12.0], [40.0, 41.0]];
+        let anchor = belt_anchor(3.0, &feet, &feet).unwrap();
+        assert_eq!(anchor.y, 3.0);
+        assert_eq!(anchor.spans, vec![[5.0, 10.0], [12.0, 40.0], [41.0, 46.0]]);
+        // The part lies on this line from 20 to 30 mm; the gap is already on it.
+        let taken = merge_spans(vec![[10.0, 12.0], [40.0, 41.0], [19.45, 30.55]]);
+        let anchor = belt_anchor(3.0, &feet, &taken).unwrap();
+        assert_eq!(
+            anchor.spans,
+            vec![[5.0, 10.0], [12.0, 19.45], [30.55, 40.0], [41.0, 46.0]]
+        );
+        assert!(belt_anchor(3.0, &[], &[]).is_none());
+    }
+
+    #[test]
+    fn belt_anchors_are_asked_only_on_a_belt_and_never_in_classic() {
+        let belt: crate::belt::BeltSpec = serde_json::from_value(serde_json::json!({
+            "angleDeg": 45.0, "axis": "z", "direction": 1, "widthMm": 220.0,
+            "copies": 1, "gapMm": 5.0, "floorSupports": true
+        }))
+        .unwrap();
+        let req = |extra: serde_json::Value| -> SliceRequest {
+            let mut body = serde_json::json!({
+                "filename": "a.stl", "dataB64": "", "layerHeight": 0.2, "lineWidth": 0.45,
+                "blend": {"mode": "weight", "toughness": 0.3}, "supports": true,
+                "supportStyle": "grid", "supportBeltAnchorMm": 10.0,
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                body[k] = v.clone();
+            }
+            serde_json::from_value(body).unwrap()
+        };
+        let mut on = req(serde_json::json!({}));
+        assert_eq!(
+            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            None
+        );
+        on.belt = Some(belt.clone());
+        assert_eq!(
+            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            Some(10.0)
+        );
+        on.support_belt_anchor_mm = Some(0.5);
+        assert_eq!(
+            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            Some(BELT_ANCHOR_MIN_MM)
+        );
+        on.support_belt_anchor_mm = None;
+        assert_eq!(
+            SliceSettings::from_request(&on).support_belt_anchor_mm,
+            None
+        );
+        let mut classic = req(serde_json::json!({"classic": true}));
+        classic.belt = Some(belt);
+        assert_eq!(
+            SliceSettings::from_request(&classic).support_belt_anchor_mm,
+            None
         );
     }
 

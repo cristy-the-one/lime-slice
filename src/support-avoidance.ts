@@ -34,3 +34,16 @@ export function gentleSliceFields(
   if (accelMmS2 !== null && Number.isFinite(accelMmS2) && accelMmS2 > 0) out.supportGentleAccelMmS2 = Math.min(20000, Math.max(100, Math.round(accelMmS2)));
   return out;
 }
+
+/** The belt anchor spacing the engine takes, mm along the belt. */
+export const BELT_ANCHOR_LIMITS = { min: 2, max: 200, default: 10 } as const;
+
+/**
+ * Anchor lines across the belt where supports stand on it. Sent only on a belt whose supports stand on the
+ * belt (supports on, no raft pad), so a flat bed and a belt without supports keep their recipe key.
+ */
+export function beltAnchorSliceField(on: boolean, belt: { raftLayers: number } | null, supports: boolean, spacingMm: number): { supportBeltAnchorMm?: number } {
+  if (!on || !belt || !supports || belt.raftLayers > 0) return {};
+  const mm = Number.isFinite(spacingMm) && spacingMm > 0 ? spacingMm : BELT_ANCHOR_LIMITS.default;
+  return { supportBeltAnchorMm: Math.min(BELT_ANCHOR_LIMITS.max, Math.max(BELT_ANCHOR_LIMITS.min, Math.round(mm * 10) / 10)) };
+}

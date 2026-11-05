@@ -733,6 +733,8 @@ const later: Partial<PresetSettings> = {
   supportXyGapMm: 0.7,
   supportInterfaceLayers: 2,
   supportTreeBrimMm: 4,
+  supportBeltAnchors: false,
+  supportBeltAnchorMm: 15,
   bridgeFlowRatio: 0.9,
   bridgeSpeedMmS: 25,
   bridgeFanPercent: 80,
@@ -742,6 +744,13 @@ eq("each one differs from its default", Object.entries(later).filter(([key, valu
 const laterSettings = { ...project.settings, ...later };
 const laterOpened = parseProject(serializeProject({ ...project, settings: laterSettings }));
 eq("every later setting survives a save and reopen", laterOpened.ok ? laterOpened.project.settings : null, laterSettings);
+{
+  const doc = JSON.parse(serializeProject(project)) as { settings: Record<string, unknown> };
+  const { supportBeltAnchors: _on, supportBeltAnchorMm: _mm, ...beforeAnchors } = doc.settings;
+  doc.settings = beforeAnchors;
+  const opened = parseProject(JSON.stringify(doc));
+  eq("a project from before belt anchors opens with them on, every 10 mm", opened.ok ? [opened.project.settings.supportBeltAnchors, opened.project.settings.supportBeltAnchorMm] : "refused", [true, 10]);
+}
 
 // Support Z gap, XY gap and interface layers: a file from before Auto stores 0 for it, and a file since stores null.
 const gapsOf = (opened: ReturnType<typeof parseProject>) =>

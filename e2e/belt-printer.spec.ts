@@ -238,6 +238,48 @@ test("a belt hides elephant's foot and keeps the support brim, and a flat printe
   expect(flat.supportTreeBrimMm).toBe(4);
 });
 
+test("belt anchor lines are on for a belt with supports, set by their spacing, and never sent by a flat printer", async ({ page }) => {
+  await quiet(page);
+  const bodies: Record<string, unknown>[] = [];
+  await page.route("**/api/slice", async (route) => {
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    bodies.push(body);
+    await route.fulfill({ json: body.belt ? beltCube : cube });
+  });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("#slice")).toBeEnabled();
+  await setSupports(page, "auto");
+  // A flat printer neither shows nor sends them.
+  await expect(page.locator("#anchorlines")).toHaveCount(0);
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(1);
+  expect(bodies[0]).not.toHaveProperty("supportBeltAnchorMm");
+
+  // A belt shows the switch, on, and sends 10 mm.
+  await page.locator("#machineKind").selectOption("belt");
+  await expect(page.locator("#anchorlines")).toBeChecked();
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1].belt).toBeTruthy();
+  expect(bodies[1].supportBeltAnchorMm).toBe(10);
+
+  // The spacing is an advanced setting.
+  await page.locator("#levelPick").selectOption("advanced");
+  await page.locator("#anchorspacing").fill("15");
+  await page.locator("#anchorspacing").press("Tab");
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.at(-1)?.supportBeltAnchorMm).toBe(15);
+
+  await page.locator("#anchorlines").uncheck();
+  await expect(page.locator("#anchorspacing")).toHaveCount(0);
+  const before = bodies.length;
+  await page.locator("#slice").click();
+  await expect.poll(() => bodies.length).toBeGreaterThan(before);
+  expect(bodies.at(-1)).not.toHaveProperty("supportBeltAnchorMm");
+});
+
 test("Max length shows only for a capped belt", async ({ page }) => {
   await quiet(page);
   await page.goto("/");

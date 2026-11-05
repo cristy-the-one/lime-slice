@@ -1,4 +1,5 @@
-import { avoidanceSliceField, gentleSliceFields, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, beltAnchorSliceField, gentleSliceFields, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { DEFAULT_PRESET } from "./presets.ts";
 import { recipeKey } from "./slice-action.ts";
 import { shallowSkinsSliceField, solidUnderWallsSliceField } from "./slice-request.ts";
 
@@ -33,6 +34,17 @@ check("filling between paint dabs is omitted with nothing painted", Object.keys(
 check("filling between paint dabs off is omitted", Object.keys(paintJoinSliceField(false, true)).length === 0);
 check("an unpainted slice keeps its recipe key", recipeKey({ ...base, ...paintJoinSliceField(true, false) }, "mesh") === recipeKey(base, "mesh"));
 check("filling between painted dabs changes the recipe", recipeKey({ ...base, ...paintJoinSliceField(true, true) }, "mesh") !== recipeKey(base, "mesh"));
+const beltBed = { raftLayers: 0 };
+check("belt anchors are on by default", DEFAULT_PRESET.supportBeltAnchors === true && DEFAULT_PRESET.supportBeltAnchorMm === 10);
+check("belt anchors are sent on a belt with supports", JSON.stringify(beltAnchorSliceField(true, beltBed, true, 10)) === '{"supportBeltAnchorMm":10}');
+check("belt anchors are never sent on a flat bed", Object.keys(beltAnchorSliceField(true, null, true, 10)).length === 0);
+check("belt anchors are not sent without supports", Object.keys(beltAnchorSliceField(true, beltBed, false, 10)).length === 0);
+check("belt anchors are not sent over a raft", Object.keys(beltAnchorSliceField(true, { raftLayers: 2 }, true, 10)).length === 0);
+check("belt anchors off are omitted", Object.keys(beltAnchorSliceField(false, beltBed, true, 10)).length === 0);
+check("the anchor spacing is held to what the engine takes", beltAnchorSliceField(true, beltBed, true, 0.5).supportBeltAnchorMm === 2 && beltAnchorSliceField(true, beltBed, true, 900).supportBeltAnchorMm === 200);
+check("an unset spacing sends the 10 mm default", beltAnchorSliceField(true, beltBed, true, Number.NaN).supportBeltAnchorMm === 10);
+check("omitted belt anchors leave the recipe key", recipeKey({ ...base, ...beltAnchorSliceField(true, null, true, 10) }, "mesh") === recipeKey(base, "mesh"));
+check("asking for belt anchors changes the recipe", recipeKey({ ...base, ...beltAnchorSliceField(true, beltBed, true, 10) }, "mesh") !== recipeKey(base, "mesh"));
 check("shallow skins off is omitted", Object.keys(shallowSkinsSliceField(false)).length === 0);
 check("shallow skins on is sent", shallowSkinsSliceField(true).shallowSkins === true);
 check("omitted shallow skins leaves the recipe key", recipeKey({ ...base, ...shallowSkinsSliceField(false) }, "mesh") === recipeKey(base, "mesh"));

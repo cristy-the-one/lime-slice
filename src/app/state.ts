@@ -226,6 +226,8 @@ export const state = {
   supportInterfaceLayers: null as number | null,
   supportGapsAuto: true as const,
   supportTreeBrimMm: 0,
+  supportBeltAnchors: true,
+  supportBeltAnchorMm: 10,
   infillCombine: true,
   shallowSkins: false,
   solidUnderWalls: false,
