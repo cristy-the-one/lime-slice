@@ -20,7 +20,8 @@ import { surfaceAt } from "../modeling/inspect.ts";
 import { appliedReply, boundsOf, describeReply, disjointRefusal, edgesReply, facesReply, nodeHandle, parseNode, partExpandContext, probeEcho, probeVerdict, solidSections, solidView, stepGuard, storedOp, typedPlaneOf, typedPointIn, type SolidView } from "../modeling/model-calls.ts";
 import { clampPieces } from "../modeling/partition.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep, type StepGroup } from "../modeling/part-reads.ts";
-import { assembledBox, frameNote, placeFree, placeOnPlate, placedBounds, type PlatePlace } from "../modeling/placing.ts";
+import { assembledBox, frameNote, frameWhere, placeFree, placeOnPlate, placedBounds, type PlatePlace } from "../modeling/placing.ts";
+import { typedView } from "../modeling/typed-view.ts";
 import { cutPlanes, MAX_SECTION_POINTS, pointsIn } from "../modeling/sections.ts";
 import { plainModelError } from "../app/model-error.ts";
 import { dataMissingInApp } from "./plugin-data.ts";
@@ -300,6 +301,10 @@ export class AppRecipeCalls {
         if (p) await this.solidFor(p);
         return p?.solid ? this.section(p, args) : { ok: false, reason: `${id} is not a part on the plate.` };
       },
+      pose: (id) => {
+        const p = this.readable(id);
+        return p ? this.typed(p) : IDENTITY_POSE;
+      },
       sketch: (id, step) => {
         const p = this.readable(id);
         return p ? sketchOutline(p.tree, step, this.typed(p)) : { reason: `${id} is not a part on the plate.` };
@@ -313,10 +318,11 @@ export class AppRecipeCalls {
 
   private async partCall(p: RunPart, tool: string, args: Body): Promise<Body> {
     switch (tool) {
-      case "model_describe": return describeReply(this.need(p), args, "model");
-      case "faces_find": return facesReply(this.need(p), args, this.expand(p));
-      case "edges_find": return edgesReply(this.need(p), args, (filter) => onFaceIndex(filter, this.bakeContext(p)));
-      case "surface_at": return surfaceAt(this.need(p), args);
+      // --- API 1.4. Reads answer in the frame ops are typed in, as the MCP session's do: a point read is where a cut at it lands.
+      case "model_describe": return describeReply(this.need(p), args, p.frame ?? "model", {}, this.typed(p));
+      case "faces_find": return facesReply(this.need(p), args, this.expand(p), this.typed(p), p.frame ?? "model");
+      case "edges_find": return edgesReply(this.need(p), args, (filter) => onFaceIndex(filter, this.bakeContext(p)), this.typed(p), p.frame ?? "model");
+      case "surface_at": return { ...surfaceAt(typedView(this.need(p), this.typed(p)), args), frame: p.frame ?? "model" };
       case "section": return this.section(p, args);
       case "model_probe": return this.probeTool(p, args);
       case "model_apply": return this.applyTool(p, args);
@@ -520,7 +526,7 @@ export class AppRecipeCalls {
     }
     if (op.kind === "partition") return answer(await this.probePartition(p, op, baked.notes ?? []));
     const missed = p.solid ? disjointRefusal(p.solid.bounds, op) : null;
-    if (missed) return answer({ ok: false, reason: missed.reason, missed: true, frame: p.frame ?? "model", ...(missed.gapMm > 0 ? { gapMm: missed.gapMm } : {}) });
+    if (missed) return answer({ ok: false, reason: `${missed.reason}${frameWhere(p.modelPose, p.frame)}`, missed: true, frame: p.frame ?? "model", ...(missed.gapMm > 0 ? { gapMm: missed.gapMm } : {}) });
     const blend = (op.kind === "fillet" || op.kind === "chamfer" || op.kind === "transition") && op.edges.length > 1;
     const preview = measure || blend ? this.env.chordMm : undefined;
     const reply = await this.engine.tree(p.tree.key, p.tree.current, probeRequest(p.tree.key, p.tree.current, op, preview));

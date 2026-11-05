@@ -9,6 +9,7 @@
  */
 import { anchorOf, cleanOp, faceFrame, isComposite, primitiveFrom, readVec3, type ExpandContext } from "./compose.ts";
 import { edgesMatching } from "./selectors.ts";
+import { typedView } from "./typed-view.ts";
 import type { EdgeRow, FaceRow } from "./solid-geometry.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
@@ -88,7 +89,9 @@ export function resolveEdges(spec: Record<string, unknown>, ctx: BakeContext): E
     if (!ctx.solid) return { reason: "Describe the solid before picking edges." };
     const filter = onFaceIndex(select as Record<string, unknown>, ctx);
     if (typeof filter === "string") return { reason: filter };
-    const matched = edgesMatching(ctx.solid.edges, ctx.solid.faces, filter, ctx.solid);
+    // The filter's direction and points are typed, as edges_find reads them: in the frame ops are typed in.
+    const typed = typedView(ctx.solid, ctx.pose);
+    const matched = edgesMatching(typed.edges, typed.faces, filter, typed);
     if ("reason" in matched) return matched;
     if (matched.length === 0) return { reason: "No edge matches that filter." };
     return matched.map((edge) => edge.index);
@@ -289,14 +292,15 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
       origin = planePoint(typedIn, [at.u, at.v, 0]);
       axis = drillDown(typedIn);
     } else if (at && typeof at.u === "number" && typeof at.v === "number") {
-      origin = [at.u, at.v, ctx.solid?.bounds.max[2] ?? 0];
+      origin = [at.u, at.v, ctx.solid ? typedView(ctx.solid, ctx.pose).bounds.max[2] : 0];
       axis = [0, 0, -1];
     } else {
       origin = (Array.isArray(spec.origin) ? spec.origin : [0, 0, 0]) as [number, number, number];
       axis = (Array.isArray(spec.axis) ? spec.axis : [0, 0, -1]) as [number, number, number];
     }
     const through = spec.through === true;
-    const box = ctx.solid?.bounds ?? { min: [0, 0, 0] as [number, number, number], max: [0, 0, 0] as [number, number, number] };
+    // The part's box where the hole's origin and axis are typed, so a through hole runs through a moved part too.
+    const box = ctx.solid ? typedView(ctx.solid, ctx.pose).bounds : { min: [0, 0, 0] as [number, number, number], max: [0, 0, 0] as [number, number, number] };
     const depth = through ? throughLength(box, origin, axis) : (typeof spec.depth === "number" ? spec.depth : 0);
     if (!through && !(depth > 0)) return { reason: "The hole needs a depth, or through." };
     const counterbore = typeof spec.counterboreDiameterMm === "number" && typeof spec.counterboreDepth === "number"

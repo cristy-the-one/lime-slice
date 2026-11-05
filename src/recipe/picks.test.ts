@@ -100,6 +100,29 @@ await (async () => {
   check("a flat face on a curved parameter says plane and gives its outline", !!f && f.surface === "plane" && sectionCalls === 1, flatPick);
 })();
 
+// --- Recipe API 1.4: a pick answers in the frame ops are typed in. A sphere R 20 centred at (0, 0, 20) joins as face 7; the
+// part is moved +200 in X and turned 90° about X (y → z). The kept value stays in the part's own frame.
+await (async () => {
+  const ball: FaceRow = { index: 7, areaMm2: 5026.55, centre: [0, 0, 20], bbox: { min: [-20, -20, 0], max: [20, 20, 40] }, kind: "sphere", radiusMm: 20, axis: [0, 0, 1], axisPoint: [0, 0, 20] };
+  const withBall = { faces: [...low.faces, wall, ball] };
+  const pose = { m: [1, 0, 0, 0, 0, -1, 0, 1, 0] as [number, number, number, number, number, number, number, number, number], t: [200, 0, 0] as V };
+  const reads: PickReads = { sketch: () => ({ reason: "no sketch" }), faces: async () => withBall, section: async () => ({ ok: true, sections: [{ areaMm2: 1 }] }), pose: () => pose };
+  const kept: Record<string, unknown> = {};
+  const sphere = await answerPick({ param: "ball", kind: "face", object: "obj_1", curved: true, value: null }, { ball: 7 }, reads, kept);
+  const s = sphere.ok ? (sphere.result as { centre: number[]; axisPoint: number[]; axis: number[]; nearPoint: number[] }) : null;
+  check("a picked sphere gives its centre where ops are typed: moved and turned", !!s && JSON.stringify(s.centre) === "[200,-20,0]" && JSON.stringify(s.axisPoint) === "[200,-20,0]" && JSON.stringify(s.axis) === "[0,-1,0]", sphere);
+  const own = kept.ball as { nearPoint: number[] } | undefined;
+  check("the kept sphere stays in the part's own frame, so a moved part keeps its pick", !!own && !!s && own.nearPoint[2]! >= 0 && JSON.stringify(s.nearPoint) !== JSON.stringify(own.nearPoint), { kept, s });
+  const rod = await answerPick({ param: "wall", kind: "face", object: "obj_1", curved: true, value: null }, { wall: 6 }, reads, {});
+  const c = rod.ok ? (rod.result as { axisPoint: number[]; axis: number[]; centre?: number[] }) : null;
+  check("a cylinder gives a point on its axis and its direction, and no centre", !!c && JSON.stringify(c.axisPoint) === "[200,0,0]" && JSON.stringify(c.axis) === "[0,-1,0]" && c.centre === undefined, rod);
+  const flat = await answerPick({ param: "top", kind: "face", object: "obj_1", value: null }, { top: 1 }, reads, {});
+  const t = flat.ok ? (flat.result as { normal: number[]; nearPoint: number[] }) : null;
+  check("a flat face's normal and point turn with the part", !!t && JSON.stringify(t.normal) === "[0,-1,0]" && t.nearPoint[0]! >= 200 && t.nearPoint[1] === -10, flat);
+  const still = await answerPick({ param: "top", kind: "face", object: "obj_1", value: null }, { top: 1 }, { ...reads, pose: undefined }, {});
+  check("without a pose the pick answers as before", still.ok && JSON.stringify((still.result as { normal: number[] }).normal) === "[0,0,1]", still);
+})();
+
 // Outlines: loops to the regions and the area section answers.
 const square = (s: number, at = 0) => ({ start: [at, at] as [number, number], segments: [[at + s, at], [at + s, at + s], [at, at + s], [at, at]].map((to) => ({ kind: "line" as const, to: to as [number, number] })) });
 const row = outlineRow([square(10), square(4, 3)], { source: "global", origin: [0, 0, 5], turn: [0, 0, 0] });

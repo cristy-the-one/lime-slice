@@ -1350,11 +1350,11 @@ export const TOOLS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         object: handle,
-        normal: { type: "array", description: "Outward normal, part frame.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        normal: { type: "array", description: "Outward normal, model space.", minItems: 3, maxItems: 3, items: { type: "number" } },
         withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Degrees. Default 5." },
         kind: { enum: ["plane", "cylinder", "cone", "sphere", "other"], description: "Surface; cylinder and cone have radiusMm and axis." },
         areaMinMm2: { type: "number", minimum: 0, description: "Minimum area, mm²." },
-        nearPoint: { type: "array", description: "Point, part frame, mm. Nearest faces first, with distanceMm.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        nearPoint: { type: "array", description: "Point, model space, mm. Nearest faces first, with distanceMm.", minItems: 3, maxItems: 3, items: { type: "number" } },
         cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
       },
@@ -1368,7 +1368,7 @@ export const TOOLS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         object: handle,
-        direction: { type: "array", description: "Edge direction, part frame.", minItems: 3, maxItems: 3, items: { type: "number" } },
+        direction: { type: "array", description: "Edge direction, model space.", minItems: 3, maxItems: 3, items: { type: "number" } },
         withinDeg: { type: "number", minimum: 0, maximum: 180, description: "Degrees. Default 5." },
         onFace: { description: "Face index, or a flat face selector {normal, withinDeg, nearPoint}." },
         lengthMinMm: { type: "number", minimum: 0, description: "Minimum length, mm." },
@@ -1445,7 +1445,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "surface_at",
-    description: "First hit of a ray on the solid, part frame, mm: point, normal, distanceMm, faceIndex. Give point and direction, or x and y for a ray down from above. Mesh, 0.05 mm.",
+    description: "First hit of a ray on the solid, model space, mm: point, normal, distanceMm, faceIndex. Give point and direction, or x and y for a ray down from above. Mesh, 0.05 mm.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

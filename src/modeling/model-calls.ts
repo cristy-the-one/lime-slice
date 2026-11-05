@@ -7,7 +7,7 @@
 import { decodeSolid } from "../model-reply.ts";
 import { isPrimitiveKind, type PrimitiveSpec } from "../model-primitive.ts";
 import { boxGap, disjointBoolean, primitiveBox, probeFromBody, probeNote, turnedAxis, type ProbedTool } from "../model-feasibility.ts";
-import { applyPose, isIdentity, turnDir, type Affine } from "../model-space.ts";
+import { applyPose, IDENTITY_POSE, isIdentity, turnDir, type Affine } from "../model-space.ts";
 import { closeCracks } from "../mesh-check.ts";
 import { eulerOrient } from "../mesh-place.ts";
 import { posedContext } from "../model-features.ts";
@@ -22,6 +22,7 @@ import { addsPiece, cleanOp, cutsOffPiece, pieceReport, separateReason, splitRea
 import { expandContextFromSolid, nearPick, ON_FACE_MM, pickSentence, type FrameFace } from "./frames.ts";
 import { edgesMatching, facesMatching } from "./selectors.ts";
 import { edgeGeometry, faceRows } from "./solid-geometry.ts";
+import { typedView } from "./typed-view.ts";
 
 /** A solid as the Model calls read it: its fingerprint, mesh, face and edge rows, edge polylines and box. */
 export type SolidView = NonNullable<ReturnType<typeof solidView>>;
@@ -120,8 +121,13 @@ export function compactEcho(op: Record<string, unknown>): Record<string, unknown
   };
 }
 
-/** model_describe's reply: the solid's volume and fingerprint, then its faces and edges, a page of each. */
-export function describeReply(solid: SolidView, input: Record<string, unknown>, frame: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+/**
+ * model_describe's reply: the solid's volume and fingerprint, then its faces and edges, a page of each. Every point and
+ * direction is in the frame ops are typed in (`pose`, the part's typed pose; `frame` names it), so a box or a face centre
+ * read here is where a cut at it lands.
+ */
+export function describeReply(own: SolidView, input: Record<string, unknown>, frame: string, extra: Record<string, unknown> = {}, pose: Affine = IDENTITY_POSE): Record<string, unknown> {
+  const solid = typedView(own, pose);
   const faces = page(solid.faces.map((face) => ({
     index: face.index,
     areaMm2: face.areaMm2,
@@ -129,7 +135,7 @@ export function describeReply(solid: SolidView, input: Record<string, unknown>, 
     centre: face.centre,
     bbox: face.bbox,
     kind: face.kind,
-    ...(face.radiusMm !== undefined ? { radiusMm: face.radiusMm, axis: face.axis } : {}),
+    ...(face.radiusMm !== undefined ? { radiusMm: face.radiusMm, axis: face.axis, ...(face.axisPoint ? { axisPoint: face.axisPoint } : {}) } : {}),
   })), input.facesCursor ?? input.cursor, input.limit);
   const edges = page(solid.edges.map((edge) => ({
     index: edge.index,
@@ -154,8 +160,13 @@ export function describeReply(solid: SolidView, input: Record<string, unknown>, 
   };
 }
 
-/** faces_find's reply: the faces a filter matches, a page of them, each flat one with the frame that draws on it. */
-export function facesReply(solid: SolidView, input: Record<string, unknown>, ctx: ExpandContext): Record<string, unknown> {
+/**
+ * faces_find's reply: the faces a filter matches, a page of them, each flat one with the frame that draws on it. The
+ * filter's normal and nearPoint, and every row, are in the frame ops are typed in (`pose`; `frame` names it), as the
+ * face frames from `ctx` are.
+ */
+export function facesReply(own: SolidView, input: Record<string, unknown>, ctx: ExpandContext, pose: Affine = IDENTITY_POSE, frame = "model"): Record<string, unknown> {
+  const solid = typedView(own, pose);
   const matched = facesMatching(solid.faces, input, solid);
   if ("reason" in matched) return { ok: false, reason: matched.reason };
   const listed = page(matched, input.cursor, input.limit);
@@ -174,17 +185,18 @@ export function facesReply(solid: SolidView, input: Record<string, unknown>, ctx
     if ("reason" in framed) return row;
     return { ...row, frame: { ...frameOf(framed.plane), turn: framed.plane.turn.map((n) => Math.round(n * 1e6) / 1e6) } };
   });
-  return { ok: true, total: matched.length, frame: "part", faces: rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...(note ? { note } : {}) };
+  return { ok: true, total: matched.length, frame, faces: rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}), ...(note ? { note } : {}) };
 }
 
-/** edges_find's reply. `onFace` turns an onFace selector into its face's index. */
-export function edgesReply(solid: SolidView, input: Record<string, unknown>, onFace: (filter: Record<string, unknown>) => Record<string, unknown> | string): Record<string, unknown> {
+/** edges_find's reply, in the frame ops are typed in (`pose`; `frame` names it). `onFace` turns an onFace selector into its face's index. */
+export function edgesReply(own: SolidView, input: Record<string, unknown>, onFace: (filter: Record<string, unknown>) => Record<string, unknown> | string, pose: Affine = IDENTITY_POSE, frame = "model"): Record<string, unknown> {
+  const solid = typedView(own, pose);
   const filter = onFace(input);
   if (typeof filter === "string") return { ok: false, reason: filter };
   const matched = edgesMatching(solid.edges, solid.faces, filter, solid);
   if ("reason" in matched) return { ok: false, reason: matched.reason };
   const listed = page(matched, input.cursor, input.limit);
-  return { ok: true, total: matched.length, frame: "part", edges: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
+  return { ok: true, total: matched.length, frame, edges: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
 }
 
 /** A step's handle in replies, `node_4`, and back. */

@@ -67,3 +67,12 @@ which `s.text(name, default)`'s parameter builder already is, and the method `mo
 origin with U right and V up. The host lays the text out, since this crate reads no fonts. `text_outline_with(text, &Lettering)` takes
 the style, weight, spacing, line spacing, alignment, angle and pen width too. A letter the font lacks is a `Refusal` with the
 layout's sentence.
+
+## One frame for reads and cuts (API 1.4)
+
+Every read answers in the frame `s.apply` takes its numbers in: model space, where a part `model_place` moved or turned stands
+(the part's own frame when it was placed with `frame: "part"`). `s.bounds`, `s.pick_face`, and the raw `faces_find`, `edges_find`,
+`surface_at`, `model_describe` and `section` calls all do, so measure the part, compute a point, and cut at it: no offset to add.
+Before 1.4 the reads answered in the solid's own frame, so on a moved part such a cut missed by the pose. `PickedFace` gains
+`centre` (a sphere's) and `axis_point` (a point on a cylinder's or a cone's axis, or a sphere's centre). A picked face is still kept
+in the part's own frame, so it stays on the part when the part moves.

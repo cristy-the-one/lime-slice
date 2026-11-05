@@ -104,7 +104,7 @@ const top = await call("faces_find", { object, normal: [0, 0, 1] });
 const faces = top.faces as { index: number; centre: number[]; kind: string; normal: number[] }[];
 check(
   "the top face is the one whose normal points up",
-  top.ok === true && top.frame === "part" && faces.length === 1 && faces[0]?.kind === "plane" && near(faces[0]?.centre[0] ?? 99, 0) && near(faces[0]?.centre[1] ?? 99, 0) && near(faces[0]?.centre[2] ?? 99, 10),
+  top.ok === true && top.frame === "model" && faces.length === 1 && faces[0]?.kind === "plane" && near(faces[0]?.centre[0] ?? 99, 0) && near(faces[0]?.centre[1] ?? 99, 0) && near(faces[0]?.centre[2] ?? 99, 10),
   JSON.stringify(top),
 );
 

@@ -16,8 +16,25 @@ export const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list 
 /** The sentence a reply ends on: which frame later typed numbers are read in. */
 export function frameNote(frame: ObjectFrame): string {
   return frame === "part"
-    ? "Numbers in later model_probe, model_apply and model_edit calls are still read in the part's own frame."
-    : "Numbers in later model_probe, model_apply and model_edit calls are read in model space, so they move with the pose; frame:\"part\" keeps them in the part's own frame.";
+    ? "Numbers in later model_probe, model_apply and model_edit calls are still read in the part's own frame, where model_describe, faces_find, edges_find and surface_at answer."
+    : "Numbers in later model_probe, model_apply and model_edit calls are read in model space, so they move with the pose, and model_describe, faces_find, edges_find and surface_at answer there too; frame:\"part\" keeps both in the part's own frame.";
+}
+
+/**
+ * What a refusal of a part away from model space's origin adds: the frame its numbers were read in, which is also the
+ * frame every read answers in, and the pose that moved it. Empty for a part with no pose. It no longer says "sits at":
+ * reads and cuts share one frame, so there is no offset for a caller to add.
+ */
+export function frameWhere(modelPose: Affine | undefined, frame: ObjectFrame | undefined): string {
+  if (!modelPose || (modelPose.t.every((v) => v === 0) && modelPose.m.every((v, i) => v === (i % 4 === 0 ? 1 : 0)))) return "";
+  const mm = (v: number) => Math.round(v * 100) / 100 + 0;
+  const turn = orientEuler(modelPose.m as Mat3);
+  const moved = modelPose.t.some((v) => v !== 0) ? `moved by (${modelPose.t.map(mm).join(", ")})` : "";
+  const turned = [turn.rx, turn.ry, turn.rz].some((deg) => Math.abs(deg) > 1e-6) ? `turned (${[turn.rx, turn.ry, turn.rz].map(mm).join("°, ")}°)` : "";
+  const pose = [moved, turned].filter(Boolean).join(" and ");
+  return frame === "part"
+    ? ` Numbers are read in the part's own frame, where model_describe, faces_find and surface_at answer too; in the assembly the part is ${pose}.`
+    : ` Numbers are read in model space, where model_describe, faces_find and surface_at answer too; model_place has the part ${pose} there. model_place {frame:"part"} reads them in the part's own frame.`;
 }
 
 /** Three numbers as typed, each a number or an expression; absent ones keep `values`, and `texts` their expressions. */

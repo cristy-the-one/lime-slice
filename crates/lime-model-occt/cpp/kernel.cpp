@@ -138,6 +138,7 @@
 #include <gp.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
+#include <gp_Sphere.hxx>
 #include <gp_Mat.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Quaternion.hxx>
@@ -1270,7 +1271,8 @@ void append_face_normal(std::string& out, const TopoDS_Face& face) {
     }
 }
 
-/// P1. A cylinder, cone, or sphere names its surface and radius. Anything else, including a plane, adds nothing.
+/// P1. A cylinder, cone, or sphere names its surface and radius, and its axis: a point on it (a sphere's centre) and its
+/// direction (a sphere's pole). Anything else, including a plane, adds nothing.
 void append_face_radius(std::string& out, const TopoDS_Face& face) {
     try {
         BRepAdaptor_Surface surface(face);
@@ -1296,7 +1298,12 @@ void append_face_radius(std::string& out, const TopoDS_Face& face) {
             axis = true;
         } else if (kind == GeomAbs_Sphere) {
             name = "sphere";
-            radius = surface.Sphere().Radius();
+            const gp_Sphere sphere = surface.Sphere();
+            radius = sphere.Radius();
+            // A sphere's axisPoint is its centre and its axis the pole direction (where its seam meridian turns).
+            axis_point = sphere.Location();
+            axis_dir = sphere.Position().Direction();
+            axis = true;
         } else {
             return;
         }
