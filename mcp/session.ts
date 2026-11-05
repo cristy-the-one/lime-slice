@@ -108,13 +108,14 @@ import { featureSolidInModel, isFeatureTool } from "../src/model-features.ts";
 import { followRepeatSources } from "../src/model-repeat.ts";
 import { planRebuild } from "../src/param-rebuild.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
-import { resolveFont, resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
-import { textsNeedingFonts, UserFontShelf, userFontUses } from "../src/modeling/user-fonts.ts";
+import { resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
+import { textsNeedingFonts, UserFontShelf } from "../src/modeling/user-fonts.ts";
 import { BAND_KINDS, BEADS_REFUSAL, CHORD, type CallMeta, DETACHABLE, type Ghost, type Job, LAYER_ROWS, LONG_CALLS, MESH_EDIT, ModelRunaway, NAME_LIMIT, OVERLAP, type ObjectToolHandler, PLACE_KEYS, PLACE_ON_SMEAR, type PickRow, type PlateObject, type PlateSnap, REGION_SHAPE, type Recipe, type RustRecipe, SLICE_CHECK_MCP, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_FACES, STALE_SLICE, STEP, STIFFNESS_KINDS, STRESS_LAYER_NEEDS, type SliceSummary, type SnapObject, TARGET_KINDS, type ToolHandler, type TypedWorkplane, UNKNOWN_OBJECT, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, firstAfter, isObject, joined, joinedPositions, modelSteps, numberNotes, numbered, pinsOf, posedPositions, positionsFrom, roundTo, shownName, slicedRunReply, stableKey, standsOnNothing, stepFileName, stlFileName, typedExprs, withPicks, xyGap } from "./session/shared.ts";
 import { workMethods } from "./session/work.ts";
 import { recipeMethods, recipeHandlers } from "./session/recipe.ts";
 import { pluginMethods, pluginHandlers } from "./session/plugin.ts";
 import { nuggetMethods, nuggetHandlers } from "./session/nugget.ts";
+import { fontsMethods } from "./session/fonts.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -718,52 +719,6 @@ export class Session {
       const refused = await this.resolveTextFonts(textsNeedingFonts(copy));
       return refused ? { ok: false, reason: refused } : this.dispatchNow(name, copy, meta);
     })();
-  }
-
-  /** The sentence for the first text whose font cannot be had, or null when every text names its font by id now. */
-  async resolveTextFonts(texts: Record<string, unknown>[]): Promise<string | null> {
-    for (const op of texts) {
-      if (typeof op.fontFile === "string") {
-        const hashed = /^(.*)#(\d{1,3})$/.exec(op.fontFile);
-        let bytes: Buffer;
-        try {
-          bytes = readFileSync(resolveFont(hashed ? hashed[1]! : op.fontFile));
-        } catch (err) {
-          return err instanceof Error ? err.message : String(err);
-        }
-        const added = await this.fonts.add(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), "added", hashed ? Number(hashed[2]) : 0);
-        if (!added.ok) return added.reason;
-        if (added.faces.length > 1 && !hashed) {
-          this.fonts.remove(added.font.id);
-          return `This file holds several fonts: ${added.faces.map((face) => `${face.index} ${face.name}`).join(", ")}. Name one as ${typeof op.fontFile === "string" ? op.fontFile : "file"}#<number>.`;
-        }
-        op.font = added.font.id;
-        delete op.fontFile;
-        await this.keepFontPack(added.font.id, op);
-      } else if (typeof op.font === "string") {
-        const found = this.fonts.find(op.font);
-        if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
-        op.font = found.id;
-        await this.keepFontPack(found.id, op);
-      }
-    }
-    return null;
-  }
-
-  /** A restricted font's pack, cut for this project's texts as they stand and this one, so a save that cannot wait has it. */
-  async keepFontPack(id: string, op: Record<string, unknown>): Promise<void> {
-    const font = this.fonts.fonts.get(id);
-    if (!font?.restricted) return;
-    const uses = this.fontUses(id);
-    uses.push({ text: String(op.text ?? ""), ...(typeof op.style === "string" ? { style: op.style } : {}), ...(typeof op.weight === "number" ? { weight: op.weight } : {}) });
-    await this.fonts.refreshPack(id, uses);
-  }
-
-  /** The texts the project's histories set in a font of the person's. */
-  fontUses(id: string): { text: string; style?: string; weight?: number }[] {
-    const owner = (key: string) => this.byTreeKey(key)?.id;
-    const objects = [...this.objects, ...this.toolsOffPlate].flatMap((obj) => (obj.tree ? [{ modelTree: savedTree(obj.tree, obj.tree.committed, owner) }] : []));
-    return userFontUses({ objects }).get(id) ?? [];
   }
 
   dispatchNow(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
@@ -7886,10 +7841,10 @@ export class Session {
   }
 }
 
-type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods;
+type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods);
+Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods);
 
 export { blendOf };
