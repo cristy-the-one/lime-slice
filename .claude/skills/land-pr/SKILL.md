@@ -36,6 +36,7 @@ The owner reviews PRs at milestones, not every small step. Open one when a piece
    - For a PR that touches UI, e2e, or anything a spec exercises, arm auto-merge (`set_auto_merge`, merge method **merge**) only after `gh pr checks <n>` shows all four smoke shards passing.
    - A CI-only PR can be armed at once.
    - A docs-only PR (only `docs/` and `*.md` files) runs no CI: the `what changed` job skips every other job, and a skipped required check counts as passed. Merge it once the owner approves; there is nothing to wait for.
+   - A standalone version bump PR takes the fast lane: only `what changed` and `version check` run, and the rest are skipped (see **release**, step 1). Wait for `version check`, then merge; the smoke shards do not run.
 4. A PR whose checks are all green before you arm it is "clean", and GitHub refuses to arm auto-merge on it. The owner's standing rule is merge-on-green, so merge it yourself: `gh pr merge <n> --merge`, after one more `gh pr checks <n>`.
 
 ## When a check fails

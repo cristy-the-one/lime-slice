@@ -12,12 +12,15 @@ env:
 jobs:
   # A change to docs/ or Markdown alone builds and tests nothing. Every other job
   # needs this one and is skipped then; a skipped required check counts as passed.
+  # A version bump alone (tools/ci/bump-only.mjs says so, strictly) skips them the same way and runs only
+  # "version check" below: it changes no code, and the heavy jobs take 11+ minutes and scarce macOS runners.
   changes:
     name: what changed
     runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.diff.outputs.code }}
       macos: ${{ steps.diff.outputs.macos }}
+      bump: ${{ steps.diff.outputs.bump }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -31,6 +34,7 @@ jobs:
           if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo "bump=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           code=false
@@ -47,9 +51,36 @@ jobs:
               crates/*|src-tauri/*|Cargo.toml|Cargo.lock|rust-toolchain*|.cargo/*|tools/occt/*|tools/mcp/*|mcp/native*|mcp/engine*|package-lock.json|.github/workflows/ci.yml) macos=true ;;
             esac
           done < <(git diff --name-only "$BASE...$HEAD")
+          # A version bump and nothing else: skip every heavy job. Anything the script doubts is not a bump.
+          bump=false
+          if [ "$code" = true ] && [ "$(node tools/ci/bump-only.mjs "$BASE" "$HEAD")" = true ]; then
+            bump=true
+            code=false
+            macos=false
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "macos=$macos" >> "$GITHUB_OUTPUT"
-          echo "Code changed: $code, macOS-relevant: $macos"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+          echo "Code changed: $code, macOS-relevant: $macos, version bump only: $bump"
+
+  # The one check a bump-only change runs. It builds nothing; it makes sure the bump is complete: every version
+  # agrees, and Cargo.lock is current (--locked fails if Cargo.toml would change the lock).
+  version-check:
+    name: version check
+    needs: changes
+    if: needs.changes.outputs.bump == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Every version agrees
+        run: node tools/ci/bump-only.mjs --check HEAD
+
+      - name: Cargo.lock is current
+        run: cargo metadata --format-version 1 --locked > /dev/null
 
   rust:
     name: test, clippy, and Tauri
@@ -204,6 +235,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           # Recipe API 1.3 on real OCCT: curved face parameters, lettering on a curved face, text_outline extruded.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-text.test.ts
+          # Recipe API 1.4 on real OCCT: reads and cuts in one frame on a moved and a turned sphere, over MCP and in the app.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-frame.test.ts
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

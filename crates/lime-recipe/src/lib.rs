@@ -430,8 +430,9 @@ pub struct Part {
 /// parameters (`number`, `count`, `toggle`, `choice`, `text`) and describe mode. 1.2: `face` and `outline` parameters
 /// a person picks (`pick_face`, `pick_outline`), `refuse`, and `bounds`. 1.3: `face(..).curved()` parameters and what a
 /// picked face is (`kind`, `axis`, `radius`), `lettering` (text on a face, flat or curved) and `text_outline` (the letters
-/// as a `Section`).
-pub const API: (u32, u32) = (1, 3);
+/// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
+/// takes (model space for a moved or turned part), as they always should have.
+pub const API: (u32, u32) = (1, 4);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -745,6 +746,10 @@ pub struct PickParam {
 /// API 1.3: `kind` is `plane`, `cylinder`, `cone`, `sphere` or `other` (a torus or a freeform face; the part's face list does
 /// not tell those apart), and for a cylinder or a cone `axis` and `radius`. A curved face has no one normal (`normal` is
 /// zero) and no outline (`outline` is empty); `point` is a point on it, which `lettering` anchors the text at.
+///
+/// API 1.4: a sphere's `centre`, and a cylinder's or a cone's `axis_point` (a point on its axis; a sphere's is its centre).
+/// Every point and direction here, like every read (`bounds`, `faces_find`, `surface_at`), is in the frame `apply` takes
+/// its numbers in: model space, where a part `model_place` moved or turned stands. Measure, then cut at that point.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PickedFace {
     pub index: u32,
@@ -755,6 +760,10 @@ pub struct PickedFace {
     pub kind: String,
     pub axis: Option<[f64; 3]>,
     pub radius: Option<f64>,
+    /// A sphere's centre (API 1.4).
+    pub centre: Option<[f64; 3]>,
+    /// A point on a cylinder's or a cone's axis, or a sphere's centre (API 1.4).
+    pub axis_point: Option<[f64; 3]>,
 }
 
 /// The rules a face parameter may fall back on when the person picked none.
@@ -1108,6 +1117,8 @@ impl Session {
             kind: r.get("surface").and_then(Json::as_str).unwrap_or("plane").to_string(),
             axis: r.get("axis").map(|a| vec3(Some(a))),
             radius: r.get("radiusMm").and_then(Json::as_f64),
+            centre: r.get("centre").map(|c| vec3(Some(c))),
+            axis_point: r.get("axisPoint").map(|a| vec3(Some(a))),
         })
     }
 
@@ -1146,7 +1157,7 @@ impl Session {
         Section::all(&r).into_iter().next().ok_or(Refusal { reason: "text_outline gave no outline".to_string(), line })
     }
 
-    /// The part's bounding box in its frame, `(min, max)` in mm (API 1.2).
+    /// The part's bounding box, `(min, max)` in mm (API 1.2), in the frame `apply` takes: model space, where a moved part stands.
     #[track_caller]
     pub fn bounds(&mut self, part: &Part) -> Result<([f64; 3], [f64; 3]), Refusal> {
         let line = std::panic::Location::caller().line();
@@ -3149,7 +3160,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 3));
+        assert_eq!(API, (1, 4));
     }
 
     #[test]
@@ -3209,6 +3220,8 @@ mod tests {
             kind: kind.to_string(),
             axis: None,
             radius: None,
+            centre: None,
+            axis_point: None,
         }
     }
 

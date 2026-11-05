@@ -140,7 +140,7 @@ check("the stamp keeps the curved face by its surface", stamped?.params.face?.su
 check("the history has the text as one step", history.filter((row) => /^Text /.test(row.label)).length === 1, history.map((row) => row.label));
 const got = await call("nugget", { action: "get", kind: "plugin", id: "label-a-face" });
 const param = ((got.params ?? []) as { name: string; curved?: boolean }[]).find((p) => p.name === "face");
-check("the plugin is kept with API 1.3 and says its face is curved", got.api === "1.3" && param?.curved === true, got);
+check("the plugin is kept with API 1.4 (this crate's) and says its face is curved", got.api === "1.4" && param?.curved === true, got);
 
 // --- The default rule takes the largest face of any kind, and a flat face works as ever.
 const block = String((await call("solid_new", { primitive: "box", dx: 40, dy: 20, dz: 10 })).object);

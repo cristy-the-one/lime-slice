@@ -122,6 +122,7 @@ mcp/recipe-find.test.ts
 mcp/plugins-file.test.ts
 mcp/ingredients-file.test.ts
 mcp/nuggets-file.test.ts
+mcp/plugin-hints.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts
@@ -228,4 +229,6 @@ src/recipe/host.test.ts
 src/recipe/tauri.test.ts
 src/recipe/ingredients.test.ts
 src/recipe/picks.test.ts
+src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
+tools/ci/bump-only.test.mjs

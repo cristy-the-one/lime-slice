@@ -258,6 +258,26 @@ fn a_cylinder_reports_its_radius_and_a_box_does_not() {
     }
 }
 
+/// A sphere's face carries its centre as `axisPoint` (and its pole as `axis`), so a recipe can place a cut on it exactly.
+#[test]
+fn a_sphere_reports_its_centre() {
+    let ball = call(json!({
+        "call": "open", "key": "sphere-centre",
+        "primitive": { "primitive": "sphere", "origin": [3.0, -4.0, 5.0], "radius": 12.0 }
+    }));
+    if ball.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {ball}");
+        return;
+    }
+    let face = ball["faces"].as_array().unwrap().iter().find(|f| f["surface"] == json!("sphere")).expect("a sphere face").clone();
+    near(face["radiusMm"].as_f64().unwrap(), 12.0);
+    let at: Vec<f64> = face["axisPoint"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    near(at[0], 3.0);
+    near(at[1], -4.0);
+    near(at[2], 5.0);
+    assert!(face["axis"].is_array(), "{face}");
+}
+
 /// The flat egg the owner pulled: 86.2 × 10 × 24, one closed face with no neighbours.
 fn egg(key: &str) -> Option<Value> {
     let opened = call(json!({

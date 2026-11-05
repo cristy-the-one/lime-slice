@@ -141,7 +141,7 @@ check("the same numbers probe after rimL moved the hook", again.ok === true, JSO
 const described = await call("model_describe", { object: hookB, limit: 1 });
 check("model_describe says the frame", described.frame === "part", String(described.frame));
 const far = await call("model_probe", { object: hookB, op: { ...onHook, origin: [200, 0, 0] } });
-check("a refusal of a member names the part frame and where the part sits", far.ok === false && far.frame === "part" && String(far.reason).includes("in the part frame") && String(far.reason).includes("sits at ("), JSON.stringify(far));
+check("a refusal of a member names the part frame and where the part sits", far.ok === false && far.frame === "part" && String(far.reason).includes("in the part's own frame") && String(far.reason).includes("in the assembly the part is moved by ("), JSON.stringify(far));
 const farModel = await call("model_probe", { object: lid, op: { ...onHook, origin: [0, 0, 200] } });
 check("a refusal of a moved model-frame part names model space", farModel.ok === false && farModel.frame === "model" && String(farModel.reason).includes("model space"), JSON.stringify(farModel));
 
