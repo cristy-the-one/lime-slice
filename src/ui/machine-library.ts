@@ -939,7 +939,7 @@ export function adoptProfile(library: MachineLibrary, profile: PrinterProfile, p
   };
 }
 
-const GCODE_TIP = "Start and end G-code are inserted into Export and Send. They are not sent to the slicer. Unless Start G-code heats and homes is on, the engine still writes temperatures and homing first. {bed} and {nozzle} become the temperatures after the printer's limits. Leave both blank and the file stays the engine's bytes.";
+const GCODE_TIP = "Start and end G-code are inserted into Export and Send. They are not sent to the slicer. Unless Start G-code heats and homes is on, the engine still writes temperatures and homing first. {bed} and {nozzle} become the temperatures after the printer's limits. {purge_line_z} is for belt printers: the belt position that puts the far edge of a purge line across the belt at the middle of the part's first wall, so the line touches the part (0 for a file that is not a belt file). Leave both blank and the file stays the engine's bytes.";
 
 const OWNS_HOMING_TIP = "Turn on when the start G-code heats and homes by itself, such as a Klipper PRINT_START macro. Export then drops the engine's own heat and G28 lines and writes the start G-code first.";
 
@@ -1188,11 +1188,14 @@ function uniqueName(rows: { name: string }[], name: string): string {
  * The IR3 V2's start sequence. PRINT_START is the printer's own macro. The belt has no Z endstop,
  * so only Y homes. The purge first draws a Z-shaped line up the belt at the left edge, which
  * cleans the nozzle, then two lines across the whole belt, as Ideaformer's own start does. Z is
- * zeroed on the second line, so the part's first layer touches it and the line holds the part
- * to the belt.
+ * zeroed so the line's far edge reaches the middle of the part's first wall (`{purge_line_z}`,
+ * `src/belt-purge.ts`), so the line touches the part and holds it to the belt.
  * It ends in absolute extrusion because the engine's body is absolute.
+ *
+ * `IR3_V2_START_5_2_1` is the text 5.2.1 shipped, with Z zeroed on the second line. It stays
+ * so that an unedited stored copy of it upgrades.
  */
-const IR3_V2_START = [
+const IR3_V2_START_5_2_1 = [
   "PRINT_START",
   "M140 S{bed}",
   "M104 S{nozzle}",
@@ -1230,7 +1233,23 @@ const IR3_V2_START = [
   "M82",
 ].join("\n");
 
-/** The IR3 V2 purge lines across the belt, as they stand now (last, against the part). */
+/** The start as built: 5.2.1's comment and `Z0` replaced by the line placed against the part. */
+const IR3_V2_START = IR3_V2_START_5_2_1
+  .split("\n")
+  .flatMap((line) => {
+    if (line.startsWith("; two lines across the belt")) {
+      return [
+        "; two lines across the belt, there and back, 25 mm of filament each. The belt is zeroed so the",
+        "; line's far edge reaches the middle of the part's first wall ({purge_line_z}, worked out from",
+        "; the file): the line is placed against the part and holds it to the belt.",
+      ];
+    }
+    if (line.startsWith("; second, so the part's first layer")) return [];
+    return [line === "G92 E0 Z0" ? "G92 E0 Z{purge_line_z}" : line];
+  })
+  .join("\n");
+
+/** The IR3 V2 purge lines across the belt, as 5.2.1 had them. */
 const IR3_V2_ACROSS = [
   "; two lines across the belt, there and back, 25 mm of filament each. Z is zeroed on the",
   "; second, so the part's first layer starts against it and the line holds it to the belt.",
@@ -1241,7 +1260,7 @@ const IR3_V2_ACROSS = [
 ];
 
 /** Until 5.1.0: the zig-zag only. */
-const IR3_V2_START_ZIGZAG_ONLY = IR3_V2_START.split("\n").filter((line) => !IR3_V2_ACROSS.includes(line)).join("\n");
+const IR3_V2_START_ZIGZAG_ONLY = IR3_V2_START_5_2_1.split("\n").filter((line) => !IR3_V2_ACROSS.includes(line)).join("\n");
 
 /** #564 on main: the lines across came before the zig-zag, so the part started far from them. */
 const IR3_V2_START_LINES_FIRST = IR3_V2_START_ZIGZAG_ONLY.replace(
@@ -1251,7 +1270,7 @@ const IR3_V2_START_LINES_FIRST = IR3_V2_START_ZIGZAG_ONLY.replace(
 
 /** Built-in start G-code the catalog shipped earlier, by printer id. */
 const PAST_STARTS: Record<string, string[]> = {
-  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST],
+  "ideaformer-ir3-v2": [IR3_V2_START_ZIGZAG_ONLY, IR3_V2_START_LINES_FIRST, IR3_V2_START_5_2_1],
 };
 
 const IR3_V2_LIMITS: KlipperLimits = {

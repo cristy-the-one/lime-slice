@@ -26,6 +26,7 @@ export interface ExportInput {
   endGcode: string;
   startOwnsHoming: boolean;
   heat: Heat;
+  filamentDiameter?: number;
 }
 
 export function exportGcode(input: ExportInput): string {
@@ -42,6 +43,7 @@ export function exportGcode(input: ExportInput): string {
     endGcode: spliceText(input.endGcode, legacyStockEnd(input.printerName)),
     startOwnsHoming: input.startOwnsHoming,
     heat: input.heat,
+    filamentDiameter: input.filamentDiameter,
   });
 }
 
