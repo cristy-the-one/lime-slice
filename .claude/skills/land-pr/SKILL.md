@@ -32,8 +32,7 @@ The owner reviews PRs at milestones, not every small step. Open one when a piece
 
    End it with the session's PR attribution line.
 2. Bind it (`ccd_pr bind_pr`) and turn the monitor on (`set_monitor`, `auto_fix: true`). From then on, CI failures and conflicts arrive as ci-monitor events. Don't poll CI yourself.
-3. **Auto-merge: the smoke shards first.** Main's ruleset requires only "test, clippy, and Tauri", "release bench smoke", and "typecheck and frontend build". GitHub's auto-merge waits for those three and nothing else. #407 merged with two red smoke shards, and main stayed broken until the next PR fixed it.
-   - For a PR that touches UI, e2e, or anything a spec exercises, arm auto-merge (`set_auto_merge`, merge method **merge**) only after `gh pr checks <n>` shows all four smoke shards passing.
+3. **Auto-merge.** Main's ruleset requires "test, clippy, and Tauri", "release bench smoke", "typecheck and frontend build" and "Playwright smoke" (one gate job over the four shards; #407 once merged with two red shards before it existed). Auto-merge can be armed as soon as the PR opens. Never require the shard names themselves: a skipped matrix job reports `Playwright smoke (shard ${{ matrix.shard }}/4)` unexpanded, so bump-only and docs-only PRs would wait forever.
    - A CI-only PR can be armed at once.
    - A docs-only PR (only `docs/` and `*.md` files) runs no CI: the `what changed` job skips every other job, and a skipped required check counts as passed. Merge it once the owner approves; there is nothing to wait for.
    - A standalone version bump PR takes the fast lane: only `what changed` and `version check` run, and the rest are skipped (see **release**, step 1). Wait for `version check`, then merge; the smoke shards do not run.

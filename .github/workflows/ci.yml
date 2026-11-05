@@ -606,6 +606,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # One fixed name for the four smoke shards, so it can be a required check. A skipped matrix job reports
+  # "Playwright smoke (shard ${{ matrix.shard }}/4)" unexpanded, so the shard names themselves can't be required:
+  # a bump-only or docs-only PR would wait for them forever. Like "test, clippy, and Tauri", this job is skipped
+  # when no code changed, and a skipped required check counts as passed.
+  smoke-gate:
+    name: Playwright smoke
+    needs: [changes, smoke]
+    if: always() && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: All four smoke shards passed
+        env:
+          RESULT: ${{ needs.smoke.result }}
+        run: |
+          echo "smoke shards: $RESULT"
+          test "$RESULT" = success
+
   mcp:
     name: MCP server
     needs: changes

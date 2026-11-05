@@ -8,7 +8,7 @@ Lime Slice is a filament slicer and a solid modeler in one Tauri 2 window, with 
 
 | Skill | Use it to |
 |---|---|
-| `land-pr` | open a PR, watch its CI, and merge it. Auto-merge waits for only three required checks, so arm it after the smoke shards pass. |
+| `land-pr` | open a PR, watch its CI, and merge it. Required checks include the "Playwright smoke" gate, so auto-merge can be armed at once. |
 | `verify-ui` | prove a UI, e2e, unit, or MCP change on this machine: build first, headless Chromium only, the right specs, screenshots in the owner's view. |
 | `release` | bump the version everywhere (`Cargo.lock` included), tag the merge commit, and attach notes to the draft. Never publish. |
 
@@ -32,3 +32,4 @@ Project memory (`~/.claude/projects/C--Users-marius-lime-slice/memory/`) holds t
 | 2026-10-23 | Added `land-pr`, `verify-ui`, `release` and this file | `.claude/skills/`, `CLAUDE.md` | A harness review found the repeated procedures living only as notes in memory. #407 merged with red smoke shards, and the 3.6.0 bump failed every `--locked` CI job on a stale `Cargo.lock`. |
 | 2026-10-28 | Shortened the `land-pr` and `verify-ui` descriptions | `.claude/skills/` | Descriptions load into every chat; the owner asked to cut context without losing triggers. |
 | 2026-10-29 | Added the "Target crashed is a kill" and missing-locator traps to `verify-ui` | `.claude/skills/verify-ui/SKILL.md` | Two sessions reported page crashes (Split to print, large exports) that were shell `timeout` SIGTERMs and a machine-wide `Stop-Process chrome-headless-shell`. |
+| 2026-11-05 | "Playwright smoke" gate job; `land-pr` auto-merge note | `.github/workflows/ci.yml`, `.claude/skills/land-pr/SKILL.md`, this file | Requiring the four shard names blocked bump-only PR #586: a skipped matrix job reports its name unexpanded. |
