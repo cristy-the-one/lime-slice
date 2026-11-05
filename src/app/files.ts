@@ -494,6 +494,7 @@ export function withPrinterGcode(gcode: string, run?: RunMeta) {
     endGcode: spliceText(picked.printer.endGcode, legacyStockEnd(picked.printer.name)),
     startOwnsHoming: picked.printer.startOwnsHoming,
     heat,
+    filamentDiameter: picked.filament.diameterMm,
   });
 }
 

@@ -19,6 +19,8 @@ export interface StampedFile {
   endGcode: string;
   startOwnsHoming: boolean;
   heat: Heat;
+  /** The filament's diameter in mm, for the purge line's width. */
+  filamentDiameter?: number;
 }
 
 export interface PrintFile extends StampedFile {
@@ -38,6 +40,7 @@ export function stampedPrinterGcode(input: StampedFile): string {
   return withMachineGcode(stamped, input.startGcode, input.endGcode, {
     startOwnsHoming: input.startOwnsHoming,
     heat: { bedC: input.heat.bedC, nozzleC: input.heat.nozzleC },
+    filamentDiameter: input.filamentDiameter,
     notes: heatNotes(input.heat),
   });
 }

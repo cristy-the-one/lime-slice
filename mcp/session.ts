@@ -10018,6 +10018,7 @@ export class Session {
       endGcode: printer.endGcode,
       startOwnsHoming: printer.startOwnsHoming,
       heat,
+      filamentDiameter: filament.diameterMm,
     });
   }
 }
