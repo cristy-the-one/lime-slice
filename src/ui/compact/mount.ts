@@ -484,6 +484,11 @@ function applyHeights(sheetPx: number, animate: boolean) {
   root.style.setProperty("--compact-sheet", hidden || !showSheet ? "0px" : `${Math.round(sheetPx)}px`);
 }
 
+/** Model's dock and Inspect arrive with the Model module: on the phone they go where `enter` put them. */
+export function adoptCompactModel() {
+  if (active) enterModel();
+}
+
 function sync() {
   const on = document.documentElement.classList.contains("layout-compact");
   if (on === active) {

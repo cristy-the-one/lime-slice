@@ -3,8 +3,9 @@
 # Format: `<path> :: <the sink's line, trimmed>`. Write a reason above each entry. New markup that carries a name, a
 # file, a plugin header, MCP or engine text uses setHtml(el, html`…`) from src/ui/html.ts instead of a new line here.
 
-# The app shell: constants, plus the built-in screw and font lists (TEXT_FONTS, SCREWS), never user data.
-src/app/markup.ts :: root.innerHTML = `
+# The Model workspace's markup, written as its module loads: constants, plus the built-in screw, primitive and font
+# lists (SCREWS, PRIMITIVES, TEXT_FONTS), never user data. (The app shell in src/app/markup.ts is a plain literal now.)
+src/app/model/markup.ts :: for (const [anchor, where, markup] of PARTS) document.querySelector(anchor)!.insertAdjacentHTML(where, markup);
 
 # The settings and results docks: composed of builders. The ones that carry names return `html` (the profile list,
 # the printer pick, the object list, the heat note); the rest escape every engine or file string with escapeHtml.

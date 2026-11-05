@@ -45,7 +45,7 @@ import { readPaint } from "./support-paint.ts";
 import type { SiteSpec } from "./support-edits.ts";
 import { readSummary, readThumbnail, summaryForWire, thumbnailForWire, type ProjectSummary, type ProjectThumbnail } from "./project-thumb.ts";
 import { PARAM_NAME } from "./modeling/expr.ts";
-import { exportsPieces } from "./split-print.ts";
+import { exportsPieces } from "./split-pieces.ts";
 import type { NodeId } from "./model-tree.ts";
 import { readAssemblies, type Assembly } from "./assembly.ts";
 

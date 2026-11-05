@@ -73,7 +73,8 @@ const cut = (patch: Partial<CardCut> = {}): CardCut => ({ mode: "x", value: 100,
 const command = COMMANDS.find((row) => row.id === "model-split-print");
 eq("Split to print is a Model command with no key, and D10's keywords", command ? [command.label, command.group, command.keys ?? [], command.keywords] : null, ["Split to print", "Model", [], "split cut connector peg dowel bed resin export"]);
 check("it is not a toolbar tool", !(MODEL_TOOLS as readonly string[]).some((tool) => /partition|split-print/.test(tool)));
-const markup = readFileSync(new URL("./app/markup.ts", import.meta.url), "utf8");
+// Model's markup, written when its module loads (src/app/model/markup.ts).
+const markup = readFileSync(new URL("./app/model/markup.ts", import.meta.url), "utf8");
 check("its menu item comes after Stress", /id="modelMenuStress"[^\n]*\n[^\n]*\n\s*<button id="modelMenuSplitPrint" type="button" role="menuitem"[^>]*>Split to print…<\/button>/.test(markup));
 check("the card's title stays within 40 characters", SPLIT_PRINT_TITLE.length <= 40);
 

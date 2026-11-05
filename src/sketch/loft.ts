@@ -9,7 +9,7 @@
 import { loftOp } from "../model-request.ts";
 import type { BooleanKind, LoftDrawing, LoftOp, LoftSection, ProfileLoop as EngineLoop, ProfileSegment as EngineSegment, Vec2, Vec3 } from "../model-tree.ts";
 import { frameOf, toWorld } from "./frame.ts";
-import { addCircle, emptySketch, readSketch, sketchJson, type Pt, type SketchData } from "./model.ts";
+import { addCircle, emptySketch, sketchJson, type Pt, type SketchData } from "./model.ts";
 import { loopSignedArea, toLoops, type ProfileLoop, type Region } from "./regions.ts";
 import { tooManyHoles, type ModeChoice, type ResolvedMode } from "./extrude.ts";
 import { copyLoop, drawLoop, lineLoop, sampleLoopPoints, sentence } from "./loops.ts";
@@ -186,58 +186,8 @@ export function readFaceLoops(body: unknown): FaceLoops | { error: string } {
   return { origin, turn, loops };
 }
 
-/**
- * Optional `drawing` on a saved loft. Undefined when it is absent or unreadable, so the loft
- * still opens and an older file is unchanged.
- */
-export function readLoftDrawing(value: unknown): LoftDrawing | undefined {
-  if (!isRecord(value)) return undefined;
-  const drawing: LoftDrawing = {};
-  if (value.sketches !== undefined) {
-    if (!Array.isArray(value.sketches)) return undefined;
-    const sketches: (SketchData | null)[] = [];
-    for (const raw of value.sketches) {
-      if (raw === null) {
-        sketches.push(null);
-        continue;
-      }
-      const sketch = readSketch(raw);
-      if (!sketch) return undefined;
-      sketches.push(sketch);
-    }
-    drawing.sketches = sketches;
-  }
-  if (value.sweep !== undefined) {
-    if (!isRecord(value.sweep)) return undefined;
-    const profile = readSketch(value.sweep.profile);
-    const pathSketch = value.sweep.pathSketch === undefined ? undefined : readSketch(value.sweep.pathSketch);
-    if (!profile || (value.sweep.pathSketch !== undefined && !pathSketch)) return undefined;
-    if (!Array.isArray(value.sweep.path) || value.sweep.path.length < 2) return undefined;
-    const path: Vec3[] = [];
-    for (const raw of value.sweep.path) {
-      const point = vec(raw);
-      if (!point) return undefined;
-      path.push(point);
-    }
-    const scale = readScale(value.sweep.scale, path.length);
-    if (!scale) return undefined;
-    let edges: number[] | undefined;
-    if (value.sweep.edges !== undefined) {
-      if (!Array.isArray(value.sweep.edges) || value.sweep.edges.some((edge) => typeof edge !== "number" || !Number.isInteger(edge) || edge < 0)) return undefined;
-      edges = [...value.sweep.edges];
-    }
-    drawing.sweep = { profile, path, scale, ...(value.sweep.scaleAtEnd === true ? { scaleAtEnd: true as const } : {}), ...(pathSketch ? { pathSketch } : {}), ...(edges && edges.length > 0 ? { edges } : {}) };
-  }
-  if (!drawing.sketches && !drawing.sweep) return undefined;
-  return drawing;
-}
-
-function readScale(value: unknown, count: number): number | number[] | null {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-  if (!Array.isArray(value) || value.length !== count) return null;
-  if (!value.every((item) => typeof item === "number" && Number.isFinite(item) && item > 0)) return null;
-  return [...value];
-}
+// Read from a project file too, so it lives in ./loft-file.ts, which needs none of the loft's code.
+export { readLoftDrawing } from "./loft-file.ts";
 
 function readLoops(value: unknown): EngineLoop[] | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > 32) return null;

@@ -7,15 +7,13 @@ import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { setHtml } from "../ui/html";
 import { isAlignRelation } from "../place-snap";
-import { commonVolume, requestModelCheck } from "./model";
 import { measureClashes } from "./assemblies.ts";
-import { revealStress } from "../ui/stress.ts";
 import { separateShells } from "./shell-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { state, type CardId } from "./state";
-import { commitSplit, draw, layerGcode, model, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
+import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
 import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail, loadNamed, pickAddedMesh, place, plateHasMesh, saveText, setOrientAngle, setPlaceCenter, withPrinterGcode } from "./files";
@@ -51,12 +49,10 @@ import {
   setModifierTool,
 } from "./override-actions";
 import { setModifierOpen } from "../ui/overrides-panel";
-import { setInspectPlateActions } from "../ui/model-inspect";
 import { toggleDock } from "../ui/splitters";
 import { pushToast } from "../ui/toasts";
-import { importPluginFiles } from "../ui/plugin-import";
-import { openPluginsPanel } from "../ui/plugins-panel";
-import { isPluginFileName } from "../plugins/share";
+import { isPluginFileName } from "../plugins/file-name";
+import { loadModel, withModel } from "./workspaces";
 import { currentRules } from "./rules";
 import { turnOnSupports } from "./support-actions";
 import {
@@ -201,8 +197,6 @@ export function wireApp() {
     if (!id || state.query.trim()) return;
     noteGroupToggle(id, details.open);
   }, true);
-  // --- E3. Inspect's plate rows: the same actions as the Prepare list, which Model hides.
-  setInspectPlateActions({ select: selectPlateObject, frame: framePlateObject, check: requestModelCheck, remove: removePlateObject, duplicate: duplicatePlateObject, add: pickAddedMesh });
   document.querySelector("#left")!.addEventListener("click", (ev) => {
     const raw = ev.target as HTMLElement;
     // An icon button is hit on its svg; the button is what the ids below name.
@@ -277,7 +271,7 @@ export function wireApp() {
     if (plateStress) {
       selectPlateObject(plateStress);
       setStage("model");
-      revealStress();
+      withModel((model) => model.revealStress());
       return;
     }
     // --- Print transitions: the object list's stale-pose note.
@@ -293,7 +287,7 @@ export function wireApp() {
     }
     const plateCheck = t.closest<HTMLElement>("[data-plate-check]")?.dataset.plateCheck;
     if (plateCheck) {
-      requestModelCheck(plateCheck);
+      withModel((model) => model.requestModelCheck(plateCheck));
       return;
     }
     const plateFrame = t.closest<HTMLElement>("[data-plate-frame]")?.dataset.plateFrame;
@@ -315,7 +309,7 @@ export function wireApp() {
     if (measureButton) {
       measureButton.disabled = true;
       measureButton.textContent = "Measuring…";
-      void measureClashes(commonVolume);
+      void measureClashes(async (a, b) => (await loadModel()).commonVolume(a, b));
       return;
     }
     const assemblyLayout = t.closest<HTMLElement>("[data-assembly-layout]")?.dataset.assemblyLayout;
@@ -566,7 +560,7 @@ export function wireApp() {
     applyTheme((ev.target as HTMLSelectElement).value as ThemeChoice);
     view3d.setTheme();
     prepare.setTheme();
-    model.setTheme();
+    fx.model?.setTheme();
     draw();
   });
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {
@@ -709,10 +703,10 @@ export function wireApp() {
     // --- Plugin milestone 8: a plugin file dropped anywhere is an import (its code is shown before it is added).
     const plugins = files.filter((file) => isPluginFileName(file.name));
     if (plugins.length) {
-      void importPluginFiles(plugins).then((text) => {
+      void loadModel().then((model) => model.importPluginFiles(plugins)).then((text) => {
         if (!text) return;
         const bad = /not imported|could not|not a plugin|is an ingredient|larger than|read by the desktop app/.test(text);
-        pushToast(text, bad ? "error" : "info", bad ? undefined : { label: "Open Plugins", run: () => { setStage("model"); openPluginsPanel(); } });
+        pushToast(text, bad ? "error" : "info", bad ? undefined : { label: "Open Plugins", run: () => { setStage("model"); withModel((model) => model.openPluginsPanel()); } });
       });
       return;
     }

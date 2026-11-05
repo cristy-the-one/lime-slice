@@ -5,7 +5,7 @@
  * object's id instead.
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
-import { readLoftDrawing } from "./sketch/loft.ts";
+import { readLoftDrawing } from "./sketch/loft-file.ts";
 import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";

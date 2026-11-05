@@ -270,6 +270,30 @@ function setPointMeasure(on: boolean) {
   fx.prepare?.setPointMeasure(on);
 }
 
+/**
+ * Model's tool set and its foot (Undo, Redo, STEP) arrive with the Model module, after the rail: they take the places
+ * `mountToolRail` gave them when the app wrote them at start, before the gizmo nudge and over the dock toggle.
+ */
+export function adoptModelRail() {
+  const rail = document.querySelector<HTMLElement>("#toolRail");
+  if (!rail) return;
+  const model = document.querySelector<HTMLElement>("#railModel");
+  if (model && model.parentElement !== rail) {
+    const nudge = rail.querySelector(":scope > #gizmoNudge");
+    if (nudge) nudge.before(model);
+    else rail.append(model);
+    addRailFolds(model);
+  }
+  const modelFoot = document.querySelector<HTMLElement>("#railModelFoot");
+  const foot = rail.querySelector<HTMLElement>(":scope > .rail-foot");
+  if (modelFoot && foot && modelFoot.parentElement !== foot) foot.prepend(modelFoot);
+  // As `paintRailStage` shows the sets for the stage on screen.
+  const stage = document.documentElement.dataset.stage ?? "";
+  for (const set of [model, modelFoot]) if (set) set.hidden = !(set.dataset.for ?? "").split(" ").includes(stage);
+  rovingReset(rail);
+  fitRail();
+}
+
 export function paintRailStage(stage: Stage) {
   if (stage !== "prepare") setPointMeasure(false);
   document.documentElement.dataset.stage = stage;
@@ -365,9 +389,15 @@ const FOLD_ORDER = ["frame", "inspect", "features", "shape", "create"];
 let openFold: HTMLElement | null = null;
 
 function mountRailFolds(rail: HTMLElement) {
-  for (const group of rail.querySelectorAll<HTMLElement>(".rail-group[data-group]")) {
+  addRailFolds(rail);
+  mountFoldEvents(rail);
+}
+
+/** A fold button before each tool group in `root` that has none yet. */
+function addRailFolds(root: HTMLElement) {
+  for (const group of root.querySelectorAll<HTMLElement>(".rail-group[data-group]")) {
     const tools = group.querySelector<HTMLElement>(":scope > .rail-tools");
-    if (!tools) continue;
+    if (!tools || group.querySelector(":scope > .rail-fold")) continue;
     const name = group.getAttribute("aria-label") ?? "";
     tools.id ||= `railTools-${group.dataset.group}`;
     const fold = document.createElement("button");
@@ -379,6 +409,9 @@ function mountRailFolds(rail: HTMLElement) {
     fold.setAttribute("aria-controls", tools.id);
     tools.before(fold);
   }
+}
+
+function mountFoldEvents(rail: HTMLElement) {
   rail.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
     const fold = target?.closest<HTMLButtonElement>(".rail-fold");

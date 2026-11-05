@@ -24,13 +24,10 @@ import { loadMachineLibrary, storeMachineLibrary } from "./machine-library.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
-import { adoptHeldPieces, adoptSavedTrees, captureOpenSolid, historyToSave, noteParametersBuilt, warmHeldPieces, type HeldToSave } from "./model.ts";
+import { loadModel, modelApi, withModel } from "./workspaces.ts";
+import type { HeldToSave, historyToSave } from "./model.ts";
 import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
 import { copyWorkplane } from "../workplane.ts";
-import { projectCopies, stampedShas } from "../plugins/library.ts";
-import { loadLibrary, openPluginsPanel, pluginLibrary } from "../ui/plugins-panel.ts";
-import { projectPluginsOffer } from "../ui/plugin-import.ts";
-import { libraryIo } from "../plugins/library.ts";
 import { setStage } from "./viewer.ts";
 import { cloneStudy } from "../sim/study.ts";
 import { solidFileName } from "../model-request.ts";
@@ -41,7 +38,6 @@ import { setProjectTitle } from "./project-title.ts";
 import { projectFileName } from "../project-file-name.ts";
 import { session, state } from "./state.ts";
 import { dropProjectFonts, shelf } from "./user-fonts.ts";
-import { closeStress } from "../ui/stress.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
 
 /** A picture opened with the file. Kept when a later save cannot draw and the geometry is unchanged. */
@@ -52,10 +48,12 @@ export async function saveCurrentProject() {
     pushToast("Load a mesh before saving a project.", "info");
     return;
   }
-  await captureOpenSolid();
+  // Model holds the open solid, the trees and the plugin library a save writes: it loads first, if it had not.
+  const model = await loadModel();
+  await model.captureOpenSolid();
   // The trees are matched to the plate's meshes as written below.
   syncPlateFromState();
-  const history = await historyToSave();
+  const history = await model.historyToSave();
   syncPlateFromState();
   const project: LimeProject = {
     version: 1,
@@ -86,7 +84,7 @@ export async function saveCurrentProject() {
   // --- A8. The record opened with the project, so a later save still carries its recipes. ---
   if (session.mcpModel) project.mcpModel = session.mcpModel;
   // --- Plugins (D9): a stamp whose code only the library holds gets a copy here, so the project rebuilds anywhere.
-  const plugins = projectCopies(session.plugins, stampedShas(project.objects), pluginLibrary());
+  const plugins = model.projectCopies(session.plugins, model.stampedShas(project.objects), model.pluginLibrary());
   if (plugins) project.plugins = plugins;
   // --- Text milestone 4 (D5): the fonts of the person's that texts use go in the project, whole, or as the outlines of the
   // letters used when the font's licence forbids embedding it.
@@ -171,9 +169,20 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     pushToast("The mesh in this project is damaged.", "error", { label: "Retry", run: openProjectPicker });
     return false;
   }
+  // A project with Model steps replays them in Model: Model loads before anything of the project is taken, so the
+  // plate never shows its parts before their steps.
+  const steps = !!project.objects?.some((obj) => obj.modelTree) || (project.modelTools?.length ?? 0) > 0 || (project.heldPieces?.length ?? 0) > 0;
+  if (steps) {
+    try {
+      await loadModel();
+    } catch (err) {
+      pushToast(`Model could not load, so this project was not opened: ${err instanceof Error ? err.message : String(err)}`, "error", { label: "Retry", run: openProjectPicker });
+      return false;
+    }
+  }
   session.projectRestoring = true;
   // The last study's colours, deformed copy and Preview cells belong to the old plate.
-  closeStress();
+  modelApi()?.closeStress();
   clearStressCells();
   // --- A8. Kept before the meshes load, and still there if that load is replaced by a later open. ---
   session.mcpModel = project.mcpModel;
@@ -219,10 +228,12 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
         return false;
       }
       if (session.docEpoch !== doc) return false;
+      // Model has loaded if the file has steps (above); a plate without steps needs none of it.
+      const model = modelApi();
       state.plate = loaded.plate;
       applySelectedToState(loaded.plate);
-      adoptSavedTrees(loaded.trees, project.modelTools ?? []);
-      adoptHeldPieces(loaded.pieces);
+      model?.adoptSavedTrees(loaded.trees, project.modelTools ?? []);
+      model?.adoptHeldPieces(loaded.pieces);
       unread.push(...loaded.unread);
       // An Add that started while these meshes were loading was aimed at the plate this replaced.
       session.meshEpoch += 1;
@@ -240,11 +251,11 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
     if (fontNotes.length > 0) pushToast(fontNotes.join(" "), "info");
     const custom = customGcodeNotice(state.layerActions);
     if (custom) pushToast(custom, "info");
-    noteParametersBuilt();
+    modelApi()?.noteParametersBuilt();
     void offerProjectPlugins(project.plugins, doc);
     // After the open, not in it: the held pieces' solids are cut again while the plate is already in use.
     window.setTimeout(() => {
-      if (session.docEpoch === doc) warmHeldPieces();
+      if (session.docEpoch === doc) modelApi()?.warmHeldPieces();
     }, 0);
     return true;
   } finally {
@@ -257,10 +268,12 @@ async function restoreProject(project: LimeProject): Promise<boolean> {
  * (the Plugins panel's "In this project", where Add to library shows each one's code first); never add them silently.
  */
 async function offerProjectPlugins(plugins: Record<string, string> | undefined, doc: number) {
-  if (!plugins || Object.keys(plugins).length === 0 || !(await libraryIo())) return;
-  const offer = await projectPluginsOffer(plugins, await loadLibrary());
+  if (!plugins || Object.keys(plugins).length === 0) return;
+  const model = await loadModel();
+  if (!(await model.libraryIo())) return;
+  const offer = await model.projectPluginsOffer(plugins, await model.loadLibrary());
   if (!offer || session.docEpoch !== doc) return;
-  pushToast(offer.text, "info", { label: "Review", run: () => { setStage("model"); openPluginsPanel(); } });
+  pushToast(offer.text, "info", { label: "Review", run: () => { setStage("model"); withModel((open) => open.openPluginsPanel()); } });
 }
 
 function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof historyToSave>>): { objects: PlateFileObject[]; tools: ToolTree[]; pieces: HeldPiece[] } {

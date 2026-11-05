@@ -3,7 +3,7 @@ import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObjec
 import { fx } from "./fx.ts";
 import { place } from "./files.ts";
 import { flushEdit, noteEdit } from "./history.ts";
-import { commitModel, exportAssemblyStep, followSelection, frameInModel } from "./model.ts";
+import { loadModel, modelApi, withModel } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { state } from "./state.ts";
 import { attachTo, liveAssemblies, ungroup } from "./assemblies.ts";
@@ -18,7 +18,7 @@ import { renderChrome } from "./settings.ts";
 /** An exact copy of the selected object: same mesh, pose, paint, and overrides. In model space it sits beside the original. */
 export function duplicatePlateObject() {
   if (!state.mesh || !state.sourcePos || !state.plate.selectedId) return;
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
   const next = addedCopy(state.plate);
@@ -27,19 +27,19 @@ export function duplicatePlateObject() {
   applySelectedToState(state.plate);
   place();
   flushEdit();
-  followSelection();
+  modelApi()?.followSelection();
 }
 
 export function removePlateObject(id: string) {
   if (state.plate.objects.length <= 1) return;
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
   state.plate = withoutObject(state.plate, id);
   applySelectedToState(state.plate);
   place();
   flushEdit();
-  followSelection();
+  modelApi()?.followSelection();
   if (state.plate.objects.length === 1) frameSelection();
 }
 
@@ -50,7 +50,7 @@ export function removePlateObject(id: string) {
 export function attachPlateObject(id: string): string | null {
   const parent = state.plate.selectedId;
   if (!parent || parent === id) return null;
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
   const refused = attachTo(id, parent);
@@ -79,7 +79,7 @@ export function ungroupAssembly(id: string) {
 export function layOutAssembly(id: string) {
   const assembly = liveAssemblies().find((row) => row.id === id);
   if (!assembly) return;
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
   const members = new Set(assembly.members.map((row) => row.object));
@@ -100,8 +100,8 @@ export function layOutAssembly(id: string) {
 export async function exportAssembly(id: string) {
   const assembly = liveAssemblies().find((row) => row.id === id);
   if (!assembly) return;
-  commitModel();
-  const done = await exportAssemblyStep(assembly);
+  modelApi()?.commitModel();
+  const done = await (await loadModel()).exportAssemblyStep(assembly);
   pushToast(done.message, done.ok ? "info" : "error");
 }
 
@@ -109,20 +109,20 @@ export function selectPlateObject(id: string) {
   if (state.plate.selectedId === id) return;
   if (!state.plate.objects.some((obj) => obj.id === id)) return;
   // The live state is about to become the other object's, so the open solid's shown step lands first.
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
   state.plate = { ...state.plate, selectedId: id };
   applySelectedToState(state.plate);
   place();
   flushEdit();
-  followSelection();
+  modelApi()?.followSelection();
 }
 
 /** Frame the named solid in the view on screen: the plate, or model space in Model. Selection, when it changes, is the only undo step. */
 export function framePlateObject(id: string) {
   if (!state.plate.objects.some((obj) => obj.id === id)) return;
-  if (state.stage === "model") frameInModel(id);
+  if (state.stage === "model") withModel((model) => model.frameInModel(id));
   if (state.plate.selectedId !== id) selectPlateObject(id);
   if (state.stage !== "model") frameSelection();
 }
@@ -145,7 +145,7 @@ const CLEARANCE_SLACK_MM = 0.01;
 
 export function arrangePlate() {
   if (state.plate.objects.length < 2) return;
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
   const prior = state.plate.objects.map((obj) => ({ id: obj.id, x: obj.offset.x, y: obj.offset.y, centered: obj.centered }));
@@ -180,7 +180,7 @@ export function alignSelectedTo(targetId: string, relation: AlignRelation): bool
   if (!box) return false;
   const delta = alignDelta(moving, box, relation, targetId === "bed");
   if (!delta || delta.every((d) => d === 0)) return false;
-  commitModel();
+  modelApi()?.commitModel();
   noteEdit();
   nudgePlacement("x", delta[0]);
   nudgePlacement("y", delta[1]);

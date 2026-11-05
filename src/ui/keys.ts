@@ -56,6 +56,22 @@ function pressesControl(ev: KeyboardEvent): boolean {
 }
 
 export function mountKeys() {
+  window.addEventListener("keydown", (ev) => {
+    if (ev.defaultPrevented || document.documentElement.dataset.overlay) return;
+    if (pressesControl(ev)) return;
+    const command = resolveKey(ev, keyContext(ev));
+    if (!command || command.id.startsWith("sketch-")) return;
+    ev.preventDefault();
+    runCommand(command.id);
+  });
+}
+
+/**
+ * The sketch's keys, which only the Model module's sketch handles: registered as that module mounts, after its own
+ * capture listeners (the Tab of the extrude's fields, the size box), in the order they had when everything mounted at
+ * start.
+ */
+export function mountSketchKeys() {
   // Capture, and only for the sketch: it has to run before the size box takes Tab. A sketch command
   // that returns false (Tab between the box's fields) is left for that box.
   window.addEventListener("keydown", (ev) => {
@@ -74,12 +90,4 @@ export function mountKeys() {
     ev.preventDefault();
     ev.stopImmediatePropagation();
   }, true);
-  window.addEventListener("keydown", (ev) => {
-    if (ev.defaultPrevented || document.documentElement.dataset.overlay) return;
-    if (pressesControl(ev)) return;
-    const command = resolveKey(ev, keyContext(ev));
-    if (!command || command.id.startsWith("sketch-")) return;
-    ev.preventDefault();
-    runCommand(command.id);
-  });
 }
