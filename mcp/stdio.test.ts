@@ -217,7 +217,7 @@ const sdk = new StdioClientTransport({
 const client = new Client({ name: "lime-mcp-test", version: "0.0.0" });
 await client.connect(sdk);
 const listed = await client.listTools();
-check("the SDK client lists tools", listed.tools.length >= 30, String(listed.tools.length));
+check("the SDK client lists the core tools by default", listed.tools.length >= 25 && listed.tools.some((tool) => tool.name === "tools_enable"), String(listed.tools.length));
 check("every tool has annotations", listed.tools.every((tool) => tool.annotations && typeof tool.annotations.readOnlyHint === "boolean"));
 check("initialize carries instructions", (client.getInstructions() ?? "").includes("faces_find") && (client.getInstructions() ?? "").includes("slice_wait"));
 const info = await client.callTool({ name: "session_info", arguments: {} });
@@ -291,7 +291,7 @@ check("a ping after a malformed line is answered", ping.id === 2 && ping.result 
 check("the process is still alive", broken.child.exitCode === null);
 broken.child.kill();
 
-// Tool groups: off by default, opt-in with LIME_MCP_TOOL_GROUPS=1.
+// Tool groups: on by default, LIME_MCP_TOOL_GROUPS=0 lists every tool.
 {
   type Row = { id?: number; method?: string; result?: { capabilities?: { tools?: { listChanged?: boolean } }; tools?: { name: string }[]; content?: { text?: string }[] } };
   const listNames = async (io: RawClient, id: number): Promise<string[]> => {
@@ -303,15 +303,15 @@ broken.child.kill();
   };
   const init = { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } };
 
-  const plain = startRaw();
+  const plain = startRaw({ LIME_MCP_TOOL_GROUPS: "0" });
   plain.send(rpc(1, "initialize", init));
   const plainInit = JSON.parse(await plain.next()) as Row;
   const plainNames = await listNames(plain, 2);
-  check("without groups, initialize does not offer list changes", plainInit.result?.capabilities?.tools?.listChanged === undefined, JSON.stringify(plainInit.result?.capabilities));
-  check("without groups, every tool is listed and tools_enable is not", plainNames.includes("model_apply") && plainNames.includes("calibration_tower") && !plainNames.includes("tools_enable") && plainNames.length > 80, String(plainNames.length));
+  check("with LIME_MCP_TOOL_GROUPS=0, initialize does not offer list changes", plainInit.result?.capabilities?.tools?.listChanged === undefined, JSON.stringify(plainInit.result?.capabilities));
+  check("with LIME_MCP_TOOL_GROUPS=0, every tool is listed and tools_enable is not", plainNames.includes("model_apply") && plainNames.includes("calibration_tower") && !plainNames.includes("tools_enable") && plainNames.length > 80, String(plainNames.length));
   plain.child.kill();
 
-  const grouped = startRaw({ LIME_MCP_TOOL_GROUPS: "1" });
+  const grouped = startRaw();
   grouped.send(rpc(1, "initialize", init));
   const groupedInit = JSON.parse(await grouped.next()) as Row;
   check("with groups, initialize declares tools.listChanged", groupedInit.result?.capabilities?.tools?.listChanged === true, JSON.stringify(groupedInit.result?.capabilities));
@@ -330,19 +330,27 @@ broken.child.kill();
       break;
     }
   }
-  check("a tool of a group not enabled says how to enable it", hiddenText.includes("model_apply is in the model group, which is not enabled. Call tools_enable {groups:[\\\"model\\\"]}"), hiddenText);
-  grouped.send(rpc(4, "tools/call", { name: "tools_enable", arguments: { groups: ["model"] } }));
+  check("a call to a tool of a closed group opens the group and runs", hiddenText.includes("groupOpened") && hiddenText.includes("model") && !hiddenText.includes("not enabled"), hiddenText);
+  let relisted = false;
+  grouped.send(rpc(30, "tools/list"));
+  for (;;) {
+    const row = JSON.parse(await grouped.next()) as Row;
+    if (row.method === "notifications/tools/list_changed") continue;
+    if (row.id === 30) { relisted = (row.result?.tools ?? []).some((tool) => tool.name === "model_apply"); break; }
+  }
+  check("the opened group is in the next list", relisted);
+  grouped.send(rpc(4, "tools/call", { name: "tools_enable", arguments: { groups: ["paint"], schemas: true } }));
   let changed = false;
   let enabledText = "";
-  for (let i = 0; i < 3 && !enabledText; i += 1) {
+  for (let i = 0; i < 4 && !enabledText; i += 1) {
     const row = JSON.parse(await grouped.next()) as Row;
     if (row.method === "notifications/tools/list_changed") changed = true;
     if (row.id === 4) enabledText = row.result?.content?.[0]?.text ?? "";
   }
   check("tools_enable sends notifications/tools/list_changed", changed, enabledText);
-  check("tools_enable names the tools it added", enabledText.includes("model_apply") && enabledText.includes("\"enabled\":[\"model\"]"), enabledText);
+  check("tools_enable names the tools it added", enabledText.includes("paint_supports") && enabledText.includes("inputSchema") && enabledText.includes("\"enabled\":[\"model\",\"paint\"]"), enabledText);
   const nextList = await listNames(grouped, 5);
-  check("the next tools/list has the model group", nextList.includes("model_apply") && nextList.includes("faces_find") && !nextList.includes("paint_supports"), nextList.join(","));
+  check("the next tools/list has the opened groups only", nextList.includes("model_apply") && nextList.includes("paint_supports") && !nextList.includes("calibration_tower"), nextList.join(","));
   grouped.child.kill();
 }
 
