@@ -2,8 +2,7 @@ import { assemblyView, nudgeAssembled } from "./assemblies.ts";
 import { fx } from "./fx";
 import { geomWorker, worker, state, session, type PreviewLayer, type SliceResponse } from "./state";
 import { createPrepareView } from "../prepare-view";
-import { createModelView, type ModelView } from "../model-view";
-import { bindModelView, leaveModel, showModel } from "./model";
+import { modelApi, withModel } from "./workspaces";
 import { createSliceView, type SliceView3d } from "../view3d";
 import { setPlateThumbnailCapture } from "./thumb-capture";
 import { FEATURE_LABEL, colorForPath, colorForReading, readsStress } from "../colors";
@@ -531,7 +530,7 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   const enteringModel = state.stage !== "model" && stage === "model";
   if (leavingModel) {
     flushEdit();
-    leaveModel();
+    modelApi()?.leaveModel();
   }
   if (enteringModel) {
     flushEdit();
@@ -558,7 +557,11 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
   paintStatus();
   resize();
   paintSpark();
-  if (stage === "model") showModel();
+  // Model shows its solid once it has loaded: at once when it is there, else as its module mounts (an empty frame till then).
+  if (stage === "model") {
+    if (modelApi()) modelApi()!.showModel();
+    else withModel(() => undefined);
+  }
   if (enteringModel) showModelPause(!!state.result);
   else if (leavingModel) {
     if (stage === "prepare" && modelVisitChanged()) session.askSlice = true;
@@ -1363,7 +1366,6 @@ export function fitNarrow() {
 
 export let view3d: SliceView3d;
 export let prepare: ReturnType<typeof createPrepareView>;
-export let model: ModelView;
 
 export function mountViews() {
   const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
@@ -1371,9 +1373,6 @@ export function mountViews() {
   view3d = createSliceView(document.querySelector<HTMLCanvasElement>("#view3d")!);
   setPlateThumbnailCapture(() => view3d.captureThumbnail());
   prepare = createPrepareView(document.querySelector<HTMLCanvasElement>("#prepare")!);
-  model = createModelView(document.querySelector<HTMLCanvasElement>("#model")!);
-  fx.model = model;
-  bindModelView();
   flatPane = document.querySelector<HTMLElement>("#pane2d")!;
   flatMeasure = mountMeasureOverlay(flatPane);
   // The scale bar has a band under the layer, so a layer fitted to the canvas never reaches it.
@@ -1385,7 +1384,6 @@ export function mountViews() {
   const sparkCanvas = document.querySelector<HTMLCanvasElement>("#spark");
   if (sparkCanvas) new ResizeObserver(() => paintSpark()).observe(sparkCanvas);
   prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
-  model.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   view3d.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
   prepare.setBedOpacity(state.bedOpacity);
   view3d.setBedOpacity(state.bedOpacity);

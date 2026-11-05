@@ -13,7 +13,7 @@ import { mountBridge } from "./app/bridge-mount";
 import { mountOpenFile } from "./app/open-file";
 import { mountToasts } from "./ui/toasts";
 import { session, state } from "./app/state";
-import { activeSection, draw, fitNarrow, model, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
+import { activeSection, draw, fitNarrow, mountViews, paintGizmoReadout, prepare, previewCenter, resize, selectedObjectIndex, setHelp, setStage, setView, view3d } from "./app/viewer";
 import { probe, renderChrome } from "./app/settings";
 import { runSlice, treeSupports } from "./app/slice-run";
 import { turnOnSupports } from "./app/support-actions";
@@ -47,8 +47,8 @@ import { mountReinforcePaint } from "./ui/reinforce-ui";
 import { fx } from "./app/fx";
 import { plateListed } from "./plate";
 import { mountMarkup } from "./app/markup";
-import "./app/modeling";
 import { wireApp } from "./app/wire";
+import { prefetchWorkspaces } from "./app/workspaces";
 
 mountMarkup(document.querySelector("#app")!);
 mountViews();
@@ -61,7 +61,7 @@ applyTheme(loadTheme());
 onSchemeChange(() => {
   view3d.setTheme();
   prepare.setTheme();
-  model.setTheme();
+  fx.model?.setTheme();
   draw();
 });
 renderChrome();
@@ -69,7 +69,6 @@ fitNarrow();
 resize();
 view3d.setTheme();
 prepare.setTheme();
-model.setTheme();
 mountChrome({
   stage: () => state.stage,
   viewMode: () => state.viewMode,
@@ -223,3 +222,5 @@ if (startStage(storedSettingsLevel(), !!state.mesh) === "prepare") setStage("pre
 syncEmptyState(!!state.mesh);
 resize();
 void probe();
+// Model, Sketch, Stress, Split to print and Plugins load once the window is idle after this first paint, or on first use.
+prefetchWorkspaces();

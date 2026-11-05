@@ -8,7 +8,7 @@ import { emptyPlate, resetHeldGeometry } from "../plate.ts";
 import { clearEdits } from "../support-edit-list.ts";
 import { applyActivePrinter, launchSettingsLevel } from "./machine-actions.ts";
 import { beginModelVisit, clearEditHistory } from "./history.ts";
-import { forgetModelTrees, noteParametersBuilt, showModel } from "./model.ts";
+import { modelApi } from "./workspaces.ts";
 import { forgetSavedThumbnail, saveCurrentProject } from "./project-io.ts";
 import { setProjectTitle } from "./project-title.ts";
 import { resetBridgeMirror } from "./bridge-mount.ts";
@@ -19,7 +19,6 @@ import { session, state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 import { fx } from "./fx.ts";
 import { dropProjectFonts } from "./user-fonts.ts";
 import { dropShownPreview, setStage, stopPlay } from "./viewer.ts";
-import { closeStress } from "../ui/stress.ts";
 import { clearStressCells } from "../sim/stress-cells.ts";
 
 export async function newProject() {
@@ -71,7 +70,7 @@ function askUnsaved(): Promise<SaveChoice | null> {
 export function blankProject() {
   session.docEpoch += 1;
   // The last study's colours, deformed copy and Preview cells belong to the old plate.
-  closeStress();
+  modelApi()?.closeStress();
   clearStressCells();
   // --- A8. File > New drops the previous project's MCP record. ---
   session.mcpModel = undefined;
@@ -80,7 +79,7 @@ export function blankProject() {
   dropProjectFonts();
   session.parameters = {};
   session.assemblies = [];
-  noteParametersBuilt();
+  modelApi()?.noteParametersBuilt();
   const stayInModel = state.stage === "model";
   cancelSlice();
   dropWorkerMesh();
@@ -93,7 +92,7 @@ export function blankProject() {
   session.seamUi?.stop();
   session.reinforceUi?.stop();
   session.supportUi?.reset();
-  forgetModelTrees();
+  modelApi()?.forgetModelTrees();
   for (const key of presetKeys()) {
     (state as unknown as Record<string, unknown>)[key] = DEFAULT_PRESET[key];
   }
@@ -193,7 +192,8 @@ export function blankProject() {
   fx.paintSectionChrome?.();
   fx.paintGizmoReadout?.();
   const nextStage = blankDocument({ stage: state.stage, layerHeight: state.layerHeight, profileName: state.profile.name }).stage;
-  if (nextStage === "model") showModel();
+  // Before Model has loaded it shows the blank plate as it mounts.
+  if (nextStage === "model") modelApi()?.showModel();
   else if (state.stage !== "preview") setStage("preview");
   renderChrome();
   markProjectClean();

@@ -976,11 +976,10 @@ export const NEEDS_CUTS ="A partition needs at least one cut. model_probe with p
 
 /**
  * --- 3b, D12. A split to print for a printer this app does not slice for (a resin target): its pieces stay in Model,
- * off the plate, and are exported; none of them, and not the part as cut, reaches the slicer.
+ * off the plate, and are exported; none of them, and not the part as cut, reaches the slicer. In ./split-pieces.ts so a
+ * project reads without this module.
  */
-export function exportsPieces(op: ModelOp | null | undefined): boolean {
-  return op?.kind === "partition" && op.target !== undefined && op.target.process !== "fdm";
-}
+export { exportsPieces } from "./split-pieces.ts";
 
 /** What an Apply says of an export target's pieces. */
 export function exportedNote(printer: string): string {

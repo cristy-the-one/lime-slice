@@ -10,7 +10,7 @@ import { fnv1aHex } from "../slice-action.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { place } from "./files.ts";
 import { fx } from "./fx.ts";
-import { followSelection, releaseModelTrees } from "./model.ts";
+import { modelApi } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { markStale, renderChrome } from "./settings.ts";
 import { state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
@@ -99,12 +99,12 @@ function apply(message: BridgeMessage): void {
     state.plate = mirroredPlate(objects, result.selectId ?? state.plate.selectedId);
     applySelectedToState(state.plate);
   }
-  releaseModelTrees();
+  modelApi()?.releaseModelTrees();
   place("load");
   markStale();
   // A fresh window opens on Preview, and a changed plate makes any preview stale: show the plate. Model stays put.
   if (objects.length > 0 && state.stage !== "model" && state.stage !== "prepare") fx.setStage("prepare");
-  followSelection();
+  modelApi()?.followSelection();
   renderChrome();
 }
 

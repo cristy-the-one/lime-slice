@@ -1,13 +1,10 @@
 import { fx } from "../app/fx";
 import { redoUserEdit, undoUserEdit } from "../app/history";
 import { runSketchKey } from "../app/sketch-keys";
-import { frameModel } from "../app/model";
-import { escapeModel, openJoinTool } from "./model-chrome";
-import { editModelStep, toggleModelHistoryFocus } from "./model-history";
-import { toggleParameters } from "./parameters";
-import { revealStress } from "./stress.ts";
-import { togglePluginsPanel } from "./plugins-panel.ts";
-import { openSplitPrint } from "./split-print.ts";
+import { modelApi, withModel } from "../app/workspaces";
+// Model's styles stay in the first stylesheet, in the place they always had (its code loads on first use): the empty
+// Model frame hides Settings and Results before Model arrives, and no rule changes rank against another.
+import "./model-dock.css";
 import {
   askProfileName,
   deleteSettingsProfile,
@@ -279,7 +276,7 @@ export function fillHelpShortcuts(host: HTMLElement) {
     paint();
     search?.focus();
   });
-  paint();
+  // The rows (every workspace's, some 700 elements) are written as the sheet opens, which paints them afresh anyway.
 }
 
 function escapeHtml(text: string) {
@@ -318,8 +315,21 @@ function sliceFromKey(selector: string) {
   click(selector);
 }
 
+/**
+ * A command that works on Model's parts: the Model and sketch commands, and Undo and Redo while Model is on screen
+ * (they press its buttons). Before Model has loaded such a command waits for it, so a key pressed on its empty frame
+ * still lands.
+ */
+function needsModel(id: string): boolean {
+  return id.startsWith("model-") || id.startsWith("sketch-") || ((id === "undo" || id === "redo") && state.stage === "model");
+}
+
 /** Runs the command's own case, else clicks its `target`. */
 export function runCommand(id: string) {
+  if (needsModel(id) && !modelApi()) {
+    withModel(() => runCommand(id));
+    return;
+  }
   if (id.startsWith("sketch-")) {
     runSketchKey(id);
     return;
@@ -420,7 +430,7 @@ export function runCommand(id: string) {
       undoUserEdit();
       return;
     case "model-escape":
-      escapeModel();
+      withModel((model) => model.escapeModel());
       return;
     case "model-view-top":
       fx.model?.setCameraPreset("top");
@@ -432,32 +442,32 @@ export function runCommand(id: string) {
       fx.model?.setCameraPreset("iso");
       return;
     case "model-join":
-      openJoinTool();
+      withModel((model) => model.openJoinTool());
       return;
     case "model-reset-view":
       // The button sits in the View menu, which is hidden until it opens. Clicking it does nothing.
-      frameModel(false);
+      withModel((model) => model.frameModel(false));
       return;
     case "model-frame-all":
-      frameModel(true);
+      withModel((model) => model.frameModel(true));
       return;
     case "model-history":
-      toggleModelHistoryFocus();
+      withModel((model) => model.toggleModelHistoryFocus());
       return;
     case "model-edit-step":
-      editModelStep();
+      withModel((model) => model.editModelStep());
       return;
     case "model-parameters":
-      toggleParameters();
+      withModel((model) => model.toggleParameters());
       return;
     case "model-stress":
-      revealStress();
+      withModel((model) => model.revealStress());
       return;
     case "model-plugins":
-      togglePluginsPanel();
+      withModel((model) => model.togglePluginsPanel());
       return;
     case "model-split-print":
-      openSplitPrint();
+      withModel((model) => model.openSplitPrint());
       return;
     case "redo":
       // In Model this steps the solid's history only, never Prepare's, even with nothing left to redo.

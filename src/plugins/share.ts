@@ -64,10 +64,8 @@ export function exportName(id: string, version: number): string {
   return `${id}-v${version}${SHARE_SUFFIX}`;
 }
 
-/** Whether a dropped or picked file's name is a plugin file to import (`.lime-plugin.rs`, or a library `.rs`). */
-export function isPluginFileName(name: string): boolean {
-  return /\.rs$/i.test(name);
-}
+// Its own file, so the app's drop handler can ask without loading the plugin code.
+export { isPluginFileName } from "./file-name.ts";
 
 function lf(text: string): string {
   return text.replace(/\r\n?/g, "\n");

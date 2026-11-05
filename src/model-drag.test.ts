@@ -45,7 +45,8 @@ function nearVec(a: readonly number[], b: readonly number[], tol = 1e-6) {
 }
 
 // Checklist: every toolbar tool has a viewport drag for every number its panel shows.
-const markup = readFileSync(new URL("./app/markup.ts", import.meta.url), "utf8");
+// Model's markup, written when its module loads (src/app/model/markup.ts).
+const markup = readFileSync(new URL("./app/model/markup.ts", import.meta.url), "utf8");
 const toolbar = [...markup.matchAll(/class="model-tool"[^>]*data-tool="(\w+)"/g)].map((match) => match[1]!);
 check("the Model toolbar has tools", toolbar.length >= 7);
 for (const tool of toolbar) check(`${tool} is on the drag checklist`, (MODEL_TOOLS as readonly string[]).includes(tool));

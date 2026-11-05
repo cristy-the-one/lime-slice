@@ -17,7 +17,7 @@ import type { SliceResponse } from "./state";
 import { authHeaders, engineDownMessage } from "../ui/api-base";
 import { type SplitSync } from "../split-at";
 import { confirmDiscard, markProjectDirty } from "../project-dirty";
-import { noteParametersBuilt } from "./model.ts";
+import { modelApi } from "./workspaces.ts";
 import { setProjectTitle } from "./project-title";
 import { pushToast } from "../ui/toasts";
 import { clearEdits } from "../support-edit-list";
@@ -53,7 +53,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     dropProjectFonts();
     session.parameters = {};
     session.assemblies = [];
-    noteParametersBuilt();
+    modelApi()?.noteParametersBuilt();
   }
   state.mesh = { name, bytes };
   state.error = "";
