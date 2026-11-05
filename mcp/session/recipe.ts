@@ -23,6 +23,7 @@ import { presetProblem, readPreset } from "../nuggets.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { SESSION_URL } from "../session-url.ts";
 
 /**
  * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
@@ -31,7 +32,7 @@ import type { Session } from "../session.ts";
  * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
  */
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
-  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
+  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const host = this.recipeHost;
   const ready = host.available();
   if (!ready.ok) return { ok: false, reason: ready.reason };
@@ -498,7 +499,7 @@ function crateApi(this: Session): [number, number] {
   if (this.recipeApi) return this.recipeApi;
   let found: [number, number] = [1, 1];
   try {
-    const lib = readFileSync(join(recipeCrateDir(import.meta.url), "src", "lib.rs"), "utf8");
+    const lib = readFileSync(join(recipeCrateDir(SESSION_URL), "src", "lib.rs"), "utf8");
     const m = /pub const API: \(u32, u32\) = \((\d+), (\d+)\);/.exec(lib);
     if (m) found = [Number(m[1]), Number(m[2])];
   } catch {
@@ -514,7 +515,7 @@ function crateApi(this: Session): [number, number] {
  * stopped (an unwrap of None) needs a part.
  */
 async function recipeDescribe(this: Session, body: string, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
-  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
+  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const host = this.recipeHost;
   const ready = host.available();
   if (!ready.ok) return { reason: ready.reason };

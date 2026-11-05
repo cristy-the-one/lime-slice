@@ -10,6 +10,7 @@ import { lfOnly, RecipeHost, recipeCrateDir } from "../recipe.ts";
 import { OP_KINDS } from "../schema.ts";
 import { type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { SESSION_URL } from "../session-url.ts";
 
 /**
  * --- I16. nugget {action: find | get | save | remove, kind}: plugins, ingredients, presets and lessons in one tool
@@ -168,7 +169,7 @@ async function ingredientSave(this: Session, input: Record<string, unknown>): Pr
   const problem = bodyProblem(body);
   if (problem) return { ok: false, reason: `The ingredient was not kept: ${problem}` };
   // It builds alone, under lust, as a recipe that imports it would build it.
-  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
+  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const ready = this.recipeHost.available();
   if (!ready.ok) return { ok: false, reason: ready.reason };
   const sha256 = bodyHash(body);
