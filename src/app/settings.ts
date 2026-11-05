@@ -1252,11 +1252,11 @@ function profileHeaderHtml() {
         <option value="">Current</option>
         ${options}
       </select>
-      <button class="btn" id="profileSave" type="button">Save</button>
+      <button class="btn" id="profileSave" type="button" aria-label="Save settings profile" data-tip="Save these slicing settings as a settings profile. This is not the printer; the printer has its own Save printer lower down.">Save</button>
       <details class="profile-more menu" id="profileMore">
-        <summary class="btn" aria-label="Profile actions" data-tip="Rename, duplicate, delete, export or import a profile">More</summary>
+        <summary class="btn" aria-label="Settings profile actions" data-tip="Rename, duplicate, delete, export or import a settings profile (not a printer)">Profile…</summary>
         <div class="profile-actions">
-          <input id="profileName" type="text" aria-label="Profile name" placeholder="Profile name" />
+          <input id="profileName" type="text" aria-label="Settings profile name" placeholder="Profile name" />
           <button class="btn" id="profileRename" type="button">Rename</button>
           <button class="btn" id="profileDuplicate" type="button">Duplicate</button>
           <button class="btn" id="profileDelete" type="button">Delete</button>

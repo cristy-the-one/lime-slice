@@ -571,6 +571,7 @@ table.stages tr.total td { border-top: 1px solid var(--line); padding-top: 3px; 
 canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 .setting.hidden { display: none; }
 .profile-more, .machine-more { position: relative; }
+.machine-more[open] { grid-column: 1 / -1; }
 .machine-more > summary { list-style: none; }
 .machine-more > summary::-webkit-details-marker { display: none; }
 .machine-more .profile-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
