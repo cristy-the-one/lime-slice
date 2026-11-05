@@ -56,9 +56,13 @@ Job names and the work they start:[^ci]
 | job | what it runs |
 | --- | --- |
 | what changed | `git diff --name-only` against the base |
-| test, clippy, and Tauri | OCCT install, `cargo test --workspace --locked`, an OCCT MCP step, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test -p lime-sim --features gpu --locked --test sliced_study`, `cargo build -p lime-slice-desktop --locked` |
+| Rust tests | OCCT install, `cargo nextest run --workspace --locked --profile ci` (profile in `.config/nextest.toml`), `cargo test --workspace --doc --locked` |
+| MCP server against real Open CASCADE | OCCT install, lust, `cargo test -p lime-recipe-runner --locked`, the `mcp/*.test.ts` files that need real OCCT |
+| clippy and GPU stress test | `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test -p lime-sim --features gpu --locked --test sliced_study` |
+| Tauri build | `cargo build -p lime-slice-desktop --locked` |
+| test, clippy, and Tauri | runs nothing; passes when the four jobs above pass. It keeps the name the ruleset requires |
 | typecheck and frontend build | `npx tsc --noEmit`, `npm run test:unit`, `npx vite build` |
-| Playwright smoke (shard N/4) | `npx vite build`, install Playwright Chromium, `npm run test:smoke -- --shard=N/4` for N in 1..4 |
+| Playwright smoke (shard N/4) | `npx vite build`, install Playwright Chromium, `npm run test:smoke:N` for N in 1..4 (`tools/ci/smoke-shards.mjs` splits the `test:smoke` list by the spec times in `e2e/durations.json`) |
 | MCP server | release build of `lime-slice`, `lime-mcp-engine`, and `lime-sim`; the licence grep in [Project rules](../conventions/project-rules.md); `npx tsc -p mcp`; the MCP test files; `npm run build:mcp` |
 | MCP server (Windows) | release engine, Explorer thumbnail handler, `npm run test:unit` |
 | MCP server (macOS) | release engine, then the native-load, scenario, and stdio tests |

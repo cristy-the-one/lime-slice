@@ -1,0 +1,9 @@
+# cargo-nextest, as the CI "Rust tests" job runs it: `cargo nextest run --workspace --locked --profile ci`.
+# Doctests are not run by nextest; CI follows with `cargo test --workspace --doc`.
+
+[profile.ci]
+# Report every failing test in one run instead of stopping at the first.
+fail-fast = false
+# Name the tests that run longer than a minute in the log (it never kills them).
+slow-timeout = { period = "60s" }
+failure-output = "immediate-final"
