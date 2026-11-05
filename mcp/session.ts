@@ -121,6 +121,7 @@ import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, l
 import { carriedData, carriedDataProblem, splitPluginData, withPluginData } from "../src/recipe/plugin-data.ts";
 import { checkImport, clashOf, exportName, exportText, keptBesideTitle, lessonsFor, marksText, rawHeader, readMarks, withMark, type ImportMark, type SharedPreset } from "../src/plugins/share.ts";
 import { bodyProblem, builtText, carriedIngredients, ingredientsDir, isIngredientId, keptIngredient, lineMap, lineText, locate, moduleOf, resolveIngredients, type KeptIngredient } from "./ingredients.ts";
+import { pluginHints } from "./plugin-hints.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, seenInPractice, writePreset } from "./nuggets.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, writeRecipeData, type RecipeCallSite, type RecipeData, type RecipeReply } from "./recipe.ts";
 import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
@@ -1676,7 +1677,7 @@ export class Session {
    * the same body keeps its version (new words only); with another body it is the next version when the run was of
    * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
    */
-  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[] } | { reason: string }> {
+  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
     const title = oneLine(opts.title, TITLE_MAX);
     if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
     let body = lfOnly(opts.source);
@@ -1742,7 +1743,8 @@ export class Session {
     }
     const carried = carriedIngredients(splitPluginData(body).code).map((row) => `${row.id} v${row.version}`);
     const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
-    return { id, version, sha256, ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}) };
+    const hints = pluginHints({ params: checked.params, target: checked.target, description: header.description }, splitPluginData(body).code);
+    return { id, version, sha256, ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
   }
 
   /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
