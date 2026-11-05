@@ -132,14 +132,15 @@ export function renameIn(library: ProfileLibrary, id: string, name: string): Pro
   };
 }
 
-export function duplicateIn(library: ProfileLibrary, id: string, newId: string): ProfileLibrary | string {
+/** Copy a profile and select the copy. A typed `name` names it (a taken name gets " 2"); with none it is "<name> copy". */
+export function duplicateIn(library: ProfileLibrary, id: string, newId: string, name = ""): ProfileLibrary | string {
   const source = library.profiles.find((profile) => profile.id === id);
   if (!source) return "That profile is no longer saved.";
-  const name = copyName(library, source.name);
+  const copy = name.trim() ? uniqueName(library, name.trim()) : copyName(library, source.name);
   return {
     version: 1,
     activeId: newId,
-    profiles: [...library.profiles, { id: newId, name, settings: cloneSettings(source.settings), level: source.level }],
+    profiles: [...library.profiles, { id: newId, name: copy, settings: cloneSettings(source.settings), level: source.level }],
   };
 }
 

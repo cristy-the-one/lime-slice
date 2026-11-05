@@ -73,7 +73,7 @@ export function renameSettingsProfile(id: string, name: string): boolean {
 }
 
 export function duplicateSettingsProfile(id: string): boolean {
-  const next = duplicateIn(loadProfileLibrary(), id, newProfileId());
+  const next = duplicateIn(loadProfileLibrary(), id, newProfileId(), typedProfileName());
   if (typeof next === "string") {
     pushToast(next, "info");
     return false;

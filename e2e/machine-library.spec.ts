@@ -201,3 +201,74 @@ test.describe("compact machine library", () => {
     expect(peeked, `peek viewport share ${peeked}`).toBeGreaterThanOrEqual(0.7);
   });
 });
+
+test("New printer… makes a printer from the chip, selects it, and opens Edit printer", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#printerChip > summary").click();
+  await expect(page.locator("#newPrinterName")).toBeHidden();
+  await page.locator("#newPrinter").click();
+  await page.locator("#newPrinterName").fill("Elegoo Centauri");
+  await page.locator("#newPrinterCreate").click();
+  await expect(page.locator("#printerChipLabel")).toContainText("Elegoo Centauri");
+  await expect(page.locator("#printerChip")).toHaveJSProperty("open", false);
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: 'Created the printer "Elegoo Centauri" and selected it.' })).toBeVisible();
+  await expect(page.locator('#left .group[data-group="printer"]')).toHaveJSProperty("open", true);
+  await expect(page.locator("#machineCaption")).toContainText("Elegoo Centauri");
+  await expect(page.locator("#machinePrinter option[value='lime-220']")).toHaveCount(1);
+  await expect(page.locator("#machinePrinter")).not.toHaveValue("lime-220");
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#machineDelete").click();
+  await expect(page.locator("#machinePrinter option", { hasText: "Elegoo Centauri" })).toHaveCount(0);
+});
+
+test("New printer… from a belt printer starts from a flat-bed one and says so", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#printerChip > summary").click();
+  await page.locator("#machinePrinter").selectOption("generic-belt-45");
+  await page.locator("#newPrinter").click();
+  await page.locator("#newPrinterName").fill("Flat one");
+  await page.locator("#newPrinterName").press("Enter");
+  await expect(page.locator("#printerChipLabel")).toContainText("Flat one");
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: 'started from the flat-bed "Lime 220"' })).toBeVisible();
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Set its bed size, firmware and G-code in Edit printer." })).toBeVisible();
+});
+
+test("an empty name for a new printer is refused with a note", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#printerChip > summary").click();
+  await page.locator("#newPrinter").click();
+  await page.locator("#newPrinterCreate").click();
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: "Name the printer first." })).toBeVisible();
+  await expect(page.locator("#printerChipLabel")).toContainText("Lime 220");
+});
+
+test("printer Duplicate uses the typed name, and without one makes a copy", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#machineName").fill("Elegoo Centauri");
+  await page.locator("#machineDuplicate").click();
+  await expect(page.locator("#machinePrinter option", { hasText: "Elegoo Centauri" })).toHaveCount(1);
+  await expect(page.locator("#machinePrinter option", { hasText: "Lime 220 copy" })).toHaveCount(0);
+  await expect(page.locator("#toasts").getByRole("status").filter({ hasText: 'Copied the printer as "Elegoo Centauri" and selected it.' })).toBeVisible();
+  await page.locator("#machineMore").evaluate((el) => { (el as HTMLDetailsElement).open = true; });
+  await page.locator("#machineName").fill("");
+  await page.locator("#machineDuplicate").click();
+  await expect(page.locator("#machinePrinter option", { hasText: "Elegoo Centauri copy" })).toHaveCount(1);
+});
+
+test("the profile menu and the printer menu are labelled apart", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await expect(page.locator("#profileSave")).toHaveText("Save");
+  await expect(page.locator("#profileSave")).toHaveAttribute("aria-label", "Save settings profile");
+  await expect(page.locator("#profileMore > summary")).toHaveText("Profile…");
+  await expect(page.locator("#profileMore > summary")).toHaveAttribute("aria-label", "Settings profile actions");
+  await expect(page.locator("#machineSave")).toHaveText("Save printer");
+  await expect(page.locator("#machineMore > summary")).toHaveText("Printer…");
+  await expect(page.locator("#machineMore > summary")).toHaveAttribute("aria-label", "Printer actions");
+  await expect(page.locator("#machineCaption")).toContainText("Printer: Lime 220");
+});

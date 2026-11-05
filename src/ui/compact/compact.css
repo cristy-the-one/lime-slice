@@ -504,7 +504,7 @@ html.layout-compact #compactDevice .connection-actions .btn#apiTest {
 }
 .compact-row-actions { display: flex; gap: var(--space-2); flex: 0 0 auto; }
 .compact-printer .popover { position: static; width: auto; margin: 0 0 var(--space-2); padding: 0; border: 0; box-shadow: none; background: transparent; }
-.compact-printer .popover #editPrinter { display: none; }
+.compact-printer .popover #editPrinter, .compact-printer .popover #newPrinter, .compact-printer .popover #newPrinterRow { display: none; }
 
 #compactMenu {
   position: fixed;

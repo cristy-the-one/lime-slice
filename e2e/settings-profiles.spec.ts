@@ -147,3 +147,22 @@ test("Rename asks for the name in the app's sheet, refuses another profile's nam
   await expect(page.locator("#profilePick option", { hasText: "Alpha" })).toHaveCount(1);
   await expect(page.locator("#profilePick option", { hasText: evil })).toHaveCount(0);
 });
+
+test("settings profile Duplicate uses the typed name, and without one makes a copy", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await openMore(page);
+  await page.locator("#profileName").fill("Base");
+  await page.locator("#profileSave").click();
+  await expect(page.locator("#profilePick option", { hasText: "Base" })).toHaveCount(1);
+  await page.locator("#profilePick").selectOption({ label: "Base" });
+  await openMore(page);
+  await page.locator("#profileName").fill("Fast draft");
+  await page.locator("#profileDuplicate").click();
+  await expect(page.locator("#profilePick option", { hasText: "Fast draft" })).toHaveCount(1);
+  await expect(page.locator("#profilePick option", { hasText: "Base copy" })).toHaveCount(0);
+  await page.locator("#profilePick").selectOption({ label: "Base" });
+  await page.locator("#profileName").fill("");
+  await page.locator("#profileDuplicate").click();
+  await expect(page.locator("#profilePick option", { hasText: "Base copy" })).toHaveCount(1);
+});

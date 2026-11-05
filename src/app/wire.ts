@@ -71,6 +71,7 @@ import {
   chooseMachine,
   deleteMachine,
   duplicateMachine,
+  newMachinePrinter,
   machineExportFile,
   importMachineFile,
   saveMachine,
@@ -469,14 +470,43 @@ export function wireApp() {
     const nozzleMm = Number(document.querySelector<HTMLSelectElement>("#machineNozzle")?.value);
     chooseMachine(printerId, filamentId, nozzleMm);
   });
+  const createPrinter = () => {
+    const input = document.querySelector<HTMLInputElement>("#newPrinterName");
+    if (!newMachinePrinter(input?.value ?? "")) {
+      input?.focus();
+      return;
+    }
+    const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
+    if (chip) chip.open = false;
+    revealPrinterDetails();
+  };
   document.addEventListener("click", (ev) => {
-    if (!(ev.target as HTMLElement).closest("#editPrinter")) return;
+    const target = ev.target as HTMLElement;
+    if (target.closest("#newPrinter")) {
+      const row = document.querySelector<HTMLElement>("#newPrinterRow");
+      if (!row) return;
+      row.hidden = !row.hidden;
+      document.querySelector("#newPrinter")?.setAttribute("aria-expanded", String(!row.hidden));
+      if (!row.hidden) document.querySelector<HTMLInputElement>("#newPrinterName")?.focus();
+      return;
+    }
+    if (target.closest("#newPrinterCreate")) {
+      createPrinter();
+      return;
+    }
+    if (!target.closest("#editPrinter")) return;
     const chip = document.querySelector<HTMLDetailsElement>("#printerChip");
     if (chip) chip.open = false;
     revealPrinterDetails();
   });
   document.querySelector("#timing")!.addEventListener("click", () => toggleDock("right"));
   // A menu stays open until a click lands outside it, as its own summary toggles it.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter" && (ev.target as HTMLElement).id === "newPrinterName") {
+      ev.preventDefault();
+      createPrinter();
+    }
+  });
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target as Element | null;
     document.querySelectorAll<HTMLDetailsElement>("details.menu[open]").forEach((menu) => {
