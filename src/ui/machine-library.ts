@@ -848,16 +848,48 @@ export function savePrinterName(library: MachineLibrary, name: string, numbers: 
   return writeNumbers(added, id, library.filamentId, numbers);
 }
 
-export function duplicateActive(library: MachineLibrary, printerId: string, filamentId: string): MachineLibrary | string {
+/**
+ * Copy the active printer and filament and select the copy. A typed `name` becomes the printer's name
+ * (a name already taken gets " 2", " 3"…); with none the copy is "<name> copy".
+ */
+export function duplicateActive(library: MachineLibrary, printerId: string, filamentId: string, name = ""): MachineLibrary | string {
   const picked = selection(library);
   if (!picked) return "Choose a printer and a filament first.";
+  const typed = name.trim();
   return {
     ...library,
     printerId,
     filamentId,
-    printers: [...library.printers, { ...picked.printer, id: printerId, builtin: false, name: uniqueName(library.printers, `${picked.printer.name} copy`) }],
+    printers: [...library.printers, { ...picked.printer, id: printerId, builtin: false, name: uniqueName(library.printers, typed || `${picked.printer.name} copy`) }],
     filaments: [...library.filaments, { ...picked.filament, id: filamentId, builtin: false, name: uniqueName(library.filaments, `${picked.filament.name} copy`), pressureAdvance: { ...picked.filament.pressureAdvance }, linearAdvance: { ...picked.filament.linearAdvance } }],
   };
+}
+
+export type NewPrinter = {
+  library: MachineLibrary;
+  /** The name the new printer got; it differs from the typed one when that was taken. */
+  name: string;
+  /** The printer the new one was copied from. */
+  from: string;
+  /** True when the active printer is a belt, so the copy started from a flat-bed printer. */
+  flattened: boolean;
+};
+
+/**
+ * Add a printer named `name` and select it. It starts from the active printer, or from the first built-in
+ * flat-bed printer when the active one is a belt. The host and key are not copied. The filament and nozzle stay.
+ */
+export function newPrinterFrom(library: MachineLibrary, name: string, id: string): NewPrinter | string {
+  const typed = name.trim();
+  if (!typed) return "Name the printer first.";
+  const picked = selection(library);
+  if (!picked) return "Choose a printer and a filament first.";
+  const flattened = picked.printer.kind === "belt";
+  const base = flattened ? library.printers.find((row) => row.builtin && row.kind !== "belt") : picked.printer;
+  if (!base) return "No flat-bed printer to start from.";
+  const unique = uniqueName(library.printers, typed);
+  const added: PrinterRecord = { ...base, id, name: unique, builtin: false, host: "", apiKey: "", startPrint: false, belt: { ...base.belt } };
+  return { library: { ...library, printerId: id, printers: [...library.printers, added] }, name: unique, from: base.name, flattened };
 }
 
 export function deleteActive(library: MachineLibrary): MachineLibrary | string {
@@ -983,7 +1015,12 @@ export function machinePickHtml(library: MachineLibrary, heat?: Heat): string {
       <select id="machineNozzle" aria-label="Nozzle size">${nozzleOptions}</select>
     </label>
     ${picked ? heatNoteHtml(heat ?? heatFor(picked.printer, picked.filament.nozzleTemp, picked.filament.bedTemp), picked.filament.name, "printerHeatNote") : ""}
-    <button class="btn" id="editPrinter" type="button">Edit printer…</button>`;
+    <button class="btn" id="editPrinter" type="button">Edit printer…</button>
+    <button class="btn" id="newPrinter" type="button" aria-expanded="false" aria-controls="newPrinterRow">New printer…</button>
+    <div class="row" id="newPrinterRow" hidden>
+      <input id="newPrinterName" type="text" aria-label="New printer name" placeholder="Name of the new printer" autocomplete="off" />
+      <button class="btn" id="newPrinterCreate" type="button">Create</button>
+    </div>`;
 }
 
 export function machineSectionHtml(
@@ -997,6 +1034,7 @@ export function machineSectionHtml(
   const heat = heatFor(picked?.printer, live.nozzleTemp, live.bedTemp);
   return `
     <div class="machine-block">
+      <div class="meta machine-caption" id="machineCaption">Printer: <strong>${escapeHtml(picked?.printer.name ?? "none")}</strong>. The buttons here act on this printer. Settings profiles are at the top of the panel.</div>
       ${beltFieldsHtml(picked?.printer, rules)}
       <label class="field setting" data-label="firmware" data-keywords="klipper marlin pressure advance linear advance">Firmware
         <select id="machineFirmware" aria-label="Printer firmware">
@@ -1014,9 +1052,9 @@ export function machineSectionHtml(
       <div class="meta" id="machineTemps">${heatReadout(heat)}</div>
       ${heatNoteHtml(heat, picked?.filament.name ?? "", "machineHeatNote")}
       <div class="row">
-        <button class="btn" id="machineSave" type="button">Save</button>
+        <button class="btn" id="machineSave" type="button" data-tip="Save the printer, filament and temperature numbers on this panel to the selected printer. Type a name under Printer… to save them as a new printer.">Save printer</button>
         <details class="machine-more" id="machineMore">
-          <summary class="btn" aria-label="Machine actions">More</summary>
+          <summary class="btn" aria-label="Printer actions" data-tip="Duplicate, delete, export or import the printer, and its G-code">Printer…</summary>
           <div class="profile-actions">
             <input id="machineName" type="text" aria-label="Printer name" placeholder="Printer name" />
             <button class="btn" id="machineDuplicate" type="button">Duplicate</button>

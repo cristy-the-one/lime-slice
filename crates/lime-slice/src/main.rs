@@ -10,7 +10,8 @@ use lime_slice_core::gcode_skeleton;
 
 use lime_slice_core::{
     pareto_request, slice_request, Axis, BlendMode, FuzzySkin, GcodeText, Gyroid3d, Ironing, Mesh,
-    RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceSettings, StrategyId, ZHopMode,
+    RigidPose, ScarfSeam, SeamPlacement, SliceRequest, SliceResponse, SliceSettings, StrategyId,
+    ZHopMode,
 };
 
 /// The Windows heap slows a long-running `serve` down: after a few slices the
@@ -234,7 +235,13 @@ enum Cmd {
         output: PathBuf,
     },
     /// Time single-strategy and blended slices.
-    Bench { input: PathBuf },
+    Bench {
+        input: PathBuf,
+        /// Print only the per-stage timings of the four blend modes (new path
+        /// and classic) as JSON, for scripts.
+        #[arg(long)]
+        json: bool,
+    },
     /// HTTP API used by the browser UI.
     Serve {
         #[arg(long, default_value_t = 43118)]
@@ -597,7 +604,7 @@ fn run() -> Result<(), String> {
             }
             Ok(())
         }
-        Cmd::Bench { input } => bench(&input),
+        Cmd::Bench { input, json } => bench(&input, json),
         Cmd::Serve {
             port,
             host,
@@ -827,11 +834,102 @@ fn calibrate(kind: CalibrateCmd) -> Result<(), String> {
     }
 }
 
-fn bench(input: &Path) -> Result<(), String> {
-    let mesh = load_input(input)?;
-    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
+/// One timed stage of a slice: its JSON key, its table label, its wall or
+/// CPU milliseconds, and whether it is a slice of `core` (CPU rows are not).
+struct StageRow {
+    key: &'static str,
+    label: &'static str,
+    ms: f64,
+    wall: bool,
+}
+
+/// The engine's stage clocks as rows, in pipeline order, with `other` the
+/// part of `core` no clock covers. CPU rows sit inside the wall row above them.
+fn stage_rows(r: &SliceResponse) -> Vec<StageRow> {
+    let s = &r.stages;
+    let row = |key, label, ms, wall| StageRow {
+        key,
+        label,
+        ms,
+        wall,
+    };
+    let mut rows = vec![
+        row("bands", "bands", s.bands_ms, true),
+        row("index", "index", s.index_ms, true),
+        row("contours", "contours", s.contour_ms, true),
+        row("cutCpu", "cut cpu", s.cut_cpu_ms, false),
+        row("simplifyCpu", "simpl cpu", s.simplify_cpu_ms, false),
+        row("roofs", "roofs", s.roof_ms, true),
+        row("supports", "supports", s.support_ms, true),
+        row("prep", "prep", s.prep_ms, true),
+        row("toolpaths", "toolpaths", s.toolpath_ms, true),
+        row("wallsCpu", "walls cpu", s.wall_cpu_ms, false),
+        row("infillCpu", "infill cpu", s.infill_cpu_ms, false),
+        row("order", "order", s.order_ms, true),
+        row("combing", "combing", s.comb_ms, true),
+        row("join", "join", s.join_ms, true),
+        row("emit", "emit", s.emit_ms, true),
+    ];
+    let named: f64 = rows.iter().filter(|r| r.wall).map(|r| r.ms).sum();
+    rows.push(row("other", "other", (r.core_ms - named).max(0.0), true));
+    rows.push(row("core", "core", r.core_ms, true));
+    rows
+}
+
+/// A run's stage numbers for `--json`: milliseconds, and milliseconds per
+/// printed layer. `callMs` is the whole `slice_configured` call, so
+/// `callMs - coreMs` is the reply built after the core: preview, score, estimate.
+fn stage_json(label: &str, r: &SliceResponse, wall_ms: f64) -> serde_json::Value {
+    let layers = r.sanity.layers;
+    let per = |ms: f64| if layers == 0 { 0.0 } else { ms / layers as f64 };
+    let rows = stage_rows(r);
+    let ms: serde_json::Map<String, serde_json::Value> = rows
+        .iter()
+        .map(|row| (row.key.to_string(), serde_json::json!(row.ms)))
+        .collect();
+    let per_layer: serde_json::Map<String, serde_json::Value> = rows
+        .iter()
+        .map(|row| (row.key.to_string(), serde_json::json!(per(row.ms))))
+        .collect();
+    serde_json::json!({
+        "run": label,
+        "layers": layers,
+        "triangles": r.mesh.triangles,
+        "coreMs": r.core_ms,
+        "callMs": wall_ms,
+        "stagesMs": ms,
+        "perLayerMs": per_layer,
+    })
+}
+
+/// The stage table of one run: a header of stage names, the milliseconds,
+/// and the milliseconds per printed layer. CPU columns are sums over threads.
+fn print_stage_table(r: &SliceResponse, wall_ms: f64) {
+    let rows = stage_rows(r);
+    let layers = r.sanity.layers.max(1) as f64;
+    let mut names = format!("  {:<10}", "stage");
+    let mut total = format!("  {:<10}", "ms");
+    let mut each = format!("  {:<10}", "ms/layer");
+    for row in &rows {
+        names.push_str(&format!(" {:>9}", row.label));
+        total.push_str(&format!(" {:>9.2}", row.ms));
+        each.push_str(&format!(" {:>9.3}", row.ms / layers));
+    }
+    println!(
+        "{names}
+{total}
+{each}"
+    );
+    println!(
+        "  whole call {wall_ms:.2} ms = core {:.2} + reply after core {:.2}",
+        r.core_ms,
+        wall_ms - r.core_ms
+    );
+}
+
+fn bench_modes(min: [f64; 3], max: [f64; 3]) -> [(&'static str, BlendMode); 4] {
     let mid_x = (min[0] + max[0]) * 0.5;
-    let modes = [
+    [
         (
             "speed",
             BlendMode::Single {
@@ -858,7 +956,42 @@ fn bench(input: &Path) -> Result<(), String> {
                 at_mm: mid_x,
             },
         ),
-    ];
+    ]
+}
+
+fn bench(input: &Path, json: bool) -> Result<(), String> {
+    let mesh = load_input(input)?;
+    let (min, max) = mesh.bounds().ok_or("empty mesh")?;
+    if json {
+        let mut runs = Vec::new();
+        for (name, mode) in bench_modes(min, max) {
+            for (suffix, settings) in [
+                ("", SliceSettings::default()),
+                (" classic", classic_settings()),
+            ] {
+                let started = std::time::Instant::now();
+                let response = lime_slice_core::slice_configured(
+                    &mesh,
+                    &mode,
+                    &Default::default(),
+                    &settings,
+                )?;
+                let wall_ms = started.elapsed().as_secs_f64() * 1e3;
+                runs.push(stage_json(&format!("{name}{suffix}"), &response, wall_ms));
+            }
+        }
+        let doc = serde_json::json!({
+            "mesh": input.display().to_string(),
+            "triangles": mesh.triangle_count(),
+            "runs": runs,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+    let modes = bench_modes(min, max);
     println!(
         "mesh {}  triangles {}  size {:.1} x {:.1} x {:.1} mm",
         input.display(),
@@ -891,8 +1024,10 @@ fn bench(input: &Path) -> Result<(), String> {
         ..SliceSettings::default()
     };
     for (name, mode) in modes {
+        let started = std::time::Instant::now();
         let response =
             lime_slice_core::slice_configured(&mesh, &mode, &Default::default(), &fresh)?;
+        let wall_ms = started.elapsed().as_secs_f64() * 1e3;
         let old = lime_slice_core::slice_configured(&mesh, &mode, &Default::default(), &classic)?;
         println!(
             "{:<14} {:>10.2} {:>10.2} {:>10.1} {:>10.2} {:>8} {:>10.1} {:>8} {:>8.1} {:>8.1} {:>8.1}  {}",
@@ -916,16 +1051,10 @@ fn bench(input: &Path) -> Result<(), String> {
             response.estimate.max_seam_z_step_mm
         );
         println!(
-            "  {} tris  outline tolerance {:.3} mm  contours {:.1} ms  supports {:.1} ms  toolpaths {:.1} ms  order {:.1} ms  combing {:.1} ms  emit {:.1} ms",
-            response.mesh.triangles,
-            response.mesh.outline_tolerance_mm,
-            response.stages.contour_ms,
-            response.stages.support_ms,
-            response.stages.toolpath_ms,
-            response.stages.order_ms,
-            response.stages.comb_ms,
-            response.stages.emit_ms
+            "  {} tris  outline tolerance {:.3} mm  stages in ms (cpu columns sum threads; per layer over {} layers)",
+            response.mesh.triangles, response.mesh.outline_tolerance_mm, response.sanity.layers
         );
+        print_stage_table(&response, wall_ms);
         if !response.sanity.ok {
             println!("  {}", response.sanity.notes.join("; "));
         }
@@ -1398,9 +1527,7 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
                 Some(part) => (200, part),
                 None => (404, err_json("reply part expired")),
             }
-        } else if method == "GET"
-            && path.starts_with("/api/gcode/")
-            && path.ends_with("/skeleton")
+        } else if method == "GET" && path.starts_with("/api/gcode/") && path.ends_with("/skeleton")
         {
             let gcode_id = path
                 .trim_start_matches("/api/gcode/")
@@ -1546,7 +1673,11 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
 }
 
 fn stored_gcode(token: &str) -> Option<GcodeText> {
-    gcode_store().lock().expect("gcode store").get(token).cloned()
+    gcode_store()
+        .lock()
+        .expect("gcode store")
+        .get(token)
+        .cloned()
 }
 
 /// The whole G-code file for `stamped`, the parked text's skeleton as the
