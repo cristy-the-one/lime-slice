@@ -86,7 +86,6 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { replyOffset } from "../src/bed-offset.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
-import { planProblem, resolveReferences, type PlanStep } from "./plan.ts";
 import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, apiRefusal, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "./plugins.ts";
 import { carriedData, carriedDataProblem, splitPluginData, withPluginData } from "../src/recipe/plugin-data.ts";
 import { checkImport, clashOf, exportName, exportText, keptBesideTitle, lessonsFor, marksText, rawHeader, readMarks, withMark, type ImportMark, type SharedPreset } from "../src/plugins/share.ts";
@@ -119,7 +118,8 @@ import { planRebuild } from "../src/param-rebuild.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
 import { resolveFont, resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 import { textsNeedingFonts, UserFontShelf, userFontUses } from "../src/modeling/user-fonts.ts";
-import { BAND_KINDS, BEADS_REFUSAL, CHANGES_NOTHING, CHORD, type CallMeta, DETACHABLE, type Ghost, IMPORT_BUILD_LIMIT_MS, type Job, LAYER_ROWS, LONG_CALLS, MESH_EDIT, ModelRunaway, NAME_LIMIT, OVERLAP, type ObjectToolHandler, PLACE_KEYS, PLACE_ON_SMEAR, type PickRow, type PlateObject, type PlateSnap, type PluginRebuild, REGION_SHAPE, type Recipe, type RustRecipe, SLICE_CHECK_MCP, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_FACES, STALE_SLICE, STEP, STIFFNESS_KINDS, STRESS_LAYER_NEEDS, type SliceSummary, type SnapObject, TARGET_KINDS, type ToolHandler, type TypedWorkplane, UNKNOWN_OBJECT, WHILE_BUSY, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, firstAfter, isObject, joined, joinedPositions, modelSteps, numberNotes, numbered, pinsOf, posedPositions, positionsFrom, replySeconds, roundTo, shownName, slicedRunReply, stableKey, standsOnNothing, stepFileName, stlFileName, typedExprs, withPicks, xyGap } from "./session/shared.ts";
+import { BAND_KINDS, BEADS_REFUSAL, CHORD, type CallMeta, DETACHABLE, type Ghost, IMPORT_BUILD_LIMIT_MS, type Job, LAYER_ROWS, LONG_CALLS, MESH_EDIT, ModelRunaway, NAME_LIMIT, OVERLAP, type ObjectToolHandler, PLACE_KEYS, PLACE_ON_SMEAR, type PickRow, type PlateObject, type PlateSnap, type PluginRebuild, REGION_SHAPE, type Recipe, type RustRecipe, SLICE_CHECK_MCP, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_FACES, STALE_SLICE, STEP, STIFFNESS_KINDS, STRESS_LAYER_NEEDS, type SliceSummary, type SnapObject, TARGET_KINDS, type ToolHandler, type TypedWorkplane, UNKNOWN_OBJECT, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, firstAfter, isObject, joined, joinedPositions, modelSteps, numberNotes, numbered, pinsOf, posedPositions, positionsFrom, roundTo, shownName, slicedRunReply, stableKey, standsOnNothing, stepFileName, stlFileName, typedExprs, withPicks, xyGap } from "./session/shared.ts";
+import { workMethods } from "./session/work.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -436,131 +436,6 @@ export class Session {
     });
     if (!detachable) return work;
     return this.detachable(name, input, work, ctx, stop, meta?.signal);
-  }
-
-  /** The call's answer, or a job handle when it is not done within replySeconds() or its request is cancelled. */
-  detachable(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
-    return new Promise((resolve, reject) => {
-      let answered = false;
-      const finish = () => {
-        answered = true;
-        clearTimeout(timer);
-        request?.removeEventListener("abort", detach);
-      };
-      const detach = () => {
-        if (answered) return;
-        finish();
-        resolve(this.workReply(this.startWorkJob(name, input, work, ctx, stop)));
-      };
-      const timer = setTimeout(detach, replySeconds() * 1000);
-      timer.unref?.();
-      request?.addEventListener("abort", detach, { once: true });
-      work.then((value) => {
-        if (answered) return;
-        finish();
-        resolve(value);
-      }, (err: unknown) => {
-        if (answered) return;
-        finish();
-        reject(err);
-      });
-      if (request?.aborted) detach();
-    });
-  }
-
-  startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
-    this.jobSeq += 1;
-    const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
-    const stoppable = name === "plan_run" || name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
-    const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
-    job.settled = work.then((value) => {
-      job.result = value;
-    }, (err: unknown) => {
-      job.error = err instanceof Error ? err.message : "The call failed.";
-    }).finally(() => {
-      job.done = true;
-      // The work's own end already scheduled the autosave; a finished job is kept a while for its wait.
-      const finished = this.workJobs.filter((row) => row.done);
-      if (finished.length > 8) this.workJobs.splice(this.workJobs.indexOf(finished[0]!), 1);
-    });
-    this.workJobs.push(job);
-    return job;
-  }
-
-  /** A job's state as slice_wait and the detached call answer it. A finished job answers with its call's own result. */
-  workReply(job: WorkJob): Record<string, unknown> {
-    if (job.done) {
-      if (job.error !== undefined) return { ok: false, job: job.handle, status: "error", tool: job.tool, reason: job.error };
-      const result = job.result ?? { ok: false };
-      // A call whose result is a job of its own (slice_start's slice) keeps that handle and status, so the same wait
-      // loop goes on to wait for the slice; the background job is named beside it.
-      if (typeof result.job === "string") return { ...result, workJob: job.handle, tool: job.tool };
-      return { ...result, job: job.handle, status: "done", tool: job.tool };
-    }
-    return {
-      ok: true,
-      job: job.handle,
-      status: "running",
-      tool: job.tool,
-      ...(job.object ? { object: job.object } : {}),
-      fraction: Math.round((job.ctx.fraction ?? 0) * 1000) / 1000,
-      ...(job.ctx.stage ? { stage: job.ctx.stage } : {}),
-      seconds: Math.round((Date.now() - job.started) / 1000),
-      note: `${job.tool} runs longer than a client waits, so it goes on in the background. Call slice_wait {job:"${job.handle}"} until status is done: that reply is the call's own result. slice_cancel takes the work back. Edits wait until it is done.`,
-    };
-  }
-
-  /** While a background job runs, only reads that leave the modeler alone, and the job's wait and cancel, are answered. */
-  busyRefusal(name: string): Record<string, unknown> | null {
-    const job = this.workJobs.find((row) => !row.done);
-    if (!job || WHILE_BUSY.has(name)) return null;
-    const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
-    return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
-  }
-
-  /**
-   * plan_run: its steps in order through runCall, so each is checked, applied, and autosaved as if called alone. The
-   * plan as a whole is detachable: past replySeconds() it answers with a job, and slice_wait returns the plan's result.
-   */
-  planRun(args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
-    const problem = validateTool("plan_run", args ?? {});
-    if (problem) throw new ProtocolError(problem);
-    const steps = (args as { steps: PlanStep[] }).steps;
-    const bad = planProblem(steps);
-    if (bad) throw new ProtocolError(bad);
-    if (this.inflight === 0) this.flushAutosave();
-    const stop = new AbortController();
-    const ctx: CallMeta = { progressToken: meta?.progressToken, signal: stop.signal };
-    const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx));
-    return this.detachable("plan_run", args as Record<string, unknown>, work, ctx, stop, meta?.signal);
-  }
-
-  async runPlan(steps: PlanStep[], ctx: CallMeta): Promise<Record<string, unknown>> {
-    const results: Record<string, unknown>[] = [];
-    const done: Record<string, unknown>[] = [];
-    const images: InlineImage[] = [];
-    const end = (head: Record<string, unknown>) => withImages({ ...head, steps: done }, images);
-    for (let i = 0; i < steps.length; i += 1) {
-      const n = i + 1;
-      const tool = steps[i]!.tool;
-      if (ctx.signal?.aborted) return end({ ok: false, failedStep: n, reason: `The plan was cancelled before step ${n} (${tool}). The steps before it stay applied.` });
-      const resolved = resolveReferences(steps[i]!.args ?? {}, results, n);
-      if ("reason" in resolved) return end({ ok: false, failedStep: n, reason: resolved.reason });
-      this.noteStage(`plan step ${n} of ${steps.length}: ${tool}`, i / steps.length);
-      let value: Record<string, unknown>;
-      try {
-        value = await this.runCall(tool, resolved.value, ctx, true);
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : "The step failed.";
-        done.push({ step: n, tool, ok: false, reason });
-        return end({ ok: false, failedStep: n, reason: `Step ${n} (${tool}) failed: ${reason}` });
-      }
-      images.push(...imagesOf(value));
-      results.push(value);
-      done.push({ step: n, tool, result: value });
-      if (value.ok === false) return end({ ok: false, failedStep: n, reason: `Step ${n} (${tool}) was refused: ${typeof value.reason === "string" ? value.reason : "no reason given."}` });
-    }
-    return end({ ok: true });
   }
 
   /**
@@ -1929,37 +1804,6 @@ export class Session {
     };
     if (input.schemas === true) reply.schemas = addedTools.map((tool) => { const spec = toolByName(tool); return spec ? { name: tool, description: spec.description, inputSchema: spec.inputSchema } : { name: tool }; });
     return reply;
-  }
-
-  /** What the call is doing now, for its progress notifications and its job's wait. */
-  noteStage(stage: string, fraction?: number): void {
-    const meta = this.callContext.getStore();
-    if (!meta) return;
-    meta.stage = stage;
-    if (fraction !== undefined) meta.fraction = fraction;
-    this.onProgress?.("model", meta.fraction ?? 0, stage, meta.progressToken);
-  }
-
-  async workWait(job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {
-    const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS) ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS)) : SLICE_WAIT_DEFAULT_S;
-    const deadline = Date.now() + limitS * 1000;
-    while (!job.done && Date.now() < deadline && !meta?.signal?.aborted) {
-      this.onProgress?.(job.handle, job.ctx.fraction ?? 0, job.ctx.stage ?? "", meta?.progressToken);
-      await Promise.race([job.settled, this.pause(Math.min(250, Math.max(1, deadline - Date.now())), meta?.signal)]);
-    }
-    return this.workReply(job);
-  }
-
-  async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
-    if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
-    if (!job.stoppable) {
-      const after = CHANGES_NOTHING.has(job.tool) ? "It changes no part." : job.tool.startsWith("model_") || job.tool === "solid_new" ? "Once it is done, model_undo or model_goto takes the part back." : "Once it is done, plate_undo takes it back.";
-      return { ok: false, job: job.handle, status: "running", reason: `${job.tool} cannot stop part way; it finishes in the background, and slice_wait returns its result. ${after}` };
-    }
-    job.stop.abort();
-    await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
-    if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: job.tool === "plan_run" ? "The plan stops at the step it is on; a batch, build, or composite step is taken back, and the steps before it stay. Call slice_wait for the outcome." : "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
-    return this.workReply(job);
   }
 
   /** An unknown handle right after a restart: the reply says where the last session's plate is. */
@@ -9382,5 +9226,11 @@ export class Session {
     });
   }
 }
+
+type Installed = typeof workMethods;
+
+/** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
+export interface Session extends Installed {}
+Object.assign(Session.prototype, workMethods);
 
 export { blendOf };
