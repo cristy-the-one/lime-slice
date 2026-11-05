@@ -7260,6 +7260,12 @@ fn object_layer(
         }
         (paths, wall_ms, infill_ms, note, shown)
     };
+    // Untoured, the planned order is the printed one: finish each island first.
+    let paths = if settings.classic {
+        crate::toolpath::order_by_island(paths, contours)
+    } else {
+        paths
+    };
     if paths.iter().any(|p| p.kind == PathKind::GapFill) && !note.contains("gap-fill") {
         note.push_str(" · gap-fill");
     }
