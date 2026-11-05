@@ -296,6 +296,7 @@ export const state = {
   viewMode: "solid" as "flat" | "split" | "solid",
   query: "",
   move: 0,
+  // The markup starts on Preview. A first run with no mesh is moved to Prepare at boot (`startStage`, main.ts).
   stage: "preview" as "prepare" | "preview" | "gcode" | "model",
   playing: false,
   profile: loadProfile(),
