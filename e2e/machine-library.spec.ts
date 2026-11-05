@@ -263,7 +263,8 @@ test("printer Duplicate uses the typed name, and without one makes a copy", asyn
 test("the profile menu and the printer menu are labelled apart", async ({ page }) => {
   await quiet(page);
   await page.goto("/");
-  await expect(page.locator("#profileSave")).toHaveText("Save profile");
+  await expect(page.locator("#profileSave")).toHaveText("Save");
+  await expect(page.locator("#profileSave")).toHaveAttribute("aria-label", "Save settings profile");
   await expect(page.locator("#profileMore > summary")).toHaveText("Profile…");
   await expect(page.locator("#profileMore > summary")).toHaveAttribute("aria-label", "Settings profile actions");
   await expect(page.locator("#machineSave")).toHaveText("Save printer");
