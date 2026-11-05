@@ -8,7 +8,6 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-
 import { base64ToBytes, bytesToBase64 } from "../src/base64.ts";
 import { coverageWarning, fnv1aHex, inAirWarning, meshKeyHex } from "../src/slice-action.ts";
 import { fanDefaults } from "../src/fan.ts";
@@ -30,7 +29,7 @@ import { facePlane, formatMm } from "../src/model-plane.ts";
 import { rootSpec, type PrimitiveSpec } from "../src/model-primitive.ts";
 import { applyRequest, crossEditRequest, editRequest, exportRequest, gotoRequest, isBrep, joinOp, keepSketch, newSolidRequest, openRequest, probeRequest, solidFileName, wholeTreeRequest } from "../src/model-request.ts";
 import { appliedReply, boundsOf, readBroken, readBuilt, solidSections, partExpandContext, typedPlaneOf, typedPointIn, describeReply, disjointRefusal, stepGuard, storedOp, probeEcho, probeVerdict, edgesReply, facesReply, nodeHandle, page, parseNode, solidView, type SolidView } from "../src/modeling/model-calls.ts";
-import { bakeOp, bakeTransition, EDGES_SHAPE, onFaceIndex, profilePlane, type BakeContext, type Baked } from "../src/modeling/bake.ts";
+import { bakeOp, bakeTransition, onFaceIndex, profilePlane, type BakeContext, type Baked } from "../src/modeling/bake.ts";
 import { thinWalls } from "../src/modeling/thin.ts";
 import { bakeCells, runComposite, storeGroup } from "../src/modeling/composite-apply.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep } from "../src/modeling/part-reads.ts";
@@ -52,7 +51,6 @@ import { geometryHash, projectSummary, thumbnailFromPng } from "../src/project-t
 import { savedTree, loadedTree, toolFirst, withSavedNames } from "../src/model-tree-file.ts";
 import { addRange, addVolume, emptyOverrides, freshOverrideId, removeRange, removeVolume, type OverrideDocument, type SettingOverride } from "../src/overrides.ts";
 import { appendEdit, editRequestFields, GROW_DEFAULT, GROW_MAX } from "../src/support-edit-list.ts";
-import type { EditEntry } from "../src/support-edit-list.ts";
 import { growFor, indexSkeleton, selectLimbs, sitesOf } from "../src/support-pick.ts";
 import type { CoverageGap, EditOutcome, SupportSkeleton } from "../src/support-edits.ts";
 import { diskFromHit, MAX_PAINT_DISKS, paintCounts, paintRequestFields, type PaintDisk, type PaintKind } from "../src/support-paint.ts";
@@ -71,34 +69,7 @@ import { checkAgainstSlice, findingSummary, fixableEdges, readFinding, readHoldP
 import { beltLayerNormal, cloneStudy, namesFaces, placeRegion, readRegion, type ObjectStudy, type SimRepresentation, type StudyConstraint, type StudyHold, type StudyLoad, type StudyRegion, type Vec3 as SimVec } from "../src/sim/study.ts";
 import { LABEL } from "../src/sim/label.ts";
 import { readBeadSection, withBeads } from "../src/sim/cards.ts";
-import {
-  BEAM_SIZE,
-  OPEN_MESH,
-  SLICED_FIELD,
-  SLICED_SWEEP,
-  RESLICE_BEAM,
-  RESLICE_PARAMETERS,
-  RESLICE_PATTERN_KEEP,
-  SWEEP_CAP,
-  SWEEP_REFUSAL,
-  ZERO_AXIS,
-  axisLength,
-  boxPositions,
-  constraintVerdict,
-  elementRefusal,
-  pageCursor,
-  pageLimit,
-  readLimits,
-  readPatch,
-  representationOf,
-  runSolver,
-  scaleLoads,
-  setupSentence,
-  solverJob,
-  vec3Of,
-  type ConstraintLimits,
-  type SweepPatch,
-} from "./sim.ts";
+import { BEAM_SIZE, OPEN_MESH, SLICED_FIELD, SLICED_SWEEP, RESLICE_BEAM, RESLICE_PARAMETERS, RESLICE_PATTERN_KEEP, SWEEP_CAP, SWEEP_REFUSAL, ZERO_AXIS, axisLength, boxPositions, constraintVerdict, elementRefusal, pageCursor, pageLimit, readLimits, readPatch, representationOf, runSolver, scaleLoads, setupSentence, solverJob, vec3Of, type ConstraintLimits, type SweepPatch } from "./sim.ts";
 import { orderFields, sequentialClearance, settingsRules, tallestLast, type PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { CURVED_FACE, GLOBAL_WORKPLANE, workplaneOwn, isGlobalFrame, planePrimitive, workplaneOnBed, workplaneOnFace, type Workplane } from "../src/workplane.ts";
@@ -107,7 +78,6 @@ import { eulerOrient, orientEuler } from "../src/mesh-place.ts";
 import { plateFileIsVersion2 } from "../src/plate.ts";
 import { advanceFor, builtinLibrary, adoptProfile, cardsOf, enginePrinter, exportOnlyRefusal, fileFromSelection, heatFor, printerTarget, targetPrinter, parseMachineFile, saveMaterialCard, serializeMachineFile, setAdvance, setFlow, setGcode, setMeasuredFits, setNozzleTemp, setRetract, type FilamentRecord, type MachineLibrary, type PrinterRecord } from "../src/ui/machine-library.ts";
 import { parseSettingsProfile, profileFileName, serializeSettingsProfile } from "../src/ui/settings-profiles.ts";
-
 import { openInApp, systemOpener, type AppOpener } from "./app-open.ts";
 import { mirror, type BridgeLink } from "./bridge-client.ts";
 import { EngineStopped, occtHint, ProtocolError, withMesh, type Engine } from "./engine.ts";
@@ -138,8 +108,7 @@ import { notClosedReason } from "./step-guard.ts";
 import { settingsRangeError } from "./settings-check.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type FacePick, type Piece } from "../src/modeling/compose.ts";
-import { pickSentence } from "../src/modeling/frames.ts";
+import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { typedPoint, typedView } from "../src/modeling/typed-view.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
@@ -150,653 +119,120 @@ import { planRebuild } from "../src/param-rebuild.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
 import { resolveFont, resolveRead, resolveWorkspaceFile, resolveWrite } from "./workspace.ts";
 import { textsNeedingFonts, UserFontShelf, userFontUses } from "../src/modeling/user-fonts.ts";
+import { BAND_KINDS, BEADS_REFUSAL, CHANGES_NOTHING, CHORD, type CallMeta, DETACHABLE, type Ghost, IMPORT_BUILD_LIMIT_MS, type Job, LAYER_ROWS, LONG_CALLS, MESH_EDIT, ModelRunaway, NAME_LIMIT, OVERLAP, type ObjectToolHandler, PLACE_KEYS, PLACE_ON_SMEAR, type PickRow, type PlateObject, type PlateSnap, type PluginRebuild, REGION_SHAPE, type Recipe, type RustRecipe, SLICE_CHECK_MCP, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_FACES, STALE_SLICE, STEP, STIFFNESS_KINDS, STRESS_LAYER_NEEDS, type SliceSummary, type SnapObject, TARGET_KINDS, type ToolHandler, type TypedWorkplane, UNKNOWN_OBJECT, WHILE_BUSY, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, firstAfter, isObject, joined, joinedPositions, modelSteps, numberNotes, numbered, pinsOf, posedPositions, positionsFrom, replySeconds, roundTo, shownName, slicedRunReply, stableKey, standsOnNothing, stepFileName, stlFileName, typedExprs, withPicks, xyGap } from "./session/shared.ts";
 
-const OVERLAP = "These parts overlap. Move one before slicing.";
-const CHORD = 0.05;
-const STEP = 0.05;
-const SLICE_WAIT_DEFAULT_S = 20;
-const SLICE_WAIT_MAX_S = 120;
-const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
-/** --- Print transitions, step 6b. plan:true before a slice of this plate as it is. */
-const SLICE_CHECK_MCP = "slice_start, then plan again, to mark the rows that hang in the slice too (seenInSlice).";
-const MESH_EDIT = "Model edits need a STEP file or a new solid. This part is a mesh.";
-const UNKNOWN_OBJECT = "That object is not on the plate. Call plate_list for the current handles.";
+export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
+export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
 
-const PLACE_KEYS = ["x", "y", "z", "turnX", "turnY", "turnZ"] as const;
-
-function joinedPositions(parts: ArrayLike<number>[]): Float32Array {
-  const out = new Float32Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let at = 0;
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  return out;
-}
-
-function posedPositions(positions: ArrayLike<number>, pose: Affine): Float32Array {
-  const out = new Float32Array(positions.length);
-  for (let i = 0; i + 2 < positions.length; i += 3) out.set(applyPose(pose, [positions[i]!, positions[i + 1]!, positions[i + 2]!]), i);
-  return out;
-}
-
-/** What model_place says about the frame later Model numbers are read in. */
-/** --- D25. Expression text, so an MCP step keeps the expressions it was typed with, as an app step keeps a field's. */
-function exprText(value: unknown): string | null {
-  return typeof value === "string" && value.trim() && !isPlainNumber(value) ? value.trim() : null;
-}
-
-/** The app field each typed number lands in, by op kind; a diameter is halved into the radius the op stores. */
-const OP_EXPR_FIELDS: Record<string, readonly (readonly [string, string, boolean?])[]> = {
-  root: [["dx", "modelDx"], ["dy", "modelDy"], ["dz", "modelDz"], ["radius", "modelRadius"], ["height", "modelHeight"], ["topRadius", "modelTopR"], ["tubeRadius", "modelTube"], ["innerRadius", "modelInnerR"], ["topX", "modelTopX"], ["sides", "modelSides"], ["across", "modelAcross"]],
-  boolean: [["dx", "modelDx"], ["dy", "modelDy"], ["dz", "modelDz"], ["radius", "modelRadius"], ["height", "modelHeight"], ["topRadius", "modelTopR"], ["tubeRadius", "modelTube"], ["innerRadius", "modelInnerR"], ["topX", "modelTopX"], ["sides", "modelSides"], ["across", "modelAcross"]],
-  hole: [["diameterMm", "modelHoleR", true], ["depth", "modelHoleD"], ["counterboreDiameterMm", "modelBoreR", true], ["counterboreDepth", "modelBoreD"]],
-  fillet: [["size", "modelBlend"]],
-  chamfer: [["size", "modelBlend"]],
-  shell: [["thickness", "modelShell"]],
-  scale: [["factor", "modelFactor"]],
-  extrude: [["depth", "depth"], ["depth2", "depth2"], ["draftDeg", "draftDeg"]],
-  revolve: [["angleDeg", "angle"]],
+const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
+  model_describe: (s, obj, input) => s.describe(obj, input),
+  faces_find: (s, obj, input) => s.facesFind(obj, input),
+  edges_find: (s, obj, input) => s.edgesFind(obj, input),
+  workplane_set: (s, obj, input) => s.workplaneSet(obj, input),
+  workplane_print_up: (s, obj) => s.printUp(obj),
+  model_place: (s, obj, input) => s.modelPlace(obj, input),
+  model_probe: (s, obj, input) => {
+    const anchored = s.anchored(obj, input.op as Record<string, unknown>);
+    if ("reason" in anchored) return { ok: false, reason: anchored.reason };
+    // --- Split to print: plan runs the planner alone, with no kernel call.
+    if (input.plan === true) return s.planTool(obj, anchored.op);
+    return s.probeMeasured(obj, { ...input, op: anchored.op });
+  },
+  surface_at: (s, obj, input) => s.surfaceAt(obj, input),
+  section: (s, obj, input) => s.sectionTool(obj, input),
+  model_check: (s, obj, input) => s.modelCheck(obj, input),
+  model_apply: (s, obj, input) => s.applyTool(obj, input),
+  model_apply_batch: (s, obj, input) => s.applyBatch(obj, input),
+  model_history: (s, obj, input) => s.history(obj, input),
+  model_anchors: (s, obj, input) => s.anchorsTool(obj, input),
+  model_goto: (s, obj, input) => s.gotoNode(obj, s.nodeOf(obj, input.node)),
+  model_undo: (s, obj) => s.step(obj, "undo"),
+  model_redo: (s, obj) => s.step(obj, "redo"),
+  model_edit: (s, obj, input) => s.edit(obj, s.nodeOf(obj, input.node), input.op),
+  model_drop: (s, obj, input) => s.drop(obj, s.nodeOf(obj, input.node)),
+  model_rename: (s, obj, input) => s.rename(obj, s.nodeOf(obj, input.node), String(input.label ?? "")),
+  model_commit: (s, obj) => s.commit(obj),
+  model_export_step: (s, obj, input) => {
+    if (input.pieces === true && input.assembly === true) return { ok: false, reason: "Export the pieces or the assembly, not both." };
+    if (input.assembly === true) return s.exportAssemblyStep(obj, String(input.name));
+    return input.pieces === true ? s.exportPieceStep(obj, String(input.name)) : s.exportStep(obj, String(input.name));
+  },
+  measure: (s, obj, input) => s.measure(obj, input),
 };
-const FEATURE_EXPR_FIELDS: readonly (readonly [string, string])[] = [["width", "modelFeatW"], ["height", "modelFeatH"], ["depth", "modelFeatDepth"], ["diameter", "modelFeatDia"], ["grooveWidth", "modelTexGroove"]];
 
-/**
- * The expression fields of one typed op, keyed as the app's panel stores them (`op.exprs`), so the app's Rebuild and
- * its out-of-date mark follow a parameter the MCP named. The session uses it for a feature (pocket, boss, texture, …),
- * whose group the app re-expands from its source; every other op links what it stored (`linksOf`).
- */
-export function typedExprs(op: unknown): Record<string, string> | undefined {
-  if (!op || typeof op !== "object" || Array.isArray(op)) return undefined;
-  const raw = op as Record<string, unknown>;
-  const out: Record<string, string> = {};
-  const kind = typeof raw.kind === "string" ? raw.kind : "";
-  if (kind === "pocket" || kind === "boss" || kind === "texture" || kind === "array" || kind === "ribs" || kind === "text") {
-    for (const [field, key] of FEATURE_EXPR_FIELDS) {
-      const text = exprText(raw[field]);
-      if (text) out[key] = text;
-    }
-    const at = raw.at as Record<string, unknown> | undefined;
-    const u = exprText(at?.u);
-    const v = exprText(at?.v);
-    if (u) out.modelFeatU = u;
-    if (v) out.modelFeatV = v;
-    const bars = raw.bars as Record<string, unknown> | undefined;
-    for (const [field, key] of [["vertical", "modelFeatBarsV"], ["horizontal", "modelFeatBarsH"], ["width", "modelFeatBarW"]] as const) {
-      const text = exprText(bars?.[field]);
-      if (text) out[key] = text;
-    }
-    const pitch = raw.pitch;
-    const pu = exprText(Array.isArray(pitch) ? pitch[0] : pitch);
-    const pv = exprText(Array.isArray(pitch) ? pitch[1] : pitch);
-    if (pu) out.modelTexPitchU = pu;
-    if (pv) out.modelTexPitchV = pv;
-  } else {
-    // A primitive placed by its centre grows from its corner when a size is rebuilt, so it keeps no size expression.
-    if ((kind === "boolean" || kind === "root") && raw.centre !== undefined) return undefined;
-    for (const [field, key, half] of OP_EXPR_FIELDS[kind] ?? []) {
-      const text = exprText(raw[field]);
-      if (text) out[key] = half ? `(${text}) / 2` : text;
-    }
-    // The fields primitiveFrom derives from dx and dz when they are left out follow them too.
-    if (kind === "boolean" || kind === "root") {
-      const dx = exprText(raw.dx);
-      const primitive = typeof raw.primitive === "string" ? raw.primitive : "box";
-      const readsRadius = ["cylinder", "cone", "tube", "sphere", "torus"].includes(primitive);
-      const readsHeight = ["cylinder", "cone", "tube", "polygon"].includes(primitive);
-      if (dx && raw.dy === undefined) out.modelDy = dx;
-      if (dx && raw.dz === undefined && (primitive === "sphere" || primitive === "ellipsoid")) out.modelDz = dx;
-      if (dx && raw.radius === undefined && readsRadius) out.modelRadius = `(${dx}) / 2`;
-      if (raw.height === undefined && out.modelDz && readsHeight) out.modelHeight = out.modelDz;
-    }
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
-/**
- * Whether a tool can change what the autosave holds: the plate, its objects, their histories and paint. Settings,
- * slices, exports, and machines are not in it, so they never cost a save.
- */
-function changesPlate(name: string): boolean {
-  if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
-  if (name === "sim_setup" || name === "sim_sweep") return true;
-  return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "recipe_run" || name === "mesh_import" || name === "project_open" || name === "project_create";
-}
-
-/** Calls that can outlast a client's request timeout: the autosave is written before they start. */
-// A sweep that reslices is one slice and one solve per variant.
-const LONG_CALLS = new Set(["recipe_run", "model_apply_batch", "model_build", "model_edit", "project_open", "mesh_import", "sim_sweep"]);
-const NAME_LIMIT = 120;
-/** D11.3: an imported plugin's build stops after this long (a person's own save keeps the cold-slot 120 s). */
-const IMPORT_BUILD_LIMIT_MS = 30_000;
-/** Tools whose op fields may be text expressions. */
-
-/**
- * Calls that may outrun the client's request timeout (Claude Code's is 60 s, and it then restarts the server). One that
- * has not answered after `replySeconds()`, or whose request the client cancels, goes on as a background job instead:
- * the reply is a job handle for slice_wait, and the work finishes or, with slice_cancel, is taken back.
- */
-const DETACHABLE = new Set([
-  "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
-  "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
-  "sim_run", "sim_sweep", "model_params", "recipe_run",
-]);
-
-/** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
-const WHILE_BUSY = new Set([
-  "session_info", "guide", "tools_enable", "plate_list", "slice_wait", "slice_cancel", "model_history", "settings_schema", "machine_list",
-  "machine_get", "overrides_list", "layer_actions_list", "paint_list", "gcode_summary", "gcode_read", "layer_summary",
-  "layer_detail", "mesh_stats", "support_trees",
-]);
-
-/** Detachable calls that change no part: a cancelled one is simply left to finish. */
-const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step"]);
-
-/** Seconds a detachable call runs before it answers with a job instead: under a 60 s client timeout. */
-function replySeconds(): number {
-  const raw = Number(process.env.LIME_MCP_REPLY_S);
-  return Number.isFinite(raw) && raw > 0 ? raw : 45;
-}
-
-/** Carried with one tools/call: a progress token, and cancel for that request. */
-export interface CallMeta {
-  progressToken?: string | number;
-  signal?: AbortSignal;
-  /** How far the work is, for a job's wait: the last fraction and stage it reported. */
-  fraction?: number;
-  stage?: string;
-}
-
-/** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */
-interface WorkJob {
-  handle: string;
-  tool: string;
-  object?: string;
-  started: number;
-  ctx: CallMeta;
-  stop: AbortController;
-  /** A run of ops (a batch, a build, a composite) stops after the step it is on; anything else finishes. */
-  stoppable: boolean;
-  settled: Promise<void>;
-  done: boolean;
-  result?: Record<string, unknown>;
-  error?: string;
-}
-
-/** `layer_image` coloured by stress before any sliced study. */
-/** The targets `lime-sim` reads. A band kind takes `band`; the stiffness kinds need a region. */
-const TARGET_KINDS = ["minSafetyFactor", "maxDeflectionMm", "deflectionBandMm", "minStiffnessNPerMm", "stiffnessBandNPerMm", "relativeDeflectionMm", "maxMassG", "minMassG"];
-const BAND_KINDS = new Set(["deflectionBandMm", "stiffnessBandNPerMm"]);
-const STIFFNESS_KINDS = new Set(["minStiffnessNPerMm", "stiffnessBandNPerMm"]);
-const REGION_SHAPE = "A region is {faces:[...]}, {sphere:{centre, radiusMm}}, or {box:{min, max}}, in the model frame.";
-export const STALE_FACES = "The part changed since this study was set up. Pick the faces again, or give the regions as a sphere or a box.";
-const PLACE_ON_SMEAR = "A sphere or box region is read on a sliced study. Hold and load faces on a smear.";
-const STRESS_LAYER_NEEDS ="Run sim_run on a sliced study of this object, then colour by stress or safety.";
-const BEADS_REFUSAL = "A card's beads need every modulus and strength above 0, and a bridgeFactor above 0 and at most 1.";
-
-export interface PlateObject {
-  id: string;
-  name: string;
-  fileName: string;
-  bytes: Uint8Array;
-  source: Float32Array;
-  triangles: number;
-  orient: Mat3;
-  scale: number;
-  centered: boolean;
-  offset: { x: number; y: number; z: number };
-  seatMm: number;
-  stepTolerance: number;
-  note?: string;
-  modelPose: Affine;
-  /** Which frame Model numbers are typed in: the part's own, or model space (absent). `model_place {frame}` sets it. */
-  frame?: ObjectFrame;
-  workplane: Workplane;
-  /** --- Gaps A3. A workplane typed with expressions: its numbers and text, so ops typed on it link to them and a parameter set moves it. */
-  workplaneTyped?: TypedWorkplane;
-  tree: ModelTree | null;
-  /** The modeler was restarted under this tree: it is rebuilt from its root and ops at its current step on next use. */
-  treeStale?: boolean;
-  /** Why the last commit's mesh does not close, when it committed anyway because the part came in open. */
-  commitWarning?: string;
-  solid: SolidView | null;
-  probes: Map<string, true>;
-  supportEdits: EditEntry[];
-  supportPaint: PaintDisk[];
-  seamPaint: SeamDisk[];
-  reinforcement: ReinforceRegion[];
-  objectSettings: PlateObjectSettings;
-  /** The history node `bytes` was meshed from. Null until a commit writes it. */
-  platedNode: number | null;
-  /**
-   * The committed solid (`platedNode`) as the engine writes it in `brep`, beside `bytes`, which is then an STL of the
-   * kernel's own mesh of it: the app's convention. A project saved before version 3 holds STEP here, which still opens.
-   * The slicer never reads it: a Model solid's plate mesh is the kernel's mesh, not a re-read of a file.
-   */
-  brep?: Uint8Array;
-  /** Runs of steps one composite edit or batch made: undo takes the whole run back. */
-  groups?: { start: number; end: number; label: string }[];
-  /** The run undo last took back, so redo can bring it all again. */
-  undoneGroup?: { start: number; end: number; label: string };
-  /**
-   * What model_build ran on this object: its base, the node before the ops, and for each op its key, the node after it
-   * (null when it was left out), and its first node. A later build with the same base resumes from the longest
-   * matching run of ops.
-   */
-  buildLog?: { base: string; start: number; steps: { key: string; node: number | null; first: number | null }[]; refused: boolean };
-  /** The model_build call this object came from, before expansion: rerun it with new parameters, and saved with the project. */
-  recipe?: Recipe;
-  /** The recipe_run that made this object: a key of `rustRecipes`. Saved with the project. */
-  rustRecipe?: string;
-  /**
-   * --- Plugin steps (D8). A rebuild of the plugin that made this part gave it a new tree: the object it replaced, kept
-   * off the plate so one model_undo at `tip` puts it back. Not saved.
-   */
-  rebuiltFrom?: { prior: PlateObject; tip: number };
-  /** The rebuilt object a model_undo took back, so model_redo brings it again. Not saved. */
-  rebuiltTo?: PlateObject;
-  /** Stress study. Absent until sim_setup. Not sent to the slicer. */
-  sim?: ObjectStudy;
-}
-
-/** A workplane_set origin and turn as numbers, beside the text each was typed as (`resolveTexts`). */
-interface TypedWorkplane {
-  source: "global" | "bed" | "face";
-  origin: [number, number, number];
-  turn: [number, number, number];
-  text: { origin: unknown; turn: unknown };
-}
-
-/** A recipe_run's source as it built, the parameters of its last apply, and the objects that apply made. */
-export interface RustRecipe {
-  source: string;
-  params: Record<string, unknown>;
-  objects: string[];
-  /** --- R-A. The recipe data the last apply read, by name, so a rerun builds the same where the files are missing. */
-  data?: Record<string, RecipeData>;
-  /** The workspace file the source was read from, when it came from one. */
-  path?: string;
-  /** SHA-256 of the source as it built: the draft's identity (docs/plan-recipe-plugins.md D1). */
-  sha256?: string;
-  /** The session's order of applies, so plugin save {from} keeps the latest run of a name. */
-  at?: number;
-  /** Parts already on the plate that the run changed. */
-  changed?: string[];
-  /** The plugin this run came from, or was kept as. */
-  plugin?: { id: string; version: number; sha256: string };
-  /**
-   * --- I10. The ingredients the source imported, as they built, by `ingredients::<name>` (`<name>@<N>` when pinned):
-   * a rerun builds these, and a plugin kept from this run carries them (I11).
-   */
-  ingredients?: Record<string, KeptIngredient>;
-}
-
-/** --- Plugin steps (D8). A recipe_run that rebuilds a stamped run: the part, the run, and where the part stood. */
-interface PluginRebuild {
-  obj: PlateObject;
-  run: StampedRun;
-  stamp: PluginStamp;
-  /** The step shown before the rebuild: Undo goes back to it. */
-  from: number;
-  /** The steps after the run on the way to `from`: built again after the new run. */
-  later: number[];
-  /** A draft's ingredient copies, as its last apply built them. */
-  ingredients?: Record<string, KeptIngredient>;
-}
-
-/** A model_build's base, ops, parameters, and name, as typed. */
-export interface Recipe {
-  base: unknown;
-  ops: unknown;
-  params: Record<string, unknown>;
-  name?: string;
-}
-
-interface Ghost {
-  mesh: Float32Array;
-  touches: boolean;
-}
-
-interface Job {
-  handle: string;
-  engineId: number;
-  objectId: string;
-  /** True when this job sliced every object, not the selected one. */
-  plateScope: boolean;
-  /** Object ids whose meshes went into this slice. */
-  slicedIds: string[];
-  /** Another object was on the plate, so the result names the slice set. */
-  others: boolean;
-  stamp: string;
-  status: string;
-  gcode?: string;
-  wire?: Record<string, unknown>;
-  error?: string;
-}
-
-interface SliceSummary {
-  seconds: number;
-  grams: number;
-  filamentMm: number;
-  cost: number;
-  warnings: string[];
-  features: { label: string; seconds: number; grams: number }[];
-  layerSeconds: number[];
-  layers: { z: number; seconds?: number }[];
-}
-
-/** --- Split to print. The kernel's sentence for each piece whose number had no room. */
-function numberNotes(reply: Record<string, unknown>): string[] {
-  return Array.isArray(reply.notes) ? reply.notes.filter((note): note is string => typeof note === "string") : [];
-}
-
-/**
- * --- Split to print, milestone 5. The connectors the kernel built and left out, in model space: each placed one's id,
- * centre and whether its holes got the teardrop roof; each dropped one's id and sentence.
- */
-function joined(reply: Record<string, unknown>, pose: Affine): { connectors?: { placed: { id: string; at: number[]; teardrop: boolean }[]; dropped: { id: string; reason: string; sentence: string }[] } } {
-  const connectors = reply.connectors as { placed?: unknown; dropped?: unknown } | undefined;
-  if (!connectors || typeof connectors !== "object") return {};
-  const mm = (value: number) => Math.round(value * 100) / 100 + 0;
-  const placed = (Array.isArray(connectors.placed) ? (connectors.placed as { id?: unknown; at?: unknown; teardrop?: unknown }[]) : []).map((row) => ({
-    id: String(row.id),
-    at: Array.isArray(row.at) && row.at.length === 3 ? applyPose(pose, row.at as [number, number, number]).map(mm) : [],
-    teardrop: row.teardrop === true,
-  }));
-  const dropped = (Array.isArray(connectors.dropped) ? (connectors.dropped as { id?: unknown; reason?: unknown; sentence?: unknown }[]) : []).map((row) => ({ id: String(row.id), reason: String(row.reason), sentence: String(row.sentence) }));
-  return { connectors: { placed, dropped } };
-}
-
-/** --- Split to print, milestone 5. A probe's pins: how many, and their volume. */
-function pinsOf(reply: Record<string, unknown>): { pins?: { count: number; volumeMm3: number } } {
-  const pins = reply.pins as { count?: unknown; volumeMm3?: unknown } | undefined;
-  if (!pins || typeof pins !== "object") return {};
-  return { pins: { count: Number(pins.count) || 0, volumeMm3: Math.round(Number(pins.volumeMm3) * 1000) / 1000 } };
-}
-
-/** --- Split to print. Where each piece's number was cut, in model space: on cut N's face (from 1), or on a side face. */
-function numbered(reply: Record<string, unknown>, pose: Affine): { numbers?: { part: number; faces: { face: string; cut?: number; at: number[] }[] }[] } {
-  if (!Array.isArray(reply.numbers)) return {};
-  const mm = (value: number) => Math.round(value * 100) / 100 + 0;
-  const numbers = (reply.numbers as { part?: unknown; faces?: unknown }[]).map((row, index) => ({
-    part: typeof row.part === "number" ? row.part : index + 1,
-    faces: (Array.isArray(row.faces) ? (row.faces as { face?: unknown; cut?: unknown; at?: unknown }[]) : []).map((face) => {
-      const at = Array.isArray(face.at) && face.at.length === 3 ? applyPose(pose, face.at as [number, number, number]).map(mm) : [];
-      return { face: face.face === "side" ? "side" : "cut", ...(typeof face.cut === "number" ? { cut: face.cut + 1 } : {}), at };
-    }),
-  }));
-  return { numbers };
-}
-
-function positionsFrom(encoded: string): Float32Array {
-  const bytes = Buffer.from(encoded, "base64");
-  const copy = new Uint8Array(bytes);
-  return new Float32Array(copy.buffer);
-}
-
-/** Rows in a `layer_detail` page: every layer of an ordinary part, about 90 KB. */
-const LAYER_ROWS = 2000;
-
-function shownName(name: string): string {
-  return name.length <= NAME_LIMIT ? name : name.slice(0, NAME_LIMIT);
-}
-
-function changedValues(rows: unknown[]): Record<string, unknown> {
-  const values: Record<string, unknown> = {};
-  for (const row of rows) {
-    if (!row || typeof row !== "object") continue;
-    const item = row as { key?: unknown; to?: unknown };
-    if (typeof item.key === "string") values[item.key] = item.to;
-  }
-  return values;
-}
-
-function roundTo(value: number, places: number): number {
-  const scale = 10 ** places;
-  return Math.round(value * scale) / scale;
-}
-
-interface SnapObject {
-  id: string;
-  name: string;
-  fileName: string;
-  bytes: Uint8Array;
-  source: Float32Array;
-  triangles: number;
-  orient: Mat3;
-  scale: number;
-  centered: boolean;
-  offset: { x: number; y: number; z: number };
-  seatMm: number;
-  stepTolerance: number;
-  note?: string;
-  modelPose: Affine;
-  frame?: ObjectFrame;
-  workplane: Workplane;
-  supportEdits: EditEntry[];
-  supportPaint: PaintDisk[];
-  seamPaint: SeamDisk[];
-  reinforcement: ReinforceRegion[];
-  objectSettings: PlateObjectSettings;
-  platedNode: number | null;
-  brep?: Uint8Array;
-  sim?: ObjectStudy;
-}
-
-interface PlateSnap {
-  label: string;
-  objects: SnapObject[];
-  selected: string;
-  settings: PresetSettings;
-  library: MachineLibrary;
-  actions: LayerAction[];
-  overrides: OverrideDocument;
-  printOrder: PrintOrder["printOrder"];
-  clearanceMm: number;
-  gantryMm: number;
-}
-
-class ModelRunaway extends Error {
-  /** --- R-C. The modeler's process ended under the call, rather than running past its time. */
-  readonly crashed: boolean;
-  constructor(message: string, crashed = false) {
-    super(message);
-    this.name = "ModelRunaway";
-    this.crashed = crashed;
-  }
-}
-
-/** --- I8. A face a selector picked during a call, with the nearPoint it was aimed at. */
-type PickRow = FacePick & { nearPoint?: number[] };
-
-/**
- * The call's reply with the faces its selectors picked: `picked` on any reply, and on a refusal one sentence per pick
- * after the reason, so a wrong face is named where the agent reads why.
- */
-function withPicks(value: Record<string, unknown>, picks: readonly PickRow[]): Record<string, unknown> {
-  if (picks.length === 0 || value.picked !== undefined) return value;
-  const picked = picks.map(({ nearPoint: _near, ...row }) => (row.level === null ? (({ level: _level, ...rest }) => rest)(row) : row));
-  if (value.ok !== false) return { ...value, picked };
-  const said = picks.map((row) => pickSentence(row, row.nearPoint)).join(" ");
-  return { ...value, ...(typeof value.reason === "string" ? { reason: `${value.reason} ${said}` } : {}), picked };
-}
-
-function domainRefusal(message: string): { ok: false; reason: string; next?: string } | null {
-  if (message.startsWith("That file was not found")) {
-    return { ok: false, reason: message, next: "Check the path, then call the tool again." };
-  }
-  if (message.startsWith("This mesh did not finish") || message.includes("LIME_MCP_WORKSPACE") || message.startsWith("Writes stay") || message.startsWith("That path is not") || message.startsWith("That name cannot") || message.startsWith("Open a .stl") || message.startsWith("That file is")) {
-    return { ok: false, reason: message };
-  }
-  return null;
-}
-
-/** The plate STL's name for a solid's file: the app's `stlName`. */
-function stlFileName(name: string): string {
-  const stem = name.replace(/\.(step|stp|stl|3mf)$/i, "");
-  return `${stem || "solid"}.stl`;
-}
-
-/** A STEP file's name for a solid's file, as the app's `stepFileName` names it. */
-function stepFileName(name: string): string {
-  const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
-  return `${stem || "solid"}.step`;
-}
-
-/** A value as text with its keys sorted, so two ops that ask the same thing have the same key. */
-function stableKey(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableKey).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableKey((value as Record<string, unknown>)[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
-/**
- * --- A9. Steps the kernel actually builds: every history node, plus each step inside a group.
- * A group is one node, so a budget that counted only nodes would stop a long composite short.
- */
-function modelSteps(tree: ModelTree): number {
-  let count = 0;
-  for (const node of tree.nodes.values()) {
-    count += 1;
-    if (node.op?.kind === "group") count += node.op.steps.length;
-  }
-  return count;
-}
-
-/**
- * --- 3.1 F4. A fillet's or chamfer's `edges` as the schema takes it: one pick object written inside a list,
- * `[{fromNode, filter}]`, is that object. Several pick objects in a list, or picks mixed with indexes, are refused
- * with the shapes that are taken, before the schema check says only "edges[0] must be a number".
- */
-function edgePicksAsTyped(args: unknown): { args: unknown } | { reason: string } {
-  if (!args || typeof args !== "object" || Array.isArray(args)) return { args };
-  const input = args as Record<string, unknown>;
-  const fix = (op: unknown): { op: unknown } | { reason: string } => {
-    if (!op || typeof op !== "object" || Array.isArray(op)) return { op };
-    const row = op as Record<string, unknown>;
-    if ((row.kind !== "fillet" && row.kind !== "chamfer" && row.kind !== "transition") || !Array.isArray(row.edges)) return { op };
-    const objects = row.edges.filter((edge) => edge !== null && typeof edge === "object");
-    if (objects.length === 0) return { op };
-    if (row.edges.length === 1) return { op: { ...row, edges: objects[0] } };
-    return { reason: EDGES_SHAPE };
-  };
-  let out = input;
-  if (input.op !== undefined) {
-    const fixed = fix(input.op);
-    if ("reason" in fixed) return fixed;
-    out = { ...out, op: fixed.op };
-  }
-  if (Array.isArray(input.ops)) {
-    const ops: unknown[] = [];
-    for (const [index, op] of input.ops.entries()) {
-      const fixed = fix(op);
-      if ("reason" in fixed) return { reason: `ops[${index}]: ${fixed.reason}` };
-      ops.push(fixed.op);
-    }
-    out = { ...out, ops };
-  }
-  return { args: out };
-}
-
-/** The first node on the path from `from` down to `to`: the child of `from` that `to` descends from. */
-function firstAfter(tree: ModelTree, from: number, to: number): number | null {
-  let node: number | null = to;
-  while (node !== null) {
-    const parent: number | null = tree.nodes.get(node)?.parent ?? null;
-    if (parent === from) return node;
-    node = parent;
-  }
-  return null;
-}
-
-function isObject(value: PlateObject | { ok: false; reason: string }): value is PlateObject {
-  return !("reason" in value);
-}
-
-function xyGap(a: Bounds, b: Bounds): number {
-  const sep = (low: number, high: number, otherLow: number, otherHigh: number) => (high <= otherLow ? otherLow - high : otherHigh <= low ? low - otherHigh : 0);
-  const dx = sep(a.min[0], a.max[0], b.min[0], b.max[0]);
-  const dy = sep(a.min[1], a.max[1], b.min[1], b.max[1]);
-  if (dx > 0 && dy > 0) return Math.hypot(dx, dy);
-  return Math.max(dx, dy);
-}
-
-/**
- * The bridge reply, without the surface. Margins keep their hot spots, and each carries the region it read as the
- * caller gave it: the solver returns one margin per target, in order.
- */
-function slicedRunReply(text: string, targets: readonly StudyConstraint[] = []): Record<string, unknown> {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    return { ok: false, reason: "The stress solve did not finish." };
-  }
-  if (parsed.ok !== true) {
-    return { ok: false, reason: typeof parsed.reason === "string" && parsed.reason ? parsed.reason : "The stress solve did not finish." };
-  }
-  const report = parsed.report && typeof parsed.report === "object" ? (parsed.report as Record<string, unknown>) : null;
-  if (!report) return { ok: false, reason: "The stress solve did not finish." };
-  const level = report.trust === "rough" || report.trust === "usable" || report.trust === "converged" ? report.trust : "rough";
-  return {
-    ok: true,
-    label: LABEL,
-    representation: "sliced",
-    trust: { level },
-    notes: Array.isArray(report.notes) ? report.notes.filter((note): note is string => typeof note === "string") : [],
-    margins: Array.isArray(report.margins) ? report.margins.map((row, index) => withRegion(row, targets[index])) : [],
-    maxDisplacementMm: typeof report.maxDisplacementMm === "number" ? report.maxDisplacementMm : 0,
-    minSafetyFactor: typeof report.minSafetyFactor === "number" ? report.minSafetyFactor : null,
-    massG: typeof report.massG === "number" ? report.massG : 0,
-    criterion: "max-stress",
-    stale: false,
-    ...sliceEstimateOf(parsed.slice),
-  };
-}
-
-function withRegion(row: unknown, target: StudyConstraint | undefined): unknown {
-  if (!target?.region || !row || typeof row !== "object" || Array.isArray(row)) return row;
-  return { ...(row as Record<string, unknown>), region: target.region, ...(target.other ? { other: target.other } : {}) };
-}
-
-/** The slicer's estimate of the slice a sliced study solved: free, since it was sliced anyway. */
-function sliceEstimateOf(value: unknown): { slicerSeconds?: number; slicerGrams?: number } {
-  if (!value || typeof value !== "object") return {};
-  const row = value as Record<string, unknown>;
-  return {
-    ...(typeof row.seconds === "number" ? { slicerSeconds: row.seconds } : {}),
-    ...(typeof row.filamentG === "number" ? { slicerGrams: row.filamentG } : {}),
-  };
-}
-
-/**
- * The engine's check for part beads that stand on nothing: no bead, support or belt under them. Lengths to 0.1 mm,
- * the longest span of one path over nothing, and the five largest patches with their layers and where each starts on
- * the plate. Absent when the engine did not run it.
- */
-function standsOnNothing(value: unknown): { standsOnNothing?: Record<string, unknown> } {
-  if (!value || typeof value !== "object") return {};
-  const hold = value as Record<string, unknown>;
-  const mm = (n: unknown) => Math.round((typeof n === "number" ? n : 0) * 10) / 10;
-  const rows = Array.isArray(hold.largest) ? hold.largest as Record<string, unknown>[] : [];
-  return {
-    standsOnNothing: {
-      unheldMm: mm(hold.unheldMm),
-      danglingMm: mm(hold.danglingMm),
-      longestSpanMm: mm(hold.longestSpanMm),
-      partMm: mm(hold.partMm),
-      patches: typeof hold.patches === "number" ? hold.patches : 0,
-      largest: rows.slice(0, 5).map((row) => ({
-        mm: mm(row.mm),
-        danglingMm: mm(row.danglingMm),
-        longestSpanMm: mm(row.longestSpanMm),
-        layers: row.layers,
-        at: Array.isArray(row.at) ? row.at.map(mm) : [],
-      })),
-    },
-  };
-}
+const HANDLERS: Record<string, ToolHandler> = {
+  solid_new: (s, input) => input.coupon !== undefined ? s.fitCouponNew(input) : s.solidNew(input),
+  model_build: (s, input) => s.build(input),
+  model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),
+  model_define: (s, input) => s.defineTool(input),
+  session_info: (s) => s.sessionInfo(),
+  project_open: (s, input) => s.projectOpen(String(input.path)),
+  project_create: (s, input) => s.projectCreate(input),
+  project_save: (s, input) => s.projectSave(String(input.name), input.ifExists === "refuse"),
+  app_open: (s, input) => s.appOpen(typeof input.path === "string" ? input.path : undefined),
+  mesh_import: (s, input) => s.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP, input.pieces === true),
+  plate_list: (s, input) => s.plateList(input),
+  plate_undo: (s) => s.plateUndo(),
+  plate_redo: (s) => s.plateRedo(),
+  object_select: (s, input) => s.objectSelect(String(input.object), input.name),
+  object_place: (s, input) => s.objectPlace(input),
+  object_remove: (s, input) => s.objectRemove(String(input.object)),
+  recipe_run: (s, input, meta) => s.recipeRun(input, meta),
+  plugin: (s, input) => s.pluginTool(input),
+  nugget: (s, input) => s.nuggetTool(input),
+  object_duplicate: (s, input) => s.objectDuplicate(input),
+  object_split_shells: (s, input) => s.splitShells(String(input.object)),
+  plate_arrange: (s, input) => s.plateArrange(input),
+  plate_print_order: (s, input) => s.printOrderSet(input),
+  machine_list: (s, input) => s.machineList(input),
+  machine_select: (s, input) => s.machineSelect(String(input.printerId), String(input.filamentId), input.nozzleMm),
+  machine_load: (s, input) => s.machineLoad(String(input.path)),
+  machine_get: (s) => s.machineGet(),
+  machine_set: (s, input) => s.machineSet(input),
+  machine_save: (s, input) => s.machineSave(String(input.name)),
+  settings_apply: (s, input) => s.settingsApply(input),
+  settings_schema: (s, input) => s.settingsSchema(input),
+  settings_set: (s, input) => s.settingsSet(input),
+  profile_save: (s, input) => s.profileSave(String(input.name)),
+  range_add: (s, input) => s.rangeAdd(input),
+  modifier_add: (s, input) => s.modifierAdd(input),
+  overrides_list: (s) => s.overridesList(),
+  override_remove: (s, input) => s.overrideRemove(String(input.id)),
+  layer_action_set: (s, input) => s.layerActionSet(input),
+  layer_actions_list: (s) => s.layerActionsList(),
+  layer_action_remove: (s, input) => s.layerActionRemove(Number(input.zMm)),
+  slice_start: (s, input) => s.sliceStart(input.cancelRunning === true, input.scope),
+  slice_wait: (s, input, meta) => s.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined),
+  slice_cancel: (s, input) => s.sliceCancel(String(input.job)),
+  gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined),
+  gcode_export: (s, input) => s.gcodeExport(input),
+  export_3mf: (s, input) => input.pieces === true ? s.exportPieceMeshes(input) : s.export3mf(String(input.name)),
+  mesh_stats: (s, input) => s.meshStats(String(input.object)),
+  layer_summary: (s, input) => s.layerSummary(typeof input.job === "string" ? input.job : undefined),
+  render_view: (s, input) => s.renderView(input),
+  paint_supports: (s, input) => s.paintSupports(input),
+  paint_seam: (s, input) => s.paintSeam(input),
+  reinforce_add: (s, input) => s.reinforceAdd(input),
+  paint_list: (s, input) => s.paintList(input),
+  paint_clear: (s, input) => s.paintClear(input),
+  support_edit: (s, input) => s.supportEdit(input),
+  support_trees: (s, input) => s.supportTrees(input),
+  layer_detail: (s, input) => s.layerDetail(input),
+  layer_paths: (s, input) => s.layerPathsFile(input),
+  layer_image: (s, input) => s.layerImage(input),
+  gcode_read: (s, input) => s.gcodeRead(input),
+  calibration_tower: (s, input) => s.calibrationTower(input),
+  calibration_apply: (s, input) => s.calibrationApply(input),
+  blend_compare: (s, input) => s.blendCompare(input),
+  blend_apply: (s, input) => s.blendApply(input),
+  guide: (s, input) => s.guide(input),
+  sim_setup: (s, input) => s.simSetup(input),
+  sim_run: (s, input) => s.simRun(input),
+  sim_field: (s, input) => s.simField(input),
+  sim_sweep: (s, input) => s.simSweep(input),
+  sim_cancel: () => ({ ok: true, label: LABEL }),
+  tools_enable: (s, input) => s.toolsEnable(input),
+};
 
 export class Session {
   readonly objects: PlateObject[] = [];
@@ -808,33 +244,33 @@ export class Session {
   running: Job | null = null;
   latest: Job | null = null;
   /** Long calls that went on in the background, newest last; a few finished ones are kept for their wait. */
-  private workJobs: WorkJob[] = [];
-  private seq = 0;
-  private jobSeq = 0;
-  private readonly engine: Engine;
-  private sourceProject: LimeProject | null = null;
-  private sourceHash = "";
-  private sourcePath = "";
-  private profileTouched = false;
-  private lastBridge: Record<string, unknown> | null = null;
+  workJobs: WorkJob[] = [];
+  seq = 0;
+  jobSeq = 0;
+  readonly engine: Engine;
+  sourceProject: LimeProject | null = null;
+  sourceHash = "";
+  sourcePath = "";
+  profileTouched = false;
+  lastBridge: Record<string, unknown> | null = null;
   /** The last sliced study's cells, for `layer_image`'s stress and safety colours. */
-  private stressCells: StressCells | null = null;
-  private lastPreview: SolidView | null = null;
-  private undoStack: PlateSnap[] = [];
-  private redoStack: PlateSnap[] = [];
-  private bridgeSeq = 0;
+  stressCells: StressCells | null = null;
+  lastPreview: SolidView | null = null;
+  undoStack: PlateSnap[] = [];
+  redoStack: PlateSnap[] = [];
+  bridgeSeq = 0;
   /** This process on the bridge. The desktop starts its sequence again when it changes. */
-  private readonly bridgeSession = randomUUID();
-  private readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
-  private readonly meshHashes = new WeakMap<Uint8Array, string>();
+  readonly bridgeSession = randomUUID();
+  readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
+  readonly meshHashes = new WeakMap<Uint8Array, string>();
   /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
-  private readonly legacySolids = new WeakSet<Uint8Array>();
+  readonly legacySolids = new WeakSet<Uint8Array>();
   /** STEP roots a commit already tried to write as the engine's binary solid, so an engine that cannot is asked once. */
-  private readonly triedRoots = new WeakSet<ArrayBuffer>();
-  private generation = 0;
-  private lastProgressAt = 0;
+  readonly triedRoots = new WeakSet<ArrayBuffer>();
+  generation = 0;
+  lastProgressAt = 0;
   overrides: OverrideDocument = emptyOverrides();
-  private pareto: { label: string; toughness: number; seconds: number; grams: number; score: number }[] = [];
+  pareto: { label: string; toughness: number; seconds: number; grams: number; score: number }[] = [];
   printOrder: PrintOrder["printOrder"] = "all-at-once";
   clearanceMm = 0;
   gantryMm = 0;
@@ -849,78 +285,83 @@ export class Session {
    * --- A6. The same table as typed: a number, or an expression. Saved as the project's `parameters`.
    * `params` is this table evaluated, which is what ops and `model_params` return.
    */
-  private paramText: Record<string, string | number> = {};
+  paramText: Record<string, string | number> = {};
   /** Plate objects held at poses relative to each other, as the project file keeps them (`src/assembly.ts`). */
-  private assemblies: Assembly[] = [];
+  assemblies: Assembly[] = [];
   /** Parts model_define stored, which an op list places with {kind: "use"}. */
   parts = new Map<string, PartDef>();
   /**
    * Tools a join took off the plate, as the desktop does: not printed, not listed, but their trees stay open, since
    * an edit that replays the join builds the tool again, and a save keeps them as the project's modelTools.
    */
-  private toolsOffPlate: PlateObject[] = [];
+  toolsOffPlate: PlateObject[] = [];
   /**
    * --- Split to print. Pieces of a split to print that is not on the way to its part's current step: model_undo above
    * it takes them off the plate, and a redo brings them back (D9). Not saved.
    */
-  private piecesOffPlate: PlateObject[] = [];
+  piecesOffPlate: PlateObject[] = [];
   /** recipe_run's builder and runner, made on its first call. */
-  private recipeHost: RecipeHost | null = null;
+  recipeHost: RecipeHost | null = null;
   /** recipe_run sources by name, with the parameters and objects of their last apply. Saved with the project. */
-  private rustRecipes = new Map<string, RustRecipe>();
+  rustRecipes = new Map<string, RustRecipe>();
   /**
    * --- Plugin steps (D7). The project's own copy of each plugin its stamped steps name, by the body's SHA-256: the
    * whole file as the project carried it. Read on open, written on save with the copies the library still has.
    */
-  private projectPlugins = new Map<string, string>();
+  projectPlugins = new Map<string, string>();
   /**
    * --- Text milestone 4. The fonts of the person's this project's texts use: added by a text's `fontFile`, or carried by the
    * project that was opened (`projectFonts`, as its file held them). A text names one by id, or by its name.
    */
-  private readonly fonts = new UserFontShelf(async (request) => JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as Record<string, unknown>);
-  private projectFonts: LimeProject["fonts"];
+  readonly fonts = new UserFontShelf(async (request) => JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as Record<string, unknown>);
+  projectFonts: LimeProject["fonts"];
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
-  private recipeDepth = 0;
+  recipeDepth = 0;
   /** The MCP client's name from initialize: a kept plugin's made-by. */
   clientName: string | undefined;
   /** Applies of recipe_run in this session, counted: a draft's `at`. */
-  private recipeSeq = 0;
-  private recipeApi: [number, number] | null = null;
-  private lustId: string | undefined;
+  recipeSeq = 0;
+  recipeApi: [number, number] | null = null;
+  lustId: string | undefined;
   /** I21: each recipe name's call count on its last run, for "call N of about M". */
-  private readonly recipeCallCounts = new Map<string, number>();
+  readonly recipeCallCounts = new Map<string, number>();
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
-  private pendingRecipe: Recipe | null = null;
+  pendingRecipe: Recipe | null = null;
   /**
    * --- D25, gaps A1–A3. The call's ops as typed, each a twin of its resolved op with every expression kept as text in
    * the project's names (`resolveTexts`), by op index after each and use expand; the base's for model_build. Set before
    * the numbers resolve, read by whatever applies the ops, so each stored step links to what it was typed with.
    */
-  private pendingTexts: unknown[] = [];
-  private pendingBaseText: unknown = undefined;
+  pendingTexts: unknown[] = [];
+  pendingBaseText: unknown = undefined;
   /** Expressions of the call being run that no stored number could follow, and the op being linked. */
-  private notLinked: { op?: number; field: string; text: string }[] = [];
-  private linkingOp: number | undefined = undefined;
+  notLinked: { op?: number; field: string; text: string }[] = [];
+  linkingOp: number | undefined = undefined;
   /** --- Gaps A4. Call-level params a model_build gave for names the project already has: this call only. */
-  private pendingOneOff: string[] = [];
+  pendingOneOff: string[] = [];
 
   /** How app_open reaches the desktop app. Tests replace it. */
   appOpener: AppOpener = systemOpener;
 
   /** The autosave a previous server left in the workspace, offered until this session has a plate of its own. */
   previousAutosave: PreviousAutosave | null = null;
-  private startupChecked = false;
-  private autosaveDirty = false;
-  private autosaveTimer: ReturnType<typeof setTimeout> | null = null;
-  private autosaveWriting: Promise<void> = Promise.resolve();
-  private inflight = 0;
+  startupChecked = false;
+  autosaveDirty = false;
+  autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  autosaveWriting: Promise<void> = Promise.resolve();
+  inflight = 0;
   /** The progress token and cancel signal of the call each piece of work belongs to. */
-  private readonly callContext = new AsyncLocalStorage<CallMeta>();
+  readonly callContext = new AsyncLocalStorage<CallMeta>();
   /** --- I8. The faces each call's selectors resolved to, for its reply and its refusal. */
-  private readonly pickLog = new AsyncLocalStorage<PickRow[]>();
+  readonly pickLog = new AsyncLocalStorage<PickRow[]>();
 
   /** When this server started, for a reply about a job an earlier server ran. */
-  private readonly startedAt = new Date().toISOString();
+  readonly startedAt = new Date().toISOString();
+
+  /** Each object Joint down turned, by id, and the orientation it had before: Keep, and a step above the cut, put it back. */
+  keptOrients = new Map<string, Mat3>();
+
+  jointed = new Set<string>();
 
   constructor(engine: Engine) {
     this.engine = engine;
@@ -941,14 +382,14 @@ export class Session {
    * One tool call: numbers, validation, the autosave, the bridge mirror. A step of a plan runs here too, with inPlan:
    * it never detaches on its own (the plan does, as a whole) and is not refused for the plan's own background job.
    */
-  private runCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+  runCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
     const opened = this.openGroupFor(name);
     const done = this.runOpenCall(name, args, meta, inPlan);
     // The spread drops the non-enumerable inline images (layer_image, render_view), so carry them over.
     return opened ? done.then((value) => withImages({ ...value, groupOpened: opened }, imagesOf(value))) : done;
   }
 
-  private runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+  runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
     const picked = edgePicksAsTyped(numbered.args);
@@ -998,7 +439,7 @@ export class Session {
   }
 
   /** The call's answer, or a job handle when it is not done within replySeconds() or its request is cancelled. */
-  private detachable(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
+  detachable(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       let answered = false;
       const finish = () => {
@@ -1027,7 +468,7 @@ export class Session {
     });
   }
 
-  private startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
+  startWorkJob(name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
     this.jobSeq += 1;
     const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
     const stoppable = name === "plan_run" || name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
@@ -1047,7 +488,7 @@ export class Session {
   }
 
   /** A job's state as slice_wait and the detached call answer it. A finished job answers with its call's own result. */
-  private workReply(job: WorkJob): Record<string, unknown> {
+  workReply(job: WorkJob): Record<string, unknown> {
     if (job.done) {
       if (job.error !== undefined) return { ok: false, job: job.handle, status: "error", tool: job.tool, reason: job.error };
       const result = job.result ?? { ok: false };
@@ -1070,7 +511,7 @@ export class Session {
   }
 
   /** While a background job runs, only reads that leave the modeler alone, and the job's wait and cancel, are answered. */
-  private busyRefusal(name: string): Record<string, unknown> | null {
+  busyRefusal(name: string): Record<string, unknown> | null {
     const job = this.workJobs.find((row) => !row.done);
     if (!job || WHILE_BUSY.has(name)) return null;
     const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
@@ -1081,7 +522,7 @@ export class Session {
    * plan_run: its steps in order through runCall, so each is checked, applied, and autosaved as if called alone. The
    * plan as a whole is detachable: past replySeconds() it answers with a job, and slice_wait returns the plan's result.
    */
-  private planRun(args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
+  planRun(args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
     const problem = validateTool("plan_run", args ?? {});
     if (problem) throw new ProtocolError(problem);
     const steps = (args as { steps: PlanStep[] }).steps;
@@ -1094,7 +535,7 @@ export class Session {
     return this.detachable("plan_run", args as Record<string, unknown>, work, ctx, stop, meta?.signal);
   }
 
-  private async runPlan(steps: PlanStep[], ctx: CallMeta): Promise<Record<string, unknown>> {
+  async runPlan(steps: PlanStep[], ctx: CallMeta): Promise<Record<string, unknown>> {
     const results: Record<string, unknown>[] = [];
     const done: Record<string, unknown>[] = [];
     const images: InlineImage[] = [];
@@ -1128,7 +569,7 @@ export class Session {
    * panic, a limit, a cancel, or dry mode takes back every object it made and every step it added; an apply that
    * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
    */
-  private async recipeRun(input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
+  async recipeRun(input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
     if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
     const host = this.recipeHost;
     const ready = host.available();
@@ -1563,7 +1004,7 @@ export class Session {
   }
 
   /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
-  private async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null, data?: Record<string, RecipeData>): Promise<Record<string, unknown>> {
+  async keepRun(keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null, data?: Record<string, RecipeData>): Promise<Record<string, unknown>> {
     if (keep === undefined) return {};
     const k = (keep && typeof keep === "object" ? keep : {}) as { title?: unknown; description?: unknown };
     const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, objectFrom, ingredients, ...(data ? { data } : {}) });
@@ -1578,7 +1019,7 @@ export class Session {
    * --- Plugin steps (D8). A draft kept as a plugin: the steps it stamped on the parts it made or changed now name the
    * plugin, so a rebuild finds it. Another draft with the same code keeps its own name.
    */
-  private promoteStamps(row: RustRecipe, name: string, saved: { id: string; version: number; sha256: string }): void {
+  promoteStamps(row: RustRecipe, name: string, saved: { id: string; version: number; sha256: string }): void {
     const recipe = name.split("@")[0]!;
     for (const id of new Set([...row.objects, ...(row.changed ?? [])])) {
       const obj = this.find(id);
@@ -1592,7 +1033,7 @@ export class Session {
   }
 
   /** --- Plugins (docs/plan-recipe-plugins.md D12). This host's crate API, read from the crate the recipes build against. */
-  private crateApi(): [number, number] {
+  crateApi(): [number, number] {
     if (this.recipeApi) return this.recipeApi;
     let found: [number, number] = [1, 1];
     try {
@@ -1611,7 +1052,7 @@ export class Session {
    * default; the run ends at its first call, so nothing reaches the engine. A recipe that read its object and then
    * stopped (an unwrap of None) needs a part.
    */
-  private async recipeDescribe(body: string, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
+  async recipeDescribe(body: string, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
     if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), moduleUrl: import.meta.url });
     const host = this.recipeHost;
     const ready = host.available();
@@ -1646,7 +1087,7 @@ export class Session {
    * the part it already changed, a split there, a fuse into what it already added, or a cut through a hole it already
    * cut is refused, and the plugin could never be kept.
    */
-  private async pluginCheck(body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
+  async pluginCheck(body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
     const described = await this.recipeDescribe(body, limitMs);
     if ("reason" in described) return { reason: `This plugin does not build with its own defaults: ${described.reason} Change the defaults or the code, then keep it.` };
     let object = described.target === "new" ? undefined : objectHint && this.find(objectHint) ? objectHint : undefined;
@@ -1683,7 +1124,7 @@ export class Session {
    * the same body keeps its version (new words only); with another body it is the next version when the run was of
    * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
    */
-  private async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+  async pluginSave(opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
     const title = oneLine(opts.title, TITLE_MAX);
     if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
     let body = lfOnly(opts.source);
@@ -1754,7 +1195,7 @@ export class Session {
   }
 
   /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
-  private lustBuild(): string | undefined {
+  lustBuild(): string | undefined {
     if (this.lustId !== undefined) return this.lustId || undefined;
     const ready = this.recipeHost?.available();
     let id = "";
@@ -1770,7 +1211,7 @@ export class Session {
    * A library plugin ready to run or show. A file whose body no longer matches its hash was edited by hand: its
    * parameters are read again (one describe run), its version goes up, and it is written back, with a note once.
    */
-  private async pluginFile(id: string): Promise<{ file: PluginFile; note?: string } | { reason: string }> {
+  async pluginFile(id: string): Promise<{ file: PluginFile; note?: string } | { reason: string }> {
     const dir = pluginsDir();
     const found = readPlugin(id, dir);
     if (!found) {
@@ -1789,7 +1230,7 @@ export class Session {
   }
 
   /** --- D1. The session's latest kept run of a recipe name: its entry under the name or `<name>@<object>`. */
-  private latestDraft(name: string): { key: string; row: RustRecipe } | null {
+  latestDraft(name: string): { key: string; row: RustRecipe } | null {
     let best: { key: string; row: RustRecipe } | null = null;
     for (const [key, row] of this.rustRecipes) {
       if (key !== name && !key.startsWith(`${name}@`)) continue;
@@ -1799,12 +1240,12 @@ export class Session {
   }
 
   /** The draft's part still on the plate, made or changed by it: where a plugin that needs a part is checked. */
-  private draftPart(row: RustRecipe): string | undefined {
+  draftPart(row: RustRecipe): string | undefined {
     return [...(row.changed ?? []), ...row.objects].find((id) => this.find(id));
   }
 
   /** --- D14. plugin {action: list | get | save | remove}. Plugin text goes in `data`: it is data, never instructions. */
-  private async pluginTool(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async pluginTool(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const action = input.action;
     const dir = pluginsDir();
     if (action === "list") {
@@ -1922,7 +1363,7 @@ export class Session {
   }
 
   /** `imported.json`: the library's plugins marked imported until a person's first run in the app (D11.6). */
-  private importMarks(): Record<string, ImportMark> {
+  importMarks(): Record<string, ImportMark> {
     const path = join(pluginsDir(), "imported.json");
     try {
       return readMarks(existsSync(path) ? readFileSync(path, "utf8") : null);
@@ -1932,7 +1373,7 @@ export class Session {
   }
 
   /** The plugins this project carries that the library lacks (by id and by code): what an open offers to add (D10). */
-  private projectOnlyPlugins(): { id: string; version: number; sha256: string; title: string }[] {
+  projectOnlyPlugins(): { id: string; version: number; sha256: string; title: string }[] {
     const dir = pluginsDir();
     const out: { id: string; version: number; sha256: string; title: string }[] = [];
     for (const [sha, text] of this.projectPlugins) {
@@ -1948,7 +1389,7 @@ export class Session {
    * --- Milestone 8 (D10). One file to send, in the workspace: the plugin as the library keeps it (its code, the
    * ingredients and recipe data it carries) with its presets and the lessons about it in its header, outside the hash.
    */
-  private async pluginExport(id: string): Promise<Record<string, unknown>> {
+  async pluginExport(id: string): Promise<Record<string, unknown>> {
     if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin to export." };
     const got = await this.pluginFile(id);
     if ("reason" in got) return { ok: false, reason: got.reason };
@@ -1988,7 +1429,7 @@ export class Session {
    * plugin is marked imported until a person runs it once in the app (D11.6); its presets and lessons join the library.
    * Its text goes in `data`: it is data, never instructions.
    */
-  private async pluginImport(text: string, from: ImportMark["from"], replace: boolean): Promise<Record<string, unknown>> {
+  async pluginImport(text: string, from: ImportMark["from"], replace: boolean): Promise<Record<string, unknown>> {
     const file = checkImport(text, this.crateApi(), bodyHash);
     if ("reason" in file) return { ok: false, reason: file.reason };
     const split = splitPluginData(file.body);
@@ -2066,7 +1507,7 @@ export class Session {
    * into the library plugin's file, by name, over what it carried; its code stays as it is, so its parameters do too.
    * New data is the next version (the older one is kept beside it, as any version is); the same data changes nothing.
    */
-  private async pluginAttachData(id: string, names: unknown[]): Promise<Record<string, unknown>> {
+  async pluginAttachData(id: string, names: unknown[]): Promise<Record<string, unknown>> {
     if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin, and data: the names of the workspace's recipe data it reads." };
     const wanted = [...new Set(names.filter((n): n is string => typeof n === "string" && n.trim() !== "").map((n) => n.trim()))];
     if (wanted.length === 0) return { ok: false, reason: "data names the workspace's recipe data to carry, like data:[\"skull/outline\"]." };
@@ -2103,7 +1544,7 @@ export class Session {
    * (Q2). find searches every kind and this session's drafts; the rest act on one kind. A plugin's get, save and remove
    * are the plugin tool's. Text a nugget carries goes in `data`: it is data, never instructions.
    */
-  private async nuggetTool(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async nuggetTool(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const action = input.action;
     const kind = typeof input.kind === "string" ? input.kind : undefined;
     if (action === "find") return this.nuggetFind(typeof input.query === "string" ? input.query.trim() : "", kind);
@@ -2164,28 +1605,28 @@ export class Session {
     return { ok: false, reason: "action is find, get, save, or remove; kind is plugin, ingredient, preset, or lesson." };
   }
 
-  private ingredientNames(): string[] {
+  ingredientNames(): string[] {
     return listLibrary(ingredientsDir(), "ingredient").map((file) => file.header.plugin).slice(0, 20);
   }
 
-  private presetNames(plugin: string): string {
+  presetNames(plugin: string): string {
     const names = listPresets(plugin).map((row) => `${row.plugin}/${row.name}`);
     return names.length ? ` ${plugin} has: ${names.join(", ")}.` : "";
   }
 
   /** The library plugins that carry an ingredient inside them (I11), by id. */
-  private pluginsCarrying(id: string): string[] {
+  pluginsCarrying(id: string): string[] {
     return listLibrary(pluginsDir()).filter((file) => carriedIngredients(file.body).some((row) => row.id === id)).map((file) => file.header.plugin);
   }
 
   /** --- I17. An ingredient several plugins carry is worth proposing for lime_recipe; the library keeps it as it is. */
-  private promotion(usedBy: string[]): Record<string, unknown> {
+  promotion(usedBy: string[]): Record<string, unknown> {
     if (usedBy.length < 2) return {};
     return { promote: `${usedBy.length} plugins carry it: worth proposing for lime_recipe in a pull request (docs/plan-recipe-ingredients.md I17). This file and its versions stay, so recipes that import it keep building.` };
   }
 
   /** --- I16. One line per hit across every kind, best first, at most 20. With no query, the newest of each. */
-  private nuggetFind(query: string, kind: string | undefined): Record<string, unknown> {
+  nuggetFind(query: string, kind: string | undefined): Record<string, unknown> {
     const rows: { score: number; row: Record<string, unknown> }[] = [];
     const score = (hay: string) => (query ? queryScore({ plugin: hay, title: "", description: "" }, query) : 1);
     const want = (k: string) => kind === undefined || kind === k;
@@ -2231,7 +1672,7 @@ export class Session {
    * --- I12. Keeps an ingredient: the named items of a run (and what they use), or a whole body. It must build alone
    * under lust; one that does not is not kept, and the sentence says which line needs what.
    */
-  private async ingredientSave(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async ingredientSave(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const title = oneLine(input.title, TITLE_MAX);
     if (!title) return { ok: false, reason: "An ingredient needs a title: one line, at most 60 characters. Its id is the title's slug unless id is given." };
     const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : slugOf(title);
@@ -2300,7 +1741,7 @@ export class Session {
    * --- I13. After an apply that reached done: at most three suggestions of what to keep, each with its ready-made
    * nugget call. Nothing is saved until that call is made (O1).
    */
-  private harvest(name: string, source: string, refused: { id: number; tool: string; line: number; reason: string; ingredient?: string }[], refusedArgs: Map<number, Record<string, unknown>>, plugin: { id: string } | null, params: Record<string, unknown> | undefined, preset: string | undefined): Record<string, unknown>[] {
+  harvest(name: string, source: string, refused: { id: number; tool: string; line: number; reason: string; ingredient?: string }[], refusedArgs: Map<number, Record<string, unknown>>, plugin: { id: string } | null, params: Record<string, unknown> | undefined, preset: string | undefined): Record<string, unknown>[] {
     const out: Record<string, unknown>[] = [];
     if (name === "plugin_check" || name === "ingredient_check") return out;
     const fns = plugin ? [] : harvestFunctions(source);
@@ -2328,7 +1769,7 @@ export class Session {
    * --- I22. The object `newId` takes the handle `oldId`: the old one leaves the plate, and the new one takes its handle,
    * its place in the list, its name and, unless the run placed it, its place on the plate and in the model.
    */
-  private async takeOver(oldId: string, newId: string, keepPlace: boolean, keepModelPlace: boolean, keepOld = false): Promise<void> {
+  async takeOver(oldId: string, newId: string, keepPlace: boolean, keepModelPlace: boolean, keepOld = false): Promise<void> {
     const old = this.find(oldId);
     const made = this.find(newId);
     if (!old || !made) return;
@@ -2357,7 +1798,7 @@ export class Session {
    * --- Plugin steps (D8). Marks a run's nodes on the one part it made or changed: the whole path when it made the part
    * (the stamp on the root), else the steps after `before`. Returns the run, or null when the path does not hold it.
    */
-  private stampRun(obj: PlateObject, before: number | null, made: boolean, stamp: Omit<PluginStamp, "fingerprint">): StampedRun | null {
+  stampRun(obj: PlateObject, before: number | null, made: boolean, stamp: Omit<PluginStamp, "fingerprint">): StampedRun | null {
     const tree = obj.tree;
     if (!tree) return null;
     const path = pathTo(tree, tree.current);
@@ -2374,7 +1815,7 @@ export class Session {
    * hash (the current version or an older `<plugin>.vN.rs`), else a draft's kept source. A sentence when none is there,
    * when the project's copy was edited, or when the code needs a newer recipe API.
    */
-  private stampSource(stamp: PluginStamp): { body: string; notes: string[]; title?: string; target?: PluginTarget; api?: string; ingredients?: Record<string, KeptIngredient> } | { reason: string } {
+  stampSource(stamp: PluginStamp): { body: string; notes: string[]; title?: string; target?: PluginTarget; api?: string; ingredients?: Record<string, KeptIngredient> } | { reason: string } {
     const notes: string[] = [];
     const current = stamp.version > 0 && isSlug(stamp.plugin) ? readPlugin(stamp.plugin) : null;
     const library = current && !("reason" in current) ? current : null;
@@ -2414,7 +1855,7 @@ export class Session {
    * under it. `renamed` maps the old steps the ops name (an edge of a step) to the new ones. Each keeps its name, and a
    * later plugin step its stamp.
    */
-  private async replaySteps(obj: PlateObject, from: ModelTree, ids: readonly NodeId[], renamed: ReadonlyMap<NodeId, NodeId>): Promise<{ replayed: number; broken?: string } | { reason: string }> {
+  async replaySteps(obj: PlateObject, from: ModelTree, ids: readonly NodeId[], renamed: ReadonlyMap<NodeId, NodeId>): Promise<{ replayed: number; broken?: string } | { reason: string }> {
     const tree = obj.tree;
     if (!tree || ids.length === 0) return { replayed: 0 };
     const parent = tree.current;
@@ -2438,7 +1879,7 @@ export class Session {
   }
 
   /** Takes a recipe run back: objects it made leave the plate, parts it changed go back to the step they stood at. */
-  private async recipeRollback(created: string[], touched: Map<string, number | null>, firstNew?: ReadonlyMap<string, number>): Promise<{ removed: string[]; restored: string[] }> {
+  async recipeRollback(created: string[], touched: Map<string, number | null>, firstNew?: ReadonlyMap<string, number>): Promise<{ removed: string[]; restored: string[] }> {
     const removed: string[] = [];
     const restored: string[] = [];
     for (const id of [...created].reverse()) {
@@ -2464,7 +1905,7 @@ export class Session {
    * tool list after list_changed can still reach the tool through plan_run, and one that does sees the tool from now on.
    * Returns the group opened, or null.
    */
-  private openGroupFor(name: string): string | null {
+  openGroupFor(name: string): string | null {
     const group = this.toolGroups && this.recipeDepth === 0 ? groupOf(name) : null;
     if (group === null || this.toolGroups!.has(group)) return null;
     this.toolGroups!.add(group);
@@ -2473,7 +1914,7 @@ export class Session {
   }
 
   /** tools_enable: adds groups to the list and tells the client it changed. With groups off, every tool is already listed. */
-  private toolsEnable(input: Record<string, unknown>): Record<string, unknown> {
+  toolsEnable(input: Record<string, unknown>): Record<string, unknown> {
     const asked = (input.groups as string[]).filter((group) => group in TOOL_GROUPS);
     if (!this.toolGroups) return { ok: true, enabled: [...GROUP_NAMES], note: "Every tool is already listed." };
     const added = asked.filter((group) => !this.toolGroups!.has(group));
@@ -2491,7 +1932,7 @@ export class Session {
   }
 
   /** What the call is doing now, for its progress notifications and its job's wait. */
-  private noteStage(stage: string, fraction?: number): void {
+  noteStage(stage: string, fraction?: number): void {
     const meta = this.callContext.getStore();
     if (!meta) return;
     meta.stage = stage;
@@ -2499,7 +1940,7 @@ export class Session {
     this.onProgress?.("model", meta.fraction ?? 0, stage, meta.progressToken);
   }
 
-  private async workWait(job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {
+  async workWait(job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {
     const limitS = typeof timeoutS === "number" && Number.isFinite(timeoutS) ? Math.min(SLICE_WAIT_MAX_S, Math.max(0.05, timeoutS)) : SLICE_WAIT_DEFAULT_S;
     const deadline = Date.now() + limitS * 1000;
     while (!job.done && Date.now() < deadline && !meta?.signal?.aborted) {
@@ -2509,7 +1950,7 @@ export class Session {
     return this.workReply(job);
   }
 
-  private async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
+  async workCancel(job: WorkJob): Promise<Record<string, unknown>> {
     if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
     if (!job.stoppable) {
       const after = CHANGES_NOTHING.has(job.tool) ? "It changes no part." : job.tool.startsWith("model_") || job.tool === "solid_new" ? "Once it is done, model_undo or model_goto takes the part back." : "Once it is done, plate_undo takes it back.";
@@ -2522,13 +1963,13 @@ export class Session {
   }
 
   /** An unknown handle right after a restart: the reply says where the last session's plate is. */
-  private withAutosaveHint(value: Record<string, unknown>): Record<string, unknown> {
+  withAutosaveHint(value: Record<string, unknown>): Record<string, unknown> {
     if (value.ok !== false || value.reason !== UNKNOWN_OBJECT || !this.previousAutosave || this.objects.length > 0) return value;
     return { ...value, reason: `${UNKNOWN_OBJECT} ${this.previousAutosave.note}`, autosave: this.previousAutosave.path };
   }
 
   /** Write the autosave a second after the last change, when no call is running. */
-  private scheduleAutosave(): void {
+  scheduleAutosave(): void {
     if (this.autosaveTimer) clearTimeout(this.autosaveTimer);
     this.autosaveTimer = setTimeout(() => {
       this.autosaveTimer = null;
@@ -2568,7 +2009,7 @@ export class Session {
    * Model tools take text such as "wallH / 2" where a number goes. Each one becomes its number before the schema
    * check, from the session's parameters and the call's own `params`.
    */
-  private withNumbers(name: string, args: unknown): { args: unknown } | { reason: string } {
+  withNumbers(name: string, args: unknown): { args: unknown } | { reason: string } {
     this.pendingTexts = [];
     this.pendingBaseText = undefined;
     this.pendingOneOff = [];
@@ -2630,7 +2071,7 @@ export class Session {
    * --- Gaps A2. The names an op of this call may use, each as text in the project's names: a project parameter stands for
    * itself, and a call-level one for the text it was given, so a step typed `w` under call params {w: 50} is the number 50.
    */
-  private nameScope(callParams: Record<string, unknown>): Record<string, string> {
+  nameScope(callParams: Record<string, unknown>): Record<string, string> {
     const scope: Record<string, string> = {};
     for (const key of Object.keys(this.params)) scope[key] = key;
     for (const [key, value] of Object.entries(callParams)) scope[key] = typeof value === "number" ? String(value) : substituteNames(String(value).trim(), scope);
@@ -2638,10 +2079,10 @@ export class Session {
   }
 
   /** Expression text that names a project parameter: what a stored number may follow. */
-  private readonly followsParameters = (text: string): boolean => !isPlainNumber(text) && Object.keys(this.params).some((key) => expressionMentions(text, key));
+  readonly followsParameters = (text: string): boolean => !isPlainNumber(text) && Object.keys(this.params).some((key) => expressionMentions(text, key));
 
   /** --- Gaps A3. workplane_set's origin and turn may be expressions: resolved here, their text kept for the object. */
-  private workplaneNumbers(input: Record<string, unknown>): { args: unknown } | { reason: string } {
+  workplaneNumbers(input: Record<string, unknown>): { args: unknown } | { reason: string } {
     const scope = this.nameScope({});
     const text: Record<string, unknown> = {};
     try {
@@ -2663,11 +2104,11 @@ export class Session {
     return this.lastBridge;
   }
 
-  private async ask<T>(value: T | Promise<T>): Promise<T> {
+  async ask<T>(value: T | Promise<T>): Promise<T> {
     return await value;
   }
 
-  private pause(ms: number, signal?: AbortSignal): Promise<void> {
+  pause(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
       if (signal?.aborted) {
         resolve();
@@ -2688,7 +2129,7 @@ export class Session {
    * The plate after `name`, for the desktop. A mesh the desktop has not been sent rides along once.
    * A new solid that was never committed has no file yet, so it is not on the desktop's plate.
    */
-  private bridgePayload(name: string, input: Record<string, unknown>, value: Record<string, unknown>): { payload: Record<string, unknown>; carriedAll: boolean } {
+  bridgePayload(name: string, input: Record<string, unknown>, value: Record<string, unknown>): { payload: Record<string, unknown>; carriedAll: boolean } {
     const objectId = typeof input.object === "string" ? input.object : "";
     const obj = objectId ? this.find(objectId) : null;
     const settings = (name === "settings_apply" || name === "settings_set") && value.ok === true && value.dryRun !== true
@@ -2746,13 +2187,13 @@ export class Session {
   }
 
   /** A new desktop answered: send it the whole plate with every mesh. */
-  private resyncBridge(): void {
+  resyncBridge(): void {
     this.bridgeLink.known.clear();
     const { payload } = this.bridgePayload("plate_sync", {}, { ok: true });
     void mirror(payload, this.bridgeLink, true);
   }
 
-  private meshHashOf(bytes: Uint8Array): string {
+  meshHashOf(bytes: Uint8Array): string {
     let hash = this.meshHashes.get(bytes);
     if (!hash) {
       hash = fnv1aHex(bytes);
@@ -2766,7 +2207,7 @@ export class Session {
    * is matched to a font already in the project; the op then names the font by id. Calls with no such text take the
    * synchronous path they always did.
    */
-  private dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
+  dispatch(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
     const texts = textsNeedingFonts(input);
     if (texts.length === 0) return this.dispatchNow(name, input, meta);
     const copy = structuredClone(input);
@@ -2777,7 +2218,7 @@ export class Session {
   }
 
   /** The sentence for the first text whose font cannot be had, or null when every text names its font by id now. */
-  private async resolveTextFonts(texts: Record<string, unknown>[]): Promise<string | null> {
+  async resolveTextFonts(texts: Record<string, unknown>[]): Promise<string | null> {
     for (const op of texts) {
       if (typeof op.fontFile === "string") {
         const hashed = /^(.*)#(\d{1,3})$/.exec(op.fontFile);
@@ -2807,7 +2248,7 @@ export class Session {
   }
 
   /** A restricted font's pack, cut for this project's texts as they stand and this one, so a save that cannot wait has it. */
-  private async keepFontPack(id: string, op: Record<string, unknown>): Promise<void> {
+  async keepFontPack(id: string, op: Record<string, unknown>): Promise<void> {
     const font = this.fonts.fonts.get(id);
     if (!font?.restricted) return;
     const uses = this.fontUses(id);
@@ -2816,86 +2257,18 @@ export class Session {
   }
 
   /** The texts the project's histories set in a font of the person's. */
-  private fontUses(id: string): { text: string; style?: string; weight?: number }[] {
+  fontUses(id: string): { text: string; style?: string; weight?: number }[] {
     const owner = (key: string) => this.byTreeKey(key)?.id;
     const objects = [...this.objects, ...this.toolsOffPlate].flatMap((obj) => (obj.tree ? [{ modelTree: savedTree(obj.tree, obj.tree.committed, owner) }] : []));
     return userFontUses({ objects }).get(id) ?? [];
   }
 
-  private dispatchNow(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
-    switch (name) {
-      case "session_info": return this.sessionInfo();
-      case "project_open": return this.projectOpen(String(input.path));
-      case "project_create": return this.projectCreate(input);
-      case "project_save": return this.projectSave(String(input.name), input.ifExists === "refuse");
-      case "app_open": return this.appOpen(typeof input.path === "string" ? input.path : undefined);
-      case "mesh_import": return this.meshImport(String(input.path), typeof input.stepToleranceMm === "number" ? input.stepToleranceMm : STEP, input.pieces === true);
-      case "plate_list": return this.plateList(input);
-      case "plate_undo": return this.plateUndo();
-      case "plate_redo": return this.plateRedo();
-      case "object_select": return this.objectSelect(String(input.object), input.name);
-      case "object_place": return this.objectPlace(input);
-      case "object_remove": return this.objectRemove(String(input.object));
-      case "recipe_run": return this.recipeRun(input, meta);
-      case "plugin": return this.pluginTool(input);
-      case "nugget": return this.nuggetTool(input);
-      case "object_duplicate": return this.objectDuplicate(input);
-      case "object_split_shells": return this.splitShells(String(input.object));
-      case "plate_arrange": return this.plateArrange(input);
-      case "plate_print_order": return this.printOrderSet(input);
-      case "machine_list": return this.machineList(input);
-      case "machine_select": return this.machineSelect(String(input.printerId), String(input.filamentId), input.nozzleMm);
-      case "machine_load": return this.machineLoad(String(input.path));
-      case "machine_get": return this.machineGet();
-      case "machine_set": return this.machineSet(input);
-      case "machine_save": return this.machineSave(String(input.name));
-      case "settings_apply": return this.settingsApply(input);
-      case "settings_schema": return this.settingsSchema(input);
-      case "settings_set": return this.settingsSet(input);
-      case "profile_save": return this.profileSave(String(input.name));
-      case "range_add": return this.rangeAdd(input);
-      case "modifier_add": return this.modifierAdd(input);
-      case "overrides_list": return this.overridesList();
-      case "override_remove": return this.overrideRemove(String(input.id));
-      case "layer_action_set": return this.layerActionSet(input);
-      case "layer_actions_list": return this.layerActionsList();
-      case "layer_action_remove": return this.layerActionRemove(Number(input.zMm));
-      case "slice_start": return this.sliceStart(input.cancelRunning === true, input.scope);
-      case "slice_wait": return this.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined);
-      case "slice_cancel": return this.sliceCancel(String(input.job));
-      case "gcode_summary": return this.gcodeSummary(typeof input.job === "string" ? input.job : undefined);
-      case "gcode_export": return this.gcodeExport(input);
-      case "export_3mf": return input.pieces === true ? this.exportPieceMeshes(input) : this.export3mf(String(input.name));
-      case "mesh_stats": return this.meshStats(String(input.object));
-      case "layer_summary": return this.layerSummary(typeof input.job === "string" ? input.job : undefined);
-      case "render_view": return this.renderView(input);
-      case "paint_supports": return this.paintSupports(input);
-      case "paint_seam": return this.paintSeam(input);
-      case "reinforce_add": return this.reinforceAdd(input);
-      case "paint_list": return this.paintList(input);
-      case "paint_clear": return this.paintClear(input);
-      case "support_edit": return this.supportEdit(input);
-      case "support_trees": return this.supportTrees(input);
-      case "layer_detail": return this.layerDetail(input);
-      case "layer_paths": return this.layerPathsFile(input);
-      case "layer_image": return this.layerImage(input);
-      case "gcode_read": return this.gcodeRead(input);
-      case "calibration_tower": return this.calibrationTower(input);
-      case "calibration_apply": return this.calibrationApply(input);
-      case "blend_compare": return this.blendCompare(input);
-      case "blend_apply": return this.blendApply(input);
-      case "guide": return this.guide(input);
-      case "sim_setup": return this.simSetup(input);
-      case "sim_run": return this.simRun(input);
-      case "sim_field": return this.simField(input);
-      case "sim_sweep": return this.simSweep(input);
-      case "sim_cancel": return { ok: true, label: LABEL };
-      case "tools_enable": return this.toolsEnable(input);
-      default: return this.model(name, input);
-    }
+  dispatchNow(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
+    const handler = Object.hasOwn(HANDLERS, name) ? HANDLERS[name] : undefined;
+    return handler ? handler(this, input, meta) : this.model(name, input);
   }
 
-  private async sessionInfo(): Promise<Record<string, unknown>> {
+  async sessionInfo(): Promise<Record<string, unknown>> {
     let engine: string | null = null;
     let occt = false;
     let reason = "";
@@ -2940,7 +2313,7 @@ export class Session {
   }
 
   /** "Plugins: N in your library; M drafts in this session." for session_info. */
-  private pluginsLine(): string {
+  pluginsLine(): string {
     let count = 0;
     try {
       count = listLibrary(pluginsDir()).length;
@@ -2952,7 +2325,7 @@ export class Session {
   }
 
   /** --- I16. "Nuggets: 6 ingredients, 9 presets, 14 lessons." for session_info. */
-  private nuggetsLine(): string {
+  nuggetsLine(): string {
     let counts = [0, 0, 0];
     try {
       counts = [listLibrary(ingredientsDir(), "ingredient").length, listPresets().length, listLessons().length];
@@ -2964,7 +2337,7 @@ export class Session {
   }
 
   /** The worked guides as a tool, for clients that do not read resources. */
-  private guide(input: Record<string, unknown>): Record<string, unknown> {
+  guide(input: Record<string, unknown>): Record<string, unknown> {
     if (typeof input.kind === "string") {
       const kind = input.kind.trim();
       const text = Object.hasOwn(KIND_GUIDES, kind) ? KIND_GUIDES[kind] : undefined;
@@ -2981,7 +2354,7 @@ export class Session {
   }
 
   /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */
-  private opGuide(kind: string): Record<string, unknown> {
+  opGuide(kind: string): Record<string, unknown> {
     const schema = opSchemaFor(kind);
     if (!schema) return { ok: false, reason: `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.` };
     const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
@@ -2991,15 +2364,15 @@ export class Session {
     return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples, ...fonts };
   }
 
-  private printer(): PrinterRecord {
+  printer(): PrinterRecord {
     return this.library.printers.find((row) => row.id === this.library.printerId) ?? this.library.printers[0]!;
   }
 
-  private filament(): FilamentRecord {
+  filament(): FilamentRecord {
     return this.library.filaments.find((row) => row.id === this.library.filamentId) ?? this.library.filaments[0]!;
   }
 
-  private addObject(partial: Omit<PlateObject, "id" | "modelPose" | "workplane" | "tree" | "solid" | "probes" | "stepTolerance" | "supportEdits" | "supportPaint" | "seamPaint" | "reinforcement" | "objectSettings" | "platedNode"> & Partial<Pick<PlateObject, "stepTolerance" | "supportEdits" | "supportPaint" | "seamPaint" | "reinforcement" | "objectSettings" | "platedNode">>, id?: string): PlateObject {
+  addObject(partial: Omit<PlateObject, "id" | "modelPose" | "workplane" | "tree" | "solid" | "probes" | "stepTolerance" | "supportEdits" | "supportPaint" | "seamPaint" | "reinforcement" | "objectSettings" | "platedNode"> & Partial<Pick<PlateObject, "stepTolerance" | "supportEdits" | "supportPaint" | "seamPaint" | "reinforcement" | "objectSettings" | "platedNode">>, id?: string): PlateObject {
     const obj: PlateObject = {
       modelPose: IDENTITY_POSE,
       workplane: GLOBAL_WORKPLANE,
@@ -3021,7 +2394,7 @@ export class Session {
     return obj;
   }
 
-  private takeId(id?: string): string {
+  takeId(id?: string): string {
     if (id) {
       const match = /^obj_(\d+)$/.exec(id);
       if (match) this.seq = Math.max(this.seq, Number(match[1]));
@@ -3031,7 +2404,7 @@ export class Session {
     return `obj_${this.seq}`;
   }
 
-  private async preview(filename: string, bytes: Uint8Array, tolerance: number): Promise<{ triangles: number; source: Float32Array; seatMm: number }> {
+  async preview(filename: string, bytes: Uint8Array, tolerance: number): Promise<{ triangles: number; source: Float32Array; seatMm: number }> {
     let text = "";
     try {
       text = await this.withBudget("preview", () => this.engine.meshPreview(JSON.stringify({
@@ -3051,7 +2424,7 @@ export class Session {
     };
   }
 
-  private snapObject(obj: PlateObject): SnapObject {
+  snapObject(obj: PlateObject): SnapObject {
     return {
       id: obj.id,
       name: obj.name,
@@ -3080,7 +2453,7 @@ export class Session {
     };
   }
 
-  private capture(label: string): PlateSnap {
+  capture(label: string): PlateSnap {
     return {
       label,
       objects: this.objects.map((obj) => this.snapObject(obj)),
@@ -3095,7 +2468,7 @@ export class Session {
     };
   }
 
-  private revive(row: SnapObject): PlateObject {
+  revive(row: SnapObject): PlateObject {
     return {
       ...row,
       orient: [...row.orient] as Mat3,
@@ -3108,7 +2481,7 @@ export class Session {
     };
   }
 
-  private install(snap: PlateSnap): void {
+  install(snap: PlateSnap): void {
     const live = new Map(this.objects.map((obj) => [obj.id, obj]));
     const next: PlateObject[] = [];
     for (const row of snap.objects) {
@@ -3154,13 +2527,13 @@ export class Session {
     this.gantryMm = snap.gantryMm;
   }
 
-  private remember(label: string): void {
+  remember(label: string): void {
     this.undoStack.push(this.capture(label));
     if (this.undoStack.length > 32) this.undoStack.shift();
     this.redoStack = [];
   }
 
-  private plateUndo(): Record<string, unknown> {
+  plateUndo(): Record<string, unknown> {
     const snap = this.undoStack.pop();
     if (!snap) return { ok: false, reason: "Nothing to undo." };
     this.redoStack.push(this.capture(snap.label));
@@ -3168,7 +2541,7 @@ export class Session {
     return { ok: true, label: snap.label };
   }
 
-  private plateRedo(): Record<string, unknown> {
+  plateRedo(): Record<string, unknown> {
     const snap = this.redoStack.pop();
     if (!snap) return { ok: false, reason: "Nothing to redo." };
     this.undoStack.push(this.capture(snap.label));
@@ -3176,7 +2549,7 @@ export class Session {
     return { ok: true, label: snap.label };
   }
 
-  private async projectCreate(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async projectCreate(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     // --- Gaps A6. Parameters and parts are not in plate_undo: a new plate that would drop them is refused unless asked.
     const names = Object.keys(this.paramText);
     const parts = [...this.parts.keys()];
@@ -3214,7 +2587,7 @@ export class Session {
     return { ok: true, project: "project", label: "New plate" };
   }
 
-  private async projectOpen(path: string): Promise<Record<string, unknown>> {
+  async projectOpen(path: string): Promise<Record<string, unknown>> {
     const full = resolveRead(path, "lime");
     const text = await readFile(full, "utf8");
     const parsed = await decodeProject(text);
@@ -3354,7 +2727,7 @@ export class Session {
     };
   }
 
-  private adoptProjectMachine(profile: ProjectProfile): void {
+  adoptProjectMachine(profile: ProjectProfile): void {
     const printer = this.library.printers.find((row) => row.name === profile.name);
     const filament = this.library.filaments.find((row) => row.nozzleTemp === profile.nozzleTemp && row.bedTemp === profile.bedTemp && Math.abs(row.densityGCm3 - profile.filamentDensityGCm3) < 1e-6)
       ?? this.library.filaments.find((row) => row.diameterMm === profile.filamentDiameter);
@@ -3368,7 +2741,7 @@ export class Session {
   }
 
   /** A saved profile may predate fan fields. The library's adopt wants them. */
-  private fanOf(profile: ProjectProfile): { fanPercent: number; overhangFanPercent: number; fanOffLayers: number } {
+  fanOf(profile: ProjectProfile): { fanPercent: number; overhangFanPercent: number; fanOffLayers: number } {
     const fallback = fanDefaults("");
     return {
       fanPercent: profile.fanPercent ?? fallback.fanPercent,
@@ -3377,7 +2750,7 @@ export class Session {
     };
   }
 
-  private placementOf(obj: PlateObject): ProjectPlacement {
+  placementOf(obj: PlateObject): ProjectPlacement {
     return {
       orient: [...obj.orient] as ProjectPlacement["orient"],
       scale: obj.scale,
@@ -3387,7 +2760,7 @@ export class Session {
     };
   }
 
-  private fileObject(obj: PlateObject): NonNullable<LimeProject["objects"]>[number] {
+  fileObject(obj: PlateObject): NonNullable<LimeProject["objects"]>[number] {
     const tree = this.savedModelTree(obj);
     return {
       id: obj.id,
@@ -3408,7 +2781,7 @@ export class Session {
     };
   }
 
-  private savedModelTree(obj: PlateObject): NonNullable<LimeProject["objects"]>[number]["modelTree"] | undefined {
+  savedModelTree(obj: PlateObject): NonNullable<LimeProject["objects"]>[number]["modelTree"] | undefined {
     const tree = obj.tree;
     if (!tree || tree.root.kind === "piece") return undefined;
     const owner = (key: string) => this.byTreeKey(key)?.id;
@@ -3422,7 +2795,7 @@ export class Session {
   }
 
   /** The object's saved history, opened at its committed step. A sentence when its saved solid was refused, else null. */
-  private async adoptHistory(obj: PlateObject, saved: NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>): Promise<string | null> {
+  async adoptHistory(obj: PlateObject, saved: NonNullable<NonNullable<LimeProject["objects"]>[number]["modelTree"]>): Promise<string | null> {
     const key = `mcp-${obj.id}`;
     const root = saved.rootFeature
       ? { kind: "feature" as const, op: saved.rootFeature }
@@ -3484,13 +2857,13 @@ export class Session {
     return note;
   }
 
-  private bufferOf(encoded: string): ArrayBuffer | null {
+  bufferOf(encoded: string): ArrayBuffer | null {
     const bytes = base64ToBytes(encoded);
     if (!bytes) return null;
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   }
 
-  private freshDocument(): LimeProject {
+  freshDocument(): LimeProject {
     const first = this.objects[0];
     const profile = enginePrinter(this.printer(), this.filament(), this.library.nozzleMm);
     const mesh = first ? meshRecord(first.fileName, first.bytes) : meshRecord("empty.stl", new Uint8Array());
@@ -3512,7 +2885,7 @@ export class Session {
     };
   }
 
-  private projectDocument(): LimeProject {
+  projectDocument(): LimeProject {
     const base = this.sourceProject ? structuredClone(this.sourceProject) : null;
     if (!base) return this.freshDocument();
     base.settings = structuredClone(this.settings);
@@ -3563,7 +2936,7 @@ export class Session {
     return base;
   }
 
-  private lossy(doc: LimeProject): string | null {
+  lossy(doc: LimeProject): string | null {
     const src = this.sourceProject;
     if (!src) return null;
     const missing: string[] = [];
@@ -3583,7 +2956,7 @@ export class Session {
    * Summary on every save. A picture on `project_save`, from the software renderer `render_view` uses.
    * Autosave does not draw: a picture of different geometry is dropped instead of kept.
    */
-  private attachPreview(doc: LimeProject, render: boolean) {
+  attachPreview(doc: LimeProject, render: boolean) {
     doc.summary = projectSummary(doc, this.freshEstimate());
     if (render) {
       const thumb = this.renderThumbnail(doc);
@@ -3592,7 +2965,7 @@ export class Session {
     if (doc.thumbnail && doc.thumbnail.meshHash !== geometryHash(doc)) delete doc.thumbnail;
   }
 
-  private freshEstimate(): { seconds: number; grams: number } | undefined {
+  freshEstimate(): { seconds: number; grams: number } | undefined {
     const job = this.latest;
     if (!job || job.status !== "done" || !job.wire || this.staleReason(job)) return undefined;
     const summary = this.summarize(job);
@@ -3600,7 +2973,7 @@ export class Session {
   }
 
   /** The plate's triangles in bed space, one array, for the thumbnail rasterizer. */
-  private platePositions(): Float32Array | null {
+  platePositions(): Float32Array | null {
     if (this.objects.length === 0) return null;
     const meshes = this.objects.map((obj) => this.placed(obj).positions);
     let count = 0;
@@ -3615,7 +2988,7 @@ export class Session {
     return positions;
   }
 
-  private renderThumbnail(doc: LimeProject) {
+  renderThumbnail(doc: LimeProject) {
     try {
       const positions = this.platePositions();
       if (!positions) return undefined;
@@ -3632,7 +3005,7 @@ export class Session {
   }
 
   /** --- Plugin steps (D8). Every stamp on the plate's trees, and on the trees of tools that left it. */
-  private stamps(): PluginStamp[] {
+  stamps(): PluginStamp[] {
     const out: PluginStamp[] = [];
     for (const obj of [...this.objects, ...this.toolsOffPlate]) for (const node of obj.tree?.nodes.values() ?? []) if (node.plugin) out.push(node.plugin);
     return out;
@@ -3642,7 +3015,7 @@ export class Session {
    * --- Plugin steps (D7). The project's copy of each library plugin a stamped step names: the copy the project came
    * with, else the library's file of that hash. Null when there are none.
    */
-  private pluginCopies(): Record<string, string> | null {
+  pluginCopies(): Record<string, string> | null {
     const out: Record<string, string> = {};
     for (const stamp of this.stamps()) {
       if (stamp.version === 0 || out[stamp.sha256] !== undefined) continue;
@@ -3664,7 +3037,7 @@ export class Session {
   }
 
   /** The project as project_save writes it, from the plate as it stands. */
-  private saveDocument(): LimeProject {
+  saveDocument(): LimeProject {
     const doc = this.projectDocument();
     const mcpModel = this.mcpModelRecord();
     if (mcpModel) doc.mcpModel = mcpModel;
@@ -3690,7 +3063,7 @@ export class Session {
     return doc;
   }
 
-  private async projectSave(name: string, refuseExisting = false): Promise<Record<string, unknown>> {
+  async projectSave(name: string, refuseExisting = false): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
     const path = resolveWrite(name, ".lime");
     if (refuseExisting && existsSync(path)) return { ok: false, reason: "A project with that name is already in the workspace. Pick another name, or leave ifExists out to replace it." };
@@ -3735,7 +3108,7 @@ export class Session {
    * Show the work in the desktop app. With no path the plate is saved first: over the project it came from when that
    * is in the workspace, otherwise under a free name from its first object, so no other file is replaced.
    */
-  private async appOpen(path?: string): Promise<Record<string, unknown>> {
+  async appOpen(path?: string): Promise<Record<string, unknown>> {
     if (path !== undefined) return openInApp(resolveWorkspaceFile(path), this.appOpener, false);
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty. Build or import a part first, or pass a workspace file as path." };
     let name = "";
@@ -3757,7 +3130,7 @@ export class Session {
     return openInApp(String(saved.path), this.appOpener, true);
   }
 
-  private async meshImport(path: string, tolerance: number, pieces = false): Promise<Record<string, unknown>> {
+  async meshImport(path: string, tolerance: number, pieces = false): Promise<Record<string, unknown>> {
     await new Promise((resolve) => setImmediate(resolve));
     const full = resolveRead(path, "mesh");
     const bytes = new Uint8Array(await readFile(full));
@@ -3804,7 +3177,7 @@ export class Session {
    * One object per solid of `obj`'s STEP file, named from the file, each where it sat in `obj` and a solid Model edits.
    * Null when the kernel reads one solid or none, so the caller goes on as for a mesh.
    */
-  private async splitSolids(obj: PlateObject, undoable: boolean): Promise<Record<string, unknown> | null> {
+  async splitSolids(obj: PlateObject, undoable: boolean): Promise<Record<string, unknown> | null> {
     let written: Record<string, unknown>;
     try {
       written = JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify({ call: "stepSolids", dataB64: bytesToBase64(obj.bytes), files: true })))) as Record<string, unknown>;
@@ -3856,12 +3229,12 @@ export class Session {
     return { ok: true, objects: made.map((piece) => piece.id), names: made.map((piece) => piece.name), solids: made.length, ...(assembly ? { assembly } : {}), label: "Separate solids" };
   }
 
-  private placed(obj: PlateObject) {
+  placed(obj: PlateObject) {
     const printer = this.printer();
     return placeMesh(obj.source, obj.orient, obj.scale, printer.bedX, printer.bedY, obj.centered, obj.offset);
   }
 
-  private overlaps(obj: PlateObject): boolean {
+  overlaps(obj: PlateObject): boolean {
     const a = this.placed(obj).bounds;
     return this.objects.some((other) => {
       if (other.id === obj.id) return false;
@@ -3870,18 +3243,18 @@ export class Session {
     });
   }
 
-  private plateNotes(obj: PlateObject, bounds: Bounds): string[] {
+  plateNotes(obj: PlateObject, bounds: Bounds): string[] {
     const printer = this.printer();
     const notes = offBed(bounds, printer.bedX, printer.bedY, printer.bedZ, printer.kind === "belt");
     if (this.overlaps(obj)) notes.push(OVERLAP);
     return notes;
   }
 
-  private find(id: string): PlateObject | null {
+  find(id: string): PlateObject | null {
     return this.objects.find((obj) => obj.id === id) ?? null;
   }
 
-  private plateList(input: Record<string, unknown>): Record<string, unknown> {
+  plateList(input: Record<string, unknown>): Record<string, unknown> {
     const assemblies = this.liveAssemblies();
     const rows = this.objects.map((obj) => {
       const placed = this.placed(obj);
@@ -3910,11 +3283,11 @@ export class Session {
   }
 
   /** A name typed for a plate object, trimmed to the limit; undefined when none was given. */
-  private givenName(value: unknown): string | undefined {
+  givenName(value: unknown): string | undefined {
     return typeof value === "string" && value.trim() ? value.trim().slice(0, NAME_LIMIT) : undefined;
   }
 
-  private objectSelect(id: string, name?: unknown): Record<string, unknown> {
+  objectSelect(id: string, name?: unknown): Record<string, unknown> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     const renamed = this.givenName(name);
@@ -3926,7 +3299,7 @@ export class Session {
     return { ok: true, object: obj.id, name: shownName(obj.name) };
   }
 
-  private objectPlace(input: Record<string, unknown>): Record<string, unknown> {
+  objectPlace(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.find(String(input.object));
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     this.remember("Place");
@@ -3954,7 +3327,7 @@ export class Session {
   }
 
   /** Older jobs keep z and seconds. Only the latest job keeps layer paths. */
-  private keepLatestWire(latest: Job): void {
+  keepLatestWire(latest: Job): void {
     for (const job of this.jobs) {
       if (job.handle === latest.handle || !job.wire || !Array.isArray(job.wire.layers)) continue;
       job.wire = {
@@ -3968,7 +3341,7 @@ export class Session {
     }
   }
 
-  private retainJobs(job: Job) {
+  retainJobs(job: Job) {
     this.jobs.push(job);
     while (this.jobs.length > 8) {
       const index = this.jobs.findIndex((row) => row !== this.running);
@@ -3980,19 +3353,19 @@ export class Session {
     }
   }
 
-  private async forgetObjects(): Promise<void> {
+  async forgetObjects(): Promise<void> {
     for (const obj of [...this.objects, ...this.toolsOffPlate, ...this.piecesOffPlate]) await this.closeTree(obj);
     this.toolsOffPlate = [];
     this.piecesOffPlate = [];
   }
 
   /** The object, on the plate or taken off it by a join or an undone split to print, whose tree has this engine key. */
-  private byTreeKey(key: string): PlateObject | undefined {
+  byTreeKey(key: string): PlateObject | undefined {
     return [...this.objects, ...this.toolsOffPlate, ...this.piecesOffPlate].find((row) => row.tree?.key === key);
   }
 
   /** A join without keepTool takes its tool off the plate, as the desktop does; its tree stays for replays and the save. */
-  private takeOffPlate(id: string): void {
+  takeOffPlate(id: string): void {
     const tool = this.objects.find((row) => row.id === id);
     if (!tool) return;
     this.objects.splice(this.objects.indexOf(tool), 1);
@@ -4005,7 +3378,7 @@ export class Session {
    * desktop's Prepare undo puts it back with the edit: model_undo or a goto before the join brings the tool back, and
    * redo takes it off again. A tool that came back without a plate mesh (a project's saved tool tree) is committed.
    */
-  private async followJoins(obj: PlateObject): Promise<{ back: string[]; left: string[] }> {
+  async followJoins(obj: PlateObject): Promise<{ back: string[]; left: string[] }> {
     const named = new Set<string>();
     for (const node of obj.tree?.nodes.values() ?? []) if (node.op?.kind === "join" && !node.op.keepTool) named.add(node.op.tool.object);
     if (named.size === 0) return { back: [], left: [] };
@@ -4044,7 +3417,7 @@ export class Session {
     return { back, left };
   }
 
-  private async closeTree(obj: PlateObject): Promise<void> {
+  async closeTree(obj: PlateObject): Promise<void> {
     const key = obj.tree?.key;
     obj.tree = null;
     if (!key) return;
@@ -4055,7 +3428,7 @@ export class Session {
     }
   }
 
-  private async objectRemove(id: string): Promise<Record<string, unknown>> {
+  async objectRemove(id: string): Promise<Record<string, unknown>> {
     const index = this.objects.findIndex((obj) => obj.id === id);
     if (index < 0) return { ok: false, reason: UNKNOWN_OBJECT };
     this.remember("Remove");
@@ -4066,7 +3439,7 @@ export class Session {
     return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
   }
 
-  private objectDuplicate(input: Record<string, unknown>): Record<string, unknown> {
+  objectDuplicate(input: Record<string, unknown>): Record<string, unknown> {
     const source = this.find(String(input.object));
     if (!source) return { ok: false, reason: UNKNOWN_OBJECT };
     const count = typeof input.count === "number" ? input.count : 1;
@@ -4107,7 +3480,7 @@ export class Session {
    * The solids of a committed shape, one per shell, or null when the shape is one solid or cannot be read.
    * Null leaves each piece with the shape it already had.
    */
-  private async shellSolids(obj: PlateObject, shells: readonly Float32Array[]): Promise<((SolidBounds & { bytes: Uint8Array }) | null)[] | null> {
+  async shellSolids(obj: PlateObject, shells: readonly Float32Array[]): Promise<((SolidBounds & { bytes: Uint8Array }) | null)[] | null> {
     if (!obj.brep) return null;
     let written: Record<string, unknown>;
     try {
@@ -4131,14 +3504,14 @@ export class Session {
   }
 
   /** `solid` is this shell's own shape. With none, the piece is a mesh and does not keep the whole compound. */
-  private keepShellSolid(obj: PlateObject, solid: { bytes: Uint8Array } | null): void {
+  keepShellSolid(obj: PlateObject, solid: { bytes: Uint8Array } | null): void {
     if (solid) obj.brep = solid.bytes;
     else delete obj.brep;
     obj.platedNode = null;
     obj.treeStale = false;
   }
 
-  private async splitShells(id: string): Promise<Record<string, unknown>> {
+  async splitShells(id: string): Promise<Record<string, unknown>> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     const split = separateBy(obj.fileName, stepSolidHint(obj.bytes)) === "solids" ? await this.splitSolids(obj, true) : null;
@@ -4198,7 +3571,7 @@ export class Session {
     return { ok: true, objects: made, shells: pieces.length, label: "Separate shells" };
   }
 
-  private asBed(obj: PlateObject): SliceObject {
+  asBed(obj: PlateObject): SliceObject {
     return {
       id: obj.id,
       name: obj.name,
@@ -4218,7 +3591,7 @@ export class Session {
     };
   }
 
-  private plateArrange(input: Record<string, unknown>): Record<string, unknown> {
+  plateArrange(input: Record<string, unknown>): Record<string, unknown> {
     if (this.objects.length < 2) return { ok: false, reason: "Arrange needs two objects." };
     const printer = this.printer();
     const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
@@ -4256,7 +3629,7 @@ export class Session {
     return { ok: true, moved: moved.filter((row) => !keep?.has(row.object)).map(({ object, centre }) => ({ object, centre })), fits: outside.length === 0, ...(outside.length ? { outside } : {}), ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Arrange" };
   }
 
-  private plateCollisions(): { a: string; b: string }[] {
+  plateCollisions(): { a: string; b: string }[] {
     const placed = this.objects.map((obj) => ({ id: obj.id, bounds: this.placed(obj).bounds }));
     const clearance = this.printOrder === "sequential" ? (sequentialClearance(this.sliceRules(this.objects.length), this.order()) ?? 0) : 0;
     const pairs: { a: string; b: string }[] = [];
@@ -4272,7 +3645,7 @@ export class Session {
     return pairs;
   }
 
-  private printOrderSet(input: Record<string, unknown>): Record<string, unknown> {
+  printOrderSet(input: Record<string, unknown>): Record<string, unknown> {
     const order = input.order === "sequential" ? "sequential" : input.order === "together" ? "all-at-once" : null;
     if (!order) return { ok: false, reason: "order is together or sequential." };
     const clearance = typeof input.clearanceMm === "number" ? input.clearanceMm : this.clearanceMm;
@@ -4291,7 +3664,7 @@ export class Session {
     return { ok: true, ...(reason ? { reason } : {}), collisions, ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Print order" };
   }
 
-  private machineGet(): Record<string, unknown> {
+  machineGet(): Record<string, unknown> {
     const printer = this.printer();
     const filament = this.filament();
     const { host: _host, apiKey: _key, hostType: _kind, startPrint: _send, ...safe } = printer;
@@ -4311,7 +3684,7 @@ export class Session {
     };
   }
 
-  private machineSet(input: Record<string, unknown>): Record<string, unknown> {
+  machineSet(input: Record<string, unknown>): Record<string, unknown> {
     const printerPatch = input.printer && typeof input.printer === "object" && !Array.isArray(input.printer) ? input.printer as Record<string, unknown> : {};
     const filamentPatch = input.filament && typeof input.filament === "object" && !Array.isArray(input.filament) ? input.filament as Record<string, unknown> : {};
     for (const key of [...Object.keys(printerPatch), ...Object.keys(filamentPatch)]) {
@@ -4370,7 +3743,7 @@ export class Session {
    * machine_set's `fits`: coupon results (plan section 28). `{material, process?, snug?, loose?, press?, wallMm?}` writes
    * measured cells for that row into the library, `{material, reset: true}` puts its starting values back.
    */
-  private enterFits(library: MachineLibrary, value: unknown): { library: MachineLibrary; said: string } | { reason: string } {
+  enterFits(library: MachineLibrary, value: unknown): { library: MachineLibrary; said: string } | { reason: string } {
     const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
     if (!raw) return { reason: "fits is {material, process?, snug?, loose?, press?, wallMm?}, or {material, reset: true}." };
     if (raw.process !== undefined && raw.process !== "fdm" && raw.process !== "resin") return { reason: "fits.process is fdm or resin." };
@@ -4393,7 +3766,7 @@ export class Session {
     return { library: setMeasuredFits(library, enterMeasured(library.measuredFits, key, results)), said: `${name} measured: ${said.join(", ")} each side. New cuts use it; applied cuts keep theirs.` };
   }
 
-  private machineSave(name: string): Record<string, unknown> {
+  machineSave(name: string): Record<string, unknown> {
     const file = fileFromSelection(this.library);
     if (!file) return { ok: false, reason: "Choose a printer and a filament first." };
     const doc = JSON.parse(serializeMachineFile(file)) as { printer?: Record<string, unknown> };
@@ -4410,14 +3783,14 @@ export class Session {
     return { ok: true, path, bytes: Buffer.byteLength(text) };
   }
 
-  private profileSave(name: string): Record<string, unknown> {
+  profileSave(name: string): Record<string, unknown> {
     const text = serializeSettingsProfile({ version: 1, name, settings: this.settings, level: "expert" });
     const path = resolveWrite(profileFileName(name), ".json");
     writeFileSync(path, text);
     return { ok: true, path, bytes: Buffer.byteLength(text) };
   }
 
-  private overrideOf(input: Record<string, unknown>): SettingOverride | { reason: string } {
+  overrideOf(input: Record<string, unknown>): SettingOverride | { reason: string } {
     const override: SettingOverride = {};
     if (typeof input.infillPercent === "number") {
       if (input.infillPercent < 0 || input.infillPercent > 100) return { reason: "Infill must be from 0–100%." };
@@ -4437,14 +3810,14 @@ export class Session {
     return override;
   }
 
-  private partSpan(): { min: number; max: number } | null {
+  partSpan(): { min: number; max: number } | null {
     const obj = this.selectedObject();
     if (!obj) return null;
     const bounds = this.placed(obj).bounds;
     return { min: bounds.min[2], max: bounds.max[2] };
   }
 
-  private rangeAdd(input: Record<string, unknown>): Record<string, unknown> {
+  rangeAdd(input: Record<string, unknown>): Record<string, unknown> {
     const span = this.partSpan();
     if (!span) return { ok: false, reason: "Load a mesh first." };
     const zFrom = Number(input.zFromMm);
@@ -4461,7 +3834,7 @@ export class Session {
     return { ok: true, id, stale: true, label: "Height range" };
   }
 
-  private modifierAdd(input: Record<string, unknown>): Record<string, unknown> {
+  modifierAdd(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.selectedObject();
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const kind = input.kind === "cylinder" || input.kind === "sphere" ? input.kind : input.kind === "box" ? "box" : null;
@@ -4484,11 +3857,11 @@ export class Session {
     return { ok: true, id, stale: true, label: "Modifier" };
   }
 
-  private overridesList(): Record<string, unknown> {
+  overridesList(): Record<string, unknown> {
     return { ok: true, ranges: this.overrides.ranges, volumes: this.overrides.volumes };
   }
 
-  private overrideRemove(id: string): Record<string, unknown> {
+  overrideRemove(id: string): Record<string, unknown> {
     const had = this.overrides.ranges.some((row) => row.id === id) || this.overrides.volumes.some((row) => row.id === id);
     if (!had) return { ok: false, reason: "That override is not on the plate." };
     this.remember("Remove override");
@@ -4496,7 +3869,7 @@ export class Session {
     return { ok: true, stale: true, label: "Remove override" };
   }
 
-  private layerActionSet(input: Record<string, unknown>): Record<string, unknown> {
+  layerActionSet(input: Record<string, unknown>): Record<string, unknown> {
     const kind = input.kind === "pause" || input.kind === "filamentChange" || input.kind === "customGcode" ? input.kind : null;
     if (!kind) return { ok: false, reason: "kind is pause, filamentChange, or customGcode." };
     let zMm = Number(input.zMm);
@@ -4517,11 +3890,11 @@ export class Session {
     return { ok: true, zMm, stale: true, ...(review.length ? { review } : {}), label: "Layer action" };
   }
 
-  private layerActionsList(): Record<string, unknown> {
+  layerActionsList(): Record<string, unknown> {
     return { ok: true, actions: this.actions.map((action) => ({ ...action })) };
   }
 
-  private layerActionRemove(zMm: number): Record<string, unknown> {
+  layerActionRemove(zMm: number): Record<string, unknown> {
     const next = this.actions.filter((action) => Math.abs(action.zMm - zMm) > 1e-6);
     if (next.length === this.actions.length) return { ok: false, reason: "There is no action at that height." };
     this.remember("Remove layer action");
@@ -4529,7 +3902,7 @@ export class Session {
     return { ok: true, stale: true, label: "Remove layer action" };
   }
 
-  private machineList(input: Record<string, unknown>): Record<string, unknown> {
+  machineList(input: Record<string, unknown>): Record<string, unknown> {
     const printers = this.library.printers.map((row) => ({
       id: row.id,
       name: shownName(row.name),
@@ -4553,7 +3926,7 @@ export class Session {
     };
   }
 
-  private machineSelect(printerId: string, filamentId: string, nozzle: unknown): Record<string, unknown> {
+  machineSelect(printerId: string, filamentId: string, nozzle: unknown): Record<string, unknown> {
     // --- Split to print (D11). An export-only printer is a target for the pieces, never the plate's printer.
     const exportOnly = exportOnlyRefusal(printerId);
     if (exportOnly) return { ok: false, reason: exportOnly };
@@ -4575,7 +3948,7 @@ export class Session {
     };
   }
 
-  private machineLoad(path: string): Record<string, unknown> {
+  machineLoad(path: string): Record<string, unknown> {
     const full = resolveRead(path, "machine");
     const parsed = parseMachineFile(readFileSync(full, "utf8"));
     if (!parsed.ok) return { ok: false, reason: parsed.message };
@@ -4592,7 +3965,7 @@ export class Session {
     return this.machineSelect(printer.id, filament.id, parsed.file.nozzleMm);
   }
 
-  private settingsApply(input: Record<string, unknown>): Record<string, unknown> {
+  settingsApply(input: Record<string, unknown>): Record<string, unknown> {
     let next = this.settings;
     if (typeof input.path === "string") {
       const parsed = parseSettingsProfile(readFileSync(resolveRead(input.path, "profile"), "utf8"));
@@ -4610,11 +3983,11 @@ export class Session {
     return { ok: true, changed, label: "Settings" };
   }
 
-  private schemaContext() {
+  schemaContext() {
     return { belt: this.printer().kind === "belt", lineWidth: Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125)) };
   }
 
-  private settingsSchema(input: Record<string, unknown>): Record<string, unknown> {
+  settingsSchema(input: Record<string, unknown>): Record<string, unknown> {
     const level = input.level === "simple" || input.level === "advanced" || input.level === "expert" ? input.level : undefined;
     const rows = settingRows({
       settings: this.settings,
@@ -4627,7 +4000,7 @@ export class Session {
     return { ok: true, rows: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };
   }
 
-  private settingsSet(input: Record<string, unknown>): Record<string, unknown> {
+  settingsSet(input: Record<string, unknown>): Record<string, unknown> {
     const values = input.values;
     if (!values || typeof values !== "object" || Array.isArray(values)) return { ok: false, reason: "values must be an object of setting keys." };
     const objectId = typeof input.object === "string" ? input.object : "";
@@ -4682,16 +4055,16 @@ export class Session {
     };
   }
 
-  private selectedObject(): PlateObject | null {
+  selectedObject(): PlateObject | null {
     return this.find(this.selected) ?? this.objects[0] ?? null;
   }
 
-  private order(): PrintOrder {
+  order(): PrintOrder {
     return { printOrder: this.printOrder, clearanceMm: this.clearanceMm, gantryMm: this.gantryMm };
   }
 
   /** The selected object's fields, or every object's when `scope` is `plate`. A missing scope is the selection. */
-  private sliceBody(obj: PlateObject, scope?: unknown): { body: Record<string, unknown>; mesh: Uint8Array; plate: boolean } {
+  sliceBody(obj: PlateObject, scope?: unknown): { body: Record<string, unknown>; mesh: Uint8Array; plate: boolean } {
     const placed = this.placed(obj);
     const name = /\.(3mf|step|stp)$/i.test(obj.fileName) ? obj.fileName.replace(/\.(3mf|step|stp)$/i, ".stl") : obj.fileName;
     const mesh = stlBytes(scaledCanonical(obj.source, obj.scale), name);
@@ -4722,7 +4095,7 @@ export class Session {
     return { body, mesh, plate: plateScope };
   }
 
-  private sliceRules(objects: number) {
+  sliceRules(objects: number) {
     const printer = this.printer();
     return settingsRules({
       kind: printer.kind,
@@ -4734,7 +4107,7 @@ export class Session {
     });
   }
 
-  private oneObjectFields(obj: PlateObject): Record<string, unknown> {
+  oneObjectFields(obj: PlateObject): Record<string, unknown> {
     const frame = sourceFrame(obj.source, obj.scale);
     const tree = (obj.objectSettings.supports ?? this.settings.supports) && (obj.objectSettings.supportStyle ?? this.settings.supportStyle) === "tree";
     return {
@@ -4750,7 +4123,7 @@ export class Session {
     };
   }
 
-  private plateFields(rows: PlateObject[] = this.objects): Record<string, unknown> {
+  plateFields(rows: PlateObject[] = this.objects): Record<string, unknown> {
     const specs = rows.map((obj) => {
       const placed = this.placed(obj);
       return {
@@ -4805,11 +4178,11 @@ export class Session {
   }
 
   /** Features still left out of the slice body. Empty once each one is sent the way the app sends it. */
-  private notSliced(): string[] {
+  notSliced(): string[] {
     return [];
   }
 
-  private async sliceStart(cancelRunning: boolean, scope?: unknown): Promise<Record<string, unknown>> {
+  async sliceStart(cancelRunning: boolean, scope?: unknown): Promise<Record<string, unknown>> {
     if (this.running && this.running.status === "running") {
       if (!cancelRunning) {
         return { ok: false, reason: `A slice is already running (${this.running.handle}). Cancel it or pass cancelRunning.` };
@@ -4859,7 +4232,7 @@ export class Session {
   }
 
   /** Names the meshes this job sliced. A plate job says so, and never claims it was only the selection. */
-  private sliceIdentity(job: Job): Record<string, unknown> {
+  sliceIdentity(job: Job): Record<string, unknown> {
     if (job.plateScope) return { scope: "plate", sliced: job.slicedIds, note: "Sliced the whole plate." };
     const named = this.find(job.objectId);
     const one = named ? { object: named.id, name: shownName(named.name) } : { object: job.objectId };
@@ -4867,7 +4240,7 @@ export class Session {
     return one;
   }
 
-  private sliceStamp(): string {
+  sliceStamp(): string {
     return JSON.stringify({
       printerId: this.library.printerId,
       filamentId: this.library.filamentId,
@@ -4899,16 +4272,16 @@ export class Session {
     });
   }
 
-  private staleReason(job: Job): string | null {
+  staleReason(job: Job): string | null {
     if (!this.find(job.objectId) || !job.stamp || this.sliceStamp() !== job.stamp) return STALE_SLICE;
     return null;
   }
 
-  private jobOf(handle: string): Job | null {
+  jobOf(handle: string): Job | null {
     return this.jobs.find((job) => job.handle === handle) ?? null;
   }
 
-  private async sliceWait(handle: string, meta?: CallMeta, timeoutS?: number): Promise<Record<string, unknown>> {
+  async sliceWait(handle: string, meta?: CallMeta, timeoutS?: number): Promise<Record<string, unknown>> {
     const work = this.workJobs.find((row) => row.handle === handle);
     if (work) return this.workWait(work, meta, timeoutS);
     const job = this.jobOf(handle);
@@ -4973,7 +4346,7 @@ export class Session {
     };
   }
 
-  private errorText(error: string): string {
+  errorText(error: string): string {
     try {
       const parsed = JSON.parse(error) as { error?: string };
       if (typeof parsed.error === "string") return parsed.error;
@@ -4987,7 +4360,7 @@ export class Session {
    * --- R-C. A job this session never had. When the plate is empty and a server that has ended left an autosave, the
    * job was that server's: its plate is opened again here, and the reply says so.
    */
-  private async lostJob(handle: string): Promise<Record<string, unknown>> {
+  async lostJob(handle: string): Promise<Record<string, unknown>> {
     const reason = "That slice job is not in this session.";
     const previous = this.previousAutosave;
     if (!previous || this.objects.length > 0 || this.jobs.length > 0 || this.workJobs.length > 0) return { ok: false, job: handle, reason };
@@ -5003,7 +4376,7 @@ export class Session {
     };
   }
 
-  private async sliceCancel(handle: string): Promise<Record<string, unknown>> {
+  async sliceCancel(handle: string): Promise<Record<string, unknown>> {
     const work = this.workJobs.find((row) => row.handle === handle);
     if (work) return this.workCancel(work);
     const job = this.jobOf(handle);
@@ -5014,7 +4387,7 @@ export class Session {
     return { ok: true, status: job.status === "done" ? "done" : "cancelled" };
   }
 
-  private summarize(job: Job): SliceSummary {
+  summarize(job: Job): SliceSummary {
     const wire = job.wire ?? {};
     const estimate = (wire.estimate ?? {}) as { seconds?: number; filamentMm?: number; byFeature?: { kind: string; seconds: number; filamentMm: number }[] };
     const filament = this.filament();
@@ -5037,7 +4410,7 @@ export class Session {
     };
   }
 
-  private warnings(wire: Record<string, unknown>): string[] {
+  warnings(wire: Record<string, unknown>): string[] {
     const out: string[] = [];
     const rows = Array.isArray(wire.warnings) ? wire.warnings : [];
     for (const row of rows) {
@@ -5062,12 +4435,12 @@ export class Session {
     return out;
   }
 
-  private finished(handle?: string): Job | null {
+  finished(handle?: string): Job | null {
     if (handle) return this.jobOf(handle);
     return this.latest;
   }
 
-  private gcodeSummary(handle?: string): Record<string, unknown> {
+  gcodeSummary(handle?: string): Record<string, unknown> {
     const job = this.finished(handle);
     if (!job?.gcode || !job.wire) return { ok: false, reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -5093,7 +4466,7 @@ export class Session {
   }
 
   /** Lines a person wrote: machine start and end, and custom layer actions. */
-  private customBlocks(): string[] {
+  customBlocks(): string[] {
     const printer = this.printer();
     const actions = this.actions
       .filter((action) => action.kind === "customGcode" && action.gcode)
@@ -5101,7 +4474,7 @@ export class Session {
     return [printer.startGcode, printer.endGcode, ...actions];
   }
 
-  private gcodeExport(input: Record<string, unknown>): Record<string, unknown> {
+  gcodeExport(input: Record<string, unknown>): Record<string, unknown> {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     if (!job?.gcode) return { ok: false, reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -5114,7 +4487,7 @@ export class Session {
     return { ok: true, path, bytes: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") };
   }
 
-  private async export3mf(name: string): Promise<Record<string, unknown>> {
+  async export3mf(name: string): Promise<Record<string, unknown>> {
     if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
     const refused = (await this.commitAll())[0];
     if (refused) return { ok: false, reason: `${refused.name} (${refused.object}): ${refused.reason}`, object: refused.object };
@@ -5125,7 +4498,7 @@ export class Session {
     return { ok: true, path, bytes: bytes.byteLength };
   }
 
-  private meshStats(id: string): Record<string, unknown> {
+  meshStats(id: string): Record<string, unknown> {
     const obj = this.find(id);
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
     const placed = this.placed(obj);
@@ -5144,7 +4517,7 @@ export class Session {
     };
   }
 
-  private layerSummary(handle?: string): Record<string, unknown> {
+  layerSummary(handle?: string): Record<string, unknown> {
     const job = this.finished(handle);
     if (!job?.wire) return { ok: false, reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -5160,7 +4533,7 @@ export class Session {
     };
   }
 
-  private async renderView(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async renderView(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const obj = this.find(typeof input.object === "string" ? input.object : this.selected) ?? this.objects[0];
     if (!obj) return { ok: false, reason: "Load a mesh first." };
     const committed = await this.commitObject(obj);
@@ -5233,7 +4606,7 @@ export class Session {
    * render_view's highlight, colours, section, and smooth, as the renderer takes them: label boxes and the section
    * plane in the solid's frame, where its mesh is.
    */
-  private renderLooks(obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[] } | { reason: string } {
+  renderLooks(obj: PlateObject, input: Record<string, unknown>, solidMesh: boolean): { options: RenderOptions; legend: Record<string, unknown>[] } | { reason: string } {
     // The solid's faces also let an edge line show only where its own faces are in front (--- 3.1 F5).
     const options: RenderOptions = { smooth: input.smooth !== false, ...(solidMesh ? { faces: obj.solid!.triangles } : {}) };
     const legend: Record<string, unknown>[] = [];
@@ -5275,7 +4648,7 @@ export class Session {
    * One triangle soup of several parts. "assembly": the members of `obj`'s assembly (every object, when it is in none) at
    * their poses in model space. "print": every object where it prints on the bed.
    */
-  private viewMesh(obj: PlateObject, view: "assembly" | "print"): Float32Array {
+  viewMesh(obj: PlateObject, view: "assembly" | "print"): Float32Array {
     if (view === "print") return joinedPositions(this.objects.map((row) => this.placed(row).positions));
     const members = assemblyOf(this.liveAssemblies(), obj.id)?.members.map((row) => row.object);
     const shown = members ? this.objects.filter((row) => members.includes(row.id)) : this.objects;
@@ -5289,7 +4662,7 @@ export class Session {
    * --- Assemblies M6. Every pair of parts in `obj`'s assembly, at their assembled poses: the mesh pass's answer, clear,
    * touch or crossing, and nested for a part wholly inside another. Pairs that are clear are counted, not listed.
    */
-  private async interferenceCheck(obj: PlateObject, exact: boolean): Promise<Record<string, unknown>> {
+  async interferenceCheck(obj: PlateObject, exact: boolean): Promise<Record<string, unknown>> {
     const cheap = this.meshInterference(obj);
     if (!exact || cheap.ok !== true) return cheap;
     // --- Assemblies M7. Each pair the mesh pass did not clear is measured: the common volume of the two solids.
@@ -5321,7 +4694,7 @@ export class Session {
    * The common volume of two parts at their assembled poses, by Open CASCADE: a join `common` with `b` as its tool,
    * probed on `a`'s current step with a preview, so `a`'s history does not change. An empty common is 0.
    */
-  private async commonVolume(a: PlateObject, b: PlateObject): Promise<{ volumeMm3: number; volumes: [number, number]; boxMm?: { min: number[]; max: number[] } } | { reason: string }> {
+  async commonVolume(a: PlateObject, b: PlateObject): Promise<{ volumeMm3: number; volumes: [number, number]; boxMm?: { min: number[]; max: number[] } } | { reason: string }> {
     for (const part of [a, b]) {
       if (this.meshBlock(part)) return { reason: "Mesh crossing, not measured: a mesh has no solid to intersect." };
       const opened = await this.opened(part);
@@ -5341,7 +4714,7 @@ export class Session {
     return { volumeMm3: Math.abs(preview.volumeMm3), volumes, ...(box ? { boxMm: { min: box.min.map(mm), max: box.max.map(mm) } } : {}) };
   }
 
-  private meshInterference(obj: PlateObject): Record<string, unknown> {
+  meshInterference(obj: PlateObject): Record<string, unknown> {
     const assembly = assemblyOf(this.liveAssemblies(), obj.id);
     if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
     const members = assembly.members.flatMap((row) => {
@@ -5386,7 +4759,7 @@ export class Session {
   }
 
   /** The tool shape of a boolean op, for a preview: it is drawn, never applied. */
-  private async ghostMesh(obj: PlateObject, raw: unknown): Promise<Ghost | { reason: string }> {
+  async ghostMesh(obj: PlateObject, raw: unknown): Promise<Ghost | { reason: string }> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { reason: tree.reason };
     if (!obj.solid) return { reason: "This solid could not be read." };
@@ -5399,7 +4772,7 @@ export class Session {
     return { mesh, touches: disjointBoolean(obj.solid.bounds, spec, baked.op.op) === null };
   }
 
-  private async surfaceAt(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async surfaceAt(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     // --- R-B. A mesh has no solid: the ray meets its triangles where the plate holds them.
     if (this.meshBlock(obj)) {
       const placed = this.placed(obj);
@@ -5413,7 +4786,7 @@ export class Session {
     return { ...surfaceAtSolid(typedView(obj.solid, typedPoseOf(obj)), input), frame: obj.frame ?? "model" };
   }
 
-  private async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async modelCheck(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (input.interference === true) return this.interferenceCheck(obj, input.exact === true);
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
@@ -5423,7 +4796,7 @@ export class Session {
   }
 
   /** A probe, and what the edit would do to the solid when the modeler sent the result back. */
-  private async probeMeasured(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async probeMeasured(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.lastPreview = null;
     const out = await this.probe(obj, input.op, input.node, true);
     if (out.ok !== true || !obj.solid) return out;
@@ -5469,50 +4842,14 @@ export class Session {
     throw new ProtocolError("That resource is not on this server.");
   }
 
-  private model(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
-    if (name === "solid_new") return input.coupon !== undefined ? this.fitCouponNew(input) : this.solidNew(input);
-    if (name === "model_build") return this.build(input);
-    if (name === "model_params") return input.rebuild === true ? this.paramsRebuild(input) : this.paramsTool(input);
-    if (name === "model_define") return this.defineTool(input);
+  model(name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
     const requested = typeof input.object === "string" ? input.object : "";
     // --- Split to print (D12). An export target's piece is off the plate and still a part to model.
     const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested && this.exportCut(row) !== null) ?? null;
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
-    switch (name) {
-      case "model_describe": return this.describe(obj, input);
-      case "faces_find": return this.facesFind(obj, input);
-      case "edges_find": return this.edgesFind(obj, input);
-      case "workplane_set": return this.workplaneSet(obj, input);
-      case "workplane_print_up": return this.printUp(obj);
-      case "model_place": return this.modelPlace(obj, input);
-      case "model_probe": {
-        const anchored = this.anchored(obj, input.op as Record<string, unknown>);
-        if ("reason" in anchored) return { ok: false, reason: anchored.reason };
-        // --- Split to print: plan runs the planner alone, with no kernel call.
-        if (input.plan === true) return this.planTool(obj, anchored.op);
-        return this.probeMeasured(obj, { ...input, op: anchored.op });
-      }
-      case "surface_at": return this.surfaceAt(obj, input);
-      case "section": return this.sectionTool(obj, input);
-      case "model_check": return this.modelCheck(obj, input);
-      case "model_apply": return this.applyTool(obj, input);
-      case "model_apply_batch": return this.applyBatch(obj, input);
-      case "model_history": return this.history(obj, input);
-      case "model_anchors": return this.anchorsTool(obj, input);
-      case "model_goto": return this.gotoNode(obj, this.nodeOf(obj, input.node));
-      case "model_undo": return this.step(obj, "undo");
-      case "model_redo": return this.step(obj, "redo");
-      case "model_edit": return this.edit(obj, this.nodeOf(obj, input.node), input.op);
-      case "model_drop": return this.drop(obj, this.nodeOf(obj, input.node));
-      case "model_rename": return this.rename(obj, this.nodeOf(obj, input.node), String(input.label ?? ""));
-      case "model_commit": return this.commit(obj);
-      case "model_export_step":
-        if (input.pieces === true && input.assembly === true) return { ok: false, reason: "Export the pieces or the assembly, not both." };
-        if (input.assembly === true) return this.exportAssemblyStep(obj, String(input.name));
-        return input.pieces === true ? this.exportPieceStep(obj, String(input.name)) : this.exportStep(obj, String(input.name));
-      case "measure": return this.measure(obj, input);
-      default: throw new ProtocolError(`There is no tool named ${name}.`);
-    }
+    const tool = Object.hasOwn(MODEL_TOOLS, name) ? MODEL_TOOLS[name] : undefined;
+    if (!tool) throw new ProtocolError(`There is no tool named ${name}.`);
+    return tool(this, obj, input);
   }
 
   /**
@@ -5520,14 +4857,14 @@ export class Session {
    * It is longer than the engine's own 60 s limit on a new step, which stops a slow boolean or blend cleanly with a
    * refusal: at 30 s the server killed first, and a 3,000-face join came back as treeLost instead of a sentence.
    */
-  private modelTimeoutMs(): number {
+  modelTimeoutMs(): number {
     const raw = Number(process.env.LIME_MCP_MODEL_TIMEOUT_S);
     const seconds = Number.isFinite(raw) && raw > 0 ? raw : 90;
     return seconds * 1000;
   }
 
   /** The steps from the root to `node`, a group's counted one by one: what a goto there may replay. */
-  private stepsTo(tree: ModelTree, node: number): number {
+  stepsTo(tree: ModelTree, node: number): number {
     return pathTo(tree, node).reduce((sum, id) => {
       const op = tree.nodes.get(id)?.op;
       return sum + (op ? 1 : 0) + (op?.kind === "group" ? op.steps.length : 0);
@@ -5535,11 +4872,11 @@ export class Session {
   }
 
   /** A call that replays `steps` steps (a group's count as many): two seconds each, at least the one-call limit. */
-  private replayBudgetMs(steps: number): number {
+  replayBudgetMs(steps: number): number {
     return Math.max(this.modelTimeoutMs(), steps * 2000);
   }
 
-  private runawayMessage(kind: string, budgetMs: number): string {
+  runawayMessage(kind: string, budgetMs: number): string {
     const seconds = Math.max(1, Math.round(budgetMs / 1000));
     if (kind === "preview") return `This mesh did not finish opening in ${seconds} s. Nothing changed.`;
     const name = kind === "fillet" || kind === "chamfer" ? kind : "edit";
@@ -5547,7 +4884,7 @@ export class Session {
   }
 
   /** --- R-C. The sentence for a call whose kernel process ended under it. */
-  private crashMessage(kind: string, why: string): string {
+  crashMessage(kind: string, why: string): string {
     if (kind === "preview") return `This mesh stopped the kernel while opening (${why}). Nothing changed.`;
     if (kind === "loft") return `The loft stopped the kernel (${why}). Nothing changed. Make it in shorter pieces: at most 4 sections each, each piece starting at the section the last one ended on.`;
     if (kind === "shell") return `The shell stopped the kernel (${why}). Nothing changed. To hollow a loft, cut an inner loft instead.`;
@@ -5559,7 +4896,7 @@ export class Session {
    * A native call on a worker. The timer runs on this thread, so a blocked call can be cut off.
    * `onRunaway` replaces the stuck worker; by default that is the modeler, which drops the open trees.
    */
-  private async withBudget<T>(kind: string, work: () => T | Promise<T>, onRunaway: () => Promise<void> = () => this.loseTrees(), budgetMs?: number): Promise<T> {
+  async withBudget<T>(kind: string, work: () => T | Promise<T>, onRunaway: () => Promise<void> = () => this.loseTrees(), budgetMs?: number): Promise<T> {
     const budget = budgetMs ?? this.modelTimeoutMs();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let rss: ReturnType<typeof setInterval> | undefined;
@@ -5596,7 +4933,7 @@ export class Session {
   }
 
   /** A timed-out mesh preview is replaced. The modeler and its open trees are left alone. */
-  private async resetPreview(): Promise<void> {
+  async resetPreview(): Promise<void> {
     try {
       await this.ask(this.engine.resetPreview?.());
     } catch {
@@ -5605,7 +4942,7 @@ export class Session {
   }
 
   /** A timed-out modeler is replaced. Open trees are dropped; the last committed bytes stay. */
-  private async loseTrees(): Promise<void> {
+  async loseTrees(): Promise<void> {
     try {
       await this.ask(this.engine.resetModeler());
     } catch {
@@ -5623,7 +4960,7 @@ export class Session {
     }
   }
 
-  private lostReply(err: unknown): Record<string, unknown> | null {
+  lostReply(err: unknown): Record<string, unknown> | null {
     if (!(err instanceof ModelRunaway)) return null;
     return {
       ok: false,
@@ -5633,7 +4970,7 @@ export class Session {
     };
   }
 
-  private async treeCall(body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
+  async treeCall(body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
     const op = body.op && typeof body.op === "object" ? body.op as { kind?: unknown } : null;
     const kind = typeof op?.kind === "string" ? op.kind : label;
     const text = await this.withBudget(kind, () => this.engine.modelTree(JSON.stringify(body)), undefined, budgetMs);
@@ -5654,14 +4991,14 @@ export class Session {
    * The plate's step's saved solid, for a whole tree to build from instead of replaying every step above it: only one in
    * the binary format, which is that step exactly. The engine refuses one that is not the step, and replays instead.
    */
-  private seedOf(obj: PlateObject, tree: ModelTree): { node: NodeId; bytes: Uint8Array } | null {
+  seedOf(obj: PlateObject, tree: ModelTree): { node: NodeId; bytes: Uint8Array } | null {
     const node = obj.platedNode;
     if (!obj.brep || !isBrep(obj.brep) || node === null || node === 0 || !tree.nodes.has(node)) return null;
     return { node, bytes: obj.brep };
   }
 
   /** STEP bytes the bridge returns. A missing `bytesBase64` is a failed export. */
-  private stepBytes(reply: Record<string, unknown>): Uint8Array | null {
+  stepBytes(reply: Record<string, unknown>): Uint8Array | null {
     if (typeof reply.bytesBase64 !== "string" || reply.bytesBase64 === "") return null;
     const bytes = base64ToBytes(reply.bytesBase64);
     if (!bytes || bytes.byteLength === 0) return null;
@@ -5669,7 +5006,7 @@ export class Session {
     return bytes;
   }
 
-  private async ensureTree(obj: PlateObject, depth = 0): Promise<ModelTree> {
+  async ensureTree(obj: PlateObject, depth = 0): Promise<ModelTree> {
     if (obj.tree && obj.treeStale) {
       const rebuilt = await this.rebuildStale(obj, depth);
       if (rebuilt) return rebuilt;
@@ -5697,7 +5034,7 @@ export class Session {
    * A history the restarted modeler lost, built again at its current step: the tools its joins name first, then the
    * whole tree, with a budget for every step in it. Null when it does not build.
    */
-  private async rebuildStale(obj: PlateObject, depth: number): Promise<ModelTree | null> {
+  async rebuildStale(obj: PlateObject, depth: number): Promise<ModelTree | null> {
     const tree = obj.tree;
     if (!tree || tree.root.kind === "piece" || depth > 8) return null;
     for (const node of tree.nodes.values()) {
@@ -5727,7 +5064,7 @@ export class Session {
     return tree;
   }
 
-  private async solidNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async solidNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const typed = primitiveFrom(input);
     if ("reason" in typed) return { ok: false, reason: typed.reason };
     const kind = typed.primitive;
@@ -5769,20 +5106,20 @@ export class Session {
   }
 
   /** A mesh has no solid to edit. A STEP file and a new solid do. */
-  private meshBlock(obj: PlateObject): string | null {
+  meshBlock(obj: PlateObject): string | null {
     if (obj.tree || obj.brep) return null;
     const name = obj.fileName.toLowerCase();
     if (name.endsWith(".step") || name.endsWith(".stp")) return null;
     return MESH_EDIT;
   }
 
-  private async opened(obj: PlateObject): Promise<ModelTree | { reason: string }> {
+  async opened(obj: PlateObject): Promise<ModelTree | { reason: string }> {
     const blocked = this.meshBlock(obj);
     if (blocked) return { reason: blocked };
     return this.ensureTree(obj);
   }
 
-  private async describe(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async describe(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const solid = obj.solid;
@@ -5795,7 +5132,7 @@ export class Session {
    * --- Print transitions (plan section 3, decision 5). The steps on the shown branch made for another pose: their stored
    * build direction is more than 1° from the one this pose on the plate's printer gives. The solid keeps them as built.
    */
-  private staleTransitions(obj: PlateObject, tree: ModelTree): { node: string; label: string; offDeg: number; note: string }[] {
+  staleTransitions(obj: PlateObject, tree: ModelTree): { node: string; label: string; offDeg: number; note: string }[] {
     const printer = this.printer();
     const pose = { orient: obj.orient, belt: printer.kind === "belt" ? printer.belt : null };
     return pathTo(tree, tree.current).flatMap((id) => {
@@ -5810,7 +5147,7 @@ export class Session {
     });
   }
 
-  private async facesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async facesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
@@ -5823,7 +5160,7 @@ export class Session {
    * frame with the extrude origin and turn that draw in it. A solid is read exactly from the kernel; a mesh is cut by its
    * triangles where the plate holds them.
    */
-  private async sectionTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async sectionTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const chordMm = typeof input.chordMm === "number" ? input.chordMm : 0.05;
     // --- saveAs: the answer goes to the workspace as recipe data (data {name}), and the reply only counts it, so a
     // mesh's measured sections never pass through the model. A recipe reads section's answer directly instead.
@@ -5858,7 +5195,7 @@ export class Session {
   }
 
   /** --- API 1.2. What a recipe's pick reads: any part's faces, sections and sketches (the person named them), and recipe data. */
-  private pickReads(ctx: CallMeta): PickReads {
+  pickReads(ctx: CallMeta): PickReads {
     return {
       faces: async (id) => {
         const obj = this.find(id);
@@ -5886,7 +5223,7 @@ export class Session {
     };
   }
 
-  private async edgesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async edgesFind(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
@@ -5895,7 +5232,7 @@ export class Session {
 
 
   /** An edge filter whose onFace is a face selector {normal, withinDeg, nearPoint}, with that face's index in its place. */
-  private onFaceIndex(obj: PlateObject, filter: Record<string, unknown>): Record<string, unknown> | string {
+  onFaceIndex(obj: PlateObject, filter: Record<string, unknown>): Record<string, unknown> | string {
     return onFaceIndex(filter, this.bakeContext(obj));
   }
 
@@ -5905,7 +5242,7 @@ export class Session {
    * --- D24. A frame is typed and answered in model space, and kept in the part's own frame, as the app and the file keep
    * it, so it moves with the part when model_place moves the part.
    */
-  private async workplaneSet(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async workplaneSet(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const source = input.source === "global" || input.source === "bed" || input.source === "face" ? input.source : "face";
     const origin = Array.isArray(input.origin) && input.origin.length >= 3 ? input.origin.slice(0, 3) as [number, number, number] : null;
     const turn = Array.isArray(input.turn) && input.turn.length >= 3 ? input.turn.slice(0, 3) as [number, number, number] : null;
@@ -5944,7 +5281,7 @@ export class Session {
     return answer();
   }
 
-  private printUp(obj: PlateObject): Record<string, unknown> {
+  printUp(obj: PlateObject): Record<string, unknown> {
     if (isGlobalFrame(obj.workplane)) return { ok: false, reason: "Pick a face before pointing it up." };
     this.remember("Point up");
     const frame = eulerOrient(obj.workplane.turn[0], obj.workplane.turn[1], obj.workplane.turn[2]);
@@ -5957,7 +5294,7 @@ export class Session {
    * that parent. With `to`, an offset from that part's own frame, which makes this part a member: of `to`'s assembly,
    * or of a new one with `to` as its root. A number may be an expression; a member keeps its text and follows it.
    */
-  private modelPlace(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  modelPlace(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
     if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return { ok: false, reason: 'frame is "part" or "model".' };
     const assemblies = this.liveAssemblies();
     const mine = assemblyOf(assemblies, obj.id);
@@ -6025,7 +5362,7 @@ export class Session {
   }
 
   /** A part's own pose in model space: a part outside every assembly, or a root, whose members then follow it (D9). */
-  private placeFree(obj: PlateObject, input: Record<string, unknown>, mine: Assembly | undefined, named: string | undefined): Record<string, unknown> {
+  placeFree(obj: PlateObject, input: Record<string, unknown>, mine: Assembly | undefined, named: string | undefined): Record<string, unknown> {
     // The pose itself is the shared one (src/modeling/placing.ts), as the app's recipe calls set it.
     const free = placeFree(obj, input, this.params);
     if ("reason" in free) return { ok: false, reason: free.reason };
@@ -6057,12 +5394,12 @@ export class Session {
    * Three of model_place's numbers, each a number or an expression over the project's parameters. An absent one keeps
    * `values` and its text in `texts`; a number drops the text. `texts` is undefined when no number has one.
    */
-  private placeNumbers(input: Record<string, unknown>, keys: [string, string, string], values: [number, number, number], texts?: MemberExprs["offset"]): { values: [number, number, number]; texts?: [string | null, string | null, string | null] } | { reason: string } {
+  placeNumbers(input: Record<string, unknown>, keys: [string, string, string], values: [number, number, number], texts?: MemberExprs["offset"]): { values: [number, number, number]; texts?: [string | null, string | null, string | null] } | { reason: string } {
     return placeNumbers(input, keys, values, this.params, texts);
   }
 
   /** Each member of `assembly` at its solved pose. Returns the members other than `except` that moved, with their boxes. */
-  private writeSolved(assembly: Assembly, except: string): { moved?: Record<string, unknown>[] } {
+  writeSolved(assembly: Assembly, except: string): { moved?: Record<string, unknown>[] } {
     const solved = solveAssembly(assembly, (id) => this.find(id)?.modelPose, this.params);
     const moved: Record<string, unknown>[] = [];
     for (const row of assembly.members) {
@@ -6079,12 +5416,12 @@ export class Session {
   }
 
   /** The session's assemblies against the objects on the plate: a removed member is dropped and its children re-seated (D10). */
-  private liveAssemblies(): Assembly[] {
+  liveAssemblies(): Assembly[] {
     this.assemblies = readAssemblies(this.assemblies, this.objects);
     return this.assemblies;
   }
 
-  private newAssemblyId(): string {
+  newAssemblyId(): string {
     for (let n = 1; ; n += 1) if (!this.assemblies.some((row) => row.id === `asm_${n}`)) return `asm_${n}`;
   }
 
@@ -6092,12 +5429,12 @@ export class Session {
    * --- Assemblies M4. A refusal of a part away from model space's origin says which frame its numbers were read in,
    * the frame the reads answer in too (`src/modeling/placing.ts`, shared with the app's recipe calls).
    */
-  private frameWhere(obj: PlateObject): string {
+  frameWhere(obj: PlateObject): string {
     return frameWhere(obj.modelPose, obj.frame);
   }
 
   /** The part's box in model space, where Model draws it: its solid (or else its plate mesh) under `modelPose`, to 0.01 mm. */
-  private assembledBox(obj: PlateObject): { min: number[]; max: number[] } | null {
+  assembledBox(obj: PlateObject): { min: number[]; max: number[] } | null {
     const box = obj.solid && obj.solid.positions.length >= 9
       ? posedBounds(obj.solid.positions, obj.modelPose)
       : posedBounds(obj.source, thenPose(seatLift(obj.seatMm), obj.modelPose));
@@ -6106,12 +5443,12 @@ export class Session {
     return { min: box.min.map(mm), max: box.max.map(mm) };
   }
 
-  private bake(obj: PlateObject, raw: unknown): Baked | { reason: string } {
+  bake(obj: PlateObject, raw: unknown): Baked | { reason: string } {
     return bakeOp(raw, this.bakeContext(obj));
   }
 
   /** What baking an op reads of `obj` (src/modeling/bake.ts, shared with the app), with the kinds only a session bakes. */
-  private bakeContext(obj: PlateObject): BakeContext {
+  bakeContext(obj: PlateObject): BakeContext {
     return {
       pose: typedPoseOf(obj),
       solid: obj.solid,
@@ -6144,7 +5481,7 @@ export class Session {
    * default filled, so a model_edit of the echo keeps the build direction it was made for; `build: null` aims it from
    * this pose again.
    */
-  private bakeTransition(obj: PlateObject, spec: Record<string, unknown>): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
+  bakeTransition(obj: PlateObject, spec: Record<string, unknown>): { op: ModelOp; typed: Record<string, unknown> } | { reason: string } {
     const printer = this.printer();
     return bakeTransition(spec, this.bakeContext(obj), { supportAngle: this.settings.supportAngle, nozzleMm: this.library.nozzleMm, printer: { id: printer.id, belt: printer.kind === "belt" ? printer.belt : null }, orient: obj.orient });
   }
@@ -6153,7 +5490,7 @@ export class Session {
    * --- Print transitions. The kernel's rows for a probe, read in model space: the new face's normal there, and its
    * angle to the belt (or the bed), the plate's up being the third row of the plate orientation.
    */
-  private transitionRows(obj: PlateObject, raw: unknown): { rows: Record<string, unknown>[]; text: string; reach: number } | null {
+  transitionRows(obj: PlateObject, raw: unknown): { rows: Record<string, unknown>[]; text: string; reach: number } | null {
     const read = readTransitionRows(raw, obj.orient);
     if (!read || !Array.isArray(raw)) return null;
     const pose = typedPoseOf(obj);
@@ -6171,11 +5508,11 @@ export class Session {
 
 
 
-  private splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
+  splitCheck(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): { text: string; bad: boolean } {
     return splitCheck(obj.solid, op);
   }
 
-  private async openJoinTool(raw: unknown): Promise<string | null> {
+  async openJoinTool(raw: unknown): Promise<string | null> {
     if (!raw || typeof raw !== "object") return null;
     const spec = raw as { kind?: unknown; toolObject?: unknown };
     if (spec.kind !== "join") return null;
@@ -6191,7 +5528,7 @@ export class Session {
    * apply, with what the letters are: `inkMm2`, how they were built, and `thin`, the letters a nozzle-wide line cannot print.
    * A text with no font is a box a stroke, which is several steps: it is applied, not probed.
    */
-  private async probeText(obj: PlateObject, raw: Record<string, unknown>, nodeHandleValue: unknown): Promise<Record<string, unknown>> {
+  async probeText(obj: PlateObject, raw: Record<string, unknown>, nodeHandleValue: unknown): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     const asked = this.nodeOf(obj, nodeHandleValue);
@@ -6210,7 +5547,7 @@ export class Session {
   }
 
   /** The letters a nozzle-wide line cannot print, for a lettering step: the engine's own layout, judged against the nozzle. */
-  private async thinLetters(op: Extract<ModelOp, { kind: "lettering" }>): Promise<{ char: string; lostPct: number }[]> {
+  async thinLetters(op: Extract<ModelOp, { kind: "lettering" }>): Promise<{ char: string; lostPct: number }[]> {
     const request: Record<string, unknown> = { call: "textLayout", text: op.text, font: op.font, height: op.height, lineMm: this.library.nozzleMm, stepMm: 0.5 };
     for (const key of ["style", "spacing", "lineSpacing", "align", "angleDeg", "weight", "strokeWidth"] as const) if (op[key] !== undefined) request[key] = op[key];
     try {
@@ -6221,7 +5558,7 @@ export class Session {
     }
   }
 
-  private async probe(obj: PlateObject, raw: unknown, nodeHandleValue?: unknown, measure = false): Promise<Record<string, unknown>> {
+  async probe(obj: PlateObject, raw: unknown, nodeHandleValue?: unknown, measure = false): Promise<Record<string, unknown>> {
     if (raw && typeof raw === "object" && (raw as { kind?: unknown }).kind === "text") return this.probeText(obj, raw as Record<string, unknown>, nodeHandleValue);
     if (raw && typeof raw === "object" && isComposite((raw as { kind?: unknown }).kind)) {
       return { ok: false, reason: "model_probe checks one step. Apply a pattern, mirror, pocket, boss, or texture with model_apply; it checks each step as it goes." };
@@ -6237,7 +5574,7 @@ export class Session {
     return this.bakeAndProbe(obj, tree, at, raw, measure);
   }
 
-  private async bakeAndProbe(obj: PlateObject, tree: ModelTree, at: number, raw: unknown, measure: boolean): Promise<Record<string, unknown>> {
+  async bakeAndProbe(obj: PlateObject, tree: ModelTree, at: number, raw: unknown, measure: boolean): Promise<Record<string, unknown>> {
     const baked = this.bake(obj, raw);
     if ("reason" in baked) return { ok: false, reason: baked.reason };
     return this.probeBaked(obj, tree, at, baked, measure);
@@ -6248,7 +5585,7 @@ export class Session {
    * read `obj.solid`, which is the current step's. The engine shows `at` for the work and the current step again after,
    * and the history does not move.
    */
-  private async atStep(obj: PlateObject, tree: ModelTree, at: number, work: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  async atStep(obj: PlateObject, tree: ModelTree, at: number, work: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
     const current = tree.current;
     const prior = obj.solid;
     let reply: Record<string, unknown>;
@@ -6281,7 +5618,7 @@ export class Session {
    * The check before an apply, for an op already in the solid's frame. A probe that passes is remembered for `at`.
    * `measure` asks the modeler for the built shape too, for model_probe's metrics; a batch step does not need it.
    */
-  private async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown>; notes?: string[] }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
+  async probeBaked(obj: PlateObject, tree: ModelTree, at: number, baked: { op: ModelOp; typed: Record<string, unknown>; notes?: string[] }, measure = false, composite = false, budgetMs?: number): Promise<Record<string, unknown>> {
     const answer = (body: Record<string, unknown>) => probeEcho(baked, body);
     if (baked.op.kind === "scale") {
       obj.probes.set(probeKey(String(at), baked.op), true);
@@ -6347,7 +5684,7 @@ export class Session {
    * a curved face of smaller radius than the wall cannot be offset either. The largest wall that fits is found by
    * halving, a probe each, within about 20 s; the solid does not change.
    */
-  private async shellAdvice(obj: PlateObject, tree: ModelTree, at: number, op: Extract<ModelOp, { kind: "shell" }>, budgetMs?: number): Promise<{ text: string; maxMm?: number; where?: Record<string, unknown>; lost?: Record<string, unknown> }> {
+  async shellAdvice(obj: PlateObject, tree: ModelTree, at: number, op: Extract<ModelOp, { kind: "shell" }>, budgetMs?: number): Promise<{ text: string; maxMm?: number; where?: Record<string, unknown>; lost?: Record<string, unknown> }> {
     const t = op.thickness;
     const parts: string[] = [];
     let where: Record<string, unknown> | undefined;
@@ -6393,7 +5730,7 @@ export class Session {
    * model_apply. A plain op needs a passed probe, or `probe: true` to check it here first. A composite op (pattern,
    * mirror, pocket, boss, texture) always checks each step as it goes and is one undo step.
    */
-  private async applyTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async applyTool(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const anchored = this.anchored(obj, input.op as Record<string, unknown>);
     if ("reason" in anchored) return { ok: false, reason: anchored.reason };
     const raw = anchored.op;
@@ -6415,7 +5752,7 @@ export class Session {
   }
 
   /** --- D25. An applied op's node keeps the expressions it was typed with. */
-  private keepExprs(obj: PlateObject, id: number | null, exprs: Record<string, string> | undefined): void {
+  keepExprs(obj: PlateObject, id: number | null, exprs: Record<string, string> | undefined): void {
     const node = id === null ? undefined : obj.tree?.nodes.get(id);
     if (!exprs || !node?.op || !obj.tree || id === null) return;
     obj.tree = withNode(obj.tree, id, { op: withExprs(node.op, exprs) });
@@ -6426,7 +5763,7 @@ export class Session {
    * holds and to the workplane's: `make` is the same typed-to-stored path the call takes, run again with each typed
    * number moved (`linkedExprs`). `stored` is what was stored, by `make`'s index.
    */
-  private linksOf(obj: PlateObject, raw: Record<string, unknown>, twin: unknown, make: (op: Record<string, unknown>) => readonly ModelOp[] | null, stored: readonly (ModelOp | null)[]): (Record<string, string> | undefined)[] {
+  linksOf(obj: PlateObject, raw: Record<string, unknown>, twin: unknown, make: (op: Record<string, unknown>) => readonly ModelOp[] | null, stored: readonly (ModelOp | null)[]): (Record<string, string> | undefined)[] {
     const own = twin === undefined ? [] : exprLeaves(raw, twin, this.followsParameters);
     const typed = obj.workplaneTyped;
     const plane = typed ? exprLeaves({ origin: typed.origin, turn: typed.turn }, typed.text, this.followsParameters) : [];
@@ -6461,7 +5798,7 @@ export class Session {
   }
 
   /** --- Gaps A3. The expressions this call typed that no stored number follows, for its reply. */
-  private takeNotLinked(): Record<string, unknown> {
+  takeNotLinked(): Record<string, unknown> {
     const rows = this.notLinked;
     this.notLinked = [];
     this.linkingOp = undefined;
@@ -6473,14 +5810,14 @@ export class Session {
    * `op` with the links of `exprs` its stored numbers match at the current parameters. A piece stored other than as
    * planned (shortened so it does not only touch) drops the links it no longer matches, so it is never out of date at once.
    */
-  private inDateExprs(op: ModelOp, exprs: Record<string, string> | undefined): ModelOp {
+  inDateExprs(op: ModelOp, exprs: Record<string, string> | undefined): ModelOp {
     if (!exprs) return op;
     const kept = Object.fromEntries(Object.entries(exprs).filter(([key, text]) => !stepOutOfDate({ ...op, exprs: { [key]: text } } as ModelOp, this.params)));
     return Object.keys(kept).length > 0 ? withExprs(op, kept) : op;
   }
 
   /** The links of one plain op, as `bake` stores it. Partitions and joins keep none. */
-  private plainLinks(obj: PlateObject, raw: Record<string, unknown>, twin: unknown, stored: ModelOp | null): Record<string, string> | undefined {
+  plainLinks(obj: PlateObject, raw: Record<string, unknown>, twin: unknown, stored: ModelOp | null): Record<string, string> | undefined {
     if (!stored || raw.kind === "partition" || raw.kind === "join") return undefined;
     return this.linksOf(obj, raw, twin, (op) => {
       const baked = this.bake(obj, op);
@@ -6488,7 +5825,7 @@ export class Session {
     }, [stored])[0];
   }
 
-  private async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
+  async apply(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
     const toolReason = await this.openJoinTool(raw);
     if (toolReason) return { ok: false, reason: toolReason };
     const tree = await this.opened(obj);
@@ -6505,7 +5842,7 @@ export class Session {
     return done;
   }
 
-  private async applyBaked(obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown, budgetMs?: number): Promise<Record<string, unknown>> {
+  async applyBaked(obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown, budgetMs?: number): Promise<Record<string, unknown>> {
     if (baked.op.kind === "partition") return this.applyPartition(obj, tree, baked.op, baked.typed, budgetMs);
     if (baked.op.kind === "split") {
       const note = this.splitCheck(obj, baked.op);
@@ -6550,7 +5887,7 @@ export class Session {
   }
 
   /** Back to `to`, and `node` out of the history: a step the guard refused leaves no trace. */
-  private async takeBack(obj: PlateObject, to: number, node: number): Promise<void> {
+  async takeBack(obj: PlateObject, to: number, node: number): Promise<void> {
     await this.gotoNode(obj, to);
     if (obj.tree?.nodes.has(node)) this.drop(obj, node);
   }
@@ -6559,7 +5896,7 @@ export class Session {
    * What composite ops need to expand: the object's workplane, and any flat face's frame and U, V extent.
    * The builder is shared with the app's feature tools (`src/modeling/frames.ts`).
    */
-  private expandContext(obj: PlateObject): ExpandContext {
+  expandContext(obj: PlateObject): ExpandContext {
     const ctx = this.expandContextOf(obj);
     const log = this.pickLog.getStore();
     const detail = ctx.faceByDetail;
@@ -6577,7 +5914,7 @@ export class Session {
     };
   }
 
-  private expandContextOf(obj: PlateObject): ExpandContext {
+  expandContextOf(obj: PlateObject): ExpandContext {
     return partExpandContext(obj.solid, typedPoseOf(obj), obj.workplane);
   }
 
@@ -6585,7 +5922,7 @@ export class Session {
    * --- D28. A feature typed with a face selector is stored with the face it found, as the app stores its pick, so an
    * edit in the app and a replay re-expand on that face. A selector that finds none is left for expand to refuse.
    */
-  private withFaceIndex(obj: PlateObject, raw: Record<string, unknown>): Record<string, unknown> {
+  withFaceIndex(obj: PlateObject, raw: Record<string, unknown>): Record<string, unknown> {
     if (!isFeatureTool(raw.kind) || raw.face === undefined || raw.faceIndex !== undefined || !raw.face || typeof raw.face !== "object") return raw;
     const index = this.expandContext(obj).faceBy(raw.face as Record<string, unknown>);
     if (typeof index !== "number") return raw;
@@ -6597,13 +5934,13 @@ export class Session {
    * The plane a profile is drawn on: origin and turn as given, else a face (face or faceIndex, with from: corner putting
    * U, V = 0 at the face's min corner), else the object's workplane.
    */
-  private profilePlane(obj: PlateObject, spec: Record<string, unknown>): { origin: [number, number, number]; turn: [number, number, number] } | { reason: string } {
+  profilePlane(obj: PlateObject, spec: Record<string, unknown>): { origin: [number, number, number]; turn: [number, number, number] } | { reason: string } {
     return profilePlane(spec, this.bakeContext(obj));
   }
 
 
   /** A plain Boolean op typed in the object's workplane, as a part-frame piece. */
-  private pieceOf(obj: PlateObject, raw: Record<string, unknown>): Piece | { reason: string } {
+  pieceOf(obj: PlateObject, raw: Record<string, unknown>): Piece | { reason: string } {
     const local = primitiveFrom(raw, "box");
     if ("reason" in local) return local;
     const op = raw.op === "fuse" || raw.op === "common" ? raw.op : "cut";
@@ -6618,7 +5955,7 @@ export class Session {
    * step. `offset` numbers the ops from there, for a resumed build.
    * --- A9. A composite whose pieces all apply is then one group node, and one checkpoint. ---
    */
-  private async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number; texts?: readonly unknown[] }): Promise<Record<string, unknown>> {
+  async applyMany(obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number; texts?: readonly unknown[] }): Promise<Record<string, unknown>> {
     const opened = await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
     const mode = options.onError === "stop" || options.onError === "skip" ? options.onError : "rollback";
@@ -6842,7 +6179,7 @@ export class Session {
    * node's id, null when the engine would not fold it (the caller then builds the group), or the failure when the
    * modeler had to be restarted.
    */
-  private async foldGroup(obj: PlateObject, before: number, firstPiece: number, group: GroupOp): Promise<number | Record<string, unknown> | null> {
+  async foldGroup(obj: PlateObject, before: number, firstPiece: number, group: GroupOp): Promise<number | Record<string, unknown> | null> {
     const tree = obj.tree;
     if (!tree || obj.treeStale || !pathTo(tree, tree.current).includes(firstPiece)) return null;
     const [reserved, node] = reserveId(tree);
@@ -6870,7 +6207,7 @@ export class Session {
    * Go back to the step before them, drop the chain, then probe and apply the group.
    * The probe and the apply share a budget that grows with the step count, so one composite is not cut off at the per-call limit.
    */
-  private async storeGroup(obj: PlateObject, before: number, firstPiece: number, steps: ModelOp[], label: string | undefined, raw: Record<string, unknown>): Promise<{ ok: true; node: number } | { ok: false; failed: Record<string, unknown> }> {
+  async storeGroup(obj: PlateObject, before: number, firstPiece: number, steps: ModelOp[], label: string | undefined, raw: Record<string, unknown>): Promise<{ ok: true; node: number } | { ok: false; failed: Record<string, unknown> }> {
     return storeGroup({
       fold: (from, first, group) => this.foldGroup(obj, from, first, group),
       back: async (from, first) => {
@@ -6894,7 +6231,7 @@ export class Session {
   }
 
   /** A baked op probed, then applied: the kernel keeps the probe's build, so it is built once. */
-  private async bakedApply(obj: PlateObject, baked: { op: ModelOp; typed: Record<string, unknown> }, label: string | undefined, budgetMs?: number): Promise<Record<string, unknown>> {
+  async bakedApply(obj: PlateObject, baked: { op: ModelOp; typed: Record<string, unknown> }, label: string | undefined, budgetMs?: number): Promise<Record<string, unknown>> {
     const at = await this.opened(obj);
     if ("reason" in at) return { ok: false, reason: at.reason };
     const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budgetMs);
@@ -6910,7 +6247,7 @@ export class Session {
    * meet the part in one kernel boolean, one history step that counts once. An op that is not a plain boolean, extrude,
    * revolve, or loft of that kind, or whose tool does not build, is reported by its index; the rest still apply.
    */
-  private async applyCombined(obj: PlateObject, raws: Record<string, unknown>[], combine: "cut" | "fuse", label: string | undefined): Promise<Record<string, unknown>> {
+  async applyCombined(obj: PlateObject, raws: Record<string, unknown>[], combine: "cut" | "fuse", label: string | undefined): Promise<Record<string, unknown>> {
     const opened = await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
     const failures: Record<string, unknown>[] = [];
@@ -6965,7 +6302,7 @@ export class Session {
    * kernel clips every cell to the face's outline less the margin (read from the solid, so curved edges count), leaves
    * out slivers under minArea, rounds the corners, and builds every cell in one boolean.
    */
-  private async bakeCells(obj: PlateObject, raw: Record<string, unknown>): Promise<{ op: ModelOp; typed: Record<string, unknown> } | { reason: string }> {
+  async bakeCells(obj: PlateObject, raw: Record<string, unknown>): Promise<{ op: ModelOp; typed: Record<string, unknown> } | { reason: string }> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { reason: tree.reason };
     return bakeCells(raw, this.expandContext(obj), typedPoseOf(obj), async (face, insetMm, frame) => {
@@ -6975,7 +6312,7 @@ export class Session {
     });
   }
 
-  private async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async applyBatch(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
     if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
     if (input.combine === "cut" || input.combine === "fuse") return this.applyCombined(obj, ops, input.combine, typeof input.label === "string" ? input.label : undefined);
@@ -6990,7 +6327,7 @@ export class Session {
    * again with the same base, it reuses every op before the first one that changed, and runs only the rest. `object`
    * names an earlier build to rebuild in place the same way, refused or not.
    */
-  private async build(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async build(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const recipe = this.pendingRecipe;
     this.pendingRecipe = null;
     const texts = this.pendingTexts;
@@ -7099,7 +6436,7 @@ export class Session {
   }
 
   /** --- Gaps A1. A new solid's root keeps the expressions its base was typed with, as the app's New solid does. */
-  private linkRoot(obj: PlateObject, base: Record<string, unknown>, baseText: unknown): void {
+  linkRoot(obj: PlateObject, base: Record<string, unknown>, baseText: unknown): void {
     const tree = obj.tree;
     if (!tree || tree.root.kind !== "primitive" || baseText === undefined) return;
     const stored: ModelOp = { kind: "root", ...tree.root.solid };
@@ -7111,7 +6448,7 @@ export class Session {
   }
 
   /** The op with every anchor replaced by the point it names on this object, as the solid stands now. */
-  private anchored(obj: PlateObject, raw: Record<string, unknown>): { op: Record<string, unknown> } | { reason: string } {
+  anchored(obj: PlateObject, raw: Record<string, unknown>): { op: Record<string, unknown> } | { reason: string } {
     if (!hasAnchor(raw)) return { op: raw };
     try {
       return { op: resolveAnchors(raw, (label) => this.labelBox(obj, label)) as Record<string, unknown> };
@@ -7126,7 +6463,7 @@ export class Session {
    * step named under it ("label body" of a placed part, or an older file's "label k/n"), a group's own label, or a
    * batch's label, on the path to the current step. "part" is the solid.
    */
-  private labelBox(obj: PlateObject, label: string, solidFrame = false): Box | null {
+  labelBox(obj: PlateObject, label: string, solidFrame = false): Box | null {
     const tree = obj.tree;
     if (!tree) return null;
     const toTyped = solidFrame ? (p: [number, number, number]) => p : (p: [number, number, number]) => this.typedPoint(obj, applyPose(typedPoseOf(obj), p));
@@ -7137,17 +6474,17 @@ export class Session {
    * --- D24. The workplane in model space, where ops are typed. It is stored in the part's own frame, as the app and
    * the file keep it, so it moves with the part when model_place moves the part.
    */
-  private typedPlane(obj: PlateObject): Workplane {
+  typedPlane(obj: PlateObject): Workplane {
     return typedPlaneOf(obj.workplane, typedPoseOf(obj));
   }
 
   /** A part-frame point in the object's workplane, the frame its ops are typed in. */
-  private typedPoint(obj: PlateObject, p: [number, number, number]): [number, number, number] {
+  typedPoint(obj: PlateObject, p: [number, number, number]): [number, number, number] {
     return typedPointIn(this.typedPlane(obj), p);
   }
 
   /** The runs one undo takes back, by label: the session's groups, and each stamped recipe run as `recipe <name>`. */
-  private stepGroups(obj: PlateObject): { start: number; end: number; label: string }[] {
+  stepGroups(obj: PlateObject): { start: number; end: number; label: string }[] {
     const runs = obj.tree ? [...obj.tree.nodes.values()].flatMap((node) => {
       const run = node.run && node.run.k === node.run.n ? runEndingAt(obj.tree!, node.id) : null;
       return run && run.before !== null ? [{ start: run.before, end: run.last, label: `recipe ${run.stamp?.plugin ?? "run"}` }] : [];
@@ -7156,7 +6493,7 @@ export class Session {
   }
 
   /** model_anchors: every label on the path to the current step with its box, or one label's. */
-  private anchorsTool(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  anchorsTool(obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
     if (!obj.tree) return { ok: false, reason: "This object has no Model history yet." };
     if (typeof input.label === "string") {
       const box = this.labelBox(obj, input.label);
@@ -7178,7 +6515,7 @@ export class Session {
   }
 
   /** The parameters, parts, and each build's recipe and log, as the project keeps them. Null when there are none. */
-  private mcpModelRecord(): Record<string, unknown> | null {
+  mcpModelRecord(): Record<string, unknown> | null {
     const recipes: Record<string, unknown> = {};
     for (const obj of this.objects) if (obj.recipe) recipes[obj.id] = { recipe: obj.recipe, ...(obj.buildLog ? { buildLog: obj.buildLog } : {}) };
     // A recipe_run source is kept once, by name; each object names it.
@@ -7200,7 +6537,7 @@ export class Session {
   }
 
   /** A project's MCP record back into the session: what it does not understand it leaves out. */
-  private adoptMcpModel(value: Record<string, unknown> | undefined): void {
+  adoptMcpModel(value: Record<string, unknown> | undefined): void {
     this.parts.clear();
     this.rustRecipes.clear();
     if (!value) return;
@@ -7252,7 +6589,7 @@ export class Session {
   }
 
   /** model_define: a named part, its default parameters and its ops, which {kind: "use", part, with} places. */
-  private defineTool(input: Record<string, unknown>): Record<string, unknown> {
+  defineTool(input: Record<string, unknown>): Record<string, unknown> {
     if (input.clear === true) this.parts.clear();
     if (typeof input.name === "string") {
       const name = input.name.trim();
@@ -7274,7 +6611,7 @@ export class Session {
   }
 
   /** Session parameters: names model ops may use in place of numbers, as text such as "wallH + 2". */
-  private paramsTool(input: Record<string, unknown>): Record<string, unknown> {
+  paramsTool(input: Record<string, unknown>): Record<string, unknown> {
     const set = (input.set ?? {}) as Record<string, unknown>;
     const next: Record<string, string | number> = input.clear === true ? {} : { ...this.paramText };
     for (const [name, value] of Object.entries(set)) {
@@ -7299,7 +6636,7 @@ export class Session {
    * --- Assemblies M3. Each assembly that reads a changed parameter is solved again: its members' model poses move, and
    * the reply names them with their new box in model space. The print layout does not move.
    */
-  private followAssemblies(before: Record<string, number>): { moved?: Record<string, unknown>[]; assemblyErrors?: Record<string, unknown>[] } {
+  followAssemblies(before: Record<string, number>): { moved?: Record<string, unknown>[]; assemblyErrors?: Record<string, unknown>[] } {
     if (this.assemblies.length === 0) return {};
     const live = readAssemblies(this.assemblies, this.objects);
     const followed = resolveForParameters(live, (id) => this.find(id)?.modelPose, before, this.params);
@@ -7316,7 +6653,7 @@ export class Session {
   }
 
   /** --- Gaps A3. A workplane typed with expressions moves with them: ops typed on it after a set use the new plane. */
-  private followWorkplanes(): void {
+  followWorkplanes(): void {
     for (const obj of this.objects) {
       const typed = obj.workplaneTyped;
       if (!typed) continue;
@@ -7337,7 +6674,7 @@ export class Session {
    * app's Parameters panel rebuilds it (`planRebuild`, one edit of the earliest step with the rest replayed), committed,
    * and checked. A part that cannot follow says why and is left as it was.
    */
-  private async paramsRebuild(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async paramsRebuild(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const set = this.paramsTool(input);
     if (set.ok !== true) return set;
     const rebuilt: Record<string, unknown>[] = [];
@@ -7356,7 +6693,7 @@ export class Session {
     };
   }
 
-  private async rebuildFromParameters(obj: PlateObject): Promise<Record<string, unknown> | null> {
+  async rebuildFromParameters(obj: PlateObject): Promise<Record<string, unknown> | null> {
     const opened = await this.opened(obj);
     if ("reason" in opened) return { object: obj.id, ok: false, reason: opened.reason };
     const start = opened.current;
@@ -7440,7 +6777,7 @@ export class Session {
    * The project's parameter table. `parameters` wins. An older file's `mcpModel.params` is the
    * fallback, and those values are numbers.
    */
-  private adoptParameters(project: { parameters?: Record<string, string | number>; mcpModel?: Record<string, unknown> }): void {
+  adoptParameters(project: { parameters?: Record<string, string | number>; mcpModel?: Record<string, unknown> }): void {
     this.params = {};
     this.paramText = {};
     const top = project.parameters;
@@ -7463,7 +6800,7 @@ export class Session {
    * A call's `params` evaluated in order on top of the session's numbers. A later name may use an
    * earlier one. The session table is unchanged.
    */
-  private mergeParams(set: Record<string, unknown>): Record<string, number> | { reason: string } {
+  mergeParams(set: Record<string, unknown>): Record<string, number> | { reason: string } {
     const out: Record<string, number> = { ...this.params };
     for (const [name, value] of Object.entries(set)) {
       if (!PARAM_NAME.test(name)) return { reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
@@ -7479,7 +6816,7 @@ export class Session {
 
   /** The whole table, in order. The first bad row refuses the set and changes nothing. */
   /** A history step from a handle (node_3), its label, or a composite edit's label (its last step). */
-  private nodeOf(obj: PlateObject, value: unknown): number | null {
+  nodeOf(obj: PlateObject, value: unknown): number | null {
     const parsed = parseNode(value);
     if (parsed !== null || typeof value !== "string" || !obj.tree) return parsed;
     const wanted = value.trim().toLowerCase();
@@ -7489,16 +6826,16 @@ export class Session {
     return group ? group.end : null;
   }
 
-  private splitKeep(raw: unknown): "both" | "above" | "below" {
+  splitKeep(raw: unknown): "both" | "above" | "below" {
     return splitKeep(raw);
   }
 
   /** The half whose centre is on the positive side of the plane is above. */
-  private keptSide(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): "above" | "below" {
+  keptSide(obj: PlateObject, op: Extract<ModelOp, { kind: "split" }>): "above" | "below" {
     return keptSide(obj.solid?.bounds, op);
   }
 
-  private keepOtherHalf(obj: PlateObject, otherKey: string, other: unknown, node: number): string | undefined {
+  keepOtherHalf(obj: PlateObject, otherKey: string, other: unknown, node: number): string | undefined {
     if (!other || typeof other !== "object") return undefined;
     const piece = solidView(other as Record<string, unknown>);
     if (!piece) return undefined;
@@ -7538,7 +6875,7 @@ export class Session {
   // --- Split to print (docs/plan-split-connectors.md, D8, D9, sections 10 and 13). Keep this block together. ---
 
   /** What the planner fills defaults from: the plate's printer as the target, the nozzle, the layer, the filament, the brim. */
-  private partitionContext(obj: PlateObject | null): FillContext {
+  partitionContext(obj: PlateObject | null): FillContext {
     const printer = this.printer();
     const box = obj?.solid ? (isIdentity(typedPoseOf(obj)) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, typedPoseOf(obj)).positions)) : null;
     return {
@@ -7554,7 +6891,7 @@ export class Session {
   }
 
   /** model_probe with plan: true. The planner alone: the solid is read, nothing is cut. */
-  private async planTool(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
+  async planTool(obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
     const spec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     if (spec.kind === "transition") return this.planTransition(obj, spec);
     if (spec.kind !== "partition") return { ok: false, reason: PLAN_KIND };
@@ -7575,7 +6912,7 @@ export class Session {
    * printer, and probes each row's fix as the op it would be. Nothing is applied. The ready op holds the rows whose fix
    * builds, as one step.
    */
-  private async planTransition(obj: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async planTransition(obj: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
     const extra = Object.keys(spec).find((key) => !["kind", "angleDeg", "size", "maxMm", "mode", "label"].includes(key));
     if (extra) return { ok: false, reason: `plan:true finds the edges itself, from this pose: it takes angleDeg, size and maxMm, not ${extra}.` };
     if (spec.mode !== undefined && spec.mode !== "auto") return { ok: false, reason: "plan:true proposes mode auto, which lets each edge's case decide." };
@@ -7634,7 +6971,7 @@ export class Session {
    * --- Print transitions, step 6b (plan decision 7). `finding` marked with what the latest slice saw hanging at its
    * edges, when that slice is still this plate as it is (the stamp `gcode_summary` reads); as it is otherwise.
    */
-  private againstSlice(obj: PlateObject, finding: Finding, build: readonly number[]): Finding {
+  againstSlice(obj: PlateObject, finding: Finding, build: readonly number[]): Finding {
     const job = this.latest;
     const wire = job?.wire;
     if (!job || !wire || this.staleReason(job) || !wire.partHold || !obj.solid) return finding;
@@ -7649,7 +6986,7 @@ export class Session {
    * the plate's printer the plate and its pin are two new objects (STEP solids, with their labels cut in); for an
    * export-only printer, the Form 4, they are written to the workspace as STEP files and never reach the plate.
    */
-  private async fitCouponNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async fitCouponNew(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const raw = input.coupon && typeof input.coupon === "object" && !Array.isArray(input.coupon) ? (input.coupon as Record<string, unknown>) : null;
     if (!raw) return { ok: false, reason: "coupon is {printer, material, radius, depth, hole, startMm}; every field is optional." };
     if (Object.keys(input).some((key) => key !== "coupon" && key !== "name")) return { ok: false, reason: "solid_new takes a coupon or a primitive, not both. Only name goes with a coupon." };
@@ -7714,19 +7051,19 @@ export class Session {
   }
 
   /** --- D11. A target typed by its printer alone: the library's printer, or an export-only one such as the Form 4. */
-  private partitionTarget(id: string): Target | null {
+  partitionTarget(id: string): Target | null {
     const row = targetPrinter(this.library, id);
     return row ? printerTarget(row) : null;
   }
 
   /** The name a target's sentences use: the library's, or the id when the library has no such printer. */
-  private targetName(op: PartitionModelOp): string {
+  targetName(op: PartitionModelOp): string {
     const id = op.target?.printer ?? this.printer().id;
     return targetPrinter(this.library, id)?.name ?? id;
   }
 
   /** --- D12. The split to print for an export target on the way to the part's step, or on the way to a piece's root. */
-  private exportCut(obj: PlateObject): PartitionModelOp | null {
+  exportCut(obj: PlateObject): PartitionModelOp | null {
     const tree = obj.tree;
     if (!tree) return null;
     for (const id of pathTo(tree, tree.current)) {
@@ -7741,7 +7078,7 @@ export class Session {
   }
 
   /** The kernel cuts a copy: every piece's volume and box in model space. The solid does not change. */
-  private async probePartition(obj: PlateObject, tree: ModelTree, at: number, op: PartitionModelOp, budgetMs?: number, planned: readonly string[] = []): Promise<Record<string, unknown>> {
+  async probePartition(obj: PlateObject, tree: ModelTree, at: number, op: PartitionModelOp, budgetMs?: number, planned: readonly string[] = []): Promise<Record<string, unknown>> {
     let reply: Record<string, unknown>;
     try {
       reply = await this.treeCall(probeRequest(tree.key, at, op), "partition", budgetMs);
@@ -7765,13 +7102,13 @@ export class Session {
   }
 
   /** --- Milestone 5. The key the pins' tree opens under, when a cut of `op` has a dowel placed. */
-  private pinsKey(obj: PlateObject, node: number, op: PartitionModelOp): string | null {
+  pinsKey(obj: PlateObject, node: number, op: PartitionModelOp): string | null {
     const dowels = op.cuts.some((cut) => cut.connectors?.on && (cut.connectors.placed ?? []).some((row) => row.type === "dowel"));
     return dowels ? `mcp-pins-${obj.id}-${node}` : null;
   }
 
   /** The keys the kernel opens each piece's tree under, one for every piece Max pieces allows after the first. */
-  private pieceKeys(obj: PlateObject, node: number, op: PartitionModelOp): string[] {
+  pieceKeys(obj: PlateObject, node: number, op: PartitionModelOp): string[] {
     return Array.from({ length: clampPieces(op.maxPieces ?? 12) - 1 }, (_, at) => `mcp-part-${obj.id}-${node}-${at + 2}`);
   }
 
@@ -7780,7 +7117,7 @@ export class Session {
    * fingerprint (D8); every other piece is a new plate object in the part's plate orientation and model pose, its own tree
    * rooted at this node, with no paint, seam, reinforcement or support edit of its own.
    */
-  private async applyPartition(obj: PlateObject, tree: ModelTree, op: PartitionModelOp, typed: Record<string, unknown>, budgetMs?: number): Promise<Record<string, unknown>> {
+  async applyPartition(obj: PlateObject, tree: ModelTree, op: PartitionModelOp, typed: Record<string, unknown>, budgetMs?: number): Promise<Record<string, unknown>> {
     if (!obj.probes.has(probeKey(String(tree.current), op))) return { ok: false, reason: "Probe this edit first, or pass probe: true. It was not applied." };
     const [reserved, node] = reserveId(tree);
     obj.tree = reserved;
@@ -7837,7 +7174,7 @@ export class Session {
    * --- Milestone 5. The pins as one more object (plan section 10): the part's plate orientation, which stands each pin
    * along the plate's Z, its own tree rooted as this node's pins, held off the plate for an export target. Its id and key.
    */
-  private partitionPins(obj: PlateObject, entry: Record<string, unknown>, node: number, exported: boolean): { id: string; key: string } | null {
+  partitionPins(obj: PlateObject, entry: Record<string, unknown>, node: number, exported: boolean): { id: string; key: string } | null {
     const id = this.partitionPiece(obj, entry, node, 0, exported);
     const made = id ? [...this.objects, ...this.piecesOffPlate].find((row) => row.id === id) : undefined;
     if (!made?.tree) return null;
@@ -7850,7 +7187,7 @@ export class Session {
    * One piece after the first as a plate object: the part's orientation, pose and settings, its own tree, empty paint.
    * An export target's piece is held off the plate from the start (D12): it is exported, never sliced.
    */
-  private partitionPiece(obj: PlateObject, entry: Record<string, unknown>, node: number, index: number, exported = false): string | null {
+  partitionPiece(obj: PlateObject, entry: Record<string, unknown>, node: number, index: number, exported = false): string | null {
     const solid = solidView(entry);
     const key = typeof entry.key === "string" ? entry.key : "";
     if (!solid || !key || !obj.tree) return null;
@@ -7890,7 +7227,7 @@ export class Session {
    * each where it was cut. A cut edited later keeps that assembly and seats any new piece in it. Its name, or null when
    * nothing joined (an export target's pieces are off the plate).
    */
-  private groupPieces(root: PlateObject, ids: readonly string[], name?: string): string | null {
+  groupPieces(root: PlateObject, ids: readonly string[], name?: string): string | null {
     let next = this.liveAssemblies();
     const poseOf = (id: string) => this.find(id)?.modelPose;
     const stem = name ?? shownName(root.name).replace(/\.(stl|step|stp|3mf)$/i, "");
@@ -7909,7 +7246,7 @@ export class Session {
   }
 
   /** The object, on the plate or off it, whose tree is `key`; a reopened project's piece has none open yet, and goes by its id. */
-  private objectOfKey(key: string): PlateObject | undefined {
+  objectOfKey(key: string): PlateObject | undefined {
     return this.byTreeKey(key) ?? [...this.objects, ...this.piecesOffPlate].find((row) => !row.tree && `mcp-${row.id}` === key);
   }
 
@@ -7917,7 +7254,7 @@ export class Session {
    * --- D9. A split to print's pieces are on the plate while that step is on the way to its part's current step, as a
    * join's tool is off it: model_undo or a goto above the cut takes them off, and a redo brings them back.
    */
-  private followPieces(obj: PlateObject): { back: string[]; left: string[]; orient: { turned: string[]; notes: string[] } } {
+  followPieces(obj: PlateObject): { back: string[]; left: string[]; orient: { turned: string[]; notes: string[] } } {
     const tree = obj.tree;
     if (!tree) return { back: [], left: [], orient: { turned: [], notes: [] } };
     const path = new Set(pathTo(tree, tree.current));
@@ -7947,9 +7284,6 @@ export class Session {
     return { back, left, orient: this.settleOrients(obj) };
   }
 
-  /** Each object Joint down turned, by id, and the orientation it had before: Keep, and a step above the cut, put it back. */
-  private keptOrients = new Map<string, Mat3>();
-  private jointed = new Set<string>();
 
   /**
    * --- Milestone 7 (plan D4, section 10). The plate orientation of a split to print's pieces from the cut on the way to
@@ -7958,7 +7292,7 @@ export class Session {
    * is what a step above the cut gives back too. An export target's pieces keep as cut. Idempotent: the apply, an edit,
    * model_undo, a goto and a redo all end here. The ids it turned, and a sentence for each piece it jointed.
    */
-  private settleOrients(obj: PlateObject): { turned: string[]; notes: string[] } {
+  settleOrients(obj: PlateObject): { turned: string[]; notes: string[] } {
     const out = { turned: [] as string[], notes: [] as string[] };
     const tree = obj.tree;
     if (!tree) return out;
@@ -8021,7 +7355,7 @@ export class Session {
    * still there takes the new piece, with its later steps replayed on it; a piece past the old count is a new object; an
    * old piece past the new count leaves the plate.
    */
-  private async rebuildPieces(obj: PlateObject, old: readonly (string | null)[], reply: Record<string, unknown>, node: number, exported: boolean): Promise<{ keys: (string | null)[]; objects: string[]; notes: string[] }> {
+  async rebuildPieces(obj: PlateObject, old: readonly (string | null)[], reply: Record<string, unknown>, node: number, exported: boolean): Promise<{ keys: (string | null)[]; objects: string[]; notes: string[] }> {
     const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
     const keys: (string | null)[] = [];
     const objects: string[] = [];
@@ -8049,7 +7383,7 @@ export class Session {
   }
 
   /** --- Milestone 5. The edited cut's pins: the old pins object leaves, and the reply's pins, if any, are a new one. */
-  private async rebuildPins(obj: PlateObject, old: string | null, reply: Record<string, unknown>, node: number, exported: boolean): Promise<{ id: string; key: string } | null> {
+  async rebuildPins(obj: PlateObject, old: string | null, reply: Record<string, unknown>, node: number, exported: boolean): Promise<{ id: string; key: string } | null> {
     const gone = old ? this.objectOfKey(old) : undefined;
     if (gone) {
       if (this.objects.includes(gone)) this.objects.splice(this.objects.indexOf(gone), 1);
@@ -8061,7 +7395,7 @@ export class Session {
   }
 
   /** `piece` takes part `index` of the edited cut as its new root, and the steps it had after its root are built again on it. */
-  private async replayPiece(obj: PlateObject, piece: PlateObject, entry: Record<string, unknown>, node: number, index: number, notes: string[]): Promise<string | null> {
+  async replayPiece(obj: PlateObject, piece: PlateObject, entry: Record<string, unknown>, node: number, index: number, notes: string[]): Promise<string | null> {
     const solid = solidView(entry);
     const key = typeof entry.key === "string" ? entry.key : "";
     if (!solid || !key || !obj.tree) return null;
@@ -8113,7 +7447,7 @@ export class Session {
    * the part's step that the plate does not hold at its own step is committed too. With the cut's arrange on, the plate is
    * then laid out, as Arrange does.
    */
-  private async commitPieces(obj: PlateObject): Promise<{ committed: string[]; refused: { object: string; reason: string }[]; arranged: boolean }> {
+  async commitPieces(obj: PlateObject): Promise<{ committed: string[]; refused: { object: string; reason: string }[]; arranged: boolean }> {
     const tree = obj.tree;
     const out = { committed: [] as string[], refused: [] as { object: string; reason: string }[], arranged: false };
     if (!tree) return out;
@@ -8142,7 +7476,7 @@ export class Session {
    * then each piece's object as it stands now. An export target's pieces are not saved with a project, so one that no
    * object holds any more is cut again from the stored op on a spare step, as the app's `rebuildPiece` does.
    */
-  private async partitionPieces(obj: PlateObject): Promise<{ pieces: PlateObject[]; op: PartitionModelOp; pins: PlateObject | null } | { reason: string }> {
+  async partitionPieces(obj: PlateObject): Promise<{ pieces: PlateObject[]; op: PartitionModelOp; pins: PlateObject | null } | { reason: string }> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return tree;
     const at = [...pathTo(tree, tree.current)].reverse().find((id) => tree.nodes.get(id)?.op?.kind === "partition");
@@ -8217,7 +7551,7 @@ export class Session {
   }
 
   /** --- D12. export_3mf with pieces: true. One 3MF of every piece, named `<name>-<n>`, or with stl: true one STL each. */
-  private async exportPieceMeshes(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async exportPieceMeshes(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const requested = typeof input.object === "string" ? input.object : "";
     const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested) ?? null;
     if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
@@ -8245,7 +7579,7 @@ export class Session {
   }
 
   /** --- D12. model_export_step with pieces: true. One STEP file holding every piece as a named solid, in order. */
-  private async exportPieceStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
+  async exportPieceStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
     const got = await this.partitionPieces(obj);
     if ("reason" in got) return { ok: false, reason: got.reason };
     const parts = got.pins ? [...got.pieces, got.pins] : got.pieces;
@@ -8275,7 +7609,7 @@ export class Session {
     };
   }
 
-  private pieceRows(pieces: readonly PlateObject[], names: readonly string[]): { part: number; name: string; object: string; volumeMm3: number }[] {
+  pieceRows(pieces: readonly PlateObject[], names: readonly string[]): { part: number; name: string; object: string; volumeMm3: number }[] {
     return pieces.map((piece, index) => ({ part: index + 1, name: names[index]!, object: piece.id, volumeMm3: Math.round((piece.solid?.volumeMm3 ?? 0) * 1000) / 1000 }));
   }
 
@@ -8283,7 +7617,7 @@ export class Session {
    * --- Plan section 10. Lay out places only the new pieces, around what is already on the plate, the part's own first
    * piece included, which all stay where they are; Arrange would move every object.
    */
-  private layOutPieces(ids: readonly string[]): boolean {
+  layOutPieces(ids: readonly string[]): boolean {
     const printer = this.printer();
     const fresh = new Set(ids);
     const keep = new Set(this.objects.filter((row) => !fresh.has(row.id)).map((row) => row.id));
@@ -8302,13 +7636,13 @@ export class Session {
 
   // --- end Split to print ---
 
-  private async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async history(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const opened = obj.tree ?? await this.opened(obj);
     if ("reason" in opened) return { ok: false, reason: opened.reason };
     return historyReply(opened, input);
   }
 
-  private async gotoNode(obj: PlateObject, node: number | null): Promise<Record<string, unknown>> {
+  async gotoNode(obj: PlateObject, node: number | null): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
@@ -8338,7 +7672,7 @@ export class Session {
     };
   }
 
-  private async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
+  async step(obj: PlateObject, direction: "undo" | "redo"): Promise<Record<string, unknown>> {
     // --- Plugin steps (D8). A part a plugin made, rebuilt as a new tree: one undo puts the old object back, one redo the new.
     const swap = direction === "undo" ? obj.rebuiltFrom : undefined;
     if (swap && obj.tree?.current === swap.tip) {
@@ -8375,7 +7709,7 @@ export class Session {
     return this.gotoNode(obj, target);
   }
 
-  private async editRoot(obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>): Promise<Record<string, unknown>> {
+  async editRoot(obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>): Promise<Record<string, unknown>> {
     const refusal = editRefusal(tree, node);
     if (refusal) return { ok: false, reason: refusal };
     const baked = this.bake(obj, raw);
@@ -8411,7 +7745,7 @@ export class Session {
    * a goto to one answered "unknown". Each step's solid changes with the root, so no old fingerprint or plated solid is
    * kept. A refusal is returned; null when it opened.
    */
-  private async reopenRoot(obj: PlateObject, tree: ModelTree, node: number, root: Exclude<ModelTree["root"], { kind: "piece" | "step" }>): Promise<Record<string, unknown> | null> {
+  async reopenRoot(obj: PlateObject, tree: ModelTree, node: number, root: Exclude<ModelTree["root"], { kind: "piece" | "step" }>): Promise<Record<string, unknown> | null> {
     const nodes = new Map([...tree.nodes].map(([id, row]) => [id, { ...row, fingerprint: null as Fingerprint | null }]));
     const row = nodes.get(node);
     if (row && root.kind === "feature") nodes.set(node, { ...row, label: rootLabel(root, row.label) });
@@ -8429,7 +7763,7 @@ export class Session {
     return null;
   }
 
-  private rename(obj: PlateObject, node: number | null, label: string): Record<string, unknown> {
+  rename(obj: PlateObject, node: number | null, label: string): Record<string, unknown> {
     const tree = obj.tree;
     if (!tree || node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
     const trimmed = label.trim();
@@ -8440,7 +7774,7 @@ export class Session {
     return { ok: true, node: nodeHandle(node), label: row.label };
   }
 
-  private async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
+  async edit(obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
     const typedText = this.pendingTexts[0];
     this.pendingTexts = [];
     const toolReason = await this.openJoinTool(raw);
@@ -8540,7 +7874,7 @@ export class Session {
   }
 
   /** Fresh ids on the tree `key` names. An edit spends them even when the engine keeps only some. */
-  private reserveOn(key: string, need: number): NodeId[] {
+  reserveOn(key: string, need: number): NodeId[] {
     const host = this.byTreeKey(key);
     if (!host?.tree) return [];
     let reserved = host.tree;
@@ -8554,7 +7888,7 @@ export class Session {
     return ids;
   }
 
-  private toolLinks(tree: ModelTree, ids: readonly NodeId[]): ToolLink[] {
+  toolLinks(tree: ModelTree, ids: readonly NodeId[]): ToolLink[] {
     const links: ToolLink[] = [];
     for (const id of ids) {
       const op = tree.nodes.get(id)?.op;
@@ -8567,7 +7901,7 @@ export class Session {
   }
 
   /** A join's tool trees take the branches the edit reply kept. */
-  private forkTools(levels: { key: string; parent: NodeId; node: NodeId; op: ModelOp; replay: { id: NodeId; op: ModelOp }[] }[], tools: unknown): void {
+  forkTools(levels: { key: string; parent: NodeId; node: NodeId; op: ModelOp; replay: { id: NodeId; op: ModelOp }[] }[], tools: unknown): void {
     const parts = Array.isArray(tools) ? tools as { built?: unknown; broken?: unknown }[] : [];
     levels.forEach((level, index) => {
       const host = this.byTreeKey(level.key);
@@ -8590,7 +7924,7 @@ export class Session {
     });
   }
 
-  private drop(obj: PlateObject, node: number | null): Record<string, unknown> {
+  drop(obj: PlateObject, node: number | null): Record<string, unknown> {
     const tree = obj.tree;
     if (!tree || node === null) return { ok: false, reason: "That step is not in the history." };
     const reason = dropRefusal(tree, node);
@@ -8601,7 +7935,7 @@ export class Session {
     return { ok: true };
   }
 
-  private async commit(obj: PlateObject): Promise<Record<string, unknown>> {
+  async commit(obj: PlateObject): Promise<Record<string, unknown>> {
     const blocked = this.meshBlock(obj);
     if (blocked) return { ok: false, reason: blocked };
     const reason = await this.commitObject(obj);
@@ -8619,7 +7953,7 @@ export class Session {
   }
 
   /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */
-  private async commitObject(obj: PlateObject): Promise<string | null> {
+  async commitObject(obj: PlateObject): Promise<string | null> {
     if (!obj.tree) return null;
     // --- Split to print (D12). A part cut for an export target is exported, and the plate keeps what it had.
     const exported = this.exportCut(obj);
@@ -8688,7 +8022,7 @@ export class Session {
    * An imported STEP root, written once as the engine's own solid of it, as the app saves it: a reopen that needs the root
    * reads that in a fraction of the STEP's time. A root that is still the plate's file stays STEP, kept once for both.
    */
-  private async brepRoot(obj: PlateObject, tree: ModelTree): Promise<void> {
+  async brepRoot(obj: PlateObject, tree: ModelTree): Promise<void> {
     const root = tree.root;
     if (root.kind !== "step" || isBrep(root.bytes) || this.triedRoots.has(root.bytes)) return;
     const bytes = new Uint8Array(root.bytes);
@@ -8701,7 +8035,7 @@ export class Session {
   }
 
   /** True when a scale step sits strictly after `from` on the way to `to`. */
-  private scaleSince(tree: ModelTree, from: number | null, to: number): boolean {
+  scaleSince(tree: ModelTree, from: number | null, to: number): boolean {
     for (let at: number | null = to; at !== null && at !== from; at = tree.nodes.get(at)?.parent ?? null) {
       if (tree.nodes.get(at)?.op?.kind === "scale") return true;
     }
@@ -8709,7 +8043,7 @@ export class Session {
   }
 
   /** Every object's current step onto the plate. One that will not commit is named with its reason; the rest still commit. */
-  private async commitAll(): Promise<{ object: string; name: string; reason: string }[]> {
+  async commitAll(): Promise<{ object: string; name: string; reason: string }[]> {
     const refused: { object: string; name: string; reason: string }[] = [];
     for (const obj of this.objects) {
       const reason = await this.commitObject(obj);
@@ -8722,7 +8056,7 @@ export class Session {
    * A plate object with no plate mesh yet, a solid never committed, carries its kernel mesh in a saved file, so the file
    * opens: an autosave commits nothing, and a save keeps an object whose mesh would not close as it stands.
    */
-  private withKernelMeshes(doc: LimeProject): LimeProject {
+  withKernelMeshes(doc: LimeProject): LimeProject {
     const unplated = new Map(this.objects.filter((obj) => obj.bytes.byteLength === 0 && obj.solid && obj.solid.positions.length >= 9).map((obj) => [obj.id, obj]));
     if (unplated.size > 0 && doc.objects) {
       doc.objects = doc.objects.map((row) => {
@@ -8739,7 +8073,7 @@ export class Session {
    * --- Assemblies M9. model_export_step with assembly: true. One STEP file of the part's assembly, each member a solid
    * named after its part at its assembled pose (`modelPose`), root first. The print layout is not read.
    */
-  private async exportAssemblyStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
+  async exportAssemblyStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
     const assembly = assemblyOf(this.liveAssemblies(), obj.id);
     if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
     const parts = exportParts(assembly, (id) => partStem(this.find(id)?.name ?? ""));
@@ -8779,7 +8113,7 @@ export class Session {
     };
   }
 
-  private async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
+  async exportStep(obj: PlateObject, name: string): Promise<Record<string, unknown>> {
     const tree = await this.opened(obj);
     if ("reason" in tree) return { ok: false, reason: tree.reason };
     let reply: Record<string, unknown>;
@@ -8797,7 +8131,7 @@ export class Session {
     return { ok: true, path, bytes: step.byteLength };
   }
 
-  private async measure(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async measure(obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const faces = typeof input.faceA === "number" || typeof input.faceB === "number";
     if (faces && typeof input.faceA === "number" && typeof input.faceB === "number") {
       const tree = await this.opened(obj);
@@ -8816,7 +8150,7 @@ export class Session {
   }
 
 
-  private wanted(input: Record<string, unknown>): PlateObject | { ok: false; reason: string } {
+  wanted(input: Record<string, unknown>): PlateObject | { ok: false; reason: string } {
     if (typeof input.object === "string" && input.object !== "") {
       const named = this.find(input.object);
       if (!named) return { ok: false, reason: UNKNOWN_OBJECT };
@@ -8827,7 +8161,7 @@ export class Session {
     return obj;
   }
 
-  private readRegion(value: unknown): RegionQuery | { reason: string } {
+  readRegion(value: unknown): RegionQuery | { reason: string } {
     if (!value || typeof value !== "object" || Array.isArray(value)) return { reason: "Name a face, an overhang, a box, a sphere, or a stroke." };
     const row = value as Record<string, unknown>;
     const region: RegionQuery = {};
@@ -8862,16 +8196,16 @@ export class Session {
     return region;
   }
 
-  private paintFrame(input: Record<string, unknown>): "part" | "bed" | { reason: string } {
+  paintFrame(input: Record<string, unknown>): "part" | "bed" | { reason: string } {
     if (input.frame === undefined || input.frame === "part" || input.frame === "bed") return input.frame === "bed" ? "bed" : "part";
     return { reason: "Paint on the part or the bed. The workplane is for model edits." };
   }
 
-  private paintPositions(obj: PlateObject, frame: "part" | "bed"): Float32Array {
+  paintPositions(obj: PlateObject, frame: "part" | "bed"): Float32Array {
     return frame === "bed" ? this.placed(obj).positions : obj.source;
   }
 
-  private sourceDisks(obj: PlateObject, disks: { p: [number, number, number]; n: [number, number, number]; r: number }[], kind: PaintKind, frame: "part" | "bed"): PaintDisk[] {
+  sourceDisks(obj: PlateObject, disks: { p: [number, number, number]; n: [number, number, number]; r: number }[], kind: PaintKind, frame: "part" | "bed"): PaintDisk[] {
     if (frame === "bed") {
       const placed = this.placed(obj);
       const src = sourceFrame(obj.source, obj.scale);
@@ -8881,7 +8215,7 @@ export class Session {
     return disks.map((disk) => ({ kind, p: disk.p, n: disk.n, r: disk.r / scale }));
   }
 
-  private pointInFrame(obj: PlateObject, point: [number, number, number], frame: "part" | "bed"): [number, number, number] {
+  pointInFrame(obj: PlateObject, point: [number, number, number], frame: "part" | "bed"): [number, number, number] {
     if (frame === "part") return point;
     const pose: RigidPose = this.placed(obj).pose;
     const centre = sourceFrame(obj.source, obj.scale).centre;
@@ -8899,25 +8233,25 @@ export class Session {
     ];
   }
 
-  private bedPointToSource(obj: PlateObject, point: [number, number, number]): [number, number, number] {
+  bedPointToSource(obj: PlateObject, point: [number, number, number]): [number, number, number] {
     const placed = this.placed(obj);
     return diskFromHit("enforce", point, [0, 0, 1], 1, placed.pose, sourceFrame(obj.source, obj.scale)).p;
   }
 
-  private paintSupports(input: Record<string, unknown>): Record<string, unknown> {
+  paintSupports(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     const mode: PaintKind | "erase" = input.mode === "block" || input.mode === "erase" ? input.mode : "enforce";
     return this.paintDisks(obj, input, mode === "erase" ? "erase" : mode, "supports");
   }
 
-  private paintSeam(input: Record<string, unknown>): Record<string, unknown> {
+  paintSeam(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     return this.paintDisks(obj, input, input.erase === true ? "erase" : "enforce", "seam");
   }
 
-  private paintDisks(obj: PlateObject, input: Record<string, unknown>, mode: PaintKind | "erase", layer: "supports" | "seam"): Record<string, unknown> {
+  paintDisks(obj: PlateObject, input: Record<string, unknown>, mode: PaintKind | "erase", layer: "supports" | "seam"): Record<string, unknown> {
     const frame = this.paintFrame(input);
     if (typeof frame !== "string") return { ok: false, reason: frame.reason };
     const region = this.readRegion(input.region);
@@ -8968,13 +8302,13 @@ export class Session {
     };
   }
 
-  private faceOf(obj: PlateObject): ((index: number) => number) | undefined {
+  faceOf(obj: PlateObject): ((index: number) => number) | undefined {
     const triangles = obj.solid?.triangles;
     if (!triangles) return undefined;
     return (index) => triangles[index] ?? -1;
   }
 
-  private reinforceAdd(input: Record<string, unknown>): Record<string, unknown> {
+  reinforceAdd(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     const kind = input.kind === "paint" || input.kind === "box" || input.kind === "cylinder" ? input.kind : null;
@@ -9031,7 +8365,7 @@ export class Session {
     return { ok: true, kind, stale: true, label: "Reinforcement" };
   }
 
-  private paintList(input: Record<string, unknown>): Record<string, unknown> {
+  paintList(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     const layer = input.layer === "seam" || input.layer === "reinforce" ? input.layer : "supports";
@@ -9052,7 +8386,7 @@ export class Session {
     };
   }
 
-  private paintClear(input: Record<string, unknown>): Record<string, unknown> {
+  paintClear(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     const layer = input.layer === "seam" || input.layer === "reinforce" ? input.layer : "supports";
@@ -9063,7 +8397,7 @@ export class Session {
     return { ok: true, layer, stale: true, label: "Clear paint" };
   }
 
-  private supportEdit(input: Record<string, unknown>): Record<string, unknown> {
+  supportEdit(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     const action = input.action === "regrow" || input.action === "prune" || input.action === "grow" ? input.action : null;
@@ -9118,7 +8452,7 @@ export class Session {
     return { ok: true, action, sites: sites.length, scope, stale: true, label: "Support edit" };
   }
 
-  private supportTrees(input: Record<string, unknown>): Record<string, unknown> {
+  supportTrees(input: Record<string, unknown>): Record<string, unknown> {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     const skeleton = job?.wire?.skeleton as SupportSkeleton | undefined;
     if (!job?.wire || !skeleton?.id?.length) return { ok: false, reason: "Slice with tree supports first." };
@@ -9149,7 +8483,7 @@ export class Session {
     };
   }
 
-  private layerColumns(input: Record<string, unknown>): { paths: PathColumns; z: number; index: number; offsets: [number, number][] } | { reason: string } {
+  layerColumns(input: Record<string, unknown>): { paths: PathColumns; z: number; index: number; offsets: [number, number][] } | { reason: string } {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     if (!job?.wire) return { reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -9163,7 +8497,7 @@ export class Session {
     return { paths: layer.paths, z: layer.z ?? 0, index, offsets };
   }
 
-  private layerDetail(input: Record<string, unknown>): Record<string, unknown> {
+  layerDetail(input: Record<string, unknown>): Record<string, unknown> {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     if (!job?.wire) return { ok: false, reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -9184,7 +8518,7 @@ export class Session {
     return end < to ? { ok: true, rows, total: layers.length, nextCursor: String(end + 1) } : { ok: true, rows };
   }
 
-  private layerPathsFile(input: Record<string, unknown>): Record<string, unknown> {
+  layerPathsFile(input: Record<string, unknown>): Record<string, unknown> {
     const layer = this.layerColumns(input);
     if ("reason" in layer) return { ok: false, reason: layer.reason };
     const paths = layerPaths(layer.paths, layer.z, typeof input.simplifyMm === "number" ? input.simplifyMm : 0.05, layer.offsets);
@@ -9194,7 +8528,7 @@ export class Session {
     return { ok: true, path, bytes: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex"), paths: paths.length };
   }
 
-  private layerImage(input: Record<string, unknown>): Record<string, unknown> {
+  layerImage(input: Record<string, unknown>): Record<string, unknown> {
     const layer = this.layerColumns(input);
     if ("reason" in layer) return { ok: false, reason: layer.reason };
     const colourBy: ColorMode = input.colourBy === "speed" || input.colourBy === "weight" || input.colourBy === "stress" || input.colourBy === "safety" ? input.colourBy : "feature";
@@ -9216,7 +8550,7 @@ export class Session {
     return input.inline === false ? body : withImages(body, [pngImage(png)]);
   }
 
-  private gcodeRead(input: Record<string, unknown>): Record<string, unknown> {
+  gcodeRead(input: Record<string, unknown>): Record<string, unknown> {
     const job = this.finished(typeof input.job === "string" ? input.job : undefined);
     if (!job?.gcode) return { ok: false, reason: "Slice first." };
     const stale = this.staleReason(job);
@@ -9234,7 +8568,7 @@ export class Session {
     return { ok: true, lines: rows, ...(rows.length === count ? { nextLine: (rows[rows.length - 1]?.line ?? start) + 1 } : {}) };
   }
 
-  private async calibrationTower(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async calibrationTower(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const kind = input.kind === "pa" || input.kind === "flow" || input.kind === "temp" || input.kind === "retract" ? input.kind : null;
     if (!kind) return { ok: false, reason: "kind is pa, flow, temp, or retract." };
     const start = Number(input.start);
@@ -9283,7 +8617,7 @@ export class Session {
     return { ok: true, bands: listed, gcodePath: path, bytes: Buffer.byteLength(reply.gcode) };
   }
 
-  private calibrationApply(input: Record<string, unknown>): Record<string, unknown> {
+  calibrationApply(input: Record<string, unknown>): Record<string, unknown> {
     const kind = input.kind === "pa" || input.kind === "flow" || input.kind === "temp" || input.kind === "retract" ? input.kind : null;
     if (!kind) return { ok: false, reason: "kind is pa, flow, temp, or retract." };
     const value = Number(input.value);
@@ -9297,7 +8631,7 @@ export class Session {
     return { ok: true, kind, value, stale: true, label: "Calibration" };
   }
 
-  private async blendCompare(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async blendCompare(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const obj = this.wanted(input);
     if (!isObject(obj)) return obj;
     const committed = await this.commitObject(obj);
@@ -9322,7 +8656,7 @@ export class Session {
     return { ok: true, points: this.pareto };
   }
 
-  private blendApply(input: Record<string, unknown>): Record<string, unknown> {
+  blendApply(input: Record<string, unknown>): Record<string, unknown> {
     const index = typeof input.index === "number" ? input.index : -1;
     const point = this.pareto[index];
     if (!point) return { ok: false, reason: "Call blend_compare first, then pass a point index." };
@@ -9338,12 +8672,12 @@ export class Session {
   }
 
   /** The file Export writes, so the review sees the printer's start and end text. */
-  private printerBuildAxis(): SimVec {
+  printerBuildAxis(): SimVec {
     const printer = this.printer();
     return printer.kind === "belt" ? beltLayerNormal(printer.belt.angleDeg) : [0, 0, 1];
   }
 
-  private readFixtures(value: unknown): StudyHold[] | { reason: string } {
+  readFixtures(value: unknown): StudyHold[] | { reason: string } {
     if (value === undefined) return [];
     if (!Array.isArray(value)) return { reason: "Fixtures are a list." };
     const holds: StudyHold[] = [];
@@ -9377,7 +8711,7 @@ export class Session {
     return holds;
   }
 
-  private readLoads(value: unknown): StudyLoad[] | { reason: string } {
+  readLoads(value: unknown): StudyLoad[] | { reason: string } {
     if (value === undefined) return [];
     if (!Array.isArray(value)) return { reason: "Loads are a list." };
     const loads: StudyLoad[] = [];
@@ -9401,7 +8735,7 @@ export class Session {
     return loads;
   }
 
-  private simCard(value: unknown) {
+  simCard(value: unknown) {
     const cards = cardsOf(this.library);
     const fallback = cards.find((card) => card.id === "inhouse-petg") ?? cards[0];
     if (!fallback) return { reason: "That card is not in the library." } as const;
@@ -9434,7 +8768,7 @@ export class Session {
     };
   }
 
-  private beamOf(value: unknown): ObjectStudy["beam"] | { reason: string } | undefined {
+  beamOf(value: unknown): ObjectStudy["beam"] | { reason: string } | undefined {
     if (value === undefined) return undefined;
     if (!value || typeof value !== "object" || Array.isArray(value)) return { reason: BEAM_SIZE };
     const box = value as Record<string, unknown>;
@@ -9443,7 +8777,7 @@ export class Session {
     return { lengthMm: box.lengthMm, widthMm: box.widthMm, heightMm: box.heightMm };
   }
 
-  private simSetup(input: Record<string, unknown>): Record<string, unknown> {
+  simSetup(input: Record<string, unknown>): Record<string, unknown> {
     const element = elementRefusal(input.element);
     if (element) return { ok: false, reason: element };
     const beam = this.beamOf(input.beam);
@@ -9514,7 +8848,7 @@ export class Session {
     return { ok: true, object: obj.id, study, sentence: setupSentence(study, card.polymer, card.provisional), label: LABEL };
   }
 
-  private smearOf(obj: PlateObject, patch?: SweepPatch) {
+  smearOf(obj: PlateObject, patch?: SweepPatch) {
     return simRecipe({
       toughness: this.settings.toughness,
       layerHeightMm: this.settings.layerHeight,
@@ -9527,7 +8861,7 @@ export class Session {
     });
   }
 
-  private solveCopy(obj: PlateObject, patch: SweepPatch | undefined, op: "run" | "field", field?: Record<string, unknown>): Record<string, unknown> {
+  solveCopy(obj: PlateObject, patch: SweepPatch | undefined, op: "run" | "field", field?: Record<string, unknown>): Record<string, unknown> {
     const saved = obj.sim;
     if (!saved) return { ok: false, reason: "Set up a study first." };
     const stale = this.staleFaces(obj, saved);
@@ -9566,7 +8900,7 @@ export class Session {
     return reply;
   }
 
-  private async simRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async simRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     const obj = this.simTarget(input);
     if ("reason" in obj) return { ok: false, reason: obj.reason };
     const saved = obj.sim;
@@ -9581,7 +8915,7 @@ export class Session {
     return reply;
   }
 
-  private representationFor(obj: PlateObject, study: ObjectStudy): SimRepresentation {
+  representationFor(obj: PlateObject, study: ObjectStudy): SimRepresentation {
     return representationOf({
       asked: study.representation,
       beam: study.beam !== undefined,
@@ -9591,7 +8925,7 @@ export class Session {
   }
 
   /** The solver's kinds and its refusal sentences (`lime-sim` sliced_study.rs), so a refusal reads the same either way. */
-  private readSimConstraints(value: unknown): StudyConstraint[] | { reason: string } | undefined {
+  readSimConstraints(value: unknown): StudyConstraint[] | { reason: string } | undefined {
     if (value === undefined) return undefined;
     if (!Array.isArray(value)) return { reason: "Constraints are a list of targets." };
     if (value.length > 8) return { reason: "A study takes up to 8 targets." };
@@ -9627,13 +8961,13 @@ export class Session {
   }
 
   /** The solid the face indexes are picked on, as a key. A Model edit changes it. */
-  private shapeKey(obj: PlateObject): string {
+  shapeKey(obj: PlateObject): string {
     const positions = obj.solid && obj.solid.positions.length >= 9 ? obj.solid.positions : obj.source;
     return fnv1aHex(new Uint8Array(positions.buffer, positions.byteOffset, positions.byteLength));
   }
 
   /** A study that names faces, run on a solid edited since it was set up. Never solve on renumbered faces. */
-  private staleFaces(obj: PlateObject, study: ObjectStudy): string | null {
+  staleFaces(obj: PlateObject, study: ObjectStudy): string | null {
     if (!study.facesKey || !namesFaces(study)) return null;
     return study.facesKey === this.shapeKey(obj) ? null : STALE_FACES;
   }
@@ -9643,7 +8977,7 @@ export class Session {
    * same way, or the committed plate mesh when that is the same shape.
    * A triangle-count difference is not the test. A box parameter keeps the count.
    */
-  private studyMesh(obj: PlateObject): StudyMesh | { reason: string } {
+  studyMesh(obj: PlateObject): StudyMesh | { reason: string } {
     const committed = !obj.treeStale && obj.bytes.byteLength > 0 && (!obj.tree || obj.platedNode === obj.tree.current);
     const solid = obj.solid;
     const choice = chooseStudyMesh({
@@ -9659,14 +8993,14 @@ export class Session {
   }
 
   /** The pose of the tessellation being sliced, when it is not the plate mesh. */
-  private studyPose(obj: PlateObject, unscaled: Float32Array): RigidPose | null {
+  studyPose(obj: PlateObject, unscaled: Float32Array): RigidPose | null {
     if (unscaled === obj.source) return null;
     const printer = this.printer();
     return placeMesh(unscaled, obj.orient, obj.scale, printer.bedX, printer.bedY, obj.centered, obj.offset).pose;
   }
 
   /** Face index of each triangle. A generated beam with no solid pairs triangles into faces. */
-  private faceIds(obj: PlateObject, study: ObjectStudy, count: number, triangleIds: ArrayLike<number> | null): number[] | null {
+  faceIds(obj: PlateObject, study: ObjectStudy, count: number, triangleIds: ArrayLike<number> | null): number[] | null {
     if (triangleIds && triangleIds.length === count) return Array.from(triangleIds);
     if (study.beam && !obj.solid) return Array.from({ length: count }, (_, index) => Math.floor(index / 2));
     return null;
@@ -9676,7 +9010,7 @@ export class Session {
    * A region's triangles in the mesh frame, before the pose. A generated beam
    * stores clockwise corners, so those are reversed to face outward.
    */
-  private slicedRegion(
+  slicedRegion(
     obj: PlateObject,
     study: ObjectStudy,
     faces: number[],
@@ -9733,7 +9067,7 @@ export class Session {
    * Solve the object as it is sliced. A sweep `patch` changes that one slice (walls, infill, the pattern) and
    * scales the loads, without touching the plate.
    */
-  private async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true, patch?: SweepPatch): Promise<Record<string, unknown>> {
+  async solveSliced(obj: PlateObject, saved: ObjectStudy, checkResolution = true, patch?: SweepPatch): Promise<Record<string, unknown>> {
     const stale = this.staleFaces(obj, saved);
     if (stale) return { ok: false, reason: stale };
     const study = cloneStudy(saved);
@@ -9839,7 +9173,7 @@ export class Session {
    * it, else on the body. A pattern is a blend, which would also move walls and infill with its toughness, so they
    * are pinned to what the object prints now, as the desktop's sweep does.
    */
-  private patchSliceBody(body: Record<string, unknown>, obj: PlateObject, patch: SweepPatch): void {
+  patchSliceBody(body: Record<string, unknown>, obj: PlateObject, patch: SweepPatch): void {
     const row = Array.isArray(body.objects) && body.objects[0] && typeof body.objects[0] === "object"
       ? (body.objects[0] as Record<string, unknown>)
       : null;
@@ -9858,7 +9192,7 @@ export class Session {
   }
 
   /** A sliced sweep: each variant one slice of the object alone and one solve. */
-  private async slicedSweep(obj: PlateObject, patches: SweepPatch[], limits: ConstraintLimits, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async slicedSweep(obj: PlateObject, patches: SweepPatch[], limits: ConstraintLimits, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (patches.some((patch) => patch.parameters)) return { ok: false, reason: RESLICE_PARAMETERS };
     const saved = obj.sim!;
     // One cell size per variant unless asked: a sweep compares variants, and a second size doubles each solve.
@@ -9892,7 +9226,7 @@ export class Session {
     return { ok: true, variants: rows, committed, note: "Each variant was sliced alone and solved. slicerSeconds and slicerGrams are that slice's." };
   }
 
-  private simField(input: Record<string, unknown>): Record<string, unknown> {
+  simField(input: Record<string, unknown>): Record<string, unknown> {
     const obj = this.simTarget(input);
     if ("reason" in obj) return { ok: false, reason: obj.reason };
     if (obj.sim && this.representationFor(obj, obj.sim) === "sliced") return { ok: false, reason: SLICED_FIELD };
@@ -9932,14 +9266,14 @@ export class Session {
     return this.solveCopy(obj, undefined, "field", { field, points, box, face, stride, limit: pageLimit(input.limit), cursor: pageCursor(input.cursor) });
   }
 
-  private simTarget(input: Record<string, unknown>): PlateObject | { reason: string } {
+  simTarget(input: Record<string, unknown>): PlateObject | { reason: string } {
     const requested = typeof input.object === "string" ? input.object : "";
     const obj = requested ? this.find(requested) : this.selectedObject();
     if (!obj) return { reason: requested ? UNKNOWN_OBJECT : "Load a mesh first." };
     return obj;
   }
 
-  private sweepPatchProblem(patch: SweepPatch): string | null {
+  sweepPatchProblem(patch: SweepPatch): string | null {
     if (patch.parameters) {
       const merged = this.mergeParams(patch.parameters);
       if ("reason" in merged && typeof merged.reason === "string") return merged.reason;
@@ -9955,7 +9289,7 @@ export class Session {
     return null;
   }
 
-  private applySweepPatch(obj: PlateObject, patch: SweepPatch): void {
+  applySweepPatch(obj: PlateObject, patch: SweepPatch): void {
     if (patch.parameters) this.paramsTool({ set: patch.parameters });
     const next = { ...obj.objectSettings };
     if (patch.walls !== undefined) {
@@ -9974,7 +9308,7 @@ export class Session {
     obj.sim = study;
   }
 
-  private async simSweep(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async simSweep(input: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!Array.isArray(input.variants)) return { ok: false, reason: SWEEP_REFUSAL };
     if (input.variants.length > SWEEP_CAP) return { ok: false, reason: SWEEP_REFUSAL };
     const patches: SweepPatch[] = [];
@@ -10026,7 +9360,7 @@ export class Session {
     return { ok: true, variants: rows, committed, ...(note ? { note } : {}) };
   }
 
-  private fileText(job: Job, now: Date): string {
+  fileText(job: Job, now: Date): string {
     const summary = this.summarize(job);
     const printer = this.printer();
     const filament = this.filament();
@@ -10047,10 +9381,6 @@ export class Session {
       filamentDiameter: filament.diameterMm,
     });
   }
-}
-
-export function meshHash(bytes: Uint8Array): string {
-  return fnv1aHex(bytes);
 }
 
 export { blendOf };
