@@ -944,7 +944,8 @@ export class Session {
   private runCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
     const opened = this.openGroupFor(name);
     const done = this.runOpenCall(name, args, meta, inPlan);
-    return opened ? done.then((value) => ({ ...value, groupOpened: opened })) : done;
+    // The spread drops the non-enumerable inline images (layer_image, render_view), so carry them over.
+    return opened ? done.then((value) => withImages({ ...value, groupOpened: opened }, imagesOf(value))) : done;
   }
 
   private runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
