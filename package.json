@@ -19,6 +19,7 @@
     "preview": "vite preview --port 43117",
     "shots": "playwright test",
     "tauri": "tauri",
+    "build:analyze": "node tools/ci/analyze-build.mjs",
     "build:mcp": "node tools/mcp/bundle.mjs"
   },
   "dependencies": {

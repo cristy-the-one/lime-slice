@@ -535,6 +535,9 @@ jobs:
       - name: Frontend build
         run: npx vite build
 
+      - name: First chunk size budget
+        run: node tools/ci/bundle-budget.mjs
+
   # The e2e specs split over four runners by time. Every shard builds the frontend
   # itself because `vite preview` serves dist/.
   smoke:
