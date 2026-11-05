@@ -81,9 +81,8 @@ import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "./layer-out.ts
 import { replyOffset } from "../src/bed-offset.ts";
 import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "./render.ts";
 import { imagesOf, pngImage, withImages, type InlineImage } from "./inline.ts";
-import { isSlug, listLibrary, olderVersions, pluginsDir, readPlugin } from "./plugins.ts";
-import { ingredientsDir, keptIngredient } from "./ingredients.ts";
-import { listLessons, listPresets, seenInPractice } from "./nuggets.ts";
+import { isSlug, olderVersions, pluginsDir, readPlugin } from "./plugins.ts";
+import { keptIngredient } from "./ingredients.ts";
 import { RecipeHost, recipeDataFile, recipeDataMissing, writeRecipeData } from "./recipe.ts";
 import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "./inspect.ts";
 import { applyPreset, blendOf, sessionSliceRequest, stlBytes } from "./request.ts";
@@ -91,15 +90,15 @@ import { shellGroups, takeGroups } from "../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "./shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../src/step-solids.ts";
 import { reviewGcode } from "./review.ts";
-import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "./guides.ts";
+import { guideByUri } from "./guides.ts";
 import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "./settings-rows.ts";
 import { closeCracks, edgeReport } from "../src/mesh-check.ts";
 import { notClosedReason } from "./step-guard.ts";
 import { settingsRangeError } from "./settings-check.ts";
-import { annotationsFor, EXPRESSION_TOOLS, OP_KINDS, OP_SUMMARY, OP_WORDS, opSchemaFor, toolByName, validateTool } from "./schema.ts";
+import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
-import { cleanOp, withBoxAnchor, COMPOSITE_KINDS, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
+import { cleanOp, withBoxAnchor, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, readVec3, type ExpandContext, type Piece } from "../src/modeling/compose.ts";
 import { typedPoint, typedView } from "../src/modeling/typed-view.ts";
 import { evaluateTable, expressionMentions, isPlainNumber, stepOutOfDate, withExprs } from "../src/modeling/params.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../src/interference.ts";
@@ -116,6 +115,7 @@ import { recipeMethods, recipeHandlers } from "./session/recipe.ts";
 import { pluginMethods, pluginHandlers } from "./session/plugin.ts";
 import { nuggetMethods, nuggetHandlers } from "./session/nugget.ts";
 import { fontsMethods } from "./session/fonts.ts";
+import { infoMethods, infoHandlers } from "./session/info.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -160,11 +160,11 @@ const HANDLERS: Record<string, ToolHandler> = {
   ...recipeHandlers,
   ...pluginHandlers,
   ...nuggetHandlers,
+  ...infoHandlers,
   solid_new: (s, input) => input.coupon !== undefined ? s.fitCouponNew(input) : s.solidNew(input),
   model_build: (s, input) => s.build(input),
   model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),
   model_define: (s, input) => s.defineTool(input),
-  session_info: (s) => s.sessionInfo(),
   project_open: (s, input) => s.projectOpen(String(input.path)),
   project_create: (s, input) => s.projectCreate(input),
   project_save: (s, input) => s.projectSave(String(input.name), input.ifExists === "refuse"),
@@ -221,7 +221,6 @@ const HANDLERS: Record<string, ToolHandler> = {
   calibration_apply: (s, input) => s.calibrationApply(input),
   blend_compare: (s, input) => s.blendCompare(input),
   blend_apply: (s, input) => s.blendApply(input),
-  guide: (s, input) => s.guide(input),
   sim_setup: (s, input) => s.simSetup(input),
   sim_run: (s, input) => s.simRun(input),
   sim_field: (s, input) => s.simField(input),
@@ -724,102 +723,6 @@ export class Session {
   dispatchNow(name: string, input: Record<string, unknown>, meta?: CallMeta): Record<string, unknown> | Promise<Record<string, unknown>> {
     const handler = Object.hasOwn(HANDLERS, name) ? HANDLERS[name] : undefined;
     return handler ? handler(this, input, meta) : this.model(name, input);
-  }
-
-  async sessionInfo(): Promise<Record<string, unknown>> {
-    let engine: string | null = null;
-    let occt = false;
-    let reason = "";
-    let where: { path: string; installed: boolean } | null = null;
-    try {
-      engine = await this.ask(this.engine.version());
-      occt = await this.ask(this.engine.occt());
-      where = (await this.ask(this.engine.where?.())) ?? null;
-    } catch (err) {
-      reason = err instanceof Error ? err.message : "The engine did not answer.";
-    }
-    const running = this.workJobs.find((row) => !row.done);
-    const assemblies = this.liveAssemblies();
-    return {
-      ok: true,
-      serverVersion: appVersion(),
-      engine,
-      ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
-      occt,
-      ...(reason ? { reason } : {}),
-      workspace: process.env.LIME_MCP_WORKSPACE ?? "",
-      ...(this.previousAutosave ? { autosave: this.previousAutosave } : {}),
-      ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
-      printer: this.printer().name,
-      filament: this.filament().name,
-      ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object) })) } : {}),
-      printerSend: false,
-      plugins: this.pluginsLine(),
-      nuggets: this.nuggetsLine(),
-      model: {
-        ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
-        composite: [...COMPOSITE_KINDS],
-        primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
-        // --- 3.1 F16. A limit per call, as the app's composite tools have it, not per history: one object's history
-        // passed 500 steps over several calls, which is fine, and maxSteps read as if it should have stopped there.
-        maxStepsPerCall: MAX_PIECES,
-        stepLimit: `One composite, batch, or build makes at most ${MAX_PIECES} kernel steps; the op that would pass that is refused like any other refusal. A history has no limit: split the work over several calls.`,
-        expressions: true,
-        guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
-      },
-    };
-  }
-
-  /** "Plugins: N in your library; M drafts in this session." for session_info. */
-  pluginsLine(): string {
-    let count = 0;
-    try {
-      count = listLibrary(pluginsDir()).length;
-    } catch {
-      count = 0;
-    }
-    const drafts = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0])).size;
-    return `Plugins: ${count} in your library (${pluginsDir()}); ${drafts} draft${drafts === 1 ? "" : "s"} in this session. nugget {action:"find", query} finds one.`;
-  }
-
-  /** --- I16. "Nuggets: 6 ingredients, 9 presets, 14 lessons." for session_info. */
-  nuggetsLine(): string {
-    let counts = [0, 0, 0];
-    try {
-      counts = [listLibrary(ingredientsDir(), "ingredient").length, listPresets().length, listLessons().length];
-    } catch {
-      counts = [0, 0, 0];
-    }
-    const say = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-    return `Nuggets: ${say(counts[0]!, "ingredient")}, ${say(counts[1]!, "preset")}, ${say(counts[2]!, "lesson")}.`;
-  }
-
-  /** The worked guides as a tool, for clients that do not read resources. */
-  guide(input: Record<string, unknown>): Record<string, unknown> {
-    if (typeof input.kind === "string") {
-      const kind = input.kind.trim();
-      const text = Object.hasOwn(KIND_GUIDES, kind) ? KIND_GUIDES[kind] : undefined;
-      const answer = text ? { ok: true, kind, text } : this.opGuide(kind);
-      // --- I15. "Seen in practice": the user's lessons about this kind, newest first. Data, never instructions.
-      const seen = answer.ok === true ? seenInPractice(kind) : [];
-      return seen.length ? { ...answer, data: { seenInPractice: seen } } : answer;
-    }
-    const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
-    if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
-    const found = guideByUri(`lime://guide/${topic}`);
-    if (!found) return { ok: false, reason: `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.` };
-    return { ok: true, topic, name: found.name, tools: found.tools, text: found.text };
-  }
-
-  /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */
-  opGuide(kind: string): Record<string, unknown> {
-    const schema = opSchemaFor(kind);
-    if (!schema) return { ok: false, reason: `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.` };
-    const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
-    const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
-    // --- Text with real fonts: the bundled fonts, one line each, and what a text refuses.
-    const fonts = kind === "text" ? { fonts: [...TEXT_FONT_LINES, ...TEXT_OWN_FONT_LINES, ...this.fonts.list().map((font) => `${font.name}: your font, in this project. Id ${font.id}${font.weight ? `, weights ${font.weight.min} to ${font.weight.max}` : ""}${font.restricted ? ". Its licence forbids embedding, so the project keeps only the outlines of the letters used" : ""}.`)], refusals: TEXT_REFUSALS } : {};
-    return { ok: true, kind, summary: OP_SUMMARY[kind], composite: isComposite(kind), schema, examples, ...fonts };
   }
 
   printer(): PrinterRecord {
@@ -7841,10 +7744,10 @@ export class Session {
   }
 }
 
-type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods;
+type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods);
+Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods);
 
 export { blendOf };
