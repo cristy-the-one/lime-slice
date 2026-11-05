@@ -9,6 +9,7 @@ import type { SeamDisk } from "../seam-paint";
 import { haptic } from "./haptics";
 import { pushToast } from "./toasts";
 import "./support-paint.css";
+import { html, setHtml } from "./html";
 
 export interface SeamPaintHooks {
   view(): { disks: readonly SeamDisk[]; hasMesh: boolean };
@@ -39,14 +40,14 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Paint seam");
   bar.hidden = true;
-  bar.innerHTML = `
+  setHtml(bar, html`
     <label class="pb-radius">
       <span class="scrub-label" data-scrub="field">Radius</span>
       <input id="seamRadius" data-brush-radius type="number" min="${BRUSH_R_MIN_MM}" max="${BRUSH_R_MAX_MM}" step="0.5" value="${BRUSH_R_DEFAULT_MM}" aria-label="Seam brush radius" />
     </label>
     <button type="button" class="btn" id="seamClear">Clear</button>
     <button type="button" class="btn" id="seamDone">Done</button>
-    <span class="pb-status" id="seamStatus" role="status"></span>`;
+    <span class="pb-status" id="seamStatus" role="status"></span>`);
   document.querySelector("#prepareBody")?.append(bar);
 
   const radiusInput = bar.querySelector<HTMLInputElement>("#seamRadius")!;

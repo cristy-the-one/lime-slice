@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type TreeMock } from "./model-tree-mock";
@@ -191,9 +192,9 @@ test("Apply writes no STEP; leaving Model writes the edited solid once, and save
   // One part is already listed, and the readout still says Volume, so neither marks the
   // file landing or the solid it opens. The row is replaced when the file is applied.
   await page.locator("#objectList .obj").evaluate((el) => el.setAttribute("data-seen", "before"));
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.locator("#projectFile").setInputFiles({ name: "edited.lime", mimeType: "application/json", buffer: saved });
-  await page.waitForFunction(() => !document.querySelector("#objectList .obj[data-seen=before]"));
+  await expect(page.locator("#objectList .obj[data-seen=before]")).toHaveCount(0);
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   const opens = calls.opens.length;
   await page.locator("#tabModel").click();

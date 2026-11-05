@@ -10,6 +10,7 @@ import { haptic } from "./haptics";
 import { pushToast } from "./toasts";
 import { chipAction, peekLine, scopeForGesture, selectionLabel, type CompactSelection } from "./compact/support-gesture";
 import "./support-edit.css";
+import { html, setHtml } from "./html";
 
 /** What the edit UI reads from the app each time it paints or picks. */
 export interface SupportEditView {
@@ -60,7 +61,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Edit supports");
   bar.hidden = true;
-  bar.innerHTML = `
+  setHtml(bar, html`
     <div class="se-scope" role="group" aria-label="Pick scope">
       <button type="button" data-scope="branch">${SCOPE_LABEL.branch}</button><button type="button" data-scope="tree">${SCOPE_LABEL.tree}</button>
     </div>
@@ -71,7 +72,7 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       <button class="btn" type="button" data-action="grow" aria-keyshortcuts="G"><span>Grow branches</span><kbd aria-hidden="true">G</kbd></button>
     </span>
     <button class="btn" type="button" data-action="regrow-selected" hidden>Regrow here</button>
-    <button class="btn" type="button" data-action="done">Done</button>`;
+    <button class="btn" type="button" data-action="done">Done</button>`);
   const scopeButtons = [...bar.querySelectorAll<HTMLButtonElement>("[data-scope]")];
   const readout = bar.querySelector<HTMLElement>(".se-readout")!;
   const deleteButton = bar.querySelector<HTMLButtonElement>('[data-action="delete"]')!;
@@ -257,10 +258,10 @@ export function mountSupportEdits(view3d: SliceView3d, hooks: SupportEditHooks) 
       }
       if (!v.treeSupports) body += `<p class="se-note">Tree supports are off.</p>`;
     }
-    const html = `<div class="se-head">${head}${tools}</div>${body}`;
-    if (html !== panelHtml) {
-      panelHtml = html;
-      panel.innerHTML = html;
+    const markup = `<div class="se-head">${head}${tools}</div>${body}`;
+    if (markup !== panelHtml) {
+      panelHtml = markup;
+      panel.innerHTML = markup;
     }
   }
 

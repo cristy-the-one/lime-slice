@@ -497,8 +497,9 @@ export function runCommand(id: string) {
       if (typed) saveSettingsProfile(typed);
       else if (selectedProfileId()) overwriteSettingsProfile(selectedProfileId());
       else {
-        const name = askProfileName("");
-        if (name) saveSettingsProfile(name);
+        void askProfileName("").then((name) => {
+          if (name) saveSettingsProfile(name);
+        });
       }
       return;
     }
@@ -509,8 +510,9 @@ export function runCommand(id: string) {
         return;
       }
       const current = document.querySelector<HTMLSelectElement>("#profilePick")?.selectedOptions[0]?.textContent ?? "";
-      const name = askProfileName(current === "Current" ? "" : current);
-      if (name) renameSettingsProfile(id, name);
+      void askProfileName(current === "Current" ? "" : current, id).then((name) => {
+        if (name) renameSettingsProfile(id, name);
+      });
       return;
     }
     case "profile-duplicate": {

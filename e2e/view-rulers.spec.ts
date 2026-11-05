@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { answerSheet } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
@@ -92,11 +93,11 @@ test("a stretched part reads each extent on its own axis", async ({ page }) => {
   const stage = page.locator("#prepareBody");
   await expect(dims(stage)).toHaveCount(3);
   // A part whose three sides differ tells the axes apart; a cube cannot.
-  // The cube is unsaved, so opening another sample asks before it replaces the plate.
-  page.once("dialog", (dialog) => void dialog.accept());
+  // The cube is unsaved, so opening another sample asks in the app's sheet before it replaces the plate.
   await page.locator("#fileMenu > summary").click();
   await page.locator("#samples > summary").click();
   await page.locator('[data-sample="thin_fin.stl"]').click();
+  await answerSheet(page, "Discard unsaved changes?");
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await expect(page.locator("#objectList .obj b")).toHaveText("thin_fin.stl");
   await expect.poll(async () => dims(stage).count()).toBe(3);
