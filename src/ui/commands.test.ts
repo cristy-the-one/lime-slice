@@ -1,4 +1,4 @@
-import { COMMANDS, fires, fuzzyScore, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
+import { COMMANDS, sheetGroups, contextOf, filterHelp, fires, fuzzyScore, groupsForStage, helpGroups, MOUSE_HINTS, paletteCommands, rankCommands, resolveKey, screensOf, shortcutOf, tipWithShortcut, type KeyContext, type KeyEventLike } from "./commands.ts";
 
 let failed = 0;
 
@@ -77,7 +77,8 @@ for (const helpOpen of bools) for (const typing of bools) for (const hasResult o
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
     for (const stage of ["prepare", "preview", "gcode", "model"] as const)
       for (const layout of ["desktop", "compact"] as const)
-        contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen: false, sketchFeature: false, sketchLoft: false, layout });
+        for (const [sketchOpen, sketchFeature, sketchLoft] of [[false, false, false], [true, false, false], [true, true, false], [true, true, true]] as const)
+          contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen, sketchFeature, sketchLoft, layout });
 const chords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const chord of chords) {
   for (const repeat of bools) {
@@ -128,7 +129,9 @@ eq("Enter applies a model edit, not from Prepare", [press("Enter"), press("Enter
 eq("a model letter does nothing in a field", press("Q", { stage: "model", typing: true }), null);
 eq("Esc clears a search before it cancels", press("Esc", { running: true, searching: true }), "search-clear");
 eq("Esc closes the sheet", press("Esc", { helpOpen: true, running: true }), "help-close");
-eq("? opens, then closes, the sheet", [press("?"), press("?", { helpOpen: true })], ["help", "help-close"]);
+eq("? opens, then closes, the sheet", [press("?"), press("?", { helpOpen: true })], ["help", "help-close-key"]);
+eq("? typed in the sheet's search stays text", press("?", { helpOpen: true, typing: true }), null);
+eq("Esc closes the sheet from its search box", press("Esc", { helpOpen: true, typing: true }), "help-close");
 eq("nothing else fires under the sheet", [press("1", { helpOpen: true }), press("Ctrl+S", { helpOpen: true }), press("M", { helpOpen: true })], [null, null, null]);
 eq("Ctrl+Enter slices", press("Ctrl+Enter"), "slice");
 eq("Ctrl+Enter slices from a field", press("Ctrl+Enter", { typing: true }), "slice");
@@ -375,7 +378,7 @@ eq("Shift+L in a sketch lofts", press("Shift+L", sketchCtx), "sketch-loft");
 eq("T in a sketch trims", press("T", sketchCtx), "sketch-trim");
 eq("L in a sketch is the line", press("L", sketchCtx), "sketch-line");
 eq("R in a sketch is the rectangle", press("R", sketchCtx), "sketch-rect");
-eq("R in a loft is smooth", press("R", { ...sketchCtx, sketchFeature: true, sketchLoft: true }), "sketch-smooth");
+eq("S in a loft is smooth", press("S", { ...sketchCtx, sketchFeature: true, sketchLoft: true }), "sketch-smooth");
 eq("M cycles the feature", press("M", { ...sketchCtx, sketchFeature: true }), "sketch-mode");
 eq("M does nothing with no feature", press("M", sketchCtx), null);
 eq("Ctrl+Z undoes the sketch", press("Ctrl+Z", sketchCtx), "sketch-undo");
@@ -396,6 +399,67 @@ eq(
   MOUSE_HINTS.filter((hint) => hint.gesture === "Shift+click").map((hint) => hint.label),
   ["Model: add or remove a face or edge", "Paint: a straight line from the last dab"],
 );
+
+// A chord that two commands share must belong to screens a person tells apart, and the sheet must say which. ------
+
+const byChord = new Map<string, typeof COMMANDS>();
+for (const command of COMMANDS) for (const chord of new Set(command.keys ?? [])) byChord.set(chord, [...(byChord.get(chord) ?? []), command]);
+for (const [chord, users] of byChord) {
+  for (let a = 0; a < users.length; a++) for (let b = a + 1; b < users.length; b++) {
+    const left = users[a]!;
+    const right = users[b]!;
+    const clash = screensOf(left).filter((screen) => screensOf(right).includes(screen));
+    check(`${chord}: ${left.id} and ${right.id} share no screen`, clash.length === 0, clash.join(","));
+  }
+}
+
+const sheetRows = helpGroups().flatMap((group) => group.entries);
+for (const [chord, users] of byChord) {
+  const shown = users.filter((command) => command.keys && command.show !== "none");
+  if (shown.length < 2) continue;
+  const contexts = shown.map((command) => sheetRows.find((row) => row.id === command.id)?.context ?? "");
+  check(`${chord}: every row on the sheet names its context`, contexts.every((context) => context !== ""), contexts.join(" | "));
+  check(`${chord}: the contexts on the sheet differ`, new Set(contexts).size === contexts.length, contexts.join(" | "));
+}
+eq("a chord used once has no context", sheetRows.find((row) => row.id === "slice")?.context, undefined);
+eq("Smooth loft has its own key", COMMANDS.find((command) => command.id === "sketch-smooth")?.keys, ["S"]);
+eq("R in a loft is nothing: Rectangle is a drawing tool", press("R", { ...sketchCtx, sketchFeature: true, sketchLoft: true }), null);
+eq("Rectangle is the only R in a sketch", COMMANDS.filter((command) => command.group === "Sketch" && command.keys?.includes("R")).map((command) => command.id), ["sketch-rect"]);
+eq("Redo carries its label and a context", sheetRows.find((row) => row.id === "redo"), { id: "redo", keys: ["Ctrl+Shift+Z", "Ctrl+Y"], label: "Redo", context: "Outside a sketch", keywords: "Ctrl+Shift+Z Ctrl+Y placement settings model again" });
+eq("Loft says Sketch beside Shift+L", [sheetRows.find((row) => row.id === "sketch-loft")?.context, sheetRows.find((row) => row.id === "model-chamfer")?.context], ["Sketch", "Model"]);
+eq("a stage list names its stages", contextOf({ id: "x", label: "x", group: "x", when: ["prepare", "preview"] }), "Prepare or Preview");
+eq("undo works outside a sketch only", [press("Ctrl+Z"), press("Ctrl+Z", sketchCtx)], ["undo", "sketch-undo"]);
+
+// The sheet's search and its folded groups. --------------------------------------------------------------------
+
+const groups = helpGroups();
+eq("a blank search keeps every group", filterHelp(groups, "  ").length, groups.length);
+const lofted = filterHelp(groups, "smooth loft");
+check("searching finds Smooth loft first", lofted[0]?.entries[0]?.id === "sketch-smooth", JSON.stringify(lofted.map((group) => group.entries.map((entry) => entry.id))));
+check("searching drops groups with no hit", lofted.every((group) => group.entries.length > 0) && lofted.length < groups.length);
+eq("searching by chord finds the row", filterHelp(groups, "Ctrl+Shift+Z").flatMap((group) => group.entries.map((entry) => entry.id)).includes("redo"), true);
+eq("searching by group name finds all its rows", filterHelp(groups, "Layers").find((group) => group.group === "Layers")?.entries.length, groups.find((group) => group.group === "Layers")?.entries.length);
+eq("nonsense finds nothing", filterHelp(groups, "xyzqq"), []);
+// Every row on the sheet, help-only commands and mouse gestures included, is found by a word of its label.
+const sheet = sheetGroups();
+const helpOnly = COMMANDS.filter((command) => command.show === "help" && command.keys);
+check("there are help-only commands to find", helpOnly.length > 0);
+for (const group of sheet) {
+  for (const entry of group.entries) {
+    const word = entry.label.split(/[^A-Za-z0-9]+/).filter((w) => w.length >= 3).sort((a, b) => b.length - a.length)[0] ?? entry.label;
+    const found = filterHelp(sheet, word).some((g) => g.entries.some((e) => e.id === entry.id));
+    check(`sheet search finds "${entry.label}" by "${word}"`, found);
+  }
+}
+check("the sheet has mouse rows", sheet.some((group) => group.group === "Mouse" && group.entries.length === MOUSE_HINTS.length));
+check("help-only commands are not in the palette", helpOnly.every((command) => !paletteCommands().includes(command)));
+eq("Prepare opens Plate and Tools", groupsForStage("prepare"), ["Plate", "Tools"]);
+eq("Preview opens Layers", groupsForStage("preview"), ["Layers"]);
+eq("G-code opens Slice", groupsForStage("gcode"), ["Slice"]);
+eq("Model opens Model, and Sketch inside a sketch", [groupsForStage("model"), groupsForStage("model", true)], [["Model"], ["Sketch"]]);
+for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+  for (const name of groupsForStage(stage, stage === "model")) check(`${stage} opens a real group (${name})`, groups.some((group) => group.group === name));
+}
 
 if (failed) {
   console.error(`${failed} failed`);

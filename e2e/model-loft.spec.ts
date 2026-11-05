@@ -166,7 +166,7 @@ test("a rectangle on the bed lofts to a circle 30 mm above, and History Edit reo
   await expect(canvas).toHaveAttribute("data-sketch-look", "0");
   await page.locator("[data-sketch-ruled]").click();
   await expect(canvas).toHaveAttribute("data-loft-ruled", "1");
-  await page.keyboard.press("R");
+  await page.keyboard.press("S");
   await expect(canvas).toHaveAttribute("data-loft-ruled", "0");
   await page.keyboard.press("M");
   await expect(canvas).toHaveAttribute("data-loft-mode", "new");

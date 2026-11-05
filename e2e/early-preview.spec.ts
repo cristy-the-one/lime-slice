@@ -1,9 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOnState, ORIGIN } from "../playwright.config";
 import fs from "node:fs";
 import path from "node:path";
 
 /** Auto-slice on, the app's default, so an edit re-slices by itself. */
-test.use({ storageState: { cookies: [], origins: [] } });
+test.use({ storageState: autoSliceOnState(ORIGIN) });
 
 const cube = JSON.parse(fs.readFileSync(path.resolve("e2e/fixtures/cube-speed.json"), "utf8"));
 
