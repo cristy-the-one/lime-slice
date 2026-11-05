@@ -14,3 +14,4 @@
 *.gcode
 /e2e/scratch/
 /e2e/zz-*
+/dist-analysis.json
