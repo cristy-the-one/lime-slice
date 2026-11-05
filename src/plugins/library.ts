@@ -285,9 +285,14 @@ export function presetsWithout(existing: string | null, name: string): string {
  * Why `name` cannot be a new preset for these values, ending with what to do, or null: a slug, and every value one
  * the plugin's declared ranges allow (D4, as `nugget save` checks it).
  */
-export function presetProblem(name: string, params: readonly PluginParamInfo[], values: Readonly<Record<string, FormValue>>): string | null {
+/** Why a preset cannot be called this, ending with what to type, or null: the name sheet checks it as the person types. */
+export function presetNameProblem(name: string): string | null {
   if (!PRESET_NAME.test(name)) return "A preset's name is lower-case letters, digits and dashes, for example pp-5mm-wall. Type one like that.";
-  return formProblem(params, values);
+  return null;
+}
+
+export function presetProblem(name: string, params: readonly PluginParamInfo[], values: Readonly<Record<string, FormValue>>): string | null {
+  return presetNameProblem(name) ?? formProblem(params, values);
 }
 
 /** Every declared value as the form holds it now (typed or default): what a preset keeps. */

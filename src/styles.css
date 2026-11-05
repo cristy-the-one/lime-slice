@@ -1324,6 +1324,17 @@ input.mh-plugin-control[readonly], select.mh-plugin-control:disabled {
 .mh-save-status[hidden] { display: none; }
 .mh-save-status.is-problem { color: var(--warn); }
 .mh-save-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+/* The question sheet (src/ui/ask-sheet.ts): confirm and prompt in the app's own look. */
+.ask-sheet { z-index: 80; }
+.ask-card { display: grid; gap: var(--space-2); width: min(440px, calc(100% - 32px)); }
+.ask-card .sheet-head { margin-bottom: 0; }
+.ask-card .sheet-head h2 { margin: 0; overflow-wrap: anywhere; }
+.ask-body { margin: 0; color: var(--text-dim); font-size: var(--fs-2); line-height: 1.45; overflow-wrap: anywhere; }
+.ask-body[hidden], .ask-field[hidden] { display: none; }
+.ask-field input[aria-invalid="true"]:not(:placeholder-shown) { border-color: var(--warn); }
+.ask-actions { margin-top: var(--space-2); }
+.btn.ask-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface-2)); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); font-weight: 600; }
+.btn.ask-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 22%, var(--surface-2)); border-color: var(--danger); }
 .mh-source-sub { margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--fs-1); }
 .mh-source {
   max-height: min(70vh, 640px);

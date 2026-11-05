@@ -10,6 +10,7 @@
  * only the fields `PrinterProfile` knows. Start and end G-code are spliced
  * into the exported file by the UI, and stay off the slice request.
  */
+import { escapeHtml, html, joinHtml, raw, type Html } from "./html.ts";
 import { coerceBelt, defaultBelt, type BeltSettings, type PrinterKind } from "../belt.ts";
 import { KLIPPER_NUMBERS, type KlipperLimits, type PrinterProfile } from "../profiles.ts";
 import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settings-rules.ts";
@@ -237,9 +238,9 @@ export function heatReadout(heat: Heat): string {
 }
 
 /** The cap warning, always in the markup so a temperature edit can fill or hide it in place. */
-export function heatNoteHtml(heat: Heat, filamentName: string, id: string): string {
+export function heatNoteHtml(heat: Heat, filamentName: string, id: string): Html {
   const lines = heatWarnings(heat, filamentName);
-  return `<div class="meta heat-note" id="${id}" role="status"${lines.length > 0 ? "" : " hidden"}>${lines.map(escapeHtml).join("<br>")}</div>`;
+  return html`<div class="meta heat-note" id="${id}" role="status"${lines.length > 0 ? "" : raw(" hidden")}>${joinHtml(lines.map((line) => html`${line}`), raw("<br>"))}</div>`;
 }
 
 export function nozzleKey(mm: number): string {
@@ -959,20 +960,16 @@ export function machineChipLabel(library: MachineLibrary): string {
 }
 
 /** The printer, filament, and nozzle pickers of the printer chip. `heat` is the print's resolved temperatures. */
-export function machinePickHtml(library: MachineLibrary, heat?: Heat): string {
+/** The printer chip's popover: printer, filament and nozzle. Printer and filament names are escaped by `html`. */
+export function machinePickHtml(library: MachineLibrary, heat?: Heat): Html {
   const picked = selection(library);
   const nozzles: number[] = [...NOZZLE_MM];
   if (!nozzles.some((size) => nozzleKey(size) === nozzleKey(library.nozzleMm))) nozzles.push(library.nozzleMm);
-  const printerOptions = library.printers
-    .map((printer) => `<option value="${escapeHtml(printer.id)}"${printer.id === library.printerId ? " selected" : ""}>${escapeHtml(printer.name)}</option>`)
-    .join("");
-  const filamentOptions = library.filaments
-    .map((filament) => `<option value="${escapeHtml(filament.id)}"${filament.id === library.filamentId ? " selected" : ""}>${escapeHtml(filament.name)}</option>`)
-    .join("");
-  const nozzleOptions = nozzles
-    .map((size) => `<option value="${nozzleKey(size)}"${nozzleKey(size) === nozzleKey(library.nozzleMm) ? " selected" : ""}>${nozzleKey(size)} mm</option>`)
-    .join("");
-  return `
+  const selected = (on: boolean) => (on ? raw(" selected") : "");
+  const printerOptions = library.printers.map((printer) => html`<option value="${printer.id}"${selected(printer.id === library.printerId)}>${printer.name}</option>`);
+  const filamentOptions = library.filaments.map((filament) => html`<option value="${filament.id}"${selected(filament.id === library.filamentId)}>${filament.name}</option>`);
+  const nozzleOptions = nozzles.map((size) => html`<option value="${nozzleKey(size)}"${selected(nozzleKey(size) === nozzleKey(library.nozzleMm))}>${nozzleKey(size)} mm</option>`);
+  return html`
     <label class="field">Printer
       <select id="machinePrinter" aria-label="Printer">${printerOptions}</select>
     </label>
@@ -1636,6 +1633,3 @@ function optionalPositive(value: unknown, fallback: number): number | null {
   return positive(value) ? value : null;
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
-}

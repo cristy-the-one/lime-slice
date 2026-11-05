@@ -232,3 +232,5 @@ src/recipe/picks.test.ts
 src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
 tools/ci/bump-only.test.mjs
+src/ui/html.test.ts
+src/ui/html-sinks.test.ts

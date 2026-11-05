@@ -8,6 +8,7 @@ import { BRUSH_R_DEFAULT_MM, BRUSH_R_MAX_MM, BRUSH_R_MIN_MM, paintCounts, tallyT
 import { haptic } from "./haptics";
 import { pushToast } from "./toasts";
 import "./support-paint.css";
+import { html, setHtml } from "./html";
 
 export interface SupportPaintHooks {
   /** The selected object's paint count, whether its supports print, and the shown result's tally. */
@@ -41,7 +42,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Paint supports");
   bar.hidden = true;
-  bar.innerHTML = `
+  setHtml(bar, html`
     <div class="pb-kind" role="group" aria-label="Brush">
       <button type="button" data-kind="enforce"><span class="pb-swatch" aria-hidden="true"></span>${KIND_LABEL.enforce}</button><button type="button" data-kind="block"><span class="pb-swatch" aria-hidden="true"></span>${KIND_LABEL.block}</button>
     </div>
@@ -51,7 +52,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
     </label>
     <button type="button" class="btn" id="paintClear">Clear</button>
     <button type="button" class="btn" id="paintDone">Done</button>
-    <span class="pb-status" id="paintStatus" role="status"></span>`;
+    <span class="pb-status" id="paintStatus" role="status"></span>`);
   document.querySelector("#prepareBody")?.append(bar);
 
   const radiusInput = bar.querySelector<HTMLInputElement>("#brushRadius")!;

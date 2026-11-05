@@ -5,6 +5,7 @@ import { setSettleOn } from "../bed-rest-pref";
 import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, removePlateObject, selectPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
+import { setHtml } from "../ui/html";
 import { isAlignRelation } from "../place-snap";
 import { commonVolume, requestModelCheck } from "./model";
 import { measureClashes } from "./assemblies.ts";
@@ -126,7 +127,7 @@ export function wireApp() {
         alignPick.to = value;
         (target as HTMLSelectElement).title = (target as HTMLSelectElement).selectedOptions[0]?.title || "Bed";
         const how = document.querySelector<HTMLSelectElement>("#alignHow");
-        if (how) how.innerHTML = alignHowHtml();
+        if (how) setHtml(how, alignHowHtml());
         if (how && isAlignRelation(how.value)) alignPick.how = how.value;
         fx.prepare.markAlignTarget(value === "bed" ? null : value);
       } else if (isAlignRelation(value)) {
@@ -231,8 +232,10 @@ export function wireApp() {
         pushToast("Choose a profile first.", "info");
         return;
       }
-      const name = askProfileName("");
-      if (name) renameSettingsProfile(id, name);
+      const current = document.querySelector<HTMLSelectElement>("#profilePick")?.selectedOptions[0]?.textContent ?? "";
+      void askProfileName(current === "Current" ? "" : current, id).then((name) => {
+        if (name) renameSettingsProfile(id, name);
+      });
       return;
     }
     if (t.id === "profileDuplicate") {

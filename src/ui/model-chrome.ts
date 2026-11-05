@@ -10,6 +10,7 @@ import type { Affine, ObjectFrame, PlaceFields } from "../model-space";
 import { setSettleOn, settleOn } from "../bed-rest-pref";
 import { isAlignRelation, type AlignRelation } from "../place-snap";
 import { alignHowHtml, modelAlignPick, modelAlignToHtml } from "../app/align-ui";
+import { setHtml } from "./html";
 import { paintGrabHint } from "../app/grab-hint";
 import { showLessonsFor } from "./lessons-note";
 import { endsText, type PickedPoint } from "../measure-points";
@@ -2171,8 +2172,8 @@ function paintAlignRow() {
   const key = `${targets}|${ways}`;
   if (key !== alignPainted) {
     alignPainted = key;
-    to.innerHTML = targets;
-    how.innerHTML = ways;
+    setHtml(to, targets);
+    setHtml(how, ways);
   }
   const none = others.length === 0;
   to.disabled = none;

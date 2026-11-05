@@ -19,6 +19,7 @@ import {
 import { haptic } from "./haptics";
 import { pushToast } from "./toasts";
 import "./support-paint.css";
+import { html, setHtml } from "./html";
 
 const STRIP_OFFSET_MAX_MM = 50;
 
@@ -65,7 +66,7 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   bar.setAttribute("role", "toolbar");
   bar.setAttribute("aria-label", "Reinforce");
   bar.hidden = true;
-  bar.innerHTML = `
+  setHtml(bar, html`
     <div class="pb-kind" id="reinforceMode" role="group" aria-label="Reinforce mode">
       <button type="button" data-reinforce-mode="brush" aria-pressed="true">Brush</button>
       <button type="button" data-reinforce-mode="edge" aria-pressed="false">Along edge</button>
@@ -100,7 +101,7 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
     <button type="button" class="btn" id="reinforceClear">Clear</button>
     <button type="button" class="btn" id="reinforceDone">Done</button>
     <div class="pb-regions" id="reinforceRegions" role="list" aria-label="Reinforcement regions"></div>
-    <span class="pb-status" id="reinforceStatus" role="status"></span>`;
+    <span class="pb-status" id="reinforceStatus" role="status"></span>`);
   document.querySelector("#prepareBody")?.append(bar);
 
   const modeGroup = bar.querySelector<HTMLElement>("#reinforceMode")!;
@@ -191,12 +192,12 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
       const row = document.createElement("div");
       row.className = "pb-region-row";
       row.setAttribute("role", "listitem");
-      row.innerHTML = `
+      setHtml(row, html`
         <button type="button" class="pb-region-select"></button>
         <span class="pb-region-end">Normal</span>
         <input type="range" class="pb-region-density" max="1" step="${REINFORCE_DENSITY_STEP}" aria-label="Region density" />
         <output class="pb-region-out"></output>
-        <button type="button" class="btn pb-region-del" aria-label="Delete region">Delete</button>`;
+        <button type="button" class="btn pb-region-del" aria-label="Delete region">Delete</button>`);
       regionsList.append(row);
     }
 

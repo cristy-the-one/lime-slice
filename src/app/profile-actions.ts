@@ -7,6 +7,7 @@ import { currentPreset, touch } from "./settings.ts";
 import { state } from "./state.ts";
 import { LEGACY_PRESETS_KEY, parseLegacyPresets, presetKeys } from "../presets.ts";
 import { pushToast } from "../ui/toasts.ts";
+import { askSheet } from "../ui/ask-sheet.ts";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel.ts";
 import {
   adoptPresets,
@@ -14,6 +15,7 @@ import {
   duplicateIn,
   importInto,
   parseSettingsProfile,
+  profileNameProblem,
   profileFileName,
   renameIn,
   saveInto,
@@ -150,10 +152,19 @@ export function typedProfileName(): string {
   return document.querySelector<HTMLInputElement>("#profileName")?.value.trim() ?? "";
 }
 
-export function askProfileName(fallback: string): string | null {
+/**
+ * The name typed in the More row, else one asked in the app's sheet, checked as the person types; null when they
+ * cancel. `renaming` is the id of the profile being renamed, so the sheet refuses another profile's name.
+ */
+export async function askProfileName(fallback: string, renaming?: string): Promise<string | null> {
   const typed = typedProfileName();
   if (typed) return typed;
-  const asked = window.prompt("Profile name", fallback);
-  const name = asked?.trim() ?? "";
+  const library = loadProfileLibrary();
+  const name = await askSheet({
+    title: renaming === undefined ? "Save settings profile" : "Rename settings profile",
+    body: renaming === undefined ? "A name for these slicing settings. A profile with the same name is replaced." : undefined,
+    confirmLabel: renaming === undefined ? "Save" : "Rename",
+    input: { label: "Profile name", value: fallback, placeholder: "Profile name", maxLength: 80, problem: (value) => profileNameProblem(library, value, renaming) },
+  });
   return name || null;
 }

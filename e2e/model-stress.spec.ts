@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -188,6 +189,7 @@ test("a saved desktop solve is drawn as sliced", async ({ page }) => {
   const unsaved = page.locator('[data-unsaved="discard"]');
   if (await unsaved.isVisible()) await unsaved.click();
   page.on("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.locator("#projectFile").setInputFiles({ name: "box.lime", mimeType: "application/json", buffer: saved });
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   await page.locator("#tabPrepare").click();

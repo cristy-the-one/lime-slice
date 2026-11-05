@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
+import { answerSheet, askSheet } from "./ask-sheet";
 import { pluginProject } from "./plugin-fixture";
 import { scriptedLibrary, scriptedRunner } from "./plugins-scripted";
 
@@ -72,8 +73,9 @@ test("the panel lists every kind of nugget, filters by kind, searches them all, 
   await card(page).locator('#modelPluginsMenu [data-act="reveal"]').click();
   await expect(readout(page)).toContainText("Showing ingredients/honeycomb.rs in");
   await card(page).locator("#modelPluginsMore").click();
-  page.once("dialog", (dialog) => void dialog.accept());
   await card(page).locator('#modelPluginsMenu [data-act="remove"]').click();
+  await expect(askSheet(page).locator(".ask-body")).toContainText("Recipes that import it stop building");
+  await answerSheet(page, "Remove the ingredient “Honeycomb cells”?");
   await expect(readout(page)).toContainText("Removed the ingredient “Honeycomb cells” (2 files).");
   expect(Object.keys((await store(page)).ingredients)).toEqual([]);
   const log = await page.evaluate(() => (window as unknown as { __libraryLog: { command: string; args: Record<string, unknown> }[] }).__libraryLog.map((row) => [row.command, row.args.id ?? null, row.args.kind ?? null]));
@@ -124,14 +126,33 @@ test("the form keeps its values as a preset, checked, and removes one", async ({
   await expect(save).toHaveAttribute("aria-disabled", "true");
   await expect(save).toHaveAttribute("data-reason", "Studs is 1 to 12. Type a value in that range.");
 
-  // A name that is not a slug is refused with the rule; a good one is kept with every value.
+  // The name sheet checks as the person types: a name that is not a slug says the rule and cannot be saved; Esc keeps
+  // nothing; a good one is kept with every value.
   await studs.fill("8");
   await expect(save).toHaveAttribute("aria-disabled", "false");
-  page.once("dialog", (dialog) => void dialog.accept("Eight Studs"));
   await save.click();
-  await expect(card(page).locator("#modelPluginsStatus")).toHaveText("A preset's name is lower-case letters, digits and dashes, for example pp-5mm-wall. Type one like that.");
-  page.once("dialog", (dialog) => void dialog.accept("eight-studs"));
+  const sheet = askSheet(page);
+  await expect(sheet).toBeVisible();
+  await expect(sheet).toHaveAttribute("role", "dialog");
+  await expect(sheet.locator("h2")).toHaveText("Save as preset");
+  const name = sheet.locator("#askSheetInput");
+  await expect(name).toBeFocused();
+  await name.fill("Eight Studs");
+  await expect(sheet.locator("#askSheetProblem")).toHaveText("A preset's name is lower-case letters, digits and dashes, for example pp-5mm-wall. Type one like that.");
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  await expect(sheet.locator('[data-ask="confirm"]')).toBeDisabled();
+  await page.screenshot({ path: `${shots}/sheet-preset-invalid-name.png` });
+  await name.press("Enter");
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toBeHidden();
+  await expect(save).toBeFocused();
+  expect(Object.keys(JSON.parse((await store(page)).presets["stud-row"]!))).toEqual(["dense"]);
   await save.click();
+  await name.fill("eight-studs");
+  await expect(sheet.locator("#askSheetProblem")).toBeHidden();
+  await name.press("Enter");
+  await expect(sheet).toBeHidden();
   await expect(card(page).locator("#modelPluginsStatus")).toContainText("Kept these values as the preset “eight-studs”.");
   await expect(card(page).locator("#modelPluginsPreset")).toHaveValue("eight-studs");
   await expect(studs).toHaveValue("8");
@@ -148,8 +169,8 @@ test("the form keeps its values as a preset, checked, and removes one", async ({
   await expect(studs).toHaveValue("8");
 
   // Remove preset asks first, then the library forgets it; the form keeps its values.
-  page.once("dialog", (dialog) => void dialog.accept());
   await card(page).locator("#modelPluginsRemovePreset").click();
+  await answerSheet(page, "Remove the preset “eight-studs”?");
   await expect(card(page).locator("#modelPluginsStatus")).toHaveText("Removed the preset “eight-studs”. The form keeps its values.");
   expect(Object.keys(JSON.parse((await store(page)).presets["stud-row"]!))).toEqual(["dense"]);
   await expect(studs).toHaveValue("8");

@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
+import { answerSheet, askSheet } from "./ask-sheet";
 import { BODY, pluginProject, SHA, type Doc } from "./plugin-fixture";
-import { FILE_OUTLINE, FILE_OUTLINE_BARE, scriptedLibrary, scriptedRunner, SHA_V4 } from "./plugins-scripted";
+import { FILE_NOTCH, FILE_OUTLINE, FILE_OUTLINE_BARE, scriptedLibrary, scriptedRunner, SHA_V4 } from "./plugins-scripted";
 
 /**
  * --- The Plugins panel (docs/plan-recipe-plugins.md D13, milestone 7). The library (a stand-in for the desktop
@@ -146,8 +147,23 @@ test("History offers Use v4 for a step built with v3, never by itself, and the m
   await card(page).locator('#modelPluginsMenu [data-act="reveal"]').click();
   await expect(readout(page)).toContainText("Showing corner-notch.rs in");
   await card(page).locator("#modelPluginsMore").click();
-  page.once("dialog", (dialog) => void dialog.accept());
+  // Remove asks in the app's sheet: Cancel keeps the plugin, Remove takes it and its older versions.
   await card(page).locator('#modelPluginsMenu [data-act="remove"]').click();
+  const sheet = askSheet(page);
+  await expect(sheet).toHaveAttribute("aria-modal", "true");
+  await expect(sheet.locator(".ask-body")).toHaveText("It and its older versions leave your library. Parts built with it keep their code in their project.");
+  await expect(sheet.locator('[data-ask="confirm"]')).toBeFocused();
+  // Tab stays in the sheet: Remove, Cancel, Remove.
+  await page.keyboard.press("Tab");
+  await expect(sheet.locator('[data-ask="cancel"]')).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(sheet.locator('[data-ask="confirm"]')).toBeFocused();
+  await page.screenshot({ path: `${shots}/sheet-remove-plugin.png` });
+  await answerSheet(page, "Remove “Corner notch”?", { cancel: true });
+  expect(Object.keys(await page.evaluate(() => (window as unknown as { __libraryStore: { files: Record<string, string> } }).__libraryStore.files))).toContain("corner-notch.rs");
+  await card(page).locator("#modelPluginsMore").click();
+  await card(page).locator('#modelPluginsMenu [data-act="remove"]').click();
+  await answerSheet(page, "Remove “Corner notch”?");
   await expect(readout(page)).toContainText("Removed “Corner notch” from your library (1 file).");
   await expect(card(page).locator(".pp-pick")).toHaveCount(2);
   const log = await page.evaluate(() => (window as unknown as { __libraryLog: { command: string; args: Record<string, unknown> }[] }).__libraryLog.map((row) => [row.command, row.args.id ?? null]));
@@ -280,4 +296,33 @@ test("a plugin that reads recipe data runs from the data it carries, and one kep
   await expect(card(page).locator("#modelPluginsStatus")).toContainText("This plugin reads recipe data shapes/outline, which was not kept with it.");
   await expect(card(page).locator("#modelPluginsStatus")).toContainText('nugget {action:"save", kind:"plugin", id, data:["shapes/outline"]}');
   await page.screenshot({ path: `${shots}/panel-data-missing.png` });
+});
+
+test("a plugin header with markup in its title, description, author and labels shows it as text", async ({ page }) => {
+  const evil = "<img src=x onerror=alert(1)>";
+  const hostile = FILE_NOTCH
+    .replace("//! plugin: corner-notch", "//! plugin: hostile-notch")
+    .replace("//! title: Corner notch", `//! title: ${evil} & "Co"`)
+    .replace("//! description: Square notches cut along one edge, for a clip.", `//! description: ${evil} it's <b>bold</b>`)
+    .replace("//! author: unknown", `//! author: ${evil}`)
+    .replace('"label":"Notches"', '"label":"<i>Notches</i>"')
+    .replace('"help":"How many notches along the edge."', '"help":"<script>alert(2)</script>"');
+  await pluginProject(page, { before: async (p) => { await scriptedLibrary(p, false, { "hostile-notch.rs": hostile }); await scriptedRunner(p); } });
+  const alerts: string[] = [];
+  page.on("dialog", (dialog) => { alerts.push(dialog.message()); void dialog.dismiss(); });
+  await openPanel(page);
+  const row = card(page).locator('.pp-pick[data-key="library:hostile-notch"]');
+  await expect(row.locator(".pp-title")).toHaveText(`${evil} & "Co"`);
+  await expect(row.locator(".pp-desc")).toHaveText(`${evil} it's <b>bold</b>`);
+  await expect(row.locator(".pp-by")).toHaveText(`By ${evil}`);
+  await row.click();
+  await expect(card(page).locator("#modelPluginsTitle")).toContainText(evil);
+  await expect(card(page).locator(".mh-plugin-field").first()).toContainText("<i>Notches</i>");
+  await card(page).locator("#modelPluginsMore").click();
+  await card(page).locator('#modelPluginsMenu [data-act="remove"]').click();
+  await expect(askSheet(page).locator("h2")).toHaveText(`Remove “${evil} & "Co"”?`);
+  await answerSheet(page, /^Remove/, { cancel: true });
+  // Nothing in any of it became an element: no img, script, b or i inside the card or the sheet.
+  expect(await page.locator("#modelPlugins img, #modelPlugins script, #modelPlugins b, #modelPlugins i, #askSheet img, #askSheet script").count()).toBe(0);
+  expect(alerts).toEqual([]);
 });

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
@@ -120,7 +121,7 @@ test("add, select, place, overlap, arrange, undo, and save a plate", async ({ pa
   await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
 
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.locator("#projectFile").setInputFiles({
     name: "plate.lime",
     mimeType: "application/json",

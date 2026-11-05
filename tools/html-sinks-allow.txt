@@ -1,0 +1,34 @@
+# Reviewed markup sinks: `innerHTML =` with a non-literal right side, or `insertAdjacentHTML`, that stay as they are.
+# src/ui/html-sinks.test.ts fails on any other one, and on a line here that no longer matches a sink.
+# Format: `<path> :: <the sink's line, trimmed>`. Write a reason above each entry. New markup that carries a name, a
+# file, a plugin header, MCP or engine text uses setHtml(el, html`…`) from src/ui/html.ts instead of a new line here.
+
+# The app shell: constants, plus the built-in screw and font lists (TEXT_FONTS, SCREWS), never user data.
+src/app/markup.ts :: root.innerHTML = `
+
+# The settings and results docks: composed of builders. The ones that carry names return `html` (the profile list,
+# the printer pick, the object list, the heat note); the rest escape every engine or file string with escapeHtml.
+src/app/settings.ts :: document.querySelector("#leftBody")!.innerHTML = `
+src/app/settings.ts :: document.querySelector("#right")!.innerHTML = `
+# Calibrate: constant labels and help text, escaped.
+src/app/settings.ts :: body.innerHTML = calibrateHtml();
+# The estimate: formatted numbers; the engine's velocity-cap sentence is escaped.
+src/app/settings.ts :: if (est) est.innerHTML = estimateHtml();
+# The banner rail: bannerLine escapes its text and label; the progress bar is numbers.
+src/app/settings.ts :: rail.innerHTML = bits.join("");
+# The blend's parameter table: setting labels and numbers.
+src/app/settings.ts :: if (node) node.innerHTML = paramTable(resolved(state.toughness, state.layerHeight));
+src/app/settings.ts :: if (node) node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+src/app/viewer.ts :: if (resolvedNode && state.blendKind === "byLayer") resolvedNode.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+src/app/viewer.ts :: if (node && state.blendKind === "byRegion") node.innerHTML = paramTable(resolved(currentWeight(), state.layerHeight));
+# The feature legend: built-in feature labels and numbers.
+src/app/viewer.ts :: legend.innerHTML = legendMarkup(previewFeatureRows(), (state.result?.estimate?.scarfedLoops ?? 0) > 0) || `<p class="fly-note">Slice to list the features.</p>`;
+# The layer readout: numbers; the engine's layer note is escaped.
+src/app/viewer.ts :: if (readout) readout.innerHTML = layerReadout();
+# Measure callouts: SVG of coordinates and formatted lengths, no text from elsewhere.
+src/measure-overlay.ts :: root.innerHTML = html;
+# The command palette and the shortcut sheet: built-in command labels and keys, escaped (lane C owns this file).
+src/ui/palette.ts :: list.innerHTML = shown.map((command, index) => {
+src/ui/palette.ts :: host.innerHTML = keys.join("") + mouse;
+# Support edits: edit kinds, counts and Z ranges from the engine's numbers.
+src/ui/support-edit-ui.ts :: panel.innerHTML = markup;

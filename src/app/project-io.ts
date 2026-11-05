@@ -119,7 +119,7 @@ export async function saveCurrentProject() {
 }
 
 export async function openProjectFile(file: File) {
-  if (!confirmDiscard()) return;
+  if (!(await confirmDiscard())) return;
   const parsed = await decodeProject(await file.text());
   if (!parsed.ok) {
     pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });

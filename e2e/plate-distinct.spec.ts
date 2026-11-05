@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import fs from "node:fs";
 import path from "node:path";
 import { meshKeyHex } from "../src/slice-action.ts";
@@ -99,7 +100,7 @@ test("add a different STL, then undo, save, and export both parts", async ({ pag
   expect(doc.objects?.map((obj) => obj.mesh.name)).toEqual(["calibration_cube_20mm.stl", "overhang_ledge.stl"]);
   expect(doc.objects![0]!.mesh.bytesBase64).not.toBe(doc.objects![1]!.mesh.bytesBase64);
 
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.locator("#projectFile").setInputFiles({
     name: "two-parts.lime",
     mimeType: "application/json",
@@ -278,7 +279,7 @@ test("a plain drop still replaces the plate", async ({ page }) => {
   await loadCube(page);
   await page.locator("#plateAddFile").setInputFiles("samples/overhang_ledge.stl");
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await dropFiles(page, [stl("bridge_span.stl"), stl("overhang_ledge.stl")], false);
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
   await expect(page.locator("[data-plate-id='part']")).toContainText("bridge_span.stl");
@@ -355,7 +356,7 @@ test("Shift+drop reads STEP at the chord on screen, and a late preview after rep
   const late = page.waitForRequest("**/api/mesh");
   await dropFiles(page, [{ name: "late.step", buffer: Buffer.from("ISO-10303-21;") }], true);
   await late;
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await dropFiles(page, [stl("bridge_span.stl")], false);
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
   await expect(page.locator("[data-plate-id='part']")).toContainText("bridge_span.stl");
@@ -376,7 +377,7 @@ test("File > Open still replaces the plate", async ({ page }) => {
   await loadCube(page);
   await page.locator("#plateAddFile").setInputFiles("samples/overhang_ledge.stl");
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.locator("#file").setInputFiles("samples/bridge_span.stl");
   await expect(page.locator("[data-plate-id]")).toHaveCount(1);
   await expect(page.locator("[data-plate-id='part']")).toContainText("bridge_span.stl");

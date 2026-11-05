@@ -17,6 +17,7 @@
  */
 import { closeModelCard, modelCardOpen, openModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
+import { askSheet, confirmSheet } from "./ask-sheet";
 import { blockedTip } from "../sketch/reasons";
 import type { PluginFileInfo, PluginParamInfo } from "../plugin-file";
 import { dataSize, elideData } from "../recipe/plugin-data";
@@ -31,6 +32,7 @@ import {
   pluginData,
   pluginIngredients,
   presetParams,
+  presetNameProblem,
   presetProblem,
   presetsText,
   presetsWithout,
@@ -1134,7 +1136,13 @@ async function ingredientAction(act: string) {
     } else if (act === "remove") {
       const users = ingredientUsers(library, row.id);
       const carried = users.length ? ` ${users.length === 1 ? "One plugin carries" : `${users.length} plugins carry`} a copy and keep building.` : "";
-      if (!window.confirm(`Remove the ingredient “${row.title}” and its older versions from your library? Recipes that import it stop building until it is kept again.${carried}`)) {
+      const sure = await confirmSheet({
+        title: `Remove the ingredient “${row.title}”?`,
+        body: `It and its older versions leave your library. Recipes that import it stop building until it is kept again.${carried}`,
+        confirmLabel: "Remove",
+        danger: true,
+      });
+      if (!sure) {
         paint();
         return;
       }
@@ -1161,7 +1169,12 @@ function presetBlocked(plugin: PanelPlugin): string | null {
 async function savePresetNow() {
   const plugin = current();
   if (!plugin || !host || presetBlocked(plugin)) return;
-  const name = window.prompt(`A name for these values of “${plugin.file.title}”: lower-case letters, digits and dashes.`, preset || "");
+  const name = await askSheet({
+    title: "Save as preset",
+    body: `A name for these values of “${plugin.file.title}”. Agents find the preset by this name.`,
+    confirmLabel: "Save",
+    input: { label: "Preset name", value: preset || "", placeholder: "pp-5mm-wall", maxLength: 48, problem: presetNameProblem },
+  });
   if (name === null) return;
   const trimmed = name.trim();
   const problem = presetProblem(trimmed, plugin.file.params, Object.fromEntries(values));
@@ -1171,7 +1184,7 @@ async function savePresetNow() {
     return;
   }
   const existing = library.presets.get(plugin.file.plugin)?.some((p) => p.name === trimmed);
-  if (existing && !window.confirm(`“${trimmed}” is already a preset of ${plugin.file.title}. Replace its values with these?`)) return;
+  if (existing && !(await confirmSheet({ title: `Replace the preset “${trimmed}”?`, body: `“${trimmed}” is already a preset of ${plugin.file.title}. Its values become these.`, confirmLabel: "Replace" }))) return;
   const io = await libraryIo();
   if (!io) {
     host.readout(LIBRARY_NEEDS_APP);
@@ -1197,7 +1210,7 @@ async function removePresetNow() {
   const plugin = current();
   if (!plugin || !host || !preset) return;
   const name = preset;
-  if (!window.confirm(`Remove the preset “${name}” of ${plugin.file.title}? Parts built with it keep their values.`)) return;
+  if (!(await confirmSheet({ title: `Remove the preset “${name}”?`, body: `It leaves ${plugin.file.title}'s presets. Parts built with it keep their values.`, confirmLabel: "Remove", danger: true }))) return;
   const io = await libraryIo();
   if (!io) {
     host.readout(LIBRARY_NEEDS_APP);
@@ -1294,7 +1307,13 @@ async function menuAction(act: string) {
       // D10: a project's plugin joins the library as an import: its author, hash and code shown first.
       said(await importPluginText(plugin.file.text, "project", "this project"));
     } else if (act === "remove") {
-      if (!window.confirm(`Remove “${plugin.file.title}” and its older versions from your library? Parts built with it keep their code in their project.`)) {
+      const sure = await confirmSheet({
+        title: `Remove “${plugin.file.title}”?`,
+        body: "It and its older versions leave your library. Parts built with it keep their code in their project.",
+        confirmLabel: "Remove",
+        danger: true,
+      });
+      if (!sure) {
         paint();
         return;
       }
