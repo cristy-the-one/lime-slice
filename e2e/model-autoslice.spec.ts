@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { autoSliceOnState, ORIGIN } from "../playwright.config";
 import fs from "node:fs";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree } from "./model-tree-mock";
@@ -90,7 +91,7 @@ const settle = (page: Page) => page.waitForTimeout(900);
 const chip = (page: Page) => page.locator("#modelPaused");
 
 test.describe("auto-slice on", () => {
-  test.use({ storageState: { cookies: [], origins: [] } });
+  test.use({ storageState: autoSliceOnState(ORIGIN) });
 
   test("edits in Model send no slice, and leaving sends exactly one", async ({ page }) => {
     const slices = await mockEngine(page);

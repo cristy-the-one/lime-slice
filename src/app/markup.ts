@@ -848,10 +848,13 @@ export function mountMarkup(root: HTMLElement) {
     </div>
   </div>
   <div id="help" class="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
-    <div class="sheet-card">
-      <h2 id="helpTitle">Shortcuts</h2>
-      <div id="helpShortcuts" class="help-body"></div>
-      <button class="btn" id="helpClose" type="button">Close</button>
+    <div class="sheet-card help-card">
+      <div class="sheet-head">
+        <h2 id="helpTitle">Shortcuts</h2>
+        <button class="btn" id="helpClose" type="button">Close</button>
+      </div>
+      <input id="helpSearch" class="help-search" type="search" placeholder="Search shortcuts" aria-label="Search shortcuts" autocomplete="off" />
+      <div id="helpShortcuts" class="help-body" role="region" aria-label="Shortcuts by group" tabindex="-1"></div>
     </div>
   </div>
 `;

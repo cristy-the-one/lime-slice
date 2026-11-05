@@ -589,7 +589,10 @@ export function setHelp(open: boolean) {
   state.help = open;
   const sheet = document.querySelector<HTMLElement>("#help")!;
   sheet.hidden = !open;
-  if (open) document.querySelector<HTMLButtonElement>("#helpClose")?.focus();
+  // The sheet resets to this workspace's groups and puts the cursor in its search box.
+  if (open) document.dispatchEvent(new CustomEvent("lime-help-opened"));
+  // A hidden search box must not keep the keyboard, or the next ? would be typed into it.
+  else if (sheet.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
 }
 
 /** By region is one plane across the plate: every object's box together, or the placed part's alone. */
