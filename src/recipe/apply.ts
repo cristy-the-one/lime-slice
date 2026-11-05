@@ -107,7 +107,7 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
   if (!target) return refuse("The plugin made no part. Change a value, then run it again.");
   if (out.done.object !== target.id) return refuse(`The plugin ended on ${out.done.object || "no part"}, not on ${target.name}, so nothing was kept. Run it on the part it makes or changes.`);
   const ids = runSteps(target);
-  if (ids.length === 0) return refuse("With these values the plugin changed nothing. Change a value, then run it again.");
+  if (ids.length === 0) return refuse(`The plugin changed nothing on ${target.name}. Check that ${target.name} is the kind of part this plugin works on (its description says what it needs), or change a value and run it again.`);
   if (!target.solid) return refuse("The solid the plugin built could not be read. Run it again.");
   const params = Object.fromEntries(Object.entries({ ...input.params, ...calls.picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"];
   const stamp: PluginStamp = { plugin: input.plugin.id, version: input.plugin.version, sha256: input.plugin.sha256, api: input.plugin.api, params, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, fingerprint: target.solid.fingerprint ?? null };

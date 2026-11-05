@@ -257,6 +257,10 @@ if (plain) {
   const out = await rebuildPluginStep({ part: { ...part, tree: latest }, run: run as never, body: broken, params: run.stamp!.params, context: run.stamp!.context, recipes: host, engine, env, runId: "deadbeef" });
   check("stud row: a panic is the reason, with its line", out.ok === false && /panicked at line \d+: no studs today/.test(out.reason), out);
   check("stud row: the failure names the steps to drop and the next free id", out.ok === false && out.dropFrom === latest.nextId && (out.nextId ?? 0) > latest.nextId, out);
+  // A run that changes nothing names the part and points at fit.
+  const idleBody = body.replace("for i in 0..n {", "for i in 0..0 {");
+  const idle = await runPluginFresh({ part: { ...part, tree: latest }, plugin: { id: "stud-row", version: 1, sha256: again.stamp!.sha256, api: again.stamp!.api }, body: idleBody, params: {}, context: again.stamp!.context, recipes: host, engine, env, runId: "0d0d0d0d" });
+  check("stud row: a run that changes nothing names the part and points at fit", idle.ok === false && idle.reason.includes(`changed nothing on ${part.name}`) && /kind of part this plugin works on/.test(idle.reason), idle);
   const back = await engine.tree(latest.key, latest.current, { call: "goto", key: latest.key, node: latest.current, chordMm: 0.05 });
   check("stud row: the part's step still builds after the failure", typeof back.error !== "string" && !!solidView(back), back.error);
 }
