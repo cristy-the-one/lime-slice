@@ -63,7 +63,9 @@ const bridge = session.bridgeSnapshot();
 const plate = (bridge?.plate as { sim?: { beam?: { lengthMm?: number } } }[] | undefined) ?? [];
 check("the bridge snapshot carries sim", plate.some((row) => row.sim?.beam?.lengthMm === 100));
 
-const beforeHistory = JSON.stringify(await session.call("model_history", { object: String(setup.object) }));
+// groupOpened is a one-time note on the call that opened the model group, not part of the history.
+const historyOf = async () => { const { groupOpened: _opened, ...rest } = await session.call("model_history", { object: String(setup.object) }); return JSON.stringify(rest); };
+const beforeHistory = await historyOf();
 const beforePlate = JSON.stringify(session.bridgeSnapshot()?.plate);
 
 const run = await session.call("sim_run", {});
@@ -106,7 +108,7 @@ const swept = await session.call("sim_sweep", {
 const sweptRows = swept.variants as { met?: boolean; reason?: string; slicerSeconds?: number }[] | undefined;
 check("a row inside its limits is met, rough or not", swept.ok === true && swept.committed === false && sweptRows?.[0]?.met === true && sweptRows[0]?.reason === "", JSON.stringify(sweptRows?.[0] ?? swept.reason));
 check("a sweep does not slice by default", sweptRows?.[0]?.slicerSeconds === undefined);
-const afterHistory = JSON.stringify(await session.call("model_history", { object: String(setup.object) }));
+const afterHistory = await historyOf();
 check("commit false leaves the history cursor", beforeHistory === afterHistory);
 check("commit false leaves the saved study", JSON.stringify(session.bridgeSnapshot()?.plate) === beforePlate);
 

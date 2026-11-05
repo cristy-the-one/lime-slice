@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, olderFile, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { plateClick } from "./plate-rows";
@@ -454,7 +455,7 @@ test("a save survives the plate being replaced while a piece's root STEP is stil
   const download = page.waitForEvent("download");
   await page.keyboard.press("Control+s");
   await expect.poll(() => holding).toBe(1);
-  page.once("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await page.locator("#file").setInputFiles({ name: "other.step", mimeType: "model/step", buffer: FILE });
   await expect(page.locator("#objectList .obj")).toHaveCount(1);
   release();

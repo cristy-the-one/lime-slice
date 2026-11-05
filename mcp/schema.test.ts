@@ -115,7 +115,11 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // Sharing (docs/plan-recipe-plugins.md milestone 8): nugget's export action, from naming a plugin file or a project's
 // copy to import, and replace for a name clash add 31 to a list at 17,152, in the model group. One export or import call
 // moves a plugin with its ingredients, data, presets and lessons, in place of pasting its source into a chat.
-const TOTAL_BUDGET = 17_190;
+// Tool groups are the default now (docs/mcp-server.md), so the budget that matters to a client is FIRST_LIST_BUDGET, the
+// list it reads every session; TOTAL_BUDGET is the flat list (LIME_MCP_TOOL_GROUPS=0) and every group opened, raised from
+// 17,190 to measured + 3% (17,187 -> 17,700) so a tool added to a group does not need a budget edit; the first list is tight.
+const TOTAL_BUDGET = 17_700;
+const FIRST_LIST_BUDGET = 4_600;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
@@ -124,6 +128,8 @@ const total = tokens(listed);
 console.log(`tools/list is ${Buffer.byteLength(listed)} bytes, ~${total} tokens, ${listedTools(null).length} tools`);
 const largest = sized.slice(0, 10).map((row) => `${row.name} ~${row.tokens}`).join(", ");
 check(`tools/list fits ${TOTAL_BUDGET} tokens${total > TOTAL_BUDGET ? ` (it is ~${total}; largest: ${largest})` : ""}`, total <= TOTAL_BUDGET);
+const firstTokens = tokens(core);
+check(`the first tools/list (groups on, none opened) fits ${FIRST_LIST_BUDGET} tokens${firstTokens > FIRST_LIST_BUDGET ? ` (it is ~${firstTokens})` : ""}`, firstTokens <= FIRST_LIST_BUDGET);
 const grouped = Object.values(TOOL_GROUPS).flatMap((row) => row.tools);
 check("every grouped tool is a tool, in one group", grouped.every((name) => names.has(name)) && new Set(grouped).size === grouped.length);
 check("groups off lists every tool but tools_enable and the unlisted ones", listedTools(null).length === TOOLS.length - 1 - UNLISTED_TOOLS.size && !listedTools(null).some((tool) => UNLISTED_TOOLS.has(tool.name)) &&!listedTools(null).some((tool) => tool.name === "tools_enable"));

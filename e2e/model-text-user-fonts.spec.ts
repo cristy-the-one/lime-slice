@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { acceptSheets } from "./ask-sheet";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -307,6 +308,7 @@ test("a variable font has a weight field instead of Bold, and the step and Edit 
 test("a restricted font says so, the project keeps only its letters, and they come back when it opens", async ({ page }) => {
   const tree = await openModel(page);
   page.on("dialog", (dialog) => void dialog.accept());
+  await acceptSheets(page);
   await openText(page);
   await addFont(page, "closed.ttf", RESTRICTED);
   const sentence = "‘Closed Mono Regular’ does not allow embedding, so this project keeps only the outlines of the letters you use.";
@@ -334,6 +336,8 @@ test("a restricted font says so, the project keeps only its letters, and they co
   await loadPlate(page);
   const before = tree.of("textFontAdd").length;
   await page.locator("#projectFile").setInputFiles({ name: "lettered.lime", mimeType: "application/json", buffer: saved });
+  // A discard question, if the reloaded plate asks one, is taken by acceptSheets before this assertion.
+  await expect(page.locator("#askSheet:not([hidden])")).toHaveCount(0);
   await expect.poll(() => tree.of("textFontAdd").length).toBe(before + 1);
   const given = Buffer.from(String(tree.of("textFontAdd").at(-1)!.dataB64), "base64");
   expect(given.equals(body), "the engine is given the project's record, whole").toBe(true);

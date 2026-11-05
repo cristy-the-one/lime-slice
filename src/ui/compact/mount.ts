@@ -5,6 +5,7 @@ import { saveCurrentProject } from "../../app/project-io";
 import { engineMode, pickModelFile, pickProjectFile, saveGcode, saveLayoutChoice, type LayoutChoice } from "../../platform";
 import { currentApiTarget } from "../api-base";
 import { haptic } from "../haptics";
+import { html, setHtml } from "../html";
 import { moveDetent, sheetHeight, snapDetent, type Detent } from "./sheet";
 import { mountCompactTouch } from "./touch";
 import "./compact.css";
@@ -563,7 +564,7 @@ function refresh() {
   const file = document.querySelector("#compactFile");
   const name = document.querySelector(".obj b")?.textContent?.trim();
   const meta = document.querySelector(".obj span")?.textContent?.trim();
-  if (file) file.innerHTML = `<b>${escape(name || "No mesh")}</b><span>${escape(meta || "")}</span>`;
+  if (file) setHtml(file, html`<b>${name || "No mesh"}</b><span>${meta || ""}</span>`);
   const engine = document.querySelector<HTMLElement>("#engineLink");
   const card = document.querySelector<HTMLElement>("#compactEngine");
   const engineMeta = document.querySelector("#compactEngineMeta");
@@ -606,8 +607,4 @@ function refresh() {
   const gear = document.querySelector<HTMLSelectElement>("#layoutChoice");
   const compactChoice = document.querySelector<HTMLSelectElement>("#layoutChoiceCompact");
   if (gear && compactChoice && compactChoice.value !== gear.value) compactChoice.value = gear.value;
-}
-
-function escape(value: string) {
-  return value.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]!);
 }

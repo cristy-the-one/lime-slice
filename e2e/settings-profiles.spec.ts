@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { DEFAULT_PRESET } from "../src/presets.ts";
 import { canvasShare } from "../src/ui/compact/viewport-share.ts";
+import { askSheet } from "./ask-sheet";
 
 async function quiet(page: Page) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
@@ -108,4 +109,60 @@ test.describe("compact profile picker", () => {
     await expect(page.locator("#profilePick")).toHaveAttribute("aria-label", "Settings profile");
     await expect(page.locator("#profileSave")).toBeVisible();
   });
+});
+
+test("Rename asks for the name in the app's sheet, refuses another profile's name as it is typed, and a name with markup stays text", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  const evil = `<img src=x onerror=alert(1)> & "Co"`;
+  for (const name of ["Alpha", evil]) {
+    await openMore(page);
+    await page.locator("#profileName").fill(name);
+    await page.locator("#profileSave").click();
+    await expect(page.locator("#profilePick option", { hasText: name })).toHaveCount(1);
+  }
+  // The list shows the name as text: nothing in it became an element.
+  expect(await page.locator("#left img, #profilePick img").count()).toBe(0);
+  await page.locator("#profilePick").selectOption({ label: evil });
+  await openMore(page);
+  await page.locator("#profileName").fill("");
+  await page.locator("#profileRename").click();
+  const sheet = askSheet(page);
+  await expect(sheet.locator("h2")).toHaveText("Rename settings profile");
+  const input = sheet.locator("#askSheetInput");
+  await expect(input).toHaveValue(evil);
+  await expect(input).toBeFocused();
+  await input.fill("Alpha");
+  await expect(sheet.locator("#askSheetProblem")).toHaveText("A profile named Alpha already exists.");
+  await expect(sheet.locator('[data-ask="confirm"]')).toBeDisabled();
+  await input.press("Enter");
+  await expect(sheet).toBeVisible();
+  await input.fill("");
+  await expect(sheet.locator("#askSheetProblem")).toHaveText("Name the profile first.");
+  await input.fill("Beta");
+  await expect(sheet.locator("#askSheetProblem")).toBeHidden();
+  await input.press("Enter");
+  await expect(sheet).toBeHidden();
+  await expect(page.locator("#profilePick option", { hasText: "Beta" })).toHaveCount(1);
+  await expect(page.locator("#profilePick option", { hasText: "Alpha" })).toHaveCount(1);
+  await expect(page.locator("#profilePick option", { hasText: evil })).toHaveCount(0);
+});
+
+test("settings profile Duplicate uses the typed name, and without one makes a copy", async ({ page }) => {
+  await quiet(page);
+  await page.goto("/");
+  await openMore(page);
+  await page.locator("#profileName").fill("Base");
+  await page.locator("#profileSave").click();
+  await expect(page.locator("#profilePick option", { hasText: "Base" })).toHaveCount(1);
+  await page.locator("#profilePick").selectOption({ label: "Base" });
+  await openMore(page);
+  await page.locator("#profileName").fill("Fast draft");
+  await page.locator("#profileDuplicate").click();
+  await expect(page.locator("#profilePick option", { hasText: "Fast draft" })).toHaveCount(1);
+  await expect(page.locator("#profilePick option", { hasText: "Base copy" })).toHaveCount(0);
+  await page.locator("#profilePick").selectOption({ label: "Base" });
+  await page.locator("#profileName").fill("");
+  await page.locator("#profileDuplicate").click();
+  await expect(page.locator("#profilePick option", { hasText: "Base copy" })).toHaveCount(1);
 });

@@ -12,6 +12,7 @@ import type { TransitionOp } from "../model-tree";
 import { CUT_LIP_ONLY, FIND_LABEL, PICK_EDGE, STRAIGHT_ONLY, TRANSITION_MAX_DEG, TRANSITION_SKIN_CARD, caseName, cardAimed, chainClick, edgesLine, cardCase, cardFromTransition, degreeSpan, findingSummary, fixOp, fixText, fixableEdges, foundWords, newTransitionCard, sameTransitionCard, transitionAngleLimit, transitionCardRefusal, transitionFix, transitionFromCard, transitionSkinWarns, transitionSource, transitionStaleBy, type Finding, type TransitionCard, type TransitionCase, type TransitionPose, type TransitionRow, SLICE_CHECK_NONE, seenText, sliceCheckSummary, sliceOnlyText } from "../model-transition";
 import { closeModelCard, modelCardOpen, openModelCard, refreshModelCard } from "./model-chrome";
 import { pushToast } from "./toasts";
+import { html, setHtml } from "./html";
 
 const CARD_ID = "transition";
 export const TRANSITION_TITLE = "Print transition";
@@ -76,7 +77,7 @@ export function mountTransitionCard(next: TransitionHost) {
   document.addEventListener("click", (ev) => {
     if (ev.target instanceof Element && ev.target.closest("#modelMenuTransition")) openTransitionCard();
   });
-  body.innerHTML = `
+  setHtml(body, html`
     <section class="tc-find" aria-label="Edges that start in the air">
       <button class="btn tc-find-run" type="button" id="modelTransFind" data-tip="List the edges of this solid whose first rows would stand on nothing in this pose, each with a fix. Nothing is sliced.">${FIND_LABEL}</button>
       <p class="model-note" id="modelTransFindStatus" role="status" hidden></p>
@@ -126,7 +127,7 @@ export function mountTransitionCard(next: TransitionHost) {
       </dl>
       <p class="model-note" id="modelTransStatus" role="status" hidden></p>
       <p class="model-note is-warn" id="modelTransSkin" role="status" hidden>${TRANSITION_SKIN_CARD}</p>
-    </section>`;
+    </section>`);
   body.addEventListener("click", onClick);
   body.addEventListener("input", onInput);
   body.addEventListener("change", onInput);

@@ -571,6 +571,7 @@ table.stages tr.total td { border-top: 1px solid var(--line); padding-top: 3px; 
 canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 .setting.hidden { display: none; }
 .profile-more, .machine-more { position: relative; }
+.machine-more[open] { grid-column: 1 / -1; }
 .machine-more > summary { list-style: none; }
 .machine-more > summary::-webkit-details-marker { display: none; }
 .machine-more .profile-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
@@ -606,12 +607,22 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; }
 .unsaved-card p { margin: 0 0 var(--space-4); color: var(--text-dim); }
 .unsaved-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .project-title { font-size: var(--fs-2); color: var(--muted); max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.help-body { columns: 2 300px; column-gap: var(--space-5); margin-bottom: var(--space-3); }
-.help-group { break-inside: avoid; margin-bottom: 14px; }
-.help-group h3 { margin: 0 0 var(--space-1); font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.help-group ul { list-style: none; margin: 0; padding: 0; }
-.help-group li { display: grid; grid-template-columns: 10.5rem 1fr; gap: var(--space-3); align-items: baseline; margin: 3px 0; }
+.help-card { display: flex; flex-direction: column; width: min(860px, calc(100% - 32px)); overflow: hidden; }
+.help-card .sheet-head { flex: none; }
+.help-search { flex: none; width: 100%; margin-bottom: var(--space-3); }
+.help-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; columns: 2 300px; column-gap: var(--space-5); padding-right: var(--space-1); }
+.help-group { break-inside: avoid; margin-bottom: var(--space-2); }
+.help-group > summary { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; list-style: none; padding: 2px 0; }
+.help-group > summary::-webkit-details-marker { display: none; }
+.help-group > summary::before { content: "\25B8"; color: var(--muted); font-size: var(--fs-1); width: 1em; }
+.help-group[open] > summary::before { content: "\25BE"; }
+.help-group h3 { margin: 0; font-size: var(--fs-1); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.help-count { font-size: var(--fs-1); color: var(--muted); }
+.help-group ul { list-style: none; margin: var(--space-1) 0 var(--space-2); padding: 0; }
+.help-group li { display: grid; grid-template-columns: 11.5rem 1fr; gap: var(--space-3); align-items: baseline; margin: 3px 0; }
 .help-keys { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.help-ctx { color: var(--muted); font-size: var(--fs-1); }
+.help-empty { margin: var(--space-3) 0; color: var(--muted); column-span: all; }
 .help-group kbd { white-space: nowrap; }
 kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-dim); font: 500 var(--fs-1) / 1.35 var(--font-mono); }
 #prepareBody, #previewBody, #modelBody { position: relative; }
@@ -1324,6 +1335,17 @@ input.mh-plugin-control[readonly], select.mh-plugin-control:disabled {
 .mh-save-status[hidden] { display: none; }
 .mh-save-status.is-problem { color: var(--warn); }
 .mh-save-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+/* The question sheet (src/ui/ask-sheet.ts): confirm and prompt in the app's own look. */
+.ask-sheet { z-index: 80; }
+.ask-card { display: grid; gap: var(--space-2); width: min(440px, calc(100% - 32px)); }
+.ask-card .sheet-head { margin-bottom: 0; }
+.ask-card .sheet-head h2 { margin: 0; overflow-wrap: anywhere; }
+.ask-body { margin: 0; color: var(--text-dim); font-size: var(--fs-2); line-height: 1.45; overflow-wrap: anywhere; }
+.ask-body[hidden], .ask-field[hidden] { display: none; }
+.ask-field input[aria-invalid="true"]:not(:placeholder-shown) { border-color: var(--warn); }
+.ask-actions { margin-top: var(--space-2); }
+.btn.ask-danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--surface-2)); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); font-weight: 600; }
+.btn.ask-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 22%, var(--surface-2)); border-color: var(--danger); }
 .mh-source-sub { margin: 0 0 var(--space-2); color: var(--text-dim); font-size: var(--fs-1); }
 .mh-source {
   max-height: min(70vh, 640px);

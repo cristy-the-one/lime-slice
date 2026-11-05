@@ -18,6 +18,7 @@ import {
   fileFromSelection,
   importInto,
   machineFileName,
+  newPrinterFrom,
   parseMachineFile,
   saveActive,
   savePrinterName,
@@ -354,13 +355,31 @@ export function saveMachine(name: string): boolean {
   return true;
 }
 
-export function duplicateMachine(): boolean {
-  const next = duplicateActive(loadMachineLibrary(), newMachineId(), newMachineId());
+/** Copy the active printer. The typed name names the copy; without one it is "<name> copy". */
+export function duplicateMachine(name = typedMachineName()): boolean {
+  const next = duplicateActive(loadMachineLibrary(), newMachineId(), newMachineId(), name);
   if (typeof next === "string") {
     pushToast(next, "info");
     return false;
   }
   commitSwitch(next);
+  const made = selection(next)?.printer.name ?? "";
+  const asked = name.trim();
+  pushToast(`Copied the printer as "${made}" and selected it.${asked && made !== asked ? ` "${asked}" was taken.` : ""}`, "info");
+  return true;
+}
+
+/** Add a printer with this name, selected, started from the active printer (a flat-bed one when that is a belt). */
+export function newMachinePrinter(name: string): boolean {
+  const made = newPrinterFrom(loadMachineLibrary(), name, newMachineId());
+  if (typeof made === "string") {
+    pushToast(made, "info");
+    return false;
+  }
+  commitSwitch(made.library);
+  const asked = name.trim();
+  const start = made.flattened ? `The active printer is a belt, so it started from the flat-bed "${made.from}".` : `It started from "${made.from}".`;
+  pushToast(`Created the printer "${made.name}" and selected it.${made.name !== asked ? ` "${asked}" was taken.` : ""} ${start} Set its bed size, firmware and G-code in Edit printer.`, "info");
   return true;
 }
 

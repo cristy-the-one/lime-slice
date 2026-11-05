@@ -2102,8 +2102,8 @@ export function mountSketch(host: SketchHost): { sync(): void } {
     }
     if (sweep?.round) options.append(...roundControls(sweep.round));
     if (loft) {
-      const ruled = textButton(loft.ruled ? "Ruled (R)" : "Smooth (R)", { sketchRuled: loft.ruled ? "1" : "0" });
-      ruled.dataset.tip = "R toggles smooth and ruled.";
+      const ruled = textButton(loft.ruled ? "Ruled (S)" : "Smooth (S)", { sketchRuled: loft.ruled ? "1" : "0" });
+      ruled.dataset.tip = "S toggles smooth and ruled.";
       ruled.title = ruled.dataset.tip;
       options.append(ruled);
     }

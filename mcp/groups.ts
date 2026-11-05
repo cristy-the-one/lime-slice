@@ -1,7 +1,8 @@
 /**
- * Tool groups, opt-in with LIME_MCP_TOOL_GROUPS=1. tools/list then sends the core tools (what the slice guide and a
- * first look need) and tools_enable; tools_enable {groups} adds a group and the server sends
- * notifications/tools/list_changed. Without the variable every tool is listed, as before.
+ * Tool groups, on by default; LIME_MCP_TOOL_GROUPS=0 lists every tool. tools/list sends the core tools (what the slice
+ * guide and a first look need) and tools_enable; tools_enable {groups} adds a group and the server sends
+ * notifications/tools/list_changed. A call to a tool of a closed group opens the group and runs, so a client that does
+ * not re-read the list can still reach it (directly, or through plan_run).
  */
 
 export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
@@ -38,9 +39,21 @@ export function groupOf(tool: string): string | null {
   return GROUP_OF.get(tool) ?? null;
 }
 
-/** Whether this server starts with only the core tools listed. */
+/** Whether this server starts with only the core tools listed: always, unless LIME_MCP_TOOL_GROUPS=0. */
 export function groupsOptedIn(): boolean {
-  return process.env.LIME_MCP_TOOL_GROUPS === "1";
+  return process.env.LIME_MCP_TOOL_GROUPS !== "0";
 }
 
-export const TOOLS_ENABLE_HELP = `Add tool groups to the tool list; the server then sends tools/list_changed. Groups: ${Object.entries(TOOL_GROUPS).map(([group, row]) => `${group} (${row.holds})`).join("; ")}.`;
+/** Short names of what each group holds, so the opener's description says which group a tool is in. */
+const GROUP_TOOLS_SHORT: Record<string, string> = {
+  model: "solid_new, model_apply/probe/build/commit, faces_find, edges_find, section, measure, recipe_run, nugget, model history",
+  paint: "paint_supports, paint_seam, reinforce_add, paint_list, paint_clear",
+  supports: "support_trees, support_edit",
+  plate: "object_duplicate, plate_arrange, object_split_shells, plate_print_order, range_add, modifier_add, overrides",
+  layers: "layer_summary/detail/paths/image, gcode_read, layer actions",
+  calibration: "calibration_tower/apply, blend_compare/apply",
+  machines: "machine_load/get/set/save, profile_save",
+  stress: "sim_setup/run/field/sweep/cancel",
+};
+
+export const TOOLS_ENABLE_HELP = `Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: ${Object.keys(TOOL_GROUPS).map((group) => `${group} (${GROUP_TOOLS_SHORT[group]})`).join("; ")}. schemas:true returns the opened tools' schemas.`;

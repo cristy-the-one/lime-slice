@@ -18,7 +18,7 @@ sources:
 
 `TOOLS` in `mcp/schema.ts` has 91 tools. `groupOf` in `mcp/groups.ts` returns null for a core tool and a group name otherwise. Descriptions below are the `description` strings from `TOOLS`, copied as written.[^schema] [^groups]
 
-`listedTools` sends every tool except `tools_enable` when groups are off. With `LIME_MCP_TOOL_GROUPS=1`, it sends the core tools, `tools_enable`, and the tools of each enabled group. A call to a tool whose group is not enabled is refused.[^schema] [^groups]
+`listedTools` sends every tool except `tools_enable` when groups are off (`LIME_MCP_TOOL_GROUPS=0`). By default it sends the core tools, `tools_enable`, and the tools of each enabled group. A call to a tool whose group is not enabled opens the group and runs.[^schema] [^groups]
 
 No tool name contains "send". Printer upload is a desktop command. See [GUI and MCP parity](gui-parity.md).
 
@@ -134,7 +134,7 @@ Run up to 25 tool calls in order, in one call. Each step is checked and applied 
 
 ### tools_enable
 
-Add tool groups to the tool list; the server then sends tools/list_changed. Groups: model (solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, history, commit, STEP export, measure); paint (support, seam, and reinforcement paint); supports (the sliced support trees: read and prune); plate (more plate work: duplicate, arrange, split shells, print order, height ranges, modifiers, overrides); layers (the sliced layers and G-code in detail, and layer actions); calibration (calibration towers and blends); machines (printer and filament records: load, read, set, save, profiles); stress (stress studies: set up, solve, read a field, sweep variants).
+Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: model (solid_new, model_apply/probe/build/commit, faces_find, edges_find, section, measure, recipe_run, nugget, model history); paint (paint_supports, paint_seam, reinforce_add, paint_list, paint_clear); supports (support_trees, support_edit); plate (object_duplicate, plate_arrange, object_split_shells, plate_print_order, range_add, modifier_add, overrides); layers (layer_summary/detail/paths/image, gcode_read, layer actions); calibration (calibration_tower/apply, blend_compare/apply); machines (machine_load/get/set/save, profile_save); stress (sim_setup/run/field/sweep/cancel). schemas:true returns the opened tools' schemas.
 
 ## Group model
 

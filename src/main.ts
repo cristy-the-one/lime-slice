@@ -4,6 +4,8 @@ import { mountLayerTip } from "./ui/layer-tip";
 import { mountKeys } from "./ui/keys";
 import { fillHelpShortcuts, mountPalette, mountStageTabs } from "./ui/palette";
 import { applyStoredLevel, mountShell, syncEmptyState } from "./ui/shell";
+import { startStage } from "./ui/first-run";
+import { storedSettingsLevel } from "./ui/settings-panel";
 import { mountCompact } from "./ui/compact/mount";
 import { mountConnection } from "./ui/connection";
 import { mountPlatform } from "./platform";
@@ -215,6 +217,9 @@ mountStageTabs();
 fillHelpShortcuts(document.querySelector("#helpShortcuts")!);
 mountLayerTip();
 document.addEventListener("lime-open-help", () => setHelp(true));
+// A first run (no saved settings level) with nothing on the plate opens Prepare, where a model is added. The markup
+// starts on Preview, which is what a returning launch keeps.
+if (startStage(storedSettingsLevel(), !!state.mesh) === "prepare") setStage("prepare");
 syncEmptyState(!!state.mesh);
 resize();
 void probe();

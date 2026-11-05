@@ -41,7 +41,7 @@ export async function loadNamed(name: string) {
 }
 
 export async function adoptBytes(name: string, bytes: ArrayBuffer) {
-  if (!session.projectRestoring && !confirmDiscard()) return;
+  if (!session.projectRestoring && !(await confirmDiscard())) return;
   session.meshEpoch += 1;
   session.chosenZ = null;
   if (!session.projectRestoring) {
