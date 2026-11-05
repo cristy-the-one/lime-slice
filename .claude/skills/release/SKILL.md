@@ -31,6 +31,8 @@ Then:
 - `git grep -n 'OLD.VERSION' -- ':!docs/plan-*'` should show only historical mentions.
 - Leave `src-tauri/Cargo.toml` alone if it shows only a line-ending change: `git checkout -- src-tauri/Cargo.toml`.
 
+`node tools/ci/bump-only.mjs origin/main HEAD` should print `true` for a standalone bump. CI's `what changed` job runs the same script: a bump-only PR (and its merge to main) runs only `what changed` and `version check`, and every other job, macOS included, is skipped. That fast lane is for a standalone bump PR. When the bump rides on the last feature PR, as the owner usually wants, the PR has code changes and runs the full CI as before. Any extra edit beyond the version lines (a dependency version, another README line) makes it `false` and the full CI runs.
+
 Commit "Bump the app to X.Y.Z". Open a PR titled "Lime Slice X.Y.Z". Its body lists the PRs since the last tag, one line each in user terms. Then land it with the **land-pr** skill.
 
 ## 2. Tag, once the bump PR is on main and the owner asked for it
