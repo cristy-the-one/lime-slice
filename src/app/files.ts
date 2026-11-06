@@ -244,7 +244,7 @@ function paintPlaceFields() {
   const cx = ((bounds.min[0] + bounds.max[0]) / 2).toFixed(1);
   const cy = ((bounds.min[1] + bounds.max[1]) / 2).toFixed(1);
   const row = document.querySelector<HTMLElement>("#placeXY");
-  if (row) row.dataset.bedZ = bounds.min[2].toFixed(1);
+  if (row) row.dataset.bedZ = bounds.min[2].toFixed(1).replace(/^-0\.0$/, "0.0");
   for (const [id, value] of [["placeX", cx], ["placeY", cy]] as const) {
     const input = document.querySelector<HTMLInputElement>(`#${id}`);
     if (input && document.activeElement !== input) input.value = value;
