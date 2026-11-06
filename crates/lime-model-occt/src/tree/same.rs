@@ -1,6 +1,12 @@
 //! Whether an incoming op asks for what a stored node already built.
 
-use super::*;
+use serde_json::Value;
+use std::collections::HashSet;
+
+use super::EDGE_MATCH_MM;
+use super::joints::keep_built;
+use super::ops::{EdgePick, EdgeRef, FacePick, FaceRef, Op};
+use super::partition::PartitionCut;
 
 /// Whether `incoming` asks for the op `stored` already is. A stored edge matches an index pick by
 /// index and a reference by midpoint and length, since a rebuild may have renumbered it.

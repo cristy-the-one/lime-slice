@@ -9,19 +9,14 @@
 //! Every call holds the store lock from start to end, so the kernel never sees one solid from two
 //! threads.
 
-use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
-use std::ffi::{CStr, CString};
-use std::fmt::Write as _;
-use std::os::raw::{c_char, c_int};
-use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::ffi::CStr;
+use std::os::raw::c_int;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 
 mod build;
 mod doc;
@@ -54,13 +49,10 @@ use ffi::*;
 pub use fit_coupon::*;
 pub use group::*;
 pub use joints::*;
-use k1::*;
 pub use ops::*;
 use outcome::*;
 pub use partition::*;
 use request::*;
-use resolve::*;
-use same::*;
 use shape::*;
 pub use step_solids::*;
 

@@ -1,4 +1,12 @@
-use super::*;
+use super::fill_lines::scan_through;
+use super::infill::clip_infill;
+use super::open_order::serpentine;
+use super::scarf::polyline_len;
+use super::seams::dist2;
+use super::{extrusion, Extrusion, PathKind};
+use crate::poly::{loop_bounds, offset_loops, point_in_loop, resolve_nonzero, signed_area, Loop};
+use crate::strategy::ResolvedStrategy;
+use crate::support::Disk;
 
 /// One chord through a support patch the grid spacing skipped.
 pub(super) fn support_spine(region: &[Loop]) -> Vec<Vec<[f64; 2]>> {

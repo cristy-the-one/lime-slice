@@ -1,4 +1,7 @@
-use super::*;
+use super::outline::Outline;
+use super::seams::dist2;
+use crate::poly::Loop;
+use std::collections::HashMap;
 
 pub(super) fn serpentine(segments: Vec<Vec<[f64; 2]>>, solid: &[Loop]) -> Vec<Vec<[f64; 2]>> {
     chain_ends(segments, 4.0, Some(solid))
@@ -200,7 +203,13 @@ pub(super) fn order_open(paths: Vec<Vec<[f64; 2]>>, solid: &[Loop]) -> Vec<Vec<[
 #[cfg(test)]
 mod order_open_tests {
     use super::*;
+    use crate::poly::Loop;
     use crate::strategy::{classicize, pure, StrategyId};
+    use crate::strategy::{InfillPattern, ResolvedStrategy};
+    use crate::toolpath::fill_lines::gyroid;
+    use crate::toolpath::infill::{build_infill, clip_infill};
+    use crate::toolpath::seams::dist2;
+    use crate::toolpath::PathFeatures;
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]

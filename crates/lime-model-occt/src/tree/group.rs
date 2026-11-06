@@ -1,6 +1,17 @@
 //! Groups of steps (A1/D20) and recipe lattices: the time budget, `build_group`, `build_combined` and their helpers.
 
-use super::*;
+use serde_json::{json, Value};
+use std::cell::Cell;
+use std::os::raw::{c_char, c_int};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use super::build::{build, BuildFail, Built};
+use super::ffi::{lime_tree_combine, lime_tree_extrude_cells, lime_tree_set_deadline, RawShape};
+use super::k1::{encode_loops, extent_flags};
+use super::ops::{BooleanOp, EdgePick, Op};
+use super::resolve::{resolve, Steps};
+use super::shape::{take_text, Shape};
 
 /// --- D4. How long a new group (an Apply or a probe) may build before it stops at the next step. Every tree
 /// shares one store lock, so a group of hundreds of Booleans on a large part would hold up every other part.

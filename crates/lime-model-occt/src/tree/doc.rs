@@ -1,6 +1,22 @@
 //! One document of the store: its nodes, which solids are held, and rebuilding a node from its nearest kept ancestor.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use super::{
+    rebuilt_differently,
+    root_placement,
+    stamp_faces,
+    Doc,
+    Node,
+    NodeId,
+    PATH_PIN_EVERY,
+    ROOT,
+};
+use super::build::{build, ToolSolid};
+use super::ops::Op;
+use super::outcome::Failure;
+use super::resolve::{resolve, Steps};
+use super::shape::Shape;
 
 impl Doc {
     pub(super) fn new(root: Shape, used: u64) -> Doc {

@@ -1,4 +1,6 @@
-use super::*;
+use super::seams::dist2;
+use super::{Extrusion, FanRole, PathKind, Slowdown};
+use crate::poly::{in_solid, Loop};
 
 /// Flow, feed, and fan a bridge uses when the request asks. `None` on a field
 /// keeps that field where overhang splitting already put it.
@@ -299,6 +301,7 @@ pub(super) fn point_seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 mod bridge_tests {
     use super::*;
     use crate::strategy::{pure, StrategyId};
+    use crate::toolpath::{extrusion, CapFeed, Extrusion, FanRole, PathKind, Slowdown};
 
     fn square(x0: f64, x1: f64) -> Vec<[f64; 2]> {
         vec![[x0, 0.0], [x1, 0.0], [x1, 10.0], [x0, 10.0]]

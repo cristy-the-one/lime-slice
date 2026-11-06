@@ -1,4 +1,8 @@
-use super::*;
+use super::layout::TRAVEL_WIN_MM;
+use super::nearest::dist_mm;
+use super::seams::{dist2, edge_start, nearest_seam, orient_path};
+use super::{Extrusion, Seam};
+use std::collections::HashMap;
 
 pub(super) fn stripe_orders(paths: &[Extrusion]) -> Vec<Vec<usize>> {
     let n = paths.len();

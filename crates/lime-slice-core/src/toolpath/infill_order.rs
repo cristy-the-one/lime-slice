@@ -1,4 +1,15 @@
-use super::*;
+use super::layout::{LEGACY_TRAVEL, TRAVEL_WIN_MM};
+use super::nearest::{approach_grid, dist_mm, legacy_nn_indices, order_nearest, ApproachGrid};
+use super::polish::{
+    apply_order, build_dirs, geom_closed, oriented_ends, polish_order, stripe_orders, walk_cost,
+};
+use super::scarf::ScarfParams;
+use super::tour::{
+    apply_flips, consider, hilbert_curve, hilbert_order, island_order, islands, nn_order, Choice,
+    Tour,
+};
+use super::{Extrusion, PathKind};
+use std::sync::atomic::Ordering;
 
 /// One run of a travel group in an island, in plan order, with what ordering
 /// it reads from the paths alone.

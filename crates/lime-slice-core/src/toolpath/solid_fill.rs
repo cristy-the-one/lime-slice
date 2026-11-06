@@ -1,4 +1,20 @@
-use super::*;
+use super::bridges::point_seg_dist;
+use super::fill_lines::{horizontal_chords, rot, rotate_loops};
+use super::infill::clip_infill;
+use super::island_order::island_loops;
+use super::outline::Outline;
+use super::seams::dist2;
+use super::void_fill::{
+    bead_cover, closed_len, net_area, ring_spine, sliver_spine, SKIN_SLIVER_MM2,
+};
+use super::walls::{infill_kind, min_bead};
+use super::{extrusion, Extrusion, PathKind, ShellBand};
+use crate::poly::{
+    boolean_diff, boolean_intersect, drop_slivers, loop_bounds, loops_from_paths, offset_loops,
+    offset_paths, paths_from_loops, resolve_nonzero, Loop,
+};
+use crate::strategy::ResolvedStrategy;
+use std::collections::BTreeSet;
 
 /// The direction rows run in a solid island on a layer. Every row ends in a
 /// turn, and Klipper takes a turn at the speed its junction deviation allows,
@@ -563,7 +579,15 @@ pub(super) fn monotonic_fill(
 #[cfg(test)]
 mod solid_row_tests {
     use super::*;
+    use crate::poly::Loop;
     use crate::strategy::{pure, StrategyId};
+    use crate::toolpath::fill_lines::{concentric_fill, rot};
+    use crate::toolpath::fuzzy::hypot2;
+    use crate::toolpath::infill::build_infill;
+    use crate::toolpath::scarf::polyline_len;
+    use crate::toolpath::seams::dist2;
+    use crate::toolpath::walls::plan_region;
+    use crate::toolpath::{Extrusion, PathFeatures, PathKind, Skin};
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
     fn rectangle(w: f64, h: f64) -> Vec<Loop> {

@@ -1,6 +1,7 @@
 //! Reading the named solids of a STEP file, for the stateless `step_solids` calls.
 
-use super::*;
+use super::{lock, temp_step};
+use super::shape::Shape;
 
 /// --- Split to print (D12). The solids of a STEP file with their product names, each checked as a partition's piece, in
 /// the file's order (see `named_solids_of`).
