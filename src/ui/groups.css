@@ -504,3 +504,13 @@ table.params th:first-child, table.params td:first-child { text-align: left; fon
 .subgroup > summary:focus-visible { outline-offset: -2px; }
 .subgroup-sum { font-weight: 400; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .subgroup-body { padding-bottom: var(--space-2); }
+
+/* The eye in Prepare's Objects list: hides the part in the 3D view only; it is still sliced and printed. It sits in the row's corner, so the buttons keep their room. */
+#objectList .obj-row:has(.obj-eye) { position: relative; }
+#objectList .obj-row:has(.obj-eye) .obj-select { padding-right: 38px; }
+#objectList .obj-eye { position: absolute; top: 4px; right: 4px; width: 28px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+#objectList .obj-eye[aria-pressed="true"] { color: var(--text-faint); }
+#objectList .obj-eye:disabled { opacity: 0.4; cursor: default; }
+.obj-row[data-hidden="true"] .obj-select { opacity: 0.5; }
+.obj-hidden-note { font-family: inherit; font-size: var(--fs-1); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.obj-hidden-note .btn { height: 22px; padding: 0 var(--space-2); font-size: var(--fs-1); flex: none; }

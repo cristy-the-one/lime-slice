@@ -1,7 +1,8 @@
 /** Select, duplicate, remove, and arrange plate objects. Adding a file is `addMeshBytes`. Pose tools keep editing the selection. */
 import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObject } from "../plate.ts";
 import { fx } from "./fx.ts";
-import { place } from "./files.ts";
+import { place, syncPlateView } from "./files.ts";
+import { isHidden, isolate, setHidden, showAll } from "../model-hidden.ts";
 import { flushEdit, noteEdit } from "./history.ts";
 import { loadModel, modelApi, withModel } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
@@ -13,7 +14,7 @@ import { sequentialClearance } from "../settings-rules.ts";
 import type { Bounds } from "../mesh-place.ts";
 import { alignDelta, bedBox, type AlignRelation } from "../place-snap.ts";
 import { nudgePlacement } from "./files.ts";
-import { renderChrome } from "./settings.ts";
+import { refreshObjectList, renderChrome } from "./settings.ts";
 
 /** An exact copy of the selected object: same mesh, pose, paint, and overrides. In model space it sits beside the original. */
 export function duplicatePlateObject() {
@@ -117,6 +118,29 @@ export function selectPlateObject(id: string) {
   place();
   flushEdit();
   modelApi()?.followSelection();
+}
+
+/**
+ * The eye in the Objects list: hide or show one object in the 3D view (`only`: show just this one, or all again). The
+ * selected object is always shown. A view choice: the plate, the slice and the export are untouched.
+ */
+export function togglePlateHidden(id: string, only: boolean) {
+  const ids = state.plate.objects.map((obj) => obj.id).filter((other) => other !== state.plate.selectedId);
+  if (!ids.includes(id)) return;
+  if (only) isolate(id, ids);
+  else setHidden(id, !isHidden(id));
+  hiddenChanged();
+}
+
+export function showAllPlateObjects() {
+  showAll();
+  hiddenChanged();
+}
+
+function hiddenChanged() {
+  syncPlateView();
+  refreshObjectList();
+  if (state.stage === "model") fx.refreshModelContext?.();
 }
 
 /** Frame the named solid in the view on screen: the plate, or model space in Model. Selection, when it changes, is the only undo step. */
