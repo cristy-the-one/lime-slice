@@ -22,6 +22,7 @@ import { stepOutOfDate, withExprs } from "../../src/modeling/params.ts";
 import { isFeatureTool } from "../../src/model-features.ts";
 import { CHORD, NAME_LIMIT, type PlateObject, UNKNOWN_OBJECT, firstAfter, stableKey, typedExprs } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /**
  * model_apply. A plain op needs a passed probe, or `probe: true` to check it here first. A composite op (pattern,
@@ -29,7 +30,7 @@ import type { Session } from "../session.ts";
  */
 async function applyTool(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const anchored = this.anchored(obj, input.op as Record<string, unknown>);
-  if ("reason" in anchored) return { ok: false, reason: anchored.reason };
+  if ("reason" in anchored) return refuse("bad-anchor", anchored.reason);
   const raw = anchored.op;
   const texts = this.pendingTexts;
   this.pendingTexts = [];
@@ -124,11 +125,11 @@ function plainLinks(this: Session, obj: PlateObject, raw: Record<string, unknown
 
 async function apply(this: Session, obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
   const toolReason = await this.openJoinTool(raw);
-  if (toolReason) return { ok: false, reason: toolReason };
+  if (toolReason) return refuse("needs-solid-tool", toolReason);
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const baked = this.bake(obj, raw);
-  if ("reason" in baked) return { ok: false, reason: baked.reason };
+  if ("reason" in baked) return refuse("bad-op", baked.reason);
   const done = await this.applyBaked(obj, tree, baked, raw);
   const label = raw && typeof raw === "object" ? (raw as { label?: unknown }).label : undefined;
   if (done.ok === true && typeof label === "string" && label.trim()) {
@@ -143,10 +144,10 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   if (baked.op.kind === "partition") return this.applyPartition(obj, tree, baked.op, baked.typed, budgetMs);
   if (baked.op.kind === "split") {
     const note = this.splitCheck(obj, baked.op);
-    if (note.bad) return { ok: false, reason: note.text };
+    if (note.bad) return refuse("does-not-fit", note.text);
   }
   const key = probeKey(String(tree.current), baked.op);
-  if (!obj.probes.has(key)) return { ok: false, reason: "Probe this edit first, or pass probe: true. It was not applied." };
+  if (!obj.probes.has(key)) return refuse("not-probed", "Probe this edit first, or pass probe: true. It was not applied.", undefined, NEXT.probe);
   const [reserved, node] = reserveId(tree);
   obj.tree = reserved;
   const keep = baked.op.kind === "split" ? this.splitKeep(raw) : "both";
@@ -162,7 +163,7 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   if (typeof reply.error === "string" && reply.error) {
     // --- A9. The kernel's failedStep is the piece inside a group, counting from 1. ---
     const failedStep = Number.isInteger(reply.failedStep) ? { failedStep: reply.failedStep as number } : {};
-    return { ok: false, reason: plainModelError(reply.error, baked.op.kind), ...failedStep };
+    return { ok: false, code: "kernel-refused", reason: plainModelError(reply.error, baked.op.kind), ...failedStep };
   }
   const stored = storedOp(baked.op, reply);
   obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored), fingerprint: null });
@@ -174,7 +175,7 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   const guarded = baked.op.kind === "group" ? null : stepGuard(baked.op, prior, obj.solid, typedPoseOf(obj));
   if (guarded) {
     await this.takeBack(obj, tree.current, node);
-    return { ok: false, ...guarded };
+    return { ok: false, code: "step-guard", ...guarded };
   }
   const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
   if (leftPlate) await this.followJoins(obj);
@@ -253,7 +254,7 @@ function pieceOf(this: Session, obj: PlateObject, raw: Record<string, unknown>):
  */
 async function applyMany(this: Session, obj: PlateObject, raws: Record<string, unknown>[], options: { label?: string; onError?: unknown; keep?: boolean; offset?: number; start?: number; texts?: readonly unknown[] }): Promise<Record<string, unknown>> {
   const opened = await this.opened(obj);
-  if ("reason" in opened) return { ok: false, reason: opened.reason };
+  if ("reason" in opened) return refuse("model-unavailable", opened.reason);
   const mode = options.onError === "stop" || options.onError === "skip" ? options.onError : "rollback";
   const start = options.start ?? opened.current;
   const offset = options.offset ?? 0;
@@ -286,16 +287,16 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
       await this.gotoNode(obj, start);
       if (obj.tree?.nodes.has(nodes[0]!)) this.drop(obj, nodes[0]!);
     }
-    return result({ ok: false, applied: 0, rolledBack: true, cancelled: true, reason: "The call was cancelled, so the whole run was taken back. The part and its history are as they were before it.", node: nodeHandle(start) });
+    return result(refuse("cancelled", "The call was cancelled, so the whole run was taken back. The part and its history are as they were before it.", { applied: 0, rolledBack: true, cancelled: true, node: nodeHandle(start) }));
   };
   const fail = async (failed: Record<string, unknown>): Promise<Record<string, unknown>> => {
     if (mode === "rollback" && nodes.length > 0) {
       if (obj.treeStale && obj.tree?.nodes.has(start)) obj.tree = jumped(obj.tree, start);
       await this.gotoNode(obj, start);
       if (obj.tree && !options.keep) this.drop(obj, nodes[0]!);
-      return result({ ok: false, applied: 0, rolledBack: true, failed, node: nodeHandle(start) });
+      return result({ ok: false, code: "build-failed", applied: 0, rolledBack: true, failed, node: nodeHandle(start) });
     }
-    return result({ ok: false, applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) });
+    return result({ ok: false, code: "build-failed", applied: nodes.length, failed, ...(nodes.length ? { node: nodeHandle(nodes[nodes.length - 1]!) } : {}) });
   };
   for (let index = 0; index < raws.length; index += 1) {
     if (meta?.signal?.aborted) return cancelled();
@@ -313,7 +314,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     const raw = this.withFaceIndex(obj, anchored.op);
     const ownNodes: number[] = [];
     // One op's refusal: the run ends, or with skip the op's own steps go and the run carries on.
-    const refuse = async (failed: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+    const endRun = async (failed: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
       const row = { index: index + offset, ...(label ? { label } : {}), ...failed };
       if (mode !== "skip") {
         const ended = await fail(row);
@@ -336,9 +337,9 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     if (raw.kind === "array" && (raw.cell as { loops?: unknown } | undefined)?.loops !== undefined) {
       if ((made += 1) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
       const baked = await this.bakeCells(obj, raw);
-      const done = "reason" in baked ? { ok: false, reason: baked.reason } : await this.bakedApply(obj, baked, label);
+      const done = "reason" in baked ? refuse("bad-op", baked.reason) : await this.bakedApply(obj, baked, label);
       if (done.ok !== true) {
-        const ended = await refuse({ reason: String(done.reason ?? "This array did not apply.") });
+        const ended = await endRun({ reason: String(done.reason ?? "This array did not apply.") });
         if (ended) return ended;
         continue;
       }
@@ -356,7 +357,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
       const done = probed.ok === true ? await this.apply(obj, raw) : probed;
       if (done.ok === true) this.keepExprs(obj, parseNode(done.node), exprs);
       if (done.ok !== true) {
-        const ended = await refuse({ reason: String(done.reason ?? "This edit did not apply."), ...(done.where ? { where: done.where } : {}) });
+        const ended = await endRun({ reason: String(done.reason ?? "This edit did not apply."), ...(done.where ? { where: done.where } : {}) });
         if (ended) return ended;
         continue;
       }
@@ -406,7 +407,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
       applyPiece: async (baked) => {
         const at = await this.opened(obj);
         if ("reason" in at) {
-          const missed = { ok: false, reason: at.reason };
+          const missed = refuse("bad-anchor", at.reason);
           return { probed: missed, done: missed };
         }
         const probed = await this.probeBaked(obj, at, at.current, baked, false, true);
@@ -425,7 +426,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     if (ran.touchingAt !== undefined) touchingAt ??= ran.touchingAt;
     const refused = "refused" in ran ? ran.refused : null;
     if (refused) {
-      const ended = await refuse(refused);
+      const ended = await endRun(refused);
       if (ended) return ended;
       continue;
     }
@@ -435,8 +436,8 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
       const linked = "steps" in ran ? ran.steps.map((step, j) => this.inDateExprs(step, links[ran.stepPieces[j]!])) : [];
       const stored = await this.storeGroup(obj, before, ownNodes[0]!, linked, label, raw);
       if (stored.ok !== true) {
-        // The pieces are already gone. refuse still drops them when they remain, and rolls the run back.
-        const ended = await refuse(stored.failed);
+        // The pieces are already gone. endRun still drops them when they remain, and rolls the run back.
+        const ended = await endRun(stored.failed);
         if (ended) return ended;
         continue;
       }
@@ -458,6 +459,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
   }
   return result({
     ok: failures.length === 0,
+    ...(failures.length ? { code: "build-failed" } : {}),
     applied: nodes.length,
     ...(failures.length ? { failures, note: `${failures.length} op${failures.length === 1 ? " was" : "s were"} refused and left out; the rest applied. Fix them and call model_build again: it reuses every op before the first one changed.` } : {}),
     ...(skipped ? { skipped, missedNote: `${skipped} step${skipped === 1 ? "" : "s"} missed the solid and were left out.` } : {}),
@@ -515,7 +517,7 @@ async function storeGroupMethod(this: Session, obj: PlateObject, before: number,
     probeApply: async (baked, budget) => {
       const at = await this.opened(obj);
       if ("reason" in at) {
-        const missed = { ok: false, reason: at.reason };
+        const missed = refuse("bad-anchor", at.reason);
         return { probed: missed, done: missed };
       }
       const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budget);
@@ -529,7 +531,7 @@ async function storeGroupMethod(this: Session, obj: PlateObject, before: number,
 /** A baked op probed, then applied: the kernel keeps the probe's build, so it is built once. */
 async function bakedApply(this: Session, obj: PlateObject, baked: { op: ModelOp; typed: Record<string, unknown> }, label: string | undefined, budgetMs?: number): Promise<Record<string, unknown>> {
   const at = await this.opened(obj);
-  if ("reason" in at) return { ok: false, reason: at.reason };
+  if ("reason" in at) return refuse("bad-anchor", at.reason);
   const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budgetMs);
   if (probed.ok !== true) return probed;
   const done = await this.applyBaked(obj, at, baked, {}, budgetMs);
@@ -545,7 +547,7 @@ async function bakedApply(this: Session, obj: PlateObject, baked: { op: ModelOp;
  */
 async function applyCombined(this: Session, obj: PlateObject, raws: Record<string, unknown>[], combine: "cut" | "fuse", label: string | undefined): Promise<Record<string, unknown>> {
   const opened = await this.opened(obj);
-  if ("reason" in opened) return { ok: false, reason: opened.reason };
+  if ("reason" in opened) return refuse("model-unavailable", opened.reason);
   const failures: Record<string, unknown>[] = [];
   const steps: ModelOp[] = [];
   const indexOf: number[] = [];
@@ -573,7 +575,7 @@ async function applyCombined(this: Session, obj: PlateObject, raws: Record<strin
     steps.push(baked.op);
     indexOf.push(index);
   }
-  if (steps.length === 0) return { ok: false, applied: 0, failures, reason: "No op of the batch can be combined." };
+  if (steps.length === 0) return refuse("bad-argument", "No op of the batch can be combined.", { applied: 0, failures });
   const name = label?.trim() || `${steps.length} ${combine}s in one boolean`;
   const group: GroupOp = { kind: "group", label: name.slice(0, 80), source: { kind: "batch", combine, ops: raws.length }, steps, combine };
   const budget = Math.max(this.modelTimeoutMs(), steps.length * 250);
@@ -610,7 +612,7 @@ async function bakeCellsMethod(this: Session, obj: PlateObject, raw: Record<stri
 
 async function applyBatch(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
-  if (ops.length === 0) return { ok: false, reason: "The batch needs at least one op." };
+  if (ops.length === 0) return refuse("bad-argument", "The batch needs at least one op.");
   if (input.combine === "cut" || input.combine === "fuse") return this.applyCombined(obj, ops, input.combine, typeof input.label === "string" ? input.label : undefined);
   const texts = this.pendingTexts;
   this.pendingTexts = [];
@@ -632,7 +634,7 @@ async function build(this: Session, input: Record<string, unknown>): Promise<Rec
   this.pendingTexts = [];
   this.pendingBaseText = undefined;
   this.pendingOneOff = [];
-  if (input.base === undefined) return { ok: false, reason: "model_build needs a base, or an object whose recipe to rerun." };
+  if (input.base === undefined) return refuse("missing-argument", "model_build needs a base, or an object whose recipe to rerun.");
   const base = (input.base ?? {}) as Record<string, unknown>;
   const ops = Array.isArray(input.ops) ? input.ops as Record<string, unknown>[] : [];
   const baseKey = stableKey(base);
@@ -643,11 +645,11 @@ async function build(this: Session, input: Record<string, unknown>): Promise<Rec
   let newBase = false;
   if (input.object !== undefined) {
     obj = this.find(String(input.object));
-    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
-    if (!obj.buildLog) return { ok: false, reason: "That object was not made by model_build. Rebuild only works on one that was." };
+    if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+    if (!obj.buildLog) return refuse("rebuild-refused", "That object was not made by model_build. Rebuild only works on one that was.");
     if (obj.buildLog.base !== baseKey) {
       const typedSame = !!recipe && !!obj.recipe && stableKey(recipe.base) === stableKey(obj.recipe.base);
-      if (!typedSame) return { ok: false, reason: "The base differs from that object's build. Rebuild keeps the base; start a new model_build for another." };
+      if (!typedSame) return refuse("rebuild-refused", "The base differs from that object's build. Rebuild keeps the base; start a new model_build for another.");
       newBase = true;
     }
   } else if (input.resume !== false) {
@@ -681,7 +683,7 @@ async function build(this: Session, input: Record<string, unknown>): Promise<Rec
     const rooted = await this.applyMany(obj, [{ kind: "root", ...base }], { label: "Base", texts: [baseText] });
     if (rooted.ok !== true) {
       const failed = rooted.failed as { reason?: unknown } | undefined;
-      return { ok: false, object: obj.id, reason: String(failed?.reason ?? rooted.reason ?? "The new base did not build.") };
+      return refuse("build-failed", String(failed?.reason ?? rooted.reason ?? "The new base did not build."), { object: obj.id });
     }
     obj.buildLog = { base: baseKey, start: obj.tree!.current, steps: [], refused: false };
   }
@@ -689,9 +691,9 @@ async function build(this: Session, input: Record<string, unknown>): Promise<Rec
     const made = await this.solidNew(base);
     if (made.ok !== true) return made;
     obj = this.find(String(made.object));
-    if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+    if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
     const tree = await this.opened(obj);
-    if ("reason" in tree) return { ok: false, object: obj.id, reason: tree.reason };
+    if ("reason" in tree) return refuse("model-unavailable", tree.reason, { object: obj.id });
     obj.buildLog = { base: baseKey, start: tree.current, steps: [], refused: false };
     this.linkRoot(obj, base, baseText);
     from = null;
@@ -726,7 +728,7 @@ async function build(this: Session, input: Record<string, unknown>): Promise<Rec
   }
   if (input.commit !== false) {
     const reason = await this.commitObject(obj);
-    if (reason) return { ok: false, object: obj.id, reason };
+    if (reason) return refuse("build-failed", reason, { object: obj.id });
   }
   return { ...body, ...resumed, ...once, ...this.takeNotLinked(), applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
 }

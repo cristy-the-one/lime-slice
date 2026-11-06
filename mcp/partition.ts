@@ -163,6 +163,7 @@ export function planPartition(op: PartitionOp, ctx: FillContext, frame: PrintFra
   const proposal = { kind: "partition", cuts, ...(op.target ? { target: op.target } : {}), labels: { ...filled.labels }, ...(op.maxPieces !== undefined ? { maxPieces: op.maxPieces } : {}), ...(op.bedMarginMm !== undefined ? { bedMarginMm: op.bedMarginMm } : {}) };
   return {
     ok: later === null,
+    ...(later === null ? {} : { code: "split-refused" }),
     plan: true,
     reason: later ?? (notes[0] ?? (cuts.length === 0 ? "No cut is proposed." : `${cuts.length} ${cuts.length === 1 ? "cut" : "cuts"}.`)),
     cuts,

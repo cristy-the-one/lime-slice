@@ -17,6 +17,7 @@ import { readTransitionRows, transitionSentence, transitionSkinWarns, TRANSITION
 import { cleanOp, expand, isComposite } from "../../src/modeling/compose.ts";
 import { CHORD, type PlateObject, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function bake(this: Session, obj: PlateObject, raw: unknown): Baked | { reason: string } {
   return bakeOp(raw, this.bakeContext(obj));
@@ -103,16 +104,16 @@ async function openJoinTool(this: Session, raw: unknown): Promise<string | null>
  */
 async function probeText(this: Session, obj: PlateObject, raw: Record<string, unknown>, nodeHandleValue: unknown): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const asked = this.nodeOf(obj, nodeHandleValue);
   const at = asked ?? tree.current;
-  if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
+  if (asked !== null && !tree.nodes.has(asked)) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   const work = async (): Promise<Record<string, unknown>> => {
     const context = this.expandContext(obj);
     const expanded = expand(this.withFaceIndex(obj, structuredClone(raw)), context, (op) => this.pieceOf(obj, op));
-    if ("reason" in expanded) return { ok: false, reason: expanded.reason };
+    if ("reason" in expanded) return refuse("bad-argument", expanded.reason);
     const only = expanded.length === 1 ? expanded[0]! : null;
-    if (!only?.step) return { ok: false, reason: "model_probe checks one step, and a text with no font is a box for every stroke. Name a font (stroke is the single-stroke one) to probe it, or apply it with model_apply." };
+    if (!only?.step) return refuse("wrong-kind", "model_probe checks one step, and a text with no font is a box for every stroke. Name a font (stroke is the single-stroke one) to probe it, or apply it with model_apply.");
     const op = toSolidOp(only.step as unknown as ModelOp, obj.modelPose);
     return this.probeBaked(obj, tree, at, { op, typed: raw }, true, true);
   };
@@ -134,22 +135,22 @@ async function thinLetters(this: Session, op: Extract<ModelOp, { kind: "letterin
 async function probe(this: Session, obj: PlateObject, raw: unknown, nodeHandleValue?: unknown, measure = false): Promise<Record<string, unknown>> {
   if (raw && typeof raw === "object" && (raw as { kind?: unknown }).kind === "text") return this.probeText(obj, raw as Record<string, unknown>, nodeHandleValue);
   if (raw && typeof raw === "object" && isComposite((raw as { kind?: unknown }).kind)) {
-    return { ok: false, reason: "model_probe checks one step. Apply a pattern, mirror, pocket, boss, or texture with model_apply; it checks each step as it goes." };
+    return refuse("wrong-kind", "model_probe checks one step. Apply a pattern, mirror, pocket, boss, or texture with model_apply; it checks each step as it goes.");
   }
   const toolReason = await this.openJoinTool(raw);
-  if (toolReason) return { ok: false, reason: toolReason };
+  if (toolReason) return refuse("needs-solid-tool", toolReason);
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const asked = this.nodeOf(obj, nodeHandleValue);
   const at = asked ?? tree.current;
-  if (asked !== null && !tree.nodes.has(asked)) return { ok: false, reason: "That step is not in the history." };
+  if (asked !== null && !tree.nodes.has(asked)) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   if (at !== tree.current) return this.atStep(obj, tree, at, () => this.bakeAndProbe(obj, tree, at, raw, measure));
   return this.bakeAndProbe(obj, tree, at, raw, measure);
 }
 
 async function bakeAndProbe(this: Session, obj: PlateObject, tree: ModelTree, at: number, raw: unknown, measure: boolean): Promise<Record<string, unknown>> {
   const baked = this.bake(obj, raw);
-  if ("reason" in baked) return { ok: false, reason: baked.reason };
+  if ("reason" in baked) return refuse("bad-op", baked.reason);
   return this.probeBaked(obj, tree, at, baked, measure);
 }
 
@@ -169,9 +170,9 @@ async function atStep(this: Session, obj: PlateObject, tree: ModelTree, at: numb
     if (lost) return lost;
     throw err;
   }
-  if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+  if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error));
   const solid = solidView(reply);
-  if (!solid) return { ok: false, reason: "That step's solid could not be read." };
+  if (!solid) return refuse("solid-unreadable", "That step's solid could not be read.");
   obj.solid = solid;
   try {
     return await work();
@@ -203,13 +204,13 @@ async function probeBaked(this: Session, obj: PlateObject, tree: ModelTree, at: 
   }
   if (baked.op.kind === "split") {
     const note = this.splitCheck(obj, baked.op);
-    if (note.bad) return answer({ ok: false, reason: note.text });
+    if (note.bad) return answer(refuse("does-not-fit", note.text));
     obj.probes.set(probeKey(String(at), baked.op), true);
     return answer({ ok: true, reason: note.text });
   }
   if (baked.op.kind === "partition") return answer(await this.probePartition(obj, tree, at, baked.op, budgetMs, baked.notes ?? []));
   const missed = obj.solid ? disjointRefusal(obj.solid.bounds, baked.op) : null;
-  if (missed) return answer({ ok: false, reason: `${missed.reason}${this.frameWhere(obj)}`, missed: true, frame: obj.frame ?? "model", ...(missed.gapMm > 0 ? { gapMm: missed.gapMm } : {}) });
+  if (missed) return answer({ ok: false, code: "does-not-fit", reason: `${missed.reason}${this.frameWhere(obj)}`, missed: true, frame: obj.frame ?? "model", ...(missed.gapMm > 0 ? { gapMm: missed.gapMm } : {}) });
   const blend = (baked.op.kind === "fillet" || baked.op.kind === "chamfer" || baked.op.kind === "transition") && baked.op.edges.length > 1;
   const preview = measure || blend ? (obj.stepTolerance || CHORD) : undefined;
   let reply: Record<string, unknown>;
@@ -225,7 +226,7 @@ async function probeBaked(this: Session, obj: PlateObject, tree: ModelTree, at: 
   if (verdict.ok === false && verdict.tooThick && baked.op.kind === "shell") {
     const advice = await this.shellAdvice(obj, tree, at, baked.op, budgetMs);
     if (advice.lost) return answer(advice.lost);
-    return answer({ ok: false, reason: `${verdict.tooThick} ${advice.text}`, ...(advice.maxMm !== undefined ? { maxMm: advice.maxMm } : {}), ...(advice.where ? { where: advice.where } : {}) });
+    return answer({ ok: false, code: "does-not-fit", reason: `${verdict.tooThick} ${advice.text}`, ...(advice.maxMm !== undefined ? { maxMm: advice.maxMm } : {}), ...(advice.where ? { where: advice.where } : {}) });
   }
   if (verdict.ok === false) return answer(verdict.body);
   obj.probes.set(probeKey(String(at), baked.op), true);
