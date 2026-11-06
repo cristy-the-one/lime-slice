@@ -10,7 +10,11 @@ async function open(page: Page, printer: string | null) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => route.fulfill({ status: 404, json: { error: "off" } }));
-  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await page.addInitScript(() => {
+    localStorage.setItem("lime-slice-theme", "dark");
+    // The rotation fields sit in the "Rotation and alignment" group (#605), closed by default.
+    localStorage.setItem("lime-slice-open-subgroups", '["object-pose"]');
+  });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await autoSliceOff(page);
