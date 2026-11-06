@@ -18,6 +18,7 @@ import { answerTextOutline } from "../../src/recipe/text-outline.ts";
 import { fontById, isPenFont, isUserFont } from "../../src/modeling/text-fonts.ts";
 import { apiRefusal, bodyHash, isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin, type PluginFile, type PluginParam, type PluginTarget } from "../plugins.ts";
 import { splitPluginData } from "../../src/recipe/plugin-data.ts";
+import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
@@ -150,7 +151,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   this.noteStage(`building recipe ${name}`, 0);
   const built = await host.build(name, source, input.autofix !== false, resolved.suffix);
   const map = lineMap(built.source, resolved);
-  const fixed = built.source !== source ? { fixedSource: built.source, fixRounds: built.fixRounds } : {};
+  const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
   const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
   if (!built.ok || !built.exe) {
     return { ok: false, reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms };

@@ -111,6 +111,7 @@ src/split-print.test.ts
 src/cut-trace.test.ts
 src/fan.test.ts
 src/bridge.test.ts
+mcp/recipe-followups.test.ts
 mcp/schema.test.ts
 mcp/settings-rows.test.ts
 mcp/scenario.test.ts
