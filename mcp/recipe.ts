@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
 import { workspaceRoot } from "./workspace.ts";
+import { refuse } from "./refusals.ts";
 
 export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, RECIPE_TOOLS, runRecipe } from "../src/recipe/host.ts";
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
@@ -81,9 +82,9 @@ export class RecipeHost {
     if (this.lust === undefined) this.lust = findLust(this.moduleUrl);
     if (this.lust === null) {
       const why = process.platform === "darwin" ? " lust does not build on macOS yet, so the macOS app does not ship it." : "";
-      return { ok: false, reason: `Recipes need lust, which is not installed here.${why} Set LIME_LUST to the lust binary, or put lust on PATH.` };
+      return refuse("recipe-unavailable", `Recipes need lust, which is not installed here.${why} Set LIME_LUST to the lust binary, or put lust on PATH.`);
     }
-    if (!existsSync(join(this.crateDir, "src", "lib.rs"))) return { ok: false, reason: `The lime-recipe crate is missing (${this.crateDir}).` };
+    if (!existsSync(join(this.crateDir, "src", "lib.rs"))) return refuse("recipe-unavailable", `The lime-recipe crate is missing (${this.crateDir}).`);
     return { ok: true, lust: this.lust };
   }
 

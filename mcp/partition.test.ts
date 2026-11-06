@@ -127,7 +127,7 @@ const drilled = await call("model_apply", { object: pieces[0], op: { kind: "hole
 check("piece 2 takes a step of its own", drilled.ok === true, JSON.stringify(drilled));
 const one = { kind: "partition", cuts: [{ origin: [0, 0, 10], normal: [1, 0, 0] }] };
 const notProbed = await call("model_edit", { object, node: "node_1", op: one });
-check("an edit is probed first", notProbed.ok === false && String(notProbed.reason).startsWith("Probe this edit first"), JSON.stringify(notProbed));
+check("an edit is probed first", notProbed.ok === false && notProbed.code === "not-probed" && String(notProbed.next).includes("model_probe") && String(notProbed.reason).startsWith("Probe this edit first"), JSON.stringify(notProbed));
 await call("model_probe", { object, op: one, node: "node_0" });
 const edited = await call("model_edit", { object, node: "node_1", op: one });
 check("the edit rebuilds the cut in two", edited.ok === true && edited.parts === 2 && JSON.stringify(edited.pieces) === JSON.stringify([pieces[0]]), JSON.stringify(edited));

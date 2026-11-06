@@ -35,6 +35,7 @@ import { readAssemblies } from "../../src/assembly.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "../workspace.ts";
 import { CHORD, ModelRunaway, type PlateObject, STEP, type ToolHandler, modelSteps, shownName, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 async function projectCreate(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   // --- Gaps A6. Parameters and parts are not in plate_undo: a new plate that would drop them is refused unless asked.
@@ -46,7 +47,7 @@ async function projectCreate(this: Session, input: Record<string, unknown>): Pro
       ...(names.length ? [`${names.length} parameter${names.length === 1 ? "" : "s"} (${list(names)})`] : []),
       ...(parts.length ? [`${parts.length} part${parts.length === 1 ? "" : "s"} (${list(parts)})`] : []),
     ].join(" and ");
-    return { ok: false, reason: `This project has ${held}, which a new plate drops and plate_undo cannot bring back. Save it with project_save first, or call project_create with discard: true.` };
+    return refuse("project-unsaved", `This project has ${held}, which a new plate drops and plate_undo cannot bring back. Save it with project_save first, or call project_create with discard: true.`);
   }
   this.remember("New plate");
   await this.forgetObjects();
@@ -78,7 +79,7 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
   const full = resolveRead(path, "lime");
   const text = await readFile(full, "utf8");
   const parsed = await decodeProject(text);
-  if (!parsed.ok) return { ok: false, reason: parsed.message };
+  if (!parsed.ok) return refuse("project-damaged", parsed.message);
   this.remember("Open project");
   // --- Text milestone 4. The project's fonts go to the engine first, so its text steps rebuild with the bytes they were made with.
   this.fonts.clear();
@@ -140,7 +141,7 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
       }];
   const objects: { object: string; name: string }[] = [];
   for (const row of rows) {
-    if (!row.bytes) return { ok: false, reason: "The mesh in this project is damaged." };
+    if (!row.bytes) return refuse("project-damaged", "The mesh in this project is damaged.");
     const preview = await this.preview(row.file, row.bytes, row.placement.stepTolerance || STEP);
     const obj = this.addObject({
       name: row.name,
@@ -551,9 +552,9 @@ function saveDocument(this: Session): LimeProject {
 }
 
 async function projectSave(this: Session, name: string, refuseExisting = false): Promise<Record<string, unknown>> {
-  if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
+  if (this.objects.length === 0) return refuse("plate-empty", "The plate is empty.", undefined, NEXT.empty);
   const path = resolveWrite(name, ".lime");
-  if (refuseExisting && existsSync(path)) return { ok: false, reason: "A project with that name is already in the workspace. Pick another name, or leave ifExists out to replace it." };
+  if (refuseExisting && existsSync(path)) return refuse("project-exists", "A project with that name is already in the workspace. Pick another name, or leave ifExists out to replace it.");
   // An object whose current step will not commit (its mesh does not close) is saved as it stands: the plate keeps its
   // last committed mesh, or the kernel's mesh when it has none, and its whole history is kept. The reply names it.
   const refused = await this.commitAll();
@@ -565,7 +566,7 @@ async function projectSave(this: Session, name: string, refuseExisting = false):
       now = "";
     }
     if (now && now !== this.sourceHash) {
-      return { ok: false, reason: "That project changed on disk since it was opened. Save it under a new name." };
+      return refuse("project-changed", "That project changed on disk since it was opened. Save it under a new name.");
     }
   }
   const doc = this.withKernelMeshes(this.saveDocument());
@@ -576,7 +577,7 @@ async function projectSave(this: Session, name: string, refuseExisting = false):
   this.attachPreview(doc, true);
   if (this.sourcePath && path === this.sourcePath) {
     const loss = this.lossy(doc);
-    if (loss) return { ok: false, reason: loss };
+    if (loss) return refuse("project-unsaved", loss);
   }
   const text = await encodeProject(doc);
   writeFileSync(path, text);
@@ -597,7 +598,7 @@ async function projectSave(this: Session, name: string, refuseExisting = false):
  */
 async function appOpen(this: Session, path?: string): Promise<Record<string, unknown>> {
   if (path !== undefined) return openInApp(resolveWorkspaceFile(path), this.appOpener, false);
-  if (this.objects.length === 0) return { ok: false, reason: "The plate is empty. Build or import a part first, or pass a workspace file as path." };
+  if (this.objects.length === 0) return refuse("plate-empty", "The plate is empty. Build or import a part first, or pass a workspace file as path.", undefined, NEXT.empty);
   let name = "";
   try {
     if (this.sourcePath) name = resolveWrite(this.sourcePath, ".lime");
@@ -610,7 +611,7 @@ async function appOpen(this: Session, path?: string): Promise<Record<string, unk
       const candidate = resolveWrite(n === 1 ? stem : `${stem}-${n}`, ".lime");
       if (!existsSync(candidate)) name = candidate;
     }
-    if (!name) return { ok: false, reason: "No free project name was found in the workspace. Save it with project_save and pass that file as path." };
+    if (!name) return refuse("project-name", "No free project name was found in the workspace. Save it with project_save and pass that file as path.");
   }
   const saved = await this.projectSave(name);
   if (saved.ok !== true) return saved;

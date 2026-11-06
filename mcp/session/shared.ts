@@ -28,6 +28,7 @@ import type { FacePick } from "../../src/modeling/compose.ts";
 import { pickSentence } from "../../src/modeling/frames.ts";
 import { isPlainNumber } from "../../src/modeling/params.ts";
 import type { Session } from "../session.ts";
+import { refuse } from "../refusals.ts";
 
 export const OVERLAP = "These parts overlap. Move one before slicing.";
 export const CHORD = 0.05;
@@ -500,10 +501,10 @@ export function withPicks(value: Record<string, unknown>, picks: readonly PickRo
 
 export function domainRefusal(message: string): { ok: false; reason: string; next?: string } | null {
   if (message.startsWith("That file was not found")) {
-    return { ok: false, reason: message, next: "Check the path, then call the tool again." };
+    return refuse("file-not-found", message, undefined, "Check the path, then call the tool again.");
   }
   if (message.startsWith("This mesh did not finish") || message.includes("LIME_MCP_WORKSPACE") || message.startsWith("Writes stay") || message.startsWith("That path is not") || message.startsWith("That name cannot") || message.startsWith("Open a .stl") || message.startsWith("That file is")) {
-    return { ok: false, reason: message };
+    return refuse("bad-path", message);
   }
   return null;
 }
@@ -609,13 +610,13 @@ export function slicedRunReply(text: string, targets: readonly StudyConstraint[]
   try {
     parsed = JSON.parse(text) as Record<string, unknown>;
   } catch {
-    return { ok: false, reason: "The stress solve did not finish." };
+    return refuse("solve-failed", "The stress solve did not finish.");
   }
   if (parsed.ok !== true) {
-    return { ok: false, reason: typeof parsed.reason === "string" && parsed.reason ? parsed.reason : "The stress solve did not finish." };
+    return refuse("solve-failed", typeof parsed.reason === "string" && parsed.reason ? parsed.reason : "The stress solve did not finish.");
   }
   const report = parsed.report && typeof parsed.report === "object" ? (parsed.report as Record<string, unknown>) : null;
-  if (!report) return { ok: false, reason: "The stress solve did not finish." };
+  if (!report) return refuse("solve-failed", "The stress solve did not finish.");
   const level = report.trust === "rough" || report.trust === "usable" || report.trust === "converged" ? report.trust : "rough";
   return {
     ok: true,
