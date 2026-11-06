@@ -7,6 +7,7 @@ import "./modeling";
 import { createModelView } from "../model-view";
 import { mountModelMarkup } from "./model/markup";
 import { bindModelView, noteParametersBuilt, requestModelCheck, showModel } from "./model";
+import { showAllObjects, toggleObjectHidden } from "./model/view";
 import { pickAddedMesh } from "./files";
 import { fx } from "./fx";
 import { state } from "./state";
@@ -61,7 +62,7 @@ export function mountModelWorkspace() {
   adoptModelRail();
   mountModelRulers();
   // --- E3. Inspect's plate rows: the same actions as the Prepare list, which Model hides.
-  setInspectPlateActions({ select: selectPlateObject, frame: framePlateObject, check: requestModelCheck, remove: removePlateObject, duplicate: duplicatePlateObject, add: pickAddedMesh });
+  setInspectPlateActions({ select: selectPlateObject, frame: framePlateObject, toggleHidden: toggleObjectHidden, showAll: showAllObjects, check: requestModelCheck, remove: removePlateObject, duplicate: duplicatePlateObject, add: pickAddedMesh });
   adoptCompactModel();
   // What the app told Model while it had not loaded: the project's parameters, and the stage it is on.
   noteParametersBuilt();

@@ -53,6 +53,13 @@ eq("numbers are text", String(html`<i style="top:${(12.5).toFixed(2)}%">`), `<i 
 
 // Inspect's object list (names from files and MCP).
 sameShape("Inspect rows", (name) => String(inspectRowsHtml([{ id: "a", name, size: "10 × 10 × 10" }, { id: name, name: `${name} 2`, size: "1 × 1 × 1" }], "a")));
+{
+  const rows = String(inspectRowsHtml([{ id: "a", name: "plinth", size: "1 × 1 × 1" }, { id: "b", name: "face_1", size: "1 × 1 × 1", hidden: true }, { id: "c", name: "crank", size: "1 × 1 × 1" }], "a"));
+  eq("Inspect rows: a hidden object's eye is pressed and says Show", rows.includes(`aria-pressed="true" aria-label="Show face_1"`), true);
+  eq("Inspect rows: a shown object's eye says Hide", rows.includes(`aria-label="Hide crank"`), true);
+  eq("Inspect rows: the open object's eye is disabled", /aria-label="Hide plinth"[^>]*disabled/.test(rows), true);
+  eq("Inspect rows: the row is marked hidden", rows.includes(`data-hidden="true"`), true);
+}
 eq("Inspect rows: an empty plate says so", String(inspectRowsHtml([], null)), `<p class="model-note">Nothing on the plate.</p>`);
 
 // The settings profile list.

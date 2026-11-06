@@ -648,7 +648,7 @@ const INSPECT = `
           </dl>
           <h3>Check</h3>
           <p class="model-note" id="modelInspectCheck">Not checked yet.</p>
-          <h3>On the plate</h3>
+          <div class="model-inspect-head"><h3>On the plate</h3><button class="btn model-inspect-showall" id="modelInspectShowAll" type="button" hidden>Show all</button></div>
           <div class="model-inspect-objects" id="modelInspectObjects" role="list" aria-label="Objects on the plate"></div>
           <div class="model-inspect-bar"><button class="btn" id="modelInspectAdd" type="button">Add a file</button><button class="btn" id="modelInspectDuplicate" type="button">Duplicate</button></div>
         </div>
