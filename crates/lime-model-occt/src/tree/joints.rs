@@ -1,6 +1,17 @@
 //! Split to print, connectors: the stored joints, how their answers are read back, and the stateless `partition_joints` call.
 
-use super::*;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::HashSet;
+
+use super::lock;
+use super::build::build;
+use super::ffi::lime_tree_surfaces;
+use super::group::GroupBudget;
+use super::ops::{Op, Solid};
+use super::partition::{connectors_on, partition_fields, PartitionCut};
+use super::resolve::{resolve, Steps};
+use super::shape::{take_text, Shape};
 
 // --- Split to print, connectors (plan sections 7, 8 and 9). The planner places them (`placeConnectors` in
 // src/modeling/partition.ts) and stores `placed` on each cut; the kernel builds each one on the real solids and keeps

@@ -1,6 +1,26 @@
 //! A solid in the kernel: `Shape`, `Mesh`, their drop and the small queries on a shape.
 
-use super::*;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_int};
+use std::ptr::NonNull;
+
+use super::Fingerprint;
+use super::ffi::{
+    lime_model_occt_string_free,
+    lime_tree_bounds,
+    lime_tree_check,
+    lime_tree_counts,
+    lime_tree_editable,
+    lime_tree_fingerprint,
+    lime_tree_free,
+    lime_tree_mesh_free,
+    lime_tree_mesh_order,
+    lime_tree_solids,
+    RawMesh,
+    RawShape,
+};
+#[cfg(lime_occt_test_hooks)]
+use super::ffi::{lime_tree_test_fault, lime_tree_test_nurbs, lime_tree_test_text};
 
 /// One solid owned by the kernel. Freed when dropped.
 pub(super) struct Shape(pub(super) NonNull<RawShape>);

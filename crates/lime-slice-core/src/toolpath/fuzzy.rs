@@ -1,4 +1,5 @@
-use super::*;
+use super::{Extrusion, PathKind};
+use crate::strategy::FuzzySkin;
 
 /// The offset, after the seam and the scarf. A scarf ramp already has a
 /// height and a flow on each point, so it is left alone. Taking the mark
@@ -81,6 +82,8 @@ pub(super) fn fuzzy_noise(x: f64, y: f64, z: f64) -> f64 {
 mod fuzzy_tests {
     use super::*;
     use crate::strategy::{FuzzySkin, StrategyId};
+    use crate::toolpath::walls::finish_paths;
+    use crate::toolpath::{extrusion, Extrusion, PathFeatures, PathKind, Seam};
 
     fn path(kind: PathKind, pts: Vec<[f64; 2]>) -> Extrusion {
         extrusion(kind, &crate::strategy::pure(StrategyId::Speed), pts, 0.45)

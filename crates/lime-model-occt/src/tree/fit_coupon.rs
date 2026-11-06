@@ -1,6 +1,15 @@
 //! The fit coupon: a stateless call that builds a small test piece for a pin or hole tolerance.
 
-use super::*;
+use base64::Engine;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::os::raw::{c_char, c_int};
+use std::ptr::NonNull;
+
+use super::lock;
+use super::ffi::{lime_tree_fit_coupon, lime_tree_surfaces, RawShape};
+use super::group::GroupBudget;
+use super::shape::{take_text, Shape};
 
 /// --- Split to print, the fit coupon (plan section 2, milestone 6): what the planner in `src/modeling/fit-coupon.ts`
 /// lays out. A plate from the origin to `sizeMm`, holes bored into its front face along +Y, labels cut into that face,

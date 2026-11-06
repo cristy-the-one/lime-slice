@@ -1,5 +1,21 @@
-use super::*;
+use super::combing::{apply_z_hop, comb_between, Comb, Combing};
+use super::infill_order::untangle;
+use super::island_order::{contained_by_linear, containing_loops};
+use super::layout::{comb_layer, order_part, order_supports, PartLayout, TRAVEL_WIN_MM};
+use super::nearest::{
+    approach_grid, dist_mm, legacy_nn_indices, order_nearest, pending_winner_linear,
+};
+use super::outline::Outline;
+use super::polish::{insert_at, oriented_ends, walk_cost, Walk};
+use super::scarf::scarf_path;
+use super::seams::{aligned_seam, dist2, orient_path, rear_seam};
+use super::support_emit::{circle_pts, plan_tree_support};
+use super::tour::hilbert_d;
+use super::void_fill::{net_area, outside_area, sliver_spine, OverlapIndex};
+use super::{emit_loops, extrusion, Extrusion, PathKind, TravelIn};
+use crate::poly::{boolean_diff, loop_bounds, signed_area, Loop};
 use crate::strategy::{pure, StrategyId};
+use crate::strategy::{ResolvedStrategy, SeamMode};
 
 fn path(kind: PathKind, pts: Vec<[f64; 2]>) -> Extrusion {
     extrusion(kind, &pure(StrategyId::Speed), pts, 0.45)

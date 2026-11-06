@@ -1,4 +1,7 @@
-use super::*;
+use super::fill_lines::clip_segment_in;
+use crate::poly::{loop_bounds, Loop};
+use std::borrow::Cow;
+use std::sync::OnceLock;
 
 /// Loops with their bounding boxes, so segment and point tests skip loops that
 /// cannot touch them.
