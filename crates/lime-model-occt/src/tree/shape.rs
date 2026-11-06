@@ -16,12 +16,11 @@ use super::ffi::{
     lime_tree_mesh_free,
     lime_tree_mesh_order,
     lime_tree_solids,
-    lime_tree_test_fault,
-    lime_tree_test_nurbs,
-    lime_tree_test_text,
     RawMesh,
     RawShape,
 };
+#[cfg(lime_occt_test_hooks)]
+use super::ffi::{lime_tree_test_fault, lime_tree_test_nurbs, lime_tree_test_text};
 
 /// One solid owned by the kernel. Freed when dropped.
 pub(super) struct Shape(pub(super) NonNull<RawShape>);
