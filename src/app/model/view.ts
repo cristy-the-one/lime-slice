@@ -50,6 +50,10 @@ import type { Lens } from "./shared";
 import { runQueuedReaim } from "./transition";
 import { showEdits, syncUndo } from "./undo";
 import { openObject } from "./workplane";
+import { mountModelInspect } from "../../ui/model-inspect";
+import { mountModelLook, onExplode } from "../../ui/model-look";
+import { plateObjectSizes } from "../settings";
+import { posedFace } from "./workplane";
 
 /** Each solid's, and each plate mesh's, box in its own frame. */
 const ownBoxes = new WeakMap<Float32Array, Bounds>();
@@ -305,4 +309,27 @@ export function frameModel(all: boolean) {
 export function frameInModel(id: string) {
   if (S.open?.objectId === id) frameModel(false);
   else S.framedFor = null;
+}
+
+export function bindInspect() {
+  // --- E3. Inspect, the right dock in Model. ---
+  mountModelInspect({
+    objects: () => plateObjectSizes(),
+    openId: () => S.open?.objectId ?? state.plate.selectedId,
+  });
+}
+
+export function bindLook() {
+  // --- A10. Section view and colour by step, from the View menu in the model foot.
+  if (fx.model) {
+    mountModelLook({
+      setLook: (state) => fx.model?.setLook(state),
+      onSectionDrag: (cb) => fx.model?.onSectionDrag(cb),
+      posed(plane) {
+        const at = posedFace({ point: plane.origin, normal: plane.normal })!;
+        return { origin: at.point, normal: at.normal };
+      },
+    });
+    onExplode(() => refreshModelContext());
+  }
 }

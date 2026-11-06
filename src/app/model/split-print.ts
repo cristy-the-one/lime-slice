@@ -55,6 +55,23 @@ import type { Body } from "./shared";
 import { kernelNotes } from "./split-apply";
 import { boxOf, openPose, viewed } from "./view";
 import { plateObjectOpen, workplaneOfOpen } from "./workplane";
+import { lastFace } from "../../model-blend";
+import { planeFor } from "../../model-plane";
+import { enterMeasured, resetMeasured } from "../../modeling/partition.ts";
+import { chainFromSketch } from "../../modeling/sketch-profile.ts";
+import { cutTraces } from "../../split-print.ts";
+import { setMeasuredFits } from "../../ui/machine-library.ts";
+import { mountSplitPrint } from "../../ui/split-print.ts";
+import { fx } from "../fx";
+import { storeMachineLibrary } from "../machine-library.ts";
+import { closeSketchSession, openProfileSketch } from "../sketch";
+import { cancelEdit } from "./edit";
+import { exportPieceFiles } from "./export";
+import { flatFace, kernelBox, modelExtent } from "./geometry";
+import { currentParams } from "./parameters";
+import { syncUndo } from "./undo";
+import { openBox } from "./view";
+import { posedFace } from "./workplane";
 
 // --- Split to print (docs/plan-split-connectors.md, milestone 4): the card's frame, its check, its Apply, and the
 // pencil's Update. Keep this block together. ---
@@ -337,4 +354,79 @@ export function readPieces(value: unknown): PieceReply[] | string {
     out.push({ key: String((entry as Body).key), solid });
   }
   return out;
+}
+
+export function bindSplitPrint() {
+  // --- Split to print: the Features menu's card.
+  mountSplitPrint({
+    undoChanged: () => syncUndo(),
+    solidBox: () => (viewed()?.editable && !S.lens ? openBox() : null),
+    frame: splitPrintFrame,
+    plan(base, cut) {
+      const at = viewed();
+      if (!at) return null;
+      const pose = openPose();
+      return planeFor(base, cut.value, [cut.tiltA, cut.tiltB], (normal) => modelExtent(at, pose, normal), kernelBox(at, pose));
+    },
+    fit: fitSplitPrint,
+    printers: splitPrinters,
+    plate: () => selection(loadMachineLibrary())?.printer.id ?? null,
+    numberSizes: labelSizes,
+    exportPieces: () => void exportPieceFiles(),
+    pickedFace() {
+      const solid = viewed();
+      const face = lastFace(S.picks);
+      if (!solid || face == null) return null;
+      return posedFace(flatFace(solid, face)) ?? "curved";
+    },
+    check: checkSplitPrint,
+    connectors(typed) {
+      const stored = splitStored(typed);
+      return stored && !("reason" in stored) ? { notes: stored.notes, fits: stored.fits, marks: stored.marks, dropped: stored.dropped } : null;
+    },
+    refusal(typed) {
+      const stored = splitStored(typed);
+      return stored && "reason" in stored ? stored.reason : "";
+    },
+    shaped(typed) {
+      const stored = splitStored(typed);
+      return stored && !("reason" in stored) ? (stored.shaped ?? []) : [];
+    },
+    traces(typed) {
+      const solid = viewed();
+      return solid ? cutTraces(typed, partitionContext(solid), openPose(), solid.positions) : [];
+    },
+    profileSketch(plane, u, sketch, check, done) {
+      openProfileSketch({
+        sketch,
+        refs: profileRefs(plane, u),
+        check(drawn) {
+          const chain = chainFromSketch(drawn);
+          return ("reason" in chain ? chain.reason : check(chain)).replace(/^Cut \d+: /, "");
+        },
+        done,
+      });
+    },
+    endProfileSketch: () => closeSketchSession(),
+    defaults(target) {
+      const solid = viewed();
+      if (!solid) return null;
+      const ctx = partitionContext(solid);
+      return defaultsFor(target ?? ctx.plateTarget, ctx);
+    },
+    holeCompensation: () => state.xyHoleCompensationMm,
+    printCoupon: printFitCoupon,
+    material: () => selection(loadMachineLibrary())?.filament.material ?? "",
+    fits: () => loadMachineLibrary().measuredFits,
+    enterFits(key, results) {
+      storeMachineLibrary(setMeasuredFits(loadMachineLibrary(), enterMeasured(loadMachineLibrary().measuredFits, key, results)));
+    },
+    resetFits(key) {
+      storeMachineLibrary(setMeasuredFits(loadMachineLibrary(), resetMeasured(loadMachineLibrary().measuredFits, key)));
+    },
+    cancelled: cancelEdit,
+    parameters: () => currentParams(),
+    view: () => fx.model ?? null,
+    readout,
+  });
 }

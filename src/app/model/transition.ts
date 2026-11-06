@@ -54,6 +54,10 @@ import { type Editing, VIEW_ONLY } from "./shared";
 import { syncUndo } from "./undo";
 import { viewed } from "./view";
 import { openObject } from "./workplane";
+import { selectedEdges } from "../../model-blend";
+import { transitionFloorMm } from "../../model-transition.ts";
+import { mountTransitionCard } from "../../ui/transition-card.ts";
+import { cancelEdit } from "./edit";
 
 /**
  * --- Print transitions (step 6): the tangent chain through `edge`, from the kernel, picked in place of the edge alone
@@ -291,4 +295,30 @@ export function runQueuedReaim() {
   if (!S.reaimQueued || (S.open?.objectId ?? state.plate.selectedId) !== S.reaimQueued || !treeOf(S.open)) return;
   S.reaimQueued = null;
   window.setTimeout(() => void reaimStale(), 0);
+}
+
+export function bindTransition() {
+  mountTransitionCard({
+    solidOpen: () => !!viewed()?.editable && !S.lens,
+    pickedEdges: () => selectedEdges(S.picks),
+    pose: () => transitionPose(openObject()),
+    printerName: (id) => loadMachineLibrary().printers.find((row) => row.id === id)?.name ?? (id || "plate's printer"),
+    supportAngle: () => state.supportAngle,
+    shallowSkins: () => state.shallowSkins,
+    floorMm: () => transitionFloorMm(state.profile.nozzleDiameter),
+    check: checkTransition,
+    wedges: transitionWedges,
+    cancelled: cancelEdit,
+    readout,
+    find: (numbers) => void findTransitions(numbers),
+    fix: (op, numbers) => void fixTransitions(op, numbers),
+    flag: (edges, lit) => fx.model?.setFlaggedEdges(edges, lit),
+    pick(edge) {
+      if (!viewed()?.edges.some((row) => row.id === edge)) return;
+      S.picks = [{ kind: "edge", index: edge }];
+      fx.model?.highlight(S.picks);
+      syncModelChrome(S.picks);
+      transitionPicked();
+    },
+  });
 }

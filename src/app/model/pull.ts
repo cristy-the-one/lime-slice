@@ -18,6 +18,13 @@ import { readout } from "./pick";
 import { keepPreview, previewOf, probeName, remember, sendPending } from "./probe";
 import { answers, type Body, shaped } from "./shared";
 import { boxOf, viewed } from "./view";
+import { mountPull } from "../../push-pull-ui";
+import { modelPreviewFresh, setAllowPullPreview, setPullLive } from "../../ui/model-chrome";
+import { fx } from "../fx";
+import { applyPull } from "./apply";
+import { currentParams } from "./parameters";
+import { editPull } from "./run-edit";
+import { openPose } from "./view";
 
 let pullGen = 0;
 
@@ -133,4 +140,56 @@ export function pullLiveNow(): boolean {
   // A History edit, Push/Pull's own included, is typed in its panel: a drag would add a step beside the one edited.
   if (S.lens || S.editing) return false;
   return true;
+}
+
+export function bindPull() {
+  // --- P1: face push/pull. The default when no other model tool is open. ---
+  if (fx.model) {
+    const pull = mountPull(fx.model, {
+      live: pullLiveNow,
+      toolOpen: () => openModelTool() === "pushpull",
+      solid: () => viewed(),
+      pose: () => openPose(),
+      selectedFaces: () => S.picks.filter((pick) => pick.kind === "face").map((pick) => pick.index),
+      distance: () => num("#modelPull"),
+      setField(distance) {
+        const input = document.querySelector<HTMLInputElement>("#modelPull");
+        if (!input || document.activeElement === input) return;
+        input.value = pullFieldText(distance);
+      },
+      readout,
+      parameters: () => currentParams(),
+      hold(on) {
+        S.pullProbe = on;
+      },
+      armPreview: setAllowPullPreview,
+      previewFresh: modelPreviewFresh,
+      probe(op) {
+        probePull(op);
+      },
+      clearPreview: clearPullPreview,
+      apply: applyPull,
+      edit: editPull,
+      busy: () => S.busy || S.jumping,
+      current: () => treeOf(S.open)?.current ?? null,
+    });
+    S.syncPullDrag = () => {
+      pull.sync();
+      syncPullDiameter();
+    };
+    S.pullPanel = pull;
+    // A typed diameter is the distance that reaches it: Distance follows, and the panel checks that as it would a typed distance.
+    document.querySelector<HTMLInputElement>("#modelPullDiameter")?.addEventListener("input", (ev) => {
+      // An emptied field is not a diameter of 0: Distance waits for a number.
+      const text = (ev.currentTarget as HTMLInputElement).value.trim();
+      const typed = Number(text);
+      const distance = text !== "" && Number.isFinite(typed) && typed > 0 ? pull.pickedDistance(typed) : null;
+      const field = document.querySelector<HTMLInputElement>("#modelPull");
+      if (distance == null || !field) return;
+      field.value = pullFieldText(distance);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    S.endPullDrag = () => pull.end();
+    setPullLive(() => pull.sync());
+  }
 }

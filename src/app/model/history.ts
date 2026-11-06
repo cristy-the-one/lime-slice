@@ -20,6 +20,22 @@ import { cutHeldAgain } from "./split-apply";
 import { showNode, undoNode } from "./tree";
 import { syncUndo } from "./undo";
 import { objectPose, present, viewed } from "./view";
+import { editRefusal, toolEditRefusal } from "../../model-edit";
+import { rowKey } from "../../model-history";
+import { isRepeatTool, repeatSourceIds, toggleRepeatSource } from "../../model-repeat";
+import { recipesUnavailable } from "../../recipe/runtime";
+import { openModelTool, openPlaceTool, syncModelChrome } from "../../ui/model-chrome";
+import { mountModelHistory, paintRepeatSources } from "../../ui/model-history";
+import { pluginAuthor } from "../../ui/plugins-panel";
+import { fx } from "../fx";
+import { takeEdgeStep } from "./edges";
+import { startEdit } from "./edit";
+import { exportPieceFiles, exportsRow } from "./export";
+import { cancelPluginFacePick, plateSketches, startPluginFacePick } from "./pick";
+import { resetPose } from "./place";
+import { savePluginRow, useLibraryVersion } from "./plugin-panel";
+import { rebuildPluginRow } from "./plugins";
+import { keepStale, reaimStale } from "./transition";
 
 let unmadeBatches: MadeObject[][] = [];
 
@@ -182,4 +198,72 @@ export function dropBranch(row: RowKey): boolean {
   syncUndo();
   readout(about(viewed() ?? at.solid));
   return true;
+}
+
+export function bindHistory() {
+  mountModelHistory({
+    jump(row) {
+      // --- A5. While Fillet or Chamfer takes a step's edges, a history row chooses that step. ---
+      if (takeEdgeStep(row)) return;
+      const step = ownStep(row);
+      if (step != null) void jumpTo(step);
+      else void peekTool(row);
+    },
+    rename: renameStep,
+    dropRefusal: whyKeepBranch,
+    drop: dropBranch,
+    editRefusal(row) {
+      const tree = treeOf(S.open);
+      const step = tree ? rowStep(modelTrees, tree, row) : null;
+      if (!step) return "This step is no longer in the history.";
+      return step.joins.length === 0 ? editRefusal(step.tree, step.id) : toolEditRefusal(step.tree, step.joins, step.id);
+    },
+    edit(row) {
+      // Shift+E away from History edits the step shown; while an edit is open that is its parent, so the key waits.
+      const tree = treeOf(S.open);
+      if (row != null) void startEdit(row);
+      else if (tree && !S.editing) void startEdit(S.lens?.row ?? rowKey([], tree.current));
+    },
+    exportable: exportsRow,
+    exportPieces: (row) => void exportPieceFiles(row),
+    openPlace: openPlaceTool,
+    resetPosition: resetPose,
+    // --- A10. Hovering or focusing a row tints the faces that step made.
+    highlight(id) {
+      fx.model?.setStepHighlight(id);
+    },
+    // --- Print transitions (decision 5): the note's Re-aim and Keep.
+    reaim: () => void reaimStale(),
+    keepPose: () => keepStale(S.open?.objectId ?? null),
+    // --- Plugin steps (milestone 6): a plugin step's values change in the card and rebuild here.
+    pluginRunner: recipesUnavailable,
+    async pluginRebuild(row, changes, edited) {
+      const next = await rebuildPluginRow(row, changes, edited);
+      return next ? { row: next } : { reason: S.readoutText || "The step was not rebuilt." };
+    },
+    pluginSketches: () => plateSketches(),
+    pluginPickFace: (done) => startPluginFacePick(done),
+    pluginCancelPick: () => cancelPluginFacePick(false),
+    // --- Milestone 7: Use vN from the library, Save as plugin… for a draft, and the author the dialog starts with.
+    async pluginUseVersion(row) {
+      const next = await useLibraryVersion(row);
+      return next ? { row: next } : { reason: S.readoutText || "The step was not rebuilt." };
+    },
+    pluginSave: (row, words) => savePluginRow(row, words),
+    pluginAuthor,
+    // --- A4. Ctrl-click adds or removes a step of this solid. A tool's step is not one of those. ---
+    picking: () => isRepeatTool(openModelTool()) && !S.lens,
+    pickSource(row) {
+      if (!isRepeatTool(openModelTool())) return false;
+      const parsed = readRow(row);
+      if (!parsed || parsed.via.length !== 0) {
+        readout("A pattern repeats a step of this solid.");
+        return true;
+      }
+      toggleRepeatSource(parsed.id);
+      paintRepeatSources(repeatSourceIds());
+      syncModelChrome(S.picks);
+      return true;
+    },
+  });
 }
