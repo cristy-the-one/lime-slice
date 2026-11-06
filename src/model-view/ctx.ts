@@ -190,7 +190,7 @@ export interface ViewCtx {
   publishGhostBox: () => void;
   measureSolid: (positions: Float32Array) => void;
   setPosedMatrix: (next: Affine) => void;
-  frameBox: (box: Bounds) => void;
+  frameBox: (box: Box) => void;
   publishCamera: () => void;
   kick: () => void;
   resize: () => void;

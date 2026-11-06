@@ -85,15 +85,15 @@ writeFileSync(join(workspace, "notes.txt"), "not a font either");
 
 const engine = loadEngineWorker(root);
 const session = new Session(engine);
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
-const refused = async (name: string, args: unknown) => (await call(name, args).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, any>;
-const volume = async (object: string, s: Session = session) => Number(((await s.call("model_describe", { object, limit: 1 })) as Record<string, any>).volumeMm3);
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
+const refused = async (name: string, args: unknown) => (await call(name, args).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, unknown>;
+const volume = async (object: string, s: Session = session) => Number(((await s.call("model_describe", { object, limit: 1 })) as Record<string, unknown>).volumeMm3);
 
 /** A 40 × 20 × 10 block and its top face. */
 async function block(s: Session = session): Promise<{ object: string; face: number; before: number }> {
-  const made = (await s.call("solid_new", { primitive: "box", dx: 40, dy: 20, dz: 10 })) as Record<string, any>;
+  const made = (await s.call("solid_new", { primitive: "box", dx: 40, dy: 20, dz: 10 })) as Record<string, unknown>;
   const object = String(made.object);
-  const top = (await s.call("faces_find", { object, normal: [0, 0, 1], limit: 1 })) as Record<string, any>;
+  const top = (await s.call("faces_find", { object, normal: [0, 0, 1], limit: 1 })) as Record<string, unknown>;
   return { object, face: (top.faces as { index: number }[])[0]!.index, before: await volume(object, s) };
 }
 const text = (face: number, extra: Record<string, unknown>) => ({ kind: "text", faceIndex: face, text: "LOT 42", height: 5, depth: 0.8, ...extra });
@@ -138,21 +138,21 @@ check("its fonts map holds one record, the file under its SHA-256", records.leng
 check("whole, byte for byte, because its licence allows embedding", records.length === 1 && Buffer.from(base64ToBytes(records[0]![1].bytesBase64)!).equals(Buffer.from(plex)));
 
 const reopened = new Session(engine);
-const opened = (await reopened.call("project_open", { path: "lettered.lime" })) as Record<string, any>;
+const opened = (await reopened.call("project_open", { path: "lettered.lime" })) as Record<string, unknown>;
 check("a new session opens it", opened.ok === true && !opened.fontNotes, JSON.stringify(opened));
 const object = String((opened.objects as { object: string }[]).find((row) => row.object !== undefined)?.object);
 check("and the lettered solid is as it was", near(await volume(object, reopened), first.before + fileAdded, 1e-6), `${await volume(object, reopened)}`);
-const again = (await reopened.call("faces_find", { object, normal: [0, 0, 1], limit: 50 })) as Record<string, any>;
+const again = (await reopened.call("faces_find", { object, normal: [0, 0, 1], limit: 50 })) as Record<string, unknown>;
 const biggest = (again.faces as { index: number; areaMm2: number }[]).reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a));
-const editAgain = (await reopened.call("model_apply", { object, op: text(biggest.index, { font: name, at: { u: -14, v: 0 }, text: "AB 1", height: 3 }) })) as Record<string, any>;
+const editAgain = (await reopened.call("model_apply", { object, op: text(biggest.index, { font: name, at: { u: -14, v: 0 }, text: "AB 1", height: 3 }) })) as Record<string, unknown>;
 check("in the reopened project the font is there to name", editAgain.ok === true, JSON.stringify(editAgain));
 
 // --- A font whose licence forbids embedding: the project keeps only the outlines of the letters used.
 const alone = new Session(engine);
 const closed = await block(alone);
-const forbidden = (await alone.call("model_apply", { object: closed.object, op: text(closed.face, { fontFile: "closed.ttf", text: "LOT 42" }) })) as Record<string, any>;
+const forbidden = (await alone.call("model_apply", { object: closed.object, op: text(closed.face, { fontFile: "closed.ttf", text: "LOT 42" }) })) as Record<string, unknown>;
 check("a font with fsType restricted is still usable", forbidden.ok === true && near((await volume(closed.object, alone)) - closed.before, fileAdded, 1e-6), JSON.stringify(forbidden));
-const savedClosed = (await alone.call("project_save", { name: "closed" })) as Record<string, any>;
+const savedClosed = (await alone.call("project_save", { name: "closed" })) as Record<string, unknown>;
 check("it saves", savedClosed.ok === true, JSON.stringify(savedClosed));
 const closedText = readFileSync(join(workspace, "closed.lime"), "utf8");
 const closedDoc = (await plainDocument(closedText)) as { fonts?: Record<string, { name: string; bytesBase64: string; byteLength: number }> };
@@ -167,7 +167,7 @@ check("marked as outlines only", pack?.meta.embedding === "outlines");
 const printOnly = new Session(engine);
 const preview = await block(printOnly);
 await printOnly.call("model_apply", { object: preview.object, op: text(preview.face, { fontFile: "preview.ttf", text: "HI" }) });
-const previewSaved = (await printOnly.call("project_save", { name: "preview" })) as Record<string, any>;
+const previewSaved = (await printOnly.call("project_save", { name: "preview" })) as Record<string, unknown>;
 const previewDoc = (await plainDocument(readFileSync(join(workspace, "preview.lime"), "utf8"))) as { fonts?: Record<string, { bytesBase64: string }> };
 const previewRecord = Object.values(previewDoc.fonts ?? {});
 check("preview-and-print embedding is packed too", previewSaved.ok === true && previewRecord.length === 1 && base64ToBytes(previewRecord[0]!.bytesBase64)![0] === 0x7b);
@@ -182,17 +182,17 @@ const foreignPack = { ...pack, id: FOREIGN, sha256: "0".repeat(63) + "1" };
 rewritten.fonts = { [foreignPack.sha256]: meshRecord("closed.limefont", new TextEncoder().encode(JSON.stringify(foreignPack))) };
 writeFileSync(join(workspace, "elsewhere.lime"), await encodeProject(rewritten));
 const elsewhere = new Session(engine);
-const there = (await elsewhere.call("project_open", { path: "elsewhere.lime" })) as Record<string, any>;
+const there = (await elsewhere.call("project_open", { path: "elsewhere.lime" })) as Record<string, unknown>;
 check("a project with only the pack opens", there.ok === true && !there.fontNotes, JSON.stringify(there));
 const thereObject = String((there.objects as { object: string }[])[0]!.object);
 check("and rebuilds the lettered solid from the pack alone", near(await volume(thereObject, elsewhere), closed.before + fileAdded, 1e-6), `${await volume(thereObject, elsewhere)}`);
-const thereFaces = (await elsewhere.call("faces_find", { object: thereObject, normal: [0, 0, 1], limit: 50 })) as Record<string, any>;
+const thereFaces = (await elsewhere.call("faces_find", { object: thereObject, normal: [0, 0, 1], limit: 50 })) as Record<string, unknown>;
 const thereTop = (thereFaces.faces as { index: number; areaMm2: number }[]).reduce((a, b) => (b.areaMm2 > a.areaMm2 ? b : a)).index;
 const nameThere = /Id user:0000cafe0000cafe/.test(JSON.stringify(await elsewhere.call("guide", { kind: "text" })));
 check("the font is listed by its id in the project", nameThere);
-const sameLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "42 LOT", height: 3, at: { u: 0, v: -6.5 } }) })) as Record<string, any>;
+const sameLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "42 LOT", height: 3, at: { u: 0, v: -6.5 } }) })) as Record<string, unknown>;
 check("the same letters can be typed again", sameLetters.ok === true, JSON.stringify(sameLetters));
-const otherLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "LOT 4X", height: 3, at: { u: 0, v: 6.5 } }) })) as Record<string, any>;
+const otherLetters = (await elsewhere.call("model_apply", { object: thereObject, op: text(thereTop, { font: FOREIGN, text: "LOT 4X", height: 3, at: { u: 0, v: 6.5 } }) })) as Record<string, unknown>;
 check("a letter the project never used is named, with why", otherLetters.ok === false && /with only the letters it was used for/.test(JSON.stringify(otherLetters)) && /‘X’/.test(JSON.stringify(otherLetters)), JSON.stringify(otherLetters));
 
 // --- Refusals are sentences, and change nothing.

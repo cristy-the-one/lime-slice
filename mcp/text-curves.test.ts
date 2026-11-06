@@ -41,7 +41,7 @@ const near = (value: unknown, expected: number, tol = 0.02) => typeof value === 
 
 const engine = loadEngineWorker(root);
 const session = new Session(engine);
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
 
 /** A round part and its wall: the face of that kind. */
@@ -109,7 +109,7 @@ const cone = () => round("cone", { radius: 25, topRadius: 15, height: 40 }, "con
   const off = await call("model_apply", { object, op: text({ point: [-20, 0, 39], height: 6 }) });
   check("text off the end of the wall", off.ok === false && /The text runs off this face\. Move it, make it smaller, or put it on one face\./.test(JSON.stringify(off)), JSON.stringify(off).slice(0, 300));
   const direction = await call("model_apply", { object, op: text({ along: "sideways" }) }).catch((err: Error) => ({ ok: false, reason: err.message }));
-  check("a direction that is not one", (direction as Record<string, any>).ok === false, JSON.stringify(direction).slice(0, 300));
+  check("a direction that is not one", (direction as Record<string, unknown>).ok === false, JSON.stringify(direction).slice(0, 300));
   check("a refusal leaves the solid as it was", near(await volume(object), before, 1e-6));
   const thin = await round("cylinder", { radius: 5, height: 20 }, "cylinder");
   const deep = await call("model_apply", { object: thin.object, op: { kind: "text", faceIndex: thin.face, text: "I", font: "sans", height: 3, depth: 4.6, op: "cut" } });

@@ -43,9 +43,9 @@ const near = (value: unknown, expected: number, tol = 0.02) => typeof value === 
 
 const engine = loadEngineWorker(root);
 const session = new Session(engine);
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 /** A call the schema may turn away by throwing: its sentence, as a refusal. */
-const refused = async (name: string, args: unknown) => (await call(name, args).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, any>;
+const refused = async (name: string, args: unknown) => (await call(name, args).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, unknown>;
 const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
 
 /** A 40 × 20 × 10 block and its top face. */
