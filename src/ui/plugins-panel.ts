@@ -156,7 +156,7 @@ export function mountPluginsPanel(next: PluginsHost) {
     // Every kind is shown.
   }
   document.addEventListener("click", (ev) => {
-    if (ev.target instanceof Element && ev.target.closest("#modelMenuPlugins")) openPluginsPanel();
+    if (ev.target instanceof Element && ev.target.closest("#modelMenuPlugins, #modelEmptyPlugins")) openPluginsPanel();
   });
   const body = root();
   if (!body) return;
@@ -442,6 +442,7 @@ function listRow(row: PanelPlugin): HTMLElement {
   const button = el("button", "pp-pick") as HTMLButtonElement;
   button.type = "button";
   button.dataset.key = row.key;
+  button.dataset.badgeTarget = row.file.target;
   button.dataset.tip = row.file.description || row.file.title;
   const title = el("span", "pp-title");
   title.textContent = row.file.title;
@@ -460,6 +461,13 @@ function listRow(row: PanelPlugin): HTMLElement {
   const by = el("span", "pp-by");
   by.textContent = row.file.author && row.file.author !== "unknown" ? `By ${row.file.author}` : "Author unknown";
   button.append(top, desc, by);
+  // With no part open, a plugin that changes one is greyed and says what it needs; it still opens, to read its values.
+  if (row.file.target === "object" && !host?.partName()) {
+    button.dataset.needsPart = "";
+    button.dataset.tip = REASON.needsPartShort;
+    const need = Object.assign(el("span", "pp-need"), { textContent: REASON.needsPartShort });
+    button.append(need);
+  }
   li.append(button);
   return li;
 }
@@ -1422,7 +1430,14 @@ async function runNow(mode: "preview" | "apply") {
 /** The part on screen changed (another object, a step, Undo): the target line and the buttons follow, the form stays. */
 export function refreshPluginsPanel() {
   const plugin = current();
-  if (!pluginsPanelOpen() || !plugin) return;
+  if (!pluginsPanelOpen()) return;
+  // The list greys the plugins that change a part while none is open: it follows a part opening or closing.
+  if (!plugin) {
+    const greyed = !!root()?.querySelector(".pp-pick[data-needs-part]");
+    const needs = !!root()?.querySelector(".pp-pick[data-badge-target=object]") && !host?.partName();
+    if (greyed !== needs) paint();
+    return;
+  }
   const line = $<HTMLElement>("#modelPluginsTarget");
   if (line) line.textContent = targetLine(plugin);
   paintRun();

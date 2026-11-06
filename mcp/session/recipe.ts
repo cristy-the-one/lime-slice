@@ -11,6 +11,7 @@ import { solidView } from "../../src/modeling/model-calls.ts";
 import { dropped, pathTo, withNode, type ModelTree, type NodeId, type PluginStamp } from "../../src/model-tree.ts";
 import { replayedTree, replayOps } from "../../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../../src/plugin-step.ts";
+import { partNames, runSiblings } from "../../src/plugin-parts.ts";
 import { answerPick } from "../../src/recipe/picks.ts";
 import { answerTextOutline } from "../../src/recipe/text-outline.ts";
 import { fontById, isPenFont, isUserFont } from "../../src/modeling/text-fonts.ts";
@@ -82,6 +83,17 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       const bed: [number, number, number] = [printer.bedX, printer.bedY, printer.bedZ];
       if (stamp.context.nozzleMm !== this.library.nozzleMm) stepNotes.push(`Built for a ${formatMm(stamp.context.nozzleMm)} mm nozzle; this rebuild uses ${formatMm(this.library.nozzleMm)} mm.`);
       if (stamp.context.bedMm.some((v, i) => v !== bed[i])) stepNotes.push(`Built for a ${stamp.context.bedMm.map(formatMm).join(" × ")} mm bed; this rebuild uses ${bed.map(formatMm).join(" × ")} mm.`);
+      // --- One run, several parts (O4 as built): they change together, by the rerun of the entry that made them all,
+      // which replaces each in turn. A set the entry does not hold (the window made it, or the run changed a given
+      // part too), or one with steps after the run, which that rerun would drop, is refused with the way round.
+      const siblings = runSiblings(this.objects.map((obj) => ({ id: obj.id, tree: obj.tree ?? undefined })), pick.id, stepTarget.id);
+      if (siblings.length > 0) {
+        const entry = stepTarget.rustRecipe ? this.rustRecipes.get(stepTarget.rustRecipe) : undefined;
+        const together = pick.before === null && !!entry && siblings.every((id) => entry.objects.includes(id));
+        const names = partNames(siblings.map((id) => this.find(id)?.name ?? id));
+        if (!together) return refuse("rebuild-refused", `${stamp.plugin} made this part in one run with ${names}, and only a set this session made can change its values together, so nothing changed. Run the plugin again (recipe_run {plugin, params}) to make a new set, then remove the old parts with object_remove.`);
+        if (rebuild.later.length > 0) return refuse("rebuild-refused", `${stamp.plugin} made this part in one run with ${names}, and making them all again would drop the ${rebuild.later.length === 1 ? "step" : `${rebuild.later.length} steps`} after the run on this part, so nothing changed. Undo ${rebuild.later.length === 1 ? "that step" : "those steps"} first, or run the plugin again (recipe_run {plugin, params}) for a new set.`);
+      }
       if (pick.before !== null && rebuild.later.some((id) => tree.nodes.get(id)?.op?.kind === "partition")) {
         return refuse("rebuild-refused", "A split to print follows this plugin step, and a rebuild cannot cut its pieces again. Undo to before the split, rebuild, then split again.");
       }
@@ -338,8 +350,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   }
   // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
   // what, every node carries the run's id, and that run is one undo step, in the project too. A run over several
-  // parts keeps plain steps, each part's as one undo step for this session (O4). A part the run made and then joined
-  // into another (a tool, keepTool false) left the plate: it is no part of its own, so the run still stamps.
+  // parts stamps each of them with the same run id and values, each with its own fingerprint, as the desktop app's
+  // Plugins panel does (O4 as built, 2026-11-06). A part the run made and then joined into another (a tool, keepTool
+  // false) left the plate: it is no part of its own.
   const label = `recipe ${name}`;
   const parts = [...created.filter((id) => this.find(id)), ...[...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id)];
   const api = this.crateApi();
@@ -353,7 +366,16 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const only = parts.length === 1 && name !== "plugin_check" ? this.find(parts[0]!) : undefined;
   const stamped = only ? this.stampRun(only, touched.get(only.id) ?? null, created.includes(only.id), stampFields) : null;
-  if (parts.length > 1) notes.push(`${plugin?.title ?? name} made or changed ${parts.length} parts in one run, so its steps stay plain steps; run it again to change them.`);
+  /** The parts a run of several stamped, all with one run id. */
+  const stampedSet = new Set<string>();
+  if (parts.length > 1 && name !== "plugin_check") {
+    const runId = randomUUID().slice(0, 8);
+    for (const id of parts) {
+      const obj = this.find(id);
+      if (obj && this.stampRun(obj, touched.get(id) ?? null, created.includes(id), stampFields, runId)) stampedSet.add(id);
+    }
+    notes.push(`${plugin?.title ?? name} made or changed ${parts.length} parts in one run; each carries the run's stamp. recipe_run {object} on one of the parts it made makes them all again together.`);
+  }
   // --- A rebuild: the steps that followed the old run, built again on the new one. With the same values the solid
   // should be the stamp's; the reply says when it is not.
   let rebuilt: { replayed: number; broken?: string; sameSolid?: boolean } | undefined;
@@ -397,7 +419,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     if (!obj || before === null || end === null || end === before) continue;
     // A rebuild is one undo step back to the old branch as it was shown; a stamped run is one by its run id.
     if (rebuild && branchRebuild && obj === rebuild.obj) obj.groups = [...(obj.groups ?? []), { start: rebuild.from, end, label }];
-    else if (!stamped || obj !== only) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
+    else if ((!stamped || obj !== only) && !stampedSet.has(obj.id)) obj.groups = [...(obj.groups ?? []), { start: before, end, label }];
   }
   // --- I22. A rerun or a replace hands each old object's handle, place, and name to the new object in its turn, so
   // the part keeps its handle with a new history; old objects with no new one leave the plate.
@@ -582,7 +604,7 @@ async function takeOver(this: Session, oldId: string, newId: string, keepPlace: 
  * --- Plugin steps (D8). Marks a run's nodes on the one part it made or changed: the whole path when it made the part
  * (the stamp on the root), else the steps after `before`. Returns the run, or null when the path does not hold it.
  */
-function stampRun(this: Session, obj: PlateObject, before: number | null, made: boolean, stamp: Omit<PluginStamp, "fingerprint">): StampedRun | null {
+function stampRun(this: Session, obj: PlateObject, before: number | null, made: boolean, stamp: Omit<PluginStamp, "fingerprint">, runId = randomUUID().slice(0, 8)): StampedRun | null {
   const tree = obj.tree;
   if (!tree) return null;
   const path = pathTo(tree, tree.current);
@@ -590,7 +612,7 @@ function stampRun(this: Session, obj: PlateObject, before: number | null, made: 
   const ids = made ? path : at >= 0 ? path.slice(at + 1) : [];
   if (ids.length === 0) return null;
   const fingerprint = tree.nodes.get(tree.current)?.fingerprint ?? obj.solid?.fingerprint ?? null;
-  obj.tree = markedRun(tree, ids, randomUUID().slice(0, 8), { ...stamp, fingerprint });
+  obj.tree = markedRun(tree, ids, runId, { ...stamp, fingerprint });
   return runEndingAt(obj.tree, tree.current);
 }
 

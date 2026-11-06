@@ -299,7 +299,9 @@ anything that reads trees today. `model-tree-file.ts` reads and writes both fiel
   the form says "Built for a 0.4 mm nozzle; a rebuild uses 0.6 mm."
 - **Several parts in one run.** v1 stamps a run that made at most one part and changed at most the part it was given.
   A run that made several parts keeps them as plain parts with a note, "Made by bolt-circle-flange v3 with 2 other
-  parts; run it again from Plugins to change it." (Decided: O4, section 13.)
+  parts; run it again from Plugins to change it." (Decided: O4, section 13.) **Superseded 2026-11-06** (As built, "a
+  plugin run that makes several parts", section 14): every part such a run keeps is stamped, one run id for them all,
+  and the Plugins panel makes them all.
 
 ### D9. When the source changed or is gone
 
@@ -396,7 +398,8 @@ What this plan adds:
 ### D13. A Plugins panel in the Model tab
 
 - **Where:** a "Plugins" button in the Model toolbar (beside Parameters in the overflow while the toolbar is full),
-  shortcut Ctrl+Alt+L, opening a dock panel the way Parameters does (`openDock`).
+  shortcut Ctrl+Alt+L, opening a dock panel the way Parameters does (`openDock`). It needs no part open: with an
+  empty plate Model's empty card offers **Run a plugin…** (As built after milestone 10, 2026-11-06).
 - **List:** a search field (title, description, plugin name), then sections: "In this project", "Your plugins",
   "Samples". Each row: title, one line of description, version, author, and badges (`imported`, `sample`, `needs a
   part`). Sorted by last used.
@@ -500,7 +503,9 @@ The owner answered on 2026-11-01: the plan's choice stands for every question, a
 - **O2. File format.** One `.rs` file with a `//!` front matter header.
 - **O3. MCP writes outside the workspace.** The MCP server may write plugin files to the app's plugin folder,
   `<slug>.rs` files only.
-- **O4. Multi-part runs.** Plain parts with a note in v1.
+- **O4. Multi-part runs.** Plain parts with a note in v1. Changed on 2026-11-06 at the owner's request (a 20-part
+  puzzle box the window refused): each part stamped, one run id shared, the window makes them all (section 14, As
+  built after milestone 10).
 - **O5. Signatures.** No signing in v1; the hash is shown.
 - **O6. Samples.** Yes, shipped in the installer, but in a later release than the plugin milestones. The first sample
   is the owner's gear pyramid recipe (`gear_pyramid.rs`: a ring of ten interlocked involute spur gears, 16 and 10
@@ -813,7 +818,8 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
      of the part (the pane's preview, as a tool's dry run), then goes back to the shown step, drops the run's steps and
      closes the trees it opened: History and the plate keep what they had. A new part's Apply is a new plate object,
      stamped on its root, as one Prepare step. O4 holds for fresh runs too: a run that makes several parts, or changes
-     the part and makes another, is refused with a sentence; so are the calls the window refuses (fit coupons,
+     the part and makes another, is refused with a sentence (since 2026-11-06 the window makes them all: see the As
+     built note after milestone 10); so are the calls the window refuses (fit coupons,
      assemblies, interference, planners), with their own sentences. Live previews 300 ms after the last change while the last run took under 1 s.
      Apply keeps the run as one History row, stamped (D8) so its pencil changes it later, and the project keeps the
      plugin's file. D13's "dry run" is a real run taken back, as the MCP's dry mode is.
@@ -998,6 +1004,46 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
      data and a face), `mcp/plugin-app.test.ts` (a picked face rebuilt through the MCP and the app: the same stamp, ops
      and solid), `e2e/model-plugin-picks.spec.ts` (in `test:smoke`: Pick face in the panel, Apply, Pick face in the
      card, Rebuild on the other face, Undo). Screenshots in `test-results/plugin-picks/`.
+
+   **As built (a plugin run that makes several parts, and Plugins with nothing open, branch
+   `claude/plugin-multi-part-app`):** the owner's 20-part puzzle box was refused by the window ("the window keeps one
+   part per run for now"), and running a plugin that builds its own parts needed a throw-away part to open Model's
+   Plugins panel. Both are gone.
+   - **The run** (`runPluginFresh`, `src/recipe/apply.ts`) keeps every part it made, and the given part when it
+     changed it, as `kept`: each tree stamped with the same values and run id and its own fingerprint. The part the run
+     ended on (`done`) is the one shown. The only refusal left for size is a real limit, more than 100 parts
+     (`MAX_RUN_PARTS`), which says to lower the count.
+   - **The MCP stamps the same** (`mcp/session/recipe.ts`): a run over several parts stamps each, one run id, instead of
+     O4's plain steps; its note says so. `recipe_run {object}` on one part of a set the session made reruns the entry and
+     replaces every part in turn (the existing rerun), so the set changes together with a new shared run id. A set the
+     entry does not hold (made in the window, or a run that also changed a given part), or one with steps after the run
+     (which the rerun would drop), is refused with the way round.
+   - **Preview** draws every part as one shape (`mergedSolid`, `src/plugin-parts.ts`): the given part as changed, each
+     made part where Apply will put it (`madePoses`: the plugin's `model_place` pose, else beside the plate's parts and
+     the parts laid before it, as a new solid is placed). Cancel takes them all back. The model view now draws a preview
+     with no solid open, in model space, and the camera frames it.
+   - **Apply** puts each made part on the plate as its own object, named as the plugin named it (`base`, `base 2` on a
+     clash), in the order made, in one Prepare step: one Undo takes all of them back, Redo brings them again. Model opens
+     the part the run ended on, with the plugin's History row. A run that also changed the given part keeps that as one
+     History row on it, with its own Undo (two undo stacks: a part's steps and the plate's objects; joining them is a
+     follow-up). Assemblies: the MCP does not group a plugin's parts into an assembly, so neither does the window.
+   - **Changing the values later** of one part of a set is not built in the window yet: History's Rebuild (and Use vN)
+     on such a part says so in one sentence before anything runs, "Parts box made this part in one run with lid and peg,
+     and the window cannot yet change the values of a run of several parts, so nothing changed. Run Parts box again from
+     Plugins with the new values, then remove the old parts." The standard, as the MCP has it: the run id is shared, the
+     plugin runs again with no part, each new part replaces the old part in its place in order (keeping its id, name
+     and place unless the run placed it), extra parts are added, missing ones removed, all one undo step. Follow-up.
+     A single-part step whose new values would make more parts says it rebuilds only its own part and how to get all.
+   - **Plugins with nothing open:** Model's empty card has **Run a plugin…**, and Ctrl+Alt+L opens the panel with an
+     empty plate or a mesh open. Plugins that build their own parts list and run; one that changes a part is greyed with
+     "Needs a part: open one in Model, then run it." (its form still opens). The list follows a part opening.
+   - **Speed:** Live previews only while the last run took under 1 s and never while one runs, so a 20-part gear set
+     previews on the button; a value typed during a run previews once it ends (unchanged).
+   - Tests: `src/plugin-parts.test.ts` (poses, the merged shape, names, a run's other parts), `mcp/plugin-app.test.ts`
+     (a three-part plugin through the MCP and the window: the same names, stored ops, stamps and fingerprints, one run
+     id; the MCP rebuilds the set together), `e2e/model-plugin-parts.spec.ts` (in `test:smoke`: an empty plate, Run a
+     plugin…, greyed plugins, Preview of three parts and of four, Cancel, Apply three objects, Undo and Redo, a value
+     change on a set). Screenshots in `test-results/plugin-parts/`.
 
 Milestones 1 and 2 are useful on their own and need no app change. 3 and 4 make plugin parts live through MCP and
 readable in the app. 5 to 7 bring running into the app. 8 and 9 make sharing and the long term safe; 8 may move ahead

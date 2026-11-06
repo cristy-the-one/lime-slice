@@ -101,6 +101,7 @@ src/model-space.test.ts
 src/model-tree.test.ts
 src/model-history.test.ts
 src/plugin-step.test.ts
+src/plugin-parts.test.ts
 src/plugins/library.test.ts
 src/plugins/share.test.ts
 src/model-hole.test.ts

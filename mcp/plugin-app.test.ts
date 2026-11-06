@@ -494,6 +494,66 @@ if (viaData) {
   } else check("outline plate: the library holds the plugin", false, file);
 }
 
+// --- 8. A plugin that makes several parts (O4 as built, 2026-11-06): a base with a hole, a lid it places above the
+// base, and a peg. The window's fresh run (the Plugins panel's Preview and Apply) keeps all three, as recipe_run
+// {plugin} does: the same names, the same stored ops and solids, each stamped with the same values and its own
+// fingerprint, all three with one run id. Then the MCP changes the set's values together from one of its parts.
+{
+  const source = [
+    "use lime_recipe::{ops, Json, Session};",
+    "fn op(text: &str) -> Json { Json::parse(text).unwrap() }",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let w = s.number("width", 20.0).range(10.0, 40.0).unit("mm").label("Width").get();',
+    '    let base = s.solid_new(ops::cuboid(w, 20.0, 8.0).set("name", "base")).unwrap();',
+    '    s.apply(&base, ops::boolean("cut", ops::cylinder(3.0, 20.0), [0.0, 0.0, -5.0])).unwrap();',
+    '    let lid = s.solid_new(ops::cuboid(w, 20.0, 2.0).set("name", "lid")).unwrap();',
+    '    s.call("model_place", op(&format!(r#"{{"object":"{}","x":0,"y":0,"z":12}}"#, lid.object))).unwrap();',
+    '    let _peg = s.solid_new(ops::cylinder(2.5, 10.0).set("name", "peg")).unwrap();',
+    "    s.done(&base);",
+    "}",
+    "",
+  ].join("\n");
+  const engineE = real ? loadEngineWorker(root) : fakeEngine();
+  const e = new Session(engineE);
+  const ei = e as unknown as Internal;
+  const first = await e.call("recipe_run", { source, name: "three-part-box", params: { width: 24 }, keep: { title: "Three part box", description: "A base, a lid above it, and a peg." } });
+  const madeIds = (first.created as string[] | undefined) ?? [];
+  check("three part box: the MCP run makes three parts and keeps the plugin", first.ok === true && madeIds.length === 3 && !!first.kept, first);
+  const mcpParts = madeIds.map((id) => ei.find(id)!);
+  const mcpRuns = mcpParts.map((obj) => runsOnPath(obj.tree)[0]);
+  check("three part box: the MCP stamps each part, one run id for all", mcpRuns.every((row) => !!row?.stamp && row.before === null) && new Set(mcpRuns.map((row) => row?.id)).size === 1, mcpRuns);
+  const file = readPlugin("three-part-box");
+  if (file && !("reason" in file) && mcpRuns.every((row) => row?.stamp)) {
+    const h = file.header;
+    const engineF = real ? loadEngineWorker(root) : fakeEngine();
+    const f = new Session(engineF);
+    const fresh = await runPluginFresh({ part: null, plugin: { id: h.plugin, version: h.version, sha256: file.sha256, api: h.api }, body: file.body, params: { width: 24 }, context: mcpRuns[0]!.stamp!.context, recipes: host, engine: appEngine(engineF), env: envOf(f, "box"), runId: "c0c0c0c0" });
+    check("three part box: the window's run keeps all three parts", fresh.ok === true && fresh.kept.length === 3, fresh.ok ? fresh.kept.map((row) => row.part.name) : fresh.reason);
+    if (fresh.ok) {
+      check("three part box: named as the plugin named them, in order", JSON.stringify(fresh.kept.map((row) => row.part.name)) === JSON.stringify(mcpParts.map((obj) => obj.name)), { app: fresh.kept.map((row) => row.part.name), mcp: mcpParts.map((obj) => obj.name) });
+      check("three part box: the part shown is the one the run ended on", fresh.made?.name === "base" && fresh.tree === fresh.kept[0]!.tree, fresh.made?.name);
+      check("three part box: every part carries the run id on its whole path", fresh.kept.every((row) => pathTo(row.tree, row.tree.current).every((id) => row.tree.nodes.get(id)?.run?.id === "c0c0c0c0")), null);
+      fresh.kept.forEach((row, i) => {
+        const mcp = mcpRuns[i]!;
+        const { fingerprint: appPrint, ...appStamp } = row.stamp;
+        const { fingerprint: mcpPrint, ...mcpStamp } = mcp.stamp!;
+        check(`three part box: ${row.part.name} has the MCP's stamp`, JSON.stringify(appStamp) === JSON.stringify(mcpStamp), { app: appStamp, mcp: mcpStamp });
+        check(`three part box: ${row.part.name} has the MCP's fingerprint`, JSON.stringify(appPrint) === JSON.stringify(mcpPrint), { app: appPrint, mcp: mcpPrint });
+        check(`three part box: ${row.part.name} has the MCP's stored ops`, JSON.stringify(pathOps(row.tree)) === JSON.stringify(pathOps(mcpParts[i]!.tree)), { app: pathOps(row.tree), mcp: pathOps(mcpParts[i]!.tree) });
+      });
+      const lid = fresh.kept.find((row) => row.part.name === "lid");
+      check("three part box: the lid stands where the plugin placed it, on both", !!lid?.part.posed && JSON.stringify(lid.part.modelPose.t) === JSON.stringify(mcpParts[1]!.modelPose?.t), { app: lid?.part.modelPose, mcp: mcpParts[1]!.modelPose });
+    }
+    // The MCP changes the set's values together, from any one of its parts: each part keeps its handle.
+    const again = await e.call("recipe_run", { object: madeIds[1], params: { width: 30 } });
+    const rerun = madeIds.map((id) => ei.find(id));
+    const newRuns = rerun.map((obj) => (obj ? runsOnPath(obj.tree)[0] : undefined));
+    check("three part box: the MCP rebuilds all three together, each keeping its handle", again.ok === true && rerun.every(Boolean) && JSON.stringify(again.replaced) === JSON.stringify(madeIds), again);
+    check("three part box: the rebuilt set shares a new run id and the new value", new Set(newRuns.map((row) => row?.id)).size === 1 && newRuns[0]?.id !== mcpRuns[0]!.id && newRuns.every((row) => row?.stamp?.params.width === 30), newRuns.map((row) => [row?.id, row?.stamp?.params]));
+  } else check("three part box: the library holds the plugin", false, file);
+}
+
 if (failed) {
   console.error(`plugin-app: ${failed} failed`);
   process.exit(1);

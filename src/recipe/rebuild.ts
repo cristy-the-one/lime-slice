@@ -177,10 +177,10 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
   const made = calls.all.filter((row) => row.origin === "made" && !row.consumed);
   let target: RunPart;
   if (madeIt) {
-    if (made.length !== 1) return refuse(made.length === 0 ? "With these values the plugin made no part, so the part was left as it was." : `With these values the plugin makes ${made.length} parts; a plugin step stands for one. Run it again from Plugins to make them.`);
+    if (made.length !== 1) return refuse(made.length === 0 ? "With these values the plugin made no part, so the part was left as it was." : `With these values the plugin makes ${made.length} parts, and this step rebuilds only the one it made before, so nothing changed. To get all ${made.length}, run the plugin from Plugins with these values: each part lands on the plate as its own object.`);
     target = made[0]!;
   } else {
-    if (made.length > 0) return refuse(`With these values the plugin also makes ${made.map((row) => row.name).join(", ")}; a plugin step changes only its own part. Run it again from Plugins to make ${made.length === 1 ? "it" : "them"}.`);
+    if (made.length > 0) return refuse(`With these values the plugin also makes ${made.map((row) => row.name).join(", ")}, and this step rebuilds only its own part, so nothing changed. To get ${made.length === 1 ? "it" : "them"} too, undo this step, then run the plugin from Plugins with these values.`);
     target = given!;
   }
   if (out.done.object !== target.id) return refuse(`The plugin ended on ${out.done.object || "no part"}, not on ${madeIt ? "the part it made" : part.id}; nothing was changed.`);

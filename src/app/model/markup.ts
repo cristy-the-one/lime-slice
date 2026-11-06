@@ -633,6 +633,8 @@ const BODY = `
                 <button class="btn" id="modelEmptyOpen" type="button">Open a file</button>
                 <!-- --- S2 sketch --- an empty plate sketches on the bed. -->
                 <button class="btn" id="modelEmptySketch" type="button">Sketch on the bed</button>
+                <!-- --- Plugins: one that builds its own parts runs with nothing open (Ctrl+Alt+L too). --- -->
+                <button class="btn" id="modelEmptyPlugins" type="button" data-tip="Run a plugin that builds its own parts. Ctrl+Alt+L">Run a plugin…</button>
               </div>
             </div>
           </div>

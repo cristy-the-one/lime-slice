@@ -2,8 +2,9 @@
  * --- The Plugins panel's run (docs/plan-recipe-plugins.md D13, milestone 7). A plugin from the library or the project
  * runs fresh: on the part on screen from its shown step, or with no part when it makes its own, its calls answered by
  * the app (`./app-calls.ts`) as a rebuild's are. At `done` the run is stamped (D8) so the step can change later: on the
- * part's new branch, or on the root of the one part it made. Preview shows that solid and takes the run back; Apply
- * keeps it as one History row (or one new object) and one undo step.
+ * part's new branch, and on the root of every part it made, one run id shared by them all (as the MCP stamps them).
+ * Preview shows those solids and takes the run back; Apply keeps them as one History row on the given part and one new
+ * object per made part, all one undo step.
  */
 import { gotoRequest } from "../model-request.ts";
 import type { ModelTree, NodeId, PluginStamp, PluginValue } from "../model-tree.ts";
@@ -41,18 +42,34 @@ export interface RunTrace {
   close?: string[];
 }
 
+/** At most this many parts one run keeps (made, and the given part): more is a count gone wrong, not a plate. */
+export const MAX_RUN_PARTS = 100;
+
+/** One part a run kept: its tree with the run stamped, the engine's reply for its shown step, and its solid. */
+export interface KeptPart {
+  part: RunPart;
+  tree: ModelTree;
+  body: Record<string, unknown>;
+  solid: SolidView;
+  stamp: PluginStamp;
+  /** The run's steps on it: a made part's whole path, the given part's steps after where it stood. */
+  ids: NodeId[];
+}
+
 export type PluginRunOutcome =
   | ({
       ok: true;
-      /** The kept part's tree with the run stamped, showing its last step: the given part's, or the made part's. */
+      /** The part the run ended on (`done`): its tree with the run stamped, showing its last step. */
       tree: ModelTree;
       /** The engine's reply for that step: the solid to show. */
       body: Record<string, unknown>;
       solid: SolidView;
       stamp: PluginStamp;
       ids: NodeId[];
-      /** The part the run made, when it made one (then the given part, if any, is unchanged). */
+      /** The part the run ended on, when the run made it. */
       made: RunPart | null;
+      /** Every part the run kept: the given part first when the run changed it, then each part it made, in order. */
+      kept: KeptPart[];
       /** Other trees the kept steps name: a split's half, a split to print's pieces, a joined tool. */
       others: RunPart[];
       notes: string[];
@@ -98,19 +115,28 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
     return { ok: false as const, reason, ...extra, notes, ...trace };
   };
   if (!out.ok || !out.done) return refuse(out.reason ?? "The plugin failed.", out.line !== undefined ? { line: out.line } : {});
-  // --- O4. A plugin step stands for one part: the one it made, or the one it was given.
+  // --- Several parts (O4 as built in the window): every part the run made is kept, and the given part when the run
+  // changed it, each stamped with the same run id and values and its own fingerprint, as the MCP stamps them.
   const made = calls.all.filter((row) => row.origin === "made" && !row.consumed);
   const changedGiven = !!given && runSteps(given).length > 0;
-  if (made.length > 1) return refuse(`With these values the plugin makes ${made.length} parts, and the window keeps one part per run for now. Run it over MCP (recipe_run {plugin}) to make them all.`);
-  if (made.length === 1 && changedGiven) return refuse(`The plugin both changed ${given!.name} and made ${made[0]!.name}, and the window keeps one part per run for now. Run it over MCP (recipe_run {plugin}).`);
-  const target = made[0] ?? given;
-  if (!target) return refuse("The plugin made no part. Change a value, then run it again.");
-  if (out.done.object !== target.id) return refuse(`The plugin ended on ${out.done.object || "no part"}, not on ${target.name}, so nothing was kept. Run it on the part it makes or changes.`);
-  const ids = runSteps(target);
-  if (ids.length === 0) return refuse(`The plugin changed nothing on ${target.name}. Check that ${target.name} is the kind of part this plugin works on (its description says what it needs), or change a value and run it again.`);
-  if (!target.solid) return refuse("The solid the plugin built could not be read. Run it again.");
+  const parts = [...(changedGiven ? [given!] : []), ...made];
+  if (parts.length === 0) {
+    if (given) return refuse(`The plugin changed nothing on ${given.name}. Check that ${given.name} is the kind of part this plugin works on (its description says what it needs), or change a value and run it again.`);
+    return refuse("The plugin made no part. Change a value, then run it again.");
+  }
+  if (parts.length > MAX_RUN_PARTS) return refuse(`With these values the plugin makes ${parts.length} parts, more than the ${MAX_RUN_PARTS} one run may keep. Lower the count it makes, then run it again.`);
+  const target = parts.find((row) => row.id === out.done!.object);
+  if (!target) return refuse(`The plugin ended on ${out.done.object || "no part"}, not on ${parts.length === 1 ? parts[0]!.name : "a part it made or changed"}, so nothing was kept. Run it on the part it makes or changes.`);
+  const unread = parts.find((row) => !row.solid);
+  if (unread) return refuse(`The solid the plugin built for ${unread.name} could not be read. Run it again.`);
   const params = Object.fromEntries(Object.entries({ ...input.params, ...calls.picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"];
-  const stamp: PluginStamp = { plugin: input.plugin.id, version: input.plugin.version, sha256: input.plugin.sha256, api: input.plugin.api, params, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, fingerprint: target.solid.fingerprint ?? null };
-  const others = calls.all.filter((row) => row !== target && row.origin !== "given" && (row.origin !== "made" || row.consumed));
-  return { ok: true, tree: markedRun(target.tree, ids, input.runId, stamp), body: target.body ?? {}, solid: target.solid, stamp, ids, made: made[0] ?? null, others, notes, ...trace };
+  const fields: Omit<PluginStamp, "fingerprint"> = { plugin: input.plugin.id, version: input.plugin.version, sha256: input.plugin.sha256, api: input.plugin.api, params, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm } };
+  const kept: KeptPart[] = parts.map((row) => {
+    const ids = runSteps(row);
+    const stamp: PluginStamp = { ...fields, fingerprint: row.solid!.fingerprint ?? null };
+    return { part: row, tree: markedRun(row.tree, ids, input.runId, stamp), body: row.body ?? {}, solid: row.solid!, stamp, ids };
+  });
+  const shown = kept[parts.indexOf(target)]!;
+  const others = calls.all.filter((row) => !parts.includes(row) && row.origin !== "given" && (row.origin !== "made" || row.consumed));
+  return { ok: true, tree: shown.tree, body: shown.body, solid: shown.solid, stamp: shown.stamp, ids: shown.ids, made: target.origin === "made" ? target : null, kept, others, notes, ...trace };
 }
