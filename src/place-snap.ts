@@ -424,7 +424,7 @@ export const ALIGN_LABELS: Record<AlignRelation, string> = {
   behind: "Behind",
   "centre-x": "Centre X",
   "centre-y": "Centre Y",
-  centre: "Centre X and Y",
+  centre: "Centre both",
   "on-top": "On top",
 };
 

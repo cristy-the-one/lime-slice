@@ -487,3 +487,20 @@ table.params th:first-child, table.params td:first-child { text-align: left; fon
 .cal-help { margin: 0 0 var(--space-2); font-size: var(--fs-2); line-height: 1.4; color: var(--text-faint); }
 .cal .row-tools { flex-wrap: wrap; }
 .cal .meta { margin-top: var(--space-2); }
+
+/* The Objects card's folded part: rotation and Align to... A quiet disclosure inside the card, lighter than a group. */
+.subgroup { margin-top: var(--space-2); border-top: 1px solid var(--border); }
+.subgroup > summary {
+  display: flex; align-items: center; gap: var(--space-2); min-height: 28px; padding: 0 2px;
+  list-style: none; cursor: pointer; font-size: var(--fs-1); font-weight: 600; color: var(--text-dim);
+}
+.subgroup > summary::-webkit-details-marker { display: none; }
+.subgroup > summary::after {
+  content: ""; margin-left: auto; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg); transition: transform 0.15s;
+}
+.subgroup[open] > summary::after { transform: rotate(45deg); }
+.subgroup > summary:hover { color: var(--text); }
+.subgroup > summary:focus-visible { outline-offset: -2px; }
+.subgroup-sum { font-weight: 400; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.subgroup-body { padding-bottom: var(--space-2); }

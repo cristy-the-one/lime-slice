@@ -28,6 +28,7 @@ export function mountSeamPaint(prepare: PrepareView, hooks: SeamPaintHooks) {
   tool.type = "button";
   tool.className = "tool";
   tool.dataset.tool = "seam";
+  tool.dataset.cap = "Seam";
   tool.dataset.tip = "Paint where the seam should sit. The picker stays until a disk covers a wall.";
   tool.setAttribute("aria-label", "Paint seam");
   tool.setAttribute("aria-pressed", "false");

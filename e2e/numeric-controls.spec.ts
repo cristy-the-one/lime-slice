@@ -15,6 +15,7 @@ async function quiet(page: Page) {
 }
 
 async function loadCube(page: Page) {
+  await page.addInitScript(() => localStorage.setItem("lime-slice-open-subgroups", '["object-pose"]'));
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await autoSliceOff(page);

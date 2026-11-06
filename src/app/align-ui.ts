@@ -9,6 +9,9 @@ const GROUPS: { label: string; relations: readonly AlignRelation[] }[] = [
   { label: "Stack", relations: ["on-top"] },
 ];
 
+/** The longer wording of an option whose short label needs it, for its tooltip. */
+const ALIGN_TIPS: Partial<Record<AlignRelation, string>> = { centre: "Centre X and Y" };
+
 export interface AlignPick {
   to: string;
   how: AlignRelation;
@@ -42,7 +45,7 @@ export function alignHowHtml(pick: AlignPick = alignPick): Html {
   return html`${GROUPS.map((group) => {
     const shown = group.relations.filter((r) => ALIGN_RELATIONS.includes(r) && (!bed || relationFitsBed(r)));
     if (shown.length === 0) return "";
-    return html`<optgroup label="${group.label}">${shown.map((r) => html`<option value="${r}"${r === pick.how ? raw(" selected") : ""}>${ALIGN_LABELS[r]}</option>`)}</optgroup>`;
+    return html`<optgroup label="${group.label}">${shown.map((r) => html`<option value="${r}" title="${ALIGN_TIPS[r] ?? ALIGN_LABELS[r]}"${r === pick.how ? raw(" selected") : ""}>${ALIGN_LABELS[r]}</option>`)}</optgroup>`;
   })}`;
 }
 
@@ -58,7 +61,7 @@ export function alignHtml(others: readonly AlignTarget[]): Html {
   return html`
     <div class="align-grid" id="placeAlign">
       <label class="setting" data-label="align to" data-keywords="snap flush centre edge touch stack on top"><span class="scrub-label">Align to…</span><select id="alignTo" aria-label="Align to" title="${targets.find((t) => t.id === alignPick.to)?.name ?? "Bed"}">${targets.map((t) => html`<option value="${t.id}" title="${t.name}"${t.id === alignPick.to ? raw(" selected") : ""}>${t.name}</option>`)}</select></label>
-      <label class="setting" data-label="align how" data-keywords="snap flush centre edge touch stack on top"><span class="scrub-label">How</span><select id="alignHow" aria-label="Align how">${alignHowHtml()}</select></label>
+      <label class="setting" data-label="align how" data-keywords="snap flush centre edge touch stack on top"><span class="scrub-label">How</span><select id="alignHow" aria-label="Align how" title="${ALIGN_TIPS[alignPick.how] ?? ALIGN_LABELS[alignPick.how]}">${alignHowHtml()}</select></label>
       <button class="btn" id="alignGo" type="button" data-tip="Move the selected object to line up with the pick. One undo step.">Align</button>
     </div>`;
 }
