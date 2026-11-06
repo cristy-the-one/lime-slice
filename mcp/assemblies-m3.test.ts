@@ -44,8 +44,9 @@ type Box = { min: number[]; max: number[] };
 type Row = { object: string; bboxMm: Box; assembledMm?: Box };
 type Pose = { m: number[]; t: number[] };
 type FileDoc = { objects: { id: string; modelPose?: Pose }[]; assemblies?: { id?: string; name?: string; members: { object: string; parent?: string | null; offset: number[]; turn?: number[]; exprs?: unknown }[] }[] };
+type Reply = { [key: string]: unknown; moved?: Row[] };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Reply;
 const rowOf = async (object: string) => ((await call("plate_list", {})).objects as Row[]).find((row) => row.object === object)!;
 const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
@@ -92,7 +93,7 @@ check("the reply names the hook and the clip that sits on it", JSON.stringify(mo
 const after = { body: await rowOf(body), hook: await rowOf(hook), clip: await rowOf(clip) };
 check("the hook moved 30 mm along the body's X", near(after.hook.assembledMm!.min[0] - before.hook.assembledMm!.min[0], 30), JSON.stringify(after.hook.assembledMm));
 check("the clip followed the hook", near(after.clip.assembledMm!.min[0] - before.clip.assembledMm!.min[0], 30) && near(after.clip.assembledMm!.min[2], before.clip.assembledMm!.min[2]));
-check("the reply's box is plate_list's", JSON.stringify(longer.moved[0].assembledMm) === JSON.stringify(after.hook.assembledMm));
+check("the reply's box is plate_list's", JSON.stringify(longer.moved?.[0]?.assembledMm) === JSON.stringify(after.hook.assembledMm));
 check("the body did not move", JSON.stringify(after.body.assembledMm) === JSON.stringify(before.body.assembledMm));
 check("the print layout did not move", ["body", "hook", "clip"].every((key) => JSON.stringify(after[key as "body"].bboxMm) === JSON.stringify(before[key as "body"].bboxMm)));
 

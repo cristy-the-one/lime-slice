@@ -44,8 +44,9 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 
 type Box = { min: number[]; max: number[] };
 type Row = { object: string; bboxMm: Box; assembledMm?: Box; frame?: string; assembly?: string };
+type Reply = { [key: string]: unknown; assembledMm?: Box; moved?: { object: string }[]; offset?: number[]; turn?: number[] };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Reply;
 const rows = async () => (await call("plate_list", {})).objects as Row[];
 const rowOf = async (object: string) => (await rows()).find((row) => row.object === object)!;
 const solid = async (dx: number, dy: number, dz: number) => {

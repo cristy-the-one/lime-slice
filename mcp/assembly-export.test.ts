@@ -43,7 +43,7 @@ function check(name: string, ok: boolean, detail = "") {
 type Box = { min: number[]; max: number[] };
 type Row = { object: string; name: string; bboxMm: Box; assembledMm?: Box; assembly?: string };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 const plate = async () => ((await call("plate_list", { limit: 100 })).objects as Row[]);
 const sameBox = (a: Box | undefined, b: Box | undefined, tol = 0.02) =>
   !!a && !!b && [...a.min, ...a.max].every((value, i) => Math.abs(value - [...b.min, ...b.max][i]!) <= tol);

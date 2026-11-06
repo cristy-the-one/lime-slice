@@ -28,7 +28,7 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 const session = new Session(fakeEngine());
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 
 const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
 const body = String((await call("mesh_import", { path: cube })).object);

@@ -1,4 +1,4 @@
-// Short, type-aware rule set, all warnings: the existing code is not held to it yet, new code can see it.
+// Short, type-aware rule set. All three are errors: `npm run lint` and CI fail on any hit.
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
@@ -11,9 +11,9 @@ export default tseslint.config(
     },
     plugins: { "@typescript-eslint": tseslint.plugin },
     rules: {
-      "@typescript-eslint/no-floating-promises": "warn",
-      "@typescript-eslint/no-misused-promises": "warn",
-      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-floating-promises": "error",
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/no-explicit-any": "error",
     },
   },
 );

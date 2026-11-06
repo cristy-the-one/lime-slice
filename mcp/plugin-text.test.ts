@@ -46,7 +46,7 @@ const near = (a: number, b: number, tol = 1e-3) => Math.abs(a - b) <= tol;
 const { Session } = await import("./session.ts");
 const session = new Session(loadEngineWorker(root));
 session.clientName = "plugin-text-test";
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
 const faceOf = async (object: string, query: Record<string, unknown>) => {
   const found = await call("faces_find", { object, ...query, limit: 1 });
@@ -134,7 +134,7 @@ check("a recipe letters a cylinder it was given by index", lettered.ok === true,
 const m = lettered.metrics as { kind?: string; radius?: number; face?: number } | undefined;
 check("pick_face says cylinder and its radius", m?.kind === "cylinder" && near(m?.radius ?? NaN, 20, 1e-3) && m?.face === wall, lettered.metrics);
 check("the letters were raised on it", (await volume(cylinder)) > before + 8, String((await volume(cylinder)) - before));
-const history = (await call("model_history", { object: cylinder, limit: 100 })).nodes as { label: string; plugin?: { id: string; params: Record<string, any> } }[];
+const history = (await call("model_history", { object: cylinder, limit: 100 })).nodes as { label: string; plugin?: { id: string; params: { face?: { surface?: string; nearPoint?: unknown }; [key: string]: unknown } } }[];
 const stamped = history.filter((row) => row.plugin?.id === "label-a-face").at(-1)?.plugin;
 check("the stamp keeps the curved face by its surface", stamped?.params.face?.surface === "cylinder" && Array.isArray(stamped?.params.face?.nearPoint), stamped);
 check("the history has the text as one step", history.filter((row) => /^Text /.test(row.label)).length === 1, history.map((row) => row.label));

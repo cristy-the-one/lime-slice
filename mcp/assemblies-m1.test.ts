@@ -44,8 +44,9 @@ const near = (value: unknown, expected: number, tol = 1e-3) => typeof value === 
 
 type Box = { min: number[]; max: number[] };
 type Row = { object: string; bboxMm: Box; assembledMm?: Box; frame?: string };
+type Reply = { [key: string]: unknown; assembledMm?: Box };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Reply;
 const rows = async () => (await call("plate_list", {})).objects as Row[];
 const rowOf = async (object: string) => (await rows()).find((row) => row.object === object)!;
 const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);

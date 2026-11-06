@@ -43,10 +43,11 @@ function check(name: string, ok: boolean, detail = "") {
 const near = (value: unknown, expected: number, tol = 0.02) => typeof value === "number" && Math.abs(value - expected) < tol;
 
 const engine = loadEngineWorker(root);
+type Reply = { [key: string]: unknown; volumeMm3?: number; fingerprint?: { faces?: number; edges?: number }; text?: { font?: string; build?: string; surface?: string }; inkMm2?: number };
 const session = new Session(engine);
-const call = async (name: string, args: unknown = {}, on = session): Promise<Record<string, any>> => {
+const call = async (name: string, args: unknown = {}, on = session): Promise<Reply> => {
   try {
-    return (await on.call(name, args)) as Record<string, any>;
+    return (await on.call(name, args)) as Reply;
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }
@@ -102,7 +103,7 @@ const text = (face: number, extra: Record<string, unknown> = {}) => ({ kind: "te
   check("and how it was built", probed.text?.font === "line@1" && probed.text?.build === "direct" && probed.text?.surface === "plane", JSON.stringify(probed.text));
   const applied = await call("model_apply", { object, op });
   check("the same text applies", applied.ok === true, JSON.stringify(applied).slice(0, 300));
-  check("it adds the ink times the depth", near((await volume(object)) - before, probed.inkMm2 * 0.8, 0.02 * probed.inkMm2 * 0.8), String((await volume(object)) - before));
+  check("it adds the ink times the depth", near((await volume(object)) - before, (probed.inkMm2 ?? NaN) * 0.8, 0.02 * (probed.inkMm2 ?? NaN) * 0.8), String((await volume(object)) - before));
   const rows = (await call("model_history", { object })).nodes as { label: string }[];
   check("one history row, named for the text", rows.length === 2 && rows[1]!.label === "Text Lime 42 gy", JSON.stringify(rows));
   // A thin pen: letters named, and the sentence.
@@ -131,7 +132,7 @@ for (const [name, make, surface] of [["a cylinder", cylinder, "cylinder"], ["a c
       check(`${label} is built as ${surface}, without a boolean`, probed.text?.surface === surface && probed.text?.build === "direct", JSON.stringify(probed.text));
       if (surface !== "freeform") {
         const moved = (cut ? -1 : 1) * ((await volume(object)) - before);
-        const expect = probed.inkMm2 * 0.5;
+        const expect = (probed.inkMm2 ?? NaN) * 0.5;
         check(`${label} moves the ink times the depth, within the curve's share`, moved > 0.85 * expect && moved < 1.2 * expect, `${moved} against ${expect}`);
       }
       const rows = (await call("model_history", { object })).nodes as unknown[];
