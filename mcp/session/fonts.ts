@@ -30,7 +30,7 @@ async function resolveTextFonts(this: Session, texts: Record<string, unknown>[])
       await this.keepFontPack(added.font.id, op);
     } else if (typeof op.font === "string") {
       const found = this.fonts.find(op.font);
-      if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
+      if (!found) return `There is no font called ‘${op.font}’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.`;
       op.font = found.id;
       await this.keepFontPack(found.id, op);
     }

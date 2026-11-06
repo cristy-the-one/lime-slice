@@ -294,6 +294,8 @@ jobs:
           node --experimental-strip-types mcp/text-skin.test.ts
           # Pen fonts (stroke, line) on every kind of face, a project saved with the old stroke text, model_probe's inkMm2 and thin.
           node --experimental-strip-types mcp/text-pen.test.ts
+          # The Hershey pen fonts through the MCP text op, on a flat face and a cylinder.
+          node --experimental-strip-types mcp/text-hershey.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts

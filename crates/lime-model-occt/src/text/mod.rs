@@ -14,6 +14,7 @@
 
 pub mod fit;
 pub mod fonts;
+pub mod hershey;
 pub mod pen;
 pub mod skin;
 #[cfg(any(test, lime_occt_test_hooks))]
@@ -1006,3 +1007,5 @@ mod user_tests;
 
 #[cfg(test)]
 mod pen_tests;
+#[cfg(test)]
+mod hershey_tests;

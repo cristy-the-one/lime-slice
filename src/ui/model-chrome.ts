@@ -29,7 +29,7 @@ import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
 import type { Piece, RoundSurface } from "../modeling/compose";
-import { fontById, isOutlineFont, isUserFont, styleHasFile, styleOf, styleRefusal, userFontView } from "../modeling/text-fonts";
+import { defaultPenGap, fontById, isHersheyFont, isOutlineFont, isUserFont, styleHasFile, styleOf, styleRefusal, userFontView } from "../modeling/text-fonts";
 import { missingFontSentence, restrictedNote, userStyleRefusal } from "../modeling/user-fonts";
 import { addFontFile, ensureLibrary, listedFonts, onUserFontsChange, removeUserFont } from "../app/user-fonts";
 import type { LetteringOp } from "../model-tree";
@@ -516,6 +516,14 @@ export function mountModelChrome(next: ModelChromeHooks) {
       paintModeGroup(featureMode);
       // A new font changes which styles it allows and what the sample shows.
       if (featureMode.closest("#modelTextFont")) {
+        // A Hershey font spaces itself: moving to or from Stroke and Line moves the Spacing field only if it still holds the other's default.
+        const spaceField = document.querySelector<HTMLInputElement>("#modelTextSpace");
+        const heightNow = Number(document.querySelector<HTMLInputElement>("#modelTextHeight")?.value) || 6;
+        const fontNow = featureMode.dataset.font;
+        if (spaceField && !isOutlineFont(fontNow) && !isUserFont(fontNow)) {
+          const other = defaultPenGap(isHersheyFont(fontNow) ? "stroke" : "hershey-simplex", heightNow);
+          if (Math.abs(Number(spaceField.value) - other) < 0.051) spaceField.value = String(Math.round(defaultPenGap(fontNow, heightNow) * 10) / 10);
+        }
         // A style the new font cannot make (a bold the stencil lacks) goes back to Regular, not to a refusal.
         const chosen = fontById(featureMode.dataset.font);
         const user = userFontView(featureMode.dataset.font);

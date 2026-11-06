@@ -328,7 +328,7 @@ function roundLettering(spec: Record<string, unknown>, ctx: ExpandContext, round
   // --- Milestone 5: a text with no font on a curved face is the stroke font, as a pen font; `stroke` and `line` are named the same way.
   const pen = penFontOf(spec.font === undefined || spec.font === "" ? STROKE_FONT : spec.font);
   const font = pen ? undefined : fontById(spec.font);
-  if (!pen && !font) return { reason: `There is no font called ‘${String(spec.font)}’. The fonts are stroke, line, sans, mono, serif, stencil.` };
+  if (!pen && !font) return { reason: `There is no font called ‘${String(spec.font)}’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil.` };
   if ([...text].length > MAX_OUTLINE_CHARS) return { reason: `Text takes at most ${MAX_OUTLINE_CHARS} characters a step; use several.` };
   const height = numOr(spec.height, 0);
   const depth = numOr(spec.depth, 0);
@@ -390,7 +390,7 @@ function letteringPiece(spec: Record<string, unknown>, frame: { plane: Workplane
   const font = userId || pen ? undefined : fontById(spec.font);
   if (!font && !userId && !pen) {
     const name = typeof spec.font === "string" ? spec.font : "";
-    return { reason: `There is no font called ‘${name}’. The fonts are stroke, line, ${["sans", "mono", "serif", "stencil"].join(", ")}.` };
+    return { reason: `There is no font called ‘${name}’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil.` };
   }
   const weight = spec.weight === undefined ? undefined : numOr(spec.weight, NaN);
   if (weight !== undefined && !(weight >= 100 && weight <= 900)) return { reason: "weight is a number from 100 to 900." };
