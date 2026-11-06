@@ -8,6 +8,7 @@ import { newTree, withChild, type ModelOp } from "../model-tree.ts";
 import { readSavedTree, savedTree } from "../model-tree-file.ts";
 import { withoutSketch } from "../model-request.ts";
 import { evaluateTable, expressionMentions, patchOpNumbers, stepOutOfDate, usedByCount, withExprs } from "./params.ts";
+import { prefsOver } from "../prefs.ts";
 import { panelParamMessage, parametersFoldCount, parametersFoldId, parametersHiddenWhileSketching, readParametersFold, writeParametersFold } from "../ui/parameters.ts";
 
 let failed = 0;
@@ -121,7 +122,7 @@ function memoryStorage(): Storage {
   };
 }
 
-const folds = memoryStorage();
+const folds = prefsOver(memoryStorage());
 check("an unsaved project shares one key", parametersFoldId("") === "unsaved" && parametersFoldId("  ") === "unsaved");
 check("a saved path is its own key", parametersFoldId("/jobs/plate.lime") === "/jobs/plate.lime");
 writeParametersFold(folds, "/jobs/plate.lime", false);

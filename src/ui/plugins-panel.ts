@@ -65,6 +65,7 @@ import { setLessons } from "./lessons-note";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
 import type { PickedFaceValue } from "../recipe/picks";
 import { approveFirstRun, exportPluginFile, importPluginText, mountPluginShare, needsFirstRun, pickPluginFiles } from "./plugin-import";
+import { prefs } from "../prefs.ts";
 
 const CARD_ID = "plugins";
 const KIND_NOUN: Readonly<Record<Exclude<NuggetKind, "all">, string>> = { plugin: "plugin", ingredient: "ingredient", preset: "preset", lesson: "lesson" };
@@ -148,7 +149,7 @@ const $ = <T extends HTMLElement>(selector: string) => root()?.querySelector<T>(
 export function mountPluginsPanel(next: PluginsHost) {
   host = next;
   try {
-    const saved = localStorage.getItem(KIND_KEY);
+    const saved = prefs.get(KIND_KEY);
     if (saved === "all" || saved === "plugin" || saved === "ingredient" || saved === "preset" || saved === "lesson") kind = saved;
   } catch {
     // Every kind is shown.
@@ -290,7 +291,7 @@ function shownKind(): NuggetKind {
 function setKind(next: NuggetKind) {
   kind = next;
   try {
-    localStorage.setItem(KIND_KEY, next);
+    prefs.set(KIND_KEY, next);
   } catch {
     // The filter still holds for this visit.
   }
@@ -915,7 +916,7 @@ function onChange(ev: Event) {
   if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
   if (target.id === "modelPluginsLive") {
     try {
-      localStorage.setItem(LIVE_KEY, (target as HTMLInputElement).checked ? "1" : "0");
+      prefs.setBool(LIVE_KEY, (target as HTMLInputElement).checked);
     } catch {
       // The choice still holds for this visit.
     }
@@ -1342,7 +1343,7 @@ let liveChoice: boolean | null = null;
 function liveOn(): boolean {
   if (liveChoice !== null) return liveChoice;
   try {
-    liveChoice = localStorage.getItem(LIVE_KEY) !== "0";
+    liveChoice = prefs.getBool(LIVE_KEY);
   } catch {
     liveChoice = true;
   }
@@ -1443,7 +1444,7 @@ export function pluginsPreviewFresh(): boolean {
 
 function usedAt(): Record<string, number> {
   try {
-    const parsed = JSON.parse(localStorage.getItem(USED_KEY) ?? "{}") as unknown;
+    const parsed = prefs.getJson(USED_KEY);
     return parsed && typeof parsed === "object" ? (parsed as Record<string, number>) : {};
   } catch {
     return {};
@@ -1453,7 +1454,7 @@ function usedAt(): Record<string, number> {
 /** A plugin was applied: it moves to the top of its section. */
 export function noteUsed(id: string) {
   try {
-    localStorage.setItem(USED_KEY, JSON.stringify({ ...usedAt(), [id]: Date.now() }));
+    prefs.setJson(USED_KEY, { ...usedAt(), [id]: Date.now() });
   } catch {
     // The order still follows titles.
   }
@@ -1465,7 +1466,7 @@ const AUTHOR_LOCAL = "lime-slice-plugin-author";
 export function pluginAuthor(): string {
   if (library.author) return library.author;
   try {
-    return localStorage.getItem(AUTHOR_LOCAL) ?? "";
+    return prefs.get(AUTHOR_LOCAL) ?? "";
   } catch {
     return "";
   }
@@ -1474,7 +1475,7 @@ export function pluginAuthor(): string {
 export async function setPluginAuthor(name: string): Promise<string | null> {
   const io = await libraryIo();
   try {
-    localStorage.setItem(AUTHOR_LOCAL, name);
+    prefs.set(AUTHOR_LOCAL, name);
   } catch {
     // The library's file is the setting where there is one.
   }

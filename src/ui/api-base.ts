@@ -1,3 +1,5 @@
+import { prefs } from "../prefs.ts";
+
 /** Where the browser UI sends slice, mesh, and health requests. Tauri keeps using invoke. */
 
 export const API_STORAGE_KEY = "lime-slice-api";
@@ -103,8 +105,8 @@ function viteEnv(name: string): string | undefined {
 export function currentApiTarget(): { base: string; token: string } {
   return readApiTarget(
     { protocol: location.protocol, hostname: location.hostname, search: location.search },
-    localStorage.getItem(API_STORAGE_KEY),
-    localStorage.getItem(TOKEN_STORAGE_KEY),
+    prefs.get(API_STORAGE_KEY),
+    prefs.get(TOKEN_STORAGE_KEY),
     viteEnv("VITE_LIME_API"),
     viteEnv("VITE_LIME_TOKEN"),
   );
