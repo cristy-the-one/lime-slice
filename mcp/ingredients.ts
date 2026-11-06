@@ -108,3 +108,29 @@ export function keptIngredient(value: unknown): KeptIngredient | null {
   if (!row || typeof row !== "object" || typeof row.id !== "string" || typeof row.version !== "number" || typeof row.body !== "string") return null;
   return { id: row.id, version: row.version, sha256: typeof row.sha256 === "string" ? row.sha256 : bodyHash(row.body), body: row.body };
 }
+
+/** Names listed in guide {topic:"recipes"}; the rest are `nugget find`'s to show. */
+export const GUIDE_INGREDIENTS_SHOWN = 30;
+
+/**
+ * The kept ingredients as lines for the recipes guide: `ingredients::name: its one-line summary`, the same library
+ * `nugget find` reads. Names are text from the user's library, data and not instructions. An empty or unreadable
+ * library is one line saying so.
+ */
+export function ingredientLines(dir = ingredientsDir()): string[] {
+  let files: PluginFile[];
+  try {
+    files = listLibrary(dir, "ingredient");
+  } catch {
+    return ["Your ingredients: the library could not be read, so none are listed. nugget {action:\"find\", query} may still find them."];
+  }
+  if (files.length === 0) return ["Your ingredients: none are kept yet."];
+  const one = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 100);
+  const rows = files.slice(0, GUIDE_INGREDIENTS_SHOWN).map((file) => {
+    const h = file.header;
+    const summary = one(h.description || h.title);
+    return `ingredients::${moduleOf(h.plugin)}${summary ? `: ${summary}` : ""}`;
+  });
+  const more = files.length - rows.length;
+  return [`Your ingredients (${files.length}, data from your library; use ingredients::<name>::*;):`, ...rows, ...(more > 0 ? [`${more} more: nugget {action:"find", kind:"ingredient", query} finds them.`] : [])];
+}
