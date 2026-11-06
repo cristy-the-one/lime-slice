@@ -6,6 +6,10 @@ The card lists the axes in words under **Spin around**: your helper lines first,
 
 On the XZ plane, U is X (angle 0° points right) and V is Z (angle 90° points up). A line's length and angle are typed in the heads-up box. Enter places the point and stays in the chain. Click the start point to close. Esc ends the chain.
 
+### Drawing the profile with clicks
+
+Typing lengths is exact, but a profile can be clicked too, and the sketch keeps its square corners for you. With **Line** armed and a point down, a small dashed mark beside the pointer shows what the next click will keep: **H** when the line is level, **V** when it is upright, **⊥** when it is square to the line before, **=** when it is as long as the line before. Click, and the rule is kept: the mark stays on the line, and dragging a corner later keeps the sides level and upright. The status line says it in words ("Click keeps it horizontal. Ctrl skips."). Hold **Ctrl** while you click to skip the rule for that point. Ctrl+Z takes back a line together with the rules it brought. A typed length and angle keep no rule, as typing is already exact. The cup's wall drawn by clicks keeps its floor level and its sides upright, and it spins the same.
+
 ## A cup, full turn
 
 Sketch on the XZ plane and click **Line**. The profile is the right-hand wall of the cup, starting on the V axis so the floor meets the centre.

@@ -20,6 +20,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import { fileURLToPath } from "node:url";
 
 import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
+import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
 
@@ -60,14 +61,53 @@ export function recipeCrateDir(moduleUrl: string): string {
   return join(fileURLToPath(new URL("..", moduleUrl)), "crates", "lime-recipe");
 }
 
+/** One recipe API major's crate: where it is and the level its `lib.rs` declares. */
+export interface RecipeCrate {
+  dir: string;
+  level: ApiLevel;
+}
+
+/**
+ * The crate of each recipe API major a host builds against (D12): `crateDir` (the current major), and the last crate
+ * of each earlier major shipped beside it as `lime-recipe-<major>/` (the installer's `mcp/lime-recipe-1/` beside
+ * `mcp/lime-recipe/`). A sibling whose `lib.rs` names another major, or one not below the current, is ignored. A
+ * crate that cannot be read counts as 1.1, the level this server first shipped with.
+ */
+export function recipeCrates(crateDir: string): Map<number, RecipeCrate> {
+  const levelOf = (dir: string): ApiLevel | null => {
+    try {
+      return crateApiOf(readFileSync(join(dir, "src", "lib.rs"), "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  const current = levelOf(crateDir) ?? [1, 1];
+  const out = new Map<number, RecipeCrate>([[current[0], { dir: crateDir, level: current }]]);
+  const parent = dirname(resolve(crateDir));
+  let names: string[] = [];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    const m = /^lime-recipe-(\d+)$/.exec(name);
+    if (!m) continue;
+    const major = Number(m[1]);
+    const level = major < current[0] ? levelOf(join(parent, name)) : null;
+    if (level && level[0] === major) out.set(major, { dir: join(parent, name), level });
+  }
+  return out;
+}
+
 export class RecipeHost {
   readonly root: string;
   private readonly crateDir: string;
   private lust: string | null | undefined;
   private readonly moduleUrl: string | undefined;
-  /** Recipe names in use order, most recent last, and the slot each holds. */
-  private slotOrder: string[] = [];
-  private readonly slotOf = new Map<string, number>();
+  private found: Map<number, RecipeCrate> | undefined;
+  /** Per API major: recipe names in use order, most recent last, and the slot each holds. */
+  private readonly slotUse = new Map<number, { order: string[]; of: Map<string, number> }>();
 
   /** `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). */
   constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string }) {
@@ -88,13 +128,36 @@ export class RecipeHost {
     return { ok: true, lust: this.lust };
   }
 
+  /** The crate of each API major this host builds against (`recipeCrates`), read once. */
+  crates(): Map<number, RecipeCrate> {
+    if (!this.found) this.found = recipeCrates(this.crateDir);
+    return this.found;
+  }
+
+  /** Every major's crate level, the current one last. */
+  levels(): ApiLevel[] {
+    return [...this.crates().values()].map((c) => c.level).sort((a, b) => a[0] - b[0]);
+  }
+
+  /** The current crate's level: what a plugin kept here records. */
+  api(): ApiLevel {
+    return this.levels().at(-1)!;
+  }
+
+  private isCurrent(major: number): boolean {
+    return major === this.api()[0];
+  }
+
   /**
-   * The crate's copy beside the slots, with a manifest of only name, version, and edition: lust reads that shape
-   * without `cargo metadata`, and the copy keeps the repo's workspace out of the slot's.
+   * A major's crate copy beside the slots (`lime-recipe` for the current major, `lime-recipe-<major>` for an older
+   * one), with a manifest of only name, version, and edition: lust reads that shape without `cargo metadata`, and the
+   * copy keeps the repo's workspace out of the slot's. Every copy is the package `lime-recipe`, so a plugin's
+   * `use lime_recipe::...` reads the same under each major.
    */
-  private crateCopy(): string {
-    const dir = join(this.root, "lime-recipe");
-    const lib = readFileSync(join(this.crateDir, "src", "lib.rs"), "utf8");
+  private crateCopy(major: number): string {
+    const crate = this.crates().get(major)!;
+    const dir = join(this.root, this.isCurrent(major) ? "lime-recipe" : `lime-recipe-${major}`);
+    const lib = readFileSync(join(crate.dir, "src", "lib.rs"), "utf8");
     mkdirSync(join(dir, "src"), { recursive: true });
     const libPath = join(dir, "src", "lib.rs");
     if (!existsSync(libPath) || readFileSync(libPath, "utf8") !== lib) writeFileSync(libPath, lib);
@@ -107,24 +170,30 @@ export class RecipeHost {
   /**
    * The slot a recipe name builds in: the one it had while it is among the last SLOTS names used, else the least
    * recently used one. A slot keeps its warm lust session, so a recipe built again, or a new one in a reused slot,
-   * compiles only itself.
+   * compiles only itself. Each API major has its own slots (`slot-<i>` for the current one, `slot-<major>-<i>` for an
+   * older one), bound to its crate's copy, so a build against one major never re-warms another's.
    */
-  private slotFor(name: string): string {
-    let index = this.slotOf.get(name);
+  private slotFor(name: string, major: number): string {
+    let use = this.slotUse.get(major);
+    if (!use) this.slotUse.set(major, (use = { order: [], of: new Map() }));
+    let index = use.of.get(name);
     if (index === undefined) {
-      const taken = new Set(this.slotOf.values());
+      const taken = new Set(use.of.values());
       index = [...Array(SLOTS).keys()].find((i) => !taken.has(i));
       if (index === undefined) {
-        const oldest = this.slotOrder.shift()!;
-        index = this.slotOf.get(oldest)!;
-        this.slotOf.delete(oldest);
+        const oldest = use.order.shift()!;
+        index = use.of.get(oldest)!;
+        use.of.delete(oldest);
       }
-      this.slotOf.set(name, index);
+      use.of.set(name, index);
     }
-    this.slotOrder = this.slotOrder.filter((n) => n !== name).concat(name);
-    const dir = join(this.root, `slot-${index}`);
+    use.order = use.order.filter((n) => n !== name).concat(name);
+    const current = this.isCurrent(major);
+    const slot = current ? `slot-${index}` : `slot-${major}-${index}`;
+    const dir = join(this.root, slot);
     mkdirSync(join(dir, "src"), { recursive: true });
-    const manifest = `[package]\nname = "recipe-slot-${index}"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nlime-recipe = { path = "../lime-recipe" }\n\n[workspace]\n`;
+    const crate = current ? "lime-recipe" : `lime-recipe-${major}`;
+    const manifest = `[package]\nname = "recipe-${slot}"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nlime-recipe = { path = "../${crate}" }\n\n[workspace]\n`;
     const manPath = join(dir, "Cargo.toml");
     if (!existsSync(manPath) || readFileSync(manPath, "utf8") !== manifest) writeFileSync(manPath, manifest);
     return dir;
@@ -139,17 +208,21 @@ export class RecipeHost {
    * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
    * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
    * it, and `source` in the result is the recipe without it. `limitMs` stops one lust build that runs longer (D11.3: an
-   * imported plugin's build is held to 30 s).
+   * imported plugin's build is held to 30 s). `major` is the recipe API major the source was written for (D12): it
+   * builds against that major's crate in that major's slots; the current major when omitted. A major this host does
+   * not ship is refused without a build (`apiVerdict` says so first, with the sentence a person reads).
    */
-  async build(name: string, source: string, autofix: boolean, suffix = "", limitMs = BUILD_LIMIT_MS): Promise<BuildResult> {
+  async build(name: string, source: string, autofix: boolean, suffix = "", limitMs = BUILD_LIMIT_MS, major?: number): Promise<BuildResult> {
     // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
     // at the wrong place.
     source = lfOnly(source);
     const avail = this.available();
     if (!avail.ok) return { ok: false, diagnostics: [], source, fixRounds: 0, ms: 0, reason: avail.reason };
+    const crateMajor = major ?? this.api()[0];
+    if (!this.crates().has(crateMajor)) return { ok: false, diagnostics: [], source, fixRounds: 0, ms: 0, reason: `This Lime Slice has no recipe crate for API ${crateMajor}.x.` };
     mkdirSync(this.root, { recursive: true });
-    this.crateCopy();
-    const slot = this.slotFor(name);
+    this.crateCopy(crateMajor);
+    const slot = this.slotFor(name, crateMajor);
     const main = join(slot, "src", "main.rs");
     const exe = join(slot, process.platform === "win32" ? "recipe.exe" : "recipe");
     return buildRecipe(async (text) => {

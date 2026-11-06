@@ -3,8 +3,6 @@
  * The methods run with this: Session; session.ts installs them on the Session prototype.
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { plainModelError } from "../../src/app/model-error.ts";
 import type { Mat3 } from "../../src/mesh-place.ts";
 import { formatMm } from "../../src/model-plane.ts";
@@ -16,8 +14,9 @@ import { markedRun, runEndingAt, runsOnPath, sameFingerprint, sameValues, stampV
 import { answerPick } from "../../src/recipe/picks.ts";
 import { answerTextOutline } from "../../src/recipe/text-outline.ts";
 import { fontById, isPenFont, isUserFont } from "../../src/modeling/text-fonts.ts";
-import { apiRefusal, bodyHash, isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin, type PluginFile, type PluginParam, type PluginTarget } from "../plugins.ts";
+import { apiLevel, bodyHash, isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin, type PluginFile, type PluginParam, type PluginTarget } from "../plugins.ts";
 import { splitPluginData } from "../../src/recipe/plugin-data.ts";
+import { apiVerdict, type ApiLevel, type ApiRefusalCode } from "../../src/recipe/api-level.ts";
 import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
@@ -68,7 +67,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       if (input.preset !== undefined) return refuse("conflicting-arguments", "A preset starts a new run. To change this plugin step, pass params; its other values stay as stamped.");
       // A part a draft made reruns from its own entry even when the stamp's code is missing (#527's rerun).
       const looked = this.stampSource(stamp);
-      if ("reason" in looked && (wanted !== undefined || pick.before !== null)) return refuse("recipe-source", looked.reason);
+      if ("reason" in looked && (wanted !== undefined || pick.before !== null)) return refuse(looked.code ?? "recipe-source", looked.reason);
       const found = "reason" in looked ? { body: "", notes: [] as string[], title: undefined, target: undefined, api: undefined, ingredients: undefined } : looked;
       stepNotes.push(...found.notes);
       const tree = stepTarget.tree;
@@ -93,8 +92,10 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     const got = await this.pluginFile(input.plugin);
     if ("reason" in got) return refuse("recipe-source", got.reason);
     const h = got.file.header;
-    const tooNew = apiRefusal(h.api, this.crateApi());
-    if (tooNew) return refuse("plugin-unsupported", tooNew);
+    // --- D12. A plugin of a newer API than this app's crate of its major, or of a major it no longer ships, is refused
+    // before anything is built: a lust error about a missing function would read like the plugin's fault.
+    const verdict = apiVerdict(h.api, this.crateLevels());
+    if (!verdict.ok) return refuse(verdict.code, verdict.reason);
     if (h.target === "object" && typeof input.object !== "string") return refuse("missing-argument", `${h.title} needs a part: pass object, the part to run it on.`);
     plugin = { id: h.plugin, version: h.version, sha256: got.file.sha256, title: h.title, target: h.target, api: h.api, ...(got.note ? { note: got.note } : {}) };
     pluginBody = got.file.body;
@@ -150,7 +151,10 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if ("reason" in resolved) return refuse("recipe-source", resolved.reason);
   const usedIngredients = Object.values(resolved.used);
   this.noteStage(`building recipe ${name}`, 0);
-  const built = await host.build(name, source, input.autofix !== false, resolved.suffix);
+  // --- D12. A plugin builds against the crate of the API major it records, in that major's slots; anything else (a
+  // draft, a source, a path) against the current crate.
+  const major = plugin ? (apiLevel(plugin.api)?.[0] ?? undefined) : undefined;
+  const built = await host.build(name, source, input.autofix !== false, resolved.suffix, undefined, major);
   const map = lineMap(built.source, resolved);
   const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
   const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
@@ -496,19 +500,20 @@ function promoteStamps(this: Session, row: RustRecipe, name: string, saved: { id
   }
 }
 
-/** --- Plugins (docs/plan-recipe-plugins.md D12). This host's crate API, read from the crate the recipes build against. */
+/**
+ * --- Plugins (docs/plan-recipe-plugins.md D12). This host's crate API: the current crate's level, read from the crate
+ * the recipes build against (1.1 when it cannot be read; the crate's absence is recipe_run's sentence).
+ */
 function crateApi(this: Session): [number, number] {
-  if (this.recipeApi) return this.recipeApi;
-  let found: [number, number] = [1, 1];
-  try {
-    const lib = readFileSync(join(recipeCrateDir(SESSION_URL), "src", "lib.rs"), "utf8");
-    const m = /pub const API: \(u32, u32\) = \((\d+), (\d+)\);/.exec(lib);
-    if (m) found = [Number(m[1]), Number(m[2])];
-  } catch {
-    // The crate's absence is recipe_run's sentence; the level stays the one this server shipped with.
-  }
-  this.recipeApi = found;
-  return found;
+  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
+  const level = this.recipeHost.api();
+  return [level[0], level[1]];
+}
+
+/** --- D12. The level of each major's crate this host builds against: the current one, and older majors shipped beside it. */
+function crateLevels(this: Session): ApiLevel[] {
+  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
+  return this.recipeHost.levels();
 }
 
 /**
@@ -594,7 +599,7 @@ function stampRun(this: Session, obj: PlateObject, before: number | null, made: 
  * hash (the current version or an older `<plugin>.vN.rs`), else a draft's kept source. A sentence when none is there,
  * when the project's copy was edited, or when the code needs a newer recipe API.
  */
-function stampSource(this: Session, stamp: PluginStamp): { body: string; notes: string[]; title?: string; target?: PluginTarget; api?: string; ingredients?: Record<string, KeptIngredient> } | { reason: string } {
+function stampSource(this: Session, stamp: PluginStamp): { body: string; notes: string[]; title?: string; target?: PluginTarget; api?: string; ingredients?: Record<string, KeptIngredient> } | { reason: string; code?: ApiRefusalCode } {
   const notes: string[] = [];
   const current = stamp.version > 0 && isSlug(stamp.plugin) ? readPlugin(stamp.plugin) : null;
   const library = current && !("reason" in current) ? current : null;
@@ -619,8 +624,8 @@ function stampSource(this: Session, stamp: PluginStamp): { body: string; notes: 
     }
   }
   if (file) {
-    const tooNew = apiRefusal(file.header.api, this.crateApi());
-    if (tooNew) return { reason: tooNew };
+    const verdict = apiVerdict(file.header.api, this.crateLevels());
+    if (!verdict.ok) return { reason: verdict.reason, code: verdict.code };
     return { body: file.body, notes, title: file.header.title, target: file.header.target, api: file.header.api };
   }
   const draft = [...this.rustRecipes.values()].filter((row) => row.sha256 === stamp.sha256).sort((a, b) => (b.at ?? 0) - (a.at ?? 0))[0];
@@ -685,6 +690,7 @@ export const recipeMethods = {
   keepRun,
   promoteStamps,
   crateApi,
+  crateLevels,
   recipeDescribe,
   takeOver,
   stampRun,

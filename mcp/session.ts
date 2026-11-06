@@ -165,7 +165,6 @@ export class Session {
   clientName: string | undefined;
   /** Applies of recipe_run in this session, counted: a draft's `at`. */
   recipeSeq = 0;
-  recipeApi: [number, number] | null = null;
   lustId: string | undefined;
   /** I21: each recipe name's call count on its last run, for "call N of about M". */
   readonly recipeCallCounts = new Map<string, number>();

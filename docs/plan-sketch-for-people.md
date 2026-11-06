@@ -470,6 +470,44 @@ paths that existed before.
   that extrudes, and Shift+X. `e2e/model-sketch.spec.ts` and `e2e/model-sketch-reasons.spec.ts` changed only for the
   new labels and to leave the Edit row's ? out of the P1 count. Nothing under `mcp/` changed, and no saved field.
 
+**As built (milestone 7, K1).**
+- `src/sketch/infer.ts` reads the rule a click would keep off the Line tool's snap and the final geometry:
+  `inferPoint` for the pointer, `segmentRules` for a closing line, `keepRules` to store them. `session.ts` runs it in
+  `pointerStep` for the Line tool only (`editor.infer`, with `editor.startOn` for a first point on a curve) and stores
+  the line and its rules in the one `replaceSketch` that already made one undo mark, so Ctrl+Z takes both. Rules are
+  added through `addInferred` in `constrain.ts`: each is tried alone on the solved sketch, and a rule that conflicts
+  with the dimensions already there, or that the solver reports as redundant, is dropped while the line stays. The stored
+  records are the `horizontal`, `vertical`, `perpendicular`, `equal` and `coincident` dims the Constrain menu already
+  writes, so a saved sketch gains no field and one saved before reads back byte for byte.
+- Tolerances, in screen pixels so a rule feels the same at any zoom: H, V and square reach 8 px (the existing
+  `SNAP_PX`, so the mark and the snap the pointer already shows agree), and the same length reaches 8 px
+  along the line and only beats the grid and a free point, so an endpoint, midpoint, intersection or curve snap is never
+  moved off its target. A stored rule must hold to 1e-6 mm, so what is kept is true of the geometry, not of the pixels.
+- Ctrl (Cmd on a Mac, which the pointer already reads as `ctrl`) skips every inference, and the H, V, square and
+  equal-length snaps with it, so a Ctrl-click lands where the pointer is (grid and point snaps stay, as they keep no
+  rule). SolidWorks suppresses its inferences with Ctrl too. Pressing or letting go of Ctrl re-reads the pointer where
+  it stands (`src/app/sketch/pointer.ts`), so the mark goes and returns without a mouse move.
+- The mark is a small dashed glyph beside the pointer (`paintInference` in `src/app/sketch/dimensions.ts`; the canvas
+  carries `data-sketch-infer`), where a kept rule's mark is solid. The status line says the same ("Click keeps it
+  horizontal. Ctrl skips."). Marks and words follow the snap: nothing is shown for a typed size, which infers nothing.
+- Decisions where the plan is silent: (1) "a dot on a reference edge" is drawn (●) and the point lands on the edge,
+  but nothing is stored, because a sketch holds no reference to the part's edge; a point on a sketch line, circle or arc
+  stores a point-on-curve rule (○), the same dot the Constrain menu's Coincident leaves. (2) Square is left out when the
+  line before already is level or upright and the new one is the other way (it is implied), and the solver's
+  redundancy check backs that up for any other repeat. (3) Parallel, midpoint and intersection snaps keep no rule: the
+  plan lists five and a parallel to the line a chain just left is a straight continuation. (4) A typed length and angle
+  keep nothing, as in the other CAD apps; Rectangle keeps its own four rules. (5) A closing click keeps the closing
+  line's level and upright rules, and nothing for a two-point chain.
+- The Constrain menu lists what fits the selection (`fittingActions` in `constrain.ts`): the rules the selection
+  completes, and those that accept its kinds and wait for more picks (Equal with one line chosen). A selected constraint
+  mark or dimension offers only Remove constraint, and Remove shows only when the selection has a rule on it. With
+  nothing selected the menu is whole, and a line saying so appears above a filtered one.
+- Tests: `src/sketch/infer.test.ts` (each rule, Ctrl, undo in one step, the solver, a drag keeping the rules, a rule that
+  fights or repeats, the round trip, the menu's choices) and `e2e/model-sketch-infer.spec.ts` (smoke: an L with H and V,
+  a Ctrl line, a square one, an equal one, a last Ctrl-click, undo, and the menu with a line, a circle and nothing
+  selected). `e2e/model-sketch.spec.ts` changed in one line: a line with no rule has no Remove constraint in the menu.
+  Nothing under `mcp/` changed.
+
 ## 7. MCP safety
 
 - No file under `mcp/` changes in any milestone. CI's MCP jobs and `mcp/schema.test.ts` run unchanged.

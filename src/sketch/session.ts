@@ -63,6 +63,7 @@ import {
   freshConstrain,
   idleConstrain,
   isConstrainTool,
+  fittingActions,
   placedStatus,
   type ConstrainAction,
   type ConstrainState,
@@ -70,6 +71,8 @@ import {
   withRectangleConstraints,
 } from "./constrain.ts";
 import { dragSketch } from "./solve.ts";
+// --- Sketch for people, milestone 7 (K1): the rule a click would keep while a line is drawn. ---
+import { inferMarks, inferPoint, inferWords, keepRules, segmentRules, startCurves, type InferMark, type Inference } from "./infer.ts";
 
 export type SketchTool = "select" | "line" | "rectangle" | DrawTool | ConstrainTool;
 export type { ConstrainTool };
@@ -132,6 +135,10 @@ export interface SketchEditor {
   hoverRef: { index: number | null; face: boolean };
   /** C1: Shift+X started the Line tool drawing helper lines. Another tool ends it. */
   helperLine: boolean;
+  /** K1: the rules the next click would keep (and the point it would land on) while the Line tool is drawing. Ctrl clears it. */
+  infer: Inference | null;
+  /** K1: the first point of the polyline was put on these curves. Its rules are kept with the first line, one undo step. */
+  startOn: { point: number; entities: number[] } | null;
   /** A typed size stands in for the cursor until Enter or the next move. */
   typed: Pt | null;
   drag: Drag | null;
@@ -189,6 +196,8 @@ export function sketchOff(): SketchEditor {
     pointer: null,
     hoverRef: { index: null, face: false },
     helperLine: false,
+    infer: null,
+    startOn: null,
     typed: null,
     drag: null,
     box: null,
@@ -240,6 +249,8 @@ export function enterSketch(editor: SketchEditor, plane: SketchPlane, on?: Sketc
     pointer: null,
     hoverRef: { index: null, face: false },
     helperLine: false,
+    infer: null,
+    startOn: null,
     typed: null,
     drag: null,
     box: null,
@@ -506,8 +517,13 @@ function gestureOpen(editor: SketchEditor): boolean {
 }
 
 function pointerStep(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, env: SketchEnv): SketchEditor {
-  const snapped = snapAt(editor, sketch, ev.uv, env.mmPerPx);
-  let next: SketchEditor = { ...editor, cursor: snapped.at, snap: snapped, pointer: ev.uv, typed: ev.phase === "move" ? null : editor.typed, esc: ev.phase === "down" ? 0 : editor.esc };
+  // K1: with the Line tool, the snap is read for the rule it stands for, and the point may settle on the line before's
+  // length. Ctrl skips all of it: no H, V or square snap, no length match, nothing kept.
+  const lining = editor.tool === "line" && !editor.lookAround;
+  const raw = snapAt(editor, sketch, ev.uv, env.mmPerPx, lining && ev.ctrl);
+  const inferred = lining && !ev.ctrl ? inferPoint(sketch, editor.chain ?? [], raw, ev.uv, env.mmPerPx) : null;
+  const snapped: SnapHit = inferred ? { ...raw, at: inferred.at } : raw;
+  let next: SketchEditor = { ...editor, cursor: snapped.at, snap: snapped, infer: inferred, pointer: ev.uv, typed: ev.phase === "move" ? null : editor.typed, esc: ev.phase === "down" ? 0 : editor.esc };
   // The edit tools pick what is under the pointer itself, so their hover does too.
   const edit = EDIT_TOOLS.has(next.tool);
   if (ev.phase === "move") next = { ...next, hover: hitSketch(sketch, edit ? ev.uv : snapped.at, env.mmPerPx * 8) };
@@ -601,6 +617,29 @@ export function redoSketch(editor: SketchEditor): SketchEditor {
   return applyMark({ ...editor, redo: editor.redo.slice(0, -1), undo }, mark);
 }
 
+/**
+ * K1: the marks for the rules the next click would keep, drawn beside the pointer. Empty with a typed size standing in
+ * for the pointer, with Ctrl held (the inference is skipped), and with any tool but Line.
+ */
+export function inferenceMarks(editor: SketchEditor): InferMark[] {
+  if (editor.phase !== "editing" || editor.tool !== "line" || editor.typed || !editor.infer) return [];
+  return inferMarks(editor.infer.rules);
+}
+
+/** K1: the status line says what the click keeps, and how to skip it. */
+function keepsClause(editor: SketchEditor): string {
+  if (editor.typed || !editor.infer) return "";
+  const words = inferWords(editor.infer.rules);
+  return words ? `Click keeps it ${words}. Ctrl skips.` : "";
+}
+
+/** K1: the Constrain menu's actions that fit what is selected. Null offers them all. */
+export function constrainChoices(editor: SketchEditor): ConstrainAction[] | null {
+  const sketch = activeSketch(editor);
+  if (!sketch || editor.phase !== "editing") return null;
+  return fittingActions(sketch, editor.selection, editor.constrain.selected);
+}
+
 /** The sentence for the readout, including the snap the pointer is on. */
 export function sketchReadout(editor: SketchEditor): string {
   if (editor.phase === "choosing") return "Click a flat face, an origin plane, or the workplane.";
@@ -613,10 +652,10 @@ export function sketchReadout(editor: SketchEditor): string {
   if (editor.lookAround) return `Look around is on. O locks the view.${tail}`;
   const refused = editor.draw.note ? ` ${editor.draw.note}` : "";
   if (editor.tool === "line" && editor.helperLine) {
-    return `Helper line. Click points. Lines drawn now are helper lines.${refused}${tail}`;
+    return `Helper line. ${keepsClause(editor) || "Click points. Lines drawn now are helper lines."}${refused}${tail}`;
   }
   if (editor.tool === "line") {
-    return `Line. Click points. Type a length and an angle.${refused}${tail}`;
+    return `Line. ${keepsClause(editor) || "Click points. Type a length and an angle."}${refused}${tail}`;
   }
   if (editor.tool === "rectangle") {
     return `Rectangle. Click two corners.${refused}${tail}`;
@@ -702,10 +741,10 @@ function lineClick(editor: SketchEditor, sketch: SketchData, at: Pt, ev: SketchP
   if (chain && chain.length >= 2) {
     const first = sketchPoint(sketch, chain[0]!)?.at;
     if (first && Math.hypot(first[0] - at[0], first[1] - at[1]) <= 1e-4) {
-      return closeChain(editor, sketch);
+      return closeChain(editor, sketch, !ev.ctrl);
     }
   }
-  return placeLinePoint(editor, sketch, at);
+  return placeLinePoint(editor, sketch, at, ev.ctrl ? null : editor.infer);
 }
 
 function rectPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer, at: Pt): SketchEditor {
@@ -720,27 +759,39 @@ function rectPointer(editor: SketchEditor, sketch: SketchData, ev: SketchPointer
   return editor;
 }
 
-function placeLinePoint(editor: SketchEditor, sketch: SketchData, at: Pt): SketchEditor {
+/**
+ * A polyline point. `infer` is what the click keeps (K1), or null for a typed size and a Ctrl-click, which keep
+ * nothing. The first point is only a point: the curves it lies on wait in `startOn` and are kept with the first line,
+ * so one undo step takes the line and every rule it brought.
+ */
+function placeLinePoint(editor: SketchEditor, sketch: SketchData, at: Pt, infer: Inference | null = null): SketchEditor {
   const chain = editor.chain;
   if (!chain || chain.length === 0) {
     const added = ensurePoint(sketch, at);
-    return replaceSketch({ ...editor, chain: [added.id], typed: null }, added.sketch);
+    const curves = infer ? startCurves(infer.rules) : [];
+    return replaceSketch({ ...editor, chain: [added.id], typed: null, infer: null, startOn: curves.length ? { point: added.id, entities: curves } : null }, added.sketch);
   }
   const first = sketchPoint(sketch, chain[0]!)?.at;
-  if (chain.length >= 2 && first && Math.hypot(first[0] - at[0], first[1] - at[1]) <= 1e-4) return closeChain(editor, sketch);
+  if (chain.length >= 2 && first && Math.hypot(first[0] - at[0], first[1] - at[1]) <= 1e-4) return closeChain(editor, sketch, infer != null);
   const before = currentMark(editor);
   const end = ensurePoint(sketch, at);
   const line = addLine(end.sketch, chain[chain.length - 1]!, end.id, editor.helperLine);
-  const next = replaceSketch({ ...editor, chain: [...chain, end.id], typed: null }, line.sketch);
+  const kept = infer ? keepRules(line.sketch, line.id, end.id, infer.rules, editor.startOn) : line.sketch;
+  const next = replaceSketch({ ...editor, chain: [...chain, end.id], typed: null, infer: null, startOn: null }, kept);
   return { ...next, undo: [...editor.undo, before].slice(-100), redo: [] };
 }
 
-function closeChain(editor: SketchEditor, sketch: SketchData): SketchEditor {
+function closeChain(editor: SketchEditor, sketch: SketchData, infer = false): SketchEditor {
   const chain = editor.chain;
   if (!chain || chain.length < 2) return endChain(editor);
   const before = currentMark(editor);
-  const line = addLine(sketch, chain[chain.length - 1]!, chain[0]!, editor.helperLine);
-  const next = replaceSketch({ ...endChain(editor), typed: null }, line.sketch);
+  const last = chain[chain.length - 1]!;
+  const line = addLine(sketch, last, chain[0]!, editor.helperLine);
+  // The closing line holds the rules its geometry shows (a square drawn with the Line tool keeps its sides level and upright).
+  const from = sketchPoint(sketch, last)?.at;
+  const to = sketchPoint(sketch, chain[0]!)?.at;
+  const kept = infer && chain.length >= 3 && from && to ? keepRules(line.sketch, line.id, chain[0]!, segmentRules(sketch, chain, from, to)) : line.sketch;
+  const next = replaceSketch({ ...endChain(editor), typed: null }, kept);
   return { ...next, undo: [...editor.undo, before].slice(-100), redo: [] };
 }
 
@@ -785,14 +836,14 @@ function endChain(editor: SketchEditor): SketchEditor {
   const sketch = activeSketch(editor);
   const pruned = sketch ? prunePoints(sketch) : sketch;
   const next = pruned && pruned !== sketch ? replaceSketch(editor, pruned) : editor;
-  return { ...next, chain: null, typed: null, esc: 1 };
+  return { ...next, chain: null, typed: null, infer: null, startOn: null, esc: 1 };
 }
 
 function clearGesture(editor: SketchEditor): SketchEditor {
   const sketch = activeSketch(editor);
   const pruned = sketch ? prunePoints(sketch) : null;
   const next = pruned ? replaceSketch(editor, pruned) : editor;
-  return { ...next, chain: null, rect: null, typed: null, drag: null, box: null, press: null, draw: idleDraw(editor.draw), constrain: idleConstrain(editor.constrain) };
+  return { ...next, chain: null, rect: null, typed: null, infer: null, startOn: null, drag: null, box: null, press: null, draw: idleDraw(editor.draw), constrain: idleConstrain(editor.constrain) };
 }
 
 function deleteSelection(editor: SketchEditor): SketchEditor {
@@ -813,15 +864,16 @@ function deleteSelection(editor: SketchEditor): SketchEditor {
   return { ...replaceSketch(editor, next), selection: freshSelection(), constrain: freshConstrain(), undo: [...editor.undo, before].slice(-100), redo: [], esc: 0 };
 }
 
-function snapAt(editor: SketchEditor, sketch: SketchData, at: Pt, mmPerPx: number): SnapHit {
+function snapAt(editor: SketchEditor, sketch: SketchData, at: Pt, mmPerPx: number, plain = false): SnapHit {
   const chain = editor.chain;
   const fromId = chain && chain.length >= 1 ? chain[chain.length - 1]! : null;
   const chained = fromId != null ? sketchPoint(sketch, fromId)?.at : undefined;
   const anchor = isDrawTool(editor.tool) ? drawAnchor(sketch, editor.draw, editor.tool) : {};
-  const from = chained ?? anchor.from;
+  // K1: `plain` (Ctrl held) leaves out the lines that stand for rules, so only the points and curves snap.
+  const from = plain ? undefined : chained ?? anchor.from;
   const prevId = chain && chain.length >= 2 ? chain[chain.length - 2]! : null;
   const prev = prevId != null ? sketchPoint(sketch, prevId)?.at : undefined;
-  const lastDir = (from && prev ? [from[0] - prev[0], from[1] - prev[1]] as Pt : undefined) ?? anchor.dir;
+  const lastDir = plain ? undefined : (from && prev ? [from[0] - prev[0], from[1] - prev[1]] as Pt : undefined) ?? anchor.dir;
   const sketchEntities: SnapEntity[] = [];
   for (const entity of sketch.entities) {
     const curve = curveOf(sketch, entity);
@@ -1251,6 +1303,8 @@ export function enterSketchData(editor: SketchEditor, sketch: SketchData): Sketc
     pointer: null,
     hoverRef: { index: null, face: false },
     helperLine: false,
+    infer: null,
+    startOn: null,
     typed: null,
     drag: null,
     box: null,

@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { lfOnly } from "./recipe.ts";
 import type { PluginValue } from "../src/model-tree.ts";
 import { pickText } from "../src/recipe/picks.ts";
+import { apiVerdict, parseApiLevel, type ApiLevel, type ApiRefusalCode } from "../src/recipe/api-level.ts";
+import { REFUSAL_CODES } from "./refusals.ts";
 
 /** The app's identifier (src-tauri/tauri.conf.json): the library sits in its data folder. */
 const APP_ID = "com.limeslice.slicer";
@@ -192,20 +194,26 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
 
 /** `major.minor` as numbers, or null. */
 export function apiLevel(text: string): [number, number] | null {
-  const m = /^(\d+)\.(\d+)$/.exec(text.trim());
-  return m ? [Number(m[1]), Number(m[2])] : null;
+  const level = parseApiLevel(text);
+  return level ? [level[0], level[1]] : null;
 }
 
-/** The refusal for a plugin that needs a newer recipe API than this host's crate (D12), or null when it builds here. */
-export function apiRefusal(wanted: string, have: [number, number]): string | null {
-  const level = apiLevel(wanted);
-  if (!level) return `This plugin names recipe API "${wanted}", which is not a level like 1.1.`;
-  if (level[0] > have[0] || (level[0] === have[0] && level[1] > have[1])) {
-    return `This plugin needs recipe API ${level[0]}.${level[1]}; this Lime Slice has ${have[0]}.${have[1]}. Update Lime Slice to run it. Its parts are kept as built.`;
-  }
-  if (level[0] < have[0]) return `This plugin was written for recipe API ${level[0]}.x, which this Lime Slice no longer builds.`;
-  return null;
+/**
+ * The refusal for a plugin this host cannot build (D12), or null when it builds here: a newer API than this host's
+ * crate of its major, or a major it no longer ships. `crates` is every major's crate level (the current one when
+ * omitted). The code is `apiVerdict`'s.
+ */
+export function apiRefusal(wanted: string, have: readonly [number, number], crates: readonly ApiLevel[] = [have]): string | null {
+  const verdict = apiVerdict(wanted, crates);
+  return verdict.ok ? null : verdict.reason;
 }
+
+/** What each of `apiVerdict`'s codes means to a client, in the refusal registry's words (a type error if one is missing). */
+export const API_REFUSALS: Record<ApiRefusalCode, string> = {
+  "plugin-unsupported": REFUSAL_CODES["plugin-unsupported"],
+  "plugin-api-retired": REFUSAL_CODES["plugin-api-retired"],
+  "plugin-invalid": REFUSAL_CODES["plugin-invalid"],
+};
 
 /** `diameter mm 80 [20-250], holes 6 [3-24], bore true`: a plugin's parameters on one line. */
 export function paramSummary(params: PluginParam[]): string {

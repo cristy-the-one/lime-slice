@@ -188,6 +188,7 @@ src/sketch/reasons.test.ts
 src/sketch/close-gap.test.ts
 src/sketch/loft-above.test.ts
 src/sketch/demos.test.ts
+src/sketch/infer.test.ts
 src/modeling/index.test.ts
 src/model-face.test.ts
 src/model-loops.test.ts
@@ -237,6 +238,7 @@ src/recipe/ingredients.test.ts
 src/recipe/picks.test.ts
 src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
+src/recipe/api-level.test.ts
 tools/ci/bump-only.test.mjs
 tools/ci/bundle-budget.test.mjs
 tools/ci/smoke-shards.test.mjs
