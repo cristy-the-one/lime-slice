@@ -5,7 +5,7 @@
  */
 import { assemblyOf, attached, movedTo, readAssemblies, samePose, type Assembly } from "../assembly.ts";
 import type { Bounds } from "../mesh-place.ts";
-import { exactVerdict, interference, meshVolume, type PairResult } from "../interference.ts";
+import type { PairResult } from "../interference.ts";
 import type { ContextPart } from "../model-context.ts";
 import { movedPose, posedBounds, thenPose, type Affine } from "../model-space.ts";
 import { meshToModel, modelPoseOf, plateUnionBounds, withModelPose } from "../plate.ts";
@@ -101,6 +101,22 @@ export interface Clash {
 /** --- Assemblies M7. The exact pass's answers, by the same key as the mesh pass's: a volume, or why not. */
 const measured = new Map<string, number | string>();
 
+/**
+ * The mesh pass and the exact verdict, loaded on the first assembly that has two parts (it is ~10 kB the rest of the
+ * app never runs). Until it is here no pair is checked; when it lands the list and the tint are drawn again.
+ */
+let engine: typeof import("../interference.ts") | null = null;
+let engineLoading = false;
+function loadEngine() {
+  if (engine || engineLoading) return;
+  engineLoading = true;
+  void import("../interference.ts").then((module) => {
+    engine = module;
+    syncAssemblyView();
+    refreshObjectList();
+  });
+}
+
 const clashCache = new Map<string, PairResult>();
 const arrayIds = new WeakMap<Float32Array, number>();
 let nextArrayId = 1;
@@ -126,6 +142,10 @@ export function assemblyClashes(): Clash[] {
       const obj = objects.get(row.object);
       return obj && obj.sourcePos.length >= 9 ? [{ obj, pose: meshToModel(obj) }] : [];
     });
+    if (members.length > 1 && !engine) {
+      loadEngine();
+      continue;
+    }
     for (let i = 0; i < members.length; i += 1) {
       for (let j = i + 1; j < members.length; j += 1) {
         const a = members[i]!;
@@ -133,13 +153,13 @@ export function assemblyClashes(): Clash[] {
         const key = `${arrayId(a.obj.sourcePos)}|${arrayId(b.obj.sourcePos)}|${JSON.stringify(a.pose)}|${JSON.stringify(b.pose)}`;
         let result = clashCache.get(key);
         if (!result) {
-          result = interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose });
+          result = engine!.interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose });
           clashCache.set(key, result);
         }
         if (result.verdict !== "crossing" && !result.nested) continue;
         const exact = measured.get(key);
         // The kernel's answer wins over the mesh's: a sliver under D11's threshold is a touch, so no clash.
-        if (typeof exact === "number" && exactVerdict(exact, [meshVolume(a.obj.sourcePos), meshVolume(b.obj.sourcePos)]) === "touch") continue;
+        if (typeof exact === "number" && engine!.exactVerdict(exact, [engine!.meshVolume(a.obj.sourcePos), engine!.meshVolume(b.obj.sourcePos)]) === "touch") continue;
         const volume = typeof exact === "number" ? `: ${exact.toFixed(1)} mm³` : "";
         const kind = result.verdict === "crossing" ? "crossing" : "nested";
         const line = kind === "crossing" ? `${a.obj.name} crosses ${b.obj.name}${volume}` : `${a.obj.name} and ${b.obj.name}: one sits inside the other${volume}`;

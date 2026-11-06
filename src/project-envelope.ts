@@ -40,7 +40,7 @@ import { fnv1aHex } from "./slice-action.ts";
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
-import { readStudy } from "./sim/study.ts";
+import { readStudy } from "./sim/study-data.ts";
 import { isGlobalFrame, readWorkplane } from "./workplane.ts";
 import { dropEmptyReinforce, readReinforcement } from "./reinforcement.ts";
 import { GROW_MAX, type EditEntry } from "./support-edit-list.ts";
