@@ -30,7 +30,7 @@ import type { SavedTree } from "../model-tree-file.ts";
 import { savedToolObjects, treeBody } from "../saved-tree-body.ts";
 import { copyWorkplane } from "../workplane.ts";
 import { setStage } from "./viewer.ts";
-import { cloneStudy } from "../sim/study.ts";
+import { cloneStudy } from "../sim/study-data.ts";
 import { solidFileName } from "../brep-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome, stale } from "./settings.ts";
