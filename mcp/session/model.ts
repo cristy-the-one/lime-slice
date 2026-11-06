@@ -30,6 +30,7 @@ import { assemblyOf } from "../../src/assembly.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, type PlateObject, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_describe: (s, obj, input) => s.describe(obj, input),
@@ -40,7 +41,7 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_place: (s, obj, input) => s.modelPlace(obj, input),
   model_probe: (s, obj, input) => {
     const anchored = s.anchored(obj, input.op as Record<string, unknown>);
-    if ("reason" in anchored) return { ok: false, reason: anchored.reason };
+    if ("reason" in anchored) return refuse("bad-anchor", anchored.reason);
     // --- Split to print: plan runs the planner alone, with no kernel call.
     if (input.plan === true) return s.planTool(obj, anchored.op);
     return s.probeMeasured(obj, { ...input, op: anchored.op });
@@ -60,7 +61,7 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_rename: (s, obj, input) => s.rename(obj, s.nodeOf(obj, input.node), String(input.label ?? "")),
   model_commit: (s, obj) => s.commit(obj),
   model_export_step: (s, obj, input) => {
-    if (input.pieces === true && input.assembly === true) return { ok: false, reason: "Export the pieces or the assembly, not both." };
+    if (input.pieces === true && input.assembly === true) return refuse("conflicting-arguments", "Export the pieces or the assembly, not both.");
     if (input.assembly === true) return s.exportAssemblyStep(obj, String(input.name));
     return input.pieces === true ? s.exportPieceStep(obj, String(input.name)) : s.exportStep(obj, String(input.name));
   },
@@ -125,7 +126,7 @@ async function commonVolume(this: Session, a: PlateObject, b: PlateObject): Prom
 
 function meshInterference(this: Session, obj: PlateObject): Record<string, unknown> {
   const assembly = assemblyOf(this.liveAssemblies(), obj.id);
-  if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
+  if (!assembly) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
   const members = assembly.members.flatMap((row) => {
     const part = this.find(row.object);
     if (!part) return [];
@@ -189,8 +190,8 @@ async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, 
     return hit.ok === false ? hit : { ...hit, frame: "plate" };
   }
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   // The ray and the hit in the frame ops are typed in, so a cut at the hit point lands on it.
   return { ...surfaceAtSolid(typedView(obj.solid, typedPoseOf(obj)), input), frame: obj.frame ?? "model" };
 }
@@ -198,8 +199,8 @@ async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, 
 async function modelCheck(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (input.interference === true) return this.interferenceCheck(obj, input.exact === true);
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (!obj.solid || obj.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
   return checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm }, input);
 }
@@ -229,7 +230,7 @@ function model(this: Session, name: string, input: Record<string, unknown>): Rec
   const requested = typeof input.object === "string" ? input.object : "";
   // --- Split to print (D12). An export target's piece is off the plate and still a part to model.
   const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested && this.exportCut(row) !== null) ?? null;
-  if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const tool = Object.hasOwn(MODEL_TOOLS, name) ? MODEL_TOOLS[name] : undefined;
   if (!tool) throw new ProtocolError(`There is no tool named ${name}.`);
   return tool(this, obj, input);
@@ -345,12 +346,7 @@ async function loseTrees(this: Session): Promise<void> {
 
 function lostReply(this: Session, err: unknown): Record<string, unknown> | null {
   if (!(err instanceof ModelRunaway)) return null;
-  return {
-    ok: false,
-    reason: err.message,
-    treeLost: true,
-    treeNote: `${err.crashed ? "The modeler stopped" : "The modeler did not answer, so it was restarted"}, which closed every open history in it. Nothing applied is lost: each history is built again from its first solid and its steps on its next use, which takes a while on a long one.`,
-  };
+  return refuse("model-runaway", err.message, { treeLost: true, treeNote: `${err.crashed ? "The modeler stopped" : "The modeler did not answer, so it was restarted"}, which closed every open history in it. Nothing applied is lost: each history is built again from its first solid and its steps on its next use, which takes a while on a long one.` });
 }
 
 async function treeCall(this: Session, body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
@@ -449,7 +445,7 @@ async function rebuildStale(this: Session, obj: PlateObject, depth: number): Pro
 
 async function solidNew(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const typed = primitiveFrom(input);
-  if ("reason" in typed) return { ok: false, reason: typed.reason };
+  if ("reason" in typed) return refuse("bad-argument", typed.reason);
   const kind = typed.primitive;
   const spec = rootSpec(typed);
   this.seq += 1;
@@ -457,7 +453,7 @@ async function solidNew(this: Session, input: Record<string, unknown>): Promise<
   const key = `mcp-${id}`;
   const reply = await this.treeCall(newSolidRequest(key, typed, CHORD));
   const error = typeof reply.error === "string" ? reply.error : "";
-  if (error) return { ok: false, reason: plainModelError(error, "create") };
+  if (error) return refuse("kernel-refused", plainModelError(error, "create"));
   const obj: PlateObject = {
     id,
     name: this.givenName(input.name) ?? kind,
@@ -504,9 +500,9 @@ async function opened(this: Session, obj: PlateObject): Promise<ModelTree | { re
 
 async function describe(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const solid = obj.solid;
-  if (!solid) return { ok: false, reason: "This solid could not be read." };
+  if (!solid) return refuse("solid-unreadable", "This solid could not be read.");
   const stale = this.staleTransitions(obj, tree);
   return describeReply(solid, input, obj.frame ?? "model", stale.length > 0 ? { notes: stale.map((row) => row.note), staleTransitions: stale.map(({ note: _note, ...row }) => row) } : {}, typedPoseOf(obj));
 }
@@ -532,8 +528,8 @@ function staleTransitions(this: Session, obj: PlateObject, tree: ModelTree): { n
 
 async function facesFind(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   return facesReply(obj.solid, input, this.expandContext(obj), typedPoseOf(obj), obj.frame ?? "model");
 }
 
@@ -547,32 +543,32 @@ async function sectionTool(this: Session, obj: PlateObject, input: Record<string
   // --- saveAs: the answer goes to the workspace as recipe data (data {name}), and the reply only counts it, so a
   // mesh's measured sections never pass through the model. A recipe reads section's answer directly instead.
   const saveAs = typeof input.saveAs === "string" ? input.saveAs : undefined;
-  if (saveAs !== undefined && this.recipeDepth > 0) return { ok: false, reason: "A recipe reads section's answer directly; saveAs is for a call from the chat." };
+  if (saveAs !== undefined && this.recipeDepth > 0) return refuse("conflicting-arguments", "A recipe reads section's answer directly; saveAs is for a call from the chat.");
   const answer = (sections: Record<string, unknown>[], extra: Record<string, unknown> = {}): Record<string, unknown> => {
     const points = sections.reduce((sum, section) => sum + pointsIn(section), 0);
     if (saveAs !== undefined) {
       const saved = writeRecipeData(saveAs, { object: obj.id, ...extra, sections });
-      if ("reason" in saved) return { ok: false, reason: saved.reason };
+      if ("reason" in saved) return refuse("bad-argument", saved.reason);
       const areas = sections.map((section) => section.areaMm2);
       return { ok: true, object: obj.id, ...extra, saved: saveAs, ...saved, sections: sections.length, points, ...(areas.length <= 50 ? { areasMm2: areas } : {}) };
     }
-    if (points > MAX_SECTION_POINTS) return { ok: false, reason: `This answer would hold ${points} points, over ${MAX_SECTION_POINTS}. Cut fewer planes, pass resample, or a larger chordMm, or pass saveAs to keep it as recipe data.` };
+    if (points > MAX_SECTION_POINTS) return refuse("out-of-range", `This answer would hold ${points} points, over ${MAX_SECTION_POINTS}. Cut fewer planes, pass resample, or a larger chordMm, or pass saveAs to keep it as recipe data.`);
     return { ok: true, object: obj.id, ...extra, sections };
   };
   const cuts = input.face === undefined ? cutPlanes(input) : null;
-  if (cuts && "reason" in cuts) return { ok: false, reason: cuts.reason };
-  if (input.face !== undefined && ["planes", "fan", "levels"].some((key) => input[key] !== undefined)) return { ok: false, reason: "Give a face or planes, not both." };
+  if (cuts && "reason" in cuts) return refuse("bad-argument", cuts.reason);
+  if (input.face !== undefined && ["planes", "fan", "levels"].some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Give a face or planes, not both.");
   if (this.meshBlock(obj)) {
-    if (!cuts) return { ok: false, reason: "A mesh has no faces to outline. Cut it with planes, fan, or levels." };
+    if (!cuts) return refuse("mesh-not-solid", "A mesh has no faces to outline. Cut it with planes, fan, or levels.");
     const positions = this.placed(obj).positions;
     const options = { ...(typeof input.resample === "number" ? { resample: input.resample } : {}), ...(typeof input.startAngleDeg === "number" ? { startAngleDeg: input.startAngleDeg } : {}) };
     return answer(cuts.map((cut) => meshSection(positions, cut, options)), { frame: "plate" });
   }
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   const cut = await solidSections(input, chordMm, cuts, typedPoseOf(obj), this.expandContext(obj), (request) => this.treeCall({ ...request, key: tree.key, node: tree.current }, "section"));
-  if ("reason" in cut) return { ok: false, reason: cut.reason };
+  if ("reason" in cut) return refuse("bad-argument", cut.reason);
   return answer(cut.sections, cut.extra);
 }
 
@@ -607,8 +603,8 @@ function pickReads(this: Session, ctx: CallMeta): PickReads {
 
 async function edgesFind(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   return edgesReply(obj.solid, input, (filter) => this.onFaceIndex(obj, filter), typedPoseOf(obj), obj.frame ?? "model");
 }
 
@@ -643,7 +639,7 @@ async function workplaneSet(this: Session, obj: PlateObject, input: Record<strin
     return answer();
   }
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (source === "bed") {
     // Under the middle of the part as it stands, W up in model space.
     const box = obj.solid ? (isIdentity(typedPoseOf(obj)) ? obj.solid.bounds : boundsOf(featureSolidInModel(obj.solid, typedPoseOf(obj)).positions)) : { min: [0, 0, 0], max: [0, 0, 0] };
@@ -652,16 +648,16 @@ async function workplaneSet(this: Session, obj: PlateObject, input: Record<strin
   }
   const faceIndex = Number(input.faceIndex);
   const face = obj.solid?.faces[faceIndex];
-  if (!face) return { ok: false, reason: "That face is not on this solid." };
-  if (!face.normal || !obj.solid) return { ok: false, reason: CURVED_FACE };
+  if (!face) return refuse("face-not-found", "That face is not on this solid.", undefined, NEXT.faces);
+  if (!face.normal || !obj.solid) return refuse("curved-face", CURVED_FACE);
   const plane = facePlane(obj.solid.positions, obj.solid.triangles, faceIndex, face.normal);
-  if (!plane) return { ok: false, reason: CURVED_FACE };
+  if (!plane) return refuse("curved-face", CURVED_FACE);
   obj.workplane = workplaneOnFace(plane);
   return answer();
 }
 
 function printUp(this: Session, obj: PlateObject): Record<string, unknown> {
-  if (isGlobalFrame(obj.workplane)) return { ok: false, reason: "Pick a face before pointing it up." };
+  if (isGlobalFrame(obj.workplane)) return refuse("bad-frame", "Pick a face before pointing it up.");
   this.remember("Point up");
   const frame = eulerOrient(obj.workplane.turn[0], obj.workplane.turn[1], obj.workplane.turn[2]);
   obj.orient = [frame[0], frame[3], frame[6], frame[1], frame[4], frame[7], frame[2], frame[5], frame[8]];

@@ -23,6 +23,7 @@ import { reviewGcode } from "../review.ts";
 import { resolveWrite } from "../workspace.ts";
 import { type CallMeta, type Job, type PlateObject, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, STALE_SLICE, type SliceSummary, type ToolHandler, UNKNOWN_OBJECT, roundTo, shownName, standsOnNothing } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function selectedObject(this: Session): PlateObject | null {
   return this.find(this.selected) ?? this.objects[0] ?? null;
@@ -154,23 +155,23 @@ function notSliced(this: Session): string[] {
 async function sliceStart(this: Session, cancelRunning: boolean, scope?: unknown): Promise<Record<string, unknown>> {
   if (this.running && this.running.status === "running") {
     if (!cancelRunning) {
-      return { ok: false, reason: `A slice is already running (${this.running.handle}). Cancel it or pass cancelRunning.` };
+      return refuse("slice-running", `A slice is already running (${this.running.handle}). Cancel it or pass cancelRunning.`, undefined, NEXT.slicewait);
     }
     await this.ask(this.engine.sliceCancel(String(this.running.engineId)));
     this.running.status = "cancelled";
     this.running = null;
   }
   const obj = this.selectedObject();
-  if (!obj) return { ok: false, reason: "Load a mesh first." };
+  if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   const committed = await this.commitObject(obj);
-  if (committed) return { ok: false, reason: committed };
+  if (committed) return refuse("commit-failed", committed);
   const skipped = this.notSliced();
   const built = this.sliceBody(obj, scope);
   built.body.partHold = true;
   const collisions = this.plateCollisions();
   const plateBody = Array.isArray(built.body.objects);
   const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), plateBody ? undefined : built.mesh))) as { id?: number; error?: string };
-  if (typeof started.id !== "number") return { ok: false, reason: humanEngineError(started.error ?? "The slice did not start.") };
+  if (typeof started.id !== "number") return refuse("slice-failed", humanEngineError(started.error ?? "The slice did not start."));
   this.jobSeq += 1;
   const job: Job = {
     handle: `job_${this.jobSeq}`,
@@ -262,7 +263,7 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
   let fraction = 0;
   let stage = "";
   while (job.status === "running" && Date.now() < deadline) {
-    if (meta?.signal?.aborted) return { ok: false, job: job.handle, status: "cancelled", reason: "The wait was cancelled." };
+    if (meta?.signal?.aborted) return refuse("cancelled", "The wait was cancelled.", { job: job.handle, status: "cancelled" });
     const poll = JSON.parse(await this.ask(this.engine.slicePoll(String(job.engineId)))) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
     if (typeof poll.fraction === "number") {
       fraction = poll.fraction;
@@ -288,17 +289,17 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
     }
   }
   if (meta?.signal?.aborted && job.status === "running") {
-    return { ok: false, job: job.handle, status: "cancelled", reason: "The wait was cancelled." };
+    return refuse("cancelled", "The wait was cancelled.", { job: job.handle, status: "cancelled" });
   }
   if (job.status === "running") {
     return { ok: true, job: job.handle, status: "running", fraction, stage, ...this.sliceIdentity(job) };
   }
   if (this.running?.handle === job.handle && job.status !== "running") this.running = null;
   if (job.status === "done") this.latest = job;
-  if (job.status === "cancelled") return { ok: false, job: job.handle, status: "cancelled", reason: "The slice was cancelled." };
+  if (job.status === "cancelled") return refuse("cancelled", "The slice was cancelled.", { job: job.handle, status: "cancelled" });
   if (job.status !== "done" || !job.wire) {
     const reason = job.error ? humanEngineError(this.errorText(job.error)) : "The slice did not finish.";
-    return { ok: false, job: job.handle, status: "error", reason };
+    return refuse("slice-failed", reason, { job: job.handle, status: "error" });
   }
   const summary = this.summarize(job);
   return {
@@ -332,24 +333,17 @@ function errorText(this: Session, error: string): string {
 async function lostJob(this: Session, handle: string): Promise<Record<string, unknown>> {
   const reason = "That slice job is not in this session.";
   const previous = this.previousAutosave;
-  if (!previous || this.objects.length > 0 || this.jobs.length > 0 || this.workJobs.length > 0) return { ok: false, job: handle, reason };
+  if (!previous || this.objects.length > 0 || this.jobs.length > 0 || this.workJobs.length > 0) return refuse("slice-lost", reason, { job: handle });
   const opened = await this.projectOpen(previous.path).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
-  if (opened.ok === false) return { ok: false, job: handle, reason: `${reason} ${previous.note}` };
-  return {
-    ok: false,
-    job: handle,
-    status: "lost",
-    reason: `${reason} The server restarted at ${this.startedAt}, so the job is gone; the plate was restored from the autosave of ${previous.savedAt} (${previous.path}), as it stood before that call. Run the call again.`,
-    restored: previous.path,
-    objects: this.objects.map((obj) => obj.id),
-  };
+  if (opened.ok === false) return refuse("slice-lost", `${reason} ${previous.note}`, { job: handle });
+  return refuse("slice-lost", `${reason} The server restarted at ${this.startedAt}, so the job is gone; the plate was restored from the autosave of ${previous.savedAt} (${previous.path}), as it stood before that call. Run the call again.`, { job: handle, status: "lost", restored: previous.path, objects: this.objects.map((obj) => obj.id) });
 }
 
 async function sliceCancel(this: Session, handle: string): Promise<Record<string, unknown>> {
   const work = this.workJobs.find((row) => row.handle === handle);
   if (work) return this.workCancel(work);
   const job = this.jobOf(handle);
-  if (!job) return { ok: false, reason: "That slice job is not in this session." };
+  if (!job) return refuse("slice-lost", "That slice job is not in this session.");
   await this.ask(this.engine.sliceCancel(String(job.engineId)));
   if (job.status === "running") job.status = "cancelled";
   if (this.running?.handle === job.handle) this.running = null;
@@ -411,9 +405,9 @@ function finished(this: Session, handle?: string): Job | null {
 
 function gcodeSummary(this: Session, handle?: string): Record<string, unknown> {
   const job = this.finished(handle);
-  if (!job?.gcode || !job.wire) return { ok: false, reason: "Slice first." };
+  if (!job?.gcode || !job.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const summary = this.summarize(job);
   const review = reviewGcode(this.fileText(job, new Date(Date.UTC(2020, 0, 2, 3, 4, 5))), {
     custom: this.customBlocks(),
@@ -445,11 +439,11 @@ function customBlocks(this: Session): string[] {
 
 function gcodeExport(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
-  if (!job?.gcode) return { ok: false, reason: "Slice first." };
+  if (!job?.gcode) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const now = typeof input.now === "string" ? new Date(input.now) : new Date();
-  if (Number.isNaN(now.getTime())) return { ok: false, reason: "That clock is not a time." };
+  if (Number.isNaN(now.getTime())) return refuse("bad-clock", "That clock is not a time.");
   const text = this.fileText(job, now);
   const path = resolveWrite(String(input.name), ".gcode");
   writeFileSync(path, text);
@@ -457,9 +451,9 @@ function gcodeExport(this: Session, input: Record<string, unknown>): Record<stri
 }
 
 async function export3mf(this: Session, name: string): Promise<Record<string, unknown>> {
-  if (this.objects.length === 0) return { ok: false, reason: "The plate is empty." };
+  if (this.objects.length === 0) return refuse("plate-empty", "The plate is empty.", undefined, NEXT.empty);
   const refused = (await this.commitAll())[0];
-  if (refused) return { ok: false, reason: `${refused.name} (${refused.object}): ${refused.reason}`, object: refused.object };
+  if (refused) return refuse("commit-failed", `${refused.name} (${refused.object}): ${refused.reason}`, { object: refused.object });
   const meshes = this.objects.map((obj) => this.placed(obj).positions);
   const bytes = encode3mf(meshes);
   const path = resolveWrite(name, ".3mf");
@@ -469,7 +463,7 @@ async function export3mf(this: Session, name: string): Promise<Record<string, un
 
 function meshStats(this: Session, id: string): Record<string, unknown> {
   const obj = this.find(id);
-  if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const placed = this.placed(obj);
   const size = [
     placed.bounds.max[0] - placed.bounds.min[0],
@@ -488,9 +482,9 @@ function meshStats(this: Session, id: string): Record<string, unknown> {
 
 function layerSummary(this: Session, handle?: string): Record<string, unknown> {
   const job = this.finished(handle);
-  if (!job?.wire) return { ok: false, reason: "Slice first." };
+  if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const summary = this.summarize(job);
   const first = summary.layers[0];
   const last = summary.layers[summary.layers.length - 1];

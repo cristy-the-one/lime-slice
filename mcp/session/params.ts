@@ -20,13 +20,14 @@ import { planRebuild } from "../../src/param-rebuild.ts";
 import { ExprError, PARAM_NAME, evaluate, resolveNumbers } from "../../src/modeling/expr.ts";
 import { CHORD, type PlateObject, type Recipe, type RustRecipe, type TypedWorkplane, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { refuse } from "../refusals.ts";
 
 /** model_anchors: every label on the path to the current step with its box, or one label's. */
 function anchorsTool(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
-  if (!obj.tree) return { ok: false, reason: "This object has no Model history yet." };
+  if (!obj.tree) return refuse("no-history", "This object has no Model history yet.");
   if (typeof input.label === "string") {
     const box = this.labelBox(obj, input.label);
-    return box ? { ok: true, ...anchorRow(input.label, box) } : { ok: false, reason: `No step is labelled "${input.label}" with a tool to measure.` };
+    return box ? { ok: true, ...anchorRow(input.label, box) } : refuse("bad-anchor", `No step is labelled "${input.label}" with a tool to measure.`);
   }
   const names = new Set<string>();
   for (let node: number | null = obj.tree.current; node !== null; node = obj.tree.nodes.get(node)?.parent ?? null) {
@@ -122,8 +123,8 @@ function defineTool(this: Session, input: Record<string, unknown>): Record<strin
   if (input.clear === true) this.parts.clear();
   if (typeof input.name === "string") {
     const name = input.name.trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_ -]*$/.test(name)) return { ok: false, reason: "A part name is letters, digits, spaces, dashes, and underscores." };
-    if (!Array.isArray(input.ops) || input.ops.length === 0) return { ok: false, reason: "A part needs ops." };
+    if (!/^[A-Za-z_][A-Za-z0-9_ -]*$/.test(name)) return refuse("bad-name", "A part name is letters, digits, spaces, dashes, and underscores.");
+    if (!Array.isArray(input.ops) || input.ops.length === 0) return refuse("missing-argument", "A part needs ops.");
     const params = (input.params ?? {}) as Record<string, unknown>;
     try {
       // Expanded once with its defaults, so a mistake shows now rather than at the first use.
@@ -131,7 +132,7 @@ function defineTool(this: Session, input: Record<string, unknown>): Record<strin
       for (const [key, value] of Object.entries(params)) defaults[key] = Number(resolveNumbers(value, defaults, `params.${key}`));
       expandOps(input.ops, defaults, this.parts, OP_WORDS);
     } catch (err) {
-      if (err instanceof ExprError) return { ok: false, reason: err.message };
+      if (err instanceof ExprError) return refuse("bad-expression", err.message);
       throw err;
     }
     this.parts.set(name, { params: structuredClone(params), ops: structuredClone(input.ops) });
@@ -144,14 +145,14 @@ function paramsTool(this: Session, input: Record<string, unknown>): Record<strin
   const set = (input.set ?? {}) as Record<string, unknown>;
   const next: Record<string, string | number> = input.clear === true ? {} : { ...this.paramText };
   for (const [name, value] of Object.entries(set)) {
-    if (!PARAM_NAME.test(name)) return { ok: false, reason: `"${name}" is not a parameter name. Use letters, digits, and underscores.` };
+    if (!PARAM_NAME.test(name)) return refuse("bad-name", `"${name}" is not a parameter name. Use letters, digits, and underscores.`);
     next[name] = typeof value === "number" && Number.isFinite(value) ? value : String(value);
   }
   // --- D22. A row this call sets must evaluate; a bad row it does not touch stays, as the app's panel keeps it.
   const table = evaluateTable(next);
   const bad = table.rows.filter((row) => row.error);
   const refused = bad.find((row) => Object.hasOwn(set, row.name));
-  if (refused) return { ok: false, reason: `${refused.name}: ${refused.error}` };
+  if (refused) return refuse("bad-expression", `${refused.name}: ${refused.error}`);
   const before = this.params;
   this.paramText = next;
   this.params = { ...table.values };
@@ -216,6 +217,7 @@ async function paramsRebuild(this: Session, input: Record<string, unknown>): Pro
   return {
     ...set,
     ok: failed.length === 0,
+    ...(failed.length ? { code: "build-failed" } : {}),
     rebuilt,
     ...(rebuilt.length === 0 ? { note: "No part uses a parameter that changed." } : {}),
     ...(failed.length ? { reason: `${failed.length} part${failed.length === 1 ? "" : "s"} could not follow; each says why.` } : {}),
@@ -224,7 +226,7 @@ async function paramsRebuild(this: Session, input: Record<string, unknown>): Pro
 
 async function rebuildFromParameters(this: Session, obj: PlateObject): Promise<Record<string, unknown> | null> {
   const opened = await this.opened(obj);
-  if ("reason" in opened) return { object: obj.id, ok: false, reason: opened.reason };
+  if ("reason" in opened) return refuse("model-unavailable", opened.reason, { object: obj.id });
   const start = opened.current;
   let moved = false;
   const plan = await planRebuild(opened, { ...this.params }, {
@@ -238,7 +240,7 @@ async function rebuildFromParameters(this: Session, obj: PlateObject): Promise<R
   });
   if (moved) await this.gotoNode(obj, start);
   if (plan === null || plan === "stale") return null;
-  if ("error" in plan) return { object: obj.id, ok: false, reason: plan.error };
+  if ("error" in plan) return refuse("build-failed", plan.error, { object: obj.id });
   const tree = obj.tree!;
   const [op, ...rest] = plan.supplied;
   const followed = followRepeatSources(
@@ -250,14 +252,14 @@ async function rebuildFromParameters(this: Session, obj: PlateObject): Promise<R
     },
     obj.modelPose,
   );
-  if ("error" in followed) return { object: obj.id, ok: false, reason: followed.error };
+  if ("error" in followed) return refuse("build-failed", followed.error, { object: obj.id });
   const replayOps = followed.ops.slice(1);
   const twin = builtBranch(tree, plan.parent, op!, replayOps);
   let steps = 0;
   let broken: { id: number; error: string } | null = null;
   if (twin != null) {
     const shown = await this.gotoNode(obj, twin);
-    if (shown.ok !== true) return { object: obj.id, ok: false, reason: String(shown.reason ?? "That branch could not be shown.") };
+    if (shown.ok !== true) return refuse("build-failed", String(shown.reason ?? "That branch could not be shown."), { object: obj.id });
   } else {
     const ids = this.reserveOn(tree.key, 1 + plan.replay.length);
     const renamed = stepIds([plan.node, ...plan.replay], ids);
@@ -271,7 +273,7 @@ async function rebuildFromParameters(this: Session, obj: PlateObject): Promise<R
       if (lost) return { object: obj.id, ...lost };
       throw err;
     }
-    if (typeof reply.error === "string" && reply.error) return { object: obj.id, ok: false, reason: plainModelError(reply.error) };
+    if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error), { object: obj.id });
     const built = readBuilt(reply.built);
     broken = readBroken(reply.broken);
     const fork: ForkStep[] = ids.map((id, index) => {
@@ -291,6 +293,7 @@ async function rebuildFromParameters(this: Session, obj: PlateObject): Promise<R
   return {
     object: obj.id,
     ok: broken == null && !reason,
+    ...(broken ? { code: "build-failed" } : reason ? { code: "commit-failed" } : {}),
     steps,
     node: nodeHandle(obj.tree?.current ?? plan.node),
     ...(broken ? { broken: true, reason: `A step could not be rebuilt: ${broken.error} The part shows the last step that built, uncommitted.` } : {}),

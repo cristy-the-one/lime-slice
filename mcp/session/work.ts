@@ -9,6 +9,7 @@ import { validateTool } from "../schema.ts";
 import { isComposite } from "../../src/modeling/compose.ts";
 import { CHANGES_NOTHING, type CallMeta, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, WHILE_BUSY, type WorkJob, replySeconds } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /** The call's answer, or a job handle when it is not done within replySeconds() or its request is cancelled. */
 function detachable(this: Session, name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
@@ -62,8 +63,8 @@ function startWorkJob(this: Session, name: string, input: Record<string, unknown
 /** A job's state as slice_wait and the detached call answer it. A finished job answers with its call's own result. */
 function workReply(this: Session, job: WorkJob): Record<string, unknown> {
   if (job.done) {
-    if (job.error !== undefined) return { ok: false, job: job.handle, status: "error", tool: job.tool, reason: job.error };
-    const result = job.result ?? { ok: false };
+    if (job.error !== undefined) return refuse("job-failed", job.error, { job: job.handle, status: "error", tool: job.tool });
+    const result = job.result ?? { ok: false, code: "job-failed" };
     // A call whose result is a job of its own (slice_start's slice) keeps that handle and status, so the same wait
     // loop goes on to wait for the slice; the background job is named beside it.
     if (typeof result.job === "string") return { ...result, workJob: job.handle, tool: job.tool };
@@ -87,7 +88,7 @@ function busyRefusal(this: Session, name: string): Record<string, unknown> | nul
   const job = this.workJobs.find((row) => !row.done);
   if (!job || WHILE_BUSY.has(name)) return null;
   const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
-  return { ok: false, job: job.handle, reason: `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.` };
+  return refuse("job-running", `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.`, { job: job.handle }, NEXT.slicewait);
 }
 
 /**
@@ -115,22 +116,22 @@ async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta): Promise
   for (let i = 0; i < steps.length; i += 1) {
     const n = i + 1;
     const tool = steps[i]!.tool;
-    if (ctx.signal?.aborted) return end({ ok: false, failedStep: n, reason: `The plan was cancelled before step ${n} (${tool}). The steps before it stay applied.` });
+    if (ctx.signal?.aborted) return end(refuse("plan-cancelled", `The plan was cancelled before step ${n} (${tool}). The steps before it stay applied.`, { failedStep: n }));
     const resolved = resolveReferences(steps[i]!.args ?? {}, results, n);
-    if ("reason" in resolved) return end({ ok: false, failedStep: n, reason: resolved.reason });
+    if ("reason" in resolved) return end(refuse("plan-reference", resolved.reason, { failedStep: n }));
     this.noteStage(`plan step ${n} of ${steps.length}: ${tool}`, i / steps.length);
     let value: Record<string, unknown>;
     try {
       value = await this.runCall(tool, resolved.value, ctx, true);
     } catch (err) {
       const reason = err instanceof Error ? err.message : "The step failed.";
-      done.push({ step: n, tool, ok: false, reason });
-      return end({ ok: false, failedStep: n, reason: `Step ${n} (${tool}) failed: ${reason}` });
+      done.push({ step: n, tool, ok: false, code: "plan-step-failed", reason });
+      return end(refuse("plan-step-failed", `Step ${n} (${tool}) failed: ${reason}`, { failedStep: n }));
     }
     images.push(...imagesOf(value));
     results.push(value);
     done.push({ step: n, tool, result: value });
-    if (value.ok === false) return end({ ok: false, failedStep: n, reason: `Step ${n} (${tool}) was refused: ${typeof value.reason === "string" ? value.reason : "no reason given."}` });
+    if (value.ok === false) return end(refuse("plan-step-failed", `Step ${n} (${tool}) was refused: ${typeof value.reason === "string" ? value.reason : "no reason given."}`, { failedStep: n }));
   }
   return end({ ok: true });
 }
@@ -158,7 +159,7 @@ async function workCancel(this: Session, job: WorkJob): Promise<Record<string, u
   if (job.done) return { ...this.workReply(job), reason: "That job had already finished." };
   if (!job.stoppable) {
     const after = CHANGES_NOTHING.has(job.tool) ? "It changes no part." : job.tool.startsWith("model_") || job.tool === "solid_new" ? "Once it is done, model_undo or model_goto takes the part back." : "Once it is done, plate_undo takes it back.";
-    return { ok: false, job: job.handle, status: "running", reason: `${job.tool} cannot stop part way; it finishes in the background, and slice_wait returns its result. ${after}` };
+    return refuse("job-running", `${job.tool} cannot stop part way; it finishes in the background, and slice_wait returns its result. ${after}`, { job: job.handle, status: "running" }, NEXT.slicewait);
   }
   job.stop.abort();
   await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
