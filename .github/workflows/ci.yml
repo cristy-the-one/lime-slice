@@ -532,6 +532,43 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
+      # The three rules are warnings, so this step never fails on them. It fails only when ESLint itself
+      # breaks (a crash or a config error: exit code 2 or more). The count per rule goes to the job summary.
+      - name: ESLint (warnings only)
+        run: |
+          set +e
+          npx eslint -f json -o eslint-report.json
+          code=$?
+          if [ ! -s eslint-report.json ]; then
+            echo "ESLint crashed (exit $code) and wrote no report"
+            exit 1
+          fi
+          node -e '
+            const files = JSON.parse(require("fs").readFileSync("eslint-report.json", "utf8"));
+            const rules = {};
+            let errors = 0;
+            for (const file of files) {
+              for (const message of file.messages) {
+                const rule = message.ruleId ?? "(parse or config)";
+                rules[rule] = (rules[rule] ?? 0) + 1;
+                if (message.severity === 2) errors += 1;
+              }
+            }
+            const lines = Object.entries(rules).sort((a, b) => b[1] - a[1]).map(([rule, n]) => `${n}\t${rule}`);
+            const total = Object.values(rules).reduce((a, b) => a + b, 0);
+            console.log(`ESLint: ${total} warnings and errors, ${errors} at error level`);
+            console.log(lines.join("\n"));
+            const summary = process.env.GITHUB_STEP_SUMMARY;
+            if (summary) {
+              require("fs").appendFileSync(summary, `### ESLint\n\n${total} findings\n\n| Rule | Count |\n|---|---|\n${Object.entries(rules).map(([r, n]) => `| ${r} | ${n} |`).join("\n")}\n`);
+            }
+          '
+          if [ "$code" -ge 2 ]; then
+            echo "ESLint failed to run (exit $code)"
+            exit 1
+          fi
+          exit 0
+
       - name: Frontend build
         run: npx vite build
 

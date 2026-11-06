@@ -102,6 +102,8 @@ test("gizmo nudge keys are 24px and overlays carry a border, a shadow and an opa
     await page.screenshot({ path: `${process.env.LIME_SHOTS}/after-file-menu.png` });
   }
 
+  // The Model chrome builds lazily after the tab opens; on a loaded machine it is not there on the first read.
+  await page.locator("#modelFeatureMenu").waitFor({ state: "attached" });
   const layers = await page.evaluate(() => {
     const opaque = (color: string) => {
       const match = color.match(/rgba?\(([^)]+)\)/);

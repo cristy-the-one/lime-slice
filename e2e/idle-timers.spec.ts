@@ -47,14 +47,17 @@ test("an idle page schedules no repeating timers, and playback still advances", 
   await expect(play).toBeEnabled();
   const readMove = () => page.locator("#move").evaluate((el) => Number((el as HTMLInputElement).value));
   const start = await readMove();
+  const t0 = Date.now();
   await play.click();
   await expect(play).toHaveText("Pause");
   await page.waitForTimeout(1000);
   const moved = (await readMove()) - start;
+  const elapsed = Date.now() - t0;
   await play.click();
   await expect(play).toHaveText("Play");
   expect(moved).toBeGreaterThan(10);
-  expect(moved).toBeLessThan(40);
+  // One move per 40 ms of real time; on a loaded runner the wait runs long, so the ceiling follows the clock.
+  expect(moved).toBeLessThanOrEqual(Math.ceil(elapsed / 40) + 3);
   const stopped = await read();
   await page.waitForTimeout(500);
   expect((await read()).raf - stopped.raf).toBeLessThanOrEqual(4);
