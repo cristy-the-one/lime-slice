@@ -126,7 +126,7 @@ export function versionedId(font: TextFont): string {
  * `stroke` is the 4 × 6 grid font (a lowercase letter is drawn as its capital); `line` has lowercase of its own.
  */
 export interface PenFont {
-  id: "stroke" | "line";
+  id: string;
   version: string;
   name: string;
   about: string;
@@ -135,7 +135,27 @@ export interface PenFont {
 export const PEN_FONTS: readonly PenFont[] = [
   { id: "stroke", version: "1", name: "Stroke", about: "Single-stroke capitals and digits on a 4 × 6 grid, for engraving. A lowercase letter is drawn as its capital." },
   { id: "line", version: "1", name: "Line", about: "Single-stroke letters with lowercase, for engraving and pen-like text." },
+  // --- Hershey pen fonts: the original NBS single-stroke typefaces (public-domain data with a usage notice, third_party/fonts/NOTICE-Hershey.txt),
+  // five of them, ASCII only. The engine reads them from `crates/lime-model-occt/src/text/hershey/`.
+  { id: "hershey-simplex", version: "1", name: "Hershey Simplex", about: "Hershey's plain single-stroke sans: the lightest and most legible at small sizes. Letters, digits and ASCII marks." },
+  { id: "hershey-duplex", version: "1", name: "Hershey Duplex", about: "A sans drawn with two strokes where it matters, so it reads heavier and rounder than Simplex." },
+  { id: "hershey-complex", version: "1", name: "Hershey Complex", about: "A single-stroke Roman with serifs and some thick-and-thin, for engraved labels." },
+  { id: "hershey-script", version: "1", name: "Hershey Script", about: "A slanted single-stroke script (Script Simplex), for names and signatures. Large letters only." },
+  { id: "hershey-gothic", version: "1", name: "Hershey Gothic", about: "Gothic English: blackletter drawn with strokes, for a decorative inscription. Large letters only." },
 ];
+
+/** Whether a font id is one of the Hershey pen fonts (`hershey-simplex`, `hershey-script@1`). */
+export function isHersheyFont(font: unknown): boolean {
+  return typeof font === "string" && font.startsWith("hershey-") && penFontOf(font) !== undefined;
+}
+
+/**
+ * The gap after each letter a pen font starts with, mm. Stroke and Line sit on a fixed grid, so a third of the height; a Hershey
+ * letter carries side space of its own, so a tenth (the engine's default as well).
+ */
+export function defaultPenGap(font: unknown, height: number): number {
+  return isHersheyFont(font) ? height * 0.1 : height / 3;
+}
 
 /** The pen font a font id names (`stroke`, `line@1`), or undefined. */
 export function penFontOf(font: unknown): PenFont | undefined {

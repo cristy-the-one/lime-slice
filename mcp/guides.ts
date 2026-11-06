@@ -2,7 +2,7 @@
  * Worked sequences. The prompts quote these, and a test checks the order,
  * so a tool rename cannot leave the prompt naming a field that is gone.
  */
-import { TEXT_FONTS } from "../src/modeling/text-fonts.ts";
+import { isHersheyFont, PEN_FONTS, TEXT_FONTS } from "../src/modeling/text-fonts.ts";
 
 export interface Guide {
   uri: string;
@@ -265,6 +265,8 @@ GUIDES.push({
 export const TEXT_FONT_LINES: string[] = [
   "stroke: the single-stroke grid font, capitals and digits and - + . , : ! ? / ' & only (a lowercase letter is drawn as its capital). With no font the text is a box for every stroke, as every text saved before fonts is; with font:\"stroke\" it is one step, a pen of strokeWidth (default 0.15 of the height) with round ends, on any face. spacing is the whole gap after a letter (a third of the height).",
   "line: single-stroke letters with lowercase (and ( ) = _), for engraving and pen-like text. One step on any face, like stroke; id line@1. It is drawn for this app, not the Hershey data. Neither pen font takes a style or a weight.",
+  ...PEN_FONTS.filter((font) => isHersheyFont(font.id)).map((font) => `${font.id}: ${font.name}. ${font.about} Id ${font.id}@${font.version}.`),
+  "The hershey-* fonts are the original Hershey single-stroke typefaces: ASCII letters, digits and marks, proportional widths, one step on any face like stroke, no style or weight. strokeWidth is the pen (default 0.15 of the height) and spacing the gap after a letter (default a tenth of the height).",
   ...TEXT_FONTS.map((font) => `${font.id}: ${font.name}. ${font.about} Id ${font.id}@${font.version}.`),
   "style regular|bold|italic|bold-italic picks the font's own file. A font with no italic is slanted 12°; a font with no bold is refused for bold.",
   "On a cylinder or a cone (outline fonts): find the face with faces_find {kind:\"cylinder\"} (or \"cone\"), then text {faceIndex, text, font, height, depth}. The letters wrap along the surface at true size and stand depth off it, square to it, centred on the face's middle (across from its seam) or on point [x, y, z], a point on the face. along:\"around\" (default) reads round the part; along:\"axis\" runs up it; flip turns the text half way; angleDeg turns it about its anchor. at and from are for flat faces.",
@@ -287,7 +289,7 @@ export const TEXT_REFUSALS: string[] = [
   "strokeWidth is above 0 and at most half the height.",
   "The middle of ‘O’ would fall out. Use the Stencil font, or engrave less deep. (an engraving through the wall drops the middle of O, A, B, D, P, Q, R, 4, 6, 8, 9)",
   "‘Allerta Stencil’ has no bold. Pick Regular, or another font.",
-  "There is no font called ‘comic’. The fonts are stroke, line, sans, mono, serif, stencil.",
+  "There is no font called ‘comic’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil.",
   "Text takes at most 400 characters a step; use several.",
   "This font has no ‘ñ’ and ‘é’. Pick another font, or take them out. (every letter the font lacks, once)",
   "This file is not a font Lime Slice can read. Use a TrueType (.ttf) or OpenType (.otf) file. (fontFile)",

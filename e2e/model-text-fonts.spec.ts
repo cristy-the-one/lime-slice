@@ -100,13 +100,14 @@ test("the Text card starts in Sans Bold, and the picker draws each font's name i
   await openModel(page);
   await openText(page);
   const buttons = page.locator("#modelTextFont [data-font]");
-  await expect(buttons).toHaveCount(6);
+  await expect(buttons).toHaveCount(11);
   await expect(buttons.nth(0)).toHaveText("Stroke");
   await expect(buttons.nth(1)).toHaveText("Line");
-  await expect(buttons.nth(2)).toHaveText("Inter");
-  expect(await buttons.evaluateAll((nodes) => nodes.map((n) => (n as HTMLElement).dataset.font))).toEqual(["stroke", "line", "sans@4.0", "mono@1", "serif@1", "stencil@1"]);
+  await expect(buttons.nth(2)).toHaveText("Hershey Simplex");
+  await expect(buttons.nth(7)).toHaveText("Inter");
+  expect(await buttons.evaluateAll((nodes) => nodes.map((n) => (n as HTMLElement).dataset.font))).toEqual(["stroke", "line", "hershey-simplex", "hershey-duplex", "hershey-complex", "hershey-script", "hershey-gothic", "sans@4.0", "mono@1", "serif@1", "stencil@1"]);
   expect(await buttons.evaluateAll((nodes) => nodes.map((n) => getComputedStyle(n).fontFamily.replace(/["']/g, "").split(",")[0]))).toEqual([
-    expect.any(String), expect.any(String), "Lime Model Sans", "Lime Model Mono", "Lime Model Serif", "Lime Model Stencil",
+    ...Array.from({ length: 7 }, () => expect.any(String)), "Lime Model Sans", "Lime Model Mono", "Lime Model Serif", "Lime Model Stencil",
   ]);
   // D4: a new text starts in Sans Bold.
   await expect(page.locator("#modelTextFont [data-font='sans@4.0']")).toHaveAttribute("aria-pressed", "true");
@@ -246,4 +247,29 @@ test("Line takes lowercase and builds it in one step", async ({ page }) => {
   const op = tree.of("apply").at(-1)!.op as { steps: Body[]; source: Body };
   expect(op.steps).toHaveLength(1);
   expect(op.steps[0]).toMatchObject({ kind: "lettering", font: "line@1", text: "Lime gy" });
+});
+
+test("a Hershey font is one lettering step, with its own gap, and the picker groups it with Stroke and Line", async ({ page }) => {
+  const tree = await openModel(page);
+  await openText(page);
+  await page.locator("#modelTextFont [data-font=hershey-script]").click();
+  await expect(page.locator("#modelTextFont [data-font=hershey-script]")).toHaveAttribute("aria-pressed", "true");
+  // The pen fields show for a pen font; the Spacing field moved from Stroke's default to a Hershey letter's own.
+  await expect(page.locator("#modelTextStroke")).toBeVisible();
+  await expect(page.locator("#modelTextSpace")).toHaveValue("0.6");
+  await typeText(page, "Lime gy");
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: "test-results/text-pen/card-hershey.png" });
+  // Back to Stroke the gap returns to a third of the height, and to Hershey again it is a Hershey letter's own.
+  await page.locator("#modelTextFont [data-font=stroke]").click();
+  await expect(page.locator("#modelTextSpace")).toHaveValue("2");
+  await page.locator("#modelTextFont [data-font=hershey-script]").click();
+  await expect(page.locator("#modelTextSpace")).toHaveValue("0.6");
+  await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]")).toHaveCount(2);
+  const op = tree.of("apply").at(-1)!.op as { steps: Body[]; source: Body };
+  expect(op.steps).toHaveLength(1);
+  expect(op.steps[0]).toMatchObject({ kind: "lettering", font: "hershey-script@1", text: "Lime gy", spacing: 0.6 });
+  expect(op.source).toMatchObject({ font: "hershey-script" });
 });

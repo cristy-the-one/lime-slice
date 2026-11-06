@@ -119,7 +119,7 @@ check("a file with its lettering step intact reads", readSavedTree(file) !== nul
 check("a garbled lettering step drops the tree, as any other garbled step does", readSavedTree(garbled) === null);
 
 // --- Refusals are sentences.
-eq("an unknown font", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, line, sans, mono, serif, stencil.");
+eq("an unknown font", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil.");
 eq("a bold the family lacks", refusal(text({ font: "stencil", style: "bold" })), "Allerta Stencil has no bold. Pick Regular, or another font.");
 check("an italic the family lacks is slanted, not refused", !refusal(text({ font: "mono", style: "italic" })).includes("no italic"));
 eq("too much text", refusal(text({ font: "sans", text: "A".repeat(401) })), "Text takes at most 400 characters a step; use several.");
@@ -137,6 +137,9 @@ const stroked = expand(text({ font: STROKE_FONT }), ctx, nothing);
 check("the stroke font by name is one lettering step, as a pen font", !("reason" in stroked) && stroked.length === 1 && stroked[0]!.step?.font === "stroke@1" && stroked[0]!.step?.kind === "lettering");
 const lined = expand(text({ font: "line", strokeWidth: 0.7, spacing: 0, text: "Lime" }), ctx, nothing);
 check("Line keeps its pen width and a zero gap", !("reason" in lined) && lined[0]!.step?.font === "line@1" && lined[0]!.step?.strokeWidth === 0.7 && lined[0]!.step?.spacing === 0);
+const hershey = expand(text({ font: "hershey-duplex", text: "Lime", strokeWidth: 0.8, spacing: 0.6 }), ctx, nothing);
+check("a Hershey font is one lettering step, stored with its version", !("reason" in hershey) && hershey.length === 1 && hershey[0]!.step?.font === "hershey-duplex@1" && hershey[0]!.step?.kind === "lettering" && hershey[0]!.step?.spacing === 0.6);
+check("a Hershey font that is not bundled is refused", refusal(text({ font: "hershey-nope" })).includes("hershey-simplex"));
 check("a pen font has no bold", refusal(text({ font: "stroke", style: "bold" })).includes("one style"));
 eq("a pen's width is at most half the height", refusal(text({ font: "stroke", strokeWidth: 4 })), "strokeWidth is above 0 and at most half the height.");
 check("a text of 80 characters still expands", !("reason" in expand(text({ text: "I".repeat(40) }), ctx, nothing)));

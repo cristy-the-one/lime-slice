@@ -117,7 +117,7 @@ eq("a pen font takes no style", refusal(text({ font: "line", style: "bold" })).i
 
 // --- Refusals are sentences.
 eq("no font on a curved face is the stroke font as a pen", step(text({ font: undefined })).font, "stroke@1");
-eq("a font that is not one", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, line, sans, mono, serif, stencil.");
+eq("a font that is not one", refusal(text({ font: "comic" })), "There is no font called ‘comic’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil.");
 eq("a direction that is not one", refusal(text({ along: "sideways" })), "along is around or axis. Around reads round the part; axis runs it up the part.");
 eq("a point that is not a point", refusal(text({ point: [1, 2] })), "point is [x, y, z]: a point on the face.");
 eq("a bold the font lacks", refusal(text({ font: "stencil", style: "bold" })), "Allerta Stencil has no bold. Pick Regular, or another font.");

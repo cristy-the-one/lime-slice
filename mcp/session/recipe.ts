@@ -220,7 +220,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       const args = { ...site.args };
       if (typeof args.font === "string" && !isPenFont(args.font) && !fontById(args.font) && !isUserFont(args.font)) {
         const found = this.fonts.find(args.font);
-        if (!found) return { ok: false, error: `There is no font called ‘${args.font}’. The fonts are stroke, line, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.` };
+        if (!found) return { ok: false, error: `There is no font called ‘${args.font}’. The fonts are stroke, line, hershey-simplex, hershey-duplex, hershey-complex, hershey-script, hershey-gothic, sans, mono, serif, stencil, and the project's own: ${this.fonts.list().map((font) => font.name).join(", ") || "none yet (fontFile adds one)"}.` };
         args.font = found.id;
       }
       return answerTextOutline(args, async (request) => JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(request)))) as Record<string, unknown>);

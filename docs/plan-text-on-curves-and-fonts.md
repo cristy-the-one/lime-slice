@@ -773,6 +773,17 @@ Deviations from this plan, each on purpose or forced:
 8. **Not done.** Show me (deferred by the owner since milestone 2), measuring on the owner's housing and Telo parts, `hershey`, and the pen fonts on split-to-print numbers and fit coupon labels
    (the plan keeps those on `textStrokes`). A user font by name in `text_outline` works over MCP only (the project's fonts are the session's).
 
+### As built (Hershey pen fonts)
+
+Deviation 1 of milestone 5 ("`hershey` is not shipped") is closed: five Hershey typefaces ship as pen fonts, with the owner's approval to download the original public-domain data.
+
+- **Source.** The USENET distribution of the Hershey Fonts as packed in `github.com/kamalmostafa/hershey-fonts` (`hershey-fonts/*.jhf`, `COPYING`, `hershey-fonts/hershey.txt`), taken from `raw.githubusercontent.com/.../master/`. Only data is read: `tools/hershey-convert.mjs` parses the `.jhf` text and writes `crates/lime-model-occt/src/text/hershey/<id>.hf` (a `cap` line, then `code advance x,y x,y ; x,y ...` per ASCII character, y up from the baseline). The usage notice (acknowledgements to A. V. Hershey and James Hurt, no NTIS-format redistribution) is kept verbatim in `third_party/fonts/NOTICE-Hershey.txt`, beside the data, and in `third_party/fonts/NOTICE.md`.
+- **Fonts.** `hershey-simplex` (futural, a light sans), `hershey-duplex` (futuram, a two-stroke sans), `hershey-complex` (rowmand, a serif Roman), `hershey-script` (scripts, Script Simplex) and `hershey-gothic` (gothiceng, Gothic English), each `@1`. ASCII 32 to 126 only: these files hold no Latin-1 accents, so a letter such as `ñ` gets the usual "The font has no ‘ñ’" sentence. About 62 KB of data in all, inside the engine; the UI carries only five names and their one-line descriptions (the first chunk grew by under 1 %).
+- **Pipeline.** `text/hershey.rs` parses a table once on first use and scales it so a capital is the pen grid's 6 units; `pen.rs` takes proportional advances from it and draws a one-point stroke as a dot. Everything after (capsules, 2D union, wrap onto a cylinder, cone, sphere, torus or freeform face, thin-letter note, `inkMm2`) is the existing path. `strokeWidth` is the pen (default 0.15 of the height); the default `spacing` for a Hershey font is a tenth of the height, not a third (the letters carry side space of their own), and the card moves its Spacing field between those two defaults when the font changes and the field still holds the other's default.
+- **Where.** The Text card's picker lists them after Stroke and Line; `text {font:"hershey-simplex"…}` over MCP; the guide and the font-not-found sentences list them. Projects saved before this are unchanged (no step names these ids).
+- **Tests.** `text/hershey_tests.rs` (every font has 95 characters, proportional advances, H has 3 strokes and I one, the cap is 6 units, refusals, thin pens), `tests/lettering_hershey.rs` (real kernel: each font raised and engraved on a flat face and a cylinder, one closed solid, direct build, volume = ink × depth), `mcp/text-hershey.test.ts` (the MCP op, guide and refusals), `src/modeling/lettering.test.ts` and `e2e/model-text-fonts.spec.ts` (picker, step, gap).
+- **Not done.** Latin-1 for Hershey (the data lacks it), the other Hershey typefaces, and Hershey on split-to-print numbers and fit coupon labels (still `textStrokes`).
+
 ### As built (speed, 5.2.1)
 
 A measurement run on real parts found the text build spending its time in checks, not in building. What changed, all in `cpp/text.cpp`, with the numbers in the PR:

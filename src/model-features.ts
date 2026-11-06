@@ -9,7 +9,7 @@ import { faceRows, type FaceRow } from "./modeling/solid-geometry.ts";
 import { closeCracks } from "./mesh-check.ts";
 import { outwardFromMesh } from "./model-blend.ts";
 import { anchorOf, expand, type Piece, type RoundSurface } from "./modeling/compose.ts";
-import { DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, isPenFont, isUserFont, penFontOf, STROKE_FONT, styleOf, userFontView, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
+import { defaultPenGap, DEFAULT_TEXT_FONT, DEFAULT_TEXT_STYLE, fontById, isOutlineFont, isPenFont, isUserFont, penFontOf, STROKE_FONT, styleOf, userFontView, versionedId, type TextStyle } from "./modeling/text-fonts.ts";
 import { expandContextFromSolid, type FrameFace } from "./modeling/frames.ts";
 import { applyPose, isIdentity, turnDir, type Affine } from "./model-space.ts";
 import type { GroupOp, LetteringOp, ModelOp } from "./model-tree.ts";
@@ -402,7 +402,7 @@ export function featurePanel(source: Record<string, unknown>): { tool: FeatureTo
     put("modelTextHeight", source.height, 6);
     put("modelTextStroke", source.strokeWidth, height * 0.15);
     // The stroke font's spacing defaults to a third of the height; an outline font's is added to the font's own, 0.
-    put("modelTextSpace", isOutlineFont(source.font) ? undefined : source.spacing, height / 3);
+    put("modelTextSpace", isOutlineFont(source.font) ? undefined : source.spacing, defaultPenGap(source.font, height));
     put("modelTextTrack", isOutlineFont(source.font) ? source.spacing : undefined, 0);
     put("modelTextLines", source.lineSpacing, 1.3);
     put("modelTextWeight", source.weight, userFontView(source.font)?.weight?.default ?? 400);
