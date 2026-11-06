@@ -14,10 +14,11 @@ import {
   type DockMode,
   type DockSide,
 } from "./panel-budget";
+import { prefs, type PrefKey } from "../prefs.ts";
 
-const WIDTH_KEY: Record<DockSide, string> = { left: "lime-slice-panel-left", right: "lime-slice-panel-right" };
+const WIDTH_KEY: Record<DockSide, PrefKey> = { left: "lime-slice-panel-left", right: "lime-slice-panel-right" };
 /** "1" closed, "0" open; unset follows the window's default. */
-const CLOSED_KEY: Record<DockSide, string> = { left: "lime-slice-panel-left-collapsed", right: "lime-slice-panel-right-collapsed" };
+const CLOSED_KEY: Record<DockSide, PrefKey> = { left: "lime-slice-panel-left-collapsed", right: "lime-slice-panel-right-collapsed" };
 const DOCK_ID: Record<DockSide, string> = { left: "#leftDock", right: "#rightDock" };
 const NAME: Record<DockSide, string> = { left: "settings", right: "results" };
 /** The control that opens each dock; a closing dock hands it the focus. */
@@ -42,18 +43,18 @@ function mode(): DockMode | "compact" {
   return compact() ? "compact" : dockMode(window.innerWidth);
 }
 
-function read(key: string): string | null {
+function read(key: PrefKey): string | null {
   try {
-    return localStorage.getItem(key);
+    return prefs.get(key);
   } catch {
     return null;
   }
 }
 
-function write(key: string, value: string | null) {
+function write(key: PrefKey, value: string | null) {
   try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
+    if (value === null) prefs.remove(key);
+    else prefs.set(key, value);
   } catch {
     /* storage off: the docks still work for this visit */
   }

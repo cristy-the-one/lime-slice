@@ -2,6 +2,7 @@ import { createElement, Minus, Settings, Square, X, type IconNode } from "lucide
 import { paintProjectTitle } from "../app/project-title";
 import { isDesktopShell, isTauri } from "../platform";
 import "./topbar.css";
+import { prefs } from "../prefs.ts";
 
 const CHROME_KEY = "lime-slice-chrome";
 
@@ -74,7 +75,7 @@ async function bindWindow(gear: HTMLDetailsElement) {
   if (!isDesktopShell()) return;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
-  const stored = localStorage.getItem(CHROME_KEY);
+  const stored = prefs.get(CHROME_KEY);
   if (stored === "native" || stored === "custom") {
     await win.setDecorations(stored === "native");
   }
@@ -85,7 +86,7 @@ async function bindWindow(gear: HTMLDetailsElement) {
     box.checked = decorated;
     box.addEventListener("change", () => {
       const native = box.checked;
-      localStorage.setItem(CHROME_KEY, native ? "native" : "custom");
+      prefs.set(CHROME_KEY, native ? "native" : "custom");
       applyChrome(native);
       void win.setDecorations(native);
       gear.open = false;

@@ -21,6 +21,7 @@ import { emptySketch, type SketchData } from "../sketch/model.ts";
 import { planeOf } from "../sketch/frame.ts";
 import { pushToast } from "./toasts";
 import { html, setHtml, type Html } from "./html";
+import { prefs } from "../prefs.ts";
 
 const CARD_ID = "split-print";
 
@@ -151,9 +152,9 @@ const HUD_REACH_PX = 110;
 /** How many times the card has opened, this one included. Storage off counts every open as the first. */
 function howTimes(): number {
   try {
-    const next = Number(localStorage.getItem(HOW_KEY) ?? "0") + 1;
+    const next = prefs.getNumber(HOW_KEY, 0) + 1;
     const count = Number.isFinite(next) && next > 0 ? next : 1;
-    localStorage.setItem(HOW_KEY, String(count));
+    prefs.setNumber(HOW_KEY, count);
     return count;
   } catch {
     return 1;
