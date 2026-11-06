@@ -360,7 +360,6 @@ function paintDockNames(stage: Stage) {
 }
 
 const RAIL_LABELS_KEY = "lime-slice-rail-labels";
-const RAIL_CAPS_KEY = "lime-slice-rail-captions";
 
 /**
  * Short names under the Prepare and Preview rail icons. On by default; chrome.css draws them only in a window at least
@@ -372,20 +371,11 @@ function mountRailCaptions() {
     document.documentElement.dataset.railCaptions = on ? "1" : "0";
     if (input) input.checked = on;
   };
-  let on = true;
-  try {
-    on = localStorage.getItem(RAIL_CAPS_KEY) !== "0";
-  } catch {
-    on = true;
-  }
+  const on = prefs.getBool("lime-slice-rail-captions");
   apply(on);
   input?.addEventListener("change", () => {
     apply(input.checked);
-    try {
-      localStorage.setItem(RAIL_CAPS_KEY, input.checked ? "1" : "0");
-    } catch {
-      // The choice still applies for this visit.
-    }
+    prefs.setBool("lime-slice-rail-captions", input.checked);
   });
 }
 

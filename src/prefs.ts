@@ -31,6 +31,8 @@ export const PREF_REGISTRY = {
   "lime-slice-settle": { type: "bool", default: false, purpose: "Bed-rest settle switch." },
   "lime-slice-measure": { type: "bool", default: true, purpose: "Measure tool switch." },
   "lime-slice-grab-hint": { type: "bool", default: false, purpose: "The grab hint was shown once." },
+  "lime-slice-open-subgroups": { type: "json", default: [], purpose: "Folded parts inside a settings card the user opened (list of ids), e.g. the Objects card's rotation and alignment." },
+  "lime-slice-rail-captions": { type: "bool", default: true, purpose: "Short names under the Prepare and Preview rail icons." },
   "lime-slice-rail-labels": { type: "bool", default: false, purpose: "Rail buttons show text labels." },
   "lime-slice-api": { type: "string", default: "", purpose: "Engine URL override from the gear menu." },
   "lime-slice-api-token": { type: "string", default: "", purpose: "Shared engine token from the gear menu." },

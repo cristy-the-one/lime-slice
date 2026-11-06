@@ -37,6 +37,7 @@ import { OVERRIDES_TIP, overrideSectionHtml } from "../ui/overrides-panel";
 import { fuzzyRequest } from "../fuzzy-skin";
 import { ironingRequest, ironingSpacingMax } from "../ironing";
 import { normalInfillDensity, reinforcementRequestFields } from "../reinforcement";
+import { prefs } from "../prefs.ts";
 import { levelSelectHtml, loadClosedGroups, loadSettingsLevel, saveClosedGroups, setSettingsLevel } from "../ui/settings-panel";
 import {
   GROUPS,
@@ -535,17 +536,12 @@ export function paintBanner() {
 /** Groups the user closed, kept across sessions. */
 export const closedGroups = loadClosedGroups(GROUPS.filter((group) => group.closed).map((group) => group.id));
 
-const SUB_KEY = "lime-slice-open-subgroups";
+const SUB_KEY = "lime-slice-open-subgroups" as const;
 
 /** Folded parts inside a card (the Objects card's rotation and alignment). Closed until the user opens one; the choice is kept. */
 const openSubgroups: Set<string> = (() => {
-  try {
-    const raw = JSON.parse(localStorage.getItem(SUB_KEY) ?? "[]") as unknown;
-    if (Array.isArray(raw)) return new Set(raw.filter((id): id is string => typeof id === "string"));
-  } catch {
-    // An unreadable entry reads as all closed.
-  }
-  return new Set<string>();
+  const stored = prefs.getJson(SUB_KEY);
+  return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
 })();
 
 export function subgroupOpen(id: string): boolean {
@@ -555,11 +551,7 @@ export function subgroupOpen(id: string): boolean {
 export function noteSubgroupToggle(id: string, open: boolean) {
   if (open) openSubgroups.add(id);
   else openSubgroups.delete(id);
-  try {
-    localStorage.setItem(SUB_KEY, JSON.stringify([...openSubgroups]));
-  } catch {
-    // The choice still applies for this visit.
-  }
+  prefs.setJson(SUB_KEY, [...openSubgroups]);
 }
 
 /** What the folded header says: the turn, or that there is none. */
