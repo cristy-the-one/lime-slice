@@ -3,7 +3,7 @@ import { S } from "./state";
 import { paintCards } from "./cards";
 import { paintBox, paintDataset } from "./dataset";
 import { leaveDemo } from "./demo";
-import { focusDimensionLabel, paintGlyphs, paintLabels } from "./dimensions";
+import { focusDimensionLabel, paintGlyphs, paintInference, paintLabels } from "./dimensions";
 import { extrudeNote, extrudeReadout, paintExtrude } from "./extrude";
 import { DEMO_EXTENT_MM, FACE_FOR_HOLES, framesMatch } from "./helpers";
 import { askOpen } from "./holes";
@@ -130,6 +130,7 @@ export function publish(hudMode: "open" | "values" | "skip") {
   paintDataset();
   paintLabels();
   paintGlyphs();
+  paintInference();
   paintReadout();
   syncHud(hudMode);
   S.hud.setNote(featureNote());

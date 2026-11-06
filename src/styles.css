@@ -1063,6 +1063,16 @@ kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border-st
 .sketch-dim-input[data-defined="1"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 65%, transparent); }
 .sketch-dim[data-conflict="1"],
 .sketch-dim-input[data-conflict="1"] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+/* --- K1. The rule the next click keeps. Dashed, where a kept constraint's mark is solid, and it never takes the click. --- */
+.sketch-infer-mark {
+  pointer-events: none;
+  min-width: 18px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-style: dashed;
+}
 /* The general `input[type=text]` rule is more specific than a class, so the driving label is named as an input. */
 input.sketch-dim-input {
   width: 4.5rem;

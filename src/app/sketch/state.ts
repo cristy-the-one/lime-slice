@@ -84,6 +84,8 @@ export interface SketchState {
   // --- A16. Each geometric constraint's mark beside its geometry. A click selects it; Delete removes it. ---
   glyphs: HTMLDivElement;
   glyphsKey: string;
+  /** K1: the rules the next click would keep, as small marks beside the pointer while a line is drawn. */
+  infer: HTMLDivElement;
   // Another Model tool opened from the toolbar or a key. The sketch gives way to it, as starting a command ends the
   // sketch in Fusion or Onshape: a new sketch stays as a card, and a History Edit is cancelled. Holes from this
   // sketch are its own tool, and an Apply on its way finishes first.
@@ -154,6 +156,7 @@ export const S: SketchState = {
   labels: undefined as never,
   glyphs: undefined as never,
   glyphsKey: "",
+  infer: undefined as never,
   bar: null,
   editor: sketchOff(),
   openFeatureImpl: () => {},

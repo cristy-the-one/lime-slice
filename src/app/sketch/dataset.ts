@@ -25,6 +25,7 @@ export function installDatasetDefaults(): void {
   S.host.canvas.dataset.sketchDefined = "";
   S.host.canvas.dataset.sketchDof = "";
   S.host.canvas.dataset.sketchConstraints = "0";
+  S.host.canvas.dataset.sketchInfer = "";
   S.host.canvas.dataset.extrude = "off";
   S.host.canvas.dataset.extrudeMode = "";
   S.host.canvas.dataset.extrudeDepth = "";

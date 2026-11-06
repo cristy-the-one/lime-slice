@@ -12,7 +12,7 @@ import { type IconNode, PenLine, Square, Circle, Spline, Hexagon, RectangleHoriz
 import { keyOf, tipWithShortcut } from "../../ui/commands";
 import { EDIT_DEMO_LEAD, EDIT_DEMO_KINDS, DEMOS } from "../../sketch/demos";
 import { hasOpenEnds } from "../../sketch/edit";
-import { type SketchTool, activeSketch } from "../../sketch/session";
+import { type SketchTool, activeSketch, constrainChoices } from "../../sketch/session";
 import { EDIT_BUTTONS, PURPOSE, ASSIST_PURPOSE, MAKE_BUTTONS, REASON } from "../../sketch/reasons";
 import { isConstrainTool, CONSTRAIN_MENU } from "../../sketch/constrain";
 
@@ -255,7 +255,17 @@ function constrainMenu(): HTMLElement {
   menu.hidden = S.menuOpen !== "constrain";
   let group = "";
   let section: HTMLElement = menu;
+  // K1: with something selected, only the rules that fit it are listed. Nothing selected lists every rule.
+  const fit = constrainChoices(S.editor);
+  if (fit) {
+    const why = document.createElement("p");
+    why.className = "sketch-menu-label";
+    why.dataset.sketchMenuFit = String(fit.length);
+    why.textContent = fit.length ? "Rules that fit the selection. Click empty space to see all." : "Nothing fits this selection. Click empty space to see every rule.";
+    menu.append(why);
+  }
   for (const item of CONSTRAIN_MENU) {
+    if (fit && !fit.includes(item.action)) continue;
     if (item.group !== group) {
       group = item.group;
       const name = item.group === "geom" ? "Geometry" : item.group === "size" ? "Size" : "Edit";

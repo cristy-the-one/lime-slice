@@ -236,7 +236,8 @@ test("constraints live in the sketch card and a typed length drives the line", a
   await expect(page.locator("[data-sketch-constrain=horizontal]")).toBeVisible();
   await expect(page.locator("[data-sketch-constrain=coincident]")).toBeVisible();
   await expect(page.locator("[data-sketch-constrain=length]")).toBeVisible();
-  await expect(page.locator("[data-sketch-constrain=remove]")).toBeVisible();
+  // K1: the menu lists what fits the selection, and a line with no rule on it has nothing to remove.
+  await expect(page.locator("[data-sketch-constrain=remove]")).toHaveCount(0);
   await page.locator("[data-sketch-constrain=horizontal]").click();
   await page.locator("[data-sketch-menu=constrain]").click();
   await page.locator("[data-sketch-constrain=length]").click();
