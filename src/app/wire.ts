@@ -20,7 +20,7 @@ import { addDroppedFiles, addMeshBytes, adoptBytes, export3mf, exportGcode, fail
 import { mountProjectFiles, openPickedFile, saveCurrentProject } from "./project-io";
 import { newProject } from "./new-project";
 import { pickModelFile } from "../platform";
-import { dismissMeshWarning, noteGroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, refreshObjectList, revealPrinterDetails, setCalibrate, settleAutoField, syncFindStuck, touch } from "./settings";
+import { dismissMeshWarning, noteGroupToggle, noteSubgroupToggle, noteObjectOverride, noteSequential, onSettings, pickStrategy, refreshObjectList, revealPrinterDetails, setCalibrate, settleAutoField, syncFindStuck, touch } from "./settings";
 import { noteEdit } from "./history";
 import { bindPlaceScrub } from "./place-scrub";
 import { bindFieldScrub } from "../ui/field-scrub";
@@ -193,6 +193,7 @@ export function wireApp() {
   document.querySelector("#left")!.addEventListener("toggle", (ev) => {
     const details = ev.target as HTMLDetailsElement;
     if (details.dataset.mod) setModifierOpen(details.dataset.mod, details.open);
+    if (details.dataset.sub && !state.query.trim()) noteSubgroupToggle(details.dataset.sub, details.open);
     const id = details.dataset.group;
     if (!id || state.query.trim()) return;
     noteGroupToggle(id, details.open);

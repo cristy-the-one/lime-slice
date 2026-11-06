@@ -54,6 +54,7 @@ export function mountReinforcePaint(prepare: PrepareView, hooks: ReinforcePaintH
   tool.type = "button";
   tool.className = "tool";
   tool.dataset.tool = "reinforce";
+  tool.dataset.cap = "Reinforce";
   tool.dataset.tip = "Paint or adjust regions that print denser infill up to 100% solid.";
   tool.setAttribute("aria-label", "Reinforce");
   tool.setAttribute("aria-pressed", "false");

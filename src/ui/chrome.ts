@@ -185,6 +185,7 @@ function mountToolRail(hooks: ChromeHooks) {
   mountRailFolds(rail);
   flyouts = mountRailFlyouts(rail);
   mountRailLabels();
+  mountRailCaptions();
   paintRailStage(hooks.stage());
 
   const buttons = { move, rotate, scale };
@@ -359,6 +360,24 @@ function paintDockNames(stage: Stage) {
 }
 
 const RAIL_LABELS_KEY = "lime-slice-rail-labels";
+
+/**
+ * Short names under the Prepare and Preview rail icons. On by default; chrome.css draws them only in a window at least
+ * 1280 px wide and 800 px high, and the rail stays 48 px wide, so nothing else moves. The setting turns them off.
+ */
+function mountRailCaptions() {
+  const input = document.querySelector<HTMLInputElement>("#railCaptions");
+  const apply = (on: boolean) => {
+    document.documentElement.dataset.railCaptions = on ? "1" : "0";
+    if (input) input.checked = on;
+  };
+  const on = prefs.getBool("lime-slice-rail-captions");
+  apply(on);
+  input?.addEventListener("change", () => {
+    apply(input.checked);
+    prefs.setBool("lime-slice-rail-captions", input.checked);
+  });
+}
 
 /** Show labels is a setting, off until the user turns it on. It widens the rail to 132 px. */
 function mountRailLabels() {
@@ -571,9 +590,29 @@ function toolButton(id: string, node: IconNode, label: string, tip: string) {
   button.dataset.tool = id;
   button.dataset.tip = tip;
   button.setAttribute("aria-label", label);
+  const cap = RAIL_CAPTIONS[id];
+  if (cap) button.dataset.cap = cap;
   button.append(svgIcon(node));
   return button;
 }
+
+/** The short name under a Prepare/Preview rail icon (chrome.css draws it from `data-cap`). The aria-label keeps the full name. */
+const RAIL_CAPTIONS: Record<string, string> = {
+  move: "Move",
+  rotate: "Rotate",
+  scale: "Scale",
+  layflat: "Flat",
+  "view-flat": "2D",
+  "view-split": "Split",
+  "view-solid": "3D",
+  rulers: "Measure",
+  "measure-points": "Points",
+  section: "Section",
+  supports: "Supports",
+  "fly-flyColor": "Colour",
+  "fly-flyFeatures": "Show",
+  "fly-flyBed": "Bed",
+};
 
 function selectManipulator(
   next: "move" | "rotate" | "scale",
