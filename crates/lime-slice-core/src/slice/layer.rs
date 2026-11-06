@@ -1,4 +1,19 @@
-use super::*;
+use super::parts::ObjectLayer;
+use super::regions::{cut_margin, keep_side, split_rects, widen_rect};
+use super::resolve::{pattern_label, resolve};
+use super::skin::skin_of;
+use super::zones::{
+    keep_zone, layer_footprints, layer_strategy, pair_sides, reinforcement_prints, zone_walls,
+};
+use crate::lightning::{Branches, Hollow, Lightning};
+use crate::modifiers::Tweak;
+use crate::poly::{boolean_intersect, clip_to_rect, offset_loops, Loop};
+use crate::strategy::{pure, ResolvedStrategy};
+use crate::toolpath::{
+    lightning_pitch, plan_region_split, CapFeed, PathFeatures, ShellBand, Skin, Slowdown,
+};
+use crate::{BlendMode, PathKind, SliceSettings, StrategyId};
+use std::sync::Arc;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn object_layer(

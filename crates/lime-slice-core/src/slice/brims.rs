@@ -1,4 +1,15 @@
-use super::*;
+use super::parts::Contours;
+use super::resolve::resolve;
+use super::zones::layer_strategy;
+use crate::poly::{boolean_union, Loop};
+use crate::strategy::pure;
+use crate::support::tree::{foot_loops, Foot};
+use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
+use crate::toolpath::{plan_brim, plan_mouse_ears, plan_skirt, Extrusion};
+use crate::{BlendMode, SliceSettings, StrategyId};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// One belt layer's support brim: a line along X at slice `y`, where the
 /// layer meets the belt, over `spans`.

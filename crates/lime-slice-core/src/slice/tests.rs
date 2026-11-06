@@ -1,4 +1,27 @@
-use super::*;
+use super::assemble::rest_on_support;
+use super::brims::{
+    belt_anchor, belt_anchor_layers, line_spans, merge_spans, subtract_spans, BELT_ANCHOR_MIN_MM,
+};
+use super::plan::{cut_mesh, height_opts, plan, plan_contours, Plan};
+use super::resolve::resolve;
+use super::skin::{skin_regions, under_walls};
+use super::supports::{
+    print_gently, Gentle, GENTLE_INTERFACE_MM_S, GENTLE_SUPPORT_ACCEL, GENTLE_SUPPORT_MM_S,
+};
+use super::tours::{guess_tours, part_paths, scarf_params, set_serial_tour_for_test, tour_part};
+use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
+use crate::gcode::PlateLayer;
+use crate::index::ZIndex;
+use crate::poly::{boolean_diff, offset_loops, signed_area, Loop};
+use crate::strategy::pure;
+use crate::support::Disk;
+use crate::toolpath::{
+    plan_support, plan_tree_support, CapFeed, PartLayout, PathFeatures, Slowdown,
+};
+use crate::{
+    outline_tolerance_mm, slice_configured, slice_request, BlendMode, Job, Mesh, PathKind,
+    PrinterProfile, ScarfSeam, SliceRequest, SliceSettings, StrategyId, Watch,
+};
 
 fn square_loop(x0: f64, y0: f64, side: f64) -> Loop {
     vec![

@@ -1,4 +1,8 @@
-use super::*;
+use super::skin::skin_of;
+use crate::strategy::{classicize, layer_weight, mix, pure, ResolvedStrategy};
+use crate::toolpath::{ShellBand, Skin};
+use crate::{BlendMode, Gyroid3d, SliceSettings, StrategyId, ZHopMode};
+use std::sync::Arc;
 
 pub(super) fn pattern_label(strategy: &ResolvedStrategy) -> String {
     if strategy.gyroid_3d && strategy.pattern == crate::strategy::InfillPattern::Gyroid {
