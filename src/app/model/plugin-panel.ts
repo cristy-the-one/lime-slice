@@ -1,6 +1,9 @@
 /** The Plugins panel: Preview, Apply, Use vN, and Save as plugin. */
 import { boundsOf, encodeStl, settleBy } from "../../mesh-place";
-import { newSolidPose, typedPoseOf } from "../../model-space";
+import { IDENTITY_POSE, inversePose, thenPose, typedPoseOf, type Affine } from "../../model-space";
+import { madePoses, mergedSolid, partNames } from "../../plugin-parts";
+import type { ModelSolid } from "../../model-view/types";
+import { fx } from "../fx";
 import { markProjectDirty } from "../../project-dirty";
 import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { jumped, withNode, type ModelTree, type NodeId, type PlateMesh } from "../../model-tree";
@@ -46,7 +49,7 @@ import { keepSolid } from "./apply";
 import { commitModel } from "./commit";
 import { plateBoxes } from "./create";
 import { treeOf } from "./edges";
-import { dropInEngine, post, treeCall } from "./engine";
+import { dropInEngine, mm, post, treeCall } from "./engine";
 import { noteMadeObject } from "./history";
 import { noteParametersBuilt } from "./parameters";
 import { about, readout } from "./pick";
@@ -55,7 +58,7 @@ import { foldHead, keepRunTrees, keptIngredients, platePlaceOf, rebuildPluginRow
 import { sentence } from "./run-edit";
 import { type Opened, STILL_WORKING, VIEW_ONLY } from "./shared";
 import { syncUndo } from "./undo";
-import { present } from "./view";
+import { inView, openPose, present } from "./view";
 import { forgetWorkplaneSteps, openObject } from "./workplane";
 import { recipesUnavailable } from "../../recipe/runtime";
 import { mountPluginAuthor, mountPluginsPanel } from "../../ui/plugins-panel";
@@ -159,16 +162,31 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
     readout(reason);
     return { ok: false, reason };
   }
-  const parsed = decodeSolid(result.body);
+  // Every part the run kept, read: the given part when it changed, and each part it made, in order.
+  const solids = result.kept.map((row) => decodeSolid(row.body));
+  const unread = solids.find((row): row is string => typeof row === "string");
+  const changed = result.kept.find((row) => row.part.origin === "given") ?? null;
+  const givenSolid = changed ? (solids[result.kept.indexOf(changed)] as ParsedSolid) : null;
+  const madeKept = result.kept.filter((row) => row.part.origin !== "given");
   const moved = mine !== S.ticket || state.stage !== "model" || (onPart && S.open?.key !== at!.key);
-  if (mode === "preview" || typeof parsed === "string" || moved) {
+  // Where each made part goes: as the plugin placed it, else beside the plate's parts; Preview and Apply agree.
+  const poses = unread ? [] : madePoses(madeKept.map((row) => ({ positions: (solids[result.kept.indexOf(row)] as ParsedSolid).positions, posed: row.part.posed ? row.part.modelPose : null })), plateBoxes());
+  const made: MadeRow[] = unread ? [] : madeKept.map((row, i) => ({ part: row.part, tree: row.tree, solid: solids[result.kept.indexOf(row)] as ParsedSolid, pose: poses[i]! }));
+  const names = partNames(made.map((row) => row.part.name || title));
+  if (mode === "preview" || unread || moved) {
     // A preview, or a run the person moved away from: nothing is kept, and the run leaves the engine.
     await takeBack(result);
-    if (typeof parsed === "string") return { ok: false, reason: parsed };
-    if (mode !== "preview" || moved || !pluginsPanelOpen()) return { ok: false, reason: "The part changed while the plugin ran, so nothing was kept. Run it again." };
+    if (unread) return { ok: false, reason: unread };
+    if (mode !== "preview" || moved || !pluginsPanelOpen()) return { ok: false, reason: `${onPart ? "The part" : "Model"} changed while the plugin ran, so nothing was kept. Run it again.` };
     pluginPreviewOn = true;
-    setModelCardPreview(parsed);
-    const text = `Preview of “${title}”${result.made ? ", a new part" : ""}: ${about(parsed)} Nothing is kept until you Apply.`;
+    const shape = previewShape(givenSolid, made);
+    setModelCardPreview(shape);
+    // With nothing open the view has no part to look at: it looks at what the plugin built.
+    if (!onPart && !S.open) fx.model?.frame(boundsOf(shape.positions));
+    const several = made.length > 1 || (!!changed && made.length > 0);
+    const text = several
+      ? `Preview of “${title}”: ${changed ? `${changed.part.name} changed, and ` : ""}${made.length === 1 ? `${names}, a new part` : `${made.length} new parts (${names})`}. Volume ${mm(shape.volumeMm3)} mm³ in all. Nothing is kept until you Apply.`
+      : `Preview of “${title}”${made.length === 1 ? ", a new part" : ""}: ${about(made[0]?.solid ?? givenSolid!)} Nothing is kept until you Apply.`;
     readout(text);
     return { ok: true, ms, text };
   }
@@ -176,32 +194,58 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
   if (!session.plugins?.[plugin.sha256]) session.plugins = { ...(session.plugins ?? {}), [plugin.sha256]: plugin.file.text };
   const values = Object.entries(params).map(([name, value]) => `${plugin.file.params.find((p) => p.name === name)?.label?.trim() || name} ${String(value)}`).join(", ");
   const notes = result.notes.filter((note) => !/^line \d+: /.test(note)).map((note) => ` ${sentence(note)}`).join("");
-  if (result.made) {
-    // A new part: a plate object of its own, stamped on its root, one Prepare step that Undo takes back.
-    if (at && onPart) await takeBack({ ...(result.dropFrom !== undefined ? { dropFrom: result.dropFrom } : {}), ...(result.nextId !== undefined ? { nextId: result.nextId } : {}) });
-    const name = result.made.name || title;
-    const made = addMadeObject(result.made, result.tree, parsed, name);
-    keepRunTrees(made, result.others);
+  const applied = `Applied “${title}” v${plugin.file.version}${values ? ` with ${values}` : ""}`;
+  if (changed && givenSolid) {
+    // The given part: the run is one History row on it, one Undo in its History.
+    modelTrees.set(at!.key, changed.tree);
+    keepSolid(at!.key, givenSolid.id, state.stepTolerance, givenSolid);
+    S.open = { ...at!, solid: givenSolid };
+    S.editBack = { key: at!.key, tip: givenSolid.id, back: from!, undone: false };
+  } else if (at && onPart) await takeBack({ ...(result.dropFrom !== undefined ? { dropFrom: result.dropFrom } : {}), ...(result.nextId !== undefined ? { nextId: result.nextId } : {}) });
+  if (made.length > 0) {
+    // New parts: a plate object each, stamped on its root with the run's one id, one Prepare step that Undo takes back.
+    const show = made.find((row) => row.part === result.made) ?? made[0]!;
+    const opened = addMadeObjects(made, show, title);
+    keepRunTrees(opened, result.others);
     markProjectDirty();
-    const text = `Applied “${title}” v${plugin.file.version}${values ? ` with ${values}` : ""}: ${name}, a new part, which Undo takes back. ${about(parsed)}${notes}`;
-    present(parsed, text);
+    const parts = made.length === 1 ? `${names}, a new part, which Undo takes back.` : `${made.length} new parts (${names}), each an object on the plate, which one Undo takes back.`;
+    const given = changed ? ` The step on ${changed.part.name} is in its History, with its own Undo.` : "";
+    const text = `${applied}: ${parts}${given} ${about(show.solid)}${notes}`;
+    present(show.solid, text);
+    noteParametersBuilt();
     return { ok: true, ms, text };
   }
-  modelTrees.set(at!.key, result.tree);
-  keepSolid(at!.key, parsed.id, state.stepTolerance, parsed);
   keepRunTrees(at!, result.others);
-  S.open = { ...at!, solid: parsed };
-  S.editBack = { key: at!.key, tip: parsed.id, back: from!, undone: false };
   markProjectDirty();
-  const text = `Applied “${title}” v${plugin.file.version}${values ? ` with ${values}` : ""}: one step in History, which Undo takes back. ${about(parsed)}${notes}`;
-  present(parsed, text);
+  const text = `${applied}: one step in History, which Undo takes back. ${about(givenSolid!)}${notes}`;
+  present(givenSolid!, text);
   noteParametersBuilt();
   return { ok: true, ms, text };
 }
 
-/** A part a plugin made, as a new plate object beside the others (or where the run placed it), shown in Model. */
-function addMadeObject(made: RunPart, tree: ModelTree, parsed: ParsedSolid, name: string): Opened {
-  const others = plateBoxes();
+/**
+ * What a Preview draws: the given part as the run changed it, where it stands, and each made part where Apply puts it,
+ * as one shape in the open solid's frame (model space when none is open).
+ */
+function previewShape(given: ParsedSolid | null, made: readonly MadeRow[]): ModelSolid {
+  if (given && made.length === 0) return given;
+  const back = inversePose(openPose());
+  return mergedSolid([...(given ? [{ solid: given, pose: IDENTITY_POSE }] : []), ...made.map((row) => ({ solid: row.solid, pose: thenPose(inView(row.pose), back) }))]);
+}
+
+/** A part a run made, ready for the plate: its stamped tree, its solid, its name and where it goes in model space. */
+interface MadeRow {
+  part: RunPart;
+  tree: ModelTree;
+  solid: ParsedSolid;
+  pose: Affine;
+}
+
+/**
+ * The parts a plugin made, each a new plate object of its own, in the order made, named as the plugin named them, where
+ * the run placed them or beside the others: one Prepare step that one Undo takes back. `show` is the one Model opens.
+ */
+function addMadeObjects(rows: readonly MadeRow[], show: MadeRow, title: string): Opened {
   commitModel();
   forgetPlaceSteps();
   forgetWorkplaneSteps();
@@ -209,28 +253,31 @@ function addMadeObject(made: RunPart, tree: ModelTree, parsed: ParsedSolid, name
   noteEdit();
   syncPlateFromState();
   const first = state.plate.objects.length === 0;
-  const unique = uniqueName(name, state.plate.objects.map((obj) => obj.name));
-  const positions = new Float32Array(parsed.positions);
-  const seat = settleBy(positions);
-  const fileName = `${unique}.stl`;
-  const bytes = encodeStl(positions, fileName);
-  setMeshSeat(bytes, seat);
-  const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
-  const pose = made.posed ? made.modelPose : newSolidPose(others, boundsOf(positions));
   const { bedX, bedY } = state.profile;
-  state.plate = addedSolid(state.plate, { name: unique, fileName, bytes, sourcePos: positions, stepTolerance: state.stepTolerance }, made.id, tree.key, pose, bedX, bedY);
+  for (const row of rows) {
+    const unique = uniqueName(row.part.name || title, state.plate.objects.map((obj) => obj.name));
+    const positions = new Float32Array(row.solid.positions);
+    const seat = settleBy(positions);
+    const fileName = `${unique}.stl`;
+    const bytes = encodeStl(positions, fileName);
+    setMeshSeat(bytes, seat);
+    const mesh: PlateMesh = { name: fileName, bytes, sourcePos: positions, token: meshTokenOf(bytes) };
+    state.plate = addedSolid(state.plate, { name: unique, fileName, bytes, sourcePos: positions, stepTolerance: state.stepTolerance }, row.part.id, row.tree.key, row.pose, bedX, bedY);
+    modelTrees.set(row.tree.key, { ...withNode(row.tree, row.tree.current, { mesh }), committed: row.tree.current });
+    keepSolid(row.tree.key, row.tree.current, state.stepTolerance, row.solid);
+  }
+  // The part Model opens on is the selected one; the others wait on the plate, each with its own History.
+  state.plate = { ...state.plate, selectedId: show.part.id };
   applySelectedToState(state.plate);
-  modelTrees.set(tree.key, { ...withNode(tree, tree.current, { mesh }), committed: tree.current });
-  keepSolid(tree.key, tree.current, state.stepTolerance, parsed);
   place(first ? "load" : "transform");
   flushEdit();
   markModelEdit();
-  noteMadeObject(made.id);
+  noteMadeObject(show.part.id);
   S.ticket += 1;
   S.picks = [];
   S.parked = null;
-  S.shownFor = made.id;
-  S.open = { objectId: made.id, key: tree.key, solid: parsed };
+  S.shownFor = show.part.id;
+  S.open = { objectId: show.part.id, key: show.tree.key, solid: show.solid };
   return S.open;
 }
 

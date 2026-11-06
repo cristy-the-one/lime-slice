@@ -8,6 +8,7 @@ import type { PluginValue } from "../../model-tree";
 import { syncPluginSteps } from "../../ui/model-history";
 import { bodySha256, checkedCopies, type PluginFileInfo } from "../../plugin-file";
 import { runsOnPath } from "../../plugin-step";
+import { partNames, runSiblings } from "../../plugin-parts";
 import { freshRunId, rebuildPluginStep } from "../../recipe/rebuild";
 import type { AppRunEnv, RunPart } from "../../recipe/app-calls";
 import { inlineIngredients, keptCopy, type KeptIngredient } from "../../recipe/ingredients";
@@ -107,6 +108,14 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
   const copy = env?.copies.get(stamp.sha256) ?? (libraryCopy ? { file: libraryCopy, intact: true } : undefined);
   const draft = env?.drafts.get(stamp.sha256);
   const title = swap?.file.title || copy?.file?.title || stamp.plugin;
+  // --- One run, several parts (O4 as built): they change together or not at all, and the window does not rebuild a
+  // set yet, so a change on one part says so before anything runs.
+  const siblings = runSiblings(state.plate.objects.map((obj) => ({ id: obj.id, tree: obj.modelTree ? modelTrees.get(obj.modelTree) : undefined })), run.id, at.objectId);
+  if (siblings.length > 0) {
+    const names = partNames(siblings.map((id) => state.plate.objects.find((obj) => obj.id === id)?.name ?? id));
+    readout(`${title} made this part in one run with ${names}, and the window cannot yet change the values of a run of several parts, so nothing changed. Run ${title} again from Plugins with the new values, then remove the old parts.`);
+    return null;
+  }
   let body: string;
   if (swap) {
     body = swap.file.body;

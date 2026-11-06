@@ -32,6 +32,8 @@ export const PURPOSE = {
 export const REASON = {
   pick: "No plugin is open yet. Click one in the list.",
   needsPart: "This plugin changes a part, and none is open. Select a part in the objects list, then open it in Model.",
+  /** The list's line under a plugin that changes a part, while none is open. */
+  needsPartShort: "Needs a part: open one in Model, then run it.",
   busy: "A plugin is running. Wait a moment for it to finish.",
   demoApply: "This is a demo, so nothing is added to your part. Click Back to my plugins.",
   demoPreset: "This is a demo, so it keeps no presets. Click Back to my plugins.",

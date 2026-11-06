@@ -76,10 +76,13 @@ export function installMesh(ctx: ViewCtx): void {
     ctx.rebuildCap();
   }
 
-  /** The shape's mesh and edges, coloured as a solid is, drawn where the solid is; the solid hides while it is up. */
+  /**
+   * The shape's mesh and edges, coloured as a solid is, drawn where the solid is; the solid hides while it is up. With
+   * no solid open (a plugin that builds its own parts) it is drawn in model space.
+   */
   function showPreview(shape: ModelSolid) {
     clearPreview();
-    if (!ctx.mesh || shape.positions.length < 9) return;
+    if (shape.positions.length < 9) return;
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(shape.positions, 3));
     const color = new Float32Array(shape.positions.length);
@@ -102,7 +105,7 @@ export function installMesh(ctx: ViewCtx): void {
       lines.raycast = () => undefined;
       body.add(lines);
     }
-    ctx.mesh.visible = false;
+    if (ctx.mesh) ctx.mesh.visible = false;
     if (ctx.edgeLines) ctx.edgeLines.visible = false;
     ctx.preview = { shape, mesh: shaded, lines };
     canvas.dataset.preview = String(shape.volumeMm3.toFixed(2));
