@@ -9,6 +9,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { bridgeOpen, type BridgeOpen } from "./bridge-client.ts";
+import { refuse } from "./refusals.ts";
 
 /** This file's folder. In an installed app it is the `mcp` folder beside the desktop program's resources. */
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -63,14 +64,14 @@ export async function openInApp(path: string, opener: AppOpener, saved: boolean)
   const kept = saved ? `the project is saved at ${path}` : `the file is at ${path}`;
   const answer = await opener.viaBridge(path);
   if (answer?.opened) return { ok: true, path, saved, opened: "bridge", note: `Opened ${name} in the running app.` };
-  if (answer) return { ok: false, path, reason: `The running app did not open ${name}: ${answer.reason}` };
+  if (answer) return refuse("app-refused", `The running app did not open ${name}: ${answer.reason}`, { path });
   const program = opener.installed();
-  if (!program) return { ok: false, path, reason: `Lime Slice is not installed; ${kept}.` };
+  if (!program) return refuse("app-not-installed", `Lime Slice is not installed; ${kept}.`, { path });
   try {
     await opener.launch(program, path);
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
-    return { ok: false, path, reason: `Lime Slice did not start (${why}); ${kept}.` };
+    return refuse("app-not-started", `Lime Slice did not start (${why}); ${kept}.`, { path });
   }
   return { ok: true, path, saved, opened: "launch", note: `Started Lime Slice with ${name}. An app that was already running opens it in its window.` };
 }

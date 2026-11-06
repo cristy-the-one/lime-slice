@@ -227,6 +227,7 @@ src/modeling/measured-fits.test.ts
 mcp/measured-fits.test.ts
 src/modeling/profile-shift.test.ts
 mcp/kernel-stop.test.ts
+mcp/refusals.test.ts
 src/modeling/face-pick.test.ts
 src/recipe/host.test.ts
 src/recipe/tauri.test.ts

@@ -16,6 +16,7 @@ import { readVec3 } from "../../src/modeling/compose.ts";
 import { resolveRead } from "../workspace.ts";
 import { type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function overrideOf(this: Session, input: Record<string, unknown>): SettingOverride | { reason: string } {
   const override: SettingOverride = {};
@@ -46,14 +47,14 @@ function partSpan(this: Session): { min: number; max: number } | null {
 
 function rangeAdd(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const span = this.partSpan();
-  if (!span) return { ok: false, reason: "Load a mesh first." };
+  if (!span) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   const zFrom = Number(input.zFromMm);
   const zTo = Number(input.zToMm);
   if (zTo < span.min - 1e-6 || zFrom > span.max + 1e-6) {
-    return { ok: false, reason: `That range is outside the part. It stands from ${span.min} to ${span.max} mm.` };
+    return refuse("outside-part", `That range is outside the part. It stands from ${span.min} to ${span.max} mm.`);
   }
   const override = this.overrideOf(input);
-  if ("reason" in override) return { ok: false, reason: override.reason };
+  if ("reason" in override) return refuse("bad-setting", override.reason);
   const id = freshOverrideId("range");
   if (input.dryRun === true) return { ok: true, dryRun: true, id, zFrom, zTo, override };
   this.remember("Height range");
@@ -63,20 +64,20 @@ function rangeAdd(this: Session, input: Record<string, unknown>): Record<string,
 
 function modifierAdd(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const obj = this.selectedObject();
-  if (!obj) return { ok: false, reason: "Load a mesh first." };
+  if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   const kind = input.kind === "cylinder" || input.kind === "sphere" ? input.kind : input.kind === "box" ? "box" : null;
-  if (!kind) return { ok: false, reason: "kind is box, cylinder, or sphere." };
+  if (!kind) return refuse("bad-action", "kind is box, cylinder, or sphere.");
   const centre = readVec3(input.centre, [Number.NaN, Number.NaN, Number.NaN]);
   const size = readVec3(input.sizeMm, [Number.NaN, Number.NaN, Number.NaN]);
   if (centre.some((value) => !Number.isFinite(value)) || size.some((value) => !(value > 0))) {
-    return { ok: false, reason: "The volume needs a centre and a size, in millimetres." };
+    return refuse("bad-region", "The volume needs a centre and a size, in millimetres.");
   }
   const part = this.placed(obj).bounds;
   const volume = { min: [centre[0] - size[0] / 2, centre[1] - size[1] / 2, centre[2] - size[2] / 2], max: [centre[0] + size[0] / 2, centre[1] + size[1] / 2, centre[2] + size[2] / 2] };
   const touches = volume.min.every((value, axis) => value <= part.max[axis] && volume.max[axis] >= part.min[axis]);
-  if (!touches) return { ok: false, reason: "That volume does not touch the part." };
+  if (!touches) return refuse("outside-part", "That volume does not touch the part.");
   const override = this.overrideOf(input);
-  if ("reason" in override) return { ok: false, reason: override.reason };
+  if ("reason" in override) return refuse("bad-setting", override.reason);
   const id = freshOverrideId("volume");
   if (input.dryRun === true) return { ok: true, dryRun: true, id };
   this.remember("Modifier");
@@ -90,7 +91,7 @@ function overridesList(this: Session): Record<string, unknown> {
 
 function overrideRemove(this: Session, id: string): Record<string, unknown> {
   const had = this.overrides.ranges.some((row) => row.id === id) || this.overrides.volumes.some((row) => row.id === id);
-  if (!had) return { ok: false, reason: "That override is not on the plate." };
+  if (!had) return refuse("no-override", "That override is not on the plate.");
   this.remember("Remove override");
   this.overrides = removeVolume(removeRange(this.overrides, id), id);
   return { ok: true, stale: true, label: "Remove override" };
@@ -98,16 +99,16 @@ function overrideRemove(this: Session, id: string): Record<string, unknown> {
 
 function layerActionSet(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const kind = input.kind === "pause" || input.kind === "filamentChange" || input.kind === "customGcode" ? input.kind : null;
-  if (!kind) return { ok: false, reason: "kind is pause, filamentChange, or customGcode." };
+  if (!kind) return refuse("bad-action", "kind is pause, filamentChange, or customGcode.");
   let zMm = Number(input.zMm);
-  if (!Number.isFinite(zMm) || zMm < 0) return { ok: false, reason: "zMm is a height in millimetres." };
+  if (!Number.isFinite(zMm) || zMm < 0) return refuse("bad-argument", "zMm is a height in millimetres.");
   const tops = this.latest ? this.summarize(this.latest).layers.map((layer) => layer.z).filter((z) => z + 1e-9 >= zMm) : [];
-  if (this.latest && tops.length === 0) return { ok: false, reason: `That is above the sliced part. The top is ${this.summarize(this.latest).layers.at(-1)?.z ?? 0} mm.` };
+  if (this.latest && tops.length === 0) return refuse("outside-part", `That is above the sliced part. The top is ${this.summarize(this.latest).layers.at(-1)?.z ?? 0} mm.`);
   if (tops.length) zMm = tops.reduce((m, z) => Math.min(m, z));
   const gcode = typeof input.gcode === "string" ? input.gcode : "";
   if (kind === "customGcode") {
-    if (gcode.trim() === "") return { ok: false, reason: "A custom line needs gcode." };
-    if (new TextEncoder().encode(gcode).byteLength > 400) return { ok: false, reason: "A custom line is at most 400 bytes." };
+    if (gcode.trim() === "") return refuse("bad-argument", "A custom line needs gcode.");
+    if (new TextEncoder().encode(gcode).byteLength > 400) return refuse("bad-argument", "A custom line is at most 400 bytes.");
   }
   const review = kind === "customGcode" ? reviewGcode(gcode, { custom: [gcode] }).review.map((line) => line.text) : [];
   if (input.dryRun === true) return { ok: true, dryRun: true, zMm, kind, ...(review.length ? { review } : {}) };
@@ -123,7 +124,7 @@ function layerActionsList(this: Session): Record<string, unknown> {
 
 function layerActionRemove(this: Session, zMm: number): Record<string, unknown> {
   const next = this.actions.filter((action) => Math.abs(action.zMm - zMm) > 1e-6);
-  if (next.length === this.actions.length) return { ok: false, reason: "There is no action at that height." };
+  if (next.length === this.actions.length) return refuse("no-action", "There is no action at that height.");
   this.remember("Remove layer action");
   this.actions = next;
   return { ok: true, stale: true, label: "Remove layer action" };
@@ -133,14 +134,14 @@ function settingsApply(this: Session, input: Record<string, unknown>): Record<st
   let next = this.settings;
   if (typeof input.path === "string") {
     const parsed = parseSettingsProfile(readFileSync(resolveRead(input.path, "profile"), "utf8"));
-    if (!parsed.ok) return { ok: false, reason: parsed.message, changed: [] };
+    if (!parsed.ok) return refuse("bad-setting", parsed.message, { changed: [] });
     next = { ...parsed.profile.settings };
   }
   if (typeof input.preset === "string") next = applyPreset(next, input.preset);
   if (typeof input.layerHeight === "number") next = { ...next, layerHeight: input.layerHeight };
   if (typeof input.supports === "boolean") next = { ...next, supports: input.supports };
   const range = settingsRangeError(next, { belt: this.printer().kind === "belt", lineWidth: Math.min(1.2, Math.max(0.2, this.library.nozzleMm * 1.125)) });
-  if (range) return { ok: false, reason: range, changed: [] };
+  if (range) return refuse("bad-setting", range, { changed: [] });
   this.remember("Settings");
   this.settings = next;
   const changed = presetKeys().filter((key) => this.settings[key] !== DEFAULT_PRESET[key]);
@@ -166,10 +167,10 @@ function settingsSchema(this: Session, input: Record<string, unknown>): Record<s
 
 function settingsSet(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const values = input.values;
-  if (!values || typeof values !== "object" || Array.isArray(values)) return { ok: false, reason: "values must be an object of setting keys." };
+  if (!values || typeof values !== "object" || Array.isArray(values)) return refuse("bad-setting", "values must be an object of setting keys.");
   const objectId = typeof input.object === "string" ? input.object : "";
   const obj = objectId ? this.find(objectId) : null;
-  if (objectId && !obj) return { ok: false, reason: UNKNOWN_OBJECT, next: "Call plate_list for the current handles." };
+  if (objectId && !obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const dryRun = input.dryRun === true;
   const changed: { key: string; from: unknown; to: unknown }[] = [];
   const refused: { key: string; reason: string }[] = [];
@@ -203,7 +204,7 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
     const note = inactiveWarning(obj ? this.settings : next, row.key);
     return note ? [note] : [];
   });
-  if (changed.length === 0) return { ok: false, reason: refused[0]?.reason ?? "Nothing to change.", refused, ...(warnings.length ? { warnings } : {}) };
+  if (changed.length === 0) return { ok: false, code: "nothing-changed", reason: refused[0]?.reason ?? "Nothing to change.", refused, ...(warnings.length ? { warnings } : {}) };
   if (!dryRun) {
     this.remember(obj ? "Object settings" : "Settings");
     if (obj) obj.objectSettings = { ...obj.objectSettings, ...objectNext };
