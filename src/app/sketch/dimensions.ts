@@ -4,7 +4,7 @@ import { placeFixed } from "./chooser";
 import { drawingFrame, publish } from "./view";
 import { type SketchData } from "../../sketch/model";
 import { toWorld } from "../../sketch/frame";
-import { activeSketch, selectConstraint, acknowledgeDimensionFocus, editDimension, commitDimensionText, blurDimensionText } from "../../sketch/session";
+import { activeSketch, inferenceMarks, selectConstraint, acknowledgeDimensionFocus, editDimension, commitDimensionText, blurDimensionText } from "../../sketch/session";
 import { type ConstraintGlyph, dimensionLabels, placedStatus, constraintGlyphs } from "../../sketch/constrain";
 
 export function installDimensionLayers(): void {
@@ -17,6 +17,54 @@ export function installDimensionLayers(): void {
   S.glyphs.className = "sketch-dims sketch-glyphs";
   S.glyphs.hidden = true;
   document.body.append(S.glyphs);
+  // --- K1. What the next click would keep, beside the pointer. Never takes the pointer: a click goes through. ---
+  S.infer = document.createElement("div");
+  S.infer.className = "sketch-dims sketch-infer";
+  S.infer.hidden = true;
+  S.infer.setAttribute("aria-hidden", "true");
+  document.body.append(S.infer);
+}
+
+/**
+ * K1: the rules the next click keeps, drawn at the pointer's snapped point the way Onshape and Fusion place their
+ * inference glyphs: small, up and to the right of it, one beside the other. They are not buttons; the status line
+ * says the same in words. A dashed edge tells them from the kept marks (`paintGlyphs`), which are solid.
+ */
+export function paintInference() {
+  const frame = drawingFrame();
+  const marks = S.editor.phase === "editing" && frame && !(S.gesture || S.revolve || S.loft || S.sweep) ? inferenceMarks(S.editor) : [];
+  const at = S.editor.cursor;
+  const screen = marks.length > 0 && at && frame ? S.host.view.projectPoint(toWorld(frame, at)) : null;
+  S.host.canvas.dataset.sketchInfer = screen ? marks.map((mark) => mark.kind).join(",") : "";
+  if (!screen) {
+    if (!S.infer.hidden) {
+      S.infer.hidden = true;
+      S.infer.replaceChildren();
+      delete S.infer.dataset.key;
+    }
+    return;
+  }
+  S.infer.hidden = false;
+  const key = marks.map((mark) => `${mark.kind}:${mark.text}`).join(" ");
+  if (key !== S.infer.dataset.key) {
+    S.infer.dataset.key = key;
+    S.infer.replaceChildren(
+      ...marks.map((mark) => {
+        const node = document.createElement("span");
+        node.className = "sketch-dim sketch-infer-mark";
+        node.dataset.infer = mark.kind;
+        node.textContent = mark.text;
+        node.title = mark.title;
+        return node;
+      }),
+    );
+  }
+  marks.forEach((_, index) => {
+    const node = S.infer.children[index] as HTMLElement | undefined;
+    if (!node) return;
+    node.style.left = `${screen.x + 16 + index * 20}px`;
+    node.style.top = `${screen.y - 16}px`;
+  });
 }
 
 const glyphsOf = new WeakMap<SketchData, ConstraintGlyph[]>();
@@ -78,6 +126,10 @@ export function paintGlyphs() {
     return;
   }
   S.glyphs.hidden = false;
+  // K1: lines now carry marks as they are drawn, and a mark sits 12 px off its line, where the next point may be
+  // clicked. While a line, rectangle or other shape is being drawn a click is a point, so the marks let it through.
+  const drawing = (S.editor.chain?.length ?? 0) > 0 || S.editor.rect != null || S.editor.draw.gesture != null;
+  S.glyphs.dataset.drawing = drawing ? "1" : "0";
   const status = placedStatus(sketch);
   const key = marks.map((mark) => `${mark.id}:${mark.text}:${mark.slot}`).join(" ") + `|${S.editor.constrain.selected ?? ""}|${status?.conflicting.join(",") ?? ""}`;
   if (key !== S.glyphsKey) {

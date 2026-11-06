@@ -13,7 +13,7 @@ import { featureBlocked, markBlocked, paintStarts, pickPrompt } from "./starts";
 import { resolvedSweepMode } from "./sweep";
 import { showMarks } from "./view";
 import { type OriginPlane } from "../../sketch/draw";
-import { activeSketch, type SketchTool } from "../../sketch/session";
+import { activeSketch, constrainChoices, type SketchTool } from "../../sketch/session";
 import { namesOpenEnds } from "../../sketch/reasons";
 import { settleAbove } from "../../sketch/loft-above";
 import { revealDock } from "../../ui/dock-reveal.ts";
@@ -30,6 +30,8 @@ function cardsState(pinned: readonly { id: number; name: string }[]): string {
   parts.push(pinned.map((item) => `${item.id}=${item.name}`).join("/"));
   if (S.editor.phase === "editing") {
     parts.push(activeSketch(S.editor)?.on?.kind ?? "");
+    // K1: the Constrain menu lists the rules that fit what is selected.
+    parts.push(constrainChoices(S.editor)?.join(",") ?? "all");
     // E1 and L1: Close the gap, Add a shape above and the shape above's strip come and go with the drawing.
     parts.push(gapToClose() ? "gap" : "", canAddAbove() ? "above" : "", aboveOpen() ? "above-open" : "");
     // H1: Start on a face shows while a part has faces; the question replaces Make while it is asked.

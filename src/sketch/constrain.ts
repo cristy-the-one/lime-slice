@@ -287,6 +287,63 @@ export function withRectangleConstraints(sketch: SketchData, sides: readonly [nu
   return next;
 }
 
+/**
+ * K1: the rules inferred while a line was drawn, added to the sketch that already holds the line. Each one is tried
+ * alone on the sketch as it stands: one that conflicts with the others, or repeats one they already imply (a vertical
+ * line after a horizontal one is square to it already), is left out, and the rest are kept. The drawing is solved
+ * after each, so what is stored is what the solver agrees with.
+ */
+export function addInferred(sketch: SketchData, drafts: readonly SketchConstraint[]): SketchData {
+  let current = sketch;
+  for (const draft of drafts) {
+    const added = addOne(current, draft);
+    const solved = solveOrRefuse(current, added.sketch);
+    if (!solved) continue;
+    if (constraintStatus(solved)?.redundant.includes(added.id)) continue;
+    current = solved;
+  }
+  return current;
+}
+
+type Selected = { entities: number[]; points: number[] };
+
+/**
+ * K1: the Constrain menu's actions that fit what is selected, or null when nothing is selected (every action is
+ * offered, and the tool then waits for clicks). An action fits when the selection already completes it, or when the
+ * selection holds only kinds it takes and still needs more picks (Equal with one line chosen). A selected constraint
+ * mark or dimension offers only Remove constraint.
+ */
+export function fittingActions(sketch: SketchData, selection: Selected, selectedDim: number | null): ConstrainAction[] | null {
+  const none = selection.entities.length === 0 && selection.points.length === 0;
+  if (none && selectedDim == null) return null;
+  if (none) return ["remove"];
+  const out: ConstrainAction[] = [];
+  for (const tool of CONSTRAIN_TOOLS) if (fitsSelection(sketch, tool, selection)) out.push(tool);
+  if (removeConstraints(sketch, selection, selectedDim) !== sketch) out.push("remove");
+  return out;
+}
+
+function fitsSelection(sketch: SketchData, tool: ConstrainTool, selection: Selected): boolean {
+  const draft = fromSelection(sketch, tool, selection);
+  if (draft.constraint || draft.coincide) return true;
+  if (draft.error) return false;
+  if (selection.entities.length + selection.points.length >= picksNeeded(tool)) return false;
+  const kinds = new Set<string>();
+  for (const id of selection.entities) kinds.add(sketchEntity(sketch, id)?.kind ?? "none");
+  const lines = kinds.has("line");
+  const rounds = kinds.has("circle") || kinds.has("arc");
+  const spline = kinds.has("spline");
+  const points = selection.points.length > 0;
+  if (tool === "horizontal" || tool === "vertical") return !rounds && !spline;
+  if (tool === "parallel" || tool === "perpendicular" || tool === "angle" || tool === "length") return !rounds && !spline && !points;
+  if (tool === "tangent") return !spline && !points;
+  if (tool === "equal") return !spline && !points && !(lines && rounds);
+  if (tool === "concentric" || tool === "radius" || tool === "diameter") return !lines && !spline && !points;
+  if (tool === "midpoint" || tool === "distance") return !rounds && !spline;
+  if (tool === "coincident") return !spline;
+  return true;
+}
+
 /** A geometric constraint's mark beside the geometry it is on, which a click picks. */
 export interface ConstraintGlyph {
   id: number;

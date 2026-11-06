@@ -10,6 +10,7 @@ import { sweepPointer } from "./sweep";
 import { chooseAt, draw, drawingFrame, enterFace, enterNamed, publish } from "./view";
 import { rayOnPlane, toWorld } from "../../sketch/frame";
 import { sketchBusy, beginChoose, sketchPointer } from "../../sketch/session";
+import type { SketchViewPointer } from "../../model-view";
 
 export function installPointer(): void {
   S.host.canvas.addEventListener("dblclick", (ev) => {
@@ -22,68 +23,16 @@ export function installPointer(): void {
     S.editor = beginChoose(S.editor);
     enterFace(hit.face);
   });
-  S.host.view.onSketchPointer((ev) => {
-    S.lastClient = { x: ev.x, y: ev.y };
-    if (S.applying || S.holding) return;
-    if (S.editor.phase === "choosing") {
-      const hit = chooseAt(ev.x, ev.y);
-      S.editor = { ...S.editor, hotPlane: hit?.kind === "plane" ? hit.name : null };
-      if (ev.phase === "down") S.chooseDown = { x: ev.x, y: ev.y };
-      if (ev.phase === "up" && S.chooseDown) {
-        const moved = (ev.x - S.chooseDown.x) ** 2 + (ev.y - S.chooseDown.y) ** 2 > 16;
-        S.chooseDown = null;
-        if (!moved && hit) {
-          if (hit.kind === "face") enterFace(hit.face);
-          else enterNamed(hit.name);
-          return;
-        }
-      }
-      publish("skip");
-      return;
-    }
-    if (ev.phase === "down") {
-      S.menuOpen = null;
-      // A press on the canvas leaves an open dimension label: its typed value is set first.
-      const label = S.labels.querySelector<HTMLInputElement>("input.sketch-dim-input");
-      if (label) commitOpenLabel(label);
-    }
-    if (S.editor.phase !== "editing" || S.editor.lookAround) return;
-    const frame = drawingFrame();
-    if (!frame) return;
-    if (S.revolve) {
-      revolvePointer(ev, frame);
-      return;
-    }
-    if (S.sweep) {
-      sweepPointer(ev, frame);
-      return;
-    }
-    if (S.loft) {
-      loftPointer(ev);
-      return;
-    }
-    if (S.gesture) {
-      extrudePointer(ev, frame);
-      return;
-    }
-    const ray = S.host.view.pointerRay(ev.x, ev.y);
-    const hit = rayOnPlane(frame, ray.origin, ray.direction);
-    const uv = hit?.uv ?? S.editor.cursor ?? [0, 0];
-    S.editor = sketchPointer(S.editor, {
-      phase: ev.phase,
-      uv,
-      sx: ev.x,
-      sy: ev.y,
-      shift: ev.shift,
-      ctrl: ev.ctrl,
-      alt: ev.alt,
-      double: ev.double,
-    }, {
-      mmPerPx: Math.max(S.host.view.sketchView().mmPerPx, 1e-4),
-      project: (at) => S.host.view.projectPoint(toWorld(frame, at)),
-    });
-    publish(ev.phase === "move" ? "values" : "open");
-  });
+  S.host.view.onSketchPointer(handle);
+  // K1: pressing or letting go of Ctrl reads the pointer again where it stands, so the inferred marks go and come back
+  // without a mouse move.
+  const ctrlChanged = (down: boolean) => (ev: KeyboardEvent) => {
+    if ((ev.key !== "Control" && ev.key !== "Meta") || ev.repeat) return;
+    if (S.editor.phase !== "editing" || S.editor.tool !== "line" || S.editor.lookAround || S.editor.cursor == null) return;
+    handle({ phase: "move", x: S.lastClient.x, y: S.lastClient.y, button: 0, shift: ev.shiftKey, ctrl: down, alt: ev.altKey, meta: false, double: false });
+  };
+  window.addEventListener("keydown", ctrlChanged(true));
+  window.addEventListener("keyup", ctrlChanged(false));
   S.host.view.onSketchView(() => {
     if (S.editor.phase !== "editing" && S.editor.phase !== "choosing") return;
     draw();
@@ -91,4 +40,67 @@ export function installPointer(): void {
     paintDataset();
     if (S.gesture || S.revolve || S.sweep) syncHud("values");
   });
+}
+
+function handle(ev: SketchViewPointer): void {
+  S.lastClient = { x: ev.x, y: ev.y };
+  if (S.applying || S.holding) return;
+  if (S.editor.phase === "choosing") {
+    const hit = chooseAt(ev.x, ev.y);
+    S.editor = { ...S.editor, hotPlane: hit?.kind === "plane" ? hit.name : null };
+    if (ev.phase === "down") S.chooseDown = { x: ev.x, y: ev.y };
+    if (ev.phase === "up" && S.chooseDown) {
+      const moved = (ev.x - S.chooseDown.x) ** 2 + (ev.y - S.chooseDown.y) ** 2 > 16;
+      S.chooseDown = null;
+      if (!moved && hit) {
+        if (hit.kind === "face") enterFace(hit.face);
+        else enterNamed(hit.name);
+        return;
+      }
+    }
+    publish("skip");
+    return;
+  }
+  if (ev.phase === "down") {
+    S.menuOpen = null;
+    // A press on the canvas leaves an open dimension label: its typed value is set first.
+    const label = S.labels.querySelector<HTMLInputElement>("input.sketch-dim-input");
+    if (label) commitOpenLabel(label);
+  }
+  if (S.editor.phase !== "editing" || S.editor.lookAround) return;
+  const frame = drawingFrame();
+  if (!frame) return;
+  if (S.revolve) {
+    revolvePointer(ev, frame);
+    return;
+  }
+  if (S.sweep) {
+    sweepPointer(ev, frame);
+    return;
+  }
+  if (S.loft) {
+    loftPointer(ev);
+    return;
+  }
+  if (S.gesture) {
+    extrudePointer(ev, frame);
+    return;
+  }
+  const ray = S.host.view.pointerRay(ev.x, ev.y);
+  const hit = rayOnPlane(frame, ray.origin, ray.direction);
+  const uv = hit?.uv ?? S.editor.cursor ?? [0, 0];
+  S.editor = sketchPointer(S.editor, {
+    phase: ev.phase,
+    uv,
+    sx: ev.x,
+    sy: ev.y,
+    shift: ev.shift,
+    ctrl: ev.ctrl,
+    alt: ev.alt,
+    double: ev.double,
+  }, {
+    mmPerPx: Math.max(S.host.view.sketchView().mmPerPx, 1e-4),
+    project: (at) => S.host.view.projectPoint(toWorld(frame, at)),
+  });
+  publish(ev.phase === "move" ? "values" : "open");
 }
