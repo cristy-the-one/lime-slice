@@ -1,4 +1,16 @@
-use super::*;
+use super::fill_lines::{clip_polyline, gyroid, scan_angle};
+use super::island_order::island_loops;
+use super::open_order::{chain_ends, order_open, serpentine};
+use super::outline::Outline;
+use super::seams::dist2;
+use super::solid_fill::{solid_fill, solid_row_angle, solid_rows};
+use super::walls::solid_infill;
+use super::{extrusion, Extrusion, PathFeatures, PathKind, ShellBand};
+use crate::poly::{
+    boolean_diff, drop_slivers, in_solid, loop_bounds, loops_from_paths, offset_loops,
+    offset_paths, paths_from_loops, signed_area, Loop,
+};
+use crate::strategy::{InfillPattern, Ironing, ResolvedStrategy};
 
 pub(super) fn gyroid_3d_graded(
     loops: &[Loop],
@@ -311,7 +323,10 @@ pub(super) fn lightning(loops: &[Loop], spacing: f64) -> Vec<Vec<[f64; 2]>> {
 #[cfg(test)]
 mod density_tests {
     use super::*;
+    use crate::poly::Loop;
     use crate::strategy::{pure, InfillPattern, StrategyId};
+    use crate::toolpath::scarf::polyline_len;
+    use crate::toolpath::PathFeatures;
 
     /// What the pattern covers of a square, mean over layers: extruded length
     /// times line width over area. Stated density is what it should be.

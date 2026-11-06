@@ -1,4 +1,8 @@
-use super::*;
+use super::{as_outers, circle, emit_loops, sharp_corners, union_all, Extrusion, PathKind};
+use crate::poly::{
+    boolean_diff, loops_from_paths, offset_loops, offset_paths, paths_from_loops, signed_area, Loop,
+};
+use crate::strategy::ResolvedStrategy;
 
 pub fn plan_skirt(
     contours: &[Loop],

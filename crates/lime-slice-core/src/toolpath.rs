@@ -1,22 +1,8 @@
-use std::borrow::Cow;
-use std::cmp::{Ordering as CmpOrdering, Reverse};
-use std::collections::{BinaryHeap, BTreeSet, HashMap};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
-use std::time::Instant;
 
-use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, drop_slivers, in_solid, loop_bounds, loops_from_paths,
-    offset_loops, offset_paths, paths_from_loops, point_in_loop, principal_axis, resolve_nonzero,
-    signed_area, Loop,
-};
-use crate::strategy::{
-    FuzzySkin, InfillPattern, Ironing, ResolvedStrategy, ScarfSeam, SeamMode, StrategyId,
-};
+use crate::poly::{boolean_union, signed_area, Loop};
+use crate::strategy::{FuzzySkin, InfillPattern, ResolvedStrategy, SeamMode, StrategyId};
 use crate::support::paint::SeamDisk;
-use crate::support::Disk;
-use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
 
 mod adhesion;
 mod bridges;
@@ -36,10 +22,10 @@ mod seams;
 mod solid_fill;
 mod support_emit;
 mod tour;
-mod void_fill;
-mod walls;
 #[cfg(test)]
 mod travel_tests;
+mod void_fill;
+mod walls;
 
 pub use self::adhesion::*;
 pub use self::bridges::*;
@@ -47,18 +33,11 @@ pub use self::combing::*;
 pub use self::fill_lines::*;
 pub(crate) use self::fuzzy::*;
 pub use self::infill::*;
-use self::infill_order::*;
 pub(crate) use self::island_order::*;
 pub use self::layout::*;
-use self::nearest::*;
-use self::open_order::*;
-use self::outline::*;
-use self::polish::*;
 pub use self::scarf::*;
 use self::seams::*;
-use self::solid_fill::*;
 pub use self::support_emit::*;
-use self::tour::*;
 pub(crate) use self::void_fill::*;
 pub use self::walls::*;
 

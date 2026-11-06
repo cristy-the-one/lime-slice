@@ -1,6 +1,6 @@
 //! The C++ kernel boundary: the raw handles and every `lime_tree_*` function.
 
-use super::*;
+use std::os::raw::{c_char, c_int};
 
 #[repr(C)]
 pub(super) struct RawShape {

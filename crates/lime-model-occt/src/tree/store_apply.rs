@@ -1,6 +1,38 @@
 //! The store's Apply, probe and fold calls, and the partition starts.
 
-use super::*;
+use serde_json::{json, Value};
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use super::{
+    doc_in,
+    preview_step_faces,
+    probe_metrics,
+    root_placement,
+    stamp_faces,
+    transition_find,
+    Doc,
+    NodeId,
+    Probed,
+    Store,
+    ROOT,
+};
+use super::build::{build, BuildFail, Built};
+use super::group::{GroupBudget, NewGroup};
+use super::ops::Op;
+use super::outcome::{with_fields, write_object, Answer, Failure, Part};
+use super::partition::{
+    partition_fields,
+    partition_keys_cover,
+    piece_keys_refusal,
+    piece_replies,
+    pins_metrics,
+    push_numbers,
+    PieceKeys,
+};
+use super::resolve::resolve;
+use super::same::{same_build, same_request};
+use super::shape::Shape;
 
 impl Store {
     pub(super) fn apply(

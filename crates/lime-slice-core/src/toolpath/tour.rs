@@ -1,4 +1,13 @@
-use super::*;
+use super::infill_order::UNTANGLE_WINDOW;
+use super::layout::{ISLAND_GAP_MM, TRAVEL_WIN_MM};
+use super::nearest::dist_mm;
+use super::polish::{
+    approach_dist2, box_dist2, centroid, oriented_ends, path_bounds, rep_dist2, rep_points,
+    walk_cost,
+};
+use super::seams::reverse_open;
+use super::Extrusion;
+use std::collections::HashMap;
 
 /// The tour `untangle` improves: the path at each position, where it is entered
 /// and left, and whether it runs from its last point.

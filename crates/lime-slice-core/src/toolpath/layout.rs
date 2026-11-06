@@ -1,4 +1,16 @@
-use super::*;
+use super::bridges::point_seg_dist;
+use super::combing::{comb_between, Combing};
+use super::infill_order::{order_runs, runs_of, Run};
+use super::island_order::island_loops;
+use super::nearest::dist_mm;
+use super::outline::Outline;
+use super::polish::{approach_dist2, box_dist2, path_bounds, rep_dist2, rep_points};
+use super::scarf::ScarfParams;
+use super::seams::dist2;
+use super::{Extrusion, PathKind, TravelIn};
+use crate::poly::{offset_loops, Loop};
+use crate::support::Disk;
+use std::sync::atomic::AtomicBool;
 
 /// Test hook. Off in every slice unless a report test turns it on. SeqCst so a
 /// rayon worker observes the store that happened before the travel order.
@@ -7,7 +19,7 @@ pub(super) static LEGACY_TRAVEL: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 #[doc(hidden)]
 pub(crate) fn set_legacy_travel_for_test(on: bool) {
-    LEGACY_TRAVEL.store(on, Ordering::SeqCst);
+    LEGACY_TRAVEL.store(on, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// A new infill order has to beat nearest-neighbor by this much or the group

@@ -1,4 +1,8 @@
-use super::*;
+use super::fuzzy::hypot2;
+use super::outline::Outline;
+use super::Extrusion;
+use crate::poly::Loop;
+use std::collections::HashMap;
 
 /// Each outer loop with the holes directly inside it. Nesting comes from
 /// containment, so loop orientation does not matter.
@@ -165,7 +169,11 @@ pub(super) fn contained_by_linear(
 #[cfg(test)]
 mod island_order_tests {
     use super::*;
+    use crate::poly::{loop_bounds, Loop};
     use crate::strategy::{classicize, pure, StrategyId};
+    use crate::toolpath::fuzzy::hypot2;
+    use crate::toolpath::walls::plan_region;
+    use crate::toolpath::{extrusion, Extrusion, PathFeatures, PathKind};
 
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]

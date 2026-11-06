@@ -1,6 +1,12 @@
 //! The requests a client sends the store (the serde side of `call`) and the small types they carry.
 
-use super::*;
+use serde::Deserialize;
+use serde_json::Value;
+use std::os::raw::c_int;
+
+use super::{transition, Fingerprint, NodeId};
+use super::fit_coupon::CouponSpec;
+use super::ops::{Affine, EdgeFilter, FacePick, Op, Solid, TextUse};
 
 /// What an edit asks of its own tree's step: a split to print's `pieceKeys`, and `keepBroken`.
 pub(super) struct OwnEdit {

@@ -1,4 +1,10 @@
-use super::*;
+use super::fuzzy::fuzz_settled;
+use super::polish::{
+    approach_dist2, edge_loop, geom_closed, oriented_ends, ring_len, starts_fixed,
+};
+use super::scarf::{scarf_one, ScarfParams};
+use super::seams::{dist2, edge_sites, orient_path};
+use super::Extrusion;
 
 /// `grid` is `approach_grid(paths)`.
 pub(super) fn legacy_nn_indices(

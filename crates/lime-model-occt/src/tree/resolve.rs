@@ -1,6 +1,12 @@
 //! Resolving an op before it builds: edge and face picks turned into indexes on the solid at hand.
 
-use super::*;
+use std::collections::HashMap;
+use std::os::raw::c_int;
+
+use super::NodeId;
+use super::ops::{EdgeFilter, EdgePick, EdgeRef, FaceMove, FacePick, FaceRef, Op};
+use super::same::{same_edge, same_face};
+use super::shape::Shape;
 
 /// The edges each step a blend takes edges from made, by that step's id.
 pub(super) type Steps = HashMap<NodeId, Vec<EdgeRef>>;

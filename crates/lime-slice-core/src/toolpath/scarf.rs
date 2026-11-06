@@ -1,4 +1,7 @@
-use super::*;
+use super::infill::turn_penalty;
+use super::seams::dist2;
+use super::{Extrusion, PathKind};
+use crate::strategy::{ScarfSeam, StrategyId};
 
 /// Spread a closed wall's seam into a scarf joint.
 ///

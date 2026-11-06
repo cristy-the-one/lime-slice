@@ -1,4 +1,8 @@
-use super::*;
+use super::infill::{sharpest_near, turn_penalty};
+use super::polish::geom_closed;
+use super::{Extrusion, Seam};
+use crate::strategy::SeamMode;
+use crate::support::paint::SeamDisk;
 
 pub(super) fn seam_rotate(loop_: &[[f64; 2]], mode: SeamMode, hint: [f64; 2]) -> Vec<[f64; 2]> {
     if loop_.is_empty() {

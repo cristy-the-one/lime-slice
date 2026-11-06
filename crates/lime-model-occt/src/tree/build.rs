@@ -1,6 +1,42 @@
 //! Building one op on a solid: `Built`, `BuildFail` and the `build` match over the op kinds.
 
-use super::*;
+use serde_json::{json, Value};
+use std::os::raw::c_int;
+use std::ptr::NonNull;
+
+use super::{lettering, transition};
+use super::ffi::{
+    lime_tree_blend,
+    lime_tree_boolean,
+    lime_tree_chamfer2,
+    lime_tree_extrude,
+    lime_tree_extrude_extent,
+    lime_tree_face_extrude,
+    lime_tree_hole,
+    lime_tree_join,
+    lime_tree_loft,
+    lime_tree_move_faces,
+    lime_tree_revolve,
+    lime_tree_scale,
+    lime_tree_shell,
+    lime_tree_split,
+    RawShape,
+};
+use super::group::{build_combined, build_group};
+use super::joints::{joined_of, keep_built, stored_joints, Joined};
+use super::k1::{build_k1_loops, k1_has_loops, push_shape};
+use super::ops::Op;
+use super::outcome::Failure;
+use super::partition::{
+    partition_max,
+    partition_refusal,
+    profile_numbers,
+    JointCut,
+    Labels,
+    Numbered,
+};
+use super::resolve::{chamfer_sides, Resolved, Steps};
+use super::shape::Shape;
 
 pub(super) struct Built {
     pub(super) op: Op,

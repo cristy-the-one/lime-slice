@@ -1,6 +1,22 @@
 //! `Shape::primitive` and the feature builds on a shape (`feature`, `feature_loops`).
 
-use super::*;
+use std::os::raw::c_int;
+
+use super::ffi::{
+    lime_tree_feature_extrude,
+    lime_tree_feature_extrude_extent,
+    lime_tree_feature_extrude_loops,
+    lime_tree_feature_extrude_loops_extent,
+    lime_tree_feature_loft,
+    lime_tree_feature_loft_loops,
+    lime_tree_feature_revolve,
+    lime_tree_feature_revolve_loops,
+    lime_tree_primitive,
+};
+use super::group::extrude_cells;
+use super::k1::{encode_loops, extent_flags, k1_has_loops, push_shape};
+use super::ops::{Op, Solid};
+use super::shape::Shape;
 
 impl Shape {
     pub(super) fn primitive(solid: &Solid) -> Result<Shape, String> {

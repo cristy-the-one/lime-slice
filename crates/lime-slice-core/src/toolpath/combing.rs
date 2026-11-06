@@ -1,4 +1,12 @@
-use super::*;
+use super::bridges::point_seg_dist;
+use super::island_order::island_loops;
+use super::outline::Outline;
+use super::scarf::polyline_len;
+use super::seams::dist2;
+use super::{Extrusion, PathKind, TravelIn};
+use crate::poly::{offset_loops, Loop};
+use std::cmp::{Ordering as CmpOrdering, Reverse};
+use std::collections::BinaryHeap;
 
 pub(super) enum Comb {
     Clear,
