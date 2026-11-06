@@ -19,6 +19,7 @@ import {
   type StudyLoad,
   type Vec3,
 } from "../src/sim/study.ts";
+import { refuse } from "./refusals.ts";
 
 export const SWEEP_CAP = 16;
 export const SWEEP_REFUSAL = "A sweep takes up to 16 variants.";
@@ -245,17 +246,17 @@ export function runSolver(job: Record<string, unknown>): Record<string, unknown>
     maxBuffer: 8 * 1024 * 1024,
   });
   if (child.error && (child.error as NodeJS.ErrnoException).code === "ENOENT") {
-    return { ok: false, reason: "The stress solver is not built." };
+    return refuse("solver-unavailable", "The stress solver is not built.");
   }
   const text = child.stdout?.trim() ?? "";
-  if (child.status !== 0 && !text) return { ok: false, reason: "The stress solver did not finish." };
+  if (child.status !== 0 && !text) return refuse("solve-failed", "The stress solver did not finish.");
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
     if (parsed && typeof parsed === "object") return parsed;
   } catch {
     // The binary writes one JSON object. Anything else is a crash.
   }
-  return { ok: false, reason: "The stress solver did not finish." };
+  return refuse("solve-failed", "The stress solver did not finish.");
 }
 
 export function pageLimit(value: unknown): number {

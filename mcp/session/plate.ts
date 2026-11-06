@@ -25,6 +25,7 @@ import { assemblyOf } from "../../src/assembly.ts";
 import { resolveRead } from "../workspace.ts";
 import { type Job, ModelRunaway, NAME_LIMIT, OVERLAP, type PlateObject, type PlateSnap, STEP, type SnapObject, type ToolHandler, UNKNOWN_OBJECT, positionsFrom, shownName, xyGap } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function printer(this: Session): PrinterRecord {
   return this.library.printers.find((row) => row.id === this.library.printerId) ?? this.library.printers[0]!;
@@ -197,7 +198,7 @@ function remember(this: Session, label: string): void {
 
 function plateUndo(this: Session): Record<string, unknown> {
   const snap = this.undoStack.pop();
-  if (!snap) return { ok: false, reason: "Nothing to undo." };
+  if (!snap) return refuse("nothing-to-undo", "Nothing to undo.");
   this.redoStack.push(this.capture(snap.label));
   this.install(snap);
   return { ok: true, label: snap.label };
@@ -205,7 +206,7 @@ function plateUndo(this: Session): Record<string, unknown> {
 
 function plateRedo(this: Session): Record<string, unknown> {
   const snap = this.redoStack.pop();
-  if (!snap) return { ok: false, reason: "Nothing to redo." };
+  if (!snap) return refuse("nothing-to-redo", "Nothing to redo.");
   this.undoStack.push(this.capture(snap.label));
   this.install(snap);
   return { ok: true, label: snap.label };
@@ -265,11 +266,11 @@ async function splitSolids(this: Session, obj: PlateObject, undoable: boolean): 
   } catch (err) {
     written = { error: err instanceof Error ? err.message : String(err) };
   }
-  if (typeof written.error === "string") return { ok: false, reason: written.error };
+  if (typeof written.error === "string") return refuse("kernel-refused", written.error);
   const rows = Array.isArray(written.solids) ? (written.solids as { name?: unknown; bytesBase64?: unknown }[]) : [];
   if (rows.length < 2) return null;
   const files = rows.map((row) => (typeof row.bytesBase64 === "string" ? base64ToBytes(row.bytesBase64) : null));
-  if (files.some((file) => !file)) return { ok: false, reason: "The kernel did not write the solids of this STEP file." };
+  if (files.some((file) => !file)) return refuse("export-failed", "The kernel did not write the solids of this STEP file.");
   const names = solidNames(obj.fileName, rows.map((row) => ({ name: typeof row.name === "string" ? row.name : "" })));
   const read = [];
   for (const [index, file] of files.entries()) read.push({ name: names[index]!, fileName: pieceFileName(names[index]!), bytes: file!, ...(await this.preview(pieceFileName(names[index]!), file!, obj.stepTolerance)) });
@@ -370,7 +371,7 @@ function givenName(this: Session, value: unknown): string | undefined {
 
 function objectSelect(this: Session, id: string, name?: unknown): Record<string, unknown> {
   const obj = this.find(id);
-  if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const renamed = this.givenName(name);
   if (renamed && renamed !== obj.name) {
     this.remember("Rename");
@@ -382,7 +383,7 @@ function objectSelect(this: Session, id: string, name?: unknown): Record<string,
 
 function objectPlace(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const obj = this.find(String(input.object));
-  if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   this.remember("Place");
   const printer = this.printer();
   // The place itself is the shared one (src/modeling/placing.ts), as the app's recipe calls set it.
@@ -511,7 +512,7 @@ async function closeTree(this: Session, obj: PlateObject): Promise<void> {
 
 async function objectRemove(this: Session, id: string): Promise<Record<string, unknown>> {
   const index = this.objects.findIndex((obj) => obj.id === id);
-  if (index < 0) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (index < 0) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   this.remember("Remove");
   const leaving = this.objects[index];
   if (leaving) await this.closeTree(leaving);
@@ -522,7 +523,7 @@ async function objectRemove(this: Session, id: string): Promise<Record<string, u
 
 function objectDuplicate(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const source = this.find(String(input.object));
-  if (!source) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!source) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const count = typeof input.count === "number" ? input.count : 1;
   this.remember("Duplicate");
   const made: string[] = [];
@@ -594,11 +595,11 @@ function keepShellSolid(this: Session, obj: PlateObject, solid: { bytes: Uint8Ar
 
 async function splitShells(this: Session, id: string): Promise<Record<string, unknown>> {
   const obj = this.find(id);
-  if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const split = separateBy(obj.fileName, stepSolidHint(obj.bytes)) === "solids" ? await this.splitSolids(obj, true) : null;
   if (split) return split;
   const groups = shellGroups(obj.source);
-  if (!groups) return { ok: false, reason: "This mesh is one shell." };
+  if (!groups) return refuse("single-shell", "This mesh is one shell.");
   const pieces = takeGroups(obj.source, groups.groups);
   // A commit keeps the whole shape in `brep` and an STL of every solid in `source`. The mesh splits by shell, and
   // each piece was left holding that whole shape, so a later join or describe used every solid. A shape of several
@@ -673,7 +674,7 @@ function asBed(this: Session, obj: PlateObject): SliceObject {
 }
 
 function plateArrange(this: Session, input: Record<string, unknown>): Record<string, unknown> {
-  if (this.objects.length < 2) return { ok: false, reason: "Arrange needs two objects." };
+  if (this.objects.length < 2) return refuse("arrange-needs-two", "Arrange needs two objects.");
   const printer = this.printer();
   const clearance = sequentialClearance(this.sliceRules(this.objects.length), this.order());
   const gap = typeof input.gapMm === "number" ? input.gapMm : clearance === null ? ARRANGE_GAP_MM : clearance + 0.01;
@@ -682,7 +683,7 @@ function plateArrange(this: Session, input: Record<string, unknown>): Record<str
     const assemblies = this.liveAssemblies();
     const wanted = String(input.assembly).trim();
     const found = assemblies.find((row) => row.name === wanted || row.id === wanted);
-    if (!found) return { ok: false, reason: assemblies.length ? `There is no assembly named ${wanted}. Assemblies: ${assemblies.map((row) => row.name).join(", ")}.` : "There is no assembly on the plate." };
+    if (!found) return refuse("no-assembly", assemblies.length ? `There is no assembly named ${wanted}. Assemblies: ${assemblies.map((row) => row.name).join(", ")}.` : "There is no assembly on the plate.", undefined, NEXT.assembly);
     const members = new Set(found.members.map((row) => row.object));
     keep = new Set(this.objects.filter((obj) => !members.has(obj.id)).map((obj) => obj.id));
   }
@@ -728,7 +729,7 @@ function plateCollisions(this: Session): { a: string; b: string }[] {
 
 function printOrderSet(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const order = input.order === "sequential" ? "sequential" : input.order === "together" ? "all-at-once" : null;
-  if (!order) return { ok: false, reason: "order is together or sequential." };
+  if (!order) return refuse("bad-argument", "order is together or sequential.");
   const clearance = typeof input.clearanceMm === "number" ? input.clearanceMm : this.clearanceMm;
   const gantry = typeof input.gantryMm === "number" ? input.gantryMm : this.gantryMm;
   if (input.dryRun !== true) {

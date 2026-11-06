@@ -11,6 +11,7 @@ import { OP_KINDS, OP_SUMMARY, opSchemaFor } from "../schema.ts";
 import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/compose.ts";
 import { type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   let engine: string | null = null;
@@ -94,7 +95,7 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
   const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
   if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
   const found = guideByUri(`lime://guide/${topic}`);
-  if (!found) return { ok: false, reason: `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.` };
+  if (!found) return refuse("unknown-topic", `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.`, undefined, NEXT.guide);
   // The recipes guide ends with the user's kept ingredients by name, so one is found before a new one is written.
   const text = topic === "recipes" ? [found.text, ...ingredientLines()].join("\n") : found.text;
   return { ok: true, topic, name: found.name, tools: found.tools, text };
@@ -103,7 +104,7 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
 /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */
 function opGuide(this: Session, kind: string): Record<string, unknown> {
   const schema = opSchemaFor(kind);
-  if (!schema) return { ok: false, reason: `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.` };
+  if (!schema) return refuse("unknown-topic", `There is no op kind ${kind}. Kinds: ${OP_KINDS.join(", ")}.`, undefined, NEXT.guide);
   const ops = guideByUri("lime://guide/ops")?.text.split("\n") ?? [];
   const examples = ops.filter((line) => new RegExp(`^\\s*(\\w+, )*${kind}[:,]`).test(line) || line.includes(`kind:\"${kind}\"`));
   // --- Text with real fonts: the bundled fonts, one line each, and what a text refuses.

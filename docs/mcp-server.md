@@ -379,11 +379,132 @@ Names below are the proposed MCP tools. They are not engine routes. Each one map
 Shared result rules:
 
 - A tool that did its job returns `{ok: true, ...}`.
-- A feasibility refusal or a slice that finished with warnings returns `{ok: false, reason}` or `{ok: true, warnings}` as specified. The `reason` is a sentence a person can read. It is not an MCP protocol error.
+- A feasibility refusal or a slice that finished with warnings returns `{ok: false, code, reason}` or `{ok: true, warnings}` as specified (codes: "Refusal codes" below). The `reason` is a sentence a person can read. It is not an MCP protocol error.
 - An MCP protocol error is only a dead engine, a path outside the workspace, a schema miss, or a missing OCCT bridge.
 - Lengths are millimetres. Angles are degrees. Time is seconds. Mass is grams.
 - Lists take `cursor` and `limit` (default 20, max 100) and return `nextCursor` when more remain.
 - No tool returns a triangle soup. `debugMesh: true` is rejected unless `LIME_MCP_DEBUG_MESH=1`, and even then the mesh is a workspace file, not a tool result.
+
+### Refusal codes
+
+Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person reads, unchanged. `code` is a short stable kebab-case word from the registry in `mcp/refusals.ts`, so an agent can branch on it instead of matching text. `next` is added only where one call is the obvious way on (`plate_list` for an unknown object, `slice_start` before a read of a slice, `model_probe` before an apply), as a sentence naming the call. Other fields (`object`, `failedStep`, `where`, `job`) are the call's own and stay as they were. A refusal that reaches the reply with no code of its own gets `refused`. `tools/list` does not change: this is reply data. `mcp/refusals.test.ts` keeps this list and the registry in step and checks that every `ok: false` in `mcp/` goes through `refuse()` or carries a `code`.
+
+- `no-object`: The handle names no object on the plate.
+- `no-mesh`: The plate has no mesh or part to act on yet.
+- `plate-empty`: The plate holds no objects.
+- `no-assembly`: The part is in no assembly, or the named assembly does not exist.
+- `bad-placement`: The parts cannot be joined or placed that way (not on the plate, different assemblies, itself).
+- `nothing-to-undo`: The plate history has nothing to undo.
+- `nothing-to-redo`: The plate history has nothing to redo.
+- `single-shell`: The mesh is one shell, so there is nothing to split.
+- `arrange-needs-two`: Arrange needs at least two objects.
+- `not-sliced`: The call reads a slice and none has been made (or no tree-support slice).
+- `stale-slice`: The slice no longer matches the plate or its settings; slice again.
+- `slice-running`: A slice is already running; cancel it or wait for it.
+- `slice-failed`: The slicer ended with an error.
+- `slice-lost`: The slice job is gone (restart or unknown handle).
+- `cancelled`: The call or the wait was cancelled.
+- `job-running`: The tool is still running in the background as a job.
+- `job-failed`: The background job ended with an error.
+- `bad-clock`: The clock value is not a time.
+- `layer-missing`: The layer has no paths or is out of range.
+- `bad-view`: The view, colours, section or highlight of a render are not valid.
+- `bad-argument`: An argument has the wrong shape or value; the reason says what it takes.
+- `missing-argument`: A required argument is missing.
+- `conflicting-arguments`: Two arguments that exclude each other were both given.
+- `out-of-range`: A number is outside the range the tool takes.
+- `bad-action`: The action or kind is not one the tool knows.
+- `bad-expression`: A parameter or number expression does not evaluate.
+- `bad-name`: A name or id is not in the form the tool accepts.
+- `bad-frame`: The frame or workplane is wrong for this call.
+- `bad-region`: A region or volume is malformed or touches nothing.
+- `unknown-topic`: A guide topic or op kind is not known.
+- `model-unavailable`: The part has no editable Model solid (a mesh, or its history is not open).
+- `no-history`: The object has no Model history.
+- `solid-unreadable`: The solid or step solid could not be read back from the kernel.
+- `mesh-not-solid`: The call needs a B-rep solid and the part is a mesh.
+- `step-not-found`: The step handle is not in the history.
+- `step-kept`: The step cannot be dropped from the history.
+- `history-start`: The model history has nothing to undo or redo.
+- `commit-failed`: The part's open Model history could not be committed to the plate.
+- `step-guard`: A guard caught a step that removed too much of the solid or only touches an edge; the step was taken back.
+- `bad-op`: The op is malformed or cannot be baked into a step.
+- `bad-anchor`: An anchor label or reference does not resolve.
+- `not-probed`: The edit was not probed first; probe it, or pass probe: true.
+- `kernel-refused`: The modeling kernel refused the op; the reason is its plain-language error.
+- `does-not-fit`: The op does not fit the solid (a check failed).
+- `face-not-found`: The face is not on this solid.
+- `curved-face`: The face is curved, so it has no plane to use.
+- `needs-solid-tool`: The tool part has no solid yet.
+- `rebuild-refused`: The rebuild could not run (not built by model_build, base differs).
+- `build-failed`: A build or rebuild did not complete.
+- `export-failed`: The solid, assembly or pieces could not be exported.
+- `model-runaway`: The modeler stopped or did not answer; histories are rebuilt on next use.
+- `split-refused`: The split to print or coupon request cannot be planned or run.
+- `bad-coupon`: The calibration coupon request is not valid.
+- `wrong-kind`: The op kind is not the one this call takes.
+- `paint-limit`: The paint or reinforcement limit is reached.
+- `no-paint`: There is no paint inside the region.
+- `no-support`: No support tree is at that point.
+- `no-override`: The override is not on the plate.
+- `no-action`: There is no layer action at that height.
+- `outside-part`: The range or volume does not touch the part.
+- `bad-setting`: A setting key or value is not valid.
+- `nothing-changed`: No setting changed.
+- `no-printer`: No printer and filament are chosen.
+- `unknown-machine`: The printer or filament is not in the library.
+- `host-not-stored`: The server stores no printer host or key.
+- `bad-fits`: The measured-fit rows are not valid.
+- `bad-machine-file`: The machine file or settings text could not be read.
+- `bad-tower`: The calibration tower cannot be built that way.
+- `blend-failed`: The blend comparison did not run.
+- `no-blend`: No blend comparison has run yet.
+- `recipe-unavailable`: The lust compiler or the recipe crate is not installed here.
+- `recipe-compile`: The recipe did not build; the diagnostics say why.
+- `recipe-failed`: The recipe ran and failed, or a rebuild after it did.
+- `recipe-commit`: A recipe's result could not be committed to the plate.
+- `recipe-source`: The recipe source or data file is missing, too large or unreadable.
+- `plugin-not-found`: No plugin of that id is in the library or the project.
+- `plugin-invalid`: The plugin file does not parse, build or follow the rules.
+- `plugin-write-failed`: The plugin file could not be written, exported or read back.
+- `plugin-unsupported`: The plugin needs a newer app version than this one.
+- `preset-not-found`: No preset of that name for the plugin.
+- `preset-invalid`: The preset is malformed or no longer fits the plugin.
+- `ingredient-not-found`: No ingredient of that name is kept.
+- `ingredient-invalid`: The ingredient is malformed or does not build alone.
+- `ingredient-write-failed`: The ingredient could not be written.
+- `lesson-not-found`: No lesson of that id.
+- `no-draft`: No run of that recipe is kept in this session.
+- `recipe-data-missing`: The recipe data file is not in the workspace.
+- `bad-path`: The path is outside the workspace or not a name the tool takes.
+- `file-not-found`: The file was not found.
+- `file-too-large`: The file or answer is over the size limit.
+- `project-unsaved`: Opening or creating would drop work that cannot be brought back.
+- `project-exists`: A project of that name is already in the workspace.
+- `project-changed`: The project changed on disk since it was opened.
+- `project-damaged`: The project file or a mesh in it is damaged.
+- `project-name`: No free project name is left in the workspace.
+- `no-study`: No study is set up; call sim_setup.
+- `bad-fixture`: A fixture (hold) is malformed.
+- `bad-load`: A load is malformed.
+- `bad-target`: A study target or constraint is malformed.
+- `bad-beam`: The beam size or build direction is not valid.
+- `no-card`: The material card is not in the library.
+- `bad-card`: The material card values are not valid.
+- `open-mesh`: The mesh is open, so it has no interior to mesh.
+- `solver-unavailable`: The stress solver is not built or not in this engine.
+- `solve-failed`: The stress solve did not finish.
+- `bad-sweep`: The sweep variants are not valid.
+- `bad-field-query`: The field query (points, box, face, stride) is not valid.
+- `no-load`: The study has no load or nothing is held.
+- `bad-representation`: The study representation or reslice option does not apply here.
+- `plan-cancelled`: The plan was cancelled before a step.
+- `plan-step-failed`: A step of the plan failed or was refused.
+- `plan-reference`: A step reference in the plan names nothing.
+- `app-refused`: The running app did not open the file.
+- `app-not-installed`: Lime Slice is not installed on this machine.
+- `app-not-started`: Lime Slice did not start.
+- `refused`: A refusal that no specific code covers; read the reason.
 
 ### Project and plate
 

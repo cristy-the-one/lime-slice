@@ -14,15 +14,16 @@ import { sourceFrame } from "../../src/plate.ts";
 import { readVec3 } from "../../src/modeling/compose.ts";
 import { type PlateObject, type ToolHandler, UNKNOWN_OBJECT, isObject, roundTo } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function wanted(this: Session, input: Record<string, unknown>): PlateObject | { ok: false; reason: string } {
   if (typeof input.object === "string" && input.object !== "") {
     const named = this.find(input.object);
-    if (!named) return { ok: false, reason: UNKNOWN_OBJECT };
+    if (!named) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
     return named;
   }
   const obj = this.selectedObject();
-  if (!obj) return { ok: false, reason: "Load a mesh first." };
+  if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   return obj;
 }
 
@@ -118,13 +119,13 @@ function paintSeam(this: Session, input: Record<string, unknown>): Record<string
 
 function paintDisks(this: Session, obj: PlateObject, input: Record<string, unknown>, mode: PaintKind | "erase", layer: "supports" | "seam"): Record<string, unknown> {
   const frame = this.paintFrame(input);
-  if (typeof frame !== "string") return { ok: false, reason: frame.reason };
+  if (typeof frame !== "string") return refuse("bad-frame", frame.reason);
   const region = this.readRegion(input.region);
-  if ("reason" in region) return { ok: false, reason: region.reason };
+  if ("reason" in region) return refuse("bad-region", region.reason);
   const radius = typeof input.radiusMm === "number" ? input.radiusMm : 3;
   const positions = this.paintPositions(obj, frame);
   const covered = coverRegion(positions, region, radius, this.faceOf(obj));
-  if ("reason" in covered) return { ok: false, reason: covered.reason };
+  if ("reason" in covered) return refuse("bad-region", covered.reason);
   const kind: PaintKind = mode === "block" ? "block" : "enforce";
   const made = this.sourceDisks(obj, covered.disks, kind, frame);
   const existing = layer === "supports" ? obj.supportPaint : obj.seamPaint;
@@ -132,7 +133,7 @@ function paintDisks(this: Session, obj: PlateObject, input: Record<string, unkno
     const picked = selectTriangles(positions, region, this.faceOf(obj));
     const removed = existing.filter((disk) => onSelection(positions, picked, this.pointInFrame(obj, disk.p, frame), Math.max(radius, disk.r))).length;
     if (input.dryRun === true) return { ok: true, dryRun: true, disks: removed, areaMm2: roundTo(covered.areaMm2, 2) };
-    if (removed === 0) return { ok: false, reason: "No paint is inside that region." };
+    if (removed === 0) return refuse("no-paint", "No paint is inside that region.");
     this.remember(layer === "supports" ? "Support paint" : "Seam paint");
     if (layer === "supports") {
       obj.supportPaint = obj.supportPaint.filter((disk) => !onSelection(positions, picked, this.pointInFrame(obj, disk.p, frame), Math.max(radius, disk.r)));
@@ -142,7 +143,7 @@ function paintDisks(this: Session, obj: PlateObject, input: Record<string, unkno
     return { ok: true, disks: removed, areaMm2: roundTo(covered.areaMm2, 2), stale: true, label: layer === "supports" ? "Support paint" : "Seam paint" };
   }
   if (existing.length + made.length > MAX_PAINT_DISKS) {
-    return { ok: false, reason: `That needs ${existing.length + made.length} disks; the limit is ${MAX_PAINT_DISKS}. Use a larger radius.` };
+    return refuse("paint-limit", `That needs ${existing.length + made.length} disks; the limit is ${MAX_PAINT_DISKS}. Use a larger radius.`);
   }
   const warnings = mode === "enforce" && layer === "supports" && obj.objectSettings.supports !== true && !this.settings.supports
     ? ["Paint is kept but not used while supports are off."]
@@ -177,19 +178,19 @@ function reinforceAdd(this: Session, input: Record<string, unknown>): Record<str
   const obj = this.wanted(input);
   if (!isObject(obj)) return obj;
   const kind = input.kind === "paint" || input.kind === "box" || input.kind === "cylinder" ? input.kind : null;
-  if (!kind) return { ok: false, reason: "kind is paint, box, or cylinder." };
+  if (!kind) return refuse("bad-action", "kind is paint, box, or cylinder.");
   const density = typeof input.density === "number" ? Math.min(1, Math.max(0, input.density)) : 1;
   if (kind === "paint") {
     const frame = this.paintFrame(input);
-    if (typeof frame !== "string") return { ok: false, reason: frame.reason };
+    if (typeof frame !== "string") return refuse("bad-frame", frame.reason);
     const region = this.readRegion(input.region);
-    if ("reason" in region) return { ok: false, reason: region.reason };
+    if ("reason" in region) return refuse("bad-region", region.reason);
     const radius = typeof input.radiusMm === "number" ? input.radiusMm : 3;
     const covered = coverRegion(this.paintPositions(obj, frame), region, radius, this.faceOf(obj));
-    if ("reason" in covered) return { ok: false, reason: covered.reason };
+    if ("reason" in covered) return refuse("bad-region", covered.reason);
     const disks: ReinforceDisk[] = this.sourceDisks(obj, covered.disks, "enforce", frame).map(({ p, n, r }) => ({ p, n, r }));
     if (totalReinforceDisks(obj.reinforcement) + disks.length > MAX_PAINT_DISKS) {
-      return { ok: false, reason: `That needs ${totalReinforceDisks(obj.reinforcement) + disks.length} disks; the limit is ${MAX_PAINT_DISKS}. Use a larger radius.` };
+      return refuse("paint-limit", `That needs ${totalReinforceDisks(obj.reinforcement) + disks.length} disks; the limit is ${MAX_PAINT_DISKS}. Use a larger radius.`);
     }
     if (input.dryRun === true) return { ok: true, dryRun: true, disks: disks.length, areaMm2: roundTo(covered.areaMm2, 2) };
     const depthMm = typeof input.depthMm === "number" ? input.depthMm : 5;
@@ -197,7 +198,7 @@ function reinforceAdd(this: Session, input: Record<string, unknown>): Record<str
     let active = regions.findIndex((item) => item.kind === "paint");
     for (const disk of disks) {
       const next = addDiskToRegion(regions, active, disk, { depthMm, fillThrough: input.fillThrough === true });
-      if (next.regions === regions) return { ok: false, reason: `One object holds at most ${MAX_REINFORCE_REGIONS} reinforcement regions.` };
+      if (next.regions === regions) return refuse("paint-limit", `One object holds at most ${MAX_REINFORCE_REGIONS} reinforcement regions.`);
       regions = [...next.regions];
       active = next.activeIndex;
       const painted = regions[active];
@@ -210,17 +211,17 @@ function reinforceAdd(this: Session, input: Record<string, unknown>): Record<str
     return { ok: true, disks: disks.length, areaMm2: roundTo(covered.areaMm2, 2), stale: true, label: "Reinforcement" };
   }
   const frame = this.paintFrame(input);
-  if (typeof frame !== "string") return { ok: false, reason: frame.reason };
+  if (typeof frame !== "string") return refuse("bad-frame", frame.reason);
   const centre = readVec3(input.centre, [Number.NaN, Number.NaN, Number.NaN]);
   const size = readVec3(input.sizeMm, [Number.NaN, Number.NaN, Number.NaN]);
   if (centre.some((value) => !Number.isFinite(value)) || size.some((value) => !(value > 0))) {
-    return { ok: false, reason: "The volume needs a centre and a size, in millimetres." };
+    return refuse("bad-region", "The volume needs a centre and a size, in millimetres.");
   }
   const bounds = frame === "bed" ? this.placed(obj).bounds : boundsOf(obj.source);
   const box = { min: [centre[0] - size[0] / 2, centre[1] - size[1] / 2, centre[2] - size[2] / 2], max: [centre[0] + size[0] / 2, centre[1] + size[1] / 2, centre[2] + size[2] / 2] };
   const touches = box.min.every((value, axis) => value <= bounds.max[axis] && box.max[axis] >= bounds.min[axis]);
-  if (!touches) return { ok: false, reason: "That volume does not touch the part." };
-  if (obj.reinforcement.length >= MAX_REINFORCE_REGIONS) return { ok: false, reason: `One object holds at most ${MAX_REINFORCE_REGIONS} reinforcement regions.` };
+  if (!touches) return refuse("outside-part", "That volume does not touch the part.");
+  if (obj.reinforcement.length >= MAX_REINFORCE_REGIONS) return refuse("paint-limit", `One object holds at most ${MAX_REINFORCE_REGIONS} reinforcement regions.`);
   const scale = obj.scale || 1;
   const center = frame === "bed" ? this.bedPointToSource(obj, centre) : centre;
   const stored = size.map((value) => value / (frame === "bed" ? scale : 1)) as [number, number, number];
@@ -266,18 +267,18 @@ function supportEdit(this: Session, input: Record<string, unknown>): Record<stri
   const obj = this.wanted(input);
   if (!isObject(obj)) return obj;
   const action = input.action === "regrow" || input.action === "prune" || input.action === "grow" ? input.action : null;
-  if (!action) return { ok: false, reason: "action is prune, regrow, or grow." };
+  if (!action) return refuse("bad-action", "action is prune, regrow, or grow.");
   const job = this.latest;
   const skeleton = job?.wire?.skeleton as SupportSkeleton | undefined;
-  if (!skeleton?.id?.length) return { ok: false, reason: "Slice with tree supports first." };
+  if (!skeleton?.id?.length) return refuse("not-sliced", "Slice with tree supports first.", undefined, NEXT.slice);
   const site = input.site as { xy?: unknown; zMm?: unknown } | undefined;
   const xy = readVec3(site?.xy ? [ ...(Array.isArray(site.xy) ? site.xy : []), 0] : undefined, [Number.NaN, Number.NaN, Number.NaN]);
   const zMm = typeof site?.zMm === "number" ? site.zMm : Number.NaN;
-  if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1]) || !Number.isFinite(zMm)) return { ok: false, reason: "site needs xy and zMm, in millimetres." };
+  if (!Number.isFinite(xy[0]) || !Number.isFinite(xy[1]) || !Number.isFinite(zMm)) return refuse("bad-argument", "site needs xy and zMm, in millimetres.");
   if (action === "regrow") {
     const gaps = Array.isArray(job?.wire?.coverage) ? job?.wire?.coverage as CoverageGap[] : [];
     const gap = gaps.find((row) => zMm + 0.5 >= row.z[0] && zMm - 0.5 <= row.z[1]);
-    if (!gap) return { ok: false, reason: "Nothing unheld to regrow here." };
+    if (!gap) return refuse("no-support", "Nothing unheld to regrow here.");
     if (input.dryRun === true) return { ok: true, dryRun: true, action, areaMm2: gap.areaMm2 };
     const id = obj.supportEdits.reduce((max, entry) => Math.max(max, entry.id), 0) + 1;
     this.remember("Support edit");
@@ -295,12 +296,12 @@ function supportEdit(this: Session, input: Record<string, unknown>): Record<stri
       best = limb;
     }
   });
-  if (best < 0 || bestD > 15) return { ok: false, reason: "No support is at that point." };
+  if (best < 0 || bestD > 15) return refuse("no-support", "No support is at that point.");
   if (action === "grow") {
     const count = input.count === undefined ? GROW_DEFAULT : input.count;
-    if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > GROW_MAX) return { ok: false, reason: `count is 1 to ${GROW_MAX} branches.` };
+    if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > GROW_MAX) return refuse("bad-argument", `count is 1 to ${GROW_MAX} branches.`);
     const edit = growFor(index, best, count);
-    if (edit.sites.length === 0) return { ok: false, reason: "No support is at that point." };
+    if (edit.sites.length === 0) return refuse("no-support", "No support is at that point.");
     if (input.dryRun === true) return { ok: true, dryRun: true, action, tree: skeleton.tree[best], count };
     const id = obj.supportEdits.reduce((max, entry) => Math.max(max, entry.id), 0) + 1;
     this.remember("Support edit");
@@ -309,7 +310,7 @@ function supportEdit(this: Session, input: Record<string, unknown>): Record<stri
   }
   const scope = input.scope === "branch" ? "branch" : "tree";
   const sites = sitesOf(index, selectLimbs(index, best, scope));
-  if (sites.length === 0) return { ok: false, reason: "No support is at that point." };
+  if (sites.length === 0) return refuse("no-support", "No support is at that point.");
   if (input.dryRun === true) return { ok: true, dryRun: true, action, sites: sites.length, scope };
   const id = obj.supportEdits.reduce((max, entry) => Math.max(max, entry.id), 0) + 1;
   this.remember("Support edit");
@@ -320,9 +321,9 @@ function supportEdit(this: Session, input: Record<string, unknown>): Record<stri
 function supportTrees(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
   const skeleton = job?.wire?.skeleton as SupportSkeleton | undefined;
-  if (!job?.wire || !skeleton?.id?.length) return { ok: false, reason: "Slice with tree supports first." };
+  if (!job?.wire || !skeleton?.id?.length) return refuse("not-sliced", "Slice with tree supports first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const groups = new Map<number, { id: number; baseXY: [number, number]; tipZ: number; branches: number }>();
   skeleton.id.forEach((id, limb) => {
     const tree = skeleton.tree[limb] ?? id;

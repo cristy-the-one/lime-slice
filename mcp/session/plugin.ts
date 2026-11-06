@@ -15,6 +15,7 @@ import { lfOnly, recipeDataFile, recipeDataMissing, recipeSourceFile, type Recip
 import { resolveWrite } from "../workspace.ts";
 import { IMPORT_BUILD_LIMIT_MS, type RustRecipe, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /**
  * --- D3. Saving checks the plugin once more: a describe run for its parameters, then a dry run with its defaults
@@ -210,11 +211,11 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
   if (action === "get") {
     if (id.startsWith("draft:")) {
       const draft = this.latestDraft(id.slice(6));
-      if (!draft) return { ok: false, reason: `No run of ${id.slice(6)} is kept in this session.` };
+      if (!draft) return refuse("no-draft", `No run of ${id.slice(6)} is kept in this session.`);
       return { ok: true, id, params: draft.row.params, objects: draft.row.objects, ...(draft.row.changed ? { changed: draft.row.changed } : {}), ...(input.withSource === true ? { source: draft.row.source } : {}), note: `Keep it with nugget {action:"save", kind:"plugin", from:"${id.slice(6)}", title, description}.` };
     }
     const got = await this.pluginFile(id);
-    if ("reason" in got) return { ok: false, reason: got.reason };
+    if ("reason" in got) return refuse("plugin-not-found", got.reason);
     const h = got.file.header;
     const code = splitPluginData(got.file.body).code;
     const recipeData = carriedData(got.file.body).map(({ name, bytes }) => ({ name, bytes }));
@@ -248,7 +249,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     const replace = input.replace === true;
     if (typeof input.from === "string" && /\.rs$/i.test(input.from)) {
       const file = recipeSourceFile(input.from);
-      if ("reason" in file) return { ok: false, reason: file.reason };
+      if ("reason" in file) return refuse("plugin-invalid", file.reason);
       return this.pluginImport(file.text, "file", replace);
     }
     if (typeof input.from === "string" && input.from.startsWith("project:")) {
@@ -257,7 +258,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
         const parsed = parsePlugin(text);
         return !("reason" in parsed) && parsed.header.plugin === wanted;
       });
-      if (!copy) return { ok: false, reason: `This project carries no plugin named ${wanted}.${this.projectOnlyPlugins().length ? ` It carries: ${this.projectOnlyPlugins().map((row) => row.id).join(", ")}.` : ""}` };
+      if (!copy) return refuse("plugin-not-found", `This project carries no plugin named ${wanted}.${this.projectOnlyPlugins().length ? ` It carries: ${this.projectOnlyPlugins().map((row) => row.id).join(", ")}.` : ""}`, undefined, NEXT.plugins);
       return this.pluginImport(copy, "project", replace);
     }
     if (typeof input.from !== "string" && typeof input.source === "string" && rawHeader(input.source)?.has("plugin")) return this.pluginImport(input.source, "mcp", replace);
@@ -270,7 +271,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     let data: Record<string, RecipeData> | undefined;
     if (typeof input.from === "string") {
       const draft = this.latestDraft(input.from);
-      if (!draft) return { ok: false, reason: `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.` };
+      if (!draft) return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.`);
       source = draft.row.source;
       name = input.from;
       objectHint = this.draftPart(draft.row);
@@ -279,9 +280,9 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     } else if (typeof input.source === "string") {
       source = input.source;
       name = typeof input.id === "string" ? input.id : undefined;
-    } else return { ok: false, reason: "Give from (a recipe name this session ran) or source." };
+    } else return refuse("missing-argument", "Give from (a recipe name this session ran) or source.");
     const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients, ...(data ? { data } : {}) });
-    if ("reason" in saved) return { ok: false, reason: saved.reason };
+    if ("reason" in saved) return refuse("plugin-invalid", saved.reason);
     if (typeof input.from === "string") {
       const draft = this.latestDraft(input.from);
       if (draft) draft.row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };
@@ -290,12 +291,12 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     return { ok: true, ...saved, path: join(dir, `${saved.id}.rs`) };
   }
   if (action === "remove") {
-    if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin." };
+    if (!isSlug(id)) return refuse("missing-argument", "Give the id of a library plugin.");
     const files = removePlugin(id, dir);
-    if (files === 0) return { ok: false, reason: `No plugin is named ${id}.` };
+    if (files === 0) return refuse("plugin-not-found", `No plugin is named ${id}.`, undefined, NEXT.plugins);
     return { ok: true, id, files, note: "Parts built with it keep their recipe in the project." };
   }
-  return { ok: false, reason: "action is list, get, save, export, or remove." };
+  return refuse("bad-action", "action is list, get, save, export, or remove.");
 }
 
 /** `imported.json`: the library's plugins marked imported until a person's first run in the app (D11.6). */
@@ -326,9 +327,9 @@ function projectOnlyPlugins(this: Session): { id: string; version: number; sha25
  * ingredients and recipe data it carries) with its presets and the lessons about it in its header, outside the hash.
  */
 async function pluginExport(this: Session, id: string): Promise<Record<string, unknown>> {
-  if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin to export." };
+  if (!isSlug(id)) return refuse("missing-argument", "Give the id of a library plugin to export.");
   const got = await this.pluginFile(id);
-  if ("reason" in got) return { ok: false, reason: got.reason };
+  if ("reason" in got) return refuse("plugin-not-found", got.reason);
   const h = got.file.header;
   const presets: Record<string, SharedPreset> = {};
   for (const row of listPresets(id)) presets[row.name] = { params: row.params as SharedPreset["params"], created: row.created };
@@ -340,7 +341,7 @@ async function pluginExport(this: Session, id: string): Promise<Record<string, u
     path = resolveWrite(name, ".rs");
     writeFileSync(path, exportText(got.file.text, presets, lessons));
   } catch (err) {
-    return { ok: false, reason: `The plugin could not be exported: ${err instanceof Error ? err.message : String(err)}` };
+    return refuse("plugin-write-failed", `The plugin could not be exported: ${err instanceof Error ? err.message : String(err)}`);
   }
   const recipeData = carriedData(got.file.body).map(({ name: n, bytes }) => ({ name: n, bytes }));
   return {
@@ -367,20 +368,20 @@ async function pluginExport(this: Session, id: string): Promise<Record<string, u
  */
 async function pluginImport(this: Session, text: string, from: ImportMark["from"], replace: boolean): Promise<Record<string, unknown>> {
   const file = checkImport(text, this.crateApi(), bodyHash);
-  if ("reason" in file) return { ok: false, reason: file.reason };
+  if ("reason" in file) return refuse("plugin-invalid", file.reason);
   const split = splitPluginData(file.body);
-  if (split.problem) return { ok: false, reason: `It was not imported: ${split.problem}` };
+  if (split.problem) return refuse("plugin-invalid", `It was not imported: ${split.problem}`);
   const tooLarge = carriedDataProblem(split.data);
-  if (tooLarge) return { ok: false, reason: `It was not imported: ${tooLarge}` };
+  if (tooLarge) return refuse("plugin-invalid", `It was not imported: ${tooLarge}`);
   const checked = await this.pluginCheck(file.body, undefined, null, IMPORT_BUILD_LIMIT_MS);
-  if ("reason" in checked) return { ok: false, reason: `It was not imported. ${checked.reason}` };
+  if ("reason" in checked) return refuse("plugin-invalid", `It was not imported. ${checked.reason}`);
   const dir = pluginsDir();
   const clash = clashOf(file.id, file.sha256, file.version, (id) => {
     const there = readPlugin(id, dir);
     return there && !("reason" in there) ? { sha256: there.sha256, version: there.header.version } : null;
   });
   const parsed = parsePlugin(file.libraryText);
-  if ("reason" in parsed) return { ok: false, reason: parsed.reason };
+  if ("reason" in parsed) return refuse("plugin-invalid", parsed.reason);
   let header: PluginHeader = { ...parsed.header, "source-sha256": file.sha256, params: checked.params, target: checked.target };
   let how: Record<string, unknown> = {};
   if (clash.kind === "same") {
@@ -399,7 +400,7 @@ async function pluginImport(this: Session, text: string, from: ImportMark["from"
     const marks = readMarks(existsSync(join(dir, "imported.json")) ? readFileSync(join(dir, "imported.json"), "utf8") : null);
     if (clash.kind !== "same" || marks[id]) writeFileSync(join(dir, "imported.json"), marksText(withMark(marks, id, { sha256: file.sha256, from, at: new Date().toISOString().slice(0, 10) })));
   } catch (err) {
-    return { ok: false, reason: `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
+    return refuse("plugin-write-failed", `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}`);
   }
   const presets: string[] = [];
   const skipped: string[] = [];
@@ -444,22 +445,22 @@ async function pluginImport(this: Session, text: string, from: ImportMark["from"
  * New data is the next version (the older one is kept beside it, as any version is); the same data changes nothing.
  */
 async function pluginAttachData(this: Session, id: string, names: unknown[]): Promise<Record<string, unknown>> {
-  if (!isSlug(id)) return { ok: false, reason: "Give the id of a library plugin, and data: the names of the workspace's recipe data it reads." };
+  if (!isSlug(id)) return refuse("missing-argument", "Give the id of a library plugin, and data: the names of the workspace's recipe data it reads.");
   const wanted = [...new Set(names.filter((n): n is string => typeof n === "string" && n.trim() !== "").map((n) => n.trim()))];
-  if (wanted.length === 0) return { ok: false, reason: "data names the workspace's recipe data to carry, like data:[\"skull/outline\"]." };
+  if (wanted.length === 0) return refuse("missing-argument", "data names the workspace's recipe data to carry, like data:[\"skull/outline\"].");
   const got = await this.pluginFile(id);
-  if ("reason" in got) return { ok: false, reason: got.reason };
+  if ("reason" in got) return refuse("plugin-not-found", got.reason);
   const split = splitPluginData(got.file.body);
   const data: Record<string, RecipeData> = { ...split.data };
   for (const name of wanted) {
     const found = recipeDataFile(name);
-    if (!found) return { ok: false, reason: recipeDataMissing(name) };
-    if ("reason" in found) return { ok: false, reason: found.reason };
+    if (!found) return refuse("recipe-data-missing", recipeDataMissing(name));
+    if ("reason" in found) return refuse("recipe-data-missing", found.reason);
     // Kept under the name as given: the name the recipe's `data {name}` call asks for.
     data[name] = found;
   }
   const tooLarge = carriedDataProblem(data);
-  if (tooLarge) return { ok: false, reason: tooLarge };
+  if (tooLarge) return refuse("file-too-large", tooLarge);
   const body = withPluginData(split.code, data);
   const sha256 = bodyHash(body);
   const h = got.file.header;
@@ -470,7 +471,7 @@ async function pluginAttachData(this: Session, id: string, names: unknown[]): Pr
   try {
     writePlugin(header, body, dir);
   } catch (err) {
-    return { ok: false, reason: `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
+    return refuse("plugin-write-failed", `The plugin could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { ok: true, id, version: header.version, sha256, recipeData, path: join(dir, `${id}.rs`) };
 }

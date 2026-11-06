@@ -25,6 +25,7 @@ import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, rec
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { SESSION_URL } from "../session-url.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /**
  * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
@@ -36,18 +37,18 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const host = this.recipeHost;
   const ready = host.available();
-  if (!ready.ok) return { ok: false, reason: ready.reason };
+  if (!ready.ok) return refuse("recipe-unavailable", ready.reason);
   const mode = input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
   // --- I23. A partial run stops after this many applied ops; it is always taken back.
   const maxSteps = typeof input.maxSteps === "number" ? input.maxSteps : undefined;
-  if (maxSteps !== undefined && mode !== "dry") return { ok: false, reason: "maxSteps is for mode:\"dry\": a run stopped part way is always taken back." };
+  if (maxSteps !== undefined && mode !== "dry") return refuse("conflicting-arguments", "maxSteps is for mode:\"dry\": a run stopped part way is always taken back.");
   // --- R-A. The source from a .rs file in the workspace, so an edit and rerun sends only the path.
-  if (typeof input.path === "string" && typeof input.source === "string") return { ok: false, reason: "Pass source or path, not both." };
+  if (typeof input.path === "string" && typeof input.source === "string") return refuse("conflicting-arguments", "Pass source or path, not both.");
   // --- Plugins (D14): a library plugin by id, built against this API level, under its id as the recipe name.
   let plugin: { id: string; version: number; sha256: string; title: string; target: PluginTarget; api: string; note?: string } | null = null;
   let pluginBody: string | null = null;
   let presetParams: Record<string, unknown> = {};
-  if (typeof input.plugin === "string" && (typeof input.source === "string" || typeof input.path === "string")) return { ok: false, reason: "Pass plugin, source, or path: one of them." };
+  if (typeof input.plugin === "string" && (typeof input.source === "string" || typeof input.path === "string")) return refuse("conflicting-arguments", "Pass plugin, source, or path: one of them.");
   // --- Plugin steps (D8). recipe_run {plugin, object} on a part whose history holds a stamped run of that plugin, or
   // {object} alone on a part a kept run changed, rebuilds that run with the code the stamp names (D9: the project's
   // copy, else the library's file of that hash, else the draft): from the step before it, the given values over the
@@ -64,10 +65,10 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       : stepTarget.rustRecipe ? runs.find((row) => row.before === null) : runs.at(-1);
     if (pick?.stamp) {
       const stamp = pick.stamp;
-      if (input.preset !== undefined) return { ok: false, reason: "A preset starts a new run. To change this plugin step, pass params; its other values stay as stamped." };
+      if (input.preset !== undefined) return refuse("conflicting-arguments", "A preset starts a new run. To change this plugin step, pass params; its other values stay as stamped.");
       // A part a draft made reruns from its own entry even when the stamp's code is missing (#527's rerun).
       const looked = this.stampSource(stamp);
-      if ("reason" in looked && (wanted !== undefined || pick.before !== null)) return { ok: false, reason: looked.reason };
+      if ("reason" in looked && (wanted !== undefined || pick.before !== null)) return refuse("recipe-source", looked.reason);
       const found = "reason" in looked ? { body: "", notes: [] as string[], title: undefined, target: undefined, api: undefined, ingredients: undefined } : looked;
       stepNotes.push(...found.notes);
       const tree = stepTarget.tree;
@@ -83,39 +84,39 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       if (stamp.context.nozzleMm !== this.library.nozzleMm) stepNotes.push(`Built for a ${formatMm(stamp.context.nozzleMm)} mm nozzle; this rebuild uses ${formatMm(this.library.nozzleMm)} mm.`);
       if (stamp.context.bedMm.some((v, i) => v !== bed[i])) stepNotes.push(`Built for a ${stamp.context.bedMm.map(formatMm).join(" × ")} mm bed; this rebuild uses ${bed.map(formatMm).join(" × ")} mm.`);
       if (pick.before !== null && rebuild.later.some((id) => tree.nodes.get(id)?.op?.kind === "partition")) {
-        return { ok: false, reason: "A split to print follows this plugin step, and a rebuild cannot cut its pieces again. Undo to before the split, rebuild, then split again." };
+        return refuse("rebuild-refused", "A split to print follows this plugin step, and a rebuild cannot cut its pieces again. Undo to before the split, rebuild, then split again.");
       }
     }
   }
   if (typeof input.plugin === "string" && !rebuild) {
-    if (input.plugin.startsWith("draft:")) return { ok: false, reason: `A draft runs again from its object (recipe_run {object, params}), or keep it first: nugget {action:"save", kind:"plugin", from:"${input.plugin.slice(6)}", title, description}.` };
+    if (input.plugin.startsWith("draft:")) return refuse("conflicting-arguments", `A draft runs again from its object (recipe_run {object, params}), or keep it first: nugget {action:"save", kind:"plugin", from:"${input.plugin.slice(6)}", title, description}.`);
     const got = await this.pluginFile(input.plugin);
-    if ("reason" in got) return { ok: false, reason: got.reason };
+    if ("reason" in got) return refuse("recipe-source", got.reason);
     const h = got.file.header;
     const tooNew = apiRefusal(h.api, this.crateApi());
-    if (tooNew) return { ok: false, reason: tooNew };
-    if (h.target === "object" && typeof input.object !== "string") return { ok: false, reason: `${h.title} needs a part: pass object, the part to run it on.` };
+    if (tooNew) return refuse("plugin-unsupported", tooNew);
+    if (h.target === "object" && typeof input.object !== "string") return refuse("missing-argument", `${h.title} needs a part: pass object, the part to run it on.`);
     plugin = { id: h.plugin, version: h.version, sha256: got.file.sha256, title: h.title, target: h.target, api: h.api, ...(got.note ? { note: got.note } : {}) };
     pluginBody = got.file.body;
     // --- I14. A preset's values under the given params, checked against the plugin's ranges again at use.
     if (typeof input.preset === "string") {
       const name = input.preset.includes("/") ? input.preset.split("/")[1]! : input.preset;
       const row = readPreset(h.plugin, name);
-      if (!row) return { ok: false, reason: `No preset ${h.plugin}/${name}.${this.presetNames(h.plugin)}` };
+      if (!row) return refuse("preset-not-found", `No preset ${h.plugin}/${name}.${this.presetNames(h.plugin)}`);
       const problem = presetProblem(h.plugin, row.params, h.params);
-      if (problem) return { ok: false, reason: `The preset ${h.plugin}/${name} no longer fits this version of the plugin: ${problem}` };
+      if (problem) return refuse("preset-invalid", `The preset ${h.plugin}/${name} no longer fits this version of the plugin: ${problem}`);
       presetParams = row.params;
     }
-  } else if (input.preset !== undefined && !rebuild) return { ok: false, reason: "A preset runs with its plugin: recipe_run {plugin, preset}." };
-  if (input.keep !== undefined && mode !== "apply") return { ok: false, reason: "keep keeps an apply that reached done; a check or dry run is never kept." };
-  if (input.keep !== undefined && rebuild) return { ok: false, reason: "keep keeps a new run; a rebuild of a plugin step runs the code the step already names." };
+  } else if (input.preset !== undefined && !rebuild) return refuse("conflicting-arguments", "A preset runs with its plugin: recipe_run {plugin, preset}.");
+  if (input.keep !== undefined && mode !== "apply") return refuse("conflicting-arguments", "keep keeps an apply that reached done; a check or dry run is never kept.");
+  if (input.keep !== undefined && rebuild) return refuse("conflicting-arguments", "keep keeps a new run; a rebuild of a plugin step runs the code the step already names.");
   const file = typeof input.path === "string" ? recipeSourceFile(input.path) : null;
-  if (file && "reason" in file) return { ok: false, reason: file.reason };
+  if (file && "reason" in file) return refuse("recipe-source", file.reason);
   const framed = pluginBody ?? (file ? file.text : typeof input.source === "string" ? input.source : null);
   // --- Plugin data. A kept plugin's body carries the recipe data its run read after its code: the host builds the
   // code, and the data answers `data {name}` after the step's own kept data and before the workspace's files.
   const split = framed === null ? null : splitPluginData(framed);
-  if (split?.problem) return { ok: false, reason: split.problem };
+  if (split?.problem) return refuse("plugin-invalid", split.problem);
   const typed = split ? split.code : null;
   const carried: Record<string, RecipeData> = split?.data ?? {};
   // --- A rerun: no source, and an object a recipe_run made. Its stored source runs again with the stored
@@ -124,7 +125,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if (typed === null) {
     const key = typeof input.object === "string" ? this.find(input.object)?.rustRecipe : undefined;
     const stored = key ? this.rustRecipes.get(key) : undefined;
-    if (!key || !stored) return { ok: false, reason: "Pass source or path, or the object of an earlier recipe_run to run its recipe again." };
+    if (!key || !stored) return refuse("missing-argument", "Pass source or path, or the object of an earlier recipe_run to run its recipe again.");
     rerun = { name: key, stored };
   }
   const given = plugin ? plugin.id : rebuild ? rebuild.stamp.plugin : typeof input.name === "string" ? input.name : file ? file.stem : "recipe";
@@ -146,7 +147,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   // --- I10. The ingredients the source imports, from the library (a rerun: the copies its last apply built), built
   // after the recipe as inline modules, the same text under lust and rustc.
   const resolved = resolveIngredients(source, { kept: replacing?.stored.ingredients ?? rebuild?.ingredients, preferKept: !!rerun || !!rebuild });
-  if ("reason" in resolved) return { ok: false, reason: resolved.reason };
+  if ("reason" in resolved) return refuse("recipe-source", resolved.reason);
   const usedIngredients = Object.values(resolved.used);
   this.noteStage(`building recipe ${name}`, 0);
   const built = await host.build(name, source, input.autofix !== false, resolved.suffix);
@@ -154,20 +155,20 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
   const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
   if (!built.ok || !built.exe) {
-    return { ok: false, reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms };
+    return { ok: false, code: "recipe-compile", reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
   }
   if (mode === "check") return { ok: true, built: true, ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms };
 
   // A rerun's or replace's object names the recipe, not a part for it to change.
   const objectArg = typeof input.object === "string" && !replacing ? input.object : undefined;
-  if (objectArg !== undefined && !this.find(objectArg)) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (objectArg !== undefined && !this.find(objectArg)) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   // --- API 1.2. A face index names a face of the part as shown now, as faces_find lists it; a rebuild starts from an
   // earlier step whose faces are numbered otherwise, so the pick reads the index on this solid.
   const shownSolid = objectArg !== undefined ? this.find(objectArg)?.solid ?? null : null;
   // --- Plugin steps (D8). A rebuild runs on the part as it stood before the run: a new branch from there.
   if (rebuild && branchRebuild) {
     const back = await this.gotoNode(rebuild.obj, rebuild.run.before!);
-    if (back.ok === false) return { ok: false, reason: `The step before the plugin's run could not be shown: ${String(back.reason ?? "the engine refused it.")}` };
+    if (back.ok === false) return refuse("build-failed", `The step before the plugin's run could not be shown: ${String(back.reason ?? "the engine refused it.")}`);
   }
   const created: string[] = [];
   /** Print and assembly poses are independent; a replace preserves each unless the run set it. */
@@ -328,7 +329,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   }
   if (!out.ok || mode === "dry") {
     const undone = await rollback();
-    if (!out.ok) return { ok: false, reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
+    if (!out.ok) return { ok: false, code: "recipe-failed", reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
     return { ok: true, dry: true, object: out.done!.object, metrics: out.done!.metrics, ...report, rolledBack: undone };
   }
   // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
@@ -360,7 +361,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     const replay = await this.replaySteps(only, oldTree, rebuild.later, renamed);
     if ("reason" in replay) {
       const undone = await rollback();
-      return { ok: false, reason: `The plugin ran, but the steps after it could not be built again: ${replay.reason} The rebuild was taken back.`, ...report, rolledBack: undone };
+      return { ok: false, code: "recipe-failed", reason: `The plugin ran, but the steps after it could not be built again: ${replay.reason} The rebuild was taken back.`, ...report, rolledBack: undone };
     }
     rebuilt = { replayed: replay.replayed, ...(replay.broken ? { broken: replay.broken } : {}), ...(sameSolid !== undefined ? { sameSolid } : {}) };
   }
@@ -382,7 +383,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       const undone = await rollback();
       for (const back of committedTouched) await commitOne(back);
       const why = String(committed.reason ?? "The commit was refused.");
-      return { ok: false, reason: `The recipe ran, but ${id} could not be committed to the plate: ${why} The run was taken back.`, object: id, metrics: out.done!.metrics, ...report, rolledBack: undone };
+      return { ok: false, code: "recipe-commit", reason: `The recipe ran, but ${id} could not be committed to the plate: ${why} The run was taken back.`, object: id, metrics: out.done!.metrics, ...report, rolledBack: undone };
     }
     if (before !== undefined) committedTouched.push(id);
   }

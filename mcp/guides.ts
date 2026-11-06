@@ -27,6 +27,7 @@ export const GUIDES: Guide[] = [
       "gcode_summary's standsOnNothing is the part beads (walls, skins, infill, bridges, gap fill) that no bead, support or belt holds: unheldMm, danglingMm for those with no held bead beside them either, longestSpanMm for the longest stretch of one path over nothing (a short bridge between walls spans a few mm; a row laid along a hollow spans all of it), and the largest patches with their layers and where each starts (plate X, Y, and Z up from the bed or belt). Floating support counts nothing; this is the measure of a roof or lip printed in the air.",
       "To line parts up, object_place {object, align:{to:<object id or bed>, how}}. how is flush-left, flush-right, flush-front, flush-back, left-of, right-of, front-of, behind, centre-x, centre-y, centre or on-top. Front is low Y. The bed takes flush and centre only.",
       "To rest a part on the bed, object_place {object, layFlat:true} drops its flattest face, the one with the most contact. {object, rotX:5, settle:true} turns it and snaps it to the nearest flat face within 12 degrees, or keeps the angle when none is near; the reply gives rotationDeg and contactMm2.",
+      "A refusal is {ok:false, code, reason}: branch on code (a short stable word such as no-object or not-sliced), read reason for the sentence. next, when one call is the obvious way on, names it.",
       "Nothing is sent to a printer.",
     ].join("\n"),
   },
