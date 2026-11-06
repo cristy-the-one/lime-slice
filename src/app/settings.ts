@@ -20,6 +20,7 @@ import { shellCount } from "../mesh-shells";
 import { separateBy, stepSolidHint } from "../step-solids";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
+import { hiddenCount, isHidden } from "../model-hidden";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
 import { noteAdvance, noteFan, noteFirmware, noteFirmwareArcs, noteFlow, noteGcode, noteHeatLimits, noteRetract, noteTemps, setSupportMode } from "./machine-actions";
@@ -57,7 +58,7 @@ import {
   type Tier,
 } from "../ui/settings-schema";
 import { chordGlyphs, COMMANDS, keyOf, shortcutOf, tipWithShortcut } from "../ui/commands";
-import { escapeHtml, html, insertHtml, setHtml, type Html } from "../ui/html";
+import { escapeHtml, html, insertHtml, raw, setHtml, type Html } from "../ui/html";
 import { profileOptionsHtml } from "../ui/name-lists";
 
 export function apiBase() {
@@ -801,6 +802,9 @@ export function refreshObjectList() {
   setHtml(slot, html`${objectListHtml()}`);
 }
 
+const EYE_OPEN = raw(`<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>`);
+const EYE_SHUT = raw(`<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" opacity=".55"/><path d="M2.5 13.5l11-11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`);
+
 function objectListHtml(): Html | "" {
   if (!state.placed) return "";
   const { rows, limit } = plateRows();
@@ -821,14 +825,21 @@ function objectListHtml(): Html | "" {
     const attach = many && !selected && !group && state.plate.selectedId
       ? html`<button class="btn obj-attach" type="button" data-plate-attach="${obj.id}" aria-label="Attach ${obj.name} to ${selectedName}" data-tip="Attach to ${selectedName}: it keeps its place and moves with it in the assembly.">Attach</button>`
       : "";
+    // The eye hides the part in the 3D view only: it is still sliced and printed. The selected part is always shown.
+    const off = isHidden(obj.id) && !selected;
+    const eye = !many ? ""
+      : selected
+        ? html`<button class="btn obj-eye" type="button" data-prep-eye="${obj.id}" aria-pressed="false" aria-label="Hide ${obj.name}" data-tip="Selected, always shown. Select another part to hide this one." disabled>${EYE_OPEN}</button>`
+        : html`<button class="btn obj-eye" type="button" data-prep-eye="${obj.id}" aria-pressed="${off ? "true" : "false"}" aria-label="${off ? "Show" : "Hide"} ${obj.name}" data-tip="${off ? "Show" : "Hide"} ${obj.name} in the 3D view (Alt-click: only this one). It is still printed.">${off ? EYE_SHUT : EYE_OPEN}</button>`;
     return html`
-      <div class="obj obj-row${group ? " obj-member" : ""}" role="listitem" data-plate-id="${obj.id}" data-selected="${selected ? "true" : "false"}"${group ? html` data-assembly="${group.id}"` : ""}>
-        <button class="obj-select" type="button" data-plate-select="${obj.id}" aria-pressed="${selected ? "true" : "false"}" data-tip="${obj.name} · ${triangleLine(obj.sourcePos.length / 9)}">
+      <div class="obj obj-row${group ? " obj-member" : ""}" role="listitem" data-plate-id="${obj.id}" data-selected="${selected ? "true" : "false"}" data-hidden="${off ? "true" : "false"}"${group ? html` data-assembly="${group.id}"` : ""}>
+        <button class="obj-select" type="button" data-plate-select="${obj.id}" aria-pressed="${selected ? "true" : "false"}" data-tip="${obj.name} · ${triangleLine(obj.sourcePos.length / 9)}${off ? " · Hidden in the view, still printed" : ""}">
           <b>${obj.name}</b>
           <span>${boundsSize(part.bounds)} mm</span>
           ${marks ? html`<span class="obj-marks">${marks}</span>` : ""}
           ${notes.length ? html`<em class="obj-note">${notes.join("; ")}</em>` : ""}        </button>
         <div class="obj-actions">
+          ${eye}
           ${attach}
           <!-- --- A7 model check --- -->
           ${obj.sim ? html`<button class="btn obj-stress" type="button" data-plate-stress="${obj.id}">Stress</button>` : ""}
@@ -867,6 +878,7 @@ function objectListHtml(): Html | "" {
     : "";
   return html`
     <div class="object-list" id="objectList"><div role="list">${rows.length ? list : html`<div class="obj" role="listitem"><b>${state.mesh?.name ?? "part"}</b><span>${boundsSize(state.placed.bounds)} mm</span></div>`}</div></div>
+    ${many && hiddenCount() > 0 ? html`<div class="meta obj-hidden-note" id="plateHiddenNote"><span>${hiddenCount()} hidden in the 3D view. Hidden parts are still sliced and printed.</span> <button class="btn" type="button" data-prep-showall>Show all</button></div>` : ""}
     ${overlap ? html`<div class="meta warn-text" id="plateOverlap">${overlap} <button class="btn" type="button" data-plate-arrange>Arrange</button></div>` : ""}
     ${clashes ? html`<div class="meta warn-text" id="assemblyInterference" data-tip="Checked at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${clashes}${measure}</div>` : ""}`;
 }

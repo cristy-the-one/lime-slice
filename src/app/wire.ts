@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, removePlateObject, selectPlateObject, ungroupAssembly } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, removePlateObject, selectPlateObject, showAllPlateObjects, togglePlateHidden, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { setHtml } from "../ui/html";
@@ -289,6 +289,15 @@ export function wireApp() {
     const plateCheck = t.closest<HTMLElement>("[data-plate-check]")?.dataset.plateCheck;
     if (plateCheck) {
       withModel((model) => model.requestModelCheck(plateCheck));
+      return;
+    }
+    const plateEye = t.closest<HTMLElement>("[data-prep-eye]")?.dataset.prepEye;
+    if (plateEye) {
+      togglePlateHidden(plateEye, (ev as MouseEvent).altKey || (ev as MouseEvent).ctrlKey || (ev as MouseEvent).metaKey);
+      return;
+    }
+    if (t.closest("[data-prep-showall]")) {
+      showAllPlateObjects();
       return;
     }
     const plateFrame = t.closest<HTMLElement>("[data-plate-frame]")?.dataset.plateFrame;

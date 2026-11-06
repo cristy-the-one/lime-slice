@@ -29,6 +29,7 @@ import { emptyOverrides } from "../overrides";
 import { isLimeProject } from "../file-drop";
 import { addedMesh, boundEntries, emptyPlate, meshTokenOf, oneObjectPlate, placeObject, plateObjectPositions, resetHeldGeometry, setMeshSeat, setSelectedOverride, withLivePose, type PlateObject } from "../plate";
 import { bedParts } from "../model-context";
+import { isHidden, pruneHidden, visibleParts } from "../model-hidden";
 import { syncAssemblyView } from "./assemblies.ts";
 import { supportModeState } from "../support-source";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
@@ -193,14 +194,25 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   fx.syncCut();
   fx.drawPaint?.();
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
-  const { bedX, bedY } = state.profile;
-  fx.prepare.setPlate(boundEntries(state.plate, bedX, bedY), bedParts(state.plate.objects, state.plate.selectedId, bedX, bedY));
+  syncPlateView();
   syncAssemblyView();
   if (state.stage === "model") fx.refreshModelContext?.();
   paintPlaceFields();
   markProjectDirty();
   markStale();
   if (rerender) renderChrome();
+}
+
+/**
+ * What the Prepare view draws of the plate. Hidden objects (a view choice, shared with Model) are left out, so nothing
+ * draws, hovers, picks, grabs, measures or snaps to them; the plate itself, slicing and export never read it. The
+ * selected object is always shown: selecting a hidden one shows it.
+ */
+export function syncPlateView() {
+  const { bedX, bedY } = state.profile;
+  pruneHidden(state.plate.objects.map((obj) => obj.id), state.plate.selectedId);
+  const entries = boundEntries(state.plate, bedX, bedY).filter((entry) => !isHidden(entry.id));
+  fx.prepare.setPlate(entries, visibleParts(bedParts(state.plate.objects, state.plate.selectedId, bedX, bedY)));
 }
 
 /** Move the placed part on one axis. X/Y also slides the sliced preview. */
