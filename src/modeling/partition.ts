@@ -3,7 +3,11 @@
  * Pure TypeScript: it proposes cuts, checks sizes, and places connectors. The kernel builds the solids.
  */
 import { textStrokes } from "./text.ts";
+import { FIT_NAMES, type Clearance, type ClearanceKey, type MeasuredFits } from "./measured-fits.ts";
 import { chainPoints, crossesItself, CROSSES_ITSELF, readChain, type ChainSegment } from "./sketch-profile.ts";
+
+// The measured fits live apart so the machine library reads them without this planner.
+export { CLEARANCE_KEYS, FIT_NAMES, readMeasuredFits, type Clearance, type ClearanceKey, type MeasuredFits } from "./measured-fits.ts";
 
 export type Vec3 = [number, number, number];
 export type UV = [number, number];
@@ -21,7 +25,6 @@ export interface Target {
   volumeMm: Vec3;
 }
 
-export type Clearance = "snug" | "loose" | "press";
 export type ClearanceInput = number | Clearance;
 export type Placement = "fit" | "fixed";
 export type HoleShape = "round" | "teardrop";
@@ -174,9 +177,6 @@ export const PITCH_DIAMETERS = 4;
 /** Where a clearance cell's number came from: a starting value, or a fit someone printed and measured. */
 export type FitSource = "starting" | "measured";
 
-/** The materials the table has a row for: PLA, PETG, ABS (ASA reads as it), TPU, and standard resin on the Form 4. */
-export type ClearanceKey = "pla" | "petg" | "abs" | "tpu" | "resin";
-
 export interface ClearanceRow {
   snug: number;
   loose: number;
@@ -206,19 +206,6 @@ export const CLEARANCE_TABLE: Readonly<Record<ClearanceKey, ClearanceRow>> = {
   // Standard resin on the Form 4 prints a gap about 0.03 mm a side smaller than drawn, which lifts Loose to 0.25.
   resin: startingRow(0.1, 0.25, 0.05),
 };
-
-/**
- * What a person measured on printed coupons, kept beside the machine library (`MachineLibrary.measuredFits`): per row,
- * the cells a coupon fixed, each a gap on each side. `resinFeatureMm` is the thinnest wall that survived on the resin
- * printer. A stored op keeps the clearance it was filled with, so this only reaches a cut made after it is saved.
- */
-export interface MeasuredFits {
-  cells?: Partial<Record<ClearanceKey, Partial<Record<Clearance, number>>>>;
-  resinFeatureMm?: number;
-}
-
-/** The fit cells, in the order the card lists them. */
-export const FIT_NAMES: readonly Clearance[] = ["snug", "loose", "press"];
 
 /** The table's row with `fits`' measured cells laid over it through `measuredRow`. */
 function withMeasured(key: ClearanceKey, fits: MeasuredFits | undefined): ClearanceRow {
@@ -293,26 +280,6 @@ export function recordResinFeature(fits: MeasuredFits | undefined, mm: number | 
   if (mm === null) delete next.resinFeatureMm;
   else next.resinFeatureMm = Math.round(mm * 1000) / 1000;
   return Object.keys(next).length === 0 ? undefined : next;
-}
-
-/** A stored `MeasuredFits`, read defensively: finite cells of known rows only. Undefined when nothing is left. */
-export function readMeasuredFits(value: unknown): MeasuredFits | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  const out: MeasuredFits = {};
-  const cells: NonNullable<MeasuredFits["cells"]> = {};
-  const rows = raw.cells && typeof raw.cells === "object" && !Array.isArray(raw.cells) ? (raw.cells as Record<string, unknown>) : {};
-  for (const key of Object.keys(CLEARANCE_TABLE) as ClearanceKey[]) {
-    const row = rows[key];
-    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
-    for (const fit of FIT_NAMES) {
-      const n = (row as Record<string, unknown>)[fit];
-      if (typeof n === "number" && Number.isFinite(n) && n >= 0 && n <= 2) cells[key] = { ...cells[key], [fit]: n };
-    }
-  }
-  if (Object.keys(cells).length > 0) out.cells = cells;
-  if (typeof raw.resinFeatureMm === "number" && Number.isFinite(raw.resinFeatureMm) && raw.resinFeatureMm > 0 && raw.resinFeatureMm <= 5) out.resinFeatureMm = raw.resinFeatureMm;
-  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** The table's key for a process and a material name, or null for a material with no row. Resin ignores the material. */

@@ -8,7 +8,8 @@
  * number is what it was before workplanes.
  */
 import { eulerOrient, orientEuler, type Mat3 } from "./mesh-place.ts";
-import { inPlaneAxes, type FacePlane } from "./model-plane.ts";
+import type { FacePlane } from "./model-plane.ts";
+import { inPlaneAxes } from "./plane-axes.ts";
 import { IDENTITY_POSE, applyPose, fromSolidOp, inversePose, isIdentity, poseScale, thenPose, type Affine } from "./model-space.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
 import type { ModelOp } from "./model-tree.ts";

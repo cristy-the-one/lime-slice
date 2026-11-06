@@ -3,9 +3,12 @@
  * Parameters evaluate in order, as `mergeParams` does: a later name may use an earlier one.
  * A bad row keeps its sentence and does not enter the table the later rows see.
  */
-import { evaluate, ExprError, PARAM_NAME, UNKNOWN_NAME_HINT, type Params } from "./expr.ts";
+import { evaluate, ExprError, expressionMentions, PARAM_NAME, UNKNOWN_NAME_HINT, type Params } from "./expr.ts";
 import type { ModelOp } from "../model-tree.ts";
 import type { SketchData } from "../sketch/model.ts";
+
+// Lives in ./expr.ts, which loads with the app (assemblies read it), so they need not load this module.
+export { expressionMentions };
 
 /** A name mapped to a plain number, or to expression text. Insertion order is evaluation order. */
 export type ParamTable = Record<string, string | number>;
@@ -75,18 +78,6 @@ export function evaluateTable(table: ParamTable): EvaluatedTable {
     }
   }
   return { values, rows };
-}
-
-/** `name` as a whole word, and not as a function call (`sin(`). `wall` does not match `wallH`. */
-export function expressionMentions(text: string, name: string): boolean {
-  if (!name || !PARAM_NAME.test(name)) return false;
-  const re = new RegExp(`\\b${name}\\b`, "g");
-  for (let match = re.exec(text); match; match = re.exec(text)) {
-    const after = text.slice(match.index + name.length).trimStart();
-    if (after.startsWith("(")) continue;
-    return true;
-  }
-  return false;
 }
 
 function sketchesOf(op: ModelOp): SketchData[] {

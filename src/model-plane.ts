@@ -10,6 +10,11 @@
  * one the kernel will cut.
  */
 
+import { inPlaneAxes } from "./plane-axes.ts";
+
+// Lives in ./plane-axes.ts, which loads with the app (workplanes use it), so they need not load this module.
+export { inPlaneAxes };
+
 export const SPLIT_MARGIN_FLOOR_MM = 0.25;
 export const SPLIT_MARGIN_FRACTION = 0.02;
 /** A tilt stops short of a quarter turn, where the plane would stand along its own base line. */
@@ -172,18 +177,6 @@ export function splitBase(mode: PlaneMode, center: Vec3, face: FacePlane | null)
   const base: Vec3 = [...center];
   base[axis] = 0;
   return { mode, normal: AXES[axis]!, base, dir: AXES[axis]! };
-}
-
-/**
- * The plane's in-plane axes (u, v), from its normal alone: u is the world axis after the normal's
- * nearest one (X → Y → Z → X), made square to the normal, and v = n × u. So Z gets X and Y, X gets
- * Y and Z, and Y gets Z and X.
- */
-export function inPlaneAxes(normal: Vec3): [Vec3, Vec3] {
-  const n = unit(normal);
-  const helper = AXES[(dominant(n) + 1) % 3]!;
-  const u = unit(sub(helper, scale(n, dot(helper, n))));
-  return [u, cross(n, u)];
 }
 
 /** The normal tilted A degrees about u, then B degrees about v (right-handed, u and v from `inPlaneAxes`). */

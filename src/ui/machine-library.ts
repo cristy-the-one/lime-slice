@@ -17,7 +17,7 @@ import { ADVANCE, firmwareTakesArcs, type Firmware, type Rules } from "../settin
 import { coerceHostKind, type MoonrakerConfigImport, type PrinterHostKind } from "./prusa-link.ts";
 import { fanDefaults, fanOf, readFan, withFan, type FanSettings } from "../fan.ts";
 import { provisionalCards, readBeadSection, type MaterialCard } from "../sim/cards.ts";
-import { readMeasuredFits, type MeasuredFits } from "../modeling/partition.ts";
+import { readMeasuredFits, type MeasuredFits } from "../modeling/measured-fits.ts";
 
 export const MACHINE_FILE_VERSION = 3;
 

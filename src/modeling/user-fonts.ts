@@ -11,7 +11,7 @@
  * Nothing here reads a file or a path: the caller hands over bytes and a function that asks the engine.
  */
 import { base64ToBytes, bytesToBase64 } from "../base64.ts";
-import { meshRecord, type ProjectMesh } from "../project.ts";
+import { meshRecord, type ProjectMesh } from "../project-envelope.ts";
 import { fontById, isPenFont, isUserFont } from "./text-fonts.ts";
 
 export { isUserFont, USER_FONT_PREFIX } from "./text-fonts.ts";

@@ -13,8 +13,8 @@ import {
 } from "../plate.ts";
 import { dropEmptyReinforce } from "../reinforcement.ts";
 import { base64ToBytes } from "../base64.ts";
-import { meshRecord, type HeldPiece, type LimeProject, type ProjectPlacement, type ProjectProfile, type ToolTree } from "../project.ts";
-import { decodeProject, encodeProject } from "../project-codec.ts";
+import { meshRecord, type HeldPiece, type LimeProject, type ProjectPlacement, type ProjectProfile, type ProjectResult, type ToolTree } from "../project-envelope.ts";
+import { decodeProjectEnvelope, encodeProject } from "../project-pack.ts";
 import { geometryHash, projectSummary, thumbnailFromPng, type ProjectThumbnail } from "../project-thumb.ts";
 import { capturePlatePng } from "./thumb-capture.ts";
 import { saveProfile, type PrinterProfile } from "../profiles.ts";
@@ -26,11 +26,12 @@ import { pushToast } from "../ui/toasts.ts";
 import { adoptBytes, place, previewRemote, seatedPositions, stlPositions } from "./files.ts";
 import { loadModel, modelApi, withModel } from "./workspaces.ts";
 import type { HeldToSave, historyToSave } from "./model.ts";
-import { savedToolObjects, treeBody, type SavedTree } from "../model-tree-file.ts";
+import type { SavedTree } from "../model-tree-file.ts";
+import { savedToolObjects, treeBody } from "../saved-tree-body.ts";
 import { copyWorkplane } from "../workplane.ts";
 import { setStage } from "./viewer.ts";
 import { cloneStudy } from "../sim/study.ts";
-import { solidFileName } from "../model-request.ts";
+import { solidFileName } from "../brep-file.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { applyPreset, currentPreset, needsEngine, renderChrome, stale } from "./settings.ts";
 import { customGcodeNotice } from "../layer-actions.ts";
@@ -118,12 +119,27 @@ export async function saveCurrentProject() {
 
 export async function openProjectFile(file: File) {
   if (!(await confirmDiscard())) return;
-  const parsed = await decodeProject(await file.text());
+  const parsed = await readProjectText(await file.text());
   if (!parsed.ok) {
     pushToast(parsed.message, "error", { label: "Retry", run: openProjectPicker });
     return;
   }
   if (await restoreProject(parsed.project)) setProjectTitle(file.name);
+}
+
+/**
+ * A file's project, read whole. The envelope reads with the app; a file with Model sections (a history, a kept tool, a
+ * held piece) loads their reader first, which is not in the app's first chunk.
+ */
+async function readProjectText(text: string): Promise<ProjectResult> {
+  const parsed = await decodeProjectEnvelope(text);
+  if (!parsed.ok || !parsed.project.modelSections) return parsed;
+  try {
+    const { readModelSections } = await import("../project-model.ts");
+    return { ok: true, project: readModelSections(parsed.project) };
+  } catch (err) {
+    return { ok: false, message: `This project's Model history could not be read: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 export function forgetSavedThumbnail() {
