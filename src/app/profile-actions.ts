@@ -22,6 +22,7 @@ import {
   serializeSettingsProfile,
   type SettingsProfileFile,
 } from "../ui/settings-profiles.ts";
+import { prefs } from "../prefs.ts";
 
 export function newProfileId(): string {
   return crypto.randomUUID();
@@ -29,16 +30,11 @@ export function newProfileId(): string {
 
 /** Presets saved before settings profiles become profiles once, then their store is dropped. */
 export function migrateLegacyPresets() {
-  let text: string | null = null;
-  try {
-    text = localStorage.getItem(LEGACY_PRESETS_KEY);
-  } catch {
-    return;
-  }
+  const text = prefs.get(LEGACY_PRESETS_KEY);
   if (text === null) return;
   const presets = parseLegacyPresets(text);
   if (Object.keys(presets).length > 0) storeProfileLibrary(adoptPresets(loadProfileLibrary(), presets, loadSettingsLevel(), newProfileId));
-  localStorage.removeItem(LEGACY_PRESETS_KEY);
+  prefs.remove(LEGACY_PRESETS_KEY);
 }
 
 export function saveSettingsProfile(name: string): boolean {

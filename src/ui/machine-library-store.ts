@@ -6,6 +6,8 @@
  * Start G-code, end G-code, and the Prusa Link host stay in this store.
  * They are not added to the slice request.
  */
+import { prefs, prefsOver, type PrefStorage } from "../prefs.ts";
+
 export const MACHINE_LIBRARY_KEY = "lime-slice-machines";
 
 export interface MachineStore {
@@ -13,9 +15,12 @@ export interface MachineStore {
   write(text: string): void;
 }
 
-export function localMachineStore(storage: Pick<Storage, "getItem" | "setItem"> = localStorage): MachineStore {
+export function localMachineStore(storage?: Pick<PrefStorage, "getItem" | "setItem">): MachineStore {
+  const store = storage ? prefsOver(storage) : prefs;
   return {
-    read: () => storage.getItem(MACHINE_LIBRARY_KEY),
-    write: (text) => storage.setItem(MACHINE_LIBRARY_KEY, text),
+    read: () => store.get(MACHINE_LIBRARY_KEY),
+    write: (text) => {
+      store.set(MACHINE_LIBRARY_KEY, text);
+    },
   };
 }

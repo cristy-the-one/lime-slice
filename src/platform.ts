@@ -1,3 +1,5 @@
+import { prefs } from "./prefs.ts";
+
 /**
  * Where the page is running, and which chrome it should use.
  * Desktop window APIs stay behind `isDesktopShell` so a later iOS shell never calls them.
@@ -58,7 +60,7 @@ export function readLayoutInput(): LayoutInput {
   const mobileUa = /iPhone|iPad|iPod|Android/i.test(ua);
   return {
     query: params.get("layout"),
-    stored: localStorage.getItem(LAYOUT_STORAGE_KEY),
+    stored: prefs.get(LAYOUT_STORAGE_KEY),
     width: window.innerWidth,
     height: window.innerHeight,
     coarse,
@@ -89,7 +91,7 @@ export function applyLayout(): ResolvedLayout {
 }
 
 export function saveLayoutChoice(choice: LayoutChoice) {
-  localStorage.setItem(LAYOUT_STORAGE_KEY, choice);
+  prefs.set(LAYOUT_STORAGE_KEY, choice);
   applyLayout();
 }
 
@@ -162,7 +164,7 @@ export function mountPlatform() {
     </select>`;
   panel.append(label);
   const select = label.querySelector<HTMLSelectElement>("select")!;
-  const stored = normalizeLayoutChoice(localStorage.getItem(LAYOUT_STORAGE_KEY)) ?? "auto";
+  const stored = normalizeLayoutChoice(prefs.get(LAYOUT_STORAGE_KEY)) ?? "auto";
   select.value = stored;
   select.addEventListener("change", () => {
     const choice = normalizeLayoutChoice(select.value) ?? "auto";

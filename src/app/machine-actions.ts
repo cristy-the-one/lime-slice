@@ -52,6 +52,7 @@ import { coerceBelt, type PrinterKind } from "../belt.ts";
 import type { FanSettings } from "../fan.ts";
 import { warps } from "../adhesion.ts";
 import { LEGACY_PRUSA_LINK_KEY, parseLegacyPrusaLink } from "../ui/prusa-link.ts";
+import { prefs } from "../prefs.ts";
 
 export function newMachineId(): string {
   return crypto.randomUUID();
@@ -508,8 +509,8 @@ function currentNumbers(): MachineNumbers {
 
 function takeLegacyPrusa(): { url: string; apiKey: string; startPrint: boolean } | null {
   try {
-    const text = localStorage.getItem(LEGACY_PRUSA_LINK_KEY);
-    if (text !== null) localStorage.removeItem(LEGACY_PRUSA_LINK_KEY);
+    const text = prefs.get(LEGACY_PRUSA_LINK_KEY);
+    if (text !== null) prefs.remove(LEGACY_PRUSA_LINK_KEY);
     return parseLegacyPrusaLink(text);
   } catch {
     return null;
