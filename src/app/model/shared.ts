@@ -227,6 +227,8 @@ export const S = {
   /** Set while the panel is opening, so closing the previous tool does not drop the draft. */
   holdSketchHoles: false as boolean,
   endPullDrag: null as (() => void) | null,
+  /** P1's face-drag sync, so a sketch can arm it again on the way out. */
+  syncPullDrag: null as (() => void) | null,
   /** P1. The face push, for the panel's Diameter field on one picked cylinder. */
   pullPanel: null as PullController | null,
   lens: null as Lens | null,

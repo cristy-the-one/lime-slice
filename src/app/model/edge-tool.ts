@@ -20,6 +20,13 @@ import type { Body, Editing } from "./shared";
 import { showNode } from "./tree";
 import { syncUndo } from "./undo";
 import { viewed } from "./view";
+import { selectedEdges } from "../../model-blend";
+import { mountEdgeDrag } from "../edge-drag";
+import { fx } from "../fx";
+import { cancelEdit } from "./edit";
+import { currentParams } from "./parameters";
+import { readout } from "./pick";
+import { openPose, pivotOf } from "./view";
 
 /** P2. The idle edge knob is armed when no other tool is using the view and the solid can be edited. */
 export function edgeArmed(): boolean {
@@ -114,4 +121,56 @@ export function matchedEdgeIds(op: ModelOp): number[] {
   if (!solid) return [];
   const refs = op.edges.filter((edge): edge is number | EdgeRef => typeof edge === "number" || !("fromNode" in edge));
   return matchEdges(solid.edges, refs, state.stepTolerance).picked;
+}
+
+export function bindEdgeDrag() {
+  // P2. Hover an edge and drag its knob: a fillet, or a chamfer while Alt is held. No toolbar tool.
+  S.edgeDrag = mountEdgeDrag({
+    stage: () => state.stage,
+    armed: edgeArmed,
+    solid: viewed,
+    pose: openPose,
+    center() {
+      const solid = viewed();
+      return solid ? pivotOf(solid) : [0, 0, 0];
+    },
+    selectedEdges: () => selectedEdges(S.picks),
+    highlight(edges) {
+      fx.model?.highlight(edges.map((index) => ({ kind: "edge" as const, index })));
+    },
+    restoreHighlight() {
+      fx.model?.highlight(S.picks);
+    },
+    readout,
+    about() {
+      const solid = viewed();
+      return solid ? about(solid) : "";
+    },
+    probe: probeEdge,
+    apply: applyEdge,
+    beginEdit: beginEdgeEdit,
+    commitEdit: commitEdgeEdit,
+    abortEdit() {
+      if (S.editing?.edgeOp) cancelEdit();
+    },
+    editing: () => !!S.editing?.edgeOp,
+    matchedEdges: matchedEdgeIds,
+    nodeOp(node) {
+      return treeOf(S.open)?.nodes.get(node)?.op ?? null;
+    },
+    view: () => fx.model ?? null,
+    canvas: () => document.querySelector<HTMLCanvasElement>("#model"),
+    setGhost(ghost) {
+      fx.model?.setGhost(ghost);
+    },
+    setPreview(shape) {
+      fx.model?.setPreview(shape);
+    },
+    ray(x, y) {
+      return fx.model?.pointerRay(x, y) ?? { origin: [0, 0, 0], direction: [0, 0, -1] };
+    },
+    params: () => currentParams(),
+    current: () => treeOf(S.open)?.current ?? null,
+  });
+  S.edgeDrag.sync();
 }
