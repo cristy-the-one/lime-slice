@@ -9,6 +9,9 @@ import type { EditLevel } from "./model-edit.ts";
 import { partitionNumbers } from "./modeling/partition.ts";
 import { savedNodes, type BooleanKind, type EdgeFilter, type EdgeStep, type ExtrudeOp, type FaceExtrudeOp, type FaceRef, type Fingerprint, type JoinTool, type LoftOp, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type MoveFacesOp, type NodeId, type ProfileLoop, type ProfileSegment, type RevolveOp, type ShellOp, type Vec2, type Vec3 } from "./model-tree.ts";
 
+// A project names its solids without loading these requests (./brep-file.ts).
+export { isBrep, solidFileName } from "./brep-file.ts";
+
 export type TreeRequest = Record<string, unknown>;
 
 /**
@@ -355,23 +358,4 @@ export function exportRequest(key: string, node: NodeId, format: "step" | "brep"
     ...(pieces?.length || poses?.length ? { pieces: (pieces ?? []).map((piece) => ({ key: piece.key, node: piece.node })), names: [...(names ?? [])] } : {}),
     ...(poses?.length ? { poses: poses.map((pose) => ({ m: [...pose.m], t: [...pose.t] })) } : {}),
   };
-}
-
-/** The first bytes of a solid the engine wrote in `brep`. A STEP file starts with `ISO-10303-21`. */
-const BREP_MAGIC = [0x4c, 0x49, 0x4d, 0x45, 0x42, 0x52, 0x45, 0x50, 0x20]; // "LIMEBREP "
-
-/**
- * Whether `bytes` are a solid the engine wrote in Open CASCADE's binary format, rather than a STEP file: such a solid
- * reads back as the step it was written from exactly, so an edit can build on it at once.
- */
-export function isBrep(bytes: ArrayBuffer | Uint8Array | undefined | null): boolean {
-  if (!bytes) return false;
-  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  return view.byteLength > BREP_MAGIC.length && BREP_MAGIC.every((byte, i) => view[i] === byte);
-}
-
-/** The name a project gives an object's solid: its file's stem, `.brep` for the binary format, else `.step`. */
-export function solidFileName(name: string, bytes: ArrayBuffer | Uint8Array): string {
-  const stem = name.replace(/\.(step|stp|stl|3mf|brep)$/i, "");
-  return `${stem || "solid"}.${isBrep(bytes) ? "brep" : "step"}`;
 }

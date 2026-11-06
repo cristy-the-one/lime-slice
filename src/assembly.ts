@@ -9,8 +9,7 @@
  * Solving walks the tree from the root and gives each member its `modelPose`. That pose stays the one value Model,
  * joins, Explode, and the MCP read; the assembly only says how to work it out again.
  */
-import { evaluate, ExprError, type Params } from "./modeling/expr.ts";
-import { expressionMentions } from "./modeling/params.ts";
+import { evaluate, ExprError, expressionMentions, type Params } from "./modeling/expr.ts";
 import { eulerOrient, orientEuler, type Mat3 } from "./mesh-place.ts";
 import { IDENTITY_POSE, poseScale, relativePose, thenPose, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";

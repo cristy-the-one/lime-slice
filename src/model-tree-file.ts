@@ -12,6 +12,10 @@ import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
 import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
+// A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
+import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
+export { savedToolObjects, treeBody };
+
 type JoinOp = Extract<ModelOp, { kind: "join" }>;
 
 /** A join as saved: its tool named by object id and step, without the engine key, which is the page's. */
@@ -58,11 +62,6 @@ export interface SavedTreeBody {
    * and on a primitive whose sizes were all typed as numbers. A bad value is left out.
    */
   rootExprs?: Record<string, string>;
-}
-
-/** The tree without its root, to give it another. `rootExprs` rides along when the primitive has any. */
-export function treeBody({ nodes, current, committed, nextId, rootExprs }: SavedTreeBody): SavedTreeBody {
-  return { nodes, current, committed, nextId, ...(rootExprs && Object.keys(rootExprs).length > 0 ? { rootExprs } : {}) };
 }
 
 /**
@@ -121,11 +120,6 @@ export function withSavedNames(tree: ModelTree): ModelTree {
 
 function savedJoin({ op, tool, relative, keepTool }: JoinOp, owner: (key: string) => string | undefined): SavedJoin {
   return { kind: "join", op, tool: { object: owner(tool.key) ?? tool.object, node: tool.node, name: tool.name }, relative, keepTool };
-}
-
-/** The objects whose trees a saved tree's joins take a tool from. */
-export function savedToolObjects(saved: SavedTreeBody): Set<string> {
-  return new Set(saved.nodes.flatMap((node) => (node.op?.kind === "join" ? [node.op.tool.object] : [])));
 }
 
 /** The saved trees' object ids, each tree after the trees its joins take a tool from: the order they open in. */

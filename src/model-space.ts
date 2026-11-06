@@ -9,7 +9,7 @@
  * sees them, so stored ops, replay, and saved trees never depend on where an object sits in model space.
  */
 import { eulerOrient, matMul, orientEuler, wrapDeg, type Bounds, type Mat3 } from "./mesh-place.ts";
-import { turnCentre } from "./model-primitive.ts";
+import type { PrimitiveSpec } from "./model-primitive.ts";
 import type { ModelOp, Vec3 } from "./model-tree.ts";
 
 /** `q = m·p + t`. A rigid pose, or a rigid pose times one uniform scale folded into `m`. */
@@ -323,4 +323,11 @@ export function newSolidPose(others: readonly Bounds[], own: Bounds): Affine {
 /** Where a copy of an object whose model-space box is `box` goes: beside it along X. */
 export function duplicatePose(pose: Affine, box: Bounds): Affine {
   return movedPose(pose, [box.max[0] - box.min[0] + DUPLICATE_GAP_MM, 0, 0]);
+}
+
+/** Where the primitive turns, from its origin: a box's or a wedge's middle, a torus's, sphere's, or ellipsoid's centre, else halfway up its axis. */
+export function turnCentre(spec: PrimitiveSpec): Vec3 {
+  if (spec.primitive === "box" || spec.primitive === "wedge") return [spec.size[0] / 2, spec.size[1] / 2, spec.size[2] / 2];
+  if (spec.primitive === "torus" || spec.primitive === "sphere" || spec.primitive === "ellipsoid") return [0, 0, 0];
+  return [0, 0, spec.height / 2];
 }

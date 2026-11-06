@@ -5,6 +5,9 @@
  */
 import { formatMm } from "./model-plane.ts";
 
+// Lives in ./model-space.ts, which loads with the app (the plate places solids with it), so it need not load this module.
+export { turnCentre } from "./model-space.ts";
+
 type Vec3 = [number, number, number];
 
 export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube";
@@ -168,13 +171,6 @@ function polygonCorners(sides: number, across: number, flats: boolean): [number,
     const angle = -Math.PI / 2 - Math.PI / sides + (2 * Math.PI * i) / sides;
     return [corner * Math.cos(angle), corner * Math.sin(angle)];
   });
-}
-
-/** Where the primitive turns, from its origin: a box's or a wedge's middle, a torus's, sphere's, or ellipsoid's centre, else halfway up its axis. */
-export function turnCentre(spec: PrimitiveSpec): Vec3 {
-  if (spec.primitive === "box" || spec.primitive === "wedge") return [spec.size[0] / 2, spec.size[1] / 2, spec.size[2] / 2];
-  if (spec.primitive === "torus" || spec.primitive === "sphere" || spec.primitive === "ellipsoid") return [0, 0, 0];
-  return [0, 0, spec.height / 2];
 }
 
 const POLYGON_NAMES: Record<number, string> = { 3: "triangle", 4: "square", 5: "pentagon", 6: "hexagon", 7: "heptagon", 8: "octagon" };

@@ -184,3 +184,15 @@ export function resolveNumbers(value: unknown, params: Params, path = "op", word
   }
   return value;
 }
+
+/** `name` as a whole word, and not as a function call (`sin(`). `wall` does not match `wallH`. */
+export function expressionMentions(text: string, name: string): boolean {
+  if (!name || !PARAM_NAME.test(name)) return false;
+  const re = new RegExp(`\\b${name}\\b`, "g");
+  for (let match = re.exec(text); match; match = re.exec(text)) {
+    const after = text.slice(match.index + name.length).trimStart();
+    if (after.startsWith("(")) continue;
+    return true;
+  }
+  return false;
+}
