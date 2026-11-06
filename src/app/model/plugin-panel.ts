@@ -57,6 +57,11 @@ import { type Opened, STILL_WORKING, VIEW_ONLY } from "./shared";
 import { syncUndo } from "./undo";
 import { present } from "./view";
 import { forgetWorkplaneSteps, openObject } from "./workplane";
+import { recipesUnavailable } from "../../recipe/runtime";
+import { mountPluginAuthor, mountPluginsPanel } from "../../ui/plugins-panel";
+import { cancelPluginFacePick, plateSketches, startPluginFacePick } from "./pick";
+import { projectPluginFiles, syncPluginEnv } from "./plugins";
+import { viewed } from "./view";
 
 /** D9's Use vN: rebuild the row's plugin step with the library's current version of the plugin. Never automatic. */
 export async function useLibraryVersion(row: RowKey): Promise<RowKey | null> {
@@ -363,4 +368,24 @@ export function keptRecipeData(sha256: string): Record<string, { value: unknown 
   const rust = (session.mcpModel as { rustRecipes?: Record<string, { sha256?: unknown; data?: unknown }> } | undefined)?.rustRecipes;
   const row = rust ? Object.values(rust).find((entry) => entry?.sha256 === sha256 && entry.data && typeof entry.data === "object") : undefined;
   return row ? (row.data as Record<string, { value: unknown }>) : undefined;
+}
+
+export function bindPlugins() {
+  // --- Plugins (D13): the Features menu's card. app/model.ts runs the plugin; the card holds the form.
+  mountPluginsPanel({
+    project: () => projectPluginFiles(),
+    partName: () => (S.open && viewed()?.editable && !S.lens ? openObject()?.name ?? S.open.objectId : null),
+    runner: recipesUnavailable,
+    run: (plugin, params, mode) => runPanelPlugin(plugin, params, mode),
+    clearPreview: () => clearPluginPreview(),
+    readout,
+    libraryChanged: () => {
+      S.pluginEnvFor = null;
+      syncPluginEnv();
+    },
+    sketches: () => plateSketches(),
+    pickFace: (done) => startPluginFacePick(done),
+    cancelPick: () => cancelPluginFacePick(false),
+  });
+  mountPluginAuthor();
 }

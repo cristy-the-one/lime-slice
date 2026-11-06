@@ -18,6 +18,10 @@ import { runEdit } from "./run-edit";
 import { type Editing, readSolids, VIEW_ONLY } from "./shared";
 import { syncUndo } from "./undo";
 import { openPose } from "./view";
+import { markProjectDirty } from "../../project-dirty";
+import { followParameters } from "../../ui/model-chrome";
+import { mountParameters } from "../../ui/parameters.ts";
+import { followAssemblyPoses } from "./place";
 
 /** Evaluated parameters. Later names see earlier ones, as `mergeParams` does. */
 export function currentParams(): Params {
@@ -133,4 +137,24 @@ async function rebuildNow() {
     return;
   }
   if (S.editBack !== back) noteParametersBuilt();
+}
+
+export function bindParameters() {
+  mountParameters({
+    table: () => session.parameters,
+    setTable(table) {
+      const before = currentParams();
+      session.parameters = table;
+      followAssemblyPoses(before);
+      markProjectDirty();
+      // --- D17. An open tool's expression fields and its dry-run follow the table.
+      followParameters();
+    },
+    usedBy: usedByName,
+    affected: () => affectedNodeIds().length,
+    rebuild() {
+      void rebuildFromParameters();
+    },
+    projectId: () => session.projectTitle?.trim() || "",
+  });
 }

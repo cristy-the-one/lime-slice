@@ -1,4 +1,16 @@
-use super::*;
+use super::belt::{tilt_layer, tilt_preview};
+use super::parts::Contours;
+use super::patch::{PreviewPatch, WholePreview};
+use super::pipeline::KeptPlate;
+use super::preview_paths::{preview_layer, preview_of};
+use super::{kept, patch, slice_sharing};
+use crate::gcode::PlateLayer;
+use crate::{
+    BlendMode, CompareEstimate, FeatureEstimate, Mesh, PreviewLayer, PrinterProfile, ScarfSeam,
+    SliceSettings, StrategyId, SupportStyle, VelocityCap, Watch,
+};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use std::sync::Arc;
 
 /// The reply's preview. A kept plate names it with a token, and when the
 /// request's `previewBase` is the preview the engine last drew from the same

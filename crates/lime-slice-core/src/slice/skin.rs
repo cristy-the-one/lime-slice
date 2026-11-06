@@ -1,4 +1,11 @@
-use super::*;
+use crate::adaptive::LayerBand;
+use crate::poly::{
+    boolean_diff, boolean_intersect, offset_loops, resolve_nonzero, signed_area, Loop,
+};
+use crate::strategy::ResolvedStrategy;
+use crate::toolpath::{island_loops, Skin};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::sync::Arc;
 
 pub(super) fn roof_distances(
     bands: &[LayerBand],

@@ -2,13 +2,14 @@
 //! through the same pipeline as an outline font, so they sit on a cylinder, a cone, a sphere, a torus or a freeform face and are
 //! one step, not one box per stroke.
 //!
-//! Two fonts. `stroke` is the 4 × 6 grid font the app has always had (capitals, digits and `- + . , : ! ? / ' &`; a lowercase
+//! Two fonts of our own and five Hershey typefaces (`hershey.rs`). `stroke` is the 4 × 6 grid font the app has always had (capitals, digits and `- + . , : ! ? / ' &`; a lowercase
 //! letter is drawn as its capital, D3). `line` is the same grid with lowercase letters and a few more marks, drawn for this
-//! app (it is not the Hershey data, see the plan's "As built (milestone 5)"). Each stroke becomes a capsule (round ends) of the
+//! app (it is not the Hershey data; the Hershey typefaces are `hershey-*`). Each stroke becomes a capsule (round ends) of the
 //! pen width, the letter's capsules are united in 2D, and what comes out is an outline glyph like any font's.
 
 use lime_recipe::geom2d::{Poly, Region};
 
+use super::hershey;
 use super::{lay_out_with, refit, Contour, Glyphs, Laid, Spec};
 
 type P = [f64; 2];
@@ -21,7 +22,7 @@ pub const STROKE_ID: &str = "stroke@1";
 pub const LINE_ID: &str = "line@1";
 
 /// The grid the letters are drawn on: 4 wide, capitals 6 tall.
-const CAP_UNITS: f64 = 6.0;
+pub(super) const CAP_UNITS: f64 = 6.0;
 const ADVANCE_UNITS: f64 = 4.0;
 
 type Strokes = &'static [&'static [P]];
@@ -659,7 +660,7 @@ static LINE_GLYPHS: &[(char, Strokes)] = &[
 
 /// Whether `font` (with or without its version) is a pen font.
 pub fn is_pen(font: &str) -> bool {
-    matches!(font.split('@').next(), Some(STROKE) | Some(LINE))
+    matches!(font.split('@').next(), Some(STROKE) | Some(LINE)) || hershey::find(font).is_some()
 }
 
 /// The stored id of a pen font, or a sentence for a version this build does not have.
@@ -668,6 +669,15 @@ pub fn versioned(font: &str) -> Result<&'static str, String> {
         Some((n, v)) => (n, Some(v)),
         None => (font, None),
     };
+    if let Some(h) = hershey::find(name) {
+        return match version {
+            None | Some("1") => Ok(h.stored),
+            Some(v) => Err(format!(
+                "This build has {}, not {name}@{v}. Pick the font again.",
+                h.stored
+            )),
+        };
+    }
     let id = match name {
         STROKE => STROKE_ID,
         LINE => LINE_ID,
@@ -687,6 +697,8 @@ struct Pen {
     lowercase: bool,
     /// The pen's width in grid units.
     width: f64,
+    /// A Hershey typeface: proportional letters from its own table.
+    hershey: Option<&'static hershey::Font>,
 }
 
 impl Pen {
@@ -694,6 +706,9 @@ impl Pen {
         let find = |table: &'static [(char, Strokes)], c: char| {
             table.iter().find(|(k, _)| *k == c).map(|(_, s)| *s)
         };
+        if let Some(font) = self.hershey {
+            return font.glyph(ch).map(|(_, strokes)| strokes);
+        }
         if ch == ' ' {
             return Some(&[]);
         }
@@ -739,8 +754,11 @@ impl Glyphs for Pen {
     fn glyph(&self, ch: char) -> Option<u32> {
         self.strokes(ch).map(|_| ch as u32)
     }
-    fn advance(&self, _glyph: u32) -> f64 {
-        ADVANCE_UNITS
+    fn advance(&self, glyph: u32) -> f64 {
+        match (self.hershey, char::from_u32(glyph)) {
+            (Some(font), Some(ch)) => font.glyph(ch).map_or(ADVANCE_UNITS, |(advance, _)| advance),
+            _ => ADVANCE_UNITS,
+        }
     }
     fn kerning(&self, _left: u32, _right: u32) -> f64 {
         0.0
@@ -752,6 +770,10 @@ impl Glyphs for Pen {
         let r = self.width / 2.0;
         let mut ink = Region::empty();
         for line in strokes {
+            if let [only] = line {
+                // A one-point stroke is a dot of the pen's width.
+                ink = ink.union(&Region::from_poly(&capsule(*only, *only, r)));
+            }
             for pair in line.windows(2) {
                 ink = ink.union(&Region::from_poly(&capsule(pair[0], pair[1], r)));
             }
@@ -771,7 +793,9 @@ impl Glyphs for Pen {
     }
     fn lacks(&self, missing: &[char]) -> String {
         let names: Vec<String> = missing.iter().map(|ch| format!("‘{ch}’")).collect();
-        let have = if self.lowercase {
+        let have = if self.hershey.is_some() {
+            "letters, digits, space and the ASCII marks (no accents or other scripts)"
+        } else if self.lowercase {
             "letters, digits, space, and - + . , : ! ? / ' & ( ) = _"
         } else {
             "A-Z, 0-9, space, and - + . , : ! ? / ' &"
@@ -801,10 +825,12 @@ pub fn lay_out(spec: &Spec) -> Result<Laid, String> {
     let pen = Pen {
         lowercase: name == LINE,
         width: width_mm / k,
+        hershey: hershey::find(name),
     };
     let mut with_gap = spec.clone();
     if with_gap.spacing.is_none() {
-        with_gap.spacing = Some(spec.height / 3.0);
+        // A Hershey letter carries its own side space; a tenth of the height more keeps neighbours apart.
+        with_gap.spacing = Some(if pen.hershey.is_some() { spec.height * 0.1 } else { spec.height / 3.0 });
     }
     let mut laid = lay_out_with(&with_gap, &pen, false, id.to_string())?;
     laid.font = id.to_string();

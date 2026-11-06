@@ -1,4 +1,31 @@
-use super::*;
+use super::brims::skirt_paths;
+use super::elapsed_ms;
+use super::layer::object_layer;
+use super::parts::{
+    CombLayer, Contours, ObjectLayer, PartPaths, PartTour, PartTravels, TourLayer, Travel,
+};
+use super::regions::keep_side;
+use super::resolve::{interior_remainings, resolve, InteriorSpan};
+use super::settings::bridge_tune;
+use super::zones::{grow_lightning, layer_footprints, layer_strategy};
+use crate::lightning::{Branches, Hollow};
+use crate::modifiers::Overrides;
+use crate::poly::{boolean_diff, boolean_intersect, loop_bounds, offset_loops, Loop};
+use crate::strategy::{pure, ResolvedStrategy};
+use crate::toolpath::{
+    apply_overhang, apply_scarf, apply_z_hop, comb_layer, order_supports, plan_ironing, Extrusion,
+    PartLayout, ScarfParams,
+};
+use crate::{
+    BlendMode, Ironing, PathKind, ScarfSeam, SliceSettings, Stage, StrategyId, Watch, ZHopMode,
+};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+};
+use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// Every layer's walls, infill, and skin, with overhangs split, and the
 /// ironing over each roof. A layer of `kept`, planned under the same `base`,

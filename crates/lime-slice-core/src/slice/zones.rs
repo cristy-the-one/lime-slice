@@ -1,4 +1,12 @@
-use super::*;
+use super::parts::Contours;
+use super::regions::{cut_piece, poly_len};
+use super::resolve::resolve;
+use crate::lightning::Lightning;
+use crate::modifiers::{zone_runs, Footprint, Overrides, Print, Tweak};
+use crate::poly::{boolean_diff, boolean_intersect, loop_bounds, signed_area, Loop};
+use crate::strategy::{layer_weight, mix, pure, ResolvedStrategy};
+use crate::toolpath::{lightning_pitch, Extrusion, Seam};
+use crate::{BlendMode, SliceSettings, StrategyId};
 
 /// The volumes whose footprint at `z` can meet the layer's outline, in
 /// request order.

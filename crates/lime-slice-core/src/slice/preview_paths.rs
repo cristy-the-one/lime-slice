@@ -1,4 +1,9 @@
-use super::*;
+use super::reply::PreviewPath;
+use crate::gcode::{Entry, PlateLayer};
+use crate::strategy::layer_weight;
+use crate::toolpath::Extrusion;
+use crate::{BlendMode, PathKind, PreviewLayer, PrinterProfile, StrategyId};
+use serde::Serialize;
 
 /// Coordinates, speeds, and weights on the wire are rounded to 1 µm (or 0.001).
 pub(super) struct Rounded(f64);

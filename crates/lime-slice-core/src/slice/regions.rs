@@ -1,4 +1,8 @@
-use super::*;
+use crate::poly::{loop_bounds, Loop};
+use crate::strategy::ResolvedStrategy;
+use crate::support::Disk;
+use crate::toolpath::{Extrusion, Seam};
+use crate::Axis;
 
 /// How far past the region cut each side plans its half. Every wall of the
 /// thicker shell, plus one bead, then lies past the plane: nothing the side

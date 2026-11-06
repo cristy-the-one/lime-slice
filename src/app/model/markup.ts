@@ -7,7 +7,7 @@
 import { SCREWS } from "../../model-hole";
 import { SPLIT_TILT_MAX_DEG } from "../../model-plane";
 import { PRIMITIVES } from "../../model-primitive";
-import { DEFAULT_TEXT_FONT, TEXT_FONTS } from "../../modeling/text-fonts";
+import { DEFAULT_TEXT_FONT, PEN_FONTS, TEXT_FONTS } from "../../modeling/text-fonts";
 
 const RAIL = `
       <!-- E3. The Model tools: chrome.ts moves this set into the rail. A group folds into one flyout button when the window is too short for it. -->
@@ -353,9 +353,8 @@ const DOCK = `
                 <button class="btn mode" type="button" data-op="cut" aria-pressed="false">Cut</button>
               </div>
               <!-- Text with real fonts: the font picker draws each name in its own font; the bold, italic and size follow it. -->
-              <div class="model-fonts" id="modelTextFont" data-for="text" role="group" aria-label="Font" data-tip="Stroke and Line are single-stroke fonts. The others are real outline fonts.">
-                <button class="btn mode font-pick" type="button" data-font="stroke" aria-pressed="false" data-tip="Single-stroke capitals and digits on a 4 × 6 grid, for engraving. A lowercase letter is drawn as its capital.">Stroke</button>
-                <button class="btn mode font-pick" type="button" data-font="line" aria-pressed="false" data-tip="Single-stroke letters with lowercase, for engraving and pen-like text.">Line</button>
+              <div class="model-fonts" id="modelTextFont" data-for="text" role="group" aria-label="Font" data-tip="Stroke, Line and the Hershey fonts are single-stroke fonts. The others are real outline fonts.">
+                ${PEN_FONTS.map((pen) => `<button class="btn mode font-pick" type="button" data-font="${pen.id}" aria-pressed="false" data-tip="${pen.about}">${pen.name}</button>`).join("\n                ")}
                 ${TEXT_FONTS.map((font) => `<button class="btn mode font-pick${font.id === DEFAULT_TEXT_FONT ? " on" : ""}" type="button" data-font="${font.id}@${font.version}" aria-pressed="${font.id === DEFAULT_TEXT_FONT}" style="font-family: '${font.family}', sans-serif" data-tip="${font.about}">${font.name}</button>`).join("\n                ")}
                 <span class="font-user-host" id="modelTextUserFonts" role="presentation"></span>
               </div>

@@ -1,4 +1,18 @@
-use super::*;
+use super::brims::skirt_paths;
+use super::elapsed_ms;
+use super::parts::{CombLayer, Contours, Part, SupportPlan};
+use super::settings::bridge_tune;
+use super::tours::{hop_travels, scarf_params};
+use crate::gcode::{LayerPaths, PrintLayer};
+use crate::poly::{in_solid, Loop};
+use crate::toolpath::{
+    apply_scarf, comb_layer, order_supports, rest_on_interface, retract_off_supports, BridgeTune,
+    Extrusion,
+};
+use crate::{BlendMode, SliceSettings, Stage, Watch};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// One layer as `assemble` joined it, with the inputs that decided it. A
 /// layer whose part, skirt, support paths, and way in are the same joins to

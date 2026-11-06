@@ -1,4 +1,9 @@
-use super::*;
+use super::patch;
+use crate::gcode::{Entry, LayerPaths, PlateLayer, PrintLayer, Run};
+use crate::support::FloorPlane;
+use crate::toolpath::belt_raft_paths;
+use crate::{BlendMode, Mesh, PreviewLayer, ScarfSeam, SeamPlacement, SliceSettings, ZHopMode};
+use std::borrow::Cow;
 
 /// One object of a plate in its part frame, ready to plan.
 pub(super) struct PlateObject<'a> {
