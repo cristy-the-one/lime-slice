@@ -516,6 +516,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   scene.add(stripSpots);
 
   const park = new THREE.Vector3();
+  /** Where the Rotate rings sit on the part: its box middle and the ring radius, kept fixed through a turn. */
+  let ringSeat: { centre: THREE.Vector3; radius: number } | null = null;
   let drag: Drag = null;
   let hover: HandleHit | null = null;
   let lastAngle = 0;
@@ -868,7 +870,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     fitGizmoScreen();
   }
 
-  /** Screen-anchored, same left-edge park as the section aim rings. Pose deltas stay on the mesh. */
+  /**
+   * Move and Scale keep the screen-anchored left-edge park (the part moves under a drag, so the widget must not).
+   * Rotate sits on the part: the rings are centred on the box middle the part turns about and sized to its box.
+   */
   function fitGizmoScreen() {
     if (!gizmo.visible) {
       delete canvas.dataset.scaleGrips;
@@ -879,6 +884,28 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     camera.updateMatrixWorld();
     const distance = Math.max(8, camera.position.distanceTo(controls.target));
     const gizmoPx = frameGizmoPx(rect.width);
+    if (gizmoTool === "rotate" && meshBounds) {
+      // While a turn is under way the rings keep the seat they had: the box of a turning part breathes and its
+      // middle drops with the bed rest, and a ring that moves under the pointer cannot be steered.
+      if (!(drag?.kind === "ring" || rotateGrab) || !ringSeat) {
+        const { min, max } = meshBounds;
+        const centre = frame.toScene((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
+        const half = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2;
+        const perPx = gizmoRadiusForPixels(Math.max(8, camera.position.distanceTo(centre)), camera.fov, rect.height, 1, camera.zoom);
+        // Hug the part (a little clear of its corners), never smaller than the parked size, never past the canvas.
+        ringSeat = { centre, radius: Math.min(Math.max(half * 1.08, perPx * gizmoPx), perPx * rect.height * 0.46) };
+      }
+      const radius = ringSeat.radius;
+      const centre = ringSeat.centre;
+      gizmo.scale.setScalar(radius);
+      gizmo.position.copy(centre);
+      gizmo.updateMatrixWorld(true);
+      canvas.dataset.gizmoAt = "part";
+      publishScaleGrips();
+      publishRingGrips();
+      return;
+    }
+    canvas.dataset.gizmoAt = "park";
     gizmo.scale.setScalar(gizmoRadiusForPixels(distance, camera.fov, rect.height, gizmoPx, camera.zoom));
     const [x, y, z] = parkLeftCameraSpace(rect.width, distance, camera.fov, camera.aspect, camera.zoom, gizmoPx + 18);
     park.set(x, y, z);
@@ -893,6 +920,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   function publishRingGrips() {
     if (gizmoTool !== "rotate" || !gizmo.visible) {
       delete canvas.dataset.ringGrips;
+      delete canvas.dataset.ringHub;
+      delete canvas.dataset.partMid;
       return;
     }
     const rect = canvas.getBoundingClientRect();
@@ -900,28 +929,52 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     const centre = gizmo.position;
     const view = camera.position.clone().sub(centre).normalize();
     const hub = centre.clone().project(camera);
+    canvas.dataset.ringHub = `${((hub.x * 0.5 + 0.5) * rect.width).toFixed(1)},${((-hub.y * 0.5 + 0.5) * rect.height).toFixed(1)}`;
+    if (mesh) {
+      // Where the drawn mesh's own box middle lands, read from its geometry, so a test can compare it with the hub.
+      mesh.geometry.computeBoundingBox();
+      const mid = mesh.geometry.boundingBox!.getCenter(new THREE.Vector3()).applyMatrix4(mesh.matrix).project(camera);
+      canvas.dataset.partMid = `${((mid.x * 0.5 + 0.5) * rect.width).toFixed(1)},${((-mid.y * 0.5 + 0.5) * rect.height).toFixed(1)}`;
+    }
     const bits: string[] = [];
-    for (const axis of ["x", "y", "z"] as const) {
+    const pxOf = (p: THREE.Vector3): [number, number] => [(p.x * 0.5 + 0.5) * rect.width, (-p.y * 0.5 + 0.5) * rect.height];
+    const ringAt = (axis: Axis) => {
       const normal = sceneAxis(axis);
       const u = new THREE.Vector3().crossVectors(normal, Math.abs(normal.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
       const w = new THREE.Vector3().crossVectors(normal, u);
-      const at = (deg: number) => {
+      return (deg: number) => {
         const a = (deg * Math.PI) / 180;
         return centre.clone().addScaledVector(u, Math.cos(a) * radius).addScaledVector(w, Math.sin(a) * radius).project(camera);
       };
+    };
+    const axes = ["x", "y", "z"] as const;
+    const rings = axes.map((axis) => ringAt(axis));
+    // Where each ring is drawn, every 5 degrees, so a grip can be placed clear of the other two rings.
+    const drawn = rings.map((at) => Array.from({ length: 72 }, (_, i) => pxOf(at(i * 5))));
+    axes.forEach((axis, k) => {
+      const at = rings[k]!;
+      const clear = (p: [number, number]) => {
+        let least = Infinity;
+        drawn.forEach((pts, j) => {
+          if (j !== k) for (const q of pts) least = Math.min(least, Math.hypot(p[0] - q[0], p[1] - q[1]));
+        });
+        return least;
+      };
       let from = 0;
-      let reach = -1;
+      let best = -1;
       for (let deg = 0; deg < 360; deg += 10) {
-        const p = at(deg);
-        const d = Math.hypot((p.x - hub.x) * rect.width, (p.y - hub.y) * rect.height);
-        if (d > reach) {
-          reach = d;
+        const p = pxOf(at(deg));
+        const q = pxOf(at(deg + 10));
+        // Clear of the other rings first (their pick tubes would take the press), then far from the hub.
+        const score = Math.min(clear(p), clear(q), 40) * 1000 + Math.hypot(p[0] - (hub.x * 0.5 + 0.5) * rect.width, p[1] - (-hub.y * 0.5 + 0.5) * rect.height);
+        if (score > best) {
+          best = score;
           from = deg;
         }
       }
-      const px = (p: THREE.Vector3) => `${Math.round((p.x * 0.5 + 0.5) * rect.width)},${Math.round((-p.y * 0.5 + 0.5) * rect.height)}`;
-      bits.push(`${axis}:${px(at(from))}:${px(at(from + 10))}:${Math.abs(normal.dot(view)).toFixed(2)}`);
-    }
+      const px = (p: THREE.Vector3) => pxOf(p).map((v) => Math.round(v)).join(",");
+      bits.push(`${axis}:${px(at(from))}:${px(at(from + 10))}:${Math.abs(sceneAxis(axis).dot(view)).toFixed(2)}`);
+    });
     canvas.dataset.ringGrips = bits.join(" ");
   }
 

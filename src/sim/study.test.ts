@@ -22,6 +22,7 @@ import {
   holdRefusal,
   checkLabel,
   checkSentence,
+  cloneStudy,
   notShown,
   onBed,
   probeNearest,
@@ -243,6 +244,32 @@ eq(
   "Safety factor 7.5 at 2 mm cells, 7.4 at 1.41 mm (1% apart).",
 );
 eq("one size says nothing", checkSentence(null), "");
+
+// The plate and the project file copy and read a study through study-data.ts, which the first chunk carries; the rest of
+// study.ts loads with Model. Copies must be exact, and the data module must not pull study.ts in at run time.
+{
+  const rich = {
+    holds: [{ kind: "bed", faces: [] }, { kind: "faces", faces: [1, 2], place: { box: { min: [0, 0, 0], max: [1, 2, 3] } } }, { kind: "plane", faces: [], normal: [0, 0, 1], origin: [0, 0, 5] }],
+    loads: [{ kind: "pressure", faces: [4], magnitude: 2.5, direction: [0, -1, 0], place: { sphere: { centre: [1, 1, 1], radiusMm: 3 } } }],
+    cardId: "inhouse-petg",
+    printer: false,
+    buildAxis: [0, 0, 1],
+    gravity: true,
+    edgeMm: 4,
+    beam: { lengthMm: 100, widthMm: 10, heightMm: 5 },
+    pattern: "gyroid",
+    representation: "smear",
+    constraints: [{ kind: "maxDisplacementMm", value: 1, band: [0, 2], region: { faces: [3] }, other: { sphere: { centre: [0, 0, 0], radiusMm: 1 } } }],
+    facesKey: "abc",
+  };
+  const read = readStudy(JSON.parse(JSON.stringify(rich)));
+  eq("a saved study reads back as written", JSON.stringify(read), JSON.stringify(rich));
+  const copy = cloneStudy(read!);
+  eq("a cloned study is byte-identical", JSON.stringify(copy), JSON.stringify(rich));
+  copy.holds[1]!.faces.push(9);
+  eq("a clone shares nothing with its source", read!.holds[1]!.faces, [1, 2]);
+  eq("the data module does not import the study module at run time", /^import (?!type).*\.\/study\.ts/m.test(readFileSync(join("src", "sim", "study-data.ts"), "utf8")), false);
+}
 
 if (failed) {
   console.error(`${failed} failed`);
