@@ -6,6 +6,7 @@ import {
   normalizeBase,
   resolveApiBase,
 } from "./api-base";
+import { prefs } from "../prefs.ts";
 
 function viteEnv(name: string): string | undefined {
   const env = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
@@ -13,7 +14,7 @@ function viteEnv(name: string): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
-/** Engine URL and shared token, edited from the gear menu and kept in localStorage. */
+/** Engine URL and shared token, edited from the gear menu and kept in the saved preferences. */
 export function mountConnection(onSaved: () => void) {
   const panel = document.querySelector("#gear .gear-panel");
   if (!panel || document.querySelector("#connection")) return;
@@ -39,8 +40,8 @@ export function mountConnection(onSaved: () => void) {
   const url = section.querySelector<HTMLInputElement>("#apiBase")!;
   const token = section.querySelector<HTMLInputElement>("#apiToken")!;
   const result = section.querySelector<HTMLElement>("#apiTestResult")!;
-  url.value = localStorage.getItem(API_STORAGE_KEY) ?? "";
-  token.value = localStorage.getItem(TOKEN_STORAGE_KEY) ?? "";
+  url.value = prefs.get(API_STORAGE_KEY) ?? "";
+  token.value = prefs.get(TOKEN_STORAGE_KEY) ?? "";
   const params = new URLSearchParams(location.search);
   url.placeholder = resolveApiBase({
     stored: "",
@@ -53,11 +54,11 @@ export function mountConnection(onSaved: () => void) {
 
   section.querySelector("#apiSave")!.addEventListener("click", () => {
     const next = normalizeBase(url.value);
-    if (next) localStorage.setItem(API_STORAGE_KEY, next);
-    else localStorage.removeItem(API_STORAGE_KEY);
+    if (next) prefs.set(API_STORAGE_KEY, next);
+    else prefs.remove(API_STORAGE_KEY);
     const secret = token.value.trim();
-    if (secret) localStorage.setItem(TOKEN_STORAGE_KEY, secret);
-    else localStorage.removeItem(TOKEN_STORAGE_KEY);
+    if (secret) prefs.set(TOKEN_STORAGE_KEY, secret);
+    else prefs.remove(TOKEN_STORAGE_KEY);
     url.value = next;
     delete result.dataset.state;
     result.textContent = "";

@@ -1,3 +1,5 @@
+import { prefs } from "./prefs.ts";
+
 export type ThemeChoice = "system" | "dark" | "light";
 
 const KEY = "lime-slice-theme";
@@ -31,12 +33,12 @@ export interface ThemeColors {
 }
 
 export function loadTheme(): ThemeChoice {
-  const saved = localStorage.getItem(KEY);
+  const saved = prefs.get(KEY);
   return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
 }
 
 export function applyTheme(choice: ThemeChoice) {
-  localStorage.setItem(KEY, choice);
+  prefs.set(KEY, choice);
   const root = document.documentElement;
   root.dataset.theme = choice;
   root.dataset.scheme = resolvedScheme(choice);

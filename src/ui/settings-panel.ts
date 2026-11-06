@@ -5,13 +5,14 @@ import "./groups.css";
 
 export type { SettingsLevel } from "./first-run";
 import { LEVEL_KEY, levelFromStored, type SettingsLevel } from "./first-run";
+import { prefs } from "../prefs.ts";
 
 const CLOSED_KEY = "lime-slice-closed-groups";
 
 /** The saved level, or null on a first run. */
 export function storedSettingsLevel(): string | null {
   try {
-    return localStorage.getItem(LEVEL_KEY);
+    return prefs.get(LEVEL_KEY);
   } catch {
     return null;
   }
@@ -27,7 +28,7 @@ export function applyStoredLevel() {
 }
 
 export function setSettingsLevel(level: SettingsLevel) {
-  localStorage.setItem(LEVEL_KEY, level);
+  prefs.set(LEVEL_KEY, level);
   document.documentElement.dataset.settingsLevel = level;
   const pick = document.querySelector<HTMLSelectElement>("#levelPick");
   if (pick && pick.value !== level) pick.value = level;
@@ -42,7 +43,7 @@ export function levelSelectHtml() {
 /** The groups the user closed, or `defaults` until a toggle was stored. */
 export function loadClosedGroups(defaults: string[]): Set<string> {
   try {
-    const raw = localStorage.getItem(CLOSED_KEY);
+    const raw = prefs.get(CLOSED_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as unknown;
       if (Array.isArray(parsed)) return new Set(parsed.filter((id): id is string => typeof id === "string"));
@@ -54,7 +55,7 @@ export function loadClosedGroups(defaults: string[]): Set<string> {
 }
 
 export function saveClosedGroups(closed: ReadonlySet<string>) {
-  localStorage.setItem(CLOSED_KEY, JSON.stringify([...closed]));
+  prefs.setJson(CLOSED_KEY, [...closed]);
 }
 
 export function mountSettingsPanel() {

@@ -14,6 +14,7 @@ import { openDock } from "./dock-reveal";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
 import type { PickedFaceValue } from "../recipe/picks";
 import { elideData } from "../recipe/plugin-data";
+import { prefs } from "../prefs.ts";
 
 /** Rows are named by `RowKey`: an open solid's step, or a step of a tool one of its joins takes ("Booleans between objects"). */
 interface ModelHistoryHooks {
@@ -206,7 +207,7 @@ function paintChosen(el: HTMLElement, row: HistoryRow) {
 
 function readCollapsed(): boolean {
   try {
-    return localStorage.getItem(COLLAPSED_KEY) === "1";
+    return prefs.getBool(COLLAPSED_KEY);
   } catch {
     return false;
   }
@@ -214,8 +215,8 @@ function readCollapsed(): boolean {
 
 function writeCollapsed(on: boolean) {
   try {
-    if (on) localStorage.setItem(COLLAPSED_KEY, "1");
-    else localStorage.removeItem(COLLAPSED_KEY);
+    if (on) prefs.setBool(COLLAPSED_KEY, true);
+    else prefs.remove(COLLAPSED_KEY);
   } catch {
     /* private window or blocked storage: the panel just opens expanded next time */
   }
