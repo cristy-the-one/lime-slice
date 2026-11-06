@@ -15,6 +15,7 @@ async function commit(page: Page, id: "#placeX" | "#placeY", value: number) {
 async function twoObjects(page: Page): Promise<string> {
   await page.addInitScript(() => {
     localStorage.setItem("lime-slice-closed-groups", "[]");
+    localStorage.setItem("lime-slice-open-subgroups", '["object-pose"]');
     localStorage.setItem("lime-slice-theme", "dark");
   });
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));

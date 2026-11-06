@@ -30,6 +30,7 @@ export function mountSupportPaint(prepare: PrepareView, hooks: SupportPaintHooks
   tool.type = "button";
   tool.className = "tool";
   tool.dataset.tool = "paint";
+  tool.dataset.cap = "Paint";
   tool.dataset.tip = "Paint where supports must grow (Enforce) or must not (Block).";
   tool.setAttribute("aria-label", "Paint supports");
   tool.setAttribute("aria-pressed", "false");

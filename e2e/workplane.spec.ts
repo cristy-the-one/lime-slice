@@ -33,6 +33,7 @@ async function openModel(page: Page): Promise<TreeMock> {
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: root.positions } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, { open: () => root, apply: (_request: Body, parent: MockSolid) => boxSolid(parent.volumeMm3 - 100), probe: () => ({ ok: true }) });
+  await page.addInitScript(() => localStorage.setItem("lime-slice-open-subgroups", '["object-pose"]'));
   await page.goto("/");
   await autoSliceOff(page);
   await page.locator("#file").setInputFiles({ name: "plate.step", mimeType: "model/step", buffer: Buffer.from("ISO-10303-21;\nEND-ISO-10303-21;\n") });

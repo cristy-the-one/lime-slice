@@ -68,6 +68,7 @@ export function mountMarkup(root: HTMLElement) {
           </select>
         </label>
         <label class="row setting" data-label="auto-slice when a slice takes under 20 s" data-tip="Slice again by itself after a change, while the last slice took under 20 seconds."><span class="row-label">Auto-slice when a slice takes under 20 s</span><input id="autoslice" type="checkbox" class="switch" role="switch" /></label>
+        <label class="row setting" data-label="names under tool icons" data-keywords="rail labels captions" data-tip="Show a short name under each tool icon in Prepare and Preview, in a window at least 1280 px wide and 800 px high."><span class="row-label">Names under tool icons</span><input id="railCaptions" type="checkbox" class="switch" role="switch" checked /></label>
         <label class="row setting" data-label="show tool labels" data-tip="Widen the tool rail and show each tool's name. Off by default."><span class="row-label">Show tool labels</span><input id="railLabels" type="checkbox" class="switch" role="switch" /></label>
         <label class="row setting" data-label="plugin author" data-tip="The name a plugin you keep is signed with, in the app and through the MCP. Never filled from your account."><span class="row-label">Plugin author</span><input id="pluginAuthor" type="text" maxlength="60" placeholder="unknown" spellcheck="false" autocomplete="off" /></label>
       </div>

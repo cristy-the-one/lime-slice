@@ -144,6 +144,35 @@
   .tool-rail .rail-caption { display: none; }
   .tool-rail .rail-sep { margin: 4px 0; }
 }
+/*
+ * Names under the icons (the setting "Names under tool icons"). The rail keeps its 48 px, so the viewport and the
+ * panels do not move; only the buttons grow taller, and only in a window with the room for them.
+ */
+@media (min-width: 1280px) and (min-height: 800px) {
+  html[data-rail-captions="1"]:not([data-rail-labels="1"]) .tool-rail button[data-cap]:not(#leftToggle) {
+    width: 44px;
+    height: auto;
+    min-height: 38px;
+    padding: 3px 0 2px;
+    gap: 1px;
+    grid-auto-flow: row;
+    grid-template-rows: auto auto;
+    align-content: center;
+  }
+  html[data-rail-captions="1"]:not([data-rail-labels="1"]) .tool-rail button[data-cap]::before {
+    content: attr(data-cap);
+    grid-row: 2;
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1.1;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: clip;
+    white-space: nowrap;
+    color: inherit;
+  }
+  html[data-rail-captions="1"]:not([data-rail-labels="1"]) .tool-rail button[data-cap] > svg { grid-row: 1; }
+}
 /* A button that opens a flyout carries a corner mark. */
 .tool-rail button.more { position: relative; }
 .tool-rail button.more::after {
