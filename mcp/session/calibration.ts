@@ -8,23 +8,24 @@ import { withMesh } from "../engine.ts";
 import { resolveWrite } from "../workspace.ts";
 import { type ToolHandler, isObject, roundTo } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 async function calibrationTower(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const kind = input.kind === "pa" || input.kind === "flow" || input.kind === "temp" || input.kind === "retract" ? input.kind : null;
-  if (!kind) return { ok: false, reason: "kind is pa, flow, temp, or retract." };
+  if (!kind) return refuse("bad-argument", "kind is pa, flow, temp, or retract.");
   const start = Number(input.start);
   const end = Number(input.end);
   const step = Number(input.step);
   if (!Number.isFinite(start) || !Number.isFinite(end) || !(step > 0) || end + 1e-9 < start) {
-    return { ok: false, reason: "The tower needs a start, an end, and a positive step." };
+    return refuse("bad-tower", "The tower needs a start, an end, and a positive step.");
   }
   const bandHeight = typeof input.bandHeightMm === "number" && input.bandHeightMm > 0 ? input.bandHeightMm : kind === "pa" ? 2 : 5;
   const bands = Math.floor((end - start) / step + 1e-9) + 1;
-  if (bands > 40) return { ok: false, reason: `That tower has ${bands} bands. The limit is 40.` };
+  if (bands > 40) return refuse("bad-tower", `That tower has ${bands} bands. The limit is 40.`);
   const height = bands * bandHeight;
   const printer = this.printer();
-  if (height > printer.bedZ) return { ok: false, reason: `That tower is ${roundTo(height, 1)} mm. The bed is ${printer.bedZ} mm tall.` };
-  if (kind === "pa" && !printer.firmware) return { ok: false, reason: "The PA tower needs a firmware." };
+  if (height > printer.bedZ) return refuse("bad-tower", `That tower is ${roundTo(height, 1)} mm. The bed is ${printer.bedZ} mm tall.`);
+  if (kind === "pa" && !printer.firmware) return refuse("bad-tower", "The PA tower needs a firmware.");
   const body = {
     kind,
     firmware: printer.firmware,
@@ -44,9 +45,9 @@ async function calibrationTower(this: Session, input: Record<string, unknown>): 
   try {
     reply = JSON.parse(await this.ask(this.engine.calibrate(JSON.stringify(body)))) as typeof reply;
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : "The tower was not built." };
+    return refuse("bad-tower", err instanceof Error ? err.message : "The tower was not built.");
   }
-  if (!reply.gcode || !Array.isArray(reply.bands)) return { ok: false, reason: reply.error ?? "The tower was not built." };
+  if (!reply.gcode || !Array.isArray(reply.bands)) return refuse("bad-tower", reply.error ?? "The tower was not built.");
   const path = resolveWrite(`${kind}-tower.gcode`, ".gcode");
   writeFileSync(path, reply.gcode);
   const listed = reply.bands.map((band, index) => ({
@@ -60,9 +61,9 @@ async function calibrationTower(this: Session, input: Record<string, unknown>): 
 
 function calibrationApply(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const kind = input.kind === "pa" || input.kind === "flow" || input.kind === "temp" || input.kind === "retract" ? input.kind : null;
-  if (!kind) return { ok: false, reason: "kind is pa, flow, temp, or retract." };
+  if (!kind) return refuse("bad-argument", "kind is pa, flow, temp, or retract.");
   const value = Number(input.value);
-  if (!Number.isFinite(value)) return { ok: false, reason: "value is the number to save on the filament." };
+  if (!Number.isFinite(value)) return refuse("bad-argument", "value is the number to save on the filament.");
   const filament = this.filament();
   this.remember("Calibration");
   if (kind === "pa") this.library = setAdvance(this.library, value, advanceFor(filament.linearAdvance, this.library.nozzleMm));
@@ -76,15 +77,15 @@ async function blendCompare(this: Session, input: Record<string, unknown>): Prom
   const obj = this.wanted(input);
   if (!isObject(obj)) return obj;
   const committed = await this.commitObject(obj);
-  if (committed) return { ok: false, reason: committed };
+  if (committed) return refuse("commit-failed", committed);
   const built = this.sliceBody(obj, "object");
   let reply: { label?: string; toughness?: number; seconds?: number; filamentG?: number; score?: number; error?: string }[];
   try {
     const parsed = JSON.parse(await this.ask(this.engine.pareto(withMesh(JSON.stringify(built.body), built.mesh)))) as typeof reply | { error?: string };
-    if (!Array.isArray(parsed)) return { ok: false, reason: parsed.error ?? "The blends were not compared." };
+    if (!Array.isArray(parsed)) return refuse("blend-failed", parsed.error ?? "The blends were not compared.");
     reply = parsed;
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : "The blends were not compared." };
+    return refuse("blend-failed", err instanceof Error ? err.message : "The blends were not compared.");
   }
   this.pareto = reply.filter((point) => typeof point.toughness === "number").map((point) => ({
     label: point.label ?? "",
@@ -93,14 +94,14 @@ async function blendCompare(this: Session, input: Record<string, unknown>): Prom
     grams: point.filamentG ?? 0,
     score: point.score ?? 0,
   }));
-  if (this.pareto.length === 0) return { ok: false, reason: "The blends were not compared." };
+  if (this.pareto.length === 0) return refuse("blend-failed", "The blends were not compared.");
   return { ok: true, points: this.pareto };
 }
 
 function blendApply(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const index = typeof input.index === "number" ? input.index : -1;
   const point = this.pareto[index];
-  if (!point) return { ok: false, reason: "Call blend_compare first, then pass a point index." };
+  if (!point) return refuse("no-blend", "Call blend_compare first, then pass a point index.", undefined, NEXT.blend);
   this.remember("Blend");
   if (point.toughness <= 0.001) {
     this.settings = { ...this.settings, blendKind: "single", strategy: "speed" };

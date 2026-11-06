@@ -20,6 +20,7 @@ import { stlBytes } from "../request.ts";
 import { applyObjectSetting } from "../settings-rows.ts";
 import { BAND_KINDS, BEADS_REFUSAL, PLACE_ON_SMEAR, type PlateObject, REGION_SHAPE, STALE_FACES, STIFFNESS_KINDS, TARGET_KINDS, type ToolHandler, UNKNOWN_OBJECT, slicedRunReply, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /** The file Export writes, so the review sees the printer's start and end text. */
 function printerBuildAxis(this: Session): SimVec {
@@ -129,39 +130,39 @@ function beamOf(this: Session, value: unknown): ObjectStudy["beam"] | { reason: 
 
 function simSetup(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const element = elementRefusal(input.element);
-  if (element) return { ok: false, reason: element };
+  if (element) return refuse("bad-argument", element);
   const beam = this.beamOf(input.beam);
-  if (beam && "reason" in beam) return { ok: false, reason: beam.reason };
+  if (beam && "reason" in beam) return refuse("bad-beam", beam.reason);
   const fixtures = this.readFixtures(input.fixtures);
-  if ("reason" in fixtures) return { ok: false, reason: fixtures.reason };
+  if ("reason" in fixtures) return refuse("bad-fixture", fixtures.reason);
   const loads = this.readLoads(input.loads);
-  if ("reason" in loads) return { ok: false, reason: loads.reason };
+  if ("reason" in loads) return refuse("bad-load", loads.reason);
   const card = this.simCard(input.card);
-  if ("reason" in card) return { ok: false, reason: card.reason };
+  if ("reason" in card) return refuse("no-card", card.reason);
   const printer = input.printer === true;
   let buildAxis: SimVec = printer ? this.printerBuildAxis() : [0, 0, 1];
   if (!printer && input.buildAxis !== undefined) {
     const axis = vec3Of(input.buildAxis);
-    if (!axis) return { ok: false, reason: ZERO_AXIS };
+    if (!axis) return refuse("bad-beam", ZERO_AXIS);
     buildAxis = axis;
   }
-  if (axisLength(buildAxis) <= 1e-12) return { ok: false, reason: ZERO_AXIS };
+  if (axisLength(buildAxis) <= 1e-12) return refuse("bad-beam", ZERO_AXIS);
   let edge = 5;
   if (input.hMm !== undefined) {
-    if (typeof input.hMm !== "number" || !(input.hMm > 0)) return { ok: false, reason: BEAM_SIZE };
+    if (typeof input.hMm !== "number" || !(input.hMm > 0)) return refuse("bad-beam", BEAM_SIZE);
     edge = input.hMm;
   }
   let representation: SimRepresentation | undefined;
   if (input.representation !== undefined) {
-    if (input.representation !== "sliced" && input.representation !== "smear") return { ok: false, reason: "representation is sliced or smear." };
+    if (input.representation !== "sliced" && input.representation !== "smear") return refuse("bad-representation", "representation is sliced or smear.");
     representation = input.representation;
   }
   const constraints = this.readSimConstraints(input.constraints);
-  if (constraints && "reason" in constraints) return { ok: false, reason: constraints.reason };
+  if (constraints && "reason" in constraints) return refuse("bad-target", constraints.reason);
   const requested = typeof input.object === "string" ? input.object : "";
   let obj = requested ? this.find(requested) : this.selectedObject();
-  if (requested && !obj) return { ok: false, reason: UNKNOWN_OBJECT };
-  if (!obj && !beam) return { ok: false, reason: "Load a mesh first." };
+  if (requested && !obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+  if (!obj && !beam) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   this.remember("Stress");
   if (!obj && beam) {
     const source = boxPositions(beam.lengthMm, beam.widthMm, beam.heightMm);
@@ -178,7 +179,7 @@ function simSetup(this: Session, input: Record<string, unknown>): Record<string,
       seatMm: 0,
     });
   }
-  if (!obj) return { ok: false, reason: "Load a mesh first." };
+  if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   if (input.card && typeof input.card === "object") this.library = saveMaterialCard(this.library, card);
   const study: ObjectStudy = {
     holds: fixtures,
@@ -213,19 +214,19 @@ function smearOf(this: Session, obj: PlateObject, patch?: SweepPatch) {
 
 function solveCopy(this: Session, obj: PlateObject, patch: SweepPatch | undefined, op: "run" | "field", field?: Record<string, unknown>): Record<string, unknown> {
   const saved = obj.sim;
-  if (!saved) return { ok: false, reason: "Set up a study first." };
+  if (!saved) return refuse("no-study", "Set up a study first.", undefined, NEXT.study);
   const stale = this.staleFaces(obj, saved);
-  if (stale) return { ok: false, reason: stale };
-  if (saved.holds.some((hold) => hold.place) || saved.loads.some((load) => load.place)) return { ok: false, reason: PLACE_ON_SMEAR };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
+  if (saved.holds.some((hold) => hold.place) || saved.loads.some((load) => load.place)) return refuse("bad-representation", PLACE_ON_SMEAR);
   const study = cloneStudy(saved);
   if (study.printer) study.buildAxis = this.printerBuildAxis();
   if (patch?.loadScale) study.loads = scaleLoads(study.loads, patch.loadScale);
   if (patch?.pattern) study.pattern = patch.pattern;
   const recipe = this.smearOf(obj, patch);
   const refused = recipeRefusal(recipe);
-  if (refused) return { ok: false, reason: refused };
+  if (refused) return refuse("bad-card", refused);
   const card = cardsOf(this.library).find((row) => row.id === study.cardId);
-  if (!card) return { ok: false, reason: "That card is not in the library." };
+  if (!card) return refuse("no-card", "That card is not in the library.");
   const pattern = study.pattern ?? recipe.pattern;
   const job = solverJob({
     op,
@@ -242,7 +243,7 @@ function solveCopy(this: Session, obj: PlateObject, patch: SweepPatch | undefine
     limit: typeof field?.limit === "number" ? field.limit : undefined,
     cursor: typeof field?.cursor === "number" ? field.cursor : undefined,
   });
-  if ("reason" in job) return { ok: false, reason: job.reason };
+  if ("reason" in job) return refuse("no-object", String(job.reason), undefined, NEXT.plate);
   const reply = runSolver(job);
   if (Array.isArray(reply.triangles)) delete reply.triangles;
   if (Array.isArray(reply.nodes)) delete reply.nodes;
@@ -252,9 +253,9 @@ function solveCopy(this: Session, obj: PlateObject, patch: SweepPatch | undefine
 
 async function simRun(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const obj = this.simTarget(input);
-  if ("reason" in obj) return { ok: false, reason: obj.reason };
+  if ("reason" in obj) return refuse("no-object", obj.reason, undefined, NEXT.plate);
   const saved = obj.sim;
-  if (!saved) return { ok: false, reason: "Set up a study first." };
+  if (!saved) return refuse("no-study", "Set up a study first.", undefined, NEXT.study);
   const reply = this.representationFor(obj, saved) === "sliced"
     ? await this.solveSliced(obj, saved, input.checkResolution !== false)
     : this.solveCopy(obj, undefined, "run");
@@ -419,20 +420,20 @@ function slicedRegion(
  */
 async function solveSliced(this: Session, obj: PlateObject, saved: ObjectStudy, checkResolution = true, patch?: SweepPatch): Promise<Record<string, unknown>> {
   const stale = this.staleFaces(obj, saved);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const study = cloneStudy(saved);
   if (patch?.loadScale !== undefined && patch.loadScale !== 1) study.loads = scaleLoads(study.loads, patch.loadScale);
   if (study.printer) study.buildAxis = this.printerBuildAxis();
-  if (study.holds.some((hold) => hold.kind === "plane")) return { ok: false, reason: "A plane hold is not on a sliced study. Hold the bed or faces." };
-  if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0 || hold.place)) return { ok: false, reason: "Nothing is held." };
+  if (study.holds.some((hold) => hold.kind === "plane")) return refuse("bad-representation", "A plane hold is not on a sliced study. Hold the bed or faces.");
+  if (!study.holds.some((hold) => hold.kind === "bed" || hold.faces.length > 0 || hold.place)) return refuse("no-load", "Nothing is held.");
   const card = cardsOf(this.library).find((row) => row.id === study.cardId);
-  if (!card) return { ok: false, reason: "That card is not in the library." };
+  if (!card) return refuse("no-card", "That card is not in the library.");
   const { body } = this.sliceBody(obj, "object");
   body.includePreview = false;
   body.includeGcode = false;
   delete body.sim;
   const mesh = this.studyMesh(obj);
-  if ("reason" in mesh) return { ok: false, reason: mesh.reason };
+  if ("reason" in mesh) return refuse("open-mesh", mesh.reason);
   const encoded = bytesToBase64(stlBytes(mesh.positions, stlFileName(obj.fileName)));
   const pose = this.studyPose(obj, mesh.unscaled);
   if (Array.isArray(body.objects)) {
@@ -461,7 +462,7 @@ async function solveSliced(this: Session, obj: PlateObject, saved: ObjectStudy, 
       continue;
     }
     const region = regionOf(hold.place ?? { faces: hold.faces }, "hold");
-    if ("reason" in region) return { ok: false, reason: region.reason as string };
+    if ("reason" in region) return refuse("bad-region", region.reason as string);
     holds.push({ kind: "region", region });
   }
   const loads: Record<string, unknown>[] = [];
@@ -469,20 +470,20 @@ async function solveSliced(this: Session, obj: PlateObject, saved: ObjectStudy, 
     const region = load.place
       ? placeRegion(load.place, centre, obj.scale)
       : this.slicedRegion(obj, study, load.faces, "load", mesh.positions, mesh.triangles);
-    if ("reason" in region) return { ok: false, reason: region.reason as string };
+    if ("reason" in region) return refuse("bad-region", region.reason as string);
     if (load.kind === "pressure") {
       loads.push({ kind: "pressure", region, mpa: load.magnitude });
       continue;
     }
     const n = Math.hypot(load.direction[0], load.direction[1], load.direction[2]);
-    if (!(n > 1e-12)) return { ok: false, reason: "The load direction has zero length." };
+    if (!(n > 1e-12)) return refuse("no-load", "The load direction has zero length.");
     loads.push({
       kind: "force",
       region,
       force: [load.direction[0] / n * load.magnitude, load.direction[1] / n * load.magnitude, load.direction[2] / n * load.magnitude],
     });
   }
-  if (loads.length === 0) return { ok: false, reason: "This study has no load." };
+  if (loads.length === 0) return refuse("no-load", "This study has no load.");
   const targets: Record<string, unknown>[] = [];
   for (const row of study.constraints ?? []) {
     const target: Record<string, unknown> = { kind: row.kind, value: row.value, ...(row.band ? { band: row.band } : {}) };
@@ -490,7 +491,7 @@ async function solveSliced(this: Session, obj: PlateObject, saved: ObjectStudy, 
       const given = row[key];
       if (!given) continue;
       const region = regionOf(given, "target");
-      if ("reason" in region) return { ok: false, reason: region.reason as string };
+      if ("reason" in region) return refuse("bad-region", region.reason as string);
       target[key] = region;
     }
     targets.push(target);
@@ -512,7 +513,7 @@ async function solveSliced(this: Session, obj: PlateObject, saved: ObjectStudy, 
   try {
     text = await Promise.resolve(this.engine.simStudy(payload));
   } catch (err) {
-    return { ok: false, reason: err instanceof Error && err.message ? err.message : "The stress solve did not finish." };
+    return refuse("solve-failed", err instanceof Error && err.message ? err.message : "The stress solve did not finish.");
   }
   this.stressCells = parseStressCells(text, obj.id) ?? this.stressCells;
   return slicedRunReply(text, study.constraints ?? []);
@@ -543,7 +544,7 @@ function patchSliceBody(this: Session, body: Record<string, unknown>, obj: Plate
 
 /** A sliced sweep: each variant one slice of the object alone and one solve. */
 async function slicedSweep(this: Session, obj: PlateObject, patches: SweepPatch[], limits: ConstraintLimits, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (patches.some((patch) => patch.parameters)) return { ok: false, reason: RESLICE_PARAMETERS };
+  if (patches.some((patch) => patch.parameters)) return refuse("bad-representation", RESLICE_PARAMETERS);
   const saved = obj.sim!;
   // One cell size per variant unless asked: a sweep compares variants, and a second size doubles each solve.
   const checkResolution = input.checkResolution === true;
@@ -552,7 +553,7 @@ async function slicedSweep(this: Session, obj: PlateObject, patches: SweepPatch[
   for (const patch of patches) {
     const solved = await this.solveSliced(obj, saved, checkResolution, patch);
     if (solved.ok !== true) {
-      rows.push({ ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : "The stress solve did not finish." });
+      rows.push({ ok: false, code: "solve-failed", met: false, reason: typeof solved.reason === "string" ? solved.reason : "The stress solve did not finish." });
       continue;
     }
     const verdict = constraintVerdict({
@@ -565,10 +566,10 @@ async function slicedSweep(this: Session, obj: PlateObject, patches: SweepPatch[
   let committed = false;
   if (input.commit === true) {
     const index = typeof input.variant === "number" ? input.variant : patches.length === 1 ? 0 : -1;
-    if (!Number.isInteger(index) || index < 0 || index >= patches.length) return { ok: false, variants: rows, reason: "Name the variant to keep." };
+    if (!Number.isInteger(index) || index < 0 || index >= patches.length) return refuse("bad-sweep", "Name the variant to keep.", { variants: rows });
     const chosen = rows[index];
-    if (!chosen || chosen.ok === false) return { ok: false, variants: rows, reason: typeof chosen?.reason === "string" ? chosen.reason : "The stress solve did not finish." };
-    if (patches[index]!.pattern) return { ok: false, variants: rows, reason: RESLICE_PATTERN_KEEP };
+    if (!chosen || chosen.ok === false) return refuse("solve-failed", typeof chosen?.reason === "string" ? chosen.reason : "The stress solve did not finish.", { variants: rows });
+    if (patches[index]!.pattern) return refuse("bad-representation", RESLICE_PATTERN_KEEP, { variants: rows });
     this.remember("Sweep");
     this.applySweepPatch(obj, patches[index]!);
     committed = true;
@@ -578,41 +579,41 @@ async function slicedSweep(this: Session, obj: PlateObject, patches: SweepPatch[
 
 function simField(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const obj = this.simTarget(input);
-  if ("reason" in obj) return { ok: false, reason: obj.reason };
-  if (obj.sim && this.representationFor(obj, obj.sim) === "sliced") return { ok: false, reason: SLICED_FIELD };
+  if ("reason" in obj) return refuse("no-object", obj.reason, undefined, NEXT.plate);
+  if (obj.sim && this.representationFor(obj, obj.sim) === "sliced") return refuse("bad-representation", SLICED_FIELD);
   const field = typeof input.field === "string" ? input.field : "";
   const names = ["displacement", "von_mises", "stress", "safety_factor", "element_error"];
-  if (!names.includes(field)) return { ok: false, reason: `Unknown field. This result has ${names.join(", ")}.` };
+  if (!names.includes(field)) return refuse("bad-field-query", `Unknown field. This result has ${names.join(", ")}.`);
   let points: SimVec[] | undefined;
   if (input.points !== undefined) {
-    if (!Array.isArray(input.points)) return { ok: false, reason: "A point is three numbers." };
+    if (!Array.isArray(input.points)) return refuse("bad-field-query", "A point is three numbers.");
     points = [];
     for (const item of input.points) {
       const point = vec3Of(item);
-      if (!point) return { ok: false, reason: "A point is three numbers." };
+      if (!point) return refuse("bad-field-query", "A point is three numbers.");
       points.push(point);
     }
   }
   let box: { min: SimVec; max: SimVec } | undefined;
   if (input.box !== undefined) {
-    if (!input.box || typeof input.box !== "object" || Array.isArray(input.box)) return { ok: false, reason: "A box needs a min and a max." };
+    if (!input.box || typeof input.box !== "object" || Array.isArray(input.box)) return refuse("bad-field-query", "A box needs a min and a max.");
     const row = input.box as { min?: unknown; max?: unknown };
     const min = vec3Of(row.min);
     const max = vec3Of(row.max);
-    if (!min || !max) return { ok: false, reason: "A box needs a min and a max." };
+    if (!min || !max) return refuse("bad-field-query", "A box needs a min and a max.");
     box = { min, max };
   }
   let face: number | undefined;
   if (input.face !== undefined) {
-    if (!Number.isInteger(input.face) || (input.face as number) < 0) return { ok: false, reason: "That face is not on this beam." };
+    if (!Number.isInteger(input.face) || (input.face as number) < 0) return refuse("face-not-found", "That face is not on this beam.", undefined, NEXT.faces);
     face = input.face as number;
   }
   let stride: number | undefined;
   if (input.stride !== undefined) {
-    if (!Number.isInteger(input.stride) || (input.stride as number) < 1) return { ok: false, reason: "A stride starts at 1." };
+    if (!Number.isInteger(input.stride) || (input.stride as number) < 1) return refuse("bad-field-query", "A stride starts at 1.");
     stride = input.stride as number;
   }
-  if (!points && !box && face === undefined && stride === undefined) return { ok: false, reason: "Name points, a box, a face, or a stride." };
+  if (!points && !box && face === undefined && stride === undefined) return refuse("bad-field-query", "Name points, a box, a face, or a stride.");
   return this.solveCopy(obj, undefined, "field", { field, points, box, face, stride, limit: pageLimit(input.limit), cursor: pageCursor(input.cursor) });
 }
 
@@ -659,28 +660,28 @@ function applySweepPatch(this: Session, obj: PlateObject, patch: SweepPatch): vo
 }
 
 async function simSweep(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (!Array.isArray(input.variants)) return { ok: false, reason: SWEEP_REFUSAL };
-  if (input.variants.length > SWEEP_CAP) return { ok: false, reason: SWEEP_REFUSAL };
+  if (!Array.isArray(input.variants)) return refuse("bad-sweep", SWEEP_REFUSAL);
+  if (input.variants.length > SWEEP_CAP) return refuse("bad-sweep", SWEEP_REFUSAL);
   const patches: SweepPatch[] = [];
   for (const item of input.variants) {
     const patch = readPatch(item);
-    if (typeof patch === "string") return { ok: false, reason: patch };
+    if (typeof patch === "string") return refuse("bad-sweep", patch);
     const problem = this.sweepPatchProblem(patch);
-    if (problem) return { ok: false, reason: problem };
+    if (problem) return refuse("bad-sweep", problem);
     patches.push(patch);
   }
   const limits = readLimits(input.constraints);
-  if (typeof limits === "string") return { ok: false, reason: limits };
+  if (typeof limits === "string") return refuse("bad-sweep", limits);
   const obj = this.simTarget(input);
-  if ("reason" in obj) return { ok: false, reason: obj.reason };
+  if ("reason" in obj) return refuse("no-object", obj.reason, undefined, NEXT.plate);
   const sliced = obj.sim !== undefined && this.representationFor(obj, obj.sim) === "sliced";
-  if (sliced && input.reslice !== true) return { ok: false, reason: SLICED_SWEEP };
-  if (!sliced && input.reslice === true) return { ok: false, reason: RESLICE_BEAM };
+  if (sliced && input.reslice !== true) return refuse("bad-representation", SLICED_SWEEP);
+  if (!sliced && input.reslice === true) return refuse("bad-representation", RESLICE_BEAM);
   if (sliced) return this.slicedSweep(obj, patches, limits as ConstraintLimits, input);
   type SweepRow = Record<string, unknown> & { ok?: boolean; met: boolean; reason: string; slicerSeconds?: number };
   const rows: SweepRow[] = patches.map((patch): SweepRow => {
     const solved = this.solveCopy(obj, patch, "run");
-    if (solved.ok !== true) return { ok: false, met: false, reason: typeof solved.reason === "string" ? solved.reason : OPEN_MESH };
+    if (solved.ok !== true) return { ok: false, code: "solve-failed", met: false, reason: typeof solved.reason === "string" ? solved.reason : OPEN_MESH };
     const verdict = constraintVerdict({
       maxDisplacementMm: typeof solved.maxDisplacementMm === "number" ? solved.maxDisplacementMm : 0,
       minSafetyFactor: typeof solved.minSafetyFactor === "number" ? solved.minSafetyFactor : null,
@@ -692,9 +693,9 @@ async function simSweep(this: Session, input: Record<string, unknown>): Promise<
   let committed = false;
   if (commit) {
     const index = typeof input.variant === "number" ? input.variant : patches.length === 1 ? 0 : -1;
-    if (!Number.isInteger(index) || index < 0 || index >= patches.length) return { ok: false, variants: rows, reason: "Name the variant to keep." };
+    if (!Number.isInteger(index) || index < 0 || index >= patches.length) return refuse("bad-sweep", "Name the variant to keep.", { variants: rows });
     const chosen = rows[index];
-    if (!chosen || chosen.ok === false) return { ok: false, variants: rows, reason: typeof chosen?.reason === "string" ? chosen.reason : OPEN_MESH };
+    if (!chosen || chosen.ok === false) return refuse("solve-failed", typeof chosen?.reason === "string" ? chosen.reason : OPEN_MESH, { variants: rows });
     this.remember("Sweep");
     this.applySweepPatch(obj, patches[index]!);
     committed = true;
