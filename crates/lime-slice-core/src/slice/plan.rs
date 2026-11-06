@@ -1,4 +1,22 @@
-use super::*;
+use super::assemble::{assemble, Assembled};
+use super::belt::tilt_preview;
+use super::parts::{edit, Contours, Edits, Part, PartPaths, PartTour, PartTravels, SupportPlan};
+use super::preview_paths::preview_of;
+use super::supports::plan_supports;
+use super::tours::{comb_part, part_paths, tour_part};
+use super::{elapsed_ms, kept, patch, plate};
+use crate::adaptive::{plan_bands, HeightOpts, LayerBand};
+use crate::gcode::{Entry, LayerPaths, PlateLayer, PrintLayer, Run};
+use crate::index::ZIndex;
+use crate::poly::{simplify_loops, Loop};
+use crate::support::edit::EditOutcome;
+use crate::support::{FloorPlane, Supports};
+use crate::{
+    BlendMode, CoverageGap, InAir, Mesh, PreviewLayer, PrinterProfile, SliceSettings, Stage, Watch,
+};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// Everything `plan` derives from the mesh. `layers` is what the G-code writer
 /// consumes; the rest is kept for the audit and the response.

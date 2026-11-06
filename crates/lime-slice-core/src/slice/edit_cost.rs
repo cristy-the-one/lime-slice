@@ -1,6 +1,18 @@
-use super::*;
+use super::elapsed_ms;
+use super::parts::{Contours, SupportPlan};
+use super::plan::outline_tolerance;
+use super::supports::plan_supports;
+use crate::adaptive::{plan_bands, HeightOpts};
+use crate::index::ZIndex;
+use crate::poly::{simplify_loops, Loop};
 use crate::support::edit::{gaps_in, SupportEdit, TipSite};
-use crate::support::{End, NodeId};
+use crate::support::{
+    Disk, {End, NodeId},
+};
+use crate::{load_slice_mesh_tol, BlendMode, CoverageGap, SliceSettings, StrategyId, Watch};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// What pruning costs against planning supports from scratch, on the mesh
 /// at `LIME_EDIT_MESH` under toughness. Prints one line per case.

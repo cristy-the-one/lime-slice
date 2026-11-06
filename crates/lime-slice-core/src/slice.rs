@@ -1,11 +1,6 @@
-use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 mod assemble;
 mod belt;
@@ -38,8 +33,6 @@ mod tests;
 pub(crate) use self::assemble::*;
 use self::belt::*;
 pub use self::brims::*;
-use self::layer::*;
-use self::layer_preview::*;
 pub use self::pareto::*;
 pub(crate) use self::parts::*;
 use self::pipeline::*;
@@ -47,59 +40,25 @@ pub use self::plan::*;
 use self::preview_paths::*;
 use self::regions::*;
 pub use self::reply::*;
-use self::resolve::*;
 pub use self::settings::*;
-use self::skin::*;
-pub(crate) use self::supports::*;
-use self::tours::*;
-use self::zones::*;
 
 pub use kept::keep_support_bases;
-pub use patch::PreviewPatch;
 pub(crate) use patch::WholePreview;
 pub use wire::{
-    Collision, EditOutcomeView, HeightRangeSpec, ModifierVolumeSpec, ObjectSpec, ObjectView,
+    Collision, EditOutcomeView, HeightRangeSpec, ModifierVolumeSpec,
     PaintDiskSpec, SiteSpec, SupportEditSpec, VolumeKind,
 };
 
-use crate::adaptive::{plan_bands, plan_plate_bands, HeightOpts, LayerBand};
 use crate::cancel::Job;
-use crate::gcode::{
-    emit_gcode, emit_later, Entry, GcodeText, LayerCue, LayerPaths, PlateLayer, PrintLayer, Run,
-};
-use crate::index::ZIndex;
-use crate::lightning::{Branches, Hollow, Lightning};
 use crate::load::load_slice_mesh_tol;
 use crate::mesh::Mesh;
 use crate::meshes::{self, PayloadError};
-use crate::modifiers::{zone_runs, Footprint, Overrides, Print, Tweak};
-use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, in_solid, loop_bounds,
-    offset_loops, resolve_nonzero, signed_area, simplify_loops, Loop,
-};
+use crate::modifiers::Overrides;
 use crate::progress::{Stage, Status, Watch};
 use crate::strategy::{
-    classicize, fan_pwm, layer_weight, mix, pure, support_density, support_interface_density,
-    support_speed, Axis, BlendMode, Firmware, FuzzySkin, Gyroid3d, Ironing, PrinterProfile,
-    ResolvedStrategy, ScarfSeam, SeamPlacement, StrategyId, ZHopMode,
+    BlendMode, Gyroid3d, PrinterProfile, ScarfSeam, SeamPlacement, ZHopMode,
 };
-use crate::support::edit::{EditOutcome, SupportEdit};
-use crate::support::paint::{self, PaintDisk, PaintTally};
-use crate::support::skeleton::{skeleton, tilt_gaps, SupportSkeleton, Tilt as SkeletonTilt};
-use crate::support::tree::{foot_loops, Foot};
-use crate::support::{
-    CoverageGap, Disk, FloorPlane, InAir, SupportLayer, SupportOpts, SupportSource, SupportStyle,
-    Supports,
-};
-use crate::toolpath::{
-    apply_overhang, apply_scarf, apply_z_hop, comb_layer, island_loops, lightning_pitch,
-    retract_off_supports,
-    BridgeTune,
-    belt_raft_paths, order_supports, plan_brim, plan_ironing, plan_mouse_ears, plan_region_split, plan_skirt, plan_support,
-    plan_brim_lines, plan_support_brim, plan_tree_support, rest_on_interface,
-    CapFeed, Extrusion, PartLayout, PathFeatures, PathKind, ScarfParams, Seam, ShellBand, Skin,
-    Slowdown, TravelIn,
-};
+use crate::support::SupportStyle;
 pub use crate::toolpath::SurfacePattern;
 
 pub fn slice_request(req: &SliceRequest, job: Job) -> Result<SliceResponse, String> {

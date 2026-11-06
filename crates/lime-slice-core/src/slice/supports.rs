@@ -1,4 +1,25 @@
-use super::*;
+use super::assemble::support_z_gap;
+use super::brims::{belt_lines, belt_trunks, merge_spans, subtract_spans, BeltBrim};
+use super::elapsed_ms;
+use super::parts::{Contours, SupportPlan};
+use super::regions::{split_edge, split_extrusions, split_rects, support_half_rects, RegionSplit};
+use super::resolve::{resolve, shaft_scales};
+use super::zones::layer_strategy;
+use crate::poly::{boolean_union, clip_to_rect, Loop};
+use crate::strategy::{
+    pure, support_density, support_interface_density, support_speed, ResolvedStrategy,
+};
+use crate::support::tree::Foot;
+use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
+use crate::toolpath::{
+    plan_brim_lines, plan_support, plan_support_brim, plan_tree_support, Extrusion,
+};
+use crate::{
+    BlendMode, PathKind, SliceSettings, Stage, StrategyId, SupportSource, SupportStyle, Watch,
+};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// Supports for the part of `cut`, grown among `solid` when other objects
 /// stand near, else among the part alone.

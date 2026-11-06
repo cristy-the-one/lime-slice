@@ -1,4 +1,21 @@
-use super::*;
+use super::elapsed_ms;
+use super::layer::speed_label;
+use super::regions::XyRect;
+use super::resolve::shaft_scales;
+use super::skin::{roof_distances, skin_regions};
+use super::supports::paint;
+use crate::adaptive::LayerBand;
+use crate::poly::{loop_bounds, Loop};
+use crate::strategy::pure;
+use crate::support::edit::EditOutcome;
+use crate::support::Supports;
+use crate::toolpath::{Extrusion, Skin, TravelIn};
+use crate::{
+    BlendMode, CoverageGap, InAir, PaintDisk, SliceSettings, StrategyId, SupportEdit, Watch,
+};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::sync::Arc;
+use std::time::Instant;
 
 /// The mesh cut into layers, with what is read off the cut alone. Every
 /// blend of the same mesh and layer settings shares it.
