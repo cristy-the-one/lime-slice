@@ -126,6 +126,10 @@ export function paintGlyphs() {
     return;
   }
   S.glyphs.hidden = false;
+  // K1: lines now carry marks as they are drawn, and a mark sits 12 px off its line, where the next point may be
+  // clicked. While a line, rectangle or other shape is being drawn a click is a point, so the marks let it through.
+  const drawing = (S.editor.chain?.length ?? 0) > 0 || S.editor.rect != null || S.editor.draw.gesture != null;
+  S.glyphs.dataset.drawing = drawing ? "1" : "0";
   const status = placedStatus(sketch);
   const key = marks.map((mark) => `${mark.id}:${mark.text}:${mark.slot}`).join(" ") + `|${S.editor.constrain.selected ?? ""}|${status?.conflicting.join(",") ?? ""}`;
   if (key !== S.glyphsKey) {
