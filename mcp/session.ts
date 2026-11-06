@@ -55,6 +55,7 @@ import { splitMethods } from "./session/split.ts";
 import { paintMethods, paintHandlers } from "./session/paint.ts";
 import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 import { stressMethods, stressHandlers } from "./session/stress.ts";
+import { refuse, withCode } from "./refusals.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -234,9 +235,9 @@ export class Session {
 
   runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
     const numbered = this.withNumbers(name, args);
-    if ("reason" in numbered) return Promise.resolve({ ok: false, reason: numbered.reason });
+    if ("reason" in numbered) return Promise.resolve(refuse("bad-argument", numbered.reason));
     const picked = edgePicksAsTyped(numbered.args);
-    if ("reason" in picked) return Promise.resolve({ ok: false, reason: picked.reason });
+    if ("reason" in picked) return Promise.resolve(refuse("bad-argument", picked.reason));
     args = picked.args;
     const problem = validateTool(name, args ?? {});
     if (problem) throw new ProtocolError(problem);
@@ -263,7 +264,7 @@ export class Session {
       const { payload, carriedAll } = this.bridgePayload(name, input, value);
       this.lastBridge = payload;
       void mirror(payload, this.bridgeLink, carriedAll);
-      return withPicks(this.withAutosaveHint(value), picks);
+      return withPicks(withCode(this.withAutosaveHint(value)), picks);
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
         const refusal = domainRefusal(err.message);
@@ -564,7 +565,7 @@ export class Session {
     const copy = structuredClone(input);
     return (async () => {
       const refused = await this.resolveTextFonts(textsNeedingFonts(copy));
-      return refused ? { ok: false, reason: refused } : this.dispatchNow(name, copy, meta);
+      return refused ? refuse("refused", refused) : this.dispatchNow(name, copy, meta);
     })();
   }
 

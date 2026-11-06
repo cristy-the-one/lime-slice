@@ -27,6 +27,7 @@ import { assemblyOf, exportParts } from "../../src/assembly.ts";
 import { resolveWrite } from "../workspace.ts";
 import { CHORD, ModelRunaway, type PlateObject, joined, modelSteps, numberNotes, numbered, shownName, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /** The whole table, in order. The first bad row refuses the set and changes nothing. */
 /** A history step from a handle (node_3), its label, or a composite edit's label (its last step). */
@@ -44,14 +45,14 @@ function nodeOf(this: Session, obj: PlateObject, value: unknown): number | null 
 
 async function history(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const opened = obj.tree ?? await this.opened(obj);
-  if ("reason" in opened) return { ok: false, reason: opened.reason };
+  if ("reason" in opened) return refuse("model-unavailable", opened.reason);
   return historyReply(opened, input);
 }
 
 async function gotoNode(this: Session, obj: PlateObject, node: number | null): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (node === null || !tree.nodes.has(node)) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   // --- 3.1 F9. A goto replays from the nearest solid the engine still holds, which can be a whole group of hundreds
   // of booleans: it gets two seconds a step on the way, not one call's limit, and a modeler past even that is a reply.
   let reply: Record<string, unknown>;
@@ -62,7 +63,7 @@ async function gotoNode(this: Session, obj: PlateObject, node: number | null): P
     if (lost) return lost;
     throw err;
   }
-  if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+  if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error));
   obj.tree = jumped(tree, node);
   const solid = solidView(reply);
   if (solid) obj.solid = solid;
@@ -93,7 +94,7 @@ async function step(this: Session, obj: PlateObject, direction: "undo" | "redo")
     return { ok: true, object: obj.id, node: nodeHandle(next.tree?.current ?? 0), group: `rebuild ${next.rustRecipe?.split("@")[0] ?? "plugin"}` };
   }
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const group = direction === "undo"
     ? obj.groups?.find((row) => row.end === tree.current && tree.nodes.has(row.start))
     : obj.undoneGroup && obj.undoneGroup.start === tree.current && tree.nodes.has(obj.undoneGroup.end) ? obj.undoneGroup : undefined;
@@ -110,33 +111,33 @@ async function step(this: Session, obj: PlateObject, direction: "undo" | "redo")
     return moved.ok === true ? { ...moved, group: `recipe ${run.stamp?.plugin ?? "run"}` } : moved;
   }
   const target = direction === "undo" ? undoTarget(tree) : redoTarget(tree);
-  if (target === null) return { ok: false, reason: direction === "undo" ? "This is the start of the history." : "There is nothing to redo." };
+  if (target === null) return refuse("history-start", direction === "undo" ? "This is the start of the history." : "There is nothing to redo.");
   obj.undoneGroup = undefined;
   return this.gotoNode(obj, target);
 }
 
 async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>): Promise<Record<string, unknown>> {
   const refusal = editRefusal(tree, node);
-  if (refusal) return { ok: false, reason: refusal };
+  if (refusal) return refuse("step-kept", refusal);
   const baked = this.bake(obj, raw);
-  if ("reason" in baked) return { ok: false, reason: baked.reason };
+  if ("reason" in baked) return refuse("bad-op", baked.reason);
   // --- K2 feature root. Reopen from the baked extrude, revolve, or loft. A probe on the solid is not a preview of replacing it, so the engine's open is the check. ---
   if (tree.root.kind === "feature") {
     const op = baked.op;
     if (op.kind !== "extrude" && op.kind !== "revolve" && op.kind !== "loft") {
-      return { ok: false, reason: "This solid started from a sketch. Replace it with an extrude, a revolve, or a loft." };
+      return refuse("bad-op", "This solid started from a sketch. Replace it with an extrude, a revolve, or a loft.");
     }
     if (op.op !== "fuse") {
       const noun = op.kind === "extrude" ? "extrude" : op.kind === "revolve" ? "revolve" : "loft";
-      return { ok: false, reason: `A new solid is the ${noun} itself. Cut and intersect need a part that is already there.` };
+      return refuse("bad-op", `A new solid is the ${noun} itself. Cut and intersect need a part that is already there.`);
     }
     const root = { kind: "feature" as const, op };
     const reopened = await this.reopenRoot(obj, tree, node, root);
     if (reopened) return reopened;
     return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
   }
-  if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return { ok: false, reason: "The new solid's first step takes a root edit." };
-  if (!obj.probes.has(probeKey(String(node), baked.op))) return { ok: false, reason: "Probe this edit first. It was not applied." };
+  if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return refuse("bad-op", "The new solid's first step takes a root edit.");
+  if (!obj.probes.has(probeKey(String(node), baked.op))) return refuse("not-probed", "Probe this edit first. It was not applied.", undefined, NEXT.probe);
   const { kind: _kind, exprs: _exprs, ...solid } = baked.op;
   // --- D25. The new sizes keep the expressions this call typed; typed numbers drop the old ones.
   const root = { kind: "primitive" as const, solid, ...(exprs ? { exprs } : {}) };
@@ -158,7 +159,7 @@ async function reopenRoot(this: Session, obj: PlateObject, tree: ModelTree, node
   const next = jumped({ ...tree, root, nodes }, node);
   const budget = Math.max(this.modelTimeoutMs(), modelSteps(next) * 2000);
   const reply = await this.treeCall(wholeTreeRequest(next, root, node, obj.stepTolerance || CHORD), "root", budget);
-  if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error, "create") };
+  if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error, "create"));
   const solid = solidView(reply);
   const rooted = nodes.get(node);
   if (rooted && solid) nodes.set(node, { ...rooted, fingerprint: solid.fingerprint });
@@ -171,11 +172,11 @@ async function reopenRoot(this: Session, obj: PlateObject, tree: ModelTree, node
 
 function rename(this: Session, obj: PlateObject, node: number | null, label: string): Record<string, unknown> {
   const tree = obj.tree;
-  if (!tree || node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
+  if (!tree || node === null || !tree.nodes.has(node)) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   const trimmed = label.trim();
-  if (!trimmed) return { ok: false, reason: "The step needs a name." };
+  if (!trimmed) return refuse("bad-name", "The step needs a name.");
   const row = tree.nodes.get(node);
-  if (!row) return { ok: false, reason: "That step is not in the history." };
+  if (!row) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   row.label = trimmed.slice(0, 80);
   return { ok: true, node: nodeHandle(node), label: row.label };
 }
@@ -184,10 +185,10 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
   const typedText = this.pendingTexts[0];
   this.pendingTexts = [];
   const toolReason = await this.openJoinTool(raw);
-  if (toolReason) return { ok: false, reason: toolReason };
+  if (toolReason) return refuse("needs-solid-tool", toolReason);
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
-  if (node === null || !tree.nodes.has(node)) return { ok: false, reason: "That step is not in the history." };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
+  if (node === null || !tree.nodes.has(node)) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   const parent = tree.nodes.get(node)?.parent;
   const typed = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
   const first = typed ? this.bake(obj, structuredClone(typed)) : null;
@@ -203,21 +204,21 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
     if (read.ok !== true) return read;
   } else planned = this.bake(obj, raw);
   const baked = planned;
-  if ("reason" in baked) return { ok: false, reason: baked.reason };
+  if ("reason" in baked) return refuse("bad-op", baked.reason);
   const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
-  if (!probed) return { ok: false, reason: "Probe this edit first. It was not applied." };
+  if (!probed) return refuse("not-probed", "Probe this edit first. It was not applied.", undefined, NEXT.probe);
   if (baked.op.kind === "split") {
     const note = this.splitCheck(obj, baked.op);
-    if (note.bad) return { ok: false, reason: note.text };
+    if (note.bad) return refuse("does-not-fit", note.text);
   } else if (baked.op.kind === "partition") {
     const checked = await this.treeCall(probeRequest(tree.key, parent, baked.op));
-    if (checked.ok !== true) return { ok: false, reason: plainModelError(typeof checked.error === "string" ? checked.error : "This does not fit.") };
+    if (checked.ok !== true) return refuse("kernel-refused", plainModelError(typeof checked.error === "string" ? checked.error : "This does not fit."));
   } else if (baked.op.kind !== "scale") {
     const tool = (baked.op.kind === "join" ? "boolean" : baked.op.kind) as ProbedTool;
     const checked = await this.treeCall(probeRequest(tree.key, parent, baked.op));
     const view = probeFromBody(checked);
     const fit = probeNote(tool, view);
-    if (!fit || fit.bad) return { ok: false, reason: fit?.text ?? "This does not fit." };
+    if (!fit || fit.bad) return refuse("does-not-fit", fit?.text ?? "This does not fit.");
   }
   const replayIds = replayChain(tree, node, tree.current);
   const replayOps = replayIds.map((id) => tree.nodes.get(id)?.op).filter((op): op is ModelOp => op != null);
@@ -227,7 +228,7 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
   const joins = this.toolLinks(tree, [node, ...replayIds]);
   const levels = crossEdit(tree, joins, node, baked.op, replayIds, (key, need) => this.reserveOn(key, need));
   const own = levels[levels.length - 1];
-  if (!own) return { ok: false, reason: "That step could not be rebuilt." };
+  if (!own) return refuse("rebuild-refused", "That step could not be rebuilt.");
   // --- 3.1 F9. An edit replays every step after the one edited, and the tools its joins take: a budget for all of them.
   const replayed = levels.reduce((sum, level) => sum + 1 + level.replay.reduce((inner, step) => inner + 1 + (step.op.kind === "group" ? step.op.steps.length : 0), 0), 0);
   // --- Split to print (D9): the edited cut makes its pieces again in the same call.
@@ -241,7 +242,7 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
     if (lost) return lost;
     throw err;
   }
-  if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+  if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error));
   const built = readBuilt(reply.built);
   const broken = readBroken(reply.broken);
   const ids = [own.node, ...own.replay.map((step) => step.id)];
@@ -332,20 +333,20 @@ function forkTools(this: Session, levels: { key: string; parent: NodeId; node: N
 
 function drop(this: Session, obj: PlateObject, node: number | null): Record<string, unknown> {
   const tree = obj.tree;
-  if (!tree || node === null) return { ok: false, reason: "That step is not in the history." };
+  if (!tree || node === null) return refuse("step-not-found", "That step is not in the history.", undefined, NEXT.hist);
   const reason = dropRefusal(tree, node);
-  if (reason) return { ok: false, reason };
+  if (reason) return refuse("step-kept", reason);
   const next = dropped(tree, node);
-  if (!next) return { ok: false, reason: "That step stays." };
+  if (!next) return refuse("step-kept", "That step stays.");
   obj.tree = next;
   return { ok: true };
 }
 
 async function commit(this: Session, obj: PlateObject): Promise<Record<string, unknown>> {
   const blocked = this.meshBlock(obj);
-  if (blocked) return { ok: false, reason: blocked };
+  if (blocked) return refuse("step-kept", blocked);
   const reason = await this.commitObject(obj);
-  if (reason) return { ok: false, reason };
+  if (reason) return refuse("step-kept", reason);
   const pieces = await this.commitPieces(obj);
   return {
     ok: true,
@@ -481,18 +482,18 @@ function withKernelMeshes(this: Session, doc: LimeProject): LimeProject {
  */
 async function exportAssemblyStep(this: Session, obj: PlateObject, name: string): Promise<Record<string, unknown>> {
   const assembly = assemblyOf(this.liveAssemblies(), obj.id);
-  if (!assembly) return { ok: false, reason: "This part is in no assembly. model_place {to} puts it in one." };
+  if (!assembly) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
   const parts = exportParts(assembly, (id) => partStem(this.find(id)?.name ?? ""));
   const held: { part: PlateObject; name: string; key: string; node: NodeId }[] = [];
   for (const row of parts) {
     const part = this.find(row.object);
     if (!part) continue;
     const tree = await this.opened(part);
-    if ("reason" in tree) return { ok: false, reason: `${shownName(part.name)}: ${tree.reason} A STEP assembly holds solids only.` };
+    if ("reason" in tree) return refuse("model-unavailable", `${shownName(part.name)}: ${tree.reason} A STEP assembly holds solids only.`);
     held.push({ part, name: row.name, key: tree.key, node: tree.current });
   }
   const [first, ...rest] = held;
-  if (!first) return { ok: false, reason: "This assembly has no part on the plate." };
+  if (!first) return refuse("no-assembly", "This assembly has no part on the plate.", undefined, NEXT.assembly);
   let reply: Record<string, unknown>;
   try {
     reply = await this.treeCall(exportRequest(first.key, first.node, "step", rest, held.map((row) => row.name), held.map((row) => row.part.modelPose ?? IDENTITY_POSE)), "export");
@@ -502,7 +503,7 @@ async function exportAssemblyStep(this: Session, obj: PlateObject, name: string)
     throw err;
   }
   const step = this.stepBytes(reply);
-  if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The assembly was not exported." };
+  if (!step) return refuse("kernel-refused", typeof reply.error === "string" ? plainModelError(reply.error) : "The assembly was not exported.");
   const path = resolveWrite(name, ".step");
   writeFileSync(path, step);
   return {
@@ -521,7 +522,7 @@ async function exportAssemblyStep(this: Session, obj: PlateObject, name: string)
 
 async function exportStep(this: Session, obj: PlateObject, name: string): Promise<Record<string, unknown>> {
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   let reply: Record<string, unknown>;
   try {
     reply = await this.treeCall(exportRequest(tree.key, tree.current, "step"), "export");
@@ -531,7 +532,7 @@ async function exportStep(this: Session, obj: PlateObject, name: string): Promis
     throw err;
   }
   const step = this.stepBytes(reply);
-  if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported." };
+  if (!step) return refuse("kernel-refused", typeof reply.error === "string" ? plainModelError(reply.error) : "The solid was not exported.");
   const path = resolveWrite(name, ".step");
   writeFileSync(path, step);
   return { ok: true, path, bytes: step.byteLength };
@@ -541,7 +542,7 @@ async function measure(this: Session, obj: PlateObject, input: Record<string, un
   const faces = typeof input.faceA === "number" || typeof input.faceB === "number";
   if (faces && typeof input.faceA === "number" && typeof input.faceB === "number") {
     const tree = await this.opened(obj);
-    if ("reason" in tree) return { ok: false, reason: tree.reason };
+    if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   }
   return measureReply(obj.solid, this.typedPlane(obj), input, async (faceA, faceB) => {
     const tree = obj.tree!;

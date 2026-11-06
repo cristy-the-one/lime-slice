@@ -32,6 +32,7 @@ import { featureSolidInModel } from "../../src/model-features.ts";
 import { resolveWrite } from "../workspace.ts";
 import { CHORD, ModelRunaway, type PlateObject, SLICE_CHECK_MCP, STEP, UNKNOWN_OBJECT, joined, numberNotes, numbered, pinsOf, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function splitKeepMethod(this: Session, raw: unknown): "both" | "above" | "below" {
   return splitKeep(raw);
@@ -101,12 +102,12 @@ function partitionContext(this: Session, obj: PlateObject | null): FillContext {
 async function planTool(this: Session, obj: PlateObject, raw: unknown): Promise<Record<string, unknown>> {
   const spec = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   if (spec.kind === "transition") return this.planTransition(obj, spec);
-  if (spec.kind !== "partition") return { ok: false, reason: PLAN_KIND };
+  if (spec.kind !== "partition") return refuse("wrong-kind", PLAN_KIND);
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const typed = readPartition(spec, (id) => this.partitionTarget(id));
-  if ("reason" in typed) return { ok: false, reason: typed.reason };
-  if (!obj.solid) return { ok: false, reason: "This solid could not be read." };
+  if ("reason" in typed) return refuse("bad-argument", typed.reason);
+  if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
   const frame = bedFrame(obj.solid.positions, obj.orient, obj.scale, typedPoseOf(obj));
   const targetName = typed.target ? targetPrinter(this.library, typed.target.printer)?.name : undefined;
@@ -121,18 +122,18 @@ async function planTool(this: Session, obj: PlateObject, raw: unknown): Promise<
  */
 async function planTransition(this: Session, obj: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
   const extra = Object.keys(spec).find((key) => !["kind", "angleDeg", "size", "maxMm", "mode", "label"].includes(key));
-  if (extra) return { ok: false, reason: `plan:true finds the edges itself, from this pose: it takes angleDeg, size and maxMm, not ${extra}.` };
-  if (spec.mode !== undefined && spec.mode !== "auto") return { ok: false, reason: "plan:true proposes mode auto, which lets each edge's case decide." };
+  if (extra) return refuse("bad-argument", `plan:true finds the edges itself, from this pose: it takes angleDeg, size and maxMm, not ${extra}.`);
+  if (spec.mode !== undefined && spec.mode !== "auto") return refuse("bad-argument", "plan:true proposes mode auto, which lets each edge's case decide.");
   const limit = transitionAngleLimit(this.settings.supportAngle);
   const angleDeg = spec.angleDeg === undefined ? limit : spec.angleDeg;
-  if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > TRANSITION_MAX_DEG) return { ok: false, reason: `angleDeg is the new face's angle to the layers, at most ${TRANSITION_MAX_DEG}°.` };
-  if (angleDeg < limit - 1e-9) return { ok: false, reason: `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.` };
+  if (typeof angleDeg !== "number" || !Number.isFinite(angleDeg) || angleDeg > TRANSITION_MAX_DEG) return refuse("bad-argument", `angleDeg is the new face's angle to the layers, at most ${TRANSITION_MAX_DEG}°.`);
+  if (angleDeg < limit - 1e-9) return refuse("bad-argument", `angleDeg must be at least ${formatMm(limit)}°, the support limit of these settings, so the new face holds its own rows.`);
   const size = spec.size === undefined ? TRANSITION_SIZE_MM : spec.size;
-  if (size !== "face" && (typeof size !== "number" || !(size > 0))) return { ok: false, reason: "size is millimetres along the flatter face, or \"face\" to its end." };
+  if (size !== "face" && (typeof size !== "number" || !(size > 0))) return refuse("bad-argument", "size is millimetres along the flatter face, or \"face\" to its end.");
   const maxMm = spec.maxMm;
-  if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return { ok: false, reason: "maxMm must be above 0 mm." };
+  if (maxMm !== undefined && (typeof maxMm !== "number" || !(maxMm > 0))) return refuse("bad-argument", "maxMm must be above 0 mm.");
   const tree = await this.opened(obj);
-  if ("reason" in tree) return { ok: false, reason: tree.reason };
+  if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   const printer = this.printer();
   const fix: TransitionFix = { mode: "auto", angleDeg, size: size as number | "face", ...(maxMm !== undefined ? { maxMm: maxMm as number } : {}) };
   const build = transitionBuild({ orient: obj.orient, belt: printer.kind === "belt" ? printer.belt : null });
@@ -145,7 +146,7 @@ async function planTransition(this: Session, obj: PlateObject, spec: Record<stri
     throw err;
   }
   const found = readFinding(reply, obj.orient, fix, (text) => plainModelError(text, "transition"));
-  if (typeof found === "string") return { ok: false, reason: plainModelError(found, "transition") };
+  if (typeof found === "string") return refuse("kernel-refused", plainModelError(found, "transition"));
   const read = this.againstSlice(obj, found, build);
   const pose = typedPoseOf(obj);
   const typedAt = (p: readonly number[]) => this.typedPoint(obj, applyPose(pose, p)).map((value) => Math.round(value * 1000) / 1000 + 0);
@@ -195,15 +196,15 @@ function againstSlice(this: Session, obj: PlateObject, finding: Finding, build: 
  */
 async function fitCouponNew(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const raw = input.coupon && typeof input.coupon === "object" && !Array.isArray(input.coupon) ? (input.coupon as Record<string, unknown>) : null;
-  if (!raw) return { ok: false, reason: "coupon is {printer, material, radius, depth, hole, startMm}; every field is optional." };
-  if (Object.keys(input).some((key) => key !== "coupon" && key !== "name")) return { ok: false, reason: "solid_new takes a coupon or a primitive, not both. Only name goes with a coupon." };
+  if (!raw) return refuse("bad-coupon", "coupon is {printer, material, radius, depth, hole, startMm}; every field is optional.");
+  if (Object.keys(input).some((key) => key !== "coupon" && key !== "name")) return refuse("bad-coupon", "solid_new takes a coupon or a primitive, not both. Only name goes with a coupon.");
   const sizes = (["radius", "depth", "startMm"] as const).filter((key) => raw[key] !== undefined && (typeof raw[key] !== "number" || !Number.isFinite(raw[key])));
-  if (sizes.length > 0) return { ok: false, reason: `coupon.${sizes[0]} is a number of millimetres.` };
-  if (raw.hole !== undefined && raw.hole !== "round" && raw.hole !== "teardrop") return { ok: false, reason: "coupon.hole is round or teardrop." };
+  if (sizes.length > 0) return refuse("bad-coupon", `coupon.${sizes[0]} is a number of millimetres.`);
+  if (raw.hole !== undefined && raw.hole !== "round" && raw.hole !== "teardrop") return refuse("bad-coupon", "coupon.hole is round or teardrop.");
   let target: Target | null = null;
   if (typeof raw.printer === "string") {
     target = this.partitionTarget(raw.printer);
-    if (!target) return { ok: false, reason: `No printer in the library is ${raw.printer}. machine_list shows the ids; formlabs-form-4 is the resin printer.` };
+    if (!target) return refuse("unknown-machine", `No printer in the library is ${raw.printer}. machine_list shows the ids; formlabs-form-4 is the resin printer.`);
   }
   const ctx = this.partitionContext(null);
   const aimed = target ?? ctx.plateTarget;
@@ -220,14 +221,14 @@ async function fitCouponNew(this: Session, input: Record<string, unknown>): Prom
     ...(typeof raw.startMm === "number" ? { startMm: raw.startMm } : {}),
     ...(name ? { name } : {}),
   });
-  if ("reason" in coupon) return { ok: false, reason: coupon.reason };
+  if ("reason" in coupon) return refuse("bad-coupon", coupon.reason);
   let reply: ReturnType<typeof readCouponReply>;
   try {
     reply = readCouponReply(JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify(fitCouponRequest(coupon))))) as Record<string, unknown>);
   } catch (err) {
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    return refuse("split-refused", err instanceof Error ? err.message : String(err));
   }
-  if (typeof reply === "string") return { ok: false, reason: plainModelError(reply, "create") };
+  if (typeof reply === "string") return refuse("kernel-refused", plainModelError(reply, "create"));
   const parts = [{ name: coupon.name, file: couponFileName(coupon), part: reply.plate }, ...(reply.pins ? [{ name: `${coupon.name} pins`, file: couponFileName(coupon, true), part: reply.pins }] : [])];
   const summary = {
     sentence: coupon.sentence,
@@ -249,7 +250,7 @@ async function fitCouponNew(this: Session, input: Record<string, unknown>): Prom
   const made: PlateObject[] = [];
   for (const one of parts) {
     const bytes = base64ToBytes(one.part.stepB64);
-    if (!bytes) return { ok: false, reason: "The engine did not write the coupon." };
+    if (!bytes) return refuse("export-failed", "The engine did not write the coupon.");
     const preview = await this.preview(one.file, bytes, STEP);
     made.push(this.addObject({ name: one.name, fileName: one.file, bytes, source: preview.source, triangles: preview.triangles, orient: [...ID_MATRIX], scale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, seatMm: preview.seatMm, stepTolerance: STEP }));
   }
@@ -294,7 +295,7 @@ async function probePartition(this: Session, obj: PlateObject, tree: ModelTree, 
     if (lost) return lost;
     throw err;
   }
-  if (reply.ok !== true) return { ok: false, reason: plainModelError(typeof reply.error === "string" ? reply.error : "This does not fit.") };
+  if (reply.ok !== true) return refuse("kernel-refused", plainModelError(typeof reply.error === "string" ? reply.error : "This does not fit."));
   const parts = Array.isArray(reply.parts) ? (reply.parts as { volumeMm3?: unknown; min?: unknown; max?: unknown }[]) : [];
   const mm = (value: number) => Math.round(value * 100) / 100;
   const pieces = parts.map((part, index) => {
@@ -325,7 +326,7 @@ function pieceKeys(this: Session, obj: PlateObject, node: number, op: PartitionM
  * rooted at this node, with no paint, seam, reinforcement or support edit of its own.
  */
 async function applyPartition(this: Session, obj: PlateObject, tree: ModelTree, op: PartitionModelOp, typed: Record<string, unknown>, budgetMs?: number): Promise<Record<string, unknown>> {
-  if (!obj.probes.has(probeKey(String(tree.current), op))) return { ok: false, reason: "Probe this edit first, or pass probe: true. It was not applied." };
+  if (!obj.probes.has(probeKey(String(tree.current), op))) return refuse("not-probed", "Probe this edit first, or pass probe: true. It was not applied.", undefined, NEXT.probe);
   const [reserved, node] = reserveId(tree);
   obj.tree = reserved;
   let reply: Record<string, unknown>;
@@ -336,7 +337,7 @@ async function applyPartition(this: Session, obj: PlateObject, tree: ModelTree, 
     if (lost) return lost;
     throw err;
   }
-  if (typeof reply.error === "string" && reply.error) return { ok: false, reason: plainModelError(reply.error) };
+  if (typeof reply.error === "string" && reply.error) return refuse("kernel-refused", plainModelError(reply.error));
   const keys: (string | null)[] = [];
   const objects: string[] = [];
   const listed = Array.isArray(reply.pieces) ? (reply.pieces as unknown[]) : [];
@@ -760,9 +761,9 @@ async function partitionPieces(this: Session, obj: PlateObject): Promise<{ piece
 async function exportPieceMeshes(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const requested = typeof input.object === "string" ? input.object : "";
   const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested) ?? null;
-  if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+  if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const got = await this.partitionPieces(obj);
-  if ("reason" in got) return { ok: false, reason: got.reason };
+  if ("reason" in got) return refuse("split-refused", got.reason);
   const name = String(input.name);
   const parts = got.pins ? [...got.pieces, got.pins] : got.pieces;
   const names = pieceNames(name, got.pieces.length, !!got.pins);
@@ -787,7 +788,7 @@ async function exportPieceMeshes(this: Session, input: Record<string, unknown>):
 /** --- D12. model_export_step with pieces: true. One STEP file holding every piece as a named solid, in order. */
 async function exportPieceStep(this: Session, obj: PlateObject, name: string): Promise<Record<string, unknown>> {
   const got = await this.partitionPieces(obj);
-  if ("reason" in got) return { ok: false, reason: got.reason };
+  if ("reason" in got) return refuse("split-refused", got.reason);
   const parts = got.pins ? [...got.pieces, got.pins] : got.pieces;
   const names = pieceNames(name, got.pieces.length, !!got.pins);
   const [first, ...rest] = parts.map((piece) => piece.tree!);
@@ -800,7 +801,7 @@ async function exportPieceStep(this: Session, obj: PlateObject, name: string): P
     throw err;
   }
   const step = this.stepBytes(reply);
-  if (!step) return { ok: false, reason: typeof reply.error === "string" ? plainModelError(reply.error) : "The pieces were not exported." };
+  if (!step) return refuse("kernel-refused", typeof reply.error === "string" ? plainModelError(reply.error) : "The pieces were not exported.");
   const path = resolveWrite(name, ".step");
   writeFileSync(path, step);
   return {

@@ -336,7 +336,7 @@ check("the save keeps the tool's tree as a model tool, not a plate object", (joi
 
 writeFileSync(join(workspace, "taken.lime"), "{}");
 const refusedSave = await call("project_save", { name: "taken.lime", ifExists: "refuse" });
-check("project_save can refuse to replace a file", refusedSave.ok === false && String(refusedSave.reason).includes("already"), JSON.stringify(refusedSave));
+check("project_save can refuse to replace a file", refusedSave.ok === false && refusedSave.code === "project-exists" && String(refusedSave.reason).includes("already"), JSON.stringify(refusedSave));
 const saved = await call("project_save", { name: "fresh.lime", ifExists: "refuse" });
 check("project_save writes a new name", saved.ok === true, JSON.stringify(saved));
 

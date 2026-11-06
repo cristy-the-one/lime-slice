@@ -18,16 +18,17 @@ import { assemblyOf } from "../../src/assembly.ts";
 import { resolveWrite } from "../workspace.ts";
 import { type Ghost, LAYER_ROWS, type PlateObject, STRESS_LAYER_NEEDS, type ToolHandler, joinedPositions, posedPositions } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 async function renderView(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const obj = this.find(typeof input.object === "string" ? input.object : this.selected) ?? this.objects[0];
-  if (!obj) return { ok: false, reason: "Load a mesh first." };
+  if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   const committed = await this.commitObject(obj);
-  if (committed) return { ok: false, reason: committed };
+  if (committed) return refuse("commit-failed", committed);
   // --- Assemblies M5. view draws several parts: the object's assembly as assembled, or the whole bed as it prints.
   if (input.view !== undefined) {
-    if (input.view !== "assembly" && input.view !== "print") return { ok: false, reason: 'view is "assembly" or "print".' };
-    if (input.op !== undefined || input.section !== undefined || input.highlight !== undefined || input.colours !== undefined) return { ok: false, reason: "view draws several parts; op, section, highlight and colours are for one part." };
+    if (input.view !== "assembly" && input.view !== "print") return refuse("bad-view", 'view is "assembly" or "print".');
+    if (input.op !== undefined || input.section !== undefined || input.highlight !== undefined || input.colours !== undefined) return refuse("bad-view", "view draws several parts; op, section, highlight and colours are for one part.");
   }
   const turntable = typeof input.turntable === "number" ? Math.round(input.turntable) : 0;
   const many = Array.isArray(input.views) || turntable > 1;
@@ -40,13 +41,13 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   const cameras: { label: string; camera: Camera | CameraSpec }[] = [];
   for (const raw of asked) {
     const read = readCamera(raw);
-    if ("reason" in read) return { ok: false, reason: read.reason };
+    if ("reason" in read) return refuse("bad-view", read.reason);
     cameras.push(read);
   }
   let ghost: Ghost | null = null;
   if (input.op !== undefined) {
     const made = await this.ghostMesh(obj, input.op);
-    if ("reason" in made) return { ok: false, reason: made.reason };
+    if ("reason" in made) return refuse("bad-view", made.reason);
     ghost = made;
   }
   // --- 3.1 F12. A section, a highlight or colours need the solid: a STEP import is opened for them here, as
@@ -55,16 +56,16 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   if (looksAsked && !(obj.solid && obj.solid.positions.length >= 9) && !this.meshBlock(obj)) {
     try {
       const opened = await this.opened(obj);
-      if ("reason" in opened) return { ok: false, reason: opened.reason };
+      if ("reason" in opened) return refuse("model-unavailable", opened.reason);
     } catch (err) {
-      if (err instanceof ProtocolError) return { ok: false, reason: err.message };
+      if (err instanceof ProtocolError) return refuse("bad-view", err.message);
       throw err;
     }
   }
   const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
   const mesh = input.view === "assembly" || input.view === "print" ? this.viewMesh(obj, input.view) : solidMesh ? obj.solid!.positions : this.placed(obj).positions;
   const looks = this.renderLooks(obj, input, solidMesh);
-  if ("reason" in looks) return { ok: false, reason: looks.reason };
+  if ("reason" in looks) return refuse("bad-view", looks.reason);
   const stem = typeof input.name === "string" ? input.name.replace(/\.png$/i, "") : obj.name;
   const edge = typeof input.longEdge === "number" ? input.longEdge : 768;
   const views: { camera: string; path: string; width: number; height: number }[] = [];
@@ -160,9 +161,9 @@ function layerColumns(this: Session, input: Record<string, unknown>): { paths: P
 
 function layerDetail(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
-  if (!job?.wire) return { ok: false, reason: "Slice first." };
+  if (!job?.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const layers = Array.isArray(job.wire.layers) ? job.wire.layers as { z?: number; seconds?: number; index?: number }[] : [];
   const span = Array.isArray(input.layers) ? input.layers : [0, Math.max(0, layers.length - 1)];
   const from = typeof span[0] === "number" ? span[0] : 0;
@@ -181,7 +182,7 @@ function layerDetail(this: Session, input: Record<string, unknown>): Record<stri
 
 function layerPathsFile(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const layer = this.layerColumns(input);
-  if ("reason" in layer) return { ok: false, reason: layer.reason };
+  if ("reason" in layer) return refuse("layer-missing", layer.reason);
   const paths = layerPaths(layer.paths, layer.z, typeof input.simplifyMm === "number" ? input.simplifyMm : 0.05, layer.offsets);
   const text = pathsSvg(paths);
   const path = resolveWrite(typeof input.name === "string" ? input.name : `layer-${layer.index}.svg`, ".svg");
@@ -191,12 +192,12 @@ function layerPathsFile(this: Session, input: Record<string, unknown>): Record<s
 
 function layerImage(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const layer = this.layerColumns(input);
-  if ("reason" in layer) return { ok: false, reason: layer.reason };
+  if ("reason" in layer) return refuse("layer-missing", layer.reason);
   const colourBy: ColorMode = input.colourBy === "speed" || input.colourBy === "weight" || input.colourBy === "stress" || input.colourBy === "safety" ? input.colourBy : "feature";
   let stress: LayerStress | undefined;
   if (readsStress(colourBy)) {
     const cells = this.stressCells;
-    if (!cells) return { ok: false, reason: STRESS_LAYER_NEEDS };
+    if (!cells) return refuse("not-sliced", STRESS_LAYER_NEEDS, undefined, NEXT.slice);
     const objects = this.finished(typeof input.job === "string" ? input.job : undefined)?.wire?.objects;
     const ids = Array.isArray(objects) ? objects.map((o) => (o && typeof o === "object" ? (o as { id?: unknown }).id : undefined)) : null;
     // A plate reply names its objects; a one-object reply is the studied object's.
@@ -213,9 +214,9 @@ function layerImage(this: Session, input: Record<string, unknown>): Record<strin
 
 function gcodeRead(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const job = this.finished(typeof input.job === "string" ? input.job : undefined);
-  if (!job?.gcode) return { ok: false, reason: "Slice first." };
+  if (!job?.gcode) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
-  if (stale) return { ok: false, reason: stale };
+  if (stale) return refuse("stale-slice", stale, undefined, NEXT.slice);
   const lines = job.gcode.split("\n");
   const start = typeof input.fromLine === "number" ? Math.max(1, Math.round(input.fromLine)) : 1;
   const count = typeof input.count === "number" ? Math.min(500, Math.max(1, Math.round(input.count))) : 40;
