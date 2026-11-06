@@ -60,6 +60,7 @@ import {
 } from "../plugins/library";
 import { DEMO_PLUGIN, DEMO_TRY } from "../plugins/demo";
 import { RECIPE_API } from "../plugin-step";
+import { apiVerdict } from "../recipe/api-level";
 import { KIND_PURPOSE, PURPOSE, REASON } from "./plugins-panel-text";
 import { setLessons } from "./lessons-note";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
@@ -617,15 +618,10 @@ function targetLine(plugin: PanelPlugin): string {
 function readOnlyNote(plugin: PanelPlugin): string | null {
   if (runnerNote === undefined) return "Checking whether plugins run here…";
   if (runnerNote) return `${runnerNote} Projects open, and parts built with plugins are kept as built.`;
-  if (plugin.file.api && apiNewer(plugin.file.api)) return `This plugin needs recipe API ${plugin.file.api}, from a newer Lime Slice; this app has ${RECIPE_API.join(".")}. Update Lime Slice to run it.`;
+  // D12: a newer API (or a retired major) is refused before anything is built, in the MCP's words.
+  const verdict = plugin.file.api ? apiVerdict(plugin.file.api, [RECIPE_API]) : null;
+  if (verdict && !verdict.ok && verdict.code !== "plugin-invalid") return verdict.reason;
   return null;
-}
-
-function apiNewer(api: string): boolean {
-  const m = /^(\d+)\.(\d+)$/.exec(api.trim());
-  if (!m) return false;
-  const [major, minor] = [Number(m[1]), Number(m[2])];
-  return major > RECIPE_API[0] || (major === RECIPE_API[0] && minor > RECIPE_API[1]);
 }
 
 function runnable(plugin: PanelPlugin): string | null {

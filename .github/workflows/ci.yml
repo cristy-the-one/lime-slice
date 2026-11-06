@@ -21,6 +21,7 @@ jobs:
       code: ${{ steps.diff.outputs.code }}
       macos: ${{ steps.diff.outputs.macos }}
       bump: ${{ steps.diff.outputs.bump }}
+      recipes: ${{ steps.diff.outputs.recipes }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -35,6 +36,7 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "macos=true" >> "$GITHUB_OUTPUT"
             echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "recipes=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           code=false
@@ -42,6 +44,10 @@ jobs:
           # the build, the engine's loading, or CI itself. macOS runners are scarce, and queued macOS jobs were
           # cancelled with no runner several times on 2026-11-02 while TypeScript-only PRs waited on them.
           macos=false
+          # The plugin corpus (docs/plan-recipe-plugins.md D12, milestone 9) runs when something an old plugin builds
+          # or runs against changed: lust's pin, the lime-recipe crate, the recipe host, the op JSON the session and
+          # src/modeling answer with, or the corpus itself. About 15 s in the MCP jobs, which already build lust.
+          recipes=false
           while IFS= read -r file; do
             case "$file" in
               docs/*|*.md|"") ;;
@@ -50,6 +56,9 @@ jobs:
             case "$file" in
               crates/*|src-tauri/*|Cargo.toml|Cargo.lock|rust-toolchain*|.cargo/*|tools/occt/*|tools/mcp/*|mcp/native*|mcp/engine*|package-lock.json|.github/workflows/ci.yml) macos=true ;;
             esac
+            case "$file" in
+              tools/lust/*|crates/lime-recipe*|tools/mcp/bundle.mjs|mcp/fixtures/plugins/*|mcp/recipe*|mcp/plugin*|mcp/session.ts|mcp/session/*|mcp/refusals.ts|src/recipe/*|src/modeling/*|src/model-tree*|src/plugin-step*|.github/workflows/ci.yml) recipes=true ;;
+            esac
           done < <(git diff --name-only "$BASE...$HEAD")
           # A version bump and nothing else: skip every heavy job. Anything the script doubts is not a bump.
           bump=false
@@ -57,11 +66,13 @@ jobs:
             bump=true
             code=false
             macos=false
+            recipes=false
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "macos=$macos" >> "$GITHUB_OUTPUT"
           echo "bump=$bump" >> "$GITHUB_OUTPUT"
-          echo "Code changed: $code, macOS-relevant: $macos, version bump only: $bump"
+          echo "recipes=$recipes" >> "$GITHUB_OUTPUT"
+          echo "Code changed: $code, macOS-relevant: $macos, version bump only: $bump, plugin corpus: $recipes"
 
   # The one check a bump-only change runs. It builds nothing; it makes sure the bump is complete: every version
   # agrees, and Cargo.lock is current (--locked fails if Cargo.toml would change the lock).
@@ -772,6 +783,16 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 
+      # The plugin corpus (D12): one saved plugin per recipe API level sends the calls it recorded, a newer API is
+      # refused without a build, and old majors build in their own slots (a fake 2.0 crate, test only). Only when lust,
+      # the crate, the host or the op JSON changed (the "what changed" job's recipes output).
+      - name: Plugin corpus (every recipe API level)
+        if: needs.changes.outputs.recipes == 'true'
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/plugin-corpus.test.ts
+
   mcp-windows:
     name: MCP server (Windows)
     needs: changes
@@ -891,6 +912,14 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/nugget.test.ts
+
+      # The plugin corpus (D12), as on Linux: the same record under lust on Windows.
+      - name: Plugin corpus (every recipe API level)
+        if: needs.changes.outputs.recipes == 'true'
+        timeout-minutes: 10
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+        run: node --experimental-strip-types mcp/plugin-corpus.test.ts
 
   mcp-macos:
     name: MCP server (macOS)

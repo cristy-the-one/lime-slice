@@ -1,0 +1,165 @@
+{
+  "run": {
+    "params": {
+      "diameter": 90,
+      "holes": 5
+    }
+  },
+  "api": "1.1",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 90,
+        "dy": 20,
+        "dz": 4
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 1.5,
+          "height": 3,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            -36,
+            0,
+            4
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 1.5,
+          "height": 3,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            -18,
+            0,
+            4
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 1.5,
+          "height": 3,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            0,
+            0,
+            4
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 1.5,
+          "height": 3,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            18,
+            0,
+            4
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 1.5,
+          "height": 3,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            36,
+            0,
+            4
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "kind": "hole",
+          "origin": [
+            0,
+            0,
+            4
+          ],
+          "axis": [
+            0,
+            0,
+            -1
+          ],
+          "diameterMm": 8,
+          "through": true
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "log",
+      "args": {
+        "text": "F1"
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-45,-10,0],\"size\":[90,20,4],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[-36,0,4],\"size\":[20,20,20],\"radius\":1.5,\"height\":3,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[-18,0,4],\"size\":[20,20,20],\"radius\":1.5,\"height\":3,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[0,0,4],\"size\":[20,20,20],\"radius\":1.5,\"height\":3,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[18,0,4],\"size\":[20,20,20],\"radius\":1.5,\"height\":3,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[36,0,4],\"size\":[20,20,20],\"radius\":1.5,\"height\":3,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"hole\",\"origin\":[0,0,4],\"axis\":[0,0,-1],\"radius\":4,\"depth\":5,\"through\":true}"
+  ],
+  "fingerprint": {
+    "volumeMm3": 7100,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "holes": 5,
+    "edge": "chamfer"
+  },
+  "log": [
+    "line 19: F1"
+  ]
+}

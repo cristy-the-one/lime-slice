@@ -8,6 +8,7 @@ import type { PlaceFields } from "./model-space.ts";
 import type { ToolLink } from "./model-edit.ts";
 import { ROOT, childrenOf, historyCaption, makesParts, pathTo, redoTarget, subtree, toolUser, undoTarget, type JoinOp, type ModelNode, type ModelTree, type NodeId, type PluginStamp, type PluginValue, type RunMark } from "./model-tree.ts";
 import { RECIPE_API, runEndingAt, runRedoFrom } from "./plugin-step.ts";
+import { apiVerdict } from "./recipe/api-level.ts";
 import type { CheckedCopy, PluginFileInfo, PluginParamInfo } from "./plugin-file.ts";
 
 /** Where a row sits against the shown step: before it in its history, it, after it on the branch Redo follows, or elsewhere. */
@@ -820,11 +821,10 @@ export function draftSources(mcpModel: unknown): Map<string, string> {
   return out;
 }
 
-function apiNewer(api: string): string | null {
-  const m = /^(\d+)\.(\d+)$/.exec(api.trim());
-  if (!m) return null;
-  const [major, minor] = [Number(m[1]), Number(m[2])];
-  return major > RECIPE_API[0] || (major === RECIPE_API[0] && minor > RECIPE_API[1]) ? `${major}.${minor}` : null;
+/** D12: the sentence for a plugin this app's recipe API cannot build (newer, or a retired major), or null. */
+function apiBlocked(api: string): string | null {
+  const verdict = apiVerdict(api, [RECIPE_API]);
+  return verdict.ok || verdict.code === "plugin-invalid" ? null : verdict.reason;
 }
 
 /**
@@ -849,10 +849,10 @@ export function pluginStepView(stamp: PluginStamp, env: PluginEnv): PluginStepVi
     const kind = typeof value === "boolean" ? "toggle" : typeof value === "number" ? "number" : typeof value === "object" ? ("normal" in value ? "face" : "outline") : "text";
     fields.push({ name, label: name, kind, value, isDefault: false });
   }
-  const newer = apiNewer(file?.api ?? stamp.api);
+  const newer = apiBlocked(file?.api ?? stamp.api);
   let note: string | null = null;
   if (copy && !copy.intact) note = "This project's copy of the plugin was changed outside the app.";
-  else if (newer) note = `This plugin needs recipe API ${newer}, from a newer Lime Slice; this app has ${RECIPE_API[0]}.${RECIPE_API[1]}.`;
+  else if (newer) note = newer;
   else if (!copy && !draft) note = env.library ? "The plugin source is not in this project or your library. The part is kept as built; its values cannot change." : "The plugin source is not in this project. The part is kept as built; its values cannot change.";
   else if (env.mac) note = "Rebuilding needs lust, which the macOS app does not ship yet.";
   return {

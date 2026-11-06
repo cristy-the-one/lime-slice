@@ -1,0 +1,144 @@
+{
+  "run": {},
+  "api": "1.0",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 60,
+        "dy": 12,
+        "dz": 6
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 2,
+          "height": 4,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            -22.5,
+            0,
+            6
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 2,
+          "height": 4,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            -7.5,
+            0,
+            6
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 2,
+          "height": 4,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            7.5,
+            0,
+            6
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 2,
+          "height": 4,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            22.5,
+            0,
+            6
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "box",
+          "dx": 60,
+          "dy": 2,
+          "dz": 3,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            0,
+            -7,
+            0
+          ]
+        },
+        "probe": true
+      }
+    },
+    {
+      "tool": "model_describe",
+      "args": {
+        "object": "obj_1"
+      }
+    },
+    {
+      "tool": "log",
+      "args": {
+        "text": "bar built"
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-30,-6,0],\"size\":[60,12,6],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[-22.5,0,6],\"size\":[20,20,20],\"radius\":2,\"height\":4,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[-7.5,0,6],\"size\":[20,20,20],\"radius\":2,\"height\":4,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[7.5,0,6],\"size\":[20,20,20],\"radius\":2,\"height\":4,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[22.5,0,6],\"size\":[20,20,20],\"radius\":2,\"height\":4,\"turn\":[0,0,0],\"merge\":true}",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"box\",\"origin\":[0,-7,0],\"size\":[60,2,3],\"radius\":30,\"height\":3,\"turn\":[0,0,0],\"merge\":true}"
+  ],
+  "fingerprint": {
+    "volumeMm3": 4320,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "pegs": 4,
+    "volume": 4320
+  },
+  "log": [
+    "line 18: bar built"
+  ]
+}
