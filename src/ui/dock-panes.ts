@@ -5,6 +5,7 @@
  * only lays the open ones out and adds the lines.
  */
 import { ChevronDown, createElement } from "lucide";
+import { prefs } from "../prefs.ts";
 
 export type PaneId = "tool" | "history" | "params" | "stress";
 
@@ -56,7 +57,7 @@ let laying = false;
 
 function readSizes(): Partial<Record<PaneId, number>> {
   try {
-    const parsed = JSON.parse(localStorage.getItem(SIZES_KEY) ?? "{}") as Record<string, unknown>;
+    const parsed = (prefs.getJson(SIZES_KEY) ?? {}) as Record<string, unknown>;
     const out: Partial<Record<PaneId, number>> = {};
     for (const [key, value] of Object.entries(parsed)) if (typeof value === "number" && value > 0) out[key as PaneId] = value;
     return out;
@@ -67,8 +68,8 @@ function readSizes(): Partial<Record<PaneId, number>> {
 
 function writeSizes() {
   try {
-    if (Object.keys(sizes).length === 0) localStorage.removeItem(SIZES_KEY);
-    else localStorage.setItem(SIZES_KEY, JSON.stringify(sizes));
+    if (Object.keys(sizes).length === 0) prefs.remove(SIZES_KEY);
+    else prefs.setJson(SIZES_KEY, sizes);
   } catch {
     /* storage off: the sizes last for this visit */
   }

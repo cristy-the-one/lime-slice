@@ -43,6 +43,7 @@ import {
   type Vec3,
 } from "../sim/study.ts";
 import { openDock } from "./dock-reveal.ts";
+import { prefs } from "../prefs.ts";
 
 export interface StressHooks {
   study(): ObjectStudy | null;
@@ -99,7 +100,7 @@ const DEFORMED_KEY = "lime.stress.deformed";
 
 function readDeformed(): boolean {
   try {
-    return localStorage.getItem(DEFORMED_KEY) === "1";
+    return prefs.getBool(DEFORMED_KEY);
   } catch {
     return false;
   }
@@ -107,7 +108,7 @@ function readDeformed(): boolean {
 
 function keepDeformed(on: boolean) {
   try {
-    localStorage.setItem(DEFORMED_KEY, on ? "1" : "0");
+    prefs.setBool(DEFORMED_KEY, on);
   } catch {
     // Storage blocked: the choice lasts this session.
   }

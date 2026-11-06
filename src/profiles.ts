@@ -1,4 +1,5 @@
 import { fanDefaults, type FanSettings } from "./fan.ts";
+import { prefs } from "./prefs.ts";
 
 /** What a slice sends as `printer`. The fan comes from the filament, as the temperatures do. */
 export interface PrinterProfile extends FanSettings {
@@ -64,7 +65,7 @@ export function defaultProfile(): PrinterProfile {
 
 export function loadProfile(): PrinterProfile {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = prefs.get(KEY);
     if (!raw) return defaultProfile();
     return { ...defaultProfile(), ...JSON.parse(raw) };
   } catch {
@@ -73,7 +74,7 @@ export function loadProfile(): PrinterProfile {
 }
 
 export function saveProfile(profile: PrinterProfile) {
-  localStorage.setItem(KEY, JSON.stringify(profile));
+  prefs.set(KEY, JSON.stringify(profile));
 }
 
 export function profileJson(profile: PrinterProfile) {

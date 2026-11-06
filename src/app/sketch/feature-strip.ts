@@ -16,6 +16,7 @@ import { activeSketch } from "../../sketch/session";
 import { hintSteps } from "../../sketch/hints";
 import { ASSIST_PURPOSE, REASON } from "../../sketch/reasons";
 import { axisChoices, sameAxisLine, regionCrossesAxis } from "../../sketch/revolve";
+import { prefs } from "../../prefs.ts";
 
 /** Replaces Make while Extrude, Revolve, Loft or Sweep is open. */
 export function featureStrip(): HTMLElement {
@@ -115,16 +116,16 @@ export function pickListedAxis(label: string) {
 }
 
 function howSeen(kind: string): number {
-  const key = `lime-slice-how-${kind}`;
+  const key = `lime-slice-how-${kind}` as const;
   try {
     if (S.howFeature !== kind) {
       S.howFeature = kind;
-      const next = Number(localStorage.getItem(key) ?? "0") + 1;
+      const next = prefs.getNumber(key, 0) + 1;
       const count = Number.isFinite(next) && next > 0 ? next : 1;
-      localStorage.setItem(key, String(count));
+      prefs.setNumber(key, count);
       return count;
     }
-    const seen = Number(localStorage.getItem(key) ?? "1");
+    const seen = prefs.getNumber(key, 1);
     return Number.isFinite(seen) && seen > 0 ? seen : 1;
   } catch {
     return 1;
