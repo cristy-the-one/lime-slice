@@ -44,7 +44,7 @@ const near = (value: unknown, expected: number, tol = 1e-3) => typeof value === 
 type Pair = { a: string; b: string; verdict: string; volumeMm3?: number };
 type Face = { kind: string; radiusMm?: number; centre: number[] };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 
 await call("project_create", {});
 // The body is the root, at the origin of model space. The hook is 40 × 40 × 10, centred on its own X and Y.

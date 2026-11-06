@@ -41,8 +41,9 @@ function check(name: string, ok: boolean, detail = "") {
 const near = (value: unknown, expected: number, tol = 1e-3) => typeof value === "number" && Math.abs(value - expected) < tol;
 
 type Row = { index: number; mid: number[]; centre: number[]; areaMm2: number; normal: number[]; lengthMm: number };
+type Reply = { [key: string]: unknown; failed?: { reason?: string }; reason?: string; thinWalls?: { regions?: unknown[] }; firstFaces?: { normal?: number[] }[]; faces?: Row[]; objects?: { object?: string }[] };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Reply;
 const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
 const apply = (object: string, op: Record<string, unknown>) => call("model_apply", { object, probe: true, op });
 const roundedArea = (w: number, h: number, r: number) => w * h - (4 - Math.PI) * r * r;

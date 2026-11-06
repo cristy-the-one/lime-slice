@@ -8,6 +8,7 @@ import type { DragHandle, FinePointer, Vec3 } from "../model-drag";
 import type { GrabAxis, GrabIntent } from "../viewport-grab";
 import type { LookState } from "../model-look";
 import type { MeasureKind } from "../measure-snap";
+import type { Box } from "../measure";
 import type { PrimitiveSpec } from "../model-primitive";
 import type { Workplane } from "../workplane";
 
@@ -131,7 +132,7 @@ export interface ModelView {
   /** Move the open solid in model space. Its mesh is not touched. */
   setPose(pose: Affine): void;
   /** Look at `box`, a model-space box, from the direction Model opens with. */
-  frame(box: Bounds): void;
+  frame(box: Box): void;
   /** Whether every corner of `box`, a model-space box, is on screen. */
   inView(box: Bounds): boolean;
   /** The faint bed and build volume, a size reference only. */

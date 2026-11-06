@@ -534,9 +534,9 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
-      # The three rules are warnings, so this step never fails on them. It fails only when ESLint itself
-      # breaks (a crash or a config error: exit code 2 or more). The count per rule goes to the job summary.
-      - name: ESLint (warnings only)
+      # The three rules are errors, so this step fails the job on any finding (exit code 1) and when ESLint itself
+      # breaks (exit code 2). It prints the count per rule first, and puts it in the job summary.
+      - name: ESLint
         run: |
           set +e
           npx eslint -f json -o eslint-report.json
@@ -558,18 +558,17 @@ jobs:
             }
             const lines = Object.entries(rules).sort((a, b) => b[1] - a[1]).map(([rule, n]) => `${n}\t${rule}`);
             const total = Object.values(rules).reduce((a, b) => a + b, 0);
-            console.log(`ESLint: ${total} warnings and errors, ${errors} at error level`);
+            console.log(`ESLint: ${total} findings, ${errors} at error level`);
             console.log(lines.join("\n"));
             const summary = process.env.GITHUB_STEP_SUMMARY;
             if (summary) {
               require("fs").appendFileSync(summary, `### ESLint\n\n${total} findings\n\n| Rule | Count |\n|---|---|\n${Object.entries(rules).map(([r, n]) => `| ${r} | ${n} |`).join("\n")}\n`);
             }
           '
-          if [ "$code" -ge 2 ]; then
-            echo "ESLint failed to run (exit $code)"
-            exit 1
+          if [ "$code" -ne 0 ]; then
+            echo "ESLint failed (exit $code): fix the findings above, see 'npm run lint'"
           fi
-          exit 0
+          exit $code
 
       - name: Frontend build
         run: npx vite build

@@ -39,8 +39,9 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 type Pair = { a: string; b: string; verdict: string; exact?: boolean; volumeMm3?: number; overlapMm?: { min: number[]; max: number[] }; nested?: boolean; note?: string };
+type Reply = { [key: string]: unknown; pairs?: Pair[] };
 const session = new Session(loadEngineWorker(root));
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Reply;
 
 await call("project_create", {});
 const body = String((await call("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 10 })).object);
@@ -50,7 +51,7 @@ const cut = await call("model_apply", { object: body, op: hole });
 check("a 6 mm hole goes through the body", cut.ok === true, JSON.stringify(cut));
 
 /** A pin of `radius` standing in the hole, in the body's assembly, and the exact check's pair for it. */
-async function pinIn(radius: number): Promise<{ pin: string; pair: Pair | undefined; cheap: Pair | undefined; reply: Record<string, any> }> {
+async function pinIn(radius: number): Promise<{ pin: string; pair: Pair | undefined; cheap: Pair | undefined; reply: Reply }> {
   const pin = String((await call("solid_new", { primitive: "cylinder", radius, height: 10 })).object);
   const placed = await call("model_place", { object: pin, to: body, x: 0, y: 0, z: 0 });
   if (placed.ok !== true) throw new Error(JSON.stringify(placed));

@@ -25,8 +25,9 @@ function check(name: string, ok: boolean, detail = "") {
 }
 const json = (value: unknown) => JSON.stringify(value);
 
+type Reply = { [key: string]: unknown; notLinked?: { text: string }[]; faces?: { index?: number }[]; resumed?: { newBase?: boolean }; params?: { w?: number } };
 const session = new Session(fakeEngine());
-const call = (name: string, args: unknown = {}) => session.call(name, args) as Promise<Record<string, any>>;
+const call = (name: string, args: unknown = {}) => session.call(name, args) as Promise<Reply>;
 const params = { w: 40, h: 30, r: 4, t: 3, u: 10, px: -6, d: 4, L: 12, n: 3 };
 await call("model_params", { set: params });
 
@@ -40,7 +41,7 @@ async function stored(object: string): Promise<{ ops: ModelOp[]; root?: Record<s
   return { ops: (tree.nodes ?? []).map((node) => node.op).filter((op): op is ModelOp => !!op), root: tree.rootExprs };
 }
 
-async function applied(op: Record<string, unknown>, base: Record<string, unknown> = { primitive: "box", dx: 80, dy: 80, dz: 20 }): Promise<{ result: Record<string, any>; op: ModelOp | undefined; all: ModelOp[] }> {
+async function applied(op: Record<string, unknown>, base: Record<string, unknown> = { primitive: "box", dx: 80, dy: 80, dz: 20 }): Promise<{ result: Reply; op: ModelOp | undefined; all: ModelOp[] }> {
   const made = await call("solid_new", base);
   const result = await call("model_apply", { object: made.object, probe: true, op });
   const { ops } = await stored(String(made.object));
