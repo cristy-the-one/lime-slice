@@ -11,6 +11,7 @@ import { reviewGcode } from "../review.ts";
 import { resolveRead, resolveWrite } from "../workspace.ts";
 import { type ToolHandler, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 function machineGet(this: Session): Record<string, unknown> {
   const printer = this.printer();
@@ -37,14 +38,14 @@ function machineSet(this: Session, input: Record<string, unknown>): Record<strin
   const filamentPatch = input.filament && typeof input.filament === "object" && !Array.isArray(input.filament) ? input.filament as Record<string, unknown> : {};
   for (const key of [...Object.keys(printerPatch), ...Object.keys(filamentPatch)]) {
     if (key === "host" || key === "apiKey" || key === "hostType" || key === "startPrint") {
-      return { ok: false, reason: "This server does not store a printer host or a key." };
+      return refuse("host-not-stored", "This server does not store a printer host or a key.");
     }
   }
   const before = this.machineGet();
   let library = this.library;
   const printer = library.printers.find((row) => row.id === library.printerId);
   const filament = library.filaments.find((row) => row.id === library.filamentId);
-  if (!printer || !filament) return { ok: false, reason: "Choose a printer and a filament first." };
+  if (!printer || !filament) return refuse("no-printer", "Choose a printer and a filament first.", undefined, NEXT.printer);
   if (typeof printerPatch.retractLength === "number" || typeof printerPatch.retractSpeed === "number") {
     library = setRetract(library, typeof printerPatch.retractLength === "number" ? printerPatch.retractLength : null, typeof printerPatch.retractSpeed === "number" ? printerPatch.retractSpeed : null);
   }
@@ -57,7 +58,7 @@ function machineSet(this: Session, input: Record<string, unknown>): Record<strin
   let fitsSaid: string | undefined;
   if (input.fits !== undefined) {
     const entered = this.enterFits(library, input.fits);
-    if ("reason" in entered) return { ok: false, reason: entered.reason };
+    if ("reason" in entered) return refuse("bad-fits", entered.reason);
     library = entered.library;
     fitsSaid = entered.said;
   }
@@ -116,7 +117,7 @@ function enterFits(this: Session, library: MachineLibrary, value: unknown): { li
 
 function machineSave(this: Session, name: string): Record<string, unknown> {
   const file = fileFromSelection(this.library);
-  if (!file) return { ok: false, reason: "Choose a printer and a filament first." };
+  if (!file) return refuse("no-printer", "Choose a printer and a filament first.", undefined, NEXT.printer);
   const doc = JSON.parse(serializeMachineFile(file)) as { printer?: Record<string, unknown> };
   if (doc.printer) {
     delete doc.printer.host;
@@ -125,7 +126,7 @@ function machineSave(this: Session, name: string): Record<string, unknown> {
     delete doc.printer.startPrint;
   }
   const text = JSON.stringify(doc, null, 2);
-  if (text.includes("apiKey") || text.includes("\"host\"")) return { ok: false, reason: "The machine file still names a host." };
+  if (text.includes("apiKey") || text.includes("\"host\"")) return refuse("host-not-stored", "The machine file still names a host.");
   const path = resolveWrite(name.endsWith(".json") ? name : `${name}.limemachine.json`, ".json");
   writeFileSync(path, text);
   return { ok: true, path, bytes: Buffer.byteLength(text) };
@@ -165,10 +166,10 @@ function machineList(this: Session, input: Record<string, unknown>): Record<stri
 function machineSelect(this: Session, printerId: string, filamentId: string, nozzle: unknown): Record<string, unknown> {
   // --- Split to print (D11). An export-only printer is a target for the pieces, never the plate's printer.
   const exportOnly = exportOnlyRefusal(printerId);
-  if (exportOnly) return { ok: false, reason: exportOnly };
+  if (exportOnly) return refuse("bad-machine-file", exportOnly);
   const printer = this.library.printers.find((row) => row.id === printerId);
   const filament = this.library.filaments.find((row) => row.id === filamentId);
-  if (!printer || !filament) return { ok: false, reason: "That printer or filament is not in the library." };
+  if (!printer || !filament) return refuse("unknown-machine", "That printer or filament is not in the library.");
   this.library = { ...this.library, printerId, filamentId, nozzleMm: typeof nozzle === "number" ? nozzle : this.library.nozzleMm };
   this.profileTouched = true;
   const heat = heatFor(printer, filament.nozzleTemp, filament.bedTemp);
@@ -187,7 +188,7 @@ function machineSelect(this: Session, printerId: string, filamentId: string, noz
 function machineLoad(this: Session, path: string): Record<string, unknown> {
   const full = resolveRead(path, "machine");
   const parsed = parseMachineFile(readFileSync(full, "utf8"));
-  if (!parsed.ok) return { ok: false, reason: parsed.message };
+  if (!parsed.ok) return refuse("bad-machine-file", parsed.message);
   const printer: PrinterRecord = { ...parsed.file.printer, id: "loaded-printer", builtin: false };
   const filament: FilamentRecord = { ...parsed.file.filament, id: "loaded-filament", builtin: false };
   this.library = {

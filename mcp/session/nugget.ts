@@ -11,6 +11,7 @@ import { OP_KINDS } from "../schema.ts";
 import { type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { SESSION_URL } from "../session-url.ts";
+import { NEXT, refuse } from "../refusals.ts";
 
 /**
  * --- I16. nugget {action: find | get | save | remove, kind}: plugins, ingredients, presets and lessons in one tool
@@ -21,15 +22,15 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
   const action = input.action;
   const kind = typeof input.kind === "string" ? input.kind : undefined;
   if (action === "find") return this.nuggetFind(typeof input.query === "string" ? input.query.trim() : "", kind);
-  if (!kind) return { ok: false, reason: `${String(action)} needs kind: plugin, ingredient, preset, or lesson.` };
+  if (!kind) return refuse("bad-action", `${String(action)} needs kind: plugin, ingredient, preset, or lesson.`);
   if (kind === "plugin") return this.pluginTool({ ...input, action });
   const id = typeof input.id === "string" ? input.id.trim() : "";
   if (kind === "ingredient") {
     const dir = ingredientsDir();
     if (action === "get") {
       const file = readPlugin(id, dir, undefined, "ingredient");
-      if (!file) return { ok: false, reason: `No ingredient is named ${id}.${this.ingredientNames().length ? ` The library has: ${this.ingredientNames().join(", ")}.` : ""}` };
-      if ("reason" in file) return { ok: false, reason: file.reason };
+      if (!file) return refuse("ingredient-not-found", `No ingredient is named ${id}.${this.ingredientNames().length ? ` The library has: ${this.ingredientNames().join(", ")}.` : ""}`, undefined, NEXT.ingredients);
+      if ("reason" in file) return refuse("ingredient-invalid", file.reason);
       const h = file.header;
       const usedBy = this.pluginsCarrying(h.plugin);
       return { ok: true, kind, id: h.plugin, version: h.version, api: h.api, sha256: file.sha256, created: h.created, items: publicItems(file.body), use: `use ingredients::${moduleOf(h.plugin)}::*;`, older: olderVersions(h.plugin, dir), ...(usedBy.length ? { usedBy } : {}), ...this.promotion(usedBy), data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) }, ...(input.withSource === true ? { source: file.body } : {}) };
@@ -37,45 +38,45 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
     if (action === "save") return this.ingredientSave(input);
     if (action === "remove") {
       const files = isIngredientId(id) ? removePlugin(id, dir) : 0;
-      if (files === 0) return { ok: false, reason: `No ingredient is named ${id}.` };
+      if (files === 0) return refuse("ingredient-not-found", `No ingredient is named ${id}.`, undefined, NEXT.ingredients);
       return { ok: true, kind, id, files, note: "Runs and plugins that used it keep their own copies." };
     }
   }
   if (kind === "preset") {
     const ref = presetId(id);
-    if (!ref) return { ok: false, reason: "A preset's id is <plugin>/<name>, like honeycomb-tray/pp-5mm-wall: lower-case letters, digits and dashes." };
+    if (!ref) return refuse("bad-name", "A preset's id is <plugin>/<name>, like honeycomb-tray/pp-5mm-wall: lower-case letters, digits and dashes.");
     if (action === "get") {
       const row = readPreset(ref.plugin, ref.name);
-      return row ? { ok: true, kind, id, plugin: row.plugin, params: row.params, created: row.created, run: { plugin: row.plugin, preset: row.name } } : { ok: false, reason: `No preset ${id}.${this.presetNames(ref.plugin)}` };
+      return row ? { ok: true, kind, id, plugin: row.plugin, params: row.params, created: row.created, run: { plugin: row.plugin, preset: row.name } } : refuse("preset-not-found", `No preset ${id}.${this.presetNames(ref.plugin)}`);
     }
     if (action === "save") {
       const plugin = await this.pluginFile(ref.plugin);
-      if ("reason" in plugin) return { ok: false, reason: `A preset is for a plugin in the library: ${plugin.reason}` };
+      if ("reason" in plugin) return refuse("plugin-not-found", `A preset is for a plugin in the library: ${plugin.reason}`);
       const params = input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : null;
-      if (!params || Object.keys(params).length === 0) return { ok: false, reason: "A preset needs params: the values it keeps." };
+      if (!params || Object.keys(params).length === 0) return refuse("missing-argument", "A preset needs params: the values it keeps.");
       const problem = presetProblem(ref.plugin, params, plugin.file.header.params);
-      if (problem) return { ok: false, reason: `The preset was not kept: ${problem}` };
+      if (problem) return refuse("preset-invalid", `The preset was not kept: ${problem}`);
       writePreset({ plugin: ref.plugin, name: ref.name, params, created: new Date().toISOString().slice(0, 10) });
       return { ok: true, kind, id, params, run: { plugin: ref.plugin, preset: ref.name } };
     }
-    if (action === "remove") return removePreset(ref.plugin, ref.name) ? { ok: true, kind, id } : { ok: false, reason: `No preset ${id}.` };
+    if (action === "remove") return removePreset(ref.plugin, ref.name) ? { ok: true, kind, id } : refuse("preset-not-found", `No preset ${id}.`);
   }
   if (kind === "lesson") {
     if (action === "save") {
       const about = id;
-      if (!isAbout(about)) return { ok: false, reason: "A lesson needs id: the op kind or helper it is about, like fillet or geom2d::offset." };
+      if (!isAbout(about)) return refuse("bad-name", "A lesson needs id: the op kind or helper it is about, like fillet or geom2d::offset.");
       const text = oneLine(input.text, LESSON_MAX);
-      if (!text) return { ok: false, reason: `A lesson needs text: one plain sentence, at most ${LESSON_MAX} characters.` };
+      if (!text) return refuse("missing-argument", `A lesson needs text: one plain sentence, at most ${LESSON_MAX} characters.`);
       const lesson = addLesson(about, text, new Date().toISOString().slice(0, 10));
       return { ok: true, kind, id: `${lesson.about}/${lesson.n}`, ...(OP_KINDS.includes(lesson.about) ? { shown: `guide {kind:"${lesson.about}"} shows it under seenInPractice.` } : {}) };
     }
     const n = Number(/\/(\d+)$/.exec(id)?.[1]);
-    if (!Number.isInteger(n)) return { ok: false, reason: "A lesson's id is <about>/<n>, as find lists it." };
+    if (!Number.isInteger(n)) return refuse("bad-name", "A lesson's id is <about>/<n>, as find lists it.");
     const row = listLessons().find((lesson) => lesson.n === n);
-    if (action === "get") return row ? { ok: true, kind, id: `${row.about}/${row.n}`, about: row.about, created: row.created, data: { text: row.text } } : { ok: false, reason: `No lesson ${id}.` };
-    if (action === "remove") return removeLesson(n) ? { ok: true, kind, id } : { ok: false, reason: `No lesson ${id}.` };
+    if (action === "get") return row ? { ok: true, kind, id: `${row.about}/${row.n}`, about: row.about, created: row.created, data: { text: row.text } } : refuse("lesson-not-found", `No lesson ${id}.`);
+    if (action === "remove") return removeLesson(n) ? { ok: true, kind, id } : refuse("lesson-not-found", `No lesson ${id}.`);
   }
-  return { ok: false, reason: "action is find, get, save, or remove; kind is plugin, ingredient, preset, or lesson." };
+  return refuse("bad-action", "action is find, get, save, or remove; kind is plugin, ingredient, preset, or lesson.");
 }
 
 function ingredientNames(this: Session): string[] {
@@ -147,42 +148,42 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
  */
 async function ingredientSave(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const title = oneLine(input.title, TITLE_MAX);
-  if (!title) return { ok: false, reason: "An ingredient needs a title: one line, at most 60 characters. Its id is the title's slug unless id is given." };
+  if (!title) return refuse("ingredient-invalid", "An ingredient needs a title: one line, at most 60 characters. Its id is the title's slug unless id is given.");
   const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : slugOf(title);
-  if (!isIngredientId(id)) return { ok: false, reason: `${id} cannot name an ingredient: lower-case letters, digits and dashes, starting with a letter, not a Rust keyword.` };
+  if (!isIngredientId(id)) return refuse("ingredient-invalid", `${id} cannot name an ingredient: lower-case letters, digits and dashes, starting with a letter, not a Rust keyword.`);
   let body: string;
   let items: string[] | undefined;
   if (typeof input.from === "string") {
     const draft = this.latestDraft(input.from);
-    if (!draft) return { ok: false, reason: `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.` };
+    if (!draft) return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.`);
     const wanted = Array.isArray(input.items) ? input.items.filter((item): item is string => typeof item === "string") : [];
-    if (wanted.length === 0) return { ok: false, reason: "Name the items to keep: items:[\"fn cells\", \"struct Cell\"]. What they use comes along." };
+    if (wanted.length === 0) return refuse("missing-argument", "Name the items to keep: items:[\"fn cells\", \"struct Cell\"]. What they use comes along.");
     const lifted = liftItems(draft.row.source, wanted);
-    if ("reason" in lifted) return { ok: false, reason: lifted.reason };
+    if ("reason" in lifted) return refuse("ingredient-invalid", lifted.reason);
     body = lifted.body;
     items = lifted.items;
   } else if (typeof input.source === "string") {
     body = lfOnly(input.source);
     const framed = body.startsWith("//! ---") ? parsePlugin(body) : null;
     if (framed && !("reason" in framed)) body = framed.body;
-  } else return { ok: false, reason: "Give from (a recipe name this session ran) with items, or source (the module's code)." };
+  } else return refuse("missing-argument", "Give from (a recipe name this session ran) with items, or source (the module's code).");
   const problem = bodyProblem(body);
-  if (problem) return { ok: false, reason: `The ingredient was not kept: ${problem}` };
+  if (problem) return refuse("ingredient-invalid", `The ingredient was not kept: ${problem}`);
   // It builds alone, under lust, as a recipe that imports it would build it.
   if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const ready = this.recipeHost.available();
-  if (!ready.ok) return { ok: false, reason: ready.reason };
+  if (!ready.ok) return refuse("recipe-unavailable", ready.reason);
   const sha256 = bodyHash(body);
   const module = moduleOf(id);
   const probe = `use ingredients::${module}::*;\n\nfn main() {}\n`;
   const resolved = resolveIngredients(probe, { kept: { [module]: { id, version: 0, sha256, body } }, preferKept: true });
-  if ("reason" in resolved) return { ok: false, reason: `The ingredient was not kept: ${resolved.reason}` };
+  if ("reason" in resolved) return refuse("ingredient-invalid", `The ingredient was not kept: ${resolved.reason}`);
   const built = await this.recipeHost.build("ingredient_check", probe, false, resolved.suffix);
   if (!built.ok) {
     const map = lineMap(probe, resolved);
     const first = built.diagnostics[0];
     const where = first ? `${lineText(map, first.line)}: ${first.message}` : (built.reason ?? "it did not build");
-    return { ok: false, reason: `The ingredient does not build alone, so it was not kept: ${where}. Keep what it needs too (items), or import it from another ingredient.` };
+    return refuse("ingredient-invalid", `The ingredient does not build alone, so it was not kept: ${where}. Keep what it needs too (items), or import it from another ingredient.`);
   }
   const dir = ingredientsDir();
   const existing = readPlugin(id, dir, undefined, "ingredient");
@@ -205,7 +206,7 @@ async function ingredientSave(this: Session, input: Record<string, unknown>): Pr
   try {
     writePlugin(header, body, dir);
   } catch (err) {
-    return { ok: false, reason: `The ingredient could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}` };
+    return refuse("ingredient-write-failed", `The ingredient could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}`);
   }
   return { ok: true, kind: "ingredient", id, version, sha256, items: items ?? publicItems(body), use: `use ingredients::${module}::*;`, path: join(dir, `${id}.rs`) };
 }
