@@ -14,7 +14,8 @@
  * Duplicate copies the selected object only.
  */
 import type { SavedTree } from "./model-tree-file.ts";
-import { cloneStudy, type ObjectStudy } from "./sim/study.ts";
+import { cloneStudy } from "./sim/study-data.ts";
+import type { ObjectStudy } from "./sim/study.ts";
 import { IDENTITY_POSE, boxUnder, duplicatePose, inversePose, isIdentity, seatLift, thenPose, type Affine, type ObjectFrame } from "./model-space.ts";
 import { copyWorkplane, isGlobalFrame, type Workplane } from "./workplane.ts";
 import { offsetInPlace } from "./step-solids.ts";

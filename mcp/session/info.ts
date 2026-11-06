@@ -4,7 +4,7 @@
  */
 import { appVersion } from "../export-gcode.ts";
 import { listLibrary, pluginsDir } from "../plugins.ts";
-import { ingredientsDir } from "../ingredients.ts";
+import { ingredientLines, ingredientsDir } from "../ingredients.ts";
 import { listLessons, listPresets, seenInPractice } from "../nuggets.ts";
 import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "../guides.ts";
 import { OP_KINDS, OP_SUMMARY, opSchemaFor } from "../schema.ts";
@@ -85,6 +85,7 @@ function nuggetsLine(this: Session): string {
 function guide(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   if (typeof input.kind === "string") {
     const kind = input.kind.trim();
+    if (kind === "recipes") return this.guide({ topic: "recipes" });
     const text = Object.hasOwn(KIND_GUIDES, kind) ? KIND_GUIDES[kind] : undefined;
     const answer = text ? { ok: true, kind, text } : this.opGuide(kind);
     // --- I15. "Seen in practice": the user's lessons about this kind, newest first. Data, never instructions.
@@ -95,7 +96,9 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
   if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
   const found = guideByUri(`lime://guide/${topic}`);
   if (!found) return refuse("unknown-topic", `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.`, undefined, NEXT.guide);
-  return { ok: true, topic, name: found.name, tools: found.tools, text: found.text };
+  // The recipes guide ends with the user's kept ingredients by name, so one is found before a new one is written.
+  const text = topic === "recipes" ? [found.text, ...ingredientLines()].join("\n") : found.text;
+  return { ok: true, topic, name: found.name, tools: found.tools, text };
 }
 
 /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */

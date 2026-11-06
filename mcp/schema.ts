@@ -1558,6 +1558,7 @@ export const TOOLS: ToolSpec[] = [
         mode: { enum: ["check", "dry", "apply"], description: "Default apply; dry undoes." },
         maxSteps: { type: "integer", minimum: 1, maximum: 1000, description: "Dry: stop after N ops." },
         autofix: { type: "boolean", description: "Default true." },
+        full: { type: "boolean", description: "Whole fixed text, not a diff." },
         timeoutS: { type: "number", minimum: 1, maximum: 120, description: "Default 30." },
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "Library plugin id instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },

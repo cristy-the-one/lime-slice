@@ -879,7 +879,7 @@ function objectPlaceHtml(): string {
   const b = selectedPart.bounds;
   const cx = ((b.min[0] + b.max[0]) / 2).toFixed(1);
   const cy = ((b.min[1] + b.max[1]) / 2).toFixed(1);
-  const z0 = b.min[2].toFixed(1);
+  const z0 = b.min[2].toFixed(1).replace(/^-0\.0$/, "0.0");
   const selectedNotes = limit(b);
   const euler = orientEuler(state.orient);
   return `
