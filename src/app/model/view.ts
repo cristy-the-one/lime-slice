@@ -34,7 +34,7 @@ import { explodeLook, showExplode } from "../../ui/model-look";
 import { canExplode, explodeContext, heldParts } from "../model-explode";
 import { meshSeat, meshTokenOf, modelPoseOf, setMeshSeat, type PlateObject } from "../../plate";
 import type { ContextPart } from "../../model-context";
-import { livePlate } from "../files";
+import { livePlate, syncPlateView } from "../files";
 import { fx } from "../fx";
 import { paintModelInspect, setInspectVolume } from "../../ui/model-inspect";
 import { state } from "../state";
@@ -331,11 +331,13 @@ export function toggleObjectHidden(id: string, only: boolean) {
   if (only) isolate(id, ids);
   else setHidden(id, !isHidden(id));
   refreshModelContext();
+  syncPlateView();
 }
 
 export function showAllObjects() {
   showAll();
   refreshModelContext();
+  syncPlateView();
 }
 
 export function bindLook() {
