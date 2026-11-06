@@ -1,4 +1,21 @@
-use super::*;
+use super::fill_lines::concentric_fill;
+use super::infill::{build_infill, clip_infill};
+use super::island_order::island_loops;
+use super::polish::geom_closed;
+use super::seams::{painted_edge, painted_vertex, rotate_closed_at};
+use super::solid_fill::{fill_strips, fit_bounds, monotonic_fill, solid_fill, solid_row_angle};
+use super::void_fill::{carve, emit_void_fill, emit_void_fill_over, ms_since, void_cells};
+use super::{
+    emit_loops, extrusion, Extrusion, FuzzyMark, PathFeatures, PathKind, Seam, ShellBand,
+    SurfacePattern,
+};
+use crate::poly::{
+    boolean_diff, boolean_intersect, loop_bounds, loops_from_paths, offset_loops, offset_paths,
+    paths_from_loops, signed_area, Loop,
+};
+use crate::strategy::{InfillPattern, ResolvedStrategy};
+use clipper2::{Milli, Paths};
+use std::time::Instant;
 
 #[allow(dead_code)]
 pub fn plan_region(

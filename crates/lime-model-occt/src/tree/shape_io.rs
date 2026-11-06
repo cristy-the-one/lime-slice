@@ -1,6 +1,22 @@
 //! Reading and writing a shape as STEP or as Open CASCADE binary (`LIMEBREP`).
 
-use super::*;
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int};
+use std::ptr::NonNull;
+
+use super::{brep_order, occt_version, temp_step, BREP_FORMAT, BREP_MAGIC, BREP_ORDER};
+use super::ffi::{
+    lime_model_occt_string_free,
+    lime_tree_read_brep,
+    lime_tree_read_step,
+    lime_tree_read_step_named,
+    lime_tree_write_brep,
+    lime_tree_write_step,
+    lime_tree_write_step_many,
+    RawShape,
+};
+use super::shape::{c_path, take_text, Shape};
+use super::step_solids::STEP_SOLIDS_MAX;
 
 impl Shape {
     /// --- Split to print (D12). These solids as one STEP file, each a product of its own named by the same place in

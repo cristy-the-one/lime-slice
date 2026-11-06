@@ -1,4 +1,8 @@
-use super::*;
+use super::outline::Outline;
+use super::scarf::polyline_len;
+use super::seams::dist2;
+use super::void_fill::edge_box_meets;
+use crate::poly::{loop_bounds, offset_loops, signed_area, Loop};
 
 /// Inset the region by half a line, then by one line each ring, and extrude
 /// each closed centerline.

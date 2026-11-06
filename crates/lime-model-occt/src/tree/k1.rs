@@ -1,6 +1,18 @@
 //! Profile v2 (K1): sketches with loops, arcs and holes build on their own path.
 
-use super::*;
+use std::os::raw::c_int;
+
+use super::build::{BuildFail, Built};
+use super::ffi::{
+    lime_tree_extrude_loops,
+    lime_tree_extrude_loops_extent,
+    lime_tree_loft_loops,
+    lime_tree_revolve_loops,
+};
+use super::group::extrude_cells;
+use super::ops::{Op, ProfileLoop, ProfileSegment};
+use super::resolve::Resolved;
+use super::shape::Shape;
 
 /// K1. True when an extrude, revolve, or any loft section carries loops.
 pub(super) fn k1_has_loops(op: &Op) -> bool {

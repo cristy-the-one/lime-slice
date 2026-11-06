@@ -1,6 +1,16 @@
 //! `Store::handle`: one arm per request.
 
-use super::*;
+use base64::Engine;
+use serde_json::json;
+
+use super::{doc_in, lettering, rebuilt_differently, root_shape, NodeId, Store, ROOT};
+use super::fit_coupon::fit_coupon_reply;
+use super::outcome::{Answer, Failure};
+use super::partition::PieceKeys;
+use super::request::{ExportFormat, OwnEdit, Request, ToolEdit};
+use super::resolve::resolve_one_face;
+use super::shape::Shape;
+use super::step_solids::{named_solids_of, STEP_SOLIDS_MAX};
 
 impl Store {
     pub(super) fn handle(&mut self, request: Request) -> Result<Answer, Failure> {

@@ -1,6 +1,18 @@
 //! Split to print: the cut and target types, the numbers handed to the kernel, the reply fields that report them, and `Shape::partition`.
 
-use super::*;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::os::raw::{c_char, c_int};
+use std::ptr::NonNull;
+
+use super::{lock, ROOT};
+use super::ffi::{lime_tree_partition, RawShape};
+use super::group::GroupBudget;
+use super::joints::{Joined, Joint, JointAnswer};
+use super::ops::{Op, Solid};
+use super::outcome::{Failure, Part};
+use super::shape::{take_text, Shape};
 
 /// --- Split to print, part numbers (plan sections 2 and 10). Each piece's number as `textStrokes` draws it, centred
 /// on the label: `digits[i]` is piece `i + 1`'s strokes, each `[u, v, length, angleDeg]`. The strokes are `strokeMm`

@@ -1,4 +1,17 @@
-use super::*;
+use super::infill::clip_infill;
+use super::island_order::island_loops;
+use super::scarf::{point_along, polyline_len};
+use super::seams::dist2;
+use super::solid_fill::solid_fill;
+use super::walls::{fill_remaining, inradius, inradius_until, min_bead};
+use super::{extrusion, Extrusion, PathKind};
+use crate::poly::{
+    boolean_diff, boolean_intersect, drop_slivers, loop_bounds, loops_from_paths, offset_loops,
+    paths_from_loops, point_in_loop, principal_axis, signed_area, Loop,
+};
+use crate::strategy::ResolvedStrategy;
+use clipper2::{EndType, FillRule, JoinType, Milli, Paths};
+use std::time::Instant;
 
 /// Skin pieces smaller than this are boolean noise along a skin edge, mm².
 pub(super) const SKIN_SLIVER_MM2: f64 = 0.05;

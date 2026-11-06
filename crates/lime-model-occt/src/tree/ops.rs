@@ -1,6 +1,11 @@
 //! The edit vocabulary: the `Op` enum and the small types its fields are made of (primitives, edge and face picks, profile loops, affine placements).
 
-use super::*;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::ffi::CStr;
+
+use super::{transition, NodeId};
+use super::partition::{PartitionCut, PartitionNumbers, PartitionTarget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

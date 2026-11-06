@@ -1,6 +1,33 @@
 //! Asking a shape about its edges and faces: lookups, signatures, loops, sections, distances and the reply.
 
-use super::*;
+use base64::Engine;
+use serde_json::{json, Value};
+use std::ffi::{CStr, CString};
+use std::fmt::Write as _;
+use std::os::raw::{c_char, c_int};
+use std::ptr::NonNull;
+
+use super::{NodeId, EDGE_MATCH_MM, SOLID_FORMAT};
+use super::ffi::{
+    lime_tree_created,
+    lime_tree_distance,
+    lime_tree_edge,
+    lime_tree_edge_chain,
+    lime_tree_edge_kinds,
+    lime_tree_edge_sig,
+    lime_tree_face,
+    lime_tree_face_from,
+    lime_tree_face_loops,
+    lime_tree_face_region,
+    lime_tree_mesh,
+    lime_tree_section,
+    lime_tree_set_face_from,
+    MeshView,
+};
+use super::ops::{EdgeRef, EdgeSig, FaceRef, CHAIN_DEG, FLAT_MM};
+use super::outcome::Failure;
+use super::same::{same_edge, same_face};
+use super::shape::{take_text, Mesh, Shape};
 
 impl Shape {
     pub(super) fn edge(&mut self, index: i32) -> Option<EdgeRef> {
