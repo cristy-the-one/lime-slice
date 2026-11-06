@@ -41,8 +41,10 @@ function check(name: string, ok: boolean, detail = "") {
   console.error(`FAIL ${name}${detail ? ` ${detail}` : ""}`);
 }
 
+type Box = { min?: number[]; max?: number[] };
+type Reply = { [key: string]: unknown; ok?: boolean; bounds?: Box; volumeMm3?: number; check?: { ok?: boolean }; resumed?: { newBase?: boolean; reusedOps?: number; ranOps?: number }; rebuilt?: Reply[] };
 const session = new Session(loadEngineWorker(root));
-const call = (name: string, args: unknown = {}) => session.call(name, args) as Promise<Record<string, any>>;
+const call = (name: string, args: unknown = {}) => session.call(name, args) as Promise<Reply>;
 
 type Values = { w: number; h: number; r: number; t: number; u: number; px: number; d: number };
 const start: Values = { w: 60, h: 40, r: 5, t: 3, u: 20, px: -10, d: 4 };
@@ -111,7 +113,7 @@ for (const change of changes) {
   now = { ...now, ...change };
   const [name, value] = Object.entries(change)[0]!;
   const done = await call("model_params", { set: change, rebuild: true });
-  const row = (done.rebuilt as Record<string, any>[] | undefined)?.find((entry) => entry.object === object);
+  const row = done.rebuilt?.find((entry) => entry.object === object);
   check(`${name} = ${value}: the cover rebuilds and commits`, done.ok === true && row?.ok === true && row.committed === true, JSON.stringify(done).slice(0, 600));
   check(`${name} = ${value}: its box follows`, sameBox(row?.bounds, box(now)), JSON.stringify(row?.bounds));
   check(`${name} = ${value}: its volume follows`, near(row?.volumeMm3, volume(now), 0.5), `${row?.volumeMm3} vs ${volume(now)}`);
@@ -139,7 +141,7 @@ check("resume: false on an object runs every op again", fresh.ok === true && fre
 // The rerun keeps its links: a set-and-rebuild still follows.
 now = { ...now, h: 44 };
 const after = await call("model_params", { set: { h: 44 }, rebuild: true });
-const afterRow = (after.rebuilt as Record<string, any>[] | undefined)?.find((entry) => entry.object === object);
+const afterRow = after.rebuilt?.find((entry) => entry.object === object);
 check("after a rerun, a rebuild still follows", afterRow?.ok === true && sameBox(afterRow.bounds, box(now)) && near(afterRow.volumeMm3, volume(now), 0.5), JSON.stringify(afterRow).slice(0, 400));
 
 // Item 4: a call-level value for a project parameter is for that call only.

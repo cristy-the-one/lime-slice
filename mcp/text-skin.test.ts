@@ -40,7 +40,7 @@ function check(name: string, ok: boolean, detail = "") {
 
 const engine = loadEngineWorker(root);
 const session = new Session(engine);
-const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, any>;
+const call = async (name: string, args: unknown = {}) => (await session.call(name, args)) as Record<string, unknown>;
 const volume = async (object: string) => Number((await call("model_describe", { object, limit: 1 })).volumeMm3);
 
 /** A curved part and its face of that kind. */
@@ -103,7 +103,7 @@ const text = (face: number, extra: Record<string, unknown> = {}) => ({ kind: "te
 // --- Refusals are sentences, and change nothing.
 {
   const { object, face, before } = await ball();
-  const fail = async (extra: Record<string, unknown>) => (await call("model_apply", { object, op: text(face, extra) }).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, any>;
+  const fail = async (extra: Record<string, unknown>) => (await call("model_apply", { object, op: text(face, extra) }).catch((err: Error) => ({ ok: false, reason: err.message }))) as Record<string, unknown>;
   const stroke = await fail({ font: "stroke", style: "bold" });
   check("the pen fonts take no style", stroke.ok === false && /one style/.test(JSON.stringify(stroke)), JSON.stringify(stroke).slice(0, 300));
   const long = await fail({ text: "LIME SLICE 2026 ".repeat(8), height: 6 });
@@ -117,7 +117,7 @@ const text = (face: number, extra: Record<string, unknown> = {}) => ({ kind: "te
   check("a refusal leaves the solid as it was", Math.abs((await volume(object)) - before) < 1e-6);
   const cylinder = await part({ primitive: "cylinder", radius: 20, height: 40 }, "cylinder");
   const projected = await call("model_apply", { object: cylinder.object, op: text(cylinder.face, { wrap: "project" }) }).catch((err: Error) => ({ ok: false, reason: err.message }));
-  check("project is for sphere, torus and freeform faces", (projected as Record<string, any>).ok === false && /Project is for a sphere/.test(JSON.stringify(projected)), JSON.stringify(projected).slice(0, 300));
+  check("project is for sphere, torus and freeform faces", (projected as Record<string, unknown>).ok === false && /Project is for a sphere/.test(JSON.stringify(projected)), JSON.stringify(projected).slice(0, 300));
 }
 
 // --- The guide says how.

@@ -1,7 +1,8 @@
 /** The frame loop: camera framing and publishing, resize, and the redraw kick. */
 import * as THREE from "three";
 import { type Affine, posedBounds } from "../model-space";
-import { type Bounds, boundsOf } from "../mesh-place";
+import { boundsOf } from "../mesh-place";
+import type { Box } from "../measure";
 import { STILL_FRAMES } from "./constants";
 import { lerpPose } from "../sketch/frame";
 import { onMeasureChange } from "../measure-pref";
@@ -43,7 +44,7 @@ export function installFrame(ctx: ViewCtx): void {
   }
 
   /** The one framing every caller shares: the box's centre, seen from the front right and above, the box filling the view. */
-  function frameBox(box: Bounds) {
+  function frameBox(box: Box) {
     const look = new THREE.Vector3((box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2);
     const size = Math.max(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2], 1);
     const radius = size * Math.sqrt(3) / 2;

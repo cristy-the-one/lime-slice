@@ -38,11 +38,12 @@ function check(name: string, ok: boolean, detail = "") {
   console.error(`FAIL ${name}${detail ? ` ${detail}` : ""}`);
 }
 
+type Reply = { [key: string]: unknown; text?: { font?: string; surface?: string; build?: string } };
 const engine = loadEngineWorker(root);
 const session = new Session(engine);
-const call = async (name: string, args: unknown = {}): Promise<Record<string, any>> => {
+const call = async (name: string, args: unknown = {}): Promise<Reply> => {
   try {
-    return (await session.call(name, args)) as Record<string, any>;
+    return (await session.call(name, args)) as Reply;
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }
@@ -75,7 +76,7 @@ for (const font of hershey) {
     if (done.ok !== true) continue;
     check(`${label} is one step in the engine's own id`, probed.text?.font === `${font.id}@${font.version}` && probed.text?.surface === surface && probed.text?.build === "direct", JSON.stringify(probed.text));
     const moved = (await volume(object)) - before;
-    const expect = probed.inkMm2 * 0.5;
+    const expect = Number(probed.inkMm2) * 0.5;
     check(`${label} adds the ink times the depth`, moved > 0.85 * expect && moved < 1.2 * expect, `${moved} against ${expect}`);
     const rows = (await call("model_history", { object })).nodes as unknown[];
     check(`${label} is one history row`, rows.length === 2, String(rows.length));

@@ -251,7 +251,7 @@ export function mountStress(next: StressHooks) {
   for (const id of ["#stressHoldPick", "#stressLoadPick"]) {
     byId(id)?.prepend(createElement(MousePointerClick, { width: 14, height: 14, "aria-hidden": "true", class: "ico" }));
   }
-  byId("#stressRun")?.addEventListener("click", run);
+  byId("#stressRun")?.addEventListener("click", () => { void run(); });
   byId("#stressCancel")?.addEventListener("click", () => {
     if (solving) cancelSolve();
     else closeStress();
@@ -279,7 +279,7 @@ export function mountStress(next: StressHooks) {
     repaintField();
   });
   byId("#stressVariantAdd")?.addEventListener("click", addVariant);
-  byId("#stressSweep")?.addEventListener("click", runSweep);
+  byId("#stressSweep")?.addEventListener("click", () => { void runSweep(); });
   byId("#stressCard")?.addEventListener("change", () => {
     cardTouched = false;
     readForm();
