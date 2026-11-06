@@ -236,6 +236,7 @@ src/recipe/ingredients.test.ts
 src/recipe/picks.test.ts
 src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
+src/recipe/api-level.test.ts
 tools/ci/bump-only.test.mjs
 tools/ci/bundle-budget.test.mjs
 tools/ci/smoke-shards.test.mjs

@@ -1,0 +1,78 @@
+{
+  "run": {
+    "part": {
+      "primitive": "box",
+      "dx": 20,
+      "dy": 20,
+      "dz": 8
+    },
+    "place": {
+      "x": 50
+    }
+  },
+  "api": "1.4",
+  "calls": [
+    {
+      "tool": "model_describe",
+      "args": {
+        "object": "obj_1",
+        "limit": 1
+      }
+    },
+    {
+      "tool": "pick",
+      "args": {
+        "param": "top",
+        "kind": "face",
+        "object": "obj_1",
+        "value": {
+          "rule": "top"
+        },
+        "curved": true
+      }
+    },
+    {
+      "tool": "model_apply",
+      "args": {
+        "object": "obj_1",
+        "op": {
+          "primitive": "cylinder",
+          "radius": 2,
+          "height": 5,
+          "kind": "boolean",
+          "op": "fuse",
+          "origin": [
+            50,
+            0,
+            8
+          ]
+        },
+        "probe": true
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-10,-10,0],\"size\":[20,20,8],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null",
+    "{\"kind\":\"boolean\",\"op\":\"fuse\",\"primitive\":\"cylinder\",\"origin\":[0,0,8],\"size\":[20,20,20],\"radius\":2,\"height\":5,\"turn\":[0,0,0],\"merge\":true}"
+  ],
+  "fingerprint": {
+    "volumeMm3": 3200,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "centre": [
+      50,
+      0,
+      8
+    ],
+    "point": [
+      53.3333,
+      -3.3333,
+      8
+    ],
+    "round": false
+  },
+  "log": []
+}

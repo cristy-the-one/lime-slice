@@ -1,7 +1,7 @@
 // Bundles the MCP server for the installer: plain JavaScript that a stock Node 22
 // runs without type stripping. The engine library is copied next to it by the
 // release workflow. Usage: node tools/mcp/bundle.mjs [outdir]
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -27,4 +27,11 @@ await build({
 // recipe_run builds recipes against lime-recipe; the server finds this copy beside it (mcp/recipe.ts).
 mkdirSync(`${outdir}/lime-recipe/src`, { recursive: true });
 copyFileSync(`${root}crates/lime-recipe/src/lib.rs`, `${outdir}/lime-recipe/src/lib.rs`);
+// docs/plan-recipe-plugins.md D12: after a major bump, the last crate of each earlier major is kept in the repo as
+// crates/lime-recipe-<major>/ (not a workspace member) and ships beside the current one, where recipeCrates finds it.
+for (const name of readdirSync(`${root}crates`)) {
+  if (!/^lime-recipe-\d+$/.test(name) || !existsSync(`${root}crates/${name}/src/lib.rs`)) continue;
+  mkdirSync(`${outdir}/${name}/src`, { recursive: true });
+  copyFileSync(`${root}crates/${name}/src/lib.rs`, `${outdir}/${name}/src/lib.rs`);
+}
 console.log(`MCP server ${version} bundled into ${outdir}`);

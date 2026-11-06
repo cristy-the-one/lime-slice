@@ -1,6 +1,6 @@
 import { draftSources, dropRefusal, foldEndingAt, foldedRedoTarget, foldedUndoTarget, historyFolds, historyKey, historyLayout, pieceLabel, pluginStepView, presentedRows, readRow, recipeNote, rowCount, rowStep, siblingBranch, stepLabel, type HistoryRow, type PluginEnv } from "./model-history.ts";
 import { dropped, jumped, newTree, opLabel, reserveId, withChild, withNode, type ModelOp, type ModelTree, type PluginStamp } from "./model-tree.ts";
-import { markedRun } from "./plugin-step.ts";
+import { markedRun, RECIPE_API } from "./plugin-step.ts";
 import type { CheckedCopy } from "./plugin-file.ts";
 import { loadedTree, savedTree, withSavedNames } from "./model-tree-file.ts";
 import type { Affine } from "./model-space.ts";
@@ -418,7 +418,12 @@ eq("D9: the project's copy matches the stamp, nothing extra", view.note, null);
 eq("D9: an edited copy", pluginStepView(stamp, env({ copies: new Map([[stamp.sha256, copyOf("1.1", false)]]) })).note, "This project's copy of the plugin was changed outside the app.");
 eq("D9: no copy anywhere", pluginStepView(stamp, env({ copies: new Map() })).note, "The plugin source is not in this project. The part is kept as built; its values cannot change.");
 eq("D9: no lust here (macOS)", pluginStepView(stamp, env({ mac: true })).note, "Rebuilding needs lust, which the macOS app does not ship yet.");
-eq("D9: a newer recipe API", pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) })).note, "This plugin needs recipe API 2.0, from a newer Lime Slice; this app has 1.4.");
+// --- Milestone 9 (D12): the MCP's sentence and no rebuild; a newer minor of this major is newer too; a retired major is named.
+const tooNew = pluginStepView({ ...stamp, api: "2.0" }, env({ copies: new Map([[stamp.sha256, copyOf("2.0")]]) }));
+eq("D9: a newer recipe API", [tooNew.note, tooNew.rebuild], [`This plugin needs recipe API 2.0; this Lime Slice has ${RECIPE_API.join(".")}. Update Lime Slice to run it. Its parts are kept as built.`, "no"]);
+const nextMinor = `${RECIPE_API[0]}.${RECIPE_API[1] + 1}`;
+eq("D12: a newer minor of this major", pluginStepView({ ...stamp, api: nextMinor }, env({ copies: new Map([[stamp.sha256, copyOf(nextMinor)]]) })).rebuild, "no");
+eq("D12: a major this app no longer ships", pluginStepView({ ...stamp, api: "0.9" }, env({ copies: new Map([[stamp.sha256, copyOf("0.9")]]) })).note, "This plugin was written for recipe API 0.x, which this Lime Slice no longer builds. Its parts are kept as built.");
 const draftView = pluginStepView(draftStamp, env({ copies: new Map(), drafts: draftSources({ rustRecipes: { studs: { source: "fn main() {}\n", sha256: draftStamp.sha256, params: {}, objects: [] } } }) }));
 eq("a draft's code is its kept source, and its values are the stamped ones", [draftView.note, draftView.kind, draftView.source, draftView.fields.map((f) => [f.name, f.value])], [null, "draft", "fn main() {}\n", [["studs", 5]]]);
 

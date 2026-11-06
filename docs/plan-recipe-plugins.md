@@ -1,6 +1,6 @@
 # Plan: recipes as plugins
 
-Status: milestones 1 to 8 built, and API 1.2 (D17, milestone 10; see the As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
+Status: milestones 1 to 10 built (API 1.4 now; see the As built notes in section 14). Written 2026-11-01 against `main` at v4.8.0 (`723d1842`).
 Companion: `docs/plan-recipes.md` (the recipe protocol, `recipe_run`, lust). This plan takes over that plan's
 requirements S2 (named recipes kept in the session and project) and S8 (a recipe's part rebuilt from new parameters),
 and widens them from "kept in a chat" to "kept in the app".
@@ -925,6 +925,49 @@ Linux and are skipped on macOS. App changes are proved with the `verify-ui` proc
    crate in the test only).
    *Ships:* old plugins keep building, or fail with one clear sentence.
    *Tested by:* the corpus job itself; a test that a plugin recording API 9.0 is refused without a build.
+
+   **As built (milestone 9, branch `claude/plugin-versions-ci`):**
+   - **The corpus.** `mcp/fixtures/plugins/` holds one real saved plugin per level, 1.0 to 1.4, each kept through the
+     MCP's own save (`recipe_run {keep}`) and using what its level added: `param_*` (1.0), the typed values (1.1), a
+     picked face, `bounds` and `refuse` (1.2), a `.curved()` face and what the pick says it is (1.3), and reads on a
+     part `model_place` moved, which answer in model space (1.4). Beside each, `<name>.expected.json` says how it is run
+     (`run`: the part, its pose, the values) and what it must produce: its calls byte for byte, the stored ops of the
+     shown path, the solid's fingerprint, its metrics and its log lines. The levels shipped before this milestone were
+     recorded now, on today's crate (D12 said "as when it was added"; nothing older was kept). A level with no plugin
+     fails the check, so the next minor ships with its plugin. Never re-record an old level: its record is the contract.
+   - **The engine is the stand-in.** The record is the same on Linux and Windows and needs no OCCT build, which keeps the
+     check in the MCP jobs (about 15 s). The 1.3 and 1.4 plugins therefore use the parts of their level the stand-in
+     answers (a curved face declaration, picked-face fields, model-space reads); lettering and text outlines need real
+     fonts and stay in `mcp/plugin-text.test.ts` on OCCT.
+   - **CI.** `mcp/plugin-corpus.test.ts` is a step in the Linux and Windows MCP jobs (which already build lust), run
+     only when the "what changed" job's new `recipes` output is true: `tools/lust/` (a `LUST_REV` bump), the crates
+     `lime-recipe*`, the corpus, the recipe host and plugin code (`mcp/recipe*`, `mcp/plugin*`, `mcp/session*`,
+     `mcp/refusals.ts`), the op JSON the answers come from (`src/recipe/`, `src/modeling/`, `src/model-tree*`,
+     `src/plugin-step*`), `tools/mcp/bundle.mjs` and the workflow. Not a required check, and no new job.
+   - **Newer than this app.** One function, `apiVerdict` in `src/recipe/api-level.ts`, decides for the MCP, History and
+     the Plugins panel before anything is built, with one sentence: "This plugin needs recipe API 9.0; this Lime Slice
+     has 1.4. Update Lime Slice to run it. Its parts are kept as built." (D12's "from Lime Slice 5.x" is left out: an
+     app cannot know which later release ships a level.) The code is `plugin-unsupported`, as milestone 1 answered a
+     first run; a rebuild of a stamped part said `recipe-source` before and now says `plugin-unsupported` too. A major the
+     app no longer ships is `plugin-api-retired` (new). History's note and the panel's greyed reason now use the MCP's
+     sentence. Import keeps its own wording ("Update Lime Slice, then import it again.").
+   - **Slots per major.** `recipeCrates` (`mcp/recipe.ts`) finds the current crate and, beside it, the last crate of
+     each earlier major as `lime-recipe-<major>/` (D12 said `mcp/lime-recipe/1/`; the current crate already sits at
+     `lime-recipe/` with its `src/` inside, so the older ones are siblings). In the repo they would be
+     `crates/lime-recipe-<major>/` (a `lib.rs`, not a workspace member), and `tools/mcp/bundle.mjs` copies each one into
+     the installer. `RecipeHost.build(..., major)` builds against that major's crate copy in that major's own four slots
+     (`slot-<major>-<n>`; the current major keeps `slot-<n>`), and `recipe_run` passes the major a library plugin or a
+     stamp records. `crateApi` is the host's current level. No 2.0 ships: the test makes a fake 2.0 crate (API (2, 0),
+     `param_f64` removed, one new function) in a temp folder with the real crate beside it as `lime-recipe-1/`.
+   - **Not built:** the app's Tauri runner still builds against one crate, so the app treats an older major as retired;
+     when the first major ships, `recipe_build` takes D16's `crateMajor` and the window's slot naming follows the
+     host's. A plugin imported or kept from an older major is still checked against the current crate.
+   - Tests: `mcp/plugin-corpus.test.ts` (no lust: a plugin recording 9.0 refused with the sentence and code, nothing
+     built; real lust: every corpus plugin's record, a stamped part whose plugin now records 9.0 refused on a rebuild
+     without a build and kept as built, every level has a plugin, and the fake 2.0 crate: the 1.0 plugin builds in a
+     1.x slot with its recorded calls and does not build against 2.0, a 2.0 source builds, 1.5 and 3.0 refused without
+     a build, a retired 1.x), `src/recipe/api-level.test.ts` (unit chain), `src/model-history.test.ts` (the shared
+     sentence, a newer minor, a retired major).
 
 10. **API 1.2: faces and outlines a person picks** (D17).
    *Ships:* plugins take their input from the part (a clicked face, a sketch, a face's outline) instead of a frozen index
