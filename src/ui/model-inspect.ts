@@ -4,6 +4,7 @@
  * on screen, and catches up when it comes back, so a hidden Inspect costs nothing.
  */
 import { state } from "../app/state.ts";
+import { hiddenCount, hiddenKey } from "../model-hidden.ts";
 import { openDock } from "./dock-reveal.ts";
 
 import { setHtml } from "./html.ts";
@@ -25,6 +26,9 @@ export interface InspectPlateActions {
   /** Select the object, which opens it in Model. */
   select(id: string): void;
   frame(id: string): void;
+  /** Hide or show an object in the Model view; `only` shows just this one. A view choice: the plate is untouched. */
+  toggleHidden(id: string, only: boolean): void;
+  showAll(): void;
   check(id: string): void;
   remove(id: string): void;
   duplicate(): void;
@@ -52,6 +56,8 @@ export function mountModelInspect(next: ModelInspectHooks) {
   document.querySelector("#modelInspectObjects")?.addEventListener("click", (ev) => {
     const target = ev.target instanceof Element ? ev.target : null;
     const pick = (attr: string) => target?.closest<HTMLElement>(`[${attr}]`)?.getAttribute(attr) ?? null;
+    const eye = pick("data-plate-eye");
+    if (eye) return actions?.toggleHidden(eye, (ev as MouseEvent).altKey || (ev as MouseEvent).ctrlKey || (ev as MouseEvent).metaKey);
     const frame = pick("data-plate-frame");
     if (frame) return actions?.frame(frame);
     const check = pick("data-plate-check");
@@ -61,6 +67,7 @@ export function mountModelInspect(next: ModelInspectHooks) {
     const select = pick("data-plate-select");
     if (select && select !== hooks?.openId()) actions?.select(select);
   });
+  document.querySelector("#modelInspectShowAll")?.addEventListener("click", () => actions?.showAll());
   document.querySelector("#modelInspectDuplicate")?.addEventListener("click", () => actions?.duplicate());
   document.querySelector("#modelInspectAdd")?.addEventListener("click", () => actions?.add());
   window.addEventListener("lime-inspect", () => paintModelInspect(true));
@@ -97,7 +104,7 @@ let painted = "";
 function rowsKey(openId: string | null): string {
   const { bedX, bedY, bedZ } = state.profile;
   const objects = state.plate.objects.map((obj) => `${obj.id}:${obj.name}:${obj.bytes.byteLength}:${obj.partScale}:${obj.orient.join(",")}`);
-  return [openId, bedX, bedY, bedZ, ...objects].join("|");
+  return [openId, bedX, bedY, bedZ, hiddenKey(), ...objects].join("|");
 }
 
 /**
@@ -119,7 +126,9 @@ export function paintModelInspect(force = false) {
   const objects = hooks.objects();
   // The rebuilt rows keep the keyboard where it was: the same button of the same object, else the first row.
   const focused = document.activeElement instanceof HTMLElement && list.contains(document.activeElement) ? document.activeElement : null;
-  const action = focused ? ["data-plate-select", "data-plate-check", "data-plate-frame", "data-plate-remove"].find((attr) => focused.hasAttribute(attr)) : undefined;
+  const showAll = document.querySelector<HTMLElement>("#modelInspectShowAll");
+  if (showAll) showAll.hidden = hiddenCount() === 0;
+  const action = focused ? ["data-plate-select", "data-plate-eye", "data-plate-check", "data-plate-frame", "data-plate-remove"].find((attr) => focused.hasAttribute(attr)) : undefined;
   const target = action ? focused!.getAttribute(action) : null;
   setHtml(list, inspectRowsHtml(objects, openId));
   if (focused) {

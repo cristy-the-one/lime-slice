@@ -14,6 +14,7 @@ import {
 import { unionBox } from "../../measure";
 import { type ParsedSolid } from "../../model-reply";
 import { contextParts } from "../../model-context";
+import { isHidden, isolate, pruneHidden, setHidden, showAll, visibleParts } from "../../model-hidden";
 import { extentAlong } from "../../model-plane";
 import { type Vec3 } from "../../model-tree";
 import {
@@ -136,7 +137,9 @@ export function refreshModelContext() {
     refreshingContext = false;
   }
   S.ghosted = ghostId();
-  const parts = contextParts(livePlate(), S.open?.objectId ?? null).filter((part) => part.id !== S.ghosted);
+  // Hidden objects are never built into the view, so nothing can draw, hover, pick, measure or snap to them. The open one is always shown.
+  pruneHidden(livePlate().map((obj) => obj.id), S.open?.objectId ?? null);
+  const parts = visibleParts(contextParts(livePlate(), S.open?.objectId ?? null)).filter((part) => part.id !== S.ghosted);
   if (S.lens && S.open) {
     // A tool's step on screen: the part its join cut is grey behind it, as it was on screen, and the tool's own plate
     // object, if Keep left it there, would only stand in its way.
@@ -300,7 +303,7 @@ function learnSeat(solid: ParsedSolid) {
 export function frameModel(all: boolean) {
   const box = openBox();
   // With no solid open, the view frames whatever model space holds.
-  const others = all || !box ? partsInView(contextParts(livePlate(), S.open?.objectId ?? null)).map((part) => boxUnder(boxOf(part.positions), part.matrix)) : [];
+  const others = all || !box ? partsInView(visibleParts(contextParts(livePlate(), S.open?.objectId ?? null))).map((part) => boxUnder(boxOf(part.positions), part.matrix)) : [];
   const union = unionBox(box ? [box, ...others] : others);
   if (union) fx.model?.frame(union);
 }
@@ -314,9 +317,25 @@ export function frameInModel(id: string) {
 export function bindInspect() {
   // --- E3. Inspect, the right dock in Model. ---
   mountModelInspect({
-    objects: () => plateObjectSizes(),
+    objects: () => plateObjectSizes().map((row) => ({ ...row, hidden: isHidden(row.id) })),
     openId: () => S.open?.objectId ?? state.plate.selectedId,
   });
+}
+
+/** Inspect's eye: hide or show one plate object in the view (`only`: show just this one, or all again). Nothing on the plate changes. */
+export function toggleObjectHidden(id: string, only: boolean) {
+  const openId = S.open?.objectId ?? state.plate.selectedId;
+  // The open object is always shown, so it is neither hidden nor counted among the ones isolating hides.
+  const ids = state.plate.objects.map((obj) => obj.id).filter((other) => other !== openId);
+  if (!ids.includes(id)) return;
+  if (only) isolate(id, ids);
+  else setHidden(id, !isHidden(id));
+  refreshModelContext();
+}
+
+export function showAllObjects() {
+  showAll();
+  refreshModelContext();
 }
 
 export function bindLook() {

@@ -462,6 +462,15 @@ html:not(.layout-compact) .model-dock .model-stress .model-params-main { padding
 /* The Prepare list's rows, with their buttons under the name in the dock's width. */
 .model-inspect .obj-row { grid-template-columns: minmax(0, 1fr); }
 .model-inspect .obj-actions { justify-content: flex-end; padding: 0 var(--space-2) var(--space-1); }
+.model-inspect-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.model-inspect-head h3 { margin: 0; }
+.model-inspect-showall { height: 22px; padding: 0 var(--space-2); font-size: var(--fs-1); }
+.model-inspect-showall[hidden] { display: none; }
+.model-inspect .obj-eye { width: 28px; height: 24px; padding: 0; margin-right: auto; display: inline-flex; align-items: center; justify-content: center; }
+.model-inspect .obj-eye[aria-pressed="true"] { color: var(--text-faint); }
+.model-inspect .obj-eye:disabled { opacity: 0.4; cursor: default; }
+/* A hidden object's row is dimmed, its buttons stay at full strength so it can still be shown, framed or opened. */
+.model-inspect .obj-row[data-hidden="true"] .obj-select { opacity: 0.5; }
 .model-inspect-bar { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
 
 /* ---------- Status line in Model ---------- */

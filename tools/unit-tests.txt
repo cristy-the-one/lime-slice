@@ -96,6 +96,7 @@ src/mesh-shells.test.ts
 src/step-solids.test.ts
 src/edge-strip.test.ts
 src/model-context.test.ts
+src/model-hidden.test.ts
 src/model-space.test.ts
 src/model-tree.test.ts
 src/model-history.test.ts
