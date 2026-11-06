@@ -30,6 +30,7 @@ import {
   type SharedPreset,
 } from "../plugins/share";
 import { showTrust } from "./plugin-trust";
+import { prefs } from "../prefs.ts";
 
 /** What the import flow needs of the Plugins panel: the library read again, and the panel opened on a plugin. */
 export interface ShareHost {
@@ -54,7 +55,7 @@ function today(): string {
 /** The project plugins (by hash) a person approved to run here, kept in this browser. */
 function approved(): string[] {
   try {
-    const rows = JSON.parse(localStorage.getItem(APPROVED_KEY) ?? "[]") as unknown;
+    const rows = prefs.getJson(APPROVED_KEY);
     return Array.isArray(rows) ? rows.filter((row): row is string => typeof row === "string") : [];
   } catch {
     return [];
@@ -63,7 +64,7 @@ function approved(): string[] {
 
 function approve(sha256: string) {
   try {
-    localStorage.setItem(APPROVED_KEY, JSON.stringify([...approved().filter((row) => row !== sha256), sha256].slice(-APPROVED_MAX)));
+    prefs.setJson(APPROVED_KEY, [...approved().filter((row) => row !== sha256), sha256].slice(-APPROVED_MAX));
   } catch {
     // It asks again next time.
   }

@@ -4,6 +4,8 @@
  * API for listing, saving, or switching named settings profiles.
  * `localSettingsProfileStore` is the UI adapter for that missing API.
  */
+import { prefs, prefsOver, type PrefStorage } from "../prefs.ts";
+
 export const SETTINGS_PROFILE_KEY = "lime-slice-settings-profiles";
 
 export interface SettingsProfileStore {
@@ -11,9 +13,12 @@ export interface SettingsProfileStore {
   write(text: string): void;
 }
 
-export function localSettingsProfileStore(storage: Pick<Storage, "getItem" | "setItem"> = localStorage): SettingsProfileStore {
+export function localSettingsProfileStore(storage?: Pick<PrefStorage, "getItem" | "setItem">): SettingsProfileStore {
+  const store = storage ? prefsOver(storage) : prefs;
   return {
-    read: () => storage.getItem(SETTINGS_PROFILE_KEY),
-    write: (text) => storage.setItem(SETTINGS_PROFILE_KEY, text),
+    read: () => store.get(SETTINGS_PROFILE_KEY),
+    write: (text) => {
+      store.set(SETTINGS_PROFILE_KEY, text);
+    },
   };
 }

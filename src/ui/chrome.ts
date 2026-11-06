@@ -30,6 +30,7 @@ import { endReveals, paintDrawerHint, toggleDock } from "./splitters";
 import { mountTooltips } from "./tooltip";
 import { fx } from "../app/fx";
 import "./chrome.css";
+import { prefs } from "../prefs.ts";
 
 export type GizmoTool = "all" | "move" | "rotate" | "scale";
 export type Stage = "prepare" | "preview" | "gcode" | "model";
@@ -396,19 +397,11 @@ function mountRailLabels() {
     if (input) input.checked = on;
   };
   let on = false;
-  try {
-    on = localStorage.getItem(RAIL_LABELS_KEY) === "1";
-  } catch {
-    on = false;
-  }
+  on = prefs.getBool(RAIL_LABELS_KEY);
   apply(on);
   input?.addEventListener("change", () => {
     apply(input.checked);
-    try {
-      localStorage.setItem(RAIL_LABELS_KEY, input.checked ? "1" : "0");
-    } catch {
-      // The choice still applies for this visit.
-    }
+    prefs.setBool(RAIL_LABELS_KEY, input.checked);
     fitRail();
   });
 }

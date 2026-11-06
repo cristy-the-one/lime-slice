@@ -48,6 +48,7 @@ import { COMMANDS, shortcutOf, shortcutShadowed, tipWithShortcut } from "./comma
 import { revealDock } from "./dock-reveal.ts";
 import { diameterExpr, radiusExpr } from "./diameter-expr.ts";
 import "./model-dock.css";
+import { prefs } from "../prefs.ts";
 
 export type { ModelTool } from "../model-drag";
 
@@ -418,7 +419,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     const on = document.querySelector("#modelBedToggle")?.getAttribute("aria-pressed") !== "true";
     setBed(on);
     try {
-      localStorage.setItem(BED_KEY, on ? "1" : "0");
+      prefs.setBool(BED_KEY, on);
     } catch {
       // A blocked store only means the choice is not remembered.
     }
@@ -2390,7 +2391,7 @@ function refreshWpPrint() {
 
 function readBedPref(): boolean {
   try {
-    return localStorage.getItem(BED_KEY) !== "0";
+    return prefs.getBool(BED_KEY);
   } catch {
     return true;
   }
@@ -2795,7 +2796,7 @@ const FEATURE_TIPS: Record<MenuTool, string> = {
 
 function rememberedFeature(): MenuTool {
   try {
-    const saved = localStorage.getItem(FEATURE_KEY);
+    const saved = prefs.get(FEATURE_KEY);
     if (isFeatureTool(saved)) return saved;
   } catch {
     // A blocked store only means the last feature is not remembered.
@@ -2805,7 +2806,7 @@ function rememberedFeature(): MenuTool {
 
 function rememberFeature(next: MenuTool) {
   try {
-    localStorage.setItem(FEATURE_KEY, next);
+    prefs.set(FEATURE_KEY, next);
   } catch {
     // The button still shows it for this session.
   }

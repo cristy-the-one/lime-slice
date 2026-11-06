@@ -6,6 +6,7 @@
 import { PARAM_NAME } from "../modeling/expr.ts";
 import { appParamMessage, evaluateTable, expressionMentions, isPlainNumber, type ParamTable } from "../modeling/params.ts";
 import { openDock } from "./dock-reveal.ts";
+import { prefs, type Prefs } from "../prefs.ts";
 
 export interface ParameterHooks {
   table(): ParamTable;
@@ -40,7 +41,7 @@ const FOLD_PREFIX = "lime-slice-model-params-folded:";
 const FOLD_ORDER = "lime-slice-model-params-folded-order";
 const FOLD_LIMIT = 50;
 
-type FoldStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+type FoldStorage = Prefs;
 
 /** A saved path, or one shared key when the project has not been saved. */
 export function parametersFoldId(projectPath: string): string {
@@ -48,7 +49,7 @@ export function parametersFoldId(projectPath: string): string {
 }
 
 function foldOrder(storage: FoldStorage): string[] {
-  return (storage.getItem(FOLD_ORDER) ?? "").split("\n").filter(Boolean);
+  return (storage.get(FOLD_ORDER) ?? "").split("\n").filter(Boolean);
 }
 
 /** How many projects remember a fold. At most 50. */
@@ -58,7 +59,7 @@ export function parametersFoldCount(storage: FoldStorage): number {
 
 /** `true` is folded. Null when this project has no stored choice. */
 export function readParametersFold(storage: FoldStorage, projectPath: string): boolean | null {
-  const stored = storage.getItem(FOLD_PREFIX + parametersFoldId(projectPath));
+  const stored = storage.get(`${FOLD_PREFIX}${parametersFoldId(projectPath)}`);
   if (stored === "1") return true;
   if (stored === "0") return false;
   return null;
@@ -67,20 +68,20 @@ export function readParametersFold(storage: FoldStorage, projectPath: string): b
 /** Remember the fold for this path. The 51st project drops the oldest. */
 export function writeParametersFold(storage: FoldStorage, projectPath: string, folded: boolean): void {
   const id = parametersFoldId(projectPath);
-  storage.setItem(FOLD_PREFIX + id, folded ? "1" : "0");
+  storage.setBool(`${FOLD_PREFIX}${id}`, folded);
   const order = foldOrder(storage).filter((item) => item !== id);
   order.push(id);
   while (order.length > FOLD_LIMIT) {
     const oldest = order.shift();
-    if (oldest) storage.removeItem(FOLD_PREFIX + oldest);
+    if (oldest) storage.remove(`${FOLD_PREFIX}${oldest}`);
   }
-  storage.setItem(FOLD_ORDER, order.join("\n"));
+  storage.set(FOLD_ORDER, order.join("\n"));
 }
 
 /** A stored choice wins. With none, an empty table starts collapsed. */
 function readFolded(count: number): boolean {
   try {
-    const stored = readParametersFold(localStorage, hooks?.projectId?.() ?? "");
+    const stored = readParametersFold(prefs, hooks?.projectId?.() ?? "");
     if (stored != null) return stored;
   } catch {
     return count === 0;
@@ -90,7 +91,7 @@ function readFolded(count: number): boolean {
 
 function writeFolded(on: boolean) {
   try {
-    writeParametersFold(localStorage, hooks?.projectId?.() ?? "", on);
+    writeParametersFold(prefs, hooks?.projectId?.() ?? "", on);
   } catch {
     /* blocked storage: the section follows the empty-table default next time */
   }
