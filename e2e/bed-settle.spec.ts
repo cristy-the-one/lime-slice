@@ -37,6 +37,7 @@ async function loadCube(page: Page) {
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/slice", (route) => route.fulfill({ status: 404, json: { error: "off" } }));
+  await page.addInitScript(() => localStorage.setItem("lime-slice-open-subgroups", '["object-pose"]'));
   await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");

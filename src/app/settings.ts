@@ -37,6 +37,7 @@ import { OVERRIDES_TIP, overrideSectionHtml } from "../ui/overrides-panel";
 import { fuzzyRequest } from "../fuzzy-skin";
 import { ironingRequest, ironingSpacingMax } from "../ironing";
 import { normalInfillDensity, reinforcementRequestFields } from "../reinforcement";
+import { prefs } from "../prefs.ts";
 import { levelSelectHtml, loadClosedGroups, loadSettingsLevel, saveClosedGroups, setSettingsLevel } from "../ui/settings-panel";
 import {
   GROUPS,
@@ -535,6 +536,30 @@ export function paintBanner() {
 /** Groups the user closed, kept across sessions. */
 export const closedGroups = loadClosedGroups(GROUPS.filter((group) => group.closed).map((group) => group.id));
 
+const SUB_KEY = "lime-slice-open-subgroups" as const;
+
+/** Folded parts inside a card (the Objects card's rotation and alignment). Closed until the user opens one; the choice is kept. */
+const openSubgroups: Set<string> = (() => {
+  const stored = prefs.getJson(SUB_KEY);
+  return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
+})();
+
+export function subgroupOpen(id: string): boolean {
+  return openSubgroups.has(id);
+}
+
+export function noteSubgroupToggle(id: string, open: boolean) {
+  if (open) openSubgroups.add(id);
+  else openSubgroups.delete(id);
+  prefs.setJson(SUB_KEY, [...openSubgroups]);
+}
+
+/** What the folded header says: the turn, or that there is none. */
+function poseSummary(euler: { rx: number; ry: number; rz: number }): string {
+  const turns = (["rx", "ry", "rz"] as const).filter((axis) => Math.abs(euler[axis]) >= 0.05).map((axis) => `${axis.toUpperCase().replace("R", "R")}${formatDeg(euler[axis])}°`);
+  return turns.length ? turns.join(" ") : "Rotate, Align to…";
+}
+
 export function noteGroupToggle(id: string, open: boolean) {
   if (open) closedGroups.delete(id);
   else closedGroups.add(id);
@@ -864,12 +889,17 @@ function objectPlaceHtml(): string {
       <label class="setting" data-label="position y" data-keywords="placement move bed offset"><span class="scrub-label" data-scrub="y">Y mm</span><input id="placeY" type="number" step="0.1" value="${cy}" aria-label="Position Y" /></label>
       <label class="setting" data-label="scale %" data-keywords="placement size percent"><span class="scrub-label" data-scrub="scale">Scale %</span><input id="partScale" type="number" min="10" max="400" step="5" value="${Math.round(state.partScale * 100)}" /></label>
     </div>
+    <details class="subgroup" id="objPoseGroup" data-sub="object-pose"${subgroupOpen("object-pose") ? " open" : ""}>
+      <summary><span>Rotation and alignment</span><span class="subgroup-sum">${poseSummary(euler)}</span></summary>
+      <div class="subgroup-body">
     <div class="grid3" id="placeRot">
       <label class="setting" data-label="rotation x" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="rx">Rx °</span><input id="placeRx" type="number" step="0.1" value="${formatDeg(euler.rx)}" aria-label="Rotation X" /></label>
       <label class="setting" data-label="rotation y" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="ry">Ry °</span><input id="placeRy" type="number" step="0.1" value="${formatDeg(euler.ry)}" aria-label="Rotation Y" /></label>
       <label class="setting" data-label="rotation z" data-keywords="turn angle degrees gizmo"><span class="scrub-label" data-scrub="rz">Rz °</span><input id="placeRz" type="number" step="0.1" value="${formatDeg(euler.rz)}" aria-label="Rotation Z" /></label>
     </div>
     ${alignHtml(state.plate.objects.filter((obj) => obj.id !== state.plate.selectedId).map((obj) => ({ id: obj.id, name: obj.name })))}
+      </div>
+    </details>
     <label class="row setting" data-label="settle on the bed" data-keywords="rest flat contact rotate snap collide" data-tip="While you turn the part with the rotate rings, snap it to the flat face that touches the bed most, near the angle you hold."><span class="row-label">Settle on the bed</span><input id="settleOn" type="checkbox" class="switch" role="switch" ${settleOn() ? "checked" : ""}/></label>
     ${separateShellsHtml()}
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
@@ -1422,6 +1452,11 @@ export function applyFilter() {
     group.classList.toggle("hidden", !any);
     if (q && any) group.open = true;
     else if (!q) group.open = !closedGroups.has(group.dataset.group ?? "");
+  });
+  // A folded part of a card opens for a search that matches inside it, and goes back to the remembered state after.
+  document.querySelectorAll<HTMLDetailsElement>("#left .subgroup").forEach((sub) => {
+    if (q && sub.querySelector(".setting.is-match")) sub.open = true;
+    else if (!q) sub.open = subgroupOpen(sub.dataset.sub ?? "");
   });
 }
 
