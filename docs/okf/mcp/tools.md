@@ -102,7 +102,7 @@ After place and settings. The selected object, or the whole plate when scope is 
 
 ### slice_wait
 
-Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. timeoutS is up to 120.
+Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. Waits are capped at 25s, even if timeoutS is larger.
 
 ### slice_cancel
 

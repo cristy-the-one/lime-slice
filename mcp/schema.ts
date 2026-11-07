@@ -1264,7 +1264,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_wait",
-    description: "Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. timeoutS is up to 120.",
+    description: "Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. Waits are capped at 25s, even if timeoutS is larger.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1470,6 +1470,7 @@ export const TOOLS: ToolSpec[] = [
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
         interference: { type: "boolean", description: "Instead: pairs of parts in its assembly that cross, as assembled." },
         exact: { type: "boolean", description: "With interference: each pair's common volume by the kernel." },
+        crossingsOnly: { type: "boolean", description: "With interference: omit touch pairs. Unmeasured pairs remain in an exact check." },
       },
     },
   },

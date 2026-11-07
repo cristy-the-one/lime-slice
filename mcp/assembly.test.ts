@@ -166,11 +166,15 @@ check("a view with a section is refused", shotBad.ok === false && String(shotBad
 const resting = await call("model_check", { object: body, interference: true });
 check("model_check {interference} answers for the assembly", resting.ok === true && resting.assembly === "LED cover" && resting.pass === "mesh", JSON.stringify(resting));
 check("a hook resting on the rim is a touch, not a crossing", !(resting.pairs as { verdict: string; nested?: boolean }[]).some((row) => row.verdict === "crossing" || row.nested), JSON.stringify(resting.pairs));
+const filteredResting = await call("model_check", { object: body, interference: true, crossingsOnly: true });
+check("crossingsOnly omits touches", (filteredResting.pairs as unknown[]).length === 0, JSON.stringify(filteredResting));
 const sunkPin = await solid(4, 4, 6);
 await call("model_place", { object: sunkPin, to: body, x: 10, z: 7 });
 const sunkCheck = await call("model_check", { object: hookA, interference: true });
 const sunkPair = (sunkCheck.pairs as { a: string; b: string; verdict: string; atMm?: number[] }[]).find((row) => [row.a, row.b].includes(sunkPin) && [row.a, row.b].includes(body));
 check("a pin sunk 3 mm into the body crosses it", sunkPair?.verdict === "crossing" && Array.isArray(sunkPair.atMm), JSON.stringify(sunkCheck));
+const filteredSunk = await call("model_check", { object: hookA, interference: true, crossingsOnly: true });
+check("crossingsOnly retains crossings", (filteredSunk.pairs as { a: string; b: string }[]).some((row) => [row.a, row.b].includes(sunkPin) && [row.a, row.b].includes(body)), JSON.stringify(filteredSunk));
 check("and the note says nothing is blocked", String(sunkCheck.note).includes("Nothing is blocked"), String(sunkCheck.note));
 const loner = await call("model_check", { object: await solid(2, 2, 2), interference: true });
 check("a part in no assembly is told how to make one", loner.ok === false && String(loner.reason).includes("model_place {to}"), JSON.stringify(loner));

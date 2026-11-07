@@ -72,9 +72,10 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
  * --- Assemblies M6. Every pair of parts in `obj`'s assembly, at their assembled poses: the mesh pass's answer, clear,
  * touch or crossing, and nested for a part wholly inside another. Pairs that are clear are counted, not listed.
  */
-async function interferenceCheck(this: Session, obj: PlateObject, exact: boolean): Promise<Record<string, unknown>> {
+async function interferenceCheck(this: Session, obj: PlateObject, exact: boolean, crossingsOnly = false): Promise<Record<string, unknown>> {
   const cheap = this.meshInterference(obj);
-  if (!exact || cheap.ok !== true) return cheap;
+  if (cheap.ok !== true) return cheap;
+  if (!exact) return crossingsOnly ? { ...cheap, pairs: (cheap.pairs as Record<string, unknown>[]).filter((row) => row.verdict !== "touch" || row.nested) } : cheap;
   // --- Assemblies M7. Each pair the mesh pass did not clear is measured: the common volume of the two solids.
   const rows = cheap.pairs as Record<string, unknown>[];
   for (const row of rows) {
@@ -94,6 +95,7 @@ async function interferenceCheck(this: Session, obj: PlateObject, exact: boolean
   return {
     ...cheap,
     pass: "exact",
+    ...(crossingsOnly ? { pairs: rows.filter((row) => row.verdict !== "touch" || row.nested || row.exact === false) } : {}),
     note: crossing > 0
       ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume. Nothing is blocked: a press fit is meant to cross.`
       : `No pair shares volume. A common volume under ${SLIVER_MM3} mm³, or a millionth of the smaller part, is a touch.`,
@@ -197,7 +199,7 @@ async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, 
 }
 
 async function modelCheck(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (input.interference === true) return this.interferenceCheck(obj, input.exact === true);
+  if (input.interference === true) return this.interferenceCheck(obj, input.exact === true, input.crossingsOnly === true);
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
