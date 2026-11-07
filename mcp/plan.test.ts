@@ -64,8 +64,10 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   check("a malformed reference is refused with its path", malformed === "Step 2: \"$one.object\" at args.object is not a reference. Write \"$N.path\" with N an earlier step's number, e.g. \"$1.object\", or start with \"$$\" for a literal \"$\".", String(malformed));
   const nested = await reply(session, "plan_run", { steps: [{ tool: "plan_run", args: { steps: [{ tool: "session_info" }] } }] });
   check("plan_run cannot be a step", nested === "Step 1: plan_run cannot run inside a plan. Put its steps in this plan instead.", String(nested));
-  const tooMany = await reply(session, "plan_run", { steps: Array.from({ length: 26 }, () => ({ tool: "session_info" })) });
-  check("more than 25 steps is refused", tooMany === "input.steps is too long.", String(tooMany));
+  const longer = await session.call("plan_run", { steps: Array.from({ length: 26 }, () => ({ tool: "session_info" })) });
+  check("a plan can run more than 25 steps", longer.ok === true && (longer.steps as unknown[]).length === 26, JSON.stringify(longer).slice(0, 300));
+  const tooMany = await reply(session, "plan_run", { steps: Array.from({ length: 251 }, () => ({ tool: "session_info" })) });
+  check("more than 250 steps is refused", tooMany === "input.steps is too long.", String(tooMany));
   const missing = await session.call("plan_run", {
     steps: [
       { tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } },

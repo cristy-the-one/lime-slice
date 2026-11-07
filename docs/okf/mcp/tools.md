@@ -130,7 +130,7 @@ PNG inline and in the workspace. Cameras on the part's axes: front shows the −
 
 ### plan_run
 
-Run up to 25 tool calls in order, in one call. Each step is checked and applied as if called alone (same refusals, undo, and autosave). A string argument that is exactly "$N.path" becomes step N's result at that path: N is an earlier step's number, from 1; the path is field names and list indexes split by dots, e.g. "$1.object" or "$2.faces.0.index". "$N" alone is the whole result; a string starting "$$" is a literal "$". The plan stops at the first refused or failed step and returns every step's result so far and failedStep. plan_run cannot be a step. A plan past about 45 s answers with a job, like a long call: slice_wait {job} returns its result. guide {topic:"plans"}.
+Run up to 250 tool calls in order, in one call. Each step is checked and applied as if called alone (same refusals, undo, and autosave). A string argument that is exactly "$N.path" becomes step N's result at that path: N is an earlier step's number, from 1; the path is field names and list indexes split by dots, e.g. "$1.object" or "$2.faces.0.index". "$N" alone is the whole result; a string starting "$$" is a literal "$". The plan stops at the first refused or failed step and returns every step's result so far and failedStep. plan_run cannot be a step. A plan past about 45 s answers with a job, like a long call: slice_wait {job} returns its result. guide {topic:"plans"}.
 
 ### tools_enable
 
