@@ -2813,7 +2813,7 @@ dependencies = [
 
 [[package]]
 name = "lime-mcp-engine"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
@@ -2826,14 +2826,14 @@ dependencies = [
 
 [[package]]
 name = "lime-model"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "lime-model-load"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "libloading 0.8.9",
@@ -2845,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "lime-model-occt"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "cc",
@@ -2859,21 +2859,21 @@ dependencies = [
 
 [[package]]
 name = "lime-preview"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "ryu",
 ]
 
 [[package]]
 name = "lime-recipe"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "lime-model-occt",
 ]
 
 [[package]]
 name = "lime-recipe-runner"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "serde_json",
  "windows-sys 0.61.2",
@@ -2881,7 +2881,7 @@ dependencies = [
 
 [[package]]
 name = "lime-shell"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "lime-preview",
  "windows 0.61.3",
@@ -2890,7 +2890,7 @@ dependencies = [
 
 [[package]]
 name = "lime-sim"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "faer",
  "pollster",
@@ -2902,7 +2902,7 @@ dependencies = [
 
 [[package]]
 name = "lime-sim-bridge"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "lime-sim",
@@ -2914,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -2927,7 +2927,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-core"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "clipper2",
@@ -2946,7 +2946,7 @@ dependencies = [
 
 [[package]]
 name = "lime-slice-desktop"
-version = "5.9.1"
+version = "5.10.0"
 dependencies = [
  "base64 0.22.1",
  "lime-model-load",
