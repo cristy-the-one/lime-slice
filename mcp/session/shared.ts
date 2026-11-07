@@ -16,6 +16,8 @@ import type { PaintDisk } from "../../src/support-paint.ts";
 import type { SeamDisk } from "../../src/seam-paint.ts";
 import type { ReinforceRegion } from "../../src/reinforcement.ts";
 import type { PlateObjectSettings } from "../../src/plate.ts";
+import type { ChainLink, JointLimits } from "../../src/chain.ts";
+import type { Vec3 } from "../../src/pivot.ts";
 import type { ObjectStudy, StudyConstraint } from "../../src/sim/study.ts";
 import { LABEL } from "../../src/sim/label.ts";
 import type { PrintOrder } from "../../src/settings-rules.ts";
@@ -254,6 +256,12 @@ export interface PlateObject {
    * The slicer never reads it: a Model solid's plate mesh is the kernel's mesh, not a re-read of a file.
    */
   brep?: Uint8Array;
+  /** Source-frame pivot. Absent for the bounds centre. */
+  pivot?: Vec3;
+  /** Parent link through pivots. Absent when the part is free. */
+  chain?: ChainLink;
+  /** Inverse-kinematics limits, degrees. Absent when the joint is free. */
+  jointLimits?: JointLimits;
   /** Runs of steps one composite edit or batch made: undo takes the whole run back. */
   groups?: { start: number; end: number; label: string }[];
   /** The run undo last took back, so redo can bring it all again. */
@@ -461,6 +469,9 @@ export interface SnapObject {
   platedNode: number | null;
   brep?: Uint8Array;
   sim?: ObjectStudy;
+  pivot?: Vec3;
+  chain?: ChainLink;
+  jointLimits?: JointLimits;
 }
 
 export interface PlateSnap {

@@ -273,6 +273,8 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   '#toolRail [data-tool="move"]': ["prepare"],
   '#toolRail [data-tool="rotate"]': ["prepare"],
   '#toolRail [data-tool="scale"]': ["prepare"],
+  '#toolRail [data-tool="pivot"]': ["prepare"],
+  '#toolRail [data-tool="ik"]': ["prepare"],
   "#layflat": ["prepare"],
   '#toolRail [data-tool="layflat"]': ["prepare"],
   '#toolRail [data-tool="section"]': ["prepare", "preview", "gcode"],

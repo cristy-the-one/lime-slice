@@ -33,6 +33,7 @@ import {
 import { explodeLook, showExplode } from "../../ui/model-look";
 import { canExplode, explodeContext, heldParts } from "../model-explode";
 import { meshSeat, meshTokenOf, modelPoseOf, setMeshSeat, type PlateObject } from "../../plate";
+import { centreOf, usingCustomPivot } from "../../pivot.ts";
 import type { ContextPart } from "../../model-context";
 import { livePlate, syncPlateView } from "../files";
 import { fx } from "../fx";
@@ -282,7 +283,10 @@ export function boxOf(positions: Float32Array): Bounds {
 
 export function pivotOf(solid: ParsedSolid): Vec3 {
   const own = boxOf(solid.positions);
-  return [(own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2];
+  const centre: Vec3 = [(own.min[0] + own.max[0]) / 2, (own.min[1] + own.max[1]) / 2, (own.min[2] + own.max[2]) / 2];
+  const obj = S.open ? state.plate.objects.find((row) => row.id === S.open!.objectId) : undefined;
+  if (!obj?.pivot || !usingCustomPivot(obj.pivot, centreOf(obj.sourcePos))) return centre;
+  return [obj.pivot[0], obj.pivot[1], obj.pivot[2] + (meshSeat(obj.bytes) ?? 0)];
 }
 
 /**

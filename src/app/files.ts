@@ -33,6 +33,8 @@ import { isHidden, pruneHidden, visibleParts } from "../model-hidden";
 import { syncAssemblyView } from "./assemblies.ts";
 import { supportModeState } from "../support-source";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
+import { heldPivotPose, pivotOrCentre, centreOf, sourceToBedPoint, usingCustomPivot } from "../pivot.ts";
+import { refreshOwnLink, scaledDescendants, solveDescendants } from "../chain.ts";
 
 export async function loadNamed(name: string) {
   state.error = "";
@@ -54,6 +56,7 @@ export async function adoptBytes(name: string, bytes: ArrayBuffer) {
     dropProjectFonts();
     session.parameters = {};
     session.assemblies = [];
+    session.chainRoot = null;
     modelApi()?.noteParametersBuilt();
   }
   state.mesh = { name, bytes };
@@ -179,11 +182,34 @@ export function place(sync: SplitSync = "transform") {
 }
 
 export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
+  const selected = state.plate.objects.find((obj) => obj.id === state.plate.selectedId);
+  const bed = { x: state.profile.bedX, y: state.profile.bedY };
+  let ratio = 1;
+  if (selected) {
+    const orientChanged = selected.orient.some((value, index) => value !== state.orient[index]);
+    const scaleChanged = selected.partScale !== state.partScale;
+    if (orientChanged || scaleChanged) {
+      const held = heldPivotPose(selected.sourcePos, selected.pivot, selected, { orient: state.orient, partScale: state.partScale }, bed.x, bed.y);
+      if (held) {
+        state.centered = held.centered;
+        state.offset = held.offset;
+      }
+      if (scaleChanged && selected.partScale !== 0) ratio = state.partScale / selected.partScale;
+    }
+  }
   syncPlateFromState();
+  if (selected) {
+    let objects = state.plate.objects;
+    if (ratio !== 1) objects = scaledDescendants(objects, selected.id, ratio);
+    objects = refreshOwnLink(objects, selected.id, bed);
+    objects = solveDescendants(objects, selected.id, bed);
+    if (objects !== state.plate.objects) state.plate = { ...state.plate, objects };
+  }
   state.placed = currentPlacement();
   if (!state.placed) {
     fx.prepare.setMesh(null);
     fx.prepare.setPlate?.([], []);
+    publishPivots();
     syncAssemblyView();
     if (rerender) renderChrome();
     return;
@@ -191,6 +217,7 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
   fx.realignSplit(sync);
   warmHull(state.sourcePos);
   fx.prepare.setMesh(state.placed, sync === "load");
+  publishPivots();
   fx.syncCut();
   fx.drawPaint?.();
   fx.prepare.setBed(state.profile.bedX, state.profile.bedY, state.profile.bedZ);
@@ -208,6 +235,19 @@ export function applyPlace(rerender: boolean, sync: SplitSync = "transform") {
  * draws, hovers, picks, grabs, measures or snaps to them; the plate itself, slicing and export never read it. The
  * selected object is always shown: selecting a hidden one shows it.
  */
+/** The pivots the Prepare view draws, and the dataset a test reads. The centre is published too, marked not custom. */
+function publishPivots() {
+  const bedX = state.profile.bedX;
+  const bedY = state.profile.bedY;
+  const rows = state.plate.objects.map((obj) => {
+    const centre = centreOf(obj.sourcePos);
+    const at = sourceToBedPoint(obj.sourcePos, pivotOrCentre(obj.pivot, centre), obj.orient, obj.partScale, obj.centered, obj.offset, bedX, bedY);
+    const chained = !!obj.chain || state.plate.objects.some((other) => other.chain?.parent === obj.id);
+    return { id: obj.id, at, custom: usingCustomPivot(obj.pivot, centre), chained, parent: obj.chain?.parent };
+  });
+  fx.prepare.setPivots?.(rows, state.plate.selectedId);
+}
+
 export function syncPlateView() {
   const { bedX, bedY } = state.profile;
   pruneHidden(state.plate.objects.map((obj) => obj.id), state.plate.selectedId);

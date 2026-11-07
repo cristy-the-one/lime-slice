@@ -79,6 +79,7 @@ export function blankProject() {
   dropProjectFonts();
   session.parameters = {};
   session.assemblies = [];
+  session.chainRoot = null;
   modelApi()?.noteParametersBuilt();
   const stayInModel = state.stage === "model";
   cancelSlice();

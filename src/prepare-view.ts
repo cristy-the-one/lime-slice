@@ -110,9 +110,17 @@ export interface PrepareView {
   /** Uniform part scale, in percentage points. Returns how many of `deltaPercent` landed after the 10–400 clamp. */
   onScale(cb: ((deltaPercent: number) => number) | null): void;
   onScaleEnd(cb: (() => void) | null): void;
+  /** Pivots in print millimetres. A custom one moves the rotate rings onto it. */
+  setPivots(rows: { id: string; at: Vec3; custom: boolean; chained: boolean; parent?: string }[], selectedId: string | null): void;
+  /** A click or drag in the Pivot tool, in print millimetres. Shift asks for a snap. */
+  onPivot(cb: ((point: Vec3, snap: boolean) => void) | null): void;
+  onPivotEnd(cb: (() => void) | null): void;
+  /** A drag in the IK tool: the print point the end should reach, on a plane through the pivot facing the camera. */
+  onIk(cb: ((point: Vec3) => void) | null): void;
+  onIkEnd(cb: (() => void) | null): void;
   setTheme(): void;
-  /** Show move arrows, rotate rings, the scale knobs, or move and rotate together. The widget stays parked on the left. */
-  setGizmoTool(tool: "all" | "move" | "rotate" | "scale"): void;
+  /** Show move arrows, rotate rings, the scale knobs, or move and rotate together. Pivot and IK hide the widget. */
+  setGizmoTool(tool: "all" | "move" | "rotate" | "scale" | "pivot" | "ik"): void;
   /** Translucent height slabs and modifier volumes. The part gizmo stays parked on the left. */
   setModifiers(doc: OverrideDocument, selectedId: string | null, tool: "move" | "scale"): void;
   /**
@@ -293,7 +301,19 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const scaleMats = new Map<ScaleAxis, THREE.MeshBasicMaterial>();
   const handlePicks: THREE.Object3D[] = [];
   const handleNodes: { kind: HandleHit["kind"]; nodes: THREE.Object3D[] }[] = [];
-  let gizmoTool: "all" | "move" | "rotate" | "scale" = "all";
+  let gizmoTool: "all" | "move" | "rotate" | "scale" | "pivot" | "ik" = "all";
+  type PivotMark = { id: string; at: Vec3; custom: boolean; chained: boolean; parent?: string };
+  let pivotMarks: PivotMark[] = [];
+  let pivotSelected: string | null = null;
+  const pivotGroup = new THREE.Group();
+  pivotGroup.raycast = () => undefined;
+  scene.add(pivotGroup);
+  let pivotCb: ((point: Vec3, snap: boolean) => void) | null = null;
+  let pivotEndCb: (() => void) | null = null;
+  let ikCb: ((point: Vec3) => void) | null = null;
+  let ikEndCb: (() => void) | null = null;
+  let pivotDrag: { pointer: number } | null = null;
+  let ikDrag: { pointer: number; through: Vec3 } | null = null;
   let pointMeasure: PointMeasure | null = null;
   let plateEntries: PlateBound[] = [];
   let plateGroup: THREE.Group | null = null;
@@ -866,8 +886,68 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   frameBed();
 
   function placeGizmo() {
-    gizmo.visible = !!meshBounds && !pointMeasure?.isOn();
+    gizmo.visible = !!meshBounds && !pointMeasure?.isOn() && gizmoTool !== "pivot" && gizmoTool !== "ik";
     fitGizmoScreen();
+  }
+
+  function syncPivotMarks() {
+    while (pivotGroup.children.length) {
+      const child = pivotGroup.children[0]!;
+      pivotGroup.remove(child);
+      const lines = child as THREE.LineSegments;
+      lines.geometry?.dispose();
+      (lines.material as THREE.Material | undefined)?.dispose?.();
+    }
+    const byId = new Map(pivotMarks.map((mark) => [mark.id, mark]));
+    for (const mark of pivotMarks) {
+      if (!mark.custom && !mark.chained) continue;
+      const parent = mark.parent ? byId.get(mark.parent) : undefined;
+      if (parent) {
+        const a = frame.toScene(parent.at[0], parent.at[1], parent.at[2]);
+        const b = frame.toScene(mark.at[0], mark.at[1], mark.at[2]);
+        const bone = new THREE.LineSegments(
+          new THREE.BufferGeometry().setFromPoints([a, b]),
+          new THREE.LineBasicMaterial({ color: hexToThree(colors.amber) }),
+        );
+        bone.raycast = () => undefined;
+        pivotGroup.add(bone);
+      }
+      const at = frame.toScene(mark.at[0], mark.at[1], mark.at[2]);
+      const arm = mark.id === pivotSelected ? 6 : 4;
+      const cross = new THREE.LineSegments(
+        new THREE.BufferGeometry().setFromPoints([
+          at.clone().add(new THREE.Vector3(-arm, 0, 0)), at.clone().add(new THREE.Vector3(arm, 0, 0)),
+          at.clone().add(new THREE.Vector3(0, -arm, 0)), at.clone().add(new THREE.Vector3(0, arm, 0)),
+          at.clone().add(new THREE.Vector3(0, 0, -arm)), at.clone().add(new THREE.Vector3(0, 0, arm)),
+        ]),
+        new THREE.LineBasicMaterial({ color: hexToThree(mark.custom ? colors.teal : colors.amber) }),
+      );
+      cross.raycast = () => undefined;
+      pivotGroup.add(cross);
+    }
+    const selected = pivotMarks.find((mark) => mark.id === pivotSelected);
+    if (selected) {
+      canvas.dataset.pivot = selected.at.map((value) => value.toFixed(3)).join(",");
+      canvas.dataset.pivotCustom = selected.custom ? "true" : "false";
+    } else {
+      delete canvas.dataset.pivot;
+      delete canvas.dataset.pivotCustom;
+    }
+    const listed = pivotMarks.filter((mark) => mark.custom || mark.chained);
+    if (listed.length) canvas.dataset.platePivots = listed.map((mark) => `${mark.id}:${mark.at.map((value) => value.toFixed(3)).join(",")}`).join(" ");
+    else delete canvas.dataset.platePivots;
+  }
+
+  /** The print point under the pointer on the camera-facing plane through `through`. */
+  function planePoint(ev: PointerEvent, through: Vec3): Vec3 | null {
+    ndc(ev);
+    const origin = frame.toScene(through[0], through[1], through[2]);
+    const normal = camera.getWorldDirection(new THREE.Vector3());
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+    const hit = new THREE.Vector3();
+    if (!raycaster.ray.intersectPlane(plane, hit)) return null;
+    const print = frame.fromScene(hit);
+    return [print[0] ?? 0, print[1] ?? 0, print[2] ?? 0];
   }
 
   /**
@@ -889,7 +969,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       // middle drops with the bed rest, and a ring that moves under the pointer cannot be steered.
       if (!(drag?.kind === "ring" || rotateGrab) || !ringSeat) {
         const { min, max } = meshBounds;
-        const centre = frame.toScene((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
+        const mark = pivotMarks.find((row) => row.id === pivotSelected);
+        const centre = mark?.custom
+          ? frame.toScene(mark.at[0], mark.at[1], mark.at[2])
+          : frame.toScene((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
         const half = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) / 2;
         const perPx = gizmoRadiusForPixels(Math.max(8, camera.position.distanceTo(centre)), camera.fov, rect.height, 1, camera.zoom);
         // Hug the part (a little clear of its corners), never smaller than the parked size, never past the canvas.
@@ -1031,7 +1114,7 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }
 
   function hitHandle(ev: { clientX: number; clientY: number }): HandleHit | null {
-    if (!meshBounds) return null;
+    if (!meshBounds || gizmoTool === "pivot" || gizmoTool === "ik") return null;
     ndc(ev);
     const hit = raycaster.intersectObjects(handlePicks, false)[0];
     const kind = hit?.object.userData.kind as HandleHit["kind"] | undefined;
@@ -1773,6 +1856,33 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       ev.stopPropagation();
       return;
     }
+    if ((gizmoTool === "pivot" || gizmoTool === "ik") && !handle) {
+      ndc(ev);
+      if (gizmoTool === "pivot") {
+        const hit = brushHit();
+        if (hit) {
+          pivotDrag = { pointer: ev.pointerId };
+          controls.enabled = false;
+          canvas.setPointerCapture(ev.pointerId);
+          pivotCb?.(hit.point, ev.shiftKey);
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      } else {
+        const mark = pivotMarks.find((row) => row.id === pivotSelected);
+        if (mark) {
+          ikDrag = { pointer: ev.pointerId, through: [...mark.at] as Vec3 };
+          controls.enabled = false;
+          canvas.setPointerCapture(ev.pointerId);
+          const point = planePoint(ev, ikDrag.through);
+          if (point) ikCb?.(point);
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+      }
+    }
     if (gizmoTool === "move" && meshBounds) {
       ndc(ev);
       const xy = hitPart() ? printOnBed() : null;
@@ -1814,6 +1924,17 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   }, { capture: true });
 
   canvas.addEventListener("pointermove", (ev) => {
+    if (pivotDrag && ev.pointerId === pivotDrag.pointer) {
+      ndc(ev);
+      const hit = brushHit();
+      if (hit) pivotCb?.(hit.point, ev.shiftKey);
+      return;
+    }
+    if (ikDrag && ev.pointerId === ikDrag.pointer) {
+      const point = planePoint(ev, ikDrag.through);
+      if (point) ikCb?.(point);
+      return;
+    }
     if (reinforceVolDrag) {
       canvas.style.cursor = "grabbing";
       ndc(ev);
@@ -2007,6 +2128,10 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
   const endDrag = (ev: PointerEvent) => {
     if (stroke !== null && ev.pointerId === stroke) endStroke(ev.type === "pointerup");
     const kind = drag?.kind;
+    const endedPivot = pivotDrag;
+    const endedIk = ikDrag;
+    pivotDrag = null;
+    ikDrag = null;
     const edited = modDrag;
     const editedReinforce = reinforceVolDrag;
     const turned = rotateGrab;
@@ -2027,6 +2152,8 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     if (kind === "ring" || turned) rotateEndCb?.();
     if (kind === "move" || kind === "xy") moveEndCb?.();
     if (kind === "scale") scaleEndCb?.();
+    if (endedPivot) pivotEndCb?.();
+    if (endedIk) ikEndCb?.();
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -2252,6 +2379,17 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
     pointMeasureOn: () => pointMeasure?.isOn() ?? false,
     onScale(cb) { scaleCb = cb; },
     onScaleEnd(cb) { scaleEndCb = cb; },
+    setPivots(rows, selectedId) {
+      pivotMarks = rows.map((row) => ({ ...row, at: [...row.at] as Vec3 }));
+      pivotSelected = selectedId;
+      syncPivotMarks();
+      fitGizmoScreen();
+      requestRender();
+    },
+    onPivot(cb) { pivotCb = cb; },
+    onPivotEnd(cb) { pivotEndCb = cb; },
+    onIk(cb) { ikCb = cb; },
+    onIkEnd(cb) { ikEndCb = cb; },
     setViewPreset(preset) { applyViewPreset(preset); },
     frameBounds(bounds) { frameBox(bounds.min, bounds.max); },
     setPaint(disks) {
@@ -2333,9 +2471,11 @@ export function createPrepareView(canvas: HTMLCanvasElement): PrepareView {
       for (const entry of handleNodes) {
         const show = tool === "scale"
           ? entry.kind === "scale"
-          : tool === "all"
-            ? entry.kind !== "scale"
-            : entry.kind === tool || (tool === "rotate" && entry.kind === "ring");
+          : tool === "pivot" || tool === "ik"
+            ? false
+            : tool === "all"
+              ? entry.kind !== "scale"
+              : entry.kind === tool || (tool === "rotate" && entry.kind === "ring");
         for (const node of entry.nodes) node.visible = show;
       }
       fitGizmoScreen();

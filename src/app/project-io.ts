@@ -332,6 +332,15 @@ function fileObjects({ trees, tools, pieces }: Awaited<ReturnType<typeof history
     if (obj.frame === "part") row.frame = "part";
     if (obj.workplane) row.workplane = copyWorkplane(obj.workplane);
     if (obj.sim) row.sim = cloneStudy(obj.sim);
+    if (obj.pivot) row.pivot = [...obj.pivot] as [number, number, number];
+    if (obj.chain) row.chain = { parent: obj.chain.parent, offset: [...obj.chain.offset] as [number, number, number], turn: [...obj.chain.turn] as ProjectPlacement["orient"] };
+    if (obj.jointLimits) {
+      row.jointLimits = {
+        ...(obj.jointLimits.x ? { x: [...obj.jointLimits.x] as [number, number] } : {}),
+        ...(obj.jointLimits.y ? { y: [...obj.jointLimits.y] as [number, number] } : {}),
+        ...(obj.jointLimits.z ? { z: [...obj.jointLimits.z] as [number, number] } : {}),
+      };
+    }
     const seat = meshSeat(obj.bytes);
     if (seat !== undefined) row.meshSeatMm = seat;
     const saved = trees.get(obj.id);

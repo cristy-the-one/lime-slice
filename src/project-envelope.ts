@@ -39,6 +39,7 @@ import { fanDefaults, readFan, type FanSettings } from "./fan.ts";
 import { fnv1aHex } from "./slice-action.ts";
 import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import { parseOverrides, type OverrideDocument } from "./overrides.ts";
+import { readChain, readJointLimits, readPivot } from "./chain.ts";
 import { plateFileIsVersion2, readPlateSettings, settingsEmpty, type PlateFileObject } from "./plate.ts";
 import { readStudy } from "./sim/study-data.ts";
 import { isGlobalFrame, readWorkplane } from "./workplane.ts";
@@ -719,6 +720,12 @@ function readPlateObject(value: unknown): PlateFileObject | string {
     const sim = readStudy(row.sim);
     if (sim) object.sim = sim;
   }
+  const pivot = readPivot(row.pivot);
+  if (pivot) object.pivot = pivot;
+  const chain = readChain(row.chain);
+  if (chain) object.chain = chain;
+  const jointLimits = readJointLimits(row.jointLimits);
+  if (jointLimits) object.jointLimits = jointLimits;
   if (row.brep !== undefined && row.brep !== null) {
     const brep = readMesh(row.brep);
     if (typeof brep === "string") {

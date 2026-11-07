@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, removePlateObject, selectPlateObject, showAllPlateObjects, togglePlateHidden, ungroupAssembly } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, linkPlateObject, noteJointField, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { setHtml } from "../ui/html";
@@ -12,7 +12,7 @@ import { separateShells } from "./shell-actions";
 import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
-import { state, type CardId } from "./state";
+import { session, state, type CardId } from "./state";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
@@ -142,6 +142,18 @@ export function wireApp() {
     }
     if (target.id === "settleOn") {
       setSettleOn((target as HTMLInputElement).checked);
+      return;
+    }
+    if (target.id === "pivotX" || target.id === "pivotY" || target.id === "pivotZ") {
+      const read = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`)?.value ?? "";
+      notePivotTriple([read("pivotX"), read("pivotY"), read("pivotZ")]);
+      return;
+    }
+    if (target.id.startsWith("joint") && (target.id.endsWith("Min") || target.id.endsWith("Max"))) {
+      const axis = target.id.startsWith("jointY") ? "y" : target.id.startsWith("jointZ") ? "z" : "x";
+      const label = axis.toUpperCase();
+      const read = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`)?.value ?? "";
+      if (noteJointField(axis, [read(`joint${label}Min`), read(`joint${label}Max`)])) touch();
       return;
     }
     if (target.id === "placeRx" || target.id === "placeRy" || target.id === "placeRz") {
@@ -303,6 +315,32 @@ export function wireApp() {
     const plateFrame = t.closest<HTMLElement>("[data-plate-frame]")?.dataset.plateFrame;
     if (plateFrame) {
       framePlateObject(plateFrame);
+      return;
+    }
+    const chainRemove = t.closest<HTMLElement>("[data-chain-remove]")?.dataset.chainRemove;
+    if (chainRemove) {
+      session.chainRoot = chainRemove;
+      removePlateObject(chainRemove);
+      return;
+    }
+    const chainSelect = t.closest<HTMLElement>("[data-chain-select]")?.dataset.chainSelect;
+    if (chainSelect) {
+      selectChain(chainSelect);
+      return;
+    }
+    const chainLink = t.closest<HTMLElement>("[data-chain-link]")?.dataset.chainLink;
+    if (chainLink) {
+      const reason = linkPlateObject(chainLink);
+      if (reason) pushToast(reason, "error");
+      return;
+    }
+    const chainUnlink = t.closest<HTMLElement>("[data-chain-unlink]")?.dataset.chainUnlink;
+    if (chainUnlink) {
+      unlinkPlateObject(chainUnlink);
+      return;
+    }
+    if (t.id === "pivotReset" && state.plate.selectedId) {
+      setObjectPivot(state.plate.selectedId, null);
       return;
     }
     const plateSelect = t.closest<HTMLElement>("[data-plate-select]")?.dataset.plateSelect;

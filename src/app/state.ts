@@ -434,6 +434,8 @@ export const session = {
   parameters: {} as Record<string, string | number>,
   /** Plate objects held at poses relative to each other (`src/assembly.ts`), as the project file keeps them. Cleared with `parameters`. */
   assemblies: [] as Assembly[],
+  /** The chain whose header is selected, so move, rotate, scale, duplicate and delete treat it as one. Not saved. */
+  chainRoot: null as string | null,
   playTimer: 0,
   drag2d: false,
   geomReady: null as { id: number; geom: PreviewGeometry } | null,
