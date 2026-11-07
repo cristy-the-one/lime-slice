@@ -394,6 +394,7 @@ Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person 
 - `plate-empty`: The plate holds no objects.
 - `no-assembly`: The part is in no assembly, or the named assembly does not exist.
 - `bad-placement`: The parts cannot be joined or placed that way (not on the plate, different assemblies, itself).
+- `bad-assembly`: The assemblies cannot be selected or merged as requested.
 - `nothing-to-undo`: The plate history has nothing to undo.
 - `nothing-to-redo`: The plate history has nothing to redo.
 - `single-shell`: The mesh is one shell, so there is nothing to split.
@@ -476,6 +477,7 @@ Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person 
 - `ingredient-write-failed`: The ingredient could not be written.
 - `lesson-not-found`: No lesson of that id.
 - `no-draft`: No run of that recipe is kept in this session.
+- `stale-draft`: A newer dry-run source differs from the last applied recipe.
 - `recipe-data-missing`: The recipe data file is not in the workspace.
 - `bad-path`: The path is outside the workspace or not a name the tool takes.
 - `file-not-found`: The file was not found.

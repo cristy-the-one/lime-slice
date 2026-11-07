@@ -198,6 +198,8 @@ export class Session {
   autosaveDirty = false;
   autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   autosaveWriting: Promise<void> = Promise.resolve();
+  /** This session has successfully written its own snapshot, rather than another session's file at the same path. */
+  autosaveSnapshot = false;
   inflight = 0;
   /** The progress token and cancel signal of the call each piece of work belongs to. */
   readonly callContext = new AsyncLocalStorage<CallMeta>();
@@ -349,7 +351,7 @@ export class Session {
       const path = autosavePath();
       if (!path) return;
       // A read-only step changes only the recovery marker; reuse the packed snapshot instead of recompressing meshes.
-      if (!dirty && plan && existsSync(path)) {
+      if (!dirty && plan && this.autosaveSnapshot && existsSync(path)) {
         const snapshot = structuredClone(plan);
         this.autosaveWriting = this.autosaveWriting.then(async () => {
           const wire = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
@@ -366,7 +368,10 @@ export class Session {
       // The document is taken now (a copy), so a write queued behind another still saves the plate as it is at this call.
       const prepared = prepareProject(doc);
       if (plan) prepared.wire.mcpPlanRecovery = structuredClone(plan);
-      this.autosaveWriting = this.autosaveWriting.then(async () => writeAutosave(path, await finishProject(prepared))).catch(() => undefined);
+      this.autosaveWriting = this.autosaveWriting.then(async () => {
+        await writeAutosave(path, await finishProject(prepared));
+        this.autosaveSnapshot = true;
+      }).catch(() => undefined);
     } catch {
       // An autosave that cannot be built is not worth failing a call for either.
     }
