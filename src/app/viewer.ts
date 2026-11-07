@@ -32,6 +32,7 @@ import { themeColors } from "../theme";
 import { resolved } from "../strategy";
 import { syncEmptyState } from "../ui/shell";
 import { paintRailStage, syncSection } from "../ui/chrome";
+import { showPose } from "./pose";
 import { clampPartPercent } from "../gizmo-math";
 import { freshPreviewMode, gizmoNudge, viewportPending } from "../ui/preview-ux";
 import { FLAT_PAD_CSS, fitFlatView, frameFlatView, mapFlat, panFlat, unmapFlat, wheelKind, wheelZoomFactor, zoomFlat, type FlatView, type XyBounds } from "../ui/flat-view";
@@ -529,7 +530,7 @@ export function setView(mode: typeof state.viewMode, source: "user" | "auto" = "
   resize();
 }
 
-export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
+export function setStage(stage: "prepare" | "preview" | "gcode" | "model" | "pose") {
   const leavingModel = state.stage === "model" && stage !== "model";
   const enteringModel = state.stage !== "model" && stage === "model";
   if (leavingModel) {
@@ -540,12 +541,17 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model") {
     flushEdit();
     beginModelVisit();
   }
+  // Leaving Pose lands its last edit as one step, as leaving Model does. Pose never moves the print layout.
+  if (state.stage === "pose" && stage !== "pose") flushEdit();
   state.stage = stage;
   paintRailStage(stage);
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
   document.querySelector<HTMLElement>("#previewBody")!.hidden = stage !== "preview";
-  document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare" || stage === "model");
+  const poseBody = document.querySelector<HTMLElement>("#poseBody");
+  if (poseBody) poseBody.hidden = stage !== "pose";
+  document.querySelector(".stage-tools")?.toggleAttribute("hidden", stage === "prepare" || stage === "model" || stage === "pose");
+  if (stage === "pose") showPose();
   if (stage !== "prepare") {
     session.paintUi?.stop();
     session.seamUi?.stop();

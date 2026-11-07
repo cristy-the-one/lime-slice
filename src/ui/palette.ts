@@ -561,6 +561,9 @@ export function runCommand(id: string) {
     case "tab-model":
       setStage("model");
       return;
+    case "tab-pose":
+      setStage("pose");
+      return;
     case "view-top":
       applyViewPreset("top");
       return;

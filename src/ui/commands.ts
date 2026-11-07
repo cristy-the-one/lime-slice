@@ -20,7 +20,7 @@ export type KeyScope =
   | "workspace"
   | "model-any";
 
-export type StageName = "prepare" | "preview" | "gcode" | "model";
+export type StageName = "prepare" | "preview" | "gcode" | "model" | "pose";
 
 export interface CommandSpec {
   id: string;
@@ -68,6 +68,7 @@ export const COMMANDS: CommandSpec[] = [
   { id: "tab-preview", label: "Preview", group: "View", keys: ["2"], when: "workspace", target: "#tabPreview, #compactTabs [data-tab=preview]", keywords: "tab toolpath stage" },
   { id: "tab-gcode", label: "G-code", group: "View", keys: ["3"], when: "workspace", target: "#tabGcode", layouts: ["desktop"], keywords: "tab gcode stage" },
   { id: "tab-model", label: "Model", group: "View", keys: ["4"], when: "workspace", target: "#tabModel, #compactTabs [data-tab=model]", keywords: "tab solid face edge measure" },
+  { id: "tab-pose", label: "Pose", group: "View", keys: ["5"], when: "workspace", target: "#tabPose", layouts: ["desktop"], keywords: "tab joints assembly posture" },
   { id: "view-cycle", label: "Cycle 2D, split, 3D", group: "View", keys: ["V"], when: "preview", keywords: "preview mode flat solid" },
   { id: "view-2d", label: "2D preview", group: "View", target: '[data-mode="flat"]', keywords: "flat" },
   { id: "view-split", label: "Split preview", group: "View", target: '[data-mode="split"]' },
@@ -78,6 +79,9 @@ export const COMMANDS: CommandSpec[] = [
   { id: "view-front", label: "Front view", group: "View", keys: ["Y"], when: ["prepare"], target: "#viewPresets button:nth-child(2)", layouts: ["desktop"], keywords: "camera prepare" },
   { id: "model-view-iso", label: "Iso view", group: "View", keys: ["I"], when: "model", keywords: "camera model isometric" },
   { id: "view-iso", label: "Iso view", group: "View", keys: ["I"], when: ["prepare"], target: "#viewPresets button:nth-child(3), #compactIso", keywords: "camera prepare isometric" },
+  { id: "pose-view-top", label: "Top view", group: "View", keys: ["T"], when: ["pose"], target: "#poseViewPresets button:nth-child(1)", layouts: ["desktop"], keywords: "camera pose" },
+  { id: "pose-view-front", label: "Front view", group: "View", keys: ["Y"], when: ["pose"], target: "#poseViewPresets button:nth-child(2)", layouts: ["desktop"], keywords: "camera pose" },
+  { id: "pose-view-iso", label: "Iso view", group: "View", keys: ["I"], when: ["pose"], target: "#poseViewPresets button:nth-child(3)", layouts: ["desktop"], keywords: "camera pose isometric" },
   { id: "model-measure", label: "Measure", group: "View", keys: ["Shift+M"], when: "model", target: "#modelToolMeasure", keywords: "ruler distance model" },
   { id: "measure", label: "Measure", group: "View", keys: ["Shift+M"], when: ["prepare", "preview", "gcode"], target: "#measureField", layouts: ["desktop"], keywords: "ruler size dimensions scale bar millimetres" },
   { id: "model-new", label: "New solid", group: "Model", keys: ["Shift+N"], when: "model", target: "#modelToolNew", keywords: "create primitive box cylinder sphere cone torus wedge polygon hexagon tube empty" },
@@ -366,7 +370,7 @@ export interface HelpGroup {
   entries: HelpEntry[];
 }
 
-const STAGE_LABEL: Record<StageName, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model" };
+const STAGE_LABEL: Record<StageName, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model", pose: "Pose" };
 
 /** Where a command's chord works, in the words a person uses. Empty when it works everywhere. */
 const SCOPE_CONTEXT: Record<KeyScope, string> = {
@@ -406,14 +410,14 @@ const SCOPE_SCREENS: Record<KeyScope, readonly string[]> = {
   running: ["running"],
   searching: ["searching"],
   brush: ["brush"],
-  find: ["prepare", "preview", "gcode"],
+  find: ["prepare", "preview", "gcode", "pose"],
   model: ["model"],
   "model-any": ["model", "sketch"],
   sketch: ["sketch"],
   "sketch-feature": ["sketch"],
   "sketch-draw": ["sketch"],
   "sketch-loft": ["sketch"],
-  workspace: ["prepare", "preview", "gcode", "model"],
+  workspace: ["prepare", "preview", "gcode", "model", "pose"],
 };
 
 export function screensOf(command: CommandSpec): readonly string[] {
