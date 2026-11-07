@@ -346,7 +346,8 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       },
       error: (message) => stop(`The recipe could not start: ${message}`),
     });
-    reply(JSON.stringify({ v: 1, ...start }));
+    if (signal?.aborted) onAbort();
+    else reply(JSON.stringify({ v: 1, ...start }));
   });
 }
 

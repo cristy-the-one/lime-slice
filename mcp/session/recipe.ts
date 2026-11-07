@@ -169,6 +169,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   // draft, a source, a path) against the current crate.
   const major = plugin ? (apiLevel(plugin.api)?.[0] ?? undefined) : undefined;
   const built = await host.build(name, source, input.autofix !== false, resolved.suffix, undefined, major);
+  if (meta?.signal?.aborted) return refuse("cancelled", "The recipe was cancelled while building; nothing changed.");
   const map = lineMap(built.source, resolved);
   const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
   const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));

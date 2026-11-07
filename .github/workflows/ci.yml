@@ -775,6 +775,7 @@ jobs:
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-cancel.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
@@ -857,7 +858,10 @@ jobs:
         timeout-minutes: 10
         env:
           LIME_RECIPE_REQUIRED: "1"
-        run: node --experimental-strip-types mcp/recipe.test.ts
+        run: |
+          node --experimental-strip-types mcp/recipe.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/recipe-cancel.test.ts
 
       # The app's recipe runner on Windows: the job object's memory cap and kill, and a real recipe built by lust.
       - name: Recipe runner
