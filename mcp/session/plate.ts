@@ -7,6 +7,7 @@ import { base64ToBytes, bytesToBase64 } from "../../src/base64.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../../src/foreign-3mf.ts";
 import { ID_MATRIX, offBed, placeMesh, type Bounds, type Mat3 } from "../../src/mesh-place.ts";
 import type { Vec3 } from "../../src/pivot.ts";
+import { refreshLinks, removedMember, saneChains, type ChainObject } from "../../src/chain.ts";
 import { page } from "../../src/modeling/model-calls.ts";
 import { placeOnPlate, placedBounds } from "../../src/modeling/placing.ts";
 import { IDENTITY_POSE, type Affine } from "../../src/model-space.ts";
@@ -385,6 +386,41 @@ function objectSelect(this: Session, id: string, name?: unknown): Record<string,
   return { ok: true, object: obj.id, name: shownName(obj.name) };
 }
 
+/** The chain view of the plate: the app's field names on this session's rows. */
+function chainRows(this: Session): ChainObject[] {
+  return this.objects.map((obj) => ({
+    id: obj.id,
+    name: obj.name,
+    sourcePos: obj.source,
+    orient: obj.orient,
+    partScale: obj.scale,
+    centered: obj.centered,
+    offset: obj.offset,
+    ...(obj.pivot ? { pivot: obj.pivot } : {}),
+    ...(obj.chain ? { chain: obj.chain } : {}),
+  }));
+}
+
+function writeLinks(this: Session, rows: readonly ChainObject[]): void {
+  for (const row of rows) {
+    const live = this.find(row.id);
+    if (!live) continue;
+    if (row.chain) live.chain = row.chain;
+    else delete live.chain;
+  }
+}
+
+/**
+ * MCP has no chain tools: a pose edit moves one object and nothing follows. The links are then re-read from where
+ * the parts stand, so the app's next move of a parent carries its children from here instead of snapping them
+ * back to a link recorded before the edit.
+ */
+function relink(this: Session): void {
+  if (!this.objects.some((obj) => obj.chain)) return;
+  const printer = this.printer();
+  this.writeLinks(refreshLinks(saneChains(this.chainRows()), { x: printer.bedX, y: printer.bedY }));
+}
+
 function objectPlace(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const obj = this.find(String(input.object));
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
@@ -408,6 +444,7 @@ function objectPlace(this: Session, input: Record<string, unknown>): Record<stri
     obj.scale = place.scale;
     obj.centered = place.centered;
     obj.offset = place.offset;
+    this.relink();
   }
   return reply;
 }
@@ -520,6 +557,11 @@ async function objectRemove(this: Session, id: string): Promise<Record<string, u
   this.remember("Remove");
   const leaving = this.objects[index];
   if (leaving) await this.closeTree(leaving);
+  // Its children sit on its parent where they stand, as the app's Remove does.
+  if (leaving && this.objects.some((obj) => obj.chain?.parent === id)) {
+    const printer = this.printer();
+    this.writeLinks(removedMember(this.chainRows(), id, { x: printer.bedX, y: printer.bedY }));
+  }
   this.objects.splice(index, 1);
   if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
   return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
@@ -714,6 +756,7 @@ function plateArrange(this: Session, input: Record<string, unknown>): Record<str
       live.centered = row.centered;
       live.offset = { ...row.offset };
     }
+    this.relink();
   }
   return { ok: true, moved: moved.filter((row) => !keep?.has(row.object)).map(({ object, centre }) => ({ object, centre })), fits: outside.length === 0, ...(outside.length ? { outside } : {}), ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Arrange" };
 }
@@ -776,6 +819,9 @@ export const plateMethods = {
   plateList,
   givenName,
   objectSelect,
+  chainRows,
+  writeLinks,
+  relink,
   objectPlace,
   keepLatestWire,
   retainJobs,

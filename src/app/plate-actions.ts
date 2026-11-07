@@ -375,16 +375,19 @@ export function notePivotTriple(raw: readonly [string, string, string]): boolean
   return true;
 }
 
-/** One joint's min and max. Both empty clears the limit. */
+/** One joint's min and max. Both empty clears the limit. A half-filled pair is left alone, as the pivot row is. */
 export function noteJointField(axis: "x" | "y" | "z", raw: readonly [string, string]): boolean {
   const id = state.plate.selectedId;
   if (!id) return false;
   const minText = raw[0].trim();
   const maxText = raw[1].trim();
   if (minText === "" && maxText === "") {
+    if (!state.plate.objects.find((row) => row.id === id)?.jointLimits?.[axis]) return false;
     setJointLimit(id, axis, null);
     return true;
   }
+  // Number("") is 0, so an empty side would otherwise store a limit the user never typed.
+  if (minText === "" || maxText === "") return false;
   const min = Number(minText);
   const max = Number(maxText);
   if (!Number.isFinite(min) || !Number.isFinite(max) || min > max || min < -360 || max > 360) return false;

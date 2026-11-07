@@ -669,6 +669,7 @@ function printUp(this: Session, obj: PlateObject): Record<string, unknown> {
   this.remember("Point up");
   const frame = eulerOrient(obj.workplane.turn[0], obj.workplane.turn[1], obj.workplane.turn[2]);
   obj.orient = [frame[0], frame[3], frame[6], frame[1], frame[4], frame[7], frame[2], frame[5], frame[8]];
+  this.relink();
   return { ok: true, reslice: true, label: "Point up" };
 }
 

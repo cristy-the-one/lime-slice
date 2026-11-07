@@ -14,7 +14,7 @@
  * Duplicate copies the selected object only.
  */
 import type { ChainLink, JointLimits } from "./chain.ts";
-import { saneChains } from "./chain.ts";
+import { copyLimits, saneChains } from "./chain.ts";
 import type { SavedTree } from "./model-tree-file.ts";
 import { cloneStudy } from "./sim/study-data.ts";
 import type { ObjectStudy } from "./sim/study.ts";
@@ -623,7 +623,7 @@ export function addedCopy(plate: PlateState): PlateState | null {
     brep: source.brep ? source.brep.slice(0) : undefined,
     modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
     ...(source.pivot ? { pivot: [...source.pivot] as [number, number, number] } : {}),
-    ...(source.jointLimits ? { jointLimits: { ...source.jointLimits } } : {}),
+    ...(source.jointLimits ? { jointLimits: copyLimits(source.jointLimits) } : {}),
     ...(source.frame ? { frame: source.frame } : {}),
     // Kept in the part's own frame, the workplane moves over with the copy's pose.
     ...(source.workplane ? { workplane: copyWorkplane(source.workplane) } : {}),
@@ -884,7 +884,7 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
       ...(row.pivot ? { pivot: [...row.pivot] as [number, number, number] } : {}),
       ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
-      ...(row.jointLimits ? { jointLimits: { ...row.jointLimits } } : {}),
+      ...(row.jointLimits ? { jointLimits: copyLimits(row.jointLimits) } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
@@ -917,7 +917,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
       ...(row.pivot ? { pivot: [...row.pivot] as [number, number, number] } : {}),
       ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
-      ...(row.jointLimits ? { jointLimits: { ...row.jointLimits } } : {}),
+      ...(row.jointLimits ? { jointLimits: copyLimits(row.jointLimits) } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
     // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.

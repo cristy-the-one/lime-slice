@@ -913,7 +913,8 @@ function pivotChainHtml(obj: ReturnType<typeof selectedObject>): string {
   const span = (axis: "x" | "y" | "z") => obj.jointLimits?.[axis];
   const joint = (axis: "x" | "y" | "z", label: string) => {
     const pair = span(axis);
-    return `<label class="setting" data-label="joint ${label} min">${label} min<input id="joint${label}Min" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[0] : ""}" aria-label="Joint ${label} minimum" /></label><label class="setting" data-label="joint ${label} max">${label} max<input id="joint${label}Max" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[1] : ""}" aria-label="Joint ${label} maximum" /></label>`;
+    // One row per axis: six inputs in one auto-fit grid squeeze to 5rem at a wide panel and clip "free".
+    return `<div class="grid3"><label class="setting" data-label="joint ${label} min">${label} min<input id="joint${label}Min" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[0] : ""}" aria-label="Joint ${label} minimum" /></label><label class="setting" data-label="joint ${label} max">${label} max<input id="joint${label}Max" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[1] : ""}" aria-label="Joint ${label} maximum" /></label></div>`;
   };
   return `
     <details class="subgroup" id="pivotChainGroup" data-sub="pivot-chain"${subgroupOpen("pivot-chain") ? " open" : ""}>
@@ -926,7 +927,7 @@ function pivotChainHtml(obj: ReturnType<typeof selectedObject>): string {
         </div>
         <button class="btn" id="pivotReset" type="button">Reset pivot</button>
         <p class="meta">Source millimetres. Empty is the centre the part already turns about. Rotate and scale keep a custom pivot still. Shift-click with the Pivot tool snaps to a corner, the centre, or a vertex.</p>
-        <div class="grid3">${joint("x", "X")}${joint("y", "Y")}${joint("z", "Z")}</div>
+        ${joint("x", "X")}${joint("y", "Y")}${joint("z", "Z")}
         <p class="meta">Joint limits, degrees, for inverse kinematics. Empty is free. Drag the end of a chain with the IK tool.</p>
       </div>
     </details>`;

@@ -139,6 +139,22 @@ export function sourceToBedPoint(
   return mapPoint(point, frame, orient, scale, bedShift(frame, bedX, bedY, centered, offset));
 }
 
+/** The placed bounding box on the bed, by the same turn, scale, seat and shift as `placeMesh`. */
+export function placedBox(
+  source: Float32Array,
+  orient: Mat3,
+  scale: number,
+  centered: boolean,
+  offset: MeshShift,
+  bedX: number,
+  bedY: number,
+): { min: Vec3; max: Vec3 } {
+  const frame = parkFrame(source, orient, scale);
+  const move = bedShift(frame, bedX, bedY, centered, offset);
+  const shift: Vec3 = [move.x, move.y, move.z];
+  return { min: add3(frame.min, shift), max: add3(frame.max, shift) };
+}
+
 /** The source point that `sourceToBedPoint` sends to `bed`, for the same pose. */
 export function bedToSourcePoint(
   source: Float32Array,

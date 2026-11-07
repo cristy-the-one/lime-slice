@@ -13,6 +13,7 @@ import {
   matVec,
   offsetKeepingPoint,
   pivotOrCentre,
+  placedBox,
   scale3,
   sourceToBedPoint,
   sub3,
@@ -21,7 +22,7 @@ import {
   type Vec3,
 } from "./pivot.ts";
 
-/** Degrees from the joint's rest orientation. An axis left out is free. */
+/** Degrees of the joint's turn in its parent's frame (the bed's for a root). An axis left out is free. */
 export interface JointLimits {
   x?: [number, number];
   y?: [number, number];
@@ -238,17 +239,26 @@ export function unlinked<T extends ChainObject>(objects: readonly T[], id: strin
   });
 }
 
-/** Scale the distances and the part scale of everything that sits on `id`. `id` itself is already scaled. */
+/**
+ * Scale the distances and the part scale of everything that sits on `id`. `id` itself is already scaled by `ratio`.
+ * A child whose scale stops at the 10–400% clamp grows less, so the joints on it move by the ratio it really took:
+ * each link's offset follows its parent's own ratio, and a joint stays on the part it sits on.
+ */
 export function scaledDescendants<T extends ChainObject>(objects: readonly T[], id: string, ratio: number): T[] {
   if (!(ratio > 0) || ratio === 1) return objects as T[];
-  const kids = new Set(descendants(objects, id));
-  if (kids.size === 0) return objects as T[];
-  return objects.map((obj) => {
-    if (!kids.has(obj.id)) return obj;
+  const order = descendants(objects, id);
+  if (order.length === 0) return objects as T[];
+  const took = new Map<string, number>([[id, ratio]]);
+  const next = new Map<string, T>();
+  for (const childId of order) {
+    const obj = byId(objects, childId);
+    if (!obj?.chain) continue;
+    const parentRatio = took.get(obj.chain.parent) ?? ratio;
     const partScale = Math.min(4, Math.max(0.1, obj.partScale * ratio));
-    const chain = obj.chain ? { ...obj.chain, offset: scale3(obj.chain.offset, ratio) } : undefined;
-    return { ...obj, partScale, ...(chain ? { chain } : {}) };
-  });
+    took.set(childId, obj.partScale > 0 ? partScale / obj.partScale : ratio);
+    next.set(childId, { ...obj, partScale, chain: { ...obj.chain, offset: scale3(obj.chain.offset, parentRatio) } });
+  }
+  return objects.map((obj) => next.get(obj.id) ?? obj);
 }
 
 function limitsOf(value: unknown): JointLimits | undefined {
@@ -293,15 +303,24 @@ export function readPivot(value: unknown): Vec3 | undefined {
   return [value[0] as number, value[1] as number, value[2] as number];
 }
 
-function clampEuler(orient: Mat3, limits: JointLimits | undefined): Mat3 {
+/**
+ * Clamp a joint's turn in its parent's frame (the bed's for a root), so a limit does not move when the parent
+ * turns. A joint that already stands outside a limit is not snapped back: the span widens to hold where it is, and
+ * the joint can only come back toward the span.
+ */
+function clampEuler(orient: Mat3, before: Mat3, parent: Mat3 | null, limits: JointLimits | undefined): Mat3 {
   if (!limits) return orient;
-  const euler = orientEuler(orient);
-  const clamp = (value: number, span: [number, number] | undefined) => (span ? Math.min(span[1], Math.max(span[0], value)) : value);
-  const rx = clamp(euler.rx, limits.x);
-  const ry = clamp(euler.ry, limits.y);
-  const rz = clamp(euler.rz, limits.z);
+  const toLocal = (m: Mat3) => (parent ? matMul(transpose(parent), m) : m);
+  const euler = orientEuler(toLocal(orient));
+  const start = orientEuler(toLocal(before));
+  const clamp = (value: number, from: number, span: [number, number] | undefined) =>
+    (span ? Math.min(Math.max(span[1], from), Math.max(Math.min(span[0], from), value)) : value);
+  const rx = clamp(euler.rx, start.rx, limits.x);
+  const ry = clamp(euler.ry, start.ry, limits.y);
+  const rz = clamp(euler.rz, start.rz, limits.z);
   if (rx === euler.rx && ry === euler.ry && rz === euler.rz) return orient;
-  return eulerOrient(rx, ry, rz);
+  const local = eulerOrient(rx, ry, rz);
+  return parent ? matMul(parent, local) : local;
 }
 
 function applyWorldRotation<T extends ChainObject>(objects: T[], jointId: string, delta: Mat3, bed: BedSize): void {
@@ -309,7 +328,8 @@ function applyWorldRotation<T extends ChainObject>(objects: T[], jointId: string
   if (!joint) return;
   const world = pivotBed(joint, bed);
   const before = joint.orient;
-  const nextOrient = clampEuler(matMul(delta, before), joint.jointLimits);
+  const parent = joint.chain ? byId(objects, joint.chain.parent)?.orient ?? null : null;
+  const nextOrient = clampEuler(matMul(delta, before), before, parent, joint.jointLimits);
   const actual = matMul(nextOrient, transpose(before));
   const index = new Map(objects.map((obj, at) => [obj.id, at]));
   objects[index.get(jointId)!] = placeAt(joint, nextOrient, joint.partScale, world, bed);
@@ -422,14 +442,15 @@ export function duplicateChain<T extends ChainObject>(
 ): DuplicateChain<T> | null {
   const members = componentIds(objects, id);
   if (!members.includes(id)) return null;
+  // The parts' placed boxes, not their pivots: pivots stacked in one column span nothing on X while the parts do.
   let maxX = -Infinity;
   let minX = Infinity;
   for (const memberId of members) {
     const obj = byId(objects, memberId);
     if (!obj) continue;
-    const at = pivotBed(obj, bed);
-    if (at[0] > maxX) maxX = at[0];
-    if (at[0] < minX) minX = at[0];
+    const box = placedBox(obj.sourcePos, obj.orient, obj.partScale, obj.centered, obj.offset, bed.x, bed.y);
+    if (box.max[0] > maxX) maxX = box.max[0];
+    if (box.min[0] < minX) minX = box.min[0];
   }
   const shift = (Number.isFinite(maxX) ? maxX - minX : 0) + 8;
   const map = new Map<string, string>();
