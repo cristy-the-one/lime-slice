@@ -151,7 +151,7 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   check("an edit while the plan runs is refused with the plan's job", busy.ok === false && String(busy.reason).startsWith(`plan_run is still running in the background as ${String(first.job)}`), JSON.stringify(busy));
   check("a long plan answers with a job", first.status === "running" && first.tool === "plan_run", JSON.stringify(first).slice(0, 300));
   const planSave = JSON.parse(readFileSync(autosavePath()!, "utf8")) as { mcpPlanRecovery?: { job?: string; completed?: unknown[] } };
-  check("the recovered plan uses the same job handle", planSave.mcpPlanRecovery?.job === first.job && planSave.mcpPlanRecovery.completed?.length === 3, JSON.stringify(planSave.mcpPlanRecovery));
+  check("the recovered plan uses the same job handle", planSave.mcpPlanRecovery?.job === first.job && planSave.mcpPlanRecovery?.completed?.length === 3, JSON.stringify(planSave.mcpPlanRecovery));
   check("slice_wait on the plan's job returns the plan's result", done.ok === true && done.status === "done" && (done.steps as unknown[]).length === 3, JSON.stringify(done).slice(0, 400));
 }
 
