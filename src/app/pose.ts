@@ -1,19 +1,19 @@
 /** Pose stage: select, link and edit joints without changing the print layout. */
 import { assemblyOf, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { boundsOf } from "../mesh-place.ts";
-import { applyPose, isIdentity, turnDir, type Affine } from "../model-space.ts";
+import { applyPose, inversePose, isIdentity, turnDir, type Affine } from "../model-space.ts";
 import { meshSeat, modelPoseOf } from "../plate.ts";
-import { linked, poseChain, turnBall, turnHinge } from "../pose.ts";
-import { createPoseView, type PoseCamera, type PoseView, type TurnEvent } from "../pose-view.ts";
+import { linked, poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
+import { createPoseView, type PoseCamera, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import type { Vec3 } from "../model-tree.ts";
 import { assembledParts, assemblyClashes, liveAssemblies, syncAssemblyView } from "./assemblies.ts";
 import { fx } from "./fx.ts";
-import { holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
+import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
 import { session, state } from "./state.ts";
 
-type Tool = "select" | "turn" | "joint" | "link";
+type Tool = "select" | "turn" | "joint" | "link" | "reach";
 let view: PoseView | null = null;
 let tool: Tool = "select";
 let linkParent: string | null = null;
@@ -22,6 +22,9 @@ let sceneShift: Affine | undefined;
 let chainSelected = false;
 let dragging = false;
 let dragStart: Member | null = null;
+let reachStart: { assembly: Assembly; object: string; at: Vec3; poses: Map<string, Affine>; centres: Map<string, Vec3>; shift: Affine } | null = null;
+let reachDistance: number | null = null;
+let lastClashes = new Set<string>();
 
 function poseOf(id: string): Affine | undefined {
   const object = state.plate.objects.find((row) => row.id === id);
@@ -42,11 +45,11 @@ function centre(id: string): Vec3 {
 }
 
 /** Persist an assembly and its solved model poses; never touch the bed layout or slice state. */
-function writeAssembly(assembly: Assembly): void {
+function writeAssembly(assembly: Assembly, poses?: Map<string, Affine>): void {
   session.assemblies = session.assemblies.map((row) => row.id === assembly.id ? assembly : row);
-  const solved = solveAssembly(assembly, poseOf);
+  const solved = poses ?? solveAssembly(assembly, poseOf).poses;
   state.plate = { ...state.plate, objects: state.plate.objects.map((part) => {
-    const pose = solved.poses.get(part.id);
+    const pose = solved.get(part.id);
     if (!pose || samePose(modelPoseOf(part), pose)) return part;
     const next = { ...part };
     if (isIdentity(pose)) delete next.modelPose;
@@ -54,6 +57,10 @@ function writeAssembly(assembly: Assembly): void {
     return next;
   }) };
   markProjectDirty();
+  if (dragging) syncPose();
+  else refreshPoseConsumers();
+}
+function refreshPoseConsumers(): void {
   syncAssemblyView();
   refreshObjectList();
   fx.refreshModelContext?.();
@@ -69,10 +76,12 @@ function replaceMember(assembly: Assembly, member: Member): void {
   editAssembly(next);
 }
 function setTool(next: Tool): void {
+  view?.cancelReach();
   tool = next;
+  view?.setReach(next === "reach");
   chainSelected = false;
   linkParent = null;
-  message = next === "link" ? "Choose the parent, then its child." : "";
+  message = next === "link" ? "Choose the parent, then its child." : next === "reach" ? "Drag a point on a jointed part." : "";
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-pose-tool]")) button.setAttribute("aria-pressed", String(button.dataset.poseTool === tool));
   syncPose();
 }
@@ -97,7 +106,7 @@ function pick(id: string | null): void {
 }
 function turn(event: TurnEvent): void {
   if (event.phase === "start") { const row = selected(); if (!row?.member.joint) return; holdEdit(); dragging = true; dragStart = structuredClone(row.member); return; }
-  if (event.phase === "end") { if (dragging) flushEdit(); dragging = false; dragStart = null; renderPanel(); return; }
+  if (event.phase === "end") { if (dragging) flushEdit(); dragging = false; dragStart = null; refreshPoseConsumers(); return; }
   const row = selected();
   if (!row?.member.joint || !dragStart?.joint || dragStart.object !== row.member.object) return;
   const joint = dragStart.joint;
@@ -109,6 +118,55 @@ function turn(event: TurnEvent): void {
   writeAssembly(next);
 }
 
+/** A Reach gesture always solves from its starting pose, and is one undo step. */
+function reach(event: ReachEvent): boolean | void {
+  if (event.phase === "start") {
+    if (!sceneShift) return false;
+    if (event.object !== state.plate.selectedId) fx.selectPlateObject(event.object);
+    const row = selected();
+    if (!row || !poseChain([row.assembly], event.object).size) {
+      message = "This part has no jointed chain to reach with."; renderPanel(); return false;
+    }
+    const objectPose = poseOf(event.object);
+    if (!objectPose) return false;
+    const inModel = applyPose(inversePose(sceneShift), event.point);
+    const poses = new Map(state.plate.objects.map((part) => [part.id, structuredClone(modelPoseOf(part))]));
+    const centres = new Map<string, Vec3>();
+    for (const id of poseChain([row.assembly], event.object)) {
+      const joint = row.assembly.members.find((member) => member.object === id)?.joint;
+      if (joint?.kind === "ball" && joint.cone !== undefined) centres.set(id, centre(id));
+    }
+    reachStart = { assembly: structuredClone(row.assembly), object: event.object, at: applyPose(inversePose(objectPose), inModel), poses, centres, shift: structuredClone(sceneShift) };
+    const canvas = document.querySelector<HTMLCanvasElement>("#pose");
+    if (canvas) { canvas.dataset.reachObject = event.object; canvas.dataset.reachLocal = JSON.stringify(reachStart.at); }
+    reachDistance = null;
+    holdEdit(); dragging = true;
+    return true;
+  }
+  if (event.phase === "cancel" || event.phase === "end") {
+    const cancelled = event.phase === "cancel";
+    const wasDragging = dragging;
+    dragging = false; reachStart = null;
+    if (wasDragging) { if (cancelled) cancelEdit(); else flushEdit(); }
+    message = cancelled ? "Reach cancelled." : reachDistance !== null && reachDistance > 0.05 ? `The grabbed point is ${reachDistance.toFixed(2)} mm from the target.` : "";
+    refreshPoseConsumers();
+    return;
+  }
+  if (!reachStart) return;
+  const target = applyPose(inversePose(reachStart.shift), event.target);
+  const result = solvePose(reachStart.assembly, (id) => reachStart?.poses.get(id), reachStart.object, reachStart.at, target, (id) => reachStart?.centres.get(id));
+  if ("reason" in result) { message = result.reason; return; }
+  reachDistance = result.distance;
+  const canvas = document.querySelector<HTMLCanvasElement>("#pose");
+  if (canvas) {
+    canvas.dataset.reachAnchor = result.anchor;
+    canvas.dataset.reachTarget = JSON.stringify(target);
+    canvas.dataset.reachPoint = JSON.stringify(result.point);
+    canvas.dataset.reachDistance = String(result.distance);
+  }
+  writeAssembly(result.assembly, result.poses);
+}
+
 function mount(): PoseView | null {
   if (view) return view;
   const canvas = document.querySelector<HTMLCanvasElement>("#pose");
@@ -116,9 +174,10 @@ function mount(): PoseView | null {
   view = createPoseView(canvas);
   view.onPick(pick);
   view.onTurn(turn);
+  view.onReach(reach);
   document.querySelector("#toolRail")?.addEventListener("click", (event) => {
     const value = (event.target as Element).closest<HTMLButtonElement>("[data-pose-tool]")?.dataset.poseTool;
-    if (value === "select" || value === "turn" || value === "joint" || value === "link") setTool(value);
+    if (value === "select" || value === "turn" || value === "joint" || value === "link" || value === "reach") setTool(value);
   });
   document.querySelector("#poseViewPresets")?.addEventListener("click", (event) => {
     const preset = (event.target as Element).closest<HTMLElement>("[data-pose-view]")?.dataset.poseView;
@@ -143,7 +202,8 @@ export function syncPose(): void {
   const placed = assembledParts(bedX, bedY, sceneShift);
   sceneShift ??= placed.shift;
   const assemblies = liveAssemblies();
-  const clashing = assemblies.length ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  if (!dragging) lastClashes = assemblies.length ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  const clashing = lastClashes;
   const row = selected();
   const object = row && state.plate.objects.find((part) => part.id === row.member.object);
   let gizmo: { pivot: Vec3; axes: Vec3[]; radius: number } | undefined;
