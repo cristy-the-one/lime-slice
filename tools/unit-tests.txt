@@ -37,6 +37,7 @@ src/chain.test.ts
 src/playback.test.ts
 src/project.test.ts
 src/assembly.test.ts
+src/pose.test.ts
 mcp/assembly-bulk.test.ts
 src/interference.test.ts
 src/project-blank.test.ts

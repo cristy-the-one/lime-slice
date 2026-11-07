@@ -5,7 +5,7 @@
 import { frameNote, frameWhere, placeFree, placeNumbers } from "../../src/modeling/placing.ts";
 import { posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from "../../src/model-space.ts";
 import { orientEuler } from "../../src/mesh-place.ts";
-import { assemblyOf, memberFields, readAssemblies, rootOf, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { assemblyOf, memberFields, readAssemblies, reparentJoint, rootOf, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -30,7 +30,9 @@ function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<s
     const mine = assemblyOf(assemblies, id);
     if (mine && mine.id !== assembly.id) return refuse("bad-placement", `${shownName(part.name)} is in ${mine.name}. A part sits in one assembly.`);
     const current = assembly.members.find((row) => row.object === id);
-    const next: Member = current?.parent === parent.id ? current : { object: id, parent: parent.id, ...memberFields(relativePose(parent.modelPose, part.modelPose)) };
+    const previousParent = current?.parent ? this.find(current.parent) : undefined;
+    const joint = previousParent ? reparentJoint(current?.joint, previousParent.modelPose, parent.modelPose) : current?.joint;
+    const next: Member = current?.parent === parent.id ? current : { object: id, parent: parent.id, ...memberFields(relativePose(parent.modelPose, part.modelPose)), ...(joint ? { joint } : {}) };
     const written = withMember(assembly, next);
     if ("reason" in written) return refuse("bad-placement", written.reason);
     assembly = written;
@@ -103,7 +105,9 @@ function modelPlace(this: Session, obj: PlateObject, input: Record<string, unkno
   const turn = this.placeNumbers(input, ["turnX", "turnY", "turnZ"], start.turn, start.exprs?.turn);
   if ("reason" in turn) return refuse("bad-placement", turn.reason);
   const exprs: MemberExprs = { ...(offset.texts ? { offset: offset.texts } : {}), ...(turn.texts ? { turn: turn.texts } : {}) };
-  const next: Member = { object: obj.id, parent: parentId, offset: offset.values, turn: turn.values, ...(exprs.offset || exprs.turn ? { exprs } : {}) };
+  const previousParent = member?.parent ? this.find(member.parent) : undefined;
+  const joint = previousParent && previousParent.id !== parentId ? reparentJoint(member?.joint, previousParent.modelPose, parent.modelPose) : member?.joint;
+  const next: Member = { object: obj.id, parent: parentId, offset: offset.values, turn: turn.values, ...(exprs.offset || exprs.turn ? { exprs } : {}), ...(joint ? { joint } : {}) };
   const written = withMember(assembly, next);
   if ("reason" in written) return refuse("bad-placement", written.reason);
   const result = { ...written, ...(named ? { name: named } : {}) };

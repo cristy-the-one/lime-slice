@@ -31,4 +31,11 @@ await s.call("model_place", { object: root, x: 5 });
 if (s.find(c)!.modelPose.t[0] !== 31 || s.find(d)!.modelPose.t[0] !== 36) throw new Error("merged assembly did not follow its destination root");
 const same = await s.call("assembly_merge", { from: joined.assembly, into: joined.assembly });
 if (same.ok !== false || Number(s.assemblies.length) !== 1) throw new Error("merging an assembly with itself should be refused");
+// Existing placement operations must not erase joint data loaded from a project.
+const jointMember = s.assemblies[0]!.members.find((row) => row.object === a)!;
+jointMember.joint = { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], min: -30, max: 60, angle: 10 };
+const movedJoint = await s.call("model_place", { object: a, x: 11 });
+if (movedJoint.ok !== true || s.assemblies[0]!.members.find((row) => row.object === a)?.joint?.kind !== "hinge") throw new Error("single placement erased the joint");
+const relinkedJoint = await s.call("model_place", { objects: [a], to: b });
+if (relinkedJoint.ok !== true || s.assemblies[0]!.members.find((row) => row.object === a)?.joint?.kind !== "hinge") throw new Error("bulk placement erased the joint");
 console.log("bulk assembly placement: ok");
