@@ -221,6 +221,8 @@ export function syncAssemblyView() {
   const { bedX, bedY } = state.profile;
   const clashing = assemblyView.on ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
   fx.prepare?.setAssembled?.(assemblyView.on ? assembledParts(bedX, bedY).parts : null, state.plate.selectedId, clashing);
+  // The Pose stage draws the same assembled poses, so whatever redraws the Assembly view redraws Pose.
+  fx.syncPose?.();
 }
 
 export function setAssemblyView(on: boolean) {
