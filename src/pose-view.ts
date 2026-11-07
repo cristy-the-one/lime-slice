@@ -34,6 +34,8 @@ export type ReachEvent =
 
 export type TurnEvent = { phase: "start"; axis: number } | { phase: "end"; axis: number } | { phase: "change"; axis: number; delta: number };
 
+export interface PoseHit { point: [number, number, number]; ray: { origin: [number, number, number]; direction: [number, number, number] }; shift: boolean; triangle: [number, number, number][] }
+
 export interface PoseView {
   setScene(scene: PoseScene): void;
   setBed(x: number, y: number, z: number): void;
@@ -43,7 +45,7 @@ export interface PoseView {
   frameAll(): void;
   resize(): void;
   /** A click (not a drag) on a part, or on empty space (`null`). */
-  onPick(cb: ((id: string | null) => void) | null): void;
+  onPick(cb: ((id: string | null, hit?: PoseHit) => void) | null): void;
   onTurn(cb: ((event: TurnEvent) => void) | null): void;
   setReach(on: boolean): void;
   onReach(cb: ((event: ReachEvent) => boolean | void) | null): void;
@@ -103,7 +105,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const held = new Map<Float32Array, { geometry: THREE.BufferGeometry; edges: THREE.EdgesGeometry }>();
   let box: Bounds | null = null;
   let framed = false;
-  let pickCb: ((id: string | null) => void) | null = null;
+  let pickCb: ((id: string | null, hit?: PoseHit) => void) | null = null;
   let turnCb: ((event: TurnEvent) => void) | null = null;
   let reachCb: ((event: ReachEvent) => boolean | void) | null = null;
   let reachEnabled = false;
@@ -413,18 +415,18 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     const start = press;
     press = null;
     if (!start || start.id !== ev.pointerId || Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > CLICK_PX) return;
-    const id = pickAt(ev.clientX, ev.clientY);
-    canvas.dataset.picked = id ?? "";
-    pickCb?.(id);
-  });
-
-  function pickAt(clientX: number, clientY: number): string | null {
-    const rect = canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
-    raycaster.setFromCamera(ndc, camera);
+    rayAt(ev.clientX, ev.clientY);
     const hit = raycaster.intersectObjects(group.children, false).find((row) => typeof row.object.userData.id === "string");
-    return hit ? (hit.object.userData.id as string) : null;
-  }
+    const id = hit ? hit.object.userData.id as string : null;
+    canvas.dataset.picked = id ?? "";
+    const attr = hit?.object instanceof THREE.Mesh ? hit.object.geometry.getAttribute("position") : null;
+    const triangle: [number, number, number][] = [];
+    if (hit && attr && hit.face) for (const index of [hit.face.a, hit.face.b, hit.face.c]) {
+      const point = hit.object.localToWorld(new THREE.Vector3().fromBufferAttribute(attr, index));
+      triangle.push(point.toArray() as [number, number, number]);
+    }
+    pickCb?.(id, hit ? { point: hit.point.toArray() as [number, number, number], ray: { origin: raycaster.ray.origin.toArray() as [number, number, number], direction: raycaster.ray.direction.toArray() as [number, number, number] }, shift: ev.shiftKey, triangle } : undefined);
+  });
 
   function setTheme() {
     colors = themeColors();

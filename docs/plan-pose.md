@@ -291,3 +291,7 @@ What this changes: all three CAD tools put a joint's axis on a picked cylinder, 
 - **Existing behaviour.** A file without `joint` keys reads and behaves as now. Prepare's Assembly view, Model's context, joins, interference and the STEP export keep reading `modelPose`.
 - **MCP size.** No new tool; the budgets in `mcp/schema.test.ts` hold.
 - **View state.** The selected chain and the Pose camera are view state: not saved and not in the undo stack. The pose itself is saved and undoable.
+
+### As built: M6
+
+The Joint tool reads a selected solid's cylindrical face and puts the hinge pivot at the midpoint of its axis, with the axis in the part's own frame. Shift-click on a mesh snaps its pivot to the nearest triangle vertex, edge midpoint or bounding-box centre, while its axis remains typed. The pick is one undoable edit and never changes print placement. If a face cannot be read or is not cylindrical, the existing joint stays as it was.

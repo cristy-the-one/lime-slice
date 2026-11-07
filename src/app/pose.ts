@@ -1,10 +1,13 @@
+import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
 import { assemblyOf, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, turnDir, type Affine } from "../model-space.ts";
 import { meshSeat, modelPoseOf } from "../plate.ts";
 import { linked, poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
-import { createPoseView, type PoseCamera, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
+import { createPoseView, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
+import { cylinderJoint } from "../pose-cylinder.ts";
+import { loadModel } from "./workspaces.ts";
 import { markProjectDirty } from "../project-dirty.ts";
 import type { Vec3 } from "../model-tree.ts";
 import { assembledParts, assemblyClashes, liveAssemblies, syncAssemblyView } from "./assemblies.ts";
@@ -25,6 +28,7 @@ let dragStart: Member | null = null;
 let reachStart: { assembly: Assembly; object: string; at: Vec3; poses: Map<string, Affine>; centres: Map<string, Vec3>; shift: Affine } | null = null;
 let reachDistance: number | null = null;
 let lastClashes = new Set<string>();
+let pickSerial = 0;
 
 function poseOf(id: string): Affine | undefined {
   const object = state.plate.objects.find((row) => row.id === id);
@@ -77,15 +81,67 @@ function replaceMember(assembly: Assembly, member: Member): void {
 }
 function setTool(next: Tool): void {
   view?.cancelReach();
+  pickSerial++;
   tool = next;
   view?.setReach(next === "reach");
   chainSelected = false;
   linkParent = null;
-  message = next === "link" ? "Choose the parent, then its child." : next === "reach" ? "Drag a point on a jointed part." : "";
+  message = next === "link" ? "Choose the parent, then its child." : next === "reach" ? "Drag a point on a jointed part." : next === "joint" ? "Select a linked part, then click its cylindrical face. Shift-click a mesh to snap its pivot." : "";
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-pose-tool]")) button.setAttribute("aria-pressed", String(button.dataset.poseTool === tool));
   syncPose();
 }
-function pick(id: string | null): void {
+async function pickJoint(id: string, hit: PoseHit): Promise<void> {
+  const row = selected();
+  const object = state.plate.objects.find((part) => part.id === id);
+  if (!row || !row.member.parent || !object || !sceneShift) { message = "Select a linked child to place its joint."; renderPanel(); return; }
+  const serial = ++pickSerial;
+  const memberBefore = JSON.stringify(row.member);
+  const inverse = inversePose(modelPoseOf(object));
+  const sceneInverse = inversePose(sceneShift);
+  const localPoint = (point: readonly number[]) => applyPose(inverse, applyPose(sceneInverse, point));
+  message = "Reading the selected face…"; renderPanel();
+  try {
+    const solid = object.modelTree || object.brep || /\.(step|stp)$/i.test(object.fileName) ? await (await loadModel()).poseSolid(object) : null;
+    if (serial !== pickSerial || state.stage !== "pose" || tool !== "joint" || state.plate.selectedId !== id || state.plate.objects.find((part) => part.id === id) !== object || JSON.stringify(selected()?.member) !== memberBefore) return;
+    let pivot: Vec3 | undefined;
+    let axis: Vec3 | undefined;
+    if (typeof solid === "string") { message = solid; renderPanel(); return; }
+    if (solid) {
+      const origin = localPoint(hit.ray.origin);
+      const direction = turnDir(inverse, turnDir(sceneInverse, hit.ray.direction));
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(solid.positions, 3));
+      const material = new THREE.MeshBasicMaterial();
+      const mesh = new THREE.Mesh(geometry, material);
+      const ray = new THREE.Raycaster(new THREE.Vector3(...origin), new THREE.Vector3(...direction));
+      const faceIndex = ray.intersectObject(mesh, false)[0]?.faceIndex;
+      geometry.dispose(); material.dispose();
+      const pickedFace = faceIndex == null ? undefined : solid.triangles[faceIndex];
+      const canvas = document.querySelector<HTMLCanvasElement>("#pose");
+      if (canvas) canvas.dataset.jointFace = pickedFace === undefined ? "" : String(pickedFace);
+      const picked = pickedFace === undefined ? null : cylinderJoint(solid, pickedFace);
+      if (!picked) { message = "Click a cylindrical face to place the joint."; renderPanel(); return; }
+      ({ pivot, axis } = picked);
+    } else {
+      if (!hit.shift) { message = "For a mesh, Shift-click a vertex, edge midpoint or box centre; type the axis."; renderPanel(); return; }
+      const vertices = hit.triangle.map(localPoint);
+      const candidates = [...vertices, ...vertices.map((v, i) => v.map((n, k) => (n + vertices[(i + 1) % vertices.length]![k]!) / 2) as Vec3), centre(id)];
+      const at = localPoint(hit.point);
+      candidates.sort((a, b) => Math.hypot(...a.map((v, i) => v - at[i]!)) - Math.hypot(...b.map((v, i) => v - at[i]!)));
+      pivot = candidates[0];
+    }
+    if (!pivot) return;
+    const current = selected();
+    if (!current || current.member.object !== id) return;
+    const old = current.member.joint;
+    const joint: Joint = old?.kind === "ball" ? { ...old, pivot } : { ...(old?.kind === "hinge" ? old : { kind: "hinge" as const, angle: 0 }), pivot, axis: axis ?? (old?.kind === "hinge" ? old.axis : [0, 0, 1]) };
+    message = solid ? "Joint placed on the cylindrical face." : "Pivot snapped. Type the joint axis.";
+    replaceMember(current.assembly, { ...current.member, joint });
+  } catch (error) {
+    if (serial === pickSerial) { message = `Could not read the selected face: ${error instanceof Error ? error.message : String(error)}`; renderPanel(); }
+  }
+}
+function pick(id: string | null, hit?: PoseHit): void {
   if (!id) return;
   if (tool === "link") {
     if (!linkParent) { linkParent = id; message = "Now choose the child."; fx.selectPlateObject(id); syncPose(); return; }
@@ -101,7 +157,8 @@ function pick(id: string | null): void {
     syncPose();
     return;
   }
-  if (id !== state.plate.selectedId) { chainSelected = false; fx.selectPlateObject(id); }
+  if (id !== state.plate.selectedId) { pickSerial++; chainSelected = false; fx.selectPlateObject(id); }
+  else if (tool === "joint" && hit) { void pickJoint(id, hit); }
   else if (tool === "select") { chainSelected = !chainSelected; syncPose(); }
 }
 function turn(event: TurnEvent): void {
