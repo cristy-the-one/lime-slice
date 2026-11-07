@@ -307,6 +307,18 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const printer = this.printer();
   const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
+  const timings = new Map<string, { line: number; tool: string; calls: number; ms: number }>();
+  const profiledCall = async (site: RecipeCallSite): Promise<RecipeReply> => {
+    const started = performance.now();
+    try { return await call(site); }
+    finally {
+      const key = `${site.line}:${site.tool}`;
+      const row = timings.get(key) ?? { line: site.line, tool: site.tool, calls: 0, ms: 0 };
+      row.calls += 1;
+      row.ms += performance.now() - started;
+      timings.set(key, row);
+    }
+  };
   const start = {
     params,
     context: { units: "mm", host: "mcp", limits: { canAssemble: true, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
@@ -320,7 +332,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   this.recipeDepth += 1;
   let out;
   try {
-    out = await host.run(built.exe, start, call, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
+    out = await host.run(built.exe, start, input.profile === true ? profiledCall : call, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
   } finally {
     this.recipeDepth -= 1;
   }
@@ -333,7 +345,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     out.line = locate(map, out.line).line;
   }
   const refused = out.refused.map((row) => ({ ...row, ...locate(map, row.line) }));
-  const report = { calls: out.calls, ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
+  const totalCallsMs = [...timings.values()].reduce((sum, row) => sum + row.ms, 0);
+  const profile = input.profile === true ? { callsMs: Math.round(totalCallsMs), outsideCallsMs: Math.max(0, Math.round(out.ms - totalCallsMs)), lines: [...timings.values()].sort((a, b) => b.ms - a.ms).map((row) => ({ ...row, ...locate(map, row.line), ms: Math.round(row.ms) })) } : undefined;
+  const report = { calls: out.calls, ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
   // --- I23. What the parts measured when a partial run stopped, before it is taken back.
   if (out.halted) {
     const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {

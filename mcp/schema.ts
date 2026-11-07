@@ -1562,6 +1562,7 @@ export const TOOLS: ToolSpec[] = [
         maxSteps: { type: "integer", minimum: 1, maximum: 1000, description: "Dry: stop after N ops." },
         autofix: { type: "boolean", description: "Default true." },
         full: { type: "boolean", description: "Whole fixed text, not a diff." },
+        profile: { type: "boolean", description: "Report time spent in recipe calls by line and estimated time outside calls." },
         timeoutS: { type: "number", minimum: 1, maximum: 600, description: "Default 30; up to 600 for background work." },
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "Library plugin id instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },

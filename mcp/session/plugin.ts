@@ -50,7 +50,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
       if (shown.ok === false) return { reason: `The step before the run could not be shown for the plugin's check: ${String(shown.reason ?? "the engine refused it.")}` };
     }
     if (object) {
-      dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", object, timeoutS });
+      dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", object, timeoutS, profile: true });
     } else {
       // New-part plugins have no dependency on the caller's plate. Share the engine and warm recipe host, but not
       // the plate, bridge or autosave. Reserve the scratch ids in the owning session to avoid tree-key collisions.
@@ -62,7 +62,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
       scratch.paramText = { ...this.paramText };
       scratch.recipeHost = this.recipeHost;
       try {
-        dry = await scratch.recipeRun({ source: body, name: "plugin_check", mode: "dry", timeoutS });
+        dry = await scratch.recipeRun({ source: body, name: "plugin_check", mode: "dry", timeoutS, profile: true });
       } finally {
         this.seq = Math.max(this.seq, scratch.seq);
       }
@@ -73,9 +73,11 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
     this.selected = selected;
   }
   const where = object ? "test part" : "reference plate";
+  const slow = ((dry.profile as { lines?: { line: number; tool: string; ms: number }[] } | undefined)?.lines ?? []).slice(0, 5);
+  const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool} line ${row.line} (${row.ms} ms)`).join(", ")}.` : "";
   const timedOut = dry.ok !== true && String(dry.reason ?? "").startsWith(`The recipe ran past its ${timeoutS} s limit`);
-  if (timedOut && budget === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.` };
-  if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.` };
+  if (timedOut && budget === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.${slowText}` };
+  if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.${slowText}` };
   const late = (dry.lateParams as { name: string; line: number }[] | undefined)?.[0];
   if (late) return { reason: `Declare ${late.name} before the first call (line ${late.line}), so the form can show it.` };
   return { ...described, ...(typeof dry.runMs === "number" ? { built: `${Math.max(0.1, Math.round(dry.runMs / 100) / 10)} s, ${where}` } : {}) };
