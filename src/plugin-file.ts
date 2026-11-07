@@ -36,6 +36,7 @@ export interface PluginFileInfo {
   headerSha: string;
   created: string;
   lust: string;
+  built?: string;
   body: string;
   /** The whole file, LF line ends. */
   text: string;
@@ -91,6 +92,7 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
     headerSha: fields.get("source-sha256") ?? "",
     created: fields.get("created") ?? "",
     lust: fields.get("lust") ?? "",
+    ...(fields.get("built") ? { built: oneLine(fields.get("built"), 100) } : {}),
     body: lines.slice(end + 1).join("\n"),
     text,
   };
