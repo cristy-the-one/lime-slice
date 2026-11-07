@@ -45,6 +45,13 @@ const rlib = join(dir, "liblime_recipe.rlib");
 const lib = spawnSync("rustc", ["--edition", "2024", "-O", "--crate-type", "rlib", "--crate-name", "lime_recipe", join(crateDir, "src", "lib.rs"), "-o", rlib], { encoding: "utf8" });
 check("rustc builds lime_recipe", lib.status === 0, lib.stderr);
 
+// The same native implementation used by the engine, in a tiny process so this test needs no OCCT bridge.
+const nativeSource = join(dir, "native.rs");
+const nativeExe = join(dir, `native${exe}`);
+writeFileSync(nativeSource, `use std::io::Read; fn main() { let mut text = String::new(); std::io::stdin().read_to_string(&mut text).unwrap(); if let Some(result) = lime_recipe::native_geometry_request(&text) { print!("{}", result); } }`);
+const nativeBuild = spawnSync("rustc", ["--edition", "2024", "-O", nativeSource, "--extern", `lime_recipe=${rlib}`, "-o", nativeExe], { encoding: "utf8" });
+check("native geometry host builds", nativeBuild.status === 0, nativeBuild.stderr);
+
 /** A section answer as the kernel gives one: a 284 × 104 floor with R7 corners (arcs in loops, sampled in regions). */
 const corner = (cx: number, cy: number, a0: number) => Array.from({ length: 9 }, (_, i) => {
   const a = ((a0 + (90 * i) / 8) * Math.PI) / 180;
@@ -92,11 +99,43 @@ async function sameUnderBoth(name: string, source: string): Promise<RecipeCallSi
   const first = textA.findIndex((t, i) => t !== textB[i]);
   check(`${name}: ${textA.length} calls, the same under lust and rustc`, textA.length === textB.length && first < 0, first >= 0 ? { call: first + 1, lust: textA[first], rustc: textB[first] } : "");
   check(`${name}: the same metrics`, JSON.stringify(a.done?.metrics) === JSON.stringify(b.done?.metrics), { lust: a.done, rustc: b.done });
+  if (nativeBuild.status === 0) {
+    const nativeCalls: RecipeCallSite[] = [];
+    const geometry: string[] = [];
+    const fallback = stub(nativeCalls);
+    const nativeRun = await host.run(built.exe!, { params: {}, context: { units: "mm", nativeGeometry: true } }, async (site) => {
+      if (site.tool !== "native_geometry") return fallback(site);
+      geometry.push(String(site.args.op));
+      const result = spawnSync(nativeExe, [], { input: JSON.stringify(site.args), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+      return result.status === 0 && result.stdout ? { ok: true, result: JSON.parse(result.stdout) } : { ok: false, error: "native unavailable" };
+    });
+    check(`${name}: native result matches interpreted`, nativeRun.ok && JSON.stringify(nativeRun.done?.metrics) === JSON.stringify(a.done?.metrics) && JSON.stringify(nativeCalls.map((c) => [c.tool, c.args, c.line])) === JSON.stringify(viaLust.map((c) => [c.tool, c.args, c.line])), { native: nativeRun.reason ?? nativeRun.stderr, geometry });
+    if (name === "vent_plate") {
+      check("vent_plate uses native lattice", geometry.includes("cells"), geometry);
+      console.log(`     vent_plate: native-host run ${nativeRun.ms} ms (includes test helper process startup)`);
+    }
+    if (name === "native_booleans") check("complex booleans use native geometry", geometry.includes("resolve"), geometry);
+    if (name === "native_booleans") {
+      const fallbackCalls: RecipeCallSite[] = [];
+      const fallbackRun = await host.run(built.exe!, { params: {}, context: { units: "mm", nativeGeometry: true } }, async (site) => site.tool === "native_geometry" ? { ok: false, error: "unavailable" } : stub(fallbackCalls)(site));
+      check("unavailable native geometry falls back", fallbackRun.ok && fallbackRun.refused.length === 0 && JSON.stringify(fallbackRun.done?.metrics) === JSON.stringify(a.done?.metrics) && JSON.stringify(fallbackCalls.map((c) => [c.tool, c.args, c.line])) === JSON.stringify(viaLust.map((c) => [c.tool, c.args, c.line])), fallbackRun.reason);
+    }
+  }
   console.log(`     ${name}: lust run ${a.ms} ms, rustc run ${b.ms} ms, metrics ${JSON.stringify(a.done?.metrics)}`);
   return viaLust;
 }
 
 if (lib.status === 0) {
+  await sameUnderBoth("native_booleans", `use lime_recipe::{Session, Json, ops};
+use lime_recipe::geom2d::{circle, Region};
+fn main() {
+    let mut s = Session::start();
+    let part = s.solid_new(ops::cuboid(2.0, 2.0, 2.0)).unwrap();
+    let a = Region::from_poly(&circle(20.0, 64));
+    let b = Region::from_poly(&circle(12.0, 48).translate(8.0, 0.0));
+    let c = a.difference(&b).union(&b);
+    s.done_with(&part, Json::obj().set("area", c.area()).set("loops", c.loops().len()));
+}`);
   const vent = await sameUnderBoth("vent_plate", readFileSync(join(crateDir, "examples", "vent_plate.rs"), "utf8"));
   const cells = vent.filter((c) => String((c.args.op as { label?: string } | undefined)?.label ?? "").startsWith("cell "));
   check("vent_plate cuts its cells with arcs", cells.length > 50 && JSON.stringify(cells[0]?.args).includes('"kind":"arc"'), cells.length);

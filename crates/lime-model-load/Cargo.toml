@@ -9,6 +9,7 @@ description = "Loads the optional Open CASCADE bridge for STEP imports and Model
 
 [dependencies]
 libloading = "0.8"
+lime-recipe = { path = "../lime-recipe" }
 base64 = "0.22"
 serde_json = "1"
 sha2 = "0.10"

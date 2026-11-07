@@ -2837,6 +2837,7 @@ version = "5.9.1"
 dependencies = [
  "base64 0.22.1",
  "libloading 0.8.9",
+ "lime-recipe",
  "lime-slice-core",
  "serde_json",
  "sha2",

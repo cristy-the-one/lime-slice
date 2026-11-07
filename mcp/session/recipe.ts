@@ -265,6 +265,10 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   /** --- API 1.2. What each given face or outline resolved to, kept in the step's stamp in its place. */
   const picked: Record<string, unknown> = {};
   const call = async (site: RecipeCallSite): Promise<RecipeReply> => {
+    if (site.tool === "native_geometry") {
+      const result = JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify({ call: "nativeGeometry", args: site.args })))) as unknown;
+      return Array.isArray(result) ? { ok: true, result } : { ok: false, error: "Native geometry is unavailable." };
+    }
     if (site.tool === "pick") {
       const on = typeof site.args.object === "string" ? site.args.object : undefined;
       if (site.args.kind === "face" && on !== undefined && on !== objectArg && !created.includes(on)) {
@@ -449,7 +453,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const start = {
     params,
-    context: { units: "mm", host: "mcp", limits: { canAssemble: true, canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    context: { units: "mm", host: "mcp", nativeGeometry: true, limits: { canAssemble: true, canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
   };
   /** Takes the run back; a rebuild also shows the old branch again, where the part stood before it. */
   const rollback = async () => {
@@ -753,7 +757,7 @@ async function recipeDescribe(this: Session, body: string, limitMs?: number): Pr
     return { reason: built.reason ?? (first ? `line ${first.line}: ${first.message}` : "The recipe did not build.") };
   }
   const printer = this.printer();
-  const start = { describe: true, params: {}, context: { units: "mm", host: "mcp", limits: { canAssemble: true, canCheckpoint: true, timeLimitS: 15 }, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
+  const start = { describe: true, params: {}, context: { units: "mm", host: "mcp", nativeGeometry: true, limits: { canAssemble: true, canCheckpoint: true, timeLimitS: 15 }, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
   const out = await host.run(built.exe, start, async () => ({ ok: false, error: "Describe mode makes no calls." }), { ...DEFAULT_LIMITS, timeoutS: 15 });
   if (!out.ok || !out.described) return { reason: out.reason ?? "The recipe did not describe its parameters." };
   const params = out.described.params.map((row) => {

@@ -11,6 +11,21 @@
 
 use std::fmt;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static NATIVE_GEOMETRY: AtomicBool = AtomicBool::new(false);
+
+// Geometry can be used without a Session. Only a host which advertises the protocol enables this path.
+fn native_geometry(args: Json) -> Option<Json> {
+    if !NATIVE_GEOMETRY.load(Ordering::Relaxed) { return None; }
+    // The host limits protocol lines to 1 MiB; large inputs stay in the local implementation.
+    if args.to_string().len() > 512 * 1024 { return None; }
+    let msg = Json::obj().set("id", 0u32).set("call", "native_geometry").set("args", args);
+    tell(msg);
+    let reply = Json::parse(&read_line()).ok()?;
+    if reply.get("ok").and_then(Json::as_bool) == Some(true) { reply.get("result").cloned() } else { None }
+}
+
 
 /// A JSON value. Objects keep their keys in insertion order.
 #[derive(Clone, Debug, PartialEq)]
@@ -1036,6 +1051,9 @@ impl Session {
     /// Reads the start line: `{"v":1,"params":{...},"context":{...}}`, with `"describe":true` for describe mode.
     pub fn start() -> Session {
         let start = Json::parse(&read_line()).unwrap_or(Json::Null);
+        let enabled = start.at("context.nativeGeometry").and_then(Json::as_bool) == Some(true)
+            && start.get("describe").and_then(Json::as_bool) != Some(true);
+        NATIVE_GEOMETRY.store(enabled, Ordering::Relaxed);
         Session::from_start(&start)
     }
 
@@ -2283,6 +2301,7 @@ pub mod geom2d {
     }
 
     impl Region {
+        pub(crate) fn from_native_loops(loops: Vec<Poly>) -> Region { Region { loops } }
         /// No area.
         pub fn empty() -> Region {
             Region { loops: Vec::new() }
@@ -2635,10 +2654,52 @@ pub mod geom2d {
         }
     }
 
+    pub(crate) fn loops_json(loops: &[Poly]) -> Json {
+        Json::arr(loops.iter().map(|p| Json::arr(p.pts.iter().map(|q| Json::arr(vec![q[0], q[1]])).collect::<Vec<Json>>())).collect::<Vec<Json>>())
+    }
+
+    pub(crate) fn loops_from_json(value: &Json) -> Option<Vec<Poly>> {
+        let rows = value.as_array()?;
+        if rows.len() > 20000 { return None; }
+        let mut loops = Vec::new();
+        let mut count = 0usize;
+        for row in rows {
+            let pts = row.as_points2()?;
+            count += pts.len();
+            if count > 100000 || pts.iter().any(|p| !p[0].is_finite() || !p[1].is_finite()) { return None; }
+            loops.push(Poly { pts });
+        }
+        Some(loops)
+    }
+
+    pub(crate) fn native_resolve(args: &Json) -> Option<Json> {
+        let a = loops_from_json(args.get("a")?)?;
+        let b = loops_from_json(args.get("b")?)?;
+        if a.iter().chain(b.iter()).map(|p| p.pts.len()).sum::<usize>() > 5000 { return None; }
+        let fill = match args.get("fill")?.as_str()? {
+            "union" => Fill::Union, "intersect" => Fill::Intersect, "difference" => Fill::Difference,
+            "xor" => Fill::Xor, "nonzero" => Fill::NonZero, "positive" => Fill::Positive,
+            "evenodd" => Fill::EvenOdd, _ => return None,
+        };
+        Some(loops_json(&resolve_local(&a, &b, fill).loops))
+    }
+
     /// The boolean of two loop sets under a fill rule: every edge is split where it meets
     /// another, each piece is kept where the rule fills one side and not the other, and the
     /// kept pieces are joined into loops with material on their left.
     fn resolve(a: &[Poly], b: &[Poly], fill: Fill) -> Region {
+        if !super::NATIVE_GEOMETRY.load(super::Ordering::Relaxed) || a.iter().chain(b.iter()).map(|p| p.pts.len()).sum::<usize>() < 40 {
+            return resolve_local(a, b, fill);
+        }
+        let kind = match fill { Fill::Union => "union", Fill::Intersect => "intersect", Fill::Difference => "difference", Fill::Xor => "xor", Fill::NonZero => "nonzero", Fill::Positive => "positive", Fill::EvenOdd => "evenodd" };
+        let args = Json::obj().set("op", "resolve").set("fill", kind).set("a", loops_json(a)).set("b", loops_json(b));
+        if let Some(reply) = super::native_geometry(args) {
+            if let Some(loops) = loops_from_json(&reply) { return Region { loops }; }
+        }
+        resolve_local(a, b, fill)
+    }
+
+    fn resolve_local(a: &[Poly], b: &[Poly], fill: Fill) -> Region {
         let mut edges: Vec<Edge> = Vec::new();
         for (side, set) in [a, b].iter().enumerate() {
             for l in set.iter() {
@@ -3001,6 +3062,38 @@ pub mod lattice {
         Grid { pitch: [0.0, 0.0], shift: 0.0, shapes: vec![cell], centres: vec![[0.0, 0.0]], points, origin: [0.0, 0.0], turn_deg: 0.0, rib: 0.0 }
     }
 
+    pub(crate) fn native_cells(args: &super::Json) -> Option<super::Json> {
+        fn point(v: &super::Json) -> Option<Pt> {
+            let a = v.as_f64s()?;
+            if a.len() != 2 || !a[0].is_finite() || !a[1].is_finite() { return None; }
+            Some([a[0], a[1]])
+        }
+        let grid = Grid {
+            pitch: point(args.get("pitch")?)?, shift: args.get("shift")?.as_f64()?,
+            shapes: geom2d::loops_from_json(args.get("shapes")?)?,
+            centres: args.get("centres")?.as_points2()?, points: args.get("points")?.as_points2()?,
+            origin: point(args.get("origin")?)?, turn_deg: args.get("turn")?.as_f64()?, rib: args.get("rib")?.as_f64()?,
+        };
+        let region = Region::from_native_loops(geom2d::loops_from_json(args.get("region")?)?);
+        let area = args.get("minArea")?.as_f64()?;
+        if !grid.shift.is_finite() || !grid.turn_deg.is_finite() || !grid.rib.is_finite() || !area.is_finite()
+            || grid.points.len() > 10000 || grid.centres.len() > 10000
+            || grid.points.iter().chain(grid.centres.iter()).any(|p| !p[0].is_finite() || !p[1].is_finite()) { return None; }
+        if grid.points.is_empty() && grid.pitch[0] > 0.0 && grid.pitch[1] > 0.0 && !region.is_empty() {
+            let bounds = region.bbox();
+            let reach = grid.shapes.iter().flat_map(|p| p.pts.iter()).fold(0.0f64, |m, p| m.max(p[0].hypot(p[1])));
+            let extent = bounds.iter().map(|p| (p[0] - grid.origin[0]).hypot(p[1] - grid.origin[1])).fold(0.0f64, f64::max) + reach + grid.shift.abs();
+            let nx = 2.0 * extent / grid.pitch[0] + 5.0;
+            let ny = 2.0 * extent / grid.pitch[1] + 5.0;
+            if !nx.is_finite() || !ny.is_finite() || nx * ny > 10000.0 { return None; }
+        }
+        let cells = grid.cells_local(&region, area);
+        Some(super::Json::arr(cells.iter().map(|c| super::Json::obj()
+            .set("index", super::Json::arr(vec![c.index[0] as f64, c.index[1] as f64]))
+            .set("centre", super::Json::arr(vec![c.centre[0], c.centre[1]]))
+            .set("region", geom2d::loops_json(c.region.loops())).set("clipped", c.clipped)).collect::<Vec<_>>()))
+    }
+
     impl Grid {
         /// Leave walls `t` mm thick between cells: each cell shrinks by `t / 2` all round.
         pub fn rib(self, t: f64) -> Grid {
@@ -3029,6 +3122,33 @@ pub mod lattice {
         /// The cells that meet `region`, row by row from the lowest, each row by column;
         /// pieces under `min_area` mm² are dropped, and a cell with nothing left is skipped.
         pub fn cells(&self, region: &Region, min_area: f64) -> Vec<Cell> {
+            if let Some(cells) = self.native_cells(region, min_area) { return cells; }
+            self.cells_local(region, min_area)
+        }
+
+        fn native_cells(&self, region: &Region, min_area: f64) -> Option<Vec<Cell>> {
+            if !super::NATIVE_GEOMETRY.load(super::Ordering::Relaxed) { return None; }
+            let point = |p: Pt| super::Json::arr(vec![p[0], p[1]]);
+            let args = super::Json::obj().set("op", "cells").set("pitch", point(self.pitch)).set("shift", self.shift)
+                .set("shapes", geom2d::loops_json(&self.shapes))
+                .set("centres", super::Json::arr(self.centres.iter().map(|p| point(*p)).collect::<Vec<_>>()))
+                .set("points", super::Json::arr(self.points.iter().map(|p| point(*p)).collect::<Vec<_>>()))
+                .set("origin", point(self.origin)).set("turn", self.turn_deg).set("rib", self.rib)
+                .set("region", geom2d::loops_json(region.loops())).set("minArea", min_area);
+            let reply = super::native_geometry(args)?;
+            let mut cells = Vec::new();
+            for row in reply.as_array()? {
+                let i = row.get("index")?.as_f64s()?;
+                let p = row.get("centre")?.as_f64s()?;
+                if i.len() != 2 || p.len() != 2 { return None; }
+                cells.push(Cell { index: [i[0] as i32, i[1] as i32], centre: [p[0], p[1]],
+                    region: Region::from_native_loops(geom2d::loops_from_json(row.get("region")?)?),
+                    clipped: row.get("clipped")?.as_bool()? });
+            }
+            Some(cells)
+        }
+
+        fn cells_local(&self, region: &Region, min_area: f64) -> Vec<Cell> {
             let mut out: Vec<Cell> = Vec::new();
             if region.is_empty() || self.shapes.is_empty() {
                 return out;
@@ -3105,6 +3225,17 @@ pub mod lattice {
             out
         }
     }
+}
+
+/// Executes the recipe's geometry algorithms in the native host, without using the recipe protocol itself.
+pub fn native_geometry_request(text: &str) -> Option<String> {
+    let args = Json::parse(text).ok()?;
+    let result = match args.get("op")?.as_str()? {
+        "resolve" => geom2d::native_resolve(&args),
+        "cells" => lattice::native_cells(&args),
+        _ => None,
+    }?;
+    Some(result.to_string())
 }
 
 #[cfg(test)]
