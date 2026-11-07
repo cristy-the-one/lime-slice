@@ -10,7 +10,7 @@
  * joins, Explode, and the MCP read; the assembly only says how to work it out again.
  */
 import { evaluate, ExprError, expressionMentions, type Params } from "./modeling/expr.ts";
-import { eulerOrient, orientEuler, type Mat3 } from "./mesh-place.ts";
+import { eulerOrient, matMul, orientEuler, type Mat3 } from "./mesh-place.ts";
 import { IDENTITY_POSE, poseScale, relativePose, thenPose, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 
@@ -19,6 +19,11 @@ export interface MemberExprs {
   offset?: [string | null, string | null, string | null];
   turn?: [string | null, string | null, string | null];
 }
+
+/** A joint's pivot and hinge axis are in the member's own part frame. */
+export type Joint =
+  | { kind: "hinge"; pivot: Vec3; axis: Vec3; angle?: number; min?: number; max?: number }
+  | { kind: "ball"; pivot: Vec3; cone?: number; rest?: [number, number, number, number] };
 
 export interface Member {
   /** The plate object's id. */
@@ -30,6 +35,7 @@ export interface Member {
   /** Degrees about X, then Y, then Z. */
   turn: Vec3;
   exprs?: MemberExprs;
+  joint?: Joint;
 }
 
 export interface Assembly {
@@ -73,6 +79,44 @@ export function memberFields(pose: Affine): { offset: Vec3; turn: Vec3 } {
   const s = poseScale(pose);
   const turn = orientEuler(pose.m.map((value) => value / s) as Mat3);
   return { offset: [...pose.t], turn: [turn.rx, turn.ry, turn.rz] };
+}
+
+/** A proper rotation as [x, y, z, w]. */
+export function rotationQuaternion(m: Mat3): [number, number, number, number] {
+  const trace = m[0] + m[4] + m[8];
+  let x: number, y: number, z: number, w: number;
+  if (trace > 0) {
+    const s = Math.sqrt(trace + 1) * 2;
+    w = s / 4; x = (m[7] - m[5]) / s; y = (m[2] - m[6]) / s; z = (m[3] - m[1]) / s;
+  } else if (m[0] > m[4] && m[0] > m[8]) {
+    const s = Math.sqrt(1 + m[0] - m[4] - m[8]) * 2;
+    w = (m[7] - m[5]) / s; x = s / 4; y = (m[1] + m[3]) / s; z = (m[2] + m[6]) / s;
+  } else if (m[4] > m[8]) {
+    const s = Math.sqrt(1 + m[4] - m[0] - m[8]) * 2;
+    w = (m[2] - m[6]) / s; x = (m[1] + m[3]) / s; y = s / 4; z = (m[5] + m[7]) / s;
+  } else {
+    const s = Math.sqrt(1 + m[8] - m[0] - m[4]) * 2;
+    w = (m[3] - m[1]) / s; x = (m[2] + m[6]) / s; y = (m[5] + m[7]) / s; z = s / 4;
+  }
+  const n = Math.hypot(x, y, z, w);
+  return [x / n, y / n, z / n, w / n];
+}
+
+/** The rotation represented by [x, y, z, w]. */
+export function quaternionRotation(q: readonly [number, number, number, number]): Mat3 {
+  const n = Math.hypot(...q), [x, y, z, w] = q.map((v) => v / n) as [number, number, number, number];
+  return [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w),
+    2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+    2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)];
+}
+
+/** When the parent changes, a ball's rest rotation must change frames with it. */
+export function reparentJoint(joint: Joint | undefined, oldParent: Affine, newParent: Affine): Joint | undefined {
+  if (!joint || joint.kind !== "ball" || !joint.rest) return joint;
+  const between = relativePose(newParent, oldParent);
+  const scale = poseScale(between);
+  const rotation = between.m.map((v) => v / scale) as Mat3;
+  return { ...joint, rest: rotationQuaternion(matMul(rotation, quaternionRotation(joint.rest))) };
 }
 
 /** `member` with each number its text gives at `params`. A text that fails keeps the number and says why. */
@@ -179,7 +223,7 @@ export function movedTo(assembly: Assembly, object: string, pose: Affine, poseOf
   const at: PoseOf = (id) => (id === object ? pose : poseOf(id));
   if (!member || member.parent === null) return { assembly, poses: solveAssembly(assembly, at).poses };
   const parentPose = poseOf(member.parent) ?? IDENTITY_POSE;
-  const next = { ...assembly, members: assembly.members.map((row) => (row === member ? { object, parent: member.parent, ...memberFields(relativePose(parentPose, pose)) } : row)) };
+  const next = { ...assembly, members: assembly.members.map((row) => (row === member ? { object, parent: member.parent, ...memberFields(relativePose(parentPose, pose)), ...(member.joint ? { joint: member.joint } : {}) } : row)) };
   return { assembly: next, poses: solveAssembly(next, poseOf).poses };
 }
 
@@ -215,7 +259,10 @@ export function attached(assemblies: readonly Assembly[], child: string, parent:
   if (mine && mine !== theirs) return { reason: `This part is already in ${mine.name}.` };
   const base: Assembly = theirs ?? { id: freshAssemblyId(assemblies), name, members: [{ object: parent, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }] };
   const parentPose = poseOf(parent) ?? IDENTITY_POSE;
-  const written = withMember(base, { object: child, parent, ...memberFields(relativePose(parentPose, poseOf(child) ?? IDENTITY_POSE)) });
+  const old = base.members.find((member) => member.object === child);
+  const oldParent = old?.parent ? poseOf(old.parent) ?? IDENTITY_POSE : IDENTITY_POSE;
+  const joint = reparentJoint(old?.joint, oldParent, parentPose);
+  const written = withMember(base, { object: child, parent, ...memberFields(relativePose(parentPose, poseOf(child) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}) });
   if ("reason" in written) return written;
   return theirs ? assemblies.map((row) => (row === theirs ? written : row)) : [...assemblies, written];
 }
@@ -264,7 +311,9 @@ export function withoutMember(assembly: Assembly, object: string, poseOf: PoseOf
   const parentPose = poseOf(parent) ?? IDENTITY_POSE;
   members = members.map((member) => {
     if (member.parent !== object) return member;
-    return { object: member.object, parent, ...memberFields(relativePose(parentPose, poseOf(member.object) ?? IDENTITY_POSE)) };
+    const oldParent = poseOf(object) ?? IDENTITY_POSE;
+    const joint = reparentJoint(member.joint, oldParent, parentPose);
+    return { object: member.object, parent, ...memberFields(relativePose(parentPose, poseOf(member.object) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}) };
   });
   return members.length >= 2 ? { ...assembly, members } : null;
 }
@@ -279,6 +328,38 @@ function readTexts(value: unknown): [string | null, string | null, string | null
   if (!Array.isArray(value) || value.length !== 3) return undefined;
   const texts = value.map((text) => (typeof text === "string" && text.trim() ? text : null)) as [string | null, string | null, string | null];
   return texts.some((text) => text !== null) ? texts : undefined;
+}
+
+/** A damaged joint is ignored without discarding its assembly or changing the stored pose. */
+export function readJoint(value: unknown): Joint | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  const pivot = readVec(row.pivot);
+  if (!pivot) return undefined;
+  if (row.kind === "hinge") {
+    const axis = readVec(row.axis);
+    if (!axis || !Number.isFinite(Math.hypot(...axis)) || Math.hypot(...axis) < 1e-12) return undefined;
+    if ([row.angle, row.min, row.max].some((n) => n !== undefined && !finite(n))) return undefined;
+    const min = row.min as number | undefined, max = row.max as number | undefined;
+    if (min !== undefined && max !== undefined && min > max) return undefined;
+    const angle = row.angle as number | undefined;
+    if (angle !== undefined && ((min !== undefined && angle < min) || (max !== undefined && angle > max))) return undefined;
+    const length = Math.hypot(...axis);
+    return { kind: "hinge", pivot, axis: Math.abs(length - 1) < 1e-12 ? axis : axis.map((x) => x / length) as Vec3,
+      ...(angle !== undefined ? { angle } : {}), ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) };
+  }
+  if (row.kind === "ball") {
+    if (row.cone !== undefined && (!finite(row.cone) || row.cone < 0 || row.cone > 180)) return undefined;
+    let rest: [number, number, number, number] | undefined;
+    if (row.rest !== undefined) {
+      if (!Array.isArray(row.rest) || row.rest.length !== 4 || !row.rest.every(finite)) return undefined;
+      const length = Math.hypot(...row.rest);
+      if (!Number.isFinite(length) || length < 1e-12) return undefined;
+      rest = (Math.abs(length - 1) < 1e-12 ? [...row.rest] : row.rest.map((x: number) => x / length)) as [number, number, number, number];
+    }
+    return { kind: "ball", pivot, ...(row.cone !== undefined ? { cone: row.cone as number } : {}), ...(rest ? { rest } : {}) };
+  }
+  return undefined;
 }
 
 function readMember(value: unknown): Member | null {
@@ -297,6 +378,8 @@ function readMember(value: unknown): Member | null {
     if (turnTexts) exprs.turn = turnTexts;
     if (exprs.offset || exprs.turn) member.exprs = exprs;
   }
+  const joint = readJoint(row.joint);
+  if (joint) member.joint = joint;
   return member;
 }
 

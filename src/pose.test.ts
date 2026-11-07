@@ -1,0 +1,86 @@
+import { memberPose, movedTo, readJoint, rotationQuaternion, solveAssembly, withoutMember, type Assembly, type Member } from "./assembly.ts";
+import { eulerOrient } from "./mesh-place.ts";
+import { applyPose, IDENTITY_POSE, thenPose, turnDir, type Affine } from "./model-space.ts";
+import { linked, poseChain, restOf, turnBall, turnHinge } from "./pose.ts";
+
+let failed = 0;
+function check(label: string, ok: boolean): void { if (!ok) { failed++; console.error(`FAIL ${label}`); } }
+function near(a: readonly number[], b: readonly number[], tol = 1e-8): boolean { return a.length === b.length && a.every((x, i) => Math.abs(x - b[i]!) <= tol); }
+function member(value: ReturnType<typeof turnHinge>): Member { if ("reason" in value) throw new Error(value.reason); return value; }
+const root: Member = { object: "body", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] };
+const knee: Member = { object: "knee", parent: "body", offset: [5, 2, 0], turn: [180, 0, 0], joint: { kind: "hinge", pivot: [1, 0, 0], axis: [0, 0, 1], angle: 0, min: -20, max: 40 } };
+const foot: Member = { object: "foot", parent: "knee", offset: [3, 0, 0], turn: [0, 0, 0] };
+const assembly: Assembly = { id: "a", name: "leg", members: [root, knee, foot] };
+const bodyPose: Affine = { m: eulerOrient(10, 20, 30), t: [10, 20, 30] };
+const original = solveAssembly(assembly, (id) => id === "body" ? bodyPose : undefined).poses;
+const pivot = applyPose(original.get("knee")!, [1, 0, 0]);
+const axis = turnDir(original.get("knee")!, [0, 0, 1]);
+const turned = member(turnHinge(knee, 90));
+check("hinge clamps angle on a flipped member", turned.joint?.kind === "hinge" && turned.joint.angle === 40);
+const changed: Assembly = { ...assembly, members: [root, turned, foot] };
+const poses = solveAssembly(changed, (id) => id === "body" ? bodyPose : undefined).poses;
+check("hinge pivot stays fixed", near(applyPose(poses.get("knee")!, [1, 0, 0]), pivot));
+check("hinge axis stays fixed", near(turnDir(poses.get("knee")!, [0, 0, 1]), axis));
+check("children follow the turned hinge", !near(poses.get("foot")!.t, original.get("foot")!.t));
+check("hinge rest recovers its original pose", near(restOf(turned).m, memberPose(knee).m) && near(restOf(turned).t, memberPose(knee).t));
+const negative = member(turnHinge(turned, -100));
+check("hinge clamps the other limit", negative.joint?.kind === "hinge" && negative.joint.angle === -20);
+const back = member(turnHinge(turned, -40));
+check("hinge returns to rest", near(memberPose(back).m, memberPose(knee).m) && near(memberPose(back).t, memberPose(knee).t));
+check("turn clears stale driving expressions", !member(turnHinge({ ...knee, exprs: { turn: ["x", null, null] } }, 10)).exprs);
+
+const ball: Member = { object: "ball", parent: "body", offset: [2, 3, 4], turn: [10, 20, 30], joint: { kind: "ball", pivot: [0, 0, 0], cone: 30 } };
+const ballTurn = member(turnBall(ball, [0, 1, 0], 90, [1, 0, 0]));
+const restDirection = turnDir(restOf(ballTurn), [1, 0, 0]);
+const nowDirection = turnDir(memberPose(ballTurn), [1, 0, 0]);
+check("ball clamps its direction to its cone", Math.abs(Math.acos(restDirection.reduce((sum, x, i) => sum + x * nowDirection[i]!, 0)) * 180 / Math.PI - 30) < 1e-6);
+check("ball pivot stays in place", near(applyPose(memberPose(ballTurn), [0, 0, 0]), [2, 3, 4]));
+const zeroCone = { ...ball, joint: { kind: "ball", pivot: [0, 0, 0], cone: 0 } } as Member;
+const twisted = member(turnBall(zeroCone, [1, 0, 0], 45, [1, 0, 0]));
+check("cone still permits twist about the rest direction", near(turnDir(memberPose(twisted), [1, 0, 0]), turnDir(memberPose(zeroCone), [1, 0, 0])) && !near(memberPose(twisted).m, memberPose(zeroCone).m));
+check("cone refuses an undefined centre direction", "reason" in turnBall(ball, [0, 1, 0], 10, [0, 0, 0]));
+check("zero turn axis is refused", "reason" in turnBall(ball, [0, 0, 0], 10, [1, 0, 0]));
+
+const flat: Assembly = { ...assembly, members: [root, knee, { ...foot, parent: "body", offset: [9, 4, 1] }] };
+const flatPoses = solveAssembly(flat, (id) => id === "body" ? bodyPose : undefined).poses;
+const reparented = linked(flat, "foot", "knee", (id) => flatPoses.get(id));
+check("link accepts two assembly members", !("reason" in reparented));
+if (!("reason" in reparented)) {
+  const after = solveAssembly(reparented, (id) => flatPoses.get(id)).poses;
+  check("link keeps the child's world pose", near(after.get("foot")!.m, flatPoses.get("foot")!.m) && near(after.get("foot")!.t, flatPoses.get("foot")!.t));
+  check("link refuses a loop", "reason" in linked(reparented, "knee", "foot", (id) => after.get(id)));
+}
+const ballChild: Member = { ...ballTurn, object: "ball", parent: "body" };
+const ballAssembly: Assembly = { ...assembly, members: [root, knee, ballChild] };
+const ballPoses = solveAssembly(ballAssembly, (id) => id === "body" ? bodyPose : undefined).poses;
+const oldRest = thenPose(restOf(ballChild), ballPoses.get("body")!);
+const linkedBall = linked(ballAssembly, "ball", "knee", (id) => ballPoses.get(id));
+if ("reason" in linkedBall) throw new Error(linkedBall.reason);
+const newBall = linkedBall.members.find((m) => m.object === "ball")!;
+const newRest = thenPose(restOf(newBall), ballPoses.get("knee")!);
+check("reparenting preserves a ball joint's world rest orientation", near(oldRest.m, newRest.m) && near(oldRest.t, newRest.t));
+const removedKnee = withoutMember(linkedBall, "knee", (id) => ballPoses.get(id))!;
+const restoredBall = removedKnee.members.find((m) => m.object === "ball")!;
+const restoredRest = thenPose(restOf(restoredBall), ballPoses.get("body")!);
+check("removing a parent preserves the child's joint and world rest", restoredBall.joint?.kind === "ball" && near(oldRest.m, restoredRest.m) && near(oldRest.t, restoredRest.t));
+const handMoved = movedTo(ballAssembly, "ball", ballPoses.get("ball")!, (id) => ballPoses.get(id));
+check("ordinary member movement retains its joint", handMoved.assembly.members.find((m) => m.object === "ball")?.joint?.kind === "ball");
+const offCentre: Member = { ...ball, joint: { kind: "ball", pivot: [1, 2, 3], cone: 50 } };
+const offTurn = member(turnBall(offCentre, [0, 0, 1], 150, [2, 2, 3]));
+check("a ball turns about an off-origin pivot", near(applyPose(memberPose(offTurn), [1, 2, 3]), applyPose(memberPose(offCentre), [1, 2, 3])));
+const opposite = member(turnBall({ ...ball, turn: [0, 0, 0] }, [0, 0, 1], 180, [1, 0, 0]));
+check("an antipodal ball turn clamps without losing its axis", Math.abs(Math.acos(Math.max(-1, Math.min(1, turnDir(memberPose(opposite), [1, 0, 0])[0]))) * 180 / Math.PI - 30) < 1e-6);
+const jointedFoot: Member = { ...foot, joint: { kind: "ball", pivot: [0, 0, 0] } };
+const tintAssembly: Assembly = { ...assembly, members: [root, knee, jointedFoot] };
+check("chain tint stops before the fixed anchor", JSON.stringify([...poseChain([tintAssembly], "foot")]) === JSON.stringify(["foot", "knee"]));
+check("a fixed selected part has no movable chain", poseChain([assembly], "foot").size === 0);
+check("an unknown selection has no chain", poseChain([assembly], "missing").size === 0);
+check("link refuses a member outside the assembly", "reason" in linked(flat, "missing", "knee", (id) => flatPoses.get(id)));
+check("invalid hinge axis is dropped", readJoint({ kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 0] }) === undefined);
+check("invalid hinge limits are dropped", readJoint({ kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], min: 2, max: 1 }) === undefined);
+check("invalid ball quaternion is dropped", readJoint({ kind: "ball", pivot: [0, 0, 0], rest: [0, 0, 0, 0] }) === undefined);
+check("nonfinite joint data is dropped", readJoint({ kind: "ball", pivot: [0, NaN, 0] }) === undefined);
+check("quaternion captures flipped orientation", near(restOf({ ...ball, turn: [180, 0, 0], joint: { kind: "ball", pivot: [0, 0, 0], rest: rotationQuaternion(eulerOrient(180, 0, 0)) } }).m, eulerOrient(180, 0, 0)));
+check("identity stays identity", near(IDENTITY_POSE.m, [1, 0, 0, 0, 1, 0, 0, 0, 1]));
+if (failed) throw new Error(`${failed} pose checks failed`);
+console.log("pose: joints, limits, children, links and rest ok");
