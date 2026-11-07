@@ -311,6 +311,7 @@ export const KIND_GUIDES: Record<string, string> = {
     "1. model_params {set:{rimL:120, bodyH:10}}.",
     "2. model_place {object:<hook>, to:<body>, x:\"rimL - 5\", y:0, z:\"bodyH\", assembly:\"LED cover\"}. The numbers are in the body's own frame. The body becomes the root.",
     "3. model_place {object:<clip>, to:<hook>, z:8}: a part can sit on any member. A part sits in one assembly.",
+    "To join many parts where they already stand, use model_place {objects:[<part1>, <part2>], to:<body>}. Every pose stays as it is; the whole request is checked before any part joins.",
     "4. model_params {set:{rimL:150}}: the reply's moved lists the hook and the clip with their new assembledMm.",
     "5. plate_list: each member's row has assembly; session_info lists the assemblies.",
     "Moving the root (model_place on it, without to) moves every member. model_place on a member without to changes its offset from its parent.",

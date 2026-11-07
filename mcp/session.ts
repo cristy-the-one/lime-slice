@@ -170,6 +170,8 @@ export class Session {
   lustId: string | undefined;
   /** I21: each recipe name's call count on its last run, for "call N of about M". */
   readonly recipeCallCounts = new Map<string, number>();
+  /** Last successful dry run's source, to avoid silently saving an older applied draft. */
+  readonly recipePreviewHashes = new Map<string, string>();
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   pendingRecipe: Recipe | null = null;
   /**

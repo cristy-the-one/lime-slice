@@ -781,6 +781,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-share.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient-stale.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 
       # The plugin corpus (D12): one saved plugin per recipe API level sends the calls it recorded, a newer API is
@@ -904,7 +905,10 @@ jobs:
         timeout-minutes: 10
         env:
           LIME_RECIPE_REQUIRED: "1"
-        run: node --experimental-strip-types mcp/ingredient.test.ts
+        run: |
+          node --experimental-strip-types mcp/ingredient.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/ingredient-stale.test.ts
 
       # Nuggets: harvest offers, keeping an ingredient, presets, lessons, one find over every kind.
       - name: Recipe nuggets

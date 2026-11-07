@@ -267,7 +267,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       const target = typeof site.args.object === "string" ? site.args.object : this.selected;
       const align = site.args.align as { to?: unknown } | undefined;
       const others = [site.args.to, align?.to].filter((v): v is string => typeof v === "string" && v !== "bed");
-      if (!created.includes(target) || others.some((id) => !created.includes(id))) {
+      const targets = site.tool === "model_place" && Array.isArray(site.args.objects) ? site.args.objects : [target];
+      if (targets.some((id) => typeof id !== "string" || !created.includes(id)) || others.some((id) => !created.includes(id))) {
         return { ok: false, error: `${site.tool} in a recipe places only the objects this run made (solid_new), relative to each other or the bed.` };
       }
     }
@@ -299,7 +300,11 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }
     const target = typeof site.args.object === "string" ? site.args.object : this.selected;
     if (site.tool === "object_place") placed.add(target);
-    if (site.tool === "model_place") modelPlaced.add(target);
+    if (site.tool === "model_place") {
+      if (Array.isArray(site.args.objects)) {
+        for (const id of site.args.objects) if (typeof id === "string") modelPlaced.add(id);
+      } else modelPlaced.add(target);
+    }
     if (site.tool === "model_apply") applied += 1;
     if (site.tool === "model_apply_batch") applied += Array.isArray(site.args.ops) ? site.args.ops.length : 1;
     if (maxSteps !== undefined && applied >= maxSteps) return { ok: true, result: value, halt: `The run stopped after ${applied} applied op${applied === 1 ? "" : "s"} (maxSteps ${maxSteps}), at line ${site.line}.` };
@@ -362,6 +367,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if (!out.ok || mode === "dry") {
     const undone = await rollback();
     if (!out.ok) return { ok: false, code: "recipe-failed", reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
+    if (name !== "plugin_check") this.recipePreviewHashes.set(name, bodyHash(built.source));
     return { ok: true, dry: true, object: out.done!.object, metrics: out.done!.metrics, ...report, rolledBack: undone };
   }
   // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
@@ -502,6 +508,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const sha256 = bodyHash(built.source);
   const changed = [...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id);
   const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}), ...(usedIngredients.length ? { ingredients: resolved.used } : {}) };
+  this.recipePreviewHashes.delete(name);
   let entryKey: string | null = null;
   if (created.length) entryKey = key;
   else if (changed.length) {
