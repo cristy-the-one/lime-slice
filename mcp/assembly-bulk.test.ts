@@ -20,4 +20,15 @@ if (joined.ok !== true || JSON.stringify([a, b].map((id) => s.find(id)!.modelPos
 await s.call("model_place", { object: root, x: 4 });
 const positions = [a, b].map((id) => s.find(id)!.modelPose.t);
 if (positions[0]![0] !== 14 || positions[1]![0] !== -3) throw new Error(`joined parts did not follow the root: ${JSON.stringify(positions)}`);
+const c = await make();
+const d = await make();
+await s.call("model_place", { object: c, x: 30 });
+await s.call("model_place", { object: d, x: 35 });
+const second = await s.call("model_place", { objects: [d], to: c, assembly: "second" });
+const merged = await s.call("assembly_merge", { from: second.assembly, into: joined.assembly });
+if (merged.ok !== true || s.assemblies.length !== 1 || s.find(c)!.modelPose.t[0] !== 30 || s.find(d)!.modelPose.t[0] !== 35) throw new Error(`merge changed a pose: ${JSON.stringify(merged)}`);
+await s.call("model_place", { object: root, x: 5 });
+if (s.find(c)!.modelPose.t[0] !== 31 || s.find(d)!.modelPose.t[0] !== 36) throw new Error("merged assembly did not follow its destination root");
+const same = await s.call("assembly_merge", { from: joined.assembly, into: joined.assembly });
+if (same.ok !== false || s.assemblies.length !== 1) throw new Error("merging an assembly with itself should be refused");
 console.log("bulk assembly placement: ok");

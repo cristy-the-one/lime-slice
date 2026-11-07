@@ -1422,6 +1422,11 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "assembly_merge",
+    description: "Join one assembly to another, keeping every part's assembled pose.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["from", "into"], properties: { from: { type: "string", minLength: 1, maxLength: 80, description: "Source assembly name or id." }, into: { type: "string", minLength: 1, maxLength: 80, description: "Destination assembly name or id." } } },
+  },
+  {
     name: "model_probe",
     description: "Check one plain edit; the solid does not change. Ok adds metrics: volume, bbox, and shells before and after, and warns on separate pieces. Then model_apply the same op.",
     inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; transition: edges that start in the air. Nothing changes." } } },

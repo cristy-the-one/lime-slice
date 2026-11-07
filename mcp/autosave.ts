@@ -72,7 +72,7 @@ export function takePreviousAutosave(): PreviousAutosave | null {
       const doc = JSON.parse(readFileSync(previous, "utf8")) as { objects?: unknown[]; mcpPlanRecovery?: PlanRecovery };
       objects = Array.isArray(doc.objects) ? doc.objects.length : 1;
       const p = doc.mcpPlanRecovery;
-      if (p && /^job_\d+$/.test(p.job) && Number.isInteger(p.total) && p.total > 0 && p.total <= 250 && Array.isArray(p.completed) && p.completed.length <= p.total && p.completed.every((step) => Number.isInteger(step.step) && step.step > 0 && step.step <= p.total && typeof step.tool === "string" && step.tool.length <= 80)) plan = p;
+      if (p && typeof p.job === "string" && /^job_\d+$/.test(p.job) && Number.isInteger(p.total) && p.total > 0 && p.total <= 250 && Array.isArray(p.completed) && p.completed.length <= p.total && p.completed.every((step) => !!step && typeof step === "object" && Number.isInteger(step.step) && step.step > 0 && step.step <= p.total && typeof step.tool === "string" && step.tool.length <= 80)) plan = p;
     } catch {
       return null;
     }

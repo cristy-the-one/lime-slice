@@ -711,6 +711,7 @@ export const modelMethods = {
 };
 
 export const modelHandlers: Record<string, ToolHandler> = {
+  assembly_merge: (s, input) => s.assemblyMerge(input),
   solid_new: (s, input) => input.coupon !== undefined ? s.fitCouponNew(input) : s.solidNew(input),
   model_build: (s, input) => s.build(input),
   model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),

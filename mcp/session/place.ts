@@ -5,7 +5,7 @@
 import { frameNote, frameWhere, placeFree, placeNumbers } from "../../src/modeling/placing.ts";
 import { posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from "../../src/model-space.ts";
 import { orientEuler } from "../../src/mesh-place.ts";
-import { assemblyOf, memberFields, readAssemblies, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { assemblyOf, memberFields, readAssemblies, rootOf, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -40,6 +40,27 @@ function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<s
   this.assemblies = theirs ? assemblies.map((row) => row.id === assembly.id ? assembly : row) : [...assemblies, assembly];
   for (const part of newMembers) part.frame = "part";
   return { ok: true, assembly: assembly.name, parent: parent.id, objects: ids, ...(input.compact === true ? {} : { note: `${ids.length} parts joined at their current assembled poses. The print layout is unchanged.` }) };
+}
+
+/** Attach the source root to the destination root, preserving both assembly trees and all current poses. */
+function assemblyMerge(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+  const assemblies = this.liveAssemblies();
+  const resolve = (value: unknown) => assemblies.filter((row) => row.id === value || row.name === value);
+  const from = resolve(input.from);
+  const into = resolve(input.into);
+  if (from.length !== 1 || into.length !== 1) return refuse("bad-assembly", "Give an unambiguous source and destination assembly name or id.");
+  const source = from[0]!;
+  const target = into[0]!;
+  if (source.id === target.id) return refuse("bad-assembly", "Choose two different assemblies.");
+  const sourceRoot = rootOf(source);
+  const targetRoot = rootOf(target);
+  const sourcePart = sourceRoot && this.find(sourceRoot.object);
+  const targetPart = targetRoot && this.find(targetRoot.object);
+  if (!sourceRoot || !targetRoot || !sourcePart || !targetPart) return refuse("bad-assembly", "Both assemblies need a root on the plate.");
+  const attached: Member = { object: sourceRoot.object, parent: targetRoot.object, ...memberFields(relativePose(targetPart.modelPose, sourcePart.modelPose)) };
+  const merged: Assembly = { ...target, members: [...target.members, ...source.members.map((member) => member.object === sourceRoot.object ? attached : member)] };
+  this.assemblies = assemblies.filter((row) => row.id !== source.id).map((row) => row.id === target.id ? merged : row);
+  return { ok: true, assembly: target.name, merged: source.name, objects: source.members.length, note: "Both assemblies keep their current poses and the destination assembly's name." };
 }
 
 /**
@@ -198,6 +219,7 @@ function assembledBox(this: Session, obj: PlateObject): { min: number[]; max: nu
 
 /** The methods this module adds to Session. */
 export const placeMethods = {
+  assemblyMerge,
   modelPlaceMany,
   modelPlace,
   placeFree: placeFreeMethod,
