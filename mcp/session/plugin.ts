@@ -44,7 +44,24 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
       const shown = await this.gotoNode(part!, objectFrom);
       if (shown.ok === false) return { reason: `The step before the run could not be shown for the plugin's check: ${String(shown.reason ?? "the engine refused it.")}` };
     }
-    dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", ...(object ? { object } : {}) });
+    if (object) {
+      dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", object });
+    } else {
+      // New-part plugins have no dependency on the caller's plate. Share the engine and warm recipe host, but not
+      // the plate, bridge or autosave. Reserve the scratch ids in the owning session to avoid tree-key collisions.
+      const scratch = new (this.constructor as typeof Session)(this.engine, { isolated: true });
+      scratch.seq = this.seq;
+      scratch.settings = { ...this.settings };
+      scratch.library = this.library;
+      scratch.params = { ...this.params };
+      scratch.paramText = { ...this.paramText };
+      scratch.recipeHost = this.recipeHost;
+      try {
+        dry = await scratch.recipeRun({ source: body, name: "plugin_check", mode: "dry" });
+      } finally {
+        this.seq = Math.max(this.seq, scratch.seq);
+      }
+    }
   } finally {
     if (back && part!.tree?.nodes.has(tip!)) await this.gotoNode(part!, tip).catch(() => ({ ok: false }));
     if (block) await this.objectRemove(block).catch(() => ({ ok: false }));

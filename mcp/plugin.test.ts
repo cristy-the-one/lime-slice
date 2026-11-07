@@ -66,7 +66,15 @@ const flange = (tweak = "") => [
 ].join("\n");
 
 // --- Keep: a run that worked, kept with one field.
+let checkPlateSize: number | undefined;
+const originalRecipeRun = Session.prototype.recipeRun;
+Session.prototype.recipeRun = function(input, meta) {
+  if (input.name === "plugin_check") checkPlateSize = this.objects.length;
+  return originalRecipeRun.call(this, input, meta);
+};
 const kept = await call("recipe_run", { source: flange(), name: "flange", keep: { title: "Bolt-circle flange", description: "A round flange with bolt holes on a circle and an optional centre bore." } });
+Session.prototype.recipeRun = originalRecipeRun;
+check("the default check for a new-part plugin runs on an empty plate", checkPlateSize === 0, checkPlateSize);
 const keptRow = kept.kept as { id: string; version: number; sha256: string } | undefined;
 check("keep saves the run as a plugin", kept.ok === true && keptRow?.id === "bolt-circle-flange" && keptRow.version === 1 && /^[0-9a-f]{64}$/.test(keptRow.sha256), kept);
 const file = join(library, "bolt-circle-flange.rs");

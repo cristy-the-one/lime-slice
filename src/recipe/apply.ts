@@ -12,7 +12,7 @@ import { plainModelError } from "../app/model-error.ts";
 import { solidView, type SolidView } from "../modeling/model-calls.ts";
 import { markedRun, stampValue } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
-import { DEFAULT_LIMITS, type RecipeLimits } from "./host.ts";
+import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type RecipeLimits } from "./host.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import type { RecipeRunner } from "./rebuild.ts";
 
@@ -32,6 +32,7 @@ export interface PluginRunInput {
   env: AppRunEnv;
   limits?: RecipeLimits;
   signal?: AbortSignal;
+  onProgress?: (fraction: number, message: string) => void;
   runId: string;
 }
 
@@ -43,7 +44,7 @@ export interface RunTrace {
 }
 
 /** At most this many parts one run keeps (made, and the given part): more is a count gone wrong, not a plate. */
-export const MAX_RUN_PARTS = 100;
+export const MAX_RUN_PARTS = MAX_APP_RECIPE_PARTS;
 
 /** One part a run kept: its tree with the run stamped, the engine's reply for its shown step, and its solid. */
 export interface KeptPart {
@@ -101,8 +102,8 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
     calls = new AppRecipeCalls({ ...part, solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
-  const start = { params: input.params, context: { units: "mm", ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
-  const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
+  const start = { params: input.params, context: { units: "mm", host: "app", limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
+  const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal, input.onProgress);
   const notes = [...calls.notes, ...(out.notes ?? [])];
   const given = calls.given;
   const opened = calls.all.filter((row) => row.origin !== "given").map((row) => row.tree.key);

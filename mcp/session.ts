@@ -92,6 +92,8 @@ export class Session {
   seq = 0;
   jobSeq = 0;
   readonly engine: Engine;
+  /** Scratch checks share the engine but never mirror or autosave their temporary plate. */
+  readonly isolated: boolean;
   sourceProject: LimeProject | null = null;
   sourceHash = "";
   sourcePath = "";
@@ -206,8 +208,9 @@ export class Session {
 
   jointed = new Set<string>();
 
-  constructor(engine: Engine) {
+  constructor(engine: Engine, options: { isolated?: boolean } = {}) {
     this.engine = engine;
+    this.isolated = options.isolated === true;
   }
 
   call(name: string, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
@@ -260,9 +263,11 @@ export class Session {
       throw err;
     }
     const work = Promise.resolve(result).then((value) => {
-      const { payload, carriedAll } = this.bridgePayload(name, input, value);
-      this.lastBridge = payload;
-      void mirror(payload, this.bridgeLink, carriedAll);
+      if (!this.isolated) {
+        const { payload, carriedAll } = this.bridgePayload(name, input, value);
+        this.lastBridge = payload;
+        void mirror(payload, this.bridgeLink, carriedAll);
+      }
       return withPicks(withCode(this.withAutosaveHint(value)), picks);
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
@@ -272,7 +277,7 @@ export class Session {
       throw err;
     }).finally(() => {
       this.inflight -= 1;
-      if (changes) {
+      if (changes && !this.isolated) {
         this.autosaveDirty = true;
         this.scheduleAutosave();
       }

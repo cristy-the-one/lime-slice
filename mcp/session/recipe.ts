@@ -5,6 +5,8 @@
 import { randomUUID } from "node:crypto";
 import { plainModelError } from "../../src/app/model-error.ts";
 import type { Mat3 } from "../../src/mesh-place.ts";
+import { evaluateMember, memberFields, memberPose, samePose } from "../../src/assembly.ts";
+import { relativePose } from "../../src/model-space.ts";
 import { formatMm } from "../../src/model-plane.ts";
 import { editRequest } from "../../src/model-request.ts";
 import { solidView } from "../../src/modeling/model-calls.ts";
@@ -304,11 +306,11 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return { ok: true, result: value };
   };
   const printer = this.printer();
+  const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
   const start = {
     params,
-    context: { units: "mm", ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    context: { units: "mm", host: "mcp", limits: { canAssemble: true, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
   };
-  const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
   /** Takes the run back; a rebuild also shows the old branch again, where the part stood before it. */
   const rollback = async () => {
     const undone = await this.recipeRollback(created, touched, firstNew);
@@ -318,7 +320,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   this.recipeDepth += 1;
   let out;
   try {
-    out = await host.run(built.exe, start, call, limits, meta?.signal);
+    out = await host.run(built.exe, start, call, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
   } finally {
     this.recipeDepth -= 1;
   }
@@ -426,6 +428,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   let object = out.done!.object;
   const replaced: string[] = [];
   const removed: string[] = [];
+  const repositioned = new Set<string>();
   if (replacing) {
     const old = replacing.stored.objects.filter((id) => !created.includes(id) && this.find(id));
     for (const [i, oldId] of old.entries()) {
@@ -435,10 +438,33 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         continue;
       }
       await this.takeOver(oldId, newId, !placed.has(newId), !modelPlaced.has(newId), rebuild?.run.before === null && rebuild.obj.id === oldId);
+      if (modelPlaced.has(newId)) repositioned.add(oldId);
       created[i] = oldId;
       if (object === newId) object = oldId;
       replaced.push(oldId);
     }
+  }
+  // A replaced part can have a new assembled pose. Refresh its stored parent offset (and its children's offsets)
+  // after all replacements, so a later solve does not put it back at the previous recipe's pose.
+  if (repositioned.size) {
+    this.assemblies = this.assemblies.map((assembly) => ({ ...assembly, members: assembly.members.map((member) => {
+      if (member.parent === null || (!repositioned.has(member.object) && !repositioned.has(member.parent))) return member;
+      const part = this.find(member.object);
+      const parent = this.find(member.parent);
+      if (!part || !parent) return member;
+      const actual = relativePose(parent.modelPose, part.modelPose);
+      const evaluated = evaluateMember(member, this.params).member;
+      if (samePose(memberPose(evaluated), actual)) return member;
+      const fields = memberFields(actual);
+      const keep = (old: number[], now: number[], texts: (string | null)[] | undefined): [string | null, string | null, string | null] | undefined => {
+        if (!texts) return undefined;
+        const result = texts.map((text, i) => Math.abs(old[i]! - now[i]!) < 1e-6 ? text : null) as [string | null, string | null, string | null];
+        return result.some((text) => text !== null) ? result : undefined;
+      };
+      const offset = keep(evaluated.offset, fields.offset, member.exprs?.offset);
+      const turn = keep(evaluated.turn, fields.turn, member.exprs?.turn);
+      return { ...member, ...fields, exprs: offset || turn ? { ...(offset ? { offset } : {}), ...(turn ? { turn } : {}) } : undefined };
+    }) }));
   }
   const fresh = created.filter((id) => !replaced.includes(id));
   // --- Kept with the project when the run made objects: the source as it built, these parameters, its data, and
@@ -560,7 +586,7 @@ async function recipeDescribe(this: Session, body: string, limitMs?: number): Pr
     return { reason: built.reason ?? (first ? `line ${first.line}: ${first.message}` : "The recipe did not build.") };
   }
   const printer = this.printer();
-  const start = { describe: true, params: {}, context: { units: "mm", bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
+  const start = { describe: true, params: {}, context: { units: "mm", host: "mcp", limits: { canAssemble: true, timeLimitS: 15 }, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
   const out = await host.run(built.exe, start, async () => ({ ok: false, error: "Describe mode makes no calls." }), { ...DEFAULT_LIMITS, timeoutS: 15 });
   if (!out.ok || !out.described) return { reason: out.reason ?? "The recipe did not describe its parameters." };
   const params = out.described.params.map((row) => {

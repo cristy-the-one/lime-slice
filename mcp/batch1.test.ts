@@ -35,6 +35,22 @@ const call = (name: string, args: unknown = {}) => session.call(name, args);
 const made = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
 const object = String(made.object);
 
+{
+  const bulk = new Session(fakeEngine());
+  await bulk.call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
+  await bulk.call("solid_new", { primitive: "box", dx: 5, dy: 5, dz: 5 });
+  const preview = await bulk.call("settings_set", { allObjects: true, values: { infill: 1 }, dryRun: true });
+  check("bulk infill dry run changes no parts", preview.ok === true && bulk.objects.every((part) => part.objectSettings.infill === undefined));
+  const applied = await bulk.call("settings_set", { allObjects: true, values: { infill: 1 } });
+  check("bulk infill applies to every existing part", applied.ok === true && applied.objects === 2 && bulk.objects.every((part) => part.objectSettings.infill === 1));
+  const invalid = await bulk.call("settings_set", { object: bulk.objects[0]!.id, allObjects: true, values: { infill: 0 } });
+  check("bulk and individual targets cannot be combined", invalid.ok === false && bulk.objects.every((part) => part.objectSettings.infill === 1));
+  const compact = await bulk.call("model_place", { object: bulk.objects[1]!.id, to: bulk.objects[0]!.id, compact: true });
+  check("compact placement keeps its assembly and omits the note", compact.ok === true && typeof compact.assembly === "string" && compact.note === undefined);
+  const refused = await bulk.call("model_place", { object: bulk.objects[0]!.id, to: bulk.objects[0]!.id, compact: true });
+  check("compact placement keeps refusal details", refused.ok === false && typeof refused.reason === "string");
+}
+
 const dry = await call("settings_set", { values: { layerHeight: 0.16 }, dryRun: true });
 check("a dry run names the change and writes nothing", dry.ok === true && dry.dryRun === true, JSON.stringify(dry));
 const still = await call("settings_schema", { query: "layer height" });

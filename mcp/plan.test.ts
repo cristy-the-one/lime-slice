@@ -2,7 +2,7 @@
  * plan_run against the stand-in engine: references between steps, a bad reference, a refused middle step, and a plan
  * that runs past the reply time and answers with a job.
  */
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import { fakeEngine } from "./engine.ts";
 import { GUIDES } from "./guides.ts";
 import { planProblem, resolveReferences } from "./plan.ts";
 import { Session } from "./session.ts";
+import { autosavePath } from "./autosave.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-plan-"));
 
@@ -32,6 +33,25 @@ async function reply(session: Session, name: string, args: unknown): Promise<Rec
 }
 
 type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
+
+// The next step must not start until the preceding changed plate is on disk.
+{
+  const originalWorkspace = process.env.LIME_MCP_WORKSPACE;
+  process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-plan-save-"));
+  const session = new Session(fakeEngine());
+  const originalCall = session.runCall.bind(session);
+  let savedBeforeNext = false;
+  session.runCall = (name, args, meta, inPlan) => {
+    if (name === "session_info") {
+      const path = autosavePath();
+      savedBeforeNext = !!path && existsSync(path) && (JSON.parse(readFileSync(path, "utf8")) as { objects: unknown[] }).objects.length === 1;
+    }
+    return originalCall(name, args, meta, inPlan);
+  };
+  const result = await session.call("plan_run", { steps: [{ tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } }, { tool: "session_info" }] });
+  check("a completed plan step is saved before the next starts", result.ok === true && savedBeforeNext);
+  process.env.LIME_MCP_WORKSPACE = originalWorkspace;
+}
 
 // A solid and its top face in one call, the face list read through a reference to the new object.
 {
@@ -64,8 +84,10 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   check("a malformed reference is refused with its path", malformed === "Step 2: \"$one.object\" at args.object is not a reference. Write \"$N.path\" with N an earlier step's number, e.g. \"$1.object\", or start with \"$$\" for a literal \"$\".", String(malformed));
   const nested = await reply(session, "plan_run", { steps: [{ tool: "plan_run", args: { steps: [{ tool: "session_info" }] } }] });
   check("plan_run cannot be a step", nested === "Step 1: plan_run cannot run inside a plan. Put its steps in this plan instead.", String(nested));
-  const tooMany = await reply(session, "plan_run", { steps: Array.from({ length: 26 }, () => ({ tool: "session_info" })) });
-  check("more than 25 steps is refused", tooMany === "input.steps is too long.", String(tooMany));
+  const longer = await session.call("plan_run", { steps: Array.from({ length: 26 }, () => ({ tool: "session_info" })) });
+  check("a plan can run more than 25 steps", longer.ok === true && (longer.steps as unknown[]).length === 26, JSON.stringify(longer).slice(0, 300));
+  const tooMany = await reply(session, "plan_run", { steps: Array.from({ length: 251 }, () => ({ tool: "session_info" })) });
+  check("more than 250 steps is refused", tooMany === "input.steps is too long.", String(tooMany));
   const missing = await session.call("plan_run", {
     steps: [
       { tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } },

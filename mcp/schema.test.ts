@@ -25,6 +25,7 @@ check(
 check("a bridge message that already names the variable stays as it is", !occtHint("Open CASCADE. Set LIME_OCCT_BRIDGE.").includes("next to node"));
 
 check("a missing path is rejected", validateTool("project_open", {}) !== null);
+check("long recipes can request ten minutes", validateTool("recipe_run", { source: "fn main() {}", timeoutS: 600 }) === null && validateTool("recipe_run", { source: "fn main() {}", timeoutS: 601 }) !== null);
 check("a hole diameter of 0 is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "hole", diameterMm: 0, through: true } }) !== null);
 check("a scale percent of 9 is rejected", validateTool("object_place", { object: "obj_1", scalePercent: 9 }) !== null);
 check("a fractional edge index is rejected", validateTool("model_probe", { object: "obj_1", op: { kind: "fillet", edges: [1.5], size: 1 } }) !== null);
