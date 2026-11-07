@@ -1,7 +1,7 @@
 {
   "name": "lime-slice",
   "private": true,
-  "version": "5.9.1",
+  "version": "5.10.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 43117",
