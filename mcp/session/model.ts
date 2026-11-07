@@ -234,6 +234,7 @@ async function probeMeasured(this: Session, obj: PlateObject, input: Record<stri
 }
 
 function model(this: Session, name: string, input: Record<string, unknown>): Record<string, unknown> | Promise<Record<string, unknown>> {
+  if (name === "model_place" && Array.isArray(input.objects)) return this.modelPlaceMany(input);
   const requested = typeof input.object === "string" ? input.object : "";
   // --- Split to print (D12). An export target's piece is off the plate and still a part to model.
   const obj = this.find(requested !== "" ? requested : this.selected) ?? this.piecesOffPlate.find((row) => row.id === requested && this.exportCut(row) !== null) ?? null;
@@ -710,6 +711,7 @@ export const modelMethods = {
 };
 
 export const modelHandlers: Record<string, ToolHandler> = {
+  assembly_merge: (s, input) => s.assemblyMerge(input),
   solid_new: (s, input) => input.coupon !== undefined ? s.fitCouponNew(input) : s.solidNew(input),
   model_build: (s, input) => s.build(input),
   model_params: (s, input) => input.rebuild === true ? s.paramsRebuild(input) : s.paramsTool(input),

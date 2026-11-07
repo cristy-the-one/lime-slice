@@ -156,6 +156,8 @@ async function ingredientSave(this: Session, input: Record<string, unknown>): Pr
   if (typeof input.from === "string") {
     const draft = this.latestDraft(input.from);
     if (!draft) return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.`);
+    const preview = this.recipePreviewHashes.get(input.from);
+    if (preview !== undefined && preview !== bodyHash(draft.row.source)) return refuse("stale-draft", `Nothing new to save: the last applied run of ${input.from} is older than its successful dry run. Apply the new recipe first, or give source explicitly.`);
     const wanted = Array.isArray(input.items) ? input.items.filter((item): item is string => typeof item === "string") : [];
     if (wanted.length === 0) return refuse("missing-argument", "Name the items to keep: items:[\"fn cells\", \"struct Cell\"]. What they use comes along.");
     const lifted = liftItems(draft.row.source, wanted);

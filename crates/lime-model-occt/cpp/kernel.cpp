@@ -5471,8 +5471,8 @@ bool loops_readable(std::vector<ProfileLoop>& loops, std::string& error) {
             error = "A loop needs a segment.";
             return false;
         }
-        if (loop.segments.size() > 200) {
-            error = "A loop takes at most 200 segments.";
+        if (loop.segments.size() > 1000) {
+            error = "A loop takes at most 1000 segments.";
             return false;
         }
         if (!finite2(loop.start)) {
@@ -5983,8 +5983,8 @@ bool decode_profile_loops(const double* data, int count, std::vector<ProfileLoop
         loop.start[0] = data[at++];
         loop.start[1] = data[at++];
         const int nseg = static_cast<int>(std::llround(data[at++]));
-        if (nseg < 1 || nseg > 200) {
-            error = nseg < 1 ? "A loop needs a segment." : "A loop takes at most 200 segments.";
+        if (nseg < 1 || nseg > 1000) {
+            error = nseg < 1 ? "A loop needs a segment." : "A loop takes at most 1000 segments.";
             return false;
         }
         for (int s = 0; s < nseg; ++s) {

@@ -14,7 +14,7 @@
  */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline",
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint",
 ]);
 
 export interface RecipeLimits {
@@ -67,7 +67,7 @@ export interface RecipeCallSite {
  * The caller's answer: the tool's result, or a refusal sentence (with any hint fields to pass on). `halt` ends the run
  * after this call without a failure (a partial dry run's step limit, I23): the recipe gets no reply and is stopped.
  */
-export type RecipeReply = { ok: true; result: unknown; halt?: string } | { ok: false; error: string; extra?: Record<string, unknown> };
+export type RecipeReply = { ok: true; result: unknown; halt?: string } | { ok: false; error: string; extra?: Record<string, unknown>; fatal?: boolean };
 
 export type RecipeCall = (call: RecipeCallSite) => Promise<RecipeReply>;
 
@@ -314,6 +314,7 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
         }
       }
       if (failure) return;
+      if (!answer.ok && answer.fatal) return stop(answer.error, site.line);
       if (answer.ok && answer.halt) {
         halted = { reason: answer.halt, id, line: site.line };
         kill();
@@ -346,7 +347,8 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       },
       error: (message) => stop(`The recipe could not start: ${message}`),
     });
-    reply(JSON.stringify({ v: 1, ...start }));
+    if (signal?.aborted) onAbort();
+    else reply(JSON.stringify({ v: 1, ...start }));
   });
 }
 

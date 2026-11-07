@@ -138,7 +138,7 @@ export function typedExprs(op: unknown): Record<string, string> | undefined {
 export function changesPlate(name: string): boolean {
   if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
   if (name === "sim_setup" || name === "sim_sweep") return true;
-  return /^(model_|object_|plate_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "recipe_run" || name === "mesh_import" || name === "project_open" || name === "project_create";
+  return /^(model_|object_|plate_|assembly_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "recipe_run" || name === "mesh_import" || name === "project_open" || name === "project_create";
 }
 
 /** Calls that can outlast a client's request timeout: the autosave is written before they start. */
@@ -183,6 +183,8 @@ export interface CallMeta {
   /** How far the work is, for a job's wait: the last fraction and stage it reported. */
   fraction?: number;
   stage?: string;
+  /** Reserved before a plan starts so each autosave can identify its eventual background job. */
+  planJob?: string;
 }
 
 /** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */

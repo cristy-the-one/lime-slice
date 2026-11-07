@@ -220,6 +220,7 @@ export class AppRecipeCalls {
 
   private async answer(site: RecipeCallSite): Promise<RecipeReply> {
     const args = site.args;
+    if (site.tool === "checkpoint") return { ok: false, error: "Resumable checkpoints are available over MCP. Run this recipe over MCP to keep completed work." };
     if (site.tool === "log") {
       if (this.notes.length < 200) this.notes.push(`line ${site.line}: ${String(args.message ?? args.text ?? "").slice(0, 400)}`);
       return { ok: true, result: { ok: true } };

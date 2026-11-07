@@ -383,7 +383,7 @@ const profilePlace = {
   origin: { ...vec3, description: "Plane origin, in place of a face." },
   turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
 };
-const profile = { type: "array", minItems: 3, maxItems: 200, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
+const profile = { type: "array", minItems: 3, maxItems: 1000, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
 const point2 = { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } };
 /** K1: loops in place of a point profile. I18: up to 1,000; a loop inside another is its hole, one inside a hole an island. */
 const loopsField = {
@@ -399,7 +399,7 @@ const loopsField = {
       segments: {
         type: "array",
         minItems: 1,
-        maxItems: 200,
+        maxItems: 1000,
         description: "Back to the start.",
         items: {
           type: "object",
@@ -418,7 +418,7 @@ const loopsField = {
 
 const profileShape = {
   smooth: { type: "boolean", description: "Spline through points." },
-  corners: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
+  corners: { type: "array", maxItems: 1000, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
 };
 const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
 
@@ -1417,8 +1417,14 @@ export const TOOLS: ToolSpec[] = [
         assembly: { type: "string", minLength: 1, maxLength: 80, description: "Assembly name." },
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
         compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
+        objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
       },
     },
+  },
+  {
+    name: "assembly_merge",
+    description: "Join one assembly to another, keeping every part's assembled pose.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["from", "into"], properties: { from: { type: "string", minLength: 1, maxLength: 80, description: "Source assembly name or id." }, into: { type: "string", minLength: 1, maxLength: 80, description: "Destination assembly name or id." } } },
   },
   {
     name: "model_probe",
@@ -1563,6 +1569,7 @@ export const TOOLS: ToolSpec[] = [
         autofix: { type: "boolean", description: "Default true." },
         full: { type: "boolean", description: "Whole fixed text, not a diff." },
         profile: { type: "boolean", description: "Report time spent in recipe calls by line and estimated time outside calls." },
+        discardCheckpoint: { type: "boolean", description: "Start a fresh run and keep the checkpoint's existing parts." },
         timeoutS: { type: "number", minimum: 1, maximum: 600, description: "Default 30; up to 600 for background work." },
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "Library plugin id instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },

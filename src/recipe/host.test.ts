@@ -50,6 +50,14 @@ function scripted(script: (line: string, io: { say(line: string): void; exit(cod
 
 const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === "solid_new" ? { ok: true, result: { ok: true, object: "obj_1" } } : { ok: true, result: { ok: true, id: site.id } });
 
+{
+  const abort = new AbortController();
+  abort.abort();
+  const p = scripted(() => {});
+  const out = await runRecipe(p.spawn, {}, ok, undefined, abort.signal);
+  check("an already-cancelled recipe stops without starting", out.reason === "The recipe was cancelled." && p.written.length === 0 && p.killed() === 1, out);
+}
+
 // Progress is an out-of-band message: it is bounded and does not consume a call or need a reply.
 {
   const seen: [number, string][] = [];

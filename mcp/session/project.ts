@@ -193,6 +193,9 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
   this.adoptParameters(parsed.project);
   this.assemblies = readAssemblies(parsed.project.assemblies, this.objects);
   this.adoptMcpModel(parsed.project.mcpModel);
+  if (full === this.previousAutosave?.path && this.previousAutosave.checkpoints) {
+    for (const [name, checkpoint] of Object.entries(this.previousAutosave.checkpoints)) this.recipeCheckpoints.set(name, checkpoint);
+  }
   this.projectPlugins = new Map(Object.entries(parsed.project.plugins ?? {}));
   // --- D10. Plugins the project carries and the library lacks: named, never added by the open itself.
   const offered = this.projectOnlyPlugins();

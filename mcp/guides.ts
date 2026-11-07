@@ -257,6 +257,7 @@ GUIDES.push({
     "The plan stops at the first refused step. The reply has every step's result so far and failedStep; the steps before it stay applied, so fix that step and send the rest.",
     "Call the tools one by one instead when you need to look at a result first: which face, whether a probe fits, what a render shows.",
     "A plan past about 45 s answers with a job like a long call: slice_wait {job} returns the plan's result, and slice_cancel stops it at the step it is on.",
+    "Each completed plan step is autosaved. If the server restarts, slice_wait for that lost plan restores the saved plate and lists the completed step numbers and tools; replies and unfinished work are not restored.",
   ].join("\n"),
 });
 
@@ -311,6 +312,8 @@ export const KIND_GUIDES: Record<string, string> = {
     "1. model_params {set:{rimL:120, bodyH:10}}.",
     "2. model_place {object:<hook>, to:<body>, x:\"rimL - 5\", y:0, z:\"bodyH\", assembly:\"LED cover\"}. The numbers are in the body's own frame. The body becomes the root.",
     "3. model_place {object:<clip>, to:<hook>, z:8}: a part can sit on any member. A part sits in one assembly.",
+    "To join many parts where they already stand, use model_place {objects:[<part1>, <part2>], to:<body>}. Every pose stays as it is; the whole request is checked before any part joins.",
+    "assembly_merge {from:<assembly>, into:<assembly>} joins two assemblies at their current poses, retaining the destination's name and the internal parent links.",
     "4. model_params {set:{rimL:150}}: the reply's moved lists the hook and the clip with their new assembledMm.",
     "5. plate_list: each member's row has assembly; session_info lists the assemblies.",
     "Moving the root (model_place on it, without to) moves every member. model_place on a member without to changes its offset from its parent.",
@@ -372,6 +375,7 @@ GUIDES.push({
     "}",
     "The language is lust's subset of Rust: std collections, closures, traits, generics, iterators, format!, f64 math. A recipe that builds under lust builds and runs the same under Cargo against the same crate.",
     "2D geometry is in the crate, tested: lime_recipe::geom2d (polygons, regions with holes, booleans, offsets, rounded corners, loops JSON) and lime_recipe::lattice (hex, square, brick, triangle cells clipped to a region). guide {topic:\"ingredients\"} lists them. Use them instead of writing clipping or corner code.",
+    "For many 2D booleans, Region::union_all(&regions) and region.difference_all(&cutters) resolve all the supplied regions together (API 1.6).",
     "Library ingredients, modules kept in the user's library: use ingredients::honeycomb::*; imports the latest, use ingredients::honeycomb::v2::*; that version (a dash in a name is an underscore). An unknown name is refused with the names there are. Lines inside one are reported as ingredient <name> v<N>, line L. A rerun builds the copies its run built, and a kept plugin carries them inside, so it is still one file.",
     "Read the real part instead of guessing it: s.face_outline(&part, face, inset_mm) (face an index or Json::obj().set(\"normal\", n).set(\"nearPoint\", p)) and s.section(&part, origin, normal) give a Section: frame {origin, u, v, w}, region (a geom2d Region in [u, v]), loops (arcs kept), area, and sec.extrude(\"cut\", -depth, loops), the extrude that draws in that frame. s.sections(&part, Json::obj().set(\"levels\", ...)) takes section's planes, fan, or levels. faces_find gives each flat face's frame and turn too.",
     "Many holes or pockets: one extrude takes up to 1000 loops (a loop inside another is its hole); s.apply_many(&part, \"cut\", ops) is model_apply_batch {combine}: one boolean, one step, and .failures lists ops left out by index; array {cell: {loops, cornerRadius, draftDeg, minArea}} clips any cell to the face's real outline.",

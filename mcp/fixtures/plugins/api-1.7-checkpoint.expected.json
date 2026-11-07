@@ -1,0 +1,41 @@
+{
+  "run": {},
+  "api": "1.7",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 10,
+        "dy": 8,
+        "dz": 4
+      }
+    },
+    {
+      "tool": "checkpoint",
+      "args": {}
+    },
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 6,
+        "dy": 4,
+        "dz": 2
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-5,-4,0],\"size\":[10,8,4],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null"
+  ],
+  "fingerprint": {
+    "volumeMm3": 320,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "parts": 2
+  },
+  "log": []
+}

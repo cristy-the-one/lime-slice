@@ -310,6 +310,7 @@ jobs:
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
+          node --experimental-strip-types mcp/large-profile.test.ts
           node --experimental-strip-types mcp/interference-exact.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts
@@ -317,6 +318,7 @@ jobs:
           node --experimental-strip-types mcp/sim-region.test.ts
           # recipe_run end to end: lust builds, OCCT cuts, a failed or dry run is taken back.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-session.test.ts
+          LIME_RECIPE_REQUIRED=1 LIME_CHECKPOINT_REAL=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-assembly-rerun.test.ts
           # Recipes read real geometry (section, face frames) and build lattices in one boolean, the honeycomb floor too.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-reads.test.ts
@@ -774,6 +776,8 @@ jobs:
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-cancel.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
@@ -781,6 +785,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-share.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient-stale.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/nugget.test.ts
 
       # The plugin corpus (D12): one saved plugin per recipe API level sends the calls it recorded, a newer API is
@@ -855,7 +860,12 @@ jobs:
         timeout-minutes: 10
         env:
           LIME_RECIPE_REQUIRED: "1"
-        run: node --experimental-strip-types mcp/recipe.test.ts
+        run: |
+          node --experimental-strip-types mcp/recipe.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/recipe-cancel.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/recipe-checkpoint.test.ts
 
       # The app's recipe runner on Windows: the job object's memory cap and kill, and a real recipe built by lust.
       - name: Recipe runner
@@ -904,7 +914,10 @@ jobs:
         timeout-minutes: 10
         env:
           LIME_RECIPE_REQUIRED: "1"
-        run: node --experimental-strip-types mcp/ingredient.test.ts
+        run: |
+          node --experimental-strip-types mcp/ingredient.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/ingredient-stale.test.ts
 
       # Nuggets: harvest offers, keeping an ingredient, presets, lessons, one find over every kind.
       - name: Recipe nuggets

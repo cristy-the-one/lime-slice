@@ -336,7 +336,14 @@ async function lostJob(this: Session, handle: string): Promise<Record<string, un
   if (!previous || this.objects.length > 0 || this.jobs.length > 0 || this.workJobs.length > 0) return refuse("slice-lost", reason, { job: handle });
   const opened = await this.projectOpen(previous.path).catch((err: unknown) => ({ ok: false, reason: err instanceof Error ? err.message : String(err) }));
   if (opened.ok === false) return refuse("slice-lost", `${reason} ${previous.note}`, { job: handle });
-  return refuse("slice-lost", `${reason} The server restarted at ${this.startedAt}, so the job is gone; the plate was restored from the autosave of ${previous.savedAt} (${previous.path}), as it stood before that call. Run the call again.`, { job: handle, status: "lost", restored: previous.path, objects: this.objects.map((obj) => obj.id) });
+  const plan = previous.plan?.job === handle ? previous.plan : undefined;
+  const checkpoints = [...this.recipeCheckpoints.keys()];
+  const progress = plan
+    ? plan.completed.length === plan.total
+      ? ` All ${plan.total} plan steps finished in the saved plate; their replies are unavailable.`
+      : ` The saved plan completed ${plan.completed.length} of ${plan.total} steps; the unfinished work was lost. Run the remaining work again.`
+    : checkpoints.length ? ` The saved plate includes resumable recipes: ${checkpoints.join(", ")}. Run recipe_run with the same name to continue.` : " The plate was saved before the interrupted call. Run the call again.";
+  return refuse("slice-lost", `${reason} The server restarted at ${this.startedAt}, so the job is gone; the plate was restored from the autosave of ${previous.savedAt} (${previous.path}).${progress}`, { job: handle, status: "lost", restored: previous.path, objects: this.objects.map((obj) => obj.id), ...(plan ? { plan: { completed: plan.completed, total: plan.total } } : {}), ...(checkpoints.length ? { recipeCheckpoints: checkpoints } : {}) });
 }
 
 async function sliceCancel(this: Session, handle: string): Promise<Record<string, unknown>> {

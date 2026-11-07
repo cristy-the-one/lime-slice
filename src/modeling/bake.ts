@@ -151,7 +151,7 @@ export function readLoopsField(value: unknown): { loops?: ProfileLoop[] } | { re
     if (!start) return { reason: "A loop starts at [u, v]." };
     const pieces = spec.segments as unknown[];
     if (pieces.length < 1) return { reason: "A loop needs a segment." };
-    if (pieces.length > 200) return { reason: "A loop takes at most 200 segments." };
+    if (pieces.length > 1000) return { reason: "A loop takes at most 1000 segments." };
     const segments: ProfileSegment[] = [];
     for (const seg of pieces) {
       if (!seg || typeof seg !== "object") return { reason: "A loop segment is incomplete." };
@@ -228,7 +228,7 @@ export function readSection(value: unknown): LoftSection | { reason: string } {
 
 /** A closed outline of at least three [u, v] points, or null. */
 export function readProfile(value: unknown): Vec2[] | null {
-  if (!Array.isArray(value) || value.length < 3 || value.length > 200) return null;
+  if (!Array.isArray(value) || value.length < 3 || value.length > 1000) return null;
   const out: Vec2[] = [];
   for (const point of value) {
     if (!Array.isArray(point) || point.length !== 2 || !point.every((n) => typeof n === "number" && Number.isFinite(n))) return null;

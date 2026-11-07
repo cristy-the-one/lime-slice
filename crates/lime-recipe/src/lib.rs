@@ -432,7 +432,8 @@ pub struct Part {
 /// picked face is (`kind`, `axis`, `radius`), `lettering` (text on a face, flat or curved) and `text_outline` (the letters
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
-pub const API: (u32, u32) = (1, 5);
+/// 1.6: batched Region unions and differences. 1.7: resumable checkpoints.
+pub const API: (u32, u32) = (1, 7);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1352,6 +1353,12 @@ impl Session {
     #[track_caller]
     pub fn log(&mut self, text: &str) {
         let _ = self.call("log", Json::obj().set("text", text));
+    }
+
+    /// Commit work so far and let the host resume this run after an interruption.
+    #[track_caller]
+    pub fn checkpoint(&mut self) -> Result<(), Refusal> {
+        self.call("checkpoint", Json::obj()).map(|_| ())
     }
 
     /// Ends the run: the host commits the part to the plate.
@@ -2366,6 +2373,12 @@ pub mod geom2d {
             resolve(&self.loops, &other.loops, Fill::Union)
         }
 
+        /// Material in any of the regions, resolved in one boolean pass.
+        pub fn union_all(regions: &[Region]) -> Region {
+            let loops: Vec<Poly> = regions.iter().flat_map(|region| region.loops.iter().cloned()).collect();
+            resolve(&loops, &[], Fill::Positive)
+        }
+
         /// Material in both.
         pub fn intersect(&self, other: &Region) -> Region {
             resolve(&self.loops, &other.loops, Fill::Intersect)
@@ -2374,6 +2387,12 @@ pub mod geom2d {
         /// Material in this and not in `other`.
         pub fn difference(&self, other: &Region) -> Region {
             resolve(&self.loops, &other.loops, Fill::Difference)
+        }
+
+        /// Material in this region with every cutter removed, resolved in one boolean pass.
+        pub fn difference_all(&self, others: &[Region]) -> Region {
+            let loops: Vec<Poly> = others.iter().flat_map(|region| region.loops.iter().cloned()).collect();
+            resolve(&self.loops, &loops, Fill::Difference)
         }
 
         /// Material in exactly one of the two.
@@ -3166,7 +3185,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 5));
+        assert_eq!(API, (1, 7));
     }
 
     #[test]
@@ -3356,6 +3375,27 @@ mod geom_tests {
         assert!(!bowtie.is_convex());
         assert_eq!(Poly::default().area(), 0.0);
         assert_eq!(Poly::default().centroid(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn batched_region_booleans_preserve_union_and_holes() {
+        let a = sq(0.0, 0.0, 6.0);
+        let b = sq(4.0, 1.0, 4.0);
+        let c = sq(2.0, 3.0, 4.0);
+        let batch = Region::union_all(&[a.clone(), b.clone(), c.clone()]);
+        let folded = a.union(&b).union(&c);
+        assert!(near(batch.area(), folded.area(), 1e-8));
+        let cut = a.difference_all(&[b.clone(), c.clone()]);
+        let folded_cut = a.difference(&b).difference(&c);
+        assert!(near(cut.area(), folded_cut.area(), 1e-8));
+        let ring = sq(0.0, 0.0, 10.0).difference(&sq(2.0, 2.0, 6.0));
+        let fill = sq(3.0, 3.0, 2.0);
+        let merged = Region::union_all(&[ring.clone(), fill.clone()]);
+        assert!(near(merged.area(), ring.union(&fill).area(), 1e-8));
+        assert!(merged.contains([4.0, 4.0]));
+        assert!(!merged.contains([6.0, 6.0]));
+        assert!(Region::union_all(&[]).is_empty());
+        assert!(near(a.difference_all(&[]).area(), a.area(), 1e-8));
     }
 
     #[test]

@@ -28,6 +28,9 @@ import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRe
 import type { Session } from "../session.ts";
 import { SESSION_URL } from "../session-url.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { checkpointJson, checkpointSignature, CHECKPOINT_MAX_BYTES, type CheckpointEvent, type RecipeCheckpoint } from "../recipe-checkpoint.ts";
+import { autosavePath } from "../autosave.ts";
+import { readFile } from "node:fs/promises";
 
 /**
  * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
@@ -36,6 +39,14 @@ import { NEXT, refuse } from "../refusals.ts";
  * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
  */
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
+  const requested = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : typeof input.plugin === "string" ? input.plugin : "";
+  const saved = requested && this.objects.length === 0 ? this.previousAutosave?.checkpoints?.[requested] : undefined;
+  if (saved && input.mode !== "check" && input.mode !== "dry") {
+    const restored = await this.projectOpen(this.previousAutosave!.path);
+    if (restored.ok !== true) return refuse("recipe-failed", `The checkpoint's autosave could not be opened: ${String(restored.reason ?? "unknown error")}`);
+  }
+  const pending = requested ? this.recipeCheckpoints.get(requested) : undefined;
+  if (pending && input.source === undefined && input.path === undefined && input.plugin === undefined && input.object === undefined) input = { ...input, source: pending.source };
   if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const host = this.recipeHost;
   const ready = host.available();
@@ -133,7 +144,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const split = framed === null ? null : splitPluginData(framed);
   if (split?.problem) return refuse("plugin-invalid", split.problem);
   const typed = split ? split.code : null;
-  const carried: Record<string, RecipeData> = split?.data ?? {};
+  const carried: Record<string, RecipeData> = { ...(input.discardCheckpoint === true ? {} : pending?.carried ?? {}), ...(split?.data ?? {}) };
   // --- A rerun: no source, and an object a recipe_run made. Its stored source runs again with the stored
   // parameters under the new ones.
   let rerun: { name: string; stored: RustRecipe } | null = null;
@@ -159,9 +170,27 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const key = replacing?.name ?? name;
   const source = rerun ? rerun.stored.source : lfOnly(typed!);
   const params = { ...(replacing?.stored.params ?? {}), ...(rebuild?.stamp.params ?? {}), ...presetParams, ...(input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : {}) };
+  if (mode === "apply" && input.discardCheckpoint === true && this.recipeCheckpoints.has(name)) {
+    const discarded = this.recipeCheckpoints.get(name)!;
+    this.recipeCheckpoints.delete(name);
+    this.autosaveDirty = true;
+    this.flushAutosave(undefined, true);
+    await this.autosaveSettled();
+    let removed = false;
+    try {
+      const wire = JSON.parse(await readFile(autosavePath()!, "utf8")) as { mcpRecipeCheckpoints?: Record<string, unknown> };
+      removed = !wire.mcpRecipeCheckpoints?.[name];
+    } catch { /* A failed autosave cannot make discarding durable. */ }
+    if (!removed) {
+      this.recipeCheckpoints.set(name, discarded);
+      return refuse("recipe-failed", "The checkpoint could not be discarded from the autosave. Check that the workspace is writable and try again.");
+    }
+    if (this.previousAutosave?.checkpoints) delete this.previousAutosave.checkpoints[name];
+  }
+  const checkpoint = mode === "apply" ? this.recipeCheckpoints.get(name) : undefined;
   // --- I10. The ingredients the source imports, from the library (a rerun: the copies its last apply built), built
   // after the recipe as inline modules, the same text under lust and rustc.
-  const resolved = resolveIngredients(source, { kept: replacing?.stored.ingredients ?? rebuild?.ingredients, preferKept: !!rerun || !!rebuild });
+  const resolved = resolveIngredients(source, { kept: checkpoint?.ingredients ?? replacing?.stored.ingredients ?? rebuild?.ingredients, preferKept: !!checkpoint || !!rerun || !!rebuild });
   if ("reason" in resolved) return refuse("recipe-source", resolved.reason);
   const usedIngredients = Object.values(resolved.used);
   this.noteStage(`building recipe ${name}`, 0);
@@ -169,11 +198,20 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   // draft, a source, a path) against the current crate.
   const major = plugin ? (apiLevel(plugin.api)?.[0] ?? undefined) : undefined;
   const built = await host.build(name, source, input.autofix !== false, resolved.suffix, undefined, major);
+  if (meta?.signal?.aborted) return refuse("cancelled", "The recipe was cancelled while building; nothing changed.");
   const map = lineMap(built.source, resolved);
   const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
   const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
   if (!built.ok || !built.exe) {
     return { ok: false, code: "recipe-compile", reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
+  }
+  const buildHash = bodyHash(`${built.source}\n${resolved.suffix}`);
+  const environmentHash = bodyHash(checkpointJson({ settings: this.settings, printer: this.printer(), nozzleMm: this.library.nozzleMm, params: this.params, paramText: this.paramText }));
+  if (checkpoint) {
+    if (checkpoint.buildHash !== buildHash || checkpointJson(checkpoint.params) !== checkpointJson(params) || input.object !== undefined || replacing || rebuild) return refuse("recipe-failed", "The saved checkpoint belongs to different source, ingredients, parameters, or a different target. Use the original run's values, or pass discardCheckpoint:true to start a new run and leave the saved parts on the plate.");
+    if (checkpoint.environmentHash !== environmentHash) return refuse("recipe-failed", "The printer, settings, or project parameters changed since the checkpoint. Restore them, or pass discardCheckpoint:true to start a new run.");
+    const changed = checkpoint.objects.find((row) => { const obj = this.find(row.id); return !obj || checkpointSignature(obj) !== row.signature; });
+    if (changed || checkpointJson(this.liveAssemblies()) !== checkpointJson(checkpoint.assemblies)) return refuse("recipe-failed", `The checkpoint's ${changed ? `part ${changed.id}` : "assembly"} changed after it was saved. Restore it, or pass discardCheckpoint:true to start a new run.`);
   }
   if (mode === "check") return { ok: true, built: true, ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms };
 
@@ -188,15 +226,15 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     const back = await this.gotoNode(rebuild.obj, rebuild.run.before!);
     if (back.ok === false) return refuse("build-failed", `The step before the plugin's run could not be shown: ${String(back.reason ?? "the engine refused it.")}`);
   }
-  const created: string[] = [];
+  const created: string[] = checkpoint ? checkpoint.objects.map((row) => row.id) : [];
   /** Print and assembly poses are independent; a replace preserves each unless the run set it. */
-  const placed = new Set<string>();
-  const modelPlaced = new Set<string>();
+  const placed = new Set<string>(checkpoint?.placed ?? []);
+  const modelPlaced = new Set<string>(checkpoint?.modelPlaced ?? []);
   /** Parts that were on the plate before the run, with the step each stood at. */
   const touched = new Map<string, number | null>();
-  const notes: string[] = [];
+  const notes: string[] = [...(checkpoint?.notes ?? [])];
   /** --- R-A. Recipe data the run read, by name: kept with the recipe so a rerun builds the same elsewhere. */
-  const dataUsed = new Map<string, RecipeData>();
+  const dataUsed = new Map<string, RecipeData>(Object.entries(checkpoint?.data ?? {}) as [string, RecipeData][]);
   /**
    * New source run under a library plugin's id (an edit of that plugin, to keep as its next version): the data the
    * library's file carries, when the workspace lacks the file. Read once, on the first miss.
@@ -222,6 +260,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     if (obj?.tree) firstNew.set(id, obj.tree.nextId);
   };
   if (objectArg) touch(objectArg);
+  if (checkpoint?.selected && this.find(checkpoint.selected)) this.selected = checkpoint.selected;
   const ctx: CallMeta = { progressToken: meta?.progressToken, signal: meta?.signal };
   /** --- API 1.2. What each given face or outline resolved to, kept in the step's stamp in its place. */
   const picked: Record<string, unknown> = {};
@@ -267,7 +306,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       const target = typeof site.args.object === "string" ? site.args.object : this.selected;
       const align = site.args.align as { to?: unknown } | undefined;
       const others = [site.args.to, align?.to].filter((v): v is string => typeof v === "string" && v !== "bed");
-      if (!created.includes(target) || others.some((id) => !created.includes(id))) {
+      const targets = site.tool === "model_place" && Array.isArray(site.args.objects) ? site.args.objects : [target];
+      if (targets.some((id) => typeof id !== "string" || !created.includes(id)) || others.some((id) => !created.includes(id))) {
         return { ok: false, error: `${site.tool} in a recipe places only the objects this run made (solid_new), relative to each other or the bed.` };
       }
     }
@@ -299,18 +339,106 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }
     const target = typeof site.args.object === "string" ? site.args.object : this.selected;
     if (site.tool === "object_place") placed.add(target);
-    if (site.tool === "model_place") modelPlaced.add(target);
+    if (site.tool === "model_place") {
+      if (Array.isArray(site.args.objects)) {
+        for (const id of site.args.objects) if (typeof id === "string") modelPlaced.add(id);
+      } else modelPlaced.add(target);
+    }
     if (site.tool === "model_apply") applied += 1;
     if (site.tool === "model_apply_batch") applied += Array.isArray(site.args.ops) ? site.args.ops.length : 1;
     if (maxSteps !== undefined && applied >= maxSteps) return { ok: true, result: value, halt: `The run stopped after ${applied} applied op${applied === 1 ? "" : "s"} (maxSteps ${maxSteps}), at line ${site.line}.` };
     return { ok: true, result: value };
+  };
+  let journal: CheckpointEvent[] = checkpoint ? structuredClone(checkpoint.events) : [];
+  const mayCheckpoint = !!checkpoint || built.source.includes("checkpoint") || resolved.suffix.includes("checkpoint");
+  let journalBytes = Buffer.byteLength(JSON.stringify(journal));
+  let overflow = journalBytes > CHECKPOINT_MAX_BYTES;
+  let replay = 0;
+  let preserved = new Set(checkpoint?.objects.map((row) => row.id) ?? []);
+  let baselineNodes = new Map<string, number | null>();
+  let baselineFirst = new Map<string, number>();
+  let baselinePoses = new Map<string, { modelPose: PlateObject["modelPose"]; frame: PlateObject["frame"]; orient: Mat3; scale: number; centered: boolean; offset: PlateObject["offset"] }>();
+  let baselineAssemblies = structuredClone(this.assemblies);
+  let baselineSelected = this.selected;
+  const captureBaseline = () => {
+    baselineNodes = new Map();
+    baselineFirst = new Map();
+    baselinePoses = new Map();
+    for (const id of preserved) {
+      const part = this.find(id);
+      if (!part) continue;
+      baselineNodes.set(id, part.tree?.current ?? null);
+      if (part.tree) baselineFirst.set(id, part.tree.nextId);
+      baselinePoses.set(id, { modelPose: structuredClone(part.modelPose), frame: part.frame, orient: [...part.orient] as Mat3, scale: part.scale, centered: part.centered, offset: { ...part.offset } });
+    }
+    baselineAssemblies = structuredClone(this.assemblies);
+    baselineSelected = this.selected;
+  };
+  if (checkpoint) captureBaseline();
+  const journalCall = async (site: RecipeCallSite): Promise<RecipeReply> => {
+    if (checkpoint && replay < checkpoint.events.length) {
+      const entry = checkpoint.events[replay++]!;
+      if (site.tool !== entry.site.tool || site.line !== entry.site.line || checkpointJson(site.args) !== checkpointJson(entry.site.args)) return { ok: false, error: `The recipe diverged before its checkpoint at line ${site.line}. The saved parts were kept; use the original run or discardCheckpoint:true.`, fatal: true };
+      return structuredClone(entry.reply);
+    }
+    if (site.tool === "checkpoint") {
+      if (mode === "dry") return { ok: true, result: { ok: true } };
+      if (!mayCheckpoint) return { ok: false, error: "Use s.checkpoint() directly so the run can be recorded from its start." };
+      if (objectArg || replacing || rebuild) return { ok: false, error: "A checkpoint currently supports a new-part recipe without object or rebuild. Run it as a new recipe first." };
+      if (overflow) return { ok: false, error: "The checkpoint journal exceeds 8 MB. Start a new recipe run after saving these parts." };
+      if (!autosavePath()) return { ok: false, error: "A checkpoint needs LIME_MCP_WORKSPACE for its autosave." };
+      if (created.some((id) => !this.find(id))) return { ok: false, error: "A checkpoint cannot keep a run that consumed one of its created parts." };
+      for (const id of created) {
+        const part = this.find(id)!;
+        const reason = await this.commitObject(part);
+        if (reason) return { ok: false, error: `The checkpoint could not commit ${id}: ${reason}` };
+      }
+      const reply: RecipeReply = { ok: true, result: { ok: true } };
+      const nextEvents = [...journal, { site: structuredClone(site), reply }];
+      const next: RecipeCheckpoint = {
+        source, buildHash, environmentHash, params: structuredClone(params), events: nextEvents,
+        objects: created.map((id) => ({ id, signature: checkpointSignature(this.find(id)!) })),
+        placed: [...placed], modelPlaced: [...modelPlaced], selected: this.selected,
+        assemblies: structuredClone(this.liveAssemblies()), notes: [...notes], data: Object.fromEntries(dataUsed), carried, ingredients: resolved.used,
+      };
+      if (Buffer.byteLength(JSON.stringify(next)) > CHECKPOINT_MAX_BYTES) return { ok: false, error: "The checkpoint journal exceeds 8 MB. Start a new recipe run after saving these parts." };
+      const prior = this.recipeCheckpoints.get(name);
+      this.recipeCheckpoints.set(name, next);
+      this.autosaveDirty = true;
+      this.flushAutosave();
+      await this.autosaveSettled();
+      let saved = false;
+      try {
+        const wire = JSON.parse(await readFile(autosavePath()!, "utf8")) as { mcpRecipeCheckpoints?: Record<string, unknown> };
+        saved = checkpointJson(wire.mcpRecipeCheckpoints?.[name]) === checkpointJson(next);
+      } catch { /* The checkpoint is not durable if the autosave could not be read. */ }
+      if (!saved) {
+        if (prior) this.recipeCheckpoints.set(name, prior); else this.recipeCheckpoints.delete(name);
+        return { ok: false, error: "The checkpoint could not be saved. The run will be taken back to its last saved checkpoint." };
+      }
+      journal = nextEvents;
+      journalBytes = Buffer.byteLength(JSON.stringify(journal));
+      preserved = new Set(created);
+      captureBaseline();
+      return reply;
+    }
+    if (mode !== "apply" || !mayCheckpoint) return call(site);
+    const recordedSite = structuredClone(site);
+    const reply = await call(site);
+    if (mode === "apply" && !overflow) {
+      const entry = { site: recordedSite, reply: structuredClone(reply) };
+      journalBytes += Buffer.byteLength(JSON.stringify(entry));
+      if (journalBytes > CHECKPOINT_MAX_BYTES) { overflow = true; journal = []; }
+      else journal.push(entry);
+    }
+    return reply;
   };
   const printer = this.printer();
   const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
   const timings = new Map<string, { line: number; tool: string; calls: number; ms: number }>();
   const profiledCall = async (site: RecipeCallSite): Promise<RecipeReply> => {
     const started = performance.now();
-    try { return await call(site); }
+    try { return await journalCall(site); }
     finally {
       const key = `${site.line}:${site.tool}`;
       const row = timings.get(key) ?? { line: site.line, tool: site.tool, calls: 0, ms: 0 };
@@ -321,20 +449,36 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const start = {
     params,
-    context: { units: "mm", host: "mcp", limits: { canAssemble: true, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    context: { units: "mm", host: "mcp", limits: { canAssemble: true, canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
   };
   /** Takes the run back; a rebuild also shows the old branch again, where the part stood before it. */
   const rollback = async () => {
-    const undone = await this.recipeRollback(created, touched, firstNew);
+    const undone = await this.recipeRollback(created.filter((id) => !preserved.has(id)), new Map([...touched, ...baselineNodes]), new Map([...firstNew, ...baselineFirst]));
+    for (const [id, node] of baselineNodes) {
+      const part = this.find(id);
+      if (part && node !== null && part.platedNode !== node) await this.commitObject(part).catch(() => null);
+    }
+    for (const [id, pose] of baselinePoses) {
+      const part = this.find(id);
+      if (!part) continue;
+      part.modelPose = structuredClone(pose.modelPose);
+      if (pose.frame === undefined) delete part.frame; else part.frame = pose.frame;
+      part.orient = [...pose.orient] as Mat3; part.scale = pose.scale; part.centered = pose.centered; part.offset = { ...pose.offset };
+    }
+    if (preserved.size) { this.assemblies = structuredClone(baselineAssemblies); this.selected = baselineSelected; }
     if (rebuild && branchRebuild && rebuild.obj.tree?.current !== rebuild.from) await this.gotoNode(rebuild.obj, rebuild.from).catch(() => ({ ok: false }));
     return undone;
   };
   this.recipeDepth += 1;
   let out;
   try {
-    out = await host.run(built.exe, start, input.profile === true ? profiledCall : call, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
+    out = await host.run(built.exe, start, input.profile === true ? profiledCall : journalCall, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
   } finally {
     this.recipeDepth -= 1;
+  }
+  if (checkpoint && replay < checkpoint.events.length && out.ok) {
+    out.ok = false;
+    out.reason = "The recipe ended before reaching its saved checkpoint. The saved parts were kept; use the original run or discardCheckpoint:true.";
   }
   if (out.calls > 0) this.recipeCallCounts.set(name, out.calls);
   for (const note of out.notes ?? []) if (notes.length < 200) notes.push(note);
@@ -347,7 +491,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const refused = out.refused.map((row) => ({ ...row, ...locate(map, row.line) }));
   const totalCallsMs = [...timings.values()].reduce((sum, row) => sum + row.ms, 0);
   const profile = input.profile === true ? { callsMs: Math.round(totalCallsMs), outsideCallsMs: Math.max(0, Math.round(out.ms - totalCallsMs)), lines: [...timings.values()].sort((a, b) => b.ms - a.ms).map((row) => ({ ...row, ...locate(map, row.line), ms: Math.round(row.ms) })) } : undefined;
-  const report = { calls: out.calls, ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
+  const savedCheckpoint = this.recipeCheckpoints.get(name);
+  const report = { calls: out.calls, ...(checkpoint ? { resumed: true, replayedCalls: replay } : {}), ...(!out.ok && savedCheckpoint ? { checkpoint: { name, objects: savedCheckpoint.objects.map((row) => row.id), resume: { name } } } : {}), ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
   // --- I23. What the parts measured when a partial run stopped, before it is taken back.
   if (out.halted) {
     const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {
@@ -362,6 +507,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   if (!out.ok || mode === "dry") {
     const undone = await rollback();
     if (!out.ok) return { ok: false, code: "recipe-failed", reason: out.reason ?? "The recipe failed.", ...(out.line !== undefined ? { line: out.line } : {}), ...report, rolledBack: undone };
+    if (name !== "plugin_check") this.recipePreviewHashes.set(name, bodyHash(built.source));
     return { ok: true, dry: true, object: out.done!.object, metrics: out.done!.metrics, ...report, rolledBack: undone };
   }
   // --- Plugin steps (D8). A run that made or changed one part is stamped on it: its first node names what ran and with
@@ -502,6 +648,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const sha256 = bodyHash(built.source);
   const changed = [...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id);
   const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}), ...(usedIngredients.length ? { ingredients: resolved.used } : {}) };
+  this.recipePreviewHashes.delete(name);
   let entryKey: string | null = null;
   if (created.length) entryKey = key;
   else if (changed.length) {
@@ -513,6 +660,12 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   for (const id of created) {
     const obj = this.find(id);
     if (obj) obj.rustRecipe = key;
+  }
+  if (this.recipeCheckpoints.delete(name)) {
+    if (this.previousAutosave?.checkpoints) delete this.previousAutosave.checkpoints[name];
+    this.autosaveDirty = true;
+    this.flushAutosave();
+    await this.autosaveSettled();
   }
   const nuggets = rerun || rebuild ? [] : this.harvest(key, built.source, refused, refusedArgs, plugin, input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : undefined, typeof input.preset === "string" ? input.preset : undefined);
   return {
@@ -600,7 +753,7 @@ async function recipeDescribe(this: Session, body: string, limitMs?: number): Pr
     return { reason: built.reason ?? (first ? `line ${first.line}: ${first.message}` : "The recipe did not build.") };
   }
   const printer = this.printer();
-  const start = { describe: true, params: {}, context: { units: "mm", host: "mcp", limits: { canAssemble: true, timeLimitS: 15 }, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
+  const start = { describe: true, params: {}, context: { units: "mm", host: "mcp", limits: { canAssemble: true, canCheckpoint: true, timeLimitS: 15 }, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm } };
   const out = await host.run(built.exe, start, async () => ({ ok: false, error: "Describe mode makes no calls." }), { ...DEFAULT_LIMITS, timeoutS: 15 });
   if (!out.ok || !out.described) return { reason: out.reason ?? "The recipe did not describe its parameters." };
   const params = out.described.params.map((row) => {
