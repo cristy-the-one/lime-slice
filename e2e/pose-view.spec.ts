@@ -160,3 +160,34 @@ test("Pose with an empty plate says what to do", async ({ page }) => {
   await expect(page.locator("#poseBody")).toBeVisible();
   await expect(page.locator("#poseEmpty")).toBeVisible();
 });
+
+
+test("Pose tints the selected part's joint chain up to its fixed anchor", async ({ page }) => {
+  const ledge = await cubeAndLedge(page);
+  await page.locator("[data-plate-select='part']").click();
+  await page.locator(`[data-plate-attach='${ledge}']`).click();
+  await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const doc = JSON.parse(fs.readFileSync((await download.path())!).toString("utf8"));
+  const source = doc.objects.find((row: { id: string }) => row.id === ledge);
+  const tip = "pose-tip";
+  const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  source.modelPose = { m: identity, t: [80, 0, 0] };
+  doc.objects.push({ ...structuredClone(source), id: tip, name: "tip.stl", modelPose: { m: identity, t: [160, 0, 0] } });
+  doc.assemblies[0].members = [
+    { object: "part", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+    { object: ledge, parent: "part", offset: [80, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] } },
+    { object: tip, parent: ledge, offset: [80, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] } },
+  ];
+  await page.reload();
+  await page.locator("#projectFile").setInputFiles({ name: "joints.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+  await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
+  await page.locator(`[data-plate-select='${tip}']`).click();
+  await page.locator("#tabPose").click();
+  const pose = page.locator("#pose");
+  await expect(pose).toHaveAttribute("data-looks", new RegExp(`${tip}:selected`));
+  await expect(pose).toHaveAttribute("data-looks", new RegExp(`${ledge}:chain`));
+  await expect(pose).not.toHaveAttribute("data-looks", /part:chain/);
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, "pose-joint-chain.png") });
+});

@@ -1,7 +1,8 @@
 /**
  * The Pose stage (`docs/plan-pose.md`). M1 draws and selects: every object at its assembled pose, solid, with the
- * selected part in the pose colour. It edits nothing yet, so it never touches the print layout or the slice.
+ * selected part and its jointed ancestors in the pose colours. It edits nothing, so it never touches the print layout or the slice.
  */
+import { poseChain } from "../pose.ts";
 import { createPoseView, type PoseCamera, type PoseView } from "../pose-view.ts";
 import { assembledParts, assemblyClashes, liveAssemblies } from "./assemblies.ts";
 import { fx } from "./fx.ts";
@@ -39,9 +40,10 @@ export function syncPose(): void {
   const { bedX, bedY, bedZ } = state.profile;
   const { parts } = assembledParts(bedX, bedY);
   // The Assembly view's interference pass, inside each assembly only, cached per pose pair.
-  const clashing = liveAssemblies().length > 0 ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  const assemblies = liveAssemblies();
+  const clashing = assemblies.length > 0 ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
   view.setBed(bedX, bedY, bedZ);
-  view.setScene({ parts, selectedId: state.plate.selectedId, chain: new Set(), clashing });
+  view.setScene({ parts, selectedId: state.plate.selectedId, chain: poseChain(assemblies, state.plate.selectedId), clashing });
   const empty = document.querySelector<HTMLElement>("#poseEmpty");
   if (empty) empty.hidden = parts.length > 0;
 }
