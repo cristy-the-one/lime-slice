@@ -1,54 +1,288 @@
-/**
- * The Pose stage (`docs/plan-pose.md`). M1 draws and selects: every object at its assembled pose, solid, with the
- * selected part and its jointed ancestors in the pose colours. It edits nothing, so it never touches the print layout or the slice.
- */
-import { poseChain } from "../pose.ts";
-import { createPoseView, type PoseCamera, type PoseView } from "../pose-view.ts";
-import { assembledParts, assemblyClashes, liveAssemblies } from "./assemblies.ts";
+/** Pose stage: select, link and edit joints without changing the print layout. */
+import { assemblyOf, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
+import { boundsOf } from "../mesh-place.ts";
+import { applyPose, isIdentity, turnDir, type Affine } from "../model-space.ts";
+import { meshSeat, modelPoseOf } from "../plate.ts";
+import { linked, poseChain, turnBall, turnHinge } from "../pose.ts";
+import { createPoseView, type PoseCamera, type PoseView, type TurnEvent } from "../pose-view.ts";
+import { markProjectDirty } from "../project-dirty.ts";
+import type { Vec3 } from "../model-tree.ts";
+import { assembledParts, assemblyClashes, liveAssemblies, syncAssemblyView } from "./assemblies.ts";
 import { fx } from "./fx.ts";
-import { state } from "./state.ts";
+import { holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
+import { refreshObjectList } from "./settings.ts";
+import { session, state } from "./state.ts";
 
+type Tool = "select" | "turn" | "joint" | "link";
 let view: PoseView | null = null;
+let tool: Tool = "select";
+let linkParent: string | null = null;
+let message = "";
+let sceneShift: Affine | undefined;
+let chainSelected = false;
+let dragging = false;
+let dragStart: Member | null = null;
+
+function poseOf(id: string): Affine | undefined {
+  const object = state.plate.objects.find((row) => row.id === id);
+  return object ? modelPoseOf(object) : undefined;
+}
+function selected(): { assembly: Assembly; member: Member } | null {
+  const id = state.plate.selectedId;
+  if (!id) return null;
+  const assembly = assemblyOf(liveAssemblies(), id);
+  const member = assembly?.members.find((row) => row.object === id);
+  return assembly && member ? { assembly, member } : null;
+}
+function centre(id: string): Vec3 {
+  const object = state.plate.objects.find((row) => row.id === id);
+  if (!object || object.sourcePos.length < 3) return [0, 0, 0];
+  const box = boundsOf(object.sourcePos);
+  return [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2 + (meshSeat(object.bytes) ?? 0)];
+}
+
+/** Persist an assembly and its solved model poses; never touch the bed layout or slice state. */
+function writeAssembly(assembly: Assembly): void {
+  session.assemblies = session.assemblies.map((row) => row.id === assembly.id ? assembly : row);
+  const solved = solveAssembly(assembly, poseOf);
+  state.plate = { ...state.plate, objects: state.plate.objects.map((part) => {
+    const pose = solved.poses.get(part.id);
+    if (!pose || samePose(modelPoseOf(part), pose)) return part;
+    const next = { ...part };
+    if (isIdentity(pose)) delete next.modelPose;
+    else next.modelPose = pose;
+    return next;
+  }) };
+  markProjectDirty();
+  syncAssemblyView();
+  refreshObjectList();
+  fx.refreshModelContext?.();
+}
+function editAssembly(assembly: Assembly): void {
+  noteEdit();
+  writeAssembly(assembly);
+  flushEdit();
+}
+function replaceMember(assembly: Assembly, member: Member): void {
+  const next = withMember(assembly, member);
+  if ("reason" in next) { message = next.reason; renderPanel(); return; }
+  editAssembly(next);
+}
+function setTool(next: Tool): void {
+  tool = next;
+  chainSelected = false;
+  linkParent = null;
+  message = next === "link" ? "Choose the parent, then its child." : "";
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-pose-tool]")) button.setAttribute("aria-pressed", String(button.dataset.poseTool === tool));
+  syncPose();
+}
+function pick(id: string | null): void {
+  if (!id) return;
+  if (tool === "link") {
+    if (!linkParent) { linkParent = id; message = "Now choose the child."; fx.selectPlateObject(id); syncPose(); return; }
+    const parent = linkParent;
+    linkParent = null;
+    const assembly = assemblyOf(liveAssemblies(), parent);
+    if (!assembly) { message = "Attach the parent to an assembly in Prepare first."; renderPanel(); return; }
+    const next = linked(assembly, id, parent, poseOf);
+    if ("reason" in next) { message = next.reason; renderPanel(); return; }
+    fx.selectPlateObject(id);
+    editAssembly(next);
+    message = "Linked. Both parts kept their positions.";
+    syncPose();
+    return;
+  }
+  if (id !== state.plate.selectedId) { chainSelected = false; fx.selectPlateObject(id); }
+  else if (tool === "select") { chainSelected = !chainSelected; syncPose(); }
+}
+function turn(event: TurnEvent): void {
+  if (event.phase === "start") { const row = selected(); if (!row?.member.joint) return; holdEdit(); dragging = true; dragStart = structuredClone(row.member); return; }
+  if (event.phase === "end") { if (dragging) flushEdit(); dragging = false; dragStart = null; renderPanel(); return; }
+  const row = selected();
+  if (!row?.member.joint || !dragStart?.joint || dragStart.object !== row.member.object) return;
+  const joint = dragStart.joint;
+  const axis: Vec3 = event.axis === 0 ? [1, 0, 0] : event.axis === 1 ? [0, 1, 0] : [0, 0, 1];
+  const turned = joint.kind === "hinge" ? turnHinge(dragStart, event.delta) : turnBall(dragStart, axis, event.delta, centre(row.member.object));
+  if ("reason" in turned) { message = turned.reason; renderPanel(); return; }
+  const next = withMember(row.assembly, turned);
+  if ("reason" in next) { message = next.reason; return; }
+  writeAssembly(next);
+}
 
 function mount(): PoseView | null {
   if (view) return view;
   const canvas = document.querySelector<HTMLCanvasElement>("#pose");
   if (!canvas) return null;
   view = createPoseView(canvas);
-  view.onPick((id) => {
-    if (id && id !== state.plate.selectedId) fx.selectPlateObject(id);
+  view.onPick(pick);
+  view.onTurn(turn);
+  document.querySelector("#toolRail")?.addEventListener("click", (event) => {
+    const value = (event.target as Element).closest<HTMLButtonElement>("[data-pose-tool]")?.dataset.poseTool;
+    if (value === "select" || value === "turn" || value === "joint" || value === "link") setTool(value);
   });
-  document.querySelector("#poseViewPresets")?.addEventListener("click", (ev) => {
-    const preset = (ev.target as Element | null)?.closest<HTMLElement>("[data-pose-view]")?.dataset.poseView;
+  document.querySelector("#poseViewPresets")?.addEventListener("click", (event) => {
+    const preset = (event.target as Element).closest<HTMLElement>("[data-pose-view]")?.dataset.poseView;
     if (preset === "top" || preset === "front" || preset === "iso") view?.setCamera(preset as PoseCamera);
   });
+  document.querySelector("#posePanel")?.addEventListener("click", panelClick);
+  document.querySelector("#posePanel")?.addEventListener("change", panelChange);
+  window.addEventListener("keydown", (event) => { if (state.stage === "pose" && event.key === "Escape") setTool("select"); });
   fx.syncPose = syncPose;
   return view;
 }
-
-/** Shows the stage: mounts the view the first time, then draws what the plate holds now. */
 export function showPose(): void {
   const poseView = mount();
   if (!poseView) return;
+  sceneShift = undefined;
   poseView.resize();
   syncPose();
 }
-
-/** Redraws Pose from the plate and the assemblies. Cheap while the stage is hidden: it waits for the next visit. */
 export function syncPose(): void {
   if (!view || state.stage !== "pose") return;
   const { bedX, bedY, bedZ } = state.profile;
-  const { parts } = assembledParts(bedX, bedY);
-  // The Assembly view's interference pass, inside each assembly only, cached per pose pair.
+  const placed = assembledParts(bedX, bedY, sceneShift);
+  sceneShift ??= placed.shift;
   const assemblies = liveAssemblies();
-  const clashing = assemblies.length > 0 ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  const clashing = assemblies.length ? new Set(assemblyClashes().flatMap((row) => [row.a, row.b])) : new Set<string>();
+  const row = selected();
+  const object = row && state.plate.objects.find((part) => part.id === row.member.object);
+  let gizmo: { pivot: Vec3; axes: Vec3[]; radius: number } | undefined;
+  if (tool === "turn" && row?.member.parent && row.member.joint && object && sceneShift) {
+    const pose = modelPoseOf(object), joint = row.member.joint;
+    const pivot = applyPose(sceneShift, applyPose(pose, joint.pivot));
+    const axes: Vec3[] = joint.kind === "hinge" ? [turnDir(pose, joint.axis)] : [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((axis) => turnDir(pose, axis));
+    const b = boundsOf(object.sourcePos);
+    gizmo = { pivot, axes, radius: Math.max(8, Math.hypot(b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]) * 0.55) };
+  }
+  const chain = poseChain(assemblies, state.plate.selectedId);
+  const marks: { pivot: Vec3; axis?: Vec3 }[] = [];
+  if (sceneShift) for (const id of chain) {
+    const part = state.plate.objects.find((object) => object.id === id);
+    const joint = assemblyOf(assemblies, id)?.members.find((member) => member.object === id)?.joint;
+    if (!part || !joint) continue;
+    const pose = modelPoseOf(part);
+    marks.push({ pivot: applyPose(sceneShift, applyPose(pose, joint.pivot)), ...(joint.kind === "hinge" ? { axis: turnDir(pose, joint.axis) } : {}) });
+  }
   view.setBed(bedX, bedY, bedZ);
-  view.setScene({ parts, selectedId: state.plate.selectedId, chain: poseChain(assemblies, state.plate.selectedId), clashing });
+  view.setScene({ parts: placed.parts, selectedId: state.plate.selectedId, chain, clashing, marks, ...(gizmo ? { gizmo } : {}) });
   const empty = document.querySelector<HTMLElement>("#poseEmpty");
-  if (empty) empty.hidden = parts.length > 0;
+  if (empty) empty.hidden = placed.parts.length > 0;
+  if (!dragging) renderPanel();
 }
+export function setPoseTheme(): void { view?.setTheme(); }
 
-/** The theme changed: the view repaints its materials and clear colour. */
-export function setPoseTheme(): void {
-  view?.setTheme();
+function addText(parent: HTMLElement, tag: string, text: string, className?: string): HTMLElement {
+  const node = document.createElement(tag); node.textContent = text; if (className) node.className = className; parent.append(node); return node;
+}
+function button(parent: HTMLElement, text: string, action: string): HTMLButtonElement {
+  const node = document.createElement("button"); node.type = "button"; node.className = "btn"; node.dataset.poseAction = action; node.textContent = text; parent.append(node); return node;
+}
+function field(parent: HTMLElement, label: string, name: string, value: number | undefined, placeholder = ""): void {
+  const wrap = document.createElement("label"); wrap.className = "pose-field";
+  addText(wrap, "span", label);
+  const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.poseField = name; input.value = value === undefined ? "" : String(Math.round(value * 10000) / 10000); input.placeholder = placeholder; input.setAttribute("aria-label", label); wrap.append(input); parent.append(wrap);
+}
+function renderPanel(): void {
+  const panel = document.querySelector<HTMLElement>("#posePanel");
+  if (!panel || state.stage !== "pose") return;
+  panel.replaceChildren();
+  addText(panel, "h3", "Parts");
+  const tree = document.createElement("div"); tree.className = "pose-tree"; panel.append(tree);
+  const assemblies = liveAssemblies();
+  const listed = new Set<string>();
+  const addPart = (id: string, depth: number) => {
+    const part = state.plate.objects.find((object) => object.id === id); if (!part || listed.has(id)) return;
+    listed.add(id); const entry = button(tree, part.name, "select"); entry.dataset.object = id; entry.style.paddingLeft = `${8 + depth * 16}px`; entry.setAttribute("aria-pressed", String(state.plate.selectedId === id));
+  };
+  for (const assembly of assemblies) {
+    addText(tree, "strong", assembly.name);
+    const walk = (parent: string | null, depth: number) => { for (const member of assembly.members.filter((item) => item.parent === parent)) { if (listed.has(member.object)) continue; addPart(member.object, depth); walk(member.object, depth + 1); } };
+    walk(null, 0);
+  }
+  for (const part of state.plate.objects) addPart(part.id, 0);
+  if (message) addText(panel, "p", message);
+  if (chainSelected) addText(panel, "p", "Chain selected. Press Esc to select the part.");
+  const row = selected();
+  if (!row) { addText(panel, "p", "Select an assembly member to add a joint. Attach free parts in Prepare."); return; }
+  addText(panel, "h3", state.plate.objects.find((item) => item.id === row.member.object)?.name ?? row.member.object);
+  const parentName = state.plate.objects.find((item) => item.id === row.member.parent)?.name;
+  addText(panel, "p", parentName ? `Parent: ${parentName}` : "Assembly root (fixed)");
+  if (!row.member.parent) return;
+  const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", "Joint");
+  const select = document.createElement("select"); select.dataset.poseField = "kind"; select.setAttribute("aria-label", "Joint kind");
+  for (const [value, name] of [["none", "Fixed"], ["hinge", "Hinge"], ["ball", "Ball"]]) { const option = document.createElement("option"); option.value = value!; option.textContent = name!; select.append(option); }
+  select.value = row.member.joint?.kind ?? "none"; label.append(select); panel.append(label);
+  const joint = row.member.joint;
+  if (joint) {
+    for (let i = 0; i < 3; i++) field(panel, `Pivot ${"XYZ"[i]} mm`, `pivot${i}`, joint.pivot[i]);
+    if (joint.kind === "hinge") {
+      for (let i = 0; i < 3; i++) field(panel, `Axis ${"XYZ"[i]}`, `axis${i}`, joint.axis[i]);
+      field(panel, "Angle °", "angle", joint.angle ?? 0);
+      field(panel, "Minimum °", "min", joint.min, "Free"); field(panel, "Maximum °", "max", joint.max, "Free");
+    } else field(panel, "Cone °", "cone", joint.cone, "Free");
+  }
+  const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
+  button(actions, "Rest", "rest"); button(actions, "Make rest", "make-rest"); button(actions, "Undo", "undo"); button(actions, "Redo", "redo");
+}
+function panelClick(event: Event): void {
+  const target = (event.target as Element).closest<HTMLButtonElement>("[data-pose-action]");
+  if (!target) return;
+  const action = target.dataset.poseAction;
+  if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
+  if (action === "undo") { undoUserEdit(); syncPose(); return; }
+  if (action === "redo") { redoUserEdit(); syncPose(); return; }
+  const row = selected(); if (!row || (action !== "rest" && action !== "make-rest")) return;
+  const ids = poseChain([row.assembly], row.member.object);
+  let assembly = row.assembly;
+  for (const member of assembly.members) {
+    if (!ids.has(member.object) || !member.joint) continue;
+    let updated: Member = member;
+    if (action === "rest" && member.joint.kind === "hinge") {
+      const result = turnHinge(member, -(member.joint.angle ?? 0));
+      if ("reason" in result) { message = result.reason; renderPanel(); return; }
+      updated = result;
+    } else if (action === "make-rest") {
+      const joint = member.joint.kind === "hinge" ? { ...member.joint, angle: 0 } : { ...member.joint, rest: rotationQuaternion(memberPose(member).m) };
+      // Limits are relative to rest; translate them with the hinge's zero point.
+      if (joint.kind === "hinge" && member.joint.kind === "hinge") {
+        const old = member.joint.angle ?? 0;
+        if (joint.min !== undefined) joint.min -= old;
+        if (joint.max !== undefined) joint.max -= old;
+      }
+      updated = { ...member, joint };
+    }
+    const next = withMember(assembly, updated); if (!("reason" in next)) assembly = next;
+  }
+  editAssembly(assembly);
+}
+function panelChange(event: Event): void {
+  const input = event.target as HTMLInputElement | HTMLSelectElement;
+  const name = input.dataset.poseField;
+  const row = selected(); if (!name || !row || !row.member.parent) return;
+  message = "";
+  if (name === "kind") {
+    const kind = input.value;
+    const pivot = row.member.joint?.pivot ?? [0, 0, 0];
+    const joint: Joint | undefined = kind === "hinge" ? { kind, pivot, axis: [0, 0, 1], angle: 0 } : kind === "ball" ? { kind, pivot, rest: rotationQuaternion(memberPose(row.member).m) } : undefined;
+    const { joint: _joint, ...plain } = row.member;
+    replaceMember(row.assembly, joint ? { ...plain, joint } : plain);
+    return;
+  }
+  const old = row.member.joint; if (!old) return;
+  const optional = name === "min" || name === "max" || name === "cone";
+  const value = input.value.trim() === "" && optional ? undefined : Number(input.value);
+  if ((value === undefined && !optional) || (value !== undefined && (!Number.isFinite(value) || input.value.trim() === ""))) { message = "Enter a finite number."; renderPanel(); return; }
+  if (name === "angle" && old.kind === "hinge") {
+    const next = turnHinge(row.member, value! - (old.angle ?? 0));
+    if ("reason" in next) { message = next.reason; renderPanel(); return; }
+    replaceMember(row.assembly, next); return;
+  }
+  const raw = structuredClone(old) as Joint;
+  if (name.startsWith("pivot")) raw.pivot[Number(name.slice(-1))] = value!;
+  else if (name.startsWith("axis") && raw.kind === "hinge") raw.axis[Number(name.slice(-1))] = value!;
+  else if ((name === "min" || name === "max") && raw.kind === "hinge") { if (value === undefined) delete raw[name]; else raw[name] = value; }
+  else if (name === "cone" && raw.kind === "ball") { if (value === undefined) delete raw.cone; else raw.cone = value; }
+  const checked = readJoint(raw);
+  if (!checked) { message = "Check the axis, limits and current angle; the joint was not changed."; renderPanel(); return; }
+  replaceMember(row.assembly, { ...row.member, joint: checked });
 }

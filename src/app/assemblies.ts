@@ -253,7 +253,7 @@ export function nudgeAssembled(axis: "x" | "y" | "z", mm: number): boolean {
  * Every plate object at its pose in model space, moved as one onto the bed: centred on it in X and Y, standing on it.
  * `bounds` is the whole set's box in that frame, for framing the camera.
  */
-export function assembledParts(bedX: number, bedY: number): { parts: ContextPart[]; bounds: Bounds | null } {
+export function assembledParts(bedX: number, bedY: number, fixedShift?: Affine): { parts: ContextPart[]; bounds: Bounds | null; shift?: Affine } {
   const placed = state.plate.objects.filter((obj) => obj.sourcePos.length >= 9).map((obj) => ({ obj, pose: meshToModel(obj) }));
   let box: Bounds | null = null;
   for (const { obj, pose } of placed) {
@@ -264,8 +264,8 @@ export function assembledParts(bedX: number, bedY: number): { parts: ContextPart
       : one;
   }
   if (!box) return { parts: [], bounds: null };
-  const shift: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [bedX / 2 - (box.min[0] + box.max[0]) / 2, bedY / 2 - (box.min[1] + box.max[1]) / 2, -box.min[2]] };
+  const shift: Affine = fixedShift ?? { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [bedX / 2 - (box.min[0] + box.max[0]) / 2, bedY / 2 - (box.min[1] + box.max[1]) / 2, -box.min[2]] };
   const parts = placed.map(({ obj, pose }) => ({ id: obj.id, name: obj.name, positions: obj.sourcePos, matrix: thenPose(pose, shift) }));
-  const bounds: Bounds = { min: [box.min[0] + shift.t[0], box.min[1] + shift.t[1], 0], max: [box.max[0] + shift.t[0], box.max[1] + shift.t[1], box.max[2] - box.min[2]] };
-  return { parts, bounds };
+  const bounds: Bounds = { min: [box.min[0] + shift.t[0], box.min[1] + shift.t[1], box.min[2] + shift.t[2]], max: [box.max[0] + shift.t[0], box.max[1] + shift.t[1], box.max[2] + shift.t[2]] };
+  return { parts, bounds, shift };
 }

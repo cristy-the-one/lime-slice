@@ -101,6 +101,7 @@ export function mountMarkup(root: HTMLElement) {
       <aside class="dock left" id="leftDock" aria-label="Settings">
         <div class="dock-head"><h2>Settings</h2><button class="btn ghost dock-close" type="button" aria-label="Collapse settings" aria-controls="leftDock"></button></div>
         <div class="panel" id="left"><div id="leftBody"></div></div>
+        <div class="panel pose-panel" id="posePanel" aria-label="Pose" hidden></div>
       </aside>
       <main class="stage mode-solid" id="stage" aria-label="Preview">
         <div class="stage-body" id="prepareBody" role="tabpanel" aria-labelledby="tabPrepare" hidden>

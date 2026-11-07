@@ -148,6 +148,18 @@ function mountToolRail(hooks: ChromeHooks) {
 
   const place = railSet("prepare", "Place");
   place.append(caption("Place"), move, rotate, scale, pivot, ik, lay, sep(), caption("View"));
+  const pose = railSet("pose", "Pose");
+  for (const [id, icon, label, tip] of [
+    ["select", Move3d, "Select", "Select a part in the view."],
+    ["turn", Rotate3d, "Turn", "Drag a joint ring. Hold Shift to snap to 5 degrees."],
+    ["joint", Crosshair, "Joint", "Select a member and enter its joint in the Pose panel."],
+    ["link", Waypoints, "Link", "Click a parent, then a child in the same assembly."],
+  ] as const) {
+    const button = toolButton(`pose-${id}`, icon, label, tip);
+    button.dataset.poseTool = id;
+    button.setAttribute("aria-pressed", String(id === "select"));
+    pose.append(button);
+  }
   const look = railSet("preview", "View");
   look.append(
     caption("View"),
@@ -185,7 +197,7 @@ function mountToolRail(hooks: ChromeHooks) {
   foot.append(leftToggle);
 
   const model = document.querySelector<HTMLElement>("#railModel");
-  rail.append(place, look, bed, shared, between, paints, edits, ...(model ? [model] : []), gizmoNudge(), foot);
+  rail.append(place, pose, look, bed, shared, between, paints, edits, ...(model ? [model] : []), gizmoNudge(), foot);
   host?.prepend(rail);
   mountRovingFocus(rail);
   mountRailFolds(rail);
@@ -333,7 +345,7 @@ export function paintRailStage(stage: Stage) {
  */
 function paintDockNames(stage: Stage) {
   const model = stage === "model";
-  const names = { left: model ? "Model" : "Settings", right: model ? "Inspect" : "Results" };
+  const names = { left: model ? "Model" : stage === "pose" ? "Pose" : "Settings", right: model ? "Inspect" : "Results" };
   for (const side of ["left", "right"] as const) {
     const dock = document.querySelector<HTMLElement>(side === "left" ? "#leftDock" : "#rightDock");
     if (!dock) continue;

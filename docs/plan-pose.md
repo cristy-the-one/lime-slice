@@ -243,6 +243,10 @@ M1 to M4 are the owner's request. M5 tidies Prepare once Pose can do the job. M6
   - `src/ui/commands.test.ts` covers the tab key, the camera keys and their targets in every stage.
   - Run unchanged: `keyboard`, `assembly`, `assembly-layout`, `theme-switch`, `lazy-workspaces`, `compact-layout`, `a11y-errors`, `small-ui`, `ui-review`, `fit`, `shortcuts-first-run`, `model-chrome`, `pivots-chains` and `history-search`.
 
+### As built: M3
+
+The Pose rail has Select, Turn, Joint and Link. The left dock shows the assembly tree and the selected member's typed joint fields. Link chooses a parent and child already in one assembly and keeps their poses; free parts are attached in Prepare first. Turn draws one ring for a hinge or three for a ball, and Shift snaps the drag to 5°. Each field, link, rest action or ring drag is one Undo step. Rest turns the selected chain's hinges toward zero within their limits. Make rest leaves the parts where they are, resets the hinge angles and shifts their limits by the same amount; ball rest orientations are reset as well. The assembled view keeps one framing shift during the Pose visit, so the fixed body does not slide as a limb moves. None of these edits changes the print layout or the slice key. Cylindrical-face picking remains M6.
+
 ## 9. Later
 
 - **Plant and move.** Several dragged or pinned points solved together: plant all eight claws and move the body, so the legs bend to keep the claws where they are. It needs a solver over several effectors, such as damped least squares on the joint angles, and is the step that makes a spider stand.
