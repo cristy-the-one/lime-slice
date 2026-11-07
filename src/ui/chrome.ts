@@ -34,7 +34,7 @@ import { fx } from "../app/fx";
 import "./chrome.css";
 import { prefs } from "../prefs.ts";
 
-export type GizmoTool = "all" | "move" | "rotate" | "scale" | "pivot" | "ik";
+export type GizmoTool = "all" | "move" | "rotate" | "scale" | "pivot";
 export type Stage = "prepare" | "preview" | "gcode" | "model" | "pose";
 export type ViewMode = "flat" | "split" | "solid";
 
@@ -120,8 +120,6 @@ function mountToolRail(hooks: ChromeHooks) {
   scale.setAttribute("aria-pressed", "false");
   const pivot = toolButton("pivot", Crosshair, "Pivot", "Click the part to place the pivot. Shift snaps to a corner, the centre, or a vertex. Rotate and scale use it.");
   pivot.setAttribute("aria-pressed", "false");
-  const ik = toolButton("ik", Waypoints, "Inverse kinematics", "Drag the end of a chain. Joints turn to follow. Limits are in Pivot and chain.");
-  ik.setAttribute("aria-pressed", "false");
   const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "Drop the flattest face onto the bed.");
   lay.classList.add("is-disabled");
   lay.setAttribute("aria-disabled", "true");
@@ -147,7 +145,7 @@ function mountToolRail(hooks: ChromeHooks) {
   section.setAttribute("aria-pressed", "false");
 
   const place = railSet("prepare", "Place");
-  place.append(caption("Place"), move, rotate, scale, pivot, ik, lay, sep(), caption("View"));
+  place.append(caption("Place"), move, rotate, scale, pivot, lay, sep(), caption("View"));
   const pose = railSet("pose", "Pose");
   for (const [id, icon, label, tip] of [
     ["select", Move3d, "Select", "Select a part in the view."],
@@ -207,7 +205,7 @@ function mountToolRail(hooks: ChromeHooks) {
   mountRailCaptions();
   paintRailStage(hooks.stage());
 
-  const buttons = { move, rotate, scale, pivot, ik };
+  const buttons = { move, rotate, scale, pivot };
 
   rail.addEventListener("click", (ev) => {
     const button = (ev.target as Element | null)?.closest<HTMLButtonElement>("button");
@@ -215,7 +213,7 @@ function mountToolRail(hooks: ChromeHooks) {
     // Model's tools are the Model code's (its Scale is not the gizmo's).
     if (button.closest("#railModel, #railModelFoot")) return;
     const id = button.dataset.tool;
-    if (id === "move" || id === "rotate" || id === "scale" || id === "pivot" || id === "ik") {
+    if (id === "move" || id === "rotate" || id === "scale" || id === "pivot") {
       setPointMeasure(false);
       selectManipulator(id, buttons, hooks);
     }
@@ -621,7 +619,6 @@ const RAIL_CAPTIONS: Record<string, string> = {
   rotate: "Rotate",
   scale: "Scale",
   pivot: "Pivot",
-  ik: "IK",
   layflat: "Flat",
   "view-flat": "2D",
   "view-split": "Split",
@@ -636,8 +633,8 @@ const RAIL_CAPTIONS: Record<string, string> = {
 };
 
 function selectManipulator(
-  next: "move" | "rotate" | "scale" | "pivot" | "ik",
-  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement; scale: HTMLButtonElement; pivot: HTMLButtonElement; ik: HTMLButtonElement },
+  next: "move" | "rotate" | "scale" | "pivot",
+  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement; scale: HTMLButtonElement; pivot: HTMLButtonElement },
   hooks: ChromeHooks,
 ) {
   const rail = document.querySelector<HTMLElement>("#toolRail");
@@ -648,7 +645,6 @@ function selectManipulator(
   buttons.rotate.setAttribute("aria-pressed", tool === "rotate" ? "true" : "false");
   buttons.scale.setAttribute("aria-pressed", tool === "scale" ? "true" : "false");
   buttons.pivot.setAttribute("aria-pressed", tool === "pivot" ? "true" : "false");
-  buttons.ik.setAttribute("aria-pressed", tool === "ik" ? "true" : "false");
   hooks.setGizmoTool(tool);
   hooks.onToolReadout();
   if (tool !== "all") document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();
