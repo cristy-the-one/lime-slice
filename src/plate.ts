@@ -13,6 +13,8 @@
  * A split half stays in the selected object's place instead.
  * Duplicate copies the selected object only.
  */
+import type { ChainLink, JointLimits } from "./chain.ts";
+import { saneChains } from "./chain.ts";
 import type { SavedTree } from "./model-tree-file.ts";
 import { cloneStudy } from "./sim/study-data.ts";
 import type { ObjectStudy } from "./sim/study.ts";
@@ -122,6 +124,12 @@ export interface PlateFileObject {
    * an older app ignores the key and drops it on the next save.
    */
   sim?: ObjectStudy;
+  /** Pivot in the source frame. Omitted for the bounds centre. An older app ignores it and drops it on the next save. */
+  pivot?: [number, number, number];
+  /** Parent link through pivots. Omitted when the part is free. An older app ignores it and drops it on the next save. */
+  chain?: ChainLink;
+  /** Inverse-kinematics limits, degrees. Omitted when the joint is free. */
+  jointLimits?: JointLimits;
 }
 
 /** One solid on the plate. Geometry stays in the session, not in the undo JSON. */
@@ -156,6 +164,12 @@ export interface PlateObject {
   workplane?: Workplane;
   /** Stress study. Absent until Stress writes one. The slice never reads it. */
   sim?: ObjectStudy;
+  /** Pivot in the source frame. Absent means the bounds centre, the point rotate and scale already use. */
+  pivot?: [number, number, number];
+  /** Parent in a pivot chain. Absent when this object is free. */
+  chain?: ChainLink;
+  /** Inverse-kinematics limits, degrees. Absent when the joint is free. */
+  jointLimits?: JointLimits;
 }
 
 export interface PlateState {
@@ -184,6 +198,9 @@ export interface PlateSnapObject {
   frame?: ObjectFrame;
   workplane?: Workplane;
   sim?: ObjectStudy;
+  pivot?: [number, number, number];
+  chain?: ChainLink;
+  jointLimits?: JointLimits;
 }
 
 export interface PlateSnap {
@@ -605,6 +622,8 @@ export function addedCopy(plate: PlateState): PlateState | null {
     settings: { ...source.settings },
     brep: source.brep ? source.brep.slice(0) : undefined,
     modelPose: duplicatePose(modelPoseOf(source), boxUnder(boundsOf(source.sourcePos), meshToModel(source))),
+    ...(source.pivot ? { pivot: [...source.pivot] as [number, number, number] } : {}),
+    ...(source.jointLimits ? { jointLimits: { ...source.jointLimits } } : {}),
     ...(source.frame ? { frame: source.frame } : {}),
     // Kept in the part's own frame, the workplane moves over with the copy's pose.
     ...(source.workplane ? { workplane: copyWorkplane(source.workplane) } : {}),
@@ -612,6 +631,8 @@ export function addedCopy(plate: PlateState): PlateState | null {
   };
   // The copy's edits are its own, so Model opens a tree of its own for it.
   delete copy.modelTree;
+  // A single copy is free. Duplicating a chain copies the whole chain and rewrites the links.
+  delete copy.chain;
   hold(copy);
   return { objects: [...plate.objects, copy], selectedId: copy.id };
 }
@@ -826,6 +847,9 @@ export function snapPlate(plate: PlateState): PlateSnap {
       ...(obj.frame ? { frame: obj.frame } : {}),
       ...(obj.workplane ? { workplane: copyWorkplane(obj.workplane) } : {}),
       ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
+      ...(obj.pivot ? { pivot: [...obj.pivot] as [number, number, number] } : {}),
+      ...(obj.chain ? { chain: { parent: obj.chain.parent, offset: [...obj.chain.offset] as [number, number, number], turn: [...obj.chain.turn] as Mat3 } } : {}),
+      ...(obj.jointLimits ? { jointLimits: { ...(obj.jointLimits.x ? { x: [...obj.jointLimits.x] as [number, number] } : {}), ...(obj.jointLimits.y ? { y: [...obj.jointLimits.y] as [number, number] } : {}), ...(obj.jointLimits.z ? { z: [...obj.jointLimits.z] as [number, number] } : {}) } } : {}),
     })),
   };
 }
@@ -858,10 +882,13 @@ export function revivePlate(snap: PlateSnap): PlateState | null {
       ...(row.frame ? { frame: row.frame } : {}),
       ...(row.workplane ? { workplane: copyWorkplane(row.workplane) } : {}),
       ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
+      ...(row.pivot ? { pivot: [...row.pivot] as [number, number, number] } : {}),
+      ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
+      ...(row.jointLimits ? { jointLimits: { ...row.jointLimits } } : {}),
     });
   }
   const selectedId = objects.some((obj) => obj.id === snap.selectedId) ? snap.selectedId : objects[0]?.id ?? null;
-  return { objects, selectedId };
+  return { objects: saneChains(objects), selectedId };
 }
 
 export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer; sourcePos: Float32Array; brepBytes?: ArrayBuffer }>): PlateState {
@@ -888,6 +915,9 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
       ...(row.frame === "part" ? { frame: row.frame } : {}),
       ...(row.workplane && !isGlobalFrame(row.workplane) ? { workplane: copyWorkplane(row.workplane) } : {}),
       ...(row.sim ? { sim: cloneStudy(row.sim) } : {}),
+      ...(row.pivot ? { pivot: [...row.pivot] as [number, number, number] } : {}),
+      ...(row.chain ? { chain: { parent: row.chain.parent, offset: [...row.chain.offset] as [number, number, number], turn: [...row.chain.turn] as Mat3 } } : {}),
+      ...(row.jointLimits ? { jointLimits: { ...row.jointLimits } } : {}),
     };
     if (row.meshSeatMm !== undefined) setMeshSeat(row.bytes, row.meshSeatMm);
     // A Model step's mesh was saved as an STL already lowered, so reading it says 0; from a file before seats, Model learns it again.
@@ -895,7 +925,7 @@ export function assemblePlate(rows: Array<PlateFileObject & { bytes: ArrayBuffer
     hold(obj);
     return obj;
   });
-  return { objects, selectedId: objects[0]?.id ?? null };
+  return { objects: saneChains(objects), selectedId: objects[0]?.id ?? null };
 }
 
 export function placeObject(obj: PlateObject, bedX: number, bedY: number) {

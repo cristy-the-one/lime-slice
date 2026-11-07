@@ -20,6 +20,8 @@ import { shellCount } from "../mesh-shells";
 import { separateBy, stepSolidHint } from "../step-solids";
 import { formatDeg, offBed, orientEuler } from "../mesh-place";
 import { boundsSize, objectMarks, overlapPairs, placeObject, selectedObject, setSelectedOverride, settingsEmpty, sourceFrame } from "../plate";
+import { componentIds } from "../chain.ts";
+import { centreOf, usingCustomPivot } from "../pivot.ts";
 import { hiddenCount, isHidden } from "../model-hidden";
 import { type PresetSettings, DEFAULT_PRESET, presetKeys } from "../presets";
 import { saveProfile } from "../profiles";
@@ -825,13 +827,26 @@ function objectListHtml(): Html | "" {
     const attach = many && !selected && !group && state.plate.selectedId
       ? html`<button class="btn obj-attach" type="button" data-plate-attach="${obj.id}" aria-label="Attach ${obj.name} to ${selectedName}" data-tip="Attach to ${selectedName}: it keeps its place and moves with it in the assembly.">Attach</button>`
       : "";
+    const chainIds = componentIds(state.plate.objects, obj.id);
+    const chainHead = chainIds.length > 1 && chainIds[0] === obj.id;
+    const link = many && !selected
+      ? html`<button class="btn obj-link" type="button" data-chain-link="${obj.id}" aria-label="Link ${obj.name} to ${selectedName}" data-tip="Link to ${selectedName}. The child follows through its pivot.">Link</button>`
+      : "";
+    const unlink = obj.chain
+      ? html`<button class="btn obj-unlink" type="button" data-chain-unlink="${obj.id}" aria-label="Unlink ${obj.name}" data-tip="Unlink from its parent. It stays where it is.">Unlink</button>`
+      : "";
     // The eye hides the part in the 3D view only: it is still sliced and printed. The selected part is always shown.
     const off = isHidden(obj.id) && !selected;
     const eye = !many ? ""
       : selected
         ? html`<button class="btn obj-eye" type="button" data-prep-eye="${obj.id}" aria-pressed="false" aria-label="Hide ${obj.name}" data-tip="Selected, always shown. Select another part to hide this one." disabled>${EYE_OPEN}</button>`
         : html`<button class="btn obj-eye" type="button" data-prep-eye="${obj.id}" aria-pressed="${off ? "true" : "false"}" aria-label="${off ? "Show" : "Hide"} ${obj.name}" data-tip="${off ? "Show" : "Hide"} ${obj.name} in the 3D view (Alt-click: only this one). It is still printed.">${off ? EYE_SHUT : EYE_OPEN}</button>`;
+    const chainOpen = chainHead && session.chainRoot === obj.id;
     return html`
+      ${chainHead ? html`<div class="obj-group" role="listitem" data-chain-head="${obj.id}" data-selected="${chainOpen ? "true" : "false"}">
+        <button class="obj-select" type="button" data-chain-select="${obj.id}" aria-pressed="${chainOpen ? "true" : "false"}" data-tip="Select this chain. Move, rotate, scale, duplicate and delete then treat it as one part."><b>Chain</b><span>${chainIds.length} parts</span></button>
+        <div class="obj-actions"><button class="btn obj-remove" type="button" data-chain-remove="${obj.id}" aria-label="Delete chain from ${obj.name}">Delete chain</button></div>
+      </div>` : ""}
       <div class="obj obj-row${group ? " obj-member" : ""}" role="listitem" data-plate-id="${obj.id}" data-selected="${selected ? "true" : "false"}" data-hidden="${off ? "true" : "false"}"${group ? html` data-assembly="${group.id}"` : ""}>
         <button class="obj-select" type="button" data-plate-select="${obj.id}" aria-pressed="${selected ? "true" : "false"}" data-tip="${obj.name} · ${triangleLine(obj.sourcePos.length / 9)}${off ? " · Hidden in the view, still printed" : ""}">
           <b>${obj.name}</b>
@@ -840,6 +855,8 @@ function objectListHtml(): Html | "" {
           ${notes.length ? html`<em class="obj-note">${notes.join("; ")}</em>` : ""}        </button>
         <div class="obj-actions">
           ${eye}
+          ${link}
+          ${unlink}
           ${attach}
           <!-- --- A7 model check --- -->
           ${obj.sim ? html`<button class="btn obj-stress" type="button" data-plate-stress="${obj.id}">Stress</button>` : ""}
@@ -883,6 +900,38 @@ function objectListHtml(): Html | "" {
     ${clashes ? html`<div class="meta warn-text" id="assemblyInterference" data-tip="Checked at the assembled poses. It never blocks a slice: a press fit is meant to cross.">${clashes}${measure}</div>` : ""}`;
 }
 
+function pivotMm(n: number): string {
+  const text = String(Math.round(n * 1000) / 1000);
+  return text === "-0" ? "0" : text;
+}
+
+function pivotChainHtml(obj: ReturnType<typeof selectedObject>): string {
+  if (!obj) return "";
+  const centre = centreOf(obj.sourcePos);
+  const custom = !!obj.pivot && usingCustomPivot(obj.pivot, centre);
+  const value = (n: number | undefined) => (custom && n !== undefined ? pivotMm(n) : "");
+  const span = (axis: "x" | "y" | "z") => obj.jointLimits?.[axis];
+  const joint = (axis: "x" | "y" | "z", label: string) => {
+    const pair = span(axis);
+    return `<label class="setting" data-label="joint ${label} min">${label} min<input id="joint${label}Min" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[0] : ""}" aria-label="Joint ${label} minimum" /></label><label class="setting" data-label="joint ${label} max">${label} max<input id="joint${label}Max" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[1] : ""}" aria-label="Joint ${label} maximum" /></label>`;
+  };
+  return `
+    <details class="subgroup" id="pivotChainGroup" data-sub="pivot-chain"${subgroupOpen("pivot-chain") ? " open" : ""}>
+      <summary><span>Pivot and chain</span><span class="subgroup-sum">${custom ? "Custom pivot" : "Centre"}</span></summary>
+      <div class="subgroup-body">
+        <div class="grid3">
+          <label class="setting" data-label="pivot x" data-keywords="pivot origin joint">Pivot X<input id="pivotX" type="number" step="0.1" placeholder="${pivotMm(centre[0])}" value="${value(obj.pivot?.[0])}" aria-label="Pivot X" /></label>
+          <label class="setting" data-label="pivot y" data-keywords="pivot origin joint">Pivot Y<input id="pivotY" type="number" step="0.1" placeholder="${pivotMm(centre[1])}" value="${value(obj.pivot?.[1])}" aria-label="Pivot Y" /></label>
+          <label class="setting" data-label="pivot z" data-keywords="pivot origin joint">Pivot Z<input id="pivotZ" type="number" step="0.1" placeholder="${pivotMm(centre[2])}" value="${value(obj.pivot?.[2])}" aria-label="Pivot Z" /></label>
+        </div>
+        <button class="btn" id="pivotReset" type="button">Reset pivot</button>
+        <p class="meta">Source millimetres. Empty is the centre the part already turns about. Rotate and scale keep a custom pivot still. Shift-click with the Pivot tool snaps to a corner, the centre, or a vertex.</p>
+        <div class="grid3">${joint("x", "X")}${joint("y", "Y")}${joint("z", "Z")}</div>
+        <p class="meta">Joint limits, degrees, for inverse kinematics. Empty is free. Drag the end of a chain with the IK tool.</p>
+      </div>
+    </details>`;
+}
+
 function objectPlaceHtml(): string {
   if (!state.placed) return "";
   const { limit } = plateRows();
@@ -912,6 +961,7 @@ function objectPlaceHtml(): string {
     ${alignHtml(state.plate.objects.filter((obj) => obj.id !== state.plate.selectedId).map((obj) => ({ id: obj.id, name: obj.name })))}
       </div>
     </details>
+    ${pivotChainHtml(selected)}
     <label class="row setting" data-label="settle on the bed" data-keywords="rest flat contact rotate snap collide" data-tip="While you turn the part with the rotate rings, snap it to the flat face that touches the bed most, near the angle you hold."><span class="row-label">Settle on the bed</span><input id="settleOn" type="checkbox" class="switch" role="switch" ${settleOn() ? "checked" : ""}/></label>
     ${separateShellsHtml()}
     ${isStepName(state.mesh?.name ?? "") ? `<label class="row setting" data-label="step chord mm" data-keywords="tessellation tolerance"><span class="row-label" data-tip="Largest gap between a curved STEP surface and its triangles, in mm">STEP chord</span><input id="stepTol" type="number" min="0.01" max="2" step="0.01" value="${state.stepTolerance}" /></label>` : ""}
@@ -924,7 +974,7 @@ const SEQUENTIAL = {
 } as const;
 type SequentialId = keyof typeof SEQUENTIAL;
 
-const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "placeRx", "placeRy", "placeRz", "objInfill", "objWalls", "objSpeed"];
+const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "placeRx", "placeRy", "placeRz", "objInfill", "objWalls", "objSpeed", "pivotX", "pivotY", "pivotZ", "jointXMin", "jointXMax", "jointYMin", "jointYMax", "jointZMin", "jointZMax"];
 
 /** The typed field the user is in, including one whose text was already stored. A rebuild replaces the input, so focus has to be put back or the caret is gone. */
 function focusedTypedField(): HTMLInputElement | null {
@@ -942,6 +992,25 @@ function uncommittedTyped(el: HTMLInputElement | null): HTMLInputElement | null 
 /** These commit on `change`, so a re-render while one holds typed text must commit it first and give focus back. */
 function typedField(): HTMLInputElement | null {
   return uncommittedTyped(focusedTypedField());
+}
+
+function fieldValue(id: string): string {
+  return document.querySelector<HTMLInputElement>(`#${id}`)?.value ?? "";
+}
+
+function pivotFieldValues(): [string, string, string] {
+  return [fieldValue("pivotX"), fieldValue("pivotY"), fieldValue("pivotZ")];
+}
+
+function jointAxis(id: string): "x" | "y" | "z" {
+  if (id.startsWith("jointY")) return "y";
+  if (id.startsWith("jointZ")) return "z";
+  return "x";
+}
+
+function jointFieldValues(axis: "x" | "y" | "z"): [string, string] {
+  const label = axis.toUpperCase();
+  return [fieldValue(`joint${label}Min`), fieldValue(`joint${label}Max`)];
 }
 
 /** Commits a typed field the way its change handler does. False when nothing was stored. */
@@ -973,6 +1042,17 @@ function commitTypedField(el: HTMLInputElement): boolean {
     case "objWalls":
     case "objSpeed":
       return noteObjectOverride(el.id, el.value);
+    case "pivotX":
+    case "pivotY":
+    case "pivotZ":
+      return fx.notePivotTriple?.(pivotFieldValues()) ?? false;
+    case "jointXMin":
+    case "jointXMax":
+    case "jointYMin":
+    case "jointYMax":
+    case "jointZMin":
+    case "jointZMax":
+      return fx.noteJointField?.(jointAxis(el.id), jointFieldValues(jointAxis(el.id))) ?? false;
     default:
       return false;
   }

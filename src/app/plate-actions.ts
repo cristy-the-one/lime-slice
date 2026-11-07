@@ -1,12 +1,14 @@
 /** Select, duplicate, remove, and arrange plate objects. Adding a file is `addMeshBytes`. Pose tools keep editing the selection. */
-import { arrangedObjects, addedCopy, placeObject, plateUnionBounds, withoutObject } from "../plate.ts";
+import { arrangedObjects, addedCopy, freshPlateId, placeObject, plateUnionBounds, type PlateObject } from "../plate.ts";
+import { componentIds, copyName, duplicateChain, linkedTo, refreshLinks, removedChain, removedMember, solveIk, unlinked, type JointLimits } from "../chain.ts";
+import { bedToSourcePoint, centreOf, snapPivotPoint, usingCustomPivot, type Vec3 } from "../pivot.ts";
 import { fx } from "./fx.ts";
-import { place, syncPlateView } from "./files.ts";
+import { applyPlace, place, syncPlateView } from "./files.ts";
 import { isHidden, isolate, setHidden, showAll } from "../model-hidden.ts";
 import { flushEdit, noteEdit } from "./history.ts";
 import { loadModel, modelApi, withModel } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
-import { state } from "./state.ts";
+import { session, state } from "./state.ts";
 import { attachTo, liveAssemblies, ungroup } from "./assemblies.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { currentRules } from "./rules.ts";
@@ -22,9 +24,20 @@ export function duplicatePlateObject() {
   modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
-  const next = addedCopy(state.plate);
-  if (!next) return;
-  state.plate = next;
+  const bed = { x: state.profile.bedX, y: state.profile.bedY };
+  const selected = state.plate.selectedId;
+  const chain = session.chainRoot && componentIds(state.plate.objects, session.chainRoot);
+  if (chain && chain.length > 1 && chain.includes(selected)) {
+    const copied = duplicateChain(state.plate.objects, session.chainRoot!, bed, freshPlateId, copyName);
+    if (!copied) return;
+    state.plate = { objects: copied.objects, selectedId: copied.selectedId };
+    session.chainRoot = componentIds(copied.objects, copied.selectedId)[0] ?? null;
+  } else {
+    const next = addedCopy(state.plate);
+    if (!next) return;
+    state.plate = next;
+    session.chainRoot = null;
+  }
   applySelectedToState(state.plate);
   place();
   flushEdit();
@@ -33,10 +46,24 @@ export function duplicatePlateObject() {
 
 export function removePlateObject(id: string) {
   if (state.plate.objects.length <= 1) return;
+  const asChain = session.chainRoot !== null && componentIds(state.plate.objects, session.chainRoot).includes(id);
+  if (asChain && !removedChain(state.plate.objects, session.chainRoot!)) return;
   modelApi()?.commitModel();
   noteEdit();
   syncPlateFromState();
-  state.plate = withoutObject(state.plate, id);
+  const bed = { x: state.profile.bedX, y: state.profile.bedY };
+  if (asChain) {
+    const kept = removedChain(state.plate.objects, session.chainRoot!);
+    if (!kept) return;
+    const selectedId = kept.some((obj) => obj.id === state.plate.selectedId) ? state.plate.selectedId : kept[0]!.id;
+    state.plate = { objects: kept, selectedId };
+    session.chainRoot = null;
+  } else {
+    const objects = removedMember(state.plate.objects, id, bed);
+    const selectedId = objects.some((obj) => obj.id === state.plate.selectedId) ? state.plate.selectedId : objects[0]?.id ?? null;
+    state.plate = { objects, selectedId };
+    if (session.chainRoot && !objects.some((obj) => obj.id === session.chainRoot)) session.chainRoot = null;
+  }
   applySelectedToState(state.plate);
   place();
   flushEdit();
@@ -107,8 +134,9 @@ export async function exportAssembly(id: string) {
 }
 
 export function selectPlateObject(id: string) {
-  if (state.plate.selectedId === id) return;
+  if (state.plate.selectedId === id && session.chainRoot === null) return;
   if (!state.plate.objects.some((obj) => obj.id === id)) return;
+  session.chainRoot = null;
   // The live state is about to become the other object's, so the open solid's shown step lands first.
   modelApi()?.commitModel();
   noteEdit();
@@ -177,7 +205,10 @@ export function arrangePlate() {
   const clearance = sequentialClearance(currentRules(), { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry });
   state.plate = {
     ...state.plate,
-    objects: arrangedObjects(state.plate.objects, state.profile.bedX, state.profile.bedY, clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM),
+    objects: refreshLinks(
+      arrangedObjects(state.plate.objects, state.profile.bedX, state.profile.bedY, clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM),
+      { x: state.profile.bedX, y: state.profile.bedY },
+    ),
   };
   const moved = state.plate.objects.some((obj) => {
     const was = prior.find((row) => row.id === obj.id);
@@ -213,4 +244,170 @@ export function alignSelectedTo(targetId: string, relation: AlignRelation): bool
   fx.scheduleAuto();
   renderChrome();
   return true;
+}
+
+Object.assign(fx, { notePivotTriple, noteJointField });
+
+function bedSize() {
+  return { x: state.profile.bedX, y: state.profile.bedY };
+}
+
+function rewritePlate(objects: PlateObject[], selectedId = state.plate.selectedId) {
+  state.plate = { objects, selectedId };
+  applySelectedToState(state.plate);
+  place();
+}
+
+/** Select the whole chain so the common move, rotate, scale, duplicate and delete act on it. */
+export function selectChain(id: string) {
+  const ids = componentIds(state.plate.objects, id);
+  const root = ids[0];
+  if (!root || ids.length < 2) return;
+  session.chainRoot = root;
+  if (state.plate.selectedId === root) {
+    renderChrome();
+    return;
+  }
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  state.plate = { ...state.plate, selectedId: root };
+  applySelectedToState(state.plate);
+  place();
+  flushEdit();
+}
+
+export function linkPlateObject(childId: string): string | null {
+  const parentId = state.plate.selectedId;
+  if (!parentId || parentId === childId) return "Select the parent, then link the child.";
+  const linked = linkedTo(state.plate.objects, childId, parentId, bedSize());
+  if (linked.reason) return linked.reason;
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  const placed = linkedTo(state.plate.objects, childId, parentId, bedSize());
+  session.chainRoot = componentIds(placed.objects, parentId)[0] ?? parentId;
+  rewritePlate(placed.objects, parentId);
+  flushEdit();
+  return null;
+}
+
+export function unlinkPlateObject(id: string) {
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  if (session.chainRoot === id) session.chainRoot = null;
+  rewritePlate(unlinked(state.plate.objects, id));
+  flushEdit();
+}
+
+function withPivot(objects: PlateObject[], id: string, point: Vec3 | null): PlateObject[] {
+  return refreshLinks(
+    objects.map((row) => {
+      if (row.id !== id) return row;
+      if (!point || !usingCustomPivot(point, centreOf(row.sourcePos))) {
+        const next = { ...row };
+        delete next.pivot;
+        return next;
+      }
+      return { ...row, pivot: [point[0], point[1], point[2]] as Vec3 };
+    }),
+    bedSize(),
+  );
+}
+
+/** Write the pivot in source millimetres. Null resets it to the centre, which the file then omits. */
+export function setObjectPivot(id: string, point: Vec3 | null) {
+  if (!state.plate.objects.some((row) => row.id === id)) return;
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  rewritePlate(withPivot(state.plate.objects, id, point));
+  flushEdit();
+}
+
+/** A pivot drag: the gesture around it owns the undo step. */
+export function movePivot(id: string, point: Vec3) {
+  if (!state.plate.objects.some((row) => row.id === id)) return;
+  syncPlateFromState();
+  state.plate = { ...state.plate, objects: withPivot(state.plate.objects, id, point) };
+  applySelectedToState(state.plate);
+  applyPlace(false);
+}
+
+/**
+ * Solve the chain from `base` (the plate at the start of the drag) so each move is the same gesture, not a
+ * pile of steps. False when the selection is not the end of a chain.
+ */
+export function dragChainEnd(base: readonly PlateObject[], target: Vec3): boolean {
+  const id = state.plate.selectedId;
+  if (!id) return false;
+  const solved = solveIk(base, id, target, bedSize());
+  if (!solved) return false;
+  state.plate = { objects: solved, selectedId: id };
+  applySelectedToState(state.plate);
+  applyPlace(false);
+  return true;
+}
+
+/** A click on the bed, optionally snapped to a corner, the centre, or a vertex. */
+export function placePivotAt(id: string, bedPoint: Vec3, snap: boolean) {
+  const obj = state.plate.objects.find((row) => row.id === id);
+  if (!obj) return;
+  const source = bedToSourcePoint(obj.sourcePos, bedPoint, obj.orient, obj.partScale, obj.centered, obj.offset, state.profile.bedX, state.profile.bedY);
+  const point = snap ? snapPivotPoint(obj.sourcePos, source, 8, obj.pivot ? [obj.pivot] : []) : source;
+  setObjectPivot(id, point);
+}
+
+/** The three pivot fields. Empty clears a custom pivot. A half-filled row is left alone. */
+export function notePivotTriple(raw: readonly [string, string, string]): boolean {
+  const id = state.plate.selectedId;
+  if (!id) return false;
+  const trimmed = raw.map((value) => value.trim()) as [string, string, string];
+  if (trimmed.every((value) => value === "")) {
+    const obj = state.plate.objects.find((row) => row.id === id);
+    if (!obj?.pivot) return false;
+    setObjectPivot(id, null);
+    return true;
+  }
+  if (trimmed.some((value) => value === "" || !Number.isFinite(Number(value)))) return false;
+  setObjectPivot(id, [Number(trimmed[0]), Number(trimmed[1]), Number(trimmed[2])]);
+  return true;
+}
+
+/** One joint's min and max. Both empty clears the limit. */
+export function noteJointField(axis: "x" | "y" | "z", raw: readonly [string, string]): boolean {
+  const id = state.plate.selectedId;
+  if (!id) return false;
+  const minText = raw[0].trim();
+  const maxText = raw[1].trim();
+  if (minText === "" && maxText === "") {
+    setJointLimit(id, axis, null);
+    return true;
+  }
+  const min = Number(minText);
+  const max = Number(maxText);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min > max || min < -360 || max > 360) return false;
+  setJointLimit(id, axis, [min, max]);
+  return true;
+}
+
+export function setJointLimit(id: string, axis: "x" | "y" | "z", span: readonly [number, number] | null) {
+  const obj = state.plate.objects.find((row) => row.id === id);
+  if (!obj) return;
+  modelApi()?.commitModel();
+  noteEdit();
+  syncPlateFromState();
+  const objects = state.plate.objects.map((row) => {
+    if (row.id !== id) return row;
+    const jointLimits: JointLimits = { ...row.jointLimits };
+    if (!span) delete jointLimits[axis];
+    else jointLimits[axis] = [span[0], span[1]];
+    const next = { ...row };
+    if (jointLimits.x || jointLimits.y || jointLimits.z) next.jointLimits = jointLimits;
+    else delete next.jointLimits;
+    return next;
+  });
+  rewritePlate(objects);
+  flushEdit();
 }

@@ -12,6 +12,7 @@ import {
   Plus,
   Printer,
   Layers,
+  Crosshair,
   Move3d,
   Palette,
   PanelLeft,
@@ -21,6 +22,7 @@ import {
   Scaling,
   Square,
   SquareSplitHorizontal,
+  Waypoints,
   TreeDeciduous,
   X,
   type IconNode,
@@ -32,7 +34,7 @@ import { fx } from "../app/fx";
 import "./chrome.css";
 import { prefs } from "../prefs.ts";
 
-export type GizmoTool = "all" | "move" | "rotate" | "scale";
+export type GizmoTool = "all" | "move" | "rotate" | "scale" | "pivot" | "ik";
 export type Stage = "prepare" | "preview" | "gcode" | "model";
 export type ViewMode = "flat" | "split" | "solid";
 
@@ -116,6 +118,10 @@ function mountToolRail(hooks: ChromeHooks) {
   const rotate = toolButton("rotate", Rotate3d, "Rotate", "Drag a ring. Shift snaps 15°.");
   const scale = toolButton("scale", Scaling, "Scale", "Drag the scale handle or an axis knob. Shift snaps 5%.");
   scale.setAttribute("aria-pressed", "false");
+  const pivot = toolButton("pivot", Crosshair, "Pivot", "Click the part to place the pivot. Shift snaps to a corner, the centre, or a vertex. Rotate and scale use it.");
+  pivot.setAttribute("aria-pressed", "false");
+  const ik = toolButton("ik", Waypoints, "Inverse kinematics", "Drag the end of a chain. Joints turn to follow. Limits are in Pivot and chain.");
+  ik.setAttribute("aria-pressed", "false");
   const lay = toolButton("layflat", ArrowDownToLine, "Lay flat", "Drop the flattest face onto the bed.");
   lay.classList.add("is-disabled");
   lay.setAttribute("aria-disabled", "true");
@@ -141,7 +147,7 @@ function mountToolRail(hooks: ChromeHooks) {
   section.setAttribute("aria-pressed", "false");
 
   const place = railSet("prepare", "Place");
-  place.append(caption("Place"), move, rotate, scale, lay, sep(), caption("View"));
+  place.append(caption("Place"), move, rotate, scale, pivot, ik, lay, sep(), caption("View"));
   const look = railSet("preview", "View");
   look.append(
     caption("View"),
@@ -188,7 +194,7 @@ function mountToolRail(hooks: ChromeHooks) {
   mountRailCaptions();
   paintRailStage(hooks.stage());
 
-  const buttons = { move, rotate, scale };
+  const buttons = { move, rotate, scale, pivot, ik };
 
   rail.addEventListener("click", (ev) => {
     const button = (ev.target as Element | null)?.closest<HTMLButtonElement>("button");
@@ -196,7 +202,7 @@ function mountToolRail(hooks: ChromeHooks) {
     // Model's tools are the Model code's (its Scale is not the gizmo's).
     if (button.closest("#railModel, #railModelFoot")) return;
     const id = button.dataset.tool;
-    if (id === "move" || id === "rotate" || id === "scale") {
+    if (id === "move" || id === "rotate" || id === "scale" || id === "pivot" || id === "ik") {
       setPointMeasure(false);
       selectManipulator(id, buttons, hooks);
     }
@@ -601,6 +607,8 @@ const RAIL_CAPTIONS: Record<string, string> = {
   move: "Move",
   rotate: "Rotate",
   scale: "Scale",
+  pivot: "Pivot",
+  ik: "IK",
   layflat: "Flat",
   "view-flat": "2D",
   "view-split": "Split",
@@ -615,8 +623,8 @@ const RAIL_CAPTIONS: Record<string, string> = {
 };
 
 function selectManipulator(
-  next: "move" | "rotate" | "scale",
-  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement; scale: HTMLButtonElement },
+  next: "move" | "rotate" | "scale" | "pivot" | "ik",
+  buttons: { move: HTMLButtonElement; rotate: HTMLButtonElement; scale: HTMLButtonElement; pivot: HTMLButtonElement; ik: HTMLButtonElement },
   hooks: ChromeHooks,
 ) {
   const rail = document.querySelector<HTMLElement>("#toolRail");
@@ -626,6 +634,8 @@ function selectManipulator(
   buttons.move.setAttribute("aria-pressed", tool === "move" ? "true" : "false");
   buttons.rotate.setAttribute("aria-pressed", tool === "rotate" ? "true" : "false");
   buttons.scale.setAttribute("aria-pressed", tool === "scale" ? "true" : "false");
+  buttons.pivot.setAttribute("aria-pressed", tool === "pivot" ? "true" : "false");
+  buttons.ik.setAttribute("aria-pressed", tool === "ik" ? "true" : "false");
   hooks.setGizmoTool(tool);
   hooks.onToolReadout();
   if (tool !== "all") document.querySelector<HTMLButtonElement>("#tabPrepare")?.click();

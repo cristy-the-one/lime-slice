@@ -6,6 +6,7 @@ import { readFile } from "node:fs/promises";
 import { base64ToBytes, bytesToBase64 } from "../../src/base64.ts";
 import { foreign3mfMessage, foreignSlicer3mf } from "../../src/foreign-3mf.ts";
 import { ID_MATRIX, offBed, placeMesh, type Bounds, type Mat3 } from "../../src/mesh-place.ts";
+import type { Vec3 } from "../../src/pivot.ts";
 import { page } from "../../src/modeling/model-calls.ts";
 import { placeOnPlate, placedBounds } from "../../src/modeling/placing.ts";
 import { IDENTITY_POSE, type Affine } from "../../src/model-space.ts";
@@ -113,6 +114,9 @@ function snapObject(this: Session, obj: PlateObject): SnapObject {
     platedNode: obj.platedNode,
     ...(obj.brep ? { brep: obj.brep } : {}),
     ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
+    ...(obj.pivot ? { pivot: [...obj.pivot] as Vec3 } : {}),
+    ...(obj.chain ? { chain: { parent: obj.chain.parent, offset: [...obj.chain.offset] as Vec3, turn: [...obj.chain.turn] as Mat3 } } : {}),
+    ...(obj.jointLimits ? { jointLimits: structuredClone(obj.jointLimits) } : {}),
   };
 }
 
@@ -550,7 +554,10 @@ function objectDuplicate(this: Session, input: Record<string, unknown>): Record<
       reinforcement: source.reinforcement.map((region) => structuredClone(region)),
       objectSettings: { ...source.objectSettings },
       ...(source.sim ? { sim: cloneStudy(source.sim) } : {}),
+      ...(source.pivot ? { pivot: [...source.pivot] as Vec3 } : {}),
+      ...(source.jointLimits ? { jointLimits: structuredClone(source.jointLimits) } : {}),
     };
+    delete copy.chain;
     this.objects.push(copy);
     made.push(id);
   }

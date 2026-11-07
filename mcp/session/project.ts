@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { base64ToBytes } from "../../src/base64.ts";
 import { fanDefaults } from "../../src/fan.ts";
 import { ID_MATRIX, settleBy, type Mat3 } from "../../src/mesh-place.ts";
+import type { Vec3 } from "../../src/pivot.ts";
 import { solidFileName, wholeTreeRequest } from "../../src/model-request.ts";
 import { solidView } from "../../src/modeling/model-calls.ts";
 import type { Affine } from "../../src/model-space.ts";
@@ -119,6 +120,9 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
         brep: obj.brep ? base64ToBytes(obj.brep.bytesBase64) ?? undefined : undefined,
         meshSeatMm: obj.meshSeatMm,
         sim: obj.sim,
+        pivot: obj.pivot,
+        chain: obj.chain,
+        jointLimits: obj.jointLimits,
       }))
     : [{
         id: undefined as string | undefined,
@@ -138,6 +142,9 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
         brep: undefined as Uint8Array | undefined,
         meshSeatMm: undefined as number | undefined,
         sim: undefined as ObjectStudy | undefined,
+        pivot: undefined,
+        chain: undefined,
+        jointLimits: undefined,
       }];
   const objects: { object: string; name: string }[] = [];
   for (const row of rows) {
@@ -163,6 +170,9 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
       objectSettings: { ...row.objectSettings },
     }, row.id);
     if (row.sim) obj.sim = cloneStudy(row.sim);
+    if (row.pivot) obj.pivot = [...row.pivot] as Vec3;
+    if (row.chain) obj.chain = { parent: row.chain.parent, offset: [...row.chain.offset] as Vec3, turn: [...row.chain.turn] as Mat3 };
+    if (row.jointLimits) obj.jointLimits = structuredClone(row.jointLimits);
     if (row.modelPose) obj.modelPose = { m: [...row.modelPose.m] as Affine["m"], t: [...row.modelPose.t] as Affine["t"] };
     if (row.frame === "part") obj.frame = "part";
     if (row.workplane) obj.workplane = { source: row.workplane.source, origin: [...row.workplane.origin] as Workplane["origin"], turn: [...row.workplane.turn] as Workplane["turn"] };
@@ -269,6 +279,9 @@ function fileObject(this: Session, obj: PlateObject): NonNullable<LimeProject["o
     ...(obj.frame === "part" ? { frame: "part" as const } : {}),
     ...(obj.workplane.source === "global" ? {} : { workplane: { source: obj.workplane.source, origin: [...obj.workplane.origin] as Workplane["origin"], turn: [...obj.workplane.turn] as Workplane["turn"] } }),
     ...(obj.sim ? { sim: cloneStudy(obj.sim) } : {}),
+    ...(obj.pivot ? { pivot: [...obj.pivot] as [number, number, number] } : {}),
+    ...(obj.chain ? { chain: { parent: obj.chain.parent, offset: [...obj.chain.offset] as [number, number, number], turn: [...obj.chain.turn] as ProjectPlacement["orient"] } } : {}),
+    ...(obj.jointLimits ? { jointLimits: structuredClone(obj.jointLimits) } : {}),
   };
 }
 

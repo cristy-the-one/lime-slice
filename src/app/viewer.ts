@@ -14,6 +14,10 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
+import { dragChainEnd, movePivot } from "./plate-actions";
+import { bedToSourcePoint, snapPivotPoint } from "../pivot.ts";
+import { pushToast } from "../ui/toasts";
+import type { PlateObject } from "../plate";
 import { renderChrome, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows, earlyOnScreen } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
 import { beginEdit, beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
@@ -1547,6 +1551,35 @@ export function mountViews() {
     flushEdit();
     state.poseHud = "";
     paintGizmoReadout();
+    renderChrome();
+    fx.scheduleAuto();
+  });
+  prepare.onPivot((point, snap) => {
+    const id = state.plate.selectedId;
+    const obj = state.plate.objects.find((row) => row.id === id);
+    if (!id || !obj) return;
+    beginEdit();
+    const source = bedToSourcePoint(obj.sourcePos, point, obj.orient, obj.partScale, obj.centered, obj.offset, state.profile.bedX, state.profile.bedY);
+    movePivot(id, snap ? snapPivotPoint(obj.sourcePos, source, 8, obj.pivot ? [obj.pivot] : []) : source);
+  });
+  prepare.onPivotEnd(() => {
+    flushEdit();
+    renderChrome();
+  });
+  let ikBase: readonly PlateObject[] | null = null;
+  let ikMiss = false;
+  prepare.onIk((point) => {
+    if (!ikBase) ikBase = state.plate.objects;
+    beginEdit();
+    if (!dragChainEnd(ikBase, point) && !ikMiss) {
+      ikMiss = true;
+      pushToast("Drag the end of a chain. The joints turn to reach it.", "info");
+    }
+  });
+  prepare.onIkEnd(() => {
+    ikBase = null;
+    ikMiss = false;
+    flushEdit();
     renderChrome();
     fx.scheduleAuto();
   });

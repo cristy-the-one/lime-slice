@@ -245,6 +245,29 @@ if (openedMulti.ok) {
   eq("the first object stays the mesh the one-object path knows", openedMulti.project.mesh, project.mesh);
   eq("the second object keeps its offset", openedMulti.project.objects?.[1]?.placement.offset, { x: 40, y: 8, z: 0 });
 }
+const chained: LimeProject = {
+  ...multi,
+  objects: [
+    { ...multi.objects![0]!, pivot: [0, 0, 0] },
+    {
+      ...multi.objects![1]!,
+      pivot: [1, 2, 3],
+      chain: { parent: "part", offset: [10, 0, 0], turn: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      jointLimits: { z: [-30, 30] },
+    },
+  ],
+};
+const chainedText = serializeProject(chained);
+const chainedWire = JSON.parse(chainedText) as { objects: Record<string, unknown>[] };
+check("a pivot and a chain are written on the objects that have them", chainedWire.objects[0]?.pivot !== undefined && chainedWire.objects[1]?.chain !== undefined && chainedWire.objects[1]?.jointLimits !== undefined);
+check("an object without a pivot omits the key", !("pivot" in (JSON.parse(multiText) as { objects: Record<string, unknown>[] }).objects[1]!));
+const openedChain = parseProject(chainedText);
+check("a pivot chain round trip opens", openedChain.ok);
+if (openedChain.ok) {
+  eq("the parent pivot comes back", openedChain.project.objects?.[0]?.pivot, [0, 0, 0]);
+  eq("the child link comes back", openedChain.project.objects?.[1]?.chain, { parent: "part", offset: [10, 0, 0], turn: [1, 0, 0, 0, 1, 0, 0, 0, 1] });
+  eq("the joint limit comes back", openedChain.project.objects?.[1]?.jointLimits, { z: [-30, 30] });
+}
 const layered = JSON.parse(multiText) as { objects: { settings?: unknown }[] };
 layered.objects[0]!.settings = { layerHeight: 0.08 };
 eq(
