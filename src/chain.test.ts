@@ -17,7 +17,6 @@ import {
   saneChains,
   scaledDescendants,
   solveDescendants,
-  solveIk,
   type ChainObject,
 } from "./chain.ts";
 import type { Vec3 } from "./pivot.ts";
@@ -104,55 +103,8 @@ check("a part cannot link to itself", linkRefusal(rows, "mid", "mid") !== null);
   near("the end is twice as far", pivotBed(solved[2]!, bed), [40, 0, 0], 0.2);
 }
 
-{
-  const target: Vec3 = [0, 20, 0];
-  const posed = solveIk(rows, "end", target, bed);
-  check("dragging the end solves", posed !== null);
-  near("the end pivot reaches the target", pivotBed(posed![2]!, bed), target, 0.5);
-  const rootAt = pivotBed(posed![0]!, bed);
-  const midAt = pivotBed(posed![1]!, bed);
-  const endAt = pivotBed(posed![2]!, bed);
-  const bone = (a: Vec3, b: readonly number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-  check("the first bone keeps its length", Math.abs(bone(rootAt, midAt) - 10) < 0.2);
-  check("the second bone keeps its length", Math.abs(bone(midAt, endAt) - 10) < 0.2);
-  check("a free part is not an end", solveIk([rows[0]!], "root", target, bed) === null);
-}
-
-{
-  const limited = rows.map((obj) => (obj.id === "root" ? { ...obj, jointLimits: { z: [0, 0] as [number, number] } } : obj));
-  const posed = solveIk(limited, "end", [10, 10, 0], bed)!;
-  near("a locked root stays put", pivotBed(posed[0]!, bed), [0, 0, 0], 0.05);
-  near("the mid joint still brings the end around itself", pivotBed(posed[2]!, bed), [10, 10, 0], 0.6);
-  check("limits round-trip through the reader", JSON.stringify(readJointLimits({ z: [0, 0], y: [1, 0] })) === JSON.stringify({ z: [0, 0] }));
-}
-
-{
-  // The root already turned 90°: a mid joint locked at 0 in its parent's frame must stay straight on the root,
-  // not snap to 0° on the bed.
-  const held = heldPivotPose(mesh, [0, 0, 0], rows[0]!, { orient: rotZ(90), partScale: 1 }, bed.x, bed.y)!;
-  const turned = solveDescendants(rows.map((obj) => (obj.id === "root" ? { ...obj, orient: rotZ(90), centered: held.centered, offset: held.offset } : obj)), "root", bed);
-  const locked = turned.map((obj) => (obj.id === "mid" ? { ...obj, jointLimits: { z: [0, 0] as [number, number] } } : obj));
-  const posed = solveIk(locked, "end", [-5, 15, 0], bed)!;
-  const rootAt = pivotBed(posed[0]!, bed);
-  const midAt = pivotBed(posed[1]!, bed);
-  const endAt = pivotBed(posed[2]!, bed);
-  const dir = (a: readonly number[], b: readonly number[]) => Math.atan2(b[1]! - a[1]!, b[0]! - a[0]!);
-  check("a locked mid joint keeps the end in line with the first bone", Math.abs(dir(rootAt, midAt) - dir(midAt, endAt)) < 0.02, `bones at ${dir(rootAt, midAt)} and ${dir(midAt, endAt)}`);
-}
-
-{
-  // A joint already outside its limit is not snapped back on the first step.
-  const bent = rows.map((obj) => (obj.id === "root" ? { ...obj, jointLimits: { z: [-10, 10] as [number, number] } } : obj));
-  const held = heldPivotPose(mesh, [0, 0, 0], bent[0]!, { orient: rotZ(45), partScale: 1 }, bed.x, bed.y)!;
-  const out = solveDescendants(bent.map((obj) => (obj.id === "root" ? { ...obj, orient: rotZ(45), centered: held.centered, offset: held.offset } : obj)), "root", bed);
-  const endBefore = pivotBed(out[2]!, bed);
-  // A little further round: the root may not turn further out, and must not snap back to 10° either.
-  const posed = solveIk(out, "end", [endBefore[0] - 0.5, endBefore[1] + 0.5, 0], bed)!;
-  const rootAt = pivotBed(posed[0]!, bed);
-  const midAt = pivotBed(posed[1]!, bed);
-  const deg = (Math.atan2(midAt[1] - rootAt[1], midAt[0] - rootAt[0]) * 180) / Math.PI;
-  check("a root bent past its limit holds where it is", Math.abs(deg - 45) < 0.5, `first bone at ${deg}°`);
-}
+// Legacy bed-joint limits remain readable even though Pose now owns inverse kinematics.
+check("legacy limits still round-trip through the reader", JSON.stringify(readJointLimits({ z: [0, 0], y: [1, 0] })) === JSON.stringify({ z: [0, 0] }));
 
 {
   // A child at the 400% clamp grows less than its parent, so the joint on it moves by what it really grew.

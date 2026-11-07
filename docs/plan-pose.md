@@ -251,6 +251,10 @@ The Pose rail has Select, Turn, Joint and Link. The left dock shows the assembly
 
 Reach drags the surface point under the pointer through the selected member's jointed chain, stopping at the first fixed ancestor. Each pointer move solves from the start of the gesture: hinge motion stays on its pin axis and obeys angle limits; ball joints obey their cones. The target is on a plane through the grabbed point facing the camera. The solve stops after 32 sweeps or at 0.05 mm, and reports the remaining distance when it cannot reach the target. A drag is one Undo step; Escape cancels it. Interference is refreshed when the drag finishes, and the plate layout and slice stay unchanged.
 
+### As built: M5
+
+Prepare keeps its Pivot tool and bed-chain Link, Unlink and Chain controls. The old Prepare IK tool and its joint-limit inputs are gone; Reach in Pose is the one inverse-kinematics tool. Legacy `jointLimits` are still read, kept through edits and written back with version 4 projects.
+
 ## 9. Later
 
 - **Plant and move.** Several dragged or pinned points solved together: plant all eight claws and move the body, so the legs bend to keep the claws where they are. It needs a solver over several effectors, such as damped least squares on the joint angles, and is the step that makes a spider stand.

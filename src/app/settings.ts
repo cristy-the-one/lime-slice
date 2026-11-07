@@ -910,12 +910,6 @@ function pivotChainHtml(obj: ReturnType<typeof selectedObject>): string {
   const centre = centreOf(obj.sourcePos);
   const custom = !!obj.pivot && usingCustomPivot(obj.pivot, centre);
   const value = (n: number | undefined) => (custom && n !== undefined ? pivotMm(n) : "");
-  const span = (axis: "x" | "y" | "z") => obj.jointLimits?.[axis];
-  const joint = (axis: "x" | "y" | "z", label: string) => {
-    const pair = span(axis);
-    // One row per axis: six inputs in one auto-fit grid squeeze to 5rem at a wide panel and clip "free".
-    return `<div class="grid3"><label class="setting" data-label="joint ${label} min">${label} min<input id="joint${label}Min" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[0] : ""}" aria-label="Joint ${label} minimum" /></label><label class="setting" data-label="joint ${label} max">${label} max<input id="joint${label}Max" type="number" min="-360" max="360" step="1" placeholder="free" value="${pair ? pair[1] : ""}" aria-label="Joint ${label} maximum" /></label></div>`;
-  };
   return `
     <details class="subgroup" id="pivotChainGroup" data-sub="pivot-chain"${subgroupOpen("pivot-chain") ? " open" : ""}>
       <summary><span>Pivot and chain</span><span class="subgroup-sum">${custom ? "Custom pivot" : "Centre"}</span></summary>
@@ -927,8 +921,6 @@ function pivotChainHtml(obj: ReturnType<typeof selectedObject>): string {
         </div>
         <button class="btn" id="pivotReset" type="button">Reset pivot</button>
         <p class="meta">Source millimetres. Empty is the centre the part already turns about. Rotate and scale keep a custom pivot still. Shift-click with the Pivot tool snaps to a corner, the centre, or a vertex.</p>
-        ${joint("x", "X")}${joint("y", "Y")}${joint("z", "Z")}
-        <p class="meta">Joint limits, degrees, for inverse kinematics. Empty is free. Drag the end of a chain with the IK tool.</p>
       </div>
     </details>`;
 }
@@ -975,7 +967,7 @@ const SEQUENTIAL = {
 } as const;
 type SequentialId = keyof typeof SEQUENTIAL;
 
-const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "placeRx", "placeRy", "placeRz", "objInfill", "objWalls", "objSpeed", "pivotX", "pivotY", "pivotZ", "jointXMin", "jointXMax", "jointYMin", "jointYMax", "jointZMin", "jointZMax"];
+const TYPED_FIELDS = ["seqclear", "seqgantry", "placeX", "placeY", "placeRx", "placeRy", "placeRz", "objInfill", "objWalls", "objSpeed", "pivotX", "pivotY", "pivotZ"];
 
 /** The typed field the user is in, including one whose text was already stored. A rebuild replaces the input, so focus has to be put back or the caret is gone. */
 function focusedTypedField(): HTMLInputElement | null {
@@ -1001,17 +993,6 @@ function fieldValue(id: string): string {
 
 function pivotFieldValues(): [string, string, string] {
   return [fieldValue("pivotX"), fieldValue("pivotY"), fieldValue("pivotZ")];
-}
-
-function jointAxis(id: string): "x" | "y" | "z" {
-  if (id.startsWith("jointY")) return "y";
-  if (id.startsWith("jointZ")) return "z";
-  return "x";
-}
-
-function jointFieldValues(axis: "x" | "y" | "z"): [string, string] {
-  const label = axis.toUpperCase();
-  return [fieldValue(`joint${label}Min`), fieldValue(`joint${label}Max`)];
 }
 
 /** Commits a typed field the way its change handler does. False when nothing was stored. */
@@ -1047,13 +1028,6 @@ function commitTypedField(el: HTMLInputElement): boolean {
     case "pivotY":
     case "pivotZ":
       return fx.notePivotTriple?.(pivotFieldValues()) ?? false;
-    case "jointXMin":
-    case "jointXMax":
-    case "jointYMin":
-    case "jointYMax":
-    case "jointZMin":
-    case "jointZMax":
-      return fx.noteJointField?.(jointAxis(el.id), jointFieldValues(jointAxis(el.id))) ?? false;
     default:
       return false;
   }
