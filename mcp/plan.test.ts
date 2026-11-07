@@ -2,7 +2,7 @@
  * plan_run against the stand-in engine: references between steps, a bad reference, a refused middle step, and a plan
  * that runs past the reply time and answers with a job.
  */
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -50,6 +50,12 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   };
   const result = await session.call("plan_run", { steps: [{ tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } }, { tool: "session_info" }] });
   check("a completed plan step is saved before the next starts", result.ok === true && savedBeforeNext);
+  const path = autosavePath()!;
+  renameSync(path, join(process.env.LIME_MCP_WORKSPACE, "autosave-2147483646.lime"));
+  const restarted = new Session(fakeEngine());
+  const recovered = await restarted.call("slice_wait", { job: "job_1" });
+  const recovery = recovered.plan as { total?: number; completed?: { step: number; tool: string }[] } | undefined;
+  check("a restarted server reports the saved plan steps", recovered.status === "lost" && recovery?.total === 2 && JSON.stringify(recovery.completed) === JSON.stringify([{ step: 1, tool: "solid_new" }, { step: 2, tool: "session_info" }]), JSON.stringify(recovered));
   process.env.LIME_MCP_WORKSPACE = originalWorkspace;
 }
 
@@ -144,6 +150,8 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   delete process.env.LIME_MCP_FAKE_MODEL_MS;
   check("an edit while the plan runs is refused with the plan's job", busy.ok === false && String(busy.reason).startsWith(`plan_run is still running in the background as ${String(first.job)}`), JSON.stringify(busy));
   check("a long plan answers with a job", first.status === "running" && first.tool === "plan_run", JSON.stringify(first).slice(0, 300));
+  const planSave = JSON.parse(readFileSync(autosavePath()!, "utf8")) as { mcpPlanRecovery?: { job?: string; completed?: unknown[] } };
+  check("the recovered plan uses the same job handle", planSave.mcpPlanRecovery?.job === first.job && planSave.mcpPlanRecovery.completed?.length === 3, JSON.stringify(planSave.mcpPlanRecovery));
   check("slice_wait on the plan's job returns the plan's result", done.ok === true && done.status === "done" && (done.steps as unknown[]).length === 3, JSON.stringify(done).slice(0, 400));
 }
 

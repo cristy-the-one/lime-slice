@@ -257,6 +257,7 @@ GUIDES.push({
     "The plan stops at the first refused step. The reply has every step's result so far and failedStep; the steps before it stay applied, so fix that step and send the rest.",
     "Call the tools one by one instead when you need to look at a result first: which face, whether a probe fits, what a render shows.",
     "A plan past about 45 s answers with a job like a long call: slice_wait {job} returns the plan's result, and slice_cancel stops it at the step it is on.",
+    "Each completed plan step is autosaved. If the server restarts, slice_wait for that lost plan restores the saved plate and lists the completed step numbers and tools; replies and unfinished work are not restored.",
   ].join("\n"),
 });
 

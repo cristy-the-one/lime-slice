@@ -183,6 +183,8 @@ export interface CallMeta {
   /** How far the work is, for a job's wait: the last fraction and stage it reported. */
   fraction?: number;
   stage?: string;
+  /** Reserved before a plan starts so each autosave can identify its eventual background job. */
+  planJob?: string;
 }
 
 /** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */

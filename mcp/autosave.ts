@@ -19,6 +19,14 @@ export interface PreviousAutosave {
   savedAt: string;
   objects: number;
   note: string;
+  plan?: PlanRecovery;
+}
+
+/** Only completed step names and numbers: no arguments, results or client data. */
+export interface PlanRecovery {
+  job: string;
+  total: number;
+  completed: { step: number; tool: string }[];
 }
 
 /** Where this server autosaves, or null without a workspace. */
@@ -59,9 +67,12 @@ export function takePreviousAutosave(): PreviousAutosave | null {
     if (!existsSync(previous)) return null;
     const savedAt = statSync(previous).mtime.toISOString();
     let objects = 0;
+    let plan: PlanRecovery | undefined;
     try {
-      const doc = JSON.parse(readFileSync(previous, "utf8")) as { objects?: unknown[] };
+      const doc = JSON.parse(readFileSync(previous, "utf8")) as { objects?: unknown[]; mcpPlanRecovery?: PlanRecovery };
       objects = Array.isArray(doc.objects) ? doc.objects.length : 1;
+      const p = doc.mcpPlanRecovery;
+      if (p && /^job_\d+$/.test(p.job) && Number.isInteger(p.total) && p.total > 0 && p.total <= 250 && Array.isArray(p.completed) && p.completed.length <= p.total && p.completed.every((step) => Number.isInteger(step.step) && step.step > 0 && step.step <= p.total && typeof step.tool === "string" && step.tool.length <= 80)) plan = p;
     } catch {
       return null;
     }
@@ -69,6 +80,7 @@ export function takePreviousAutosave(): PreviousAutosave | null {
       path: previous,
       savedAt,
       objects,
+      ...(plan ? { plan } : {}),
       note: `A previous server's plate, saved ${savedAt}, is in ${previous} with ${objects} object${objects === 1 ? "" : "s"} and their Model history. If the server restarted mid-session, project_open that path to carry on.`,
     };
   } catch {

@@ -42,10 +42,10 @@ function detachable(this: Session, name: string, input: Record<string, unknown>,
 }
 
 function startWorkJob(this: Session, name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
-  this.jobSeq += 1;
+  if (!ctx.planJob) this.jobSeq += 1;
   const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
   const stoppable = name === "plan_run" || name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
-  const job: WorkJob = { handle: `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
+  const job: WorkJob = { handle: ctx.planJob ?? `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
   job.settled = work.then((value) => {
     job.result = value;
   }, (err: unknown) => {
@@ -103,7 +103,7 @@ function planRun(this: Session, args: unknown, meta?: CallMeta): Promise<Record<
   if (bad) throw new ProtocolError(bad);
   if (this.inflight === 0) this.flushAutosave();
   const stop = new AbortController();
-  const ctx: CallMeta = { progressToken: meta?.progressToken, signal: stop.signal };
+  const ctx: CallMeta = { progressToken: meta?.progressToken, signal: stop.signal, planJob: `job_${++this.jobSeq}` };
   const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx));
   return this.detachable("plan_run", args as Record<string, unknown>, work, ctx, stop, meta?.signal);
 }
@@ -133,7 +133,8 @@ async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta): Promise
     done.push({ step: n, tool, result: value });
     // A plan can run for minutes. Persist the plate at the completed step boundary, before starting another step;
     // the ordinary delayed autosave waits for the whole plan's inflight call and would otherwise lose every step.
-    this.flushAutosave();
+    const completed = done.filter((row) => (row.result as Record<string, unknown> | undefined)?.ok !== false).map((row) => ({ step: Number(row.step), tool: String(row.tool) }));
+    this.flushAutosave({ job: ctx.planJob!, total: steps.length, completed });
     await this.autosaveSettled();
     if (value.ok === false) return end(refuse("plan-step-failed", `Step ${n} (${tool}) was refused: ${typeof value.reason === "string" ? value.reason : "no reason given."}`, { failedStep: n }));
   }

@@ -3,6 +3,8 @@
  * Feasibility refusals are `{ok:false, reason}` and are decided before apply.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { bytesToBase64 } from "../src/base64.ts";
 import { fnv1aHex } from "../src/slice-action.ts";
@@ -26,7 +28,7 @@ import { blendOf } from "./request.ts";
 import { guideByUri } from "./guides.ts";
 import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
-import { autosavePath, takePreviousAutosave, writeAutosave, type PreviousAutosave } from "./autosave.ts";
+import { autosavePath, takePreviousAutosave, writeAutosave, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
 import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
 import { expressionMentions, isPlainNumber } from "../src/modeling/params.ts";
 import type { Assembly } from "../src/assembly.ts";
@@ -338,13 +340,24 @@ export class Session {
   }
 
   /** The plate and its histories to this server's autosave in the workspace, without committing anything. Never throws. */
-  flushAutosave(): void {
-    if (!this.autosaveDirty) return;
+  flushAutosave(plan?: PlanRecovery): void {
+    if (!this.autosaveDirty && !plan) return;
+    const dirty = this.autosaveDirty;
     this.autosaveDirty = false;
-    if (this.objects.length === 0) return;
+    if (this.objects.length === 0 && !plan) return;
     try {
       const path = autosavePath();
       if (!path) return;
+      // A read-only step changes only the recovery marker; reuse the packed snapshot instead of recompressing meshes.
+      if (!dirty && plan && existsSync(path)) {
+        const snapshot = structuredClone(plan);
+        this.autosaveWriting = this.autosaveWriting.then(async () => {
+          const wire = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+          wire.mcpPlanRecovery = snapshot;
+          await writeAutosave(path, JSON.stringify(wire));
+        }).catch(() => undefined);
+        return;
+      }
       // A solid never committed has no plate mesh yet: its kernel mesh stands in, so the file opens.
       const doc = this.withKernelMeshes(this.saveDocument());
       this.attachPreview(doc, false);
@@ -352,6 +365,7 @@ export class Session {
       // compressed in that chain too, so the call does not wait for them.
       // The document is taken now (a copy), so a write queued behind another still saves the plate as it is at this call.
       const prepared = prepareProject(doc);
+      if (plan) prepared.wire.mcpPlanRecovery = structuredClone(plan);
       this.autosaveWriting = this.autosaveWriting.then(async () => writeAutosave(path, await finishProject(prepared))).catch(() => undefined);
     } catch {
       // An autosave that cannot be built is not worth failing a call for either.
