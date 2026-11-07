@@ -50,6 +50,13 @@ if (!("reason" in reparented)) {
   check("link keeps the child's world pose", near(after.get("foot")!.m, flatPoses.get("foot")!.m) && near(after.get("foot")!.t, flatPoses.get("foot")!.t));
   check("link refuses a loop", "reason" in linked(reparented, "knee", "foot", (id) => after.get(id)));
 }
+const carrier: Member = { object: "carrier", parent: "body", offset: [-3, 5, 1], turn: [0, 20, 0] };
+const withCarrier: Assembly = { ...assembly, members: [...assembly.members, carrier] };
+const carrierPoses = solveAssembly(withCarrier, (id) => id === "body" ? bodyPose : undefined).poses;
+const movedBranch = linked(withCarrier, "knee", "carrier", (id) => carrierPoses.get(id));
+if ("reason" in movedBranch) throw new Error(movedBranch.reason);
+const movedBranchPoses = solveAssembly(movedBranch, (id) => carrierPoses.get(id)).poses;
+check("link keeps a moved member and its descendants in place", near(movedBranchPoses.get("knee")!.t, carrierPoses.get("knee")!.t) && near(movedBranchPoses.get("foot")!.t, carrierPoses.get("foot")!.t));
 const ballChild: Member = { ...ballTurn, object: "ball", parent: "body" };
 const ballAssembly: Assembly = { ...assembly, members: [root, knee, ballChild] };
 const ballPoses = solveAssembly(ballAssembly, (id) => id === "body" ? bodyPose : undefined).poses;
