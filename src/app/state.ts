@@ -297,7 +297,7 @@ export const state = {
   query: "",
   move: 0,
   // The markup starts on Preview. A first run with no mesh is moved to Prepare at boot (`startStage`, main.ts).
-  stage: "preview" as "prepare" | "preview" | "gcode" | "model",
+  stage: "preview" as "prepare" | "preview" | "gcode" | "model" | "pose",
   playing: false,
   profile: loadProfile(),
   sourcePos: null as Float32Array | null,

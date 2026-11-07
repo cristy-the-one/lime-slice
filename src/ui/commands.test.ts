@@ -75,7 +75,7 @@ const bools = [false, true];
 const contexts: KeyContext[] = [];
 for (const helpOpen of bools) for (const typing of bools) for (const hasResult of bools) for (const running of bools)
   for (const searching of bools) for (const brushOn of bools) for (const editingSupports of bools) for (const inGcode of bools)
-    for (const stage of ["prepare", "preview", "gcode", "model"] as const)
+    for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const)
       for (const layout of ["desktop", "compact"] as const)
         for (const [sketchOpen, sketchFeature, sketchLoft] of [[false, false, false], [true, false, false], [true, true, false], [true, true, true]] as const)
           contexts.push({ helpOpen, typing, stage, hasResult, running, searching, brushOn, editingSupports, inGcode, sketchOpen, sketchFeature, sketchLoft, layout });
@@ -191,7 +191,7 @@ eq("an empty slot is dropped", tipWithShortcut("Add ()", undefined), "Add");
 eq("a real shortcut is kept", tipWithShortcut("Arrange (A)", "A"), "Arrange (A)");
 
 // R3-01. A Prepare key is null wherever its button is not on screen, and the same command where it is.
-const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" | "model", string>>> = {
+const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" | "model" | "pose", string>>> = {
   M: { prepare: "tool-move" },
   R: { prepare: "tool-rotate" },
   F: { prepare: "tool-layflat" },
@@ -200,38 +200,39 @@ const STAGE_KEYS: Record<string, Partial<Record<"prepare" | "preview" | "gcode" 
   N: { prepare: "paint-reinforce" },
   E: { preview: "edit-supports", gcode: "edit-supports" },
   C: { prepare: "tool-section", preview: "tool-section", gcode: "tool-section" },
-  T: { prepare: "view-top", model: "model-view-top" },
-  Y: { prepare: "view-front", model: "model-view-front" },
-  I: { prepare: "view-iso", model: "model-view-iso" },
-  "/": { prepare: "search", preview: "search", gcode: "search" },
-  "Ctrl+F": { prepare: "search", preview: "search", gcode: "search" },
+  T: { prepare: "view-top", model: "model-view-top", pose: "pose-view-top" },
+  Y: { prepare: "view-front", model: "model-view-front", pose: "pose-view-front" },
+  I: { prepare: "view-iso", model: "model-view-iso", pose: "pose-view-iso" },
+  "/": { prepare: "search", preview: "search", gcode: "search", pose: "search" },
+  "Ctrl+F": { prepare: "search", preview: "search", gcode: "search", pose: "search" },
   "Shift+1": { prepare: "strategy-speed", preview: "strategy-speed" },
   "Shift+M": { prepare: "measure", preview: "measure", gcode: "measure", model: "model-measure" },
 };
 for (const [chord, where] of Object.entries(STAGE_KEYS)) {
-  for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+  for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const) {
     eq(`${chord} in ${stage}`, press(chord, { stage, hasResult: stage === "preview" }), where[stage] ?? null);
   }
 }
 
 // R3-05. Every chord, in every combination of stage and mode, fires at most one command,
 // and a targeted command fires only where that target is on screen.
-const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | "model")[]> = {
-  "#leftToggle": ["prepare", "preview", "gcode", "model"],
-  "#timing": ["prepare", "preview", "gcode", "model"],
+const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | "model" | "pose")[]> = {
+  "#leftToggle": ["prepare", "preview", "gcode", "model", "pose"],
+  "#timing": ["prepare", "preview", "gcode", "model", "pose"],
   "#contextBarRestore": ["model"],
-  "#compactChromeShow": ["prepare", "preview", "gcode", "model"],
-  "#slice": ["prepare", "preview", "gcode", "model"],
-  "#force": ["prepare", "preview", "gcode", "model"],
-  "#cancel": ["prepare", "preview", "gcode", "model"],
-  "#export": ["prepare", "preview", "gcode", "model"],
-  "#tabPrepare": ["prepare", "preview", "gcode", "model"],
-  "#tabPreview": ["prepare", "preview", "gcode", "model"],
-  "#tabGcode": ["prepare", "preview", "gcode", "model"],
-  "#tabModel": ["prepare", "preview", "gcode", "model"],
-  "#compactTabs [data-tab=prepare]": ["prepare", "preview", "gcode", "model"],
-  "#compactTabs [data-tab=preview]": ["prepare", "preview", "gcode", "model"],
-  "#compactTabs [data-tab=model]": ["prepare", "preview", "gcode", "model"],
+  "#compactChromeShow": ["prepare", "preview", "gcode", "model", "pose"],
+  "#slice": ["prepare", "preview", "gcode", "model", "pose"],
+  "#force": ["prepare", "preview", "gcode", "model", "pose"],
+  "#cancel": ["prepare", "preview", "gcode", "model", "pose"],
+  "#export": ["prepare", "preview", "gcode", "model", "pose"],
+  "#tabPrepare": ["prepare", "preview", "gcode", "model", "pose"],
+  "#tabPreview": ["prepare", "preview", "gcode", "model", "pose"],
+  "#tabGcode": ["prepare", "preview", "gcode", "model", "pose"],
+  "#tabModel": ["prepare", "preview", "gcode", "model", "pose"],
+  "#tabPose": ["prepare", "preview", "gcode", "model", "pose"],
+  "#compactTabs [data-tab=prepare]": ["prepare", "preview", "gcode", "model", "pose"],
+  "#compactTabs [data-tab=preview]": ["prepare", "preview", "gcode", "model", "pose"],
+  "#compactTabs [data-tab=model]": ["prepare", "preview", "gcode", "model", "pose"],
   "#compactIso": ["prepare"],
   "#modelHistoryToggle": ["model"],
   '[data-mode="flat"]': ["preview"],
@@ -240,6 +241,9 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   "#viewPresets button:nth-child(1)": ["prepare"],
   "#viewPresets button:nth-child(2)": ["prepare"],
   "#viewPresets button:nth-child(3)": ["prepare"],
+  "#poseViewPresets button:nth-child(1)": ["pose"],
+  "#poseViewPresets button:nth-child(2)": ["pose"],
+  "#poseViewPresets button:nth-child(3)": ["pose"],
   "#measureField": ["prepare", "preview", "gcode"],
   "#modelToolMeasure": ["model"],
   "#modelToolNew": ["model"],
@@ -283,8 +287,8 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   '#toolRail [data-tool="seam"]': ["prepare"],
   '#toolRail [data-tool="reinforce"]': ["prepare"],
   // Undo and Redo run in every stage. The Model buttons are the tooltip targets, and the handler clicks them only in Model.
-  "#modelUndo": ["prepare", "preview", "gcode", "model"],
-  "#modelRedo": ["prepare", "preview", "gcode", "model"],
+  "#modelUndo": ["prepare", "preview", "gcode", "model", "pose"],
+  "#modelRedo": ["prepare", "preview", "gcode", "model", "pose"],
   '[data-sketch-tool="line"]': ["model"],
   '[data-sketch-tool="rectangle"]': ["model"],
   '[data-sketch-tool="circle"]': ["model"],
@@ -310,6 +314,10 @@ const TARGET_LAYOUTS: Record<string, readonly ("desktop" | "compact")[]> = {
   "#tabPreview": ["desktop"],
   "#tabGcode": ["desktop"],
   "#tabModel": ["desktop"],
+  "#tabPose": ["desktop"],
+  "#poseViewPresets button:nth-child(1)": ["desktop"],
+  "#poseViewPresets button:nth-child(2)": ["desktop"],
+  "#poseViewPresets button:nth-child(3)": ["desktop"],
   "#compactTabs [data-tab=prepare]": ["compact"],
   "#compactTabs [data-tab=preview]": ["compact"],
   "#compactTabs [data-tab=model]": ["compact"],
@@ -336,7 +344,7 @@ for (const command of COMMANDS) {
 }
 const honestChords = [...new Set(COMMANDS.flatMap((command) => command.keys ?? []))];
 for (const layout of ["desktop", "compact"] as const) {
-  for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+  for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const) {
     for (const sketchOpen of bools) for (const sketchFeature of bools) for (const sketchLoft of bools) for (const brushOn of bools)
       for (const helpOpen of bools) for (const running of bools) for (const typing of bools) {
         const ctx: KeyContext = {
@@ -459,7 +467,7 @@ eq("Prepare opens Plate and Tools", groupsForStage("prepare"), ["Plate", "Tools"
 eq("Preview opens Layers", groupsForStage("preview"), ["Layers"]);
 eq("G-code opens Slice", groupsForStage("gcode"), ["Slice"]);
 eq("Model opens Model, and Sketch inside a sketch", [groupsForStage("model"), groupsForStage("model", true)], [["Model"], ["Sketch"]]);
-for (const stage of ["prepare", "preview", "gcode", "model"] as const) {
+for (const stage of ["prepare", "preview", "gcode", "model", "pose"] as const) {
   for (const name of groupsForStage(stage, stage === "model")) check(`${stage} opens a real group (${name})`, groups.some((group) => group.group === name));
 }
 

@@ -61,6 +61,8 @@ export interface Fx {
   noteJointField: PlateActions["noteJointField"];
   separateShells: ShellActions["separateShells"];
   drawPaint: () => void;
+  // pose.ts: redraw the Pose stage when the plate or the assemblies change. Set once Pose has been opened.
+  syncPose?: () => void;
   // The Model workspace (model.ts registers them)
   commitModel: Commit["commitModel"];
   exportedPart: SplitPrint["exportedPart"];

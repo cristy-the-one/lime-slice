@@ -35,7 +35,7 @@ import "./chrome.css";
 import { prefs } from "../prefs.ts";
 
 export type GizmoTool = "all" | "move" | "rotate" | "scale" | "pivot" | "ik";
-export type Stage = "prepare" | "preview" | "gcode" | "model";
+export type Stage = "prepare" | "preview" | "gcode" | "model" | "pose";
 export type ViewMode = "flat" | "split" | "solid";
 
 export interface ChromeHooks {
@@ -96,7 +96,7 @@ function iconizeToolbar() {
   iconOnly(document.querySelector("#flatZoomOut"), Minus, 14);
 }
 
-const STAGE_NAME: Record<Stage, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model" };
+const STAGE_NAME: Record<Stage, string> = { prepare: "Prepare", preview: "Preview", gcode: "G-code", model: "Model", pose: "Pose" };
 
 /**
  * The rail at the far left: one vertical toolbar whose tool sets follow the stage. Preview and G-code share theirs,

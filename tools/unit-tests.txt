@@ -34,6 +34,7 @@ src/ui/compact/support-edit.test.ts
 src/mesh-place.test.ts
 src/pivot.test.ts
 src/chain.test.ts
+src/pose-look.test.ts
 src/playback.test.ts
 src/project.test.ts
 src/assembly.test.ts
