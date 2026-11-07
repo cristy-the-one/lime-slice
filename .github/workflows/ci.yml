@@ -310,6 +310,7 @@ jobs:
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
+          node --experimental-strip-types mcp/large-profile.test.ts
           node --experimental-strip-types mcp/interference-exact.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts

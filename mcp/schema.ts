@@ -383,7 +383,7 @@ const profilePlace = {
   origin: { ...vec3, description: "Plane origin, in place of a face." },
   turn: { ...vec3, description: "Plane turn, degrees X, Y, Z." },
 };
-const profile = { type: "array", minItems: 3, maxItems: 200, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
+const profile = { type: "array", minItems: 3, maxItems: 1000, items: { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } }, description: "Closed outline, [u, v] points, mm." };
 const point2 = { type: "array", minItems: 2, maxItems: 2, items: { type: "number" } };
 /** K1: loops in place of a point profile. I18: up to 1,000; a loop inside another is its hole, one inside a hole an island. */
 const loopsField = {
@@ -399,7 +399,7 @@ const loopsField = {
       segments: {
         type: "array",
         minItems: 1,
-        maxItems: 200,
+        maxItems: 1000,
         description: "Back to the start.",
         items: {
           type: "object",
@@ -418,7 +418,7 @@ const loopsField = {
 
 const profileShape = {
   smooth: { type: "boolean", description: "Spline through points." },
-  corners: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
+  corners: { type: "array", maxItems: 1000, items: { type: "integer", minimum: 0 }, description: "Sharp corners when smooth." },
 };
 const perPoint = (what: string) => ({ description: `${what}: one number, or one per path point.` });
 
