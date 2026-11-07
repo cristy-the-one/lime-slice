@@ -1417,6 +1417,7 @@ export const TOOLS: ToolSpec[] = [
         assembly: { type: "string", minLength: 1, maxLength: 80, description: "Assembly name." },
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
         compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
+        objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
       },
     },
   },
