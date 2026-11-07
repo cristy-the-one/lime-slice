@@ -211,6 +211,38 @@ Each lands as its own PR, is usable, and has tests. UI work follows the `verify-
 
 M1 to M4 are the owner's request. M5 tidies Prepare once Pose can do the job. M6 makes setting up a joint quick. M7 brings the MCP to parity, as `docs/plan-gui-mcp-parity.md` asks.
 
+### As built: M1
+
+- **The stage.**
+  - **Placement.** `Pose` is the fifth tab (`#tabPose`, key `5`, D5) in `Stage`, `StageName`, `state.stage` and `setStage`. Its body is `#poseBody`, shown and hidden like `#modelBody`. Leaving Pose flushes the edit, as leaving Model does.
+  - **Keys.** The rail's stage label and the shortcut sheet name it. T, Y and I click its own camera chip (`#poseViewPresets`). `/` and Ctrl+F search the settings there too, because the left dock is still Settings in M1.
+- **The view, `src/pose-view.ts`.**
+  - **What it reuses.** Model's scene pieces: the studio lights, the orbit glide, the view cube, the bed reference, Model's camera framing, and the frame loop that stops when the view is still.
+  - **What it draws.** Every object from its plate mesh at the pose `assembledParts` gives the Assembly view, centred on the bed and standing on it, so the two views agree. Each part gets Model's solid material, opaque and depth-written, with outline edges in `IDLE_EDGE`.
+  - **What it keeps.** One geometry and one outline per source array, so a selection or pose change rewrites matrices and uploads no vertex. The 86-part spider opens in about 0.4 s here, the interference pass included.
+  - **Picking.** A click picks; a press that moves past 4 px orbits.
+- **Looks, `src/pose-look.ts`.**
+  - **The order.** A clash wins over the selection, and the selection wins over the chain, as in the Assembly view (D8). The clash pass is the Assembly view's own, per assembly and cached per pose.
+  - **The chain.** The chain set is empty until joints exist (M2).
+- **D6, the colours.** `--pose` is `#f2846f` and `--pose-chain` is `#b5675a`, in **both** themes. The plan's light values (`#c2452f`, `#e0a094`) assumed a light viewport, but `tokens.css` keeps the viewport dark in the light theme ("Dark viewport in both themes"), and `#c2452f` on `#0c0e12` would sink. Measured on the stage:
+
+  | | Contrast on the stage | ΔE from `--context` (grey parts) | ΔE from `--amber` | ΔE from `--mesh` | ΔE from `--danger` |
+  |---|---|---|---|---|---|
+  | `--pose` | 7.7:1 | 55 | 46 | 81 | 16 (the same family, not the same red) |
+  | `--pose-chain` | 4.7:1 | 44 | 56 | 80 | 28 |
+
+  The selection and its chain are 20 apart.
+- **Selection.** A click in the view calls the same `selectPlateObject` as the object list, so the list, Prepare and Pose agree. A click on empty space keeps the selection. `syncAssemblyView`, which runs on every placement, selection and assembly change, now also redraws Pose (`fx.syncPose`), only while Pose is on screen.
+- **Not in M1.**
+  - **The left dock.** It is still Settings, with the print-layout fields. M3 replaces it with the Pose panel; until then, moving X or Y there moves the print layout, as it does in Prepare.
+  - **The phone layout.** It has no Pose tab, as it has none for G-code.
+  - **The Top preset.** It looks almost straight down (`0, -0.04, 1`), as Model's and Prepare's do. Reach (M4) does not depend on it, because a hinge takes only its in-plane share of a drag.
+- **Tests.**
+  - `e2e/pose-view.spec.ts` (new, in `test:smoke`, passes three times with `--repeat-each=3`). It covers key 5, opaque drawing, both parts standing on the plate, the selection tint, selecting from the list and by a click, an empty click, the chip and the T/Y/I keys, the light theme's coral, the print layout unchanged afterwards, the boxes matching the Assembly view's `data-assembled`, the amber tint for crossing members, and the empty plate's line.
+  - `src/pose-look.test.ts` (new, in `tools/unit-tests.txt`). It covers the look order, and reads both theme blocks of `tokens.css` for contrast of at least 3:1 and Lab distance from `--context`, `--amber`, `--mesh` and `--danger`.
+  - `src/ui/commands.test.ts` covers the tab key, the camera keys and their targets in every stage.
+  - Run unchanged: `keyboard`, `assembly`, `assembly-layout`, `theme-switch`, `lazy-workspaces`, `compact-layout`, `a11y-errors`, `small-ui`, `ui-review`, `fit`, `shortcuts-first-run`, `model-chrome`, `pivots-chains` and `history-search`.
+
 ## 9. Later
 
 - **Plant and move.** Several dragged or pinned points solved together: plant all eight claws and move the body, so the legs bend to keep the claws where they are. It needs a solver over several effectors, such as damped least squares on the joint angles, and is the step that makes a spider stand.
@@ -235,7 +267,7 @@ What this changes: all three CAD tools put a joint's axis on a picked cylinder, 
 | D3 | Joint kinds? | Decided by the owner on 2026-11-07: hinge and ball, with limits. |
 | D4 | How does it land? | Decided by the owner on 2026-11-07: this plan as a docs-only PR, then M1 in its own PR. |
 | D5 | Where does the Pose tab sit, and what key? | After Model, key `5`, so no existing key changes. The other order (Model, Pose, Prepare, Preview, G-code) matches the order of work, but it would move every key the owner has learned. |
-| D6 | The pose colour values? | `#f2846f` / `#c2452f` for the selection and `#b5675a` / `#e0a094` for its chain, subject to the contrast test. The M1 PR shows a swatch screenshot in both themes for the owner to pick. |
+| D6 | The pose colour values? | As built in M1: `#f2846f` for the selection and `#b5675a` for its chain, in both themes, because the viewport is dark in both (see "As built: M1"). The test in `src/pose-look.test.ts` guards them. The owner may still pick others from the M1 screenshots. |
 | D7 | Do bed chains (#626's `chain` on `PlateObject`) go entirely? | Not now. Keep them readable and following (section 5), and decide once Pose is in use. |
 | D8 | Does selecting a part tint its chain up to the anchor, or the part and its children? | Up to the anchor, because that is what Reach will turn. The children move with the part and are drawn in their normal colour. |
 

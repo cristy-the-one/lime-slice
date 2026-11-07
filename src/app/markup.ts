@@ -42,6 +42,7 @@ export function mountMarkup(root: HTMLElement) {
         <button class="btn mode tab on" id="tabPreview" type="button" role="tab" data-tab="preview" aria-label="Preview" aria-selected="true" aria-pressed="true" aria-controls="previewBody" data-key="2">Preview</button>
         <button class="btn mode tab" id="tabGcode" type="button" role="tab" data-tab="gcode" aria-label="G-code" aria-selected="false" aria-pressed="false" aria-controls="gcodePane" data-key="3">G-code</button>
         <button class="btn mode tab" id="tabModel" type="button" role="tab" data-tab="model" aria-label="Model" aria-selected="false" aria-pressed="false" aria-controls="modelBody" data-key="4">Model</button>
+        <button class="btn mode tab" id="tabPose" type="button" role="tab" data-tab="pose" aria-label="Pose" aria-selected="false" aria-pressed="false" aria-controls="poseBody" data-key="5">Pose</button>
       </div>
       <button class="btn panel-toggle" id="toggleLeft" type="button">Settings</button>
       <button class="btn panel-toggle" id="toggleRight" type="button">Results</button>
@@ -108,6 +109,15 @@ export function mountMarkup(root: HTMLElement) {
           <div class="gizmo-readout gizmo-contact" id="contactReadout" hidden></div>
         </div>
         <div class="stage-body" id="modelBody" role="tabpanel" aria-labelledby="tabModel" hidden>
+        </div>
+        <div class="stage-body" id="poseBody" role="tabpanel" aria-labelledby="tabPose" hidden>
+          <canvas id="pose" aria-label="Parts at their assembled pose"></canvas>
+          <div class="modes stage-chip view-presets" id="poseViewPresets" role="group" aria-label="Camera">
+            <button class="btn" type="button" data-pose-view="top" data-tip="Top view">Top</button>
+            <button class="btn" type="button" data-pose-view="front" data-tip="Front view">Front</button>
+            <button class="btn" type="button" data-pose-view="iso" data-tip="Iso view">Iso</button>
+          </div>
+          <p class="pose-empty" id="poseEmpty" hidden>Open a project or add a part to pose it.</p>
         </div>
         <div class="stage-body" id="previewBody" role="tabpanel" aria-labelledby="tabPreview">
           <div class="stage-chip section-chip" id="sectionChip" role="group" aria-label="Section" hidden data-tip="Section: clip the preview on the arrow side of a free plane. Offset slides the plane, the rings aim it, and the axis keeps it square to the bed. Does not change the slice.">

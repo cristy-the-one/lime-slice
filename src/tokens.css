@@ -68,6 +68,9 @@
   --stage: #0b0d11;
   /* Other plate objects in Model mode: neutral grey on the dark viewport. */
   --context: #9aa3b0;
+  /* Pose's selection and the rest of its chain (docs/plan-pose.md): coral, not --danger, so it never reads as an error. */
+  --pose: #f2846f;
+  --pose-chain: #b5675a;
   --stage-chip: #1a1f28;
   --stage-chip-line: #3a4454;
   --stage-chip-on: #2a3342;
@@ -148,6 +151,9 @@
   /* Dark viewport in both themes. A light clear color changes gizmo edge pixels. */
   --stage: #0c0e12;
   --context: #9aa3b0;
+  /* The viewport stays dark in this theme too, so Pose keeps the dark theme's coral. */
+  --pose: #f2846f;
+  --pose-chain: #b5675a;
   --bed: #161a22;
   --bed-minor: #222733;
   /* Same cut-plane tint as dark. A dark sheet shifts the ghost off the mesh green. */

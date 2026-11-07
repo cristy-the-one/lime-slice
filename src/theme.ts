@@ -16,6 +16,10 @@ export interface ThemeColors {
   bedMinor: string;
   mesh: string;
   danger: string;
+  /** Pose's selected part (`docs/plan-pose.md`, section 4). A coral of the danger family that does not read as an error. */
+  pose: string;
+  /** The rest of the selected chain in Pose: a quieter step of the same hue. */
+  poseChain: string;
   /** Material a step will add, such as a print transition's wedge. */
   ok: string;
   slow: string;
@@ -59,6 +63,8 @@ export function themeColors(): ThemeColors {
     bedMinor: pick("--bed-minor", "#222733"),
     mesh: pick("--mesh", "#96be28"),
     danger: pick("--danger", "#f0615a"),
+    pose: pick("--pose", "#f2846f"),
+    poseChain: pick("--pose-chain", "#b5675a"),
     ok: pick("--ok", "#4ade80"),
     slow: pick("--slow", "#f5a524"),
     fast: pick("--fast", "#d55e00"),
