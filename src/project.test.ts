@@ -393,6 +393,22 @@ eq("a plate with an assembly writes it at version 4", [assembledWire.version, as
 const assembledOpened = parseProject(assembledText);
 eq("the assembly round-trips", assembledOpened.ok ? assembledOpened.project.assemblies : null, assembled.assemblies);
 eq("and is written again identically", assembledOpened.ok ? serializeProject(assembledOpened.project) : null, assembledText);
+// M2: joint definitions travel with the assembly, while damaged joints leave the member fixed.
+const jointProject: LimeProject = { ...assembled,
+  objects: [...assembled.objects!, { ...assembled.objects![1]!, id: "tip", name: "tip.stl" }],
+  assemblies: [{ ...assembled.assemblies![0]!, members: [
+    assembled.assemblies![0]!.members[0]!,
+    { ...assembled.assemblies![0]!.members[1]!, joint: { kind: "hinge", pivot: [1, 2, 3], axis: [0, 0, 1], angle: 20, min: -30, max: 60 } },
+    { object: "tip", parent: "hook", offset: [1, 0, 0], turn: [0, 0, 0], joint: { kind: "ball", pivot: [0, 1, 0], cone: 45, rest: [0, 0, 0, 1] } },
+  ] }],
+};
+const jointText = serializeProject(jointProject);
+const jointOpened = parseProject(jointText);
+eq("hinge and ball joints round-trip in a version 4 project", jointOpened.ok ? jointOpened.project.assemblies : null, jointProject.assemblies);
+const damagedJoint = JSON.parse(jointText) as { assemblies: { members: { joint?: unknown }[] }[] };
+damagedJoint.assemblies[0]!.members[1]!.joint = { kind: "hinge", pivot: [1, 2, 3], axis: [0, 0, 0] };
+const damagedOpened = parseProject(JSON.stringify(damagedJoint));
+check("a damaged joint is dropped while its assembly and ball joint survive", damagedOpened.ok && damagedOpened.project.assemblies?.[0]?.members.length === 3 && damagedOpened.project.assemblies[0]!.members[1]!.joint === undefined && damagedOpened.project.assemblies[0]!.members[2]!.joint?.kind === "ball");
 eq("a file without assemblies reads none and writes none", [plainOpened.ok ? plainOpened.project.assemblies ?? null : 0, "assemblies" in JSON.parse(multiText)], [null, false]);
 const appSave = JSON.parse(assembledText) as { objects: unknown[]; assemblies?: unknown };
 appSave.objects = appSave.objects.slice(0, 1);

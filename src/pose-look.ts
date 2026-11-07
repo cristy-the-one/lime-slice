@@ -4,7 +4,7 @@ export type PoseLook = "part" | "selected" | "chain" | "clash";
 
 export interface PoseLooks {
   selectedId: string | null;
-  /** The other members a Reach drag would turn (plan D8). Empty until joints exist. */
+  /** The other jointed members a Reach drag would turn (plan D8). */
   chain: ReadonlySet<string>;
   clashing: ReadonlySet<string>;
 }
