@@ -1,7 +1,7 @@
 import { memberPose, movedTo, readJoint, rotationQuaternion, solveAssembly, withoutMember, type Assembly, type Member } from "./assembly.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { applyPose, IDENTITY_POSE, thenPose, turnDir, type Affine } from "./model-space.ts";
-import { linked, poseChain, restOf, turnBall, turnHinge } from "./pose.ts";
+import { linked, poseChain, restOf, solvePose, turnBall, turnHinge } from "./pose.ts";
 
 let failed = 0;
 function check(label: string, ok: boolean): void { if (!ok) { failed++; console.error(`FAIL ${label}`); } }
@@ -89,5 +89,45 @@ check("invalid ball quaternion is dropped", readJoint({ kind: "ball", pivot: [0,
 check("nonfinite joint data is dropped", readJoint({ kind: "ball", pivot: [0, NaN, 0] }) === undefined);
 check("quaternion captures flipped orientation", near(restOf({ ...ball, turn: [180, 0, 0], joint: { kind: "ball", pivot: [0, 0, 0], rest: rotationQuaternion(eulerOrient(180, 0, 0)) } }).m, eulerOrient(180, 0, 0)));
 check("identity stays identity", near(IDENTITY_POSE.m, [1, 0, 0, 0, 1, 0, 0, 0, 1]));
+// M4: a grabbed point, not the last pivot, follows a three-hinge chain in model space.
+const hinge = (object: string, parent: string, x: number): Member => ({ object, parent, offset: [x, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], angle: 0, min: -170, max: 170 } });
+const leg: Assembly = { id: "leg", name: "leg", members: [root, hinge("hip", "body", 0), hinge("knee2", "hip", 10), hinge("ankle", "knee2", 10)] };
+const solveLeg = (target: [number, number, number]) => solvePose(leg, (id) => id === "body" ? IDENTITY_POSE : undefined, "ankle", [10, 0, 0], target);
+const reached = solveLeg([17, 17, 0]);
+if ("reason" in reached) throw new Error(reached.reason);
+check("three hinges reach the grabbed point within tolerance", reached.reached && reached.distance <= 0.05 && reached.anchor === "body");
+check("reach leaves the original assembly unchanged", leg.members.every((m) => m.joint?.kind !== "hinge" || m.joint.angle === 0));
+check("reach never moves the fixed anchor", near(reached.poses.get("body")!.m, IDENTITY_POSE.m) && near(reached.poses.get("body")!.t, IDENTITY_POSE.t));
+for (const before of leg.members.filter((row) => row.joint?.kind === "hinge")) {
+  const after = reached.assembly.members.find((row) => row.object === before.object)!;
+  const joint = before.joint!;
+  if (joint.kind !== "hinge" || after.joint?.kind !== "hinge") throw new Error("missing hinge");
+  check(`${before.object} keeps its pin in its parent frame`, near(applyPose(memberPose(before), joint.pivot), applyPose(memberPose(after), joint.pivot), 1e-6));
+  check(`${before.object} keeps its axis in its parent frame`, near(turnDir(memberPose(before), joint.axis), turnDir(memberPose(after), joint.axis), 1e-6));
+  check(`${before.object} respects limits`, after.joint.angle! >= -170 && after.joint.angle! <= 170);
+}
+const far = solveLeg([100, 0, 0]);
+if ("reason" in far) throw new Error(far.reason);
+check("an unreachable target leaves the fully extended leg pointing toward it", !far.reached && near(far.point, [30, 0, 0], 1e-6));
+const bent: Assembly = { ...leg, members: leg.members.map((row) => row.joint?.kind === "hinge" ? member(turnHinge(row, row.object === "knee2" ? -60 : 30)) : row) };
+const stretched = solvePose(bent, (id) => id === "body" ? IDENTITY_POSE : undefined, "ankle", [10, 0, 0], [100, 0, 0]);
+check("an unreachable target straightens a bent leg towards it", !("reason" in stretched) && stretched.point[0] > 29.8 && Math.abs(stretched.point[1]) < 0.1);
+const largeLeg: Assembly = { ...leg, members: [...leg.members, ...Array.from({ length: 82 }, (_, i): Member => ({ object: `other-${i}`, parent: "body", offset: [0, i, 0], turn: [0, 0, 0] }))] };
+const many = solvePose(largeLeg, (id) => id === "body" ? IDENTITY_POSE : undefined, "ankle", [10, 0, 0], [17, 17, 0]);
+check("an 86-part assembly reaches without moving unrelated parts", !("reason" in many) && many.reached && near(many.poses.get("other-40")!.t, [0, 40, 0]));
+const offPlane = solveLeg([17, 17, 8]);
+if ("reason" in offPlane) throw new Error(offPlane.reason);
+check("hinges stay in their plane for an off-plane target", Math.abs(offPlane.point[2]) < 1e-6 && offPlane.distance >= 8);
+const stopped: Assembly = { ...leg, members: leg.members.map((row) => row.object === "knee2" ? { ...row, joint: undefined } : row) };
+const anchored = solvePose(stopped, (id) => id === "body" ? IDENTITY_POSE : undefined, "ankle", [10, 0, 0], [25, 4, 0]);
+check("reach stops at the first fixed member", !("reason" in anchored) && anchored.anchor === "knee2" && near(anchored.poses.get("hip")!.t, [0, 0, 0]));
+const constrained: Assembly = { ...leg, members: leg.members.map((row) => row.joint?.kind === "hinge" ? { ...row, joint: { ...row.joint, min: 0, max: 0 } } : row) };
+const locked = solvePose(constrained, (id) => id === "body" ? IDENTITY_POSE : undefined, "ankle", [10, 0, 0], [10, 20, 0]);
+check("locked joints remain locked", !("reason" in locked) && near(locked.point, [30, 0, 0], 1e-6));
+const ballLeg: Assembly = { id: "ball-leg", name: "ball", members: [root, { object: "ball", parent: "body", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "ball", pivot: [0, 0, 0], cone: 30, rest: [0, 0, 0, 1] } }] };
+const ballReach = solvePose(ballLeg, (id) => id === "body" ? IDENTITY_POSE : undefined, "ball", [10, 0, 0], [0, 10, 0], () => [1, 0, 0]);
+check("ball reach obeys its cone", !("reason" in ballReach) && Math.abs(Math.atan2(ballReach.point[1], ballReach.point[0]) * 180 / Math.PI - 30) < 1e-6);
+check("reach refuses a missing ball centre", "reason" in solvePose(ballLeg, (id) => id === "body" ? IDENTITY_POSE : undefined, "ball", [10, 0, 0], [0, 10, 0]));
+check("reach refuses a fixed part", "reason" in solvePose(leg, (id) => id === "body" ? IDENTITY_POSE : undefined, "body", [0, 0, 0], [1, 1, 1]));
 if (failed) throw new Error(`${failed} pose checks failed`);
 console.log("pose: joints, limits, children, links and rest ok");

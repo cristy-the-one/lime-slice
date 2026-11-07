@@ -1,7 +1,7 @@
 /** Joint operations for assembled model-space poses. They never change the print layout. */
-import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, rotationQuaternion, type Assembly, type Member, type PoseOf } from "./assembly.ts";
+import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, rotationQuaternion, samePose, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
 import { matMul, rotAbout, type Mat3 } from "./mesh-place.ts";
-import { applyPose, type Affine } from "./model-space.ts";
+import { applyPose, inversePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 
 export type PoseResult = Member | { reason: string };
@@ -100,4 +100,87 @@ export function linked(assembly: Assembly, child: string, parent: string, poseOf
   if (!poseOf(child) || !poseOf(parent)) return { reason: "Both parts need a model pose before they can be linked." };
   const result = attached([assembly], child, parent, poseOf, assembly.name);
   return Array.isArray(result) ? result[0]! : result;
+}
+
+
+export interface ReachResult {
+  assembly: Assembly;
+  poses: Map<string, Affine>;
+  /** The first fixed member, which never moves. */
+  anchor: string;
+  /** Final position of the grabbed point and its distance from the target, in model space. */
+  point: Vec3;
+  distance: number;
+  sweeps: number;
+  reached: boolean;
+}
+
+const minus = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const length = (v: Vec3): number => Math.hypot(...v);
+
+/**
+ * Cyclic coordinate descent from the grabbed member toward its first fixed ancestor. The point `at` is in the
+ * grabbed member's part frame; `target` is in model space. Inputs are never mutated, so a drag can solve from its
+ * starting pose for every pointer event. Ball cone limits need each ball member's centre in its own part frame.
+ */
+export function solvePose(
+  original: Assembly, poseOf: PoseOf, object: string, at: Vec3, target: Vec3,
+  centreOf: (id: string) => Vec3 | undefined = () => undefined,
+): ReachResult | { reason: string } {
+  if (!at.every(Number.isFinite) || !target.every(Number.isFinite)) return { reason: "Reach needs finite points." };
+  const root = original.members.find((member) => member.parent === null);
+  if (!root || !poseOf(root.object)) return { reason: "The assembly needs a fixed root pose." };
+  const chain = [...poseChain([original], object)];
+  if (!chain.length) return { reason: "This part has no jointed chain to reach with." };
+  const anchor = original.members.find((member) => member.object === chain[chain.length - 1])?.parent;
+  if (!anchor) return { reason: "The jointed chain needs a fixed anchor." };
+  let assembly = original;
+  let poses = solveAssembly(assembly, poseOf).poses;
+  if (!poses.has(object)) return { reason: "The selected part is not reachable from the assembly root." };
+  let sweeps = 0;
+  for (; sweeps < 32; sweeps++) {
+    if (length(minus(applyPose(poses.get(object)!, at), target)) <= 0.05) break;
+    let changed = false;
+    for (const id of chain) {
+      const member = assembly.members.find((row) => row.object === id)!;
+      const joint = member.joint!;
+      const jointPose = poses.get(id);
+      if (!jointPose) continue;
+      const pivot = applyPose(jointPose, joint.pivot);
+      const toEnd = minus(applyPose(poses.get(object)!, at), pivot);
+      const toTarget = minus(target, pivot);
+      let updated: PoseResult;
+      if (joint.kind === "hinge") {
+        const axis = turnDir(jointPose, joint.axis);
+        const a = minus(toEnd, [axis[0] * dot(toEnd, axis), axis[1] * dot(toEnd, axis), axis[2] * dot(toEnd, axis)]);
+        const b = minus(toTarget, [axis[0] * dot(toTarget, axis), axis[1] * dot(toTarget, axis), axis[2] * dot(toTarget, axis)]);
+        if (length(a) < 1e-9 || length(b) < 1e-9) continue;
+        const delta = Math.atan2(dot(axis, cross(a, b)), dot(a, b)) * 180 / Math.PI;
+        updated = turnHinge(member, delta);
+      } else {
+        const a = unit(toEnd), b = unit(toTarget);
+        if (!a || !b) continue;
+        const cosine = Math.max(-1, Math.min(1, dot(a, b)));
+        let worldAxis = unit(cross(a, b));
+        if (!worldAxis) {
+          if (cosine > 0) continue;
+          worldAxis = unit(cross(a, Math.abs(a[0]) < 0.8 ? [1, 0, 0] : [0, 1, 0]));
+        }
+        if (!worldAxis) continue;
+        const localAxis = turnDir(inversePose(jointPose), worldAxis);
+        const centre = joint.cone !== undefined ? centreOf(id) : undefined;
+        if (joint.cone !== undefined && !centre) return { reason: `The ball joint on ${id} needs the part centre for its cone limit.` };
+        updated = turnBall(member, localAxis, Math.min(90, Math.acos(cosine) * 180 / Math.PI), centre ?? joint.pivot);
+      }
+      if ("reason" in updated) return updated;
+      if (samePose(memberPose(member), memberPose(updated))) continue;
+      changed = true;
+      assembly = { ...assembly, members: assembly.members.map((row) => row.object === id ? updated : row) };
+      poses = solveAssembly(assembly, poseOf).poses;
+    }
+    if (!changed) { sweeps++; break; }
+  }
+  const point = applyPose(poses.get(object)!, at);
+  const distance = length(minus(point, target));
+  return { assembly, poses, anchor, point, distance, sweeps, reached: distance <= 0.05 };
 }
