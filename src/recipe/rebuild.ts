@@ -15,7 +15,7 @@ import { readBroken, readBuilt, solidView, type SolidView } from "../modeling/mo
 import { markedRun, sameFingerprint, sameValues, stampValue, type StampedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
-import { DEFAULT_LIMITS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
+import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
 
 /** The steps on the way to the shown step that came after a run: what a rebuild of it replays. */
 export function laterSteps(tree: ModelTree, run: StampedRun): NodeId[] {
@@ -54,7 +54,7 @@ export function replayedTree(tree: ModelTree, parent: NodeId, fresh: readonly No
 /** What a rebuild needs of the app's recipes: a build and a run (`AppRecipes`, or a scripted stand-in in tests). */
 export interface RecipeRunner {
   build(name: string, source: string, autofix: boolean, suffix?: string): Promise<BuildResult>;
-  run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits?: RecipeLimits, signal?: AbortSignal): Promise<RunOutcome>;
+  run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits?: RecipeLimits, signal?: AbortSignal, onProgress?: (fraction: number, message: string) => void): Promise<RunOutcome>;
 }
 
 export interface RebuildInput {
@@ -158,7 +158,7 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
     calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
-  const start = { params: input.params, context: { units: "mm", ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
+  const start = { params: input.params, context: { units: "mm", host: "app", limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   const notes = [...calls.notes, ...(out.notes ?? [])];
   const given = calls.given;

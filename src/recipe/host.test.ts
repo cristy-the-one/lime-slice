@@ -50,6 +50,17 @@ function scripted(script: (line: string, io: { say(line: string): void; exit(cod
 
 const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === "solid_new" ? { ok: true, result: { ok: true, object: "obj_1" } } : { ok: true, result: { ok: true, id: site.id } });
 
+// Progress is an out-of-band message: it is bounded and does not consume a call or need a reply.
+{
+  const seen: [number, string][] = [];
+  const p = scripted((_line, io) => {
+    io.say(JSON.stringify({ progress: { fraction: 1.5, message: "axle 41" } }));
+    io.say(JSON.stringify({ done: { object: "", metrics: {} } }));
+  });
+  const out = await runRecipe(p.spawn, {}, ok, undefined, undefined, (fraction, message) => seen.push([fraction, message]));
+  check("recipe progress reaches the caller without a tool call", out.ok && out.calls === 0 && JSON.stringify(seen) === '[[1,"axle 41"]]', { out, seen });
+}
+
 // --- A whole run: the start line, two calls, a refusal with its hint, a note, a late parameter, done.
 {
   const seen: RecipeCallSite[] = [];

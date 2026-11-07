@@ -2,7 +2,7 @@
  * plan_run against the stand-in engine: references between steps, a bad reference, a refused middle step, and a plan
  * that runs past the reply time and answers with a job.
  */
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import { fakeEngine } from "./engine.ts";
 import { GUIDES } from "./guides.ts";
 import { planProblem, resolveReferences } from "./plan.ts";
 import { Session } from "./session.ts";
+import { autosavePath } from "./autosave.ts";
 
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-plan-"));
 
@@ -32,6 +33,25 @@ async function reply(session: Session, name: string, args: unknown): Promise<Rec
 }
 
 type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
+
+// The next step must not start until the preceding changed plate is on disk.
+{
+  const originalWorkspace = process.env.LIME_MCP_WORKSPACE;
+  process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-plan-save-"));
+  const session = new Session(fakeEngine());
+  const originalCall = session.runCall.bind(session);
+  let savedBeforeNext = false;
+  session.runCall = (name, args, meta, inPlan) => {
+    if (name === "session_info") {
+      const path = autosavePath();
+      savedBeforeNext = !!path && existsSync(path) && (JSON.parse(readFileSync(path, "utf8")) as { objects: unknown[] }).objects.length === 1;
+    }
+    return originalCall(name, args, meta, inPlan);
+  };
+  const result = await session.call("plan_run", { steps: [{ tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } }, { tool: "session_info" }] });
+  check("a completed plan step is saved before the next starts", result.ok === true && savedBeforeNext);
+  process.env.LIME_MCP_WORKSPACE = originalWorkspace;
+}
 
 // A solid and its top face in one call, the face list read through a reference to the new object.
 {

@@ -27,6 +27,9 @@ export interface RecipeLimits {
 
 export const DEFAULT_LIMITS: RecipeLimits = { timeoutS: 30, maxCalls: 2000, maxLineBytes: 1 << 20 };
 
+/** The Plugins window keeps at most this many parts from one fresh run. */
+export const MAX_APP_RECIPE_PARTS = 100;
+
 /** One lust diagnostic, as `lust build --json` writes it, with the span's line in the recipe. */
 export interface RecipeDiagnostic {
   code: string;
@@ -187,7 +190,7 @@ export type RecipeSpawn = (events: RecipeProcessEvents) => RecipeProcess;
 /**
  * Runs a built recipe: the start line, then each call through `call`, until `done`, an exit, or a limit.
  */
-export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal): Promise<RunOutcome> {
+export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal, onProgress?: (fraction: number, message: string) => void): Promise<RunOutcome> {
   const started = Date.now();
   const refused: RunOutcome["refused"] = [];
   let calls = 0;
@@ -263,6 +266,13 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
           described.ended = true;
           if (typeof d.line === "number") described.line = d.line;
           kill();
+        }
+        return;
+      }
+      if (msg.progress && typeof msg.progress === "object") {
+        const progress = msg.progress as Record<string, unknown>;
+        if (typeof progress.fraction === "number" && Number.isFinite(progress.fraction)) {
+          onProgress?.(Math.max(0, Math.min(1, progress.fraction)), String(progress.message ?? "").slice(0, 400));
         }
         return;
       }

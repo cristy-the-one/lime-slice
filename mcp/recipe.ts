@@ -236,8 +236,8 @@ export class RecipeHost {
    * Runs a built recipe: the start line, then each call through `call`, until `done`, an exit, or a limit. The
    * program runs with an empty environment (SystemRoot only on Windows, which a process needs to start).
    */
-  run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal): Promise<RunOutcome> {
-    return runRecipe(nodeSpawn(exe, this.root), start, call, limits, signal);
+  run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal, onProgress?: (fraction: number, message: string) => void): Promise<RunOutcome> {
+    return runRecipe(nodeSpawn(exe, this.root), start, call, limits, signal, onProgress);
   }
 
   /** The slot directories that exist, for tests. */

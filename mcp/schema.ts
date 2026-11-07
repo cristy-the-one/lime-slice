@@ -1085,13 +1085,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "settings_set",
-    description: "After settings_schema. Many keys at once, then slice_start. dryRun writes nothing. With object: infill 0–1, walls, speed, supports.",
+    description: "After settings_schema. Many keys at once, then slice_start. dryRun writes nothing. With object or allObjects: infill 0–1, walls, speed, supports.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["values"],
       properties: {
         object: handle,
+        allObjects: { type: "boolean", description: "Apply object settings to every part currently on the plate." },
         values: { type: "object", description: "Setting keys and values. A key that is auto in settings_schema (null) takes null for auto, and 0 is a real 0." },
         dryRun: { type: "boolean", description: "Report the change only." },
       },
@@ -1415,6 +1416,7 @@ export const TOOLS: ToolSpec[] = [
         to: { type: "string", minLength: 1, maxLength: 64, description: "Sit on this part: the numbers are its frame." },
         assembly: { type: "string", minLength: 1, maxLength: 80, description: "Assembly name." },
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
+        compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
       },
     },
   },

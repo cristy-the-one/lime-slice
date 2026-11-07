@@ -38,7 +38,12 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   edges_find: (s, obj, input) => s.edgesFind(obj, input),
   workplane_set: (s, obj, input) => s.workplaneSet(obj, input),
   workplane_print_up: (s, obj) => s.printUp(obj),
-  model_place: (s, obj, input) => s.modelPlace(obj, input),
+  model_place: (s, obj, input) => {
+    const result = s.modelPlace(obj, input);
+    if (input.compact !== true || result.ok !== true) return result;
+    const { note: _note, ...compact } = result;
+    return compact;
+  },
   model_probe: (s, obj, input) => {
     const anchored = s.anchored(obj, input.op as Record<string, unknown>);
     if ("reason" in anchored) return refuse("bad-anchor", anchored.reason);
