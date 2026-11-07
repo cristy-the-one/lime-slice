@@ -14,7 +14,7 @@
  */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint",
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint", "native_geometry",
 ]);
 
 export interface RecipeLimits {
@@ -323,7 +323,8 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       if (answer.ok) {
         reply(JSON.stringify({ id, ok: true, result: answer.result ?? null }));
       } else {
-        refused.push({ id, tool, line: site.line, reason: answer.error });
+        // Native geometry is an optional acceleration; its recipe-side fallback handles a missing host.
+        if (tool !== "native_geometry") refused.push({ id, tool, line: site.line, reason: answer.error });
         reply(JSON.stringify({ ...(answer.extra ?? {}), id, ok: false, error: answer.error }));
       }
     };

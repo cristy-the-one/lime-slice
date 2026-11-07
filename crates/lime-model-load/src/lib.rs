@@ -37,6 +37,13 @@ pub fn add_search_dir(dir: PathBuf) {
 
 /// One call on the Model history tree. The request and the reply are JSON; `docs/step-modeler.md` lists the calls.
 pub fn tree(request: &str) -> Result<String, String> {
+    if request.contains("nativeGeometry") {
+        let value: serde_json::Value = serde_json::from_str(request).map_err(|e| e.to_string())?;
+        if value.get("call").and_then(serde_json::Value::as_str) == Some("nativeGeometry") {
+            let args = value.get("args").ok_or("Missing geometry arguments")?.to_string();
+            return lime_recipe::native_geometry_request(&args).ok_or_else(|| "Invalid native geometry request".to_string());
+        }
+    }
     let (call, free) = load()?;
     let c = CString::new(request).map_err(|_| "tree request is not a C string".to_string())?;
     let ptr = unsafe { call(c.as_ptr()) };
@@ -285,6 +292,17 @@ mod mesh_tests {
     use super::decode_step_mesh;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde_json::json;
+
+    #[test]
+    fn native_recipe_geometry_needs_no_occt_bridge() {
+        let request = json!({"call":"nativeGeometry", "args": {
+            "op":"resolve", "fill":"nonzero", "a":[[[0,0],[4,0],[4,4],[0,4]]], "b":[]
+        }});
+        let result: serde_json::Value = serde_json::from_str(&super::tree(&request.to_string()).unwrap()).unwrap();
+        assert_eq!(result.as_array().unwrap().len(), 1);
+        assert_eq!(result[0].as_array().unwrap().len(), 4);
+        assert!(super::tree(r#"{"call":"nativeGeometry","args":{"op":"invalid"}}"#).is_err());
+    }
 
     #[test]
     fn positions_are_triangle_soup_and_face_ids_are_not_indices() {
