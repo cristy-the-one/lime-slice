@@ -66,12 +66,37 @@ const flange = (tweak = "") => [
 ].join("\n");
 
 // --- Keep: a run that worked, kept with one field.
+let checkPlateSize: number | undefined;
+const originalRecipeRun = Session.prototype.recipeRun;
+Session.prototype.recipeRun = function(input, meta) {
+  if (input.name === "plugin_check") checkPlateSize = this.objects.length;
+  return originalRecipeRun.call(this, input, meta);
+};
 const kept = await call("recipe_run", { source: flange(), name: "flange", keep: { title: "Bolt-circle flange", description: "A round flange with bolt holes on a circle and an optional centre bore." } });
+Session.prototype.recipeRun = originalRecipeRun;
+check("the default check for a new-part plugin runs on an empty plate", checkPlateSize === 0, checkPlateSize);
 const keptRow = kept.kept as { id: string; version: number; sha256: string } | undefined;
 check("keep saves the run as a plugin", kept.ok === true && keptRow?.id === "bolt-circle-flange" && keptRow.version === 1 && /^[0-9a-f]{64}$/.test(keptRow.sha256), kept);
 const file = join(library, "bolt-circle-flange.rs");
 const text = existsSync(file) ? readFileSync(file, "utf8") : "";
 check("the file is the recipe after a //! header", text.startsWith("//! ---\n//! plugin: bolt-circle-flange\n") && text.endsWith(flange()) && text.includes("//! made-by: plugin-test") && /^\/\/! api: \d+\.\d+$/m.test(text) && text.includes("//! target: new"), text.slice(0, 900));
+check("the header records the defaults run time", /^\/\/! built: [\d.]+ s, reference plate$/m.test(text), text.slice(0, 900));
+{
+  let timeout: unknown;
+  Session.prototype.recipeRun = async function(input, meta) {
+    if (input.name !== "plugin_check") return originalRecipeRun.call(this, input, meta);
+    timeout = input.timeoutS;
+    return { ok: false, reason: `The recipe ran past its ${timeout} s limit and was stopped.`, runMs: Number(timeout) * 1000 };
+  };
+  try {
+    const advisory = await session.pluginCheck(flange(), undefined);
+    check("an advisory timeout keeps the plugin with an unverified warning", !("reason" in advisory) && /not verified/.test(advisory.warning ?? "") && advisory.built === "over 30 s, reference plate", advisory);
+    const enforced = await session.pluginCheck(`//! budget: 90s\n${flange()}`, undefined);
+    check("an author's budget is enforced", "reason" in enforced && timeout === 90 && /90 s limit/.test(enforced.reason), enforced);
+  } finally {
+    Session.prototype.recipeRun = originalRecipeRun;
+  }
+}
 check("the header caches the declared parameters", text.includes('"name":"diameter","kind":"number","default":80,"min":20,"max":250,"step":0.5,"unit":"mm","label":"Outer diameter"') && text.includes('"options":["fillet","chamfer","sharp"]'), text.slice(0, 900));
 
 // --- Find it.

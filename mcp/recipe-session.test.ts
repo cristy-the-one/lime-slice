@@ -61,8 +61,10 @@ const example = readFileSync(join(root, "crates", "lime-recipe", "examples", "mo
 // --- apply: the bar with its holes; every hole is a real cut, and the part is on the plate.
 let bar = "";
 {
-  const r = await call("recipe_run", { source: example, name: "bar", params: { width: 60, holes: 4 } });
+  const r = await call("recipe_run", { source: example, name: "bar", params: { width: 60, holes: 4 }, profile: true });
   check("the bar applies", r.ok === true && typeof r.object === "string", r);
+  const profile = r.profile as { callsMs?: number; outsideCallsMs?: number; lines?: { line: number; tool: string; calls: number }[] } | undefined;
+  check("the profile names timed recipe calls and time outside them", typeof profile?.callsMs === "number" && typeof profile.outsideCallsMs === "number" && !!profile.lines?.some((row) => row.tool === "model_apply" && row.line > 0 && row.calls >= 1), profile);
   bar = String(r.object);
   check("four holes drilled", (r.metrics as { holes?: number } | undefined)?.holes === 4, r.metrics);
   check("the bar is listed as created", Array.isArray(r.created) && (r.created as string[]).includes(bar), r.created);

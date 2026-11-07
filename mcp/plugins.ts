@@ -62,6 +62,8 @@ export interface PluginHeader {
   "made-by"?: string;
   api: string;
   lust?: string;
+  /** Time measured by the defaults check, or its lower bound when the advisory limit was reached. */
+  built?: string;
   "source-sha256": string;
   created: string;
   target: PluginTarget;
@@ -139,6 +141,7 @@ export function pluginText(header: PluginHeader, body: string): string {
     ["made-by", header["made-by"]],
     ["api", header.api],
     ["lust", header.lust],
+    ["built", header.built],
     ["source-sha256", header["source-sha256"]],
     ["created", header.created],
     ["target", ingredient ? undefined : header.target],
@@ -183,6 +186,7 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
     ...(fields.get("made-by") ? { "made-by": oneLine(fields.get("made-by"), AUTHOR_MAX) } : {}),
     api: fields.get("api") ?? "1.0",
     ...(fields.get("lust") ? { lust: fields.get("lust") } : {}),
+    ...(fields.get("built") ? { built: oneLine(fields.get("built"), 100) } : {}),
     "source-sha256": fields.get("source-sha256") ?? "",
     created: fields.get("created") ?? "",
     target: target === "object" || target === "either" ? target : "new",

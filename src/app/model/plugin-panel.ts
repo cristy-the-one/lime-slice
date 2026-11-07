@@ -138,6 +138,7 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
       recipes,
       engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
       env: recipeEnv(at?.objectId ?? "", false, plugin.sha256),
+      onProgress: (fraction, message) => { if (mine === S.ticket) readout(`${message || `Running ${title}`} (${Math.round(fraction * 100)}%)`); },
       runId: freshRunId(),
     });
   } finally {

@@ -431,8 +431,8 @@ pub struct Part {
 /// a person picks (`pick_face`, `pick_outline`), `refuse`, and `bounds`. 1.3: `face(..).curved()` parameters and what a
 /// picked face is (`kind`, `axis`, `radius`), `lettering` (text on a face, flat or curved) and `text_outline` (the letters
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
-/// takes (model space for a moved or turned part), as they always should have.
-pub const API: (u32, u32) = (1, 4);
+/// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
+pub const API: (u32, u32) = (1, 5);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1203,6 +1203,12 @@ impl Session {
     /// The context the host sent: printer, material, units, a starting object.
     pub fn context(&self) -> &Json {
         &self.context
+    }
+
+    /// Report progress from 0.0 to 1.0 and a short description to the host.
+    pub fn progress(&self, fraction: f64, message: &str) {
+        if self.describe { return; }
+        tell(Json::obj().set("progress", Json::obj().set("fraction", fraction).set("message", message)));
     }
 
     /// The object the run starts from, when the host named one.
@@ -3160,7 +3166,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 4));
+        assert_eq!(API, (1, 5));
     }
 
     #[test]

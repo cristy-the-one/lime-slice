@@ -24,9 +24,14 @@ import { NEXT, refuse } from "../refusals.ts";
  * the part it already changed, a split there, a fuse into what it already added, or a cut through a hole it already
  * cut is refused, and the plugin could never be kept.
  */
-async function pluginCheck(this: Session, body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget } | { reason: string }> {
+async function pluginCheck(this: Session, body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget; built?: string; warning?: string } | { reason: string }> {
   const described = await this.recipeDescribe(body, limitMs);
   if ("reason" in described) return { reason: `This plugin does not build with its own defaults: ${described.reason} Change the defaults or the code, then keep it.` };
+  const budgetLine = /^\s*\/\/!\s*budget:\s*(.*?)\s*$/m.exec(body);
+  const budgetMatch = budgetLine ? /^(\d+(?:\.\d+)?)s$/.exec(budgetLine[1]!) : null;
+  const budget = budgetMatch ? Number(budgetMatch[1]) : undefined;
+  if (budgetLine && (!budget || budget < 1 || budget > 600)) return { reason: "The plugin budget must be 1–600 seconds, for example //! budget: 90s." };
+  const timeoutS = limitMs === undefined ? budget ?? 30 : 30;
   let object = described.target === "new" ? undefined : objectHint && this.find(objectHint) ? objectHint : undefined;
   let block: string | undefined;
   if (described.target === "object" && !object) {
@@ -44,16 +49,38 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
       const shown = await this.gotoNode(part!, objectFrom);
       if (shown.ok === false) return { reason: `The step before the run could not be shown for the plugin's check: ${String(shown.reason ?? "the engine refused it.")}` };
     }
-    dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", ...(object ? { object } : {}) });
+    if (object) {
+      dry = await this.recipeRun({ source: body, name: "plugin_check", mode: "dry", object, timeoutS, profile: true });
+    } else {
+      // New-part plugins have no dependency on the caller's plate. Share the engine and warm recipe host, but not
+      // the plate, bridge or autosave. Reserve the scratch ids in the owning session to avoid tree-key collisions.
+      const scratch = new (this.constructor as typeof Session)(this.engine, { isolated: true });
+      scratch.seq = this.seq;
+      scratch.settings = { ...this.settings };
+      scratch.library = this.library;
+      scratch.params = { ...this.params };
+      scratch.paramText = { ...this.paramText };
+      scratch.recipeHost = this.recipeHost;
+      try {
+        dry = await scratch.recipeRun({ source: body, name: "plugin_check", mode: "dry", timeoutS, profile: true });
+      } finally {
+        this.seq = Math.max(this.seq, scratch.seq);
+      }
+    }
   } finally {
     if (back && part!.tree?.nodes.has(tip!)) await this.gotoNode(part!, tip).catch(() => ({ ok: false }));
     if (block) await this.objectRemove(block).catch(() => ({ ok: false }));
     this.selected = selected;
   }
-  if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.` };
+  const where = object ? "test part" : "reference plate";
+  const slow = ((dry.profile as { lines?: { line: number; tool: string; ms: number }[] } | undefined)?.lines ?? []).slice(0, 5);
+  const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool} line ${row.line} (${row.ms} ms)`).join(", ")}.` : "";
+  const timedOut = dry.ok !== true && String(dry.reason ?? "").startsWith(`The recipe ran past its ${timeoutS} s limit`);
+  if (timedOut && budget === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.${slowText}` };
+  if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.${slowText}` };
   const late = (dry.lateParams as { name: string; line: number }[] | undefined)?.[0];
   if (late) return { reason: `Declare ${late.name} before the first call (line ${late.line}), so the form can show it.` };
-  return described;
+  return { ...described, ...(typeof dry.runMs === "number" ? { built: `${Math.max(0.1, Math.round(dry.runMs / 100) / 10)} s, ${where}` } : {}) };
 }
 
 /**
@@ -61,7 +88,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
  * the same body keeps its version (new words only); with another body it is the next version when the run was of
  * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
  */
-async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; built?: string; warning?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
   const title = oneLine(opts.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
   let body = lfOnly(opts.source);
@@ -115,6 +142,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
     ...(this.clientName ? { "made-by": oneLine(this.clientName, AUTHOR_MAX) } : {}),
     api: this.crateApi().join("."),
     ...(this.lustBuild() ? { lust: this.lustBuild() } : {}),
+    ...(checked.built ? { built: checked.built } : {}),
     "source-sha256": sha256,
     created: new Date().toISOString().slice(0, 10),
     target: checked.target,
@@ -128,7 +156,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   const carried = carriedIngredients(splitPluginData(body).code).map((row) => `${row.id} v${row.version}`);
   const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
   const hints = pluginHints({ params: checked.params, target: checked.target, description: header.description }, splitPluginData(body).code);
-  return { id, version, sha256, ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
+  return { id, version, sha256, ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
 }
 
 /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
@@ -225,6 +253,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       version: h.version,
       api: h.api,
       target: h.target,
+      ...(h.built ? { built: h.built } : {}),
       sha256: h["source-sha256"],
       created: h.created,
       ...(h.lust ? { lust: h.lust } : {}),

@@ -81,9 +81,9 @@ export class AppRecipes {
   }
 
   /** Runs a recipe this app built, answering its calls through `call`. */
-  run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal): Promise<RunOutcome> {
+  run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal, onProgress?: (fraction: number, message: string) => void): Promise<RunOutcome> {
     this.runs += 1;
-    return runRecipe(this.spawn(exe, `run-${Date.now().toString(36)}-${this.runs}`, limits), start, call, limits, signal);
+    return runRecipe(this.spawn(exe, `run-${Date.now().toString(36)}-${this.runs}`, limits), start, call, limits, signal, onProgress);
   }
 
   /**

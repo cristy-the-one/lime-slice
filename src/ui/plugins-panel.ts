@@ -617,9 +617,10 @@ function trustBox(plugin: PanelPlugin): HTMLElement | null {
 /** "Builds a new part", "Changes Part 1", or what to do when it needs a part and none is open. */
 function targetLine(plugin: PanelPlugin): string {
   const part = host?.partName() ?? null;
-  if (plugin.file.target === "new") return "Builds a new part.";
-  if (plugin.file.target === "object") return part ? `Changes ${part}.` : REASON.needsPart;
-  return part ? `Changes ${part}.` : "Builds a new part, or changes the part you open.";
+  const target = plugin.file.target === "new" ? "Builds a new part."
+    : plugin.file.target === "object" ? part ? `Changes ${part}.` : REASON.needsPart
+      : part ? `Changes ${part}.` : "Builds a new part, or changes the part you open.";
+  return plugin.file.built ? `${target} Defaults check: ${plugin.file.built}.` : target;
 }
 
 /** D15: why the form is read-only here, or null when plugins run. */

@@ -131,6 +131,10 @@ async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta): Promise
     images.push(...imagesOf(value));
     results.push(value);
     done.push({ step: n, tool, result: value });
+    // A plan can run for minutes. Persist the plate at the completed step boundary, before starting another step;
+    // the ordinary delayed autosave waits for the whole plan's inflight call and would otherwise lose every step.
+    this.flushAutosave();
+    await this.autosaveSettled();
     if (value.ok === false) return end(refuse("plan-step-failed", `Step ${n} (${tool}) was refused: ${typeof value.reason === "string" ? value.reason : "no reason given."}`, { failedStep: n }));
   }
   return end({ ok: true });

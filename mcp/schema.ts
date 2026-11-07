@@ -1085,13 +1085,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "settings_set",
-    description: "After settings_schema. Many keys at once, then slice_start. dryRun writes nothing. With object: infill 0–1, walls, speed, supports.",
+    description: "After settings_schema. Many keys at once, then slice_start. dryRun writes nothing. With object or allObjects: infill 0–1, walls, speed, supports.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["values"],
       properties: {
         object: handle,
+        allObjects: { type: "boolean", description: "Apply object settings to every part currently on the plate." },
         values: { type: "object", description: "Setting keys and values. A key that is auto in settings_schema (null) takes null for auto, and 0 is a real 0." },
         dryRun: { type: "boolean", description: "Report the change only." },
       },
@@ -1264,7 +1265,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "slice_wait",
-    description: "Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. timeoutS is up to 120.",
+    description: "Wait about 20s for a slice or a long call's job, or status running. A done job returns its call's result. Waits are capped at 25s, even if timeoutS is larger.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1415,6 +1416,7 @@ export const TOOLS: ToolSpec[] = [
         to: { type: "string", minLength: 1, maxLength: 64, description: "Sit on this part: the numbers are its frame." },
         assembly: { type: "string", minLength: 1, maxLength: 80, description: "Assembly name." },
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
+        compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
       },
     },
   },
@@ -1470,6 +1472,7 @@ export const TOOLS: ToolSpec[] = [
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
         interference: { type: "boolean", description: "Instead: pairs of parts in its assembly that cross, as assembled." },
         exact: { type: "boolean", description: "With interference: each pair's common volume by the kernel." },
+        crossingsOnly: { type: "boolean", description: "With interference: omit touch pairs. Unmeasured pairs remain in an exact check." },
       },
     },
   },
@@ -1559,7 +1562,8 @@ export const TOOLS: ToolSpec[] = [
         maxSteps: { type: "integer", minimum: 1, maximum: 1000, description: "Dry: stop after N ops." },
         autofix: { type: "boolean", description: "Default true." },
         full: { type: "boolean", description: "Whole fixed text, not a diff." },
-        timeoutS: { type: "number", minimum: 1, maximum: 120, description: "Default 30." },
+        profile: { type: "boolean", description: "Report time spent in recipe calls by line and estimated time outside calls." },
+        timeoutS: { type: "number", minimum: 1, maximum: 600, description: "Default 30; up to 600 for background work." },
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "Library plugin id instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },
         keep: { type: "object", description: "{title, description}: on success, save as a plugin." },

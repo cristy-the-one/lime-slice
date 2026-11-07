@@ -34,7 +34,7 @@ export const OVERLAP = "These parts overlap. Move one before slicing.";
 export const CHORD = 0.05;
 export const STEP = 0.05;
 export const SLICE_WAIT_DEFAULT_S = 20;
-export const SLICE_WAIT_MAX_S = 120;
+export const SLICE_WAIT_MAX_S = 25;
 export const STALE_SLICE = "The printer, filament, settings, or placement changed after this slice. Slice again.";
 /** --- Print transitions, step 6b. plan:true before a slice of this plate as it is. */
 export const SLICE_CHECK_MCP = "slice_start, then plan again, to mark the rows that hang in the slice too (seenInSlice).";

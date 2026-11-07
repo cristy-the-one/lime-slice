@@ -3,7 +3,7 @@
  * it computes is a reference, a string "$N.path" replaced by step N's result at that path. No caller code runs.
  */
 
-export const MAX_PLAN_STEPS = 25;
+export const MAX_PLAN_STEPS = 250;
 
 export interface PlanStep {
   tool: string;

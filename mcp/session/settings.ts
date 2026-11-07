@@ -169,6 +169,9 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
   const values = input.values;
   if (!values || typeof values !== "object" || Array.isArray(values)) return refuse("bad-setting", "values must be an object of setting keys.");
   const objectId = typeof input.object === "string" ? input.object : "";
+  const allObjects = input.allObjects === true;
+  if (allObjects && objectId) return refuse("conflicting-arguments", "Give object or allObjects, not both.");
+  if (allObjects && this.objects.length === 0) return refuse("no-object", "There are no parts on the plate.", undefined, NEXT.plate);
   const obj = objectId ? this.find(objectId) : null;
   if (objectId && !obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const dryRun = input.dryRun === true;
@@ -177,7 +180,7 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
   let next = this.settings;
   const objectNext: PlateObjectSettings = obj ? { ...obj.objectSettings } : {};
   for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
-    if (obj) {
+    if (obj || allObjects) {
       if (!isObjectKey(key)) {
         refused.push({ key, reason: "This setting is plate-wide." });
         continue;
@@ -188,7 +191,7 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
         continue;
       }
       (objectNext as Record<ObjectSettingKey, unknown>)[key] = applied.value;
-      changed.push({ key, from: obj.objectSettings[key], to: applied.value });
+      changed.push({ key, from: obj ? obj.objectSettings[key] : undefined, to: applied.value });
       continue;
     }
     const applied = applySetting(next, key, value, this.schemaContext());
@@ -201,13 +204,14 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
     changed.push({ key, from: this.settings[key as keyof PresetSettings], to });
   }
   const warnings = changed.flatMap((row) => {
-    const note = inactiveWarning(obj ? this.settings : next, row.key);
+    const note = inactiveWarning(obj || allObjects ? this.settings : next, row.key);
     return note ? [note] : [];
   });
   if (changed.length === 0) return { ok: false, code: "nothing-changed", reason: refused[0]?.reason ?? "Nothing to change.", refused, ...(warnings.length ? { warnings } : {}) };
   if (!dryRun) {
-    this.remember(obj ? "Object settings" : "Settings");
+    this.remember(obj || allObjects ? "Object settings" : "Settings");
     if (obj) obj.objectSettings = { ...obj.objectSettings, ...objectNext };
+    else if (allObjects) for (const part of this.objects) part.objectSettings = { ...part.objectSettings, ...objectNext };
     else this.settings = next;
   }
   return {
@@ -216,7 +220,8 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
     ...(refused.length ? { refused } : {}),
     ...(warnings.length ? { warnings } : {}),
     ...(dryRun ? { dryRun: true } : { stale: true }),
-    label: obj ? "Object settings" : "Settings",
+    ...(allObjects ? { objects: this.objects.length } : {}),
+    label: obj || allObjects ? "Object settings" : "Settings",
   };
 }
 
