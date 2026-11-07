@@ -36,6 +36,7 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
     ...(reason ? { reason } : {}),
     workspace: process.env.LIME_MCP_WORKSPACE ?? "",
     ...(this.previousAutosave ? { autosave: this.previousAutosave } : {}),
+    ...((this.recipeCheckpoints.size || Object.keys(this.previousAutosave?.checkpoints ?? {}).length) ? { recipeCheckpoints: [...new Set([...this.recipeCheckpoints.keys(), ...Object.keys(this.previousAutosave?.checkpoints ?? {})])] } : {}),
     ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
     printer: this.printer().name,
     filament: this.filament().name,

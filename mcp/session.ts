@@ -58,6 +58,7 @@ import { paintMethods, paintHandlers } from "./session/paint.ts";
 import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 import { stressMethods, stressHandlers } from "./session/stress.ts";
 import { refuse, withCode } from "./refusals.ts";
+import type { RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
@@ -174,6 +175,8 @@ export class Session {
   readonly recipeCallCounts = new Map<string, number>();
   /** Last successful dry run's source, to avoid silently saving an older applied draft. */
   readonly recipePreviewHashes = new Map<string, string>();
+  /** Resumable runs belong to this session's autosave, never to an imported project. */
+  readonly recipeCheckpoints = new Map<string, RecipeCheckpoint>();
   /** The recipe of the model_build being called, kept from before its ops were expanded. */
   pendingRecipe: Recipe | null = null;
   /**
@@ -342,11 +345,11 @@ export class Session {
   }
 
   /** The plate and its histories to this server's autosave in the workspace, without committing anything. Never throws. */
-  flushAutosave(plan?: PlanRecovery): void {
+  flushAutosave(plan?: PlanRecovery, forceEmpty = false): void {
     if (!this.autosaveDirty && !plan) return;
     const dirty = this.autosaveDirty;
     this.autosaveDirty = false;
-    if (this.objects.length === 0 && !plan) return;
+    if (this.objects.length === 0 && !plan && this.recipeCheckpoints.size === 0 && !forceEmpty) return;
     try {
       const path = autosavePath();
       if (!path) return;
@@ -368,6 +371,7 @@ export class Session {
       // The document is taken now (a copy), so a write queued behind another still saves the plate as it is at this call.
       const prepared = prepareProject(doc);
       if (plan) prepared.wire.mcpPlanRecovery = structuredClone(plan);
+      if (this.recipeCheckpoints.size) prepared.wire.mcpRecipeCheckpoints = structuredClone(Object.fromEntries(this.recipeCheckpoints));
       this.autosaveWriting = this.autosaveWriting.then(async () => {
         await writeAutosave(path, await finishProject(prepared));
         this.autosaveSnapshot = true;

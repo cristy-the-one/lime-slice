@@ -10,6 +10,7 @@ import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { workspaceRoot } from "./workspace.ts";
+import { checkpointRecords, type RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
 export const PREVIOUS_NAME = "autosave-previous.lime";
 const OWN = /^autosave-(\d+)\.lime$/;
@@ -20,6 +21,7 @@ export interface PreviousAutosave {
   objects: number;
   note: string;
   plan?: PlanRecovery;
+  checkpoints?: Record<string, RecipeCheckpoint>;
 }
 
 /** Only completed step names and numbers: no arguments, results or client data. */
@@ -68,21 +70,26 @@ export function takePreviousAutosave(): PreviousAutosave | null {
     const savedAt = statSync(previous).mtime.toISOString();
     let objects = 0;
     let plan: PlanRecovery | undefined;
+    let checkpoints: Record<string, RecipeCheckpoint> = {};
     try {
-      const doc = JSON.parse(readFileSync(previous, "utf8")) as { objects?: unknown[]; mcpPlanRecovery?: PlanRecovery };
+      const doc = JSON.parse(readFileSync(previous, "utf8")) as { objects?: unknown[]; mcpPlanRecovery?: PlanRecovery; mcpRecipeCheckpoints?: unknown };
       objects = Array.isArray(doc.objects) ? doc.objects.length : 1;
+      checkpoints = checkpointRecords(doc.mcpRecipeCheckpoints);
       const p = doc.mcpPlanRecovery;
       if (p && typeof p.job === "string" && /^job_\d+$/.test(p.job) && Number.isInteger(p.total) && p.total > 0 && p.total <= 250 && Array.isArray(p.completed) && p.completed.length <= p.total && p.completed.every((step) => !!step && typeof step === "object" && Number.isInteger(step.step) && step.step > 0 && step.step <= p.total && typeof step.tool === "string" && step.tool.length <= 80)) plan = p;
     } catch {
       return null;
     }
-    return {
+    const result: PreviousAutosave = {
       path: previous,
       savedAt,
       objects,
       ...(plan ? { plan } : {}),
       note: `A previous server's plate, saved ${savedAt}, is in ${previous} with ${objects} object${objects === 1 ? "" : "s"} and their Model history. If the server restarted mid-session, project_open that path to carry on.`,
     };
+    // Journals can include source and data values. Keep them internal; callers only need their names.
+    if (Object.keys(checkpoints).length) Object.defineProperty(result, "checkpoints", { value: checkpoints, enumerable: false });
+    return result;
   } catch {
     return null;
   }

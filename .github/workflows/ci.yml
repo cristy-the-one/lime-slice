@@ -318,6 +318,7 @@ jobs:
           node --experimental-strip-types mcp/sim-region.test.ts
           # recipe_run end to end: lust builds, OCCT cuts, a failed or dry run is taken back.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-session.test.ts
+          LIME_RECIPE_REQUIRED=1 LIME_CHECKPOINT_REAL=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-assembly-rerun.test.ts
           # Recipes read real geometry (section, face frames) and build lattices in one boolean, the honeycomb floor too.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-reads.test.ts
@@ -776,6 +777,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-cancel.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
@@ -862,6 +864,8 @@ jobs:
           node --experimental-strip-types mcp/recipe.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --experimental-strip-types mcp/recipe-cancel.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/recipe-checkpoint.test.ts
 
       # The app's recipe runner on Windows: the job object's memory cap and kill, and a real recipe built by lust.
       - name: Recipe runner

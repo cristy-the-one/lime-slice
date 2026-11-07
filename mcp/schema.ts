@@ -1569,6 +1569,7 @@ export const TOOLS: ToolSpec[] = [
         autofix: { type: "boolean", description: "Default true." },
         full: { type: "boolean", description: "Whole fixed text, not a diff." },
         profile: { type: "boolean", description: "Report time spent in recipe calls by line and estimated time outside calls." },
+        discardCheckpoint: { type: "boolean", description: "Start a fresh run and keep the checkpoint's existing parts." },
         timeoutS: { type: "number", minimum: 1, maximum: 600, description: "Default 30; up to 600 for background work." },
         plugin: { type: "string", minLength: 1, maxLength: 60, description: "Library plugin id instead of source." },
         preset: { type: "string", maxLength: 100, description: "With plugin: kept values." },

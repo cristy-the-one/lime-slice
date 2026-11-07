@@ -432,8 +432,8 @@ pub struct Part {
 /// picked face is (`kind`, `axis`, `radius`), `lettering` (text on a face, flat or curved) and `text_outline` (the letters
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
-/// 1.6: batched Region unions and differences.
-pub const API: (u32, u32) = (1, 6);
+/// 1.6: batched Region unions and differences. 1.7: resumable checkpoints.
+pub const API: (u32, u32) = (1, 7);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1353,6 +1353,12 @@ impl Session {
     #[track_caller]
     pub fn log(&mut self, text: &str) {
         let _ = self.call("log", Json::obj().set("text", text));
+    }
+
+    /// Commit work so far and let the host resume this run after an interruption.
+    #[track_caller]
+    pub fn checkpoint(&mut self) -> Result<(), Refusal> {
+        self.call("checkpoint", Json::obj()).map(|_| ())
     }
 
     /// Ends the run: the host commits the part to the plate.
@@ -3179,7 +3185,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 6));
+        assert_eq!(API, (1, 7));
     }
 
     #[test]
