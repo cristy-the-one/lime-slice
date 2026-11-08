@@ -102,6 +102,8 @@ export interface RenderOptions {
   /** Shading blended across a curved surface's facets (default true); creases stay sharp. */
   smooth?: boolean;
   tints?: Tint[];
+  /** Triangle ranges in the joined mesh; unlike tint boxes these do not bleed between overlapping parts. */
+  partTints?: { start: number; end: number; rgb: Vec }[];
   /** Each triangle's face, as the solid's reply numbers them: a tint then takes whole faces, mostly inside its box. */
   faces?: ArrayLike<number>;
   /** Only the side of the plane the normal points away from is drawn; the inside shows where it is cut, in red. */
@@ -125,8 +127,8 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const depth = new Float32Array(width * height);
   depth.fill(-Infinity);
   const color = new Uint8Array(width * height);
-  /** 0, or 1 + the tint index; 255 for the inside of a cut. */
-  const tintAt = new Uint8Array(width * height);
+  /** 0, or 1 + the tint index; 0xffffffff for the inside of a cut. */
+  const tintAt = new Uint32Array(width * height);
   const ghostDepth = new Float32Array(width * height);
   ghostDepth.fill(-Infinity);
   const ghostShade = new Uint8Array(width * height);
@@ -230,6 +232,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   // so a sweep or a sphere reads round and a box's edge stays sharp.
   const corners = options.smooth === false ? null : cornerNormals(positions);
   const tints = options.tints ?? [];
+  const partTints = options.partTints ?? [];
   const pads = tints.map((box) => Math.max(0.3, 0.06 * Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2])));
   const inBox = (i: number, b: number) => [0, 3, 6].every((o) => {
     const p: Vec = [positions[i + o]!, positions[i + o + 1]!, positions[i + o + 2]!];
@@ -270,12 +273,14 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
         if (hit >= 0) tint = Math.min(hit + 1, 254);
       }
     }
+    const part = partTints.findIndex((range) => i / 9 >= range.start && i / 9 < range.end);
+    if (part >= 0) tint = tints.length + part + 1;
     let side: Vec | undefined;
     if (section) {
       side = [0, 1, 2].map((k) => (positions[i + 3 * k]! - section.point[0]) * section.normal[0] + (positions[i + 3 * k + 1]! - section.point[1]) * section.normal[1] + (positions[i + 3 * k + 2]! - section.point[2]) * section.normal[2]) as Vec;
       if (side.every((d) => d > 0)) continue;
       // A facet facing away from the camera is the part's inside, seen through the cut.
-      if (dot(own, eye) < 0) tint = 255;
+      if (dot(own, eye) < 0) tint = 0xffffffff;
     }
     paint(project(positions[i]!, positions[i + 1]!, positions[i + 2]!), project(positions[i + 3]!, positions[i + 4]!, positions[i + 5]!), project(positions[i + 6]!, positions[i + 7]!, positions[i + 8]!), shades, depth, color, tint, side, i / 9);
   }
@@ -296,8 +301,8 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       let rgb: Vec = [Math.round(shade * dark), Math.round(shade * dark), Math.round(Math.min(255, shade + 8) * dark)];
       const tinted = color[pixel] ? tintAt[pixel]! : 0;
       if (tinted) {
-        const hue = tinted === 255 ? CUT : tints[tinted - 1]!.rgb;
-        const lit = tinted === 255 ? 0.85 : Math.min(1.15, shade / 200);
+        const hue = tinted === 0xffffffff ? CUT : tinted <= tints.length ? tints[tinted - 1]!.rgb : partTints[tinted - tints.length - 1]!.rgb;
+        const lit = tinted === 0xffffffff ? 0.85 : Math.min(1.15, shade / 200);
         rgb = [0, 1, 2].map((k) => Math.round(Math.min(255, hue[k]! * lit) * dark)) as Vec;
       }
       const tint = ghostShade[pixel]!;

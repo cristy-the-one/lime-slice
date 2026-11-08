@@ -148,6 +148,16 @@ const fixedA = shades(renderMesh(merge(fixed, otherA), "top", 128, undefined, { 
 const fixedB = shades(renderMesh(merge(fixed, otherB), "top", 128, undefined, { fit }).png, 128, 128);
 const fixedOnly = shades(renderMesh(fixed, "top", 128, undefined, { fit }).png, 128, 128);
 check("fixed framing keeps the stationary part on the same pixels", fixedOnly.every((shade, i) => shade === 248 || (fixedA[i] === shade && fixedB[i] === shade)));
+// Colour is attached to triangle ownership, even where parts have overlapping bounds.
+const redLeft = shades(renderMesh(merge(fixed, otherA), "top", 128, undefined, { fit, partTints: [{ start: 0, end: fixed.length / 9, rgb: [220, 30, 30] }] }).png, 128, 128);
+const blueLeft = shades(renderMesh(merge(fixed, otherA), "top", 128, undefined, { fit, partTints: [{ start: 0, end: fixed.length / 9, rgb: [30, 30, 220] }] }).png, 128, 128);
+check("part colour changes only its own pixels", redLeft.some((v, i) => v > blueLeft[i]! + 20) && fixedOnly.every((v, i) => v !== 248 || redLeft[i] === blueLeft[i]));
+const colourView = await session.call("render_view", { object: solid.object, view: "assembly", partColours: { [String(solid.object)]: "#e02020" }, camera: "top", longEdge: 64, inline: false, name: "part-colour.png" });
+check("render_view accepts part colours by handle", colourView.ok === true, JSON.stringify(colourView));
+const missingColour = await session.call("render_view", { object: solid.object, view: "assembly", partColours: { missing: "#e02020" }, inline: false });
+check("render_view refuses a colour for a missing part", missingColour.ok === false, JSON.stringify(missingColour));
+const badColour = await session.call("render_view", { object: solid.object, view: "assembly", partColours: { [String(solid.object)]: "red" }, inline: false });
+check("render_view refuses an invalid part colour", badColour.ok === false, JSON.stringify(badColour));
 const fitResult = await session.call("render_view", { object: solid.object, camera: "top", fit, longEdge: 64, inline: false, name: "fixed-fit.png" });
 check("render_view accepts fixed model-space framing", fitResult.ok === true, JSON.stringify(fitResult));
 const sectionFit = await session.call("render_view", { object: solid.object, fit, section: { normal: [0, -1, 0] }, inline: false, longEdge: 64, name: "fixed-section.png" });

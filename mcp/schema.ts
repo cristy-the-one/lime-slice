@@ -1742,6 +1742,7 @@ export const TOOLS: ToolSpec[] = [
         op: { type: "object", description: "Boolean op. Drawn only." },
         highlight: { description: "A label, or a list: those steps in orange." },
         colours: { type: "object", description: "Label to colour, e.g. {\"fish\": \"#b08040\"}." },
+        partColours: { type: "object", description: "Part handle or unique name to colour in assembly or print view, e.g. {\"arm\": \"#b08040\"}." },
         section: { type: "object", additionalProperties: false, description: "Cut away the side normal points to; the inside shows red.", properties: { normal: vec3, point: { ...vec3, description: "Default: the part's centre." } } },
         smooth: { type: "boolean", description: "Smooth shading on curves (default true)." },
         view: { enum: ["assembly", "print"], description: "Several parts: the object's assembly as assembled, or the bed as it prints." },
