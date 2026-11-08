@@ -302,6 +302,10 @@ export async function mockModelTree(page: Page, handlers: Handlers): Promise<Tre
         return { dropped: [...gone], current: 0 };
       }
       case "export": {
+        // As the engine does: a piece whose tree it does not hold is a tool to open, named.
+        for (const piece of Array.isArray(request.pieces) ? (request.pieces as ToolRef[]) : []) {
+          if (!docs.has(piece.key)) return toolMissing(piece);
+        }
         exports += 1;
         // A `brep` export starts as the engine's binary solid does, so the app takes it as that step exactly.
         const bytes = Buffer.from(request.format === "brep" ? `LIMEBREP 1 mock 0 *\nEDITED-${exports}` : `EDITED-STEP-${exports}`);

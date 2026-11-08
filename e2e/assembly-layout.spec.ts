@@ -141,4 +141,16 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
   await expect(page.locator("#toasts")).toContainText("Saved body.step: 2 parts at their assembled poses");
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(shots, "layout-step-saved.png") });
+
+  // A restarted engine holds no tree. Pose's Save pose as STEP opens both parts again and writes the file (v6.0.1 said
+  // "The modeler no longer has this solid" here, because a missing piece read as the exported tree gone).
+  tree.forget();
+  await page.locator("#tabPose").click();
+  const save = page.locator("#posePanel").getByRole("button", { name: "Save pose as STEP" });
+  const [again] = await Promise.all([page.waitForEvent("download"), save.click()]);
+  expect(again.suggestedFilename()).toBe("body.step");
+  const second = tree.of("export").at(-1) as { pieces?: { key: string }[]; poses?: unknown[] };
+  expect(second.pieces).toHaveLength(1);
+  expect(second.poses).toHaveLength(2);
+  await expect(page.locator("#toasts")).not.toContainText("no longer has this solid");
 });
