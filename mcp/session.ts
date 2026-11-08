@@ -111,6 +111,8 @@ export class Session {
   undoStack: PlateSnap[] = [];
   redoStack: PlateSnap[] = [];
   bridgeSeq = 0;
+  /** Latest plate snapshot generated for the desktop; a pull must not race its delivery. */
+  bridgePlateSeq = 0;
   /** This process on the bridge. The desktop starts its sequence again when it changes. */
   readonly bridgeSession = randomUUID();
   readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
@@ -578,6 +580,7 @@ export class Session {
       ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
       : null;
     this.bridgeSeq += 1;
+    if (plateSnapshot) this.bridgePlateSeq = this.bridgeSeq;
     const payload = {
       tool: bridgeTool,
       session: this.bridgeSession,

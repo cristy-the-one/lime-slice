@@ -21,6 +21,8 @@ async function tandemPull(this: Session): Promise<Record<string, unknown>> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "The Tandem desktop is not connected or cannot provide context." };
   const human = value as Record<string, unknown>;
   if (human.mirrorSession !== this.bridgeSession) return { ok: false, reason: "The desktop and MCP do not have the same mirrored session." };
+  if (human.mirrorSeq !== this.bridgePlateSeq || this.bridgePlateSeq === 0) return { ok: false, reason: "The desktop has not applied the latest MCP plate snapshot. Wait for its receipt before pulling." };
+  if (this.inflight !== 1) return { ok: false, reason: "Another MCP operation is still running. Wait for it before pulling." };
   if (human.gesture !== false || human.editing !== false) return { ok: false, reason: "Finish the active desktop edit before pulling its placements." };
   if (human.humanChangesTruncated !== false || !Array.isArray(human.humanChanges)) return { ok: false, reason: "The desktop change summary is unavailable or incomplete." };
   const updates: Array<{ obj: NonNullable<ReturnType<Session["find"]>>; offset: { x: number; y: number; z: number }; orient: Mat3; scale: number; centered: boolean }> = [];

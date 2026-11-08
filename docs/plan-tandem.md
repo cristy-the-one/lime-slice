@@ -6,6 +6,8 @@ Current work: an initial activity indicator and an on-demand human-context summa
 
 Until Model histories can be reconciled, the desktop refuses a mirrored mesh replacement or removal that would discard a Model history already held by the desktop. This is a preservation guard, not editable Model synchronization.
 
+The placement pull also refuses while another MCP operation is in flight or the desktop has not acknowledged the latest MCP plate sequence. This closes those stale-snapshot cases but does not lock the desktop against a new human gesture after its context is published.
+
 ## 1. Goal
 
 A person can keep working in Lime Slice while an assistant contributes through MCP. Each can see enough of the other's activity to coordinate, and neither silently overwrites the other's work. The person can tell which part the assistant is working on and what changed; the assistant can find out what the person is looking at or editing and work against a current session.
