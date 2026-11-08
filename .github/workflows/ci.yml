@@ -186,7 +186,9 @@ jobs:
           df -h / | tail -1
 
       - name: Install cargo-nextest
-        run: curl -LsSf --retry 4 --retry-delay 5 --retry-max-time 90 https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+        run: |
+          curl -LsSf --retry 4 --retry-delay 5 --retry-max-time 90 https://get.nexte.st/latest/linux -o "$RUNNER_TEMP/cargo-nextest.tar.gz"
+          tar zxf "$RUNNER_TEMP/cargo-nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Test
         run: |
