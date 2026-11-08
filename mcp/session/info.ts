@@ -40,7 +40,7 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
     ...(running ? { job: { job: running.handle, tool: running.tool, ...(running.object ? { object: running.object } : {}), ...(running.ctx.stage ? { stage: running.ctx.stage } : {}) } } : {}),
     printer: this.printer().name,
     filament: this.filament().name,
-    ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object) })) } : {}),
+    ...(assemblies.length ? { assemblies: assemblies.map((row) => ({ assembly: row.name, members: row.members.map((member) => member.object), ...(row.members.some((member) => member.joint) ? { joints: row.members.filter((member) => member.joint).map((member) => ({ object: member.object, joint: structuredClone(member.joint) })) } : {}) })) } : {}),
     printerSend: false,
     plugins: this.pluginsLine(),
     nuggets: this.nuggetsLine(),

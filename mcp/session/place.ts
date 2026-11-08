@@ -4,8 +4,10 @@
  */
 import { frameNote, frameWhere, placeFree, placeNumbers } from "../../src/modeling/placing.ts";
 import { posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from "../../src/model-space.ts";
-import { orientEuler } from "../../src/mesh-place.ts";
-import { assemblyOf, memberFields, readAssemblies, reparentJoint, rootOf, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { boundsOf, orientEuler } from "../../src/mesh-place.ts";
+import { poseChain, solvePose, turnHinge } from "../../src/pose.ts";
+import type { Vec3 } from "../../src/model-tree.ts";
+import { assemblyOf, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -14,7 +16,7 @@ import { NEXT, refuse } from "../refusals.ts";
 function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const ids = input.objects as string[];
   if (typeof input.to !== "string") return refuse("bad-placement", "Give to: the part these objects join.");
-  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
+  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.reach !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
   if (new Set(ids).size !== ids.length) return refuse("bad-placement", "Each object can appear only once.");
   const parent = this.find(input.to);
   if (!parent) return refuse("no-object", `to: ${UNKNOWN_OBJECT}`, undefined, NEXT.plate);
@@ -71,6 +73,7 @@ function assemblyMerge(this: Session, input: Record<string, unknown>): Record<st
  * or of a new one with `to` as its root. A number may be an expression; a member keeps its text and follows it.
  */
 function modelPlace(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.joint !== undefined || input.angle !== undefined || input.reach !== undefined) return poseMember.call(this, obj, input);
   if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return refuse("bad-frame", 'frame is "part" or "model".');
   const assemblies = this.liveAssemblies();
   const mine = assemblyOf(assemblies, obj.id);
@@ -137,6 +140,71 @@ function modelPlace(this: Session, obj: PlateObject, input: Record<string, unkno
     ...moved,
     note: `Assembled pose set: ${shownName(obj.name)} sits on ${shownName(parent.name)} in ${result.name}. The print layout is unchanged. ${frameNote(frame)}`,
   };
+}
+
+/** Change a joint and optionally move its chain, validating everything before writing a pose. */
+function poseMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.to !== undefined || input.assembly !== undefined || input.frame !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Set a joint, angle or reach separately from placement and linking.");
+  if (input.angle !== undefined && input.reach !== undefined) return refuse("conflicting-arguments", "Give angle or reach, not both.");
+  const assemblies = this.liveAssemblies();
+  let assembly = assemblyOf(assemblies, obj.id);
+  let member = assembly?.members.find((row) => row.object === obj.id);
+  if (!assembly || !member || member.parent === null) return refuse("bad-placement", "Choose a linked child in an assembly; its root is fixed.");
+  const original = assembly;
+  assembly = solveAssembly(assembly, (id) => this.find(id)?.modelPose, this.params).assembly;
+  member = assembly.members.find((row) => row.object === obj.id)!;
+  if (input.joint !== undefined) {
+    const { joint: _old, ...plain } = member;
+    if (input.joint === null) member = plain;
+    else {
+      const row = input.joint as Record<string, unknown>;
+      const allowed = row.kind === "hinge" ? ["kind", "pivot", "axis", "min", "max"] : ["kind", "pivot", "cone"];
+      if (Object.keys(row).some((key) => !allowed.includes(key))) return refuse("bad-placement", "The joint contains a field its kind does not take; see guide {kind: pose}.");
+      const raw = row.kind === "hinge" ? { ...row, angle: 0 } : { ...row, rest: rotationQuaternion(memberPose(member).m) };
+      const joint = readJoint(raw);
+      if (!joint) return refuse("bad-placement", "A joint needs a finite pivot, a nonzero hinge axis and valid limits containing its zero angle, or a ball cone from 0 to 180 degrees.");
+      member = { ...plain, joint };
+    }
+    const next = withMember(assembly, member);
+    if ("reason" in next) return refuse("bad-placement", next.reason);
+    assembly = next;
+  }
+  if (input.angle !== undefined) {
+    if (!member.joint || member.joint.kind !== "hinge") return refuse("bad-placement", "Angle needs a hinge on this member.");
+    const turned = turnHinge(member, (input.angle as number) - (member.joint.angle ?? 0));
+    if ("reason" in turned) return refuse("bad-placement", turned.reason);
+    const next = withMember(assembly, turned);
+    if ("reason" in next) return refuse("bad-placement", next.reason);
+    assembly = next; member = turned;
+  }
+  let reach: ReturnType<typeof solvePose> | undefined;
+  if (input.reach !== undefined) {
+    const points = input.reach as { at: Vec3; to: Vec3 };
+    if (![points.at, points.to].every((v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n)))) return refuse("bad-placement", "Reach needs two finite three-number points.");
+    const centre = (id: string): Vec3 | undefined => {
+      const part = this.find(id);
+      if (!part) return undefined;
+      const source = part.solid?.positions.length ? part.solid.positions : part.source;
+      if (source.length < 3) return undefined;
+      const box = boundsOf(source), seat = part.solid?.positions.length ? 0 : part.seatMm;
+      return [(box.min[0] + box.max[0]) / 2, (box.min[1] + box.max[1]) / 2, (box.min[2] + box.max[2]) / 2 + seat];
+    };
+    reach = solvePose(assembly, (id) => this.find(id)?.modelPose, obj.id, points.at, points.to, centre);
+    if ("reason" in reach) return refuse("bad-placement", reach.reason);
+    assembly = reach.assembly;
+  }
+  this.remember("Pose");
+  this.assemblies = assemblies.map((row) => row.id === original.id ? assembly! : row);
+  const moved = this.writeSolved(assembly, "");
+  const angles = [...poseChain([assembly], obj.id)].flatMap((id) => {
+    const joint = assembly!.members.find((row) => row.object === id)?.joint;
+    const before = original.members.find((row) => row.object === id)?.joint;
+    return joint?.kind === "hinge" && (before?.kind !== "hinge" || (joint.angle ?? 0) !== (before.angle ?? 0)) ? [{ object: id, angle: joint.angle ?? 0 }] : [];
+  });
+  const current = assembly.members.find((row) => row.object === obj.id)!;
+  return { ok: true, assembly: assembly.name, object: obj.id, ...(current.joint ? { joint: current.joint } : { joint: null }), ...moved,
+    ...(angles.length ? { angles } : {}), ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}),
+    ...(input.compact === true ? {} : { note: "The print layout is unchanged." }) };
 }
 
 /** A part's own pose in model space: a part outside every assembly, or a root, whose members then follow it (D9). */

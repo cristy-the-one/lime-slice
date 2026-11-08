@@ -295,3 +295,7 @@ What this changes: all three CAD tools put a joint's axis on a picked cylinder, 
 ### As built: M6
 
 The Joint tool reads a selected solid's cylindrical face and puts the hinge pivot at the midpoint of its axis, with the axis in the part's own frame. Shift-click on a mesh snaps its pivot to the nearest triangle vertex, edge midpoint or bounding-box centre, while its axis remains typed. The pick is one undoable edit and never changes print placement. If a face cannot be read or is not cylindrical, the existing joint stays as it was.
+
+### As built: M7
+
+`model_place` sets or removes a member joint, turns a hinge to an absolute angle, or reaches a model-space target with a part-frame point. Joint creation can accompany one turn or reach; placement and linking stay separate. Replies name changed parts and hinge angles, and a reach reports its fixed anchor, final point and distance. `plate_list` and `session_info` expose the joints, and `guide {kind:"pose"}` gives the workflow. MCP plate undo restores assembly joints and model poses along with the plate.

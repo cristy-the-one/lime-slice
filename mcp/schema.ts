@@ -923,7 +923,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "guide",
-    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples, or assembly or place.",
+    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples, or assembly, place or pose.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1401,7 +1401,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set the assembled pose: model space, mm and degrees; numbers may be expressions. The print layout does not move. With to, an offset in that part's frame, and both join one assembly. guide {kind:\"assembly\"}.",
+    description: "Set the assembled pose: model space, mm and degrees; numbers may be expressions. The print layout does not move. With to, an offset in that part's frame, and both join one assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1416,6 +1416,9 @@ export const TOOLS: ToolSpec[] = [
         to: { type: "string", minLength: 1, maxLength: 64, description: "Sit on this part: the numbers are its frame." },
         assembly: { type: "string", minLength: 1, maxLength: 80, description: "Assembly name." },
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
+        joint: { oneOf: [{ type: "object" }, { enum: [null] }], description: "Joint or null; guide {kind:\"pose\"}." },
+        angle: { type: "number", description: "Hinge angle in degrees." },
+        reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
         compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
         objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
       },

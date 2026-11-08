@@ -1,3 +1,4 @@
+import type { Assembly } from "../../src/assembly.ts";
 /**
  * What the Session and its tool modules share: the constants, types, and helper functions that were at the top of
  * mcp/session.ts. Moved, not changed.
@@ -476,6 +477,7 @@ export interface SnapObject {
 
 export interface PlateSnap {
   label: string;
+  assemblies: Assembly[];
   objects: SnapObject[];
   selected: string;
   settings: PresetSettings;
