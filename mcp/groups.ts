@@ -22,7 +22,7 @@ export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   supports: { holds: "the sliced support trees: read, prune, and grow", tools: ["support_trees", "support_edit"] },
   plate: {
     holds: "more plate work: duplicate, arrange, split shells, print order, height ranges, modifiers, overrides",
-    tools: ["object_duplicate", "plate_arrange", "object_split_shells", "plate_print_order", "range_add", "modifier_add", "overrides_list", "override_remove"],
+    tools: ["tandem_pull", "object_duplicate", "plate_arrange", "object_split_shells", "plate_print_order", "range_add", "modifier_add", "overrides_list", "override_remove"],
   },
   layers: {
     holds: "the sliced layers and G-code in detail, and layer actions",
@@ -55,7 +55,7 @@ const GROUP_TOOLS_SHORT: Record<string, string> = {
   model: "solid_new, model_apply/probe/build/commit, faces_find, edges_find, section, measure, recipe_run, nugget, model history",
   paint: "paint_supports, paint_seam, reinforce_add, paint_list, paint_clear",
   supports: "support_trees, support_edit",
-  plate: "object_duplicate, plate_arrange, object_split_shells, plate_print_order, range_add, modifier_add, overrides",
+  plate: "tandem_pull, duplicate, arrange, split shells, print order, ranges, modifiers, overrides",
   layers: "layer_summary/detail/paths/image, gcode_read, layer actions",
   calibration: "calibration_tower/apply, blend_compare/apply",
   machines: "machine_load/get/set/save, profile_save",

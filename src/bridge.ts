@@ -120,6 +120,7 @@ const PLATE_TOOLS = new Set([
   "model_commit",
   "project_open",
   "project_create",
+  "tandem_pull",
 ]);
 
 export function bridgeHasPlateUpdate(message: BridgeMessage): boolean {
@@ -157,7 +158,7 @@ export function bridgeHumanChanges<T>(current: readonly MirrorObject<T>[], basel
     const row = here.get(id);
     if (sameBridgeObject(before, row)) continue;
     if (!row) changed.push({ object: id, name: before.name, removed: true });
-    else changed.push({ object: id, name: row.name, scalePercent: row.scalePercent, centered: row.centered, offset: { ...row.offset }, orient: [...row.orient], meshChanged: row.meshHash !== before.meshHash });
+    else changed.push({ object: id, name: row.name, scalePercent: row.scalePercent, centered: row.centered, offset: { ...row.offset }, orient: [...row.orient], meshChanged: row.meshHash !== before.meshHash, base: { name: before.name, scalePercent: before.scalePercent, centered: before.centered, offset: { ...before.offset }, orient: [...before.orient], meshHash: before.meshHash } });
   }
   return changed;
 }
