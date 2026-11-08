@@ -122,7 +122,9 @@ const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }>
 // list it reads every session; TOTAL_BUDGET is the flat list (LIME_MCP_TOOL_GROUPS=0) and every group opened, raised from
 // 17,190 to measured + 3% (17,187 -> 17,700) so a tool added to a group does not need a budget edit; the first list is tight.
 const TOTAL_BUDGET = 17_700;
-const FIRST_LIST_BUDGET = 4_600;
+// Raised from 4,600 to 5,300 (measured 5,260) when model_place and model_export_step became core: posing and saving the pose as STEP need
+// no Model edit, and a client that never re-reads the list after tools_enable could not call them by name.
+const FIRST_LIST_BUDGET = 5_300;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");

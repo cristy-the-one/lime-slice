@@ -321,6 +321,7 @@ broken.child.kill();
     firstList.includes("tools_enable") && firstList.includes("mesh_import") && firstList.includes("slice_start") && firstList.includes("guide") && !firstList.includes("model_apply") && firstList.length < 35,
     firstList.join(","),
   );
+  check("posing and its STEP export are core tools", firstList.includes("model_place") && firstList.includes("model_export_step"), firstList.join(","));
   grouped.send(rpc(3, "tools/call", { name: "model_apply", arguments: { op: { kind: "scale", factor: 2 } } }));
   let hiddenText = "";
   for (;;) {
@@ -349,6 +350,19 @@ broken.child.kill();
   }
   check("tools_enable sends notifications/tools/list_changed", changed, enabledText);
   check("tools_enable names the tools it added", enabledText.includes("paint_supports") && enabledText.includes("inputSchema") && enabledText.includes("\"enabled\":[\"model\",\"paint\"]"), enabledText);
+  check("tools_enable puts the plan_run note before the schemas", enabledText.indexOf("plan_run") >= 0 && enabledText.indexOf("plan_run") < enabledText.indexOf("inputSchema"), enabledText.slice(0, 300));
+  // A whole Model group's schemas are tens of kilobytes; the reply stays short and says how to ask for a few.
+  const enableReply = async (id: number, args: Record<string, unknown>) => {
+    grouped.send(rpc(id, "tools/call", { name: "tools_enable", arguments: args }));
+    for (;;) {
+      const row = JSON.parse(await grouped.next()) as Row;
+      if (row.id === id) return row.result?.content?.[0]?.text ?? "";
+    }
+  };
+  const wholeGroup = await enableReply(40, { groups: ["model"], schemas: true });
+  check("a whole group's schemas give a short reply that names the tools filter", wholeGroup.length < 4_000 && wholeGroup.includes("schemasNote") && wholeGroup.includes("model_apply"), `${wholeGroup.length} chars`);
+  const narrowed = JSON.parse(await enableReply(41, { groups: ["model"], schemas: true, tools: ["faces_find"] })) as { schemas?: { name: string; inputSchema?: unknown }[] };
+  check("tools narrows the schemas", narrowed.schemas?.length === 1 && narrowed.schemas[0]!.name === "faces_find" && narrowed.schemas[0]!.inputSchema !== undefined, JSON.stringify(narrowed).slice(0, 300));
   const nextList = await listNames(grouped, 5);
   check("the next tools/list has the opened groups only", nextList.includes("model_apply") && nextList.includes("paint_supports") && !nextList.includes("calibration_tower"), nextList.join(","));
   grouped.child.kill();

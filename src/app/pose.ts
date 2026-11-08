@@ -14,6 +14,7 @@ import { assembledParts, assemblyClashes, liveAssemblies, syncAssemblyView } fro
 import { fx } from "./fx.ts";
 import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit } from "./history.ts";
 import { refreshObjectList } from "./settings.ts";
+import { exportAssembly } from "./plate-actions.ts";
 import { session, state } from "./state.ts";
 
 type Tool = "select" | "turn" | "joint" | "link" | "reach";
@@ -317,6 +318,15 @@ function renderPanel(): void {
     walk(null, 0);
   }
   for (const part of state.plate.objects) addPart(part.id, 0);
+  // The pose is what a STEP export writes: each member a named solid at its assembled pose.
+  if (assemblies.length) {
+    const exports = document.createElement("div"); exports.className = "pose-buttons"; panel.append(exports);
+    for (const assembly of assemblies) {
+      const save = button(exports, assemblies.length === 1 ? "Save pose as STEP" : `Save ${assembly.name} as STEP`, "step");
+      save.dataset.assembly = assembly.id;
+      save.dataset.tip = "One STEP file of the assembly as posed: each part a named solid at its assembled pose.";
+    }
+  }
   if (message) addText(panel, "p", message);
   if (chainSelected) addText(panel, "p", "Chain selected. Press Esc to select the part.");
   const row = selected();
@@ -348,6 +358,11 @@ function panelClick(event: Event): void {
   if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
   if (action === "undo") { undoUserEdit(); syncPose(); return; }
   if (action === "redo") { redoUserEdit(); syncPose(); return; }
+  if (action === "step" && target.dataset.assembly) {
+    target.disabled = true;
+    void exportAssembly(target.dataset.assembly).finally(() => { target.disabled = false; });
+    return;
+  }
   const row = selected(); if (!row || (action !== "rest" && action !== "make-rest")) return;
   const ids = poseChain([row.assembly], row.member.object);
   let assembly = row.assembly;
