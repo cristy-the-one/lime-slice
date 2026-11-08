@@ -13,6 +13,8 @@ function check(name: string, ok: boolean, detail = "") {
 }
 
 const names = new Set(TOOLS.map((tool) => tool.name));
+const placeDescription = TOOLS.find((tool) => tool.name === "model_place")!.description;
+check("model_place says the print layout does not move", placeDescription.includes("print layout does not move") && !placeDescription.includes("The bed moves at model_commit"));
 check("the mvp tools are present", ["session_info", "project_open", "project_create", "project_save", "mesh_import", "plate_list", "object_select", "object_place", "object_remove", "machine_list", "machine_select", "settings_apply", "slice_start", "slice_wait", "slice_cancel", "gcode_summary", "gcode_export", "export_3mf"].every((name) => names.has(name)));
 check("printer send is not a tool", !names.has("printer_send"));
 check("app_open starts an app, so it is not a read", !annotationsFor("app_open").readOnlyHint && annotationsFor("app_open").destructiveHint);

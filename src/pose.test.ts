@@ -1,7 +1,7 @@
 import { memberPose, movedTo, readJoint, rotationQuaternion, solveAssembly, withoutMember, type Assembly, type Member } from "./assembly.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { applyPose, IDENTITY_POSE, thenPose, turnDir, type Affine } from "./model-space.ts";
-import { linked, poseChain, restOf, solvePose, turnBall, turnHinge } from "./pose.ts";
+import { alignedHinge, linked, poseChain, restOf, solvePose, turnBall, turnHinge } from "./pose.ts";
 
 let failed = 0;
 function check(label: string, ok: boolean): void { if (!ok) { failed++; console.error(`FAIL ${label}`); } }
@@ -29,6 +29,11 @@ const back = member(turnHinge(turned, -40));
 check("hinge returns to rest", near(memberPose(back).m, memberPose(knee).m) && near(memberPose(back).t, memberPose(knee).t));
 check("turn clears stale driving expressions", !member(turnHinge({ ...knee, exprs: { turn: ["x", null, null] } }, 10)).exprs);
 
+const bentHinge: Member = { ...knee, turn: [0, 0, 15] };
+check("aligned removes the hinge's rest twist", Math.abs(alignedHinge(bentHinge)! + 15) < 1e-8);
+check("aligned is invariant as the hinge turns", Math.abs(alignedHinge(member(turnHinge(bentHinge, 20)))! + 15) < 1e-8);
+check("an upside-down perpendicular joint has no unique alignment", alignedHinge({ ...bentHinge, turn: [180, 0, 0] }) === null);
+check("the fixed root has no hinge alignment", alignedHinge(root) === null);
 const ball: Member = { object: "ball", parent: "body", offset: [2, 3, 4], turn: [10, 20, 30], joint: { kind: "ball", pivot: [0, 0, 0], cone: 30 } };
 const ballTurn = member(turnBall(ball, [0, 1, 0], 90, [1, 0, 0]));
 const restDirection = turnDir(restOf(ballTurn), [1, 0, 0]);

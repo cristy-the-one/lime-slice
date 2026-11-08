@@ -1401,7 +1401,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set the assembled pose: model space, mm and degrees; numbers may be expressions. The print layout does not move. With to, an offset in that part's frame, and both join one assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
+    description: "Set an assembled pose or joint, in mm and degrees. The print layout does not move. With to, join an assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1420,6 +1420,7 @@ export const TOOLS: ToolSpec[] = [
         angle: { type: "number", description: "Hinge angle in degrees." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
         root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
+        reply: { enum: ["angles"], description: "Pose: changed hinge angles only." },
         compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
         objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
       },
@@ -1727,7 +1728,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "render_view",
-    description: "PNG inline and in the workspace. Cameras on the part's axes: front shows the −Y face, back, left (−X), right, top, bottom, iso; or direction and up. views: several cameras, one image each. op: a boolean's tool in orange, not applied.",
+    description: "Render a PNG: named camera or direction and up; views: one image each. op shows a boolean tool in orange.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1744,6 +1745,7 @@ export const TOOLS: ToolSpec[] = [
         section: { type: "object", additionalProperties: false, description: "Cut away the side normal points to; the inside shows red.", properties: { normal: vec3, point: { ...vec3, description: "Default: the part's centre." } } },
         smooth: { type: "boolean", description: "Smooth shading on curves (default true)." },
         view: { enum: ["assembly", "print"], description: "Several parts: the object's assembly as assembled, or the bed as it prints." },
+        fit: { type: "object", description: "Fixed model-space box {min,max}; each is [x,y,z]." },
         inline: { type: "boolean", description: "Default true." },
         name: { type: "string", minLength: 1 },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },

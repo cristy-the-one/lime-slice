@@ -1,6 +1,6 @@
 /** Joint operations for assembled model-space poses. They never change the print layout. */
 import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, rotationQuaternion, samePose, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
-import { matMul, rotAbout, type Mat3 } from "./mesh-place.ts";
+import { matMul, rotAbout, wrapDeg, type Mat3 } from "./mesh-place.ts";
 import { applyPose, inversePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 
@@ -29,6 +29,18 @@ export function restOf(member: Member): Affine {
     ? matMul(pose.m, rotAbout(joint.axis, -radians(joint.angle ?? 0)))
     : joint.rest ? quaternionRotation(joint.rest) : pose.m;
   return aroundPivot(pose, joint.pivot, rotation);
+}
+
+/** Angle that removes the member's twist about its hinge axis, relative to its parent. */
+export function alignedHinge(member: Member): number | null {
+  const joint = readJoint(member.joint);
+  if (!joint || joint.kind !== "hinge" || member.parent === null) return null;
+  const q = rotationQuaternion(memberPose(member).m);
+  const axial = q[0] * joint.axis[0] + q[1] * joint.axis[1] + q[2] * joint.axis[2];
+  if (Math.hypot(axial, q[3]) < 1e-10) return null;
+  const twist = 2 * Math.atan2(axial, q[3]) * 180 / Math.PI;
+  const aligned = wrapDeg((joint.angle ?? 0) - twist);
+  return Math.abs(aligned) < 1e-9 ? 0 : aligned;
 }
 
 /** Turn by delta degrees about the hinge's own axis, clamping the accumulated angle. */

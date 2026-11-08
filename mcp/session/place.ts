@@ -16,7 +16,7 @@ import { NEXT, refuse } from "../refusals.ts";
 function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const ids = input.objects as string[];
   if (typeof input.to !== "string") return refuse("bad-placement", "Give to: the part these objects join.");
-  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.reach !== undefined || input.root !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
+  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.reach !== undefined || input.root !== undefined || input.reply !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
   if (new Set(ids).size !== ids.length) return refuse("bad-placement", "Each object can appear only once.");
   const parent = this.find(input.to);
   if (!parent) return refuse("no-object", `to: ${UNKNOWN_OBJECT}`, undefined, NEXT.plate);
@@ -73,6 +73,7 @@ function assemblyMerge(this: Session, input: Record<string, unknown>): Record<st
  * or of a new one with `to` as its root. A number may be an expression; a member keeps its text and follows it.
  */
 function modelPlace(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.reply !== undefined && input.joint === undefined && input.angle === undefined && input.reach === undefined) return refuse("conflicting-arguments", "reply: angles is for a joint, angle or reach call.");
   if (input.root !== undefined) return rerootMember.call(this, obj, input);
   if (input.joint !== undefined || input.angle !== undefined || input.reach !== undefined) return poseMember.call(this, obj, input);
   if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return refuse("bad-frame", 'frame is "part" or "model".');
@@ -230,12 +231,13 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
   }
   this.remember("Pose");
   this.assemblies = assemblies.map((row) => row.id === original.id ? assembly! : row);
-  const moved = this.writeSolved(assembly, "");
+  const moved = this.writeSolved(assembly, "", input.reply !== "angles");
   const angles = [...poseChain([assembly], obj.id)].flatMap((id) => {
     const joint = assembly!.members.find((row) => row.object === id)?.joint;
     const before = original.members.find((row) => row.object === id)?.joint;
     return joint?.kind === "hinge" && (before?.kind !== "hinge" || (joint.angle ?? 0) !== (before.angle ?? 0)) ? [{ object: id, angle: joint.angle ?? 0 }] : [];
   });
+  if (input.reply === "angles") return { ok: true, angles, ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}) };
   const current = assembly.members.find((row) => row.object === obj.id)!;
   return { ok: true, assembly: assembly.name, object: obj.id, ...(current.joint ? { joint: current.joint } : { joint: null }), ...moved,
     ...(angles.length ? { angles } : {}), ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}),
@@ -280,7 +282,7 @@ function placeNumbersMethod(this: Session, input: Record<string, unknown>, keys:
 }
 
 /** Each member of `assembly` at its solved pose. Returns the members other than `except` that moved, with their boxes. */
-function writeSolved(this: Session, assembly: Assembly, except: string): { moved?: Record<string, unknown>[] } {
+function writeSolved(this: Session, assembly: Assembly, except: string, includeMoved = true): { moved?: Record<string, unknown>[] } {
   const solved = solveAssembly(assembly, (id) => this.find(id)?.modelPose, this.params);
   const moved: Record<string, unknown>[] = [];
   for (const row of assembly.members) {
@@ -289,7 +291,7 @@ function writeSolved(this: Session, assembly: Assembly, except: string): { moved
     if (!obj || !pose || row.parent === null) continue;
     const changed = !samePose(pose, obj.modelPose);
     obj.modelPose = pose;
-    if (!changed || row.object === except) continue;
+    if (!changed || row.object === except || !includeMoved) continue;
     const box = this.assembledBox(obj);
     moved.push({ object: row.object, name: shownName(obj.name), ...(box ? { assembledMm: box } : {}) });
   }

@@ -21,6 +21,8 @@ import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
 
 async function renderView(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const fit = input.fit as { min: [number, number, number]; max: [number, number, number] } | undefined;
+  if (fit && (Object.keys(fit).some((key) => key !== "min" && key !== "max") || ![fit.min, fit.max].every((v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n))) || fit.min.some((v, i) => v > fit.max[i]!) || fit.min.every((v, i) => v === fit.max[i]))) return refuse("bad-view", "fit needs a finite nonempty box with min no greater than max.");
   const obj = this.find(typeof input.object === "string" ? input.object : this.selected) ?? this.objects[0];
   if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   const committed = await this.commitObject(obj);
@@ -63,15 +65,21 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
     }
   }
   const solidMesh = !!obj.solid && obj.solid.positions.length >= 9;
-  const mesh = input.view === "assembly" || input.view === "print" ? this.viewMesh(obj, input.view) : solidMesh ? obj.solid!.positions : this.placed(obj).positions;
+  const mesh = input.view === "assembly" || input.view === "print" ? this.viewMesh(obj, input.view) : fit ? posedPositions(solidMesh ? obj.solid!.positions : obj.source, solidMesh ? obj.modelPose : thenPose(seatLift(obj.seatMm), obj.modelPose)) : solidMesh ? obj.solid!.positions : this.placed(obj).positions;
   const looks = this.renderLooks(obj, input, solidMesh);
   if ("reason" in looks) return refuse("bad-view", looks.reason);
+  // A single solid is normally drawn in its own frame; fixed boxes are in model space.
+  if (fit && !input.view && solidMesh) {
+    if (looks.options.section) looks.options.section = { point: applyPose(obj.modelPose, looks.options.section.point), normal: turnDir(obj.modelPose, looks.options.section.normal) };
+    if (looks.options.tints?.length) looks.options.tintFrame = inversePose(obj.modelPose);
+    if (ghost) ghost = { ...ghost, mesh: posedPositions(ghost.mesh, obj.modelPose) };
+  }
   const stem = typeof input.name === "string" ? input.name.replace(/\.png$/i, "") : obj.name;
   const edge = typeof input.longEdge === "number" ? input.longEdge : 768;
   const views: { camera: string; path: string; width: number; height: number }[] = [];
   const pictures: InlineImage[] = [];
   cameras.forEach(({ label, camera }, index) => {
-    const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, looks.options);
+    const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, { ...looks.options, ...(fit ? { fit } : {}) });
     const file = many ? `${stem}-${label}${cameras.filter((row) => row.label === label).length > 1 ? `-${index + 1}` : ""}.png` : typeof input.name === "string" ? input.name : `${obj.name}-${label}.png`;
     const path = resolveWrite(file, ".png");
     writeFileSync(path, drawn.png);
