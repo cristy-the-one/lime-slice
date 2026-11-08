@@ -41,6 +41,7 @@ src/assembly.test.ts
 src/pose.test.ts
 src/pose-anim.test.ts
 src/pose-playback.test.ts
+src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
 mcp/assembly-reroot.test.ts
