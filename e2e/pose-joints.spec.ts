@@ -248,6 +248,10 @@ test("Joint reads a cylindrical hole from a solid and keeps its print placement"
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions, seatMm: 0 } }));
   await mockModelTree(page, { open: () => solid });
+  await page.route("**/api/model/tree", async (route) => {
+    if (route.request().postDataJSON()?.call === "open") await new Promise((resolve) => setTimeout(resolve, 350));
+    await route.fallback();
+  });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/"); await autoSliceOff(page);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
@@ -271,9 +275,11 @@ test("Joint reads a cylindrical hole from a solid and keeps its print placement"
   for (const dy of [-160, -170, -180, -190, -200]) {
     for (const dx of [0, -10, 10, -20, 20]) {
       await panel.locator(`[data-object='${child}']`).click();
-      await canvas.evaluate((el) => delete el.dataset.jointFace);
+      await canvas.evaluate((el) => { delete el.dataset.jointFace; delete el.dataset.picked; });
       await page.mouse.click(x! + dx, y! + dy);
-      await page.waitForTimeout(80);
+      const picked = await canvas.getAttribute("data-picked");
+      if (picked !== child) continue;
+      await expect.poll(() => canvas.getAttribute("data-joint-face"), { message: "wait for the modeler to identify the picked face" }).not.toBeNull();
       const face = await canvas.getAttribute("data-joint-face");
       if (face === "0") { found = true; break; }
       if (face === "1") await panel.getByRole("button", { name: "Undo", exact: true }).click();
