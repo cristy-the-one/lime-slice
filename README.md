@@ -1,6 +1,6 @@
 # Lime Slice
 
-Lime Slice 6.0.1 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
+Lime Slice 6.1.0 is a filament slicer and a solid modeler in one window. Open an STL, 3MF, or STEP file, or start a solid from a sketch, then slice it to G-code. A Rust planner builds the toolpaths. Model edits go through Open CASCADE when its bridge is installed. The window is a Tauri 2 desktop app, and the same pages run in a browser against a local engine.
 
 The shell is the landscape layout: a tool rail on the left, a dock on each side, and a status line. Prepare and Preview use the left dock for settings and the right dock for results. Model uses the left dock for the open tool, the sketch, History, and Parameters, and the right dock for Inspect.
 
@@ -261,7 +261,7 @@ The setup is the same. Only the paths differ:
 - macOS: `/Applications/Lime Slice.app/Contents/Resources/mcp/server.mjs`. Claude Desktop's config is `~/Library/Application Support/Claude/claude_desktop_config.json`.
 - Linux (`.deb`): `/usr/lib/Lime Slice/mcp/server.mjs`. Claude Desktop's config is `~/.config/Claude/claude_desktop_config.json`.
 
-Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way. Recipes on Linux need the C headers of `libc6-dev`: the `.deb` installs it, and an AppImage user runs `sudo apt install libc6-dev`. The macOS app has no recipes yet: lust does not build on macOS, and `recipe_run` answers that it needs lust.
+Paths use forward slashes. Set `LIME_MCP_WORKSPACE` the same way. Recipes on Linux need the C headers of `libc6-dev`: the `.deb` installs it, and an AppImage user runs `sudo apt install libc6-dev`. The Apple silicon macOS app ships lust, so recipes run there as on Linux and Windows. The Intel macOS app has no recipes: it ships without lust, and `recipe_run` answers that it needs lust.
 
 ### What it does
 
@@ -418,7 +418,7 @@ Clipper2 (`clipper2c-sys`) compiles its C++ sources with the Rust `cc` crate. Th
 
 ## Releases
 
-`.github/workflows/release.yml` builds unsigned installers when a tag named `v*` is pushed, and when someone runs the workflow by hand. The artifacts are attached to a **draft** GitHub Release. Linux is a `.deb` plus an `.AppImage` (Ubuntu 24.04). macOS is off for now, because lust (which recipes need) does not build there yet; when it is back, it is two `.dmg` files, Apple silicon and Intel, rather than one universal binary. Windows is an NSIS installer. The existing CI jobs are unchanged.
+`.github/workflows/release.yml` builds unsigned installers when a tag named `v*` is pushed, and when someone runs the workflow by hand. The artifacts are attached to a **draft** GitHub Release. Linux is a `.deb` plus an `.AppImage` (Ubuntu 24.04). macOS is two `.dmg` files, Apple silicon and Intel, rather than one universal binary; only the Apple silicon one carries lust, which recipes need, because lust's macOS build is proven on arm64 only. Windows is an NSIS installer. The existing CI jobs are unchanged.
 
 These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, and the AppImage is not signed either. Code signing, notarization, and the Tauri updater plugin are not part of this workflow. A later signing setup would fill these secrets; none of them are read today:
 
@@ -433,7 +433,7 @@ These builds are unsigned. macOS Gatekeeper and Windows SmartScreen will warn, a
 | `TAURI_SIGNING_PRIVATE_KEY` | Updater minisign private key |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Password for that updater key |
 
-A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (6.0.1). Publishing that draft is a separate step. Draft releases through v5.9.0 are already on the repository.
+A Windows Authenticode certificate is not configured either. A manual run creates or updates the draft release `v<app version>` from `src-tauri/tauri.conf.json` (6.1.0). Publishing that draft is a separate step. Draft releases through v5.9.0 are already on the repository.
 
 ## Headless slice and bench
 

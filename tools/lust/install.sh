@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Builds lust, the checker and compiler recipe_run uses, at the commit in tools/lust/LUST_REV.
 # Usage: tools/lust/install.sh [dir]   (default ~/.lime-slice/lust). Prints the lust binary's path last.
-# Linux, and Windows under Git Bash with Visual Studio's C++ tools (tcc is built with cl there); a developer shell is
-# loaded when cl is not on PATH. tools/lust/stage.sh lays the build out for the installers.
-# macOS is not supported yet: lust does not build there (tcc Mach-O). CI skips the recipe steps on macOS.
+# Linux, Apple silicon macOS, and Windows under Git Bash with Visual Studio's C++ tools (tcc is built with cl there); a
+# developer shell is loaded when cl is not on PATH. tools/lust/stage.sh lays the build out for the installers.
+# macOS: lust's scripts/build-tcc.sh needs bash 5 and the GNU userland first (brew install bash coreutils findutils
+# gnu-sed), as lust's own macos-arm64 job installs them; it patches tinycc's Mach-O output there. lust's macOS build is
+# proven on arm64 only, so the Intel dmg ships without lust.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 rev=$(tr -d '[:space:]' < "$here/LUST_REV")
@@ -36,8 +38,7 @@ case "$(uname -s)" in
     export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$msvc_link"
     ;;
   Darwin)
-    echo "lust does not build on macOS yet" >&2
-    exit 2
+    [ -f "$dest/third_party/tcc/lib/libtcc.a" ] || "$dest/scripts/build-tcc.sh" >&2
     ;;
   *)
     [ -f "$dest/third_party/tcc/lib/libtcc.a" ] || "$dest/scripts/build-tcc.sh" >&2
