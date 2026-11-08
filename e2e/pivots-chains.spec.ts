@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { autoSliceOff } from "./auto-slice";
 
@@ -40,7 +41,8 @@ function parsePivots(raw: string | null): Record<string, [number, number, number
 test("a custom pivot stays put when the part turns, and a chain follows", async ({ page }) => {
   await openCube(page);
   await expect(page.locator('#toolRail [data-tool="pivot"]')).toBeVisible();
-  await expect(page.locator('#toolRail [data-tool="ik"]')).toBeVisible();
+  await expect(page.locator('#toolRail [data-tool="ik"]')).toHaveCount(0);
+  await expect(page.locator('#jointXMin')).toHaveCount(0);
 
   const before = await page.locator("#placeX").inputValue();
   await commitPivot(page, "0", "0", "0");
@@ -89,4 +91,32 @@ test("a custom pivot stays put when the part turns, and a chain follows", async 
   await expect(page.locator("[data-plate-id]")).toHaveCount(4);
   await page.keyboard.press("Control+z");
   await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+});
+
+
+test("legacy bed-chain limits survive an edit even though Prepare no longer shows them", async ({ page }) => {
+  await openCube(page);
+  await page.locator("#plateDuplicate").click();
+  await expect(page.locator("[data-plate-id]")).toHaveCount(2);
+  await page.locator("[data-chain-link]").evaluate((el) => (el as HTMLButtonElement).click());
+  await expect(page.locator("[data-chain-head]")).toHaveCount(1);
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const doc = JSON.parse(fs.readFileSync((await download.path())!, "utf8")) as { objects: { id: string; chain?: unknown; jointLimits?: unknown }[] };
+  const child = doc.objects.find((row) => row.chain)!;
+  const parent = doc.objects.find((row) => !row.chain)!;
+  child.jointLimits = { x: [-10, 30], z: [0, 0] };
+  await page.reload();
+  await page.locator("#projectFile").setInputFiles({ name: "old-chain.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+  await expect(page.locator("[data-chain-head]")).toHaveCount(1);
+  await expect(page.locator("#jointXMin")).toHaveCount(0);
+  await expect(page.locator('#toolRail [data-tool="ik"]')).toHaveCount(0);
+  await page.locator(`[data-plate-select='${parent.id}']`).click();
+  const before = parsePivots(await page.locator("#prepare").getAttribute("data-plate-pivots"));
+  const x = Number(await page.locator("#placeX").inputValue());
+  await page.locator("#placeX").fill(String(x + 10)); await page.locator("#placeX").press("Tab");
+  const after = parsePivots(await page.locator("#prepare").getAttribute("data-plate-pivots"));
+  expect(after[child.id]![0]).toBeCloseTo(before[child.id]![0] + 10, 0);
+  const [saved] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const result = JSON.parse(fs.readFileSync((await saved.path())!, "utf8")) as typeof doc;
+  expect(result.objects.find((row) => row.id === child.id)?.jointLimits).toEqual({ x: [-10, 30], z: [0, 0] });
 });

@@ -14,10 +14,8 @@ import { syncLayerTip } from "../ui/layer-tip";
 import { type LayerGcode, indexLayerGcode, type PlayPoint, layerMoves, matchGcodeLine, layerClasses } from "../playback";
 import { replyOffset, shownBedOffset } from "../bed-offset";
 import { applyPlace, fetchStoredGcode, livePlate, nudgePlacement, objectPlacement } from "./files";
-import { dragChainEnd, movePivot } from "./plate-actions";
+import { movePivot } from "./plate-actions";
 import { bedToSourcePoint, snapPivotPoint } from "../pivot.ts";
-import { pushToast } from "../ui/toasts";
-import type { PlateObject } from "../plate";
 import { renderChrome, layerReadout, paramTable, currentWeight, markStale, touch, stale, previewFeatureRows, earlyOnScreen } from "./settings";
 import { cycleLayerAction, layerMarkerText } from "../layer-actions";
 import { beginEdit, beginModelVisit, cancelEdit, flushEdit, holdEdit, modelVisitChanged, noteEdit } from "./history";
@@ -1575,23 +1573,6 @@ export function mountViews() {
   prepare.onPivotEnd(() => {
     flushEdit();
     renderChrome();
-  });
-  let ikBase: readonly PlateObject[] | null = null;
-  let ikMiss = false;
-  prepare.onIk((point) => {
-    if (!ikBase) ikBase = state.plate.objects;
-    beginEdit();
-    if (!dragChainEnd(ikBase, point) && !ikMiss) {
-      ikMiss = true;
-      pushToast("Drag the end of a chain. The joints turn to reach it.", "info");
-    }
-  });
-  prepare.onIkEnd(() => {
-    ikBase = null;
-    ikMiss = false;
-    flushEdit();
-    renderChrome();
-    fx.scheduleAuto();
   });
   prepare.onModifierSelect((id) => selectModifier(id));
   prepare.onModifierEditStart(() => beginModifierEdit());

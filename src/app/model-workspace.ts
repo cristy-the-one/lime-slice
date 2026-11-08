@@ -69,3 +69,4 @@ export function mountModelWorkspace() {
   fx.resize?.();
   if (state.stage === "model") showModel();
 }
+export { poseSolid } from "./model/pose-solid.ts";

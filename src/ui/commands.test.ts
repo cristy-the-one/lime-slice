@@ -33,6 +33,7 @@ check("boundary bonus beats a buried match", (fuzzyScore("s", "Slice") ?? 0) > (
 
 const ids = COMMANDS.map((command) => command.id);
 eq("unique ids", new Set(ids).size, ids.length);
+check("Prepare has no legacy IK command", !ids.includes("tool-ik"));
 
 // Key events -------------------------------------------------------------------------------------------------
 
@@ -278,7 +279,6 @@ const TARGET_STAGES: Record<string, readonly ("prepare" | "preview" | "gcode" | 
   '#toolRail [data-tool="rotate"]': ["prepare"],
   '#toolRail [data-tool="scale"]': ["prepare"],
   '#toolRail [data-tool="pivot"]': ["prepare"],
-  '#toolRail [data-tool="ik"]': ["prepare"],
   "#layflat": ["prepare"],
   '#toolRail [data-tool="layflat"]': ["prepare"],
   '#toolRail [data-tool="section"]': ["prepare", "preview", "gcode"],

@@ -58,7 +58,6 @@ export interface Fx {
   // plate-actions.ts, shell-actions.ts, main.ts
   selectPlateObject: PlateActions["selectPlateObject"];
   notePivotTriple: PlateActions["notePivotTriple"];
-  noteJointField: PlateActions["noteJointField"];
   separateShells: ShellActions["separateShells"];
   drawPaint: () => void;
   // pose.ts: redraw the Pose stage when the plate or the assemblies change. Set once Pose has been opened.

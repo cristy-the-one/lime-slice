@@ -124,6 +124,7 @@ function snapObject(this: Session, obj: PlateObject): SnapObject {
 function capture(this: Session, label: string): PlateSnap {
   return {
     label,
+    assemblies: structuredClone(this.assemblies),
     objects: this.objects.map((obj) => this.snapObject(obj)),
     selected: this.selected,
     settings: structuredClone(this.settings),
@@ -161,6 +162,8 @@ function install(this: Session, snap: PlateSnap): void {
       kept.source = row.source;
       kept.triangles = row.triangles;
       kept.orient = [...row.orient] as Mat3;
+      kept.modelPose = structuredClone(row.modelPose);
+      kept.frame = row.frame;
       kept.scale = row.scale;
       kept.centered = row.centered;
       kept.offset = { ...row.offset };
@@ -186,6 +189,7 @@ function install(this: Session, snap: PlateSnap): void {
   }
   this.objects.splice(0, this.objects.length, ...next);
   this.selected = snap.selected;
+  this.assemblies = structuredClone(snap.assemblies);
   this.settings = structuredClone(snap.settings);
   this.library = structuredClone(snap.library);
   this.actions = snap.actions.map((action) => ({ ...action }));
@@ -345,7 +349,9 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
   const assemblies = this.liveAssemblies();
   const rows = this.objects.map((obj) => {
     const placed = this.placed(obj);
-    const assembly = assemblyOf(assemblies, obj.id)?.name;
+    const group = assemblyOf(assemblies, obj.id);
+    const assembly = group?.name;
+    const joint = group?.members.find((member) => member.object === obj.id)?.joint;
     const centre = [
       (placed.bounds.min[0] + placed.bounds.max[0]) / 2,
       (placed.bounds.min[1] + placed.bounds.max[1]) / 2,
@@ -360,6 +366,7 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
       ...(assembled ? { assembledMm: assembled } : {}),
       ...(obj.frame === "part" ? { frame: "part" as const } : {}),
       ...(assembly ? { assembly } : {}),
+      ...(joint ? { joint: structuredClone(joint) } : {}),
       scalePercent: obj.scale * 100,
       notes: this.plateNotes(obj, placed.bounds),
     };

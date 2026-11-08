@@ -1,6 +1,6 @@
-# Pivots, chains, and inverse kinematics
+# Pivots and bed chains
 
-A pivot is a point on an object. A chain links objects through those points so a child follows its parent. Inverse kinematics turns the joints of a chain while you drag the end. All three are plate placement. They are not assemblies: an assembly keeps parts in model space and has no degrees of freedom (`docs/plan-assemblies.md`). An object can be in both.
+A pivot is a point on an object. A bed chain links objects through those points so a child follows its parent in the print layout. It is a layout convenience, separate from an assembly's model-space pose. For joints and inverse kinematics, use the Pose stage and its Reach tool (`docs/plan-pose.md`). An object can be in both a bed chain and an assembly.
 
 The project version stays 4. The new keys are omitted when they are absent, so a file written without a pivot, a chain, or a joint limit is the same file as before. An older app ignores the keys and drops them the next time it saves.
 
@@ -18,15 +18,13 @@ Select the parent, then Link on the child. The link stores the child's pivot in 
 
 The Chain row selects the whole chain. Move, rotate, scale, duplicate, and delete then treat it as one object, and one undo step puts it back. Delete chain removes every member. The plate always keeps one object, so a chain that is the whole plate is not removed. Delete on a single row removes that member and reparents its children. A copy of one member is free: it does not stay linked. A loop is refused. Arrange records the links again after it packs, so a packed child does not jump back.
 
-## Inverse kinematics
+## Older project files
 
-Select the end object (the one with a parent and no children) and drag with the IK tool. The solver is cyclic coordinate descent, written here, with no library: each joint turns about its pivot so the end pivot approaches the pointer. The pointer rides a plane through the end pivot, facing the camera. Bone lengths stay. A step is at most 90°, and the solve stops at 32 steps or when the end is within 0.05 mm. Joint limits, in the Pivot and chain group, clamp the Euler angles of a joint after each step. Empty is free. The end object is not a joint. One drag is one undo step.
-
-FABRIK is not implemented. A shared parent turns every child that hangs on that joint, not only the branch you are reaching with.
+Projects made before Pose may contain bed-chain `jointLimits`. They remain in the file when it is opened and saved, so an older app can still read them. The Prepare controls no longer edit or use those limits; Pose joints are stored separately on assembly members.
 
 ## What does not change
 
 - No new slice-request field. `crates/lime-slice-core` is untouched.
-- No GPL or LGPL code. The solver is original.
+- No GPL or LGPL code.
 - Nothing here needs a network.
 - The MCP server has no new tool. Opening and saving a project keeps `pivot`, `chain`, and `jointLimits`. Duplicating one object through MCP drops the link and keeps the pivot.

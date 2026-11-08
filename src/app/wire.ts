@@ -2,7 +2,7 @@ import { type ColorMode } from "../colors";
 import { matMul, rotX, rotY, rotZ } from "../mesh-place";
 import { layFlatMatrix } from "../bed-rest";
 import { setSettleOn } from "../bed-rest-pref";
-import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, linkPlateObject, noteJointField, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject, ungroupAssembly } from "./plate-actions";
+import { alignSelectedTo, arrangePlate, attachPlateObject, duplicatePlateObject, exportAssembly, framePlateObject, layOutAssembly, linkPlateObject, notePivotTriple, removePlateObject, selectChain, selectPlateObject, setObjectPivot, showAllPlateObjects, togglePlateHidden, unlinkPlateObject, ungroupAssembly } from "./plate-actions";
 import { fx } from "./fx";
 import { alignHowHtml, alignPick } from "./align-ui";
 import { setHtml } from "../ui/html";
@@ -148,13 +148,6 @@ export function wireApp() {
     if (target.id === "pivotX" || target.id === "pivotY" || target.id === "pivotZ") {
       const read = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`)?.value ?? "";
       notePivotTriple([read("pivotX"), read("pivotY"), read("pivotZ")]);
-      return;
-    }
-    if (target.id.startsWith("joint") && (target.id.endsWith("Min") || target.id.endsWith("Max"))) {
-      const axis = target.id.startsWith("jointY") ? "y" : target.id.startsWith("jointZ") ? "z" : "x";
-      const label = axis.toUpperCase();
-      const read = (id: string) => document.querySelector<HTMLInputElement>(`#${id}`)?.value ?? "";
-      if (noteJointField(axis, [read(`joint${label}Min`), read(`joint${label}Max`)])) touch();
       return;
     }
     if (target.id === "placeRx" || target.id === "placeRy" || target.id === "placeRz") {

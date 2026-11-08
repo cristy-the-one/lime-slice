@@ -26,7 +26,15 @@ export interface PoseScene extends PoseLooks {
   marks?: { pivot: [number, number, number]; axis?: [number, number, number] }[];
 }
 
+export type ReachEvent =
+  | { phase: "start"; object: string; point: [number, number, number] }
+  | { phase: "change"; target: [number, number, number] }
+  | { phase: "end" }
+  | { phase: "cancel" };
+
 export type TurnEvent = { phase: "start"; axis: number } | { phase: "end"; axis: number } | { phase: "change"; axis: number; delta: number };
+
+export interface PoseHit { point: [number, number, number]; ray: { origin: [number, number, number]; direction: [number, number, number] }; shift: boolean; triangle: [number, number, number][] }
 
 export interface PoseView {
   setScene(scene: PoseScene): void;
@@ -37,8 +45,11 @@ export interface PoseView {
   frameAll(): void;
   resize(): void;
   /** A click (not a drag) on a part, or on empty space (`null`). */
-  onPick(cb: ((id: string | null) => void) | null): void;
+  onPick(cb: ((id: string | null, hit?: PoseHit) => void) | null): void;
   onTurn(cb: ((event: TurnEvent) => void) | null): void;
+  setReach(on: boolean): void;
+  onReach(cb: ((event: ReachEvent) => boolean | void) | null): void;
+  cancelReach(): void;
 }
 
 /** Edges sharper than this crease are outlined. Model's ghost outlines a mesh tool at the same angle. */
@@ -94,8 +105,10 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const held = new Map<Float32Array, { geometry: THREE.BufferGeometry; edges: THREE.EdgesGeometry }>();
   let box: Bounds | null = null;
   let framed = false;
-  let pickCb: ((id: string | null) => void) | null = null;
+  let pickCb: ((id: string | null, hit?: PoseHit) => void) | null = null;
   let turnCb: ((event: TurnEvent) => void) | null = null;
+  let reachCb: ((event: ReachEvent) => boolean | void) | null = null;
+  let reachEnabled = false;
   const gizmos = new THREE.Group();
   const marks = new THREE.Group();
   scene.add(gizmos, marks);
@@ -251,6 +264,14 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const moved = glide(now);
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      if (reachEnabled) {
+        const rect = canvas.getBoundingClientRect();
+        canvas.dataset.reachPoints = group.children.filter((part) => part instanceof THREE.Mesh && typeof part.userData.id === "string").map((part) => {
+          const mesh = part as THREE.Mesh;
+          const point = mesh.geometry.boundingSphere!.center.clone().applyMatrix4(mesh.matrixWorld).project(camera);
+          return `${mesh.userData.id}:${(rect.left + (point.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - point.y) * rect.height / 2).toFixed(1)}`;
+        }).join(" ");
+      } else delete canvas.dataset.reachPoints;
       if (gizmos.children.length && ringGeometry) {
         const rect = canvas.getBoundingClientRect();
         const radius = ringGeometry.parameters.radius;
@@ -345,6 +366,44 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   };
   canvas.addEventListener("pointerup", endTurn, true);
   canvas.addEventListener("pointercancel", endTurn, true);
+  let reachDrag: { pointer: number; plane: THREE.Plane } | null = null;
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (!reachEnabled || ev.button !== 0 || !reachCb) return;
+    rayAt(ev.clientX, ev.clientY);
+    const hit = raycaster.intersectObjects(group.children, false).find((row) => typeof row.object.userData.id === "string");
+    if (!hit) return;
+    const point = hit.point.clone();
+    const accepted = reachCb({ phase: "start", object: hit.object.userData.id as string, point: point.toArray() as [number, number, number] });
+    if (accepted === false) return;
+    const normal = camera.getWorldDirection(new THREE.Vector3());
+    reachDrag = { pointer: ev.pointerId, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, point) };
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    ev.preventDefault(); ev.stopImmediatePropagation();
+  }, true);
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!reachDrag || reachDrag.pointer !== ev.pointerId) return;
+    rayAt(ev.clientX, ev.clientY);
+    const point = raycaster.ray.intersectPlane(reachDrag.plane, new THREE.Vector3());
+    if (point) reachCb?.({ phase: "change", target: point.toArray() as [number, number, number] });
+    ev.preventDefault(); ev.stopImmediatePropagation();
+  }, true);
+  function finishReach(cancel: boolean): void {
+    if (!reachDrag) return;
+    const pointer = reachDrag.pointer;
+    reachDrag = null;
+    controls.enabled = true;
+    if (canvas.hasPointerCapture(pointer)) canvas.releasePointerCapture(pointer);
+    reachCb?.({ phase: cancel ? "cancel" : "end" });
+  }
+  canvas.addEventListener("pointerup", (ev) => {
+    if (!reachDrag || reachDrag.pointer !== ev.pointerId) return;
+    finishReach(false); ev.preventDefault(); ev.stopImmediatePropagation();
+  }, true);
+  canvas.addEventListener("pointercancel", (ev) => {
+    if (!reachDrag || reachDrag.pointer !== ev.pointerId) return;
+    finishReach(true); ev.preventDefault(); ev.stopImmediatePropagation();
+  }, true);
   canvas.addEventListener("pointerdown", (ev) => {
     if (viewHelperHit(viewHelper, canvas, ev)) {
       kick();
@@ -356,18 +415,18 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     const start = press;
     press = null;
     if (!start || start.id !== ev.pointerId || Math.hypot(ev.clientX - start.x, ev.clientY - start.y) > CLICK_PX) return;
-    const id = pickAt(ev.clientX, ev.clientY);
-    canvas.dataset.picked = id ?? "";
-    pickCb?.(id);
-  });
-
-  function pickAt(clientX: number, clientY: number): string | null {
-    const rect = canvas.getBoundingClientRect();
-    const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
-    raycaster.setFromCamera(ndc, camera);
+    rayAt(ev.clientX, ev.clientY);
     const hit = raycaster.intersectObjects(group.children, false).find((row) => typeof row.object.userData.id === "string");
-    return hit ? (hit.object.userData.id as string) : null;
-  }
+    const id = hit ? hit.object.userData.id as string : null;
+    canvas.dataset.picked = id ?? "";
+    const attr = hit?.object instanceof THREE.Mesh ? hit.object.geometry.getAttribute("position") : null;
+    const triangle: [number, number, number][] = [];
+    if (hit && attr && hit.face) for (const index of [hit.face.a, hit.face.b, hit.face.c]) {
+      const point = hit.object.localToWorld(new THREE.Vector3().fromBufferAttribute(attr, index));
+      triangle.push(point.toArray() as [number, number, number]);
+    }
+    pickCb?.(id, hit ? { point: hit.point.toArray() as [number, number, number], ray: { origin: raycaster.ray.origin.toArray() as [number, number, number], direction: raycaster.ray.direction.toArray() as [number, number, number] }, shift: ev.shiftKey, triangle } : undefined);
+  });
 
   function setTheme() {
     colors = themeColors();
@@ -405,5 +464,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     onTurn(cb) {
       turnCb = cb;
     },
+    setReach(on) { reachEnabled = on; canvas.style.cursor = on ? "crosshair" : ""; kick(); },
+    onReach(cb) { reachCb = cb; },
+    cancelReach() { finishReach(true); },
   };
 }

@@ -1,15 +1,11 @@
 /**
  * A chain links plate objects parent to child through their pivots. A child's pivot stays at a fixed offset in its
  * parent's pivot frame, and its turn stays fixed in that frame, so moving, turning or scaling the parent carries the
- * children. Inverse kinematics turns those joints so the end object's pivot reaches a point. Nothing here is a slice
- * input: the bed pose of each object is still its own orient, scale and offset.
+ * children. Nothing here is a slice input: the bed pose of each object is still its own orient, scale and offset.
  */
-import { matMul, orientEuler, eulerOrient, rotAbout, type Mat3, type MeshShift } from "./mesh-place.ts";
+import { matMul, type Mat3, type MeshShift } from "./mesh-place.ts";
 import {
   add3,
-  cross3,
-  dot3,
-  hypot3,
   matVec,
   offsetKeepingPoint,
   pivotOrCentre,
@@ -22,7 +18,7 @@ import {
   type Vec3,
 } from "./pivot.ts";
 
-/** Degrees of the joint's turn in its parent's frame (the bed's for a root). An axis left out is free. */
+/** Legacy bed-chain limits, retained for project-file compatibility. */
 export interface JointLimits {
   x?: [number, number];
   y?: [number, number];
@@ -301,100 +297,6 @@ export function readJointLimits(value: unknown): JointLimits | undefined {
 export function readPivot(value: unknown): Vec3 | undefined {
   if (!Array.isArray(value) || value.length !== 3 || value.some((n) => typeof n !== "number" || !Number.isFinite(n))) return undefined;
   return [value[0] as number, value[1] as number, value[2] as number];
-}
-
-/**
- * Clamp a joint's turn in its parent's frame (the bed's for a root), so a limit does not move when the parent
- * turns. A joint that already stands outside a limit is not snapped back: the span widens to hold where it is, and
- * the joint can only come back toward the span.
- */
-function clampEuler(orient: Mat3, before: Mat3, parent: Mat3 | null, limits: JointLimits | undefined): Mat3 {
-  if (!limits) return orient;
-  const toLocal = (m: Mat3) => (parent ? matMul(transpose(parent), m) : m);
-  const euler = orientEuler(toLocal(orient));
-  const start = orientEuler(toLocal(before));
-  const clamp = (value: number, from: number, span: [number, number] | undefined) =>
-    (span ? Math.min(Math.max(span[1], from), Math.max(Math.min(span[0], from), value)) : value);
-  const rx = clamp(euler.rx, start.rx, limits.x);
-  const ry = clamp(euler.ry, start.ry, limits.y);
-  const rz = clamp(euler.rz, start.rz, limits.z);
-  if (rx === euler.rx && ry === euler.ry && rz === euler.rz) return orient;
-  const local = eulerOrient(rx, ry, rz);
-  return parent ? matMul(parent, local) : local;
-}
-
-function applyWorldRotation<T extends ChainObject>(objects: T[], jointId: string, delta: Mat3, bed: BedSize): void {
-  const joint = byId(objects, jointId);
-  if (!joint) return;
-  const world = pivotBed(joint, bed);
-  const before = joint.orient;
-  const parent = joint.chain ? byId(objects, joint.chain.parent)?.orient ?? null : null;
-  const nextOrient = clampEuler(matMul(delta, before), before, parent, joint.jointLimits);
-  const actual = matMul(nextOrient, transpose(before));
-  const index = new Map(objects.map((obj, at) => [obj.id, at]));
-  objects[index.get(jointId)!] = placeAt(joint, nextOrient, joint.partScale, world, bed);
-  for (const id of descendants(objects, jointId)) {
-    const row = objects[index.get(id)!]!;
-    const at = pivotBed(row, bed);
-    const moved = add3(world, matVec(actual, sub3(at, world)));
-    objects[index.get(id)!] = placeAt(row, matMul(actual, row.orient), row.partScale, moved, bed);
-  }
-}
-
-function rotateJointToward<T extends ChainObject>(objects: T[], jointId: string, leafId: string, target: Vec3, bed: BedSize): void {
-  const joint = byId(objects, jointId);
-  const leaf = byId(objects, leafId);
-  if (!joint || !leaf) return;
-  const origin = pivotBed(joint, bed);
-  const end = pivotBed(leaf, bed);
-  const toEnd = sub3(end, origin);
-  const toTarget = sub3(target, origin);
-  const endLen = hypot3(toEnd);
-  const targetLen = hypot3(toTarget);
-  if (endLen < 1e-6 || targetLen < 1e-6) return;
-  const a = scale3(toEnd, 1 / endLen);
-  const b = scale3(toTarget, 1 / targetLen);
-  let axis = cross3(a, b);
-  let axisLen = hypot3(axis);
-  const dot = Math.max(-1, Math.min(1, dot3(a, b)));
-  let angle = Math.acos(dot);
-  if (axisLen < 1e-8) {
-    if (dot > 0) return;
-    const helper: Vec3 = Math.abs(a[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
-    axis = cross3(a, helper);
-    axisLen = hypot3(axis) || 1;
-    angle = Math.PI;
-  }
-  // One step stays under a right angle so a limit clamp and the next joint can still share the reach.
-  if (angle > Math.PI / 2) angle = Math.PI / 2;
-  applyWorldRotation(objects, jointId, rotAbout(axis, angle), bed);
-}
-
-/**
- * Cyclic coordinate descent: turn each joint from the one before the end back to the root so the end pivot
- * moves toward `target`. Bone lengths stay. Per-joint Euler limits clamp the turn. Null when `leafId` is not
- * the end of a chain. The result's links match the pose it solved.
- */
-export function solveIk<T extends ChainObject>(objects: readonly T[], leafId: string, target: Vec3, bed: BedSize, iterations = 32): T[] | null {
-  if (!isChainLeaf(objects, leafId)) return null;
-  const chain = chainUp(objects, leafId);
-  const joints = chain.slice(0, -1);
-  if (joints.length === 0) return null;
-  const rows = objects.map((obj) => ({
-    ...obj,
-    orient: [...obj.orient] as Mat3,
-    offset: { ...obj.offset },
-    ...(obj.pivot ? { pivot: [...obj.pivot] as Vec3 } : {}),
-    ...(obj.chain ? { chain: copyLink(obj.chain) } : {}),
-    ...(obj.jointLimits ? { jointLimits: copyLimits(obj.jointLimits) } : {}),
-  })) as T[];
-  for (let iter = 0; iter < iterations; iter += 1) {
-    const leaf = byId(rows, leafId);
-    if (!leaf) break;
-    if (hypot3(sub3(pivotBed(leaf, bed), target)) < 0.05) break;
-    for (let i = joints.length - 1; i >= 0; i -= 1) rotateJointToward(rows, joints[i]!, leafId, target, bed);
-  }
-  return refreshLinks(rows, bed);
 }
 
 /** Take one member out. Its children sit on its parent, where they already stand. */

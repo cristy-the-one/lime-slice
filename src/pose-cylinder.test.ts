@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import { cylinderJoint } from "./pose-cylinder.ts";
+import type { ParsedSolid } from "./model-reply.ts";
+const solid: ParsedSolid = { id: 0, volumeMm3: 1, positions: new Float32Array([4, 2, 3, 4, 2, 9, 3, 3, 9, 100, 100, 100, 101, 100, 100, 100, 101, 100]), triangles: new Uint32Array([0, 1]), faces: [{ id: 0, areaMm2: 1, surface: "cylinder", axisPoint: [3, 2, 1], axis: [0, 0, 2] }, { id: 1, areaMm2: 1 }], edges: [], fingerprint: null, editable: true };
+assert.deepEqual(cylinderJoint(solid, 0), { pivot: [3, 2, 6], axis: [0, 0, 1] });
+assert.equal(cylinderJoint(solid, 1), null);
+solid.faces[0]!.axis = [1, 0, 1];
+solid.faces[0]!.axisPoint = [0, 0, 0];
+const angled = cylinderJoint(solid, 0)!;
+assert.ok(Math.abs(Math.hypot(...angled.axis) - 1) < 1e-12);
+assert.ok(Math.abs(angled.pivot[0] - 5) < 1e-12 && Math.abs(angled.pivot[2] - 5) < 1e-12);
+solid.faces[0]!.axis = [0, 0, 0];
+assert.equal(cylinderJoint(solid, 0), null);
+console.log("pose cylinder: midpoint and invalid faces ok");

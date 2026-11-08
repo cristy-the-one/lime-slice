@@ -247,6 +247,14 @@ M1 to M4 are the owner's request. M5 tidies Prepare once Pose can do the job. M6
 
 The Pose rail has Select, Turn, Joint and Link. The left dock shows the assembly tree and the selected member's typed joint fields. Link chooses a parent and child already in one assembly and keeps their poses; free parts are attached in Prepare first. Turn draws one ring for a hinge or three for a ball, and Shift snaps the drag to 5°. Each field, link, rest action or ring drag is one Undo step. Rest turns the selected chain's hinges toward zero within their limits. Make rest leaves the parts where they are, resets the hinge angles and shifts their limits by the same amount; ball rest orientations are reset as well. The assembled view keeps one framing shift during the Pose visit, so the fixed body does not slide as a limb moves. None of these edits changes the print layout or the slice key. Cylindrical-face picking remains M6.
 
+### As built: M4
+
+Reach drags the surface point under the pointer through the selected member's jointed chain, stopping at the first fixed ancestor. Each pointer move solves from the start of the gesture: hinge motion stays on its pin axis and obeys angle limits; ball joints obey their cones. The target is on a plane through the grabbed point facing the camera. The solve stops after 32 sweeps or at 0.05 mm, and reports the remaining distance when it cannot reach the target. A drag is one Undo step; Escape cancels it. Interference is refreshed when the drag finishes, and the plate layout and slice stay unchanged.
+
+### As built: M5
+
+Prepare keeps its Pivot tool and bed-chain Link, Unlink and Chain controls. The old Prepare IK tool and its joint-limit inputs are gone; Reach in Pose is the one inverse-kinematics tool. Legacy `jointLimits` are still read, kept through edits and written back with version 4 projects.
+
 ## 9. Later
 
 - **Plant and move.** Several dragged or pinned points solved together: plant all eight claws and move the body, so the legs bend to keep the claws where they are. It needs a solver over several effectors, such as damped least squares on the joint angles, and is the step that makes a spider stand.
@@ -283,3 +291,11 @@ What this changes: all three CAD tools put a joint's axis on a picked cylinder, 
 - **Existing behaviour.** A file without `joint` keys reads and behaves as now. Prepare's Assembly view, Model's context, joins, interference and the STEP export keep reading `modelPose`.
 - **MCP size.** No new tool; the budgets in `mcp/schema.test.ts` hold.
 - **View state.** The selected chain and the Pose camera are view state: not saved and not in the undo stack. The pose itself is saved and undoable.
+
+### As built: M6
+
+The Joint tool reads a selected solid's cylindrical face and puts the hinge pivot at the midpoint of its axis, with the axis in the part's own frame. Shift-click on a mesh snaps its pivot to the nearest triangle vertex, edge midpoint or bounding-box centre, while its axis remains typed. The pick is one undoable edit and never changes print placement. If a face cannot be read or is not cylindrical, the existing joint stays as it was.
+
+### As built: M7
+
+`model_place` sets or removes a member joint, turns a hinge to an absolute angle, or reaches a model-space target with a part-frame point. Joint creation can accompany one turn or reach; placement and linking stay separate. Replies name changed parts and hinge angles, and a reach reports its fixed anchor, final point and distance. `plate_list` and `session_info` expose the joints, and `guide {kind:"pose"}` gives the workflow. MCP plate undo restores assembly joints and model poses along with the plate.
