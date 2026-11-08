@@ -424,6 +424,18 @@ impl Store {
                 for pose in &poses {
                     places.extend(pose.placement().map_err(Failure::Message)?);
                 }
+                // A piece whose tree this engine does not hold (a restarted engine, or a part from a project that
+                // Model has not opened yet) is named as a tool to open, as a join's tool is. Missing([ROOT]) would
+                // read as the exported tree itself gone, and the client would reopen the wrong tree.
+                for (piece, at) in all.iter().skip(1) {
+                    if !self.docs.contains_key(piece) {
+                        return Err(Failure::ToolMissing {
+                            node: None,
+                            key: piece.clone(),
+                            step: *at,
+                        });
+                    }
+                }
                 for (key, node) in &all {
                     self.ensure(key, *node)?;
                 }

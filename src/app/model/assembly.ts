@@ -8,10 +8,10 @@ import { livePlate } from "../files";
 import { state } from "../state";
 import { exportParts, type Assembly } from "../../assembly";
 import { exportStem, partStem } from "../../modeling/partition-export.ts";
-import { treeCall } from "./engine";
+import { restoreShared, treeCall } from "./engine";
 import { exportSolid, saveStepFile } from "./export";
 import { toolTreeOf } from "./join";
-import type { Body } from "./shared";
+import { unopened, type Body } from "./shared";
 
 /**
  * --- Assemblies M7. The common volume of two plate parts at their assembled poses, by the kernel: a dry run of a join
@@ -53,6 +53,13 @@ export async function exportAssemblyStep(assembly: Assembly): Promise<{ ok: bool
   }
   const [first, ...rest] = held;
   if (!first) return { ok: false, message: "This assembly has no part on the plate." };
+  // Parts from a project that Model has not opened since the app started: open each one now, rather than one round trip
+  // per part while the export asks for it (v6.0.1: the 86-part spider ran out of rounds).
+  for (const row of held) {
+    if (!unopened.has(row.key)) continue;
+    const problem = await restoreShared(row.key, row.node);
+    if (problem) return { ok: false, message: `${row.name}: ${problem}` };
+  }
   const bytes = await exportSolid(first.key, first.node, "step", rest, held.map((row) => row.name), held.map((row) => row.pose));
   if (typeof bytes === "string") return { ok: false, message: bytes };
   const file = `${exportStem(assembly.name)}.step`;
