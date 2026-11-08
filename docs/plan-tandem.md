@@ -66,6 +66,8 @@ On 2026-11-08, a separate Windows desktop from this branch and a real MCP stdio 
 
 A subsequent Windows test saved an STL project at X 135, opened a new project and reopened it; the desktop showed X 135. Restarting the desktop while retaining the MCP session restored the same part and position after the next MCP call. With the installed OCCT library explicitly configured, MCP created and drilled a solid and the live desktop showed its committed shape. The live mirror exposed that shape as a mesh, with no editable Model history; opening the MCP-saved `.lime` in a fresh desktop restored both the solid and its hole history. During this test `app_open` reported success before a dirty desktop had accepted its discard prompt; its result now calls this a delivered request rather than a confirmed open. Gestures in flight, editable live Model synchronization, and broader restart/conflict cases still need end-to-end coverage.
 
+The separately installed Windows beta was also tested with its bundled MCP and OCCT: a real box was committed, a desktop move was pulled into MCP, and a competing move generated a conflict while preserving both poses. The beta reported the conflict as `tandem-busy` when asked to pull; the branch now reports `tandem-conflict` so the agent knows to reconcile rather than wait. Undoing the MCP move and pulling the desktop position restored agreement.
+
 ## 6. Non-goals
 
 No multi-user cloud collaboration, live chat, surveillance of every pointer movement, arbitrary remote connections, automatic conflict resolution that loses work, or requirement to use a specific model provider. Tandem complements the existing MCP client; it does not introduce an LLM into the app.

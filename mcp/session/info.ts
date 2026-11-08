@@ -21,6 +21,7 @@ async function tandemPull(this: Session): Promise<Record<string, unknown>> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return refuse("tandem-unavailable", "The Tandem desktop is not connected or cannot provide context.");
   const human = value as Record<string, unknown>;
   if (human.mirrorSession !== this.bridgeSession) return refuse("tandem-conflict", "The desktop and MCP do not have the same mirrored session.");
+  if (typeof human.conflict === "string" && human.conflict) return refuse("tandem-conflict", `The desktop held back a conflicting update to ${human.conflict}; reconcile the two versions before pulling.`);
   if (human.mirrorSeq !== this.bridgePlateSeq || this.bridgePlateSeq === 0) return refuse("tandem-busy", "The desktop has not applied the latest MCP plate snapshot. Wait for its receipt before pulling.");
   if (this.inflight !== 1) return refuse("tandem-busy", "Another MCP operation is still running. Wait for it before pulling.");
   if (human.gesture !== false || human.editing !== false) return refuse("tandem-busy", "Finish the active desktop edit before pulling its placements.");
