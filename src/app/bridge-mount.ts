@@ -67,6 +67,11 @@ function applyMessage(message: BridgeMessage): void {
   flush();
 }
 
+function receipt(message: BridgeMessage, outcome: "applied" | "conflict" | "missing" | "failed" | "stale"): void {
+  if (!message.session || typeof message.seq !== "number" || !bridgeHasPlateUpdate(message)) return;
+  void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_receipt", { session: message.session, seq: message.seq, outcome })).catch(() => {});
+}
+
 function flush(): void {
   const released = releaseBridge(waiting, state.poseHud);
   waiting.splice(0, waiting.length, ...released.waiting);
@@ -74,6 +79,7 @@ function flush(): void {
     try {
       apply(message);
     } catch (err) {
+      receipt(message, "failed");
       // A mirror never stops the window. Say what went wrong, so it is not a silent empty plate.
       pushToast(`The MCP mirror could not be shown: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
@@ -110,6 +116,7 @@ function apply(message: BridgeMessage): void {
     }
     lastConflict = conflict;
     refreshHumanContext?.();
+    receipt(message, "conflict");
     return;
   }
   const result = mirrorPlate(current, message, seen, owned);
@@ -118,6 +125,7 @@ function apply(message: BridgeMessage): void {
     if (lastMissing !== `${message.session}:${message.seq}`) pushToast(result.missing, "info");
     lastMissing = `${message.session}:${message.seq}`;
     void announce();
+    receipt(message, "missing");
     return;
   }
   const accept = () => {
@@ -129,6 +137,7 @@ function apply(message: BridgeMessage): void {
       lastConflict = "";
     }
     if (result.applied) refreshHumanContext?.();
+    receipt(message, result.applied ? "applied" : "stale");
   };
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {

@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { bytesToBase64 } from "../src/base64.ts";
+import { bridgeHasPlateUpdate, type BridgeMessage } from "../src/bridge.ts";
 import { fnv1aHex } from "../src/slice-action.ts";
 import type { Mat3 } from "../src/mesh-place.ts";
 import type { SolidView } from "../src/modeling/model-calls.ts";
@@ -20,7 +21,7 @@ import type { PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { builtinLibrary, type MachineLibrary } from "../src/ui/machine-library.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
-import { mirror, type BridgeLink } from "./bridge-client.ts";
+import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
 import { RecipeHost } from "./recipe.ts";
@@ -279,12 +280,18 @@ export class Session {
       throw err;
     }
     const work = Promise.resolve(result).then((value) => {
+      let receipt: { session: string; seq: number; status: string } | undefined;
       if (!this.isolated) {
         const { payload, carriedAll } = this.bridgePayload(name, input, value);
         this.lastBridge = payload;
         void mirror(payload, this.bridgeLink, carriedAll);
+        if (changes && bridgeTarget() && bridgeHasPlateUpdate(payload as BridgeMessage)) {
+          receipt = { session: this.bridgeSession, seq: this.bridgeSeq, status: "pending; check session_info receipts" };
+        }
       }
-      return withPicks(withCode(this.withAutosaveHint(value)), picks);
+      const answer = withPicks(withCode(this.withAutosaveHint(value)), picks);
+      if (receipt) answer.tandemReceipt = receipt;
+      return answer;
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
         const refusal = domainRefusal(err.message);

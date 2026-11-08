@@ -14,6 +14,7 @@
 //! It changes when the app starts and each time the page calls `bridge_ready`,
 //! so the server knows a page that has none of the meshes it sent before.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -33,12 +34,34 @@ const MAX_BODY: usize = 256 * 1024 * 1024;
 
 /// What this window does beyond the mirror, named on every authorised answer, so a server
 /// sends an open message only to a window that will not take it for a plate.
-const FEATURES: &str = "open tandem-context";
+const FEATURES: &str = "open tandem-context tandem-receipts";
 
 /// Bumped by the page each time it mounts, so a reloaded page reads as a new desktop.
 static PAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static START: OnceLock<String> = OnceLock::new();
 static HUMAN_CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
+static RECEIPTS: Mutex<VecDeque<Value>> = Mutex::new(VecDeque::new());
+
+/// Record a bounded outcome after the page has actually handled an MCP snapshot.
+#[tauri::command]
+pub fn bridge_receipt(session: String, seq: u64, outcome: String) {
+    if session.is_empty()
+        || session.len() > 120
+        || !matches!(
+            outcome.as_str(),
+            "applied" | "conflict" | "missing" | "failed" | "stale"
+        )
+    {
+        return;
+    }
+    if let Ok(mut receipts) = RECEIPTS.lock() {
+        if receipts.len() == 64 {
+            receipts.pop_front();
+        }
+        receipts
+            .push_back(serde_json::json!({ "session": session, "seq": seq, "outcome": outcome }));
+    }
+}
 
 /// This process and page, as the server sees them.
 fn instance() -> String {
@@ -130,6 +153,17 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
         match read_request(&mut stream) {
+            Ok(request)
+                if request.method.eq_ignore_ascii_case("GET")
+                    && request.path == "/tandem-receipts"
+                    && tokens_match(bearer(&request.authorization), &token) =>
+            {
+                let body = RECEIPTS
+                    .lock()
+                    .map(|items| serde_json::json!(&*items).to_string())
+                    .unwrap_or_else(|_| "[]".into());
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Lime-Bridge-Instance: {}\r\nX-Lime-Bridge-Features: {FEATURES}\r\nConnection: close\r\n\r\n{body}", body.len(), instance());
+            }
             Ok(request)
                 if request.method.eq_ignore_ascii_case("GET")
                     && request.path == "/tandem-context"
@@ -346,6 +380,20 @@ mod tests {
         let addr = listen_addr(43119);
         assert!(addr.ip().is_loopback());
         assert_eq!(addr.port(), 43119);
+    }
+
+    #[test]
+    fn receipts_are_bounded_and_ignore_invalid_outcomes() {
+        RECEIPTS.lock().unwrap().clear();
+        bridge_receipt("s".into(), 0, "invented".into());
+        assert!(RECEIPTS.lock().unwrap().is_empty());
+        for seq in 0..70 {
+            bridge_receipt("s".into(), seq, "applied".into());
+        }
+        let receipts = RECEIPTS.lock().unwrap();
+        assert_eq!(receipts.len(), 64);
+        assert_eq!(receipts.front().unwrap()["seq"], 6);
+        assert_eq!(receipts.back().unwrap()["seq"], 69);
     }
 
     #[test]

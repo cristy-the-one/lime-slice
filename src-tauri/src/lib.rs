@@ -518,6 +518,7 @@ pub fn run() {
             prusa_link_http,
             bridge::bridge_ready,
             bridge::bridge_human_context,
+            bridge::bridge_receipt,
             open_file::take_launch_file,
             recipe::recipe_available,
             recipe::recipe_build,
