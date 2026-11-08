@@ -1401,7 +1401,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set an assembled pose or joint, in mm and degrees. With to, join an assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
+    description: "Set an assembled pose or joint, in mm and degrees. The print layout does not move. With to, join an assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
