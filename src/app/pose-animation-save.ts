@@ -99,4 +99,3 @@ export function showAnimationSave(context: SaveContext): void {
   });
   document.body.append(dialog); dialog.showModal();
 }
-
