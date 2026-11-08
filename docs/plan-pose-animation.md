@@ -217,3 +217,7 @@ M1 is useful on its own (it fixes L3 and L4 for anyone animating by hand today) 
 - No change to the slice, the G-code, the print layout or any cache key; golden G-code stays byte-identical.
 - An animation runs under the same lust sandbox, limits and memory cap as every plugin (`plan-recipe-plugins.md` D11); its frames are rendered by the host, outside the sandbox, from the poses it asked for.
 - Every new spec goes in `test:smoke` and every new unit test in `tools/unit-tests.txt` (the repo's `verify-ui` rule); the MCP token budgets in `mcp/schema.test.ts` are raised only by the rule written there.
+
+### As built: M1
+
+`render_view {fit:{min,max}}` uses one model-space box for framing, including sections and boolean previews. `model_place {reply:"angles"}` returns only changed hinge angles and, for Reach, its result. `plate_list` includes `aligned` for hinges with a unique alignment; it removes the hinge-axis twist from the member's current orientation and remains stable as that hinge turns. The perpendicular half-turn has no unique alignment and omits the value.

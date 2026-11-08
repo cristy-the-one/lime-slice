@@ -138,6 +138,25 @@ try {
 check("render_view writes a PNG a decoder can open", decodedPixels === 64 * 64);
 check("the top view shows the hole", afterDark > beforeDark, `${beforeDark} ${afterDark}`);
 
+// One model-space box keeps an unmoving part at the same pixels when another part moves.
+const fit = { min: [-20, -20, -5] as [number, number, number], max: [60, 20, 15] as [number, number, number] };
+const fixed = box([0, 0, 0], [10, 10, 10]);
+const otherA = box([20, 0, 0], [30, 10, 10]);
+const otherB = box([40, 0, 0], [50, 10, 10]);
+const merge = (a: Float32Array, b: Float32Array) => Float32Array.from([...a, ...b]);
+const fixedA = shades(renderMesh(merge(fixed, otherA), "top", 128, undefined, { fit }).png, 128, 128);
+const fixedB = shades(renderMesh(merge(fixed, otherB), "top", 128, undefined, { fit }).png, 128, 128);
+const fixedOnly = shades(renderMesh(fixed, "top", 128, undefined, { fit }).png, 128, 128);
+check("fixed framing keeps the stationary part on the same pixels", fixedOnly.every((shade, i) => shade === 248 || (fixedA[i] === shade && fixedB[i] === shade)));
+const fitResult = await session.call("render_view", { object: solid.object, camera: "top", fit, longEdge: 64, inline: false, name: "fixed-fit.png" });
+check("render_view accepts fixed model-space framing", fitResult.ok === true, JSON.stringify(fitResult));
+const sectionFit = await session.call("render_view", { object: solid.object, fit, section: { normal: [0, -1, 0] }, inline: false, longEdge: 64, name: "fixed-section.png" });
+check("fixed framing works with a section", sectionFit.ok === true, JSON.stringify(sectionFit));
+const ghostFit = await session.call("render_view", { object: solid.object, fit, op: { kind: "boolean", op: "cut", primitive: "box", dx: 2, dy: 2, dz: 2 }, inline: false, longEdge: 64, name: "fixed-ghost.png" });
+check("fixed framing works with a boolean preview", ghostFit.ok === true, JSON.stringify(ghostFit));
+const badFit = await session.call("render_view", { object: solid.object, fit: { min: [5, 0, 0], max: [0, 1, 1] }, inline: false });
+check("render_view refuses inverted framing boxes", badFit.ok === false, JSON.stringify(badFit));
+
 const handles: string[] = [];
 for (let i = 0; i < 12; i += 1) {
   const started = await session.call("slice_start", {});

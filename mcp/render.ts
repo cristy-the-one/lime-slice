@@ -1,4 +1,5 @@
 import { deflateSync } from "node:zlib";
+import { applyPose, type Affine } from "../src/model-space.ts";
 
 /** A small PNG of the mesh. The tool result is the file path, and the same pixels inline. */
 
@@ -94,6 +95,10 @@ export interface Tint {
 }
 
 export interface RenderOptions {
+  /** A fixed box in the same space as the mesh, projected for this camera. */
+  fit?: { min: Vec; max: Vec };
+  /** Convert rendered positions back to the frame of tint boxes. */
+  tintFrame?: Affine;
   /** Shading blended across a curved surface's facets (default true); creases stay sharp. */
   smooth?: boolean;
   tints?: Tint[];
@@ -136,14 +141,18 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   let minY = Infinity;
   let maxX = -Infinity;
   let maxY = -Infinity;
-  for (const mesh of ghost ? [positions, ghost] : [positions]) {
-    for (let i = 0; i + 2 < mesh.length; i += 3) {
-      const point = project(mesh[i]!, mesh[i + 1]!, mesh[i + 2]!);
-      if (point[0] < minX) minX = point[0];
-      if (point[1] < minY) minY = point[1];
-      if (point[0] > maxX) maxX = point[0];
-      if (point[1] > maxY) maxY = point[1];
-    }
+  const include = (x: number, y: number, z: number) => {
+    const point = project(x, y, z);
+    minX = Math.min(minX, point[0]); minY = Math.min(minY, point[1]);
+    maxX = Math.max(maxX, point[0]); maxY = Math.max(maxY, point[1]);
+  };
+  if (options.fit) {
+    for (const x of [options.fit.min[0], options.fit.max[0]])
+      for (const y of [options.fit.min[1], options.fit.max[1]])
+        for (const z of [options.fit.min[2], options.fit.max[2]]) include(x, y, z);
+  } else {
+    for (const mesh of ghost ? [positions, ghost] : [positions])
+      for (let i = 0; i + 2 < mesh.length; i += 3) include(mesh[i]!, mesh[i + 1]!, mesh[i + 2]!);
   }
   const spanX = Math.max(maxX - minX, 1e-6);
   const spanY = Math.max(maxY - minY, 1e-6);
@@ -222,7 +231,11 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const corners = options.smooth === false ? null : cornerNormals(positions);
   const tints = options.tints ?? [];
   const pads = tints.map((box) => Math.max(0.3, 0.06 * Math.hypot(box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2])));
-  const inBox = (i: number, b: number) => [0, 3, 6].every((o) => [0, 1, 2].every((k) => positions[i + o + k]! >= tints[b]!.min[k]! - pads[b]! && positions[i + o + k]! <= tints[b]!.max[k]! + pads[b]!));
+  const inBox = (i: number, b: number) => [0, 3, 6].every((o) => {
+    const p: Vec = [positions[i + o]!, positions[i + o + 1]!, positions[i + o + 2]!];
+    const point = options.tintFrame ? applyPose(options.tintFrame, p) : p;
+    return [0, 1, 2].every((k) => point[k]! >= tints[b]!.min[k]! - pads[b]! && point[k]! <= tints[b]!.max[k]! + pads[b]!);
+  });
   // With faces, a face takes the first tint whose box holds most of its area: a step's own faces lie in its box, and
   // a big face it only touches, a head beside a bill or a floor round a plinth, keeps its grey.
   const faceTint = new Map<number, number>();

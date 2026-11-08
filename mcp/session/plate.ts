@@ -24,6 +24,7 @@ import { shellGroups, takeGroups } from "../../src/mesh-shells.ts";
 import { matchShellSolids, type SolidBounds } from "../shell-solids.ts";
 import { offsetInPlace, pieceFileName, separateBy, solidNames, stepSolidHint } from "../../src/step-solids.ts";
 import { assemblyOf } from "../../src/assembly.ts";
+import { alignedHinge } from "../../src/pose.ts";
 import { resolveRead } from "../workspace.ts";
 import { type Job, ModelRunaway, NAME_LIMIT, OVERLAP, type PlateObject, type PlateSnap, STEP, type SnapObject, type ToolHandler, UNKNOWN_OBJECT, positionsFrom, shownName, xyGap } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -351,7 +352,9 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
     const placed = this.placed(obj);
     const group = assemblyOf(assemblies, obj.id);
     const assembly = group?.name;
-    const joint = group?.members.find((member) => member.object === obj.id)?.joint;
+    const member = group?.members.find((row) => row.object === obj.id);
+    const joint = member?.joint;
+    const aligned = member ? alignedHinge(member) : null;
     const centre = [
       (placed.bounds.min[0] + placed.bounds.max[0]) / 2,
       (placed.bounds.min[1] + placed.bounds.max[1]) / 2,
@@ -367,6 +370,7 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
       ...(obj.frame === "part" ? { frame: "part" as const } : {}),
       ...(assembly ? { assembly } : {}),
       ...(joint ? { joint: structuredClone(joint) } : {}),
+      ...(aligned !== null ? { aligned } : {}),
       scalePercent: obj.scale * 100,
       notes: this.plateNotes(obj, placed.bounds),
     };
