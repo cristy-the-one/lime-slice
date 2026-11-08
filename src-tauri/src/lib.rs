@@ -270,6 +270,7 @@ async fn save_text_file(
 ) -> Result<bool, String> {
     let label = match extension.as_str() {
         "3mf" => "3MF",
+        "gif" => "GIF animation",
         "rs" => "Lime Slice plugin",
         _ => "G-code",
     };

@@ -13,7 +13,6 @@ import { applyTheme, type ThemeChoice } from "../theme";
 import { axisNormal, clampOffset, flipSection } from "../section-plane";
 import { wheelNotch } from "../gizmo-math";
 import { session, state, type CardId } from "./state";
-import { setPoseTheme } from "./pose";
 import { commitSplit, draw, layerGcode, paintPlayback, paintSectionChrome, prepare, scrub, sectionLimit, setHelp, setStage, stepGizmo, stopPlay, syncGcodeHighlight, toggleLayerAction, togglePlay, view3d } from "./viewer";
 import { applyPareto, cancelSlice, runFlowCal, runPaCal, runPareto, runRetractCal, runSlice, runTempCal } from "./slice-run";
 import { planFileDrop } from "../file-drop";
@@ -603,7 +602,7 @@ export function wireApp() {
     view3d.setTheme();
     prepare.setTheme();
     fx.model?.setTheme();
-    setPoseTheme();
+    if (state.stage === "pose") void import("./pose").then(({ setPoseTheme }) => setPoseTheme());
     draw();
   });
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((button) => {

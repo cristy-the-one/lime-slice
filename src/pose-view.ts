@@ -22,6 +22,8 @@ export type PoseCamera = "top" | "front" | "iso";
 
 export interface PoseScene extends PoseLooks {
   parts: ContextPart[];
+  /** Per-part colours for animation frames; no selection tint while playing. */
+  colors?: ReadonlyMap<string, string>;
   gizmo?: { pivot: [number, number, number]; axes: [number, number, number][]; radius: number };
   marks?: { pivot: [number, number, number]; axis?: [number, number, number] }[];
 }
@@ -44,6 +46,8 @@ export interface PoseView {
   /** Frame every part, from the front right and above, as Model frames its solid. */
   frameAll(): void;
   resize(): void;
+  /** Off-screen renderer with a camera fixed for the whole export. */
+  beginCapture(size: number, preset?: { bounds: Bounds; direction: [number, number, number]; up?: [number, number, number] }): { frame(png?: boolean): Promise<{ png?: Uint8Array; rgb: Uint8Array }>; dispose(): void };
   /** A click (not a drag) on a part, or on empty space (`null`). */
   onPick(cb: ((id: string | null, hit?: PoseHit) => void) | null): void;
   onTurn(cb: ((event: TurnEvent) => void) | null): void;
@@ -97,6 +101,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     chain: solid(colors.poseChain, 0.06),
     clash: solid(colors.amber, 0.25),
   };
+  const animationMaterials = new Map<string, THREE.MeshStandardMaterial>();
   const edgeMaterial = new THREE.LineBasicMaterial({ color: IDLE_EDGE });
 
   const group = new THREE.Group();
@@ -140,6 +145,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       held.delete(positions);
     }
     group.clear();
+    const colorsInFrame = new Set(next.colors?.values() ?? []);
+    for (const [color, material] of animationMaterials) if (!colorsInFrame.has(color)) { material.dispose(); animationMaterials.delete(color); }
     const published: string[] = [];
     const looks: string[] = [];
     let union: Bounds | null = null;
@@ -147,7 +154,14 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const entry = geometryOf(part.positions);
       const look = lookOf(part.id, next);
       const matrix = new THREE.Matrix4().set(...(affineRows(part.matrix) as [number, number, number, number, number, number, number, number, number, number, number, number]), 0, 0, 0, 1);
-      const mesh = new THREE.Mesh(entry.geometry, materials[look]);
+      const color = next.colors?.get(part.id);
+      let material = materials[look];
+      if (color) {
+        let custom = animationMaterials.get(color);
+        if (!custom) { custom = solid(color); animationMaterials.set(color, custom); }
+        material = custom;
+      }
+      const mesh = new THREE.Mesh(entry.geometry, material);
       mesh.matrixAutoUpdate = false;
       mesh.matrix.copy(matrix);
       mesh.userData.id = part.id;
@@ -200,6 +214,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     if (published.length) canvas.dataset.posed = published.join(" ");
     else delete canvas.dataset.posed;
     canvas.dataset.looks = looks.join(" ");
+    if (next.colors?.size) canvas.dataset.animationColors = [...next.colors].map(([id, color]) => `${id}:${color}`).join(" ");
+    else delete canvas.dataset.animationColors;
     canvas.dataset.opaque = String(Object.values(materials).every((material) => !material.transparent && material.opacity === 1 && material.depthWrite));
     if (next.selectedId) canvas.dataset.selected = next.selectedId;
     else delete canvas.dataset.selected;
@@ -458,6 +474,44 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     setCamera,
     frameAll,
     resize,
+    beginCapture(size, preset) {
+      const offscreen = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+      offscreen.setPixelRatio(1); offscreen.setSize(size, size, false);
+      offscreen.setClearColor(hexToThree(colors.stage), 1);
+      offscreen.outputColorSpace = renderer.outputColorSpace;
+      offscreen.toneMapping = renderer.toneMapping;
+      const fixedCamera = camera.clone(); fixedCamera.aspect = 1; fixedCamera.updateProjectionMatrix();
+      if (preset) {
+        const direction = new THREE.Vector3(...preset.direction);
+        if (direction.lengthSq() < 1e-12) { offscreen.dispose(); throw new Error("The animation camera needs a nonzero direction."); }
+        const up = new THREE.Vector3(...(preset.up ?? [0, 0, 1])).normalize();
+        if (up.lengthSq() < 1e-12 || Math.abs(up.dot(direction.clone().normalize())) > 0.999) { offscreen.dispose(); throw new Error("The animation camera up must not point along its direction."); }
+        const min = new THREE.Vector3(...preset.bounds.min), max = new THREE.Vector3(...preset.bounds.max);
+        const centre = min.clone().add(max).multiplyScalar(0.5);
+        const radius = Math.max(1, max.clone().sub(min).length() / 2);
+        fixedCamera.up.copy(up);
+        const distance = radius / Math.sin(THREE.MathUtils.degToRad(fixedCamera.fov / 2)) * 1.1;
+        fixedCamera.position.copy(centre).add(direction.normalize().multiplyScalar(distance));
+        fixedCamera.near = Math.max(0.01, distance - radius * 1.5); fixedCamera.far = distance + radius * 1.5 + 10;
+        fixedCamera.lookAt(centre); fixedCamera.updateProjectionMatrix(); fixedCamera.updateMatrixWorld();
+      }
+      const pixels = document.createElement("canvas"); pixels.width = size; pixels.height = size;
+      const context = pixels.getContext("2d", { willReadFrequently: true });
+      if (!context) { offscreen.dispose(); throw new Error("Could not create an animation canvas."); }
+      return {
+        async frame(png = true) {
+          offscreen.render(scene, fixedCamera);
+          context.drawImage(offscreen.domElement, 0, 0);
+          const rgba = context.getImageData(0, 0, size, size).data, rgb = new Uint8Array(size * size * 3);
+          for (let i = 0; i < size * size; i++) { rgb[i * 3] = rgba[i * 4]!; rgb[i * 3 + 1] = rgba[i * 4 + 1]!; rgb[i * 3 + 2] = rgba[i * 4 + 2]!; }
+          if (!png) return { rgb };
+          const blob = await new Promise<Blob | null>((resolve) => pixels.toBlob(resolve, "image/png"));
+          if (!blob) throw new Error("Could not encode an animation frame.");
+          return { png: new Uint8Array(await blob.arrayBuffer()), rgb };
+        },
+        dispose() { offscreen.dispose(); offscreen.forceContextLoss(); },
+      };
+    },
     onPick(cb) {
       pickCb = cb;
     },

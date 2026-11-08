@@ -6,7 +6,7 @@ import { DEFAULT_LIMITS, type RecipeReply } from "./host.ts";
 import { inlineIngredients } from "./ingredients.ts";
 import { splitPluginData } from "./plugin-data.ts";
 
-export type AppAnimation = { ok: true; result: AnimationResult; camera?: unknown; notes: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[] };
+export type AppAnimation = { ok: true; result: AnimationResult; spec: PoseAnimation; camera?: unknown; notes: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[] };
 
 export async function runAppAnimation(recipes: AppRecipes, name: string, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], signal?: AbortSignal): Promise<AppAnimation> {
   const split = splitPluginData(source);
@@ -16,7 +16,7 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
   const built = await recipes.build(name, split.code, false, resolved.suffix);
   if (!built.ok || !built.exe) return { ok: false, reason: built.reason ?? (built.diagnostics.map((d) => `line ${d.line}: ${d.message}`).join("; ") || "The animation did not build.") };
   const rig = animationRig(assembly, parts), notes: string[] = [];
-  let sampled: AnimationResult | undefined, camera: unknown;
+  let sampled: AnimationResult | undefined, camera: unknown, spec: PoseAnimation | undefined;
   let issues: { line?: number; reason: string }[] | undefined;
   const run = await recipes.run(built.exe, { kind: "animation", params }, async (site): Promise<RecipeReply> => {
     if (site.tool === "rig") return { ok: true, result: { members: rig } };
@@ -29,7 +29,8 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
     if (site.tool === "animate") {
       if (sampled || issues) return { ok: false, error: "An animation script may animate only once." };
       camera = site.args.camera;
-      const result = sampleAnimation(site.args as unknown as PoseAnimation, assembly, poseOf, parts);
+      spec = site.args as unknown as PoseAnimation;
+      const result = sampleAnimation(spec, assembly, poseOf, parts);
       if ("issues" in result) { issues = result.issues; return { ok: false, error: issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") }; }
       sampled = result;
       return { ok: true, result: { frames: result.frames.length, durationS: result.durationS, fps: result.fps, keys: result.keys } };
@@ -37,6 +38,6 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
     return { ok: false, error: "That animation call is not available." };
   }, DEFAULT_LIMITS, signal);
   if (!run.ok || issues) return { ok: false, reason: run.reason ?? issues?.[0]?.reason ?? "The animation failed.", ...(issues ? { issues } : {}) };
-  if (!sampled) return { ok: false, reason: "The script ended without an animation." };
-  return { ok: true, result: sampled, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])] };
+  if (!sampled || !spec) return { ok: false, reason: "The script ended without an animation." };
+  return { ok: true, result: sampled, spec, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])] };
 }

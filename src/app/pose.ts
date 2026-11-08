@@ -2,7 +2,7 @@ import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
 import { assemblyOf, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { boundsOf } from "../mesh-place.ts";
-import { applyPose, inversePose, isIdentity, turnDir, type Affine } from "../model-space.ts";
+import { applyPose, inversePose, isIdentity, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
 import { meshSeat, modelPoseOf } from "../plate.ts";
 import { linked, poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
 import { createPoseView, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
@@ -16,6 +16,9 @@ import { cancelEdit, holdEdit, noteEdit, flushEdit, redoUserEdit, undoUserEdit }
 import { refreshObjectList } from "./settings.ts";
 import { exportAssembly } from "./plate-actions.ts";
 import { session, state } from "./state.ts";
+import { PosePlayback } from "../pose-playback.ts";
+import type { AnimationResult, AnimationPart, PoseAnimation } from "../pose-anim.ts";
+import { bodySha256, readPluginFile, type PluginFileInfo } from "../plugin-file.ts";
 
 type Tool = "select" | "turn" | "joint" | "link" | "reach";
 let view: PoseView | null = null;
@@ -30,6 +33,83 @@ let reachStart: { assembly: Assembly; object: string; at: Vec3; poses: Map<strin
 let reachDistance: number | null = null;
 let lastClashes = new Set<string>();
 let pickSerial = 0;
+let animationFiles: PluginFileInfo[] = [];
+let animationChoice = "";
+const animationParameters = new Map<string, Record<string, string | number | boolean>>();
+let animationRun = 0;
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string }; swatches?: Map<string, string> }
+let animation: PoseAnimationState | null = null;
+let animationRequest = 0;
+
+function stopAnimation(): void {
+  animationRun++;
+  if (animationRequest) cancelAnimationFrame(animationRequest);
+  animationRequest = 0;
+  animation = null;
+}
+function animationTick(): void {
+  if (!animation || state.stage !== "pose") { stopAnimation(); return; }
+  animation.clock.frame(performance.now());
+  syncPose();
+  const slider = document.querySelector<HTMLInputElement>("[data-pose-animation-frame]");
+  const label = document.querySelector<HTMLElement>("[data-pose-animation-count]");
+  if (slider) slider.value = String(animation.clock.frame(performance.now()));
+  if (label) label.textContent = `Frame ${animation.clock.frame(performance.now()) + 1} / ${animation.result.frames.length}`;
+  if (animation.clock.playing) animationRequest = requestAnimationFrame(animationTick);
+  else { animationRequest = 0; renderPanel(); }
+}
+async function refreshAnimations(): Promise<void> {
+  const { loadLibrary, pluginLibrary } = await import("../ui/plugins-panel.ts");
+  await loadLibrary();
+  const files = [...pluginLibrary().plugins.values()].map((row) => row.file);
+  for (const text of Object.values(session.plugins ?? {})) {
+    const file = readPluginFile(text); if (file) files.push(file);
+  }
+  const unique = new Map<string, PluginFileInfo>();
+  for (const file of files) if (/^\/\/!\s*kind:\s*animation\s*$/m.test(file.text)) unique.set(file.plugin, file);
+  animationFiles = [...unique.values()].sort((a, b) => a.title.localeCompare(b.title));
+  if (!animationFiles.some((file) => file.plugin === animationChoice)) animationChoice = animationFiles[0]?.plugin ?? "";
+  if (state.stage === "pose") renderPanel();
+}
+async function playAnimation(): Promise<void> {
+  const row = selected(), file = animationFiles.find((item) => item.plugin === animationChoice);
+  if (!row || !file) { message = "Select an assembly and an animation."; renderPanel(); return; }
+  if (animation && animation.assembly === row.assembly.id) {
+    if (animation.clock.playing) animation.clock.pause(performance.now());
+    else { animation.clock.play(performance.now()); animationTick(); }
+    renderPanel(); return;
+  }
+  const ticket = ++animationRun;
+  const assemblySnapshot = structuredClone(row.assembly);
+  const poses = new Map(row.assembly.members.map((member) => [member.object, poseOf(member.object)]));
+  const objects = new Map(row.assembly.members.map((member) => [member.object, state.plate.objects.find((item) => item.id === member.object)]));
+  message = "Building animation…"; renderPanel();
+  const [{ recipeRuntime }, { runAppAnimation }, sha] = await Promise.all([import("../recipe/runtime.ts"), import("../recipe/animation-run.ts"), bodySha256(file.body)]);
+  const recipes = await recipeRuntime();
+  if (ticket !== animationRun || state.stage !== "pose") return;
+  if (!recipes) { message = "Playing an animation needs the desktop app."; renderPanel(); return; }
+  const parts: AnimationPart[] = row.assembly.members.flatMap((member) => {
+    const part = state.plate.objects.find((item) => item.id === member.object);
+    if (!part) return [];
+    const seat = meshSeat(part.bytes) ?? 0, positions = part.sourcePos.slice();
+    if (seat) for (let i = 2; i < positions.length; i += 3) positions[i] += seat;
+    return [{ object: part.id, name: part.name, positions }];
+  });
+  const params = { ...Object.fromEntries(file.params.filter((param) => param.default !== null).map((param) => [param.name, param.default])), ...animationParameters.get(file.plugin) };
+  try {
+    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts);
+    if (ticket !== animationRun || state.stage !== "pose") return;
+    const current = selected()?.assembly;
+    if (!current || current.id !== assemblySnapshot.id || JSON.stringify(current) !== JSON.stringify(assemblySnapshot) || [...objects].some(([id, object]) => state.plate.objects.find((item) => item.id === id) !== object)) { message = "The assembly changed while the animation was building. Play it again."; renderPanel(); return; }
+    if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; renderPanel(); return; }
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text } };
+    message = result.result.warnings[0]?.reason ?? "";
+    animation.clock.play(performance.now()); animationTick(); renderPanel();
+  } catch (error) {
+    if (ticket === animationRun) { message = error instanceof Error ? error.message : String(error); renderPanel(); }
+  }
+}
+
 
 function poseOf(id: string): Affine | undefined {
   const object = state.plate.objects.find((row) => row.id === id);
@@ -81,6 +161,7 @@ function replaceMember(assembly: Assembly, member: Member): void {
   editAssembly(next);
 }
 function setTool(next: Tool): void {
+  stopAnimation();
   view?.cancelReach();
   pickSerial++;
   tool = next;
@@ -144,6 +225,7 @@ async function pickJoint(id: string, hit: PoseHit): Promise<void> {
 }
 function pick(id: string | null, hit?: PoseHit): void {
   if (!id) return;
+  stopAnimation();
   if (tool === "link") {
     if (!linkParent) { linkParent = id; message = "Now choose the child."; fx.selectPlateObject(id); syncPose(); return; }
     const parent = linkParent;
@@ -243,16 +325,30 @@ function mount(): PoseView | null {
   });
   document.querySelector("#posePanel")?.addEventListener("click", panelClick);
   document.querySelector("#posePanel")?.addEventListener("change", panelChange);
-  window.addEventListener("keydown", (event) => { if (state.stage === "pose" && event.key === "Escape") setTool("select"); });
+  document.querySelector("#posePanel")?.addEventListener("input", (event) => {
+    const slider = event.target as HTMLInputElement;
+    if (!slider.hasAttribute("data-pose-animation-frame") || !animation) return;
+    animation.clock.seek(Number(slider.value)); syncPose();
+    const label = document.querySelector<HTMLElement>("[data-pose-animation-count]");
+    if (label) label.textContent = `Frame ${Number(slider.value) + 1} / ${animation.result.frames.length}`;
+  });
+  window.addEventListener("keydown", (event) => {
+    if (state.stage !== "pose") return;
+    if (event.key === "Escape" && animation) { stopAnimation(); message = ""; syncPose(); }
+    else if (event.key === "Escape") setTool("select");
+    else if (event.code === "Space" && animation && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) { event.preventDefault(); void playAnimation(); }
+  });
   fx.syncPose = syncPose;
   return view;
 }
 export function showPose(): void {
+  stopAnimation();
   const poseView = mount();
   if (!poseView) return;
   sceneShift = undefined;
   poseView.resize();
   syncPose();
+  void refreshAnimations();
 }
 export function syncPose(): void {
   if (!view || state.stage !== "pose") return;
@@ -282,10 +378,17 @@ export function syncPose(): void {
     marks.push({ pivot: applyPose(sceneShift, applyPose(pose, joint.pivot)), ...(joint.kind === "hinge" ? { axis: turnDir(pose, joint.axis) } : {}) });
   }
   view.setBed(bedX, bedY, bedZ);
-  view.setScene({ parts: placed.parts, selectedId: state.plate.selectedId, chain, clashing, marks, ...(gizmo ? { gizmo } : {}) });
+  const frame = animation?.result.frames[animation.clock.frame(performance.now())];
+  const shown = frame && sceneShift ? placed.parts.map((part) => {
+    const pose = frame.poses.get(part.id), object = state.plate.objects.find((item) => item.id === part.id);
+    if (!pose || !object) return part;
+    const seated = thenPose(seatLift(meshSeat(object.bytes) ?? 0), pose);
+    return { ...part, matrix: thenPose(seated, sceneShift!) };
+  }) : placed.parts;
+  view.setScene({ parts: shown, selectedId: frame ? null : state.plate.selectedId, chain: frame ? new Set() : chain, clashing: frame ? new Set() : clashing, marks: frame ? [] : marks, ...(frame ? { colors: animation?.swatches ?? frame.colors } : {}), ...(!frame && gizmo ? { gizmo } : {}) });
   const empty = document.querySelector<HTMLElement>("#poseEmpty");
   if (empty) empty.hidden = placed.parts.length > 0;
-  if (!dragging) renderPanel();
+  if (!dragging && !animation) renderPanel();
 }
 export function setPoseTheme(): void { view?.setTheme(); }
 
@@ -327,6 +430,37 @@ function renderPanel(): void {
       save.dataset.tip = "One STEP file of the assembly as posed: each part a named solid at its assembled pose.";
     }
   }
+  addText(panel, "h3", "Animations");
+  if (animationFiles.length) {
+    const select = document.createElement("select"); select.dataset.poseAnimation = "choice"; select.setAttribute("aria-label", "Animation");
+    for (const file of animationFiles) { const option = document.createElement("option"); option.value = file.plugin; option.textContent = file.title; select.append(option); }
+    select.value = animationChoice; panel.append(select);
+    const file = animationFiles.find((item) => item.plugin === animationChoice);
+    for (const param of file?.params ?? []) {
+      if (param.kind === "face" || param.kind === "outline") continue;
+      const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", param.label || param.name);
+      const value = animationParameters.get(file!.plugin)?.[param.name] ?? param.default;
+      if (param.kind === "choice") {
+        const input = document.createElement("select"); input.dataset.poseAnimationParam = param.name; input.setAttribute("aria-label", param.label || param.name);
+        for (const item of param.options ?? []) { const option = document.createElement("option"); option.value = item; option.textContent = item; input.append(option); }
+        input.value = String(value ?? ""); label.append(input);
+      } else {
+        const input = document.createElement("input"); input.dataset.poseAnimationParam = param.name; input.setAttribute("aria-label", param.label || param.name);
+        input.type = param.kind === "toggle" ? "checkbox" : param.kind === "text" ? "text" : "number";
+        if (input.type === "checkbox") input.checked = value === true;
+        else { input.value = String(value ?? ""); if (param.min !== undefined) input.min = String(param.min); if (param.max !== undefined) input.max = String(param.max); if (param.step !== undefined) input.step = String(param.step); }
+        label.append(input);
+      }
+      panel.append(label);
+    }
+    const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
+    button(actions, animation?.clock.playing ? "Pause" : "Play", "animation-play");
+    if (animation) {
+      button(actions, "Stop", "animation-stop"); button(actions, "Keep this frame", "animation-keep"); button(actions, "Save animation…", "animation-save");
+      const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = String(animation.result.frames.length - 1); slider.value = String(animation.clock.frame(performance.now())); slider.dataset.poseAnimationFrame = ""; slider.setAttribute("aria-label", "Animation frame"); panel.append(slider);
+      const label = addText(panel, "p", `Frame ${Number(slider.value) + 1} / ${animation.result.frames.length}`); label.dataset.poseAnimationCount = "";
+    }
+  } else addText(panel, "p", "No animation plugins in this project or library.");
   if (message) addText(panel, "p", message);
   if (chainSelected) addText(panel, "p", "Chain selected. Press Esc to select the part.");
   const row = selected();
@@ -355,6 +489,26 @@ function panelClick(event: Event): void {
   const target = (event.target as Element).closest<HTMLButtonElement>("[data-pose-action]");
   if (!target) return;
   const action = target.dataset.poseAction;
+  if (animation && action && !action.startsWith("animation-")) stopAnimation();
+  if (action === "animation-play") { void playAnimation(); return; }
+  if (action === "animation-save") {
+    if (animation && view && sceneShift) {
+      const current = animation, poseView = view, shift = sceneShift;
+      void import("./pose-animation-save.ts").then(({ showAnimationSave }) => { if (animation === current && state.stage === "pose") showAnimationSave({ current, view: poseView, shift, active: () => animation, isPose: () => state.stage === "pose", sync: syncPose, render: renderPanel }); });
+    }
+    return;
+  }
+  if (action === "animation-stop") { stopAnimation(); message = ""; syncPose(); return; }
+  if (action === "animation-keep" && animation) {
+    const frame = animation.result.frames[animation.clock.frame(performance.now())];
+    const plugin = animation.plugin;
+    stopAnimation();
+    if (frame) {
+      session.plugins = { ...(session.plugins ?? {}), [plugin.sha]: plugin.text };
+      editAssembly(frame.assembly);
+    }
+    syncPose(); return;
+  }
   if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
   if (action === "undo") { undoUserEdit(); syncPose(); return; }
   if (action === "redo") { redoUserEdit(); syncPose(); return; }
@@ -389,7 +543,16 @@ function panelClick(event: Event): void {
 }
 function panelChange(event: Event): void {
   const input = event.target as HTMLInputElement | HTMLSelectElement;
+  if (input.dataset.poseAnimation === "choice") { stopAnimation(); animationChoice = input.value; syncPose(); return; }
+  if (input.dataset.poseAnimationParam) {
+    const name = input.dataset.poseAnimationParam, previous = animationParameters.get(animationChoice) ?? {};
+    const value = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
+    if (typeof value === "number" && (!Number.isFinite(value) || input.value.trim() === "")) { message = "Enter a finite animation parameter."; renderPanel(); return; }
+    animationParameters.set(animationChoice, { ...previous, [name]: value }); stopAnimation(); syncPose(); return;
+  }
+  if (input.hasAttribute("data-pose-animation-frame") && animation) { animation.clock.seek(Number(input.value)); syncPose(); renderPanel(); return; }
   const name = input.dataset.poseField;
+  if (name && animation) stopAnimation();
   const row = selected(); if (!name || !row || !row.member.parent) return;
   message = "";
   if (name === "kind") {
