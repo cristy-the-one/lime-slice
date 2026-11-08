@@ -56,6 +56,8 @@ Milestones may be split into reviewable PRs. A milestone is not complete merely 
 
 Test disconnected and older peers, authentication and loopback restrictions, multiple operations and failures, bounded activity, page/server restart and document switch. Exercise simultaneous independent edits, same-object conflicts, deletion, undo, a human gesture in progress, and a rejected or delayed apply. Verify real desktop-to-MCP-to-desktop behavior, including saving and reopening a project. Test the UI for readable, quiet indicators and correct targets. Run focused tests during development and the repository's relevant checks before delivery.
 
+On 2026-11-08, a separate Windows desktop from this branch and a real MCP stdio server with the 6.1.0 native engine exercised a disposable STL project. A human changed X from 110 to 130 in the desktop; `tandem_pull` brought MCP to X 130. A competing desktop X 140 and MCP X 150 left both versions intact, produced a `conflict` receipt, and refused a stale pull. After undoing MCP's competing change, two copies of the same STL were loaded; a desktop move of the first and an MCP move of the second both survived, the receipt said `diverged`, and a pull brought MCP to both positions. The native engine reported OCCT unavailable; this placement exercise used STL and did not require it. Save/reopen, real Model geometry, gestures in flight, and desktop restart still need end-to-end coverage.
+
 ## 6. Non-goals
 
 No multi-user cloud collaboration, live chat, surveillance of every pointer movement, arbitrary remote connections, automatic conflict resolution that loses work, or requirement to use a specific model provider. Tandem complements the existing MCP client; it does not introduce an LLM into the app.

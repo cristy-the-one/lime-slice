@@ -114,6 +114,8 @@ export class Session {
   /** This process on the bridge. The desktop starts its sequence again when it changes. */
   readonly bridgeSession = randomUUID();
   readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
+  /** Object ids included in a plate snapshot, independently of shared mesh hashes. */
+  readonly bridgeObjectIds = new Set<string>();
   readonly meshHashes = new WeakMap<Uint8Array, string>();
   /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
   readonly legacySolids = new WeakSet<Uint8Array>();
@@ -550,12 +552,14 @@ export class Session {
         }
       : undefined;
     const shown = this.objects.filter((row) => row.bytes.byteLength > 0);
+    const bridgeTool = name === "object_select" && typeof input.name === "string" ? "plate_sync" : name;
+    const plateSnapshot = bridgeHasPlateUpdate({ tool: bridgeTool, ok: value.ok === true, plate: [] });
     const known = this.bridgeLink.known;
     const carriedAll = known.size === 0;
     const meshes: Record<string, unknown> = {};
     for (const row of shown) {
       const hash = this.meshHashOf(row.bytes);
-      if (known.has(hash) || hash in meshes) continue;
+      if ((known.has(hash) && this.bridgeObjectIds.has(row.id)) || hash in meshes) continue;
       meshes[hash] = {
         fileName: row.fileName,
         bytesB64: bytesToBase64(row.bytes),
@@ -566,12 +570,16 @@ export class Session {
     // The desktop keeps a mesh only while an object on its plate uses it, so an undone remove sends it again.
     known.clear();
     for (const row of shown) known.add(this.meshHashOf(row.bytes));
+    if (plateSnapshot) {
+      this.bridgeObjectIds.clear();
+      for (const row of shown) this.bridgeObjectIds.add(row.id);
+    }
     const commit = name === "model_commit" && value.ok === true && obj && obj.bytes.byteLength > 0
       ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
       : null;
     this.bridgeSeq += 1;
     const payload = {
-      tool: name === "object_select" && typeof input.name === "string" ? "plate_sync" : name,
+      tool: bridgeTool,
       session: this.bridgeSession,
       seq: this.bridgeSeq,
       plate: shown.map((row) => ({
