@@ -41,7 +41,7 @@ const animationParameters = new Map<string, Record<string, string | number | boo
 let animationParameterProject: unknown;
 let animationParameterPlugins: unknown;
 let animationRun = 0;
-export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string> }
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined }
 let animation: PoseAnimationState | null = null;
 let animationRequest = 0;
 
@@ -143,7 +143,7 @@ async function playAnimation(): Promise<void> {
     const current = selected()?.assembly;
     if (!current || current.id !== assemblySnapshot.id || JSON.stringify(current) !== JSON.stringify(assemblySnapshot) || [...objects].some(([id, object]) => state.plate.objects.find((item) => item.id === id) !== object)) { message = "The assembly changed while the animation was building. Play it again."; renderPanel(); return; }
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; renderPanel(); return; }
-    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params } };
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
     animation.clock.play(performance.now()); animationTick(); renderPanel();
   } catch (error) {
@@ -426,7 +426,7 @@ export function syncPose(): void {
     const seated = thenPose(seatLift(meshSeat(object.bytes) ?? 0), pose);
     return { ...part, matrix: thenPose(seated, sceneShift!) };
   }) : placed.parts;
-  view.setScene({ parts: shown, selectedId: frame ? null : state.plate.selectedId, chain: frame ? new Set() : chain, clashing: frame ? new Set() : clashing, marks: frame ? [] : marks, ...(frame ? { colors: animation?.swatches ?? frame.colors } : {}), ...(!frame && gizmo ? { gizmo } : {}) });
+  view.setScene({ parts: shown, selectedId: frame ? null : state.plate.selectedId, chain: frame ? new Set() : chain, clashing: frame ? new Set() : clashing, marks: frame ? [] : marks, ...(frame ? { colors: animation?.swatches ?? frame.colors, ...(animation?.background ? { background: animation.background } : {}) } : {}), ...(!frame && gizmo ? { gizmo } : {}) });
   const empty = document.querySelector<HTMLElement>("#poseEmpty");
   if (empty) empty.hidden = placed.parts.length > 0;
   if (!dragging && !animation) renderPanel();

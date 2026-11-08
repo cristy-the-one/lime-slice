@@ -9,7 +9,10 @@ import { interference } from "./interference.ts";
 export type Quaternion = [number, number, number, number];
 export type Aim = number | "rest" | "aligned" | "min" | "max" | { fraction: number } | { rotation: Quaternion } | { reach: { at: Vec3; to: Vec3 } };
 export interface PoseKey { t: number; line?: number; ease?: "linear" | "inOut"; hold?: number; set?: Record<string, Aim>; rest?: boolean; colors?: Record<string, string> }
-export interface PoseAnimation { fps: number; keys: PoseKey[]; colors?: Record<string, string> }
+export interface PoseAnimation { fps: number; keys: PoseKey[]; colors?: Record<string, string>; background?: string }
+/** A background as a script, a tool call or the save dialog gives it. */
+export const BACKGROUND_REFUSAL = "A background is a colour written #rrggbb, such as #e07040.";
+export const isBackground = (value: unknown): value is string => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
 /** `positions` and `centre` are in the part frame, before its model pose. */
 export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3 }
 export interface RigMember { object: string; name: string; parent: string | null; joint: Member["joint"]; aligned?: number }
@@ -141,6 +144,7 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
     if (record(animation.colors)) addColors(animation.colors as Record<string, string>, -1);
     else issues.push({ reason: "The palette must map member names to colours." });
   }
+  if (animation.background !== undefined && !isBackground(animation.background)) issues.push({ reason: BACKGROUND_REFUSAL });
   if (!Number.isInteger(animation.fps) || animation.fps < 4 || animation.fps > 30) issues.push({ reason: "Frames per second must be a whole number from 4 to 30." });
   if (!Array.isArray(animation.keys) || animation.keys.length === 0) return { issues: [...issues, { reason: "Add at least one key." }] };
   const root = original.members.filter((member) => member.parent === null);

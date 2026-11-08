@@ -10,7 +10,7 @@ import { readsStress, type ColorMode } from "../../src/colors.ts";
 import { ProtocolError } from "../engine.ts";
 import { layerPaths, pathsPng, type LayerStress, pathsSvg } from "../layer-out.ts";
 import { replyOffset } from "../../src/bed-offset.ts";
-import { renderMesh, readCamera, type Camera, type CameraSpec, type RenderOptions } from "../render.ts";
+import { renderMesh, readBackground, readCamera, type Camera, type CameraSpec, type RenderOptions } from "../render.ts";
 import { pngImage, withImages, type InlineImage } from "../inline.ts";
 import { readVec3 } from "../../src/modeling/compose.ts";
 import { typedPoint } from "../../src/modeling/typed-view.ts";
@@ -23,6 +23,8 @@ import { NEXT, refuse } from "../refusals.ts";
 async function renderView(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const fit = input.fit as { min: [number, number, number]; max: [number, number, number] } | undefined;
   if (fit && (Object.keys(fit).some((key) => key !== "min" && key !== "max") || ![fit.min, fit.max].every((v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n))) || fit.min.some((v, i) => v > fit.max[i]!) || fit.min.every((v, i) => v === fit.max[i]))) return refuse("bad-view", "fit needs a finite nonempty box with min no greater than max.");
+  const background = input.background === undefined ? undefined : readBackground(input.background);
+  if (background && "reason" in background) return refuse("bad-view", background.reason);
   const obj = this.find(typeof input.object === "string" ? input.object : this.selected) ?? this.objects[0];
   if (!obj) return refuse("no-mesh", "Load a mesh first.", undefined, NEXT.mesh);
   const committed = await this.commitObject(obj);
@@ -102,7 +104,7 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   const views: { camera: string; path: string; width: number; height: number }[] = [];
   const pictures: InlineImage[] = [];
   cameras.forEach(({ label, camera }, index) => {
-    const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, { ...looks.options, ...(fit ? { fit } : {}) });
+    const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, { ...looks.options, ...(fit ? { fit } : {}), ...(background ? { background: background.rgb } : {}) });
     const file = many ? `${stem}-${label}${cameras.filter((row) => row.label === label).length > 1 ? `-${index + 1}` : ""}.png` : typeof input.name === "string" ? input.name : `${obj.name}-${label}.png`;
     const path = resolveWrite(file, ".png");
     writeFileSync(path, drawn.png);

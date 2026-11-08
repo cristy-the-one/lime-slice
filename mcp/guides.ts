@@ -313,8 +313,9 @@ export const KIND_GUIDES: Record<string, string> = {
     `In the script, s.rig() names members; rig.group("Finger *") matches names with * and |. Animation::new(fps) holds a.key(seconds, Pose::rest() or Pose::new().set(name, angle)); set_all takes a group. A missing group is refused with its line.`,
     `Use Aim::Rest, Aligned, Min, Max, Fraction or Reach, Ease::InOut and key.hold(seconds). A reach may remain short of its target: read reached, distanceMm and clamped in the key summary. A hinge cannot turn around an axis its rig does not have.`,
     `Pose and Animation colour(name, "#rrggbb") colour a member or group; a key colour changes at that key without fading. Camera::looking(x,y,z) sets a fixed camera. The export frames share one framing and one GIF palette.`,
+    `a.background("#rrggbb") (recipe API 1.9; //! api: 1.9) sets the frames' background, and pose_animate {background} overrides it. The GIF palette keeps that colour exact. With none, MCP frames are pale #f8f8ff and Pose uses its stage colour with the bed showing; a chosen background hides the bed.`,
     `Export with pose_animate {object, plugin, out:{gif:"wave.gif", frames:"wave-frames"}, longEdge:640}. Set fps or camera to override. The workspace receives the files and project_save keeps the source and parameters; no frame or GIF is stored in the project.`,
-    `In Pose, select an animation, Play or scrub, and Stop to restore the view. Keep this frame writes one undoable pose; Save animation exports GIF or PNG frames with camera, size, FPS and member colours. Imported code is shown before its first run.`,
+    `In Pose, select an animation, Play or scrub, and Stop to restore the view. Keep this frame writes one undoable pose; Save animation exports GIF or PNG frames with camera, size, FPS, background and member colours. Imported code is shown before its first run.`,
   ].join("\n"),
   pose: [
     "Pose parts in an assembly without changing their print layout. First join each part with model_place {object, to}.",
