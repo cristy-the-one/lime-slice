@@ -1957,3 +1957,10 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-panel input, .pose-panel select { width: 100%; min-width: 0; }
 .pose-panel .pose-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .pose-panel .pose-error { color: var(--danger); }
+
+.pose-animation-save { width: min(460px, 90vw); max-height: 85vh; overflow-y: auto; padding: 20px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.pose-animation-save::backdrop { background: #0009; }
+.pose-animation-save h2 { margin: 0 0 16px; font-size: 18px; }
+.pose-animation-save label { display: grid; grid-template-columns: 1fr minmax(90px, 150px); gap: 12px; align-items: center; margin: 8px 0; }
+.pose-animation-save input, .pose-animation-save select { max-width: 100%; }
+.pose-animation-save .pose-buttons { display: flex; gap: 8px; margin-top: 16px; }
