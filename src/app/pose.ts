@@ -38,8 +38,10 @@ let pickSerial = 0;
 let animationFiles: PluginFileInfo[] = [];
 let animationChoice = "";
 const animationParameters = new Map<string, Record<string, string | number | boolean>>();
+let animationParameterProject: unknown;
+let animationParameterPlugins: unknown;
 let animationRun = 0;
-export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string }; swatches?: Map<string, string> }
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string> }
 let animation: PoseAnimationState | null = null;
 let animationRequest = 0;
 
@@ -63,6 +65,9 @@ function animationTick(): void {
 async function refreshAnimations(): Promise<void> {
   const { loadLibrary, pluginLibrary } = await import("../ui/plugins-panel.ts");
   await loadLibrary();
+  if (animationParameterProject !== session.mcpModel || animationParameterPlugins !== session.plugins) {
+    animationParameters.clear(); animationParameterProject = session.mcpModel; animationParameterPlugins = session.plugins;
+  }
   const files = [...pluginLibrary().plugins.values()].map((row) => row.file);
   for (const text of Object.values(session.plugins ?? {})) {
     const file = readPluginFile(text); if (file) files.push(file);
@@ -73,12 +78,12 @@ async function refreshAnimations(): Promise<void> {
       const row = value as { source?: unknown; api?: unknown; params?: unknown } | null;
       if (!row || typeof row.source !== "string") continue;
       const existing = readPluginFile(row.source);
-      if (existing?.kind === "animation") { files.push(existing); continue; }
-      const id = name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "animation";
+      const id = existing?.kind === "animation" ? existing.plugin : name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "animation";
       if (!animationParameters.has(id) && row.params && typeof row.params === "object" && !Array.isArray(row.params)) {
         const values = Object.entries(row.params).filter((entry): entry is [string, string | number | boolean] => ["string", "number", "boolean"].includes(typeof entry[1]));
         animationParameters.set(id, Object.fromEntries(values));
       }
+      if (existing?.kind === "animation") { files.push(existing); continue; }
       if (files.some((file) => file.kind === "animation" && file.plugin === id)) continue;
       const params: PluginParamInfo[] = [];
       if (row.params && typeof row.params === "object" && !Array.isArray(row.params)) for (const [key, defaultValue] of Object.entries(row.params)) {
@@ -138,7 +143,7 @@ async function playAnimation(): Promise<void> {
     const current = selected()?.assembly;
     if (!current || current.id !== assemblySnapshot.id || JSON.stringify(current) !== JSON.stringify(assemblySnapshot) || [...objects].some(([id, object]) => state.plate.objects.find((item) => item.id === id) !== object)) { message = "The assembly changed while the animation was building. Play it again."; renderPanel(); return; }
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; renderPanel(); return; }
-    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text } };
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params } };
     message = result.result.warnings[0]?.reason ?? "";
     animation.clock.play(performance.now()); animationTick(); renderPanel();
   } catch (error) {
@@ -537,10 +542,13 @@ function panelClick(event: Event): void {
   if (action === "animation-stop") { stopAnimation(); message = ""; syncPose(); return; }
   if (action === "animation-keep" && animation) {
     const frame = animation.result.frames[animation.clock.frame(performance.now())];
-    const plugin = animation.plugin;
+    const plugin = animation.plugin, assembly = animation.assembly;
     stopAnimation();
     if (frame) {
       session.plugins = { ...(session.plugins ?? {}), [plugin.sha]: plugin.text };
+      const prior = session.mcpModel?.animations;
+      const kept = prior && typeof prior === "object" && !Array.isArray(prior) ? prior as Record<string, unknown> : {};
+      session.mcpModel = { ...(session.mcpModel ?? {}), animations: { ...kept, [plugin.name]: { source: plugin.source, plugin: plugin.name, api: plugin.api, params: plugin.params, assembly } } };
       editAssembly(frame.assembly);
     }
     syncPose(); return;

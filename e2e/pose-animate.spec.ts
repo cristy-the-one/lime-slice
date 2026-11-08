@@ -88,6 +88,7 @@ test("Pose plays, scrubs and keeps an animation without changing the pose until 
   const [savedProject] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
   const savedDoc = JSON.parse(readFileSync((await savedProject.path())!, "utf8"));
   expect(Object.values(savedDoc.plugins ?? {}).some((text) => String(text).includes("kind: animation"))).toBe(true);
+  expect(savedDoc.mcpModel.animations["pose-test"].params.fps).toBe(6);
   await page.locator("[data-pose-action='undo']").click();
   await expect(pose).toHaveAttribute("data-posed", before!);
   await page.locator("[data-pose-action='animation-play']").click();
