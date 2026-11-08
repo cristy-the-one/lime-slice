@@ -4,6 +4,8 @@ Status: implementation in progress on `codex/tandem-awareness`. This plan covers
 
 Current work: an initial activity indicator and an on-demand human-context summary are being built. The desktop preserves independent changes to mirrored parts while accepting changes to other parts; competing changes to one part pause the snapshot. MCP can inspect a bounded summary of changed desktop poses and explicitly import compatible placements with `tandem_pull`. That pull checks all reported baselines before changing anything and is undoable, but the desktop summary is asynchronous and the pull is not an atomic lock on the human's next edit. The desktop records a bounded asynchronous receipt for each handled plate snapshot, and the originating MCP result can identify the snapshot. Missing receipts mean the outcome is unknown; `diverged` means the desktop preserved an edit that MCP does not yet contain. Settings, editable Model history, initial synchronization and reconnection need their own protection. No milestone is complete until its acceptance conditions below are met.
 
+Until Model histories can be reconciled, the desktop refuses a mirrored mesh replacement or removal that would discard a Model history already held by the desktop. This is a preservation guard, not editable Model synchronization.
+
 ## 1. Goal
 
 A person can keep working in Lime Slice while an assistant contributes through MCP. Each can see enough of the other's activity to coordinate, and neither silently overwrites the other's work. The person can tell which part the assistant is working on and what changed; the assistant can find out what the person is looking at or editing and work against a current session.

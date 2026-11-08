@@ -1,4 +1,4 @@
-import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeHumanChanges, bridgeIsNew, bridgePreserveHuman, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
+import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeHumanChanges, bridgeIsNew, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
 import { ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
 
 let failed = 0;
@@ -70,6 +70,11 @@ const humanSummary = bridgeHumanChanges(humanMoved, baseline);
 check("the assistant can inspect the human's changed pose", humanSummary.length === 1 && (humanSummary[0]?.offset as { x: number }).x === 19 && humanSummary[0]?.meshChanged === false);
 check("a removed mirrored part is visible in human changes", bridgeHumanChanges([], baseline)[0]?.removed === true);
 const incoming: BridgeMessage = { tool: "object_place", session: "s1", seq: 3, ok: true, plate: [row("obj_1", "h1", 25)] };
+const protectedPlate = placed.plate.map((obj) => obj.id === "obj_1" ? { ...obj, extra: "model" } : obj);
+check("a mesh replacement cannot overwrite an editable desktop Model tree", bridgeProtectedModel(protectedPlate, { ...incoming, tool: "model_commit", plate: [row("obj_1", "new-mesh")] }, placed.seen, placed.owned, (extra) => extra === "model") === "obj_1");
+check("a remote removal cannot discard an editable desktop Model tree", bridgeProtectedModel(protectedPlate, { ...incoming, tool: "object_remove", plate: [] }, placed.seen, placed.owned, (extra) => extra === "model") === "obj_1");
+check("a new server does not claim an unlisted desktop Model tree", bridgeProtectedModel(protectedPlate, { ...incoming, session: "s2", tool: "plate_sync", plate: [] }, placed.seen, placed.owned, (extra) => extra === "model") === null);
+check("a placement that keeps the mesh does not block an editable desktop Model tree", bridgeProtectedModel(protectedPlate, incoming, placed.seen, placed.owned, (extra) => extra === "model") === null);
 check("a concurrent desktop move is detected before a snapshot can overwrite it", bridgeConflict(humanMoved, incoming, placed.seen, baseline) === "obj_1");
 const unchangedRemote = { ...incoming, plate: [row("obj_1", "h1", 12, [...rotZ(90)])] };
 check("a desktop move does not conflict with an unchanged server row", bridgeConflict(humanMoved, unchangedRemote, placed.seen, baseline) === null);

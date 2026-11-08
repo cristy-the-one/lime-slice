@@ -2,7 +2,7 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeConflict, bridgeHasPlateUpdate, bridgeHumanChanges, bridgePreserveHuman, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeConflict, bridgeHasPlateUpdate, bridgeHumanChanges, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, setMeshSeat, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
@@ -107,7 +107,7 @@ function apply(message: BridgeMessage): void {
     meshHash: hashOf(obj.bytes),
     extra: obj,
   }));
-  const conflict = bridgeConflict(current, message, seen, baseline);
+  const conflict = bridgeProtectedModel(current, message, seen, owned, (object) => !!object?.modelTree) ?? bridgeConflict(current, message, seen, baseline);
   if (conflict) {
     if (lastConflict !== conflict) {
       pushToast(`Tandem paused a mirrored update: ${conflict} was also changed here. Your changes were kept; the MCP session has its own version.`, "error");

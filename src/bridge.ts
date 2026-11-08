@@ -127,6 +127,18 @@ export function bridgeHasPlateUpdate(message: BridgeMessage): boolean {
   return message.ok !== false && !!message.tool && PLATE_TOOLS.has(message.tool) && !!message.plate;
 }
 
+/** Never replace or remove a desktop Model history with a mesh-only bridge snapshot. */
+export function bridgeProtectedModel<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, owned: ReadonlySet<string>, hasModel: (extra: T | null) => boolean): string | null {
+  if (!bridgeIsNew(seen, message) || !bridgeHasPlateUpdate(message) || !message.plate) return null;
+  const incoming = new Map(message.plate.map((row) => [row.object, row]));
+  for (const row of current) {
+    if (!hasModel(row.extra)) continue;
+    const next = incoming.get(row.id);
+    if ((next && (next.meshHash ?? "") !== row.meshHash) || (!next && (message.session ?? "") === seen.session && owned.has(row.id))) return row.name;
+  }
+  return null;
+}
+
 /** A detached copy of the last plate state actually accepted by this desktop. */
 export function bridgeBaseline<T>(plate: readonly MirrorObject<T>[], owned: ReadonlySet<string>): Map<string, MirrorObject<null>> {
   return new Map(plate.filter((row) => owned.has(row.id)).map((row) => [row.id, {
