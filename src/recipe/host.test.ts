@@ -119,6 +119,27 @@ const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === 
   check("the caller was not asked", asked === 0);
 }
 
+// --- Animation calls are isolated from model-editing recipe calls.
+{
+  const seen: string[] = [];
+  const p = scripted((line, io) => {
+    const msg = JSON.parse(line) as Record<string, unknown>;
+    if (msg.v === 1) io.say(JSON.stringify({ id: 1, call: "rig", args: {}, at: { line: 3 } }));
+    else if (msg.id === 1) io.say(JSON.stringify({ id: 2, call: "model_apply", args: {}, at: { line: 7 } }));
+    else if (msg.id === 2) io.say(JSON.stringify({ id: 3, call: "animate", args: {}, at: { line: 9 } }));
+    else io.say(JSON.stringify({ done: { object: "", metrics: {} } }));
+  });
+  const out = await runRecipe(p.spawn, { kind: "animation" }, async (site) => { seen.push(site.tool); return ok(site); });
+  check("animation permits rig and animate only", seen.join(",") === "rig,animate", seen);
+  check("animation refuses model edits at their line", out.refused[0]?.reason === "An animation can only pose the assembly it was given." && out.refused[0]?.line === 7, out.refused);
+  const normal = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) io.say(JSON.stringify({ id: 1, call: "rig", args: {}, at: { line: 4 } }));
+    else io.say(JSON.stringify({ done: { object: "", metrics: {} } }));
+  });
+  const ordinary = await runRecipe(normal.spawn, {}, async (site) => { seen.push(site.tool); return ok(site); });
+  check("ordinary recipes cannot call rig", ordinary.refused[0]?.reason.startsWith("rig is not a recipe call") === true && seen.length === 2, ordinary.refused);
+}
+
 // --- A panic names its line; an exit without done says so.
 {
   const p = scripted((line, io) => {
