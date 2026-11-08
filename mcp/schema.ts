@@ -1727,6 +1727,23 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
   },
   {
+    name: "pose_animate",
+    description: "Sample an assembly animation and optionally export a GIF or PNG frames; leaves the pose unchanged.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      object: handle,
+      source: { type: "string", description: "Rust animation source." },
+      path: { type: "string", description: "Animation source in the workspace." },
+      plugin: { type: "string", description: "Animation plugin name." },
+      params: { type: "object", description: "Animation parameter values." },
+      fps: { type: "integer", minimum: 1, maximum: 60, description: "Override frames per second." },
+      camera: { description: "Camera name or direction and optional up." },
+      longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Output image size." },
+      out: { type: "object", additionalProperties: false, description: "Workspace GIF name and/or PNG frame folder.", properties: {
+        gif: { type: "string", minLength: 1, description: "GIF path." }, frames: { type: "string", minLength: 1, description: "PNG folder." },
+      } },
+    } },
+  },
+  {
     name: "render_view",
     description: "Render a PNG: named camera or direction and up; views: one image each. op shows a boolean tool in orange.",
     inputSchema: {
@@ -1742,6 +1759,7 @@ export const TOOLS: ToolSpec[] = [
         op: { type: "object", description: "Boolean op. Drawn only." },
         highlight: { description: "A label, or a list: those steps in orange." },
         colours: { type: "object", description: "Label to colour, e.g. {\"fish\": \"#b08040\"}." },
+        partColours: { type: "object", description: "Part handle or unique name to colour in assembly or print view, e.g. {\"arm\": \"#b08040\"}." },
         section: { type: "object", additionalProperties: false, description: "Cut away the side normal points to; the inside shows red.", properties: { normal: vec3, point: { ...vec3, description: "Default: the part's centre." } } },
         smooth: { type: "boolean", description: "Smooth shading on curves (default true)." },
         view: { enum: ["assembly", "print"], description: "Several parts: the object's assembly as assembled, or the bed as it prints." },

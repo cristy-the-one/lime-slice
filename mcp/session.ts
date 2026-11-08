@@ -47,6 +47,7 @@ import { machineMethods, machineHandlers } from "./session/machine.ts";
 import { settingsMethods, settingsHandlers } from "./session/settings.ts";
 import { sliceMethods, sliceHandlers } from "./session/slice.ts";
 import { layersMethods, layersHandlers } from "./session/layers.ts";
+import { animationMethods, animationHandlers } from "./session/animation.ts";
 import { modelMethods, modelHandlers } from "./session/model.ts";
 import { placeMethods } from "./session/place.ts";
 import { probeMethods } from "./session/probe.ts";
@@ -74,6 +75,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   ...settingsHandlers,
   ...sliceHandlers,
   ...layersHandlers,
+  ...animationHandlers,
   ...modelHandlers,
   ...paintHandlers,
   ...calibrationHandlers,
@@ -651,10 +653,10 @@ export class Session {
 
 }
 
-type Installed = typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods & typeof stressMethods;
+type Installed = typeof animationMethods & typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods & typeof stressMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods);
+Object.assign(Session.prototype, animationMethods, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods);
 
 export { blendOf };

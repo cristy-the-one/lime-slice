@@ -80,6 +80,7 @@ export const REFUSAL_CODES = {
   "recipe-unavailable": "The lust compiler or the recipe crate is not installed here.",
   "recipe-compile": "The recipe did not build; the diagnostics say why.",
   "recipe-failed": "The recipe ran and failed, or a rebuild after it did.",
+  "animation-refused": "The animation could not be built, run or sampled.",
   "recipe-commit": "A recipe's result could not be committed to the plate.",
   "recipe-source": "The recipe source or data file is missing, too large or unreadable.",
   "plugin-not-found": "No plugin of that id is in the library or the project.",

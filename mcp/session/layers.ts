@@ -68,6 +68,29 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   const mesh = input.view === "assembly" || input.view === "print" ? this.viewMesh(obj, input.view) : fit ? posedPositions(solidMesh ? obj.solid!.positions : obj.source, solidMesh ? obj.modelPose : thenPose(seatLift(obj.seatMm), obj.modelPose)) : solidMesh ? obj.solid!.positions : this.placed(obj).positions;
   const looks = this.renderLooks(obj, input, solidMesh);
   if ("reason" in looks) return refuse("bad-view", looks.reason);
+  if (input.partColours !== undefined) {
+    if (input.view !== "assembly" && input.view !== "print") return refuse("bad-view", "partColours needs an assembly or print view.");
+    if (!input.partColours || typeof input.partColours !== "object" || Array.isArray(input.partColours)) return refuse("bad-view", "partColours maps part names or handles to colours.");
+    const rows = viewRows(this, obj, input.view);
+    const chosen = new Map<string, [number, number, number]>();
+    for (const [name, raw] of Object.entries(input.partColours as Record<string, unknown>)) {
+      const matches = rows.filter((row) => row.id === name || row.name === name);
+      if (matches.length !== 1) return refuse("bad-view", matches.length ? `Part name "${name}" is ambiguous; use its handle.` : `No part named "${name}" is in this view.`);
+      const colour = typeof raw === "string" ? /^#?([0-9a-f]{6})$/i.exec(raw) : null;
+      if (!colour) return refuse("bad-view", `partColours.${name} is a colour like "#c86450".`);
+      const n = parseInt(colour[1]!, 16);
+      chosen.set(matches[0]!.id, [(n >> 16) & 255, (n >> 8) & 255, n & 255]);
+    }
+    let start = 0;
+    looks.options.partTints = [];
+    for (const row of rows) {
+      const solid = row.solid && row.solid.positions.length >= 9;
+      const end = start + (input.view === "print" ? this.placed(row).positions.length : solid ? row.solid!.positions.length : row.source.length) / 9;
+      const rgb = chosen.get(row.id);
+      if (rgb) looks.options.partTints.push({ start, end, rgb });
+      start = end;
+    }
+  }
   // A single solid is normally drawn in its own frame; fixed boxes are in model space.
   if (fit && !input.view && solidMesh) {
     if (looks.options.section) looks.options.section = { point: applyPose(obj.modelPose, looks.options.section.point), normal: turnDir(obj.modelPose, looks.options.section.normal) };
@@ -144,13 +167,18 @@ function renderLooks(this: Session, obj: PlateObject, input: Record<string, unkn
  * their poses in model space. "print": every object where it prints on the bed.
  */
 function viewMesh(this: Session, obj: PlateObject, view: "assembly" | "print"): Float32Array {
-  if (view === "print") return joinedPositions(this.objects.map((row) => this.placed(row).positions));
-  const members = assemblyOf(this.liveAssemblies(), obj.id)?.members.map((row) => row.object);
-  const shown = members ? this.objects.filter((row) => members.includes(row.id)) : this.objects;
+  const shown = viewRows(this, obj, view);
+  if (view === "print") return joinedPositions(shown.map((row) => this.placed(row).positions));
   return joinedPositions(shown.map((row) => {
     const solid = row.solid && row.solid.positions.length >= 9;
     return posedPositions(solid ? row.solid!.positions : row.source, solid ? row.modelPose : thenPose(seatLift(row.seatMm), row.modelPose));
   }));
+}
+
+function viewRows(session: Session, obj: PlateObject, view: "assembly" | "print"): PlateObject[] {
+  if (view === "print") return session.objects;
+  const members = assemblyOf(session.liveAssemblies(), obj.id)?.members.map((row) => row.object);
+  return members ? session.objects.filter((row) => members.includes(row.id)) : session.objects;
 }
 
 function layerColumns(this: Session, input: Record<string, unknown>): { paths: PathColumns; z: number; index: number; offsets: [number, number][] } | { reason: string } {
