@@ -23,6 +23,8 @@ export interface PluginParamInfo {
 
 export interface PluginFileInfo {
   plugin: string;
+  /** Animation plugins run in Pose, not Model. Absent means a recipe plugin. */
+  kind?: "animation";
   title: string;
   version: number;
   description: string;
@@ -81,6 +83,7 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
   const target = fields.get("target");
   return {
     plugin,
+    ...(fields.get("kind") === "animation" ? { kind: "animation" as const } : {}),
     title: oneLine(fields.get("title") ?? plugin, 60),
     version: Math.max(1, Math.floor(Number(fields.get("version")) || 1)),
     description: oneLine(fields.get("description"), 280),
@@ -101,6 +104,7 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
 /** A plugin's header as it is written (D6), in the MCP server's field order (`pluginText` in `mcp/plugins.ts`). */
 export interface PluginHeaderOut {
   plugin: string;
+  kind?: "animation";
   title: string;
   version: number;
   description: string;
@@ -118,6 +122,7 @@ export interface PluginHeaderOut {
 export function pluginFileText(header: PluginHeaderOut, body: string): string {
   const fields: [string, unknown][] = [
     ["plugin", header.plugin],
+    ["kind", header.kind],
     ["title", header.title],
     ["version", header.version],
     ["description", header.description],

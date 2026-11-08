@@ -117,6 +117,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     const got = await this.pluginFile(input.plugin);
     if ("reason" in got) return refuse("recipe-source", got.reason);
     const h = got.file.header;
+    if (h.kind === "animation") return refuse("bad-argument", `"${h.plugin}" is an animation. Use pose_animate with an assembly member.`);
     // --- D12. A plugin of a newer API than this app's crate of its major, or of a major it no longer ships, is refused
     // before anything is built: a lust error about a missing function would read like the plugin's fault.
     const verdict = apiVerdict(h.api, this.crateLevels());

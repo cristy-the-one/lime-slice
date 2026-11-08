@@ -18,7 +18,7 @@ export interface TrustView {
   mode: "import" | "first-run";
   /** Where it came from, said in the sub line: "a file", "this project", "an MCP call". */
   from: string;
-  file: Pick<ImportFile, "id" | "title" | "version" | "description" | "author" | "madeBy" | "api" | "sha256" | "headerSha" | "ingredients" | "data" | "presets" | "lessons" | "body">;
+  file: Pick<ImportFile, "id" | "kind" | "title" | "version" | "description" | "author" | "madeBy" | "api" | "sha256" | "headerSha" | "ingredients" | "data" | "presets" | "lessons" | "body">;
   /** A name clash at import: the id it would be kept beside, and whether the file is a newer version. */
   clash?: { keepBoth: string; version: number; newer: boolean };
 }
@@ -138,7 +138,7 @@ export function showTrust(view: TrustView): Promise<TrustChoice> {
   const changed = !!f.headerSha && f.headerSha !== f.sha256;
   warn.hidden = !changed;
   warn.textContent = changed ? "Its code was changed after it was kept: the hash in its header does not match the code. The hash above is the code's." : "";
-  $("pluginTrustMay").textContent = MAY_DO;
+  $("pluginTrustMay").textContent = f.kind === "animation" ? "It can pose only the assembly you choose. It cannot change geometry, read files, use the network or start programs." : MAY_DO;
   $("pluginTrustCode").textContent = elideData(f.body.replace(/^\n+/, ""));
   const clash = $("pluginTrustClash");
   clash.hidden = !view.clash;
