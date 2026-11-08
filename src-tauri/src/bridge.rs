@@ -69,13 +69,16 @@ pub fn bridge_human_context(
     gesture: bool,
     editing: bool,
     conflict: Option<String>,
+    mirror_session: Option<String>,
+    mirror_seq: Option<u64>,
 ) {
     let stage: String = stage.chars().take(32).collect();
     let selected = selected.map(|name| name.chars().take(120).collect::<String>());
     let conflict = conflict.map(|name| name.chars().take(120).collect::<String>());
+    let mirror_session = mirror_session.map(|name| name.chars().take(120).collect::<String>());
     if let Ok(mut context) = HUMAN_CONTEXT.lock() {
         *context = Some(
-            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict }),
+            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict, "mirrorSession": mirror_session, "mirrorSeq": mirror_seq }),
         );
     }
 }

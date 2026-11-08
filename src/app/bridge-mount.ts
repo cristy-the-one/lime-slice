@@ -17,6 +17,7 @@ import { state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 
 const waiting: BridgeMessage[] = [];
 let seen: BridgeSeen = { session: "", seq: 0 };
+let plateSeen: BridgeSeen = { session: "", seq: 0 };
 /** Server objects on this plate. The mirror never removes an object outside this set. */
 let owned = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -119,20 +120,23 @@ function apply(message: BridgeMessage): void {
     void announce();
     return;
   }
-  seen = result.seen;
-  owned = result.owned;
-  if (result.applied && bridgeHasPlateUpdate(message)) {
-    baseline = bridgeBaseline(result.plate, owned);
-    const resolved = lastConflict !== "";
-    lastConflict = "";
-    if (resolved) refreshHumanContext?.();
-  }
+  const accept = () => {
+    seen = result.seen;
+    owned = result.owned;
+    if (result.applied && bridgeHasPlateUpdate(message)) {
+      baseline = bridgeBaseline(result.plate, owned);
+      plateSeen = result.seen;
+      lastConflict = "";
+    }
+    if (result.applied) refreshHumanContext?.();
+  };
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {
     if (settings) {
       markStale();
       renderChrome();
     }
+    accept();
     return;
   }
   const objects = result.plate.map(toPlateObject);
@@ -151,6 +155,7 @@ function apply(message: BridgeMessage): void {
   if (objects.length > 0 && state.stage !== "model" && state.stage !== "prepare") fx.setStage("prepare");
   modelApi()?.followSelection();
   renderChrome();
+  accept();
 }
 
 function samePose(next: MirrorObject<PlateObject>, before: MirrorObject<PlateObject> | undefined): boolean {
@@ -214,6 +219,7 @@ async function announce(): Promise<void> {
 export function resetBridgeMirror(): void {
   waiting.splice(0, waiting.length);
   seen = { session: "", seq: 0 };
+  plateSeen = { session: "", seq: 0 };
   owned = new Set();
   lastMissing = "";
   baseline.clear();
@@ -235,7 +241,7 @@ export function mountBridge(): void {
     contextTimer = setTimeout(() => {
       const selected = state.plate.objects.find((item) => item.id === state.plate.selectedId);
       const focused = document.activeElement;
-      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: lastConflict || null };
+      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: lastConflict || null, mirrorSession: plateSeen.session || null, mirrorSeq: plateSeen.session ? plateSeen.seq : null };
       const encoded = JSON.stringify(context);
       if (encoded === lastContext) return;
       lastContext = encoded;
