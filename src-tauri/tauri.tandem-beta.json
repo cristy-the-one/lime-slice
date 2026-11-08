@@ -1,0 +1,9 @@
+{
+  "productName": "Lime Slice Tandem Beta",
+  "mainBinaryName": "lime-slice-tandem-beta",
+  "identifier": "com.limeslice.slicer.tandem-beta",
+  "app": {
+    "windows": [{ "label": "main", "title": "Lime Slice Tandem Beta", "width": 1440, "height": 900, "minWidth": 960, "minHeight": 640, "decorations": false }]
+  },
+  "bundle": { "fileAssociations": [] }
+}

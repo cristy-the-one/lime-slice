@@ -51,10 +51,10 @@ assert.equal((await session.call("tandem_pull", {})).ok, false, "one stale part 
 assert.equal(obj.offset.x, base.offset.x, "a refused batch leaves valid parts untouched");
 context.humanChanges = [changed];
 context.mirrorSession = "another-session";
-assert.equal((await session.call("tandem_pull", {})).ok, false, "another desktop session is refused");
+assert.equal((await session.call("tandem_pull", {})).code, "tandem-conflict", "another desktop session is refused with a stable code");
 context.mirrorSession = session.bridgeSession;
 context.mirrorSeq = 0;
-assert.equal((await session.call("tandem_pull", {})).ok, false, "an unacknowledged plate snapshot is refused");
+assert.equal((await session.call("tandem_pull", {})).code, "tandem-busy", "an unacknowledged plate snapshot is refused with a stable code");
 context.mirrorSeq = session.bridgePlateSeq;
 session.inflight = 1;
 assert.equal((await session.call("tandem_pull", {})).ok, false, "another in-flight MCP operation is refused");

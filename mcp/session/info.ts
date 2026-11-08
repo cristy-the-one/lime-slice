@@ -18,26 +18,26 @@ import type { Mat3 } from "../../src/mesh-place.ts";
 /** Pull plate placements only after every changed part passes the same baseline check. */
 async function tandemPull(this: Session): Promise<Record<string, unknown>> {
   const value = await bridgeHumanContext();
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, reason: "The Tandem desktop is not connected or cannot provide context." };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return refuse("tandem-unavailable", "The Tandem desktop is not connected or cannot provide context.");
   const human = value as Record<string, unknown>;
-  if (human.mirrorSession !== this.bridgeSession) return { ok: false, reason: "The desktop and MCP do not have the same mirrored session." };
-  if (human.mirrorSeq !== this.bridgePlateSeq || this.bridgePlateSeq === 0) return { ok: false, reason: "The desktop has not applied the latest MCP plate snapshot. Wait for its receipt before pulling." };
-  if (this.inflight !== 1) return { ok: false, reason: "Another MCP operation is still running. Wait for it before pulling." };
-  if (human.gesture !== false || human.editing !== false) return { ok: false, reason: "Finish the active desktop edit before pulling its placements." };
-  if (human.humanChangesTruncated !== false || !Array.isArray(human.humanChanges)) return { ok: false, reason: "The desktop change summary is unavailable or incomplete." };
+  if (human.mirrorSession !== this.bridgeSession) return refuse("tandem-conflict", "The desktop and MCP do not have the same mirrored session.");
+  if (human.mirrorSeq !== this.bridgePlateSeq || this.bridgePlateSeq === 0) return refuse("tandem-busy", "The desktop has not applied the latest MCP plate snapshot. Wait for its receipt before pulling.");
+  if (this.inflight !== 1) return refuse("tandem-busy", "Another MCP operation is still running. Wait for it before pulling.");
+  if (human.gesture !== false || human.editing !== false) return refuse("tandem-busy", "Finish the active desktop edit before pulling its placements.");
+  if (human.humanChangesTruncated !== false || !Array.isArray(human.humanChanges)) return refuse("tandem-unavailable", "The desktop change summary is unavailable or incomplete.");
   const updates: Array<{ obj: NonNullable<ReturnType<Session["find"]>>; offset: { x: number; y: number; z: number }; orient: Mat3; scale: number; centered: boolean }> = [];
   const ids = new Set<string>();
   for (const raw of human.humanChanges) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, reason: "The desktop change summary is invalid." };
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return refuse("bad-argument", "The desktop change summary is invalid.");
     const row = raw as Record<string, unknown>;
-    if (typeof row.object !== "string" || ids.has(row.object) || row.removed || row.meshChanged !== false || !row.base || typeof row.base !== "object" || Array.isArray(row.base)) return { ok: false, reason: "Tandem can currently pull placements only; removals, meshes and invalid changes need manual reconciliation." };
+    if (typeof row.object !== "string" || ids.has(row.object) || row.removed || row.meshChanged !== false || !row.base || typeof row.base !== "object" || Array.isArray(row.base)) return refuse("tandem-unsupported", "Tandem can currently pull placements only; removals, meshes and invalid changes need manual reconciliation.");
     ids.add(row.object);
     const obj = this.find(row.object);
     const base = row.base as Record<string, unknown>;
-    if (!obj || shownName(obj.name) !== base.name || row.name !== base.name || obj.scale * 100 !== base.scalePercent || obj.centered !== base.centered || this.meshHashOf(obj.bytes) !== base.meshHash || JSON.stringify(obj.offset) !== JSON.stringify(base.offset) || JSON.stringify(obj.orient) !== JSON.stringify(base.orient)) return { ok: false, reason: `The MCP version of ${row.object} no longer matches the desktop baseline; reconcile it first.` };
+    if (!obj || shownName(obj.name) !== base.name || row.name !== base.name || obj.scale * 100 !== base.scalePercent || obj.centered !== base.centered || this.meshHashOf(obj.bytes) !== base.meshHash || JSON.stringify(obj.offset) !== JSON.stringify(base.offset) || JSON.stringify(obj.orient) !== JSON.stringify(base.orient)) return refuse("tandem-conflict", `The MCP version of ${row.object} no longer matches the desktop baseline; reconcile it first.`);
     const offset = row.offset as Record<string, unknown> | undefined;
     const orient = row.orient;
-    if (!offset || typeof offset !== "object" || ![offset.x, offset.y, offset.z, row.scalePercent].every((n) => typeof n === "number" && Number.isFinite(n)) || (row.scalePercent as number) <= 0 || typeof row.centered !== "boolean" || !Array.isArray(orient) || orient.length !== 9 || !orient.every((n) => typeof n === "number" && Number.isFinite(n))) return { ok: false, reason: `The desktop placement for ${row.object} is invalid.` };
+    if (!offset || typeof offset !== "object" || ![offset.x, offset.y, offset.z, row.scalePercent].every((n) => typeof n === "number" && Number.isFinite(n)) || (row.scalePercent as number) <= 0 || typeof row.centered !== "boolean" || !Array.isArray(orient) || orient.length !== 9 || !orient.every((n) => typeof n === "number" && Number.isFinite(n))) return refuse("bad-argument", `The desktop placement for ${row.object} is invalid.`);
     updates.push({ obj, offset: { x: offset.x as number, y: offset.y as number, z: offset.z as number }, orient: [...orient] as Mat3, scale: (row.scalePercent as number) / 100, centered: row.centered });
   }
   if (updates.length === 0) return { ok: true, changed: [] };

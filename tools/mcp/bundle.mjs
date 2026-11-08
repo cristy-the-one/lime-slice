@@ -12,6 +12,8 @@ const { version } = JSON.parse(readFileSync(`${root}package.json`, "utf8"));
 
 // The folder also holds the engine library; only the scripts are rebuilt.
 for (const name of ["server.mjs", "engine-worker.mjs"]) rmSync(`${outdir}/${name}`, { force: true });
+// The release workflow adds this only for a beta tag. A later stable build must not inherit it.
+rmSync(`${outdir}/tandem-beta.identity`, { force: true });
 await build({
   entryPoints: [`${root}mcp/server.ts`, `${root}mcp/engine-worker.ts`],
   bundle: true,

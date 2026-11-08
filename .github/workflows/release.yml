@@ -37,6 +37,8 @@ jobs:
           else
             tag="v$(jq -r .version src-tauri/tauri.conf.json)"
           fi
+          prerelease=false
+          [[ "$tag" == *-tandem-beta.* ]] && prerelease=true
           # The tags endpoint does not return drafts, so search the list.
           id="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
             --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)"
@@ -52,7 +54,7 @@ jobs:
               -f name="Lime Slice $tag" \
               -F body=@"$RUNNER_TEMP/body.md" \
               -F draft=true \
-              -F prerelease=false \
+              -F prerelease="$prerelease" \
               --jq .id)"
             echo "Created draft release $id for $tag"
           else
@@ -224,7 +226,11 @@ jobs:
           cargo build -p lime-mcp-engine --release
           New-Item -ItemType Directory -Force -Path src-tauri/resources/mcp | Out-Null
           Copy-Item target\release\lime_mcp_engine.dll src-tauri/resources/mcp/
-          # Explorer's thumbnail handler. The installer copies it to $INSTDIR.
+      - name: Build the Explorer thumbnail handler
+        if: matrix.platform == 'windows-latest' && !(github.ref_type == 'tag' && contains(github.ref_name, '-tandem-beta.'))
+        shell: pwsh
+        run: |
+          # Explorer's thumbnail handler. The production installer copies it to $INSTDIR.
           cargo build -p lime-shell --release
           Copy-Item target\release\lime_shell.dll src-tauri/resources/lime_shell.dll
 
@@ -232,6 +238,11 @@ jobs:
       # Node 22.6+, so Claude's config can point at the install instead of a checkout.
       - name: Bundle the MCP server
         run: npm run build:mcp
+
+      - name: Isolate Tandem beta data
+        if: github.ref_type == 'tag' && contains(github.ref_name, '-tandem-beta.')
+        shell: bash
+        run: touch src-tauri/resources/mcp/tandem-beta.identity
 
       # recipe_run builds recipes with lust (tools/lust/LUST_REV) and its tinycc. They ship in mcp/lust beside
       # server.mjs, which finds them there (mcp/recipe.ts findLust). The Intel dmg carries none: this runner is
@@ -283,6 +294,21 @@ jobs:
           ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/crt
           ./tools/windows/stage_crt.ps1 -Dest src-tauri/resources/mcp
 
+      - name: Choose installer identity
+        id: installer-identity
+        shell: bash
+        env:
+          BASE_ARGS: ${{ matrix.args }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          args="$BASE_ARGS"
+          if [[ "$REF_TYPE" == tag && "$REF_NAME" == *-tandem-beta.* ]]; then
+            # Do not install the production Explorer extension for an experimental build.
+            args="${args/--config src-tauri\/tauri.shell.json/} --config src-tauri/tauri.tandem-beta.json"
+          fi
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
       - name: Build unsigned installers and upload them to the draft release
         uses: tauri-apps/tauri-action@v1
         env:
@@ -293,7 +319,7 @@ jobs:
           uploadUpdaterJson: false
           uploadUpdaterSignatures: false
           retryAttempts: 3
-          args: ${{ matrix.args }}
+          args: ${{ steps.installer-identity.outputs.args }}
 
       # Recipes need the bundled lust and its tcc to stay executable inside the .deb.
       - name: Check lust in the .deb

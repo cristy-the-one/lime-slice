@@ -259,7 +259,7 @@ export function mountBridge(): void {
       const encoded = JSON.stringify(context);
       if (encoded === lastContext) return;
       lastContext = encoded;
-      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_human_context", context)).catch(() => { lastContext = ""; });
+      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_human_context", { context })).catch(() => { lastContext = ""; });
     }, 50);
   };
   refreshHumanContext = () => { lastContext = ""; publishContext(); };

@@ -29,6 +29,7 @@ use tauri::{AppHandle, Emitter};
 use crate::open_file;
 
 const DEFAULT_PORT: u16 = 43119;
+const TANDEM_BETA_PORT: u16 = 43129;
 const MAX_HEADER: usize = 16 * 1024;
 /// A plate message carries its meshes: room for a few large parts.
 const MAX_BODY: usize = 256 * 1024 * 1024;
@@ -86,8 +87,9 @@ pub fn bridge_ready() {
 }
 
 /// A bounded, deliberately small description of the page; never input field values.
-#[tauri::command]
-pub fn bridge_human_context(
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanContext {
     stage: String,
     selected: Option<String>,
     gesture: bool,
@@ -97,7 +99,21 @@ pub fn bridge_human_context(
     mirror_seq: Option<u64>,
     human_changes: Vec<Value>,
     human_changes_truncated: bool,
-) {
+}
+
+#[tauri::command]
+pub fn bridge_human_context(context: HumanContext) {
+    let HumanContext {
+        stage,
+        selected,
+        gesture,
+        editing,
+        conflict,
+        mirror_session,
+        mirror_seq,
+        human_changes,
+        human_changes_truncated,
+    } = context;
     let stage: String = stage.chars().take(32).collect();
     let selected = selected.map(|name| name.chars().take(120).collect::<String>());
     let conflict = conflict.map(|name| name.chars().take(120).collect::<String>());
@@ -132,7 +148,13 @@ pub fn start(app: AppHandle) {
         .ok()
         .and_then(|text| text.trim().parse::<u16>().ok())
         .filter(|port| *port != 0)
-        .unwrap_or(DEFAULT_PORT);
+        .unwrap_or(
+            if app.config().identifier == "com.limeslice.slicer.tandem-beta" {
+                TANDEM_BETA_PORT
+            } else {
+                DEFAULT_PORT
+            },
+        );
     let addr = listen_addr(port);
     let listener = match TcpListener::bind(addr) {
         Ok(listener) => listener,

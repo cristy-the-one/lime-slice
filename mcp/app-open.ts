@@ -13,7 +13,8 @@ import { refuse } from "./refusals.ts";
 
 /** This file's folder. In an installed app it is the `mcp` folder beside the desktop program's resources. */
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROGRAM = "lime-slice-desktop";
+const BETA = existsSync(join(HERE, "tandem-beta.identity"));
+const PROGRAM = BETA ? "lime-slice-tandem-beta" : "lime-slice-desktop";
 
 /** The ways to reach the app. Tests replace them. */
 export interface AppOpener {
@@ -33,13 +34,15 @@ export function installedApp(): string | null {
   const candidates: string[] = [];
   if (process.platform === "win32") {
     candidates.push(join(HERE, "..", `${PROGRAM}.exe`));
-    for (const root of [process.env.LOCALAPPDATA, process.env.ProgramFiles]) {
+    for (const root of BETA ? [] : [process.env.LOCALAPPDATA, process.env.ProgramFiles]) {
       if (root) candidates.push(join(root, "Lime Slice", `${PROGRAM}.exe`));
     }
   } else if (process.platform === "darwin") {
-    candidates.push(join(HERE, "..", "..", "MacOS", PROGRAM), join("/Applications", "Lime Slice.app", "Contents", "MacOS", PROGRAM));
+    candidates.push(join(HERE, "..", "..", "MacOS", PROGRAM));
+    if (!BETA) candidates.push(join("/Applications", "Lime Slice.app", "Contents", "MacOS", PROGRAM));
   } else {
-    candidates.push(join(HERE, "..", "..", "..", "bin", PROGRAM), join("/usr", "bin", PROGRAM));
+    candidates.push(join(HERE, "..", "..", "..", "bin", PROGRAM));
+    if (!BETA) candidates.push(join("/usr", "bin", PROGRAM));
   }
   return candidates.find((path) => existsSync(path)) ?? null;
 }
