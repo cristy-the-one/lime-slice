@@ -128,7 +128,8 @@ const TOTAL_BUDGET = 18_250;
 // Raised from 4,600 to 5,300 (measured 5,260) when model_place and model_export_step became core: posing and saving the pose as STEP need
 // no Model edit, and a client that never re-reads the list after tools_enable could not call them by name. With
 // model_place root:true the first list measures 5,285.
-const FIRST_LIST_BUDGET = 5_300;
+// pose_animate is a core tool (animation plan D7): one call replaces many pose and render calls.
+const FIRST_LIST_BUDGET = 5_650;
 const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
 const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
 const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");

@@ -1727,6 +1727,23 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
   },
   {
+    name: "pose_animate",
+    description: "Sample an assembly animation and optionally export a GIF or PNG frames; leaves the pose unchanged.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {
+      object: handle,
+      source: { type: "string", description: "Rust animation source." },
+      path: { type: "string", description: "Animation source in the workspace." },
+      plugin: { type: "string", description: "Animation plugin name." },
+      params: { type: "object", description: "Animation parameter values." },
+      fps: { type: "integer", minimum: 1, maximum: 60, description: "Override frames per second." },
+      camera: { description: "Camera name or direction and optional up." },
+      longEdge: { type: "integer", minimum: 32, maximum: 1024, description: "Output image size." },
+      out: { type: "object", additionalProperties: false, description: "Workspace GIF name and/or PNG frame folder.", properties: {
+        gif: { type: "string", minLength: 1, description: "GIF path." }, frames: { type: "string", minLength: 1, description: "PNG folder." },
+      } },
+    } },
+  },
+  {
     name: "render_view",
     description: "Render a PNG: named camera or direction and up; views: one image each. op shows a boolean tool in orange.",
     inputSchema: {

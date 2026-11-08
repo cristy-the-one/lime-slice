@@ -1,0 +1,54 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fakeEngine } from "./engine.ts";
+import { findLust } from "./recipe.ts";
+import { Session } from "./session.ts";
+
+if (!findLust()) {
+  if (process.env.LIME_RECIPE_REQUIRED === "1") throw new Error("lust is required");
+  console.log("pose-animate: skipped (set LIME_LUST)"); process.exit(0);
+}
+const workspace = mkdtempSync(join(tmpdir(), "lime-pose-animation-"));
+process.env.LIME_MCP_WORKSPACE = workspace;
+const session = new Session(fakeEngine());
+const call = (name: string, input: Record<string, unknown>) => session.call(name, input);
+const make = async () => String((await call("solid_new", { primitive: "box", dx: 2, dy: 2, dz: 2 })).object);
+const root = await make(), finger = await make();
+session.find(finger)!.name = "Finger";
+assert.equal((await call("model_place", { object: finger, to: root, x: 4 })).ok, true);
+assert.equal((await call("model_place", { object: finger, joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], min: -90, max: 90 } })).ok, true);
+const before = structuredClone(session.assemblies), poses = session.objects.map((row) => structuredClone(row.modelPose));
+const source = `use lime_recipe::{anim::*, Session};
+fn main() {
+  let mut s = Session::start();
+  let rig = s.rig().unwrap();
+  let mut a = Animation::new(4);
+  a.key(0.0, Pose::rest().colour("Finger", "#ff0000"));
+  a.key(1.0, Pose::new().set_all(&rig.group("Finger"), Aim::Degrees(60.0)).colour("Finger", "#0000ff"));
+  s.animate(&a).unwrap();
+}`;
+const dry = await call("pose_animate", { object: finger, source });
+assert.equal(dry.ok, true, JSON.stringify(dry));
+assert.equal(dry.frames, 4);
+assert.ok(Array.isArray(dry.rig));
+const saved = await call("pose_animate", { object: finger, source, longEdge: 64, out: { gif: "arm.gif", frames: "arm-frames" } });
+assert.equal(saved.ok, true, JSON.stringify(saved));
+assert.equal(saved.frames, 4);
+assert.ok(JSON.stringify(saved).length < 4000);
+assert.equal(readFileSync(join(workspace, "arm.gif")).subarray(0, 6).toString(), "GIF89a");
+assert.ok(existsSync(join(workspace, "arm-frames", "frame-001.png")) && existsSync(join(workspace, "arm-frames", "frame-004.png")));
+assert.notDeepEqual(readFileSync(join(workspace, "arm-frames", "frame-001.png")), readFileSync(join(workspace, "arm-frames", "frame-004.png")));
+assert.deepEqual(session.assemblies, before);
+assert.deepEqual(session.objects.map((row) => row.modelPose), poses);
+const longSource = source.replace("Animation::new(4)", "Animation::new(15)").replace("a.key(1.0,", "a.key(4.0,");
+const long = await call("pose_animate", { object: finger, source: longSource, longEdge: 32, out: { gif: "long.gif" } });
+assert.equal(long.ok, true, JSON.stringify(long));
+assert.equal(long.frames, 60);
+assert.ok(JSON.stringify(long).length < 4000);
+const bad = await call("pose_animate", { object: finger, source: source.replace('rig.group("Finger")', 'rig.group("missing")') });
+assert.equal(bad.ok, false);
+assert.ok(JSON.stringify(bad).includes("missing"));
+assert.deepEqual(session.assemblies, before);
+console.log("pose-animate: sample, GIF, PNG, refusal and unchanged pose passed");
