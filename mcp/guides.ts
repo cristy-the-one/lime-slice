@@ -326,6 +326,7 @@ export const KIND_GUIDES: Record<string, string> = {
     "4. model_params {set:{rimL:150}}: the reply's moved lists the hook and the clip with their new assembledMm.",
     "5. plate_list: each member's row has assembly; session_info lists the assemblies.",
     "Moving the root (model_place on it, without to) moves every member. model_place on a member without to changes its offset from its parent.",
+    "model_place {object:<member>, root:true} makes that member the fixed root where everything stands: the links up to the old root turn round, each carrying its joint (a hinge keeps its pin, angle and limits). IK then anchors there. One undo step.",
     "With to, a number left out is 0. model_place {object, to} with no numbers keeps the part where it stands and records that offset.",
     "A member's Model numbers are read in its own part frame (frame part), so a step typed from its drawing stays put when the assembly moves.",
     "plate_arrange {assembly} lays out only that assembly's members, around the other objects. The print layout never follows the assembly.",

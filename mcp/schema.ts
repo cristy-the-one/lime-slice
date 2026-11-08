@@ -1419,6 +1419,7 @@ export const TOOLS: ToolSpec[] = [
         joint: { oneOf: [{ type: "object" }, { enum: [null] }], description: "Joint or null; guide {kind:\"pose\"}." },
         angle: { type: "number", description: "Hinge angle in degrees." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
+        root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
         compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
         objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
       },
