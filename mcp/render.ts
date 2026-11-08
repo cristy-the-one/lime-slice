@@ -110,6 +110,8 @@ export interface RenderOptions {
   section?: { point: Vec; normal: Vec };
   /** Empty pixels stay transparent (RGBA). The default preview is opaque RGB, which `render_view` keeps. */
   transparent?: boolean;
+  /** Return RGB pixels too, for animation encoding. */
+  pixels?: boolean;
 }
 
 /** The colour the inside of a part shows where a section cuts it. */
@@ -117,7 +119,7 @@ const CUT: Vec = [205, 70, 60];
 /** Facets that meet at less than this many degrees share their shading. */
 const SMOOTH_DEG = 35;
 
-export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec, longEdge = 768, ghost?: Float32Array, options: RenderOptions = {}): { png: Uint8Array; width: number; height: number } {
+export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec, longEdge = 768, ghost?: Float32Array, options: RenderOptions = {}): { png: Uint8Array; width: number; height: number; rgb?: Uint8Array } {
   const basis = cameraBasis(camera);
   if ("reason" in basis) throw new Error(basis.reason);
   const { eye, right, up } = basis;
@@ -289,6 +291,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const transparent = options.transparent === true;
   const channels = transparent ? 4 : 3;
   const raw = new Uint8Array((width * channels + 1) * height);
+  const rgbPixels = options.pixels ? new Uint8Array(width * height * 3) : undefined;
   for (let y = 0; y < height; y += 1) {
     const row = y * (width * channels + 1);
     raw[row] = 0;
@@ -316,6 +319,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       raw[at] = rgb[0];
       raw[at + 1] = rgb[1];
       raw[at + 2] = rgb[2];
+      if (rgbPixels) rgbPixels.set(rgb, pixel * 3);
       if (transparent) raw[at + 3] = 255;
     }
   }
@@ -333,7 +337,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
     png.set(part, offset);
     offset += part.length;
   }
-  return { png, width, height };
+  return { png, width, height, ...(rgbPixels ? { rgb: rgbPixels } : {}) };
 }
 
 /** Each triangle corner's normal: the mean of the facets at that point within SMOOTH_DEG of the corner's own facet. */
