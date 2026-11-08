@@ -84,7 +84,7 @@ test("Pose draws every part solid at its assembled pose, tints the selection, an
   await page.screenshot({ path: path.join(shots, "pose-selected.png") });
 
   // The list selects, and the view follows.
-  await page.locator("[data-plate-select='part']").click();
+  await page.locator("[data-pose-action='select'][data-object='part']").click();
   await expect(pose).toHaveAttribute("data-selected", "part");
   await expect(pose).toHaveAttribute("data-looks", "part:selected");
 

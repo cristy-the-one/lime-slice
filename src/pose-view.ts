@@ -22,7 +22,11 @@ export type PoseCamera = "top" | "front" | "iso";
 
 export interface PoseScene extends PoseLooks {
   parts: ContextPart[];
+  gizmo?: { pivot: [number, number, number]; axes: [number, number, number][]; radius: number };
+  marks?: { pivot: [number, number, number]; axis?: [number, number, number] }[];
 }
+
+export type TurnEvent = { phase: "start"; axis: number } | { phase: "end"; axis: number } | { phase: "change"; axis: number; delta: number };
 
 export interface PoseView {
   setScene(scene: PoseScene): void;
@@ -34,6 +38,7 @@ export interface PoseView {
   resize(): void;
   /** A click (not a drag) on a part, or on empty space (`null`). */
   onPick(cb: ((id: string | null) => void) | null): void;
+  onTurn(cb: ((event: TurnEvent) => void) | null): void;
 }
 
 /** Edges sharper than this crease are outlined. Model's ghost outlines a mesh tool at the same angle. */
@@ -90,6 +95,15 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   let box: Bounds | null = null;
   let framed = false;
   let pickCb: ((id: string | null) => void) | null = null;
+  let turnCb: ((event: TurnEvent) => void) | null = null;
+  const gizmos = new THREE.Group();
+  const marks = new THREE.Group();
+  scene.add(gizmos, marks);
+  const markLine = new THREE.LineBasicMaterial({ color: hexToThree(colors.pose), depthTest: false });
+  const markBall = new THREE.MeshBasicMaterial({ color: hexToThree(colors.pose), depthTest: false });
+  const markSphere = new THREE.SphereGeometry(1.5, 10, 8);
+  const ringMaterial = new THREE.MeshBasicMaterial({ color: hexToThree(colors.pose), transparent: true, opacity: 0.85, depthTest: false, side: THREE.DoubleSide });
+  let ringGeometry: THREE.TorusGeometry | null = null;
 
   function geometryOf(positions: Float32Array) {
     let entry = held.get(positions);
@@ -139,6 +153,35 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       if (look !== "part") looks.push(`${part.id}:${look}`);
     }
     group.updateMatrixWorld(true);
+    for (const mark of marks.children) if (mark instanceof THREE.Line) mark.geometry.dispose();
+    marks.clear();
+    for (const mark of next.marks ?? []) {
+      const pivot = new THREE.Vector3(...mark.pivot);
+      if (mark.axis) {
+        const axis = new THREE.Vector3(...mark.axis).normalize().multiplyScalar(6);
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([pivot.clone().sub(axis), pivot.clone().add(axis)]), markLine);
+        line.renderOrder = 11; marks.add(line);
+      } else {
+        const dot = new THREE.Mesh(markSphere, markBall); dot.position.copy(pivot); dot.renderOrder = 11; marks.add(dot);
+      }
+    }
+    gizmos.clear();
+    ringGeometry?.dispose();
+    ringGeometry = null;
+    if (next.gizmo) {
+      const { pivot, axes, radius } = next.gizmo;
+      ringGeometry = new THREE.TorusGeometry(radius, Math.max(0.45, radius * 0.035), 8, 96);
+      axes.forEach((axis, index) => {
+        const ring = new THREE.Mesh(ringGeometry!, ringMaterial);
+        ring.position.set(...pivot);
+        ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(...axis).normalize());
+        ring.userData.axis = index;
+        ring.userData.direction = new THREE.Vector3(...axis).normalize();
+        ring.renderOrder = 10;
+        gizmos.add(ring);
+      });
+      gizmos.updateMatrixWorld(true);
+    }
     box = union;
     // For a test: every part's box where it stands, and which parts are not in the plain look.
     if (published.length) canvas.dataset.posed = published.join(" ");
@@ -208,6 +251,16 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       const moved = glide(now);
       viewHelper.center.copy(controls.target);
       renderer.render(scene, camera);
+      if (gizmos.children.length && ringGeometry) {
+        const rect = canvas.getBoundingClientRect();
+        const radius = ringGeometry.parameters.radius;
+        const centre = gizmos.children[0]!.position.clone().project(camera);
+        canvas.dataset.turnCenter = `${(rect.left + (centre.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - centre.y) * rect.height / 2).toFixed(1)}`;
+        canvas.dataset.turnHandles = gizmos.children.map((ring) => {
+          const at = ring.localToWorld(new THREE.Vector3(radius, 0, 0)).project(camera);
+          return `${ring.userData.axis}:${(rect.left + (at.x + 1) * rect.width / 2).toFixed(1)},${(rect.top + (1 - at.y) * rect.height / 2).toFixed(1)}`;
+        }).join(" ");
+      } else { delete canvas.dataset.turnHandles; delete canvas.dataset.turnCenter; }
       renderViewHelper(renderer, viewHelper);
       still = moved || viewHelper.animating ? 0 : still + 1;
       if (still > STILL_FRAMES) {
@@ -240,6 +293,58 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   // A click picks; a drag orbits. The press position tells them apart.
   const raycaster = new THREE.Raycaster();
   let press: { x: number; y: number; id: number } | null = null;
+  let turnDrag: { pointer: number; axis: number; normal: THREE.Vector3; pivot: THREE.Vector3; from: THREE.Vector3; previous: number; total: number; emitted: number } | null = null;
+  const rayAt = (x: number, y: number) => {
+    const rect = canvas.getBoundingClientRect();
+    raycaster.setFromCamera(new THREE.Vector2(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1), camera);
+  };
+  canvas.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || !turnCb || !gizmos.children.length) return;
+    rayAt(ev.clientX, ev.clientY);
+    const hit = raycaster.intersectObjects(gizmos.children, false)[0];
+    if (!hit) return;
+    const ring = hit.object;
+    const normal = (ring.userData.direction as THREE.Vector3).clone();
+    const pivot = ring.position.clone();
+    const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(normal, pivot), new THREE.Vector3());
+    if (!point || point.distanceToSquared(pivot) < 1e-12) return;
+    turnDrag = { pointer: ev.pointerId, axis: ring.userData.axis as number, normal, pivot, from: point.sub(pivot).normalize(), previous: 0, total: 0, emitted: 0 };
+    controls.enabled = false;
+    canvas.setPointerCapture(ev.pointerId);
+    turnCb({ phase: "start", axis: turnDrag.axis });
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!turnDrag || turnDrag.pointer !== ev.pointerId) return;
+    rayAt(ev.clientX, ev.clientY);
+    const point = raycaster.ray.intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(turnDrag.normal, turnDrag.pivot), new THREE.Vector3());
+    if (point && point.distanceToSquared(turnDrag.pivot) > 1e-12) {
+      const to = point.sub(turnDrag.pivot).normalize();
+      const raw = Math.atan2(turnDrag.normal.dot(new THREE.Vector3().crossVectors(turnDrag.from, to)), turnDrag.from.dot(to)) * 180 / Math.PI;
+      let step = raw - turnDrag.previous;
+      if (step > 180) step -= 360;
+      if (step < -180) step += 360;
+      turnDrag.previous = raw;
+      turnDrag.total += step;
+      const target = ev.shiftKey ? Math.round(turnDrag.total / 5) * 5 : turnDrag.total;
+      if (Math.abs(target - turnDrag.emitted) > 1e-8) { turnDrag.emitted = target; turnCb?.({ phase: "change", axis: turnDrag.axis, delta: target }); }
+    }
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  }, true);
+  const endTurn = (ev: PointerEvent) => {
+    if (!turnDrag || turnDrag.pointer !== ev.pointerId) return;
+    const axis = turnDrag.axis;
+    turnDrag = null;
+    controls.enabled = true;
+    if (canvas.hasPointerCapture(ev.pointerId)) canvas.releasePointerCapture(ev.pointerId);
+    turnCb?.({ phase: "end", axis });
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  };
+  canvas.addEventListener("pointerup", endTurn, true);
+  canvas.addEventListener("pointercancel", endTurn, true);
   canvas.addEventListener("pointerdown", (ev) => {
     if (viewHelperHit(viewHelper, canvas, ev)) {
       kick();
@@ -276,6 +381,9 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     paint(materials.selected, colors.pose);
     paint(materials.chain, colors.poseChain);
     paint(materials.clash, colors.amber);
+    ringMaterial.color.setHex(hexToThree(colors.pose));
+    markLine.color.setHex(hexToThree(colors.pose));
+    markBall.color.setHex(hexToThree(colors.pose));
     canvas.dataset.poseColor = colors.pose;
     kick();
   }
@@ -293,6 +401,9 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     resize,
     onPick(cb) {
       pickCb = cb;
+    },
+    onTurn(cb) {
+      turnCb = cb;
     },
   };
 }

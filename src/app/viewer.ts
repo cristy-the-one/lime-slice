@@ -544,6 +544,10 @@ export function setStage(stage: "prepare" | "preview" | "gcode" | "model" | "pos
   // Leaving Pose lands its last edit as one step, as leaving Model does. Pose never moves the print layout.
   if (state.stage === "pose" && stage !== "pose") flushEdit();
   state.stage = stage;
+  const settingsPanel = document.querySelector<HTMLElement>("#left");
+  const posePanel = document.querySelector<HTMLElement>("#posePanel");
+  if (settingsPanel) settingsPanel.hidden = stage === "pose";
+  if (posePanel) posePanel.hidden = stage !== "pose";
   paintRailStage(stage);
   document.querySelector<HTMLElement>("#prepareBody")!.hidden = stage !== "prepare";
   document.querySelector<HTMLElement>("#modelBody")!.hidden = stage !== "model";
