@@ -49,6 +49,7 @@ assert.equal(long.frames, 60);
 assert.ok(JSON.stringify(long).length < 4000);
 const bad = await call("pose_animate", { object: finger, source: source.replace('rig.group("Finger")', 'rig.group("missing")') });
 assert.equal(bad.ok, false);
+assert.equal(bad.code, "animation-refused");
 assert.ok(JSON.stringify(bad).includes("missing"));
 assert.deepEqual(session.assemblies, before);
 console.log("pose-animate: sample, GIF, PNG, refusal and unchanged pose passed");

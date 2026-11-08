@@ -187,14 +187,21 @@ jobs:
 
       - name: Install cargo-nextest
         run: |
-          curl -LsSf --retry 4 --retry-delay 5 --retry-max-time 90 https://get.nexte.st/latest/linux -o "$RUNNER_TEMP/cargo-nextest.tar.gz"
-          tar zxf "$RUNNER_TEMP/cargo-nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+          if curl -LsSf --retry 4 --retry-delay 5 --retry-max-time 90 https://get.nexte.st/latest/linux -o "$RUNNER_TEMP/cargo-nextest.tar.gz"; then
+            tar zxf "$RUNNER_TEMP/cargo-nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+          else
+            echo "::warning::nextest download failed; Rust tests will run with cargo test."
+          fi
 
       - name: Test
         run: |
           cargo build -p lime-model-occt --locked
           export LIME_OCCT_BRIDGE="$PWD/target/debug/liblime_model_occt.so"
-          cargo nextest run --workspace --locked --profile ci
+          if cargo nextest --version >/dev/null 2>&1; then
+            cargo nextest run --workspace --locked --profile ci
+          else
+            cargo test --workspace --locked --lib --bins --tests --no-fail-fast
+          fi
 
       - name: Doctests
         run: cargo test --workspace --doc --locked

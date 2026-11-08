@@ -74,6 +74,7 @@ check("every code written in mcp/ is in the registry", [...written].every((code)
 const allowed: { file: RegExp; line: RegExp; why: string }[] = [
   { file: /^mcp\/engine(-worker)?\.ts$/, line: /ok: false/, why: "the engine's own wire protocol and stand-in replies: the session turns them into refusals" },
   { file: /^mcp\/recipe\.ts$/, line: /ok: false/, why: "BuildResult and available(): the session words them as recipe-unavailable and recipe-compile" },
+  { file: /^mcp\/animation-run\.ts$/, line: /ok: false/, why: "internal animation and recipe protocol replies: the session turns run failures into animation-refused" },
   { file: /^mcp\/session\/recipe\.ts$/, line: /ok: false, error:/, why: "the answers a recipe's own calls get (lust reads error); a refusal of the whole run goes through refuse" },
   { file: /.*/, line: /ok: false;/, why: "a type, not a value" },
   { file: /.*/, line: /\(\) => \(\{ ok: false \}\)/, why: "a swallowed failure whose value is only tested for ok" },
