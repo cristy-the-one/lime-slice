@@ -134,11 +134,32 @@ export function bridgeBaseline<T>(plate: readonly MirrorObject<T>[], owned: Read
   }]));
 }
 
+/** Remember what the server sent, even when the desktop keeps its own independent edit. */
+export function bridgeServerBaseline(message: BridgeMessage): Map<string, MirrorObject<null>> {
+  return new Map((message.plate ?? []).map((row) => [row.object, {
+    id: row.object, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
+    offset: { ...row.offset }, orient: [...row.orient] as Mat3, meshHash: row.meshHash ?? "", extra: null,
+  }]));
+}
+
 function sameBridgeObject(a: MirrorObject<unknown> | undefined, b: MirrorObject<unknown> | undefined): boolean {
   if (!a || !b) return a === b;
   return a.name === b.name && a.scalePercent === b.scalePercent && a.centered === b.centered && a.meshHash === b.meshHash
     && a.offset.x === b.offset.x && a.offset.y === b.offset.y && a.offset.z === b.offset.z
     && a.orient.every((value, index) => value === b.orient[index]);
+}
+
+/** A small description of local edits to previously mirrored parts, without transferring meshes. */
+export function bridgeHumanChanges<T>(current: readonly MirrorObject<T>[], baseline: ReadonlyMap<string, MirrorObject<null>>): Array<Record<string, unknown>> {
+  const here = new Map(current.map((row) => [row.id, row]));
+  const changed: Array<Record<string, unknown>> = [];
+  for (const [id, before] of baseline) {
+    const row = here.get(id);
+    if (sameBridgeObject(before, row)) continue;
+    if (!row) changed.push({ object: id, name: before.name, removed: true });
+    else changed.push({ object: id, name: row.name, scalePercent: row.scalePercent, centered: row.centered, offset: { ...row.offset }, orient: [...row.orient], meshChanged: row.meshHash !== before.meshHash });
+  }
+  return changed;
 }
 
 /** Refuse a snapshot that would overwrite a desktop edit since the last accepted snapshot. */
@@ -151,9 +172,23 @@ export function bridgeConflict<T>(current: readonly MirrorObject<T>[], message: 
   }]));
   for (const [id, before] of baseline) {
     const human = here.get(id);
-    if (!sameBridgeObject(before, human) && !sameBridgeObject(human, incoming.get(id))) return human?.name ?? before.name;
+    const remote = incoming.get(id);
+    if (!sameBridgeObject(before, human) && !sameBridgeObject(human, remote) && (!human || !sameBridgeObject(before, remote))) return human?.name ?? before.name;
   }
   return null;
+}
+
+/** Carry a desktop-only change forward when the incoming server row still equals the shared baseline. */
+export function bridgePreserveHuman<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>): BridgeMessage {
+  if (!bridgeIsNew(seen, message) || (message.session ?? "") !== seen.session || !bridgeHasPlateUpdate(message) || !message.plate) return message;
+  const here = new Map(current.map((row) => [row.id, row]));
+  const incoming = bridgeServerBaseline(message);
+  return { ...message, plate: message.plate.map((row) => {
+    const before = baseline.get(row.object);
+    const human = here.get(row.object);
+    if (!before || !human || sameBridgeObject(before, human) || !sameBridgeObject(before, incoming.get(row.object))) return row;
+    return { ...row, name: human.name, scalePercent: human.scalePercent, centered: human.centered, offset: { ...human.offset }, orient: [...human.orient] as Mat3, meshHash: human.meshHash };
+  }) };
 }
 
 /** True when this message is newer than what the window has, or comes from a new server process. */

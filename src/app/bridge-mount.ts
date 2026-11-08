@@ -2,7 +2,7 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeBaseline, bridgeConflict, bridgeHasPlateUpdate, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeConflict, bridgeHasPlateUpdate, bridgeHumanChanges, bridgePreserveHuman, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, setMeshSeat, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
@@ -67,7 +67,7 @@ function applyMessage(message: BridgeMessage): void {
   flush();
 }
 
-function receipt(message: BridgeMessage, outcome: "applied" | "conflict" | "missing" | "failed" | "stale"): void {
+function receipt(message: BridgeMessage, outcome: "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale"): void {
   if (!message.session || typeof message.seq !== "number" || !bridgeHasPlateUpdate(message)) return;
   void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_receipt", { session: message.session, seq: message.seq, outcome })).catch(() => {});
 }
@@ -119,7 +119,9 @@ function apply(message: BridgeMessage): void {
     receipt(message, "conflict");
     return;
   }
-  const result = mirrorPlate(current, message, seen, owned);
+  const merged = bridgePreserveHuman(current, message, seen, baseline);
+  const diverged = !!message.plate && !!merged.plate && merged.plate.some((row, index) => row !== message.plate![index]);
+  const result = mirrorPlate(current, merged, seen, owned);
   if (result.missing) {
     // Say it once per gap. Telling the listener this window is new makes the server send every mesh again.
     if (lastMissing !== `${message.session}:${message.seq}`) pushToast(result.missing, "info");
@@ -132,12 +134,12 @@ function apply(message: BridgeMessage): void {
     seen = result.seen;
     owned = result.owned;
     if (result.applied && bridgeHasPlateUpdate(message)) {
-      baseline = bridgeBaseline(result.plate, owned);
+      baseline = bridgeServerBaseline(message);
       plateSeen = result.seen;
       lastConflict = "";
     }
     if (result.applied) refreshHumanContext?.();
-    receipt(message, result.applied ? "applied" : "stale");
+    receipt(message, result.applied ? (diverged ? "diverged" : "applied") : "stale");
   };
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {
@@ -248,9 +250,12 @@ export function mountBridge(): void {
   const publishContext = () => {
     if (contextTimer !== undefined) clearTimeout(contextTimer);
     contextTimer = setTimeout(() => {
+      syncPlateFromState();
       const selected = state.plate.objects.find((item) => item.id === state.plate.selectedId);
       const focused = document.activeElement;
-      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: lastConflict || null, mirrorSession: plateSeen.session || null, mirrorSeq: plateSeen.session ? plateSeen.seq : null };
+      const rows: MirrorObject<null>[] = state.plate.objects.filter((item) => baseline.has(item.id)).map((item) => ({ id: item.id, name: item.name, scalePercent: item.partScale * 100, centered: item.centered, offset: { ...item.offset }, orient: [...item.orient] as Mat3, meshHash: hashOf(item.bytes), extra: null }));
+      const changes = bridgeHumanChanges(rows, baseline);
+      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: lastConflict || null, mirrorSession: plateSeen.session || null, mirrorSeq: plateSeen.session ? plateSeen.seq : null, humanChanges: changes.slice(0, 20), humanChangesTruncated: changes.length > 20 };
       const encoded = JSON.stringify(context);
       if (encoded === lastContext) return;
       lastContext = encoded;

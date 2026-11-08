@@ -49,7 +49,7 @@ pub fn bridge_receipt(session: String, seq: u64, outcome: String) {
         || session.len() > 120
         || !matches!(
             outcome.as_str(),
-            "applied" | "conflict" | "missing" | "failed" | "stale"
+            "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale"
         )
     {
         return;
@@ -94,14 +94,24 @@ pub fn bridge_human_context(
     conflict: Option<String>,
     mirror_session: Option<String>,
     mirror_seq: Option<u64>,
+    human_changes: Vec<Value>,
+    human_changes_truncated: bool,
 ) {
     let stage: String = stage.chars().take(32).collect();
     let selected = selected.map(|name| name.chars().take(120).collect::<String>());
     let conflict = conflict.map(|name| name.chars().take(120).collect::<String>());
     let mirror_session = mirror_session.map(|name| name.chars().take(120).collect::<String>());
+    let human_changes_count = human_changes.len();
+    let human_changes: Vec<Value> = human_changes
+        .into_iter()
+        .take(20)
+        .filter(|row| row.to_string().len() <= 2048)
+        .collect();
+    let human_changes_truncated =
+        human_changes_truncated || human_changes.len() < human_changes_count;
     if let Ok(mut context) = HUMAN_CONTEXT.lock() {
         *context = Some(
-            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict, "mirrorSession": mirror_session, "mirrorSeq": mirror_seq }),
+            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict, "mirrorSession": mirror_session, "mirrorSeq": mirror_seq, "humanChanges": human_changes, "humanChangesTruncated": human_changes_truncated }),
         );
     }
 }
