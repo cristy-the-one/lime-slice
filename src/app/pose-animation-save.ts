@@ -2,6 +2,7 @@
 import { applyPose, type Affine } from "../model-space.ts";
 import { PosePlayback } from "../pose-playback.ts";
 import type { PoseView } from "../pose-view.ts";
+import { hexToThree, themeColors } from "../theme.ts";
 import type { PoseAnimationState } from "./pose.ts";
 
 interface SaveContext {
@@ -30,6 +31,13 @@ export function showAnimationSave(context: SaveContext): void {
   const camera = document.createElement("select"); camera.setAttribute("aria-label", "Animation camera");
   for (const [value, text] of [["view", "This view"], ["script", "Script camera"]]) { const option = document.createElement("option"); option.value = value!; option.textContent = text!; option.disabled = value === "script" && !current.camera; camera.append(option); }
   camera.value = current.camera ? "script" : "view"; field("Camera", camera);
+  // The view follows the swatch, so Play shows what Save writes. Leaving without saving puts the colour back.
+  const background = document.createElement("input"); background.type = "color"; background.setAttribute("aria-label", "Animation background");
+  const startBackground = current.background;
+  background.value = startBackground ?? themeColors().stage; field("Background", background);
+  const showBackground = (color: string | undefined) => { current.background = color; if (context.active() === current && context.isPose()) context.sync(); };
+  background.addEventListener("input", () => showBackground(background.value));
+  let saved = false;
   const swatchesOn = document.createElement("input"); swatchesOn.type = "checkbox"; swatchesOn.setAttribute("aria-label", "Use member colours"); field("Use member colours", swatchesOn);
   const swatches = new Map<string, HTMLInputElement>();
   for (const part of current.parts) {
@@ -42,13 +50,13 @@ export function showAnimationSave(context: SaveContext): void {
   let cancelled = false;
   cancel.addEventListener("click", () => { cancelled = true; if (!save.disabled) dialog.close(); });
   dialog.addEventListener("cancel", (event) => { if (save.disabled) { event.preventDefault(); cancelled = true; } });
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener("close", () => { dialog.remove(); if (!saved) showBackground(startBackground); }, { once: true });
   save.addEventListener("click", () => {
     void (async () => {
       const px = Number(size.value), rate = Number(fps.value);
       if (!Number.isInteger(px) || px < 320 || px > 1920 || !Number.isInteger(rate) || rate < 1 || rate > 60) { status.textContent = "Choose a size from 320 to 1920 and an FPS from 1 to 60."; return; }
       if (context.active() !== current || !view || !sceneShift) { status.textContent = "The animation is no longer active."; return; }
-      save.disabled = true; cancelled = false;
+      save.disabled = true; background.disabled = true; cancelled = false;
       const oldResult = current.result, oldClock = current.clock, oldSwatches = current.swatches;
       let capture: ReturnType<PoseView["beginCapture"]> | null = null;
       try {
@@ -80,19 +88,20 @@ export function showAnimationSave(context: SaveContext): void {
         const { saveBytes, saveBytesToFolder } = await import("./save-bytes.ts");
         if (format.value === "gif") {
           const { animatedGif } = await import("../animation-gif.ts");
-          await saveBytes(animatedGif(px, px, gifFrames), "animation.gif", "gif", "image/gif");
+          const n = hexToThree(background.value);
+          await saveBytes(animatedGif(px, px, gifFrames, [(n >> 16) & 255, (n >> 8) & 255, n & 255]), "animation.gif", "gif", "image/gif");
         } else if ((await import("../platform.ts")).isDesktopShell()) {
           await saveBytesToFolder(pngFrames, "image/png");
         } else {
           const { zipSync } = await import("fflate");
           await saveBytes(zipSync(Object.fromEntries(pngFrames.map((frame) => [frame.name, frame.bytes])), { level: 0 }), "animation-frames.zip", "zip", "application/zip");
         }
-        dialog.close();
+        saved = true; dialog.close();
       } catch (error) { status.textContent = error instanceof Error ? error.message : String(error); }
       finally {
         capture?.dispose(); current.result = oldResult; current.clock = oldClock; current.swatches = oldSwatches;
         if (context.active() === current && context.isPose()) { context.sync(); context.render(); }
-        save.disabled = false;
+        save.disabled = false; background.disabled = false;
         if (cancelled && dialog.open) dialog.close();
       }
     })();

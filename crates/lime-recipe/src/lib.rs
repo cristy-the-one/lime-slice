@@ -448,7 +448,8 @@ pub struct Part {
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
-pub const API: (u32, u32) = (1, 8);
+/// 1.9: `Animation::background`.
+pub const API: (u32, u32) = (1, 9);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -3332,7 +3333,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 8));
+        assert_eq!(API, (1, 9));
     }
 
     #[test]
@@ -4030,9 +4031,9 @@ pub mod anim {
     }
     /// Keys and presentation for one animation; no pose is changed until the host runs it.
     #[derive(Clone, Debug, PartialEq)]
-    pub struct Animation { fps: u32, keys: Vec<Key>, camera: Option<Camera>, colors: Vec<(String, String)> }
+    pub struct Animation { fps: u32, keys: Vec<Key>, camera: Option<Camera>, colors: Vec<(String, String)>, background: Option<String> }
     impl Animation {
-        pub fn new(fps: u32) -> Self { Animation { fps, keys: Vec::new(), camera: None, colors: Vec::new() } }
+        pub fn new(fps: u32) -> Self { Animation { fps, keys: Vec::new(), camera: None, colors: Vec::new(), background: None } }
         #[track_caller]
         pub fn key(&mut self, time: f64, pose: Pose) -> &mut Key {
             self.keys.push(Key { t: time, line: std::panic::Location::caller().line(), pose, ease: Ease::Linear, hold: 0.0 });
@@ -4040,11 +4041,14 @@ pub mod anim {
         }
         pub fn camera(&mut self, camera: Camera) -> &mut Self { self.camera = Some(camera); self }
         pub fn colour(&mut self, name: &str, hex: &str) -> &mut Self { self.colors.push((name.to_string(), hex.to_string())); self }
+        /// The frames' background, "#rrggbb" (recipe API 1.9). The host refuses any other form; a caller's own choice overrides it.
+        pub fn background(&mut self, hex: &str) -> &mut Self { self.background = Some(hex.to_string()); self }
         pub fn to_json(&self) -> Json {
             let mut colors = Json::obj();
             for (name, color) in &self.colors { colors = colors.set(name, color.as_str()); }
             let mut out = Json::obj().set("fps", self.fps).set("keys", Json::Arr(self.keys.iter().map(Key::json).collect())).set("colors", colors);
             if let Some(camera) = &self.camera { out = out.set("camera", camera.json()); }
+            if let Some(background) = &self.background { out = out.set("background", background.as_str()); }
             out
         }
     }
@@ -4071,5 +4075,13 @@ mod animation_tests {
         assert_eq!(data.at("keys.0.colors.Finger 1 root").and_then(Json::as_str), Some("#ff0000"));
         assert_eq!(data.at("keys.0.hold").and_then(Json::as_f64), Some(0.5));
         assert!(data.at("keys.0.line").and_then(Json::as_f64).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn background_is_sent_only_when_set() {
+        let mut anim = Animation::new(12);
+        assert!(anim.to_json().at("background").is_none(), "a 1.8 animation must send the same call as before");
+        anim.background("#204060");
+        assert_eq!(anim.to_json().at("background").and_then(Json::as_str), Some("#204060"));
     }
 }

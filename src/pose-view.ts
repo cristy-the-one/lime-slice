@@ -24,6 +24,8 @@ export interface PoseScene extends PoseLooks {
   parts: ContextPart[];
   /** Per-part colours for animation frames; no selection tint while playing. */
   colors?: ReadonlyMap<string, string>;
+  /** An animation's background, #rrggbb. It replaces the stage colour and hides the bed, so the colour is the whole backdrop. */
+  background?: string;
   gizmo?: { pivot: [number, number, number]; axes: [number, number, number][]; radius: number };
   marks?: { pivot: [number, number, number]; axis?: [number, number, number] }[];
 }
@@ -81,6 +83,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const viewHelper = mountViewHelper(camera, canvas);
   const bedRef = mountBedReference(scene, "z-up");
   let colors: ThemeColors = themeColors();
+  let background: string | null = null;
+  const clearColor = () => hexToThree(background ?? colors.stage);
 
   // Model's solid look (src/model-view/mesh.ts), opaque and depth-written, one material per look.
   const solid = (color: string, emissive = 0) =>
@@ -145,6 +149,11 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       held.delete(positions);
     }
     group.clear();
+    background = next.background ?? null;
+    renderer.setClearColor(clearColor(), 1);
+    bedRef.setVisible(!background);
+    if (background) canvas.dataset.animationBackground = background;
+    else delete canvas.dataset.animationBackground;
     const colorsInFrame = new Set(next.colors?.values() ?? []);
     for (const [color, material] of animationMaterials) if (!colorsInFrame.has(color)) { material.dispose(); animationMaterials.delete(color); }
     const published: string[] = [];
@@ -446,7 +455,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
 
   function setTheme() {
     colors = themeColors();
-    renderer.setClearColor(hexToThree(colors.stage), 1);
+    renderer.setClearColor(clearColor(), 1);
     bedRef.setColors(hexToThree(colors.bed), hexToThree(colors.bedMinor), hexToThree(colors.line), hexToThree(colors.teal));
     const paint = (material: THREE.MeshStandardMaterial, color: string) => {
       material.color.setHex(hexToThree(color));
@@ -477,7 +486,6 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
     beginCapture(size, preset) {
       const offscreen = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
       offscreen.setPixelRatio(1); offscreen.setSize(size, size, false);
-      offscreen.setClearColor(hexToThree(colors.stage), 1);
       offscreen.outputColorSpace = renderer.outputColorSpace;
       offscreen.toneMapping = renderer.toneMapping;
       const fixedCamera = camera.clone(); fixedCamera.aspect = 1; fixedCamera.updateProjectionMatrix();
@@ -500,6 +508,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       if (!context) { offscreen.dispose(); throw new Error("Could not create an animation canvas."); }
       return {
         async frame(png = true) {
+          offscreen.setClearColor(clearColor(), 1);
           offscreen.render(scene, fixedCamera);
           context.drawImage(offscreen.domElement, 0, 0);
           const rgba = context.getImageData(0, 0, size, size).data, rgb = new Uint8Array(size * size * 3);
