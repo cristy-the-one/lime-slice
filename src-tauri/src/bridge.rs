@@ -18,7 +18,7 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -33,11 +33,12 @@ const MAX_BODY: usize = 256 * 1024 * 1024;
 
 /// What this window does beyond the mirror, named on every authorised answer, so a server
 /// sends an open message only to a window that will not take it for a plate.
-const FEATURES: &str = "open";
+const FEATURES: &str = "open tandem-context";
 
 /// Bumped by the page each time it mounts, so a reloaded page reads as a new desktop.
 static PAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static START: OnceLock<String> = OnceLock::new();
+static HUMAN_CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
 
 /// This process and page, as the server sees them.
 fn instance() -> String {
@@ -55,6 +56,21 @@ fn instance() -> String {
 #[tauri::command]
 pub fn bridge_ready() {
     PAGE_EPOCH.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut context) = HUMAN_CONTEXT.lock() {
+        *context = None;
+    }
+}
+
+/// A bounded, deliberately small description of the page; never input field values.
+#[tauri::command]
+pub fn bridge_human_context(stage: String, selected: Option<String>, gesture: bool, editing: bool) {
+    let stage: String = stage.chars().take(32).collect();
+    let selected = selected.map(|name| name.chars().take(120).collect::<String>());
+    if let Ok(mut context) = HUMAN_CONTEXT.lock() {
+        *context = Some(
+            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing }),
+        );
+    }
 }
 
 pub fn start(app: AppHandle) {
@@ -104,6 +120,19 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
         match read_request(&mut stream) {
+            Ok(request)
+                if request.method.eq_ignore_ascii_case("GET")
+                    && request.path == "/tandem-context"
+                    && tokens_match(bearer(&request.authorization), &token) =>
+            {
+                let body = HUMAN_CONTEXT
+                    .lock()
+                    .ok()
+                    .and_then(|context| context.clone())
+                    .unwrap_or(Value::Null)
+                    .to_string();
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Lime-Bridge-Instance: {}\r\nX-Lime-Bridge-Features: {FEATURES}\r\nConnection: close\r\n\r\n{body}", body.len(), instance());
+            }
             Ok(request) => match decide(&request, &token) {
                 (status, Some(Event::Mirror(mut value))) => {
                     let _ = write_status(&mut stream, status, &instance());

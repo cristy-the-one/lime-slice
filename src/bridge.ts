@@ -50,6 +50,7 @@ export interface BridgeCommit {
 }
 
 export interface BridgeMessage {
+  activity?: { id: string; phase: "start" | "end"; tool?: string; object?: string };
   tool?: string;
   /** One MCP server process. A new one starts its sequence again. */
   session?: string;

@@ -15,6 +15,19 @@ let queue: Promise<void> = Promise.resolve();
 let instance = "";
 const SEND_TIMEOUT_MS = 30_000;
 
+/** Read the desktop's small human context only when explicitly asked. */
+export async function bridgeHumanContext(): Promise<unknown | null> {
+  const target = bridgeTarget();
+  if (!target) return null;
+  try {
+    const response = await fetch(new URL("/tandem-context", target.url), { headers: { authorization: `Bearer ${target.token}` }, signal: AbortSignal.timeout(1000) });
+    if (!response.ok || !(response.headers.get("x-lime-bridge-features") ?? "").split(/[\s,]+/).includes("tandem-context")) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
 /** The mirror's address and token, or null when the mirror is off. */
 export function bridgeTarget(): { url: string; token: string } | null {
   const url = process.env.LIME_MCP_BRIDGE;

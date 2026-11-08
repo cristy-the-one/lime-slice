@@ -4,6 +4,7 @@ export function mountMarkup(root: HTMLElement) {
     <header class="top">
       <div class="brand">Lime <span>Slice</span></div>
       <div class="project-title" id="projectTitle">Untitled</div>
+      <span class="tandem-activity" id="tandemActivity" role="status" hidden></span>
       <details class="menu" id="fileMenu">
         <summary class="btn ghost" aria-label="File menu">File<span class="caret" aria-hidden="true"></span></summary>
         <nav>

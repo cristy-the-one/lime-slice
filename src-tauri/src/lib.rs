@@ -506,6 +506,7 @@ pub fn run() {
             model_tree,
             prusa_link_http,
             bridge::bridge_ready,
+            bridge::bridge_human_context,
             open_file::take_launch_file,
             recipe::recipe_available,
             recipe::recipe_build,

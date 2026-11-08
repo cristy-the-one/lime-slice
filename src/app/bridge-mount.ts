@@ -23,6 +23,32 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let lastMissing = "";
 /** A mesh hash per buffer, so a big part is hashed once and not on every message. */
 const hashes = new WeakMap<ArrayBuffer, string>();
+let refreshHumanContext: (() => void) | undefined;
+const activity = new Map<string, { tool: string; object?: string; timer: ReturnType<typeof setTimeout> }>();
+
+function showActivity(): void {
+  const element = document.querySelector<HTMLElement>("#tandemActivity");
+  if (!element) return;
+  const current = [...activity.values()].at(-1);
+  element.hidden = !current;
+  element.textContent = current ? `Assistant: ${current.tool.replaceAll("_", " ")}${current.object ? ` · ${current.object}` : ""}` : "";
+}
+
+function receiveActivity(value: NonNullable<BridgeMessage["activity"]>): void {
+  if (typeof value.id !== "string" || value.id.length > 100) return;
+  if (value.phase === "end") {
+    const old = activity.get(value.id);
+    if (old) clearTimeout(old.timer);
+    activity.delete(value.id);
+    showActivity();
+  } else if (value.phase === "start" && typeof value.tool === "string" && !activity.has(value.id)) {
+    if (activity.size >= 64) return;
+    // Expire a lost end message. Names are text, never markup.
+    const timer = setTimeout(() => { activity.delete(value.id); showActivity(); }, 120_000);
+    activity.set(value.id, { tool: value.tool.slice(0, 80), ...(typeof value.object === "string" ? { object: value.object.slice(0, 120) } : {}), timer });
+    setTimeout(() => { if (activity.has(value.id)) showActivity(); }, 250);
+  }
+}
 
 function hashOf(bytes: ArrayBuffer): string {
   let hash = hashes.get(bytes);
@@ -159,6 +185,7 @@ async function announce(): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("bridge_ready");
+    refreshHumanContext?.();
   } catch {
     // The bridge is off, or this build has no listener: nothing to announce.
   }
@@ -170,6 +197,9 @@ export function resetBridgeMirror(): void {
   seen = { session: "", seq: 0 };
   owned = new Set();
   lastMissing = "";
+  for (const item of activity.values()) clearTimeout(item.timer);
+  activity.clear();
+  showActivity();
   if (timer !== undefined) clearTimeout(timer);
   timer = undefined;
   void announce();
@@ -177,8 +207,26 @@ export function resetBridgeMirror(): void {
 
 export function mountBridge(): void {
   if (!isTauri()) return;
+  let contextTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastContext = "";
+  const publishContext = () => {
+    if (contextTimer !== undefined) clearTimeout(contextTimer);
+    contextTimer = setTimeout(() => {
+      const selected = state.plate.objects.find((item) => item.id === state.plate.selectedId);
+      const focused = document.activeElement;
+      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable) };
+      const encoded = JSON.stringify(context);
+      if (encoded === lastContext) return;
+      lastContext = encoded;
+      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_human_context", context)).catch(() => { lastContext = ""; });
+    }, 50);
+  };
+  refreshHumanContext = () => { lastContext = ""; publishContext(); };
+  for (const event of ["pointerdown", "pointerup", "click", "focusin", "focusout", "change"]) document.addEventListener(event, publishContext);
+  publishContext();
   void import("@tauri-apps/api/event").then(({ listen }) => {
     void listen<BridgeMessage>("lime-bridge", (event) => {
+      if (event.payload.activity) { receiveActivity(event.payload.activity); return; }
       applyMessage(event.payload);
     });
   });

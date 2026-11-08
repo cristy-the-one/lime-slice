@@ -12,6 +12,7 @@ import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/com
 import { type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { bridgeHumanContext } from "../bridge-client.ts";
 
 async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   let engine: string | null = null;
@@ -27,9 +28,11 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   }
   const running = this.workJobs.find((row) => !row.done);
   const assemblies = this.liveAssemblies();
+  const human = await bridgeHumanContext();
   return {
     ok: true,
     serverVersion: appVersion(),
+    ...(human ? { tandem: { human, note: "Activity only: desktop and MCP edits are not yet synchronized safely." } } : {}),
     engine,
     ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
     occt,

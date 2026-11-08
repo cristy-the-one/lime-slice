@@ -256,6 +256,8 @@ export class Session {
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
     const changes = !annotationsFor(name).readOnlyHint && (changesPlate(name) || (name === "model_params" && input.rebuild === true));
+    const activity = changes && !this.isolated ? crypto.randomUUID() : null;
+    if (activity) void mirror({ activity: { id: activity, phase: "start", tool: name, ...(typeof input.object === "string" ? { object: input.object } : {}) } });
     // The plate as it stood before a call that can run long is on disk before it starts; others rely on the save after.
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     if (changes && this.inflight === 0 && long) this.flushAutosave();
@@ -271,6 +273,7 @@ export class Session {
       result = this.callContext.run(ctx, () => this.pickLog.run(picks, () => this.dispatch(name, input, ctx)));
     } catch (err) {
       this.inflight -= 1;
+      if (activity) void mirror({ activity: { id: activity, phase: "end" } });
       throw err;
     }
     const work = Promise.resolve(result).then((value) => {
@@ -288,6 +291,7 @@ export class Session {
       throw err;
     }).finally(() => {
       this.inflight -= 1;
+      if (activity) void mirror({ activity: { id: activity, phase: "end" } });
       if (changes && !this.isolated) {
         this.autosaveDirty = true;
         this.scheduleAutosave();
