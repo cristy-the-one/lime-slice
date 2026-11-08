@@ -35,7 +35,7 @@ cp "$mimalloc_license" "$dest/LICENSE-mimalloc"
 {
   echo "lust $(git -C "$src" rev-parse HEAD), https://github.com/cristy-the-one/lust-lang (MIT, LICENSE-lust)."
   echo "tinycc $(git -C "$src/third_party/tinycc" rev-parse HEAD), https://github.com/TinyCC/tinycc (LGPL 2.1, COPYING-tinycc),"
-  echo "  built by lust-lang's scripts/build-tcc.sh (Linux) or scripts/build-tcc.ps1 (Windows, with its PE patch)."
+  echo "  built by lust-lang's scripts/build-tcc.sh (Linux, macOS) or scripts/build-tcc.ps1 (Windows, with its PE patch)."
   echo "  libtcc is linked into lust-core; relink it against another libtcc by rebuilding lust with LUST_TCC_HOME."
   echo "mimalloc (libmimalloc-sys $mimalloc_version), https://github.com/microsoft/mimalloc (MIT, LICENSE-mimalloc)."
 } > "$dest/SOURCES.txt"

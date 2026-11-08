@@ -121,7 +121,8 @@ export class RecipeHost {
   available(): { ok: true; lust: string } | { ok: false; reason: string } {
     if (this.lust === undefined) this.lust = findLust(this.moduleUrl);
     if (this.lust === null) {
-      const why = process.platform === "darwin" ? " lust does not build on macOS yet, so the macOS app does not ship it." : "";
+      // The Apple silicon dmg ships lust; the Intel one does not (lust's macOS build is proven on arm64 only).
+      const why = process.platform === "darwin" && process.arch === "x64" ? " The Intel macOS app does not ship lust." : "";
       return refuse("recipe-unavailable", `Recipes need lust, which is not installed here.${why} Set LIME_LUST to the lust binary, or put lust on PATH.`);
     }
     if (!existsSync(join(this.crateDir, "src", "lib.rs"))) return refuse("recipe-unavailable", `The lime-recipe crate is missing (${this.crateDir}).`);

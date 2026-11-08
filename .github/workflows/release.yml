@@ -77,21 +77,21 @@ jobs:
             engine: liblime_mcp_engine.so
             # deb is the local Linux default; the release also builds an AppImage.
             args: --bundles deb,appimage --config src-tauri/tauri.occt.json
-          # macOS is off for now (2026-11-01): lust, which recipes need, does not build there yet (tcc Mach-O).
-          # Uncomment these two entries to build the dmgs again.
-#         - label: macos-arm
-#           platform: macos-latest
-#           target: aarch64-apple-darwin
-#           bridge: liblime_model_occt.dylib
-#           engine: liblime_mcp_engine.dylib
-#           args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
-#         - label: macos-intel
-#           platform: macos-latest
-#           target: x86_64-apple-darwin
-#           bridge: liblime_model_occt.dylib
-#           engine: liblime_mcp_engine.dylib
-#           # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
-#           args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
+          # macOS is back (6.1.0): lust builds on Apple silicon. The Apple silicon dmg ships lust; the Intel one does
+          # not, because lust's macOS build is proven on arm64 only and this runner is arm64 (see the lust steps).
+          - label: macos-arm
+            platform: macos-latest
+            target: aarch64-apple-darwin
+            bridge: liblime_model_occt.dylib
+            engine: liblime_mcp_engine.dylib
+            args: --target aarch64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
+          - label: macos-intel
+            platform: macos-latest
+            target: x86_64-apple-darwin
+            bridge: liblime_model_occt.dylib
+            engine: liblime_mcp_engine.dylib
+            # Cross-compiled on the Apple Silicon runner. Two dmgs, not one universal binary.
+            args: --target x86_64-apple-darwin --bundles dmg --config src-tauri/tauri.occt.json
           - label: windows
             platform: windows-latest
             target: ""
@@ -234,10 +234,16 @@ jobs:
         run: npm run build:mcp
 
       # recipe_run builds recipes with lust (tools/lust/LUST_REV) and its tinycc. They ship in mcp/lust beside
-      # server.mjs, which finds them there (mcp/recipe.ts findLust). lust does not build on macOS yet, so the
-      # macOS installers carry none and recipe_run answers "Recipes need lust" there.
+      # server.mjs, which finds them there (mcp/recipe.ts findLust). The Intel dmg carries none: this runner is
+      # arm64, so its lust would be too, and lust's macOS build is proven on arm64 only. recipe_run answers
+      # "Recipes need lust" there.
+      # build-tcc.sh needs bash 5 and the GNU userland, as in lust-lang's macos-arm64 job.
+      - name: Install bash 5 and GNU userland (macOS)
+        if: matrix.label == 'macos-arm'
+        run: brew install bash coreutils findutils gnu-sed
+
       - name: Cache lust
-        if: runner.os != 'macOS'
+        if: matrix.label != 'macos-intel'
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/lust
@@ -245,8 +251,8 @@ jobs:
 
       # On Windows install.sh loads the Visual Studio developer environment itself (tools/lust/msvc-env.sh).
       - name: Build lust and stage it beside the MCP server
-        if: runner.os != 'macOS'
-        timeout-minutes: 25
+        if: matrix.label != 'macos-intel'
+        timeout-minutes: 30
         shell: bash
         run: |
           set -euo pipefail
@@ -255,7 +261,7 @@ jobs:
 
       # A recipe built and run by the staged copy, with the bundled server's engine.
       - name: Run recipes with the staged lust
-        if: runner.os != 'macOS'
+        if: matrix.label != 'macos-intel'
         timeout-minutes: 10
         shell: bash
         env:
