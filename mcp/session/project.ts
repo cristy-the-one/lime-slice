@@ -30,7 +30,7 @@ import { adoptProfile, enginePrinter } from "../../src/ui/machine-library.ts";
 import { openInApp } from "../app-open.ts";
 import { appVersion } from "../export-gcode.ts";
 import { renderMesh } from "../render.ts";
-import { isSlug, olderVersions, pluginsDir, readPlugin } from "../plugins.ts";
+import { isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin } from "../plugins.ts";
 import { stlBytes } from "../request.ts";
 import { readAssemblies } from "../../src/assembly.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "../workspace.ts";
@@ -521,6 +521,10 @@ function stamps(this: Session): PluginStamp[] {
  */
 function pluginCopies(this: Session): Record<string, string> | null {
   const out: Record<string, string> = {};
+  for (const [sha, text] of this.projectPlugins) {
+    const file = parsePlugin(text);
+    if (!("reason" in file) && file.header.kind === "animation") out[sha] = text;
+  }
   for (const stamp of this.stamps()) {
     if (stamp.version === 0 || out[stamp.sha256] !== undefined) continue;
     const kept = this.projectPlugins.get(stamp.sha256);

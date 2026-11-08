@@ -54,7 +54,7 @@ export type NuggetFileKind = "plugin" | "ingredient";
 export interface PluginHeader {
   /** The id, under the key its kind names (`plugin:` or `ingredient:`). */
   plugin: string;
-  kind?: NuggetFileKind;
+  kind?: NuggetFileKind | "animation";
   title: string;
   version: number;
   description: string;
@@ -134,6 +134,7 @@ export function pluginText(header: PluginHeader, body: string): string {
   const ingredient = header.kind === "ingredient";
   const fields: [string, unknown][] = [
     [ingredient ? "ingredient" : "plugin", header.plugin],
+    ["kind", header.kind === "animation" ? "animation" : undefined],
     ["title", header.title],
     ["version", header.version],
     ["description", header.description],
@@ -165,8 +166,8 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
     if (m) fields.set(m[1]!, m[2]!.trim());
   }
   const body = lines.slice(end + 1).join("\n");
-  const kind: NuggetFileKind = fields.has("ingredient") && !fields.has("plugin") ? "ingredient" : "plugin";
-  const plugin = fields.get(kind) ?? "";
+  const kind: NuggetFileKind | "animation" = fields.has("ingredient") && !fields.has("plugin") ? "ingredient" : fields.get("kind") === "animation" ? "animation" : "plugin";
+  const plugin = fields.get(kind === "ingredient" ? "ingredient" : "plugin") ?? "";
   if (!isSlug(plugin)) return { reason: `The ${kind}'s id "${plugin}" is not lower-case letters, digits, and dashes (at most ${SLUG_MAX}).` };
   let params: PluginParam[] = [];
   try {
@@ -178,7 +179,7 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
   const target = fields.get("target");
   const header: PluginHeader = {
     plugin,
-    ...(kind === "ingredient" ? { kind } : {}),
+    ...(kind !== "plugin" ? { kind } : {}),
     title: oneLine(fields.get("title") ?? plugin, TITLE_MAX),
     version: Math.max(1, Math.floor(Number(fields.get("version")) || 1)),
     description: oneLine(fields.get("description"), DESCRIPTION_MAX),
@@ -253,7 +254,7 @@ export function readPlugin(id: string, dir = pluginsDir(), version?: number, kin
   const parsed = parsePlugin(readFileSync(path, "utf8"));
   if ("reason" in parsed) return parsed;
   if (parsed.header.plugin !== id) return { reason: `${id}.rs names itself ${parsed.header.plugin}.` };
-  if ((parsed.header.kind ?? "plugin") !== kind) return { reason: `${id}.rs is ${kind === "plugin" ? "an ingredient, not a plugin" : "a plugin, not an ingredient"}.` };
+  if ((parsed.header.kind === "ingredient" ? "ingredient" : "plugin") !== kind) return { reason: `${id}.rs is ${kind === "plugin" ? "an ingredient, not a plugin" : "a plugin, not an ingredient"}.` };
   return parsed;
 }
 
@@ -272,7 +273,7 @@ export function writePlugin(header: PluginHeader, body: string, dir = pluginsDir
   if (!isSlug(header.plugin)) throw new Error(`Not a plugin id: ${header.plugin}`);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${header.plugin}.rs`);
-  const old = readPlugin(header.plugin, dir, undefined, header.kind ?? "plugin");
+  const old = readPlugin(header.plugin, dir, undefined, header.kind === "ingredient" ? "ingredient" : "plugin");
   if (old && !("reason" in old) && old.header.version !== header.version) writeWhole(join(dir, `${header.plugin}.v${old.header.version}.rs`), old.text);
   writeWhole(path, pluginText(header, body));
   const older = olderVersions(header.plugin, dir).filter((v) => v < header.version);

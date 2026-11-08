@@ -109,7 +109,7 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
     for (const file of listLibrary(pluginsDir())) {
       const h = file.header;
       const s = score(`${h.plugin} ${h.title} ${h.description}`);
-      if (s) rows.push({ score: s + 0.5, row: { kind: "plugin", id: h.plugin, v: h.version, target: h.target, params: paramSummary(h.params), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+      if (s) rows.push({ score: s + 0.5, row: { kind: "plugin", id: h.plugin, v: h.version, ...(h.kind === "animation" ? { pluginKind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
     const names = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0]!).filter((n) => n !== "plugin_check"));
     for (const name of names) {

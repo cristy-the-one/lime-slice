@@ -155,6 +155,8 @@ export class Session {
   recipeHost: RecipeHost | null = null;
   /** recipe_run sources by name, with the parameters and objects of their last apply. Saved with the project. */
   rustRecipes = new Map<string, RustRecipe>();
+  /** Animation source and parameters kept with the assembly after export. */
+  animations = new Map<string, { source: string; plugin?: string; api?: string; params: Record<string, unknown>; assembly: string }>();
   /**
    * --- Plugin steps (D7). The project's own copy of each plugin its stamped steps name, by the body's SHA-256: the
    * whole file as the project carried it. Read on open, written on save with the copies the library still has.

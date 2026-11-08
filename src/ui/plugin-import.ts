@@ -246,7 +246,7 @@ export async function approveFirstRun(file: PluginFileInfo, sha256: string, from
   const from = fromLabel ?? (mark?.from === "project" ? "a project" : mark?.from === "mcp" ? "an MCP call" : mark ? "a file" : "this project");
   const parsed = checkImport(file.text, RECIPE_API);
   const view = "reason" in parsed
-    ? { id: file.plugin, title: file.title, version: file.version, description: file.description, author: file.author, madeBy: file.madeBy, api: file.api, sha256, headerSha: file.headerSha, ingredients: [], data: [], presets: {}, lessons: [], body: file.body }
+    ? { id: file.plugin, ...(file.kind ? { kind: file.kind } : {}), title: file.title, version: file.version, description: file.description, author: file.author, madeBy: file.madeBy, api: file.api, sha256, headerSha: file.headerSha, ingredients: [], data: [], presets: {}, lessons: [], body: file.body }
     : { ...parsed, sha256 };
   const choice = await showTrust({ mode: "first-run", from, file: view });
   if (choice !== "run") return false;

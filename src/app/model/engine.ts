@@ -71,9 +71,11 @@ export async function treeCall(key: string, node: NodeId, request: Body): Promis
   if (problem) return { error: problem };
   let body = await seededCall(key, node, request);
   // A join's tool tree the engine lacks (a restarted engine, or a tree opened from a project) opens, and the call goes again.
+  // An assembly's STEP names every part as a piece, and each piece the engine lacks is one such round.
+  const toolRounds = TOOL_ROUNDS + (Array.isArray(request.pieces) ? request.pieces.length : 0);
   for (let tools = 0, round = 0; round < 2; ) {
     const tool = missingToolOf(body);
-    if (tool && tools < TOOL_ROUNDS) {
+    if (tool && tools < toolRounds) {
       tools += 1;
       const problem = await restoreTool(tool.key, tool.node);
       if (problem) return { error: problem };

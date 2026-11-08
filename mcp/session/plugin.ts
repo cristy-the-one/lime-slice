@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "../plugins.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginText, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "../plugins.ts";
 import { carriedData, carriedDataProblem, splitPluginData, withPluginData } from "../../src/recipe/plugin-data.ts";
 import { checkImport, clashOf, exportName, exportText, keptBesideTitle, lessonsFor, marksText, rawHeader, readMarks, withMark, type ImportMark, type SharedPreset } from "../../src/plugins/share.ts";
 import { builtText, carriedIngredients, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
@@ -180,6 +180,20 @@ async function pluginFile(this: Session, id: string): Promise<{ file: PluginFile
   const dir = pluginsDir();
   const found = readPlugin(id, dir);
   if (!found) {
+    for (const text of this.projectPlugins.values()) {
+      const file = parsePlugin(text);
+      if (!("reason" in file) && file.header.plugin === id && file.header.kind === "animation") return { file, ...(!file.matches ? { note: "This project's animation code differs from its saved hash." } : {}) };
+    }
+    const kept = this.animations.get(id);
+    if (kept && isSlug(id)) {
+      const framed = parsePlugin(kept.source);
+      const body = lfOnly("reason" in framed ? kept.source : framed.body).replace(/^\n+/, "");
+      const described = await this.recipeDescribe(body);
+      if ("reason" in described) return { reason: described.reason };
+      const header: PluginHeader = { plugin: id, kind: "animation", title: id, version: 1, description: "Saved with this project.", author: "unknown", api: this.crateApi().join("."), "source-sha256": bodyHash(body), created: "", target: "object", params: described.params };
+      const file = parsePlugin(pluginText(header, body));
+      if (!("reason" in file)) return { file };
+    }
     const names = listLibrary(dir).map((row) => row.header.plugin);
     return { reason: `No plugin is named ${id}.${names.length ? ` The library has: ${names.slice(0, 20).join(", ")}.` : " The library is empty."} nugget {action:"find", kind:"plugin"} lists them.` };
   }
@@ -187,7 +201,7 @@ async function pluginFile(this: Session, id: string): Promise<{ file: PluginFile
   if (found.matches) return { file: found };
   const described = await this.recipeDescribe(found.body);
   if ("reason" in described) return { reason: `${id}.rs was changed outside the app and no longer builds: ${described.reason}` };
-  const header: PluginHeader = { ...found.header, version: found.header.version + 1, "source-sha256": found.sha256, params: described.params, target: described.target };
+  const header: PluginHeader = { ...found.header, version: found.header.version + 1, "source-sha256": found.sha256, params: described.params, target: found.header.kind === "animation" ? "object" : described.target };
   writePlugin(header, found.body, dir);
   const again = readPlugin(id, dir);
   if (!again || "reason" in again) return { reason: `${id}.rs could not be read back.` };
@@ -221,7 +235,13 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       const h = file.header;
       const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
       if (score === 0) continue;
-      rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+      rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+    }
+    const listedIds = new Set(rows.map(({ row }) => row.id));
+    for (const [name, animation] of this.animations) {
+      if (listedIds.has(name)) continue;
+      const score = query ? queryScore({ plugin: name, title: name, description: "animation" }, query) : 1;
+      if (score) rows.push({ score, row: { id: name, kind: "animation", run: "pose_animate", assembly: animation.assembly, params: Object.entries(animation.params).map(([key, value]) => `${key} ${JSON.stringify(value)}`).join(", "), data: { title: name } } });
     }
     const names = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0]!).filter((n) => n !== "plugin_check"));
     for (const name of names) {
@@ -250,6 +270,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     return {
       ok: true,
       id: h.plugin,
+      ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}),
       version: h.version,
       api: h.api,
       target: h.target,
@@ -402,16 +423,17 @@ async function pluginImport(this: Session, text: string, from: ImportMark["from"
   if (split.problem) return refuse("plugin-invalid", `It was not imported: ${split.problem}`);
   const tooLarge = carriedDataProblem(split.data);
   if (tooLarge) return refuse("plugin-invalid", `It was not imported: ${tooLarge}`);
-  const checked = await this.pluginCheck(file.body, undefined, null, IMPORT_BUILD_LIMIT_MS);
+  const parsed = parsePlugin(file.libraryText);
+  if ("reason" in parsed) return refuse("plugin-invalid", parsed.reason);
+  // Animation defaults need a real assembly; describe verifies the sandbox build and its parameters without posing one.
+  const checked = parsed.header.kind === "animation" ? await this.recipeDescribe(file.body, IMPORT_BUILD_LIMIT_MS) : await this.pluginCheck(file.body, undefined, null, IMPORT_BUILD_LIMIT_MS);
   if ("reason" in checked) return refuse("plugin-invalid", `It was not imported. ${checked.reason}`);
   const dir = pluginsDir();
   const clash = clashOf(file.id, file.sha256, file.version, (id) => {
     const there = readPlugin(id, dir);
     return there && !("reason" in there) ? { sha256: there.sha256, version: there.header.version } : null;
   });
-  const parsed = parsePlugin(file.libraryText);
-  if ("reason" in parsed) return refuse("plugin-invalid", parsed.reason);
-  let header: PluginHeader = { ...parsed.header, "source-sha256": file.sha256, params: checked.params, target: checked.target };
+  let header: PluginHeader = { ...parsed.header, "source-sha256": file.sha256, params: checked.params, target: parsed.header.kind === "animation" ? "object" : checked.target };
   let how: Record<string, unknown> = {};
   if (clash.kind === "same") {
     header = { ...header, version: clash.version };

@@ -307,6 +307,15 @@ export const TEXT_OWN_FONT_LINES: string[] = [
 ];
 
 export const KIND_GUIDES: Record<string, string> = {
+  animation: [
+    `An animation is a Rust recipe plugin with //! kind: animation and recipe API 1.8. It poses one assembly; it cannot edit geometry or the print layout.`,
+    `Create joints first: guide {kind:"pose"}; plate_list gives the hinge limits and aligned angle. Run pose_animate {object, source} to check and sample without writing files or changing the pose.`,
+    `In the script, s.rig() names members; rig.group("Finger *") matches names with * and |. Animation::new(fps) holds a.key(seconds, Pose::rest() or Pose::new().set(name, angle)); set_all takes a group. A missing group is refused with its line.`,
+    `Use Aim::Rest, Aligned, Min, Max, Fraction or Reach, Ease::InOut and key.hold(seconds). A reach may remain short of its target: read reached, distanceMm and clamped in the key summary. A hinge cannot turn around an axis its rig does not have.`,
+    `Pose and Animation colour(name, "#rrggbb") colour a member or group; a key colour changes at that key without fading. Camera::looking(x,y,z) sets a fixed camera. The export frames share one framing and one GIF palette.`,
+    `Export with pose_animate {object, plugin, out:{gif:"wave.gif", frames:"wave-frames"}, longEdge:640}. Set fps or camera to override. The workspace receives the files and project_save keeps the source and parameters; no frame or GIF is stored in the project.`,
+    `In Pose, select an animation, Play or scrub, and Stop to restore the view. Keep this frame writes one undoable pose; Save animation exports GIF or PNG frames with camera, size, FPS and member colours. Imported code is shown before its first run.`,
+  ].join("\n"),
   pose: [
     "Pose parts in an assembly without changing their print layout. First join each part with model_place {object, to}.",
     "Set a hinge with model_place {object:<leg>, joint:{kind:\"hinge\", pivot:[0,0,0], axis:[0,0,1], min:-45, max:90}}. Pivot and axis are in that part's own frame; the current position is angle zero. A ball uses {kind:\"ball\", pivot:[0,0,0], cone:45}. Remove either with joint:null.",

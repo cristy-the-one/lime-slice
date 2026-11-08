@@ -268,12 +268,7 @@ async fn save_text_file(
     extension: String,
     bytes_b64: Option<String>,
 ) -> Result<bool, String> {
-    let label = match extension.as_str() {
-        "3mf" => "3MF",
-        "gif" => "GIF animation",
-        "rs" => "Lime Slice plugin",
-        _ => "G-code",
-    };
+    let label = save_filter_label(&extension);
     let picked = app
         .dialog()
         .file()
@@ -291,6 +286,22 @@ async fn save_text_file(
     };
     std::fs::write(path, bytes).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// The save dialog's name for a file type. Anything not listed is named by its extension, never "G-code": Pose's Save
+/// pose as STEP showed a "G-code (*.step)" filter in v6.0.1.
+fn save_filter_label(extension: &str) -> String {
+    match extension.to_ascii_lowercase().as_str() {
+        "gcode" | "gco" | "g" => "G-code".into(),
+        "3mf" => "3MF".into(),
+        "gif" => "GIF animation".into(),
+        "step" | "stp" => "STEP".into(),
+        "stl" => "STL".into(),
+        "lime" => "Lime Slice project".into(),
+        "rs" => "Lime Slice plugin".into(),
+        "json" => "JSON".into(),
+        other => other.to_ascii_uppercase(),
+    }
 }
 
 /// One file of a folder export: its name, as the card shows it, and its bytes in base64.
@@ -529,6 +540,17 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn save_dialog_names_each_file_type() {
+        assert_eq!(super::save_filter_label("step"), "STEP");
+        assert_eq!(super::save_filter_label("gcode"), "G-code");
+        assert_eq!(super::save_filter_label("3mf"), "3MF");
+        assert_eq!(super::save_filter_label("lime"), "Lime Slice project");
+        assert_eq!(super::save_filter_label("json"), "JSON");
+        assert_eq!(super::save_filter_label("gif"), "GIF animation");
+        assert_eq!(super::save_filter_label("webm"), "WEBM");
+    }
+
     use std::path::Path;
     use std::thread;
 

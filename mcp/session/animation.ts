@@ -4,9 +4,11 @@ import { join } from "node:path";
 import { assemblyOf } from "../../src/assembly.ts";
 import { seatLift } from "../../src/model-space.ts";
 import { animationRig, type AnimationPart } from "../../src/pose-anim.ts";
+import { apiVerdict } from "../../src/recipe/api-level.ts";
 import { runAnimation } from "../animation-run.ts";
 import { animatedGif, type GifFrame } from "../animation-gif.ts";
 import { readCamera, renderMesh } from "../render.ts";
+import { slugOf } from "../plugins.ts";
 import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { resolveWrite } from "../workspace.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -22,15 +24,30 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const choices = [input.source, input.path, input.plugin].filter((value) => typeof value === "string");
   if (choices.length !== 1) return refuse("conflicting-arguments", "Pass exactly one of source, path or plugin.");
   let source = typeof input.source === "string" ? input.source : "";
+  let defaultName = typeof input.plugin === "string" ? input.plugin : "animation";
+  let pluginCopy: { sha256: string; text: string } | undefined;
+  let savedParams: Record<string, unknown> = {};
+  let api: string | undefined;
   if (typeof input.path === "string") {
     const file = recipeSourceFile(input.path);
     if ("reason" in file) return refuse("recipe-source", file.reason);
-    source = file.text;
+    source = file.text; defaultName = file.stem;
   }
   if (typeof input.plugin === "string") {
-    const plugin = await this.pluginFile(input.plugin);
-    if ("reason" in plugin) return refuse("recipe-source", plugin.reason);
-    source = plugin.file.body;
+    const kept = this.animations.get(input.plugin);
+    if (kept) { source = kept.source; savedParams = kept.params; api = kept.api; }
+    else {
+      const plugin = await this.pluginFile(input.plugin);
+      if ("reason" in plugin) return refuse("recipe-source", plugin.reason);
+      if (plugin.file.header.kind !== "animation") return refuse("bad-argument", `"${input.plugin}" is a recipe plugin. Use recipe_run for it.`);
+      source = plugin.file.body; api = plugin.file.header.api; pluginCopy = { sha256: plugin.file.sha256, text: plugin.file.text };
+    }
+  }
+  const name = slugOf(typeof input.name === "string" ? input.name : defaultName);
+  if (!name) return refuse("bad-argument", "Give the animation a name with letters or digits.");
+  if (api) {
+    const verdict = apiVerdict(api, this.crateLevels());
+    if (!verdict.ok) return refuse(verdict.code, verdict.reason);
   }
   if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const parts: AnimationPart[] = [];
@@ -40,7 +57,8 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const solid = row.solid && row.solid.positions.length >= 9;
     parts.push({ object: row.id, name: row.name, positions: solid ? row.solid!.positions : posedPositions(row.source, seatLift(row.seatMm)) });
   }
-  const result = await runAnimation(this.recipeHost, source, (input.params ?? {}) as Record<string, unknown>, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
+  const params = { ...savedParams, ...(input.params ?? {}) as Record<string, unknown> };
+  const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
   if (!result.ok) return { ok: false, code: "animation-refused", reason: result.reason, ...(result.issues ? { issues: result.issues } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
   // Repeated intersections are one warning per pair, not one line per frame.
@@ -85,9 +103,10 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
   }
   if (gifPath) writeFileSync(gifPath, animatedGif(edge, edge, gifFrames));
+  this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
+  if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
+  this.autosaveDirty = true;
   return { ...summary, files: { ...(gifPath ? { gif: gifPath } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
 }
 export const animationMethods = { poseAnimate };
 export const animationHandlers: Record<string, ToolHandler> = { pose_animate: (session, input, meta) => session.poseAnimate(input, meta) };
-
-

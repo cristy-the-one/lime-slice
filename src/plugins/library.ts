@@ -474,7 +474,7 @@ export function panelPlugins(library: PluginLibrary, project: ReadonlyMap<string
 }
 
 function badgesOf(file: PluginFileInfo): string[] {
-  return file.target === "object" ? ["needs a part"] : [];
+  return file.kind === "animation" ? ["animation"] : file.target === "object" ? ["needs a part"] : [];
 }
 
 /** How many words of `query` the plugin's id, title or description holds (`queryScore` in `mcp/plugins.ts`). */

@@ -100,6 +100,15 @@ fn an_assembly_exports_as_named_solids_at_their_poses() {
     let names = ["body", "hook", "clip"];
     let pieces = json!([{ "key": "hook", "node": 0 }, { "key": "clip", "node": 0 }]);
 
+    // A piece the engine does not hold is a tool to open, named, not the exported tree gone (Pose's Save pose as
+    // STEP after a restart, v6.0.1).
+    let unheld = call(json!({
+        "call": "export", "key": "body", "node": 0, "format": "step",
+        "pieces": [{ "key": "hook", "node": 0 }, { "key": "never-opened", "node": 3 }], "names": ["body", "hook", "x"],
+    }));
+    assert_eq!(unheld["missingTool"], json!({ "key": "never-opened", "node": 3 }), "{unheld}");
+    assert!(unheld.get("missing").is_none(), "{unheld}");
+
     let flat = ok(json!({
         "call": "export", "key": "body", "node": 0, "format": "step", "pieces": pieces, "names": names,
     }));

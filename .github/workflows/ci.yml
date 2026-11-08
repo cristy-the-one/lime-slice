@@ -787,6 +787,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-run.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/pose-animate.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-cancel.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts
