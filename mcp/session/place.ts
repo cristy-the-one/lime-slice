@@ -7,7 +7,7 @@ import { posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from 
 import { boundsOf, orientEuler } from "../../src/mesh-place.ts";
 import { poseChain, solvePose, turnHinge } from "../../src/pose.ts";
 import type { Vec3 } from "../../src/model-tree.ts";
-import { assemblyOf, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { assemblyOf, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -16,7 +16,7 @@ import { NEXT, refuse } from "../refusals.ts";
 function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const ids = input.objects as string[];
   if (typeof input.to !== "string") return refuse("bad-placement", "Give to: the part these objects join.");
-  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.reach !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
+  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.reach !== undefined || input.root !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
   if (new Set(ids).size !== ids.length) return refuse("bad-placement", "Each object can appear only once.");
   const parent = this.find(input.to);
   if (!parent) return refuse("no-object", `to: ${UNKNOWN_OBJECT}`, undefined, NEXT.plate);
@@ -73,6 +73,7 @@ function assemblyMerge(this: Session, input: Record<string, unknown>): Record<st
  * or of a new one with `to` as its root. A number may be an expression; a member keeps its text and follows it.
  */
 function modelPlace(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.root !== undefined) return rerootMember.call(this, obj, input);
   if (input.joint !== undefined || input.angle !== undefined || input.reach !== undefined) return poseMember.call(this, obj, input);
   if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return refuse("bad-frame", 'frame is "part" or "model".');
   const assemblies = this.liveAssemblies();
@@ -139,6 +140,40 @@ function modelPlace(this: Session, obj: PlateObject, input: Record<string, unkno
     ...(box ? { assembledMm: box } : {}),
     ...moved,
     note: `Assembled pose set: ${shownName(obj.name)} sits on ${shownName(parent.name)} in ${result.name}. The print layout is unchanged. ${frameNote(frame)}`,
+  };
+}
+
+/**
+ * root:true makes this member its assembly's fixed root where everything stands. The links up to the old root turn
+ * round and carry their joints with them, so IK anchors at the new root. One undo step; the print layout does not move.
+ */
+function rerootMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.root !== true) return refuse("bad-placement", "root takes true: this part becomes its assembly's fixed root.");
+  if (input.to !== undefined || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.reach !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Give root:true on its own (assembly may rename); every pose is kept.");
+  const assemblies = this.liveAssemblies();
+  const mine = assemblyOf(assemblies, obj.id);
+  if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
+  const named = this.givenName(input.assembly);
+  const before = rootOf(mine)?.object ?? null;
+  const turned = rerooted(mine, obj.id, (id) => this.find(id)?.modelPose);
+  if ("reason" in turned) return refuse("bad-placement", turned.reason);
+  const result = named ? { ...turned, name: named } : turned;
+  if (before !== obj.id || named) this.remember("Root");
+  this.assemblies = assemblies.map((row) => (row.id === mine.id ? result : row));
+  // The old root is a member now, and a member reads its Model numbers, and its joint, in its own part frame.
+  const oldRoot = before && before !== obj.id ? this.find(before) : undefined;
+  if (oldRoot) oldRoot.frame = "part";
+  const relinked = result.members.filter((member) => {
+    const old = mine.members.find((row) => row.object === member.object);
+    return old?.parent !== member.parent;
+  }).map((member) => ({ object: member.object, parent: member.parent, ...(member.joint ? { joint: member.joint } : {}) }));
+  return {
+    ok: true,
+    assembly: result.name,
+    root: obj.id,
+    previousRoot: before,
+    relinked,
+    ...(input.compact === true ? {} : { note: before === obj.id ? "This part is already the root." : `${shownName(obj.name)} is now the fixed root. Every pose is kept and the print layout is unchanged. Each reversed link took its joint: a hinge keeps its pin, angle and limits, turning the other part. The old root's Model numbers are now in its part frame, as a member's are.` }),
   };
 }
 

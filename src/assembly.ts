@@ -11,7 +11,7 @@
  */
 import { evaluate, ExprError, expressionMentions, type Params } from "./modeling/expr.ts";
 import { eulerOrient, matMul, orientEuler, type Mat3 } from "./mesh-place.ts";
-import { IDENTITY_POSE, poseScale, relativePose, thenPose, type Affine } from "./model-space.ts";
+import { applyPose, IDENTITY_POSE, poseScale, relativePose, thenPose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 
 /** Expression text per number, `null` where the number is typed plainly. */
@@ -316,6 +316,46 @@ export function withoutMember(assembly: Assembly, object: string, poseOf: PoseOf
     return { object: member.object, parent, ...memberFields(relativePose(parentPose, poseOf(member.object) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}) };
   });
   return members.length >= 2 ? { ...assembly, members } : null;
+}
+
+/**
+ * The joint a child carried on its link to its parent, moved to the parent once that link turns round. `childPose` is
+ * the child in the parent's frame. A hinge keeps its pin and turns the other way about it, so its angle and limits read
+ * as before; a ball keeps its pivot and cone, and its rest rotation is inverted.
+ */
+export function reversedJoint(joint: Joint | undefined, childPose: Affine): Joint | undefined {
+  if (!joint) return undefined;
+  const pivot = applyPose(childPose, joint.pivot);
+  if (joint.kind === "hinge") return { ...joint, pivot, axis: turnDir(childPose, joint.axis).map((v) => -v) as Vec3 };
+  const { rest, ...ball } = joint;
+  return { ...ball, pivot, ...(rest ? { rest: [-rest[0], -rest[1], -rest[2], rest[3]] as [number, number, number, number] } : {}) };
+}
+
+/**
+ * `assembly` with `object` as its fixed root, every pose kept. The links from `object` up to the old root turn round:
+ * each part on that path sits on the part that sat on it, at the offset that keeps it where it is, and takes the joint
+ * that link carried (`reversedJoint`). Parts off the path keep their links. The reversed links lose their expressions
+ * for plain numbers, as a hand move does. Refused, with a sentence, for a part outside the assembly.
+ */
+export function rerooted(assembly: Assembly, object: string, poseOf: PoseOf): Assembly | { reason: string } {
+  const byObject = new Map(assembly.members.map((member) => [member.object, member] as const));
+  const target = byObject.get(object);
+  if (!target) return { reason: "This part is not in the assembly." };
+  if (target.parent === null) return assembly;
+  const path: Member[] = [];
+  for (let at: Member | undefined = target; at; at = at.parent === null ? undefined : byObject.get(at.parent)) {
+    if (path.includes(at)) return { reason: "This assembly's links make a loop." };
+    path.push(at);
+  }
+  if (path[path.length - 1]!.parent !== null) return { reason: "This part does not reach the assembly's root." };
+  const pose = (id: string) => poseOf(id) ?? IDENTITY_POSE;
+  const next = new Map<string, Member>([[object, { object, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }]]);
+  for (let i = 0; i + 1 < path.length; i += 1) {
+    const child = path[i]!.object, parent = path[i + 1]!.object;
+    const joint = reversedJoint(path[i]!.joint, relativePose(pose(parent), pose(child)));
+    next.set(parent, { object: parent, parent: child, ...memberFields(relativePose(pose(child), pose(parent))), ...(joint ? { joint } : {}) });
+  }
+  return { ...assembly, members: assembly.members.map((member) => next.get(member.object) ?? member) };
 }
 
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);

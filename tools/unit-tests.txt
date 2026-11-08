@@ -41,6 +41,7 @@ src/assembly.test.ts
 src/pose.test.ts
 mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
+mcp/assembly-reroot.test.ts
 src/interference.test.ts
 src/project-blank.test.ts
 src/project-codec.test.ts
