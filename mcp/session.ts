@@ -579,6 +579,15 @@ export class Session {
     const commit = name === "model_commit" && value.ok === true && obj && obj.bytes.byteLength > 0
       ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
       : null;
+    // Send history only with a commit or a full resync; ordinary placements stay light.
+    const modelHistories: NonNullable<BridgeMessage["modelHistories"]> = {};
+    if (plateSnapshot && (name === "model_commit" || name === "plate_sync")) {
+      for (const row of shown) {
+        if (name === "model_commit" && row.id !== obj?.id) continue;
+        const tree = this.savedModelTree(row);
+        if (tree) modelHistories[row.id] = { tree, ...(row.brep ? { brepB64: bytesToBase64(row.brep) } : {}) };
+      }
+    }
     this.bridgeSeq += 1;
     if (plateSnapshot) this.bridgePlateSeq = this.bridgeSeq;
     const payload = {
@@ -600,6 +609,7 @@ export class Session {
       ok: value.ok === true,
       ...(settings ? { settings } : {}),
       ...(commit ? { commit } : {}),
+      ...(Object.keys(modelHistories).length ? { modelHistories } : {}),
     };
     return { payload, carriedAll };
   }

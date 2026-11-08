@@ -9,6 +9,9 @@
  */
 import { base64ToBytes } from "./base64.ts";
 import type { Mat3 } from "./mesh-place.ts";
+import type { PlateFileObject } from "./plate.ts";
+import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
+import type { SavedTree } from "./model-tree-file.ts";
 
 /** Shown when a message names a mesh this window was never sent. The server sends it again on its next tool. */
 export const BRIDGE_RESEND = "The MCP session changed a part this window has not received yet. It arrives with the session's next step.";
@@ -66,6 +69,26 @@ export interface BridgeMessage {
   meshes?: Record<string, BridgeMesh>;
   /** Set only for `model_commit`. Absent for a probe or an apply. */
   commit?: BridgeCommit;
+  /** Editable histories for newly mirrored objects, in the project-file format. */
+  modelHistories?: Record<string, { tree: NonNullable<PlateFileObject["modelTree"]>; brepB64?: string }>;
+}
+
+/** Decode a self-contained history. Linked trees need a coordinated transfer and are refused here. */
+export function decodeBridgeHistory(saved: NonNullable<BridgeMessage["modelHistories"]>[string]): { tree: SavedTree<{ name: string; bytes: ArrayBuffer }>; brep?: ArrayBuffer } | null {
+  const tree = saved.tree;
+  if (savedToolObjects(tree).size || tree.nodes.some((node) => node.piece || node.pins || node.pieces?.some(Boolean))) return null;
+  let decoded: SavedTree<{ name: string; bytes: ArrayBuffer }>;
+  if (tree.rootPrimitive) decoded = { ...treeBody(tree), rootPrimitive: tree.rootPrimitive };
+  else if (tree.rootFeature) decoded = { ...treeBody(tree), rootFeature: tree.rootFeature };
+  else {
+    const root = tree.rootStep;
+    const bytes = root?.bytesBase64 ? base64ToBytes(root.bytesBase64) : null;
+    if (!root || !bytes || bytes.byteLength !== root.byteLength) return null;
+    decoded = { ...treeBody(tree), rootStep: { name: root.name, bytes: bytes.slice().buffer as ArrayBuffer } };
+  }
+  if (!saved.brepB64) return { tree: decoded };
+  const bytes = base64ToBytes(saved.brepB64);
+  return bytes?.length ? { tree: decoded, brep: bytes.slice().buffer as ArrayBuffer } : null;
 }
 
 /** Where this window is in the server's sequence. */

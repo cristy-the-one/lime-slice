@@ -1,4 +1,4 @@
-import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeHumanChanges, bridgeIsNew, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
+import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeHumanChanges, bridgeIsNew, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
 import { ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
 
 let failed = 0;
@@ -167,6 +167,12 @@ const live: BridgeMessage[] = [duringDrag, duringDrag];
 const freed = releaseBridge(live, "");
 live.splice(0, live.length, ...freed.waiting);
 check("emptying the queue in place keeps what was released", freed.ready.length === 2);
+
+const savedHistory = { tree: { nodes: [{ id: 0, parent: null, op: null, fingerprint: null }], current: 0, committed: 0, nextId: 1, rootStep: { name: "root.step", bytesBase64: "YWJj", byteLength: 3, hash: "test" } }, brepB64: "ZGVm" } satisfies NonNullable<BridgeMessage["modelHistories"]>[string];
+const decodedHistory = decodeBridgeHistory(savedHistory);
+check("a self-contained history and solid are decoded", !!decodedHistory && !!decodedHistory.tree.rootStep && new TextDecoder().decode(decodedHistory.tree.rootStep.bytes) === "abc" && new TextDecoder().decode(decodedHistory.brep) === "def");
+check("a truncated root is refused", decodeBridgeHistory({ ...savedHistory, tree: { ...savedHistory.tree, rootStep: { name: "root.step", bytesBase64: "YWJj", byteLength: 4, hash: "test" } } }) === null);
+check("histories with linked split pieces are refused", decodeBridgeHistory({ ...savedHistory, tree: { ...savedHistory.tree, nodes: [{ ...savedHistory.tree.nodes[0]!, piece: "other" }] } }) === null);
 
 if (failed) {
   console.error(`${failed} failed`);

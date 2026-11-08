@@ -2,15 +2,16 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeConflict, bridgeHasPlateUpdate, bridgeHumanChanges, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeConflict, bridgeHasPlateUpdate, bridgeHumanChanges, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, setMeshSeat, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
 import { fnv1aHex } from "../slice-action.ts";
+import type { SavedTree } from "../model-tree-file.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { place } from "./files.ts";
 import { fx } from "./fx.ts";
-import { modelApi } from "./workspaces.ts";
+import { loadModel, modelApi } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { markStale, renderChrome } from "./settings.ts";
 import { state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
@@ -21,6 +22,7 @@ let plateSeen: BridgeSeen = { session: "", seq: 0 };
 /** Server objects on this plate. The mirror never removes an object outside this set. */
 let owned = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
+let processing = false;
 let lastMissing = "";
 let baseline = new Map<string, MirrorObject<null>>();
 let lastConflict = "";
@@ -64,7 +66,7 @@ function hashOf(bytes: ArrayBuffer): string {
 
 function applyMessage(message: BridgeMessage): void {
   waiting.splice(0, waiting.length, ...parkBridge(waiting, message));
-  flush();
+  void flush();
 }
 
 function receipt(message: BridgeMessage, outcome: "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale"): void {
@@ -72,7 +74,12 @@ function receipt(message: BridgeMessage, outcome: "applied" | "diverged" | "conf
   void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_receipt", { session: message.session, seq: message.seq, outcome })).catch(() => {});
 }
 
-function flush(): void {
+async function flush(): Promise<void> {
+  if (processing) return;
+  processing = true;
+  try {
+  // Load before taking messages out of the queue: the document or a gesture can change while loading.
+  if (waiting.some((message) => message.modelHistories && bridgeHasPlateUpdate(message))) await loadModel();
   const released = releaseBridge(waiting, state.poseHud);
   waiting.splice(0, waiting.length, ...released.waiting);
   for (const message of released.ready) {
@@ -87,8 +94,15 @@ function flush(): void {
   if (waiting.length > 0 && timer === undefined) {
     timer = setTimeout(() => {
       timer = undefined;
-      flush();
+      void flush();
     }, 200);
+  }
+  } catch (err) {
+    for (const message of waiting.splice(0)) receipt(message, "failed");
+    pushToast(`The MCP mirror could not load Model: ${err instanceof Error ? err.message : String(err)}`, "error");
+  } finally {
+    processing = false;
+    if (waiting.length && !state.poseHud && timer === undefined) void flush();
   }
 }
 
@@ -151,12 +165,27 @@ function apply(message: BridgeMessage): void {
     return;
   }
   const objects = result.plate.map(toPlateObject);
+  // Only attach histories to genuinely new objects. Existing desktop histories remain protected,
+  // including when a later commit arrives with a replacement mesh.
+  const incomingTrees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
+  for (const object of objects) {
+    if (current.some((row) => row.id === object.id)) continue;
+    const saved = message.modelHistories?.[object.id];
+    const decoded = saved && decodeBridgeHistory(saved);
+    if (!decoded) {
+      if (saved) pushToast(`Tandem showed ${object.name} as a mesh; its linked or unreadable Model history was not imported.`, "info");
+      continue;
+    }
+    incomingTrees.set(object.id, decoded.tree);
+    if (decoded.brep) object.brep = decoded.brep;
+  }
   if (objects.length === 0) {
     state.plate = emptyPlate();
     state.mesh = null;
     state.sourcePos = null;
   } else {
     state.plate = mirroredPlate(objects, result.selectId ?? state.plate.selectedId);
+    if (incomingTrees.size) modelApi()?.adoptSavedTrees(incomingTrees);
     applySelectedToState(state.plate);
   }
   modelApi()?.releaseModelTrees();
