@@ -1,4 +1,4 @@
-/** Animated GIF with one fixed RGB palette shared by every frame. */
+/** Animated GIF with one fixed RGB palette shared by every frame; one entry can hold an exact background colour. */
 export interface GifFrame { rgb: Uint8Array; delayCs: number }
 
 /** A compact LZW stream. GIF codes are packed least-significant bit first. */
@@ -30,21 +30,31 @@ function compress(indices: Uint8Array): number[] {
   return bytes;
 }
 
-/** Encode opaque RGB frames using a consistent 3/3/2-bit colour palette. */
-export function animatedGif(width: number, height: number, frames: readonly GifFrame[]): Uint8Array {
+const paletteIndex = (r: number, g: number, b: number) => (r & 0xe0) | ((g & 0xe0) >> 3) | (b >> 6);
+
+/**
+ * Encode opaque RGB frames using a consistent 3/3/2-bit colour palette. With `background`, the palette entry that colour
+ * falls in becomes exactly that colour, so background pixels decode unchanged. Other pixels in the same entry take it
+ * too: they are already within one quantisation step of it.
+ */
+export function animatedGif(width: number, height: number, frames: readonly GifFrame[], background?: readonly [number, number, number]): Uint8Array {
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 65535 || height > 65535 || !frames.length) throw new Error("GIF needs a nonempty set of frames with valid dimensions.");
   const bytes: number[] = [];
   const byte = (...v: number[]) => bytes.push(...v);
   const word = (v: number) => byte(v & 255, (v >>> 8) & 255);
   byte(...new TextEncoder().encode("GIF89a")); word(width); word(height); byte(0xf7, 0, 0);
-  for (let i = 0; i < 256; i++) byte(Math.round(((i >> 5) & 7) * 255 / 7), Math.round(((i >> 2) & 7) * 255 / 7), Math.round((i & 3) * 255 / 3));
+  const exact = background ? paletteIndex(background[0], background[1], background[2]) : -1;
+  for (let i = 0; i < 256; i++) {
+    if (i === exact) byte(background![0], background![1], background![2]);
+    else byte(Math.round(((i >> 5) & 7) * 255 / 7), Math.round(((i >> 2) & 7) * 255 / 7), Math.round((i & 3) * 255 / 3));
+  }
   byte(0x21, 0xff, 11, ...new TextEncoder().encode("NETSCAPE2.0"), 3, 1, 0, 0, 0);
   for (const frame of frames) {
     if (frame.rgb.length !== width * height * 3 || !Number.isFinite(frame.delayCs) || frame.delayCs < 0 || frame.delayCs > 65535) throw new Error("GIF frame dimensions or delay are invalid.");
     byte(0x21, 0xf9, 4, 4); word(Math.round(frame.delayCs)); byte(0, 0);
     byte(0x2c); word(0); word(0); word(width); word(height); byte(0, 8);
     const indices = new Uint8Array(width * height);
-    for (let i = 0; i < indices.length; i++) indices[i] = (frame.rgb[3 * i]! & 0xe0) | ((frame.rgb[3 * i + 1]! & 0xe0) >> 3) | (frame.rgb[3 * i + 2]! >> 6);
+    for (let i = 0; i < indices.length; i++) indices[i] = paletteIndex(frame.rgb[3 * i]!, frame.rgb[3 * i + 1]!, frame.rgb[3 * i + 2]!);
     const compressed = compress(indices);
     for (let at = 0; at < compressed.length; at += 255) { const part = compressed.slice(at, at + 255); byte(part.length, ...part); }
     byte(0);

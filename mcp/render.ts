@@ -1,5 +1,6 @@
 import { deflateSync } from "node:zlib";
 import { applyPose, type Affine } from "../src/model-space.ts";
+import { BACKGROUND_REFUSAL, isBackground } from "../src/pose-anim.ts";
 
 /** A small PNG of the mesh. The tool result is the file path, and the same pixels inline. */
 
@@ -112,6 +113,18 @@ export interface RenderOptions {
   transparent?: boolean;
   /** Return RGB pixels too, for animation encoding. */
   pixels?: boolean;
+  /** The colour of empty pixels; default BACKGROUND. `transparent` still leaves them empty. */
+  background?: Vec;
+}
+
+/** Empty pixels unless a caller chooses: the pale paper every preview has always had. */
+export const BACKGROUND: Vec = [248, 248, 255];
+
+/** A caller's `background`, or why it is refused. */
+export function readBackground(raw: unknown): { rgb: Vec } | { reason: string } {
+  if (!isBackground(raw)) return { reason: BACKGROUND_REFUSAL };
+  const n = parseInt(raw.slice(1), 16);
+  return { rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] };
 }
 
 /** The colour the inside of a part shows where a section cuts it. */
@@ -289,6 +302,7 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   if (ghost) draw(ghost, ghostDepth, ghostShade);
   const ink = edgeInk(positions, project, toPixel, owner, depth, options.faces ?? null, width, height, fit, eye, section);
   const transparent = options.transparent === true;
+  const background = options.background ?? BACKGROUND;
   const channels = transparent ? 4 : 3;
   const raw = new Uint8Array((width * channels + 1) * height);
   const rgbPixels = options.pixels ? new Uint8Array(width * height * 3) : undefined;
@@ -299,9 +313,10 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
       const at = row + 1 + x * channels;
       const pixel = y * width + x;
       if (transparent && color[pixel]! === 0 && ghostShade[pixel]! === 0) continue;
-      const shade = color[pixel]! || 248;
+      const shade = color[pixel]!;
       const dark = 1 - 0.78 * ink[pixel]! / 255;
-      let rgb: Vec = [Math.round(shade * dark), Math.round(shade * dark), Math.round(Math.min(255, shade + 8) * dark)];
+      const base: Vec = shade ? [shade, shade, Math.min(255, shade + 8)] : background;
+      let rgb: Vec = [Math.round(base[0] * dark), Math.round(base[1] * dark), Math.round(base[2] * dark)];
       const tinted = color[pixel] ? tintAt[pixel]! : 0;
       if (tinted) {
         const hue = tinted === 0xffffffff ? CUT : tinted <= tints.length ? tints[tinted - 1]!.rgb : partTints[tinted - tints.length - 1]!.rgb;

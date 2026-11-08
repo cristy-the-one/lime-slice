@@ -7,7 +7,7 @@ import { animationRig, type AnimationPart } from "../../src/pose-anim.ts";
 import { apiVerdict } from "../../src/recipe/api-level.ts";
 import { runAnimation } from "../animation-run.ts";
 import { animatedGif, type GifFrame } from "../animation-gif.ts";
-import { readCamera, renderMesh } from "../render.ts";
+import { BACKGROUND, readBackground, readCamera, renderMesh } from "../render.ts";
 import { slugOf } from "../plugins.ts";
 import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { resolveWrite } from "../workspace.ts";
@@ -21,6 +21,8 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   if (!obj) return refuse("no-mesh", "Choose an assembly member first.", undefined, NEXT.mesh);
   const assembly = assemblyOf(this.liveAssemblies(), obj.id);
   if (!assembly) return refuse("bad-assembly", "That part does not belong to an assembly.");
+  const asked = input.background === undefined ? undefined : readBackground(input.background);
+  if (asked && "reason" in asked) return refuse("bad-argument", asked.reason);
   const choices = [input.source, input.path, input.plugin].filter((value) => typeof value === "string");
   if (choices.length !== 1) return refuse("conflicting-arguments", "Pass exactly one of source, path or plugin.");
   let source = typeof input.source === "string" ? input.source : "";
@@ -71,6 +73,9 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   }
   const warnings = [...warningCounts.values()].map(({ first, count }) => ({ reason: count > 1 ? `${first} (${count} frames)` : first }));
   const out = input.out as { gif?: string; frames?: string } | undefined;
+  // Checked already: the tool's by readBackground above, the script's by sampleAnimation.
+  const scripted = result.background ? readBackground(result.background) : undefined;
+  const background = asked && "rgb" in asked ? asked.rgb : scripted && "rgb" in scripted ? scripted.rgb : BACKGROUND;
   const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
   if (!out) return { ...summary, rig: animationRig(assembly, parts).map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
   if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
@@ -97,12 +102,12 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
       start = end;
       return mesh;
     });
-    const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: !!gifPath });
+    const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: !!gifPath, background });
     if (files[i]) writeFileSync(files[i]!, drawn.png);
     if (gifPath) gifFrames.push({ rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) });
     this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
   }
-  if (gifPath) writeFileSync(gifPath, animatedGif(edge, edge, gifFrames));
+  if (gifPath) writeFileSync(gifPath, animatedGif(edge, edge, gifFrames, background));
   this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
   if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
   this.autosaveDirty = true;

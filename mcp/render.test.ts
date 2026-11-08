@@ -44,8 +44,7 @@ function box(min: number[], max: number[]): Float32Array {
   return positions;
 }
 
-function shades(png: Uint8Array, width: number, height: number): number[] {
-  if (png[0] !== 137 || png[1] !== 80 || png[2] !== 78 || png[3] !== 71) return [];
+function rawRows(png: Uint8Array): Buffer {
   const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
   let offset = 8;
   const parts: Uint8Array[] = [];
@@ -56,7 +55,12 @@ function shades(png: Uint8Array, width: number, height: number): number[] {
     if (type === "IDAT") parts.push(data);
     offset += 12 + length;
   }
-  const raw = inflateSync(Buffer.concat(parts.map((part) => Buffer.from(part))));
+  return inflateSync(Buffer.concat(parts.map((part) => Buffer.from(part))));
+}
+
+function shades(png: Uint8Array, width: number, height: number): number[] {
+  if (png[0] !== 137 || png[1] !== 80 || png[2] !== 78 || png[3] !== 71) return [];
+  const raw = rawRows(png);
   const found: number[] = [];
   for (let y = 0; y < height; y += 1) {
     const row = y * (width * 3 + 1);
@@ -185,6 +189,26 @@ const again = await session.call("solid_new", { dx: 10, dy: 10, dz: 10 });
 const opens = engine.calls.filter((call) => call === "close").length;
 await session.call("project_create", {});
 check("a new project closes the open solid", again.ok === true && engine.calls.filter((call) => call === "close").length === opens + 1);
+
+// A chosen background: every corner of the PNG and of the raw pixels is exactly that colour, and the part is still drawn.
+const cornersOf = (png: Uint8Array, edge: number) => {
+  const raw = rawRows(png), at = (x: number, y: number) => [...raw.subarray(y * (edge * 3 + 1) + 1 + x * 3, y * (edge * 3 + 1) + 4 + x * 3)].join();
+  return [at(0, 0), at(edge - 1, 0), at(0, edge - 1), at(edge - 1, edge - 1)];
+};
+const chosen = renderMesh(ledge, "iso", 96, undefined, { background: [18, 171, 86], pixels: true });
+check("a frame's corner pixels are the chosen background", cornersOf(chosen.png, 96).every((pixel) => pixel === "18,171,86"), cornersOf(chosen.png, 96).join(" "));
+check("so are the raw pixels the GIF encoder reads", [...chosen.rgb!.subarray(0, 3)].join() === "18,171,86");
+check("the part is still drawn over it", shades(chosen.png, 96, 96).some((shade) => shade !== 18));
+const paper = renderMesh(ledge, "iso", 96).png;
+check("no choice keeps the pale background", cornersOf(paper, 96).every((pixel) => pixel === "248,248,255"), cornersOf(paper, 96).join(" "));
+const backgroundSession = new Session(fakeEngine());
+const backgroundPart = String((await backgroundSession.call("solid_new", { primitive: "box", dx: 2, dy: 2, dz: 2 })).object);
+const shown = await backgroundSession.call("render_view", { object: backgroundPart, camera: "iso", background: "#12AB56", name: "background.png", inline: false, longEdge: 64 });
+check("render_view takes a background", shown.ok === true && cornersOf(readFileSync(String(shown.path)), 64).every((pixel) => pixel === "18,171,86"), JSON.stringify(shown));
+for (const bad of ["red", "#abc", "12ab56", "#12ab5g", "#12ab566", ""]) {
+  const refused = await backgroundSession.call("render_view", { object: backgroundPart, background: bad, inline: false });
+  check(`render_view refuses the background ${JSON.stringify(bad)} with a sentence`, refused.ok === false && String(refused.reason).includes("#rrggbb"), JSON.stringify(refused));
+}
 
 if (failed) {
   console.error(`${failed} failed`);
