@@ -63,7 +63,7 @@ export async function openInApp(path: string, opener: AppOpener, saved: boolean)
   const name = basename(path);
   const kept = saved ? `the project is saved at ${path}` : `the file is at ${path}`;
   const answer = await opener.viaBridge(path);
-  if (answer?.opened) return { ok: true, path, saved, opened: "bridge", note: `Opened ${name} in the running app.` };
+  if (answer?.opened) return { ok: true, path, saved, opened: "bridge", status: "requested", note: `Sent ${name} to the running app. The app may ask the user to confirm before opening it.` };
   if (answer) return refuse("app-refused", `The running app did not open ${name}: ${answer.reason}`, { path });
   const program = opener.installed();
   if (!program) return refuse("app-not-installed", `Lime Slice is not installed; ${kept}.`, { path });

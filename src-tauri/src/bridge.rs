@@ -5,8 +5,9 @@
 //! 43119). Every request, including health, must send `Authorization: Bearer`.
 //! A matching POST body is emitted as the `lime-bridge` event after any token
 //! field is removed. A body `{"open": "<path>"}` is not mirrored: the window
-//! opens that `.lime`, `.stl`, `.3mf`, or `.step` file the way File > Open does,
-//! and answers 204, or 404 with the reason when the file cannot be opened. This
+//! requests that the page open that file the way File > Open does. It answers 204
+//! when delivered, or 404 if the file cannot be read; the page may still ask
+//! the user for confirmation. This
 //! module does not start a process and does not open a console window.
 //!
 //! An authorised answer names this window's instance in `X-Lime-Bridge-Instance`,
@@ -194,7 +195,7 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
                     let _ = app.emit("lime-bridge", value);
                 }
                 (_, Some(Event::Open(path))) => {
-                    // The server says what happened from this answer, so it comes after the file was read.
+                    // Delivery follows the file read; the page may still ask for confirmation.
                     match open_file::deliver(&app, path) {
                         Ok(()) => {
                             let _ = write_status(&mut stream, 204, &instance());

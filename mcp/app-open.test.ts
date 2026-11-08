@@ -71,7 +71,7 @@ const projectPath = join(workspace, "calibration_cube_20mm.lime");
   check("the plate is saved under its first object's name", opened.path === projectPath && existsSync(projectPath), JSON.stringify(opened));
   check("the saved file is a project", readFileSync(projectPath, "utf8").includes("\"version\""));
   check("the running app is asked over the bridge with the saved path", asked.bridge.length === 1 && asked.bridge[0] === projectPath);
-  check("the bridge result says it in a sentence", opened.ok === true && opened.opened === "bridge" && opened.note === "Opened calibration_cube_20mm.lime in the running app.", JSON.stringify(opened));
+  check("the bridge result says the app may still need confirmation", opened.ok === true && opened.opened === "bridge" && opened.status === "requested" && opened.note === "Sent calibration_cube_20mm.lime to the running app. The app may ask the user to confirm before opening it.", JSON.stringify(opened));
   check("an app that answered is not started again", asked.launched.length === 0);
   const again = await s.call("app_open", {});
   check("a second open saves over the project it saved", again.path === projectPath && again.ok === true, JSON.stringify(again));
