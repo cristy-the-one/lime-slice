@@ -63,12 +63,19 @@ pub fn bridge_ready() {
 
 /// A bounded, deliberately small description of the page; never input field values.
 #[tauri::command]
-pub fn bridge_human_context(stage: String, selected: Option<String>, gesture: bool, editing: bool) {
+pub fn bridge_human_context(
+    stage: String,
+    selected: Option<String>,
+    gesture: bool,
+    editing: bool,
+    conflict: Option<String>,
+) {
     let stage: String = stage.chars().take(32).collect();
     let selected = selected.map(|name| name.chars().take(120).collect::<String>());
+    let conflict = conflict.map(|name| name.chars().take(120).collect::<String>());
     if let Ok(mut context) = HUMAN_CONTEXT.lock() {
         *context = Some(
-            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing }),
+            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict }),
         );
     }
 }

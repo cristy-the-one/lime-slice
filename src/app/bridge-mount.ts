@@ -108,6 +108,7 @@ function apply(message: BridgeMessage): void {
       void announce();
     }
     lastConflict = conflict;
+    refreshHumanContext?.();
     return;
   }
   const result = mirrorPlate(current, message, seen, owned);
@@ -122,7 +123,9 @@ function apply(message: BridgeMessage): void {
   owned = result.owned;
   if (result.applied && bridgeHasPlateUpdate(message)) {
     baseline = bridgeBaseline(result.plate, owned);
+    const resolved = lastConflict !== "";
     lastConflict = "";
+    if (resolved) refreshHumanContext?.();
   }
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {
@@ -232,7 +235,7 @@ export function mountBridge(): void {
     contextTimer = setTimeout(() => {
       const selected = state.plate.objects.find((item) => item.id === state.plate.selectedId);
       const focused = document.activeElement;
-      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable) };
+      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: lastConflict || null };
       const encoded = JSON.stringify(context);
       if (encoded === lastContext) return;
       lastContext = encoded;

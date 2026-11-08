@@ -32,7 +32,7 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   return {
     ok: true,
     serverVersion: appVersion(),
-    ...(human ? { tandem: { human, note: "Activity only: desktop and MCP edits are not yet synchronized safely." } } : {}),
+    ...(human ? { tandem: { human, note: "Activity only: desktop and MCP edits are not yet synchronized safely. A conflict means the desktop held back an MCP plate update; inspect both versions before proceeding." } } : {}),
     engine,
     ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
     occt,
