@@ -133,6 +133,10 @@ Sampling lives in one TypeScript module shared by the app and the MCP (`src/pose
 - **One framing for the whole animation**: the host poses every sampled frame once, takes the union of the posed bounds, and frames that box for every image. Nothing re-frames between frames (L3).
 - Size: `longEdge` (MCP) or the export dialog's size (app). The background and look are Pose's (`plan-pose.md` section 4): solid parts, Model's shading and edges; the selection colour is off in exported frames.
 
+### D5a. Colour
+
+Frames render in colour: a script can assign a colour to a part or named group, a checked palette can assign colours by part, or the host can use Pose's own look. A key can change a colour; the change is a cut at that key, not a fade. Pose's save dialog offers a swatch per member, `render_view` gains `partColours`, and an exported GIF uses one palette shared by all frames.
+
 ## 4. Pose: play and save
 
 ### D6. The Animations section and the Save button
@@ -188,10 +192,10 @@ Each one is a PR with its tests, as `plan-pose.md` was built.
 | | Milestone | Done when | Tests |
 |---|---|---|---|
 | M1 | **MCP groundwork.** `render_view {fit}`, `model_place {reply:"angles"}`, `aligned` in `plate_list`. | The section 2 experiment can be redone over the MCP with a fixed framing and a reply under 5 KB. | `mcp/render.test.ts`, `mcp/pose.test.ts`; `aligned` of a finger link equals its turn's opposite. |
-| M2 | **The sampler.** `src/pose-anim.ts`: keys to frames (aims, easing, holds, limits, slerp, per-frame reach), one framing, the rig check. | The arm's five keys give the 16 sets of angles of section 2 within 0.01°; a reach key tracks a moving target with every pin on its axis. | `src/pose-anim.test.ts` in `tools/unit-tests.txt`. |
+| M2 | **The sampler.** `src/pose-anim.ts`: keys to frames (aims, easing, holds, limits, slerp, per-frame reach and colour cuts), one framing, the rig check. | The arm's five keys give the 16 sets of angles of section 2 within 0.01°; a reach key tracks a moving target with every pin on its axis. | `src/pose-anim.test.ts` in `tools/unit-tests.txt`. |
 | M3 | **`lime-recipe` 1.8.** `anim` module (`Animation`, `Pose`, `Aim`, `Ease`, `Camera`), `s.rig()`, `s.animate()`; the host's `kind: animation` allowlist and the D2 refusal. | The script of D1 builds under lust and Cargo and runs in describe mode. | `crates/lime-recipe` tests; `mcp/recipe.test.ts` gains an animation that tries `model_apply` and is refused. |
-| M4 | **`pose_animate`.** The MCP tool, the engine's frame renderer with `fit`, the GIF writer, the PNG frames, the D4 reply. | `pose_animate` on the arm writes `arm-point-peace.gif`; its frames match the M1 redo frame for frame. | `mcp/pose-animate.test.ts`; the reply for 60 frames is under 4 KB. |
-| M5 | **Pose: play and save.** The Animations section, Play, scrubber, Keep this frame, Save animation… (GIF, PNG frames, size, fps, camera). | Play the arm's animation in Pose and save a GIF from the panel; the project pose is unchanged after Play. | `e2e/pose-animate.spec.ts` (play, scrub, keep, save, refusal shown), in `test:smoke`. |
+| M4 | **`pose_animate`.** The MCP tool, the engine's frame renderer with `fit` and `partColours`, the shared-palette GIF writer, the PNG frames, the D4 reply. | `pose_animate` on the arm writes `arm-point-peace.gif`; its frames match the M1 redo frame for frame. | `mcp/pose-animate.test.ts`; the reply for 60 frames is under 4 KB. |
+| M5 | **Pose: play and save.** The Animations section, Play, scrubber, Keep this frame, Save animation… (GIF, PNG frames, size, fps, camera). | Play the arm's animation in Pose and save a GIF from the panel; the project pose is unchanged after Play; save options include member colour swatches. | `e2e/pose-animate.spec.ts` (play, scrub, keep, save, refusal shown), in `test:smoke`. |
 | M6 | **Plugins and docs.** `kind: animation` in the Plugins panel and `recipe_run`'s plugin list, the `animation` guide, README. | An animation exported from one project imports into another and plays. | `mcp/plugin*.test.ts` gain a kind round trip. |
 
 M1 is useful on its own (it fixes L3 and L4 for anyone animating by hand today) and can land first. M2 and M3 can go in parallel; M4 needs both; M5 needs M2 and M3.
@@ -221,3 +225,16 @@ M1 is useful on its own (it fixes L3 and L4 for anyone animating by hand today) 
 ### As built: M1
 
 `render_view {fit:{min,max}}` uses one model-space box for framing, including sections and boolean previews. `model_place {reply:"angles"}` returns only changed hinge angles and, for Reach, its result. `plate_list` includes `aligned` for hinges with a unique alignment; it removes the hinge-axis twist from the member's current orientation and remains stable as that hinge turns. The perpendicular half-turn has no unique alignment and omits the value.
+
+
+## 12. Handover
+
+This plan was written against v6.1.0. The reference arm is `D:\lime-workspace\arm\mechanical-arm-ik-shoulder.lime`: 24 parts, 18 hinges and Shoulder disc as the fixed root. The experiment's positive shoulder roll and elbow angles lift the arm; the index links' aligned angles are +15°, +27° and +30°. Finger curls in the experiment use negative angles. Joint signs depend on each member's own axis and rest pose; inspect the rig rather than assuming mirrored limbs have the same sign.
+
+The other local rig is `D:\lime-workspace\spider\porcelain-spider-pose-rig.lime`: 86 parts, 32 hinges, Head top fixed. Coxa limits are ±30° and the following Femur, Tibia and Tarsus hinges are ±60°; inspect each joint's axis and orientation when choosing a direction. These local paths are examples, not test dependencies.
+
+Shared joint and reach math lives in `src/pose.ts`, assembly data in `src/assembly.ts`, the MCP placement and rendering in `mcp/session/place.ts`, `mcp/session/layers.ts` and `mcp/render.ts`, and the Pose view and controller in `src/pose-view.ts` and `src/app/pose.ts`. The animation sampler is shared between app and MCP. Preserve the MCP schema token budgets, existing line endings and version consistency; add unit tests to `tools/unit-tests.txt` and UI smoke specs to `test:smoke`. Keep each milestone reviewable and avoid changes to print placement, slice state or cache keys.
+
+### As built: M2
+
+The shared sampler resolves named members and wildcard groups, validates all keys before producing frames, and samples hinges, ball rotations and Reach with the existing joint solver. It interpolates numeric and quaternion tracks, freezes every track during a hold, and applies colour changes as cuts. It reports key-time Reach distances and limit clamps, duplicate keys, and sampled-frame interference when meshes are supplied. Frame bounds cover the union of the supplied part bounds over the exported frames; callers can see whether all members had geometry for interference checks. Sampling never changes the input assembly or its model poses.
