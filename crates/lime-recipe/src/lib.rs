@@ -447,8 +447,8 @@ pub struct Part {
 /// picked face is (`kind`, `axis`, `radius`), `lettering` (text on a face, flat or curved) and `text_outline` (the letters
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
-/// 1.6: batched Region unions and differences. 1.7: resumable checkpoints.
-pub const API: (u32, u32) = (1, 7);
+/// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
+pub const API: (u32, u32) = (1, 8);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1236,6 +1236,22 @@ impl Session {
             tell(Json::obj().set("describe", Json::obj().set("object", true)));
         }
         self.context.get("object").and_then(Json::as_str).map(|o| Part { object: o.to_string() })
+    }
+
+    /// Read the named members and joints of the assembly given to an animation.
+    #[track_caller]
+    pub fn rig(&mut self) -> Result<anim::Rig, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let result = self.call("rig", Json::obj())?;
+        anim::Rig::from_json(&result).ok_or(Refusal { reason: "The host gave no animation rig.".to_string(), line })
+    }
+
+    /// Send the whole animation once. On success the animation run is complete.
+    #[track_caller]
+    pub fn animate(&mut self, animation: &anim::Animation) -> Result<Json, Refusal> {
+        let result = self.call("animate", animation.to_json())?;
+        tell(Json::obj().set("done", Json::obj().set("object", "").set("metrics", Json::obj())));
+        Ok(result)
     }
 
     /// One call: `tool` is an MCP tool name from the host's allowlist, `args`
@@ -3892,5 +3908,168 @@ D {:?}", sampled_area(&d, [0.0, 0.0], [12.0, 12.0], 240), d.area(), a, b, d);
         assert!(lattice::hex(10.0, lattice::Orient::Pointy).cells(&Region::empty(), 0.0).is_empty());
         let few = lattice::rect(10.0, 10.0).cells(&Region::from_poly(&rect(10.5, 10.5)), 3.0);
         assert_eq!(few.len(), 1);
+    }
+}
+
+/// A declarative pose animation. The host owns sampling, limits and rendering (recipe API 1.8).
+pub mod anim {
+    use super::Json;
+
+    /// One joint target in the member's part frame, or a model-space Reach target.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Aim {
+        Degrees(f64), Rest, Aligned, Min, Max, Fraction(f64),
+        Rotation([f64; 4]), Reach { at: [f64; 3], to: [f64; 3] },
+    }
+    impl From<f64> for Aim { fn from(value: f64) -> Self { Aim::Degrees(value) } }
+    impl Aim {
+        fn json(&self) -> Json {
+            match self {
+                Aim::Degrees(value) => Json::from(*value),
+                Aim::Rest => Json::from("rest"), Aim::Aligned => Json::from("aligned"),
+                Aim::Min => Json::from("min"), Aim::Max => Json::from("max"),
+                Aim::Fraction(value) => Json::obj().set("fraction", *value),
+                Aim::Rotation(q) => Json::obj().set("rotation", Json::arr(q.to_vec())),
+                Aim::Reach { at, to } => Json::obj().set("reach", Json::obj().set("at", *at).set("to", *to)),
+            }
+        }
+    }
+
+    /// The easing into a key. The default is linear.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Ease { Linear, InOut }
+    impl Ease { fn name(self) -> &'static str { match self { Ease::Linear => "linear", Ease::InOut => "inOut" } } }
+
+    /// Names matching a wildcard union. The original pattern goes to the host, which refuses an empty group.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Group { pattern: String, names: Vec<String> }
+    impl Group { pub fn names(&self) -> &[String] { &self.names } }
+
+    /// A joint and its parent, as supplied by the host. All angles are degrees.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Member {
+        pub name: String, pub parent: Option<String>, pub joint: Option<String>,
+        pub angle: Option<f64>, pub min: Option<f64>, pub max: Option<f64>, pub cone: Option<f64>, pub aligned: Option<f64>,
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Rig { pub members: Vec<Member> }
+    impl Rig {
+        pub(crate) fn from_json(value: &Json) -> Option<Self> {
+            let rows = value.get("members")?.as_array()?;
+            let mut members = Vec::new();
+            for row in rows {
+                let joint = row.get("joint");
+                members.push(Member {
+                    name: row.get("name")?.as_str()?.to_string(),
+                    parent: row.get("parent").and_then(Json::as_str).map(str::to_string),
+                    joint: joint.and_then(|j| j.get("kind")).and_then(Json::as_str).map(str::to_string),
+                    angle: joint.and_then(|j| j.get("angle")).and_then(Json::as_f64),
+                    min: joint.and_then(|j| j.get("min")).and_then(Json::as_f64),
+                    max: joint.and_then(|j| j.get("max")).and_then(Json::as_f64),
+                    cone: joint.and_then(|j| j.get("cone")).and_then(Json::as_f64),
+                    aligned: row.get("aligned").and_then(Json::as_f64),
+                });
+            }
+            Some(Rig { members })
+        }
+        pub fn group(&self, pattern: &str) -> Group {
+            let mut names = Vec::new();
+            for member in &self.members {
+                if pattern.split('|').any(|one| matches(one.trim(), &member.name)) { names.push(member.name.clone()); }
+            }
+            Group { pattern: pattern.to_string(), names }
+        }
+    }
+    fn matches(pattern: &str, name: &str) -> bool {
+        let pieces: Vec<&str> = pattern.split('*').collect();
+        if pieces.len() == 1 { return pattern == name; }
+        if !name.starts_with(pieces[0]) || !name.ends_with(pieces[pieces.len() - 1]) { return false; }
+        let mut from = pieces[0].len();
+        for piece in pieces.iter().skip(1) {
+            match name[from..].find(piece) { Some(at) => from += at + piece.len(), None => return false }
+        }
+        from <= name.len()
+    }
+
+    /// A sparse pose: unmentioned joints keep the value interpolated by the host.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Pose { rest: bool, set: Vec<(String, Aim)>, colors: Vec<(String, String)> }
+    impl Default for Pose { fn default() -> Self { Self::new() } }
+    impl Pose {
+        pub fn new() -> Self { Pose { rest: false, set: Vec::new(), colors: Vec::new() } }
+        pub fn rest() -> Self { Pose { rest: true, set: Vec::new(), colors: Vec::new() } }
+        pub fn set(mut self, name: &str, aim: impl Into<Aim>) -> Self { self.set.push((name.to_string(), aim.into())); self }
+        pub fn set_all(mut self, group: &Group, aim: Aim) -> Self { self.set.push((group.pattern.clone(), aim)); self }
+        /// A colour change at this key is a cut, not an interpolation.
+        pub fn colour(mut self, name: &str, hex: &str) -> Self { self.colors.push((name.to_string(), hex.to_string())); self }
+        fn json(&self) -> (Json, Json) {
+            let mut set = Json::obj(); let mut colors = Json::obj();
+            for (name, aim) in &self.set { set = set.set(name, aim.json()); }
+            for (name, color) in &self.colors { colors = colors.set(name, color.as_str()); }
+            (set, colors)
+        }
+    }
+
+    /// A camera direction from the assembly toward the camera, with an optional up direction.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Camera { direction: [f64; 3], up: Option<[f64; 3]> }
+    impl Camera {
+        pub fn looking(x: f64, y: f64, z: f64) -> Self { Camera { direction: [x, y, z], up: None } }
+        pub fn up(mut self, x: f64, y: f64, z: f64) -> Self { self.up = Some([x, y, z]); self }
+        fn json(&self) -> Json { let mut out = Json::obj().set("direction", self.direction); if let Some(up) = self.up { out = out.set("up", up); } out }
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Key { t: f64, line: u32, pose: Pose, ease: Ease, hold: f64 }
+    impl Key {
+        pub fn ease(&mut self, ease: Ease) -> &mut Self { self.ease = ease; self }
+        pub fn hold(&mut self, seconds: f64) -> &mut Self { self.hold = seconds; self }
+        fn json(&self) -> Json {
+            let (set, colors) = self.pose.json();
+            Json::obj().set("t", self.t).set("line", self.line).set("rest", self.pose.rest).set("set", set).set("colors", colors).set("ease", self.ease.name()).set("hold", self.hold)
+        }
+    }
+    /// Keys and presentation for one animation; no pose is changed until the host runs it.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Animation { fps: u32, keys: Vec<Key>, camera: Option<Camera>, colors: Vec<(String, String)> }
+    impl Animation {
+        pub fn new(fps: u32) -> Self { Animation { fps, keys: Vec::new(), camera: None, colors: Vec::new() } }
+        #[track_caller]
+        pub fn key(&mut self, time: f64, pose: Pose) -> &mut Key {
+            self.keys.push(Key { t: time, line: std::panic::Location::caller().line(), pose, ease: Ease::Linear, hold: 0.0 });
+            self.keys.last_mut().unwrap()
+        }
+        pub fn camera(&mut self, camera: Camera) -> &mut Self { self.camera = Some(camera); self }
+        pub fn colour(&mut self, name: &str, hex: &str) -> &mut Self { self.colors.push((name.to_string(), hex.to_string())); self }
+        pub fn to_json(&self) -> Json {
+            let mut colors = Json::obj();
+            for (name, color) in &self.colors { colors = colors.set(name, color.as_str()); }
+            let mut out = Json::obj().set("fps", self.fps).set("keys", Json::Arr(self.keys.iter().map(Key::json).collect())).set("colors", colors);
+            if let Some(camera) = &self.camera { out = out.set("camera", camera.json()); }
+            out
+        }
+    }
+}
+
+#[cfg(test)]
+mod animation_tests {
+    use super::{anim::{Aim, Animation, Ease, Pose, Rig}, Json};
+
+    #[test]
+    fn animation_encodes_keys_and_rig_groups() {
+        let rig = Rig::from_json(&Json::obj().set("members", Json::arr(vec![
+            Json::obj().set("name", "Finger 1 root").set("parent", "Palm").set("joint", Json::obj().set("kind", "hinge").set("angle", 12).set("min", -90).set("max", 90)).set("aligned", 15),
+            Json::obj().set("name", "Finger 2 claw"),
+        ]))).unwrap();
+        let group = rig.group("Finger 1 *|Finger 2 *");
+        assert_eq!(group.names().len(), 2);
+        assert_eq!(rig.members[0].aligned, Some(15.0));
+        let mut anim = Animation::new(12);
+        anim.key(1.0, Pose::rest().set_all(&group, Aim::Aligned).colour("Finger 1 root", "#ff0000")).ease(Ease::InOut).hold(0.5);
+        let data = anim.to_json();
+        assert_eq!(data.at("fps").and_then(Json::as_f64), Some(12.0));
+        assert_eq!(data.at("keys.0.set.Finger 1 *|Finger 2 *").and_then(Json::as_str), Some("aligned"));
+        assert_eq!(data.at("keys.0.colors.Finger 1 root").and_then(Json::as_str), Some("#ff0000"));
+        assert_eq!(data.at("keys.0.hold").and_then(Json::as_f64), Some(0.5));
+        assert!(data.at("keys.0.line").and_then(Json::as_f64).unwrap() > 0.0);
     }
 }

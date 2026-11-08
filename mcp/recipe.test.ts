@@ -46,6 +46,36 @@ function stub(log: RecipeCallSite[]) {
   };
 }
 
+// --- The animation authoring example compiles with the actual sandbox compiler.
+{
+  const source = "//! ---\n//! plugin: arm-point-then-peace\n//! title: Point into the distance, then a peace sign\n//! kind: animation\n//! api: 1.8\n//! params: [{\"name\":\"fps\",\"kind\":\"count\",\"default\":12,\"min\":4,\"max\":30}]\n//! ---\nuse lime_recipe::{anim::*, Session};\n\nfn main() {\n    let mut s = Session::start();\n    let fps = s.count(\"fps\", 12).range(4, 30).label(\"Frames per second\").get();\n    let rig = s.rig().unwrap_or_else(|r| s.refuse(&r.reason));\n\n    let fingers = rig.group(\"Finger * root|Finger * middle|Finger * claw\");\n    let index = rig.group(\"Finger 1 *\");\n    let middle = rig.group(\"Finger 2 *\");\n\n    let mut a = Animation::new(fps);\n    a.key(0.0, Pose::rest());\n    a.key(1.2, Pose::new().set(\"Upper arm\", 90.0).set(\"Forearm\", 110.0).set(\"Palm\", 180.0)).ease(Ease::InOut);\n    a.key(1.8, Pose::new().set_all(&fingers, Aim::Fraction(-0.9)).set(\"Thumb *\", -40.0));\n    a.key(2.6, Pose::new().set_all(&index, Aim::Aligned)).hold(1.0);\n    a.key(3.6, Pose::new().set(\"Forearm\", 150.0).set(\"Palm\", 90.0)).ease(Ease::InOut);\n    a.key(4.4, Pose::new().set_all(&middle, Aim::Aligned)).hold(1.2);\n    a.camera(Camera::looking(-1.0, -1.0, 0.5));\n\n    s.animate(&a).unwrap_or_else(|r| s.refuse(&r.reason));\n}\n";
+  const built = await host.build("animation-example", source, false);
+  check("animation example builds with lust", built.ok, built.diagnostics);
+  if (built.ok) {
+    const described = await host.run(built.exe!, { kind: "animation", describe: true }, async () => ({ ok: false, error: "describe must not call the rig" }));
+    check("animation example describes fps", described.ok && described.described?.params[0]?.name === "fps", described);
+    const calls: RecipeCallSite[] = [];
+    const run = await host.run(built.exe!, { kind: "animation" }, async (site) => {
+      calls.push(site);
+      if (site.tool === "rig") return { ok: true, result: { members: [{ name: "Finger 1 root", parent: "Palm", joint: { kind: "hinge", angle: 0, min: -90, max: 90 }, aligned: 15 }] } };
+      return { ok: true, result: {} };
+    });
+    const animation = calls.find((call) => call.tool === "animate")?.args;
+    check("animation example sends its rig and keys", run.ok && calls.map((call) => call.tool).join(",") === "rig,animate" && Array.isArray(animation?.keys) && animation.keys.length === 6, { run, calls });
+    const forbiddenSource = source.replace("s.animate(&a).unwrap_or_else(|r| s.refuse(&r.reason));", "s.call(\"model_apply\", lime_recipe::Json::obj()).unwrap_or_else(|r| s.refuse(&r.reason));");
+    const forbidden = await host.build("animation-forbidden", forbiddenSource, false);
+    check("animation attempting a model edit builds", forbidden.ok, forbidden.diagnostics);
+    if (forbidden.ok) {
+      const seen: string[] = [];
+      const stopped = await host.run(forbidden.exe!, { kind: "animation" }, async (site) => {
+        seen.push(site.tool);
+        return { ok: true, result: { members: [] } };
+      });
+      check("animation model edit is refused by the real host", stopped.refused.some((r) => r.reason === "An animation can only pose the assembly it was given." && r.line > 0) && seen.join(",") === "rig", stopped);
+    }
+  }
+}
+
 // --- An auto fix: `60` where an f64 goes is fixed by lust's edit, then built.
 {
   const broken = example.replace('let width = s.param_f64("width", 60.0);', 'let width: f64 = 60;');

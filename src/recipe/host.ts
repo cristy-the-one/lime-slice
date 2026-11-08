@@ -17,6 +17,9 @@ export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint", "native_geometry",
 ]);
 
+/** Animation scripts may only describe a rig and request its animation, never edit the plate. */
+export const ANIMATION_TOOLS: ReadonlySet<string> = new Set(["rig", "animate", "log", "progress", "data"]);
+
 export interface RecipeLimits {
   /** Wall time for the run, kernel time included. */
   timeoutS: number;
@@ -304,7 +307,9 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       calls += 1;
       if (calls > limits.maxCalls) return stop(`The recipe made more than ${limits.maxCalls} calls and was stopped.`, site.line);
       let answer: RecipeReply;
-      if (!RECIPE_TOOLS.has(tool)) {
+      if (start.kind === "animation" && !ANIMATION_TOOLS.has(tool)) {
+        answer = { ok: false, error: "An animation can only pose the assembly it was given." };
+      } else if (start.kind !== "animation" && !RECIPE_TOOLS.has(tool)) {
         answer = { ok: false, error: `${tool || "(no call)"} is not a recipe call. A recipe may call: ${[...RECIPE_TOOLS].join(", ")}.` };
       } else {
         try {
