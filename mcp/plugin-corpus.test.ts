@@ -67,8 +67,16 @@ type SessionT = InstanceType<typeof Session>;
 interface Internal {
   find(id: string): { tree?: ModelTree } | undefined;
 }
-function sessionWith(host: RecipeHost): { session: SessionT; call: (name: string, args?: unknown) => Promise<Record<string, unknown>> } {
+let previousSession: SessionT | null = null;
+/** Each fixture has a fresh session. Finish its pending autosave before the next uses the same workspace. */
+async function sessionWith(host: RecipeHost): Promise<{ session: SessionT; call: (name: string, args?: unknown) => Promise<Record<string, unknown>> }> {
+  if (previousSession) {
+    if (previousSession.autosaveTimer) clearTimeout(previousSession.autosaveTimer);
+    previousSession.autosaveTimer = null;
+    await previousSession.autosaveSettled();
+  }
   const session = new Session(fakeEngine());
+  previousSession = session;
   session.clientName = "plugin-corpus-test";
   session.recipeHost = host;
   return { session, call: (name, args = {}) => session.call(name, args) };
@@ -83,7 +91,7 @@ function pathOps(session: SessionT, object: string): string[] {
 // --- 1. A plugin recording API 9.0 is refused without a build. No lust is needed: the check comes first.
 {
   const host = new TapHost({ crateDir: recipeCrateDir(import.meta.url), root: join(scratch, "no-lust"), lust: "lust-is-never-run-here" });
-  const { call } = sessionWith(host);
+  const { call } = await sessionWith(host);
   copyFileSync(join(root, "mcp", "fixtures", "plugin-import", "newer-api.lime-plugin.rs"), join(library, "fixture-future.rs"));
   const future = await call("recipe_run", { plugin: "fixture-future" });
   const have = host.api().join(".");
@@ -137,7 +145,7 @@ for (const name of files) {
   const expected = JSON.parse(readFileSync(expectedPath, "utf8")) as Expected;
   writeFileSync(join(library, `${header.plugin}.rs`), text);
   const host = new TapHost({ crateDir: recipeCrateDir(import.meta.url), root: hostRoot, lust });
-  const { session, call } = sessionWith(host);
+  const { session, call } = await sessionWith(host);
   const object = expected.run.part ? String((await call("solid_new", expected.run.part)).object) : undefined;
   if (object && expected.run.place) await call("model_place", { object, ...expected.run.place });
   const out = await call("recipe_run", { plugin: header.plugin, ...(object ? { object } : {}), ...(expected.run.params ? { params: expected.run.params } : {}) });
@@ -195,7 +203,7 @@ check("every recipe API level has a plugin in the corpus", missing.length === 0,
   const host = new TapHost({ crateDir: join(crates, "lime-recipe"), root: join(scratch, "host-2"), lust });
   const one = crateLevels.at(-1)!;
   check("the host finds the 2.0 crate and the 1.x crate beside it", JSON.stringify(host.levels()) === JSON.stringify([one, [2, 0]]) && JSON.stringify(host.api()) === "[2,0]", host.levels());
-  const { session, call } = sessionWith(host);
+  const { session, call } = await sessionWith(host);
   check("the session's API is the current crate's", JSON.stringify(session.crateApi()) === "[2,0]", session.crateApi());
 
   const oldest = files.find((n) => n.startsWith("api-1.0-"));
@@ -229,7 +237,7 @@ check("every recipe API level has a plugin in the corpus", missing.length === 0,
     // The 1.x crate no longer ships: a 1.x plugin is retired in one sentence, before a build.
     rmSync(join(crates, "lime-recipe-1"), { recursive: true, force: true });
     const bare = new TapHost({ crateDir: join(crates, "lime-recipe"), root: join(scratch, "host-3"), lust });
-    const { call: call3 } = sessionWith(bare);
+    const { call: call3 } = await sessionWith(bare);
     writeFileSync(join(library, `${kept.id}.rs`), kept.text);
     const retired = await call3("recipe_run", { plugin: kept.id });
     check("with the 1.x crate gone, a 1.0 plugin is retired, without a build", retired.ok === false && retired.code === "plugin-api-retired" && retired.reason === "This plugin was written for recipe API 1.x, which this Lime Slice no longer builds. Its parts are kept as built." && bare.builds === 0, retired);
