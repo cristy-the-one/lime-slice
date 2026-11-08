@@ -88,6 +88,13 @@ async function playAnimation(): Promise<void> {
   const recipes = await recipeRuntime();
   if (ticket !== animationRun || state.stage !== "pose") return;
   if (!recipes) { message = "Playing an animation needs the desktop app."; renderPanel(); return; }
+  const [{ needsFirstRun, approveFirstRun }, { pluginLibrary, loadLibrary }] = await Promise.all([import("../ui/plugin-import.ts"), import("../ui/plugins-panel.ts")]);
+  if (needsFirstRun(file, sha, pluginLibrary())) {
+    const approved = await approveFirstRun(file, sha, undefined, pluginLibrary());
+    if (ticket !== animationRun || state.stage !== "pose") return;
+    if (!approved) { message = "Animation cancelled."; renderPanel(); return; }
+    await loadLibrary();
+  }
   const parts: AnimationPart[] = row.assembly.members.flatMap((member) => {
     const part = state.plate.objects.find((item) => item.id === member.object);
     if (!part) return [];

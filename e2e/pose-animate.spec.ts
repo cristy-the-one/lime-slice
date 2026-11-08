@@ -6,6 +6,12 @@ import { autoSliceOff } from "./auto-slice";
 
 test("Pose plays, scrubs and keeps an animation without changing the pose until kept", async ({ page }) => {
   await page.addInitScript(() => {
+    (window as unknown as { __limePluginLibrary: unknown }).__limePluginLibrary = {
+      invoke: async (command: string) => {
+        if (command === "plugin_library_list") return { dir: "test-library", files: [], presets: [], settings: null, imported: null };
+        throw new Error(`Unexpected library command ${command}`);
+      },
+    };
     const handlers = new Map<string, Set<(event: { payload: unknown }) => void>>();
     const emit = (event: string, payload: unknown) => setTimeout(() => { for (const handler of handlers.get(event) ?? []) handler({ payload }); }, 0);
     let run = "", step = 0;
@@ -57,6 +63,12 @@ test("Pose plays, scrubs and keeps an animation without changing the pose until 
   const parameter = page.locator("[data-pose-animation-param='fps']");
   await parameter.fill("6"); await parameter.press("Tab");
   await page.locator("[data-pose-action='animation-play']").click();
+  await expect(page.locator("#pluginTrust")).toBeVisible();
+  await expect(page.locator("#pluginTrustCode")).toContainText("fn main()");
+  await page.locator("#pluginTrust").getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("[data-pose-animation-frame]")).toHaveCount(0);
+  await page.locator("[data-pose-action='animation-play']").click();
+  await page.locator("#pluginTrust [data-choice='run']").click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __animationParams?: { fps?: number } }).__animationParams?.fps)).toBe(6);
   await expect(page.locator("[data-pose-animation-frame]")).toBeVisible();
   await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "3"; el.dispatchEvent(new Event("input", { bubbles: true })); });

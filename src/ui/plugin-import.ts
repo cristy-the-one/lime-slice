@@ -240,8 +240,8 @@ export function needsFirstRun(file: Pick<PluginFileInfo, "plugin" | "version">, 
 }
 
 /** Shows the first-run view; true when the person pressed Run (the mark is then cleared, or the hash approved). */
-export async function approveFirstRun(file: PluginFileInfo, sha256: string, fromLabel?: string): Promise<boolean> {
-  const library = host?.library();
+export async function approveFirstRun(file: PluginFileInfo, sha256: string, fromLabel?: string, libraryOverride?: PluginLibrary): Promise<boolean> {
+  const library = libraryOverride ?? host?.library();
   const mark = library?.imported[file.plugin];
   const from = fromLabel ?? (mark?.from === "project" ? "a project" : mark?.from === "mcp" ? "an MCP call" : mark ? "a file" : "this project");
   const parsed = checkImport(file.text, RECIPE_API);
