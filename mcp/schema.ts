@@ -1999,6 +1999,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         groups: { type: "array", minItems: 1, maxItems: GROUP_NAMES.length, items: { enum: GROUP_NAMES }, description: "Group names." },
         schemas: { type: "boolean", description: "Return the tools' schemas, for a client that does not re-read the list." },
+        tools: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1, maxLength: 64 }, description: "With schemas: only these tools' schemas." },
       },
     },
   },
