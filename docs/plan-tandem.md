@@ -2,7 +2,7 @@
 
 Status: implementation in progress on `codex/tandem-awareness`. This plan covers the whole app, including Model, Prepare, Pose and animation. It follows the pose-animation work; its first work can proceed while that work finishes review.
 
-Current work: an initial activity indicator and an on-demand human-context summary are being built. They are awareness only; the existing mirror's conflict and synchronization limitations still apply. No milestone is complete until its acceptance conditions below are met.
+Current work: an initial activity indicator and an on-demand human-context summary are being built. A conservative guard pauses an incoming plate snapshot when it would overwrite a desktop change to a previously mirrored object in the same session. This is not two-way synchronization: the MCP session may have already changed, and settings, editable Model history, initial synchronization and reconnection need their own protection. No milestone is complete until its acceptance conditions below are met.
 
 ## 1. Goal
 

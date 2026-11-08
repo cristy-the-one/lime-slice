@@ -122,6 +122,40 @@ const PLATE_TOOLS = new Set([
   "project_create",
 ]);
 
+export function bridgeHasPlateUpdate(message: BridgeMessage): boolean {
+  return message.ok !== false && !!message.tool && PLATE_TOOLS.has(message.tool) && !!message.plate;
+}
+
+/** A detached copy of the last plate state actually accepted by this desktop. */
+export function bridgeBaseline<T>(plate: readonly MirrorObject<T>[], owned: ReadonlySet<string>): Map<string, MirrorObject<null>> {
+  return new Map(plate.filter((row) => owned.has(row.id)).map((row) => [row.id, {
+    id: row.id, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
+    offset: { ...row.offset }, orient: [...row.orient] as Mat3, meshHash: row.meshHash, extra: null,
+  }]));
+}
+
+function sameBridgeObject(a: MirrorObject<unknown> | undefined, b: MirrorObject<unknown> | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.name === b.name && a.scalePercent === b.scalePercent && a.centered === b.centered && a.meshHash === b.meshHash
+    && a.offset.x === b.offset.x && a.offset.y === b.offset.y && a.offset.z === b.offset.z
+    && a.orient.every((value, index) => value === b.orient[index]);
+}
+
+/** Refuse a snapshot that would overwrite a desktop edit since the last accepted snapshot. */
+export function bridgeConflict<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>): string | null {
+  if (!bridgeIsNew(seen, message) || (message.session ?? "") !== seen.session || !bridgeHasPlateUpdate(message) || !message.plate) return null;
+  const here = new Map(current.map((row) => [row.id, row]));
+  const incoming = new Map(message.plate.map((row) => [row.object, {
+    id: row.object, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
+    offset: row.offset, orient: row.orient, meshHash: row.meshHash ?? "", extra: null,
+  }]));
+  for (const [id, before] of baseline) {
+    const human = here.get(id);
+    if (!sameBridgeObject(before, human) && !sameBridgeObject(human, incoming.get(id))) return human?.name ?? before.name;
+  }
+  return null;
+}
+
 /** True when this message is newer than what the window has, or comes from a new server process. */
 export function bridgeIsNew(seen: BridgeSeen, message: BridgeMessage): boolean {
   if (typeof message.seq !== "number") return true;

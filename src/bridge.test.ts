@@ -1,4 +1,4 @@
-import { BRIDGE_RESEND, bridgeIsNew, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
+import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeIsNew, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
 import { ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
 
 let failed = 0;
@@ -63,6 +63,14 @@ const placed = mirrorPlate(added.plate, {
 }, added.seen, added.owned);
 const moved = placed.plate.find((obj) => obj.id === "obj_1");
 check("a place copies the resulting pose and keeps the mesh", placed.applied && moved?.offset.x === 12 && moved.orient[1] !== 0 && moved.mesh === undefined);
+
+const baseline = bridgeBaseline(placed.plate, placed.owned);
+const humanMoved = placed.plate.map((obj) => obj.id === "obj_1" ? { ...obj, offset: { ...obj.offset, x: 19 } } : obj);
+const incoming: BridgeMessage = { tool: "object_place", session: "s1", seq: 3, ok: true, plate: [row("obj_1", "h1", 25)] };
+check("a concurrent desktop move is detected before a snapshot can overwrite it", bridgeConflict(humanMoved, incoming, placed.seen, baseline) === "obj_1");
+check("a desktop move is also protected from an unchanged server snapshot", bridgeConflict(humanMoved, { ...incoming, plate: [row("obj_1", "h1", 12, [...rotZ(90)])] }, placed.seen, baseline) === "obj_1");
+check("an unmodified desktop accepts the assistant's change", bridgeConflict(placed.plate, incoming, placed.seen, baseline) === null);
+check("a desktop deletion is protected", bridgeConflict(placed.plate.filter((obj) => obj.id !== "obj_1"), incoming, placed.seen, baseline) === "obj_1");
 
 const stale = mirrorPlate(placed.plate, { tool: "object_place", session: "s1", seq: 2, ok: true, plate: [] }, placed.seen, placed.owned);
 check("an older message changes nothing", !stale.applied && stale.plate.length === 2);

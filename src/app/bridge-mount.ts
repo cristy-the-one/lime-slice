@@ -2,7 +2,7 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeBaseline, bridgeConflict, bridgeHasPlateUpdate, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, setMeshSeat, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
@@ -21,6 +21,8 @@ let seen: BridgeSeen = { session: "", seq: 0 };
 let owned = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 let lastMissing = "";
+let baseline = new Map<string, MirrorObject<null>>();
+let lastConflict = "";
 /** A mesh hash per buffer, so a big part is hashed once and not on every message. */
 const hashes = new WeakMap<ArrayBuffer, string>();
 let refreshHumanContext: (() => void) | undefined;
@@ -98,6 +100,16 @@ function apply(message: BridgeMessage): void {
     meshHash: hashOf(obj.bytes),
     extra: obj,
   }));
+  const conflict = bridgeConflict(current, message, seen, baseline);
+  if (conflict) {
+    if (lastConflict !== conflict) {
+      pushToast(`Tandem paused a mirrored update: ${conflict} was also changed here. Your changes were kept; the MCP session has its own version.`, "error");
+      // A skipped snapshot may have carried meshes the server believes we received.
+      void announce();
+    }
+    lastConflict = conflict;
+    return;
+  }
   const result = mirrorPlate(current, message, seen, owned);
   if (result.missing) {
     // Say it once per gap. Telling the listener this window is new makes the server send every mesh again.
@@ -108,6 +120,10 @@ function apply(message: BridgeMessage): void {
   }
   seen = result.seen;
   owned = result.owned;
+  if (result.applied && bridgeHasPlateUpdate(message)) {
+    baseline = bridgeBaseline(result.plate, owned);
+    lastConflict = "";
+  }
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {
     if (settings) {
@@ -197,6 +213,8 @@ export function resetBridgeMirror(): void {
   seen = { session: "", seq: 0 };
   owned = new Set();
   lastMissing = "";
+  baseline.clear();
+  lastConflict = "";
   for (const item of activity.values()) clearTimeout(item.timer);
   activity.clear();
   showActivity();
