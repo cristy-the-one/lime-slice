@@ -3,16 +3,19 @@
  * guide and a first look need) and tools_enable; tools_enable {groups} adds a group and the server sends
  * notifications/tools/list_changed. A call to a tool of a closed group opens the group and runs, so a client that does
  * not re-read the list can still reach it (directly, or through plan_run).
+ *
+ * model_place (assemblies, joints, pose and reach) and model_export_step (one STEP, posed assemblies included) are core:
+ * posing and saving the pose need no Model edit, and a client that never re-reads the list could not call them by name.
  */
 
 export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   model: {
-    holds: "solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, recipes, history, commit, STEP export, measure",
+    holds: "solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, recipes, history, commit, measure",
     tools: [
-      "solid_new", "model_describe", "faces_find", "edges_find", "workplane_set", "workplane_print_up", "model_place", "assembly_merge", "model_probe",
+      "solid_new", "model_describe", "faces_find", "edges_find", "workplane_set", "workplane_print_up", "assembly_merge", "model_probe",
       "surface_at", "section", "model_check", "model_apply", "model_apply_batch", "model_build", "recipe_run", "nugget", "model_define", "model_anchors", "model_params",
       "model_history", "model_goto", "model_undo", "model_redo", "model_edit", "model_rename", "model_drop", "model_commit",
-      "model_export_step", "measure",
+      "measure",
     ],
   },
   paint: { holds: "support, seam, and reinforcement paint", tools: ["paint_supports", "paint_seam", "reinforce_add", "paint_list", "paint_clear"] },
@@ -31,6 +34,9 @@ export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
 };
 
 export const GROUP_NAMES = Object.keys(TOOL_GROUPS);
+
+/** Characters of schemas tools_enable returns in one reply; a whole group is several times this. */
+export const SCHEMAS_REPLY_CAP = 12_000;
 
 const GROUP_OF = new Map<string, string>(Object.entries(TOOL_GROUPS).flatMap(([group, row]) => row.tools.map((tool) => [tool, group] as const)));
 
@@ -56,4 +62,4 @@ const GROUP_TOOLS_SHORT: Record<string, string> = {
   stress: "sim_setup/run/field/sweep/cancel",
 };
 
-export const TOOLS_ENABLE_HELP = `Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: ${Object.keys(TOOL_GROUPS).map((group) => `${group} (${GROUP_TOOLS_SHORT[group]})`).join("; ")}. schemas:true returns the opened tools' schemas.`;
+export const TOOLS_ENABLE_HELP = `Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: ${Object.keys(TOOL_GROUPS).map((group) => `${group} (${GROUP_TOOLS_SHORT[group]})`).join("; ")}. schemas:true returns the opened tools' schemas; tools narrows them.`;

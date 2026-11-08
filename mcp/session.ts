@@ -26,7 +26,7 @@ import { imagesOf, withImages } from "./inline.ts";
 import { RecipeHost } from "./recipe.ts";
 import { blendOf } from "./request.ts";
 import { guideByUri } from "./guides.ts";
-import { GROUP_NAMES, groupOf, groupsOptedIn, TOOL_GROUPS } from "./groups.ts";
+import { GROUP_NAMES, groupOf, groupsOptedIn, SCHEMAS_REPLY_CAP, TOOL_GROUPS } from "./groups.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
 import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
@@ -317,13 +317,24 @@ export class Session {
     for (const group of added) this.toolGroups.add(group);
     if (added.length > 0) this.onToolsChanged?.();
     const addedTools = asked.flatMap((group) => TOOL_GROUPS[group]!.tools);
+    // The note comes first: a client that sets a long reply aside still reads its start.
     const reply: Record<string, unknown> = {
       ok: true,
+      note: "The tool list has changed. If these tools do not appear in yours, call them through plan_run {steps:[{tool, args}]}, or by name: a tool of any group opens its group.",
       enabled: GROUP_NAMES.filter((group) => this.toolGroups!.has(group)),
       added: added.flatMap((group) => TOOL_GROUPS[group]!.tools),
-      note: "The tool list has changed. If these tools do not appear in yours, call them through plan_run {steps:[{tool, args}]}, or by name: a tool of any group opens its group.",
     };
-    if (input.schemas === true) reply.schemas = addedTools.map((tool) => { const spec = toolByName(tool); return spec ? { name: tool, description: spec.description, inputSchema: spec.inputSchema } : { name: tool }; });
+    if (input.schemas === true) {
+      const wanted = Array.isArray(input.tools) ? new Set(input.tools as string[]) : null;
+      const rows = addedTools.filter((tool) => !wanted || wanted.has(tool));
+      const schemas = rows.map((tool) => { const spec = toolByName(tool); return spec ? { name: tool, description: spec.description, inputSchema: spec.inputSchema } : { name: tool }; });
+      // A whole group's schemas run to tens of kilobytes, more than a client shows. Past the cap, the reply names the
+      // tools and asks for the few that are needed.
+      if (JSON.stringify(schemas).length > SCHEMAS_REPLY_CAP) {
+        reply.schemas = [];
+        reply.schemasNote = `${rows.length} schemas are too long for one reply. Ask for the ones you need: tools_enable {groups, schemas:true, tools:["model_apply"]}.`;
+      } else reply.schemas = schemas;
+    }
     return reply;
   }
 

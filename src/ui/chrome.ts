@@ -7,8 +7,10 @@ import {
   createElement,
   DraftingCompass,
   Download,
+  Grab,
   Grid3x3,
   Minus,
+  MousePointer2,
   Plus,
   Printer,
   Layers,
@@ -148,9 +150,9 @@ function mountToolRail(hooks: ChromeHooks) {
   place.append(caption("Place"), move, rotate, scale, pivot, lay, sep(), caption("View"));
   const pose = railSet("pose", "Pose");
   for (const [id, icon, label, tip] of [
-    ["select", Move3d, "Select", "Select a part in the view."],
+    ["select", MousePointer2, "Select", "Select a part in the view. A drag here turns the camera."],
     ["turn", Rotate3d, "Turn", "Drag a joint ring. Hold Shift to snap to 5 degrees."],
-    ["reach", Move3d, "Reach", "Drag a point on a part to move its jointed chain."],
+    ["reach", Grab, "Reach", "Drag a point on a part to move its jointed chain (inverse kinematics)."],
     ["joint", Crosshair, "Joint", "Select a member and enter its joint in the Pose panel."],
     ["link", Waypoints, "Link", "Click a parent, then a child in the same assembly."],
   ] as const) {

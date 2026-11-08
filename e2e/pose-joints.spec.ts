@@ -295,3 +295,26 @@ test("Joint reads a cylindrical hole from a solid and keeps its print placement"
   await panel.getByRole("button", { name: "Undo", exact: true }).click();
   await expect(panel.getByLabel("Joint kind")).toHaveValue("none");
 });
+
+test("each Pose tool has its own icon and key, and the panel saves the pose as one STEP", async ({ page }) => {
+  await setup(page);
+  const rail = page.locator("#toolRail");
+  const icon = (tool: string) => rail.locator(`[data-pose-tool='${tool}'] svg`).innerHTML();
+  const icons = await Promise.all(["select", "turn", "reach", "joint", "link"].map(icon));
+  expect(new Set(icons).size, "Select and Reach no longer share an icon").toBe(5);
+
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  for (const [key, tool] of [["g", "reach"], ["r", "turn"], ["j", "joint"], ["l", "link"], ["v", "select"]] as const) {
+    await page.keyboard.press(key);
+    await expect(rail.locator(`[data-pose-tool='${tool}']`), `${key} picks ${tool}`).toHaveAttribute("aria-pressed", "true");
+  }
+  await expect(page.locator("#posePanel")).not.toContainText("Choose the parent");
+
+  // The parts here are meshes, so the export answers that a STEP assembly holds solids only: the button reached it.
+  const save = page.locator("#posePanel").getByRole("button", { name: "Save pose as STEP" });
+  await expect(save).toBeVisible();
+  await save.click();
+  await expect(page.locator("#toasts")).toContainText("a STEP assembly holds solids only");
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(shots, "pose-tools-step.png") });
+});

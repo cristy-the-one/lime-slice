@@ -313,6 +313,8 @@ export const KIND_GUIDES: Record<string, string> = {
     "Turn a hinge to an absolute angle with model_place {object:<leg>, angle:30}; its limits clamp the turn and its children follow.",
     "Drag a claw using model_place {object:<claw>, reach:{at:[10,0,0], to:[100,20,30]}}: at is in the claw's own frame, to is in model space. Consecutive joints turn toward the target; the first fixed parent is the anchor. The reply gives moved parts, changed hinge angles, final point, distanceMm and reached, even when limits prevent reaching it.",
     "A pose call accepts joint and angle or reach together, but placement, linking and angle plus reach are separate calls. plate_list and session_info show the joints. Undo restores one pose call.",
+    "To chain a limb where it already stands, link each segment to the one before it: model_place {objects:[<femur>], to:<coxa>}, then the tibia to the femur. Every pose is kept.",
+    "Save the pose as one STEP with model_export_step {object:<any member>, name, assembly:true}: each part a named solid at its assembled pose.",
   ].join("\n"),
   assembly: [
     "An assembly holds plate objects at offsets from each other, so a parameter change moves them together.",
