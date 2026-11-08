@@ -1731,6 +1731,7 @@ export const TOOLS: ToolSpec[] = [
     description: "Sample an assembly animation and optionally export a GIF or PNG frames; leaves the pose unchanged.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       object: handle,
+      name: { type: "string", minLength: 1, maxLength: 80, description: "Name saved with the project after export." },
       source: { type: "string", description: "Rust animation source." },
       path: { type: "string", description: "Animation source in the workspace." },
       plugin: { type: "string", description: "Animation plugin name." },

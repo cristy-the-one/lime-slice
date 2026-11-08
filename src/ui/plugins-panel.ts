@@ -616,6 +616,7 @@ function trustBox(plugin: PanelPlugin): HTMLElement | null {
 
 /** "Builds a new part", "Changes Part 1", or what to do when it needs a part and none is open. */
 function targetLine(plugin: PanelPlugin): string {
+  if (plugin.file.kind === "animation") return "Poses an assembly. Open Pose to play it.";
   const part = host?.partName() ?? null;
   const target = plugin.file.target === "new" ? "Builds a new part."
     : plugin.file.target === "object" ? part ? `Changes ${part}.` : REASON.needsPart
@@ -634,6 +635,7 @@ function readOnlyNote(plugin: PanelPlugin): string | null {
 }
 
 function runnable(plugin: PanelPlugin): string | null {
+  if (plugin.file.kind === "animation") return "Open Pose to play this animation on an assembly.";
   if (busy) return REASON.busy;
   const ro = readOnlyNote(plugin);
   if (ro) return ro;

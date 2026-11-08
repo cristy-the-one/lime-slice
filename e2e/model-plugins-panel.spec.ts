@@ -326,3 +326,18 @@ test("a plugin header with markup in its title, description, author and labels s
   expect(await page.locator("#modelPlugins img, #modelPlugins script, #modelPlugins b, #modelPlugins i, #askSheet img, #askSheet script").count()).toBe(0);
   expect(alerts).toEqual([]);
 });
+
+
+test("animation plugins are identified and directed to Pose", async ({ page }) => {
+  const body = "fn main() {}\n";
+  const hash = createHash("sha256").update(body).digest("hex");
+  const animation = `//! ---\n//! plugin: wave\n//! kind: animation\n//! title: Wave\n//! version: 1\n//! api: 1.8\n//! source-sha256: ${hash}\n//! params: []\n//! ---\n${body}`;
+  await pluginProject(page, { before: async (page) => { await scriptedLibrary(page, false, { "wave.rs": animation }); await scriptedRunner(page); } });
+  await openPanel(page);
+  const row = card(page).locator('.pp-pick[data-key="library:wave"]');
+  await expect(row.locator('.pp-badge[data-badge="animation"]')).toBeVisible();
+  await row.click();
+  await expect(card(page).locator("#modelPluginsTarget")).toContainText("Open Pose");
+  await expect(card(page).locator("#modelPluginsPreview")).toBeDisabled();
+  await expect(card(page).locator("#modelPluginsPreview")).toHaveAttribute("data-reason", /Open Pose/);
+});

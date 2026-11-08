@@ -59,6 +59,7 @@ function mcpModelRecord(this: Session): Record<string, unknown> | null {
   const workplanes = Object.fromEntries(this.objects.filter((obj) => obj.workplaneTyped).map((obj) => [obj.id, obj.workplaneTyped]));
   const record = {
     ...(Object.keys(rustRecipes).length ? { rustRecipes } : {}),
+    ...(this.animations.size ? { animations: Object.fromEntries(this.animations) } : {}),
     ...(this.parts.size ? { parts: Object.fromEntries(this.parts) } : {}),
     ...(Object.keys(recipes).length ? { recipes } : {}),
     ...(Object.keys(workplanes).length ? { workplanes } : {}),
@@ -70,9 +71,19 @@ function mcpModelRecord(this: Session): Record<string, unknown> | null {
 function adoptMcpModel(this: Session, value: Record<string, unknown> | undefined): void {
   this.parts.clear();
   this.rustRecipes.clear();
+  this.animations.clear();
   this.recipePreviewHashes.clear();
   this.recipeCheckpoints.clear();
   if (!value) return;
+  const animations = value.animations;
+  if (animations && typeof animations === "object" && !Array.isArray(animations)) {
+    for (const [name, saved] of Object.entries(animations)) {
+      const row = saved as { source?: unknown; plugin?: unknown; api?: unknown; params?: unknown; assembly?: unknown } | null;
+      if (!row || typeof row.source !== "string" || typeof row.assembly !== "string") continue;
+      const params = row.params && typeof row.params === "object" && !Array.isArray(row.params) ? row.params as Record<string, unknown> : {};
+      this.animations.set(name, { source: row.source, assembly: row.assembly, params, ...(typeof row.plugin === "string" ? { plugin: row.plugin } : {}), ...(typeof row.api === "string" ? { api: row.api } : {}) });
+    }
+  }
   const rust = value.rustRecipes;
   if (rust && typeof rust === "object") {
     for (const [key, saved] of Object.entries(rust)) {

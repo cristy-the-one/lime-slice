@@ -131,6 +131,7 @@ export function lessonsFor<L extends { about: string }>(id: string, ingredients:
 /** What an import would bring: everything the panel's first-run view and the MCP reply show. */
 export interface ImportFile {
   id: string;
+  kind?: "animation";
   title: string;
   version: number;
   description: string;
@@ -270,6 +271,7 @@ export function checkImport(raw: string, have: readonly [number, number], sha256
   }
   return {
     id,
+    ...(fields.get("kind") === "animation" ? { kind: "animation" as const } : {}),
     title: (fields.get("title") || id).trim(),
     version: Math.max(1, Math.floor(Number(fields.get("version")) || 1)),
     description: fields.get("description") ?? "",

@@ -2,6 +2,7 @@
 import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../src/pose-anim.ts";
 import type { Assembly, PoseOf } from "../src/assembly.ts";
 import { resolveIngredients } from "./ingredients.ts";
+import { splitPluginData } from "../src/recipe/plugin-data.ts";
 import { DEFAULT_LIMITS, recipeDataFile, recipeDataMissing, type RecipeHost } from "./recipe.ts";
 
 export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; notes: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
@@ -9,9 +10,11 @@ export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown
 export async function runAnimation(host: RecipeHost, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { fps?: number; signal?: AbortSignal; progress?: (fraction: number, message: string) => void } = {}): Promise<AnimationRun> {
   const ready = host.available();
   if (!ready.ok) return { ok: false, reason: ready.reason };
-  const ingredients = resolveIngredients(source);
+  const split = splitPluginData(source);
+  if (split.problem) return { ok: false, reason: split.problem };
+  const ingredients = resolveIngredients(split.code);
   if ("reason" in ingredients) return { ok: false, reason: ingredients.reason };
-  const built = await host.build("pose_animation", source, false, ingredients.suffix);
+  const built = await host.build("pose_animation", split.code, false, ingredients.suffix);
   if (!built.ok || !built.exe) return { ok: false, reason: built.reason ?? "The animation did not build.", diagnostics: built.diagnostics };
   if (options.signal?.aborted) return { ok: false, reason: "The animation was cancelled." };
   const rig = animationRig(assembly, parts);
@@ -24,6 +27,8 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
     if (site.tool === "log") { notes.push(String(site.args.message ?? site.args.text ?? "").slice(0, 400)); return { ok: true, result: {} }; }
     if (site.tool === "data") {
       const name = typeof site.args.name === "string" ? site.args.name : "";
+      const carried = split.data[name];
+      if (carried) return { ok: true, result: carried.value };
       const data = recipeDataFile(name);
       if (!data || "reason" in data) return { ok: false, error: data?.reason ?? recipeDataMissing(name) };
       return { ok: true, result: data.value };
