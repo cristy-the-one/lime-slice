@@ -23,6 +23,14 @@ license = "MIT"
 publish = false
 rust-version = "1.88.0"
 
+# Every crate takes serde_json from here. `float_roundtrip` makes it read a
+# decimal number to the nearest f64, as JSON.parse, Rust's `str::parse` and
+# lime-recipe do. Without it, about one number in eight comes back one unit off
+# in the last place (11.005321081608713 read as 11.005321081608711), so a lust
+# plugin's calls differed with the engine's native geometry on and off.
+[workspace.dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
