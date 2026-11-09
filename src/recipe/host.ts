@@ -15,6 +15,8 @@
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
   "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint", "mesh_at_end", "native_geometry",
+  // --- API 1.11 (docs/plan-native-recipes.md 7.1): build what is queued on a part now.
+  "flush",
 ]);
 
 /** Animation scripts may only describe a rig and request its animation, never edit the plate. */
@@ -133,6 +135,12 @@ export interface CompileResult {
   exe?: string;
   /** The path of the slot's `main.rs`, which lust's diagnostics name. */
   main: string;
+}
+
+/** The text lust builds: the recipe, then its ingredients (`suffix`) on lines of their own, as `buildRecipe` joins them. */
+export function builtText(source: string, suffix = ""): string {
+  if (!suffix) return source;
+  return (source.endsWith("\n") ? source : `${source}\n`) + suffix;
 }
 
 /** Writes `text` as the slot's `main.rs` and builds it. */
@@ -292,6 +300,15 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       if (msg.late_param && typeof msg.late_param === "object") {
         const late = msg.late_param as { name?: unknown; line?: unknown };
         if (lateParams.length < 50) lateParams.push({ name: String(late.name ?? ""), line: typeof late.line === "number" ? late.line : 0 });
+        return;
+      }
+      // --- API 1.11. `s.queue(on)`: silent queuing on or off for the rest of the run. Told to the caller as a call of
+      // its own (`queue`), in order with the calls; it takes no reply and does not count.
+      if (msg.queue && typeof msg.queue === "object") {
+        const q = msg.queue as { silent?: unknown; line?: unknown };
+        try {
+          await call({ id: 0, tool: "queue", args: { silent: q.silent !== false }, line: typeof q.line === "number" ? q.line : 0 });
+        } catch { /* A caller without a queue has nothing to turn off. */ }
         return;
       }
       if (msg.done && typeof msg.done === "object") {

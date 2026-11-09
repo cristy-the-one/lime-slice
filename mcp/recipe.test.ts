@@ -190,7 +190,7 @@ function stub(log: RecipeCallSite[]) {
   const after = (await call("model_history", { object: id })) as Record<string, unknown>;
   check("session: the history is back at its step", JSON.stringify(after.current) === JSON.stringify(before.current), { before: before.current, after: after.current });
 
-  const regret = await call("recipe_run", { source: src(["    let p = s.object().unwrap();", "    s.apply(&p, ops::boolean(\"fuse\", ops::cylinder(1.0, 3.0), [0.0, 0.0, 10.0])).unwrap();", '    panic!("changed my mind");']), name: "regret", object: id });
+  const regret = await call("recipe_run", { source: src(["    let p = s.object().unwrap();", "    let _built = s.apply(&p, ops::boolean(\"fuse\", ops::cylinder(1.0, 3.0), [0.0, 0.0, 10.0])).unwrap();", '    panic!("changed my mind");']), name: "regret", object: id });
   const back = (await call("model_history", { object: id })) as Record<string, unknown>;
   check("session: a panic after an edit sends the part back", regret.ok === false && regret.line === 6 && (regret.rolledBack as { restored: string[] }).restored[0] === id && JSON.stringify(back.current) === JSON.stringify(before.current), { regret, back: back.current });
 

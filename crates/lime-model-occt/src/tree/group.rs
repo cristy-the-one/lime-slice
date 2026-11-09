@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::build::{build, BuildFail, Built};
-use super::ffi::{lime_tree_combine, lime_tree_extrude_cells, lime_tree_set_deadline, RawShape};
+use super::ffi::{lime_tree_combine, lime_tree_combine_checked, lime_tree_extrude_cells, lime_tree_set_deadline, RawShape};
 use super::k1::{encode_loops, extent_flags};
 use super::ops::{BooleanOp, EdgePick, Op};
 use super::resolve::{resolve, Steps};
@@ -333,7 +333,7 @@ pub(super) fn extrude_cells(from: Option<&Shape>, op: &Op) -> Result<(Shape, Val
 
 /// I19: one step's tool, built alone, for a combined group of `which`. Only booleans, extrudes, revolves, and lofts
 /// of that same boolean are tools.
-fn step_tool(step: &Op, which: BooleanOp) -> Result<Shape, String> {
+pub(super) fn step_tool(step: &Op, which: BooleanOp) -> Result<Shape, String> {
     let named = match which {
         BooleanOp::Fuse => "fuse",
         BooleanOp::Cut => "cut",
@@ -385,11 +385,35 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
         }));
     }
     let raws: Vec<*const RawShape> = tools.iter().map(Shape::raw).collect();
+    // --- docs/plan-native-recipes.md 7.1: a recipe's queued tools also say which of them changed nothing.
+    let queued = source.get("kind").and_then(Value::as_str) == Some("queue");
+    let mut missed: Vec<c_int> = vec![0; raws.len()];
+    // Plain booleans merge faces on one surface after each step: a queued group of them merges once at its end. The
+    // host never groups them with ops that do not merge.
+    let merge = c_int::from(steps.iter().all(|step| matches!(step, Op::Boolean { merge: true, .. })));
     let kept = Shape::made(|error| unsafe {
-        lime_tree_combine(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, error)
+        if queued {
+            lime_tree_combine_checked(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, merge, missed.as_mut_ptr(), error)
+        } else {
+            lime_tree_combine(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, error)
+        }
     })
     .map_err(BuildFail::plain)?;
-    let report = json!({ "tools": tools.len(), "failed": failed });
+    // Indexes of the steps, not of the tools that built. A plain boolean that misses is an ordinary step (it keeps the
+    // solid as it was, built alone too); an extrude, revolve or loft that changes nothing is refused alone, so only
+    // those count as missed.
+    let built: Vec<usize> = (0..count).filter(|index| !failed.iter().any(|row| row["index"] == json!(index))).collect();
+    let gone: Vec<usize> = missed
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| **m != 0)
+        .filter_map(|(at, _)| built.get(at).copied())
+        .filter(|index| !matches!(steps[*index], Op::Boolean { .. }))
+        .collect();
+    let mut report = json!({ "tools": tools.len(), "failed": failed });
+    if queued {
+        report["missed"] = json!(gone);
+    }
     Ok(Built {
         op: Op::Group {
             label,
@@ -407,5 +431,20 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
         sides: Vec::new(),
         report: Some(("combined", report)),
     })
+}
+
+/// --- docs/plan-native-recipes.md 7.1. A plain fuse or cut's tool built alone, and its box: what a recipe's queue reads
+/// before it holds the op back. The answer is `{min, max}`, or the sentence why the tool does not build.
+pub(super) fn tool_box_reply(op: &Op) -> Result<String, String> {
+    let which = match op {
+        Op::Boolean { op, .. } | Op::Extrude { op, .. } | Op::Revolve { op, .. } | Op::Loft { op, .. } => *op,
+        _ => return Err("Only a boolean, extrude, revolve, or loft has a tool of its own.".into()),
+    };
+    if !matches!(which, BooleanOp::Fuse | BooleanOp::Cut) {
+        return Err("Only a fuse or a cut is queued.".into());
+    }
+    let tool = step_tool(op, which)?;
+    let [x0, y0, z0, x1, y1, z1] = tool.bounds().ok_or_else(|| "The tool has no extent.".to_string())?;
+    Ok(json!({ "min": [x0, y0, z0], "max": [x1, y1, z1] }).to_string())
 }
 // --- end recipe lattices ---

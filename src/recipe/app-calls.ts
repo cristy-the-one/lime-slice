@@ -32,12 +32,13 @@ import { ID_MATRIX, type Mat3 } from "../mesh-place.ts";
 import { rootSpec } from "../model-primitive.ts";
 import { applyRequest, gotoRequest, joinOp, newSolidRequest, probeRequest } from "../model-request.ts";
 import { applyPose, IDENTITY_POSE, typedPoseOf, type Affine, type ObjectFrame } from "../model-space.ts";
-import { dropped, jumped, newTree, opLabel, pathTo, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PartitionModelOp } from "../model-tree.ts";
+import { dropped, jumped, newTree, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PartitionModelOp } from "../model-tree.ts";
 import { runEndingAt } from "../plugin-step.ts";
 import { GLOBAL_WORKPLANE, planePrimitive, type Workplane } from "../workplane.ts";
 import type { RecipeCall, RecipeCallSite, RecipeReply } from "./host.ts";
 import { answerPick, sketchOutline, type PickReads } from "./picks.ts";
 import { answerTextOutline } from "./text-outline.ts";
+import { queuedGuard, queueableOp, RecipeQueue } from "./queue.ts";
 
 type Body = Record<string, unknown>;
 
@@ -203,8 +204,109 @@ export class AppRecipeCalls {
     return this.parts.get(id);
   }
 
-  /** The handler the shared host calls (`runRecipe`). */
-  readonly call: RecipeCall = async (site) => this.answer(site);
+  /** The handler the shared host calls (`runRecipe`): through the run's queue once `useQueue` set one. */
+  readonly call: RecipeCall = async (site) => (this.queue ? this.queue.call(site, (s) => this.answer(s)) : this.answer(site));
+
+  /** --- docs/plan-native-recipes.md 7.1. The run's queue of booleans, as the MCP session keeps one. */
+  queue: RecipeQueue | null = null;
+  private readonly bakedOps = new WeakMap<object, Baked>();
+
+  /**
+   * Queues booleans for this run: `unread` are the built text's lines whose apply reply the recipe does not read
+   * (`unreadApplyLines`); `silent` is off for a run built again one by one.
+   */
+  useQueue(unread: ReadonlySet<number>, silent: boolean, timeLimitS: number, signal?: AbortSignal): RecipeQueue {
+    this.queue = new RecipeQueue({
+      tool: async (object, op) => {
+        const p = this.addressable(object);
+        if (!p || !p.solid || !queueableOp(op)) return null;
+        const baked = this.bake(p, structuredClone(op));
+        if ("reason" in baked) return null;
+        const kind = (baked.op as { op?: unknown }).op;
+        if (kind !== "fuse" && kind !== "cut") return null;
+        // Stateless, as native geometry is: it names no tree, so an engine without it answers an error and the op is
+        // built in its place.
+        let reply: Body;
+        try {
+          reply = await this.engine.open({ call: "toolBox", op: baked.op });
+        } catch {
+          return null;
+        }
+        const min = reply.min as Box["min"] | undefined;
+        const max = reply.max as Box["max"] | undefined;
+        if (!Array.isArray(min) || !Array.isArray(max)) return null;
+        this.bakedOps.set(op, baked);
+        return { kind, box: { min, max }, merge: (baked.op as { merge?: unknown }).merge === true };
+      },
+      partBox: (object) => this.parts.get(object)?.solid?.bounds ?? null,
+      build: async (object, ops, groups) => {
+        const p = this.addressable(object);
+        if (!p) return { ok: false, reason: `${object} is not a part of this run.` };
+        return this.applyQueued(p, () => this.queue?.stopped() ?? null, ops.map((q) => ({ baked: this.bakedOps.get(q.op)!, label: typeof q.op.label === "string" ? q.op.label : undefined })), groups);
+      },
+      applyOne: (site) => this.answer(site),
+    }, unread, { silent, timeLimitS, selected: () => this.selected, signal });
+    return this.queue;
+  }
+
+  /** Queued ops built as combined groups, then stored as sent, one step each (the MCP session's `applyQueued`). */
+  private async applyQueued(p: RunPart, stopped: () => string | null, ops: { baked: Baked; label?: string }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number; stopped?: true }> {
+    const from = p.tree.current;
+    const added: NodeId[] = [];
+    const back = async () => {
+      if (added.length > 0) await this.back(p, from, added[0]!);
+    };
+    for (const members of groups) {
+      const why = stopped();
+      if (why) {
+        await back();
+        return { ok: false, reason: why, stopped: true };
+      }
+      const steps = members.map((i) => ops[i]!.baked.op);
+      const combine = (steps[0] as { op?: "fuse" | "cut" }).op!;
+      const group: GroupOp = { kind: "group", label: `${steps.length} queued ${combine}s`, source: { kind: "queue", ops: steps.length }, steps, combine };
+      const baked: Baked = { op: group, typed: { kind: "queue", ops: steps.length } };
+      const before = p.solid;
+      const probed = await this.probeBaked(p, baked, false);
+      const done = probed.ok === true ? await this.applyBaked(p, baked, {}) : probed;
+      const node = parseNode(done.node);
+      if (done.ok === true && node !== null) added.push(node);
+      const failedStep = typeof done.failedStep === "number" ? members[done.failedStep - 1] : undefined;
+      if (done.ok !== true) {
+        await back();
+        return { ok: false, reason: String(done.reason ?? "The queued boolean was refused."), ...(failedStep !== undefined ? { index: failedStep } : {}) };
+      }
+      const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
+      const left = report.failed?.[0];
+      const missed = report.missed?.[0];
+      if (left || missed !== undefined) {
+        await back();
+        return { ok: false, reason: left ? left.reason : `The ${combine} does not change the part.`, index: members[left ? left.index : missed!]! };
+      }
+      const guard = queuedGuard(steps, before, p.solid);
+      if (guard) {
+        await back();
+        return { ok: false, reason: guard };
+      }
+    }
+    const ids = ops.map(() => this.reserve(p));
+    const reply = await this.engine.tree(p.tree.key, p.tree.current, { call: "unfold", key: p.tree.key, from, last: added[added.length - 1], nodes: ids.map((id, i) => ({ id, op: ops[i]!.baked.op })) });
+    if (typeof reply.error === "string" && reply.error) {
+      await back();
+      return { ok: false, reason: plainModelError(reply.error) };
+    }
+    const tip = ids[ids.length - 1]!;
+    p.tree = rechained(p.tree, from, added, ops.map((row, i) => ({
+      id: ids[i]!,
+      op: row.baked.op,
+      label: row.label?.trim() ? row.label.trim().slice(0, 80) : opLabel(row.baked.op),
+      fingerprint: i === ops.length - 1 ? (p.solid?.fingerprint ?? null) : null,
+      builtWith: ids[0]!,
+    })));
+    if (p.solid) p.solid = { ...p.solid, id: tip };
+    if (p.body) p.body = { ...p.body, id: tip };
+    return { ok: true };
+  }
 
   private add(part: RunPart): RunPart {
     this.parts.set(part.id, part);

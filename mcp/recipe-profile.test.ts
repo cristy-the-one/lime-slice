@@ -33,6 +33,8 @@ if (!findLust()) {
 }
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-recipe-profile-"));
 process.env.LIME_MCP_MODEL_TIMEOUT_S = process.env.LIME_MCP_MODEL_TIMEOUT_S ?? "60";
+// This counts meshes and booleans step by step: the host's queued booleans (recipe-queue.test.ts) would group them.
+process.env.LIME_RECIPE_QUEUE = "0";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail: unknown = "") {

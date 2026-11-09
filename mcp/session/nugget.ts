@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, listExtra, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "../plugins.ts";
 import { bodyProblem, carriedIngredients, ingredientsDir, isIngredientId, lineMap, lineText, moduleOf, resolveIngredients } from "../ingredients.ts";
-import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, writePreset } from "../nuggets.ts";
+import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, SHIPPED_LESSONS, writePreset } from "../nuggets.ts";
 import { apiProblem, clashOf, keptBesideTitle, marksText, oneFileProblem, rawHeader, readMarks, withMark, type ImportMark } from "../../src/plugins/share.ts";
 import { lfOnly, RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { OP_KINDS } from "../schema.ts";
@@ -74,8 +74,10 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
     }
     const n = Number(/\/(\d+)$/.exec(id)?.[1]);
     if (!Number.isInteger(n)) return refuse("bad-name", "A lesson's id is <about>/<n>, as find lists it.");
-    const row = listLessons().find((lesson) => lesson.n === n);
-    if (action === "get") return row ? { ok: true, kind, id: `${row.about}/${row.n}`, about: row.about, created: row.created, data: { text: row.text } } : refuse("lesson-not-found", `No lesson ${id}.`);
+    const shipped = SHIPPED_LESSONS.find((lesson) => lesson.n === n && id === `${lesson.about}/${lesson.n}`);
+    const row = shipped ?? listLessons().find((lesson) => lesson.n === n);
+    if (action === "get") return row ? { ok: true, kind, id: `${row.about}/${row.n}`, about: row.about, created: row.created, ...(shipped ? { shipped: true } : {}), data: { text: row.text } } : refuse("lesson-not-found", `No lesson ${id}.`);
+    if (action === "remove" && shipped) return refuse("bad-action", "This lesson ships with Lime Slice and stays.");
     if (action === "remove") return removeLesson(n) ? { ok: true, kind, id } : refuse("lesson-not-found", `No lesson ${id}.`);
   }
   return refuse("bad-action", "action is find, get, save, or remove; kind is plugin, ingredient, preset, or lesson.");
@@ -152,6 +154,10 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
     }
   }
   if (want("lesson")) {
+    for (const l of SHIPPED_LESSONS) {
+      const s = score(`${l.about} ${l.text} ${l.words}`);
+      if (s) rows.push({ score: s, row: { kind: "lesson", id: `${l.about}/${l.n}`, shipped: true, data: { text: l.text } } });
+    }
     for (const l of listLessons().reverse()) {
       const s = score(`${l.about} ${l.text}`);
       if (s) rows.push({ score: s, row: { kind: "lesson", id: `${l.about}/${l.n}`, data: { text: l.text } } });

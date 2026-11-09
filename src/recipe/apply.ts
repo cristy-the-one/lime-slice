@@ -12,7 +12,8 @@ import { plainModelError } from "../app/model-error.ts";
 import { solidView, type SolidView } from "../modeling/model-calls.ts";
 import { markedRun, stampValue } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
-import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type RecipeLimits } from "./host.ts";
+import { builtText, DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type RecipeLimits } from "./host.ts";
+import { unreadApplyLines } from "./unread-applies.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import type { RecipeRunner } from "./rebuild.ts";
 
@@ -77,8 +78,24 @@ export type PluginRunOutcome =
     } & RunTrace)
   | ({ ok: false; reason: string; line?: number; notes: string[] } & RunTrace);
 
-/** Build the plugin and run it. On a failure the engine shows the given part's step again. */
+/**
+ * Build the plugin and run it. On a failure the engine shows the given part's step again. A queued boolean refused
+ * after the plugin moved past it (docs/plan-native-recipes.md 7.1) takes that run out of the engine and runs it again
+ * one by one, so the plugin sees the refusal at its own line.
+ */
 export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOutcome> {
+  const first = await runFreshOnce(input, true);
+  if (first.ok || !first.replay) return first;
+  const { engine, part } = input;
+  if (part && first.dropFrom !== undefined) await engine.tree(part.tree.key, part.tree.current, { call: "drop", key: part.tree.key, node: first.dropFrom });
+  for (const key of first.close ?? []) await engine.open({ call: "close", key });
+  const nextId = first.nextId ?? part?.tree.nextId;
+  const again = await runFreshOnce({ ...input, part: part && nextId !== undefined ? { ...part, tree: { ...part.tree, nextId: Math.max(nextId, part.tree.nextId) } } : part }, false);
+  again.notes.unshift(`Built one by one: the tool at line ${first.replay.line} was refused inside a queued boolean (${first.replay.reason}).`);
+  return again;
+}
+
+async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<PluginRunOutcome & { replay?: { line: number; reason: string } }> {
   const { part, engine } = input;
   const chordMm = input.env.chordMm;
   // The host builds the code; the data a kept plugin carries answers `data {name}` after the step's own.
@@ -102,8 +119,18 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
     calls = new AppRecipeCalls({ ...part, solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
+  const queue = calls.useQueue(unreadApplyLines(builtText(built.source, input.suffix ?? "")), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal, input.onProgress);
+  // `done` builds what is still queued.
+  if (out.ok && out.done && queue.holding) {
+    const flushed = await queue.flushAll();
+    const stop = flushed && !flushed.ok ? flushed.error : queue.stopped();
+    if (stop) {
+      out.ok = false;
+      out.reason = stop;
+    }
+  }
   const notes = [...calls.notes, ...(out.notes ?? [])];
   const given = calls.given;
   const opened = calls.all.filter((row) => row.origin !== "given").map((row) => row.tree.key);
@@ -113,8 +140,9 @@ export async function runPluginFresh(input: PluginRunInput): Promise<PluginRunOu
   };
   const refuse = async (reason: string, extra: { line?: number } = {}) => {
     await back();
-    return { ok: false as const, reason, ...extra, notes, ...trace };
+    return { ok: false as const, reason, ...extra, notes, ...trace, ...(queue.replay ? { replay: queue.replay } : {}) };
   };
+  for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${row.line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
   if (!out.ok || !out.done) return refuse(out.reason ?? "The plugin failed.", out.line !== undefined ? { line: out.line } : {});
   // --- Several parts (O4 as built in the window): every part the run made is kept, and the given part when the run
   // changed it, each stamped with the same run id and values and its own fingerprint, as the MCP stamps them.
