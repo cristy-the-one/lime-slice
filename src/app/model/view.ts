@@ -44,6 +44,7 @@ import { chooseStudyMesh } from "../../sim/study-mesh.ts";
 import { closeSplitPrint } from "../../ui/split-print.ts";
 import { closeTransitionCard } from "../../ui/transition-card.ts";
 import { S } from "./shared";
+import { warmMesh } from "./commit";
 import { hideEmpty } from "./create";
 import { treeOf } from "./edges";
 import { mm } from "./engine";
@@ -105,6 +106,8 @@ export function present(parsed: ParsedSolid, message: string, view: Lens | null 
   else if (openModelTool() === "check") refreshModelCheck();
   // --- Print transitions: Prepare's Re-aim runs once that object's solid is on screen.
   if (S.reaimQueued) runQueuedReaim();
+  // The plate takes this solid's mesh when Model is left: its cracks are closed meanwhile, off the UI's path.
+  if (!view) warmMesh(parsed);
 }
 
 export function requestModelCheck(objectId: string) {
