@@ -1,9 +1,10 @@
 /**
- * The Tandem light in the top bar: is the live bridge to an MCP server off, on (waiting for one), or connected? In the
- * Tandem beta it always shows, and the person can turn the bridge on or off here. Turning it on makes the app keep a
- * random token in a file of its own (loopback only; see src-tauri/src/bridge.rs); the bundled MCP server reads that
- * file, and "Copy MCP settings" gives another MCP client the two lines it needs. The token never stays in the page.
- * Outside the beta the light shows only while a bridge runs (started by the bridge launcher).
+ * The Tandem light in the top bar: is the live bridge to an MCP server off, on (waiting for one), or connected? It
+ * always shows (in the release app too since 6.2.0; before, only in the Tandem beta or while a launcher's bridge ran),
+ * and the person can turn the bridge on or off here. Turning it on makes the app keep a random token in a file of its
+ * own (loopback only; see src-tauri/src/bridge.rs); the app's bundled MCP server reads that file (mcp/bridge-client.ts:
+ * the release's reads the release app's, the beta's the beta's), and "Copy MCP settings" gives another MCP client the
+ * two lines it needs. The token never stays in the page.
  */
 import { pushToast } from "../ui/toasts.ts";
 
@@ -43,7 +44,8 @@ export function mountBridgeLight(): void {
   const show = (status: BridgeStatus) => {
     current = status;
     const words = bridgeLightText(status);
-    light.hidden = !status.beta && status.state === "off";
+    // Always shown since 6.2.0: the release app's own MCP server reads its token file as the beta's does.
+    light.hidden = false;
     light.dataset.state = status.state;
     text.textContent = words.short;
     say.textContent = words.long;
