@@ -18,7 +18,7 @@ ttf-parser = "0.25"
 # geom2d: a glyph that overlaps itself is united in 2D before it is built, and thin strokes are found by an opening.
 lime-recipe = { path = "../lime-recipe" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json.workspace = true
 sha2 = "0.10"
 
 [build-dependencies]

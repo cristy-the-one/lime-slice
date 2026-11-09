@@ -23,7 +23,7 @@ lime-sim-bridge = { path = "../crates/lime-sim-bridge", features = ["gpu"] }
 lime-slice-core = { path = "../crates/lime-slice-core" }
 mimalloc = { version = "0.1", default-features = false }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json.workspace = true
 tauri = { version = "2", features = ["image-png"] }
 url = "2"
 tauri-plugin-dialog = "2"

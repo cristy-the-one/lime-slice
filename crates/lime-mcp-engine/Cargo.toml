@@ -17,5 +17,5 @@ lime-model-load = { path = "../lime-model-load" }
 lime-sim = { path = "../lime-sim" }
 lime-sim-bridge = { path = "../lime-sim-bridge", features = ["gpu"] }
 lime-slice-core = { path = "../lime-slice-core" }
-serde_json = "1"
+serde_json.workspace = true
 mimalloc = { version = "0.1", default-features = false }
