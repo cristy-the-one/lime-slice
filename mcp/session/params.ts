@@ -50,6 +50,7 @@ function mcpModelRecord(this: Session): Record<string, unknown> | null {
   for (const obj of this.objects) if (obj.recipe) recipes[obj.id] = { recipe: obj.recipe, ...(obj.buildLog ? { buildLog: obj.buildLog } : {}) };
   // A recipe_run source is kept once, by name; each object names it.
   for (const obj of this.objects) if (obj.rustRecipe && this.rustRecipes.has(obj.rustRecipe)) recipes[obj.id] = { ...(recipes[obj.id] as object | undefined), rust: obj.rustRecipe };
+  for (const obj of this.objects) if (obj.linkedTo) recipes[obj.id] = { ...(recipes[obj.id] as object | undefined), linked: obj.linkedTo };
   const used = new Set(this.objects.map((obj) => obj.rustRecipe).filter((key): key is string => !!key));
   for (const [key, row] of this.rustRecipes) if (row.changed?.some((id) => this.find(id))) used.add(key);
   // --- Plugin steps (D7). A draft a stamped step names is kept too: it is that step's code.
@@ -112,8 +113,9 @@ function adoptMcpModel(this: Session, value: Record<string, unknown> | undefined
   if (recipes && typeof recipes === "object") {
     for (const [id, saved] of Object.entries(recipes)) {
       const obj = this.find(id);
-      const row = saved as { recipe?: Recipe; buildLog?: PlateObject["buildLog"]; rust?: unknown } | null;
+      const row = saved as { recipe?: Recipe; buildLog?: PlateObject["buildLog"]; rust?: unknown; linked?: unknown } | null;
       if (obj && typeof row?.rust === "string" && this.rustRecipes.has(row.rust)) obj.rustRecipe = row.rust;
+      if (obj && typeof row?.linked === "string" && row.linked !== obj.id && this.find(row.linked)) obj.linkedTo = row.linked;
       if (!obj || !row?.recipe || typeof row.recipe !== "object") continue;
       obj.recipe = row.recipe;
       if (row.buildLog && Array.isArray(row.buildLog.steps) && typeof row.buildLog.base === "string") obj.buildLog = row.buildLog;

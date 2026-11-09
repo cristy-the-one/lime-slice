@@ -193,13 +193,41 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
     const { joint: _old, ...plain } = member;
     if (input.joint === null) member = plain;
     else {
-      const row = input.joint as Record<string, unknown>;
-      const allowed = row.kind === "hinge" ? ["kind", "pivot", "axis", "min", "max"] : ["kind", "pivot", "cone"];
+      const given = input.joint as Record<string, unknown>;
+      const old = original.members.find((one) => one.object === obj.id)?.joint ?? member.joint;
+      // A joint redefined on a part that already has one of its kind keeps what it leaves out: its pivot and axis.
+      const row = old && (given.kind === undefined || given.kind === old.kind)
+        ? { ...(old.kind === "hinge" ? { pivot: old.pivot, axis: old.axis } : { pivot: old.pivot }), kind: old.kind, ...given } as Record<string, unknown>
+        : given;
+      const allowed = row.kind === "hinge" ? ["kind", "pivot", "axis", "min", "max", "zero"] : ["kind", "pivot", "cone", "zero"];
       if (Object.keys(row).some((key) => !allowed.includes(key))) return refuse("bad-placement", "The joint contains a field its kind does not take; see guide {kind: pose}.");
-      const raw = row.kind === "hinge" ? { ...row, angle: 0 } : { ...row, rest: rotationQuaternion(memberPose(member).m) };
+      if (row.zero !== undefined && row.zero !== "keep" && row.zero !== "here") return refuse("bad-placement", "zero is \"keep\" or \"here\".");
+      const { zero: wanted, ...fields } = row;
+      const same = (a: readonly number[] | undefined, b: unknown): boolean => !!a && Array.isArray(b) && a.length === b.length && a.every((v, i) => Math.abs(v - (b[i] as number)) < 1e-9);
+      const sameFrame = !!old && old.kind === row.kind && same(old.pivot, row.pivot) && (old.kind !== "hinge" || same(old.axis, row.axis));
+      // The zero is where angle 0 is. An existing joint keeps it unless asked for "here"; a new one, or one whose pivot or
+      // axis moved (so its old zero has no meaning), takes the part's present pose.
+      if (wanted === "keep" && !sameFrame) return refuse("bad-placement", old ? "zero: \"keep\" needs the same kind of joint on the same pivot and axis; give zero: \"here\" to make the present pose the new zero." : "There is no earlier joint to keep a zero from.");
+      const keep = sameFrame && wanted !== "here";
+      let raw: Record<string, unknown>;
+      if (fields.kind === "hinge") raw = { ...fields, angle: 0 };
+      else raw = { ...fields, rest: keep && old?.kind === "ball" && old.rest ? old.rest : rotationQuaternion(memberPose(member).m) };
       const joint = readJoint(raw);
       if (!joint) return refuse("bad-placement", "A joint needs a finite pivot, a nonzero hinge axis and valid limits containing its zero angle, or a ball cone from 0 to 180 degrees.");
       member = { ...plain, joint };
+      if (keep && old?.kind === "hinge" && joint.kind === "hinge" && (old.angle ?? 0) !== 0) {
+        // The pose stays: its angle from the kept zero is the old one, and a call's angle is measured from that zero. The
+        // new limits may exclude the old angle only when this call gives an angle that brings it back inside.
+        const was = old.angle ?? 0;
+        const target = input.angle as number | undefined;
+        const held = { ...joint, angle: was };
+        if (target === undefined && !readJoint(held)) return refuse("bad-placement", `The part stands at ${was} degrees from its zero, outside the new limits. Give angle inside them, or zero: "here".`);
+        if (target !== undefined && (!Number.isFinite(target) || (joint.min !== undefined && target < joint.min) || (joint.max !== undefined && target > joint.max))) return refuse("bad-placement", "The angle is outside the new limits.");
+        const { min: _min, max: _max, ...open } = held;
+        const turned = turnHinge({ ...plain, joint: open }, (target ?? was) - was);
+        if ("reason" in turned) return refuse("bad-placement", turned.reason);
+        member = { ...turned, joint: { ...held, angle: target ?? was } };
+      }
     }
     const next = withMember(assembly, member);
     if ("reason" in next) return refuse("bad-placement", next.reason);

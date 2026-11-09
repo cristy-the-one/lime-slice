@@ -319,7 +319,7 @@ export const KIND_GUIDES: Record<string, string> = {
   ].join("\n"),
   pose: [
     "Pose parts in an assembly without changing their print layout. First join each part with model_place {object, to}.",
-    "Set a hinge with model_place {object:<leg>, joint:{kind:\"hinge\", pivot:[0,0,0], axis:[0,0,1], min:-45, max:90}}. Pivot and axis are in that part's own frame; the current position is angle zero. A ball uses {kind:\"ball\", pivot:[0,0,0], cone:45}. Remove either with joint:null.",
+    "Set a hinge with model_place {object:<leg>, joint:{kind:\"hinge\", pivot:[0,0,0], axis:[0,0,1], min:-45, max:90}}. Pivot and axis are in that part's own frame; the current position is angle zero. A ball uses {kind:\"ball\", pivot:[0,0,0], cone:45}. Remove either with joint:null. Redefining a joint keeps its zero (joint:{min,max} only changes limits); joint:{zero:\"here\"} makes the present pose the zero. model_check {object, sweep:{from,to,step}} finds the first angle where the part meets a fixed one.",
     "Turn a hinge to an absolute angle with model_place {object:<leg>, angle:30}; its limits clamp the turn and its children follow.",
     "Drag a claw using model_place {object:<claw>, reach:{at:[10,0,0], to:[100,20,30]}}: at is in the claw's own frame, to is in model space. Consecutive joints turn toward the target; the first fixed parent is the anchor. The reply gives moved parts, changed hinge angles, final point, distanceMm and reached, even when limits prevent reaching it.",
     "plate_list reports aligned for a hinge: the angle that removes its current twist relative to its parent, even after the hinge has turned. A half-turn perpendicular to the hinge has no unique alignment.",

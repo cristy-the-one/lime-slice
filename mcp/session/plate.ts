@@ -578,10 +578,27 @@ async function objectRemove(this: Session, id: string): Promise<Record<string, u
   return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
 }
 
+/**
+ * What lets a copy rebuild: the original's history under the copy's own key (the modeler builds it again on first use),
+ * its recipe and build log, and its committed solid. Copies share no mutable state with the original.
+ */
+function copiedModel(source: PlateObject, id: string): Pick<PlateObject, "tree" | "solid" | "platedNode" | "treeStale" | "buildLog" | "recipe"> {
+  return {
+    tree: source.tree ? { ...source.tree, key: `mcp-${id}` } : null,
+    solid: source.solid,
+    platedNode: source.platedNode,
+    ...(source.tree ? { treeStale: true } : {}),
+    ...(source.buildLog ? { buildLog: structuredClone(source.buildLog) } : {}),
+    ...(source.recipe ? { recipe: structuredClone(source.recipe) } : {}),
+  };
+}
+
 function objectDuplicate(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const source = this.find(String(input.object));
   if (!source) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const count = typeof input.count === "number" ? input.count : 1;
+  const linked = input.linked === true;
+  let joined = false;
   this.remember("Duplicate");
   const made: string[] = [];
   for (let i = 0; i < count; i += 1) {
@@ -597,10 +614,8 @@ function objectDuplicate(this: Session, input: Record<string, unknown>): Record<
       offset: { ...source.offset },
       modelPose: { m: [...source.modelPose.m] as PlateObject["modelPose"]["m"], t: [...source.modelPose.t] as PlateObject["modelPose"]["t"] },
       workplane: { source: source.workplane.source, origin: [...source.workplane.origin] as Workplane["origin"], turn: [...source.workplane.turn] as Workplane["turn"] },
-      tree: null,
-      solid: null,
+      ...copiedModel(source, id),
       probes: new Map(),
-      platedNode: null,
       supportEdits: source.supportEdits.map((entry) => structuredClone(entry)),
       supportPaint: source.supportPaint.map((disk) => ({ ...disk, p: [...disk.p] as typeof disk.p, n: [...disk.n] as typeof disk.n })),
       seamPaint: source.seamPaint.map((disk) => structuredClone(disk)),
@@ -611,11 +626,24 @@ function objectDuplicate(this: Session, input: Record<string, unknown>): Record<
       ...(source.jointLimits ? { jointLimits: structuredClone(source.jointLimits) } : {}),
     };
     delete copy.chain;
+    if (linked) copy.linkedTo = source.linkedTo ?? source.id;
+    else delete copy.linkedTo;
     this.objects.push(copy);
     made.push(id);
+    // The copy sits in the original's assembly on the same parent, with the same joint at the same angle and the same
+    // numbers, so it stands where the original does until it is placed.
+    const assemblies = this.liveAssemblies();
+    const row = assemblyOf(assemblies, source.id);
+    const member = row?.members.find((one) => one.object === source.id);
+    if (row && member && member.parent !== null) {
+      this.assemblies = assemblies.map((one) => one === row ? { ...one, members: [...one.members, { ...structuredClone(member), object: id }] } : one);
+      joined = true;
+    }
   }
   this.selected = made[made.length - 1] ?? source.id;
-  return { ok: true, objects: made, label: "Duplicate" };
+  const kept = source.recipe || source.buildLog ? "Each copy keeps the original's recipe and history, so model_build {object} rebuilds it." : "";
+  const note = [joined ? "Each copy joined the original's assembly on the same parent with the same joint, angle and numbers, so it sits on the original until model_place moves it." : "", linked ? "Linked: rebuilding or committing the original rebuilds each copy; committing a copy unlinks it." : "", kept].filter(Boolean).join(" ");
+  return { ok: true, objects: made, label: "Duplicate", ...(joined ? { assembly: assemblyOf(this.assemblies, made[0]!)?.name } : {}), ...(linked ? { linked: source.linkedTo ?? source.id } : {}), ...(note ? { note } : {}) };
 }
 
 /**
