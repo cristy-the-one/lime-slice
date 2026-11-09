@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub mod opt;
+
 /// Windows `CREATE_NO_WINDOW`: lust and the recipe are console programs, which would otherwise flash a window.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -472,6 +474,8 @@ pub struct BuildOutput {
     pub exe: Option<PathBuf>,
     /// The slot's `main.rs`, which lust's diagnostics name.
     pub main: PathBuf,
+    /// Which program the build left: `opt` (lust's optimised build) or `tcc`.
+    pub compiler: &'static str,
 }
 
 /// The slots a root holds, as the MCP server's host keeps them (mcp/recipe.ts): a warm crate per slot, one lust daemon.
@@ -491,6 +495,15 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     );
     write_if_changed(&dir.join("Cargo.toml"), &manifest)?;
     let main = dir.join("src").join("main.rs");
+    // lust's optimised build (`--opt=bg`, zig cc) when the bundled zig is here; tcc otherwise (opt.rs).
+    let opt = opt::opt_build(lust);
+    let cache = root.join("cache");
+    if opt.mode != opt::OptMode::Off {
+        opt::drop_untrusted(&cache);
+        if fs::read_to_string(&main).is_ok_and(|old| old != text) {
+            opt::distrust_running(&cache);
+        }
+    }
     fs::write(&main, text)?;
     let exe = dir.join(if cfg!(windows) { "recipe.exe" } else { "recipe" });
     let _ = fs::remove_file(&exe);
@@ -498,9 +511,12 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     let out_path = dir.join("build.out");
     let err_path = dir.join("build.err");
     let mut command = quiet(lust);
+    command.arg("build").arg("--sandbox");
+    if let Some(arg) = opt.arg() {
+        command.arg(arg);
+    }
     command
-        .arg("build")
-        .arg("--sandbox")
+        .envs(opt.env.iter().map(|(k, v)| (*k, v)))
         .arg("--json")
         .arg(&main)
         .arg("--manifest-path")
@@ -508,7 +524,7 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
         .arg("-o")
         .arg(&exe)
         .env("LUST_DAEMON_SOCKET", root.join("lust.sock"))
-        .env("LUST_CACHE_DIR", root.join("cache"))
+        .env("LUST_CACHE_DIR", &cache)
         .stdin(Stdio::null())
         .stdout(File::create(&out_path)?)
         .stderr(File::create(&err_path)?);
@@ -530,7 +546,8 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     let stdout = fs::read_to_string(&out_path).unwrap_or_default();
     let stderr = fs::read_to_string(&err_path).unwrap_or_default() + &note;
     let made = code == Some(0) && exe.is_file();
-    Ok(BuildOutput { code, stdout, stderr, exe: made.then_some(exe), main })
+    let compiler = opt.built_with(&stderr);
+    Ok(BuildOutput { code, stdout, stderr, exe: made.then_some(exe), main, compiler })
 }
 
 /// The crate's copy beside the slots, with a manifest of only name, version and edition (lust reads that shape without

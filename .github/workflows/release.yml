@@ -244,6 +244,14 @@ jobs:
         shell: bash
         run: touch src-tauri/resources/mcp/tandem-beta.identity
 
+      # The release's own server mirrors into the release app once the person turns its Tandem light on: it reads that
+      # app's bridge token file (com.limeslice.slicer, port 43119), as the beta's reads only the beta's
+      # (mcp/bridge-client.ts). A checkout's server and an unmarked bundle read none.
+      - name: Mark the release's MCP server
+        if: "!(github.ref_type == 'tag' && contains(github.ref_name, '-tandem-beta.'))"
+        shell: bash
+        run: touch src-tauri/resources/mcp/stable.identity
+
       # recipe_run builds recipes with lust (tools/lust/LUST_REV) and its tinycc. They ship in mcp/lust beside
       # server.mjs, which finds them there (mcp/recipe.ts findLust). The Intel dmg carries none: this runner is
       # arm64, so its lust would be too, and lust's macOS build is proven on arm64 only. recipe_run answers
@@ -260,6 +268,15 @@ jobs:
           path: ${{ runner.temp }}/lust
           key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
 
+      # zig for lust's optimised recipe builds (`--opt=bg`, zig cc): the official release for this runner, checked
+      # against tools/lust/ZIG_SHA256, staged trimmed in mcp/lust/zig by stage.sh.
+      - name: Cache zig
+        if: matrix.label != 'macos-intel'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/ZIG_VERSION', 'tools/lust/ZIG_SHA256') }}
+
       # On Windows install.sh loads the Visual Studio developer environment itself (tools/lust/msvc-env.sh).
       - name: Build lust and stage it beside the MCP server
         if: matrix.label != 'macos-intel'
@@ -268,12 +285,14 @@ jobs:
         run: |
           set -euo pipefail
           tools/lust/install.sh "$RUNNER_TEMP/lust" > /dev/null
-          tools/lust/stage.sh "$RUNNER_TEMP/lust" src-tauri/resources/mcp/lust
+          zig=$(tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)
+          tools/lust/stage.sh "$RUNNER_TEMP/lust" src-tauri/resources/mcp/lust "$zig"
 
-      # A recipe built and run by the staged copy, with the bundled server's engine.
+      # A recipe built and run by the staged copy, with the bundled server's engine; then the same with the staged
+      # zig, every build lust's optimised one (LIME_LUST_OPT=now), and the background build landing (recipe-opt).
       - name: Run recipes with the staged lust
         if: matrix.label != 'macos-intel'
-        timeout-minutes: 10
+        timeout-minutes: 20
         shell: bash
         env:
           LIME_RECIPE_REQUIRED: "1"
@@ -281,7 +300,12 @@ jobs:
           set -euo pipefail
           exe=""
           [ "$RUNNER_OS" = "Windows" ] && exe=".exe"
-          LIME_LUST="$PWD/src-tauri/resources/mcp/lust/bin/lust$exe" node --experimental-strip-types mcp/recipe.test.ts
+          export LIME_LUST="$PWD/src-tauri/resources/mcp/lust/bin/lust$exe"
+          LIME_LUST_OPT=0 node --experimental-strip-types mcp/recipe.test.ts
+          test -x "src-tauri/resources/mcp/lust/zig/zig$exe"
+          LIME_LUST_OPT=now node --experimental-strip-types mcp/recipe.test.ts
+          LIME_ZIG="$PWD/src-tauri/resources/mcp/lust/zig/zig$exe" LIME_LUST_OPT_CACHE="$RUNNER_TEMP/lime-opt-cache" node --experimental-strip-types mcp/recipe-opt.test.ts
+          du -sh src-tauri/resources/mcp/lust src-tauri/resources/mcp/lust/zig
 
       # Without these a Windows install that lacks the VC++ Redistributable
       # stops at start with "MSVCP140.dll was not found".
@@ -329,10 +353,12 @@ jobs:
           set -euo pipefail
           deb=$(ls target/release/bundle/deb/*.deb | head -n 1)
           listing=$(dpkg-deb -c "$deb")
-          for f in mcp/lust/bin/lust mcp/lust/bin/lust-core mcp/lust/lib/lust/tcc/bin/tcc; do
+          for f in mcp/lust/bin/lust mcp/lust/bin/lust-core mcp/lust/lib/lust/tcc/bin/tcc mcp/lust/zig/zig; do
             grep -qE "^-rwxr-xr-x .*/$f\$" <<< "$listing" || { echo "$f is missing or not executable in $deb"; exit 1; }
           done
           # Here-strings, not `echo | grep -q`: grep -q stops reading early, echo then fails with a broken pipe, and
           # pipefail turns that into a false "missing" (the v4.8.0 release run).
           grep -q "mcp/lust/COPYING-tinycc" <<< "$listing" || { echo "tinycc's licence is missing in $deb"; exit 1; }
+          grep -q "mcp/lust/LICENSE-zig" <<< "$listing" || { echo "zig's licence is missing in $deb"; exit 1; }
+          grep -q "mcp/lust/zig/lib/libc/glibc/LICENSES" <<< "$listing" || { echo "glibc's licences are missing in $deb"; exit 1; }
           grep -q libc6-dev <<< "$(dpkg-deb -f "$deb" Depends)" || { echo "$deb does not depend on libc6-dev"; exit 1; }

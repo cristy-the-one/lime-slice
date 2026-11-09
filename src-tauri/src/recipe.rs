@@ -104,6 +104,7 @@ pub async fn recipe_build(app: AppHandle, slot: u32, source: String) -> Result<V
             "stderr": out.stderr,
             "exe": out.exe.map(|p| p.to_string_lossy().into_owned()),
             "main": out.main.to_string_lossy(),
+            "compiler": out.compiler,
         }))
     })
     .await

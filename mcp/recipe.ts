@@ -23,6 +23,7 @@ import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type 
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
+import { builtWith, distrustRunning, dropUntrusted, optBuild, withEnv } from "./recipe-opt.ts";
 
 export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, RECIPE_TOOLS, runRecipe } from "../src/recipe/host.ts";
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
@@ -200,6 +201,7 @@ export class RecipeHost {
     return dir;
   }
 
+  /** lust's environment for this host: its daemon socket, and its cache, where `opt/` keeps the optimised binaries. */
   private lustEnv(): NodeJS.ProcessEnv {
     // One daemon for every slot: its socket path is fixed under the root, not the current directory.
     return { ...process.env, LUST_DAEMON_SOCKET: join(this.root, "lust.sock"), LUST_CACHE_DIR: join(this.root, "cache") };
@@ -226,10 +228,15 @@ export class RecipeHost {
     const slot = this.slotFor(name, crateMajor);
     const main = join(slot, "src", "main.rs");
     const exe = join(slot, process.platform === "win32" ? "recipe.exe" : "recipe");
+    // lust's optimised build (`--opt=bg`, zig cc) when the bundled zig is here; tcc otherwise (mcp/recipe-opt.ts).
+    const opt = optBuild(avail.lust);
+    const cache = join(this.root, "cache");
+    if (opt.mode !== "off") dropUntrusted(cache);
     return buildRecipe(async (text) => {
+      if (opt.mode !== "off" && existsSync(main) && readFileSync(main, "utf8") !== text) distrustRunning(cache);
       writeFileSync(main, text);
-      const r = await run(avail.lust, ["build", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], this.lustEnv(), limitMs);
-      return { ...r, exe, main };
+      const r = await run(avail.lust, ["build", "--sandbox", ...opt.args, "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
+      return { ...r, exe, main, compiler: builtWith(opt, r.stderr) };
     }, source, autofix, suffix);
   }
 

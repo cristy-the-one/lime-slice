@@ -12,8 +12,10 @@ const { version } = JSON.parse(readFileSync(`${root}package.json`, "utf8"));
 
 // The folder also holds the engine library; only the scripts are rebuilt.
 for (const name of ["server.mjs", "engine-worker.mjs"]) rmSync(`${outdir}/${name}`, { force: true });
-// The release workflow adds this only for a beta tag. A later stable build must not inherit it.
+// The release workflow adds one of these to an installer's server (mcp/bridge-client.ts): tandem-beta for a beta tag,
+// stable for any other. A later build must not inherit either.
 rmSync(`${outdir}/tandem-beta.identity`, { force: true });
+rmSync(`${outdir}/stable.identity`, { force: true });
 await build({
   entryPoints: [`${root}mcp/server.ts`, `${root}mcp/engine-worker.ts`],
   bundle: true,
