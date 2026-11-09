@@ -10,6 +10,7 @@ import { isComposite } from "../../src/modeling/compose.ts";
 import { CHANGES_NOTHING, type CallMeta, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, WHILE_BUSY, type WorkJob, replySeconds } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { leanReply } from "../lean.ts";
 
 /** The call's answer, or a job handle when it is not done within replySeconds() or its request is cancelled. */
 function detachable(this: Session, name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController, request?: AbortSignal): Promise<Record<string, unknown>> {
@@ -130,7 +131,8 @@ async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta): Promise
     }
     images.push(...imagesOf(value));
     results.push(value);
-    done.push({ step: n, tool, result: value });
+    // The plan reads each step whole (a reference may name any field); its reply carries the lean form, as a call from the chat does.
+    done.push({ step: n, tool, result: leanReply(tool, (resolved.value ?? {}) as Record<string, unknown>, value) });
     // A plan can run for minutes. Persist the plate at the completed step boundary, before starting another step;
     // the ordinary delayed autosave waits for the whole plan's inflight call and would otherwise lose every step.
     const completed = done.filter((row) => (row.result as Record<string, unknown> | undefined)?.ok !== false).map((row) => ({ step: Number(row.step), tool: String(row.tool) }));

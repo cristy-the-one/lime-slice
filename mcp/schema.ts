@@ -8,6 +8,9 @@ const handle = { type: "string", minLength: 1, maxLength: 64, description: "Hand
 /** A model_place number: mm or degrees, or an expression over model_params names. The handler reads and checks it. */
 const placeNumber = { description: "Number or expression." };
 const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start or a long call." };
+/** Lean replies (mcp/lean.ts): the switches that give a reply as it was. */
+const fullReply = { type: "boolean", description: "The reply as before: unrounded, every field." };
+const faceBoxes = { type: "boolean", description: "Each face's box." };
 const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
@@ -1375,7 +1378,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_describe",
-    description: "After a STEP import or solid_new. Centres are part-frame mm. Then faces_find or edges_find.",
+    description: "After a STEP import or solid_new. Part-frame mm, to 0.0001. Then faces_find or edges_find.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1384,13 +1387,15 @@ export const TOOLS: ToolSpec[] = [
         cursor,
         facesCursor: cursor,
         edgesCursor: cursor,
-        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        limit: { type: "integer", minimum: 0, maximum: 100, description: "0 to 100. 0: counts only." },
+        bbox: faceBoxes,
+        full: fullReply,
       },
     },
   },
   {
     name: "faces_find",
-    description: "After solid_new or a STEP import. Part-frame centres, mm; a flat face's frame and extrude turn. Then workplane_set with faceIndex.",
+    description: "After solid_new or a STEP import. Part-frame centres, mm; a flat face's frame and extrude turn for 3 rows or fewer. Then workplane_set with faceIndex.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1403,12 +1408,15 @@ export const TOOLS: ToolSpec[] = [
         nearPoint: { type: "array", description: "Point, model space, mm. Nearest faces first, with distanceMm.", minItems: 3, maxItems: 3, items: { type: "number" } },
         cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        frames: { type: "boolean", description: "Frames on every row." },
+        bbox: faceBoxes,
+        full: fullReply,
       },
     },
   },
   {
     name: "edges_find",
-    description: "After solid_new or a STEP import. Part-frame mids, mm. Then model_probe a fillet with edges.select.",
+    description: "After solid_new or a STEP import. Start and end, part-frame mm; a curved edge adds mid. Then model_probe a fillet with edges.select.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1421,6 +1429,7 @@ export const TOOLS: ToolSpec[] = [
         convex: { type: "boolean", description: "Convex edges only." },
         cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        full: fullReply,
       },
     },
   },

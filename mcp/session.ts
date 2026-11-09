@@ -25,6 +25,7 @@ import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
 import { RECEIPT_WAIT_MS, tandemEarlier, tandemOutcome } from "./tandem-receipts.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
+import { leanReply } from "./lean.ts";
 import { RecipeHost } from "./recipe.ts";
 import { blendOf } from "./request.ts";
 import { guideByUri } from "./guides.ts";
@@ -336,8 +337,10 @@ export class Session {
         this.scheduleAutosave();
       }
     });
-    if (!detachable) return work;
-    return this.detachable(name, input, work, ctx, stop, meta?.signal);
+    // A call from the chat reads the lean form (mcp/lean.ts); a step of a recipe or a plan reads the reply whole.
+    const said = inPlan || this.recipeDepth > 0 ? work : work.then((value) => leanReply(name, input, value));
+    if (!detachable) return said;
+    return this.detachable(name, input, said, ctx, stop, meta?.signal);
   }
 
 

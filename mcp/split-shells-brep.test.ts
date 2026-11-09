@@ -67,7 +67,7 @@ check(
 const meshBox = new Map(rows.map((row) => [row.object, row.assembledMm]));
 const pieces: { object: string; volume: number; box: Box }[] = [];
 for (const row of rows) {
-  const described = await call("model_describe", { object: row.object, limit: 20 });
+  const described = await call("model_describe", { object: row.object, limit: 20, bbox: true });
   const faces = (described.faces ?? []) as { bbox?: Box }[];
   const after = (await plate()).find((item) => item.object === row.object)?.assembledMm;
   const mesh = meshBox.get(row.object);

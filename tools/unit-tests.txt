@@ -134,6 +134,7 @@ mcp/beta-identity.test.ts
 mcp/recipe-followups.test.ts
 mcp/schema.test.ts
 mcp/guide-sections.test.ts
+mcp/lean.test.ts
 mcp/settings-rows.test.ts
 mcp/scenario.test.ts
 mcp/export.test.ts

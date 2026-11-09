@@ -124,7 +124,7 @@ check(
   JSON.stringify(top),
 );
 
-const vertical = await call("edges_find", { object, direction: [0, 0, 1], convex: true });
+const vertical = await call("edges_find", { object, direction: [0, 0, 1], convex: true, full: true });
 const edges = vertical.edges as { index: number; mid: number[]; start: number[]; end: number[]; dir: number[] }[];
 check(
   "vertical edges come back with a mid, ends, and a direction",
