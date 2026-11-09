@@ -390,6 +390,9 @@ html:not(.layout-compact) .model-dock .model-stress .model-params-main { padding
 .stress-more > summary:hover { color: var(--text); }
 .stress-more[open] > :not(summary) { margin-top: 4px; }
 .stress-group .stress-more { margin-bottom: 0; }
+/* The gear's tooth form, folded under its main numbers: a full row of the fields grid, its own grid inside. */
+.model-fields > .model-gear-more { grid-column: 1 / -1; margin: 0; }
+.model-gear-more[hidden] { display: none; }
 .stress-label { margin: 0; font-weight: 600; }
 .stress-note { margin: 0; color: var(--text-dim); font-size: var(--fs-1); }
 .stress-note.stress-nothing { color: var(--text); font-size: var(--fs-2); }

@@ -4,13 +4,14 @@
  * The ghost never asks the engine: it is built here, from the sizes alone.
  */
 import { formatMm } from "./model-plane.ts";
+import { boreGhostOutline, gearGhostOutline, gearLabel, tipRadius, type GearFields } from "./model-gear.ts";
 
 // Lives in ./model-space.ts, which loads with the app (the plate places solids with it), so it need not load this module.
 export { turnCentre } from "./model-space.ts";
 
 type Vec3 = [number, number, number];
 
-export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube";
+export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube" | "gear";
 
 /** Every primitive, in the order the picker lists them, with its name for a new object. */
 export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
@@ -23,6 +24,7 @@ export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
   { kind: "wedge", label: "Wedge" },
   { kind: "polygon", label: "Polygon" },
   { kind: "tube", label: "Tube" },
+  { kind: "gear", label: "Gear" },
 ];
 
 export function isPrimitiveKind(value: unknown): value is PrimitiveKind {
@@ -55,6 +57,25 @@ export interface PrimitiveSpec {
   flats?: boolean;
   /** A box's four edges along its own Z rounded to this radius, as a rounded pocket or boss cuts them. */
   cornerRadius?: number;
+  // --- A gear (src/model-gear.ts): `height` is its thickness, `origin` its base centre. Only a gear carries these.
+  teeth?: number;
+  module?: number;
+  pressureDeg?: number;
+  backlash?: number;
+  profileShift?: number;
+  phaseDeg?: number;
+  bore?: number;
+  boreShape?: GearFields["boreShape"];
+  boreFlat?: number;
+  hubDiameter?: number;
+  hubHeight?: number;
+}
+
+/** A gear spec's gear numbers, or null for any other kind. */
+export function gearOf(spec: PrimitiveSpec): GearFields | null {
+  if (spec.primitive !== "gear") return null;
+  const { teeth = 0, module = 0, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight } = spec;
+  return { teeth, module, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight };
 }
 
 /** Every number the panel offers a primitive, whichever kind reads it. */
@@ -69,6 +90,8 @@ export interface PrimitiveFields {
   sides: number;
   across: number;
   flats: boolean;
+  /** A gear's numbers; absent for the panel's other kinds. */
+  gear?: GearFields;
 }
 
 /** The spec of `kind` from the panel's numbers: the newer fields only where that kind reads them. A sphere does not turn. */
@@ -92,6 +115,10 @@ export function primitiveSpec(kind: PrimitiveKind, fields: PrimitiveFields, orig
       return { ...base, sides: fields.sides, across: fields.across, flats: fields.flats };
     case "tube":
       return { ...base, innerRadius: fields.innerRadius };
+    case "gear": {
+      const gear = Object.fromEntries(Object.entries(fields.gear ?? { teeth: 20, module: 1.5 }).filter(([, value]) => value !== undefined));
+      return { ...base, ...gear };
+    }
     default:
       return base;
   }
@@ -108,6 +135,7 @@ const READS: Record<PrimitiveKind, { size: boolean; radius: boolean; height: boo
   wedge: { size: true, radius: false, height: false },
   polygon: { size: false, radius: false, height: true },
   tube: { size: false, radius: true, height: true },
+  gear: { size: false, radius: false, height: true },
 };
 
 /**
@@ -142,6 +170,11 @@ export function primitiveBounds(spec: PrimitiveSpec): { min: Vec3; max: Vec3 } {
     case "cylinder":
     case "tube":
       return round(spec.radius, spec.height);
+    case "gear": {
+      const gear = gearOf(spec)!;
+      const hub = gear.hubDiameter && gear.hubHeight ? gear.hubHeight : 0;
+      return round(Math.max(tipRadius(gear), hub > 0 ? (gear.hubDiameter ?? 0) / 2 : 0), spec.height + hub);
+    }
     case "cone":
       return round(Math.max(spec.radius, spec.topRadius ?? 0), spec.height);
     case "sphere":
@@ -199,6 +232,8 @@ export function primitiveLabel(spec: PrimitiveSpec): string {
     }
     case "tube":
       return `tube ⌀${n(spec.radius * 2)} inside ⌀${n((spec.innerRadius ?? 0) * 2)} h ${n(spec.height)}`;
+    case "gear":
+      return gearLabel(gearOf(spec)!, spec.height, n);
   }
 }
 
@@ -266,6 +301,12 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
       lathe(quad, sides, -Math.PI / 2 - Math.PI / sides, corner, corner, spec.height, 0);
       break;
     }
+    case "gear": {
+      const gear = gearOf(spec)!;
+      if (!Number.isInteger(gear.teeth) || gear.teeth < 3 || gear.teeth > 400 || !ok(gear.module, spec.height)) break;
+      gearPrism(tri, quad, gear, spec.height);
+      break;
+    }
     case "sphere":
       if (ok(spec.radius)) ring(quad, ROUND, ROUND / 2, (u, v) => {
         const lat = -Math.PI / 2 + v * Math.PI;
@@ -294,6 +335,103 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
 }
 
 type Quad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => void;
+type Tri = (a: Vec3, b: Vec3, c: Vec3) => void;
+
+type Loop = readonly [number, number][];
+
+/**
+ * The gear's ghost: its toothed outline pushed up its thickness, the bore through it, and the hub on top. The caps are
+ * triangulated so the view's edge pass finds only real edges: each tooth fanned from its own root corner, and the ring
+ * of root corners fanned from the axis, or zipped to the bore. A fan from the axis alone would meet each tooth's radial
+ * root line edge-on and draw it as a spoke.
+ */
+function gearPrism(tri: Tri, quad: Quad, gear: GearFields, height: number) {
+  const outline = gearGhostOutline(gear);
+  const per = outline.length / gear.teeth;
+  const roots: [number, number][] = [];
+  walls(quad, outline, 0, height, true);
+  for (let k = 0; k < gear.teeth; k += 1) {
+    const tooth = outline.slice(k * per, (k + 1) * per);
+    const a = tooth[0]!;
+    for (let j = 1; j + 1 < tooth.length; j += 1) {
+      const [b, c] = [tooth[j]!, tooth[j + 1]!];
+      tri([a[0], a[1], 0], [c[0], c[1], 0], [b[0], b[1], 0]);
+      tri([a[0], a[1], height], [b[0], b[1], height], [c[0], c[1], height]);
+    }
+    roots.push(a, tooth[per - 1]!);
+  }
+  const bore = boreGhostOutline(gear);
+  const rootBore = fitsInside(bore, roots) ? bore : [];
+  ringCap(tri, rootBore, roots, 0, false);
+  ringCap(tri, rootBore, roots, height, true);
+  walls(quad, rootBore, 0, height, false);
+  if (!(gear.hubDiameter && gear.hubHeight && gear.hubDiameter > 0 && gear.hubHeight > 0)) return;
+  const r = gear.hubDiameter / 2;
+  const hub: [number, number][] = Array.from({ length: ROUND }, (_, i) => [r * Math.cos((2 * Math.PI * i) / ROUND), r * Math.sin((2 * Math.PI * i) / ROUND)]);
+  const hubBore = fitsInside(bore, hub) ? bore : [];
+  const top = height + gear.hubHeight;
+  walls(quad, hub, height, top, true);
+  ringCap(tri, hubBore, hub, top, true);
+  walls(quad, hubBore, height, top, false);
+}
+
+/** Whether `inner` lies inside `outer`, both about the origin, with a little to spare. */
+function fitsInside(inner: Loop, outer: Loop): boolean {
+  if (inner.length === 0) return false;
+  const reach = Math.max(...inner.map(([x, y]) => Math.hypot(x, y)));
+  const floor = Math.min(...outer.map(([x, y]) => Math.hypot(x, y)));
+  return reach < floor * 0.98;
+}
+
+/** A loop's walls from `z0` to `z1`, facing out from the axis, or in toward it for a bore. */
+function walls(quad: Quad, loop: Loop, z0: number, z1: number, outward: boolean) {
+  const n = loop.length;
+  for (let i = 0; i < n; i += 1) {
+    const [x0, y0] = loop[i]!;
+    const [x1, y1] = loop[(i + 1) % n]!;
+    if (outward) quad([x0, y0, z0], [x1, y1, z0], [x1, y1, z1], [x0, y0, z1]);
+    else quad([x1, y1, z0], [x0, y0, z0], [x0, y0, z1], [x1, y1, z1]);
+  }
+}
+
+/**
+ * A flat cap at `z` between two counter-clockwise loops that each meet every ray from the axis once: fanned from the
+ * axis without an inner loop, else zipped between the two by angle. Faces up for `up`, else down.
+ */
+function ringCap(tri: Tri, inner: Loop, outer: Loop, z: number, up: boolean) {
+  const face = (a: readonly number[], b: readonly number[], c: readonly number[]) =>
+    up ? tri([a[0]!, a[1]!, z], [b[0]!, b[1]!, z], [c[0]!, c[1]!, z]) : tri([a[0]!, a[1]!, z], [c[0]!, c[1]!, z], [b[0]!, b[1]!, z]);
+  if (inner.length === 0) {
+    for (let i = 0; i < outer.length; i += 1) face([0, 0], outer[i]!, outer[(i + 1) % outer.length]!);
+    return;
+  }
+  const sweep = (loop: Loop) => {
+    const turn = (p: readonly number[]) => (Math.atan2(p[1]!, p[0]!) + 2 * Math.PI) % (2 * Math.PI);
+    let start = 0;
+    loop.forEach((p, i) => {
+      if (turn(p) < turn(loop[start]!)) start = i;
+    });
+    const points = [...loop.slice(start), ...loop.slice(0, start)];
+    const angles = points.map(turn);
+    // The first point again, a full turn on, closes the loop.
+    return { points: [...points, points[0]!], angles: [...angles, angles[0]! + 2 * Math.PI] };
+  };
+  const a = sweep(inner);
+  const b = sweep(outer);
+  let i = 0;
+  let j = 0;
+  while (i < inner.length || j < outer.length) {
+    const nextInner = i < inner.length ? a.angles[i + 1]! : Infinity;
+    const nextOuter = j < outer.length ? b.angles[j + 1]! : Infinity;
+    if (nextInner <= nextOuter) {
+      face(a.points[i]!, b.points[j]!, a.points[i + 1]!);
+      i += 1;
+    } else {
+      face(b.points[j]!, b.points[j + 1]!, a.points[i]!);
+      j += 1;
+    }
+  }
+}
 
 /** A box, or a wedge whose top runs from X 0 to `top`. */
 function block(quad: Quad, dx: number, dy: number, dz: number, top: number) {

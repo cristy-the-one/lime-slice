@@ -141,7 +141,30 @@ eq("the first box is Box 1", primitiveName([], "box"), "Box 1");
 eq("the next box is Box 2", primitiveName(["Box 1", "Cone 1", "bracket.step"], "box"), "Box 2");
 eq("a gap is filled first", primitiveName(["Cone 1", "Cone 3"], "cone"), "Cone 2");
 eq("each kind counts its own", primitiveName(["Box 1", "Box 2"], "torus"), "Torus 1");
-eq("every kind has a name", PRIMITIVES.map((entry) => primitiveName([], entry.kind)), ["Box 1", "Cylinder 1", "Sphere 1", "Ellipsoid 1", "Cone 1", "Torus 1", "Wedge 1", "Polygon 1", "Tube 1"]);
+eq("every kind has a name", PRIMITIVES.map((entry) => primitiveName([], entry.kind)), ["Box 1", "Cylinder 1", "Sphere 1", "Ellipsoid 1", "Cone 1", "Torus 1", "Wedge 1", "Polygon 1", "Tube 1", "Gear 1"]);
+
+// A gear's ghost is closed, every edge shared by two triangles: no cap fan meets a tooth's radial root line edge-on,
+// which the view's edge pass would draw as a spoke.
+function openEdges(mesh: Float32Array): number {
+  const key = (i: number) => [mesh[i]!, mesh[i + 1]!, mesh[i + 2]!].map((v) => v.toFixed(4)).join(",");
+  const uses = new Map<string, number>();
+  for (let t = 0; t < mesh.length; t += 9) {
+    const corners = [key(t), key(t + 3), key(t + 6)];
+    for (let k = 0; k < 3; k += 1) {
+      const edge = [corners[k]!, corners[(k + 1) % 3]!].sort().join("|");
+      uses.set(edge, (uses.get(edge) ?? 0) + 1);
+    }
+  }
+  return [...uses.values()].filter((count) => count !== 2).length;
+}
+eq("a plain gear's ghost is closed", openEdges(primitiveMesh(spec("gear", { teeth: 20, module: 1.5, height: 6 }))), 0);
+eq("a gear with a hex bore is closed", openEdges(primitiveMesh(spec("gear", { teeth: 20, module: 1.5, height: 6, bore: 5, boreShape: "hex" }))), 0);
+eq("a gear with a D bore is closed", openEdges(primitiveMesh(spec("gear", { teeth: 12, module: 2, height: 6, bore: 6, boreShape: "d" }))), 0);
+eq(
+  "a bore wider than the root circle is left out of the ghost",
+  primitiveMesh(spec("gear", { teeth: 20, module: 1.5, height: 6, bore: 40 })).length,
+  primitiveMesh(spec("gear", { teeth: 20, module: 1.5, height: 6 })).length,
+);
 
 if (failed) {
   console.error(`model-primitive: ${failed} failed`);

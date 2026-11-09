@@ -159,7 +159,9 @@ check("its pivot sits on the line through the solid's middle", Math.abs(plan.ori
 const upPanel = editPanel({ kind: "split", origin: [0, 0, 42], normal: [0, 0, 1] }, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, center);
 eq("a plain Z split opens as Plane Z at its height, untilted", [upPanel.plane, upPanel.fields], [{ mode: "z", flip: false }, { modelPlane: 42, modelTiltA: 0, modelTiltB: 0 }]);
 eq("a root opens New solid's panel with its sizes", editPanel({ kind: "root", ...boxSpec }, skew, center), { tool: "create", fields: { modelDx: 20, modelDy: 20, modelDz: 20 }, primitive: "box" });
-eq("a polygon keeps its flats", editPanel({ kind: "root", primitive: "polygon", origin: [0, 0, 0], size: [0, 0, 0], radius: 0, height: 4, turn: [0, 0, 0], sides: 6, across: 10, flats: true }, skew, center).flats, true);
+eq("a gear keeps its bore shape", editPanel({ kind: "root", primitive: "gear", origin: [0, 0, 0], size: [0, 0, 0], radius: 0, height: 6, turn: [0, 0, 0], teeth: 20, module: 1.5, bore: 5, boreShape: "hex" }, skew, center).boreShape, "hex");
+eq("a gear without a bore shape opens on Round", editPanel({ kind: "root", primitive: "gear", origin: [0, 0, 0], size: [0, 0, 0], radius: 0, height: 6, turn: [0, 0, 0], teeth: 20, module: 1.5 }, skew, center).boreShape, "round");
+eq("a polygon keeps its flats",editPanel({ kind: "root", primitive: "polygon", origin: [0, 0, 0], size: [0, 0, 0], radius: 0, height: 4, turn: [0, 0, 0], sides: 6, across: 10, flats: true }, skew, center).flats, true);
 const join: ModelOp = { kind: "join", op: "cut", tool: { object: "b", key: "b#1", node: 0, name: "Box 2" }, relative: { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }, keepTool: true };
 eq("a join keeps its tool and opens with its op and Keep", editPanel(join, skew, center), { tool: "boolean", fields: {}, boolOp: "cut", join: { name: "Box 2", keepTool: true } });
 check("a pose of identity opens the stored numbers as they are", fromSolidOp(turnedBox, { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] }) === turnedBox);

@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -309,6 +309,23 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
         knob("sides", "modelSides", axes[1], "accent", "Sides", { rate: 0.25, min: 3, max: 64, whole: true, unit: "count" }),
         height,
       ];
+    case "gear": {
+      // The tip circle grows by (teeth / 2 + 1) mm a module, so a millimetre pulled out is that much module: the knob
+      // stays under the pointer. Teeth step one at a time, a tooth per two millimetres. Bore, flat and hub are
+      // diameters on the gear's axis (two millimetres a millimetre), each on its own diagonal so no two knobs meet.
+      const teeth = Math.max(6, ctx.read("modelGearTeeth") || 20);
+      const diag = (a: Vec3, b: Vec3) => normalize(add(a, b));
+      const back = (v: Vec3): Vec3 => [-v[0], -v[1], -v[2]];
+      return [
+        knob("gear-module", "modelGearModule", axes[0], "accent", "Module", { rate: 1 / (teeth / 2 + 1), min: 0.05 }),
+        knob("gear-teeth", "modelGearTeeth", axes[1], "accent", "Teeth", { rate: 0.5, min: 6, max: 150, whole: true, unit: "count" }),
+        height,
+        knob("gear-bore", "modelGearBore", diag(axes[0], axes[1]), "accent", "Bore", { rate: 2, min: 0 }),
+        knob("gear-bore-flat", "modelGearBoreFlat", diag(axes[0], back(axes[1])), "accent", "Flat", { rate: 2, min: 0 }),
+        knob("gear-hub", "modelGearHub", diag(back(axes[0]), axes[1]), "accent", "Hub ⌀", { rate: 2, min: 0 }),
+        knob("gear-hub-height", "modelGearHubH", diag(axes[2], back(axes[0])), "z", "Hub height", { min: 0 }),
+      ];
+    }
   }
 }
 

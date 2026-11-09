@@ -15,11 +15,15 @@ use super::ffi::{
 };
 use super::group::extrude_cells;
 use super::k1::{encode_loops, extent_flags, k1_has_loops, push_shape};
-use super::ops::{Op, Solid};
+use super::gear::build_gear;
+use super::ops::{Op, Primitive, Solid};
 use super::shape::Shape;
 
 impl Shape {
     pub(super) fn primitive(solid: &Solid) -> Result<Shape, String> {
+        if solid.primitive == Primitive::Gear {
+            return build_gear(solid);
+        }
         let p = solid.numbers();
         Shape::made(|error| unsafe {
             lime_tree_primitive(solid.primitive.name().as_ptr(), p.as_ptr(), error)

@@ -4,6 +4,7 @@
  * applies one by one like any other edit. Nothing here calls the modeler.
  */
 import { eulerOrient, matMul, orientEuler, type Mat3 } from "../mesh-place.ts";
+import { GEAR_DEFAULTS, isBoreShape, type GearFields } from "../model-gear.ts";
 import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive.ts";
 import { framePose, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
 import { pathSamples } from "./sweep.ts";
@@ -75,7 +76,10 @@ export function primitiveFrom(input: Record<string, unknown>, fallback: Primitiv
     sides: Math.round(numOr(input.sides, 6)),
     across: numOr(input.across, dx),
     flats: input.flats === true,
+    ...(kind === "gear" ? { gear: gearFrom(input) } : {}),
   };
+  // A gear's thickness is `thickness` (the op's word) or `height` (the stored one).
+  if (kind === "gear") fields.height = numOr(input.thickness, numOr(input.height, GEAR_DEFAULTS.thickness));
   if (kind === "polygon" && (fields.sides < 3 || fields.sides > 64)) return { reason: "A polygon has from 3 to 64 sides." };
   if (kind === "tube" && fields.innerRadius >= fields.radius) return { reason: "The tube's hole must be smaller than its outside." };
   if (kind === "cone" && fields.topRadius > fields.radius) return { reason: "The cone's top must be no wider than its base." };
@@ -85,6 +89,16 @@ export function primitiveFrom(input: Record<string, unknown>, fallback: Primitiv
   const centre = readVec3(input.centre, [0, 0, 0]);
   const mid = turnCentre(spec);
   return { ...spec, origin: [centre[0] - mid[0], centre[1] - mid[1], centre[2] - mid[2]] };
+}
+
+/** A gear's numbers as typed: teeth and module, and the optional ones only when given. */
+function gearFrom(input: Record<string, unknown>): GearFields {
+  const gear: GearFields = { teeth: numOr(input.teeth, GEAR_DEFAULTS.teeth), module: numOr(input.module, GEAR_DEFAULTS.module) };
+  for (const key of ["pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight"] as const) {
+    if (typeof input[key] === "number" && Number.isFinite(input[key])) gear[key] = input[key] as number;
+  }
+  if (isBoreShape(input.boreShape)) gear.boreShape = input.boreShape;
+  return gear;
 }
 
 /** Which fields each kind reads, so an echo shows those and not the panel's leftovers. */
@@ -98,6 +112,7 @@ const READS: Record<PrimitiveKind, readonly string[]> = {
   ellipsoid: ["size"],
   torus: ["radius", "tubeRadius"],
   polygon: ["height", "sides", "across", "flats"],
+  gear: ["height", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreShape", "boreFlat", "hubDiameter", "hubHeight"],
 };
 
 /** An op as a caller reads it back: a primitive keeps only the fields its kind reads. */

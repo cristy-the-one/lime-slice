@@ -85,6 +85,8 @@ const PANEL_KEYS: Record<string, Record<string, string>> = (() => {
   const primitive = {
     "size.0": "modelDx", "size.1": "modelDy", "size.2": "modelDz", radius: "modelRadius", height: "modelHeight", topRadius: "modelTopR",
     tubeRadius: "modelTube", innerRadius: "modelInnerR", topX: "modelTopX", sides: "modelSides", across: "modelAcross",
+    teeth: "modelGearTeeth", module: "modelGearModule", pressureDeg: "modelGearPressure", backlash: "modelGearBacklash", profileShift: "modelGearShift",
+    phaseDeg: "modelGearPhase", bore: "modelGearBore", boreFlat: "modelGearBoreFlat", hubDiameter: "modelGearHub", hubHeight: "modelGearHubH",
     "origin.0": "modelX", "origin.1": "modelY", "origin.2": "modelZ",
   };
   return {

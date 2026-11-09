@@ -766,6 +766,8 @@ html.layout-compact .model-fields { display: flex; flex-wrap: nowrap; overflow-x
 html.layout-compact .model-prim { height: 44px; }
 html.layout-compact .model-fields label { flex: 0 0 84px; }
 html.layout-compact .model-fields label[data-wide] { flex-basis: 120px; }
+html.layout-compact .model-fields > .model-gear-more { flex: 0 0 auto; }
+html.layout-compact .model-gear-more > .model-fields { overflow: visible; }
 /* Cancel, Done and Apply stay on the sheet's bottom edge, clear of the floating Slice button. */
 html.layout-compact .model-actions {
   flex: 0 0 auto;

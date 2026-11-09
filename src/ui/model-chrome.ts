@@ -2,7 +2,7 @@
  * Model mode's toolbar, the tool that is open, and the ghost that follows its numbers.
  * Apply still lives in `app/model.ts`. This file only decides what is on screen.
  */
-import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, FlipHorizontal2, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Radius, Redo2, Rows3, Ruler, Scaling, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
+import { Axis3d, Box, Boxes, ChevronRight, CircleDot, Cog, Cone, Copy, Cylinder, Disc, Download, Egg, Eye, FlipHorizontal2, Focus, Globe, Grid2x2, Grid3x3, Hash, Hexagon, Layers, ListChecks, Move3d, MoveVertical, Plus, Radius, Redo2, Rows3, Ruler, Scaling, SquareArrowUp, SquareSplitHorizontal, SquareSquare, SquaresUnite, Torus, Triangle, TriangleRight, Type, Undo2, createElement, type IconNode } from "lucide";
 import type { HandleDrag, ModelGhost, ModelGrabHooks, ModelSolid } from "../model-view";
 import type { ContextPart } from "../model-context";
 import { edgeAnchor, fieldText, handlesFor, measureNote, type DragContext, type DragHandle, type ModelTool, type Vec3 } from "../model-drag";
@@ -24,7 +24,8 @@ import { edgeOfText, isEdgeFilter, type EdgeSource } from "../model-edge-step";
 import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
-import { isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
+import { GEAR_DEFAULTS, gearRefusal, isBoreShape, type BoreShape, type GearFields } from "../model-gear";
+import { gearOf, isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
 import { paintRepeatSources } from "./model-history";
@@ -304,6 +305,7 @@ const PRIMITIVE_ICONS: Record<PrimitiveKind, IconNode> = {
   wedge: TriangleRight,
   polygon: Hexagon,
   tube: Disc,
+  gear: Cog,
 };
 
 /** What the Radius field means on each primitive that has one. */
@@ -619,6 +621,15 @@ export function mountModelChrome(next: ModelChromeHooks) {
       hooks?.paramsChanged();
       return;
     }
+    // A gear's bore shape shows or hides the D bore's Flat, and changes the ghost at once.
+    if (ev.target instanceof HTMLElement && ev.target.id === "modelGearBoreShape") {
+      syncFields();
+      refreshGhost();
+      refreshApply();
+      refreshNote();
+      hooks?.paramsChanged();
+      return;
+    }
     if (ev.target instanceof HTMLElement && ev.target.id === "modelChamferFlip") {
       paintChamferSide();
       refreshGhost();
@@ -651,7 +662,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape")) return;
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -673,6 +684,11 @@ export function mountModelChrome(next: ModelChromeHooks) {
       paintPathList();
     }
     refreshGhost();
+    // A gear's numbers are checked here as they are typed: the note says what is wrong and Apply waits.
+    if (primitiveKind() === "gear" && (tool === "create" || tool === "boolean")) {
+      refreshApply();
+      refreshNote();
+    }
     hooks?.paramsChanged(true);
     // --- A7 model check ---
     if (tool === "check") queueModelCheck(true);
@@ -1045,6 +1061,10 @@ function fillEdit() {
   if (!panel) return;
   if (panel.boolOp) paintBoolOp(`model${{ fuse: "Fuse", cut: "Cut", common: "Common" }[panel.boolOp]}`);
   if (panel.flats !== undefined) paintAcross(panel.flats);
+  if (panel.primitive === "gear") {
+    const shape = document.querySelector<HTMLSelectElement>("#modelGearBoreShape");
+    if (shape) shape.value = panel.boreShape ?? "round";
+  }
   if (panel.plane) paintPlaneMode(panel.plane.mode);
   if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
   // --- A5. A stored step pick opens on that step; picked edges stay picked. ---
@@ -1332,7 +1352,9 @@ function syncFields() {
     const holeOk = !node.dataset.hole || (node.dataset.hole === "points" ? pointsHoles : !pointsHoles);
     // --- Assemblies M11. The frame switch is for a member of an assembly.
     const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
-    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk));
+    // --- A gear's Flat is for a D bore.
+    const gearBoreOk = !node.dataset.gearBore || node.dataset.gearBore === gearBoreShape();
+    node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk));
   });
   // --- A3 composite features ---
   // --- Text with real fonts: what the font picked allows, and the sample line, whenever the card shows.
@@ -1364,6 +1386,7 @@ function syncFields() {
   retitleAxes();
   const radius = RADIUS_LABELS[kind] ?? "Radius";
   setLabel("#modelRadiusLabel", "#modelRadius", radius);
+  setLabel("#modelHeightLabel", "#modelHeight", kind === "gear" ? "Thickness" : "Height");
   const flats = acrossFlats();
   setLabel("#modelAcrossLabel", "#modelAcross", flats ? "Across flats" : "Across corners", flats ? "Width across flats" : "Width across corners");
 }
@@ -1566,10 +1589,56 @@ export function fieldPrimitive(): PrimitiveSpec {
       sides: num("#modelSides"),
       across: num("#modelAcross"),
       flats: acrossFlats(),
+      ...(primitiveKind() === "gear" ? { gear: gearFields() } : {}),
     },
     [num("#modelX"), num("#modelY"), num("#modelZ")],
     [num("#modelRx"), num("#modelRy"), num("#modelRz")],
   );
+}
+
+/** The bore shape picked for a gear. */
+function gearBoreShape(): BoreShape {
+  const value = document.querySelector<HTMLSelectElement>("#modelGearBoreShape")?.value;
+  return isBoreShape(value) ? value : "round";
+}
+
+/**
+ * The gear's numbers from the panel. A field left at what the engine assumes is not sent: the tooth form at its
+ * defaults, no bore at 0, a D bore's flat at 0 (0.9 x the bore), and a hub unless both its sizes are above 0.
+ */
+function gearFields(): GearFields {
+  const out: GearFields = { teeth: num("#modelGearTeeth"), module: num("#modelGearModule") };
+  const pressure = num("#modelGearPressure");
+  if (pressure !== GEAR_DEFAULTS.pressureDeg) out.pressureDeg = pressure;
+  const backlash = num("#modelGearBacklash");
+  if (backlash !== GEAR_DEFAULTS.backlash) out.backlash = backlash;
+  const shift = num("#modelGearShift");
+  if (shift !== GEAR_DEFAULTS.profileShift) out.profileShift = shift;
+  const phase = num("#modelGearPhase");
+  if (phase !== GEAR_DEFAULTS.phaseDeg) out.phaseDeg = phase;
+  const bore = num("#modelGearBore");
+  if (bore > 0) {
+    const shape = gearBoreShape();
+    out.bore = bore;
+    out.boreShape = shape;
+    const flat = num("#modelGearBoreFlat");
+    if (shape === "d" && flat > 0) out.boreFlat = flat;
+  }
+  const hub = num("#modelGearHub");
+  const hubHeight = num("#modelGearHubH");
+  if (hub > 0 && hubHeight > 0) {
+    out.hubDiameter = hub;
+    out.hubHeight = hubHeight;
+  }
+  return out;
+}
+
+/** The sentence a gear's numbers are refused with before anything is sent; null for any other primitive, or a fine gear. */
+function gearRefused(): string | null {
+  if (primitiveKind() !== "gear" || joinOpen() || (tool !== "create" && tool !== "boolean")) return null;
+  const spec = fieldPrimitive();
+  const gear = gearOf(spec);
+  return gear ? gearRefusal(gear, spec.height) : null;
 }
 
 /** Pick a primitive, which is also what Boolean combines with from then on. From the keyboard, focus follows, as in any radio group. */
@@ -1577,6 +1646,9 @@ function setPrimitive(kind: PrimitiveKind, focus: boolean) {
   const wasObject = joinOpen();
   primKind = kind;
   withObject = false;
+  // A gear starts 6 mm thick while Height is still as the panel opened.
+  const height = document.querySelector<HTMLInputElement>("#modelHeight");
+  if (kind === "gear" && !edit && height && height.value === height.defaultValue && !height.dataset.expr) writeFields(["modelHeight"], [GEAR_DEFAULTS.thickness]);
   paintPrimRow();
   if (focus) document.querySelector<HTMLElement>(`#modelPrim [data-kind="${kind}"]`)?.focus();
   if (wasObject) {
@@ -1925,7 +1997,7 @@ function refreshApply() {
     : stepBlend
       ? edgeStepKnown() && probeAllowsApply(current, probe)
       : modelApplyReady(current, picks, num("#modelFactor"), current === "split" && !!splitPlan()?.inside, probeAllowsApply(current, probe));
-  button.disabled = waiting || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready;
+  button.disabled = waiting || !current || (picksObject() && !joinTool) || (!!edit && !!hooks?.editUnchanged()) || !ready || gearRefused() !== null;
 }
 
 function refreshNote() {
@@ -1933,7 +2005,11 @@ function refreshNote() {
   if (!note) return;
   let text = "";
   let bad = false;
-  if (edit && hooks?.editUnchanged()) {
+  const gearNo = gearRefused();
+  if (gearNo) {
+    text = gearNo;
+    bad = true;
+  } else if (edit && hooks?.editUnchanged()) {
     text = tool === "fillet" || tool === "chamfer" ? "Change the size or the edges to update this step." : tool === "shell" ? "Change the thickness or the open faces to update this step." : "Change a number to update this step.";
   } else if (edit && tool === "create") {
     text = "The steps after it are built again on the new solid.";
