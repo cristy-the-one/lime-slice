@@ -92,7 +92,7 @@ eq("a cylinder offers its diameter", actionsFor("cylinder").map((action) => acti
 eq("a curved face still pushes", actionsFor("curved").map((action) => action.id), ["push-pull-curved"]);
 eq("edges offer fillet and chamfer", actionsFor("edges").map((action) => action.id), ["fillet", "chamfer"]);
 eq("empty space offers a new primitive", actionsFor("empty").map((action) => action.id), ["new-primitive"]);
-eq("the primitive menu is the New solid row", actionsFor("empty")[0]?.menu?.map((item) => item.id), ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"]);
+eq("the primitive menu is the New solid row", actionsFor("empty")[0]?.menu?.map((item) => item.id), ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube", "gear"]);
 eq("a mixed selection has no built-in", actionsFor("mixed"), []);
 
 const later = ["sketch-on-face", "sketch-on-bed", "features", "pattern", "hole-through-axis", "use-as-axis", "paste", "section"];
