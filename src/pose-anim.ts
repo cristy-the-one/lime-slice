@@ -119,7 +119,11 @@ function rotateBall(member: Member, target: Quaternion, centre: Vec3): Member | 
 }
 
 /** Validate all keys before returning any frame; never mutate the given assembly or poses. */
-export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[]): AnimationResult | { issues: AnimationIssue[] } {
+/**
+ * `options.interference: false` leaves the parts' crossing check out: a second sampling of a script that was already
+ * checked (an export at another frame rate) only needs the poses.
+ */
+export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { interference?: boolean } = {}): AnimationResult | { issues: AnimationIssue[] } {
   if (!record(animation)) return { issues: [{ reason: "An animation must be an object." }] };
   const issues: AnimationIssue[] = [], warnings: AnimationIssue[] = [];
   const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
@@ -236,6 +240,9 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
   let colorIndex = 0;
   const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
   const centre = partCentre;
+  const checkPairs = options.interference !== false;
+  const pairSeen = new Map<number, { pa: Affine; pb: Affine; hit: boolean }>();
+  const samePose = (p: Affine, q: Affine) => p === q || (p.m.every((v, k) => v === q.m[k]) && p.t.every((v, k) => v === q.t[k]));
   // Solve at key times too: a key between exported frames must report its own target, not a later sample.
   const frameTimes = Array.from({ length: count }, (_, frame) => count === 1 ? 0 : end * frame / (count - 1));
   const frameNumbers = new Map(frameTimes.map((time, frame) => [time, frame]));
@@ -294,14 +301,24 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
       const one = boxUnder(part.box, pose);
       bounds = bounds ? { min: bounds.min.map((v, i) => Math.min(v, one.min[i]!)) as Vec3, max: bounds.max.map((v, i) => Math.max(v, one.max[i]!)) as Vec3 } : one;
     }
-    const frameBoxes = usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; });
-    for (let i = 0; i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
+    const frameBoxes = checkPairs ? usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; }) : [];
+    for (let i = 0; checkPairs && i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
       const a = usable[i]!, b = usable[j]!, pa = poses.get(a.id), pb = poses.get(b.id), ba = frameBoxes[i], bb = frameBoxes[j];
       if (!pa || !pb || !ba || !bb || ba.min.some((v, axis) => v > bb.max[axis]! || bb.min[axis]! > ba.max[axis]!)) continue;
-      const result = interference({ positions: a.positions, pose: pa }, { positions: b.positions, pose: pb });
-      if (result.verdict === "crossing" || result.nested) warnings.push({ reason: `Frame ${frame + 1}: ${rig.find((r) => r.object === a.id)!.name} intersects ${rig.find((r) => r.object === b.id)!.name}.` });
+      // Two parts that stand as they stood the last time they were tested cross as they did: most pairs of a
+      // mechanism do not move in most frames. The poses must be the same numbers, so the answer is the test's own.
+      const slot = i * usable.length + j, last = pairSeen.get(slot);
+      let hit: boolean;
+      if (last && samePose(last.pa, pa) && samePose(last.pb, pb)) hit = last.hit;
+      else {
+        const result = interference({ positions: a.positions, pose: pa }, { positions: b.positions, pose: pb });
+        hit = result.verdict === "crossing" || !!result.nested;
+        pairSeen.set(slot, { pa, pb, hit });
+      }
+      if (hit) warnings.push({ reason: `Frame ${frame + 1}: ${rig.find((r) => r.object === a.id)!.name} intersects ${rig.find((r) => r.object === b.id)!.name}.` });
     }
-    frames.push({ time, assembly: structuredClone(assembly), poses: new Map(poses), colors: new Map(colors) });
+    // The assembly is replaced, never written to, from one time to the next, so a frame can hold it as it is.
+    frames.push({ time, assembly, poses: new Map(poses), colors: new Map(colors) });
   }
-  return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: usable.length === original.members.length };
+  return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
 }

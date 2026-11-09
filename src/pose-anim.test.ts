@@ -101,6 +101,16 @@ const clashParts = parts.filter((part) => part.object !== "tip").map((part) => (
 const clash = sampleAnimation({ fps: 4, keys: [{ t: 0 }] }, clashRig, poseOf, clashParts);
 if ("issues" in clash) throw Error(JSON.stringify(clash.issues));
 assert.ok(clash.warnings.some((warning) => warning.reason.includes("Frame 1") && warning.reason.includes("intersects")));
+// Two parts that stand still are tested once, and every frame still says they cross.
+const still = sampleAnimation({ fps: 4, keys: [{ t: 0 }, { t: 1 }] }, clashRig, poseOf, clashParts);
+if ("issues" in still) throw Error(JSON.stringify(still.issues));
+assert.deepEqual(still.warnings.map((warning) => warning.reason.slice(0, 8)), still.frames.map((_, frame) => `Frame ${frame + 1}:`));
+// An export at another frame rate asks for the poses only.
+const posesOnly = sampleAnimation({ fps: 4, keys: [{ t: 0 }, { t: 1 }] }, clashRig, poseOf, clashParts, { interference: false });
+if ("issues" in posesOnly) throw Error(JSON.stringify(posesOnly.issues));
+assert.equal(posesOnly.warnings.length, 0);
+assert.equal(posesOnly.interferenceChecked, false);
+assert.deepEqual(posesOnly.frames.map((frame) => [...frame.poses]), still.frames.map((frame) => [...frame.poses]));
 const constrained = sampleAnimation({ fps: 4, keys: [{ t: 0, line: 30, set: { Finger: { reach: { at: [10,0,0], to: [-10,0,0] } } } }] }, rig, poseOf, parts);
 if ("issues" in constrained) throw Error(JSON.stringify(constrained.issues));
 assert.equal(constrained.keys[0]!.reached, false);

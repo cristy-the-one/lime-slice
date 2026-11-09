@@ -51,14 +51,20 @@ function stopAnimation(): void {
   animationRequest = 0;
   animation = null;
 }
+/** The frame the last tick drew, or -1 when the next tick must draw. */
+let animationDrawn = -1;
 function animationTick(): void {
   if (!animation || state.stage !== "pose") { stopAnimation(); return; }
-  animation.clock.frame(performance.now());
-  syncPose();
-  const slider = document.querySelector<HTMLInputElement>("[data-pose-animation-frame]");
-  const label = document.querySelector<HTMLElement>("[data-pose-animation-count]");
-  if (slider) slider.value = String(animation.clock.frame(performance.now()));
-  if (label) label.textContent = `Frame ${animation.clock.frame(performance.now()) + 1} / ${animation.result.frames.length}`;
+  const frame = animation.clock.frame(performance.now());
+  // The display refreshes more often than the animation steps: a tick inside the same frame has nothing to draw.
+  if (frame !== animationDrawn || !animation.clock.playing) {
+    animationDrawn = frame;
+    syncPose();
+    const slider = document.querySelector<HTMLInputElement>("[data-pose-animation-frame]");
+    const label = document.querySelector<HTMLElement>("[data-pose-animation-count]");
+    if (slider) slider.value = String(frame);
+    if (label) label.textContent = `Frame ${frame + 1} / ${animation.result.frames.length}`;
+  }
   if (animation.clock.playing) animationRequest = requestAnimationFrame(animationTick);
   else { animationRequest = 0; renderPanel(); }
 }
@@ -110,7 +116,7 @@ async function playAnimation(): Promise<void> {
   if (!verdict.ok) { message = verdict.reason; renderPanel(); return; }
   if (animation && animation.assembly === row.assembly.id) {
     if (animation.clock.playing) animation.clock.pause(performance.now());
-    else { animation.clock.play(performance.now()); animationTick(); }
+    else { animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); }
     renderPanel(); return;
   }
   const ticket = ++animationRun;
@@ -145,7 +151,7 @@ async function playAnimation(): Promise<void> {
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; renderPanel(); return; }
     animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
-    animation.clock.play(performance.now()); animationTick(); renderPanel();
+    animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); renderPanel();
   } catch (error) {
     if (ticket === animationRun) { message = error instanceof Error ? error.message : String(error); renderPanel(); }
   }
