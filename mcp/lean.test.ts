@@ -79,6 +79,24 @@ process.env.LIME_MCP_LEAN = "0";
 check("LIME_MCP_LEAN=0 turns the lean form off for the server", same(await call("faces_find", { object }), facesFull));
 delete process.env.LIME_MCP_LEAN;
 
+// A blend's picked edges are said once.
+const many = Array.from({ length: 100 }, (_, i) => i * 2);
+const refs = many.map((index) => ({ index, sig: { a: [0, 0, 1], b: [1, 0, 0] } }));
+const probed = { ok: true, reason: "This fillet fits.", edges: many, stored: { kind: "fillet", edges: many, size: 1 }, typed: { kind: "fillet", edges: many, size: 1 }, metrics: { delta: { volumeMm3: 118.46 } } };
+const echo = leanReply("model_probe", {}, probed) as Reply;
+console.log(`a probe of a fillet on 100 edges: ${bytes(echo)} bytes lean, ${bytes(probed)} as before`);
+check("past 32 edges a probe counts them and lists the first 16 once", same(echo.edges, { count: 100, first: many.slice(0, 16) }) && echo.stored.edges === "100 edges" && echo.typed.edges === "100 edges" && echo.stored.size === 1 && same(echo.metrics, probed.metrics) && echo.reason === probed.reason, echo);
+const refusedEcho = leanReply("model_probe", {}, { ok: false, code: "does-not-fit", reason: "Too large.", edges: many, stored: { kind: "fillet", edges: many, size: 30 }, typed: { kind: "fillet", edges: many, size: 30 } }) as Reply;
+check("a refusal's echo is counted too, and keeps its reason and code", refusedEcho.ok === false && refusedEcho.code === "does-not-fit" && refusedEcho.reason === "Too large." && refusedEcho.edges.count === 100 && refusedEcho.typed.edges === "100 edges");
+const appliedEcho = leanReply("model_apply", {}, { ok: true, node: "node_4", stored: { kind: "fillet", edges: refs, size: 1 }, typed: { kind: "fillet", edges: many, size: 1 } }) as Reply;
+check("an applied blend's stored references and typed indexes are counted", appliedEcho.node === "node_4" && appliedEcho.stored.edges === "100 edges" && appliedEcho.typed.edges === "100 edges" && appliedEcho.edges === undefined);
+const few = { ok: true, edges: [1, 2, 3], stored: { kind: "fillet", edges: [1, 2, 3], size: 1 }, typed: { kind: "fillet", edges: [1, 2, 3], size: 1 } };
+check("32 edges or fewer, full: true, and another tool are untouched", leanReply("model_probe", {}, few) === few && leanReply("model_probe", { full: true }, probed) === probed && leanReply("model_history", {}, probed) === probed && leanReply("model_apply", {}, { ok: true, node: "node_2", stored: { kind: "hole" }, typed: { kind: "hole" } }).edges === undefined);
+// Through the session: a fillet of four edges echoes them as before, and a step reads the same reply whole.
+const blendOp = { kind: "fillet", edges: { select: { direction: [0, 0, 1] } }, size: 1 };
+const blend = await call("model_probe", { object, op: blendOp });
+check("a small pick is echoed as it was", blend.ok === true && Array.isArray(blend.edges) && blend.edges.length === 4 && same(blend.stored.edges, blend.edges) && same(blend, await asStep("model_probe", { object, op: blendOp })), blend);
+
 // A plan reads each step whole, so a reference into a field the lean form leaves out still resolves.
 const plan = await call("plan_run", { steps: [{ tool: "faces_find", args: { object } }, { tool: "faces_find", args: { object, nearPoint: "$1.faces.5.frame.origin", limit: 1 } }] });
 check("a plan's reference reaches a frame the lean reply leaves out", plan.ok === true && plan.steps.length === 2, plan);

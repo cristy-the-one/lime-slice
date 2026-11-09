@@ -37,9 +37,37 @@ export function leanOff(input: Row): boolean {
   return input.full === true || process.env.LIME_MCP_LEAN === "0";
 }
 
-/** `value` as a chat reads it: the reply of `tool` called with `input`. A refusal, or a tool with no lean form, is unchanged. */
+/** Past this many picked edges a probe or an applied blend counts them, and lists the first ECHO_EDGES_SHOWN once. */
+export const ECHO_EDGES = 32;
+export const ECHO_EDGES_SHOWN = 16;
+
+/**
+ * A blend's picked edges, said once. An edge selector's result came back three times: `edges`, the op as stored (each
+ * edge a reference with its faces' signature) and the op as typed, on a refusal too; a fillet of every vertical edge
+ * of a plate answered 4,036 tokens. Past ECHO_EDGES edges: `edges` is {count, first}, and stored and typed say "N edges".
+ * edges_find with the same selector lists them all.
+ */
+function leanEcho(value: Row): Row {
+  const long = (edges: unknown): edges is unknown[] => Array.isArray(edges) && edges.length > ECHO_EDGES;
+  const counted = (op: unknown): unknown => (op && typeof op === "object" && long((op as Row).edges) ? { ...(op as Row), edges: `${((op as Row).edges as unknown[]).length} edges` } : op);
+  const stored = counted(value.stored);
+  const typed = counted(value.typed);
+  if (!long(value.edges) && stored === value.stored && typed === value.typed) return value;
+  return {
+    ...value,
+    ...(long(value.edges) ? { edges: { count: value.edges.length, first: value.edges.slice(0, ECHO_EDGES_SHOWN) } } : {}),
+    ...(value.stored !== undefined ? { stored } : {}),
+    ...(value.typed !== undefined ? { typed } : {}),
+  };
+}
+
+const ECHO_TOOLS = new Set(["model_probe", "model_apply", "model_edit"]);
+
+/** `value` as a chat reads it: the reply of `tool` called with `input`. A tool with no lean form is unchanged. */
 export function leanReply(tool: string, input: Row, value: Row): Row {
-  if (value.ok !== true || leanOff(input)) return value;
+  if (leanOff(input)) return value;
+  if (ECHO_TOOLS.has(tool)) return leanEcho(value);
+  if (value.ok !== true) return value;
   if (tool === "model_describe" || tool === "faces_find" || tool === "edges_find") {
     const faces = Array.isArray(value.faces) ? (value.faces as Row[]) : null;
     const edges = Array.isArray(value.edges) ? (value.edges as Row[]) : null;
