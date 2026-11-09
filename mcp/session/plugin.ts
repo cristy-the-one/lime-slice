@@ -74,7 +74,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
   }
   const where = object ? "test part" : "reference plate";
   const slow = ((dry.profile as { lines?: { line: number; tool: string; ms: number }[] } | undefined)?.lines ?? []).slice(0, 5);
-  const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool} line ${row.line} (${row.ms} ms)`).join(", ")}.` : "";
+  const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool === "done" ? "the queued applies built at done" : `${row.tool} line ${row.line}`} (${row.ms} ms)`).join(", ")}.` : "";
   const timedOut = dry.ok !== true && String(dry.reason ?? "").startsWith(`The recipe ran past its ${timeoutS} s limit`);
   if (timedOut && budget === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.${slowText}` };
   if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.${slowText}` };

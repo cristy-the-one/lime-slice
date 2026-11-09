@@ -545,7 +545,17 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     out = await host.run(built.exe, start, input.profile === true ? profiledCall : journalCall, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
     // --- docs/plan-native-recipes.md 7.1: `done` builds what is still queued, before the parts are kept.
     if (out.ok && out.done && queue.holding) {
-      const flushed = await queue.flushAll();
+      // The recipe's program has ended, so its clock (`out.ms`) has stopped: this build is timed here and added to
+      // the run, and to the profile as the row `done`, so runMs, the split and a kept plugin's `built:` hold it.
+      const began = performance.now();
+      const sink = newSink();
+      if (tap) tap.current = sink;
+      let flushed: RecipeReply | null;
+      try { flushed = await queue.flushAll(); }
+      finally { if (tap) tap.current = null; }
+      const took = performance.now() - began;
+      out.ms += Math.round(took);
+      if (tap) timings.set("done", { line: 0, tool: "done", calls: 1, ms: took, sink });
       // A cancel or the time limit that came while it built takes the whole run back, as during the run.
       const stop = flushed && !flushed.ok ? flushed.error : queue.stopped();
       if (stop) {

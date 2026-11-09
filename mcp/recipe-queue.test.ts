@@ -97,6 +97,26 @@ fn main() {
   check("the steps built together carry builtWith, the first of them", marked.length === 5 && marked.every((row) => row.builtWith === marked[0]!.id) && off.history.every((row) => row.builtWith === undefined), on.history);
 }
 
+// The queue built at `done` is part of the run's time: runMs and the profile hold it, as the row `done`.
+{
+  const engine = fakeEngine();
+  const inner = engine.modelTree.bind(engine);
+  // The combined boolean takes 120 ms here, so the time is seen in the numbers.
+  engine.modelTree = (body: string) => (body.includes('"call":"apply"') && body.includes('"kind":"group"') ? new Promise<string>((done) => setTimeout(() => done(inner(body) as string), 120)) : inner(body));
+  const session = new Session(engine);
+  const began = performance.now();
+  const reply = (await session.call("recipe_run", { source: CUTS, name: "timed", profile: true })) as R;
+  const wall = performance.now() - began;
+  const profile = (reply.profile ?? {}) as { lines?: { tool: string; line: number; ms: number; calls: number }[]; split?: Record<string, number>; callsMs?: number };
+  const row = profile.lines?.find((line) => line.tool === "done");
+  check("the queue built at done has a profile row of its own", reply.ok === true && !!row && row.calls === 1 && row.line === 0 && row.ms >= 115, reply);
+  check("runMs holds it, and stays inside the call's wall time", Number(reply.runMs) >= (row?.ms ?? Infinity) && Number(reply.runMs) <= wall + 1, { runMs: reply.runMs, wall, row });
+  check("the profile's calls hold it", Number(profile.callsMs) >= (row?.ms ?? Infinity) - 1, profile);
+  check("the split still adds up to runMs", Math.abs(Object.values(profile.split ?? {}).reduce((a, b) => a + b, 0) - Number(reply.runMs)) <= 1, { split: profile.split, runMs: reply.runMs });
+  const plain = (await new Session(engine).call("recipe_run", { source: CUTS, name: "timed" })) as R;
+  check("runMs holds it without a profile too", plain.ok === true && Number(plain.runMs) >= 115 && plain.profile === undefined, plain);
+}
+
 // A line that reads its apply's reply builds in its place; a read builds the queue first.
 const READS = `use lime_recipe::{ops, Json, Session};
 
