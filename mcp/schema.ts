@@ -1734,8 +1734,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_edit",
-    description: "Replace a probed step and replay the steps under it. Or patch one model_build step.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step, full: fullReply, op: opPointer("The replacement plain edit."), patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." } } },
+    description: "Replace a step (probe it first, or probe: true) and replay the steps under it. Or change model_build steps without sending the build again: patch one, patches several.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, node: step, full: fullReply, op: opPointer("The replacement plain edit."), probe: { type: "boolean", description: "With op: check first; edit only if it passes." }, patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." }, patches: { type: "array", minItems: 1, maxItems: 100, items: { type: "object" }, description: "In order, one rebuild: {node, patch}, {node, remove: true}, {insert: op, after | before: node}. node: a label or the op number, from 1." } } },
   },
   {
     name: "model_rename",
@@ -2554,8 +2554,14 @@ function checkTool(name: string, input: unknown): string | null {
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };
-  if (name === "model_edit" && (input as { patch?: unknown }).patch !== undefined) return record.op !== undefined ? "model_edit takes op or patch, not both." : null;
-  if (name === "model_edit" && record.op === undefined) return "op is required (or patch, to change fields of a model_build step).";
+  if (name === "model_edit") {
+    const edit = input as { patch?: unknown; patches?: unknown; node?: unknown };
+    const forms = [record.op, edit.patch, edit.patches].filter((value) => value !== undefined).length;
+    if (forms > 1) return edit.patches === undefined ? "model_edit takes op or patch, not both." : "model_edit takes one of op, patch, or patches.";
+    if (forms === 0) return "op is required (or patch or patches, to change steps of a model_build object).";
+    if (edit.patches === undefined && edit.node === undefined) return "node is required.";
+    if (record.op === undefined) return null;
+  }
   if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true, 0, name === "model_probe");
   if (name === "render_view" && record.op !== undefined) return checkOp(record.op, "op", true);
   if (name === "model_apply") return checkOp(record.op, "op", false);

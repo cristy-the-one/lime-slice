@@ -62,7 +62,7 @@ import { paintMethods, paintHandlers } from "./session/paint.ts";
 import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 import { stressMethods, stressHandlers } from "./session/stress.ts";
 import { NEXT, refuse, withCode } from "./refusals.ts";
-import { patchStep } from "./edit-patch.ts";
+import { patchStep, patchSteps } from "./edit-patch.ts";
 import type { RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
@@ -268,7 +268,9 @@ export class Session {
 
   runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
     // model_edit {node: label, patch}: the step's fields change in the build's own ops and the build runs again from there.
-    if (name === "model_edit" && args && typeof args === "object" && (args as Record<string, unknown>).patch !== undefined) {
+    // patches does the same for several steps, with insert and remove, in one rebuild.
+    const patching = name === "model_edit" && args && typeof args === "object";
+    if (patching && ((args as Record<string, unknown>).patch !== undefined || (args as Record<string, unknown>).patches !== undefined)) {
       const shape = validateTool(name, args);
       if (shape) throw new ProtocolError(shape);
       const rewritten = this.patchToBuild(args as Record<string, unknown>);
@@ -512,7 +514,7 @@ export class Session {
    * The build's resume then reuses every step before it. Only an object model_build made has ops to patch.
    */
   patchToBuild(input: Record<string, unknown>): { args: Record<string, unknown> } | { refusal: Record<string, unknown> } {
-    if (input.op !== undefined) return { refusal: refuse("conflicting-arguments", "model_edit takes op or patch, not both.") };
+    if (input.op !== undefined || (input.patch !== undefined && input.patches !== undefined)) return { refusal: refuse("conflicting-arguments", "model_edit takes one of op, patch, or patches.") };
     const obj = this.find(typeof input.object === "string" && input.object !== "" ? input.object : this.selected);
     if (!obj) return { refusal: refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate) };
     const recipe = obj.recipe;
@@ -524,7 +526,10 @@ export class Session {
       const { params: _params, ...rest } = n.args as Record<string, unknown>;
       return validateTool("model_apply", rest);
     };
-    const patched = patchStep(recipe.ops as Record<string, unknown>[], input.node, input.patch, check);
+    // patches: several steps changed, removed or inserted, and one rebuild from the first of them.
+    const patched = input.patches !== undefined
+      ? patchSteps(recipe.ops as Record<string, unknown>[], input.patches, check)
+      : patchStep(recipe.ops as Record<string, unknown>[], input.node, input.patch, check);
     if ("reason" in patched) return { refusal: refuse(patched.code, patched.reason, { object: obj.id }) };
     return { args: { object: obj.id, base: structuredClone(recipe.base), ops: patched.ops, params: kept, ...(recipe.name ? { name: recipe.name } : {}) } };
   }
