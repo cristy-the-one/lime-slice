@@ -244,6 +244,32 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   expect(splits.map((request) => request.key)).toEqual([splits[0]!.key, splits[0]!.otherKey]);
 });
 
+test("the list of faces a test clicks by is written under a driver, and not in a person's browser", async ({ page }) => {
+  await modeler(page);
+  const canvas = page.locator("#model");
+  /** The pointer over the middle of the solid: a face under it shows the grab cursor, so pushing a face is on. */
+  const overSolid = async () => {
+    await expect(canvas).toHaveAttribute("data-solid-screen", /\d/);
+    const screen = (await canvas.getAttribute("data-solid-screen"))!.split(",").map(Number);
+    const rect = (await canvas.boundingBox())!;
+    await page.mouse.move(rect.x + screen[0]! + screen[2]! / 2 - 3, rect.y + screen[1]! + screen[3]! / 2);
+    await page.mouse.move(rect.x + screen[0]! + screen[2]! / 2, rect.y + screen[1]! + screen[3]! / 2);
+    await expect.poll(() => canvas.evaluate((el) => (el as HTMLElement).style.cursor)).toBe("grab");
+  };
+
+  await openModel(page);
+  await overSolid();
+  await expect.poll(async () => ((await canvas.getAttribute("data-faces")) ?? "").split(" ").filter(Boolean).length, "Playwright drives the page: each face is listed").toBe(6);
+
+  // The same page as a person opens it. The list is a 50–300 kB string on every frame of an orbit of a big part.
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "webdriver", { get: () => false }));
+  await openModel(page);
+  expect(await page.evaluate(() => navigator.webdriver)).toBe(false);
+  await overSolid();
+  await page.waitForTimeout(300);
+  expect(await canvas.getAttribute("data-faces"), "nothing reads the list, so it is not written").toBeNull();
+});
+
 /**
  * A slab whose top is `cols` × `rows` faces, each cut into `split` × `split` quads, as a big STEP part's
  * tessellation is: thousands of faces and over a hundred thousand triangles.
