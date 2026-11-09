@@ -43,13 +43,23 @@ function check(name: string, ok: boolean, detail: unknown = "") {
   console.error(`FAIL ${name} ${typeof detail === "string" ? detail : JSON.stringify(detail)}`);
 }
 
-const hostRoot = mkdtempSync(join(tmpdir(), "lime-recipe-opt-"));
-const host = new RecipeHost({ crateDir, root: hostRoot, lust });
+// One host (one lust daemon) per mode, as a server has: the daemon keeps the environment it started with, zig's
+// folder on PATH included, so a daemon started with LIME_LUST_OPT=0 has no zig for a later --opt.
+const roots = new Map<string, string>();
+const hostRoot = (mode: string | undefined) => {
+  const key = mode ?? "default";
+  if (!roots.has(key)) roots.set(key, mkdtempSync(join(tmpdir(), `lime-recipe-opt-${key}-`)));
+  return roots.get(key)!;
+};
+const hosts = new Map<string, RecipeHost>();
 const source = readFileSync(join(crateDir, "examples", "mounting_bar.rs"), "utf8");
 
 async function calls(mode: string | undefined): Promise<{ compiler?: string; calls: string; ok: boolean; ms: number }> {
   if (mode === undefined) delete process.env.LIME_LUST_OPT;
   else process.env.LIME_LUST_OPT = mode;
+  const key = mode ?? "default";
+  if (!hosts.has(key)) hosts.set(key, new RecipeHost({ crateDir, root: hostRoot(mode), lust: lust! }));
+  const host = hosts.get(key)!;
   const built = await host.build("bar", source, false);
   if (!built.ok || !built.exe) return { ok: false, calls: JSON.stringify(built.diagnostics) + (built.reason ?? ""), ms: built.ms };
   const log: RecipeCallSite[] = [];
@@ -82,15 +92,17 @@ const warm = () => existsSync(cache) && readdirNames(cache).some((n) => n.starts
 const first = await calls(undefined);
 check("the default builds and runs", first.ok, first);
 check("zig's cache warms up in the background", await until(warm, 15 * 60_000), cache);
+// With zig warm, a build starts lust's background build (that build runs tcc's program, or the cached optimised one
+// when it already landed); the optimised binary lands in the host's own lust cache, and a later build runs it.
 const second = await calls(undefined);
-check("a warm build is tcc while the optimised one builds", second.ok && second.compiler === "tcc", second);
-const opt = join(hostRoot, "cache", "opt");
-const landed = await until(() => existsSync(opt) && readdirNames(opt).some((n) => n.endsWith(".ok")) && !existsSync(join(opt, "running.lock")), 10 * 60_000);
+check("a warm build runs", second.ok && second.calls === tcc.calls, second);
+const opt = join(hostRoot(undefined), "cache", "opt");
+const landed = await until(() => existsSync(opt) && readdirNames(opt).some((n) => n.endsWith(".ok")), 10 * 60_000);
 check("the background build lands in the host's lust cache", landed, existsSync(opt) ? readdirNames(opt) : opt);
 const third = await calls(undefined);
 check("a later build installs the optimised program", third.ok && third.compiler === "opt", third);
 check("the cached optimised program sends the same calls", third.calls === tcc.calls);
-console.log(`recipe-opt: builds ${tcc.ms} ms tcc, ${now.ms} ms --opt, ${third.ms} ms cached`);
+console.log(`recipe-opt: builds ${tcc.ms} ms tcc, ${now.ms} ms --opt, ${second.ms} ms with the background build (${second.compiler}), ${third.ms} ms cached`);
 
 // Untrusted builds: one in flight when a slot's file changed is dropped once it ends; others stay.
 {

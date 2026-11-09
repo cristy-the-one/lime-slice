@@ -8,6 +8,9 @@
  * milestone 2) as a table with the range of the run time, and says whether the two ways ended with the same solid (the
  * kernel's fingerprint, and a hash of the mesh).
  *
+ * tcc against lust's optimised build (mcp/recipe-opt.ts): run it once with LIME_LUST_OPT=0 and once with
+ * LIME_LUST_OPT=now and LIME_ZIG set (every build `--opt`; the first build of each case is the optimised compile).
+ *
  * It needs what the recipe tests need, and exits 2 saying what is missing otherwise:
  *   - lust (LIME_LUST, or on PATH): the pinned build, `tools/lust/LUST_REV`.
  *   - the real engine and the Open CASCADE bridge: LIME_MCP_ENGINE (the library, else target/release), LIME_OCCT_BRIDGE
