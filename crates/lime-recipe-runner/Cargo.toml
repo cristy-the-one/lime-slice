@@ -8,7 +8,7 @@ publish.workspace = true
 description = "The app's recipe runner (docs/plan-recipe-plugins.md D16): builds a recipe with the bundled lust and runs it with limits and a memory cap. The protocol itself is src/recipe/host.ts."
 
 [dependencies]
-serde_json = "1"
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }

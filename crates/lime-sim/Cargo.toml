@@ -12,7 +12,7 @@ faer = { version = "=0.24.4", default-features = false, features = ["std", "spar
 pollster = { version = "0.4", optional = true }
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json.workspace = true
 wgpu = { version = "27", optional = true, default-features = false, features = ["wgsl", "dx12", "vulkan", "metal"] }
 
 [features]
@@ -22,7 +22,7 @@ wgpu = { version = "27", optional = true, default-features = false, features = [
 gpu = ["dep:wgpu", "dep:pollster"]
 
 [dev-dependencies]
-serde_json = "1"
+serde_json.workspace = true
 
 [[bin]]
 name = "lime-sim"
