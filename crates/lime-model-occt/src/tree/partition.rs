@@ -253,6 +253,8 @@ pub(super) struct PieceKeys {
     pub(super) list: Vec<Option<String>>,
     /// --- Split to print: where the pins' tree opens.
     pub(super) pins: Option<String>,
+    /// False: an Apply answers without meshing the new solid (`Request::Apply`'s `mesh`).
+    pub(super) mesh: bool,
 }
 
 /// Every key a split to print names for its pieces is a tree of its own, apart from `key` and from each other.
