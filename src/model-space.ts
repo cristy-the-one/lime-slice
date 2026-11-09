@@ -131,21 +131,27 @@ export function boxUnder(source: Bounds, pose: Affine): Bounds {
   return { min, max };
 }
 
-let lastBounds: { positions: ArrayLike<number>; pose: Affine; box: Bounds | null } | null = null;
+const keptBounds = new WeakMap<object, { pose: Affine; box: Bounds | null; read: Affine; readBox: Bounds | null }>();
 
 /**
- * The exact box of `positions` once posed. Kept for the last solid and pose, since every tool, handle and
+ * The exact box of `positions` once posed. Kept with each mesh for its last pose, since every tool, handle and
  * note reads it while the numbers move and only a new solid or a new pose changes it. A pose that only
  * moved shifts the kept box instead of reading every vertex again, as Place does on each pointer move.
  */
 export function posedBounds(positions: ArrayLike<number>, pose: Affine): Bounds | null {
-  const held = lastBounds;
-  if (held && held.positions === positions) {
+  // One entry a mesh, not one in all: an assembly asks for each of its parts in turn on every drag step, and a
+  // single entry was thrown away by the next part. `read` is the pose whose box was read from the vertices; a
+  // pose that differs from it by a move takes that box shifted, so repeated moves do not add up rounding.
+  const key = positions as unknown as object;
+  const held = keptBounds.get(key);
+  if (held) {
     if (held.pose === pose) return held.box;
-    if (held.box && pose.m.every((value, i) => value === held.pose.m[i])) {
-      const d = [pose.t[0] - held.pose.t[0], pose.t[1] - held.pose.t[1], pose.t[2] - held.pose.t[2]];
-      const box: Bounds = { min: [held.box.min[0] + d[0]!, held.box.min[1] + d[1]!, held.box.min[2] + d[2]!], max: [held.box.max[0] + d[0]!, held.box.max[1] + d[1]!, held.box.max[2] + d[2]!] };
-      lastBounds = { positions, pose, box };
+    if (held.readBox && pose.m.every((value, i) => value === held.read.m[i])) {
+      const d = [pose.t[0] - held.read.t[0], pose.t[1] - held.read.t[1], pose.t[2] - held.read.t[2]];
+      const b = held.readBox;
+      const box: Bounds = { min: [b.min[0] + d[0]!, b.min[1] + d[1]!, b.min[2] + d[2]!], max: [b.max[0] + d[0]!, b.max[1] + d[1]!, b.max[2] + d[2]!] };
+      held.pose = pose;
+      held.box = box;
       return box;
     }
   }
@@ -164,7 +170,7 @@ export function posedBounds(positions: ArrayLike<number>, pose: Affine): Bounds 
     }
     box = { min, max };
   }
-  lastBounds = { positions, pose, box };
+  keptBounds.set(key, { pose, box, read: pose, readBox: box });
   return box;
 }
 
