@@ -522,6 +522,25 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Tested by:* byte comparison of the library copy and the crate copy on every tooth count from 6 to 120; rustc
    against lust; real-OCCT extrude of each outline kind (valid solid, expected volume); the corpus.
 
+   **As built (2026-11-09, `claude/gears-native`, with milestone 8 as decided "both now").** `lime_recipe::gears` (API
+   1.12) holds the library's ten functions with their names, arguments and code unchanged, so they keep the library's
+   numbers and its platform trig; `crates/lime-recipe/tests/fixtures/involute_gears_v1.rs` is the library file as it was
+   adopted. `cargo test -p lime-recipe --test gears` compares them bit for bit with that copy: every tooth count from 6
+   to 120 at six modules, four backlashes, four flank counts and six phases (over 10 million points), `mate_phase`,
+   `mate_turn`, `idler_centre`, `rack_outline`, `involute`. `mcp/recipe-gears.test.ts` builds a recipe that carries the
+   library copy inline, as a kept plugin does, with lust and with rustc: 23,124 comparisons, none differ under either.
+   New names for the better maths: `Gear::new(z, m).pressure(deg).backlash(mm).shift(x)` and `outline(phase)`, an
+   `Outline` of true involute splines (9 points a flank, evenly in roll angle), the root fillet a rack with an ISO 53
+   tip round (0.38 m) leaves, and on a small gear the undercut that round and the flank's lowest point cut (18 teeth at
+   20° are clear, 17 are just undercut, as a hob leaves them; a brute-force rack simulation agreed), arcs at tip and
+   root. It uses the crate's own trig, so it sends the same bytes under lust and rustc (checked), and the kernel builds
+   the same outline from the same code. Also `points`, `area`, `pitch_thickness`, `undercut`, `refusal`,
+   `centre_distance` (working distance with shift), `ops::gear` and `ops::gear_solid`. Up to 150 teeth: an extrude loop
+   takes 1000 segments and a gear is 6 a tooth (8 undercut). `outline_loops` became `Gear::outline(..).to_loop()`.
+   The library ingredient is the owner's file and is not changed here: its next version can be `pub use
+   lime_recipe::gears::*;`. Native fast path: not needed: an outline is microseconds in lust (the whole adopted sweep of
+   23,124 outlines ran in 4.9 s under lust, 0.9 s under rustc), far under the 5 ms a call that section 5 asks for.
+
 6. **More native fast paths.** From milestone 2's profiles: the next `geom2d` functions whose calls cost over 5 ms in
    lust (offsets and rounded corners first), each with its threshold and its byte test through the engine.
    *Notice:* the spiderweb plugin and lattice-heavy plugins get faster; nothing else changes.
@@ -539,6 +558,40 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Notice:* a person adds a gear from the Model tab; an agent makes one with one op.
    *Tested by:* real-OCCT tests (valid solid, tooth thickness at the pitch circle, two gears mesh without
    interference at the right centre distance), an e2e spec in `test:smoke`, a fixture rebuild.
+
+   **As built (2026-11-09, `claude/gears-native`).** A gear is a primitive, `primitive: "gear"` with `teeth`, `module`,
+   `height` (thickness) and optional `pressureDeg`, `backlash`, `profileShift`, `phaseDeg`, `bore`/`boreShape`/`boreFlat`
+   (round, hex across flats, D) and `hubDiameter`/`hubHeight`, so it is a new solid (`open`, `solid_new {gear}`), a
+   boolean's tool, and an edited root, and saves and rebuilds as every primitive op does: a gear field is written only
+   on a gear, so old projects and old ops are byte for byte as they were. The engine builds it in Rust
+   (`crates/lime-model-occt/src/tree/gear.rs`) from `lime_recipe::gears::Gear::outline` as one extrude of loops (the
+   flanks are OCCT B-splines through the involute points; the volume matches the outline's exact area within 2e-4 on
+   every gear the numbers allow, 176 checked), and as a tool it meets the solid as a join does, so its flank, tip and root
+   faces belong to its step and `{fromNode, filter:"convex"}` chamfers or fillets its teeth. Refusals are one sentence
+   (teeth, module, pressure angle, shift, backlash, thickness, a pointed tooth, an undercut through the tooth, a bore that
+   leaves less than a module under the teeth, a hub without both sizes or not wider than the bore).
+   MCP: op kind `gear` (fuse by default), its fields only in `guide {kind:"gear"}`, and `solid_new {gear:{...}}`; the
+   list grew by 0 tokens net (a duplicated kind list in solid_new's description and half a line of the transition
+   summary paid for it). The Model tab's New solid and Boolean panels have a Gear (Teeth, Module, Thickness, Bore and
+   shape, Hub, and under More the pressure angle, backlash, shift and phase), a live involute ghost, and the refusal
+   under Apply before the engine is asked.
+   *Proven:* `crates/lime-model-occt/tests/gear.rs` on real OCCT: valid closed solids (STEP read back) from 6 to 150
+   teeth; tooth thickness at the pitch circle by a thin ring's common within 2 µm; four pairs (12/24, 17/31, 9/40,
+   24/24) at their centre distance with `mate_phase` share no volume, still none turned 0.06 mm either way, and cross
+   turned 0.16 mm (the 0.2 mm of play two 0.1 mm backlashes leave); bores, hubs, a gear fused, chamfered and filleted, a
+   turned gear cut through a block, a stored op that rebuilds to the same fingerprint. `mcp/gear.test.ts` does the same
+   through the server with `model_check {interference, exact}`. `e2e/model-gear.spec.ts` (in `test:smoke`) for the card.
+   *Measured* (this machine, release, three runs; the same outline as the library's default 3-point polyline):
+
+   | Teeth | Gear: faces, new solid, cut from a plate | Polyline: faces, new solid, cut |
+   |---:|---|---|
+   | 12 (m 2) | 74 faces, 57 ms, cut 283 to 309 ms | 98 faces, 21 to 25 ms, cut 67 to 73 ms |
+   | 24 (m 2) | 146 faces, 112 ms, cut 548 to 686 ms | 194 faces, 40 to 42 ms, cut 137 to 154 ms |
+   | 60 (m 1) | 362 faces, 272 to 316 ms, cut 1,285 to 1,431 ms | 482 faces, 119 to 127 ms, cut 465 to 476 ms |
+
+   A quarter fewer faces and two to four times the time: curved faces cost more than flat ones, as section 2.4 found.
+   Fewer spline points (6 a flank) were no faster and less exact, so the gear keeps 9. The reason for the step is the
+   teeth (true involutes that mesh within their backlash, and the volume the polyline loses), not speed.
 
 ## 9. Done for the whole plan
 

@@ -76,3 +76,11 @@ Every read answers in the frame `s.apply` takes its numbers in: model space, whe
 Before 1.4 the reads answered in the solid's own frame, so on a moved part such a cut missed by the pose. `PickedFace` gains
 `centre` (a sphere's) and `axis_point` (a point on a cylinder's or a cone's axis, or a sphere's centre). A picked face is still kept
 in the part's own frame, so it stays on the part when the part moves.
+
+## Gears (API 1.12)
+
+`gears` is the library's `involute-gears` v1, adopted with the same names and the same numbers bit for bit
+(`gear_outline`, `mate_phase`, `idler_centre`, `rack_outline`, ...; `tests/gears.rs` and `mcp/recipe-gears.test.ts`
+compare them with the library copy in `tests/fixtures`), and `Gear`, true involute outlines: splines on the flanks, the
+cutting rack's root fillet and undercut, arcs at tip and root, any pressure angle and profile shift, in the crate's own
+trig. `ops::gear` is the kernel's gear step, which builds the same outline (`guide {kind:"gear"}`).

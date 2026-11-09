@@ -3374,6 +3374,7 @@ pub mod gears {
     /// Teeth centred on `centres` (mm along u, one pitch = PI * m apart); the outline is closed
     /// at v = `back` so it overlaps the bar it is fused to. Cut the root strip first:
     /// box from the first tooth's root to the last one's, v from below the tips to 1.25 m.
+    #[allow(clippy::ptr_arg)] // The library's signature, kept as it was adopted.
     pub fn rack_outline(m: f64, centres: &Vec<f64>, back: f64) -> Vec<P2> {
         let t20 = 20f64.to_radians().tan();
         let p4 = std::f64::consts::PI * m / 4.0;
@@ -3713,7 +3714,7 @@ pub mod gears {
                 }
                 join(&mut pieces, (Kind::Involute, involute_from(rho0, ra)));
             }
-            if !(seam <= 1e-6 * m) {
+            if seam.is_nan() || seam > 1e-6 * m {
                 return Err("The root fillet does not meet the involute for these numbers.".to_string());
             }
             if pieces.iter().any(|(_, pts)| pts.iter().any(|p| p.1 <= 0.0 || p.0 > ra + 1e-9)) {
