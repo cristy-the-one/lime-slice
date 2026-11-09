@@ -285,7 +285,7 @@ jobs:
         run: |
           set -euo pipefail
           tools/lust/install.sh "$RUNNER_TEMP/lust" > /dev/null
-          zig=$(tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)
+          zig=$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)
           tools/lust/stage.sh "$RUNNER_TEMP/lust" src-tauri/resources/mcp/lust "$zig"
 
       # A recipe built and run by the staged copy, with the bundled server's engine; then the same with the staged

@@ -838,7 +838,7 @@ jobs:
           LIME_RECIPE_REQUIRED: "1"
           LIME_LUST_OPT_CACHE: ${{ runner.temp }}/lime-opt-cache
         run: |
-          export LIME_ZIG="$(tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig"
+          export LIME_ZIG="$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig"
           test -x "$LIME_ZIG"
           node --experimental-strip-types mcp/recipe-opt.test.ts
           export LIME_LUST_OPT=now
@@ -1009,7 +1009,7 @@ jobs:
           LIME_LUST_OPT_CACHE: ${{ runner.temp }}/lime-opt-cache
         run: |
           set -euo pipefail
-          export LIME_ZIG="$(tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig.exe"
+          export LIME_ZIG="$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig.exe"
           test -f "$LIME_ZIG"
           node --experimental-strip-types mcp/recipe-opt.test.ts
           export LIME_LUST_OPT=now

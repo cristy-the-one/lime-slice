@@ -22,7 +22,7 @@ if [ -f "$dest/$name/zig$exe" ] && [ -f "$dest/$name/.sha256-ok" ] && [ "$(cat "
   echo "$dest/$name"
   exit 0
 fi
-sha256() { if command -v sha256sum > /dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+sha256() { if command -v sha256sum > /dev/null; then sha256sum "$1" | cut -d' ' -f1 | tr -dc '0-9a-f'; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 mkdir -p "$dest"
 archive="$dest/$name.$ext"
 if [ ! -f "$archive" ] || [ "$(sha256 "$archive")" != "$want" ]; then
