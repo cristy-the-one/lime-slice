@@ -451,6 +451,48 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    engine and real OCCT in CI: same solid as one by one, a refused op's line, an overlapping cut and fuse kept in order,
    a read flushes first, `done` flushes), the corpus job, the bench before and after.
 
+   *As built (2026-11-09), as the owner decided it (silent queuing by default, the explicit queue, the teaching):*
+   - **Which lines queue.** lust does not yet say how a call's result is used (its build JSON has diagnostics only;
+     `must_use` is parsed and ignored). A lazy reply from `s.apply` was ruled out: its type is `Result<Json, Refusal>`
+     and a `Json` is a plain enum a recipe may match, so no read can be caught without changing the API of every saved
+     plugin. So the host reads the built text itself (`src/recipe/unread-applies.ts`) and claims a line only when the
+     call's shape proves the reply unread: `s.apply(..)?;`, `.unwrap();`, `.expect(..);`, a bare statement, `let _ =`,
+     `.is_ok()` / `.is_err()`, and `match` / `if let` whose `Ok` binds nothing (gears-on-sphere's helper). Comments and
+     strings are blanked; a line with a read apply beside an unread one, or a recipe with its own `fn apply`, claims
+     nothing. Request to lust-lang, to replace the scan: in `lust build --json`, one line per call to a
+     `#[track_caller]` function the host names (a flag such as `--mark-unread lime_recipe::Session::apply`) whose
+     `Ok` value is never read, `{"kind":"unread_result","fn":"lime_recipe::Session::apply","span":{"line":L,"col":C}}`,
+     with the span the call reports through `Location::caller()`; lust's checker knows each value's uses, so it also
+     covers what text cannot (a helper that returns the reply, a binding never read).
+   - **Host** (`src/recipe/queue.ts`, shared by the MCP session and the app's Plugins run and plugin-step rebuild): an
+     unread line's plain fuse or cut (boolean, extrude, revolve, loft naming no face, edge or anchor) is answered
+     `{ok, queued}` after a pre-check: the engine builds its tool alone (`toolBox`, a new stateless tree call) and its
+     box must meet the part's box grown by queued fuses. Anything else is built in its place after the queue, so its
+     refusal is the recipe's own. Flush triggers as decided (any call naming the part, the selected part for calls
+     naming none, checkpoint, `done`, `flush`, 200 ops, 80 % of the time limit). Grouping: earliest compatible group
+     of the same kind past groups whose tools the box misses; plain booleans group only with plain booleans, and a
+     queued group of them merges faces on one surface once at its end, as each did alone (without that the puzzle box
+     had 102 extra faces). Each group is a `group {combine, source: {kind: "queue"}}` applied as any combined batch;
+     then the engine's new `unfold` call swaps the groups for one step per op in the order sent, the last holding the
+     solid, and the client marks each `builtWith` (saved in the project, shown by `model_history`). The step guards run
+     per group. The kernel names an extrude, revolve or loft that changed nothing inside a queued group by its faces
+     (`combined.missed`, from the boolean's history); a plain boolean that misses is an ordinary step either way.
+     Any refusal there replays the run with silent queuing off (MCP re-enters `recipe_run`; the app runs again after
+     dropping the first attempt's steps). `LIME_RECIPE_QUEUE=0` turns silent queuing off for a server.
+   - **API 1.11**: `apply_later`, `flush` (with `Combined::lines`), `apply_now`, `queue(bool)`; corpus plugin
+     `api-1.11-queue`. The corpus also runs every level again with silent queuing off and checks the same calls, ops,
+     solid and metrics.
+   - **Teaching**: the recipes guide's Speed paragraph, the instructions line, a lesson that ships with the app
+     (`apply/0`, found by "slow", "speed", "many applies", "batch"), and the reply's `queued {applies, booleans}`,
+     `queueHints` and `replayed`.
+   - **Numbers** (this PC, release engine and bridge, real OCCT, three runs each, wall time of `recipe_run`):
+     gears-on-sphere unchanged 4.7 to 4.8 s queued (3 booleans) against 13.8 to 18.3 s one by one (27); with
+     `apply_later` 4.5 to 4.6 s. The same 1,358 faces, 3,996 edges and volume 919,718.5239405725 mm³, and 28 History
+     rows either way. The puzzle box plugin: 12.9 to 15.0 s queued against 14.3 to 19.2 s one by one; 176 applies built
+     as 76 booleans (319 kernel applies against 419); the same 20 parts, 218 History rows, 2,362 faces and 6,103
+     edges, volume equal to 15 digits. Its hint says why it gains less: `model_place` at line 52 builds the queue 13
+     times.
+
 4. **Mesh once, at the end.** During a recipe run the session asks the kernel for no mesh after a step and marks the
    part's mesh out of date; a read, a probe preview or `done` meshes it. The app's runner does the same.
    *Notice:* sequential recipes get faster (up to about a fifth on gears-on-sphere); previews look the same.
