@@ -7,7 +7,7 @@ import { plainModelError } from "../../src/app/model-error.ts";
 import { ID_MATRIX } from "../../src/mesh-place.ts";
 import { disjointBoolean } from "../../src/model-feasibility.ts";
 import { facePlane, formatMm } from "../../src/model-plane.ts";
-import { rootSpec, type PrimitiveSpec } from "../../src/model-primitive.ts";
+import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
 import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView } from "../../src/modeling/model-calls.ts";
 import { onFaceIndex } from "../../src/modeling/bake.ts";
@@ -24,6 +24,7 @@ import { EngineStopped, occtHint, ProtocolError } from "../engine.ts";
 import { recipeDataFile, recipeDataMissing, writeRecipeData } from "../recipe.ts";
 import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type SolidMetrics } from "../inspect.ts";
 import { primitiveFrom } from "../../src/modeling/compose.ts";
+import { gearRefusal } from "../../src/model-gear.ts";
 import { typedView } from "../../src/modeling/typed-view.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../../src/interference.ts";
 import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
@@ -564,8 +565,13 @@ async function rebuildStale(this: Session, obj: PlateObject, depth: number): Pro
 }
 
 async function solidNew(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const typed = primitiveFrom(input);
+  // A gear: the gear op's fields (guide {kind:"gear"}), its base on Z = 0, centred on its axis.
+  const gear = input.gear && typeof input.gear === "object" ? (input.gear as Record<string, unknown>) : null;
+  if (gear && input.primitive !== undefined) return refuse("bad-argument", "Give a primitive or a gear, not both.");
+  const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(input);
   if ("reason" in typed) return refuse("bad-argument", typed.reason);
+  const gearWhy = gear ? gearRefusal(gearOf(typed)!, typed.height) : null;
+  if (gearWhy) return refuse("bad-argument", gearWhy);
   const kind = typed.primitive;
   const spec = rootSpec(typed);
   this.seq += 1;

@@ -321,6 +321,8 @@ jobs:
           node --experimental-strip-types mcp/assembly.test.ts
           node --experimental-strip-types mcp/large-profile.test.ts
           node --experimental-strip-types mcp/interference-exact.test.ts
+          # A kernel gear step: solid_new {gear}, the gear op, two gears that mesh within their backlash (docs/plan-native-recipes.md milestone 8).
+          node --experimental-strip-types mcp/gear.test.ts
           node --experimental-strip-types mcp/assembly-friction-occt.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts

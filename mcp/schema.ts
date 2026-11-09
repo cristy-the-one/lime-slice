@@ -758,6 +758,40 @@ const transitionOp = {
   },
 };
 (op.oneOf as unknown[]).push(transitionOp);
+
+/**
+ * --- A gear (docs/plan-native-recipes.md milestone 8): a spur gear with true involute flanks, as a boolean's tool. One
+ * name on the list; guide {kind:"gear"} has its fields. solid_new {gear:{...}} makes one a new solid.
+ */
+export const gearFields = {
+  teeth: { type: "integer", minimum: 6, maximum: 150, description: "Teeth." },
+  module: { type: "number", minimum: 0.05, maximum: 50, description: "mm of pitch diameter per tooth." },
+  thickness: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Along the gear's axis, mm." },
+  pressureDeg: { type: "number", minimum: 10, maximum: 30, description: "Default 20." },
+  backlash: { type: "number", minimum: 0, maximum: 50, description: "mm off each tooth at the pitch circle. Default 0.1." },
+  profileShift: { type: "number", minimum: -1, maximum: 1, description: "Times the module. Default 0." },
+  phaseDeg: { type: "number", description: "Tooth 0's centre from the gear's +X. Default 0." },
+  bore: { type: "number", minimum: 0, description: "mm: a round or D bore's diameter, a hex bore across flats. 0 none." },
+  boreShape: { enum: ["round", "hex", "d"], description: "Default round." },
+  boreFlat: { type: "number", exclusiveMinimum: 0, description: "A D bore, flat to far side, mm. Default 0.9 bore." },
+  hubDiameter: { type: "number", exclusiveMinimum: 0, description: "A hub on top; with hubHeight." },
+  hubHeight: { type: "number", exclusiveMinimum: 0, description: "mm above the gear." },
+};
+const gearOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "teeth", "module", "thickness"],
+  properties: {
+    kind: { const: "gear" },
+    op: booleanKind,
+    ...gearFields,
+    origin: { ...vec3, description: "Base centre, before the turn." },
+    centre: { ...vec3, description: "Mid-axis: the turn point." },
+    turn: { ...vec3, description: "Degrees X, then Y, then Z." },
+    label,
+  },
+};
+(op.oneOf as unknown[]).push(gearOp);
 // The kinds pushed after OP_WORDS was first filled: their words ("lip", "corner") are text too, not expressions.
 addOpWords(op);
 
@@ -791,7 +825,8 @@ export const OP_SUMMARY: Record<string, string> = {
   text: "text {text, height, depth, face, at}: raised or cut letters.",
   array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
   ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
-  transition: "transition {edges, mode, angleDeg, size}: a wedge in a concave corner or a gusset under a lip, angleDeg to the layers.",
+  transition: "transition {edges, mode, angleDeg, size}: a wedge in a concave corner or a gusset under a lip.",
+  gear: "gear {op, teeth, module, thickness}: spur gear.",
 };
 
 /** The op branch of one kind, as the server checks it. */
@@ -1312,13 +1347,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "solid_new",
-    description: "Add a primitive solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube), centred on X and Y on Z = 0. Or, with coupon, a fit coupon. Needs Open CASCADE.",
+    description: "Add a primitive, a gear or a fit coupon, centred on X and Y on Z = 0. Needs Open CASCADE.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         ...solidFields,
         name: objectName,
+        gear: { type: "object", description: "guide {kind:\"gear\"}." },
         coupon: {
           type: "object",
           additionalProperties: false,

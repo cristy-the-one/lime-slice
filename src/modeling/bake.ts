@@ -13,7 +13,8 @@ import { typedView } from "./typed-view.ts";
 import type { EdgeRow, FaceRow } from "./solid-geometry.ts";
 import { sweepSections, type SweepSpec } from "./sweep.ts";
 import { throughLength, SCREWS } from "../model-hole.ts";
-import { rootSpec } from "../model-primitive.ts";
+import { gearOf, rootSpec } from "../model-primitive.ts";
+import { gearRefusal } from "../model-gear.ts";
 import { extrudeOp, faceExtrudeOp, loftOp, moveFacesOp, revolveOp, shellOp, stepEdges, type ProfileShape } from "../model-request.ts";
 import { toSolidOp, turnDir, type Affine } from "../model-space.ts";
 import { formatMm } from "../model-plane.ts";
@@ -472,6 +473,17 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     }
     const made = moveFacesOp(rows);
     return { op: toSolidOp(made, ctx.pose), typed: { ...made } };
+  }
+  // --- A gear (src/model-gear.ts): a boolean whose tool is the gear primitive, placed as a cylinder is. Fuse by default.
+  if (kind === "gear") {
+    const gearOp = spec.op === "cut" || spec.op === "common" ? spec.op : "fuse";
+    const local = primitiveFrom({ ...spec, primitive: "gear" }, "gear");
+    if ("reason" in local) return local;
+    const why = gearRefusal(gearOf(local)!, local.height);
+    if (why) return { reason: why };
+    const solid = planePrimitive(local, ctx.plane);
+    const op = toSolidOp({ kind: "boolean", op: gearOp, ...solid }, ctx.pose);
+    return { op, typed: { kind: "boolean", op: gearOp, ...solid, ...(spec.centre !== undefined ? { centre: spec.centre } : {}) } };
   }
   if (kind === "boolean") {
     const booleanOp = spec.op === "fuse" || spec.op === "common" ? spec.op : "cut";
