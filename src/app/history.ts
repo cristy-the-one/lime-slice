@@ -10,12 +10,14 @@ import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setFan, setNozzleTemp, setRetract, setTemps } from "../ui/machine-library";
 import { loadSettingsLevel, setSettingsLevel } from "../ui/settings-panel";
+import { pushToast } from "../ui/toasts";
 import {
   beginGesture,
   commitGesture,
   emptyHistory,
   foldSince,
   historyRefs,
+  pushStep,
   putBrepFor,
   redoSnap,
   undoSnap,
@@ -87,6 +89,25 @@ export function rebaseEdits(set: ReadonlyMap<string, { row: PlateSnap["objects"]
   for (const snap of history.undo) rebase(snap);
   for (const snap of history.redo) rebase(snap);
   rebase(history.pending);
+}
+
+/** The state now, as a step would keep it. Take it before a change that `recordForeignStep` then makes undoable. */
+export function captureEdit(): EditSnap {
+  return capture();
+}
+
+/**
+ * A change from elsewhere that replaced something of the window's (Tandem: MCP's shape and Model history for a part,
+ * over the window's own) is one named undo step: Undo puts `before` back. A gesture still settling lands first as its
+ * own step. Run it after the change and before `releaseModelTrees`, so the trees `before` names stay; then rebase the
+ * snapshot's other changes (`rebaseEdits`), which reaches this step too, so its Undo takes back only the swapped parts.
+ */
+export function recordForeignStep(before: EditSnap, label: string) {
+  window.clearTimeout(timer);
+  settling = false;
+  held = false;
+  if (history.pending) commitNow(before);
+  history = pushStep({ ...history, pending: null }, before, label);
 }
 
 /** Close the open gesture as a step and say which objects it changed. */
@@ -358,9 +379,17 @@ export function undoUserEdit(): boolean {
   const step = undoSnap(history, now);
   if (!step) return false;
   history = step.history;
+  sayNamed("Undid", step.restore.label, history.redo.at(-1));
   noteTouched(now, step.restore);
   applySnap(step.restore);
   return true;
+}
+
+/** A named step keeps its name both ways, and says it: "Undid Assistant: Fuse Ornament gear on Glasses frame". */
+function sayNamed(verb: string, label: string | undefined, other: EditSnap | undefined) {
+  if (!label) return;
+  if (other) other.label = label;
+  pushToast(`${verb} ${label}`, "info");
 }
 
 export function redoUserEdit(): boolean {
@@ -370,6 +399,7 @@ export function redoUserEdit(): boolean {
   const step = redoSnap(history, now);
   if (!step) return false;
   history = step.history;
+  sayNamed("Redid", step.restore.label, history.undo.at(-1));
   noteTouched(now, step.restore);
   applySnap(step.restore);
   return true;

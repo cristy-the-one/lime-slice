@@ -12,7 +12,8 @@ import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/com
 import { shownName, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
-import { bridgeHumanContext, bridgeReceipts } from "../bridge-client.ts";
+import { bridgeHumanContext, bridgeReceipts, bridgeStatus } from "../bridge-client.ts";
+import { tandemEarlier } from "../tandem-receipts.ts";
 import type { Mat3 } from "../../src/mesh-place.ts";
 
 /** Why the desktop holds parts back and what clears each, or "" when none is. Older desktops send only `conflict`. */
@@ -71,11 +72,23 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   }
   const running = this.workJobs.find((row) => !row.done);
   const assemblies = this.liveAssemblies();
-  const [human, receipts] = await Promise.all([bridgeHumanContext(), bridgeReceipts()]);
+  const [status, human, receipts, earlier] = await Promise.all([bridgeStatus(), bridgeHumanContext(), bridgeReceipts(), tandemEarlier(this, null)]);
+  // Always present, so an agent can tell a missing bridge from a quiet one (feedback 2026-11-09, section 3).
+  const tandem = {
+    bridge: status.bridge,
+    ...(status.why ? { why: status.why } : {}),
+    ...(status.url ? { url: status.url } : {}),
+    ...(human ? { human } : {}),
+    ...(receipts ? { receipts: receipts.slice(-8) } : {}),
+    ...(earlier.length ? { earlier } : {}),
+    note: status.bridge === "connected"
+      ? "MCP changes show in the window live, shape and Model history included; what they replace there is one Ctrl+Z away. Each change's reply has tandemReceipt (applied, applied-replaced, waiting, no-bridge…). tandem_pull imports the person's placements."
+      : "No window is connected: app_open reloads the whole file in the app, and later changes do not show live.",
+  };
   return {
     ok: true,
     serverVersion: appVersion(),
-    ...(human || receipts ? { tandem: { ...(human ? { human } : {}), ...(receipts ? { receipts: receipts.slice(-8) } : {}), note: "Use tandem_pull to import compatible human placements. Desktop and MCP are not atomically synchronized. A conflict holds back only the parts named in its held list (human.conflicts says why and what clears each); the rest of that snapshot applied. Receipts are asynchronous; absence does not prove application." } } : {}),
+    tandem,
     engine,
     ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
     occt,

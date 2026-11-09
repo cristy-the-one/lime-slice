@@ -345,8 +345,11 @@ function drop(this: Session, obj: PlateObject, node: number | null): Record<stri
 async function commit(this: Session, obj: PlateObject): Promise<Record<string, unknown>> {
   const blocked = this.meshBlock(obj);
   if (blocked) return refuse("step-kept", blocked);
+  const from = obj.platedNode;
   const reason = await this.commitObject(obj);
   if (reason) return refuse("step-kept", reason);
+  // What this commit put on the plate, in a few words, for the desktop's undo step ("Fuse Ornament gear").
+  this.commitChange = { object: obj.id, change: commitChange(obj.tree, from, obj.platedNode) };
   const pieces = await this.commitPieces(obj);
   return {
     ok: true,
@@ -357,6 +360,27 @@ async function commit(this: Session, obj: PlateObject): Promise<Record<string, u
     ...(pieces.refused.length ? { piecesRefused: pieces.refused } : {}),
     ...(pieces.arranged ? { arranged: true } : {}),
   };
+}
+
+/**
+ * The steps a commit put on the plate, named as the history names them: the steps from the plate's step before the
+ * commit (`from`) to the one now (`to`), "Fuse Ornament gear" or "Fuse Ornament gear and 2 more steps". Undefined when
+ * the plate's step did not move (or moved back up the history: an undo, which the tool name says better).
+ */
+export function commitChange(tree: ModelTree | null | undefined, from: NodeId | null, to: NodeId | null): string | undefined {
+  if (!tree || to === null || to === from) return undefined;
+  const labels: string[] = [];
+  let at: NodeId | null = to;
+  for (let guard = 0; at !== null && at !== from && guard <= tree.nodes.size; guard += 1) {
+    const node = tree.nodes.get(at);
+    if (!node) return undefined;
+    if (node.parent !== null || from === null) labels.push(node.name?.trim() || node.label);
+    at = node.parent;
+  }
+  if (from !== null && at !== from) return undefined;
+  const first = labels.at(-1);
+  if (!first) return undefined;
+  return labels.length === 1 ? first : `${first} and ${labels.length - 1} more step${labels.length === 2 ? "" : "s"}`;
 }
 
 /** The plate mesh becomes the solid on screen. A second commit of the same node does not export again. */

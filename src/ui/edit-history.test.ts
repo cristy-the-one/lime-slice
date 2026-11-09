@@ -7,6 +7,7 @@ import {
   emptyHistory,
   foldSince,
   historyRefs,
+  pushStep,
   putBrepFor,
   redoSnap,
   sameSnap,
@@ -144,6 +145,16 @@ const cloned = cloneSnap(solid);
 check("a copied step shares the STEP buffer", cloned.plate!.objects[0]!.brep === solid.plate!.objects[0]!.brep);
 check("an object without a STEP stays without one", !("brep" in cloned.plate!.objects[1]!));
 check("the rest is a copy", cloned.plate!.objects[0] !== solid.plate!.objects[0] && cloned.meshPins !== solid.meshPins && sameSnap(cloned, solid));
+
+// A Tandem swap: a named step lands like a gesture (redo goes) and Undo restores the state before the swap.
+{
+  const before = snap(1);
+  const swapped = pushStep({ undo: [snap(0.5)], redo: [snap(3)], pending: null }, before, "Assistant: Fuse Ornament gear on Glasses frame");
+  check("a named step lands on top and clears redo", swapped.undo.length === 2 && swapped.redo.length === 0 && swapped.undo.at(-1)?.label === "Assistant: Fuse Ornament gear on Glasses frame");
+  check("the named step is a copy, not the caller's snap", swapped.undo.at(-1) !== before && before.label === undefined);
+  const undone = undoSnap(swapped, snap(2));
+  check("undo of the named step restores the state before the swap", undone?.restore.placement.partScale === 1 && undone.restore.label === "Assistant: Fuse Ornament gear on Glasses frame");
+}
 
 if (failed) {
   console.error(`${failed} failed`);

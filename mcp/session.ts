@@ -22,6 +22,7 @@ import type { LayerAction } from "../src/layer-actions.ts";
 import { builtinLibrary, type MachineLibrary } from "../src/ui/machine-library.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
 import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
+import { RECEIPT_WAIT_MS, tandemEarlier, tandemOutcome } from "./tandem-receipts.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
 import { RecipeHost } from "./recipe.ts";
@@ -119,6 +120,10 @@ export class Session {
   readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
   /** Object ids included in a plate snapshot, independently of shared mesh hashes. */
   readonly bridgeObjectIds = new Set<string>();
+  /** What the last model_commit put on the plate, for the desktop's undo step. */
+  commitChange: { object: string; change: string | undefined } | null = null;
+  /** Snapshots whose desktop outcome a reply could not give yet; the next call's reply gives it. Oldest first. */
+  readonly tandemPending: { seq: number; at: number }[] = [];
   readonly meshHashes = new WeakMap<Uint8Array, string>();
   /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
   readonly legacySolids = new WeakSet<Uint8Array>();
@@ -293,18 +298,23 @@ export class Session {
       if (activity) void mirror({ activity: { id: activity, phase: "end" } });
       throw err;
     }
-    const work = Promise.resolve(result).then((value) => {
-      let receipt: { session: string; seq: number; status: string } | undefined;
+    const work = Promise.resolve(result).then(async (value) => {
+      let receipt: Record<string, unknown> | undefined;
+      let earlier: Record<string, unknown>[] = [];
       if (!this.isolated) {
         const { payload, carriedAll } = this.bridgePayload(name, input, value);
         this.lastBridge = payload;
-        void mirror(payload, this.bridgeLink, carriedAll);
+        const sent = mirror(payload, this.bridgeLink, carriedAll);
         if (changes && bridgeTarget() && bridgeHasPlateUpdate(payload as BridgeMessage)) {
-          receipt = { session: this.bridgeSession, seq: this.bridgeSeq, status: "pending; check session_info receipts" };
+          // Wait briefly for the window's own answer, so the reply says whether the change is in the app (section 2).
+          // A step of a plan does not wait; its outcome comes with the next reply.
+          receipt = await tandemOutcome(this, this.bridgeSeq, sent, inPlan ? 0 : RECEIPT_WAIT_MS);
         }
+        earlier = await tandemEarlier(this, receipt ? Number(receipt.seq) : null);
       }
       const answer = withPicks(withCode(this.withAutosaveHint(value)), picks);
       if (receipt) answer.tandemReceipt = receipt;
+      if (earlier.length) answer.tandemEarlier = earlier;
       return answer;
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
@@ -591,8 +601,11 @@ export class Session {
     const known = this.bridgeLink.known;
     const carriedAll = known.size === 0;
     const meshes: Record<string, unknown> = {};
+    /** Rows whose shape is new to the desktop: they carry their history too, so the window takes both together. */
+    const newShape = new Set<string>();
     for (const row of shown) {
       const hash = this.meshHashOf(row.bytes);
+      if (!known.has(hash) || !this.bridgeObjectIds.has(row.id)) newShape.add(row.id);
       if ((known.has(hash) && this.bridgeObjectIds.has(row.id)) || hash in meshes) continue;
       meshes[hash] = {
         fileName: row.fileName,
@@ -611,15 +624,17 @@ export class Session {
     const commit = name === "model_commit" && value.ok === true && obj && obj.bytes.byteLength > 0
       ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
       : null;
-    // Send history only with a commit or a full resync; ordinary placements stay light.
+    // A history rides with a commit, a full resync, and every part whose shape is new to the desktop (an undo of a commit,
+    // a new part), so the window replaces shape and history together. Ordinary placements stay light.
     const modelHistories: NonNullable<BridgeMessage["modelHistories"]> = {};
-    if (plateSnapshot && (name === "model_commit" || name === "plate_sync")) {
+    if (plateSnapshot) {
       for (const row of shown) {
-        if (name === "model_commit" && row.id !== obj?.id) continue;
+        if (!(name === "plate_sync" || (name === "model_commit" && row.id === obj?.id) || newShape.has(row.id))) continue;
         const tree = this.savedModelTree(row);
         if (tree) modelHistories[row.id] = { tree, ...(row.brep ? { brepB64: bytesToBase64(row.brep) } : {}) };
       }
     }
+    const change = commit && this.commitChange?.object === obj?.id ? this.commitChange?.change : undefined;
     this.bridgeSeq += 1;
     if (plateSnapshot) this.bridgePlateSeq = this.bridgeSeq;
     const payload = {
@@ -642,6 +657,7 @@ export class Session {
       ...(settings ? { settings } : {}),
       ...(commit ? { commit } : {}),
       ...(Object.keys(modelHistories).length ? { modelHistories } : {}),
+      ...(change ? { change } : {}),
     };
     return { payload, carriedAll };
   }

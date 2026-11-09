@@ -21,6 +21,7 @@ import { duplicatePlateObject, framePlateObject, removePlateObject, selectPlateO
 export {
   adoptHeldPieces,
   adoptSavedTrees,
+  bridgeHistoryOf,
   captureOpenSolid,
   commitModel,
   commonVolume,
@@ -31,6 +32,8 @@ export {
   frameModel,
   historyToSave,
   leaveModel,
+  modelEditingPart,
+  noteBridgeSwap,
   noteParametersBuilt,
   releaseModelTrees,
   requestModelCheck,

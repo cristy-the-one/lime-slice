@@ -69,8 +69,13 @@ export interface BridgeMessage {
   meshes?: Record<string, BridgeMesh>;
   /** Set only for `model_commit`. Absent for a probe or an apply. */
   commit?: BridgeCommit;
-  /** Editable histories for newly mirrored objects, in the project-file format. */
+  /**
+   * Editable histories, in the project-file format: for a new part, and for every part whose mesh this message changes
+   * (a commit, an undo of one), so the window takes MCP's history with MCP's shape.
+   */
   modelHistories?: Record<string, { tree: NonNullable<PlateFileObject["modelTree"]>; brepB64?: string }>;
+  /** What the tool did, in a few words ("Fuse Ornament gear"), for the window's undo step. Absent when MCP cannot say. */
+  change?: string;
 }
 
 /** Decode a self-contained history. Linked trees need a coordinated transfer and are refused here. */
@@ -171,9 +176,13 @@ export interface BridgeHold {
   reason: string;
 }
 
-/** What to do about a held part, in a sentence a person or an agent can act on. */
+/**
+ * What to do about a held part, in a sentence a person or an agent can act on. Since live shapes (wave 8) the window
+ * applies MCP's version of every part and keeps its own as an undo step, so it holds nothing back; the sentences stay
+ * for a peer that still reports holds. None of them asks for a reload.
+ */
 export function bridgeHoldReason(name: string, kind: BridgeHoldKind): string {
-  if (kind === "model-history") return `${name} has a Model history in the window, so MCP's new shape for it was held back; the rest of the plate updated. Undo the change in MCP (plate_undo) to keep the window's, or project_save from MCP and open that project in the window to take MCP's.`;
+  if (kind === "model-history") return `${name} has a Model history in the window, so MCP's new shape for it was held back; the rest of the plate updated. Undo the change in MCP (plate_undo) to keep the window's, or undo the window's edit to the part to take MCP's.`;
   if (kind === "removed-here") return `${name} was removed in the window and changed by MCP, so MCP's update to it was held back; the rest of the plate updated. Undo the removal in the window to take MCP's version, or object_remove it in MCP.`;
   return `${name} was changed both in the window and by MCP, so MCP's update to it was held back; the rest of the plate updated. Undo it in the window to take MCP's version, or plate_undo in MCP and tandem_pull the window's.`;
 }
@@ -274,6 +283,134 @@ export function bridgeNextBaseline(message: BridgeMessage, previous: ReadonlyMap
     else next.delete(object);
   }
   return next;
+}
+
+/**
+ * What MCP's version of a part replaced in the window, for the receipt, so the agent can tell the person:
+ * - `human-edits`: a person changed the part here (an undo step did) and MCP changed it too;
+ * - `removed-here`: a person removed it here and MCP changed it, so it is back;
+ * - `model-history`: the window held a Model history for it that MCP's is not built on (not the same steps, nor those
+ *   steps and more), such as an older copy of the project. A history MCP's continues is not reported: that is a
+ *   fast-forward, and nothing of the window's is lost.
+ * The window's version is one Ctrl+Z away in every case.
+ */
+export type BridgeReplacedKind = "human-edits" | "removed-here" | "model-history";
+
+export interface BridgeReplaced {
+  object: string;
+  name: string;
+  kind: BridgeReplacedKind;
+}
+
+/** The parts whose shape this snapshot changes on the desktop: a new mesh, or MCP removed a part it had sent. */
+export function bridgeShapeChanges<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, owned: ReadonlySet<string>): string[] {
+  if (!bridgeIsNew(seen, message) || !bridgeHasPlateUpdate(message) || !message.plate) return [];
+  const sameSession = (message.session ?? "") === seen.session;
+  const incoming = new Map(message.plate.map((row) => [row.object, row]));
+  return current.filter((row) => {
+    const next = incoming.get(row.id);
+    return next ? (next.meshHash ?? "") !== row.meshHash : sameSession && owned.has(row.id);
+  }).map((row) => row.id);
+}
+
+/**
+ * MCP's snapshot always applies (the owner's Tandem rule: a change made through MCP shows in the window live, every
+ * time). What it overwrites in the window becomes one undo step there instead of a hold:
+ * - `swaps`: every part whose window version is replaced and must come back with Ctrl+Z: a part with a Model history
+ *   here whose shape MCP changed or removed, and a part a person changed here that MCP changed too (or a person removed).
+ * - `replaced`: the ones to report, with why (see `BridgeReplacedKind`). `historyBehind(id)` says whether the window's
+ *   history for a part is the same as MCP's incoming one or an ancestor of it; null when it cannot tell.
+ */
+export function bridgeOverrides<T>(
+  current: readonly MirrorObject<T>[],
+  message: BridgeMessage,
+  seen: BridgeSeen,
+  baseline: ReadonlyMap<string, MirrorObject<null>>,
+  owned: ReadonlySet<string>,
+  options: { hasModel?: (row: MirrorObject<T>) => boolean; touched?: ReadonlySet<string>; historyBehind?: (id: string) => boolean | null } = {},
+): { swaps: string[]; replaced: BridgeReplaced[] } {
+  const found = bridgeHolds(current, message, seen, baseline, owned, { protectedModel: options.hasModel, touched: options.touched });
+  const here = new Map(current.map((row) => [row.id, row]));
+  const replaced: BridgeReplaced[] = [];
+  for (const hold of found) {
+    if (hold.kind === "both-changed") replaced.push({ object: hold.object, name: hold.name, kind: "human-edits" });
+    else if (hold.kind === "removed-here") replaced.push({ object: hold.object, name: hold.name, kind: "removed-here" });
+    else if (options.touched?.has(hold.object) && (!baseline.has(hold.object) || !sameBridgeObject(baseline.get(hold.object), here.get(hold.object)))) replaced.push({ object: hold.object, name: hold.name, kind: "human-edits" });
+    else if (message.plate?.some((row) => row.object === hold.object) && options.historyBehind?.(hold.object) !== true) replaced.push({ object: hold.object, name: hold.name, kind: "model-history" });
+  }
+  return { swaps: found.map((hold) => hold.object), replaced };
+}
+
+/** A Model history as the bridge compares it: the root, and the steps from the root to the plate's step. */
+export interface BridgeHistoryShape {
+  /** Any text that is the same exactly when the root is: a primitive's or a feature's JSON, a STEP's size and hash. */
+  root: string;
+  nodes: readonly { id: number; parent: number | null; op: unknown }[];
+  committed: number;
+}
+
+/** The same JSON whatever the key order, so an op read from a file and one built in memory compare equal. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value as Record<string, unknown>).sort().filter((key) => (value as Record<string, unknown>)[key] !== undefined).map((key) => `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+function historyPath(shape: BridgeHistoryShape): string[] | null {
+  const byId = new Map(shape.nodes.map((node) => [node.id, node]));
+  const path: string[] = [];
+  let at: number | null = shape.committed;
+  for (let guard = 0; at !== null; guard += 1) {
+    const node = byId.get(at);
+    if (!node || guard > byId.size) return null;
+    if (node.parent !== null) path.push(stableJson(node.op));
+    at = node.parent;
+  }
+  return path.reverse();
+}
+
+/**
+ * How the window's history for a part stands to MCP's: `same`, `behind` (MCP's is the window's steps and more: a
+ * fast-forward, the common case when the window opened a project MCP saved), `kept` (MCP's plate step is elsewhere,
+ * after an undo say, but its tree still holds all the window's steps), or `diverged`. Null when either is unknown.
+ */
+export function bridgeHistoryRelation(here: BridgeHistoryShape | null, incoming: BridgeHistoryShape | null): "same" | "behind" | "kept" | "diverged" | null {
+  if (!here || !incoming) return null;
+  if (here.root !== incoming.root) return "diverged";
+  const mine = historyPath(here);
+  const theirs = historyPath(incoming);
+  if (!mine || !theirs) return null;
+  if (mine.length <= theirs.length && mine.every((op, at) => op === theirs[at])) return mine.length === theirs.length ? "same" : "behind";
+  // MCP went back (an undo, a step on another branch) but its tree still holds every step of the window's: `kept`.
+  return holdsPath(incoming, mine) ? "kept" : "diverged";
+}
+
+/** Whether `path`'s steps lead down from the root of `tree`, on any branch. */
+function holdsPath(tree: BridgeHistoryShape, path: readonly string[]): boolean {
+  const root = tree.nodes.find((node) => node.parent === null);
+  let at: number[] = root ? [root.id] : [];
+  for (const op of path) {
+    at = tree.nodes.filter((node) => node.parent !== null && at.includes(node.parent) && stableJson(node.op) === op).map((node) => node.id);
+    if (at.length === 0) return false;
+  }
+  return true;
+}
+
+/** The root text of a history as a project file (and the bridge) carries it. */
+export function bridgeSavedRoot(tree: { rootPrimitive?: unknown; rootFeature?: unknown; rootStep?: { byteLength?: number; hash?: string } | null }): string {
+  if (tree.rootPrimitive) return `primitive:${stableJson(tree.rootPrimitive)}`;
+  if (tree.rootFeature) return `feature:${stableJson(tree.rootFeature)}`;
+  return `step:${tree.rootStep?.byteLength ?? 0}:${tree.rootStep?.hash ?? ""}`;
+}
+
+/**
+ * The name of the window's undo step for MCP's change: "Assistant: Fuse Ornament gear on Glasses frame". The product
+ * names no vendor, since any MCP client can drive it; the step says what was done, from MCP's `change` or the tool.
+ */
+export function bridgeSwapLabel(message: BridgeMessage, names: readonly string[]): string {
+  const what = (message.change?.trim() || (message.tool ?? "change").replaceAll("_", " ")).slice(0, 80);
+  const parts = names.length === 0 ? "" : names.length <= 2 ? names.join(" and ") : `${names[0]} and ${names.length - 1} more parts`;
+  return `Assistant: ${what}${parts ? ` on ${parts}` : ""}`;
 }
 
 /** A plate object's pose and mesh, as a person's edit can change them. `mesh` is any token that changes with the mesh. */

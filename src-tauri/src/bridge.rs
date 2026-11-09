@@ -1,7 +1,13 @@
 //! Opt-in live mirror from the MCP server into this window.
 //!
 //! Off unless `LIME_BRIDGE` is `1`, `true`, or `yes`, and `LIME_BRIDGE_TOKEN`
-//! is non-empty. The listener is `127.0.0.1` only (`LIME_BRIDGE_PORT`, default
+//! is non-empty (the bridge launcher), or the person turned it on in the app
+//! (the Tandem light): then the app keeps a random token in
+//! `tandem-bridge.json` in its config folder, a file only this user can read,
+//! and starts the bridge from it on every start until it is turned off. The
+//! bundled MCP server reads the same file, so neither side needs the token typed.
+//! The token is never logged and never sent anywhere but that file and the page.
+//! The listener is `127.0.0.1` only (`LIME_BRIDGE_PORT`, default
 //! 43119). Every request, including health, must send `Authorization: Bearer`.
 //! A matching POST body is emitted as the `lime-bridge` event after any token
 //! field is removed. A body `{"open": "<path>"}` is not mirrored: the window
@@ -19,12 +25,13 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::open_file;
 
@@ -43,53 +50,219 @@ static PAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static START: OnceLock<String> = OnceLock::new();
 static HUMAN_CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
 static RECEIPTS: Mutex<VecDeque<Value>> = Mutex::new(VecDeque::new());
+/// The listener while it runs: who started it, its port, and how to stop it.
+static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+/// When an MCP server last sent an authorised request, in milliseconds since 1970. Zero: never.
+static LAST_SEEN: AtomicU64 = AtomicU64::new(0);
+/// An MCP server that talked within this long counts as connected.
+const CONNECTED_FOR: Duration = Duration::from_secs(120);
+/// The file the app keeps its own token in, in its config folder; the bundled MCP server reads it too.
+const TOKEN_FILE: &str = "tandem-bridge.json";
 
-/// A part the page held back, as text fields only, each cut short: `{object, name, kind}`.
-fn held_part(row: &Value) -> Option<Value> {
+struct Running {
+    port: u16,
+    /// `launcher` (the environment) or `app` (turned on in the app).
+    source: &'static str,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// A part the page held back or replaced, as text fields only, each cut short: `{object, name, kind}`.
+fn part_row(row: &Value, kinds: &[&str]) -> Option<Value> {
     let field = |key: &str| {
         row.get(key)
             .and_then(Value::as_str)
             .map(|text| text.chars().take(120).collect::<String>())
     };
     let kind = field("kind")?;
-    if !matches!(
-        kind.as_str(),
-        "model-history" | "both-changed" | "removed-here"
-    ) {
+    if !kinds.contains(&kind.as_str()) {
         return None;
     }
     Some(serde_json::json!({ "object": field("object")?, "name": field("name")?, "kind": kind }))
 }
 
 /// Record a bounded outcome after the page has actually handled an MCP snapshot. A conflict names the parts it held
-/// back; the rest of that snapshot applied.
+/// back; the rest of that snapshot applied. `replaced` names the parts where MCP's version replaced the window's own
+/// (a person's edits, or a Model history MCP's does not continue); the window keeps its version as one undo step.
+/// `waiting` says the page holds the snapshot until the person finishes (`reason`: a gesture, typing, a Model edit);
+/// its outcome follows under the same sequence number.
 #[tauri::command]
-pub fn bridge_receipt(session: String, seq: u64, outcome: String, held: Option<Vec<Value>>) {
+pub fn bridge_receipt(
+    session: String,
+    seq: u64,
+    outcome: String,
+    held: Option<Vec<Value>>,
+    replaced: Option<Vec<Value>>,
+    reason: Option<String>,
+) {
     if session.is_empty()
         || session.len() > 120
         || !matches!(
             outcome.as_str(),
-            "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale"
+            "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale" | "waiting"
         )
     {
         return;
     }
+    let rows = |list: Option<Vec<Value>>, kinds: &[&str]| -> Vec<Value> {
+        list.unwrap_or_default()
+            .iter()
+            .take(20)
+            .filter_map(|row| part_row(row, kinds))
+            .collect()
+    };
+    let held = rows(held, &["model-history", "both-changed", "removed-here"]);
+    let replaced = rows(replaced, &["human-edits", "removed-here", "model-history"]);
+    let reason =
+        reason.filter(|text| matches!(text.as_str(), "gesture" | "typing" | "model-edit"));
     if let Ok(mut receipts) = RECEIPTS.lock() {
         if receipts.len() == 64 {
             receipts.pop_front();
         }
-        let held: Vec<Value> = held
-            .unwrap_or_default()
-            .iter()
-            .take(20)
-            .filter_map(held_part)
-            .collect();
         let mut receipt = serde_json::json!({ "session": session, "seq": seq, "outcome": outcome });
         if !held.is_empty() {
             receipt["held"] = Value::Array(held);
         }
+        if !replaced.is_empty() {
+            receipt["replaced"] = Value::Array(replaced);
+        }
+        if let Some(reason) = reason {
+            receipt["reason"] = Value::String(reason);
+        }
         receipts.push_back(receipt);
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The bridge as the Tandem light shows it: `off`, `on` (listening, no MCP server talked lately) or `connected`.
+#[tauri::command]
+pub fn bridge_status(app: AppHandle) -> Value {
+    let beta = app.config().identifier == "com.limeslice.slicer.tandem-beta";
+    let running = RUNNING
+        .lock()
+        .ok()
+        .and_then(|running| running.as_ref().map(|run| (run.port, run.source)));
+    let Some((port, source)) = running else {
+        return serde_json::json!({ "state": "off", "beta": beta, "port": default_port(&app) });
+    };
+    let seen = LAST_SEEN.load(Ordering::SeqCst);
+    let connected = seen > 0 && now_ms().saturating_sub(seen) < CONNECTED_FOR.as_millis() as u64;
+    serde_json::json!({
+        "state": if connected { "connected" } else { "on" },
+        "beta": beta,
+        "port": port,
+        "source": source,
+        "url": format!("http://127.0.0.1:{port}/"),
+    })
+}
+
+/// Turn the bridge on from the app: a token from the file, or a new random one written there, and the listener.
+#[tauri::command]
+pub fn bridge_enable(app: AppHandle) -> Result<Value, String> {
+    let running = RUNNING.lock().map(|run| run.is_some()).unwrap_or(false);
+    if !running {
+        let token = match read_token_file(&app) {
+            Some(token) => token,
+            None => {
+                let token = new_token()?;
+                write_token_file(&app, &token, default_port(&app))?;
+                token
+            }
+        };
+        listen(app.clone(), token, default_port(&app), "app")?;
+    }
+    Ok(bridge_status(app))
+}
+
+/// Turn the bridge off: the listener stops and the app's token file goes, so the next start stays off too.
+#[tauri::command]
+pub fn bridge_disable(app: AppHandle) -> Value {
+    stop_listener();
+    if let Some(path) = token_path(&app) {
+        let _ = std::fs::remove_file(path);
+    }
+    bridge_status(app)
+}
+
+/// The two lines an MCP server's environment needs to reach this window, for the person to copy into another MCP
+/// client's settings. Only while the bridge runs. The bundled MCP server does not need them: it reads the token file.
+#[tauri::command]
+pub fn bridge_setup(app: AppHandle) -> Option<Value> {
+    let port = RUNNING.lock().ok()?.as_ref()?.port;
+    let token = read_token_file(&app).or_else(|| {
+        std::env::var("LIME_BRIDGE_TOKEN")
+            .ok()
+            .filter(|token| !token.is_empty())
+    })?;
+    let file = token_path(&app).map(|path| path.to_string_lossy().into_owned());
+    Some(serde_json::json!({ "url": format!("http://127.0.0.1:{port}/"), "token": token, "file": file }))
+}
+
+fn default_port(app: &AppHandle) -> u16 {
+    std::env::var("LIME_BRIDGE_PORT")
+        .ok()
+        .and_then(|text| text.trim().parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(
+            if app.config().identifier == "com.limeslice.slicer.tandem-beta" {
+                TANDEM_BETA_PORT
+            } else {
+                DEFAULT_PORT
+            },
+        )
+}
+
+fn token_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join(TOKEN_FILE))
+}
+
+/// The app's token, when the person turned the bridge on here and it was not turned off since.
+fn read_token_file(app: &AppHandle) -> Option<String> {
+    let text = std::fs::read_to_string(token_path(app)?).ok()?;
+    token_from_file(&text)
+}
+
+fn token_from_file(text: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let token = value.get("token")?.as_str()?;
+    (token.len() >= 32 && token.chars().all(|c| c.is_ascii_hexdigit())).then(|| token.to_string())
+}
+
+fn write_token_file(app: &AppHandle, token: &str, port: u16) -> Result<(), String> {
+    let path = token_path(app).ok_or("The app has no config folder for the bridge token.")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|err| format!("The bridge token could not be kept: {err}"))?;
+    }
+    let body = serde_json::json!({ "url": format!("http://127.0.0.1:{port}/"), "token": token }).to_string();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .map_err(|err| format!("The bridge token could not be kept: {err}"))?;
+    file.write_all(body.as_bytes())
+        .map_err(|err| format!("The bridge token could not be kept: {err}"))
+}
+
+/// 32 random bytes from the operating system, as hex.
+fn new_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| "The system gave no random bytes for a bridge token.".to_string())?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// This process and page, as the server sees them.
@@ -168,37 +341,63 @@ pub fn bridge_human_context(context: HumanContext) {
     }
 }
 
+/// At app start: the launcher's environment, else the token the person kept by turning the bridge on in the app.
 pub fn start(app: AppHandle) {
-    if !flag_on("LIME_BRIDGE") {
-        return;
-    }
-    let Some(token) = std::env::var("LIME_BRIDGE_TOKEN")
-        .ok()
-        .filter(|token| !token.is_empty())
-    else {
-        eprintln!("lime-slice: the live bridge stayed off because LIME_BRIDGE_TOKEN is empty.");
-        return;
-    };
-    let port = std::env::var("LIME_BRIDGE_PORT")
-        .ok()
-        .and_then(|text| text.trim().parse::<u16>().ok())
-        .filter(|port| *port != 0)
-        .unwrap_or(
-            if app.config().identifier == "com.limeslice.slicer.tandem-beta" {
-                TANDEM_BETA_PORT
-            } else {
-                DEFAULT_PORT
-            },
-        );
-    let addr = listen_addr(port);
-    let listener = match TcpListener::bind(addr) {
-        Ok(listener) => listener,
-        Err(err) => {
-            eprintln!("lime-slice: the live bridge could not listen on {addr}: {err}");
-            return;
+    let port = default_port(&app);
+    if flag_on("LIME_BRIDGE") {
+        match std::env::var("LIME_BRIDGE_TOKEN")
+            .ok()
+            .filter(|token| !token.is_empty())
+        {
+            Some(token) => {
+                if let Err(err) = listen(app, token, port, "launcher") {
+                    eprintln!("lime-slice: {err}");
+                }
+                return;
+            }
+            None => eprintln!(
+                "lime-slice: the live bridge stayed off because LIME_BRIDGE_TOKEN is empty."
+            ),
         }
+    }
+    if let Some(token) = read_token_file(&app) {
+        if let Err(err) = listen(app, token, port, "app") {
+            eprintln!("lime-slice: {err}");
+        }
+    }
+}
+
+/// Bind loopback `port` and serve on a thread of its own until `stop_listener`.
+fn listen(app: AppHandle, token: String, port: u16, source: &'static str) -> Result<(), String> {
+    let addr = listen_addr(port);
+    let listener = TcpListener::bind(addr)
+        .map_err(|err| format!("the live bridge could not listen on {addr}: {err}"))?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let thread = std::thread::spawn(move || serve(listener, token, app, flag));
+    if let Ok(mut running) = RUNNING.lock() {
+        *running = Some(Running {
+            port,
+            source,
+            stop,
+            thread: Some(thread),
+        });
+    }
+    Ok(())
+}
+
+/// Stop the listener and wait for its thread, so the port is free for the next `listen`.
+fn stop_listener() {
+    let Some(mut running) = RUNNING.lock().ok().and_then(|mut running| running.take()) else {
+        return;
     };
-    std::thread::spawn(move || serve(listener, token, app));
+    running.stop.store(true, Ordering::SeqCst);
+    // The thread waits in accept: a connection of our own wakes it to see the flag.
+    let _ = TcpStream::connect_timeout(&listen_addr(running.port), Duration::from_secs(1));
+    if let Some(thread) = running.thread.take() {
+        let _ = thread.join();
+    }
+    LAST_SEEN.store(0, Ordering::SeqCst);
 }
 
 fn flag_on(name: &str) -> bool {
@@ -213,14 +412,23 @@ pub fn listen_addr(port: u16) -> SocketAddr {
     SocketAddr::from((Ipv4Addr::LOCALHOST, port))
 }
 
-fn serve(listener: TcpListener, token: String, app: AppHandle) {
+fn serve(listener: TcpListener, token: String, app: AppHandle, stop: Arc<AtomicBool>) {
     for incoming in listener.incoming() {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         let Ok(mut stream) = incoming else {
             continue;
         };
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-        match read_request(&mut stream) {
+        let request = read_request(&mut stream);
+        if let Ok(request) = &request {
+            if tokens_match(bearer(&request.authorization), &token) {
+                LAST_SEEN.store(now_ms(), Ordering::SeqCst);
+            }
+        }
+        match request {
             Ok(request)
                 if request.method.eq_ignore_ascii_case("GET")
                     && request.path == "/tandem-receipts"
@@ -453,10 +661,10 @@ mod tests {
     #[test]
     fn receipts_are_bounded_and_ignore_invalid_outcomes() {
         RECEIPTS.lock().unwrap().clear();
-        bridge_receipt("s".into(), 0, "invented".into(), None);
+        bridge_receipt("s".into(), 0, "invented".into(), None, None, None);
         assert!(RECEIPTS.lock().unwrap().is_empty());
         for seq in 0..70 {
-            bridge_receipt("s".into(), seq, "applied".into(), None);
+            bridge_receipt("s".into(), seq, "applied".into(), None, None, None);
         }
         {
             let receipts = RECEIPTS.lock().unwrap();
@@ -468,7 +676,7 @@ mod tests {
             serde_json::json!({ "object": "obj-1", "name": "Sphere 1", "kind": "model-history", "extra": "dropped" }),
             serde_json::json!({ "object": "obj_9", "name": "x", "kind": "invented" }),
         ];
-        bridge_receipt("s".into(), 70, "conflict".into(), Some(held));
+        bridge_receipt("s".into(), 70, "conflict".into(), Some(held), None, None);
         let receipts = RECEIPTS.lock().unwrap();
         let last = receipts.back().unwrap();
         assert_eq!(last["outcome"], "conflict");
@@ -476,6 +684,39 @@ mod tests {
             last["held"],
             serde_json::json!([{ "object": "obj-1", "name": "Sphere 1", "kind": "model-history" }])
         );
+        drop(receipts);
+        // Live shapes: MCP's version applied over the person's edits, and a snapshot waiting for a gesture.
+        let replaced = vec![
+            serde_json::json!({ "object": "obj_1", "name": "Glasses frame", "kind": "human-edits" }),
+            serde_json::json!({ "object": "obj_2", "name": "x", "kind": "both-changed" }),
+        ];
+        bridge_receipt("s".into(), 71, "applied".into(), None, Some(replaced), None);
+        bridge_receipt("s".into(), 72, "waiting".into(), None, None, Some("model-edit".into()));
+        bridge_receipt("s".into(), 73, "waiting".into(), None, None, Some("<script>".into()));
+        let receipts = RECEIPTS.lock().unwrap();
+        let rows: Vec<&Value> = receipts.iter().rev().take(3).collect();
+        assert_eq!(
+            rows[2]["replaced"],
+            serde_json::json!([{ "object": "obj_1", "name": "Glasses frame", "kind": "human-edits" }])
+        );
+        assert_eq!(rows[1]["outcome"], "waiting");
+        assert_eq!(rows[1]["reason"], "model-edit");
+        assert!(rows[0].get("reason").is_none());
+    }
+
+    #[test]
+    fn only_a_long_hex_token_is_read_from_the_file() {
+        let good = "ab".repeat(32);
+        assert_eq!(
+            token_from_file(&format!(r#"{{"url":"http://127.0.0.1:43129/","token":"{good}"}}"#)),
+            Some(good)
+        );
+        assert_eq!(token_from_file(r#"{"token":"short"}"#), None);
+        assert_eq!(token_from_file(&format!(r#"{{"token":"{}"}}"#, "zz".repeat(32))), None);
+        assert_eq!(token_from_file("not json"), None);
+        let made = new_token().unwrap();
+        assert_eq!(made.len(), 64);
+        assert_ne!(made, new_token().unwrap());
     }
 
     #[test]

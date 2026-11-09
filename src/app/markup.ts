@@ -7,6 +7,14 @@ export function mountMarkup(root: HTMLElement) {
       <div class="brand">Lime <span>Slice</span><small id="betaIdentity" hidden> Beta</small></div>
       <div class="project-title" id="projectTitle">Untitled</div>
       <span class="tandem-activity" id="tandemActivity" role="status" hidden></span>
+      <details class="menu tandem-bridge" id="tandemBridge" data-state="off" hidden>
+        <summary class="btn ghost" aria-label="Tandem bridge"><span class="tandem-dot" aria-hidden="true"></span><span id="tandemBridgeText">Tandem: off</span></summary>
+        <nav>
+          <p class="tandem-bridge-say" id="tandemBridgeSay"></p>
+          <button type="button" id="tandemBridgeToggle">Turn the bridge on</button>
+          <button type="button" id="tandemBridgeCopy" hidden>Copy MCP settings</button>
+        </nav>
+      </details>
       <details class="menu" id="fileMenu">
         <summary class="btn ghost" aria-label="File menu">File<span class="caret" aria-hidden="true"></span></summary>
         <nav>

@@ -80,6 +80,11 @@ export interface EditSnap {
   assemblies?: unknown[];
   /** Which mesh bytes each object had. Absent on snaps from before Model edits joined this history. */
   meshPins?: MeshPin[];
+  /**
+   * The step's name, when it has one: the change that left this state ("Assistant: Fuse Ornament gear on Glasses
+   * frame", a Tandem swap). Undo and Redo say it. Absent on a person's own steps.
+   */
+  label?: string;
 }
 
 export interface EditHistory {
@@ -125,6 +130,13 @@ export function commitGesture(history: EditHistory, current: EditSnap): EditHist
   const undo = [...history.undo, cloneSnap(before)];
   if (undo.length > LIMIT) undo.shift();
   return { undo, redo: [], pending: null };
+}
+
+/** Land `before` as a finished step named `label`, as `commitGesture` lands one: the redo steps go. */
+export function pushStep(history: EditHistory, before: EditSnap, label: string): EditHistory {
+  const undo = [...history.undo, { ...cloneSnap(before), label }];
+  if (undo.length > LIMIT) undo.shift();
+  return { undo, redo: [], pending: history.pending };
 }
 
 export function canUndo(history: EditHistory, current: EditSnap): boolean {

@@ -1,4 +1,4 @@
-import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeDrifted, bridgeHolds, bridgeHumanChanges, bridgeIsNew, bridgeMerge, bridgeNextBaseline, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, bridgeTouched, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
+import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeDrifted, bridgeHistoryRelation, bridgeHoldReason, bridgeHolds, bridgeOverrides, bridgeSavedRoot, bridgeShapeChanges, bridgeSwapLabel, type BridgeHistoryShape, bridgeHumanChanges, bridgeIsNew, bridgeMerge, bridgeNextBaseline, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, bridgeTouched, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
 import { ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
 
 let failed = 0;
@@ -215,7 +215,8 @@ const seenB: BridgeSeen = { session: "s1", seq: 20 };
 const isModel = (obj: MirrorObject<string>) => obj.extra === "own history";
 const fusedAndMore: BridgeMessage = { tool: "object_duplicate", session: "s1", seq: 21, ok: true, objectId: "obj_22", plate: [row("obj-1", "fused"), row("obj_3", "box", 70), row("obj_22", "fused", 140)], meshes: { fused: mesh("fused.stl") } };
 const holdsB = bridgeHolds(plateB, fusedAndMore, seenB, baseB, ownedB, { protectedModel: isModel, touched: new Set() });
-check("B: only the part whose Model history MCP would discard is held, with a reason", holdsB.length === 1 && holdsB[0]?.object === "obj-1" && holdsB[0].kind === "model-history" && /plate_undo/.test(holdsB[0].reason) && /project_save/.test(holdsB[0].reason));
+check("B: only the part whose Model history MCP would discard is found, with a reason that asks for no reload", holdsB.length === 1 && holdsB[0]?.object === "obj-1" && holdsB[0].kind === "model-history" && /plate_undo/.test(holdsB[0].reason) && !/project_save|reopen|open that project/.test(holdsB[0].reason));
+check("no hold reason asks for project_save and a reopen", (["model-history", "both-changed", "removed-here"] as const).every((kind) => !/project_save|reopen/.test(bridgeHoldReason("Part", kind))));
 const mergedB = bridgeMerge(plateB, fusedAndMore, seenB, baseB, holdsB, new Set());
 const appliedB = mirrorPlate(plateB, mergedB.message, seenB, ownedB);
 const sphereB = appliedB.plate.find((obj) => obj.id === "obj-1");
@@ -238,6 +239,54 @@ const movedBoth: BridgeMessage = { tool: "object_place", session: "s1", seq: 21,
 const holdsC = bridgeHolds(plateC, movedBoth, seenB, baseB, ownedB, { protectedModel: isModel, touched: new Set(["obj_3"]) });
 const appliedC = mirrorPlate(plateC, bridgeMerge(plateC, movedBoth, seenB, baseB, holdsC, new Set(["obj_3"])).message, seenB, ownedB);
 check("B: a part both sides moved is held as both-changed; the other part's move applies", holdsC.length === 1 && holdsC[0]?.kind === "both-changed" && appliedC.plate.find((obj) => obj.id === "obj_3")?.offset.x === 55 && appliedC.plate.find((obj) => obj.id === "obj-1")?.offset.x === 9);
+
+// --- Wave 8, live shapes (eyeglasses session 2026-11-09): MCP fused a gear onto the frame, whose Model history the window
+// had from opening the project MCP saved. The window held it back. Now MCP's shape and history apply, every time; what
+// they replace is one undo step, and only a person's own edits (or a history MCP's does not continue) are reported.
+const box = { kind: "box", size: [20, 20, 10] };
+const cut = { kind: "boolean", op: "cut", primitive: "cylinder", radius: 3 };
+const join = { kind: "join", op: "fuse", tool: { object: "obj_7", node: 2, name: "Ornament gear" } };
+// Key order differs, as an op read from a file and one built in memory do.
+const joinReordered = { tool: { name: "Ornament gear", node: 2, object: "obj_7" }, op: "fuse", kind: "join" };
+const shape = (ops: unknown[], root = bridgeSavedRoot({ rootPrimitive: box })): BridgeHistoryShape => ({ root, committed: ops.length, nodes: [{ id: 0, parent: null, op: null }, ...ops.map((op, at) => ({ id: at + 1, parent: at, op }))] });
+check("live: MCP's history that continues the window's is a fast-forward", bridgeHistoryRelation(shape([cut]), shape([cut, joinReordered])) === "behind");
+check("live: the same steps are the same history", bridgeHistoryRelation(shape([cut, join]), shape([cut, joinReordered])) === "same");
+check("live: a step of the window's own that MCP's lacks is a divergence", bridgeHistoryRelation(shape([cut, { ...cut, radius: 4 }]), shape([cut, join])) === "diverged");
+check("live: another root is a divergence", bridgeHistoryRelation(shape([]), shape([], bridgeSavedRoot({ rootPrimitive: { kind: "box", size: [21, 20, 10] } }))) === "diverged");
+check("live: an unknown history is unknown", bridgeHistoryRelation(null, shape([])) === null);
+check("live: a branch the plate is not on does not count", bridgeHistoryRelation({ ...shape([cut, { ...cut, radius: 9 }]), committed: 1 }, shape([cut, join])) === "behind");
+check("live: MCP stepping back keeps the window's steps in its tree: kept, not lost", bridgeHistoryRelation(shape([cut, join]), { ...shape([cut, joinReordered]), committed: 1 }) === "kept");
+
+const frameSeen: BridgeSeen = { session: "s9", seq: 40 };
+const framePlate: MirrorObject<string>[] = [
+  { ...mine, id: "obj_1", name: "Glasses frame", centered: false, meshHash: "frame", extra: "history" },
+  { ...mine, id: "obj_7", name: "Ornament gear", centered: false, meshHash: "gear", offset: { x: 40, y: 0, z: 0 }, extra: "history" },
+];
+const frameOwned = new Set(["obj_1", "obj_7"]);
+const frameBase = bridgeServerBaseline({ tool: "plate_sync", session: "s9", seq: 40, ok: true, plate: [{ ...row("obj_1", "frame"), name: "Glasses frame" }, { ...row("obj_7", "gear", 40), name: "Ornament gear" }] });
+const fused: BridgeMessage = { tool: "model_commit", session: "s9", seq: 41, ok: true, objectId: "obj_1", change: "Fuse Ornament gear", commit: { object: "obj_1", meshHash: "fused" }, plate: [{ ...row("obj_1", "fused"), name: "Glasses frame" }, { ...row("obj_7", "gear", 40), name: "Ornament gear" }], meshes: { fused: mesh("frame.stl") } };
+const hasHistory = (obj: MirrorObject<string>) => obj.extra === "history";
+const ff = bridgeOverrides(framePlate, fused, frameSeen, frameBase, frameOwned, { hasModel: hasHistory, touched: new Set(), historyBehind: () => true });
+check("live: a fast-forward shape commit swaps the part and reports nothing replaced", ff.swaps.join() === "obj_1" && ff.replaced.length === 0);
+const ffPlate = mirrorPlate(framePlate, bridgeMerge(framePlate, fused, frameSeen, frameBase, [], new Set()).message, frameSeen, frameOwned);
+const frameAfter = ffPlate.plate.find((obj) => obj.id === "obj_1");
+check("live: MCP's shape applies (never held back), the gear stays as it was", ffPlate.applied && frameAfter?.meshHash === "fused" && !!frameAfter.mesh && ffPlate.plate.find((obj) => obj.id === "obj_7")?.meshHash === "gear");
+check("live: a pose-only change swaps nothing", bridgeOverrides(framePlate, { ...fused, tool: "object_place", plate: [{ ...row("obj_1", "frame", 5), name: "Glasses frame" }, { ...row("obj_7", "gear", 40), name: "Ornament gear" }] }, frameSeen, frameBase, frameOwned, { hasModel: hasHistory, touched: new Set() }).swaps.length === 0);
+const older = bridgeOverrides(framePlate, fused, frameSeen, frameBase, frameOwned, { hasModel: hasHistory, touched: new Set(), historyBehind: () => false });
+check("live: a window history MCP's does not continue is replaced and reported", older.swaps.join() === "obj_1" && older.replaced.length === 1 && older.replaced[0]?.kind === "model-history" && older.replaced[0].name === "Glasses frame");
+const edited = framePlate.map((obj) => (obj.id === "obj_1" ? { ...obj, meshHash: "frame-filleted-here" } : obj));
+const mineReplaced = bridgeOverrides(edited, fused, frameSeen, frameBase, frameOwned, { hasModel: hasHistory, touched: new Set(["obj_1"]), historyBehind: () => false });
+check("live: the person's own unsynced edit to the part is replaced live and reported as human-edits", mineReplaced.swaps.join() === "obj_1" && mineReplaced.replaced.map((row) => `${row.object}:${row.kind}`).join() === "obj_1:human-edits");
+const editedApplied = mirrorPlate(edited, bridgeMerge(edited, fused, frameSeen, frameBase, [], new Set(["obj_1"])).message, frameSeen, frameOwned);
+check("live: and MCP's version is what the window shows", editedApplied.plate.find((obj) => obj.id === "obj_1")?.meshHash === "fused");
+const movedHere = framePlate.map((obj) => (obj.id === "obj_7" ? { ...obj, offset: { x: 44, y: 0, z: 0 } } : obj));
+const bothMoved: BridgeMessage = { ...fused, seq: 41, tool: "object_place", commit: undefined, change: undefined, meshes: undefined, plate: [{ ...row("obj_1", "frame"), name: "Glasses frame" }, { ...row("obj_7", "gear", 60), name: "Ornament gear" }] };
+const poseClash = bridgeOverrides(movedHere, bothMoved, frameSeen, frameBase, frameOwned, { hasModel: hasHistory, touched: new Set(["obj_7"]) });
+const poseApplied = mirrorPlate(movedHere, bridgeMerge(movedHere, bothMoved, frameSeen, frameBase, [], new Set(["obj_7"])).message, frameSeen, frameOwned);
+check("live: a move both sides made applies MCP's, with the person's as the undo step and reported", poseClash.swaps.join() === "obj_7" && poseClash.replaced[0]?.kind === "human-edits" && poseApplied.plate.find((obj) => obj.id === "obj_7")?.offset.x === 60);
+check("live: MCP removing a part with a Model history removes it here too (the undo step keeps it)", bridgeOverrides(framePlate, { ...bothMoved, tool: "object_remove", plate: [{ ...row("obj_1", "frame"), name: "Glasses frame" }] }, frameSeen, frameBase, frameOwned, { hasModel: hasHistory, touched: new Set() }).swaps.join() === "obj_7");
+check("live: the parts whose shape a snapshot changes, for waiting on a Model edit", bridgeShapeChanges(framePlate, fused, frameSeen, frameOwned).join() === "obj_1" && bridgeShapeChanges(framePlate, bothMoved, frameSeen, frameOwned).length === 0);
+check("live: the undo step is named for MCP's change and the part, with no vendor", bridgeSwapLabel(fused, ["Glasses frame"]) === "Assistant: Fuse Ornament gear on Glasses frame" && bridgeSwapLabel({ tool: "plate_undo" }, ["A", "B", "C"]) === "Assistant: plate undo on A and 2 more parts");
 
 if (failed) {
   console.error(`${failed} failed`);

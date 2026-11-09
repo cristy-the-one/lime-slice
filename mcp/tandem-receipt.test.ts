@@ -14,6 +14,7 @@ const server = createServer((request, response) => {
   const chunks: Buffer[] = [];
   request.on("data", (chunk: Buffer) => chunks.push(chunk));
   request.on("end", () => {
+    if (request.method === "GET") { response.writeHead(204).end(); return; }
     const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
     if (body.tool === "project_create") delivered(body);
     response.setHeader("x-lime-bridge-instance", "test-window");
@@ -28,11 +29,12 @@ process.env.LIME_MCP_BRIDGE_TOKEN = "test-token";
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-tandem-test-"));
 const session = new Session(fakeEngine());
 const answer = await session.call("project_create", {});
-const receipt = answer.tandemReceipt as { session: string; seq: number; status: string };
+const receipt = answer.tandemReceipt as { seq: number; status: string };
 const payload = await received;
-assert.equal(receipt.session, payload.session);
+assert.equal(session.bridgeSession, payload.session);
 assert.equal(receipt.seq, payload.seq);
-assert.match(receipt.status, /pending/);
+// A window without the receipts feature took it: the reply says unconfirmed rather than pending forever.
+assert.equal(receipt.status, "unconfirmed");
 const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
 assert.equal((await session.call("mesh_import", { path: cube })).ok, true);
 await mirror({ test: "drain" });

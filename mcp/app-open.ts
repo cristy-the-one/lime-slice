@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bridgeOpen, type BridgeOpen } from "./bridge-client.ts";
+import { bridgeOpen, bridgeStatus, type BridgeOpen, type BridgeStatus } from "./bridge-client.ts";
 import { refuse } from "./refusals.ts";
 
 /** This file's folder. In an installed app it is the `mcp` folder beside the desktop program's resources. */
@@ -24,6 +24,8 @@ export interface AppOpener {
   installed(): string | null;
   /** Start `program` with `path`. Rejects when it did not start. */
   launch(program: string, path: string): Promise<void>;
+  /** Whether a window is on the bridge, and why not. Absent: not asked. */
+  bridge?(): Promise<BridgeStatus>;
 }
 
 /**
@@ -59,7 +61,7 @@ export function launchApp(program: string, path: string): Promise<void> {
   });
 }
 
-export const systemOpener: AppOpener = { viaBridge: bridgeOpen, installed: installedApp, launch: launchApp };
+export const systemOpener: AppOpener = { viaBridge: bridgeOpen, installed: installedApp, launch: launchApp, bridge: bridgeStatus };
 
 /** Open `path`, a workspace file, in the app. `saved` says this call wrote it. The result says how in a sentence. */
 export async function openInApp(path: string, opener: AppOpener, saved: boolean): Promise<Record<string, unknown>> {
@@ -76,5 +78,10 @@ export async function openInApp(path: string, opener: AppOpener, saved: boolean)
     const why = err instanceof Error ? err.message : String(err);
     return refuse("app-not-started", `Lime Slice did not start (${why}); ${kept}.`, { path });
   }
-  return { ok: true, path, saved, opened: "launch", note: `Started Lime Slice with ${name}. An app that was already running opens it in its window.` };
+  // Feedback 2026-11-09, section 3: a launch quietly reloaded the file in the running window three turns running. Say so.
+  const status = await opener.bridge?.();
+  const absent = status?.bridge === "absent"
+    ? { bridge: "absent", warning: `The Tandem bridge is not connected (${status.why ?? "no window answers"}). This reloads ${name} in the app: its camera, selection and open panels start over, and later MCP changes will not show there live. Tell the person.` }
+    : {};
+  return { ok: true, path, saved, opened: "launch", note: `Started Lime Slice with ${name}. An app that was already running opens it in its window.`, ...absent };
 }

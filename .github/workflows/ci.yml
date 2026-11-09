@@ -324,6 +324,8 @@ jobs:
           node --experimental-strip-types mcp/assembly-friction-occt.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts
+          # Tandem live shapes: a commit sends shape and Model history together, a fast-forward of what the window holds.
+          node --experimental-strip-types mcp/tandem-history-occt.test.ts
           # A Model edit between two sliced solves needs OCCT, so the sim region test runs here, not in the mcp job.
           node --experimental-strip-types mcp/sim-region.test.ts
           # recipe_run end to end: lust builds, OCCT cuts, a failed or dry run is taken back.
