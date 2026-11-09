@@ -173,6 +173,11 @@ const accepted: [string, unknown][] = [
 ];
 for (const [name, input] of accepted) check(`accepts ${name}`, validateTool(name, input) === null);
 
+// A wrong field of a tool names the tool's own fields, so the next call is right. The op hints ("Use label.")
+// stay for an op's fields.
+check("a wrong tool field names the tool's fields", validateTool("workplane_set", { face: 3 }) === "input.face is not a field of this tool. It takes object, source, faceIndex, origin, turn.");
+check("a wrong tool field gets no op hint", !String(validateTool("nugget", { action: "find", name: "x" })).includes("Use label."));
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);
