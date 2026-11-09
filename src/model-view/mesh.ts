@@ -7,7 +7,7 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import type { ModelSolid } from "./types";
 import { boxEdges, boxList, dashSegments, writeColor } from "./helpers";
-import { drawnEdgeSegments, smoothNormals } from "./smooth";
+import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { facePaint } from "../model-look";
 import { hexToThree } from "../theme";
 import type { ViewCtx } from "./ctx";
@@ -90,7 +90,7 @@ export function installMesh(ctx: ViewCtx): void {
     const used = paintColours(shape, color, new Set(), null);
     publishFaceColours(used);
     geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-    const smooth = smoothNormals(shape.positions, shape.triangles);
+    const smooth = smoothNormalsOf(shape.positions, shape.triangles);
     geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
     const shaded = new THREE.Mesh(geometry, solidMaterial);
     shaded.raycast = () => undefined;

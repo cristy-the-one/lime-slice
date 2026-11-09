@@ -129,3 +129,63 @@ function edgeKey(a: number[], b: number[]): string {
 function q(value: number): number {
   return Math.round(value * 1e3) / 1e3;
 }
+
+/** The outline of each face of one mesh, as [`faceBoundarySegments`] gives it. */
+export interface FaceOutlines {
+  get(face: number): number[] | undefined;
+}
+
+const outlines = new WeakMap<object, { triangles: ArrayLike<number>; faces: FaceOutlines }>();
+
+/**
+ * [`faceBoundarySegments`], one face at a time: a face's outline is worked out when it is first read and kept with
+ * the mesh. Only a selected or hovered face is ever read, so a part with thousands of faces no longer pays for all
+ * of them each time it is shown, and a mesh shown again (undo, redo, a step of the history) pays nothing.
+ */
+export function faceOutlines(positions: ArrayLike<number>, triangles: ArrayLike<number>): FaceOutlines {
+  const key = positions as unknown as object;
+  const kept = outlines.get(key);
+  if (kept && kept.triangles === triangles) return kept.faces;
+  let ofFace: Map<number, number[]> | null = null;
+  const done = new Map<number, number[] | undefined>();
+  const faces: FaceOutlines = {
+    get(face) {
+      if (done.has(face)) return done.get(face);
+      if (!ofFace) {
+        ofFace = new Map();
+        for (let tri = 0; tri < triangles.length; tri += 1) {
+          const at = triangles[tri] ?? 0;
+          const bag = ofFace.get(at);
+          if (bag) bag.push(tri);
+          else ofFace.set(at, [tri]);
+        }
+      }
+      const tris = ofFace.get(face);
+      let flat: number[] | undefined;
+      if (tris) {
+        // The same walk as `faceBoundarySegments`, over this face's triangles in their order in the mesh.
+        const bag = new Map<string, number[]>();
+        for (const tri of tris) {
+          const base = tri * 9;
+          const verts: number[][] = [];
+          for (let vertex = 0; vertex < 3; vertex += 1) {
+            const offset = base + vertex * 3;
+            verts.push([positions[offset] ?? 0, positions[offset + 1] ?? 0, positions[offset + 2] ?? 0]);
+          }
+          for (const [i, j] of [[0, 1], [1, 2], [2, 0]] as const) {
+            const edge = edgeKey(verts[i]!, verts[j]!);
+            if (bag.has(edge)) bag.delete(edge);
+            else bag.set(edge, [...verts[i]!, ...verts[j]!]);
+          }
+        }
+        const out: number[] = [];
+        for (const segment of bag.values()) out.push(...segment);
+        if (out.length > 0) flat = out;
+      }
+      done.set(face, flat);
+      return flat;
+    },
+  };
+  outlines.set(key, { triangles, faces });
+  return faces;
+}

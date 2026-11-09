@@ -1,7 +1,7 @@
 /** The Model view's binders for this area: called once, in order, by bindModelView. */
 import { faceCentre } from "../../model-plane";
 import { faceLoopsRequest } from "../../model-request";
-import { faceBoundarySegments } from "../../model-select";
+import { faceOutlines } from "../../model-select";
 import { readFaceLoops } from "../../sketch/loft";
 import { sketchJson } from "../../sketch/model.ts";
 import { closeModelTool, openModelTool, openSketchHolePanel, sketchHoleCount, sketchHolesArmed } from "../../ui/model-chrome";
@@ -71,7 +71,7 @@ export function bindSketch() {
       outline(face) {
         const solid = viewed();
         if (!solid || face == null) return [];
-        const raw = faceBoundarySegments(solid.positions, solid.triangles).get(face) ?? [];
+        const raw = faceOutlines(solid.positions, solid.triangles).get(face) ?? [];
         return posePoints(raw, openPose());
       },
       pullArmed: pullLiveNow,

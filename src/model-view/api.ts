@@ -4,11 +4,11 @@ import { BLEND_GHOST_STEP_MM } from "./constants";
 import { type CameraPose, mmPerPixel } from "../sketch/frame";
 import type { ModelView } from "./types";
 import type { Vec3 } from "../model-drag";
-import { faceBoundarySegments } from "../model-select";
+import { faceOutlines } from "../model-select";
 import { framePose, sameWorkplane } from "../workplane";
 import { hexToThree, themeColors } from "../theme";
 import { polylinePairs, readAccent } from "./helpers";
-import { drawnEdgeSegments, smoothNormals } from "./smooth";
+import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import type { ViewCtx } from "./ctx";
 
 export function buildApi(ctx: ViewCtx): ModelView {
@@ -39,12 +39,12 @@ export function buildApi(ctx: ViewCtx): ModelView {
         ctx.kick();
         return;
       }
-      ctx.boundaries = faceBoundarySegments(next.positions, next.triangles);
+      ctx.boundaries = faceOutlines(next.positions, next.triangles);
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute("position", new THREE.BufferAttribute(next.positions, 3));
       const color = new Float32Array(next.positions.length);
       geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-      const smooth = smoothNormals(next.positions, next.triangles);
+      const smooth = smoothNormalsOf(next.positions, next.triangles);
       geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
       canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
       ctx.mesh = new THREE.Mesh(geometry, solidMaterial);

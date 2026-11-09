@@ -1,4 +1,4 @@
-import { faceBoundarySegments, lastEdge, modelApplyReady, nextModelPicks, selectionChipLabel, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
+import { faceBoundarySegments, faceOutlines, lastEdge, modelApplyReady, nextModelPicks, selectionChipLabel, selectionCountLabel, shellFacesLabel } from "./model-select.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -63,6 +63,28 @@ const positions = [
 const outline = faceBoundarySegments(positions, [7, 7]);
 eq("one face keeps its boundary", outline.size, 1);
 eq("the diagonal is dropped", (outline.get(7)?.length ?? 0) / 6, 4);
+
+// Read one face at a time, each outline is the one the whole-mesh walk gives: three faces mixed through the mesh,
+// one of them a strip whose inner sides cancel, and a face that no triangle has.
+{
+  const mesh: number[] = [];
+  const owner: number[] = [];
+  const quad = (x: number, z: number, face: number) => {
+    mesh.push(x, 0, z, x + 1, 0, z, x + 1, 1, z, x, 0, z, x + 1, 1, z, x, 1, z);
+    owner.push(face, face);
+  };
+  for (let i = 0; i < 6; i += 1) {
+    quad(i, 0, 3);
+    quad(i * 2, 5, i % 2 === 0 ? 1 : 9);
+  }
+  const whole = faceBoundarySegments(mesh, owner);
+  const lazy = faceOutlines(mesh, owner);
+  for (const id of [9, 3, 1, 3]) eq(`face ${id} read alone has the whole walk's outline`, lazy.get(id), whole.get(id));
+  eq("the strip keeps only its rim", (lazy.get(3)?.length ?? 0) / 6, 14);
+  eq("a face with no triangle has no outline", lazy.get(4), undefined);
+  check("the same mesh gives the same outlines back", faceOutlines(mesh, owner) === lazy);
+  check("another face list of the same points is read afresh", faceOutlines(mesh, [...owner]) !== lazy);
+}
 
 if (failed) {
   console.error(`${failed} failed`);
