@@ -274,6 +274,8 @@ export interface PlateObject {
    * matching run of ops.
    */
   buildLog?: { base: string; start: number; steps: { key: string; node: number | null; first: number | null }[]; refused: boolean };
+  /** The object this is a linked copy of (`object_duplicate {linked:true}`): its commit rebuilds this one. Saved with the project. */
+  linkedTo?: string;
   /** The model_build call this object came from, before expansion: rerun it with new parameters, and saved with the project. */
   recipe?: Recipe;
   /** The recipe_run that made this object: a key of `rustRecipes`. Saved with the project. */
