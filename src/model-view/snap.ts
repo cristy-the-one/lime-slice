@@ -49,7 +49,7 @@ export function installSnap(ctx: ViewCtx): void {
       if (ctx.solid && ctx.solid.positions.length >= 9) {
         const own = ctx.solid;
         jobs.push(() => void solidFootprint(own.positions, ctx.poseNow));
-        if (ctx.measureOpen) jobs.push(() => warmFeatures(own.positions, own.edges.map((edge) => edge.points)));
+        if (ctx.measureOpen) jobs.push(() => warmFeatures(own.positions, own.edges.filter((edge) => !own.seams?.includes(edge.id)).map((edge) => edge.points)));
       }
       for (const part of ctx.contextList) {
         if (part.self) continue;

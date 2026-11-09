@@ -119,7 +119,10 @@ export function installPicking(ctx: ViewCtx): void {
     if (!ctx.solid) return null;
     const rect = canvas.getBoundingClientRect();
     let best: { index: number; distance: number } | null = null;
+    const seams = ctx.solid.seams && ctx.solid.seams.length > 0 ? new Set(ctx.solid.seams) : null;
     for (const edge of ctx.solid.edges) {
+      // A seam is not an edge of the part: it is neither hovered nor picked (the MCP list keeps it, its index is unchanged).
+      if (seams?.has(edge.id)) continue;
       const points = edge.points;
       for (let i = 0; i + 5 < points.length; i += 3) {
         // A segment the section hides wholly cannot be picked; one it crosses can, as its shown part is drawn.
@@ -206,7 +209,7 @@ export function installPicking(ctx: ViewCtx): void {
     const target = hit.object instanceof THREE.Mesh ? hit.object : null;
     if (!target) return null;
     // Only the open solid has B-rep edges, so only it offers circle centres.
-    const curves = target === ctx.mesh ? ctx.solid?.edges.map((edge) => edge.points) : undefined;
+    const curves = target === ctx.mesh ? ctx.solid?.edges.filter((edge) => !ctx.solid?.seams?.includes(edge.id)).map((edge) => edge.points) : undefined;
     const found = featureAtHit(hit, target, camera, canvas, curves);
     if (!found) return null;
     ctx.snappedTo = { kind: found.kind, at: found.at, object };

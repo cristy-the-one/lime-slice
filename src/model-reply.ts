@@ -59,6 +59,7 @@ export interface SolidArrays {
   triangles: ArrayLike<number>;
   faces: FaceRow[];
   edges: { lengthMm: number; points: ArrayLike<number> }[];
+  seams?: number[];
   solid?: boolean;
   /** The node that made each face, or null for a face the step being previewed has not applied yet. */
   stepFaces?: (number | null)[];
@@ -106,6 +107,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
   }
   if (offsets[edgeLengths.length]! * 3 !== points.length) return DAMAGED;
   const stepFaces = readStepFaces(body.stepFaces, faces.length);
+  const seams = Array.isArray(body.edgeSeams) ? body.edgeSeams.filter((edge): edge is number => Number.isInteger(edge) && edge >= 0 && edge < edges.length) : [];
   return {
     id: typeof body.id === "number" ? body.id : 0,
     volumeMm3: body.volumeMm3,
@@ -115,6 +117,7 @@ export function decodeSolid(body: Record<string, unknown>): ParsedSolid | string
     edges,
     fingerprint: readFingerprint(body.fingerprint),
     editable: body.solid !== false,
+    ...(seams.length > 0 ? { seams } : {}),
     ...(stepFaces ? { stepFaces } : {}),
   };
 }
@@ -135,6 +138,7 @@ export type SolidWire = {
   solid: boolean;
   faces: FaceRow[];
   edgeLengths: number[];
+  edgeSeams?: number[];
   positions: string;
   triangles: string;
   edgePoints: string;
@@ -162,6 +166,7 @@ export function encodeSolid(solid: SolidArrays): SolidWire & { stepFaces?: (numb
       };
     }),
     edgeLengths: solid.edges.map((edge) => edge.lengthMm),
+    ...(solid.seams && solid.seams.length > 0 ? { edgeSeams: solid.seams } : {}),
     positions: wordsBase64(Float32Array.from(solid.positions)),
     triangles: wordsBase64(Uint32Array.from(solid.triangles)),
     edgePoints: wordsBase64(Float32Array.from(points)),

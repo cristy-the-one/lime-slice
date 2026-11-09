@@ -767,7 +767,33 @@ std::string describe(Held& held) {
         }
         out += held.edge_about[static_cast<size_t>(i)];
     }
-    out += "]}";
+    out += "]";
+    // The edges a window should not draw: a seam (a face meets itself along it) or a pole (no length). They stay in
+    // the list above, so picking and every index a caller holds are as before.
+    TopTools_IndexedDataMapOfShapeListOfShape ancestors;
+    TopExp::MapShapesAndAncestors(held.shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
+    std::string seams;
+    for (int i = 1; i <= edges; ++i) {
+        const TopoDS_Edge edge = TopoDS::Edge(held.edges(i));
+        bool seam = BRep_Tool::Degenerated(edge);
+        const int at = ancestors.FindIndex(edge);
+        if (!seam && at > 0) {
+            for (const TopoDS_Shape& face : ancestors.FindFromIndex(at)) {
+                if (BRep_Tool::IsClosed(edge, TopoDS::Face(face))) {
+                    seam = true;
+                    break;
+                }
+            }
+        }
+        if (seam) {
+            seams += seams.empty() ? "" : ",";
+            seams += std::to_string(i - 1);
+        }
+    }
+    if (!seams.empty()) {
+        out += ",\"edgeSeams\":[" + seams + "]";
+    }
+    out += "}";
     return out;
 }
 
@@ -1510,6 +1536,10 @@ std::string blend_refusal(const TopoDS_Shape& shape, const std::vector<TopoDS_Ed
         TopTools_IndexedDataMapOfShapeListOfShape ancestors;
         TopExp::MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors);
         for (const TopoDS_Edge& edge : edges) {
+            if (BRep_Tool::Degenerated(edge)) {
+                seam = true; // a pole: no length, nothing to round
+                continue;
+            }
             const TopTools_ListOfShape* faces = ancestors.Seek(edge);
             if (faces == nullptr) {
                 continue;
@@ -1560,7 +1590,7 @@ std::string blend_refusal(const TopoDS_Shape& shape, const std::vector<TopoDS_Ed
     }
     if (seam) {
         return many ? std::string("These seam edges cannot be ") + verb + "."
-                    : std::string("This seam edge cannot be ") + verb + ".";
+                    : std::string("That edge is the seam of a round face, not a real edge; nothing to round.");
     }
     return "";
 }

@@ -8,6 +8,7 @@ import { faceBoundarySegments } from "../model-select";
 import { framePose, sameWorkplane } from "../workplane";
 import { hexToThree, themeColors } from "../theme";
 import { polylinePairs, readAccent } from "./helpers";
+import { drawnEdgeSegments, smoothNormals } from "./smooth";
 import type { ViewCtx } from "./ctx";
 
 export function buildApi(ctx: ViewCtx): ModelView {
@@ -43,16 +44,13 @@ export function buildApi(ctx: ViewCtx): ModelView {
       geometry.setAttribute("position", new THREE.BufferAttribute(next.positions, 3));
       const color = new Float32Array(next.positions.length);
       geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-      geometry.computeVertexNormals();
+      const smooth = smoothNormals(next.positions, next.triangles);
+      geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
+      canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
       ctx.mesh = new THREE.Mesh(geometry, solidMaterial);
       body.add(ctx.mesh);
-      const segments: number[] = [];
-      for (const edge of next.edges) {
-        const points = edge.points;
-        for (let i = 0; i + 5 < points.length; i += 3) {
-          segments.push(points[i]!, points[i + 1]!, points[i + 2]!, points[i + 3]!, points[i + 4]!, points[i + 5]!);
-        }
-      }
+      const { segments, drawn } = drawnEdgeSegments(next.edges, next.seams);
+      canvas.dataset.edgesDrawn = `${drawn}/${next.edges.length}`;
       if (segments.length > 0) {
         const lines = new THREE.BufferGeometry();
         lines.setAttribute("position", new THREE.Float32BufferAttribute(segments, 3));

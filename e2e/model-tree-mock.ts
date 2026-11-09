@@ -10,6 +10,8 @@ export interface MockSolid {
   triangles: number[];
   faces: { id: number; areaMm2: number; normal?: [number, number, number]; surface?: "cylinder" | "cone" | "sphere"; radiusMm?: number; axisPoint?: [number, number, number]; axis?: [number, number, number] }[];
   edges: { id: number; lengthMm: number; points: number[] }[];
+  /** Edges (by index) that are the seam of a round face. */
+  seams?: number[];
   solid?: boolean;
   /** --- A10. The node that made each face, when a test wants colour by step. */
   stepFaces?: (number | null)[];
