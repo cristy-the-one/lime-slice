@@ -11,7 +11,7 @@ description = "Loads the optional Open CASCADE bridge for STEP imports and Model
 libloading = "0.8"
 lime-recipe = { path = "../lime-recipe" }
 base64 = "0.22"
-serde_json = "1"
+serde_json.workspace = true
 sha2 = "0.10"
 
 [dev-dependencies]
