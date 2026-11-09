@@ -468,6 +468,14 @@ extern "C" {
         count: c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    pub(super) fn lime_tree_combine_checked(
+        from: *const RawShape,
+        op: *const c_char,
+        tools: *const *const RawShape,
+        count: c_int,
+        missed: *mut c_int,
+        error: *mut *mut c_char,
+    ) -> *mut RawShape;
     #[cfg(lime_occt_test_hooks)]
     pub(super) fn lime_tree_test_fault(shape: *const RawShape, error: *mut *mut c_char) -> c_int;
     #[cfg(lime_occt_test_hooks)]

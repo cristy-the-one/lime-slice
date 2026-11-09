@@ -105,6 +105,20 @@ pub(super) enum Request {
         #[serde(default = "default_chord")]
         chord_mm: f64,
     },
+    /// --- docs/plan-native-recipes.md 7.1. Stateless: a plain fuse or cut's tool built alone, and its box.
+    ToolBox {
+        op: Op,
+    },
+    /// --- docs/plan-native-recipes.md 7.1. The combined groups on the path from `from` down to `last`, each already
+    /// applied, become the chain `nodes` under `from`, one step per op as the recipe sent them, in that order: the
+    /// last keeps the solid `last` holds and the others none, so going to one builds it as a rebuild does. The ops
+    /// must be the groups' steps, each once. The groups are dropped. Nothing is built.
+    Unfold {
+        key: String,
+        from: NodeId,
+        last: NodeId,
+        nodes: Vec<UnfoldNode>,
+    },
     /// With `preview`, a probe that builds also answers the built shape's reply at `chordMm`, which
     /// the shape keeps, so an Apply that takes the probe meshes nothing again.
     Probe {
@@ -409,6 +423,13 @@ pub(super) type Tip = Result<NodeId, String>;
 
 /// An edit's new branch: the last step that built, each built step as `{id, op, fingerprint}`, and the broken step with why.
 pub(super) type Forked = (NodeId, Vec<serde_json::Value>, Option<(NodeId, String)>);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UnfoldNode {
+    pub(super) id: NodeId,
+    pub(super) op: Op,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

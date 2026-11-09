@@ -15,7 +15,8 @@ import { readBroken, readBuilt, solidView, type SolidView } from "../modeling/mo
 import { markedRun, sameFingerprint, sameValues, stampValue, type StampedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
-import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
+import { builtText, DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
+import { unreadApplyLines } from "./unread-applies.ts";
 
 /** The steps on the way to the shown step that came after a run: what a rebuild of it replays. */
 export function laterSteps(tree: ModelTree, run: StampedRun): NodeId[] {
@@ -123,6 +124,20 @@ export type RebuildResult =
  * stood on again and nothing of the attempt is kept (the caller keeps its own tree).
  */
 export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildResult> {
+  const first = await rebuildOnce(input, true);
+  if (first.ok || !first.replay) return first;
+  // --- docs/plan-native-recipes.md 7.1. A queued boolean refused after the plugin moved past it: that attempt leaves
+  // the engine, and the run is built again one by one, so the plugin sees the refusal at its own line.
+  const { part, engine } = input;
+  if (first.dropFrom !== undefined) await engine.tree(part.tree.key, part.tree.current, { call: "drop", key: part.tree.key, node: first.dropFrom });
+  for (const key of first.close ?? []) await engine.open({ call: "close", key });
+  const nextId = Math.max(first.nextId ?? part.tree.nextId, part.tree.nextId);
+  const again = await rebuildOnce({ ...input, part: { ...part, tree: { ...part.tree, nextId } } }, false);
+  again.notes.unshift(`Built one by one: the tool at line ${first.replay.line} was refused inside a queued boolean (${first.replay.reason}).`);
+  return again;
+}
+
+async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<RebuildResult & { replay?: { line: number; reason: string } }> {
   const { part, run, engine } = input;
   const tree = part.tree;
   const from = tree.current;
@@ -158,8 +173,17 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
     calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
+  const queue = calls.useQueue(unreadApplyLines(builtText(built.source, input.suffix ?? "")), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
+  // `done` builds what is still queued.
+  if (out.ok && out.done && queue.holding) {
+    const flushed = await queue.flushAll();
+    if (flushed && !flushed.ok) {
+      out.ok = false;
+      out.reason = flushed.error;
+    }
+  }
   const notes = [...calls.notes, ...(out.notes ?? [])];
   const given = calls.given;
   const opened = calls.all.filter((row) => row.origin !== "given").map((row) => row.tree.key);
@@ -170,8 +194,9 @@ export async function rebuildPluginStep(input: RebuildInput): Promise<RebuildRes
   });
   const refuse = async (reason: string, extra: { line?: number } = {}) => {
     await back();
-    return { ok: false as const, reason, ...extra, notes, ...left() };
+    return { ok: false as const, reason, ...extra, notes, ...left(), ...(queue.replay ? { replay: queue.replay } : {}) };
   };
+  for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${row.line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
   if (!out.ok || !out.done) return refuse(out.reason ?? "The plugin failed.", out.line !== undefined ? { line: out.line } : {});
   // --- O4. A stamped run made at most one part and changed at most the part it was given: so must its rebuild.
   const made = calls.all.filter((row) => row.origin === "made" && !row.consumed);

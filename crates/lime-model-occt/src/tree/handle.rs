@@ -228,6 +228,15 @@ impl Store {
                 last,
                 chord_mm,
             } => self.fold(key, parent, node, op, last, chord_mm),
+            Request::ToolBox { op } => Ok(Answer::Plain(
+                super::group::tool_box_reply(&op).map_err(Failure::Message)?,
+            )),
+            Request::Unfold {
+                key,
+                from,
+                last,
+                nodes,
+            } => self.unfold(key, from, last, nodes),
             Request::Probe {
                 key,
                 node,

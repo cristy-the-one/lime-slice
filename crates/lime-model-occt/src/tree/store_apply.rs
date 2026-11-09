@@ -359,6 +359,113 @@ impl Store {
         Ok(Answer::Held { key, text, fields })
     }
 
+    /// --- docs/plan-native-recipes.md 7.1. A recipe's queued ops, built as the combined groups on the path from `from`
+    /// down to `last`, stored as the recipe sent them: one step per op, in order, the last with the groups' solid. A path
+    /// that is not only combined groups, has another branch, or whose steps are not exactly the ops is refused, and
+    /// nothing changes.
+    pub(super) fn unfold(
+        &mut self,
+        key: String,
+        from: NodeId,
+        last: NodeId,
+        nodes: Vec<super::request::UnfoldNode>,
+    ) -> Result<Answer, Failure> {
+        let not_the_ops = || Failure::Message("The steps to unfold are not the groups' steps".into());
+        let doc = doc_in(&mut self.docs, &key)?;
+        let mut path = Vec::new();
+        let mut at = last;
+        while at != from {
+            let node = doc.node(at)?;
+            path.push(at);
+            at = node.parent.ok_or_else(not_the_ops)?;
+        }
+        path.reverse();
+        let Some(&first) = path.first() else {
+            return Err(not_the_ops());
+        };
+        let mut steps: Vec<&Op> = Vec::new();
+        for id in &path {
+            match doc.node(*id)?.op.as_ref() {
+                Some(Op::Group { steps: own, combine: Some(_), .. }) => steps.extend(own.iter()),
+                _ => return Err(not_the_ops()),
+            }
+        }
+        if nodes.is_empty() || nodes.len() != steps.len() {
+            return Err(not_the_ops());
+        }
+        let mut used = vec![false; steps.len()];
+        let mut ids = std::collections::HashSet::new();
+        for node in &nodes {
+            if !ids.insert(node.id) {
+                return Err(not_the_ops());
+            }
+            let found = steps
+                .iter()
+                .enumerate()
+                .position(|(i, step)| !used[i] && same_request(step, &node.op))
+                .ok_or_else(not_the_ops)?;
+            used[found] = true;
+            if doc.nodes.contains_key(&node.id) {
+                return Err(Failure::Message(format!(
+                    "Node {} is already in this tree for another step",
+                    node.id
+                )));
+            }
+        }
+        let gone = doc.subtree(first);
+        if gone.len() != path.len() {
+            return Err(Failure::Message(
+                "A queued group has another branch under it".into(),
+            ));
+        }
+        if doc.node(last)?.shape.is_none() {
+            return Err(Failure::Message(
+                "The last group's solid is no longer held".into(),
+            ));
+        }
+        if self.names_tool(&key, Some(&gone)) {
+            return Err(Failure::Message(
+                "A step of another part's history uses a step of this run as its tool".into(),
+            ));
+        }
+        self.clock += 1;
+        let used_at = self.clock;
+        let doc = doc_in(&mut self.docs, &key)?;
+        let held = doc.nodes.get_mut(&last).expect("checked above");
+        let shape = held.shape.take().expect("checked above");
+        let fingerprint = held.fingerprint;
+        let tip = nodes.last().expect("checked above").id;
+        let owners: Vec<NodeId> = held
+            .face_owners
+            .iter()
+            .map(|owner| if gone.contains(owner) { tip } else { *owner })
+            .collect();
+        doc.nodes.retain(|node, _| !gone.contains(node));
+        if doc
+            .probe
+            .as_ref()
+            .is_some_and(|probe| gone.contains(&probe.parent))
+        {
+            doc.probe = None;
+        }
+        let mut parent = from;
+        for node in nodes {
+            doc.insert(node.id, parent, node.op)?;
+            parent = node.id;
+        }
+        let node = doc.nodes.get_mut(&tip).expect("inserted above");
+        node.fingerprint = fingerprint;
+        node.shape = Some(shape);
+        node.face_owners = owners;
+        node.used = used_at;
+        doc.current = tip;
+        self.replies
+            .retain(|reply| reply.key != key || !gone.contains(&reply.node));
+        Ok(Answer::Plain(
+            json!({ "id": tip, "fingerprint": fingerprint }).to_string(),
+        ))
+    }
+
     pub(super) fn probe(
         &mut self,
         key: &str,

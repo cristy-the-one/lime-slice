@@ -10,6 +10,8 @@ import { totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { encodePaths } from "../src/preview-wire.ts";
+import { primitiveBox } from "../src/model-feasibility.ts";
+import type { PrimitiveSpec } from "../src/model-primitive.ts";
 import { SOLVER_STAND_IN } from "./sim.ts";
 import { appVersion } from "./version.ts";
 
@@ -845,6 +847,22 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         return new Promise<string>(() => undefined);
       }
       const fallback = (): KeptSolid => ({ volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] });
+      // --- docs/plan-native-recipes.md 7.1. A queued box's tool alone (other tools are not modelled here, so they are
+      // built in their place), and queued groups stored as one step per op with the last group's solid.
+      if (req.call === "toolBox") {
+        const op = req.op as { kind?: string; turn?: unknown } | undefined;
+        if (op?.kind !== "boolean") return JSON.stringify({ error: "The stand-in builds only primitive tools alone." });
+        const box = primitiveBox({ turn: [0, 0, 0], ...(op as object) } as PrimitiveSpec);
+        return JSON.stringify({ min: box.min, max: box.max });
+      }
+      if (req.call === "unfold") {
+        const u = req as { last?: number; nodes?: { id: number }[] };
+        const solid = atNode.get(key)?.get(u.last ?? -1) ?? kept.get(key);
+        const tip = u.nodes?.[u.nodes.length - 1]?.id;
+        if (!solid || tip === undefined) return JSON.stringify({ error: "The last group's solid is no longer held" });
+        keepNode(key, tip, solid);
+        return JSON.stringify({ id: tip, fingerprint: { volumeMm3: solid.volume, faces: 6, edges: 12 } });
+      }
       // --- Split to print: the box between the cuts, each piece after the first a tree of its own under its key.
       const cut = (from: KeptSolid) => partitioned(from, req.op as { cuts?: { origin?: number[]; normal?: number[] }[] });
       const startPieces = (rest: KeptSolid[]) => {

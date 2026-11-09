@@ -620,6 +620,18 @@ TopoDS_Shape combine_profile_tools(
     double& volume,
     std::string& error);
 
+/// A recipe's queued fuses or cuts (docs/plan-native-recipes.md 7.1): the tools, whose boxes are apart, meet `current`
+/// in one boolean, checked as `combine_profile_tools` checks several. `missed[i]` is 1 for a tool that changed nothing
+/// (every one of its faces is gone from the result), which alone would have been refused.
+TopoDS_Shape combine_tools_checked(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<TopoDS_Shape>& tools,
+    double& volume,
+    std::string& error,
+    std::vector<int>& missed);
+
 /// What `build_extrude_cells` did with its cells: built, clipped by the region, left out (outside it, under the
 /// smallest area, or failing to build), and each corner it rounded as full, reduced, or left sharp.
 struct CellCounts {

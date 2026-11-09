@@ -138,6 +138,7 @@ pub fn call(request: &str) -> String {
     let transient = matches!(
         &request,
         Request::MeshStep { .. }
+            | Request::ToolBox { .. }
             | Request::Capabilities
             | Request::StepSolids { .. }
             | Request::ShapeSolids { .. }

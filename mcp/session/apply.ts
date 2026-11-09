@@ -13,7 +13,8 @@ import { labelBox } from "../../src/modeling/part-reads.ts";
 import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../../src/modeling/anchors.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../../src/modeling/links.ts";
 import { applyPose, toSolidOp, typedPoseOf } from "../../src/model-space.ts";
-import { dropped, jumped, opLabel, pathTo, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type ProfileLoop } from "../../src/model-tree.ts";
+import { dropped, jumped, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type ProfileLoop } from "../../src/model-tree.ts";
+import { queuedGuard, queueableOp } from "../../src/recipe/queue.ts";
 import { runEndingAt } from "../../src/plugin-step.ts";
 import { workplaneOwn, planePrimitive, type Workplane } from "../../src/workplane.ts";
 import { ProtocolError } from "../engine.ts";
@@ -596,6 +597,102 @@ async function applyCombined(this: Session, obj: PlateObject, raws: Record<strin
 }
 
 /**
+ * --- docs/plan-native-recipes.md 7.1. A recipe's op as a queued tool: its stored op, and its tool's kind and box from
+ * the engine (the tool built alone). Null when it is not a plain fuse or cut, names a face, or its tool does not build.
+ */
+async function queueTool(this: Session, obj: PlateObject, raw: Record<string, unknown>): Promise<{ kind: "fuse" | "cut"; box: Box; baked: { op: ModelOp; typed: Record<string, unknown> } } | null> {
+  if (!queueableOp(raw)) return null;
+  const tree = await this.opened(obj);
+  if ("reason" in tree) return null;
+  const baked = this.bake(obj, structuredClone(raw));
+  if ("reason" in baked) return null;
+  const kind = (baked.op as { op?: unknown }).op;
+  if (kind !== "fuse" && kind !== "cut") return null;
+  let reply: Record<string, unknown>;
+  try {
+    reply = await this.treeCall({ call: "toolBox", op: baked.op }, "boolean");
+  } catch {
+    return null;
+  }
+  const min = reply.min as Box["min"] | undefined;
+  const max = reply.max as Box["max"] | undefined;
+  if (!Array.isArray(min) || !Array.isArray(max) || min.length !== 3 || max.length !== 3) return null;
+  return { kind, box: { min, max }, baked };
+}
+
+/**
+ * --- docs/plan-native-recipes.md 7.1. A recipe's queued ops built as `groups` (each one combined boolean), then stored
+ * as sent: one step per op in order, the last with the solid, each marked `builtWith` the first. A refusal, a tool the
+ * kernel left out or found changed nothing, or a step guard takes every group back, and names the op when it can.
+ */
+async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; label?: string }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number }> {
+  const at = await this.opened(obj);
+  if ("reason" in at) return { ok: false, reason: at.reason };
+  const from = at.current;
+  const added: number[] = [];
+  const back = async () => {
+    if (added.length > 0) await this.takeBack(obj, from, added[0]!).catch(() => null);
+  };
+  for (const members of groups) {
+    const steps = members.map((i) => ops[i]!.op);
+    const combine = (steps[0] as { op?: "fuse" | "cut" }).op!;
+    const group: GroupOp = { kind: "group", label: `${steps.length} queued ${combine}s`, source: { kind: "queue", ops: steps.length }, steps, combine };
+    const before = obj.solid;
+    const done = await this.bakedApply(obj, { op: group, typed: { kind: "queue", ops: steps.length } }, undefined, Math.max(this.modelTimeoutMs(), steps.length * 250));
+    const node = parseNode(done.node);
+    if (done.ok === true && node !== null) added.push(node);
+    const failedStep = typeof done.failedStep === "number" ? members[done.failedStep - 1] : undefined;
+    if (done.ok !== true) {
+      await back();
+      return { ok: false, reason: String(done.reason ?? "The queued boolean was refused."), ...(failedStep !== undefined ? { index: failedStep } : {}) };
+    }
+    const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
+    const left = report.failed?.[0];
+    const missed = report.missed?.[0];
+    if (left || missed !== undefined) {
+      await back();
+      return { ok: false, reason: left ? left.reason : `The ${combine} does not change the part.`, index: members[left ? left.index : missed!] };
+    }
+    const guard = queuedGuard(steps, before, obj.solid);
+    if (guard) {
+      await back();
+      return { ok: false, reason: guard };
+    }
+  }
+  let tree = obj.tree!;
+  const ids: number[] = [];
+  for (let i = 0; i < ops.length; i += 1) {
+    const [next, id] = reserveId(tree);
+    tree = next;
+    ids.push(id);
+  }
+  obj.tree = tree;
+  let reply: Record<string, unknown>;
+  try {
+    reply = await this.treeCall({ call: "unfold", key: tree.key, from, last: added[added.length - 1], nodes: ids.map((id, i) => ({ id, op: ops[i]!.op })) }, "group");
+  } catch (err) {
+    if (this.lostReply(err)) return { ok: false, reason: "The modeler stopped while the queued steps were stored." };
+    await back();
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+  if (typeof reply.error === "string" && reply.error) {
+    await back();
+    return { ok: false, reason: plainModelError(reply.error) };
+  }
+  const first = ids[0]!;
+  obj.tree = rechained(obj.tree!, from, added, ops.map((row, i) => ({
+    id: ids[i]!,
+    op: row.op,
+    label: row.label?.trim() ? row.label.trim().slice(0, 80) : opLabel(row.op),
+    fingerprint: null,
+    builtWith: first,
+  })));
+  if (obj.solid) obj.solid = { ...obj.solid, id: ids[ids.length - 1]! };
+  obj.probes.clear();
+  return { ok: true };
+}
+
+/**
  * I20: an array whose cell is loops, as one extrude of cells on the face. The lattice is laid out as any array's; the
  * kernel clips every cell to the face's outline less the margin (read from the solid, so curved edges count), leaves
  * out slivers under minArea, rounds the corners, and builds every cell in one boolean.
@@ -811,6 +908,8 @@ export const applyMethods = {
   storeGroup: storeGroupMethod,
   bakedApply,
   applyCombined,
+  queueTool,
+  applyQueued,
   bakeCells: bakeCellsMethod,
   applyBatch,
   build,
