@@ -1,6 +1,7 @@
 # Plan: native speed for recipes
 
-Status: plan, for review. Written 2026-11-09 against `main` at v6.1.0 (`84953920`). Nothing here is built yet.
+Status: plan; the owner took the decisions on 2026-11-09 (section 7). Written 2026-11-09 against `main` at v6.1.0
+(`84953920`). Nothing here is built yet; the last-digit fix of section 2.6 is being made in its own PR.
 Companions: `docs/plan-recipes.md` (the protocol and rule zero: lust and rustc send the same bytes),
 `docs/plan-recipe-plugins.md` (plugins, the sandbox, API levels, the fixtures corpus), and
 `docs/plan-recipe-ingredients.md` (ingredients and standard ingredients in `lime-recipe`).
@@ -32,14 +33,16 @@ release. That is option 1 of the owner's question, already working, and it cut t
 So the plan, in order:
 
 1. Fix a byte-for-byte difference found while measuring (section 2.6): the native geometry answer passes through a
-   JSON parser that can change the last digit of a number.
-2. Make the kernel do less: show where kernel time goes in `profile`, let recipes queue applies so the host sends
-   them as one boolean, and stop re-meshing a part after every step of a run.
+   JSON parser that can change the last digit of a number. (Being fixed now, in its own PR.)
+2. Make the kernel do less: show where kernel time goes in `profile`; the host queues applies silently and builds
+   them as a few booleans, with the same part, while recipes keep an explicit queue they control; a recipe may ask
+   for the part to be meshed once, at the end.
 3. Adopt proven library code in a release, by a written process: the gear ingredient becomes a standard ingredient in
-   `lime-recipe` (for reuse and exact curves, not speed), more geometry gets a native fast path when the profile shows
-   it is worth it, and a kernel `gear` step comes later if the owner wants one in the Model tab.
+   `lime-recipe`, a kernel `gear` step with a Model tab card comes with it, and more geometry gets a native fast path
+   when the profile shows it is worth it.
 4. Ask lust-lang for an optimised sandboxed build (lust's C through an optimising C compiler, in the background,
-   cached by hash). That is the "other side of the win" without leaving lust or its sandbox.
+   cached by hash), adopted if it is at least five times faster with identical results. That is the "other side of
+   the win" without leaving lust or its sandbox.
 5. Not now: compiling plugins with rustc on the person's machine into a library the engine loads, and WebAssembly.
    Section 3 says why and what would change the answer.
 
@@ -132,8 +135,8 @@ last digit (for example `11.005321081608713` against `…711`; 72,067 against 71
 the 13th digit). Answering the same requests with a rustc-built `lime_recipe::native_geometry_request` fed the request
 text directly gives the all-lust bytes exactly. The engine path differs in one step: `lime-model-load`'s `tree`
 parses the request with `serde_json` and writes `args` back out before the crate reads it. Most likely `serde_json`,
-which without its `float_roundtrip` feature may read a decimal number one unit off in the last place, is the cause. The bench of section 2.7 also
-gives the same bits under lust and rustc, so the algorithm is not the cause.
+which without its `float_roundtrip` feature may read a decimal number one unit off in the last place, is the cause.
+The bench of section 2.7 also gives the same bits under lust and rustc, so the algorithm is not the cause.
 
 Why it matters: a plugin's calls should be the same bytes on every host (rule zero, the fixtures corpus, a part's
 fingerprint on rebuild). Today the bytes depend on whether the host offers native geometry and on input size. The fix
@@ -172,6 +175,9 @@ burden, and the plugin corpus guarantee: every saved plugin keeps building and s
 sentence why not.
 
 ### 3.1 Make the kernel do less (no new compiler)
+
+(Decided 2026-11-09: the host queues silently by default and the explicit queue below stays; meshing once is on
+request. Section 7.1 has the design as decided; the text here is the option as first proposed.)
 
 **a. Queued applies.** A recipe that does not need each apply's answer before the next one queues them, and the host
 sends each run of queued ops as one combined boolean. Today that is `s.apply_many(&part, "fuse", ops)`, which needs
@@ -350,19 +356,22 @@ good reasons (one copy of the call handlers). It needs 3.3's ABI and loses its c
 
 ## 4. Recommendation
 
-1. **Fix the native geometry bytes** (milestone 1). A small change with a test through the engine's own path.
+As decided on 2026-11-09 (section 7):
+
+1. **Fix the native geometry bytes** (milestone 1, in its own PR now).
 2. **Measure in the open** (milestone 2): the kernel's split in `profile`, and a committed bench of three real plugins
    (gears-on-sphere, the puzzle box, the spiderweb plugin) so every later step reports before and after.
-3. **Queued applies and the profile hint** (milestone 3). The largest win, no new trust, all platforms.
-4. **Mesh once, at the end of a run** (milestone 4).
+3. **Silent queuing by default, an explicit queue, and teaching agents** (milestone 3). The largest win, no new
+   trust, all platforms.
+4. **Mesh once, at the end of a run, when the recipe asks** (milestone 4).
 5. **Gears as a standard ingredient** (milestone 5), adopted by the process in section 5, with the spline outline as a
    choice.
-6. **More native fast paths, picked by data** (milestone 6).
-7. **lust: optimised sandboxed builds** (milestone 7), as an experiment with lust-lang; adopt if it gives at least
-   five times on the corpus's compute-heavy plugins with the same bytes.
-8. **A kernel gear step and its Model card** (milestone 8), if the owner wants gears as a first-class feature.
+6. **A kernel gear step and its Model card** (milestone 6).
+7. **More native fast paths, picked by data** (milestone 7).
+8. **lust: optimised sandboxed builds** (milestone 8), with lust-lang; adopted only if at least five times faster on
+   the compute bench with byte-identical calls on the plugin corpus.
 
-Not recommended now: rustc on the person's machine (3.3), WebAssembly (3.4), in-process recipes (3.6).
+Not now: rustc on the person's machine (3.3), WebAssembly (3.4), in-process recipes (3.6).
 
 ## 5. How library code gets adopted
 
@@ -390,36 +399,119 @@ Not recommended now: rustc on the person's machine (3.3), WebAssembly (3.4), in-
 | Risk | Effect | What limits it |
 |---|---|---|
 | Queued ops reordered wrongly | a cut lands before a fuse it should follow | swap only when tool boxes do not overlap; a test with overlapping fuse and cut keeps order; the corpus |
-| A queued op refused | the recipe learns late | `flush` and `done` return `failures` with recipe lines; a recipe that needs each answer keeps `s.apply` |
+| A queued op refused | the recipe learns late | silent queue: the cheap pre-check refuses at the call, and a late refusal replays the run one by one so the recipe sees it at its own call; explicit queue: `flush` and `done` return `failures` with recipe lines |
+| Silent queuing changes what a recipe reads | a recipe branches on an apply's reply | only lines whose reply is not read queue silently (marked at build); any read of the part flushes first |
+| Silent queuing changes a part's history | corpus records or stamps differ | the same ops are stored as the same nodes in the same order; only how they were built differs; the corpus runs with queuing on and off |
 | Lazy meshing serves an old mesh to a read | wrong `surface_at` or section | any read flushes the queue and meshes first; the bench and plugin tests compare reads before and after |
 | Native fast path drifts from the lust copy | different bytes on different hosts | the byte test through the engine's path, per function; milestone 1 fixes the known case |
 | A standard ingredient changes a plugin's part | a rebuild differs | plugins keep inline copies; new behaviour gets a new name |
 | Optimised lust builds disagree with tcc builds | a plugin builds a different part after its first run | lust's rule zero and oracle, the corpus run under both builds, fall back to the tcc build on any mismatch |
-| Bigger installers (a C compiler) | download size | only if milestone 7 proves the speed; trimmed to one target |
+| Bigger installers (a C compiler) | download size | only if milestone 8 passes its gate; trimmed to one target |
 | macOS Intel still has no lust | none of this reaches it until lust does | projects open as built, as today; option 3.4 is the only one that would reach it without lust |
 | Measurement noise on a busy machine | wrong conclusions | the committed bench runs each case three times and reports ranges; compare back to back |
 
-## 7. Decisions for the owner
+## 7. Decisions taken
 
-Each has the plan's choice; the plan goes ahead on it unless the owner says otherwise.
+The owner answered on 2026-11-09. The options as they were offered are kept short after each answer.
 
-1. **Queued applies.** (a) A new `s.apply_later` with `flush`, plus the profile hint; (b) the host quietly queues
-   every `s.apply` whose answer the recipe ignores (it cannot know that for sure); (c) only the hint, recipes use
-   `apply_many` by hand. **Plan: (a).** It is explicit, safe, and old recipes are untouched.
-2. **Mesh at the end of a run.** (a) Always inside recipe runs; (b) only when the recipe asks. **Plan: (a).** Nothing
-   visible changes except speed: previews and the plate show the finished part.
-3. **Gears.** (a) A standard ingredient in the crate now (polyline and spline outlines); (b) also a kernel gear step
-   and a Model tab card now; (c) leave gears in the library. **Plan: (a) now, (b) later** if the owner wants gears as
-   a feature people click.
-4. **Compiling on the person's machine with rustc.** (a) Not now; (b) opt-in for the person's own plugins, as a
-   separate program, after an OS sandbox; (c) as a DLL in the engine. **Plan: (a).** The measurements show the time is
-   in the kernel; (c) breaks the sandbox promise.
-5. **lust's optimised build.** (a) Ask lust-lang for a sandboxed optimised build and try it as a tiered build here;
-   (b) wait for lust's own backend work; (c) drop it. **Plan: (a)**, as an experiment with a go/no-go number (five
-   times on compute-heavy plugins, same bytes), before any installer grows.
-6. **Behaviour when adopting.** (a) Same names keep the same bytes; better maths comes under new names; (b) allow the
-   crate copy to improve the old name's numbers. **Plan: (a).** It is what keeps every saved plugin building the same
-   part.
+### 7.1 Booleans: queued silently by default, and the agent keeps control
+
+**Decision.** The host queues applies silently by default, so an ordinary recipe written with `s.apply` gets the
+speed without changes. The explicit queue stays (`s.apply_later`, `s.flush`, and `s.apply_now` to build one op at
+once), and the MCP teaches agents when to use it. (Offered: explicit queue only; silent queue; hint only.)
+
+**What queues silently.** A `model_apply` of a plain fuse or cut (boolean, extrude, revolve, loft; not a composite,
+pattern, fillet, shell or split) on one part, from a recipe line whose reply the recipe does not read. The build marks
+those lines: the result is used only by `?`, `.unwrap()`, `.is_ok()` or `.is_err()`, `let _ =`, or a `match` or
+`if let` that binds no field of the `Ok` value (gears-on-sphere's `match s.apply(..) { Ok(_) => true, Err(e) => .. }`
+is one). lust's check already knows how each call's result is used; the mark goes in the build's JSON with the recipe
+line, and the host reads it. A line that reads the reply (a volume, a node) is answered as today, after a flush.
+
+**What the recipe is told at the call.** Before an op joins the queue, the host checks it cheaply: the tool builds on
+its own, and its box meets the part. Most refusals are one of these two ("The tool does not touch the part.") and come
+back at once, at the recipe's own line, as today. A queued op is answered `{ok: true, queued: true}`.
+
+**When the queue is flushed.** Before any call that reads or depends on the part: `faces_find`, `edges_find`,
+`surface_at`, `measure`, `section`, `model_describe` (and `bounds`), `model_probe`, `model_check`, `model_history`,
+`pick`, `model_place` or `object_place`, an apply that does not queue (including `apply_many` and `s.apply_now`),
+`checkpoint`, `model_commit`, and `done`. Also at an explicit `s.flush`, at 200 queued ops, and when the run's time
+limit is near. A call on another part does not flush this part's queue.
+
+**How the flush builds.** The ops are grouped in the order sent. An op joins the open group when it is the same kind
+(fuse or cut) and its tool's box misses every tool already in the group; it may move ahead of earlier ops of the other
+kind only when its box misses theirs (disjoint tools commute). Otherwise it starts a new group. Each group is one
+combined boolean (the kernel's existing `combine`). gears-on-sphere becomes three: the nine gears, the nine hubs, the
+nine bores. Keeping the tools in a group apart from each other is deliberate: the result is then the same faces and
+edges as building them one by one, not only the same volume.
+
+**How results stay identical.**
+
+- *The same solid.* Disjoint tools added or cut in one boolean give the same solid as in sequence. The bench and the
+  corpus check the fingerprint (volume, faces, edges) with queuing on and off; section 2.3 measured it on
+  gears-on-sphere with an even looser grouping (gears and hubs together).
+- *The same calls recorded.* The recipe's calls, their order and their arguments are what the recipe sent; queuing
+  changes how the host builds them, not what is recorded. The plugin stamp keeps the same ops as the same History
+  nodes in the same order. Nodes built together carry an added mark (`builtWith: <first node>`), so an older app
+  reads them as ordinary steps. Only the last node of a group keeps a solid; going to a middle step builds it, as a
+  rebuild does.
+- *Refusals per tool.* A group the kernel refuses as a whole, or a tool it leaves out (`failures` by index, as
+  `apply_many` reports today), cannot be told to a recipe that already moved on. The host then takes the run back and
+  runs it again from the start with silent queuing off. That is exact because a run is deterministic (rule zero: the
+  same values give the same calls). The recipe sees the refusal at the right call, with its line, and the reply says
+  "Built one by one: the tool at line 41 was refused inside a queued boolean." The cost is one extra run, only then.
+- *Reads.* A read always sees the part as if every earlier op had been built, because it flushes first.
+
+**The explicit queue.** `s.apply_later(&part, op)` always queues, with no pre-check and no replay: refusals come back
+from `s.flush(&part)` (or `done`) as `Combined {applied, failures}` with recipe lines. `s.apply_now(&part, op)`
+flushes and builds one op on its own, for a recipe that wants a step's own answer. `s.queue(false)` turns silent
+queuing off for the rest of a run. All are additions in one API minor.
+
+**Teaching agents (the "skill").** No client-side skill is needed: a skill reaches one client, while the MCP's own
+guide, instructions, lessons and replies reach every agent. So:
+
+- `guide {kind: "recipes"}` gains a short "Speed" section: the host builds plain fuses and cuts in groups; reads
+  flush; read what you need before a loop of applies; `apply_later` when you want the refusals at the end;
+  `apply_now` when a step's own answer matters; `profile: true` shows where the time goes.
+- The server's instructions line for Model gains about ten words: "Recipes: read before a loop of applies; reads
+  flush the queue."
+- A lesson ships with the app (not only in a person's library), found by `nugget find` on "slow", "speed", "many
+  applies" or "batch": "Many applies on one part build fast when nothing reads the part between them. Move faces_find,
+  measure and section out of the loop."
+- The reply hints, from the run's own numbers: when a read flushed the queue many times ("faces_find at line 41
+  flushed the queue 9 times; reading before the loop would build the 27 applies as 3 booleans"), when a line's reply
+  is read and so could not queue ("line 30 reads the apply's volume, so its 12 applies built one by one"), and when a
+  replay happened. The hints stay within the reply's token budget.
+
+### 7.2 Mesh once at the end: only when the recipe asks
+
+**Decision.** `s.mesh_at_end()` (or `recipe_run {meshAtEnd: true}`) asks the host not to mesh after each step; reads
+and `done` mesh as needed. Off by default. (Offered: always in recipe runs; on request.) Silent queuing already
+removes the meshes inside a group.
+
+### 7.3 Gears: both, now
+
+**Decision.** A standard ingredient in the crate (`lime_recipe::gears`) and a kernel `gear` step with a Model tab card
+and an MCP op, both in this plan (milestones 5 and 6). (Offered: ingredient now and kernel later; both now; leave in
+the library.)
+
+### 7.4 rustc on the person's machine: not now
+
+**Decision.** Not now. (Offered: not now; opt-in for own plugins as a separate program after an OS sandbox; a DLL in
+the engine.) Section 3.3 has what would change the answer.
+
+### 7.5 Optimised lust build: yes, if faster with identical results
+
+**Decision.** Yes, behind a go/no-go gate: at least five times faster on the compute bench (the recipes' own code),
+and byte-identical calls on the whole plugin corpus. It ships only when both hold. (Offered: try it; wait for lust's
+own backend; drop it.)
+
+### 7.6 Adoption rule: same names keep the same bytes
+
+**Decision.** The owner asked for the most valuable choice. Chosen: an adopted function keeps its library name and
+gives the same bytes; better maths (the crate's own trig, spline flanks, exact involutes) comes under new names.
+(Offered: that; or let the crate improve the old names' numbers.) Why: it keeps the plugin corpus promise, every saved
+plugin builds the same part, at no cost. Improved numbers under an old name would make a rebuild of an old part differ
+from what it built, and the fingerprint check would flag parts nobody changed; a new name costs one line in the guide.
 
 ## 8. Milestones
 
@@ -427,8 +519,9 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
 (`docs/mcp-server.md`, `guide {kind: "recipes"}` or `"ingredients"`, `docs/step-modeler.md`). MCP tests run with
 `node --experimental-strip-types`; real-lust tests run in CI with `LIME_RECIPE_REQUIRED=1` on Windows and Linux.
 
-1. **Native geometry gives the same bytes.** `lime-model-load`'s `tree` hands the crate the request's `args` text
-   without parsing and re-writing its numbers (or `serde_json` gets `float_roundtrip`; the test decides).
+1. **Native geometry gives the same bytes** (in its own PR now, not part of this plan's PR). `lime-model-load`'s
+   `tree` hands the crate the request's `args` text without parsing and re-writing its numbers (or `serde_json` gets
+   `float_roundtrip`; the test decides).
    *Notice:* a plugin sends the same cut whether or not the host helps with geometry.
    *Tested by:* a Rust test in `lime-model-load` that sends coordinates known to misparse and compares
    `native_geometry_request` through `tree` with the direct call; `mcp/recipe-geom2d.test.ts` gains a case through the
@@ -443,19 +536,27 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Tested by:* a unit test of the profile shape (stand-in engine); the bench runs locally, and in the nightly perf job
    if that job can build lust; never in the smoke shards.
 
-3. **Queued applies.** Crate: `apply_later`, `flush`, the queue flushed by any other call and by `done`; API minor up,
-   with its corpus plugin. Host: the flush planner (runs of one kind, safe swaps by box), `failures` mapped to recipe
-   lines; the profile hint. Guide: queue applies whose answer you do not read.
-   *Notice:* gears-on-sphere written with `apply_later` runs in about 2 s instead of 12, with the same part.
-   *Tested by:* `cargo test -p lime-recipe` (queue and flush lines), `mcp/recipe-queue.test.ts` (real lust, stand-in
-   engine and real OCCT in CI: same solid as one by one, a refused op's line, an overlapping cut and fuse kept in order,
-   a read flushes first, `done` flushes), the corpus job, the bench before and after.
+3. **Queued booleans: silent by default, explicit when wanted, and taught.** Crate: `apply_later`, `flush`,
+   `apply_now`, `queue(false)`; API minor up, with its corpus plugin. Build: the mark for lines whose apply reply is
+   not read (from lust's check, with the recipe line). Host: the pre-check (the tool builds alone, its box meets the
+   part), a queue per part, the flush triggers of section 7.1, the grouping (same kind, disjoint boxes, safe moves),
+   the `builtWith` mark on stored nodes, the replay one by one on a late refusal; the same in the app's runner. MCP:
+   the guide's Speed section, the instructions line, the shipped lesson, the reply hints, schema budgets.
+   *Notice:* gears-on-sphere, unchanged, runs in about 2 s instead of 12, with the same part and the same History
+   rows; an agent is told when a read in its loop kept applies from grouping.
+   *Tested by:* `cargo test -p lime-recipe` (queue lines); `mcp/recipe-queue.test.ts` (real lust, stand-in engine and
+   real OCCT in CI): the same fingerprint and the same stored ops with queuing on and off, a refused tool at its call,
+   a late refusal replayed with the right line, a read flushes first, a line that reads the reply does not queue,
+   overlapping tools kept apart, `done` flushes, the explicit queue's `failures`; `mcp/plugin-app.test.ts` (the same
+   through the window); the corpus job with queuing on and off; `schema.test.ts` budgets; the bench before and after.
 
-4. **Mesh once, at the end.** During a recipe run the session asks the kernel for no mesh after a step and marks the
-   part's mesh out of date; a read, a probe preview or `done` meshes it. The app's runner does the same.
-   *Notice:* sequential recipes get faster (up to about a fifth on gears-on-sphere); previews look the same.
-   *Tested by:* `mcp/recipe-session.test.ts` (reads after applies give the same answers), `mcp/plugin-app.test.ts`
-   (same stamp and solid through MCP and the window), the bench.
+4. **Mesh once at the end, on request.** `s.mesh_at_end()` and `recipe_run {meshAtEnd}`: the session asks the kernel
+   for no mesh after a step and marks the part's mesh out of date; a read, a probe preview or `done` meshes it. The
+   app's runner does the same. Off by default.
+   *Notice:* a recipe that asks gets faster (up to about a fifth on gears-on-sphere built one by one); nothing else
+   changes.
+   *Tested by:* `mcp/recipe-session.test.ts` (reads after applies give the same answers with it on),
+   `mcp/plugin-app.test.ts` (same stamp and solid through MCP and the window), the bench.
 
 5. **Gears as a standard ingredient.** `lime_recipe::gears` adopted from the library's `involute-gears` v1 by section
    5's process, plus `outline_loops` (spline flanks, tip and root arcs) and a worked example; the library ingredient's
@@ -464,23 +565,23 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Tested by:* byte comparison of the library copy and the crate copy on every tooth count from 6 to 120; rustc
    against lust; real-OCCT extrude of each outline kind (valid solid, expected volume); the corpus.
 
-6. **More native fast paths.** From milestone 2's profiles: the next `geom2d` functions whose calls cost over 5 ms in
+6. **A kernel gear step and its Model card.** `gear` op with B-spline involute flanks, a Model tab card, an MCP op
+   with its guide, and the crate builder `ops::gear`.
+   *Notice:* a person adds a gear from the Model tab; an agent makes one with one op.
+   *Tested by:* real-OCCT tests (valid solid, tooth thickness at the pitch circle, two gears mesh without
+   interference at the right centre distance), an e2e spec in `test:smoke`, a fixture rebuild.
+
+7. **More native fast paths.** From milestone 2's profiles: the next `geom2d` functions whose calls cost over 5 ms in
    lust (offsets and rounded corners first), each with its threshold and its byte test through the engine.
    *Notice:* the spiderweb plugin and lattice-heavy plugins get faster; nothing else changes.
    *Tested by:* `mcp/recipe-geom2d.test.ts` per function, the bench.
 
-7. **Optimised lust builds (experiment).** With lust-lang: a sandboxed optimised build; here, a tiered runner behind
-   an environment switch (first run tcc, later runs the optimised build, cached by source hash, lust revision and API
-   level). Go if the bench's compute-heavy cases get at least five times faster in their own code with the same bytes;
-   then a follow-up PR ships the compiler in the installers.
+8. **Optimised lust builds.** With lust-lang: a sandboxed optimised build; here, a tiered runner behind an
+   environment switch (first run tcc, later runs the optimised build, cached by source hash, lust revision and API
+   level). Go only if the compute bench gets at least five times faster in the recipes' own code and every plugin in
+   the corpus sends byte-identical calls under both builds; then a follow-up PR ships the compiler in the installers.
    *Notice:* behind the switch only, until the go decision.
    *Tested by:* the corpus under both builds (same calls, byte for byte), the bench.
-
-8. **A kernel gear step** (if decided). `gear` op with B-spline involute flanks, a Model tab card, an MCP op with its
-   guide, and the crate builder `ops::gear`.
-   *Notice:* a person adds a gear from the Model tab; an agent makes one with one op.
-   *Tested by:* real-OCCT tests (valid solid, tooth thickness at the pitch circle, two gears mesh without
-   interference at the right centre distance), an e2e spec in `test:smoke`, a fixture rebuild.
 
 ## 9. Done for the whole plan
 
