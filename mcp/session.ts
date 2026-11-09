@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { bytesToBase64 } from "../src/base64.ts";
+import { bridgeHasPlateUpdate, type BridgeMessage } from "../src/bridge.ts";
 import { fnv1aHex } from "../src/slice-action.ts";
 import type { Mat3 } from "../src/mesh-place.ts";
 import type { SolidView } from "../src/modeling/model-calls.ts";
@@ -20,7 +21,7 @@ import type { PrintOrder } from "../src/settings-rules.ts";
 import type { LayerAction } from "../src/layer-actions.ts";
 import { builtinLibrary, type MachineLibrary } from "../src/ui/machine-library.ts";
 import { systemOpener, type AppOpener } from "./app-open.ts";
-import { mirror, type BridgeLink } from "./bridge-client.ts";
+import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
 import { RecipeHost } from "./recipe.ts";
@@ -110,9 +111,13 @@ export class Session {
   undoStack: PlateSnap[] = [];
   redoStack: PlateSnap[] = [];
   bridgeSeq = 0;
+  /** Latest plate snapshot generated for the desktop; a pull must not race its delivery. */
+  bridgePlateSeq = 0;
   /** This process on the bridge. The desktop starts its sequence again when it changes. */
   readonly bridgeSession = randomUUID();
   readonly bridgeLink: BridgeLink = { known: new Set(), resync: () => this.resyncBridge() };
+  /** Object ids included in a plate snapshot, independently of shared mesh hashes. */
+  readonly bridgeObjectIds = new Set<string>();
   readonly meshHashes = new WeakMap<Uint8Array, string>();
   /** STEP solids from projects saved before version 3 that a commit already tried to write again in the binary format. */
   readonly legacySolids = new WeakSet<Uint8Array>();
@@ -258,6 +263,8 @@ export class Session {
     if (problem) throw new ProtocolError(problem);
     const input = (args ?? {}) as Record<string, unknown>;
     const changes = !annotationsFor(name).readOnlyHint && (changesPlate(name) || (name === "model_params" && input.rebuild === true));
+    const activity = changes && !this.isolated ? crypto.randomUUID() : null;
+    if (activity) void mirror({ activity: { id: activity, phase: "start", tool: name, ...(typeof input.object === "string" ? { object: input.object } : {}) } });
     // The plate as it stood before a call that can run long is on disk before it starts; others rely on the save after.
     const long = LONG_CALLS.has(name) || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
     if (changes && this.inflight === 0 && long) this.flushAutosave();
@@ -273,15 +280,22 @@ export class Session {
       result = this.callContext.run(ctx, () => this.pickLog.run(picks, () => this.dispatch(name, input, ctx)));
     } catch (err) {
       this.inflight -= 1;
+      if (activity) void mirror({ activity: { id: activity, phase: "end" } });
       throw err;
     }
     const work = Promise.resolve(result).then((value) => {
+      let receipt: { session: string; seq: number; status: string } | undefined;
       if (!this.isolated) {
         const { payload, carriedAll } = this.bridgePayload(name, input, value);
         this.lastBridge = payload;
         void mirror(payload, this.bridgeLink, carriedAll);
+        if (changes && bridgeTarget() && bridgeHasPlateUpdate(payload as BridgeMessage)) {
+          receipt = { session: this.bridgeSession, seq: this.bridgeSeq, status: "pending; check session_info receipts" };
+        }
       }
-      return withPicks(withCode(this.withAutosaveHint(value)), picks);
+      const answer = withPicks(withCode(this.withAutosaveHint(value)), picks);
+      if (receipt) answer.tandemReceipt = receipt;
+      return answer;
     }).catch((err: unknown) => {
       if (err instanceof ProtocolError) {
         const refusal = domainRefusal(err.message);
@@ -290,6 +304,7 @@ export class Session {
       throw err;
     }).finally(() => {
       this.inflight -= 1;
+      if (activity) void mirror({ activity: { id: activity, phase: "end" } });
       if (changes && !this.isolated) {
         this.autosaveDirty = true;
         this.scheduleAutosave();
@@ -539,12 +554,14 @@ export class Session {
         }
       : undefined;
     const shown = this.objects.filter((row) => row.bytes.byteLength > 0);
+    const bridgeTool = name === "object_select" && typeof input.name === "string" ? "plate_sync" : name;
+    const plateSnapshot = bridgeHasPlateUpdate({ tool: bridgeTool, ok: value.ok === true, plate: [] });
     const known = this.bridgeLink.known;
     const carriedAll = known.size === 0;
     const meshes: Record<string, unknown> = {};
     for (const row of shown) {
       const hash = this.meshHashOf(row.bytes);
-      if (known.has(hash) || hash in meshes) continue;
+      if ((known.has(hash) && this.bridgeObjectIds.has(row.id)) || hash in meshes) continue;
       meshes[hash] = {
         fileName: row.fileName,
         bytesB64: bytesToBase64(row.bytes),
@@ -555,12 +572,26 @@ export class Session {
     // The desktop keeps a mesh only while an object on its plate uses it, so an undone remove sends it again.
     known.clear();
     for (const row of shown) known.add(this.meshHashOf(row.bytes));
+    if (plateSnapshot) {
+      this.bridgeObjectIds.clear();
+      for (const row of shown) this.bridgeObjectIds.add(row.id);
+    }
     const commit = name === "model_commit" && value.ok === true && obj && obj.bytes.byteLength > 0
       ? { object: obj.id, meshHash: this.meshHashOf(obj.bytes) }
       : null;
+    // Send history only with a commit or a full resync; ordinary placements stay light.
+    const modelHistories: NonNullable<BridgeMessage["modelHistories"]> = {};
+    if (plateSnapshot && (name === "model_commit" || name === "plate_sync")) {
+      for (const row of shown) {
+        if (name === "model_commit" && row.id !== obj?.id) continue;
+        const tree = this.savedModelTree(row);
+        if (tree) modelHistories[row.id] = { tree, ...(row.brep ? { brepB64: bytesToBase64(row.brep) } : {}) };
+      }
+    }
     this.bridgeSeq += 1;
+    if (plateSnapshot) this.bridgePlateSeq = this.bridgeSeq;
     const payload = {
-      tool: name === "object_select" && typeof input.name === "string" ? "plate_sync" : name,
+      tool: bridgeTool,
       session: this.bridgeSession,
       seq: this.bridgeSeq,
       plate: shown.map((row) => ({
@@ -578,6 +609,7 @@ export class Session {
       ok: value.ok === true,
       ...(settings ? { settings } : {}),
       ...(commit ? { commit } : {}),
+      ...(Object.keys(modelHistories).length ? { modelHistories } : {}),
     };
     return { payload, carriedAll };
   }

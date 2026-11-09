@@ -1,6 +1,7 @@
 /* Top bar: brand, File menu, printer chip, stage tabs, estimate readout, Slice, Export, gear. */
 
 .top { gap: var(--space-2); }
+.tandem-activity { color: var(--muted, #777); font-size: 0.8rem; white-space: nowrap; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: transparent; }
 .caret {

@@ -5,8 +5,9 @@
 //! 43119). Every request, including health, must send `Authorization: Bearer`.
 //! A matching POST body is emitted as the `lime-bridge` event after any token
 //! field is removed. A body `{"open": "<path>"}` is not mirrored: the window
-//! opens that `.lime`, `.stl`, `.3mf`, or `.step` file the way File > Open does,
-//! and answers 204, or 404 with the reason when the file cannot be opened. This
+//! requests that the page open that file the way File > Open does. It answers 204
+//! when delivered, or 404 if the file cannot be read; the page may still ask
+//! the user for confirmation. This
 //! module does not start a process and does not open a console window.
 //!
 //! An authorised answer names this window's instance in `X-Lime-Bridge-Instance`,
@@ -14,11 +15,12 @@
 //! It changes when the app starts and each time the page calls `bridge_ready`,
 //! so the server knows a page that has none of the meshes it sent before.
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -27,17 +29,41 @@ use tauri::{AppHandle, Emitter};
 use crate::open_file;
 
 const DEFAULT_PORT: u16 = 43119;
+const TANDEM_BETA_PORT: u16 = 43129;
 const MAX_HEADER: usize = 16 * 1024;
 /// A plate message carries its meshes: room for a few large parts.
 const MAX_BODY: usize = 256 * 1024 * 1024;
 
 /// What this window does beyond the mirror, named on every authorised answer, so a server
 /// sends an open message only to a window that will not take it for a plate.
-const FEATURES: &str = "open";
+const FEATURES: &str = "open tandem-context tandem-receipts";
 
 /// Bumped by the page each time it mounts, so a reloaded page reads as a new desktop.
 static PAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static START: OnceLock<String> = OnceLock::new();
+static HUMAN_CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
+static RECEIPTS: Mutex<VecDeque<Value>> = Mutex::new(VecDeque::new());
+
+/// Record a bounded outcome after the page has actually handled an MCP snapshot.
+#[tauri::command]
+pub fn bridge_receipt(session: String, seq: u64, outcome: String) {
+    if session.is_empty()
+        || session.len() > 120
+        || !matches!(
+            outcome.as_str(),
+            "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale"
+        )
+    {
+        return;
+    }
+    if let Ok(mut receipts) = RECEIPTS.lock() {
+        if receipts.len() == 64 {
+            receipts.pop_front();
+        }
+        receipts
+            .push_back(serde_json::json!({ "session": session, "seq": seq, "outcome": outcome }));
+    }
+}
 
 /// This process and page, as the server sees them.
 fn instance() -> String {
@@ -55,6 +81,56 @@ fn instance() -> String {
 #[tauri::command]
 pub fn bridge_ready() {
     PAGE_EPOCH.fetch_add(1, Ordering::SeqCst);
+    if let Ok(mut context) = HUMAN_CONTEXT.lock() {
+        *context = None;
+    }
+}
+
+/// A bounded, deliberately small description of the page; never input field values.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HumanContext {
+    stage: String,
+    selected: Option<String>,
+    gesture: bool,
+    editing: bool,
+    conflict: Option<String>,
+    mirror_session: Option<String>,
+    mirror_seq: Option<u64>,
+    human_changes: Vec<Value>,
+    human_changes_truncated: bool,
+}
+
+#[tauri::command]
+pub fn bridge_human_context(context: HumanContext) {
+    let HumanContext {
+        stage,
+        selected,
+        gesture,
+        editing,
+        conflict,
+        mirror_session,
+        mirror_seq,
+        human_changes,
+        human_changes_truncated,
+    } = context;
+    let stage: String = stage.chars().take(32).collect();
+    let selected = selected.map(|name| name.chars().take(120).collect::<String>());
+    let conflict = conflict.map(|name| name.chars().take(120).collect::<String>());
+    let mirror_session = mirror_session.map(|name| name.chars().take(120).collect::<String>());
+    let human_changes_count = human_changes.len();
+    let human_changes: Vec<Value> = human_changes
+        .into_iter()
+        .take(20)
+        .filter(|row| row.to_string().len() <= 2048)
+        .collect();
+    let human_changes_truncated =
+        human_changes_truncated || human_changes.len() < human_changes_count;
+    if let Ok(mut context) = HUMAN_CONTEXT.lock() {
+        *context = Some(
+            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict, "mirrorSession": mirror_session, "mirrorSeq": mirror_seq, "humanChanges": human_changes, "humanChangesTruncated": human_changes_truncated }),
+        );
+    }
 }
 
 pub fn start(app: AppHandle) {
@@ -72,7 +148,13 @@ pub fn start(app: AppHandle) {
         .ok()
         .and_then(|text| text.trim().parse::<u16>().ok())
         .filter(|port| *port != 0)
-        .unwrap_or(DEFAULT_PORT);
+        .unwrap_or(
+            if app.config().identifier == "com.limeslice.slicer.tandem-beta" {
+                TANDEM_BETA_PORT
+            } else {
+                DEFAULT_PORT
+            },
+        );
     let addr = listen_addr(port);
     let listener = match TcpListener::bind(addr) {
         Ok(listener) => listener,
@@ -104,6 +186,30 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
         match read_request(&mut stream) {
+            Ok(request)
+                if request.method.eq_ignore_ascii_case("GET")
+                    && request.path == "/tandem-receipts"
+                    && tokens_match(bearer(&request.authorization), &token) =>
+            {
+                let body = RECEIPTS
+                    .lock()
+                    .map(|items| serde_json::json!(&*items).to_string())
+                    .unwrap_or_else(|_| "[]".into());
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Lime-Bridge-Instance: {}\r\nX-Lime-Bridge-Features: {FEATURES}\r\nConnection: close\r\n\r\n{body}", body.len(), instance());
+            }
+            Ok(request)
+                if request.method.eq_ignore_ascii_case("GET")
+                    && request.path == "/tandem-context"
+                    && tokens_match(bearer(&request.authorization), &token) =>
+            {
+                let body = HUMAN_CONTEXT
+                    .lock()
+                    .ok()
+                    .and_then(|context| context.clone())
+                    .unwrap_or(Value::Null)
+                    .to_string();
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nX-Lime-Bridge-Instance: {}\r\nX-Lime-Bridge-Features: {FEATURES}\r\nConnection: close\r\n\r\n{body}", body.len(), instance());
+            }
             Ok(request) => match decide(&request, &token) {
                 (status, Some(Event::Mirror(mut value))) => {
                     let _ = write_status(&mut stream, status, &instance());
@@ -111,7 +217,7 @@ fn serve(listener: TcpListener, token: String, app: AppHandle) {
                     let _ = app.emit("lime-bridge", value);
                 }
                 (_, Some(Event::Open(path))) => {
-                    // The server says what happened from this answer, so it comes after the file was read.
+                    // Delivery follows the file read; the page may still ask for confirmation.
                     match open_file::deliver(&app, path) {
                         Ok(()) => {
                             let _ = write_status(&mut stream, 204, &instance());
@@ -307,6 +413,20 @@ mod tests {
         let addr = listen_addr(43119);
         assert!(addr.ip().is_loopback());
         assert_eq!(addr.port(), 43119);
+    }
+
+    #[test]
+    fn receipts_are_bounded_and_ignore_invalid_outcomes() {
+        RECEIPTS.lock().unwrap().clear();
+        bridge_receipt("s".into(), 0, "invented".into());
+        assert!(RECEIPTS.lock().unwrap().is_empty());
+        for seq in 0..70 {
+            bridge_receipt("s".into(), seq, "applied".into());
+        }
+        let receipts = RECEIPTS.lock().unwrap();
+        assert_eq!(receipts.len(), 64);
+        assert_eq!(receipts.front().unwrap()["seq"], 6);
+        assert_eq!(receipts.back().unwrap()["seq"], 69);
     }
 
     #[test]

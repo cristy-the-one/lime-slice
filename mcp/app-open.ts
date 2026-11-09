@@ -13,7 +13,8 @@ import { refuse } from "./refusals.ts";
 
 /** This file's folder. In an installed app it is the `mcp` folder beside the desktop program's resources. */
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROGRAM = "lime-slice-desktop";
+const BETA = existsSync(join(HERE, "tandem-beta.identity"));
+const PROGRAM = BETA ? "lime-slice-tandem-beta" : "lime-slice-desktop";
 
 /** The ways to reach the app. Tests replace them. */
 export interface AppOpener {
@@ -33,13 +34,15 @@ export function installedApp(): string | null {
   const candidates: string[] = [];
   if (process.platform === "win32") {
     candidates.push(join(HERE, "..", `${PROGRAM}.exe`));
-    for (const root of [process.env.LOCALAPPDATA, process.env.ProgramFiles]) {
+    for (const root of BETA ? [] : [process.env.LOCALAPPDATA, process.env.ProgramFiles]) {
       if (root) candidates.push(join(root, "Lime Slice", `${PROGRAM}.exe`));
     }
   } else if (process.platform === "darwin") {
-    candidates.push(join(HERE, "..", "..", "MacOS", PROGRAM), join("/Applications", "Lime Slice.app", "Contents", "MacOS", PROGRAM));
+    candidates.push(join(HERE, "..", "..", "MacOS", PROGRAM));
+    if (!BETA) candidates.push(join("/Applications", "Lime Slice.app", "Contents", "MacOS", PROGRAM));
   } else {
-    candidates.push(join(HERE, "..", "..", "..", "bin", PROGRAM), join("/usr", "bin", PROGRAM));
+    candidates.push(join(HERE, "..", "..", "..", "bin", PROGRAM));
+    if (!BETA) candidates.push(join("/usr", "bin", PROGRAM));
   }
   return candidates.find((path) => existsSync(path)) ?? null;
 }
@@ -63,7 +66,7 @@ export async function openInApp(path: string, opener: AppOpener, saved: boolean)
   const name = basename(path);
   const kept = saved ? `the project is saved at ${path}` : `the file is at ${path}`;
   const answer = await opener.viaBridge(path);
-  if (answer?.opened) return { ok: true, path, saved, opened: "bridge", note: `Opened ${name} in the running app.` };
+  if (answer?.opened) return { ok: true, path, saved, opened: "bridge", status: "requested", note: `Sent ${name} to the running app. The app may ask the user to confirm before opening it.` };
   if (answer) return refuse("app-refused", `The running app did not open ${name}: ${answer.reason}`, { path });
   const program = opener.installed();
   if (!program) return refuse("app-not-installed", `Lime Slice is not installed; ${kept}.`, { path });

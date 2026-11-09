@@ -917,6 +917,11 @@ export function annotationsFor(name: string): { readOnlyHint: boolean; destructi
 
 export const TOOLS: ToolSpec[] = [
   {
+    name: "tandem_pull",
+    description: "Import the desktop's changed plate placements when they still match the shared baseline. Refuses concurrent edits, incomplete context and unsupported mesh changes. Requires the local Tandem bridge.",
+    inputSchema: empty,
+  },
+  {
     name: "session_info",
     description: "Server version, engine, whether Open CASCADE loaded, and the Model ops, primitives, and guides on offer. Nothing is sent to a printer.",
     inputSchema: empty,

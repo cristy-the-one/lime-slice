@@ -1,9 +1,12 @@
+import { isTauri } from "../platform.ts";
+
 export function mountMarkup(root: HTMLElement) {
   root.innerHTML = `
   <div class="app">
     <header class="top">
-      <div class="brand">Lime <span>Slice</span></div>
+      <div class="brand">Lime <span>Slice</span><small id="betaIdentity" hidden> Beta</small></div>
       <div class="project-title" id="projectTitle">Untitled</div>
+      <span class="tandem-activity" id="tandemActivity" role="status" hidden></span>
       <details class="menu" id="fileMenu">
         <summary class="btn ghost" aria-label="File menu">File<span class="caret" aria-hidden="true"></span></summary>
         <nav>
@@ -219,4 +222,9 @@ export function mountMarkup(root: HTMLElement) {
     </div>
   </div>
 `;
+  if (isTauri()) {
+    void import("@tauri-apps/api/app").then(({ getIdentifier }) => getIdentifier()).then((id) => {
+      if (id === "com.limeslice.slicer.tandem-beta") root.querySelector<HTMLElement>("#betaIdentity")!.hidden = false;
+    }).catch(() => {});
+  }
 }

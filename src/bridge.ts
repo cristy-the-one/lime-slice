@@ -9,6 +9,9 @@
  */
 import { base64ToBytes } from "./base64.ts";
 import type { Mat3 } from "./mesh-place.ts";
+import type { PlateFileObject } from "./plate.ts";
+import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
+import type { SavedTree } from "./model-tree-file.ts";
 
 /** Shown when a message names a mesh this window was never sent. The server sends it again on its next tool. */
 export const BRIDGE_RESEND = "The MCP session changed a part this window has not received yet. It arrives with the session's next step.";
@@ -50,6 +53,7 @@ export interface BridgeCommit {
 }
 
 export interface BridgeMessage {
+  activity?: { id: string; phase: "start" | "end"; tool?: string; object?: string };
   tool?: string;
   /** One MCP server process. A new one starts its sequence again. */
   session?: string;
@@ -65,6 +69,26 @@ export interface BridgeMessage {
   meshes?: Record<string, BridgeMesh>;
   /** Set only for `model_commit`. Absent for a probe or an apply. */
   commit?: BridgeCommit;
+  /** Editable histories for newly mirrored objects, in the project-file format. */
+  modelHistories?: Record<string, { tree: NonNullable<PlateFileObject["modelTree"]>; brepB64?: string }>;
+}
+
+/** Decode a self-contained history. Linked trees need a coordinated transfer and are refused here. */
+export function decodeBridgeHistory(saved: NonNullable<BridgeMessage["modelHistories"]>[string]): { tree: SavedTree<{ name: string; bytes: ArrayBuffer }>; brep?: ArrayBuffer } | null {
+  const tree = saved.tree;
+  if (savedToolObjects(tree).size || tree.nodes.some((node) => node.piece || node.pins || node.pieces?.some(Boolean))) return null;
+  let decoded: SavedTree<{ name: string; bytes: ArrayBuffer }>;
+  if (tree.rootPrimitive) decoded = { ...treeBody(tree), rootPrimitive: tree.rootPrimitive };
+  else if (tree.rootFeature) decoded = { ...treeBody(tree), rootFeature: tree.rootFeature };
+  else {
+    const root = tree.rootStep;
+    const bytes = root?.bytesBase64 ? base64ToBytes(root.bytesBase64) : null;
+    if (!root || !bytes || bytes.byteLength !== root.byteLength) return null;
+    decoded = { ...treeBody(tree), rootStep: { name: root.name, bytes: bytes.slice().buffer as ArrayBuffer } };
+  }
+  if (!saved.brepB64) return { tree: decoded };
+  const bytes = base64ToBytes(saved.brepB64);
+  return bytes?.length ? { tree: decoded, brep: bytes.slice().buffer as ArrayBuffer } : null;
 }
 
 /** Where this window is in the server's sequence. */
@@ -119,7 +143,89 @@ const PLATE_TOOLS = new Set([
   "model_commit",
   "project_open",
   "project_create",
+  "tandem_pull",
 ]);
+
+export function bridgeHasPlateUpdate(message: BridgeMessage): boolean {
+  return message.ok !== false && !!message.tool && PLATE_TOOLS.has(message.tool) && !!message.plate;
+}
+
+/** Never replace or remove a desktop Model history with a mesh-only bridge snapshot. */
+export function bridgeProtectedModel<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, owned: ReadonlySet<string>, hasModel: (extra: T | null) => boolean): string | null {
+  if (!bridgeIsNew(seen, message) || !bridgeHasPlateUpdate(message) || !message.plate) return null;
+  const incoming = new Map(message.plate.map((row) => [row.object, row]));
+  for (const row of current) {
+    if (!hasModel(row.extra)) continue;
+    const next = incoming.get(row.id);
+    if ((next && (next.meshHash ?? "") !== row.meshHash) || (!next && (message.session ?? "") === seen.session && owned.has(row.id))) return row.name;
+  }
+  return null;
+}
+
+/** A detached copy of the last plate state actually accepted by this desktop. */
+export function bridgeBaseline<T>(plate: readonly MirrorObject<T>[], owned: ReadonlySet<string>): Map<string, MirrorObject<null>> {
+  return new Map(plate.filter((row) => owned.has(row.id)).map((row) => [row.id, {
+    id: row.id, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
+    offset: { ...row.offset }, orient: [...row.orient] as Mat3, meshHash: row.meshHash, extra: null,
+  }]));
+}
+
+/** Remember what the server sent, even when the desktop keeps its own independent edit. */
+export function bridgeServerBaseline(message: BridgeMessage): Map<string, MirrorObject<null>> {
+  return new Map((message.plate ?? []).map((row) => [row.object, {
+    id: row.object, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
+    offset: { ...row.offset }, orient: [...row.orient] as Mat3, meshHash: row.meshHash ?? "", extra: null,
+  }]));
+}
+
+function sameBridgeObject(a: MirrorObject<unknown> | undefined, b: MirrorObject<unknown> | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.name === b.name && a.scalePercent === b.scalePercent && a.centered === b.centered && a.meshHash === b.meshHash
+    && a.offset.x === b.offset.x && a.offset.y === b.offset.y && a.offset.z === b.offset.z
+    && a.orient.every((value, index) => value === b.orient[index]);
+}
+
+/** A small description of local edits to previously mirrored parts, without transferring meshes. */
+export function bridgeHumanChanges<T>(current: readonly MirrorObject<T>[], baseline: ReadonlyMap<string, MirrorObject<null>>): Array<Record<string, unknown>> {
+  const here = new Map(current.map((row) => [row.id, row]));
+  const changed: Array<Record<string, unknown>> = [];
+  for (const [id, before] of baseline) {
+    const row = here.get(id);
+    if (sameBridgeObject(before, row)) continue;
+    if (!row) changed.push({ object: id, name: before.name, removed: true });
+    else changed.push({ object: id, name: row.name, scalePercent: row.scalePercent, centered: row.centered, offset: { ...row.offset }, orient: [...row.orient], meshChanged: row.meshHash !== before.meshHash, base: { name: before.name, scalePercent: before.scalePercent, centered: before.centered, offset: { ...before.offset }, orient: [...before.orient], meshHash: before.meshHash } });
+  }
+  return changed;
+}
+
+/** Refuse a snapshot that would overwrite a desktop edit since the last accepted snapshot. */
+export function bridgeConflict<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>): string | null {
+  if (!bridgeIsNew(seen, message) || (message.session ?? "") !== seen.session || !bridgeHasPlateUpdate(message) || !message.plate) return null;
+  const here = new Map(current.map((row) => [row.id, row]));
+  const incoming = new Map(message.plate.map((row) => [row.object, {
+    id: row.object, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
+    offset: row.offset, orient: row.orient, meshHash: row.meshHash ?? "", extra: null,
+  }]));
+  for (const [id, before] of baseline) {
+    const human = here.get(id);
+    const remote = incoming.get(id);
+    if (!sameBridgeObject(before, human) && !sameBridgeObject(human, remote) && (!human || !sameBridgeObject(before, remote))) return human?.name ?? before.name;
+  }
+  return null;
+}
+
+/** Carry a desktop-only change forward when the incoming server row still equals the shared baseline. */
+export function bridgePreserveHuman<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>): BridgeMessage {
+  if (!bridgeIsNew(seen, message) || (message.session ?? "") !== seen.session || !bridgeHasPlateUpdate(message) || !message.plate) return message;
+  const here = new Map(current.map((row) => [row.id, row]));
+  const incoming = bridgeServerBaseline(message);
+  return { ...message, plate: message.plate.map((row) => {
+    const before = baseline.get(row.object);
+    const human = here.get(row.object);
+    if (!before || !human || sameBridgeObject(before, human) || !sameBridgeObject(before, incoming.get(row.object))) return row;
+    return { ...row, name: human.name, scalePercent: human.scalePercent, centered: human.centered, offset: { ...human.offset }, orient: [...human.orient] as Mat3, meshHash: human.meshHash };
+  }) };
+}
 
 /** True when this message is newer than what the window has, or comes from a new server process. */
 export function bridgeIsNew(seen: BridgeSeen, message: BridgeMessage): boolean {

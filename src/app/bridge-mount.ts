@@ -2,27 +2,58 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeConflict, bridgeHasPlateUpdate, bridgeHumanChanges, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, setMeshSeat, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
 import { fnv1aHex } from "../slice-action.ts";
+import type { SavedTree } from "../model-tree-file.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { place } from "./files.ts";
 import { fx } from "./fx.ts";
-import { modelApi } from "./workspaces.ts";
+import { loadModel, modelApi } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { markStale, renderChrome } from "./settings.ts";
 import { state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 
 const waiting: BridgeMessage[] = [];
 let seen: BridgeSeen = { session: "", seq: 0 };
+let plateSeen: BridgeSeen = { session: "", seq: 0 };
 /** Server objects on this plate. The mirror never removes an object outside this set. */
 let owned = new Set<string>();
 let timer: ReturnType<typeof setTimeout> | undefined;
+let processing = false;
 let lastMissing = "";
+let baseline = new Map<string, MirrorObject<null>>();
+let lastConflict = "";
 /** A mesh hash per buffer, so a big part is hashed once and not on every message. */
 const hashes = new WeakMap<ArrayBuffer, string>();
+let refreshHumanContext: (() => void) | undefined;
+const activity = new Map<string, { tool: string; object?: string; timer: ReturnType<typeof setTimeout> }>();
+
+function showActivity(): void {
+  const element = document.querySelector<HTMLElement>("#tandemActivity");
+  if (!element) return;
+  const current = [...activity.values()].at(-1);
+  element.hidden = !current;
+  element.textContent = current ? `Assistant: ${current.tool.replaceAll("_", " ")}${current.object ? ` · ${current.object}` : ""}` : "";
+}
+
+function receiveActivity(value: NonNullable<BridgeMessage["activity"]>): void {
+  if (typeof value.id !== "string" || value.id.length > 100) return;
+  if (value.phase === "end") {
+    const old = activity.get(value.id);
+    if (old) clearTimeout(old.timer);
+    activity.delete(value.id);
+    showActivity();
+  } else if (value.phase === "start" && typeof value.tool === "string" && !activity.has(value.id)) {
+    if (activity.size >= 64) return;
+    // Expire a lost end message. Names are text, never markup.
+    const timer = setTimeout(() => { activity.delete(value.id); showActivity(); }, 120_000);
+    activity.set(value.id, { tool: value.tool.slice(0, 80), ...(typeof value.object === "string" ? { object: value.object.slice(0, 120) } : {}), timer });
+    setTimeout(() => { if (activity.has(value.id)) showActivity(); }, 250);
+  }
+}
 
 function hashOf(bytes: ArrayBuffer): string {
   let hash = hashes.get(bytes);
@@ -35,16 +66,27 @@ function hashOf(bytes: ArrayBuffer): string {
 
 function applyMessage(message: BridgeMessage): void {
   waiting.splice(0, waiting.length, ...parkBridge(waiting, message));
-  flush();
+  void flush();
 }
 
-function flush(): void {
+function receipt(message: BridgeMessage, outcome: "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale"): void {
+  if (!message.session || typeof message.seq !== "number" || !bridgeHasPlateUpdate(message)) return;
+  void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_receipt", { session: message.session, seq: message.seq, outcome })).catch(() => {});
+}
+
+async function flush(): Promise<void> {
+  if (processing) return;
+  processing = true;
+  try {
+  // Load before taking messages out of the queue: the document or a gesture can change while loading.
+  if (waiting.some((message) => message.modelHistories && bridgeHasPlateUpdate(message))) await loadModel();
   const released = releaseBridge(waiting, state.poseHud);
   waiting.splice(0, waiting.length, ...released.waiting);
   for (const message of released.ready) {
     try {
       apply(message);
     } catch (err) {
+      receipt(message, "failed");
       // A mirror never stops the window. Say what went wrong, so it is not a silent empty plate.
       pushToast(`The MCP mirror could not be shown: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
@@ -52,8 +94,15 @@ function flush(): void {
   if (waiting.length > 0 && timer === undefined) {
     timer = setTimeout(() => {
       timer = undefined;
-      flush();
+      void flush();
     }, 200);
+  }
+  } catch (err) {
+    for (const message of waiting.splice(0)) receipt(message, "failed");
+    pushToast(`The MCP mirror could not load Model: ${err instanceof Error ? err.message : String(err)}`, "error");
+  } finally {
+    processing = false;
+    if (waiting.length && !state.poseHud && timer === undefined) void flush();
   }
 }
 
@@ -72,31 +121,71 @@ function apply(message: BridgeMessage): void {
     meshHash: hashOf(obj.bytes),
     extra: obj,
   }));
-  const result = mirrorPlate(current, message, seen, owned);
+  const conflict = bridgeProtectedModel(current, message, seen, owned, (object) => !!object?.modelTree) ?? bridgeConflict(current, message, seen, baseline);
+  if (conflict) {
+    if (lastConflict !== conflict) {
+      pushToast(`Tandem paused a mirrored update: ${conflict} was also changed here. Your changes were kept; the MCP session has its own version.`, "error");
+      // A skipped snapshot may have carried meshes the server believes we received.
+      void announce();
+    }
+    lastConflict = conflict;
+    refreshHumanContext?.();
+    receipt(message, "conflict");
+    return;
+  }
+  const merged = bridgePreserveHuman(current, message, seen, baseline);
+  const diverged = !!message.plate && !!merged.plate && merged.plate.some((row, index) => row !== message.plate![index]);
+  const result = mirrorPlate(current, merged, seen, owned);
   if (result.missing) {
     // Say it once per gap. Telling the listener this window is new makes the server send every mesh again.
     if (lastMissing !== `${message.session}:${message.seq}`) pushToast(result.missing, "info");
     lastMissing = `${message.session}:${message.seq}`;
     void announce();
+    receipt(message, "missing");
     return;
   }
-  seen = result.seen;
-  owned = result.owned;
+  const accept = () => {
+    seen = result.seen;
+    owned = result.owned;
+    if (result.applied && bridgeHasPlateUpdate(message)) {
+      baseline = bridgeServerBaseline(message);
+      plateSeen = result.seen;
+      lastConflict = "";
+    }
+    if (result.applied) refreshHumanContext?.();
+    receipt(message, result.applied ? (diverged ? "diverged" : "applied") : "stale");
+  };
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {
     if (settings) {
       markStale();
       renderChrome();
     }
+    accept();
     return;
   }
   const objects = result.plate.map(toPlateObject);
+  // Only attach histories to genuinely new objects. Existing desktop histories remain protected,
+  // including when a later commit arrives with a replacement mesh.
+  const incomingTrees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
+  for (const object of objects) {
+    if (current.some((row) => row.id === object.id)) continue;
+    const saved = message.modelHistories?.[object.id];
+    const decoded = saved && decodeBridgeHistory(saved);
+    if (!decoded) {
+      if (saved) pushToast(`Tandem showed ${object.name} as a mesh; its linked or unreadable Model history was not imported.`, "info");
+      continue;
+    }
+    incomingTrees.set(object.id, decoded.tree);
+    if (decoded.brep) object.brep = decoded.brep;
+  }
   if (objects.length === 0) {
     state.plate = emptyPlate();
     state.mesh = null;
     state.sourcePos = null;
   } else {
     state.plate = mirroredPlate(objects, result.selectId ?? state.plate.selectedId);
+    if (incomingTrees.size) modelApi()?.adoptSavedTrees(incomingTrees);
     applySelectedToState(state.plate);
   }
   modelApi()?.releaseModelTrees();
@@ -106,6 +195,7 @@ function apply(message: BridgeMessage): void {
   if (objects.length > 0 && state.stage !== "model" && state.stage !== "prepare") fx.setStage("prepare");
   modelApi()?.followSelection();
   renderChrome();
+  accept();
 }
 
 function samePose(next: MirrorObject<PlateObject>, before: MirrorObject<PlateObject> | undefined): boolean {
@@ -159,6 +249,7 @@ async function announce(): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("bridge_ready");
+    refreshHumanContext?.();
   } catch {
     // The bridge is off, or this build has no listener: nothing to announce.
   }
@@ -168,8 +259,14 @@ async function announce(): Promise<void> {
 export function resetBridgeMirror(): void {
   waiting.splice(0, waiting.length);
   seen = { session: "", seq: 0 };
+  plateSeen = { session: "", seq: 0 };
   owned = new Set();
   lastMissing = "";
+  baseline.clear();
+  lastConflict = "";
+  for (const item of activity.values()) clearTimeout(item.timer);
+  activity.clear();
+  showActivity();
   if (timer !== undefined) clearTimeout(timer);
   timer = undefined;
   void announce();
@@ -177,8 +274,29 @@ export function resetBridgeMirror(): void {
 
 export function mountBridge(): void {
   if (!isTauri()) return;
+  let contextTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastContext = "";
+  const publishContext = () => {
+    if (contextTimer !== undefined) clearTimeout(contextTimer);
+    contextTimer = setTimeout(() => {
+      syncPlateFromState();
+      const selected = state.plate.objects.find((item) => item.id === state.plate.selectedId);
+      const focused = document.activeElement;
+      const rows: MirrorObject<null>[] = state.plate.objects.filter((item) => baseline.has(item.id)).map((item) => ({ id: item.id, name: item.name, scalePercent: item.partScale * 100, centered: item.centered, offset: { ...item.offset }, orient: [...item.orient] as Mat3, meshHash: hashOf(item.bytes), extra: null }));
+      const changes = bridgeHumanChanges(rows, baseline);
+      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: lastConflict || null, mirrorSession: plateSeen.session || null, mirrorSeq: plateSeen.session ? plateSeen.seq : null, humanChanges: changes.slice(0, 20), humanChangesTruncated: changes.length > 20 };
+      const encoded = JSON.stringify(context);
+      if (encoded === lastContext) return;
+      lastContext = encoded;
+      void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_human_context", { context })).catch(() => { lastContext = ""; });
+    }, 50);
+  };
+  refreshHumanContext = () => { lastContext = ""; publishContext(); };
+  for (const event of ["pointerdown", "pointerup", "click", "focusin", "focusout", "change"]) document.addEventListener(event, publishContext);
+  publishContext();
   void import("@tauri-apps/api/event").then(({ listen }) => {
     void listen<BridgeMessage>("lime-bridge", (event) => {
+      if (event.payload.activity) { receiveActivity(event.payload.activity); return; }
       applyMessage(event.payload);
     });
   });

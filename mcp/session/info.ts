@@ -9,9 +9,44 @@ import { listLessons, listPresets, seenInPractice } from "../nuggets.ts";
 import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "../guides.ts";
 import { OP_KINDS, OP_SUMMARY, opSchemaFor } from "../schema.ts";
 import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/compose.ts";
-import { type ToolHandler } from "./shared.ts";
+import { shownName, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { bridgeHumanContext, bridgeReceipts } from "../bridge-client.ts";
+import type { Mat3 } from "../../src/mesh-place.ts";
+
+/** Pull plate placements only after every changed part passes the same baseline check. */
+async function tandemPull(this: Session): Promise<Record<string, unknown>> {
+  const value = await bridgeHumanContext();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return refuse("tandem-unavailable", "The Tandem desktop is not connected or cannot provide context.");
+  const human = value as Record<string, unknown>;
+  if (human.mirrorSession !== this.bridgeSession) return refuse("tandem-conflict", "The desktop and MCP do not have the same mirrored session.");
+  if (typeof human.conflict === "string" && human.conflict) return refuse("tandem-conflict", `The desktop held back a conflicting update to ${human.conflict}; reconcile the two versions before pulling.`);
+  if (human.mirrorSeq !== this.bridgePlateSeq || this.bridgePlateSeq === 0) return refuse("tandem-busy", "The desktop has not applied the latest MCP plate snapshot. Wait for its receipt before pulling.");
+  if (this.inflight !== 1) return refuse("tandem-busy", "Another MCP operation is still running. Wait for it before pulling.");
+  if (human.gesture !== false || human.editing !== false) return refuse("tandem-busy", "Finish the active desktop edit before pulling its placements.");
+  if (human.humanChangesTruncated !== false || !Array.isArray(human.humanChanges)) return refuse("tandem-unavailable", "The desktop change summary is unavailable or incomplete.");
+  const updates: Array<{ obj: NonNullable<ReturnType<Session["find"]>>; offset: { x: number; y: number; z: number }; orient: Mat3; scale: number; centered: boolean }> = [];
+  const ids = new Set<string>();
+  for (const raw of human.humanChanges) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return refuse("bad-argument", "The desktop change summary is invalid.");
+    const row = raw as Record<string, unknown>;
+    if (typeof row.object !== "string" || ids.has(row.object) || row.removed || row.meshChanged !== false || !row.base || typeof row.base !== "object" || Array.isArray(row.base)) return refuse("tandem-unsupported", "Tandem can currently pull placements only; removals, meshes and invalid changes need manual reconciliation.");
+    ids.add(row.object);
+    const obj = this.find(row.object);
+    const base = row.base as Record<string, unknown>;
+    if (!obj || shownName(obj.name) !== base.name || row.name !== base.name || obj.scale * 100 !== base.scalePercent || obj.centered !== base.centered || this.meshHashOf(obj.bytes) !== base.meshHash || JSON.stringify(obj.offset) !== JSON.stringify(base.offset) || JSON.stringify(obj.orient) !== JSON.stringify(base.orient)) return refuse("tandem-conflict", `The MCP version of ${row.object} no longer matches the desktop baseline; reconcile it first.`);
+    const offset = row.offset as Record<string, unknown> | undefined;
+    const orient = row.orient;
+    if (!offset || typeof offset !== "object" || ![offset.x, offset.y, offset.z, row.scalePercent].every((n) => typeof n === "number" && Number.isFinite(n)) || (row.scalePercent as number) <= 0 || typeof row.centered !== "boolean" || !Array.isArray(orient) || orient.length !== 9 || !orient.every((n) => typeof n === "number" && Number.isFinite(n))) return refuse("bad-argument", `The desktop placement for ${row.object} is invalid.`);
+    updates.push({ obj, offset: { x: offset.x as number, y: offset.y as number, z: offset.z as number }, orient: [...orient] as Mat3, scale: (row.scalePercent as number) / 100, centered: row.centered });
+  }
+  if (updates.length === 0) return { ok: true, changed: [] };
+  this.remember("Tandem human placements");
+  for (const update of updates) Object.assign(update.obj, { offset: update.offset, orient: update.orient, scale: update.scale, centered: update.centered });
+  this.relink();
+  return { ok: true, changed: updates.map((update) => update.obj.id) };
+}
 
 async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   let engine: string | null = null;
@@ -27,9 +62,11 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   }
   const running = this.workJobs.find((row) => !row.done);
   const assemblies = this.liveAssemblies();
+  const [human, receipts] = await Promise.all([bridgeHumanContext(), bridgeReceipts()]);
   return {
     ok: true,
     serverVersion: appVersion(),
+    ...(human || receipts ? { tandem: { ...(human ? { human } : {}), ...(receipts ? { receipts: receipts.slice(-8) } : {}), note: "Use tandem_pull to import compatible human placements. Desktop and MCP are not atomically synchronized. A conflict means the desktop held back an MCP update; inspect both versions. Receipts are asynchronous; absence does not prove application." } } : {}),
     engine,
     ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
     occt,
@@ -115,6 +152,7 @@ function opGuide(this: Session, kind: string): Record<string, unknown> {
 
 /** The methods this module adds to Session. */
 export const infoMethods = {
+  tandemPull,
   sessionInfo,
   pluginsLine,
   nuggetsLine,
@@ -123,6 +161,7 @@ export const infoMethods = {
 };
 
 export const infoHandlers: Record<string, ToolHandler> = {
+  tandem_pull: (s) => s.tandemPull(),
   session_info: (s) => s.sessionInfo(),
   guide: (s, input) => s.guide(input),
 };

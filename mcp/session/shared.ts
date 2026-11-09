@@ -139,6 +139,7 @@ export function typedExprs(op: unknown): Record<string, string> | undefined {
  * slices, exports, and machines are not in it, so they never cost a save.
  */
 export function changesPlate(name: string): boolean {
+  if (name === "tandem_pull") return true;
   if (name === "model_export_step" || name === "model_check" || name === "model_params" || name === "model_define") return false;
   if (name === "sim_setup" || name === "sim_sweep") return true;
   return /^(model_|object_|plate_|assembly_|paint_|workplane_|support_edit|reinforce_|modifier_|range_|override_)/.test(name) || name === "solid_new" || name === "recipe_run" || name === "mesh_import" || name === "project_open" || name === "project_create";

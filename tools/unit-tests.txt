@@ -125,6 +125,10 @@ src/split-print.test.ts
 src/cut-trace.test.ts
 src/fan.test.ts
 src/bridge.test.ts
+mcp/bridge-context.test.ts
+mcp/tandem-receipt.test.ts
+mcp/tandem-pull.test.ts
+mcp/beta-identity.test.ts
 mcp/recipe-followups.test.ts
 mcp/schema.test.ts
 mcp/settings-rows.test.ts

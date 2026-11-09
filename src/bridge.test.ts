@@ -1,4 +1,4 @@
-import { BRIDGE_RESEND, bridgeIsNew, bridgeSettings, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
+import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeHumanChanges, bridgeIsNew, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
 import { ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
 
 let failed = 0;
@@ -63,6 +63,36 @@ const placed = mirrorPlate(added.plate, {
 }, added.seen, added.owned);
 const moved = placed.plate.find((obj) => obj.id === "obj_1");
 check("a place copies the resulting pose and keeps the mesh", placed.applied && moved?.offset.x === 12 && moved.orient[1] !== 0 && moved.mesh === undefined);
+
+const baseline = bridgeBaseline(placed.plate, placed.owned);
+const humanMoved = placed.plate.map((obj) => obj.id === "obj_1" ? { ...obj, offset: { ...obj.offset, x: 19 } } : obj);
+const humanSummary = bridgeHumanChanges(humanMoved, baseline);
+check("the assistant can inspect the human's changed pose", humanSummary.length === 1 && (humanSummary[0]?.offset as { x: number }).x === 19 && humanSummary[0]?.meshChanged === false);
+check("a removed mirrored part is visible in human changes", bridgeHumanChanges([], baseline)[0]?.removed === true);
+const incoming: BridgeMessage = { tool: "object_place", session: "s1", seq: 3, ok: true, plate: [row("obj_1", "h1", 25)] };
+const protectedPlate = placed.plate.map((obj) => obj.id === "obj_1" ? { ...obj, extra: "model" } : obj);
+check("a mesh replacement cannot overwrite an editable desktop Model tree", bridgeProtectedModel(protectedPlate, { ...incoming, tool: "model_commit", plate: [row("obj_1", "new-mesh")] }, placed.seen, placed.owned, (extra) => extra === "model") === "obj_1");
+check("a remote removal cannot discard an editable desktop Model tree", bridgeProtectedModel(protectedPlate, { ...incoming, tool: "object_remove", plate: [] }, placed.seen, placed.owned, (extra) => extra === "model") === "obj_1");
+check("a new server does not claim an unlisted desktop Model tree", bridgeProtectedModel(protectedPlate, { ...incoming, session: "s2", tool: "plate_sync", plate: [] }, placed.seen, placed.owned, (extra) => extra === "model") === null);
+check("a placement that keeps the mesh does not block an editable desktop Model tree", bridgeProtectedModel(protectedPlate, incoming, placed.seen, placed.owned, (extra) => extra === "model") === null);
+check("a concurrent desktop move is detected before a snapshot can overwrite it", bridgeConflict(humanMoved, incoming, placed.seen, baseline) === "obj_1");
+const unchangedRemote = { ...incoming, plate: [row("obj_1", "h1", 12, [...rotZ(90)])] };
+check("a desktop move does not conflict with an unchanged server row", bridgeConflict(humanMoved, unchangedRemote, placed.seen, baseline) === null);
+const preserved = mirrorPlate(humanMoved, bridgePreserveHuman(humanMoved, unchangedRemote, placed.seen, baseline), placed.seen, placed.owned);
+check("a desktop move survives an unchanged server snapshot", preserved.plate.find((obj) => obj.id === "obj_1")?.offset.x === 19);
+check("the baseline still records the server's pose", bridgeServerBaseline(unchangedRemote).get("obj_1")?.offset.x === 12);
+const twoObjects = [...placed.plate, { ...mine, id: "obj_2", name: "obj_2", centered: false, meshHash: "h2" }];
+const twoOwned = new Set(["obj_1", "obj_2"]);
+const twoBaseline = bridgeBaseline(twoObjects, twoOwned);
+const humanFirst = twoObjects.map((obj) => obj.id === "obj_1" ? { ...obj, offset: { ...obj.offset, x: 19 } } : obj);
+const remoteSecond: BridgeMessage = { ...incoming, plate: [row("obj_1", "h1", 12, [...rotZ(90)]), row("obj_2", "h2", 30)] };
+check("independent human and assistant changes do not conflict", bridgeConflict(humanFirst, remoteSecond, placed.seen, twoBaseline) === null);
+const combined = mirrorPlate(humanFirst, bridgePreserveHuman(humanFirst, remoteSecond, placed.seen, twoBaseline), placed.seen, twoOwned);
+check("independent changes to two parts both survive", combined.plate.find((obj) => obj.id === "obj_1")?.offset.x === 19 && combined.plate.find((obj) => obj.id === "obj_2")?.offset.x === 30);
+const laterConflict = { ...remoteSecond, seq: 4, plate: [row("obj_1", "h1", 25), row("obj_2", "h2", 30)] };
+check("a later change to the human-edited part still conflicts", bridgeConflict(combined.plate, laterConflict, combined.seen, bridgeServerBaseline(remoteSecond)) === "obj_1");
+check("an unmodified desktop accepts the assistant's change", bridgeConflict(placed.plate, incoming, placed.seen, baseline) === null);
+check("a desktop deletion is protected", bridgeConflict(placed.plate.filter((obj) => obj.id !== "obj_1"), incoming, placed.seen, baseline) === "obj_1");
 
 const stale = mirrorPlate(placed.plate, { tool: "object_place", session: "s1", seq: 2, ok: true, plate: [] }, placed.seen, placed.owned);
 check("an older message changes nothing", !stale.applied && stale.plate.length === 2);
@@ -137,6 +167,12 @@ const live: BridgeMessage[] = [duringDrag, duringDrag];
 const freed = releaseBridge(live, "");
 live.splice(0, live.length, ...freed.waiting);
 check("emptying the queue in place keeps what was released", freed.ready.length === 2);
+
+const savedHistory = { tree: { nodes: [{ id: 0, parent: null, op: null, fingerprint: null }], current: 0, committed: 0, nextId: 1, rootStep: { name: "root.step", bytesBase64: "YWJj", byteLength: 3, hash: "test" } }, brepB64: "ZGVm" } satisfies NonNullable<BridgeMessage["modelHistories"]>[string];
+const decodedHistory = decodeBridgeHistory(savedHistory);
+check("a self-contained history and solid are decoded", !!decodedHistory && !!decodedHistory.tree.rootStep && new TextDecoder().decode(decodedHistory.tree.rootStep.bytes) === "abc" && new TextDecoder().decode(decodedHistory.brep) === "def");
+check("a truncated root is refused", decodeBridgeHistory({ ...savedHistory, tree: { ...savedHistory.tree, rootStep: { name: "root.step", bytesBase64: "YWJj", byteLength: 4, hash: "test" } } }) === null);
+check("histories with linked split pieces are refused", decodeBridgeHistory({ ...savedHistory, tree: { ...savedHistory.tree, nodes: [{ ...savedHistory.tree.nodes[0]!, piece: "other" }] } }) === null);
 
 if (failed) {
   console.error(`${failed} failed`);

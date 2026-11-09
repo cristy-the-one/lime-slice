@@ -6,7 +6,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { lfOnly } from "./recipe.ts";
 import type { PluginValue } from "../src/model-tree.ts";
@@ -15,7 +16,10 @@ import { apiVerdict, parseApiLevel, type ApiLevel, type ApiRefusalCode } from ".
 import { REFUSAL_CODES } from "./refusals.ts";
 
 /** The app's identifier (src-tauri/tauri.conf.json): the library sits in its data folder. */
-const APP_ID = "com.limeslice.slicer";
+export function pluginAppId(moduleDir: string): string {
+  return existsSync(join(moduleDir, "tandem-beta.identity")) ? "com.limeslice.slicer.tandem-beta" : "com.limeslice.slicer";
+}
+const APP_ID = pluginAppId(dirname(fileURLToPath(import.meta.url)));
 /** Older versions of a plugin kept beside it as `<plugin>.vN.rs`. */
 const KEEP_VERSIONS = 5;
 

@@ -181,6 +181,8 @@ check("a root op may carry a label", validateTool("model_apply", { op: { kind: "
   const listed = async () => ((await own.call("plate_list", {})).objects as { object?: string; name?: string }[]).map((row) => row.name);
   const named = await own.call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 10, name: "  led body  " });
   check("solid_new with a name stands the object under it", named.ok === true && (await own.call("model_commit", { object: named.object })).ok === true && (await listed()).includes("led body"), JSON.stringify(await listed()));
+  const committedMirror = own.bridgePayload("model_commit", { object: named.object }, { ok: true }).payload as BridgeMessage;
+  check("a committed solid carries its editable history to the desktop", typeof named.object === "string" && !!committedMirror?.modelHistories?.[named.object]?.tree.rootPrimitive);
   const plain = await own.call("solid_new", { primitive: "cylinder", radius: 3, height: 8 });
   await own.call("model_commit", { object: plain.object });
   check("a solid with no name is still called by its primitive", (await listed()).includes("cylinder"), JSON.stringify(await listed()));
@@ -188,6 +190,7 @@ check("a root op may carry a label", validateTool("model_apply", { op: { kind: "
   const mirrored = structuredClone(own.bridgeSnapshot()) as { tool?: string; plate?: { object: string; name: string; meshHash?: string }[] } | null;
   check("object_select with a name renames the object and says so", renamed.ok === true && renamed.name === "hook" && (await listed()).includes("hook") && !(await listed()).includes("cylinder"), JSON.stringify({ renamed, now: await listed() }));
   check("the desktop's mirror carries the new name as a full plate", mirrored?.tool === "plate_sync" && mirrored.plate?.find((row) => row.object === plain.object)?.name === "hook", JSON.stringify(mirrored?.plate));
+  check("a full plate resync carries both solid histories", Object.keys((own.bridgePayload("plate_sync", {}, { ok: true }).payload as BridgeMessage).modelHistories ?? {}).length === 2);
   // The desktop window applies that message to a plate that still holds the old name.
   const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1] as MirrorObject["orient"];
   const before: MirrorObject[] = (mirrored?.plate ?? []).map((row: { object: string; name: string; meshHash?: string }) => ({

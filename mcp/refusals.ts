@@ -125,6 +125,10 @@ export const REFUSAL_CODES = {
   "app-refused": "The running app did not open the file.",
   "app-not-installed": "Lime Slice is not installed on this machine.",
   "app-not-started": "Lime Slice did not start.",
+  "tandem-unavailable": "The Tandem desktop context is unavailable or incomplete.",
+  "tandem-conflict": "The desktop and MCP session do not share the required baseline.",
+  "tandem-busy": "A desktop or MCP operation must finish before the pull.",
+  "tandem-unsupported": "The desktop changes include a kind Tandem cannot yet import.",
   "refused": "A refusal that no specific code covers; read the reason.",
 } as const;
 

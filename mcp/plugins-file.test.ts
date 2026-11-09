@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { pluginFileText, readPluginFile } from "../src/plugin-file.ts";
 import { carriedData, splitPluginData, withPluginData } from "../src/recipe/plugin-data.ts";
-import { apiRefusal, bodyHash, listLibrary, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginText, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "./plugins.ts";
+import { apiRefusal, bodyHash, listLibrary, oneLine, paramSummary, parsePlugin, pluginAppId, pluginAuthor, pluginText, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "./plugins.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail: unknown = "") {
@@ -37,6 +37,10 @@ const header = (version: number, text = body): PluginHeader => ({
 
 check("a title becomes an id", slugOf("Bolt-circle Flange (M6)!") === "bolt-circle-flange-m6" && slugOf("   ") === "");
 check("plugin text is one line, capped", oneLine("a\nb\u0007  c", 4) === "a b ");
+const identityDir = mkdtempSync(join(tmpdir(), "lime-beta-identity-"));
+check("normal MCP uses the stable app identity", pluginAppId(identityDir) === "com.limeslice.slicer");
+writeFileSync(join(identityDir, "tandem-beta.identity"), "");
+check("packaged Tandem beta uses its separate data identity", pluginAppId(identityDir) === "com.limeslice.slicer.tandem-beta");
 
 const text = pluginText(header(1), body);
 check("the file starts with the front matter and is the recipe after it", text.startsWith("//! ---\n//! plugin: bolt-circle-flange\n") && text.endsWith(body), text.slice(0, 200));
