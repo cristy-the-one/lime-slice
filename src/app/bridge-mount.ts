@@ -2,19 +2,19 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeDrifted, bridgeHasPlateUpdate, bridgeHolds, bridgeHumanChanges, bridgeMerge, bridgeNextBaseline, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeHold, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeDrifted, bridgeHasPlateUpdate, bridgeHolds, bridgeIsNew, bridgeHumanChanges, bridgeMerge, bridgeNextBaseline, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeHold, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
-import { bridgedObject, emptyPlate, mirroredPlate, setMeshSeat, type PlateObject } from "../plate.ts";
+import { bridgedObject, emptyPlate, mirroredPlate, pinPlateMeshes, setMeshSeat, snapPlate, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
 import { fnv1aHex } from "../slice-action.ts";
 import type { SavedTree } from "../model-tree-file.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { place } from "./files.ts";
 import { fx } from "./fx.ts";
-import { onPlateTouched, pendingTouched } from "./history.ts";
+import { onPlateTouched, pendingTouched, rebaseEdits } from "./history.ts";
 import { loadModel, modelApi } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
-import { markStale, renderChrome } from "./settings.ts";
+import { markStale, renderChrome, settleTypedField } from "./settings.ts";
 import { state, STEP_TOLERANCE_DEFAULT } from "./state.ts";
 
 const waiting: BridgeMessage[] = [];
@@ -75,6 +75,35 @@ function hashOf(bytes: ArrayBuffer): string {
   return hash;
 }
 
+/**
+ * A number field a person typed into and has not committed yet. A snapshot waits for it, as it waits for a drag: re-rendering
+ * the panel under it would commit the typed value to whatever part the snapshot selected (found 2026-11-09, where a
+ * duplicate MCP had just selected took the person's half-typed X).
+ */
+let typing: HTMLElement | null = null;
+
+/** Why a snapshot waits now: a gesture, or a typed value not yet committed. Empty when it can apply. */
+function busyHere(): string {
+  if (typing && !typing.isConnected) typing = null;
+  return state.poseHud || (typing ? "typing" : "");
+}
+
+function watchTyping(): void {
+  document.addEventListener("input", (ev) => {
+    const target = ev.target;
+    // Number fields set poses, sizes and settings; a search box left focused must not hold the mirror up.
+    if (ev.isTrusted && target instanceof HTMLInputElement && target.type === "number") typing = target;
+  }, true);
+  const done = (ev: Event) => {
+    if (ev.target !== typing) return;
+    typing = null;
+    // After the change lands on the part it was typed for: the app's own handlers run first.
+    if (waiting.length) setTimeout(() => void flush(), 0);
+  };
+  document.addEventListener("change", done, true);
+  document.addEventListener("focusout", done, true);
+}
+
 function applyMessage(message: BridgeMessage): void {
   waiting.splice(0, waiting.length, ...parkBridge(waiting, message));
   void flush();
@@ -95,7 +124,7 @@ async function flush(): Promise<void> {
   try {
   // Load before taking messages out of the queue: the document or a gesture can change while loading.
   if (waiting.some((message) => message.modelHistories && bridgeHasPlateUpdate(message))) await loadModel();
-  const released = releaseBridge(waiting, state.poseHud);
+  const released = releaseBridge(waiting, busyHere());
   waiting.splice(0, waiting.length, ...released.waiting);
   for (const message of released.ready) {
     try {
@@ -117,7 +146,7 @@ async function flush(): Promise<void> {
     pushToast(`The MCP mirror could not load Model: ${err instanceof Error ? err.message : String(err)}`, "error");
   } finally {
     processing = false;
-    if (waiting.length && !state.poseHud && timer === undefined) void flush();
+    if (waiting.length && !busyHere() && timer === undefined) void flush();
   }
 }
 
@@ -186,6 +215,9 @@ function pruneTouched(current: readonly MirrorObject<PlateObject>[]): void {
 function apply(message: BridgeMessage): void {
   const settings = bridgeSettings(message);
   if (settings) assignSettings(settings);
+  // A focused Place field's text is the person's, for the part selected now: it lands there before the snapshot, and is
+  // not stored again by the rebuild after it, on the part the snapshot selects or over the pose it sets (bug A, 2026-11-09).
+  if (bridgeHasPlateUpdate(message) && bridgeIsNew(seen, message)) settleTypedField();
   // The selected object's live pose is the plate's before the mirror compares against it.
   syncPlateFromState();
   const current = desktopRows();
@@ -268,8 +300,27 @@ function apply(message: BridgeMessage): void {
   if (objects.length > 0 && state.stage !== "model" && state.stage !== "prepare") fx.setStage("prepare");
   modelApi()?.followSelection();
   keepWrittenPoses(result.plate, result.owned);
+  rebaseOnto(current);
   renderChrome();
   accept();
+}
+
+/**
+ * What this snapshot changed in the window is MCP's, not a step of the person's: their Undo history takes it as given, so
+ * Undo takes back only their own edits (a held part's move, say) and never MCP's parts or moves.
+ */
+function rebaseOnto(before: readonly MirrorObject<PlateObject>[]): void {
+  const was = new Map(before.map((row) => [row.id, row]));
+  const now = desktopRows();
+  const ids = new Set(now.filter((row) => {
+    const old = was.get(row.id);
+    return !old || old.meshHash !== row.meshHash || !samePose(row, old);
+  }).map((row) => row.id));
+  const removed = new Set(before.filter((row) => !now.some((item) => item.id === row.id)).map((row) => row.id));
+  if (ids.size === 0 && removed.size === 0) return;
+  const plate = { ...state.plate, objects: state.plate.objects.filter((obj) => ids.has(obj.id)) };
+  const pins = new Map(pinPlateMeshes(plate).map((pin) => [pin.id, pin]));
+  rebaseEdits(new Map(snapPlate(plate).objects.map((row) => [row.id, { row, pin: pins.get(row.id)! }])), removed);
 }
 
 /**
@@ -397,6 +448,7 @@ export function mountBridge(): void {
     publishContext();
   });
   for (const event of ["pointerdown", "pointerup", "click", "focusin", "focusout", "change"]) document.addEventListener(event, publishContext);
+  watchTyping();
   publishContext();
   void import("@tauri-apps/api/event").then(({ listen }) => {
     void listen<BridgeMessage>("lime-bridge", (event) => {

@@ -52,6 +52,43 @@ export function pendingTouched(): string[] {
   return bridgeTouched(touchRows(start.plate, start.meshPins), live);
 }
 
+/**
+ * Changes that came from elsewhere (a Tandem snapshot) and are nobody's step here: every kept step, and the gesture still
+ * open, takes them as if they had always been there. So Undo takes back only what the person did, and never undoes MCP's
+ * parts or moves in the window, and a gesture open while a snapshot lands does not count MCP's changes as the person's.
+ * `set` is each changed or added object as the plate has it now, with its mesh pin; `removed` the objects that went.
+ */
+export function rebaseEdits(set: ReadonlyMap<string, { row: PlateSnap["objects"][number]; pin: MeshPin }>, removed: ReadonlySet<string>) {
+  if (set.size === 0 && removed.size === 0) return;
+  const rebase = (snap: EditSnap | null) => {
+    if (!snap?.plate) return;
+    const have = new Set(snap.plate.objects.map((row) => row.id));
+    const tokens = new Map((snap.meshPins ?? []).map((pin) => [pin.id, pin.token]));
+    const copy = (row: PlateSnap["objects"][number]) => {
+      const { brep, ...rest } = row;
+      const out: PlateSnap["objects"][number] = structuredClone(rest);
+      if (brep) out.brep = brep;
+      return out;
+    };
+    snap.plate.objects = [
+      ...snap.plate.objects.filter((row) => !removed.has(row.id)).map((row) => {
+        const next = set.get(row.id);
+        if (!next) return row;
+        // A new mesh from MCP is the object's own now, history and all; a move keeps what the step had besides the pose.
+        if (tokens.get(row.id) !== next.pin.token) return copy(next.row);
+        return { ...row, name: next.row.name, orient: [...next.row.orient], partScale: next.row.partScale, centered: next.row.centered, offset: { ...next.row.offset } };
+      }),
+      ...[...set].filter(([id]) => !have.has(id)).map(([, { row }]) => copy(row)),
+    ];
+    if (snap.plate.selectedId && removed.has(snap.plate.selectedId)) snap.plate.selectedId = snap.plate.objects[0]?.id ?? null;
+    const pins = (snap.meshPins ?? []).filter((pin) => !removed.has(pin.id) && !set.has(pin.id));
+    snap.meshPins = [...pins, ...[...set.values()].map(({ pin }) => pin)];
+  };
+  for (const snap of history.undo) rebase(snap);
+  for (const snap of history.redo) rebase(snap);
+  rebase(history.pending);
+}
+
 /** Close the open gesture as a step and say which objects it changed. */
 function commitNow(current: EditSnap) {
   const before = history.pending;

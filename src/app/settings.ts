@@ -194,6 +194,18 @@ export function commitTypedFields(typing = typedField()): boolean {
   return true;
 }
 
+/**
+ * Before something other than the person changes the plate (a Tandem snapshot): the focused field's text lands on the
+ * part it was typed for, now, and counts as stored. Otherwise the next rebuild would store it again on whatever part is
+ * selected then, or over the pose the snapshot just set: a part the person never touched would move or turn by itself.
+ */
+export function settleTypedField(): void {
+  const focused = focusedTypedField();
+  if (!focused) return;
+  commitTypedFields(uncommittedTyped(focused));
+  focused.defaultValue = focused.value;
+}
+
 function schemaContext(rules: Rules = currentRules()): SchemaContext {
   return { belt: rules.belt, lineWidth: fx.lineWidth?.() ?? state.profile.nozzleDiameter * 1.125 };
 }
