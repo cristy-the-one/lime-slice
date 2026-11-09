@@ -430,3 +430,31 @@ fn a_sphere_grows_and_shrinks_by_its_radius() {
         assert!(face.get("closed").is_none() && face.get("inMaxMm").is_none(), "{face}");
     }
 }
+
+/// A sphere's seam is listed in `edgeSeams` (so a window can leave it out), stays in the edge list, and a fillet or
+/// chamfer that names it is refused in one sentence.
+#[test]
+fn a_seam_is_flagged_and_cannot_be_rounded() {
+    let key = "sphere-seam";
+    let ball = call(json!({
+        "call": "open", "key": key,
+        "primitive": { "primitive": "sphere", "origin": [0.0, 0.0, 0.0], "radius": 5.0 }
+    }));
+    if ball.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {ball}");
+        return;
+    }
+    let edges = ball["edgeLengths"].as_array().unwrap().len();
+    let seams: Vec<i64> = ball["edgeSeams"].as_array().expect("a sphere has a seam").iter().map(|v| v.as_i64().unwrap()).collect();
+    assert!(!seams.is_empty() && seams.iter().all(|&s| (s as usize) < edges), "{seams:?} of {edges}");
+    for seam in &seams {
+        let reply = call(json!({ "call": "probe", "key": key, "node": 0, "op": { "kind": "fillet", "edges": [seam], "size": 1.0 } }));
+        let text = reply.to_string();
+        assert!(text.contains("That edge is the seam of a round face, not a real edge; nothing to round."), "{text}");
+    }
+    let cube = call(json!({
+        "call": "open", "key": "box-no-seam",
+        "primitive": { "primitive": "box", "origin": [0.0, 0.0, 0.0], "size": [10.0, 10.0, 10.0] }
+    }));
+    assert!(cube.get("edgeSeams").is_none(), "a box has no seam: {cube}");
+}

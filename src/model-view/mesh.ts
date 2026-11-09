@@ -7,6 +7,7 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import type { ModelSolid } from "./types";
 import { boxEdges, boxList, dashSegments, writeColor } from "./helpers";
+import { drawnEdgeSegments, smoothNormals } from "./smooth";
 import { facePaint } from "../model-look";
 import { hexToThree } from "../theme";
 import type { ViewCtx } from "./ctx";
@@ -89,14 +90,12 @@ export function installMesh(ctx: ViewCtx): void {
     const used = paintColours(shape, color, new Set(), null);
     publishFaceColours(used);
     geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-    geometry.computeVertexNormals();
+    const smooth = smoothNormals(shape.positions, shape.triangles);
+    geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
     const shaded = new THREE.Mesh(geometry, solidMaterial);
     shaded.raycast = () => undefined;
     body.add(shaded);
-    const segments: number[] = [];
-    for (const edge of shape.edges) {
-      for (let i = 0; i + 5 < edge.points.length; i += 3) segments.push(edge.points[i]!, edge.points[i + 1]!, edge.points[i + 2]!, edge.points[i + 3]!, edge.points[i + 4]!, edge.points[i + 5]!);
-    }
+    const { segments } = drawnEdgeSegments(shape.edges, shape.seams);
     let lines: THREE.LineSegments | null = null;
     if (segments.length > 0) {
       const edges = new THREE.BufferGeometry();

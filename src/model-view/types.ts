@@ -27,6 +27,8 @@ export interface ModelSolid {
   /** The face of each triangle. */
   triangles: Uint32Array;
   edges: { id: number; lengthMm: number; points: Float32Array }[];
+  /** Edges (by index) that are a seam or a pole: listed and pickable as ever, but not drawn as a line. */
+  seams?: number[];
   /** The history node that made each face. Null is a preview face with no step yet. */
   stepFaces?: (number | null)[];
 }
