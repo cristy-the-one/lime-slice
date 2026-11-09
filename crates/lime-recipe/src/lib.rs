@@ -450,7 +450,7 @@ pub struct Part {
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
 /// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.12: `gears` (the library's involute gears, and true
 /// involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
-pub const API: (u32, u32) = (1, 10);
+pub const API: (u32, u32) = (1, 12);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1577,7 +1577,7 @@ pub mod ops {
         Json::obj().set("kind", "fillet").set("edges", edges).set("size", size)
     }
 
-    /// The kernel's gear step (API 1.10): a spur gear with true involute flanks, `thickness` mm along its axis, its base
+    /// The kernel's gear step (API 1.12): a spur gear with true involute flanks, `thickness` mm along its axis, its base
     /// centred on `origin` (part frame), combined by `op` ("fuse", "cut" or "common"). Add `bore`, `boreShape`,
     /// `hubDiameter`, `hubHeight`, `phaseDeg` or `turn` with `.set`; guide {kind:"gear"} lists them.
     pub fn gear(op: &str, gear: &super::gears::Gear, thickness: f64, origin: [f64; 3]) -> Json {
@@ -3276,7 +3276,7 @@ pub mod lattice {
     }
 }
 
-/// Involute spur gears and racks (API 1.10), adopted from the library ingredient `involute-gears` v1 by the process in
+/// Involute spur gears and racks (API 1.12), adopted from the library ingredient `involute-gears` v1 by the process in
 /// docs/plan-native-recipes.md section 5.
 ///
 /// The ingredient's functions keep their names, their arguments and their numbers bit for bit (`gear_outline`,
@@ -3940,7 +3940,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 10));
+        assert_eq!(API, (1, 12));
     }
 
     #[test]

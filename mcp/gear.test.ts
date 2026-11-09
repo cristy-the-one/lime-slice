@@ -117,7 +117,6 @@ check("the history names the gear", show(plainHistory).includes("gear 16 teeth m
 const wideBore = await call("model_probe", { object: plate, op: { kind: "gear", teeth: 20, module: 1.5, thickness: 5, bore: 40 } });
 check("a bore wider than the root is the engine's sentence", wideBore.ok === false && show(wideBore).includes("The bore leaves less than one module of material under the teeth"), show(wideBore));
 
-session.close?.();
 if (failed > 0) {
   console.error(`${failed} failed`);
   process.exit(1);
