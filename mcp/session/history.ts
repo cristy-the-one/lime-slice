@@ -422,7 +422,39 @@ async function commitObject(this: Session, obj: PlateObject): Promise<string | n
   if (this.scaleSince(tree, from, tree.current)) obj.scale = 1;
   obj.platedNode = tree.current;
   obj.tree = { ...obj.tree!, committed: tree.current };
+  // A copy edited by hand is its own part from now on; copies linked to this one follow it.
+  delete obj.linkedTo;
+  await this.syncLinked(obj);
   return null;
+}
+
+/**
+ * Each copy linked to `obj` (`object_duplicate {linked:true}`) takes its committed shape, history, recipe and build log.
+ * Its pose, name, assembly seat and joint stay. Its own history is closed: the modeler builds the new one on first use.
+ */
+async function syncLinked(this: Session, obj: PlateObject): Promise<void> {
+  for (const copy of this.objects) {
+    if (copy.linkedTo !== obj.id || copy === obj) continue;
+    await this.closeTree(copy);
+    copy.tree = obj.tree ? { ...obj.tree, key: `mcp-${copy.id}` } : null;
+    copy.treeStale = obj.tree ? true : undefined;
+    copy.solid = obj.solid;
+    copy.platedNode = obj.platedNode;
+    copy.bytes = obj.bytes;
+    copy.source = obj.source;
+    copy.triangles = obj.triangles;
+    copy.fileName = obj.fileName;
+    copy.seatMm = obj.seatMm;
+    copy.scale = obj.scale;
+    copy.stepTolerance = obj.stepTolerance;
+    copy.commitWarning = obj.commitWarning;
+    if (obj.brep) copy.brep = obj.brep;
+    else delete copy.brep;
+    if (obj.buildLog) copy.buildLog = structuredClone(obj.buildLog);
+    else delete copy.buildLog;
+    if (obj.recipe) copy.recipe = structuredClone(obj.recipe);
+    else delete copy.recipe;
+  }
 }
 
 /**
@@ -572,6 +604,7 @@ export const historyMethods = {
   drop,
   commit,
   commitObject,
+  syncLinked,
   brepRoot,
   scaleSince,
   commitAll,
