@@ -26,7 +26,7 @@ use super::ffi::{
 use super::group::{build_combined, build_group};
 use super::joints::{joined_of, keep_built, stored_joints, Joined};
 use super::k1::{build_k1_loops, k1_has_loops, push_shape};
-use super::ops::Op;
+use super::ops::{Op, Primitive};
 use super::outcome::Failure;
 use super::partition::{
     partition_max,
@@ -145,6 +145,14 @@ pub(super) fn build(
                     place.as_ptr(),
                     error,
                 )
+            })
+        }
+        // A gear is built in Rust from loops, then meets the solid as a join's tool does, where it already stands.
+        Op::Boolean { op: which, tool, .. } if tool.primitive == Primitive::Gear => {
+            let gear = Shape::primitive(tool).map_err(BuildFail::plain)?;
+            let place = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+            Shape::made(|error| unsafe {
+                lime_tree_join(from.raw(), gear.raw(), which.name().as_ptr(), place.as_ptr(), error)
             })
         }
         Op::Boolean {

@@ -22,6 +22,7 @@ mod build;
 mod doc;
 mod ffi;
 mod fit_coupon;
+mod gear;
 mod group;
 mod handle;
 mod joints;

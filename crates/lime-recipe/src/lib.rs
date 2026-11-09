@@ -448,8 +448,9 @@ pub struct Part {
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
-/// 1.9: `Animation::background`.
-pub const API: (u32, u32) = (1, 9);
+/// 1.9: `Animation::background`. 1.10: `gears` (the library's involute gears, and true involute `Gear` outlines) and
+/// `ops::gear`, the kernel's gear step.
+pub const API: (u32, u32) = (1, 10);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1565,6 +1566,27 @@ pub mod ops {
     pub fn fillet(edges: Json, size: f64) -> Json {
         Json::obj().set("kind", "fillet").set("edges", edges).set("size", size)
     }
+
+    /// The kernel's gear step (API 1.10): a spur gear with true involute flanks, `thickness` mm along its axis, its base
+    /// centred on `origin` (part frame), combined by `op` ("fuse", "cut" or "common"). Add `bore`, `boreShape`,
+    /// `hubDiameter`, `hubHeight`, `phaseDeg` or `turn` with `.set`; guide {kind:"gear"} lists them.
+    pub fn gear(op: &str, gear: &super::gears::Gear, thickness: f64, origin: [f64; 3]) -> Json {
+        gear_fields(Json::obj().set("kind", "gear").set("op", op), gear, thickness).set("origin", origin)
+    }
+
+    /// A new solid that is a gear, for `solid_new`: its base on Z = 0, centred on the axis.
+    pub fn gear_solid(gear: &super::gears::Gear, thickness: f64) -> Json {
+        gear_fields(Json::obj().set("primitive", "gear"), gear, thickness)
+    }
+
+    fn gear_fields(base: Json, gear: &super::gears::Gear, thickness: f64) -> Json {
+        base.set("teeth", gear.teeth)
+            .set("module", gear.module)
+            .set("thickness", thickness)
+            .set("pressureDeg", gear.pressure_deg)
+            .set("backlash", gear.backlash)
+            .set("profileShift", gear.shift)
+    }
 }
 
 /// 2D geometry for sketches and cell patterns: polygons, regions with holes,
@@ -1665,14 +1687,14 @@ pub mod geom2d {
         quadrant(n as i64, r)
     }
 
-    fn sin_cos(x: f64) -> (f64, f64) {
+    pub(crate) fn sin_cos(x: f64) -> (f64, f64) {
         let n = (x * (2.0 / PI)).round();
         let r = (x - n * 1.5707963267341256) - n * 6.077100506506192e-11;
         quadrant(n as i64, r)
     }
 
     #[allow(clippy::excessive_precision, clippy::approx_constant)]
-    fn atan(x: f64) -> f64 {
+    pub(crate) fn atan(x: f64) -> f64 {
         const HI: [f64; 4] = [0.4636476090008061, 0.7853981633974483, 0.982793723247329, 1.5707963267948966];
         const LO: [f64; 4] = [2.2698777452961687e-17, 3.061616997868383e-17, 1.3903311031230998e-17, 6.123233995736766e-17];
         let neg = x < 0.0;
@@ -1710,7 +1732,7 @@ pub mod geom2d {
         if neg { -v } else { v }
     }
 
-    fn atan2(y: f64, x: f64) -> f64 {
+    pub(crate) fn atan2(y: f64, x: f64) -> f64 {
         const PI_LO: f64 = 1.2246467991473532e-16;
         if x == 0.0 {
             return if y > 0.0 {
@@ -3240,6 +3262,580 @@ pub mod lattice {
                 out.push(Cell { index, centre, region: piece, clipped });
             }
             out
+        }
+    }
+}
+
+/// Involute spur gears and racks (API 1.10), adopted from the library ingredient `involute-gears` v1 by the process in
+/// docs/plan-native-recipes.md section 5.
+///
+/// The ingredient's functions keep their names, their arguments and their numbers bit for bit (`gear_outline`,
+/// `gear_outline_with`, `gear_tooth`, `pitch_radius`, `involute`, `mate_phase`, `mate_turn`, `dir_deg`,
+/// `idler_centre`, `rack_outline`): a recipe that switches from the library copy to this one sends the same calls.
+/// They use the platform's own trig, as the ingredient did, so like it they can differ in the last bit between lust
+/// and rustc.
+///
+/// `Gear` is new: true involute flanks as splines, the root fillet the cutting rack leaves (so a small gear is undercut
+/// as a cut one is), arcs at tip and root, any pressure angle and profile shift, as the `loops` an `extrude` takes. It
+/// uses the crate's own trig, so it sends the same bytes under lust and rustc, and the kernel's `gear` op builds the
+/// same outline from the same code.
+pub mod gears {
+    use super::geom2d::{atan, atan2, sin_cos, sin_cos_deg};
+    use super::Json;
+
+    // ---- involute-gears v1: same names, same bytes. ----
+
+    pub type P2 = [f64; 2];
+
+    pub fn involute(a: f64) -> f64 { a.tan() - a }
+
+    /// Pitch radius of a z-tooth gear of module m.
+    pub fn pitch_radius(z: u32, m: f64) -> f64 { m * z as f64 / 2.0 }
+
+    /// One tooth centred on angle `c` (radians), counter-clockwise, root to root.
+    /// 20 degree pressure angle, addendum m, dedendum 1.25 m; `backlash` mm at the pitch
+    /// circle; `flank` points per flank (3 keeps a 24-tooth gear under 200 points).
+    pub fn gear_tooth(z: u32, m: f64, backlash: f64, flank: usize, c: f64, pts: &mut Vec<P2>) {
+        let zf = z as f64;
+        let r = m * zf / 2.0;
+        let rb = r * 20f64.to_radians().cos();
+        let (ra, rf) = (r + m, r - 1.25 * m);
+        let r0 = rf.max(rb);
+        let psi = std::f64::consts::PI / (2.0 * zf) - backlash / (2.0 * r);
+        let ap = (rb / r).acos();
+        let half = |rho: f64| psi + involute(ap) - involute((rb / rho.max(rb)).acos());
+        let gap = std::f64::consts::PI / zf - half(r0);
+        let n = flank.max(2);
+        let h0 = half(r0) + 0.25 * gap;
+        pts.push([rf * (c - h0).cos(), rf * (c - h0).sin()]);
+        for i in 0..n {
+            let rho = r0 + (ra - r0) * i as f64 / (n - 1) as f64;
+            let a = c - half(rho);
+            pts.push([rho * a.cos(), rho * a.sin()]);
+        }
+        for i in 0..n {
+            let rho = ra - (ra - r0) * i as f64 / (n - 1) as f64;
+            let a = c + half(rho);
+            pts.push([rho * a.cos(), rho * a.sin()]);
+        }
+        pts.push([rf * (c + h0).cos(), rf * (c + h0).sin()]);
+    }
+
+    /// A whole gear outline with tooth 0 centred on `phase_deg`: (2 + 2 * flank) points a tooth.
+    pub fn gear_outline_with(z: u32, m: f64, backlash: f64, flank: usize, phase_deg: f64) -> Vec<P2> {
+        let mut pts = Vec::new();
+        let pitch = 2.0 * std::f64::consts::PI / z as f64;
+        for t in 0..z { gear_tooth(z, m, backlash, flank, phase_deg.to_radians() + pitch * t as f64, &mut pts); }
+        pts
+    }
+
+    /// gear_outline_with at 0.1 mm backlash and 3 flank points.
+    pub fn gear_outline(z: u32, m: f64, phase_deg: f64) -> Vec<P2> { gear_outline_with(z, m, 0.1, 3, phase_deg) }
+
+    /// Phase (degrees) for a mating gear of `mate_z` teeth whose centre lies in direction
+    /// `dir_deg` from a gear of `own_z` teeth with tooth 0 at `own_phase_deg`, so each tooth
+    /// meets a gap. Chain it along a train: drive -> idler -> output.
+    pub fn mate_phase(own_phase_deg: f64, own_z: u32, dir_deg: f64, mate_z: u32) -> f64 {
+        let own_pitch = 360.0 / own_z as f64;
+        let f = (((dir_deg - own_phase_deg) / own_pitch) % 1.0 + 1.0) % 1.0;
+        dir_deg + 180.0 - (0.5 - f) * 360.0 / mate_z as f64
+    }
+
+    /// Turn of a mating gear when its driver turns `own_turn_deg`: opposite way, by the ratio.
+    pub fn mate_turn(own_turn_deg: f64, own_z: u32, mate_z: u32) -> f64 { -own_turn_deg * own_z as f64 / mate_z as f64 }
+
+    /// Direction in degrees from a to b.
+    pub fn dir_deg(a: P2, b: P2) -> f64 { (b[1] - a[1]).atan2(b[0] - a[0]).to_degrees() }
+
+    /// Centre of an idler that sits `d1` from `a` and `d2` from `c` (centre distances, i.e.
+    /// sums of pitch radii). `left` picks the side to the left of a -> c. None if out of reach.
+    pub fn idler_centre(a: P2, c: P2, d1: f64, d2: f64, left: bool) -> Option<P2> {
+        let (dx, dy) = (c[0] - a[0], c[1] - a[1]);
+        let d = dx.hypot(dy);
+        if d > d1 + d2 || d < (d1 - d2).abs() || d == 0.0 { return None; }
+        let k = (d1 * d1 - d2 * d2 + d * d) / (2.0 * d);
+        let h = (d1 * d1 - k * k).max(0.0).sqrt();
+        let (px, py) = (a[0] + k * dx / d, a[1] + k * dy / d);
+        let s = if left { 1.0 } else { -1.0 };
+        Some([px - s * h * dy / d, py + s * h * dx / d])
+    }
+
+    /// Rack outline in (u along the rack, v up), pitch line at v = 0, teeth pointing to -v.
+    /// Teeth centred on `centres` (mm along u, one pitch = PI * m apart); the outline is closed
+    /// at v = `back` so it overlaps the bar it is fused to. Cut the root strip first:
+    /// box from the first tooth's root to the last one's, v from below the tips to 1.25 m.
+    pub fn rack_outline(m: f64, centres: &Vec<f64>, back: f64) -> Vec<P2> {
+        let t20 = 20f64.to_radians().tan();
+        let p4 = std::f64::consts::PI * m / 4.0;
+        let (add, ded) = (0.9 * m, 1.25 * m);
+        let (w_tip, w_root) = (p4 - add * t20, p4 + ded * t20);
+        let n = centres.len();
+        let mut pts: Vec<P2> = vec![[centres[0] - w_root, back]];
+        for c in centres.iter() {
+            pts.push([c - w_root, ded]);
+            pts.push([c - w_tip, -add]);
+            pts.push([c + w_tip, -add]);
+            pts.push([c + w_root, ded]);
+        }
+        pts.push([centres[n - 1] + w_root, back]);
+        pts
+    }
+
+    // ---- New in the crate: true involute gears. ----
+
+    const PI: f64 = std::f64::consts::PI;
+
+    /// The fewest and the most teeth a `Gear` takes.
+    pub const MIN_TEETH: u32 = 6;
+    pub const MAX_TEETH: u32 = 150;
+
+    /// Steps along a root fillet and along an involute flank: the spline goes through one point more than this.
+    const FILLET_STEPS: usize = 6;
+    const FLANK_STEPS: usize = 8;
+
+    /// An involute spur gear: `teeth`, `module` (mm), `pressure_deg` (20 by default), `backlash` (mm taken off each
+    /// tooth's thickness at the pitch circle, 0.1 by default) and `shift` (profile shift, times the module, 0 by default).
+    /// Addendum m (1 + shift), dedendum m (1.25 - shift), cut by a rack with sharp tips: a gear under about 17 teeth at
+    /// 20 degrees is undercut, as a hobbed one is, and meshes without its mate's tips touching the fillet.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Gear {
+        pub teeth: u32,
+        pub module: f64,
+        pub pressure_deg: f64,
+        pub backlash: f64,
+        pub shift: f64,
+    }
+
+    /// One piece of a gear's outline, after the previous piece's end: `Line(to)`, `Arc(through, to)`, or
+    /// `Spline(through, to)`, as `extrude.loops` spells them.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Piece {
+        Line(P2),
+        Arc(P2, P2),
+        Spline(Vec<P2>, P2),
+    }
+
+    /// A closed outline from `start` back to `start`.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Outline {
+        pub start: P2,
+        pub pieces: Vec<Piece>,
+    }
+
+    /// What a piece of a flank is: the rack tip's fillet, a straight radial line, or the involute.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Kind {
+        Fillet,
+        Radial,
+        Involute,
+    }
+
+    /// One flank from the root circle up to the tip, in polar `(radius, half-angle from the tooth's centre line)`: each
+    /// piece's points from its start to its end, the next piece starting where this one ends. The last is the involute.
+    struct Side {
+        pieces: Vec<(Kind, Vec<(f64, f64)>)>,
+    }
+
+    fn polar(rho: f64, angle: f64) -> P2 {
+        let (s, c) = sin_cos(angle);
+        [rho * c, rho * s]
+    }
+
+    impl Outline {
+        /// The loop for `extrude.loops`: `{start, segments}` with line, arc and spline segments.
+        pub fn to_loop(&self) -> Json {
+            let pt = |p: P2| Json::from(vec![p[0], p[1]]);
+            let mut segs: Vec<Json> = Vec::new();
+            for piece in self.pieces.iter() {
+                match piece {
+                    Piece::Line(to) => segs.push(Json::obj().set("kind", "line").set("to", pt(*to))),
+                    Piece::Arc(through, to) => segs.push(Json::obj().set("kind", "arc").set("through", pt(*through)).set("to", pt(*to))),
+                    Piece::Spline(through, to) => {
+                        let through: Vec<Json> = through.iter().map(|p| pt(*p)).collect();
+                        segs.push(Json::obj().set("kind", "spline").set("through", through).set("to", pt(*to)))
+                    }
+                }
+            }
+            Json::obj().set("start", pt(self.start)).set("segments", segs)
+        }
+    }
+
+    impl Gear {
+        /// `teeth` of module `module` mm at 20 degrees, 0.1 mm backlash, no profile shift.
+        pub fn new(teeth: u32, module: f64) -> Gear {
+            Gear { teeth, module, pressure_deg: 20.0, backlash: 0.1, shift: 0.0 }
+        }
+
+        pub fn pressure(self, deg: f64) -> Gear {
+            Gear { pressure_deg: deg, ..self }
+        }
+
+        pub fn backlash(self, mm: f64) -> Gear {
+            Gear { backlash: mm, ..self }
+        }
+
+        /// Profile shift, times the module: positive moves the teeth out (thicker roots, no undercut), negative in.
+        pub fn shift(self, x: f64) -> Gear {
+            Gear { shift: x, ..self }
+        }
+
+        pub fn pitch_radius(&self) -> f64 {
+            self.module * self.teeth as f64 / 2.0
+        }
+
+        pub fn base_radius(&self) -> f64 {
+            self.pitch_radius() * sin_cos_deg(self.pressure_deg).1
+        }
+
+        pub fn tip_radius(&self) -> f64 {
+            self.pitch_radius() + self.module * (1.0 + self.shift)
+        }
+
+        pub fn root_radius(&self) -> f64 {
+            self.pitch_radius() - self.module * (1.25 - self.shift)
+        }
+
+        /// The angle between two teeth, in degrees.
+        pub fn pitch_deg(&self) -> f64 {
+            360.0 / self.teeth as f64
+        }
+
+        /// A tooth's thickness along the pitch circle, mm.
+        pub fn pitch_thickness(&self) -> f64 {
+            2.0 * self.pitch_radius() * self.psi()
+        }
+
+        /// Half a tooth's angle at the pitch circle.
+        fn psi(&self) -> f64 {
+            let (s, c) = sin_cos_deg(self.pressure_deg);
+            let z = self.teeth as f64;
+            PI / (2.0 * z) + 2.0 * self.shift * (s / c) / z - self.backlash / (2.0 * self.pitch_radius())
+        }
+
+        /// Whether the cutting rack's flank reaches below where the line of action meets the base circle, so the root of
+        /// each tooth is undercut (cut into, thinner than the involute). Under 18 teeth at 20 degrees without shift.
+        pub fn undercut(&self) -> bool {
+            let (sa, ca) = sin_cos_deg(self.pressure_deg);
+            let m = self.module;
+            let w_tip = PI * m / 4.0 + self.backlash / 2.0 - 1.25 * m * (sa / ca);
+            let round = (0.38 * m).min(m * (1.2 - self.shift)).min(0.95 * w_tip * ca / (1.0 - sa)).max(0.0);
+            let depth = m * (1.25 - self.shift) - round * (1.0 - sa);
+            self.pitch_radius() * sa - depth / sa <= 0.0
+        }
+
+        /// None when the numbers make a gear, else the sentence why not.
+        pub fn refusal(&self) -> Option<String> {
+            self.side().err()
+        }
+
+        fn numbers_refusal(&self) -> Option<String> {
+            let ok = |v: f64, lo: f64, hi: f64| v.is_finite() && v >= lo && v <= hi;
+            if self.teeth < MIN_TEETH || self.teeth > MAX_TEETH {
+                return Some(format!("A gear takes {MIN_TEETH} to {MAX_TEETH} teeth."));
+            }
+            if !ok(self.module, 0.05, 50.0) {
+                return Some("A gear's module is 0.05 to 50 mm.".to_string());
+            }
+            if !ok(self.pressure_deg, 10.0, 30.0) {
+                return Some("A gear's pressure angle is 10 to 30 degrees.".to_string());
+            }
+            if !ok(self.shift, -1.0, 1.0) {
+                return Some("A gear's profile shift is -1 to 1, times the module.".to_string());
+            }
+            if !ok(self.backlash, 0.0, self.module) {
+                return Some("A gear's backlash is 0 to one module, in mm at the pitch circle.".to_string());
+            }
+            None
+        }
+
+        /// One flank, worked out once with the spline's steps: where the rack's tip fillet meets the involute, and the
+        /// points of each.
+        fn side(&self) -> Result<Side, String> {
+            self.side_with(FILLET_STEPS, FLANK_STEPS)
+        }
+
+        /// The flank as a rack with a rounded tip cuts it (ISO 53: dedendum 1.25 m, tip radius 0.38 m, smaller where
+        /// a high pressure angle or a big shift leaves no room). The tip's round leaves the root fillet; its straight
+        /// flank leaves the involute down to the form circle. When the flank's lowest point would reach past where the
+        /// line of action touches the base circle, the gear is undercut: that point's path cuts into the involute, and
+        /// the flank follows it up to where it crosses the involute.
+        fn side_with(&self, fillet_steps: usize, flank_steps: usize) -> Result<Side, String> {
+            if let Some(why) = self.numbers_refusal() {
+                return Err(why);
+            }
+            let (sa, ca) = sin_cos_deg(self.pressure_deg);
+            let tan_a = sa / ca;
+            let m = self.module;
+            let r = self.pitch_radius();
+            let rb = r * ca;
+            let ra = self.tip_radius();
+            let rf = self.root_radius();
+            let inv_a = tan_a - atan(tan_a);
+            let psi = self.psi();
+            // The involute's half-angle at radius rho (rho >= rb).
+            let inv_half = |rho: f64| {
+                let t = (rho * rho - rb * rb).max(0.0).sqrt() / rb;
+                psi + inv_a - (t - atan(t))
+            };
+            if inv_half(ra) <= 0.0 {
+                return Err("These teeth come to a point below the tip: use less profile shift, more teeth, or a smaller pressure angle.".to_string());
+            }
+            let undercut = "The undercut cuts through these teeth: use more teeth or a positive profile shift.";
+            // The rack, rolling on the pitch circle: its tooth in the gap after tooth 0, its tip on the root circle. In
+            // the rolling frame the pitch point is (r, 0) and the rack has moved -r s along v when the gear has turned s.
+            let w_tip = PI * m / 4.0 + self.backlash / 2.0 - 1.25 * m * tan_a;
+            let round = (0.38 * m).min(m * (1.2 - self.shift)).min(0.95 * w_tip * ca / (1.0 - sa)).max(0.0);
+            let xc = rf + round;
+            let yc = PI * m / 2.0 - w_tip + round * (1.0 - sa) / ca;
+            let reach = r - xc;
+            // A rolling-frame point seen from the gear, which has turned s: (radius, angle).
+            let seen = |p: P2, s: f64| {
+                let (sn, cs) = sin_cos(s);
+                let g = [p[0] * cs - p[1] * sn, p[0] * sn + p[1] * cs];
+                ((g[0] * g[0] + g[1] * g[1]).sqrt(), atan2(g[1], g[0]))
+            };
+            // Where the tip's round touches the gear: on the line from the pitch point through the round's centre.
+            let fillet_at = |s: f64| {
+                let c = [xc, yc - r * s];
+                let d = [c[0] - r, c[1]];
+                let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                let q = if l > 0.0 { [c[0] + round * d[0] / l, c[1] + round * d[1] / l] } else { [xc - round, c[1]] };
+                seen(q, s)
+            };
+            // The flank's lowest point, where the round meets it, and its path.
+            let low_at = |s: f64| seen([xc - round * sa, yc - r * s - round * ca], s);
+            let s_root = yc / r;
+            let s_low = (yc + reach * ca / sa) / r;
+            let depth = r - (xc - round * sa);
+            let t_form = (r * sa - depth / sa) / rb;
+            let sample = |f: &dyn Fn(f64) -> (f64, f64), s0: f64, s1: f64, steps: usize| -> Vec<(f64, f64)> {
+                (0..=steps).map(|i| f(s0 + (s1 - s0) * i as f64 / steps as f64)).collect()
+            };
+            // The involute from rho0 to rho1, evenly in its roll angle.
+            let involute_from = |rho0: f64, rho1: f64| -> Vec<(f64, f64)> {
+                let t_of = |rho: f64| (rho * rho - rb * rb).max(0.0).sqrt() / rb;
+                let (t0, t1) = (t_of(rho0), t_of(rho1));
+                (0..=flank_steps)
+                    .map(|i| {
+                        let t = t0 + (t1 - t0) * i as f64 / flank_steps as f64;
+                        let rho = if i == 0 { rho0 } else if i == flank_steps { rho1 } else { rb * (1.0 + t * t).sqrt() };
+                        (rho, psi + inv_a - (t - atan(t)))
+                    })
+                    .collect()
+            };
+            let mut pieces: Vec<(Kind, Vec<(f64, f64)>)> = Vec::new();
+            // Each piece ends on the next one's first point exactly, so neighbours share it; a gap of more than a hair
+            // would be a slip in the maths here, never a gear.
+            let mut seam: f64 = 0.0;
+            let mut join = |pieces: &mut Vec<(Kind, Vec<(f64, f64)>)>, next: (Kind, Vec<(f64, f64)>)| {
+                if let Some((_, last)) = pieces.last_mut() {
+                    let n = last.len() - 1;
+                    let (a, b) = (polar(last[n].0, last[n].1), polar(next.1[0].0, next.1[0].1));
+                    seam = seam.max(((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])).sqrt());
+                    last[n] = next.1[0];
+                }
+                pieces.push(next);
+            };
+            if t_form > 0.0 {
+                // No undercut: the round's fillet runs into the involute at the form circle, where the flank starts.
+                let form = rb * (1.0 + t_form * t_form).sqrt();
+                if s_low > s_root {
+                    join(&mut pieces, (Kind::Fillet, sample(&fillet_at, s_root, s_low, fillet_steps)));
+                } else if form > rf + 1e-9 {
+                    join(&mut pieces, (Kind::Radial, vec![(rf, inv_half(form)), (form, inv_half(form))]));
+                }
+                join(&mut pieces, (Kind::Involute, involute_from(form, ra)));
+            } else {
+                // Undercut: the whole involute from the base circle is cut, and then the round and the flank's lowest
+                // point cut into it. The tooth's edge is the cutter's path wherever that is nearer the middle.
+                let path = |s: f64| if s <= s_low { fillet_at(s) } else { low_at(s) };
+                let gap = |s: f64| {
+                    let (rho, a) = path(s);
+                    if rho < rb { -1.0 } else { a - inv_half(rho) }
+                };
+                let mut s_end = s_low.max(s_root);
+                let mut step = 0.01;
+                while path(s_end).0 < ra && step < 1e3 {
+                    s_end += step;
+                    step *= 1.5;
+                }
+                // Where the path crosses the involute, found on a fine walk and then bisected.
+                let mut crossings: Vec<f64> = Vec::new();
+                let walk = 600;
+                let mut prev = (s_root, -1.0);
+                for i in 1..=walk {
+                    let s = s_root + (s_end - s_root) * i as f64 / walk as f64;
+                    let g = gap(s);
+                    if (g < 0.0) != (prev.1 < 0.0) {
+                        let (mut a, mut b) = (prev.0, s);
+                        for _ in 0..90 {
+                            let mid = 0.5 * (a + b);
+                            if (gap(mid) < 0.0) == (prev.1 < 0.0) { a = mid } else { b = mid }
+                        }
+                        crossings.push(b);
+                    }
+                    prev = (s, g);
+                }
+                if crossings.len() % 2 == 0 {
+                    return Err(undercut.to_string());
+                }
+                // On the path from the root, then on the involute and the path in turn, ending on the involute.
+                let mut from = s_root;
+                for (k, &s) in crossings.iter().enumerate() {
+                    if k % 2 == 0 {
+                        for (a, b) in [(from, s.min(s_low)), (from.max(s_low), s)] {
+                            if b > a {
+                                let f: &dyn Fn(f64) -> (f64, f64) = if b <= s_low { &fillet_at } else { &low_at };
+                                join(&mut pieces, (Kind::Fillet, sample(f, a, b, fillet_steps)));
+                            }
+                        }
+                    } else {
+                        let rho0 = pieces.last().map_or(rb, |(_, pts)| pts[pts.len() - 1].0);
+                        join(&mut pieces, (Kind::Involute, involute_from(rho0, path(s).0)));
+                        from = s;
+                    }
+                }
+                let rho0 = pieces.last().map_or(rb, |(_, pts)| pts[pts.len() - 1].0);
+                let crossing = (rho0, inv_half(rho0));
+                if let Some((_, last)) = pieces.last_mut() {
+                    let n = last.len() - 1;
+                    last[n] = crossing;
+                }
+                join(&mut pieces, (Kind::Involute, involute_from(rho0, ra)));
+            }
+            if !(seam <= 1e-6 * m) {
+                return Err("The root fillet does not meet the involute for these numbers.".to_string());
+            }
+            if pieces.iter().any(|(_, pts)| pts.iter().any(|p| p.1 <= 0.0 || p.0 > ra + 1e-9)) {
+                return Err(undercut.to_string());
+            }
+            pieces[0].1[0].0 = rf;
+            Ok(Side { pieces })
+        }
+
+        /// The whole outline with tooth 0 centred on `phase_deg` from +U, counter-clockwise: per tooth a root arc, the
+        /// root fillet each side (two splines on an undercut gear), an involute spline each side, and a tip arc.
+        pub fn outline(&self, phase_deg: f64) -> Result<Outline, String> {
+            let side = self.side()?;
+            let z = self.teeth;
+            let rf = self.root_radius();
+            let root_half = side.pieces[0].1[0].1;
+            let tip = *side.pieces[side.pieces.len() - 1].1.last().expect("an involute");
+            let pitch = 2.0 * PI / z as f64;
+            let centre = |k: u32| (phase_deg + self.pitch_deg() * k as f64) * (PI / 180.0);
+            let start = polar(rf, centre(0) - root_half);
+            let piece = |kind: Kind, pts: &[P2]| {
+                let to = pts[pts.len() - 1];
+                if kind == Kind::Radial { Piece::Line(to) } else { Piece::Spline(pts[1..pts.len() - 1].to_vec(), to) }
+            };
+            let mut pieces: Vec<Piece> = Vec::new();
+            for k in 0..z {
+                let c = centre(k);
+                // Up the clockwise flank, across the tip, down the counter-clockwise flank.
+                for (kind, pts) in side.pieces.iter() {
+                    let pts: Vec<P2> = pts.iter().map(|p| polar(p.0, c - p.1)).collect();
+                    pieces.push(piece(*kind, &pts));
+                }
+                pieces.push(Piece::Arc(polar(tip.0, c), polar(tip.0, c + tip.1)));
+                for (kind, pts) in side.pieces.iter().rev() {
+                    let pts: Vec<P2> = pts.iter().rev().map(|p| polar(p.0, c + p.1)).collect();
+                    pieces.push(piece(*kind, &pts));
+                }
+                // Along the root to the next tooth.
+                let to = if k + 1 == z { start } else { polar(rf, centre(k + 1) - root_half) };
+                pieces.push(Piece::Arc(polar(rf, c + pitch / 2.0), to));
+            }
+            // An arc so short it bows less than a micron (a root land at a high pressure angle) is a line: the kernel
+            // takes three points that close to a line for no arc at all.
+            let mut from = start;
+            for piece in pieces.iter_mut() {
+                let to = match piece {
+                    Piece::Line(to) | Piece::Arc(_, to) | Piece::Spline(_, to) => *to,
+                };
+                if let Piece::Arc(through, _) = piece {
+                    let (a, b) = ([through[0] - from[0], through[1] - from[1]], [to[0] - from[0], to[1] - from[1]]);
+                    let span = (a[0] * a[0] + a[1] * a[1]).sqrt().max((b[0] * b[0] + b[1] * b[1]).sqrt()).max(1.0);
+                    if (a[0] * b[1] - a[1] * b[0]).abs() <= 1e-5 * span {
+                        *piece = Piece::Line(to);
+                    }
+                }
+                from = to;
+            }
+            Ok(Outline { start, pieces })
+        }
+
+        /// The outline as points: `per_flank` steps along each fillet and each involute, and the arcs in steps of at
+        /// most 3 degrees. For a preview or an area; extrude `outline(..).to_loop()` for the part.
+        pub fn points(&self, phase_deg: f64, per_flank: usize) -> Result<Vec<P2>, String> {
+            self.points_with(phase_deg, per_flank, 3.0)
+        }
+
+        fn points_with(&self, phase_deg: f64, per_flank: usize, arc_step_deg: f64) -> Result<Vec<P2>, String> {
+            let n = per_flank.max(2);
+            let side = self.side_with(n, n)?;
+            let mut up: Vec<(f64, f64)> = Vec::new();
+            for (_, pts) in side.pieces.iter() {
+                let skip = usize::from(!up.is_empty());
+                up.extend(pts[skip..].iter().copied());
+            }
+            let z = self.teeth;
+            let rf = self.root_radius();
+            let pitch = 2.0 * PI / z as f64;
+            let mut pts: Vec<P2> = Vec::new();
+            let arc = |pts: &mut Vec<P2>, rho: f64, a0: f64, a1: f64| {
+                let steps = (((a1 - a0).abs() / (arc_step_deg * PI / 180.0)).ceil() as usize).max(1);
+                for i in 1..steps {
+                    pts.push(polar(rho, a0 + (a1 - a0) * i as f64 / steps as f64));
+                }
+            };
+            for k in 0..z {
+                let c = (phase_deg + self.pitch_deg() * k as f64) * (PI / 180.0);
+                for p in up.iter() {
+                    pts.push(polar(p.0, c - p.1));
+                }
+                let tip = up[up.len() - 1];
+                arc(&mut pts, tip.0, c - tip.1, c + tip.1);
+                for p in up.iter().rev() {
+                    pts.push(polar(p.0, c + p.1));
+                }
+                let root = up[0].1;
+                arc(&mut pts, rf, c + root, c + pitch - root);
+            }
+            Ok(pts)
+        }
+
+        /// The outline's area, mm², from a fine polyline: a check, and what an extrude of it holds per mm.
+        pub fn area(&self) -> Result<f64, String> {
+            let pts = self.points_with(0.0, 400, 0.05)?;
+            let n = pts.len();
+            let mut a2 = 0.0;
+            for i in 0..n {
+                let (p, q) = (pts[i], pts[(i + 1) % n]);
+                a2 += p[0] * q[1] - p[1] * q[0];
+            }
+            Ok(a2 / 2.0)
+        }
+
+        /// The centre distance at which this gear meshes with `other` (same module and pressure angle): the sum of the
+        /// pitch radii, or with profile shift the working distance (`inv aw = inv a + 2 tan a (x1 + x2) / (z1 + z2)`).
+        pub fn centre_distance(&self, other: &Gear) -> f64 {
+            let a0 = self.pitch_radius() + other.pitch_radius();
+            let x = self.shift + other.shift;
+            if x == 0.0 {
+                return a0;
+            }
+            let (sa, ca) = sin_cos_deg(self.pressure_deg);
+            let tan_a = sa / ca;
+            let target = tan_a - atan(tan_a) + 2.0 * tan_a * x / (self.teeth + other.teeth) as f64;
+            // Newton on inv(w) = tan w - w, from the pressure angle.
+            let mut w = self.pressure_deg * (PI / 180.0);
+            for _ in 0..40 {
+                let (s, c) = sin_cos(w);
+                let t = s / c;
+                let f = t - w - target;
+                w -= f / (t * t);
+            }
+            a0 * ca / sin_cos(w).1
         }
     }
 }

@@ -38,6 +38,17 @@ pub enum Primitive {
     Polygon,
     Tube,
     Ellipsoid,
+    /// A spur gear with true involute flanks (`gear.rs`), built in Rust from loops: never handed to `spec_of`.
+    Gear,
+}
+
+/// A gear's bore: a round hole, a hexagon (`bore` across its flats), or a D (`bore` across, `boreFlat` from the flat).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BoreShape {
+    Round,
+    Hex,
+    D,
 }
 
 impl Primitive {
@@ -52,6 +63,7 @@ impl Primitive {
             Primitive::Polygon => c"polygon",
             Primitive::Tube => c"tube",
             Primitive::Ellipsoid => c"ellipsoid",
+            Primitive::Gear => c"gear",
         }
     }
 }
@@ -96,6 +108,38 @@ pub struct Solid {
     /// A box's four edges along its own Z, rounded to this radius in the one solid, as a rounded pocket or boss cuts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub corner_radius: Option<f64>,
+    // --- A gear (docs/plan-native-recipes.md milestone 8). `height` is its thickness; `origin` its base centre. Each is
+    // written only on a gear, so every other primitive stores as it did.
+    /// 6 to 200, a whole number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teeth: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<f64>,
+    /// 20 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pressure_deg: Option<f64>,
+    /// mm off each tooth's thickness at the pitch circle; 0.1 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backlash: Option<f64>,
+    /// Times the module; 0 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_shift: Option<f64>,
+    /// Tooth 0's centre, degrees from the gear's own +X about its axis; 0 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_deg: Option<f64>,
+    /// The bore's size, mm: a round or D bore's diameter, a hexagon's width across its flats. None or 0 for no bore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bore: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bore_shape: Option<BoreShape>,
+    /// A D bore's width from its flat to the far side, mm; 0.9 of the bore when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bore_flat: Option<f64>,
+    /// A hub on the gear's top face (its own +Z): both, or neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_diameter: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_height: Option<f64>,
 }
 
 impl Solid {
