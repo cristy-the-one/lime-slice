@@ -9,6 +9,7 @@ import { framePose, sameWorkplane } from "../workplane";
 import { hexToThree, themeColors } from "../theme";
 import { polylinePairs, readAccent } from "./helpers";
 import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
+import { treeRaycast } from "./solid-ray";
 import type { ViewCtx } from "./ctx";
 
 export function buildApi(ctx: ViewCtx): ModelView {
@@ -48,6 +49,8 @@ export function buildApi(ctx: ViewCtx): ModelView {
       geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
       canvas.dataset.solidPoints = `${smooth.points}/${next.positions.length / 3}`;
       ctx.mesh = new THREE.Mesh(geometry, solidMaterial);
+      // Every ray at the solid (hover, press, pick, Measure, the hidden-line samples) asks a box tree, not every triangle.
+      ctx.mesh.raycast = treeRaycast;
       body.add(ctx.mesh);
       const { segments, drawn } = drawnEdgeSegments(next.edges, next.seams);
       canvas.dataset.edgesDrawn = `${drawn}/${next.edges.length}`;
