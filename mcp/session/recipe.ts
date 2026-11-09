@@ -485,15 +485,17 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     partBox: (object) => this.find(object)?.solid?.bounds ?? null,
     build: async (object, ops: QueuedOp[], groups) => {
       const obj = this.find(object);
-      if (!obj) return { ok: false, reason: UNKNOWN_OBJECT };
+      if (!obj) return { ok: false, code: "no-object", reason: UNKNOWN_OBJECT };
       touch(object);
+      const lastSite = ops[ops.length - 1]!.site;
+      this.noteStage(`recipe ${name}: call ${lastSite.id}, building ${ops.length} queued applies as ${groups.length} boolean${groups.length === 1 ? "" : "s"}, ${lineText(map, lastSite.line)}`);
       const rows = ops.map((q) => ({ op: bakedOps.get(q.op)!.op, ...(typeof q.op.label === "string" ? { label: q.op.label } : {}) }));
-      const done = await this.applyQueued(obj, rows, groups);
+      const done = await this.applyQueued(obj, rows, groups, () => queue.stopped());
       if (done.ok) applied += ops.length;
       return done;
     },
     applyOne: (site) => call(site),
-  }, unreadApplyLines(builtText(built.source, resolved.suffix)), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected });
+  }, unreadApplyLines(builtText(built.source, resolved.suffix)), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected, signal: meta?.signal });
   const queued = (site: RecipeCallSite) => queue.call(site, call);
   const timings = new Map<string, { line: number; tool: string; calls: number; ms: number; sink: KernelSink }>();
   /** The kernel's timing for this run's tree calls (mesh-end.ts); the calls that follow the recipe's end are kept apart. */
@@ -544,9 +546,11 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     // --- docs/plan-native-recipes.md 7.1: `done` builds what is still queued, before the parts are kept.
     if (out.ok && out.done && queue.holding) {
       const flushed = await queue.flushAll();
-      if (flushed && !flushed.ok) {
+      // A cancel or the time limit that came while it built takes the whole run back, as during the run.
+      const stop = flushed && !flushed.ok ? flushed.error : queue.stopped();
+      if (stop) {
         out.ok = false;
-        out.reason = flushed.error;
+        out.reason = stop;
       }
     }
   } finally {

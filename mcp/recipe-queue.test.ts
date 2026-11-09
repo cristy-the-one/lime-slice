@@ -171,6 +171,36 @@ fn main() {
   check("and left the same steps", JSON.stringify(on.ops) === JSON.stringify(off.ops), { on: on.ops, off: off.ops });
 }
 
+// A cancel that comes while the queue is built after `done` takes the whole run back, as a cancel during the run does.
+{
+  process.env.LIME_MCP_REPLY_S = "0.05";
+  process.env.LIME_MCP_FAKE_MODEL_MS = "150";
+  try {
+    const session = fake();
+    // Ten overlapping fuses: ten booleans, about three seconds of stand-in kernel time after done.
+    const SLOW = `use lime_recipe::{ops, Session};
+fn main() {
+    let mut s = Session::start();
+    let p = s.solid_new(ops::cuboid(10.0, 10.0, 2.0)).unwrap();
+    for _ in 0..10 { s.apply(&p, ops::boolean("fuse", ops::cuboid(1.0, 1.0, 1.0), [0.0, 0.0, 2.0])).unwrap(); }
+    s.done(&p);
+}
+`;
+    const job = await session.call("recipe_run", { name: "slow-flush", source: SLOW, timeoutS: 60 });
+    check("a slow queued run goes on as a job", job.status === "running" && typeof job.job === "string", job);
+    const stage = () => String(session.workJobs.find((row) => row.handle === job.job)?.ctx.stage ?? "");
+    for (let i = 0; i < 400 && !stage().includes("queued applies"); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    check("the queue is being built after done", stage().includes("building 10 queued applies"), stage());
+    let cancelled = await session.call("slice_cancel", { job: job.job });
+    while (cancelled.status === "cancelling") cancelled = await session.call("slice_wait", { job: job.job, timeoutS: 1 });
+    check("a cancel during the queue's build fails the run as cancelled", cancelled.ok === false && String(cancelled.reason).includes("cancelled"), cancelled);
+    check("and keeps nothing", session.objects.length === 0, session.objects.map((o) => o.id));
+  } finally {
+    delete process.env.LIME_MCP_REPLY_S;
+    delete process.env.LIME_MCP_FAKE_MODEL_MS;
+  }
+}
+
 // --- Real Open CASCADE.
 const bridge = process.env.LIME_OCCT_BRIDGE ?? "";
 const root = fileURLToPath(new URL("..", import.meta.url));

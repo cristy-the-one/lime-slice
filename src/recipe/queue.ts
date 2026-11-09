@@ -61,7 +61,7 @@ export interface QueuePort {
    * boolean, and stores each op as its own step in that order. On a refusal nothing changes, and `index` is the op the
    * engine named, when it named one.
    */
-  build(object: string, ops: QueuedOp[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number }>;
+  build(object: string, ops: QueuedOp[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number; stopped?: true }>;
   /** One op on its own, as the recipe's call would have been answered. */
   applyOne(site: RecipeCallSite): Promise<RecipeReply>;
 }
@@ -193,13 +193,31 @@ export class RecipeQueue {
   /** Whether `s.queue(true)` may turn silent queuing back on: not in a replay. */
   private readonly allowed: boolean;
 
-  constructor(port: QueuePort, unread: ReadonlySet<number>, opts: { silent: boolean; timeLimitS: number; selected?: () => string | null }) {
+  constructor(port: QueuePort, unread: ReadonlySet<number>, opts: { silent: boolean; timeLimitS: number; selected?: () => string | null; signal?: AbortSignal }) {
+    this.signal = opts.signal;
     this.port = port;
     this.unread = unread;
     this.silent = opts.silent;
     this.allowed = opts.silent;
     this.timeLimitMs = opts.timeLimitS * 1000;
     this.selected = opts.selected ?? (() => null);
+  }
+
+  private readonly signal: AbortSignal | undefined;
+
+  /**
+   * Why building must stop now, or null: the run was cancelled, or it passed its time limit (a queue built after the
+   * recipe reached `done` still counts against it). Checked before each boolean; the run is then taken back whole.
+   */
+  stopped(): string | null {
+    if (this.signal?.aborted) return "The recipe was cancelled.";
+    if (Date.now() - this.started > this.timeLimitMs) return `The recipe ran past its ${this.timeLimitMs / 1000} s limit and was stopped.`;
+    return null;
+  }
+
+  /** A reply that ends the run for a stop, never a replay. */
+  private stop(reason: string): RecipeReply {
+    return { ok: false, error: reason, fatal: true };
   }
 
   private readonly timeLimitMs: number;
@@ -342,6 +360,8 @@ export class RecipeQueue {
     }
     if (run.length) segments.push(run);
     for (const segment of segments) {
+      const why = this.stopped();
+      if (why) return this.stop(why);
       const failed = Array.isArray(segment) ? await this.buildRun(object, segment) : await this.buildOne(object, segment);
       if (failed) return failed;
     }
@@ -350,6 +370,8 @@ export class RecipeQueue {
 
   /** A queued op built on its own: an explicit op's refusal waits for `flush`; a silent one's means a replay. */
   private async buildOne(object: string, q: QueuedOp): Promise<RecipeReply | null> {
+    const why = this.stopped();
+    if (why) return this.stop(why);
     const reply = await this.port.applyOne(q.site);
     if (reply.ok) return null;
     if (q.explicit) {
@@ -370,6 +392,7 @@ export class RecipeQueue {
     }
     const groups = planGroups(run.map((q) => q.tool!));
     const built = await this.port.build(object, run, groups);
+    if (!built.ok && built.stopped) return this.stop(built.reason);
     if (built.ok) {
       this.report.queued += run.length;
       this.report.booleans += groups.length;

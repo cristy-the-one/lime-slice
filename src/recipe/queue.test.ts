@@ -121,6 +121,21 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
   eq("a fillet builds the queue, then itself", seen, [{ kind: "one", detail: 10 }, { kind: "inner", detail: "model_apply@12" }]);
 }
 
+{
+  // A cancel, or the run's time limit, stops the build before the next boolean: the run ends, with no replay.
+  const { port, seen } = stand();
+  const abort = new AbortController();
+  const q = new RecipeQueue(port, new Set([10]), { silent: true, timeLimitS: 30, signal: abort.signal });
+  await q.call(cut(10, 0), inner(seen));
+  abort.abort();
+  const done = await q.flushAll();
+  eq("a cancel stops the queue's build", [done?.ok, (done as { error?: string })?.error, q.replay, seen.length], [false, "The recipe was cancelled.", null, 0]);
+  const late = new RecipeQueue(port, new Set([10]), { silent: true, timeLimitS: 0.001 });
+  await late.call(cut(10, 0), inner(seen));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.001 s limit and was stopped.");
+}
+
 if (failed > 0) {
   console.error(`${failed} failed`);
   process.exit(1);

@@ -215,7 +215,7 @@ export class AppRecipeCalls {
    * Queues booleans for this run: `unread` are the built text's lines whose apply reply the recipe does not read
    * (`unreadApplyLines`); `silent` is off for a run built again one by one.
    */
-  useQueue(unread: ReadonlySet<number>, silent: boolean, timeLimitS: number): RecipeQueue {
+  useQueue(unread: ReadonlySet<number>, silent: boolean, timeLimitS: number, signal?: AbortSignal): RecipeQueue {
     this.queue = new RecipeQueue({
       tool: async (object, op) => {
         const p = this.addressable(object);
@@ -224,7 +224,14 @@ export class AppRecipeCalls {
         if ("reason" in baked) return null;
         const kind = (baked.op as { op?: unknown }).op;
         if (kind !== "fuse" && kind !== "cut") return null;
-        const reply = await this.engine.tree(p.tree.key, p.tree.current, { call: "toolBox", op: baked.op });
+        // Stateless, as native geometry is: it names no tree, so an engine without it answers an error and the op is
+        // built in its place.
+        let reply: Body;
+        try {
+          reply = await this.engine.open({ call: "toolBox", op: baked.op });
+        } catch {
+          return null;
+        }
         const min = reply.min as Box["min"] | undefined;
         const max = reply.max as Box["max"] | undefined;
         if (!Array.isArray(min) || !Array.isArray(max)) return null;
@@ -235,21 +242,26 @@ export class AppRecipeCalls {
       build: async (object, ops, groups) => {
         const p = this.addressable(object);
         if (!p) return { ok: false, reason: `${object} is not a part of this run.` };
-        return this.applyQueued(p, ops.map((q) => ({ baked: this.bakedOps.get(q.op)!, label: typeof q.op.label === "string" ? q.op.label : undefined })), groups);
+        return this.applyQueued(p, () => this.queue?.stopped() ?? null, ops.map((q) => ({ baked: this.bakedOps.get(q.op)!, label: typeof q.op.label === "string" ? q.op.label : undefined })), groups);
       },
       applyOne: (site) => this.answer(site),
-    }, unread, { silent, timeLimitS, selected: () => this.selected });
+    }, unread, { silent, timeLimitS, selected: () => this.selected, signal });
     return this.queue;
   }
 
   /** Queued ops built as combined groups, then stored as sent, one step each (the MCP session's `applyQueued`). */
-  private async applyQueued(p: RunPart, ops: { baked: Baked; label?: string }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number }> {
+  private async applyQueued(p: RunPart, stopped: () => string | null, ops: { baked: Baked; label?: string }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number; stopped?: true }> {
     const from = p.tree.current;
     const added: NodeId[] = [];
     const back = async () => {
       if (added.length > 0) await this.back(p, from, added[0]!);
     };
     for (const members of groups) {
+      const why = stopped();
+      if (why) {
+        await back();
+        return { ok: false, reason: why, stopped: true };
+      }
       const steps = members.map((i) => ops[i]!.baked.op);
       const combine = (steps[0] as { op?: "fuse" | "cut" }).op!;
       const group: GroupOp = { kind: "group", label: `${steps.length} queued ${combine}s`, source: { kind: "queue", ops: steps.length }, steps, combine };

@@ -637,15 +637,21 @@ async function queueTool(this: Session, obj: PlateObject, raw: Record<string, un
  * as sent: one step per op in order, the last with the solid, each marked `builtWith` the first. A refusal, a tool the
  * kernel left out or found changed nothing, or a step guard takes every group back, and names the op when it can.
  */
-async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; label?: string }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number }> {
+async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; label?: string }[], groups: number[][], stopped: () => string | null = () => null): Promise<{ ok: true } | { ok: false; code: string; reason: string; index?: number; stopped?: true }> {
   const at = await this.opened(obj);
-  if ("reason" in at) return { ok: false, reason: at.reason };
+  if ("reason" in at) return { ok: false, code: "model-unavailable", reason: at.reason };
   const from = at.current;
   const added: number[] = [];
   const back = async () => {
     if (added.length > 0) await this.takeBack(obj, from, added[0]!).catch(() => null);
   };
   for (const members of groups) {
+    // A cancel or the run's time limit stops the build between booleans; what was built is taken back.
+    const why = stopped();
+    if (why) {
+      await back();
+      return { ok: false, code: "cancelled", reason: why, stopped: true };
+    }
     const steps = members.map((i) => ops[i]!.op);
     const combine = (steps[0] as { op?: "fuse" | "cut" }).op!;
     const group: GroupOp = { kind: "group", label: `${steps.length} queued ${combine}s`, source: { kind: "queue", ops: steps.length }, steps, combine };
@@ -656,19 +662,19 @@ async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; 
     const failedStep = typeof done.failedStep === "number" ? members[done.failedStep - 1] : undefined;
     if (done.ok !== true) {
       await back();
-      return { ok: false, reason: String(done.reason ?? "The queued boolean was refused."), ...(failedStep !== undefined ? { index: failedStep } : {}) };
+      return { ok: false, code: "kernel-refused", reason: String(done.reason ?? "The queued boolean was refused."), ...(failedStep !== undefined ? { index: failedStep } : {}) };
     }
     const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
     const left = report.failed?.[0];
     const missed = report.missed?.[0];
     if (left || missed !== undefined) {
       await back();
-      return { ok: false, reason: left ? left.reason : `The ${combine} does not change the part.`, index: members[left ? left.index : missed!] };
+      return { ok: false, code: "kernel-refused", reason: left ? left.reason : `The ${combine} does not change the part.`, index: members[left ? left.index : missed!] };
     }
     const guard = queuedGuard(steps, before, obj.solid);
     if (guard) {
       await back();
-      return { ok: false, reason: guard };
+      return { ok: false, code: "step-guard", reason: guard };
     }
   }
   let tree = obj.tree!;
@@ -683,13 +689,13 @@ async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; 
   try {
     reply = await this.treeCall({ call: "unfold", key: tree.key, from, last: added[added.length - 1], nodes: ids.map((id, i) => ({ id, op: ops[i]!.op })) }, "group");
   } catch (err) {
-    if (this.lostReply(err)) return { ok: false, reason: "The modeler stopped while the queued steps were stored." };
+    if (this.lostReply(err)) return { ok: false, code: "model-runaway", reason: "The modeler stopped while the queued steps were stored." };
     await back();
-    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    return { ok: false, code: "kernel-refused", reason: err instanceof Error ? err.message : String(err) };
   }
   if (typeof reply.error === "string" && reply.error) {
     await back();
-    return { ok: false, reason: plainModelError(reply.error) };
+    return { ok: false, code: "kernel-refused", reason: plainModelError(reply.error) };
   }
   const first = ids[0]!;
   obj.tree = rechained(obj.tree!, from, added, ops.map((row, i) => ({

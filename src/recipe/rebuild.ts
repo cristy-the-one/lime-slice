@@ -173,15 +173,16 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
     calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
-  const queue = calls.useQueue(unreadApplyLines(builtText(built.source, input.suffix ?? "")), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS);
+  const queue = calls.useQueue(unreadApplyLines(builtText(built.source, input.suffix ?? "")), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   // `done` builds what is still queued.
   if (out.ok && out.done && queue.holding) {
     const flushed = await queue.flushAll();
-    if (flushed && !flushed.ok) {
+    const stop = flushed && !flushed.ok ? flushed.error : queue.stopped();
+    if (stop) {
       out.ok = false;
-      out.reason = flushed.error;
+      out.reason = stop;
     }
   }
   const notes = [...calls.notes, ...(out.notes ?? [])];
