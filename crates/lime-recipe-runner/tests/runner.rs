@@ -130,6 +130,17 @@ fn a_real_recipe_that_only_logs() {
     assert_eq!(built.code, Some(0), "{}\n{}", built.stdout, built.stderr);
     let exe = built.exe.expect("the build made a program");
     assert!(built.main.ends_with(Path::new("slot-0").join("src").join("main.rs")));
+    // The same text again is the program the slot holds: the file a run starts is the one already built.
+    let made = std::fs::metadata(&exe).unwrap().modified().unwrap();
+    let again = build(&lust, &root, &repo_crate(), 0, source, Duration::from_secs(120)).unwrap();
+    assert_eq!(again.exe.as_deref(), Some(exe.as_path()));
+    assert_eq!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "unchanged text was built again");
+    // Changed text, and then the first text after it, each build.
+    let edited = build(&lust, &root, &repo_crate(), 0, &format!("{source}// edited\n"), Duration::from_secs(120)).unwrap();
+    assert_eq!(edited.code, Some(0), "{}\n{}", edited.stdout, edited.stderr);
+    assert_ne!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "changed text was not built");
+    let built = build(&lust, &root, &repo_crate(), 0, source, Duration::from_secs(120)).unwrap();
+    assert_eq!(built.code, Some(0), "{}\n{}", built.stdout, built.stderr);
 
     let broken = build(&lust, &root, &repo_crate(), 1, "fn main() { let x: f64 = 1; }\n", Duration::from_secs(120)).unwrap();
     assert_ne!(broken.code, Some(0));

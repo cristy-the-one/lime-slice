@@ -487,7 +487,9 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     if slot >= SLOTS {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("slot {slot} is not one of {SLOTS}")));
     }
-    crate_copy(root, crate_dir)?;
+    if crate_copy(root, crate_dir)? {
+        built().clear();
+    }
     let dir = root.join(format!("slot-{slot}"));
     fs::create_dir_all(dir.join("src"))?;
     let manifest = format!(
@@ -504,8 +506,20 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
             opt::distrust_running(&cache);
         }
     }
-    fs::write(&main, text)?;
     let exe = dir.join(if cfg!(windows) { "recipe.exe" } else { "recipe" });
+    // The program this slot holds was built from this text by this lust against this crate: it is the program a
+    // build would make. A build of unchanged text still ran lust and left a new file, and Windows takes about 0.3 s
+    // to start a program file it has not run before, against a few milliseconds for one it has. Values go in the
+    // start line, so a Live preview, an Apply and a rebuild from other values all come here with the same text.
+    // While lust's background build may still swap in the optimised program, lust is asked each time.
+    let key = (text.to_owned(), lust.to_path_buf(), opt.mode);
+    if let Some(kept) = built().get(&exe) {
+        if kept.0 == key && exe.is_file() && main.is_file() && (opt.mode != opt::OptMode::Bg || kept.1.compiler == "opt") {
+            return Ok(kept.1.clone());
+        }
+    }
+    built().remove(&exe);
+    fs::write(&main, text)?;
     let _ = fs::remove_file(&exe);
     // Output goes to files: lust's daemon may inherit the handles and keep a pipe open past the build.
     let out_path = dir.join("build.out");
@@ -547,20 +561,37 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     let stderr = fs::read_to_string(&err_path).unwrap_or_default() + &note;
     let made = code == Some(0) && exe.is_file();
     let compiler = opt.built_with(&stderr);
-    Ok(BuildOutput { code, stdout, stderr, exe: made.then_some(exe), main, compiler })
+    let output = BuildOutput { code, stdout, stderr, exe: made.then_some(exe.clone()), main, compiler };
+    if made {
+        built().insert(exe, (key, output.clone()));
+    }
+    Ok(output)
+}
+
+type BuiltKey = (String, PathBuf, opt::OptMode);
+type Built = std::collections::HashMap<PathBuf, (BuiltKey, BuildOutput)>;
+
+/// Each slot's last good build, by its program's path: the text, the lust and the build mode that made it.
+fn built() -> std::sync::MutexGuard<'static, Built> {
+    static BUILT: std::sync::LazyLock<std::sync::Mutex<Built>> = std::sync::LazyLock::new(Default::default);
+    BUILT.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// The crate's copy beside the slots, with a manifest of only name, version and edition (lust reads that shape without
 /// `cargo metadata`); the same files the MCP server's host writes.
-fn crate_copy(root: &Path, crate_dir: &Path) -> io::Result<()> {
+/// Answers whether the crate's text was written, which makes every built program stale.
+fn crate_copy(root: &Path, crate_dir: &Path) -> io::Result<bool> {
     let lib = fs::read_to_string(crate_dir.join("src").join("lib.rs"))?;
     let dir = root.join("lime-recipe");
     fs::create_dir_all(dir.join("src"))?;
-    write_if_changed(&dir.join("src").join("lib.rs"), &lib)?;
+    let lib_path = dir.join("src").join("lib.rs");
+    let changed = !fs::read_to_string(&lib_path).is_ok_and(|old| old == lib);
+    write_if_changed(&lib_path, &lib)?;
     write_if_changed(
         &dir.join("Cargo.toml"),
         "[package]\nname = \"lime-recipe\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\n\n[workspace]\n",
-    )
+    )?;
+    Ok(changed)
 }
 
 /// Writes only when the text differs, so lust's warm session keeps what it compiled.
