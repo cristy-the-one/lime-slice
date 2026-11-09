@@ -5,6 +5,7 @@
  * object's id instead.
  */
 import { isPrimitiveKind, primitiveMesh, type PrimitiveSpec } from "./model-primitive.ts";
+import { isBoreShape } from "./model-gear.ts";
 import { readLoftDrawing } from "./sketch/loft-file.ts";
 import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
@@ -643,7 +644,8 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   const height = value.height === undefined ? 0 : value.height;
   if (!origin || !size || !turn || !finite(radius) || !finite(height)) return undefined;
   const spec: PrimitiveSpec = { primitive: value.primitive, origin, size, radius, height, turn };
-  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius"] as const) {
+  // A gear's numbers (src/model-gear.ts) ride with the same rule: kept only when there.
+  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight"] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (!finite(raw)) return undefined;
@@ -652,6 +654,10 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (value.flats !== undefined) {
     if (typeof value.flats !== "boolean") return undefined;
     spec.flats = value.flats;
+  }
+  if (value.boreShape !== undefined) {
+    if (!isBoreShape(value.boreShape)) return undefined;
+    spec.boreShape = value.boreShape;
   }
   return spec;
 }

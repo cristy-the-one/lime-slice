@@ -4,13 +4,14 @@
  * The ghost never asks the engine: it is built here, from the sizes alone.
  */
 import { formatMm } from "./model-plane.ts";
+import { gearGhostOutline, gearLabel, tipRadius, type GearFields } from "./model-gear.ts";
 
 // Lives in ./model-space.ts, which loads with the app (the plate places solids with it), so it need not load this module.
 export { turnCentre } from "./model-space.ts";
 
 type Vec3 = [number, number, number];
 
-export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube";
+export type PrimitiveKind = "box" | "cylinder" | "sphere" | "ellipsoid" | "cone" | "torus" | "wedge" | "polygon" | "tube" | "gear";
 
 /** Every primitive, in the order the picker lists them, with its name for a new object. */
 export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
@@ -23,6 +24,7 @@ export const PRIMITIVES: readonly { kind: PrimitiveKind; label: string }[] = [
   { kind: "wedge", label: "Wedge" },
   { kind: "polygon", label: "Polygon" },
   { kind: "tube", label: "Tube" },
+  { kind: "gear", label: "Gear" },
 ];
 
 export function isPrimitiveKind(value: unknown): value is PrimitiveKind {
@@ -55,6 +57,25 @@ export interface PrimitiveSpec {
   flats?: boolean;
   /** A box's four edges along its own Z rounded to this radius, as a rounded pocket or boss cuts them. */
   cornerRadius?: number;
+  // --- A gear (src/model-gear.ts): `height` is its thickness, `origin` its base centre. Only a gear carries these.
+  teeth?: number;
+  module?: number;
+  pressureDeg?: number;
+  backlash?: number;
+  profileShift?: number;
+  phaseDeg?: number;
+  bore?: number;
+  boreShape?: GearFields["boreShape"];
+  boreFlat?: number;
+  hubDiameter?: number;
+  hubHeight?: number;
+}
+
+/** A gear spec's gear numbers, or null for any other kind. */
+export function gearOf(spec: PrimitiveSpec): GearFields | null {
+  if (spec.primitive !== "gear") return null;
+  const { teeth = 0, module = 0, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight } = spec;
+  return { teeth, module, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight };
 }
 
 /** Every number the panel offers a primitive, whichever kind reads it. */
@@ -69,6 +90,8 @@ export interface PrimitiveFields {
   sides: number;
   across: number;
   flats: boolean;
+  /** A gear's numbers; absent for the panel's other kinds. */
+  gear?: GearFields;
 }
 
 /** The spec of `kind` from the panel's numbers: the newer fields only where that kind reads them. A sphere does not turn. */
@@ -92,6 +115,10 @@ export function primitiveSpec(kind: PrimitiveKind, fields: PrimitiveFields, orig
       return { ...base, sides: fields.sides, across: fields.across, flats: fields.flats };
     case "tube":
       return { ...base, innerRadius: fields.innerRadius };
+    case "gear": {
+      const gear = Object.fromEntries(Object.entries(fields.gear ?? { teeth: 20, module: 1.5 }).filter(([, value]) => value !== undefined));
+      return { ...base, ...gear };
+    }
     default:
       return base;
   }
@@ -108,6 +135,7 @@ const READS: Record<PrimitiveKind, { size: boolean; radius: boolean; height: boo
   wedge: { size: true, radius: false, height: false },
   polygon: { size: false, radius: false, height: true },
   tube: { size: false, radius: true, height: true },
+  gear: { size: false, radius: false, height: true },
 };
 
 /**
@@ -142,6 +170,11 @@ export function primitiveBounds(spec: PrimitiveSpec): { min: Vec3; max: Vec3 } {
     case "cylinder":
     case "tube":
       return round(spec.radius, spec.height);
+    case "gear": {
+      const gear = gearOf(spec)!;
+      const hub = gear.hubDiameter && gear.hubHeight ? gear.hubHeight : 0;
+      return round(Math.max(tipRadius(gear), hub > 0 ? (gear.hubDiameter ?? 0) / 2 : 0), spec.height + hub);
+    }
     case "cone":
       return round(Math.max(spec.radius, spec.topRadius ?? 0), spec.height);
     case "sphere":
@@ -199,6 +232,8 @@ export function primitiveLabel(spec: PrimitiveSpec): string {
     }
     case "tube":
       return `tube ⌀${n(spec.radius * 2)} inside ⌀${n((spec.innerRadius ?? 0) * 2)} h ${n(spec.height)}`;
+    case "gear":
+      return gearLabel(gearOf(spec)!, spec.height, n);
   }
 }
 
@@ -266,6 +301,17 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
       lathe(quad, sides, -Math.PI / 2 - Math.PI / sides, corner, corner, spec.height, 0);
       break;
     }
+    case "gear": {
+      const gear = gearOf(spec)!;
+      if (!Number.isInteger(gear.teeth) || gear.teeth < 3 || gear.teeth > 400 || !ok(gear.module, spec.height)) break;
+      prism(tri, quad, gearGhostOutline(gear), spec.height);
+      if (gear.hubDiameter && gear.hubHeight && ok(gear.hubDiameter, gear.hubHeight)) {
+        const before = out.length;
+        lathe(quad, ROUND, 0, gear.hubDiameter / 2, gear.hubDiameter / 2, gear.hubHeight, 0);
+        for (let i = before + 2; i < out.length; i += 3) out[i] = out[i]! + spec.height;
+      }
+      break;
+    }
     case "sphere":
       if (ok(spec.radius)) ring(quad, ROUND, ROUND / 2, (u, v) => {
         const lat = -Math.PI / 2 + v * Math.PI;
@@ -294,6 +340,19 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
 }
 
 type Quad = (a: Vec3, b: Vec3, c: Vec3, d: Vec3) => void;
+type Tri = (a: Vec3, b: Vec3, c: Vec3) => void;
+
+/** A star-shaped outline about the origin, counter-clockwise, pushed up `height`: caps fanned from the axis, and walls. */
+function prism(tri: Tri, quad: Quad, outline: readonly [number, number][], height: number) {
+  const n = outline.length;
+  for (let i = 0; i < n; i += 1) {
+    const [x0, y0] = outline[i]!;
+    const [x1, y1] = outline[(i + 1) % n]!;
+    quad([x0, y0, 0], [x1, y1, 0], [x1, y1, height], [x0, y0, height]);
+    tri([0, 0, 0], [x1, y1, 0], [x0, y0, 0]);
+    tri([0, 0, height], [x0, y0, height], [x1, y1, height]);
+  }
+}
 
 /** A box, or a wedge whose top runs from X 0 to `top`. */
 function block(quad: Quad, dx: number, dy: number, dz: number, top: number) {

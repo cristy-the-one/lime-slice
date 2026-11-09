@@ -445,6 +445,20 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
       return { modelRadius: spec.radius, modelInnerR: spec.innerRadius ?? 0, modelHeight: spec.height };
     case "polygon":
       return { modelSides: spec.sides ?? 0, modelAcross: spec.across ?? 0, modelHeight: spec.height };
+    case "gear":
+      return {
+        modelHeight: spec.height,
+        modelGearTeeth: spec.teeth ?? 0,
+        modelGearModule: spec.module ?? 0,
+        modelGearPressure: spec.pressureDeg ?? 20,
+        modelGearBacklash: spec.backlash ?? 0.1,
+        modelGearShift: spec.profileShift ?? 0,
+        modelGearPhase: spec.phaseDeg ?? 0,
+        modelGearBore: spec.bore ?? 0,
+        modelGearBoreFlat: spec.boreFlat ?? 0,
+        modelGearHub: spec.hubDiameter ?? 0,
+        modelGearHubH: spec.hubHeight ?? 0,
+      };
   }
 }
 

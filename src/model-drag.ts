@@ -309,6 +309,8 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
         knob("sides", "modelSides", axes[1], "accent", "Sides", { rate: 0.25, min: 3, max: 64, whole: true, unit: "count" }),
         height,
       ];
+    case "gear":
+      return [height];
   }
 }
 
