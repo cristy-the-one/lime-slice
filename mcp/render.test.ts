@@ -191,9 +191,9 @@ await session.call("project_create", {});
 check("a new project closes the open solid", again.ok === true && engine.calls.filter((call) => call === "close").length === opens + 1);
 
 // A chosen background: every corner of the PNG and of the raw pixels is exactly that colour, and the part is still drawn.
-const cornersOf = (png: Uint8Array, edge: number) => {
+const cornersOf = (png: Uint8Array, edge: number, tall = edge) => {
   const raw = rawRows(png), at = (x: number, y: number) => [...raw.subarray(y * (edge * 3 + 1) + 1 + x * 3, y * (edge * 3 + 1) + 4 + x * 3)].join();
-  return [at(0, 0), at(edge - 1, 0), at(0, edge - 1), at(edge - 1, edge - 1)];
+  return [at(0, 0), at(edge - 1, 0), at(0, tall - 1), at(edge - 1, tall - 1)];
 };
 const chosen = renderMesh(ledge, "iso", 96, undefined, { background: [18, 171, 86], pixels: true });
 check("a frame's corner pixels are the chosen background", cornersOf(chosen.png, 96).every((pixel) => pixel === "18,171,86"), cornersOf(chosen.png, 96).join(" "));
@@ -204,7 +204,20 @@ check("no choice keeps the pale background", cornersOf(paper, 96).every((pixel) 
 const backgroundSession = new Session(fakeEngine());
 const backgroundPart = String((await backgroundSession.call("solid_new", { primitive: "box", dx: 2, dy: 2, dz: 2 })).object);
 const shown = await backgroundSession.call("render_view", { object: backgroundPart, camera: "iso", background: "#12AB56", name: "background.png", inline: false, longEdge: 64 });
-check("render_view takes a background", shown.ok === true && cornersOf(readFileSync(String(shown.path)), 64).every((pixel) => pixel === "18,171,86"), JSON.stringify(shown));
+check("render_view takes a background", shown.ok === true && cornersOf(readFileSync(String(shown.path)), Number(shown.width), Number(shown.height)).every((pixel) => pixel === "18,171,86"), JSON.stringify(shown));
+// render_view sizes the picture to the part: a plate from the front is a strip, at the scale of the square picture.
+const plate = box([0, 0, 0], [100, 80, 10]);
+const strip = renderMesh(plate, "front", 96, undefined, { crop: true });
+const square = renderMesh(plate, "front", 96);
+check("a cropped picture keeps the long edge and drops the empty rows", strip.width === 96 && strip.height < 32 + 1 && square.width === 96 && square.height === 96, `${strip.width}x${strip.height}`);
+const stripShades = shades(strip.png, strip.width, strip.height), squareShades = shades(square.png, 96, 96);
+const drawnIn = (list: number[]) => list.filter((shade) => shade !== 248).length;
+check("the part is drawn at the same scale", Math.abs(drawnIn(stripShades) - drawnIn(squareShades)) <= 96 * 2, `${drawnIn(stripShades)} against ${drawnIn(squareShades)}`);
+check("a fixed box keeps the square", renderMesh(plate, "front", 96, undefined, { crop: true, fit: { min: [0, 0, 0], max: [100, 80, 10] } }).height === 96);
+const plateSession = new Session(fakeEngine());
+const platePart = String((await plateSession.call("solid_new", { primitive: "box", dx: 100, dy: 80, dz: 10 })).object);
+const plateShown = await plateSession.call("render_view", { object: platePart, camera: "front", name: "plate.png", inline: false, longEdge: 128 });
+check("render_view answers the cropped size", plateShown.ok === true && plateShown.width === 128 && Number(plateShown.height) < 64, JSON.stringify(plateShown));
 for (const bad of ["red", "#abc", "12ab56", "#12ab5g", "#12ab566", ""]) {
   const refused = await backgroundSession.call("render_view", { object: backgroundPart, background: bad, inline: false });
   check(`render_view refuses the background ${JSON.stringify(bad)} with a sentence`, refused.ok === false && String(refused.reason).includes("#rrggbb"), JSON.stringify(refused));

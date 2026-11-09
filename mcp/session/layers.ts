@@ -104,7 +104,7 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   const views: { camera: string; path: string; width: number; height: number }[] = [];
   const pictures: InlineImage[] = [];
   cameras.forEach(({ label, camera }, index) => {
-    const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, { ...looks.options, ...(fit ? { fit } : {}), ...(background ? { background: background.rgb } : {}) });
+    const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, { ...looks.options, ...(fit ? { fit } : { crop: true }), ...(background ? { background: background.rgb } : {}) });
     const file = many ? `${stem}-${label}${cameras.filter((row) => row.label === label).length > 1 ? `-${index + 1}` : ""}.png` : typeof input.name === "string" ? input.name : `${obj.name}-${label}.png`;
     const path = resolveWrite(file, ".png");
     writeFileSync(path, drawn.png);
