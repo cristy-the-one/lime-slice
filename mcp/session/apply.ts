@@ -5,8 +5,8 @@
 import { plainModelError } from "../../src/app/model-error.ts";
 import { probeKey } from "../../src/model-feasibility.ts";
 import { rootSpec } from "../../src/model-primitive.ts";
-import { applyRequest } from "../../src/model-request.ts";
-import { appliedReply, partExpandContext, typedPlaneOf, typedPointIn, stepGuard, storedOp, nodeHandle, parseNode, solidView } from "../../src/modeling/model-calls.ts";
+import { applyRequest, gotoRequest } from "../../src/model-request.ts";
+import { appliedReply, partExpandContext, typedPlaneOf, typedPointIn, stepGuard, storedOp, nodeHandle, parseNode, solidView, type SolidView } from "../../src/modeling/model-calls.ts";
 import { profilePlane } from "../../src/modeling/bake.ts";
 import { bakeCells, runComposite, storeGroup } from "../../src/modeling/composite-apply.ts";
 import { labelBox } from "../../src/modeling/part-reads.ts";
@@ -14,8 +14,7 @@ import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../../src/mode
 import { exprLeaves, linkedExprs, withLeaf } from "../../src/modeling/links.ts";
 import { applyPose, toSolidOp, typedPoseOf } from "../../src/model-space.ts";
 import { dropped, jumped, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type ProfileLoop } from "../../src/model-tree.ts";
-import { queuedGuard, queueableOp } from "../../src/recipe/queue.ts";
-import { runEndingAt } from "../../src/plugin-step.ts";
+import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuard, queueableOp } from "../../src/recipe/queue.ts";import { runEndingAt } from "../../src/plugin-step.ts";
 import { workplaneOwn, planePrimitive, type Workplane } from "../../src/workplane.ts";
 import { ProtocolError } from "../engine.ts";
 import { expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, type ExpandContext, type Piece } from "../../src/modeling/compose.ts";
@@ -142,7 +141,7 @@ async function apply(this: Session, obj: PlateObject, raw: unknown): Promise<Rec
   return done;
 }
 
-async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown, budgetMs?: number): Promise<Record<string, unknown>> {
+async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, baked: { op: ModelOp; typed: Record<string, unknown> }, raw: unknown, budgetMs?: number, unmeshed?: readonly Box[]): Promise<Record<string, unknown>> {
   if (baked.op.kind === "partition") return this.applyPartition(obj, tree, baked.op, baked.typed, budgetMs);
   if (baked.op.kind === "split") {
     const note = this.splitCheck(obj, baked.op);
@@ -156,7 +155,8 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   const otherKey = baked.op.kind === "split" && keep === "both" ? `mcp-split-${obj.id}-${node}` : undefined;
   let reply: Record<string, unknown>;
   // A recipe that meshes once at its end asks for no mesh after a plain step (mesh-end.ts).
-  const noMesh = this.meshDeferNow && (baked.op.kind === "boolean" || baked.op.kind === "extrude") && otherKey === undefined;
+  // So does a queued group that is not the last of its flush (`unmeshed`: the boxes of its fuse tools, `applyQueued`).
+  const noMesh = ((this.meshDeferNow && (baked.op.kind === "boolean" || baked.op.kind === "extrude")) || unmeshed !== undefined) && otherKey === undefined;
   try {
     reply = await this.treeCall({ ...applyRequest(tree.key, tree.current, node, baked.op, CHORD, otherKey), ...(noMesh ? { mesh: false } : {}) }, baked.op.kind, budgetMs);
   } catch (err) {
@@ -173,7 +173,7 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored), fingerprint: null });
   const prior = obj.solid;
   const lite = noMesh && reply.format === "lime-solid-lite";
-  const solid = lite ? lightSolid(reply, prior, baked.op) : solidView(reply);
+  const solid = lite ? (unmeshed ? liteSolid(reply, prior, unmeshed) : lightSolid(reply, prior, baked.op)) : solidView(reply);
   if (solid) obj.solid = solid;
   obj.probes.clear();
   // --- A9. Each piece of a group was already guarded. A group of cuts may remove more than half on purpose. ---
@@ -542,12 +542,12 @@ async function storeGroupMethod(this: Session, obj: PlateObject, before: number,
 }
 
 /** A baked op probed, then applied: the kernel keeps the probe's build, so it is built once. */
-async function bakedApply(this: Session, obj: PlateObject, baked: { op: ModelOp; typed: Record<string, unknown> }, label: string | undefined, budgetMs?: number): Promise<Record<string, unknown>> {
+async function bakedApply(this: Session, obj: PlateObject, baked: { op: ModelOp; typed: Record<string, unknown> }, label: string | undefined, budgetMs?: number, unmeshed?: readonly Box[]): Promise<Record<string, unknown>> {
   const at = await this.opened(obj);
   if ("reason" in at) return refuse("bad-anchor", at.reason);
   const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budgetMs);
   if (probed.ok !== true) return probed;
-  const done = await this.applyBaked(obj, at, baked, {}, budgetMs);
+  const done = await this.applyBaked(obj, at, baked, {}, budgetMs, unmeshed);
   const node = parseNode(done.node);
   if (done.ok === true && label?.trim() && node !== null) this.rename(obj, node, label);
   return done;
@@ -637,7 +637,7 @@ async function queueTool(this: Session, obj: PlateObject, raw: Record<string, un
  * as sent: one step per op in order, the last with the solid, each marked `builtWith` the first. A refusal, a tool the
  * kernel left out or found changed nothing, or a step guard takes every group back, and names the op when it can.
  */
-async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; label?: string }[], groups: number[][], stopped: () => string | null = () => null): Promise<{ ok: true } | { ok: false; code: string; reason: string; index?: number; stopped?: true }> {
+async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; label?: string; box?: Box }[], groups: number[][], stopped: () => string | null = () => null): Promise<{ ok: true } | { ok: false; code: string; reason: string; index?: number; stopped?: true }> {
   const at = await this.opened(obj);
   if ("reason" in at) return { ok: false, code: "model-unavailable", reason: at.reason };
   const from = at.current;
@@ -645,20 +645,29 @@ async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; 
   const back = async () => {
     if (added.length > 0) await this.takeBack(obj, from, added[0]!).catch(() => null);
   };
-  for (const members of groups) {
+  const stepsOf = groups.map((members) => members.map((i) => ops[i]!.op));
+  /** The group before the one at hand, when it was built without a mesh (`groupSkipsMesh`). */
+  let bare: number | null = null;
+  for (const [g, members] of groups.entries()) {
     // A cancel or the run's time limit stops the build between booleans; what was built is taken back.
     const why = stopped();
     if (why) {
       await back();
       return { ok: false, code: "cancelled", reason: why, stopped: true };
     }
-    const steps = members.map((i) => ops[i]!.op);
+    const steps = stepsOf[g]!;
     const combine = (steps[0] as { op?: "fuse" | "cut" }).op!;
     const group: GroupOp = { kind: "group", label: `${steps.length} queued ${combine}s`, source: { kind: "queue", ops: steps.length }, steps, combine };
-    const before = obj.solid;
-    const done = await this.bakedApply(obj, { op: group, typed: { kind: "queue", ops: steps.length } }, undefined, Math.max(this.modelTimeoutMs(), steps.length * 250));
+    let before = obj.solid;
+    // Only the last group's solid is shown: a group before it that the guards read no mesh of is built without one.
+    // Its box is the part's, grown by its fuse tools.
+    const unmeshed = groupSkipsMesh(stepsOf, g) ? members.flatMap((i) => (combine === "fuse" && ops[i]!.box ? [ops[i]!.box!] : [])) : undefined;
+    const done = await this.bakedApply(obj, { op: group, typed: { kind: "queue", ops: steps.length } }, undefined, Math.max(this.modelTimeoutMs(), steps.length * 250), unmeshed);
     const node = parseNode(done.node);
     if (done.ok === true && node !== null) added.push(node);
+    // The queue keeps track of its own unmeshed step: the next group builds on it, and the last one is meshed.
+    const lite = node !== null && this.meshPending.get(obj.id) === node;
+    if (lite) this.meshPending.delete(obj.id);
     const failedStep = typeof done.failedStep === "number" ? members[done.failedStep - 1] : undefined;
     if (done.ok !== true) {
       await back();
@@ -671,11 +680,30 @@ async function applyQueued(this: Session, obj: PlateObject, ops: { op: ModelOp; 
       await back();
       return { ok: false, code: "kernel-refused", reason: left ? left.reason : `The ${combine} does not change the part.`, index: members[left ? left.index : missed!] };
     }
+    // The guard counts the edges where pieces meet before and after. The solid before has no mesh when its group
+    // skipped it: it is meshed now (a goto of that step, and back) in the one case the guard reads it.
+    if (bare !== null && node !== null && guardReadsBefore(steps, obj.solid)) {
+      let meshed: SolidView | null = null;
+      try {
+        const shown = await this.treeCall(gotoRequest(obj.tree!.key, bare, CHORD), "edit");
+        meshed = typeof shown.error === "string" && shown.error ? null : solidView(shown);
+        const again = await this.treeCall(gotoRequest(obj.tree!.key, node, CHORD), "edit");
+        if (typeof again.error === "string" && again.error) meshed = null;
+      } catch {
+        meshed = null;
+      }
+      if (!meshed) {
+        await back();
+        return { ok: false, code: "kernel-refused", reason: "The step before a queued boolean could not be meshed for its check." };
+      }
+      before = meshed;
+    }
     const guard = queuedGuard(steps, before, obj.solid);
     if (guard) {
       await back();
       return { ok: false, code: "step-guard", reason: guard };
     }
+    bare = lite ? node : null;
   }
   let tree = obj.tree!;
   const ids: number[] = [];

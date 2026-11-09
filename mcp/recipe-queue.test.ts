@@ -261,6 +261,45 @@ fn main() {
   check("OCCT: the same faces and edges, and the volume to 1e-9", !!a && !!b && a.faces === b.faces && a.edges === b.edges && Math.abs(a.volumeMm3 - b.volumeMm3) <= 1e-9 * b.volumeMm3, { on: a, off: b });
   check("OCCT: the same History rows, in the order sent", JSON.stringify(on.ops) === JSON.stringify(off.ops) && on.ops.length === 13, { on: on.ops.length, off: off.ops.length });
   // Rebuilding a middle step from the steps before it gives that step's solid, as a rebuild does.
+  // A flush meshes only what is read. Extruded bosses, then cylinders cut into them: two booleans, and the first (no
+  // primitive boolean in it, not the last) asks for no mesh. The solid, its mesh and the steps are the ones of a run
+  // whose every group was meshed (the same engine, with `mesh: false` taken off each request).
+  const PADS = `use lime_recipe::{ops, Json, Session};
+
+fn main() {
+    let mut s = Session::start();
+    let p = s.object().expect("a sphere");
+    for c in [[-12.0, -12.0], [12.0, -12.0], [-12.0, 12.0], [12.0, 12.0]] {
+        s.apply(&p, Json::obj().set("kind", "extrude").set("op", "fuse").set("origin", [c[0], c[1], 50.0]).set("profile", Json::arr(vec![[-4.0, -4.0], [4.0, -4.0], [4.0, 4.0], [-4.0, 4.0]])).set("depth", 12.0)).unwrap();
+        s.apply(&p, ops::boolean("cut", ops::cylinder(1.5, 8.0), [c[0], c[1], 56.0])).unwrap();
+    }
+    s.done_with(&p, Json::obj());
+}
+`;
+  const meshOf = (session: Session, object: string) => {
+    const solid = (session as unknown as { find(id: string): { solid?: { positions: Float32Array; triangles: Uint32Array; fingerprint: unknown } } | undefined }).find(object)?.solid;
+    return solid ? JSON.stringify([solid.fingerprint, Array.from(solid.positions), Array.from(solid.triangles)]) : "none";
+  };
+  const padsRun = async (meshAll: boolean) => {
+    const asked: boolean[] = [];
+    const engine = { ...worker, modelTree: (body: string) => {
+      const group = body.includes('"call":"apply"') && body.includes('"kind":"queue"');
+      if (group) asked.push(body.includes('"mesh":false'));
+      return worker.modelTree(meshAll ? body.replace(',"mesh":false}', "}") : body);
+    } };
+    const session = new Session(engine);
+    const call = (n: string, a: unknown = {}) => session.call(n, a) as Promise<R>;
+    const { object } = await sphere(call);
+    const reply = await call("recipe_run", { source: PADS, name: "pads", object, timeoutS: 120 });
+    return { reply, asked, mesh: meshOf(session, object), ops: opsOf(session, object), check: await call("model_check", { object }) };
+  };
+  const lean = await padsRun(false);
+  const full = await padsRun(true);
+  check("OCCT: pads and bores queue as two booleans", lean.reply.ok === true && JSON.stringify(lean.reply.queued) === JSON.stringify({ applies: 8, booleans: 2 }), lean.reply);
+  check("OCCT: the first group asks for no mesh, the last one is meshed", JSON.stringify(lean.asked) === JSON.stringify([true, false]), lean.asked);
+  check("OCCT: the same solid, mesh and steps as with every group meshed", full.reply.ok === true && lean.mesh !== "none" && lean.mesh === full.mesh && JSON.stringify(lean.ops) === JSON.stringify(full.ops), { lean: lean.mesh.length, full: full.mesh.length });
+  check("OCCT: and the same model_check", JSON.stringify(lean.check) === JSON.stringify(full.check), { lean: lean.check, full: full.check });
+
   const mid = on.history.find((row) => row.builtWith !== undefined && row.current !== true);
   const shown = mid ? await on.session.call("model_goto", { object: on.object, node: mid.id }) : null;
   check("OCCT: going to a step built inside a group builds it", shown?.ok === true, shown);

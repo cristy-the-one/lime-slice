@@ -489,7 +489,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       touch(object);
       const lastSite = ops[ops.length - 1]!.site;
       this.noteStage(`recipe ${name}: call ${lastSite.id}, building ${ops.length} queued applies as ${groups.length} boolean${groups.length === 1 ? "" : "s"}, ${lineText(map, lastSite.line)}`);
-      const rows = ops.map((q) => ({ op: bakedOps.get(q.op)!.op, ...(typeof q.op.label === "string" ? { label: q.op.label } : {}) }));
+      const rows = ops.map((q) => ({ op: bakedOps.get(q.op)!.op, ...(typeof q.op.label === "string" ? { label: q.op.label } : {}), ...(q.tool ? { box: q.tool.box } : {}) }));
       const done = await this.applyQueued(obj, rows, groups, () => queue.stopped());
       if (done.ok) applied += ops.length;
       return done;

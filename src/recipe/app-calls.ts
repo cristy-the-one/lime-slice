@@ -38,7 +38,7 @@ import { GLOBAL_WORKPLANE, planePrimitive, type Workplane } from "../workplane.t
 import type { RecipeCall, RecipeCallSite, RecipeReply } from "./host.ts";
 import { answerPick, sketchOutline, type PickReads } from "./picks.ts";
 import { answerTextOutline } from "./text-outline.ts";
-import { queuedGuard, queueableOp, RecipeQueue } from "./queue.ts";
+import { groupSkipsMesh, guardReadsBefore, liteSolid, queuedGuard, queueableOp, RecipeQueue } from "./queue.ts";
 
 type Body = Record<string, unknown>;
 
@@ -242,7 +242,7 @@ export class AppRecipeCalls {
       build: async (object, ops, groups) => {
         const p = this.addressable(object);
         if (!p) return { ok: false, reason: `${object} is not a part of this run.` };
-        return this.applyQueued(p, () => this.queue?.stopped() ?? null, ops.map((q) => ({ baked: this.bakedOps.get(q.op)!, label: typeof q.op.label === "string" ? q.op.label : undefined })), groups);
+        return this.applyQueued(p, () => this.queue?.stopped() ?? null, ops.map((q) => ({ baked: this.bakedOps.get(q.op)!, label: typeof q.op.label === "string" ? q.op.label : undefined, ...(q.tool ? { box: q.tool.box } : {}) })), groups);
       },
       applyOne: (site) => this.answer(site),
     }, unread, { silent, timeLimitS, selected: () => this.selected, signal });
@@ -250,25 +250,30 @@ export class AppRecipeCalls {
   }
 
   /** Queued ops built as combined groups, then stored as sent, one step each (the MCP session's `applyQueued`). */
-  private async applyQueued(p: RunPart, stopped: () => string | null, ops: { baked: Baked; label?: string }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number; stopped?: true }> {
+  private async applyQueued(p: RunPart, stopped: () => string | null, ops: { baked: Baked; label?: string; box?: Box }[], groups: number[][]): Promise<{ ok: true } | { ok: false; reason: string; index?: number; stopped?: true }> {
     const from = p.tree.current;
     const added: NodeId[] = [];
     const back = async () => {
       if (added.length > 0) await this.back(p, from, added[0]!);
     };
-    for (const members of groups) {
+    const stepsOf = groups.map((members) => members.map((i) => ops[i]!.baked.op));
+    /** The group before the one at hand, when it was built without a mesh (`groupSkipsMesh`). */
+    let bare: NodeId | null = null;
+    for (const [g, members] of groups.entries()) {
       const why = stopped();
       if (why) {
         await back();
         return { ok: false, reason: why, stopped: true };
       }
-      const steps = members.map((i) => ops[i]!.baked.op);
+      const steps = stepsOf[g]!;
       const combine = (steps[0] as { op?: "fuse" | "cut" }).op!;
       const group: GroupOp = { kind: "group", label: `${steps.length} queued ${combine}s`, source: { kind: "queue", ops: steps.length }, steps, combine };
       const baked: Baked = { op: group, typed: { kind: "queue", ops: steps.length } };
-      const before = p.solid;
+      let before = p.solid;
+      // Only the last group's solid is shown: a group before it that the guards read no mesh of is built without one.
+      const unmeshed = groupSkipsMesh(stepsOf, g) ? members.flatMap((i) => (combine === "fuse" && ops[i]!.box ? [ops[i]!.box!] : [])) : undefined;
       const probed = await this.probeBaked(p, baked, false);
-      const done = probed.ok === true ? await this.applyBaked(p, baked, {}) : probed;
+      const done = probed.ok === true ? await this.applyBaked(p, baked, {}, unmeshed) : probed;
       const node = parseNode(done.node);
       if (done.ok === true && node !== null) added.push(node);
       const failedStep = typeof done.failedStep === "number" ? members[done.failedStep - 1] : undefined;
@@ -283,11 +288,24 @@ export class AppRecipeCalls {
         await back();
         return { ok: false, reason: left ? left.reason : `The ${combine} does not change the part.`, index: members[left ? left.index : missed!]! };
       }
+      // The solid before has no mesh when its group skipped it: it is meshed now (a goto of that step, and back) in
+      // the one case the guard reads it.
+      if (bare !== null && node !== null && guardReadsBefore(steps, p.solid)) {
+        const shown = await this.engine.tree(p.tree.key, bare, gotoRequest(p.tree.key, bare, this.env.chordMm));
+        const meshed = typeof shown.error === "string" && shown.error ? null : solidView(shown);
+        const again = await this.engine.tree(p.tree.key, node, gotoRequest(p.tree.key, node, this.env.chordMm));
+        if (!meshed || (typeof again.error === "string" && again.error)) {
+          await back();
+          return { ok: false, reason: "The step before a queued boolean could not be meshed for its check." };
+        }
+        before = meshed;
+      }
       const guard = queuedGuard(steps, before, p.solid);
       if (guard) {
         await back();
         return { ok: false, reason: guard };
       }
+      bare = unmeshed !== undefined && node !== null && p.solid?.positions.length === 0 ? node : null;
     }
     const ids = ops.map(() => this.reserve(p));
     const reply = await this.engine.tree(p.tree.key, p.tree.current, { call: "unfold", key: p.tree.key, from, last: added[added.length - 1], nodes: ids.map((id, i) => ({ id, op: ops[i]!.baked.op })) });
@@ -688,7 +706,7 @@ export class AppRecipeCalls {
   }
 
   /** The baked op applied on the shown step, a new step at the end of the part's branch, as the session applies one. */
-  private async applyBaked(p: RunPart, baked: Baked, raw: unknown): Promise<Body> {
+  private async applyBaked(p: RunPart, baked: Baked, raw: unknown, unmeshed?: readonly Box[]): Promise<Body> {
     if (baked.op.kind === "partition") return this.applyPartition(p, baked.op, baked.typed);
     if (baked.op.kind === "split") {
       const note = splitCheck(p.solid, baked.op);
@@ -698,14 +716,22 @@ export class AppRecipeCalls {
     const node = this.reserve(p);
     const keep = baked.op.kind === "split" ? splitKeep(raw) : "both";
     const otherKey = baked.op.kind === "split" && keep === "both" ? this.pieceKey(p, node, "half") : undefined;
-    const reply = await this.engine.tree(p.tree.key, parent, applyRequest(p.tree.key, parent, node, baked.op, this.env.chordMm, otherKey));
+    // A queued group that is not the last of its flush asks for no mesh (`unmeshed`: its fuse tools' boxes, `applyQueued`).
+    let reply = await this.engine.tree(p.tree.key, parent, { ...applyRequest(p.tree.key, parent, node, baked.op, this.env.chordMm, otherKey), ...(unmeshed ? { mesh: false } : {}) });
     if (typeof reply.error === "string" && reply.error) {
       // --- A9. The kernel's failedStep is the piece inside a group, counting from 1. ---
       const failedStep = Number.isInteger(reply.failedStep) ? { failedStep: reply.failedStep as number } : {};
       return { ok: false, reason: plainModelError(reply.error, baked.op.kind), ...failedStep };
     }
     const stored = storedOp(baked.op, reply);
-    const after = solidView(reply);
+    const applied = reply;
+    let lite: SolidView | null = null;
+    if (unmeshed && reply.format === "lime-solid-lite") {
+      lite = liteSolid(reply, p.solid, unmeshed);
+      // No solid to grow a box from: the step is meshed after all (a goto of it), and read as any step is.
+      if (!lite) reply = await this.engine.tree(p.tree.key, node, gotoRequest(p.tree.key, node, this.env.chordMm));
+    }
+    const after = lite ?? solidView(reply);
     p.tree = withChild(p.tree, parent, { id: node, op: stored, label: opLabel(stored), fingerprint: after?.fingerprint ?? null, ...(otherKey ? { piece: otherKey } : {}) });
     const prior = p.solid;
     const guarded = baked.op.kind === "group" ? null : stepGuard(baked.op, prior, after, this.typed(p));
@@ -714,7 +740,8 @@ export class AppRecipeCalls {
       return { ok: false, ...(guarded ?? { reason: "The solid this step built could not be read." }) };
     }
     p.solid = after;
-    p.body = reply;
+    // An unmeshed group shows nothing: the body stays the last meshed one until the flush's last group answers.
+    if (!lite) p.body = reply;
     let toolLeftPlate: string | undefined;
     if (stored.kind === "join" && !stored.keepTool) {
       const tool = this.parts.get(stored.tool.object);
@@ -723,9 +750,9 @@ export class AppRecipeCalls {
         toolLeftPlate = tool.id;
       }
     }
-    const other = otherKey ? this.keepOtherHalf(p, otherKey, reply.other, node) : undefined;
+    const other = otherKey ? this.keepOtherHalf(p, otherKey, applied.other, node) : undefined;
     const kept = baked.op.kind === "split" ? (keep === "both" ? "both" : keptSide(prior?.bounds, baked.op)) : undefined;
-    return appliedReply(node, baked, reply, { ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(toolLeftPlate ? { toolLeftPlate } : {}) });
+    return appliedReply(node, baked, applied, { ...(other ? { other } : {}), ...(kept ? { kept } : {}), ...(toolLeftPlate ? { toolLeftPlate } : {}) });
   }
 
   private pieceKey(p: RunPart, node: NodeId, piece: number | "half" | "pins"): string {
