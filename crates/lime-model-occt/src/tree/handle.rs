@@ -212,11 +212,13 @@ impl Store {
                 other_key,
                 piece_keys,
                 pins_key,
+                mesh,
             } => {
                 let keys = PieceKeys {
                     other: other_key,
                     list: piece_keys,
                     pins: pins_key,
+                    mesh,
                 };
                 self.apply(key, parent, node, op, chord_mm, keys)
             }
