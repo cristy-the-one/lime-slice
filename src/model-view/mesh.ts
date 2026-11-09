@@ -6,9 +6,11 @@ import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import type { ModelSolid } from "./types";
-import { boxEdges, boxList, dashSegments, writeColor } from "./helpers";
+import { boxEdges, boxList, dashSegments } from "./helpers";
 import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
+import { colourRuns, fillFace, fillFaces } from "./face-colours";
 import { facePaint } from "../model-look";
+import { faceTriangles } from "../model-select";
 import { hexToThree } from "../theme";
 import type { ViewCtx } from "./ctx";
 
@@ -146,11 +148,28 @@ export function installMesh(ctx: ViewCtx): void {
   /** --- A10. One colour for a face of `shape`: its step, the accent when it is selected, or the idle grey. */
   function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
     const used = new Set<string>();
-    const tint = ctx.removedFaces ? hexToThree(ctx.colors.danger) : ctx.datumPick ? hexToThree(ctx.colors.teal) : ctx.accent;
-    // A face has one colour, so it is worked out once a face, not once a triangle: with colour by step on, each
-    // call builds the step's colour from its hue, and a hover repaints every triangle of a part of thousands of faces.
+    const paintOf = painter(shape, selected, pickHover);
+    fillFaces(into, shape.triangles, (face) => {
+      const painted = paintOf(face);
+      if (painted.stepHex) used.add(painted.stepHex);
+      return painted.hex;
+    });
+    return used;
+  }
+
+  /** The accent a selected face takes: red for a face a shell removes, teal while a workplane is picked. */
+  function tintNow(): number {
+    return ctx.removedFaces ? hexToThree(ctx.colors.danger) : ctx.datumPick ? hexToThree(ctx.colors.teal) : ctx.accent;
+  }
+
+  /**
+   * A face has one colour, so it is worked out once a face, not once a triangle: with colour by step on, each
+   * call builds the step's colour from its hue, and a part has thousands of faces.
+   */
+  function painter(shape: ModelSolid, selected: Set<number>, pickHover: number | null): (face: number) => ReturnType<typeof facePaint> {
+    const tint = tintNow();
     const paints = new Map<number, ReturnType<typeof facePaint>>();
-    const paintOf = (face: number) => {
+    return (face) => {
       let painted = paints.get(face);
       if (painted) return painted;
       const owner = shape.stepFaces && face < shape.stepFaces.length ? (shape.stepFaces[face] ?? null) : null;
@@ -164,16 +183,9 @@ export function installMesh(ctx: ViewCtx): void {
         accent: tint,
         study: shape === ctx.solid ? stressTint(face) : null,
       });
-      if (painted.stepHex) used.add(painted.stepHex);
       paints.set(face, painted);
       return painted;
     };
-    shape.triangles.forEach((face, triangle) => {
-      const painted = paintOf(face);
-      const offset = triangle * 9;
-      for (let vertex = 0; vertex < 3; vertex += 1) writeColor(painted.hex, into, offset + vertex * 3);
-    });
-    return used;
   }
 
   /** The load wins over the hold on a face that is both, as the load arrow sits on it. */
@@ -189,13 +201,80 @@ export function installMesh(ctx: ViewCtx): void {
     else delete canvas.dataset.faceColors;
   }
 
+  /**
+   * What the solid's colour buffer holds: for which solid, from which inputs, with which face lit by the pointer.
+   * `whole` is on from a repaint of every face until the renderer has uploaded the buffer.
+   */
+  let painted: { attribute: THREE.BufferAttribute; solid: ModelSolid; key: string; hover: number | null; used: Set<string>; whole: boolean } | null = null;
+
+  /** Everything a face's colour is worked out from, but the face under the pointer: `painter` and `stressTint` read these and no more. */
+  function paintKey(selected: Set<number>): string {
+    return [
+      [...selected].sort((a, b) => a - b).join(","),
+      tintNow(),
+      ctx.highlightStep ?? "",
+      ctx.look.colourByStep ? 1 : 0,
+      [...ctx.stressLoad].join(","),
+      [...ctx.stressHold].join(","),
+      hexToThree(ctx.colors.paintEnforce),
+    ].join("|");
+  }
+
+  /**
+   * Colour the solid's faces. Asked again with nothing changed (a solid is shown, then its empty selection is), it
+   * paints nothing. With only the face under the pointer changed, it repaints the face the pointer left and the one
+   * it reached, and uploads those triangles alone: the whole buffer of a 216k-triangle part is 7.8 MB.
+   */
   function paintFaces() {
     if (!ctx.mesh || !ctx.solid) return;
     const selected = new Set(ctx.picks.filter((pick) => pick.kind === "face").map((pick) => pick.index));
     const hoverFace = ctx.mode === "face" && ctx.hover?.kind === "face" ? ctx.hover.index : null;
     const attribute = ctx.mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
+    const key = paintKey(selected);
+    if (painted && painted.attribute === attribute && painted.solid === ctx.solid && painted.key === key) {
+      if (painted.hover !== hoverFace) {
+        const paintOf = painter(ctx.solid, selected, hoverFace);
+        const byFace = faceTriangles(ctx.solid.triangles);
+        let wrote = false;
+        for (const face of [painted.hover, hoverFace]) {
+          const tris = face == null ? undefined : byFace.get(face);
+          if (face == null || !tris) continue;
+          fillFace(array, tris, paintOf(face).hex);
+          wrote = true;
+          if (painted.whole) continue;
+          const runs = colourRuns(tris);
+          // A triangle past the end of the buffer was never written: no run names it, the whole buffer goes instead.
+          if (runs.length > 0 && runs[runs.length - 2]! + runs[runs.length - 1]! > array.length) {
+            attribute.clearUpdateRanges();
+            painted.whole = true;
+            continue;
+          }
+          for (let i = 0; i < runs.length; i += 2) attribute.addUpdateRange(runs[i]!, runs[i + 1]!);
+        }
+        painted.hover = hoverFace;
+        if (wrote) attribute.needsUpdate = true;
+      }
+      if (!ctx.preview) publishFaceColours(painted.used);
+      return;
+    }
     const used = paintColours(ctx.solid, array, selected, hoverFace);
+    if (painted?.attribute === attribute) {
+      painted.solid = ctx.solid;
+      painted.key = key;
+      painted.hover = hoverFace;
+      painted.used = used;
+      painted.whole = true;
+    } else {
+      const record = { attribute, solid: ctx.solid, key, hover: hoverFace, used, whole: true };
+      painted = record;
+      // The renderer says when the buffer is on the card; until then a repaint of two faces must not narrow the upload.
+      attribute.onUpload(() => {
+        record.whole = false;
+      });
+    }
+    // Runs left by a hover would keep the renderer to those triangles.
+    attribute.clearUpdateRanges();
     attribute.needsUpdate = true;
     if (!ctx.preview) publishFaceColours(used);
   }

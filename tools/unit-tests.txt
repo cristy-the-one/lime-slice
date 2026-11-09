@@ -269,3 +269,4 @@ mcp/edit-patch.test.ts
 mcp/plugin-extra.test.ts
 src/model-view/smooth.test.ts
 src/model-view/solid-ray.test.ts
+src/model-view/face-colours.test.ts

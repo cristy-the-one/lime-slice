@@ -27,12 +27,6 @@ export function failedGhostMaterial() {
 }
 // --- end A3 ---
 
-export function writeColor(hex: number, into: Float32Array, offset: number) {
-  into[offset] = ((hex >> 16) & 255) / 255;
-  into[offset + 1] = ((hex >> 8) & 255) / 255;
-  into[offset + 2] = (hex & 255) / 255;
-}
-
 /** A solid outline broken into short dashes, in millimetres along each segment, so it reads as removed. */
 export function dashSegments(positions: number[]): number[] {
   const dash = 1.8;
