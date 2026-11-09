@@ -448,8 +448,8 @@ pub struct Part {
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
-/// 1.9: `Animation::background`. 1.10: `gears` (the library's involute gears, and true involute `Gear` outlines) and
-/// `ops::gear`, the kernel's gear step.
+/// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.12: `gears` (the library's involute gears, and true
+/// involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
 pub const API: (u32, u32) = (1, 10);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
@@ -1389,6 +1389,16 @@ impl Session {
     #[track_caller]
     pub fn log(&mut self, text: &str) {
         let _ = self.call("log", Json::obj().set("text", text));
+    }
+
+    /// Asks the host to mesh each part once, when the run ends or when a call needs the mesh, and not after every step
+    /// (recipe API 1.10). The part, its solid and its mesh at the end are the same; a long run of plain steps (a
+    /// boolean with a primitive, an extrude with its own plane) is faster by what the meshing between them cost.
+    /// A step that reads the part's faces (a face selector, a pick, a section) meshes it first. A host that
+    /// does not know the request, as the Plugins window, runs as before. Call it once, before the steps.
+    #[track_caller]
+    pub fn mesh_at_end(&mut self) {
+        let _ = self.call("mesh_at_end", Json::obj());
     }
 
     /// Commit work so far and let the host resume this run after an interruption.
@@ -3929,7 +3939,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 9));
+        assert_eq!(API, (1, 10));
     }
 
     #[test]

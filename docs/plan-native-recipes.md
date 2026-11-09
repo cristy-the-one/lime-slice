@@ -443,6 +443,34 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Tested by:* a unit test of the profile shape (stand-in engine); the bench runs locally, and in the nightly perf job
    if that job can build lust; never in the smoke shards.
 
+   **As built (2026-11-09, `claude/recipe-profile-mesh`).** The bridge's counters were already there (`Stats` in
+   `kernel.cpp`, `lime_model_occt_stats`); what was missing was a per-call reading. `lime_occt_tree` in
+   `crates/lime-model-occt/src/lib.rs` now answers a request whose body starts with `{"timing":true,` with `kernelUs`
+   added as the reply's last field (`us` in the bridge, `booleanUs`, `volumeUs`, `meshUs`, `readoutUs`, `describeUs`,
+   `builds`, `meshes`: the counters before and after the call). Any other request is answered as before, with no extra
+   work, and an old bridge ignores the marker, so the profile then says only `engineMs`. `recipe_run {profile: true}`
+   puts the marker on every tree call of the run (`treeCall`, `mcp/session/model.ts`) and keeps the answers per recipe
+   call and in total (`mcp/session/mesh-end.ts`). The reply gets `profile.split`, parts that add up to `runMs`:
+   `recipeMs` (the recipe's own code and its start), `hostMs` (the server's work in the calls), `engineHopMs`
+   (the worker hop and the text both ways), `kernelBooleanMs`, `kernelMeshMs` (meshing and reading the mesh out) and
+   `kernelOtherMs` (volume, measuring faces and edges, building the tools, the store); `profile.kernel` has the
+   counters and each line its `kernelMs`, `booleanMs` and `meshMs`. The plan's `{booleanMs, volumeMs, meshMs,
+   readoutMs}` per line became those three on the line and the full set in `profile.kernel`, so a line stays short.
+   The bench is `mcp/bench/recipe-bench.ts` (not `tools/recipe-bench.mjs`: it runs the session, which is TypeScript):
+   `node --experimental-strip-types --no-warnings mcp/bench/recipe-bench.ts [--runs 3] [--only gears,web,moon]
+   [--json file]`, with the real engine, the bridge and lust (it says what is missing and exits 2). Its fixtures are in
+   `mcp/fixtures/bench/`: the owner's `gears-on-sphere.rs` (with `involute-gears` and `op-builders`), and the saved
+   `spiderweb-cut-on-a-part` and `moon-crater-field` plugins, which carry their ingredients; they hold no personal data
+   and no part of anyone's. The plan named the puzzle box; it is 22 s a run and the bench takes the moon crater field
+   (10 craters on a sphere) instead, whose time is in meshing. It is not a CI job: the perf workflow has neither lust
+   nor Open CASCADE. *Tested by:* `mcp/recipe-profile.test.ts` (the split adds up to the run within a millisecond, with
+   the stand-in engine and with real Open CASCADE; the kernel is inside the engine's time, which is inside the calls),
+   `cargo test -p lime-model-occt` (`tests/mesh_end.rs`, `timing_tests`). Measured on the owner's PC with other work
+   running (three runs each, medians; `docs/mcp-server.md` has the table's columns), gears on a sphere, as written:
+   run 16.1 to 20.3 s of which the kernel's booleans 10.5 s, meshing 3.1 s, the rest of the kernel 2.5 s, the recipe's
+   own code 0.5 s, the host 0.3 s, the hop to the engine 0.1 s. The crater field: 1.1 to 1.25 s, of which meshing 0.47 s.
+   The web cut: 1.7 to 2.0 s, of which the recipe's own code 0.73 s, the booleans 0.71 s, meshing 0.15 s.
+
 3. **Queued applies.** Crate: `apply_later`, `flush`, the queue flushed by any other call and by `done`; API minor up,
    with its corpus plugin. Host: the flush planner (runs of one kind, safe swaps by box), `failures` mapped to recipe
    lines; the profile hint. Guide: queue applies whose answer you do not read.
@@ -456,6 +484,36 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Notice:* sequential recipes get faster (up to about a fifth on gears-on-sphere); previews look the same.
    *Tested by:* `mcp/recipe-session.test.ts` (reads after applies give the same answers), `mcp/plugin-app.test.ts`
    (same stamp and solid through MCP and the window), the bench.
+
+   **As built (2026-11-09, `claude/recipe-profile-mesh`).** On request only, as decision 2 (b) names it, so nothing
+   changes for a run that does not ask: `recipe_run {meshAtEnd: true}`, or `s.mesh_at_end()` in the recipe (API 1.10,
+   corpus plugin `api-1.10-mesh-at-end`; the window answers it with an ok and meshes every step as before, the part is
+   the same). The engine's `apply` takes `mesh: false` and then answers `{id, format: "lime-solid-lite", fingerprint}`
+   with the usual `op`, `replayed` and `held`: the solid is built and kept, not meshed (a split, and any apply with
+   `otherKey`, `pieceKeys` or `pinsKey`, is meshed whatever was asked). The session asks this of a plain `model_apply`
+   only: a boolean with a primitive, or an extrude, whose fields are all sizes and a place (`skipsMesh`,
+   `mcp/session/mesh-end.ts`); the part then holds a solid with its volume, fingerprint and a box and no faces
+   (`lightSolid`), and a step is owed a mesh (`session.meshPending`). Every other call of the run first meshes what is
+   owed (`ensureMeshes`: a `goto` of the step, which meshes the solid the step already holds), so a read, a pick, a
+   section, a check or a checkpoint sees the part as it always did, and the run's end meshes once before the parts are
+   kept. A failed run clears what was owed and takes the run back as before. `profile.meshAtEnd` is that last mesh.
+   Two differences, both in a step that skipped its mesh, both documented in `guide {kind: "recipes"}`: the check that a
+   tool misses the part reads the part's box as grown by the fuses so far (never smaller than the part, so a miss is
+   found less often and never refused wrongly), and the check that a step does not leave pieces meeting only along an
+   edge reads a step's mesh and is not made (`model_check` of the finished part still lists open edges). The engine does
+   not measure the box: from the geometry it cost 70 ms a step on the gears, as much as the mesh it saved (the first
+   version did, and gained nothing). Found while measuring: Open CASCADE's booleans take about a tenth longer on a part
+   with no mesh (they measure faces from it), so the gain is a little less than the meshing saved. Decision 2's (a),
+   always on, was left: it would change the checks above for every recipe. The schema gains one short parameter
+   (`meshAtEnd`, 18,246 of 18,250 tokens; the detail is in the recipes guide).
+   *Tested by:* `mcp/recipe-profile.test.ts` (stand-in engine: every plain step asks for no mesh, one mesh at the end, a
+   read in the middle meshes first, a hole is meshed, a refused run leaves nothing owed, the same stored steps; real
+   Open CASCADE: the same fingerprint, volume and mesh byte for byte, the same read in the middle and the same
+   `model_check`), `cargo test -p lime-model-occt` (`tests/mesh_end.rs`: four steps meshed one by one and not meshed
+   until a `goto` give the same replies byte for byte), `mcp/plugin-corpus.test.ts`. The bench, three runs each,
+   medians, run plus the final mesh against meshing every step, the same solid and mesh byte for byte in every case:
+   gears on a sphere 14.2 % faster (final mesh 0.7 s), moon crater field 44.8 % (0.02 s), spiderweb cut no different
+   (its time is in the recipe's geometry and lust, and its parts are small: -3 %, which is noise).
 
 5. **Gears as a standard ingredient.** `lime_recipe::gears` adopted from the library's `involute-gears` v1 by section
    5's process, plus `outline_loops` (spline flanks, tip and root arcs) and a worked example; the library ingredient's

@@ -181,6 +181,12 @@ export class Session {
   projectFonts: LimeProject["fonts"];
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   recipeDepth = 0;
+  /** recipe_run {profile}: each tree call of the run asks the kernel for its timing and adds it here (mcp/session/mesh-end.ts). */
+  kernelTap: import("./session/mesh-end.ts").KernelTap | null = null;
+  /** recipe_run {meshAtEnd}: parts whose newest step has no mesh yet, by object id, and the step. */
+  readonly meshPending = new Map<string, number>();
+  /** True while a recipe's plain model_apply may skip the mesh (the run asked for meshAtEnd and the op reads no faces). */
+  meshDeferNow = false;
   /** The MCP client's name from initialize: a kept plugin's made-by. */
   clientName: string | undefined;
   /** Applies of recipe_run in this session, counted: a draft's `at`. */

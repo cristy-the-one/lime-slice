@@ -769,6 +769,22 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
     },
     slowing: false,
     modelTree: (body: string): string | Promise<string> => {
+      // A request that starts with the timing marker (recipe_run {profile}) is answered with `kernelUs` added: fixed
+      // numbers by call, so a test can add them up. The mesh is counted unless the apply asked for none.
+      if (body.startsWith('{"timing":true,')) {
+        const unmarked = `{${body.slice('{"timing":true,'.length)}`;
+        const plain = JSON.parse(unmarked) as { call?: string; mesh?: boolean };
+        const counted = (text: string): string => {
+          let reply: Record<string, unknown>;
+          try { reply = JSON.parse(text) as Record<string, unknown>; } catch { return text; }
+          const boolean = plain.call === "apply" || plain.call === "probe" ? 1500 : 0;
+          const mesh = (plain.call === "apply" && plain.mesh !== false) || plain.call === "goto" ? 700 : 0;
+          reply.kernelUs = { us: boolean + (boolean ? 200 : 0) + mesh + (mesh ? 100 : 0) + 400, booleanUs: boolean, volumeUs: boolean ? 200 : 0, meshUs: mesh, readoutUs: mesh ? 100 : 0, describeUs: 100, builds: boolean ? 1 : 0, meshes: mesh ? 1 : 0 };
+          return JSON.stringify(reply);
+        };
+        const answer = engine.modelTree(unmarked);
+        return typeof answer === "string" ? counted(answer) : answer.then(counted);
+      }
       // A slow whole-history open, as a project with no saved solids replays every step.
       const slowOpen = Number(process.env.LIME_MCP_FAKE_OPEN_MS ?? 0);
       if (slowOpen > 0 && !engine.slowing && /"call":"open"/.test(body) && /"nodes":\[\{/.test(body)) {
@@ -804,6 +820,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         aIndex?: number;
         bIndex?: number;
         preview?: boolean;
+        mesh?: boolean;
         replay?: { id?: number; op?: unknown }[];
         primitive?: { origin?: number[]; size?: number[] };
         filename?: string;
@@ -951,6 +968,8 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
           const piece = remember(req.otherKey, { ...nextSolid, positions: new Float32Array(nextSolid.positions) });
           return JSON.stringify({ ...wire, other: { ...piece, key: req.otherKey } });
         }
+        // An apply that asked for no mesh: the step and its fingerprint (the real bridge's lite reply).
+        if (req.mesh === false) return JSON.stringify({ id: wire.id, format: "lime-solid-lite", fingerprint: wire.fingerprint });
         return JSON.stringify(wire);
       }
       if (req.call === "edit") {

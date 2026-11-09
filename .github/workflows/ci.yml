@@ -346,6 +346,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-text.test.ts
           # Recipe API 1.4 on real OCCT: reads and cuts in one frame on a moved and a turned sphere, over MCP and in the app.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-frame.test.ts
+          # recipe_run {profile}'s kernel split (booleans, meshing, host, recipe adding up to the run) and {meshAtEnd}: the same solid and mesh, byte for byte, with one mesh at the end.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-profile.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:

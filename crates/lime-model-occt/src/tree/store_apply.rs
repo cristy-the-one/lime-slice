@@ -13,6 +13,7 @@ use super::{
     transition_find,
     Doc,
     NodeId,
+    LITE_FORMAT,
     Probed,
     Store,
     ROOT,
@@ -48,6 +49,7 @@ impl Store {
             other: other_key,
             list: piece_keys,
             pins: pins_key,
+            mesh,
         } = keys;
         if pins_key.is_some() && !matches!(op, Op::Partition { .. }) {
             return Err(Failure::Message("pinsKey is only for a split to print".into()));
@@ -130,9 +132,22 @@ impl Store {
         doc.current = id;
         // --- A10.
         stamp_faces(doc, id);
+        // A recipe that meshes once at its end asks for no mesh here: the answer names the step and its fingerprint, and a
+        // `goto` of the step meshes it (the same reply a mesh here would have been). The part's box is not measured: from
+        // the geometry it costs about as much as the mesh it saves, so the caller keeps the box it has and grows it.
+        let lite = !mesh && other_key.is_none() && piece_keys.is_empty() && pins_key.is_none();
         // The other piece is sent only to start its own tree. A split replayed without `otherKey`
         // drops it unseen.
-        let rendered = self.reply(&key, id, chord).and_then(|text| {
+        let rendered = if lite {
+            Ok((
+                Arc::new(
+                    json!({ "id": id, "format": LITE_FORMAT, "fingerprint": fingerprint }).to_string(),
+                ),
+                None,
+                Vec::new(),
+            ))
+        } else {
+            self.reply(&key, id, chord).and_then(|text| {
             let other = match (built.other.as_mut(), &other_key) {
                 (Some(other), Some(_)) => Some(other.reply(ROOT, chord)?),
                 _ => None,
@@ -140,7 +155,8 @@ impl Store {
             // --- Split to print: each piece with a key, as the split's other piece.
             let pieces = piece_replies(&mut built.pieces, &piece_keys, chord)?;
             Ok((text, other, pieces))
-        });
+            })
+        };
         let (text, other, pieces) = match rendered {
             Ok(rendered) => rendered,
             Err(failure) => {
