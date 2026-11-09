@@ -6,7 +6,7 @@ import { appVersion } from "../export-gcode.ts";
 import { listLibrary, pluginsDir } from "../plugins.ts";
 import { ingredientLines, ingredientsDir } from "../ingredients.ts";
 import { listLessons, listPresets, seenInPractice } from "../nuggets.ts";
-import { GUIDES, guideByUri, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "../guides.ts";
+import { GUIDES, guideByUri, guideSections, type GuideSection, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "../guides.ts";
 import { OP_KINDS, OP_SUMMARY, opSchemaFor } from "../schema.ts";
 import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/compose.ts";
 import { shownName, type ToolHandler } from "./shared.ts";
@@ -157,8 +157,27 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
   const found = guideByUri(`lime://guide/${topic}`);
   if (!found) return refuse("unknown-topic", `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.`, undefined, NEXT.guide);
   // The recipes guide ends with the user's kept ingredients by name, so one is found before a new one is written.
-  const text = topic === "recipes" ? [found.text, ...ingredientLines()].join("\n") : found.text;
-  return { ok: true, topic, name: found.name, tools: found.tools, text };
+  const sections = guideSections(topic);
+  if (sections && topic === "recipes") sections.push({ section: "library", also: [], about: "your kept ingredients by name", text: ingredientLines().join("\n") });
+  const whole = () => (topic === "recipes" ? [found.text, ...ingredientLines()].join("\n") : found.text);
+  if (!sections || input.full === true) return { ok: true, topic, name: found.name, tools: found.tools, text: whole() };
+  // A long guide answers its sections by name; one section, or a few split by commas, is its lines unchanged.
+  if (typeof input.section === "string" && input.section.trim() !== "") {
+    const asked = input.section.split(",").map((name) => name.trim()).filter(Boolean);
+    const rows = asked.map((name) => sections.find((row) => row.section.toLowerCase() === name.toLowerCase() || row.also.some((other) => other.toLowerCase() === name.toLowerCase())));
+    const missing = asked.filter((_, i) => !rows[i]);
+    if (missing.length) return refuse("unknown-topic", `The ${topic} guide has no section named ${missing.join(", ")}. Sections: ${sections.map((row) => row.section).join(", ")}.`, undefined, NEXT.guide);
+    const picked = [...new Set(rows)] as GuideSection[];
+    return { ok: true, topic, section: picked.map((row) => row.section).join(","), text: picked.map((row) => row.text).join("\n") };
+  }
+  return {
+    ok: true,
+    topic,
+    name: found.name,
+    tools: found.tools,
+    sections: sections.map((row) => `${row.section}${row.also.length ? `, ${row.also.join(", ")}` : ""} (~${Math.ceil(Buffer.byteLength(row.text) / 4)} tokens)${row.about ? `: ${row.about}` : ""}`),
+    next: `guide {topic:"${topic}", section} reads one section, or a few as "a,b"; full:true the whole text.${topic === "ops" ? " guide {kind} has one op kind's schema and lines." : ""}`,
+  };
 }
 
 /** One op kind's full schema, its line from tools/list, and the ops guide's lines about it. */

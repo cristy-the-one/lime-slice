@@ -441,3 +441,90 @@ GUIDES.push({
 export function guideByUri(uri: string): Guide | undefined {
   return GUIDES.find((guide) => guide.uri === uri);
 }
+
+/**
+ * The long guides in sections, so `guide {topic}` answers a short index and `guide {topic, section}` one part
+ * (an audit of 36 sessions: guide text was 18% of all reply text, and 37 reads repeated a guide already read).
+ * A section starts at the line that begins with its marker and runs to the next marker; the text itself stays one
+ * string, so `lime://guide/*` and `guide {topic, full:true}` are unchanged. Row: [names, marker, what it covers];
+ * names after a "|" are other names the section answers to (an op kind that shares its lines).
+ */
+const SECTION_MARKERS: Record<string, [string, string, string][]> = {
+  ops: [
+    ["basics", "Every Model edit", "units, frames, solid_new, local frames"],
+    ["fits", "solid_new {coupon", "fit coupon, machine_set fits"],
+    ["boolean", "boolean:", "primitives, origin, centre, turn"],
+    ["gear", "gear:", ""],
+    ["extrude", "extrude:", "profile, loops, draft, upTo"],
+    ["revolve", "revolve:", "and smooth profiles"],
+    ["loft", "loft:", ""],
+    ["sweep", "sweep:", ""],
+    ["shell", "shell:", ""],
+    ["faceExtrude", "faceExtrude:", ""],
+    ["moveFaces", "moveFaces:", ""],
+    ["hole", "hole:", ""],
+    ["fillet|chamfer", "fillet, chamfer:", "edge picks, two-size chamfer"],
+    ["transition", "transition:", ""],
+    ["split|scale", "split:", ""],
+    ["partition", "partition (split to print)", "cuts, shaped cuts, connectors, resin"],
+    ["join", "join:", ""],
+    ["pocket", "pocket:", "at, from, face picks, merged faces, unify"],
+    ["boss", "boss:", ""],
+    ["texture", "texture:", ""],
+    ["array", "array:", ""],
+    ["ribs", "ribs:", ""],
+    ["pattern", "pattern:", ""],
+    ["text", "text:", ""],
+    ["anchors", "Anchors:", "points named by label"],
+    ["mirror", "mirror:", ""],
+    ["labels", "Any op takes label", "labels, model_edit patch, composites"],
+    ["flow", "A call that runs past", "jobs, probe, history, commit"],
+  ],
+  recipes: [
+    ["find", "Before writing a recipe", "find a plugin first, run one"],
+    ["flow", "A recipe is a Rust main", "check, run, path, reply, transaction"],
+    ["keeping", "Keeping a new-part plugin", "defaults check, budget"],
+    ["speed", "recipe_run {profile:true}", "profile, grouped applies"],
+    ["refusals", "A refusal says which face", "picked face, nearPoint"],
+    ["rerun", "Keep the same name", "warm edits, saved recipes, plugin steps"],
+    ["maths", "Maths:", "f64 functions, constants"],
+    ["params", "Parameters, declared", "number, count, toggle, picks"],
+    ["frame", "One frame (API 1.4)", "one frame, text, curved faces"],
+    ["plugins", "Writing a plugin people can use", "rules, two before/afters"],
+    ["api", "The API (crate lime_recipe)", "Session calls, Json, an example"],
+    ["geometry", "2D geometry is in the crate", "geom2d, library ingredients, sections, many holes, data"],
+  ],
+  ingredients: [
+    ["basics", "Standard ingredients", "imports, units"],
+    ["shapes", "Shapes:", "shapes, Poly"],
+    ["regions", "Region (outlines", "booleans, measures"],
+    ["offsets", "Offsets:", "offsets, corners"],
+    ["output", "Output for extrude", "loops for an op"],
+    ["lattices", "Lattices:", ""],
+    ["own", "Your own ingredients", "library modules"],
+    ["gears", "Gears (API 1.12)", ""],
+    ["data", "Data:", ""],
+    ["example", "Example, a honeycomb", ""],
+  ],
+};
+
+export interface GuideSection {
+  /** The name `guide {topic, section}` takes. */
+  section: string;
+  /** Other names it answers to. */
+  also: string[];
+  about: string;
+  text: string;
+}
+
+/** A sectioned guide's parts in order, whose texts joined by a newline are the guide's text; null for a short guide. */
+export function guideSections(topic: string): GuideSection[] | null {
+  const markers = Object.hasOwn(SECTION_MARKERS, topic) ? SECTION_MARKERS[topic]! : null;
+  const lines = guideByUri(`lime://guide/${topic}`)?.text.split("\n");
+  if (!markers || !lines) return null;
+  const starts = markers.map(([, marker]) => lines.findIndex((line) => line.startsWith(marker)));
+  return markers.map(([names, , about], i) => {
+    const [section, ...also] = names.split("|");
+    return { section: section!, also, about, text: lines.slice(i === 0 ? 0 : starts[i]!, i + 1 < starts.length ? starts[i + 1]! : lines.length).join("\n") };
+  });
+}

@@ -4,10 +4,10 @@ import { GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "Handle (obj_1). Default: the selected object." };
 /** A model_place number: mm or degrees, or an expression over model_params names. The handler reads and checks it. */
 const placeNumber = { description: "Number or expression." };
-const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
+const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start or a long call." };
 const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
@@ -965,12 +965,14 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "guide",
-    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples, or assembly, place or pose.",
+    description: "Worked call sequences. No topic lists them. ops, recipes and ingredients answer their sections. kind gives one Model op kind's full fields and examples, or assembly, place or pose.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         topic: { type: "string", minLength: 1, maxLength: 40, description: "Guide name, e.g. ops." },
+        section: { type: "string", minLength: 1, maxLength: 120, description: "One section, or \"a,b\"." },
+        full: { type: "boolean", description: "The whole text." },
         kind: { type: "string", minLength: 1, maxLength: 40, description: "An op kind, e.g. fillet." },
       },
     },
