@@ -26,6 +26,8 @@ export function historyReply(tree: ModelTree, input: Record<string, unknown>): R
     // --- Plugin steps (D8): the run a step belongs to, and on its first step what ran with which values.
     ...(node.plugin ? { plugin: { id: node.plugin.plugin, version: node.plugin.version, params: node.plugin.params } } : {}),
     ...(node.run ? { run: `${node.run.id} ${node.run.k}/${node.run.n}` } : {}),
+    // --- docs/plan-native-recipes.md 7.1: a recipe's queued step names the first step it was built with.
+    ...(node.builtWith !== undefined ? { builtWith: nodeHandle(node.builtWith) } : {}),
   }));
   const listed = page(rows, input.cursor, input.limit);
   return { ok: true, nodes: listed.rows, ...(listed.nextCursor ? { nextCursor: listed.nextCursor } : {}) };

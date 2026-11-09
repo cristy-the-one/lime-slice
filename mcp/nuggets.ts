@@ -124,6 +124,16 @@ export interface Lesson {
   created: string;
 }
 
+/**
+ * Lessons that ship with the app, in every library: `nugget find` lists them beside a person's own (`shipped: true`),
+ * and `get` reads them; they are not removed. Numbered 0 and down, so they never take a library lesson's number.
+ * `words` are what a search for them would say, besides the sentence.
+ */
+export const SHIPPED_LESSONS: readonly (Lesson & { words: string })[] = [
+  // --- docs/plan-native-recipes.md 7.1, the queued booleans.
+  { n: 0, about: "apply", created: "2026-11-09", words: "slow speed fast many batch queue queued loop booleans", text: "Many applies on one part build fast when nothing reads the part between them. Move faces_find, measure and section out of the loop." },
+];
+
 function lessonsPath(): string {
   return join(pluginsDir(), "lessons.json");
 }

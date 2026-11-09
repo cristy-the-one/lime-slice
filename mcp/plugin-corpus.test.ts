@@ -174,6 +174,28 @@ for (const name of files) {
       check(`${name} (API ${header.api}): the same ${field} as recorded`, a === e, { recorded: expected[field], now: actual[field] });
     }
   }
+  // --- docs/plan-native-recipes.md 7.1: queued booleans change how the host builds, never what is sent or stored. The
+  // same plugin with silent queuing off sends the same calls and leaves the same ops, solid, metrics and log.
+  if (!record) {
+    const offHost = new TapHost({ crateDir: recipeCrateDir(import.meta.url), root: hostRoot, lust });
+    const off = await sessionWith(offHost);
+    process.env.LIME_RECIPE_QUEUE = "0";
+    try {
+      const offObject = expected.run.part ? String((await off.call("solid_new", expected.run.part)).object) : undefined;
+      if (offObject && expected.run.place) await off.call("model_place", { object: offObject, ...expected.run.place });
+      const offOut = await off.call("recipe_run", { plugin: header.plugin, ...(offObject ? { object: offObject } : {}), ...(expected.run.params ? { params: expected.run.params } : {}) });
+      const offMade = String(offOut.object);
+      const offDescribed = await off.call("model_describe", { object: offMade, limit: 1 });
+      const same = offOut.ok === true
+        && JSON.stringify(offHost.calls) === JSON.stringify(actual.calls)
+        && JSON.stringify(pathOps(off.session, offMade)) === JSON.stringify(actual.ops)
+        && JSON.stringify(offDescribed.fingerprint ?? null) === JSON.stringify(actual.fingerprint)
+        && JSON.stringify(offOut.metrics ?? null) === JSON.stringify(actual.metrics);
+      check(`${name} (API ${header.api}): the same calls, ops, solid and metrics with silent queuing off`, same, { off: { ok: offOut.ok, calls: offHost.calls.length, ops: pathOps(off.session, offMade), fingerprint: offDescribed.fingerprint, metrics: offOut.metrics } });
+    } finally {
+      delete process.env.LIME_RECIPE_QUEUE;
+    }
+  }
   firstRun.set(name, { id: header.plugin, text, expected: record ? actual : expected });
   // A stamped part whose plugin now records a newer API: the rebuild is refused before a build, the part kept.
   if (name === files[0]) {

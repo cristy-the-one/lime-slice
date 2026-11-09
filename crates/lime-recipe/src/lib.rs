@@ -448,8 +448,8 @@ pub struct Part {
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
-/// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.12: `gears` (the library's involute gears, and true
-/// involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
+/// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.11: the explicit queue (`apply_later`, `flush`, `apply_now`, `queue`).
+/// 1.12: `gears` (the library's involute gears, and true involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
 pub const API: (u32, u32) = (1, 12);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
@@ -1378,6 +1378,42 @@ impl Session {
         Ok(Combined::from_json(&r))
     }
 
+    /// API 1.11: queues `op` on `part`. Nothing is built now: the host builds queued fuses and cuts whose tools lie
+    /// apart in one boolean when the part is next read, placed, applied without the queue, at `flush`, or at `done`.
+    /// An op the host refuses comes back from `flush` (or ends the run at `done`) with this line, not here.
+    #[track_caller]
+    pub fn apply_later(&mut self, part: &Part, op: Json) -> Result<(), Refusal> {
+        self.call("model_apply", Json::obj().set("object", part.object.as_str()).set("op", op).set("probe", true).set("queue", "later"))
+            .map(|_| ())
+    }
+
+    /// API 1.11: builds what is queued on `part` now. `failures` lists each `apply_later` op the host refused, by its
+    /// place among the ops queued since the last flush, and `Combined::lines` gives the recipe line of each.
+    #[track_caller]
+    pub fn flush(&mut self, part: &Part) -> Result<Combined, Refusal> {
+        let r = self.call("flush", Json::obj().set("object", part.object.as_str()))?;
+        Ok(Combined::from_json(&r))
+    }
+
+    /// API 1.11: builds what is queued on `part`, then `op` on its own, and answers as `apply` does (its node, its
+    /// fingerprint): for a step whose own answer the recipe reads.
+    #[track_caller]
+    pub fn apply_now(&mut self, part: &Part, op: Json) -> Result<Json, Refusal> {
+        self.call("model_apply", Json::obj().set("object", part.object.as_str()).set("op", op).set("probe", true).set("queue", "now"))
+    }
+
+    /// API 1.11: `queue(false)` asks the host to build every later `apply` of this run one by one, as it is called,
+    /// instead of holding plain fuses and cuts whose answer the recipe does not read. `queue(true)` allows it again.
+    /// `apply_later` always queues.
+    #[track_caller]
+    pub fn queue(&mut self, silent: bool) {
+        if self.describe {
+            return;
+        }
+        let line = std::panic::Location::caller().line();
+        tell(Json::obj().set("queue", Json::obj().set("silent", silent).set("line", line)));
+    }
+
     /// Describe mode ends at the first call: the host has every declared parameter and stops the program here.
     fn end_describe(&self, line: u32) {
         tell(Json::obj().set("describe", Json::obj().set("end", true).set("line", line)));
@@ -1525,6 +1561,17 @@ pub struct Combined {
 }
 
 impl Combined {
+    /// API 1.11: the recipe line of each failure, in the order of `failures` (0 when the host did not say).
+    pub fn lines(&self) -> Vec<u32> {
+        let mut lines: Vec<u32> = Vec::new();
+        if let Some(rows) = self.reply.get("failures").and_then(Json::as_array) {
+            for f in rows.iter() {
+                lines.push(f.get("line").and_then(Json::as_f64).unwrap_or(0.0) as u32);
+            }
+        }
+        lines
+    }
+
     pub fn from_json(r: &Json) -> Combined {
         let mut failures: Vec<(usize, String)> = Vec::new();
         if let Some(rows) = r.get("failures").and_then(Json::as_array) {
@@ -4047,6 +4094,17 @@ mod tests {
         let c = Combined::from_json(&r);
         assert_eq!(c.applied, 3);
         assert_eq!(c.failures, vec![(1, "no".to_string())]);
+    }
+
+    #[test]
+    fn a_flush_gives_each_refusal_its_line() {
+        // API 1.11: `flush` answers the explicit queue's refusals by their place and recipe line.
+        let r = Json::parse(r#"{"ok":true,"applied":2,"failures":[{"index":1,"reason":"no","line":41},{"index":3,"reason":"nor"}]}"#).unwrap();
+        let c = Combined::from_json(&r);
+        assert_eq!(c.applied, 2);
+        assert_eq!(c.failures, vec![(1, "no".to_string()), (3, "nor".to_string())]);
+        assert_eq!(c.lines(), vec![41, 0]);
+        assert_eq!(Combined::from_json(&Json::obj()).lines(), Vec::<u32>::new());
     }
 
     #[test]

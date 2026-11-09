@@ -4676,6 +4676,64 @@ TopoDS_Shape combine_profile_tools(
     return result;
 }
 
+TopoDS_Shape combine_tools_checked(
+    const TopoDS_Shape& current,
+    double before,
+    const std::string& which,
+    const std::vector<TopoDS_Shape>& tools,
+    bool merge,
+    double& volume,
+    std::string& error,
+    std::vector<int>& missed) {
+    missed.assign(tools.size(), 0);
+    if (tools.empty() || current.IsNull()) {
+        error = "A queued boolean needs a solid and at least one tool.";
+        return {};
+    }
+    if (which != "fuse" && which != "cut") {
+        error = "A queued boolean is a fuse or a cut";
+        return {};
+    }
+    const int bodies = count_of(current, TopAbs_SOLID);
+    TopTools_ListOfShape list;
+    for (const TopoDS_Shape& tool : tools) {
+        list.Append(tool);
+    }
+    Handle(BRepTools_History) history;
+    TopoDS_Shape result = boolean_list(which, current, list, error, &history);
+    if (!error.empty()) {
+        return {};
+    }
+    if (!accepted_result(result, volume, error)) {
+        return {};
+    }
+    if (std::abs(volume - before) <= 1e-6 * std::max(1.0, before)) {
+        error = std::string("The ") + which + " does not change the part.";
+        return {};
+    }
+    if (which == "fuse" && count_of(result, TopAbs_SOLID) > bodies) {
+        error = "This would add a separate body; place it touching the part.";
+        return {};
+    }
+    // Plain booleans merge the faces left on one surface after each step; after the group, once, as they would have.
+    if (merge) {
+        result = merge_same_domain(result, &history);
+    }
+    // A tool that met the solid leaves at least one of its faces, whole or split, in the result: a cut's inside the
+    // part as the hole's walls, a fuse's outside it. A tool whose every face is gone changed nothing, and alone it
+    // would have been refused.
+    if (!history.IsNull()) {
+        for (size_t i = 0; i < tools.size(); ++i) {
+            bool left = false;
+            for (TopExp_Explorer face(tools[i], TopAbs_FACE); face.More() && !left; face.Next()) {
+                left = !history->IsRemoved(face.Current());
+            }
+            missed[i] = left ? 0 : 1;
+        }
+    }
+    return result;
+}
+
 TopoDS_Wire section_wire(const LoftSection& section, std::string& error) {
     const ProfileFrame frame = frame_of(section.profile);
     if (section.radius > 0.0) {
