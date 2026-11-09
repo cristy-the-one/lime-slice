@@ -396,9 +396,17 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
         }
     })
     .map_err(BuildFail::plain)?;
-    // Indexes of the steps, not of the tools that built.
+    // Indexes of the steps, not of the tools that built. A plain boolean that misses is an ordinary step (it keeps the
+    // solid as it was, built alone too); an extrude, revolve or loft that changes nothing is refused alone, so only
+    // those count as missed.
     let built: Vec<usize> = (0..count).filter(|index| !failed.iter().any(|row| row["index"] == json!(index))).collect();
-    let gone: Vec<usize> = missed.iter().enumerate().filter(|(_, m)| **m != 0).filter_map(|(at, _)| built.get(at).copied()).collect();
+    let gone: Vec<usize> = missed
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| **m != 0)
+        .filter_map(|(at, _)| built.get(at).copied())
+        .filter(|index| !matches!(steps[*index], Op::Boolean { .. }))
+        .collect();
     let mut report = json!({ "tools": tools.len(), "failed": failed });
     if queued {
         report["missed"] = json!(gone);

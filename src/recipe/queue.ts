@@ -221,10 +221,12 @@ export class RecipeQueue {
       const built = await this.flushAll(site);
       return built ?? inner(site);
     }
-    // Every part the call names, or every part when it names none and so reads the selected one.
-    const named = this.named(site.args);
+    // Every queued part the call names; a call that names no part reads the selected one, or, when the host cannot say
+    // which that is, any of them.
     const own = ["solid_new", "log", "data", "native_geometry", "text_outline"].includes(site.tool);
-    const parts = named.length > 0 ? named : own ? [] : [...this.queues.keys()];
+    const named = this.named(site.args, !own);
+    const addressed = typeof site.args.object === "string" || Array.isArray(site.args.objects) || this.selected() !== null;
+    const parts = named.length > 0 || addressed ? named : own ? [] : [...this.queues.keys()];
     for (const object of parts) {
       const built = await this.flush(object, site);
       if (built) return built;
@@ -246,7 +248,7 @@ export class RecipeQueue {
     return [...this.pending.values()].flat();
   }
 
-  private named(args: Record<string, unknown>): string[] {
+  private named(args: Record<string, unknown>, selectedToo: boolean): string[] {
     const found = new Set<string>();
     const walk = (value: unknown, depth: number) => {
       if (depth > 6) return;
@@ -256,7 +258,7 @@ export class RecipeQueue {
       else if (value && typeof value === "object") for (const v of Object.values(value)) walk(v, depth + 1);
     };
     walk(args, 0);
-    if (args.object === undefined) {
+    if (args.object === undefined && selectedToo) {
       const selected = this.selected();
       if (selected && this.queues.get(selected)?.length) found.add(selected);
     }

@@ -3490,6 +3490,17 @@ mod tests {
     }
 
     #[test]
+    fn a_flush_gives_each_refusal_its_line() {
+        // API 1.10: `flush` answers the explicit queue's refusals by their place and recipe line.
+        let r = Json::parse(r#"{"ok":true,"applied":2,"failures":[{"index":1,"reason":"no","line":41},{"index":3,"reason":"nor"}]}"#).unwrap();
+        let c = Combined::from_json(&r);
+        assert_eq!(c.applied, 2);
+        assert_eq!(c.failures, vec![(1, "no".to_string()), (3, "nor".to_string())]);
+        assert_eq!(c.lines(), vec![41, 0]);
+        assert_eq!(Combined::from_json(&Json::obj()).lines(), Vec::<u32>::new());
+    }
+
+    #[test]
     fn ops_shapes() {
         assert_eq!(ops::cuboid(10.0, 20.0, 4.0).to_string(), r#"{"primitive":"box","dx":10,"dy":20,"dz":4}"#);
         assert_eq!(

@@ -913,6 +913,14 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         const steps = [{ id: req.node ?? 1, op: req.op }, ...replay.map((step) => ({ id: step.id, op: step.op }))];
         return JSON.stringify({ ...wire, built: steps.map((step) => ({ id: step.id, op: step.op, fingerprint: wire.fingerprint })), ...fields });
       }
+      // --- docs/plan-native-recipes.md 7.1. LIME_MCP_FAKE_QUEUE_MISS=x: a cut at that X changes nothing, as a tool whose
+      // box meets the part's but not the part: refused alone, reported as missed inside a queued boolean.
+      const missX = process.env.LIME_MCP_FAKE_QUEUE_MISS;
+      const misses = (op: unknown) => missX !== undefined && (op as { op?: string } | undefined)?.op === "cut" && (op as { origin?: number[] }).origin?.[0] === Number(missX);
+      if (req.call === "probe" && misses(req.op)) return JSON.stringify({ ok: false, error: "The cut does not change the part." });
+      const queuedMissed = req.call === "apply" && req.op?.kind === "group" && (req.op as { source?: { kind?: string } }).source?.kind === "queue"
+        ? ((req.op as { steps?: unknown[] }).steps ?? []).flatMap((step, index) => (misses(step) ? [index] : []))
+        : null;
       if (req.call === "probe") {
         const radius = req.op?.radius ?? 0;
         if (req.op?.kind === "hole" && radius > 8) return JSON.stringify({ ok: false, error: "The hole misses the solid." });
@@ -965,6 +973,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         keepNode(key, req.node ?? 1, nextSolid);
         const wire = remember(key, nextSolid);
         wire.id = req.node ?? 1;
+        if (queuedMissed) return JSON.stringify({ ...wire, combined: { tools: ((req.op as { steps?: unknown[] }).steps ?? []).length, failed: [], missed: queuedMissed } });
         if (req.op?.kind === "split" && req.otherKey) {
           const piece = remember(req.otherKey, { ...nextSolid, positions: new Float32Array(nextSolid.positions) });
           return JSON.stringify({ ...wire, other: { ...piece, key: req.otherKey } });

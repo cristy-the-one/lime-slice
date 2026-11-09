@@ -257,6 +257,8 @@ src/recipe/picks.test.ts
 src/modeling/typed-view.test.ts
 src/recipe/plugin-data.test.ts
 src/recipe/api-level.test.ts
+src/recipe/queue.test.ts
+src/recipe/unread-applies.test.ts
 tools/ci/bump-only.test.mjs
 tools/ci/bundle-budget.test.mjs
 tools/ci/smoke-shards.test.mjs
