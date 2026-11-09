@@ -2,6 +2,13 @@
 
 .top { gap: var(--space-2); }
 .tandem-activity { color: var(--muted, #777); font-size: 0.8rem; white-space: nowrap; }
+/* The Tandem light: grey off, amber on and waiting for an MCP server, green connected. */
+.tandem-bridge > summary { font-size: 0.8rem; white-space: nowrap; }
+.tandem-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); flex: none; }
+.tandem-bridge[data-state="on"] .tandem-dot { background: var(--warn); }
+.tandem-bridge[data-state="connected"] .tandem-dot { background: var(--ok); }
+.tandem-bridge nav { max-width: 300px; }
+.tandem-bridge-say { margin: var(--space-1) var(--space-2) var(--space-2); color: var(--text-dim); font-size: 0.8rem; line-height: 1.4; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-dim); }
 .btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: transparent; }
 .caret {

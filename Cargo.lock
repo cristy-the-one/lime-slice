@@ -2949,6 +2949,7 @@ name = "lime-slice-desktop"
 version = "6.1.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.3.4",
  "lime-model-load",
  "lime-recipe-runner",
  "lime-sim-bridge",

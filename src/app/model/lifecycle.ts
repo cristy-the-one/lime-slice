@@ -138,6 +138,16 @@ export function forgetModelTrees() {
   syncUndo();
 }
 
+/**
+ * The plate object a person is editing in Model right now, or null: a tool open on it, a step running or being jumped
+ * to, a rebuild, a Place or workplane gesture, a sketch. A Tandem snapshot that changes that object's shape waits for it.
+ */
+export function modelEditingPart(): string | null {
+  if (state.stage !== "model" || !S.shownFor) return null;
+  const busy = S.busy || S.jumping || !!S.editing || S.rebuilding || !!S.placeBefore || !!S.wpBefore || S.sketchRootEdit;
+  return busy ? S.shownFor : null;
+}
+
 /** A plate action changed the selection while Model is open: the view opens the selected object's solid. */
 export function followSelection() {
   if (state.stage !== "model") return;

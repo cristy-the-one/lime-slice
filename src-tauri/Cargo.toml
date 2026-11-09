@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
+getrandom = "0.3"
 lime-model-load = { path = "../crates/lime-model-load" }
 lime-recipe-runner = { path = "../crates/lime-recipe-runner" }
 lime-sim-bridge = { path = "../crates/lime-sim-bridge", features = ["gpu"] }

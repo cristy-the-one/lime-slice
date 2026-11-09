@@ -351,6 +351,17 @@ function swapMadeTree(at: Opened, made: RunPart, next: ModelTree, parsed: Parsed
   swapBack = { id: at.objectId, key, tip: next.current, step: newestEdits().undo, undone: false };
 }
 
+/**
+ * Tandem put MCP's tree on plate object `id` as the Prepare step just recorded: while Model shows that object at the new
+ * tree's plate step, Model's Undo is that step, back to the window's own tree, as after a plugin rebuild.
+ */
+export function noteBridgeSwap(id: string) {
+  const key = state.plate.objects.find((obj) => obj.id === id)?.modelTree;
+  const tree = key ? modelTrees.get(key) : undefined;
+  if (!key || !tree) return;
+  swapBack = { id, key, tip: tree.committed, step: newestEdits().undo, undone: false };
+}
+
 /** Whether Undo (or Redo) is the swap back to a rebuilt part's old tree (or forward to its new one). */
 export function canSwapBack(way: "undo" | "redo"): boolean {
   const swap = swapBack;

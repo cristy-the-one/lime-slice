@@ -2,7 +2,7 @@
  * Opt-in live mirror. The desktop listens for `lime-bridge` only inside Tauri.
  * The headless MCP server does not import this file.
  */
-import { bridgeDrifted, bridgeHasPlateUpdate, bridgeHolds, bridgeIsNew, bridgeHumanChanges, bridgeMerge, bridgeNextBaseline, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeHold, type BridgeMessage, type BridgeSeen, type MirrorObject } from "../bridge.ts";
+import { bridgeDrifted, bridgeHasPlateUpdate, bridgeHistoryRelation, bridgeIsNew, bridgeHumanChanges, bridgeMerge, bridgeNextBaseline, bridgeOverrides, bridgeSavedRoot, bridgeSettings, bridgeShapeChanges, bridgeSwapLabel, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeHold, type BridgeMessage, type BridgeReplaced, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, pinPlateMeshes, setMeshSeat, snapPlate, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
@@ -11,7 +11,8 @@ import type { SavedTree } from "../model-tree-file.ts";
 import { pushToast } from "../ui/toasts.ts";
 import { place } from "./files.ts";
 import { fx } from "./fx.ts";
-import { onPlateTouched, pendingTouched, rebaseEdits } from "./history.ts";
+import { captureEdit, newestEdits, onPlateTouched, pendingTouched, rebaseEdits, recordForeignStep, undoUserEdit } from "./history.ts";
+import { mountBridgeLight } from "./bridge-light.ts";
 import { loadModel, modelApi } from "./workspaces.ts";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync.ts";
 import { markStale, renderChrome, settleTypedField } from "./settings.ts";
@@ -26,17 +27,13 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let processing = false;
 let lastMissing = "";
 let baseline = new Map<string, MirrorObject<null>>();
-/** Parts held back from MCP's snapshots, each with MCP's latest version of it (null: MCP removed it). */
-let holds: BridgeHold[] = [];
-const heldRemote = new Map<string, MirrorObject<null> | null>();
-let lastHeld = "";
 /**
  * Mirrored parts a person changed here (an undo step changed them) since the version both sides last agreed on. Only
  * these count as the person's changes: a difference the window made by itself is put right by the next snapshot.
  */
 const touched = new Set<string>();
-/** Parts whose Model history came from MCP with this mesh, untouched here: MCP's next commit may replace them. */
-const adopted = new Map<string, string>();
+/** Snapshots already reported as waiting, so the receipt says it once. */
+const toldWaiting = new WeakSet<BridgeMessage>();
 /** A mesh hash per buffer, so a big part is hashed once and not on every message. */
 const hashes = new WeakMap<ArrayBuffer, string>();
 let refreshHumanContext: (() => void) | undefined;
@@ -88,6 +85,19 @@ function busyHere(): string {
   return state.poseHud || (typing ? "typing" : "");
 }
 
+/**
+ * Why the queued snapshots wait, as a receipt names it (`gesture`, `typing`, `model-edit`), or empty when they can apply.
+ * A Model edit in progress holds back only a snapshot that changes that part's shape: a tool open on it, a step running.
+ */
+function waitReason(): "" | "gesture" | "typing" | "model-edit" {
+  const busy = busyHere();
+  if (busy) return busy === "typing" ? "typing" : "gesture";
+  const editing = modelApi()?.modelEditingPart();
+  if (!editing || waiting.length === 0) return "";
+  const current = desktopRows();
+  return waiting.some((message) => bridgeShapeChanges(current, message, seen, owned).includes(editing)) ? "model-edit" : "";
+}
+
 function watchTyping(): void {
   document.addEventListener("input", (ev) => {
     const target = ev.target;
@@ -109,13 +119,18 @@ function applyMessage(message: BridgeMessage): void {
   void flush();
 }
 
-type Outcome = "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale";
+type Outcome = "applied" | "diverged" | "conflict" | "missing" | "failed" | "stale" | "waiting";
 
-/** What the window did with a snapshot. A conflict names each part held back; everything else in it applied. */
-function receipt(message: BridgeMessage, outcome: Outcome, held: readonly BridgeHold[] = []): void {
+/**
+ * What the window did with a snapshot. `replaced` names the parts where MCP's version replaced the window's own (kept as
+ * one undo step); `waiting` says it waits for the person (`reason`), and its outcome follows under the same number.
+ */
+function receipt(message: BridgeMessage, outcome: Outcome, extra: { held?: readonly BridgeHold[]; replaced?: readonly BridgeReplaced[]; reason?: string } = {}): void {
   if (!message.session || typeof message.seq !== "number" || !bridgeHasPlateUpdate(message)) return;
-  const parts = held.slice(0, 20).map((row) => ({ object: row.object, name: row.name, kind: row.kind }));
-  void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_receipt", { session: message.session, seq: message.seq, outcome, ...(parts.length ? { held: parts } : {}) })).catch(() => {});
+  const held = (extra.held ?? []).slice(0, 20).map((row) => ({ object: row.object, name: row.name, kind: row.kind }));
+  const replaced = (extra.replaced ?? []).slice(0, 20).map((row) => ({ object: row.object, name: row.name, kind: row.kind }));
+  const args = { session: message.session, seq: message.seq, outcome, ...(held.length ? { held } : {}), ...(replaced.length ? { replaced } : {}), ...(extra.reason ? { reason: extra.reason } : {}) };
+  void import("@tauri-apps/api/core").then(({ invoke }) => invoke("bridge_receipt", args)).catch(() => {});
 }
 
 async function flush(): Promise<void> {
@@ -124,8 +139,15 @@ async function flush(): Promise<void> {
   try {
   // Load before taking messages out of the queue: the document or a gesture can change while loading.
   if (waiting.some((message) => message.modelHistories && bridgeHasPlateUpdate(message))) await loadModel();
-  const released = releaseBridge(waiting, busyHere());
+  const reason = waitReason();
+  const released = releaseBridge(waiting, reason);
   waiting.splice(0, waiting.length, ...released.waiting);
+  // Tell MCP once that its change waits for the person, so its reply can say so rather than "pending".
+  for (const message of waiting) {
+    if (toldWaiting.has(message) || !reason) continue;
+    toldWaiting.add(message);
+    receipt(message, "waiting", { reason });
+  }
   for (const message of released.ready) {
     try {
       apply(message);
@@ -146,7 +168,7 @@ async function flush(): Promise<void> {
     pushToast(`The MCP mirror could not load Model: ${err instanceof Error ? err.message : String(err)}`, "error");
   } finally {
     processing = false;
-    if (waiting.length && !busyHere() && timer === undefined) void flush();
+    if (waiting.length && !waitReason() && timer === undefined) void flush();
   }
 }
 
@@ -172,34 +194,35 @@ function humanTouched(): Set<string> {
 }
 
 /**
- * The window keeps a Model history MCP must not discard: one a person made or changed here, or one open in Model now.
- * A history MCP sent with this very mesh and nobody touched since is MCP's own, and its next commit replaces it.
+ * Whether the window's history for `id` is MCP's incoming one or an ancestor of it (a fast-forward: nothing of the
+ * window's is lost). Null when either is unknown, as when MCP sent no history for the part.
  */
-function holdsModel(row: MirrorObject<PlateObject>, human: ReadonlySet<string>): boolean {
-  if (!row.extra?.modelTree) return false;
-  const open = state.stage === "model" && state.plate.selectedId === row.id;
-  return open || human.has(row.id) || adopted.get(row.id) !== row.meshHash;
+function historyBehind(message: BridgeMessage, id: string): boolean | null {
+  const saved = message.modelHistories?.[id]?.tree;
+  const here = modelApi()?.bridgeHistoryOf(id) ?? null;
+  if (!saved || !here) return null;
+  const relation = bridgeHistoryRelation(here, { root: bridgeSavedRoot(saved), nodes: saved.nodes, committed: saved.committed });
+  return relation === null ? null : relation !== "diverged";
 }
 
-/** Remember what is held back and MCP's version of each, and tell the person once per new set. */
-function holdBack(found: readonly BridgeHold[], message: BridgeMessage): void {
-  holds = [...found];
-  heldRemote.clear();
-  const remote = bridgeServerBaseline(message);
-  for (const hold of found) heldRemote.set(hold.object, remote.get(hold.object) ?? null);
-  const names = found.map((hold) => hold.name).join(", ");
-  if (names && names !== lastHeld) pushToast(found.length === 1 ? `Tandem: ${found[0]!.reason}` : `Tandem held back MCP's updates to ${names}; the rest of the plate updated. Undo your change to a part here to take MCP's version of it.`, "error");
-  lastHeld = names;
-}
-
-/** The holds that still stand against the desktop as it is now: undoing here, or matching MCP's version, clears one. */
-function standingHolds(current: readonly MirrorObject<PlateObject>[], human: ReadonlySet<string>): BridgeHold[] {
-  if (holds.length === 0) return [];
-  const ids = new Set(holds.map((hold) => hold.object));
-  const plate = [...heldRemote].flatMap(([id, row]) => (row ? [{ object: id, name: row.name, scalePercent: row.scalePercent, centered: row.centered, offset: row.offset, orient: row.orient, meshHash: row.meshHash }] : []));
-  const probe: BridgeMessage = { tool: "plate_sync", session: plateSeen.session, seq: plateSeen.seq + 1, ok: true, plate };
-  const shared = new Map([...baseline].filter(([id]) => ids.has(id)));
-  return bridgeHolds(current.filter((row) => ids.has(row.id)), probe, plateSeen, shared, ids, { protectedModel: (row) => holdsModel(row, human), touched: human });
+/** What the person sees after a swap: what MCP did, what of theirs it replaced, and Undo right there. */
+function sayReplaced(label: string, replaced: readonly BridgeReplaced[]): void {
+  const step = newestEdits().undo;
+  const mine = replaced.filter((row) => row.kind !== "model-history").map((row) => row.name);
+  const history = replaced.filter((row) => row.kind === "model-history").map((row) => row.name);
+  const said = [
+    mine.length ? `It replaced your changes to ${mine.join(", ")}.` : "",
+    history.length ? `It replaced the window's own Model history of ${history.join(", ")}.` : "",
+  ].filter(Boolean).join(" ");
+  pushToast(`${label}.${said ? ` ${said}` : ""} Undo puts the window's version back.`, "info", {
+    label: "Undo",
+    run: () => {
+      // Only while that step is still the newest: an Undo button must never take back a later edit of the person's.
+      if (newestEdits().undo !== step) return;
+      undoUserEdit();
+      modelApi()?.followSelection();
+    },
+  });
 }
 
 /** Forget a person's change once the desktop and the shared version agree on that part again. */
@@ -222,9 +245,10 @@ function apply(message: BridgeMessage): void {
   syncPlateFromState();
   const current = desktopRows();
   const human = humanTouched();
-  // Only the parts in conflict wait; a new part, or a change to any other part, applies.
-  const found = bridgeHolds(current, message, seen, baseline, owned, { protectedModel: (row) => holdsModel(row, human), touched: human });
-  const merged = bridgeMerge(current, message, seen, baseline, found, human);
+  // MCP's version of every part applies (wave 8: live, every time, never held back). What it overwrites here, a Model
+  // history or the person's own edits, becomes one named undo step, and the receipt names what was the person's.
+  const { swaps, replaced } = bridgeOverrides(current, message, seen, baseline, owned, { hasModel: (row) => !!row.extra?.modelTree, touched: human, historyBehind: (id) => historyBehind(message, id) });
+  const merged = bridgeMerge(current, message, seen, baseline, [], human);
   const result = mirrorPlate(current, merged.message, seen, owned);
   if (result.missing) {
     // Say it once per gap. Telling the listener this window is new makes the server send every mesh again.
@@ -236,21 +260,23 @@ function apply(message: BridgeMessage): void {
   }
   const accept = () => {
     if (result.applied && (message.session ?? "") !== seen.session) {
-      // A new server process numbers its objects again: nothing it sends is a part a person changed or MCP's history.
+      // A new server process numbers its objects again: nothing it sends is a part a person changed.
       touched.clear();
-      adopted.clear();
     }
     seen = result.seen;
     owned = result.owned;
     if (result.applied && bridgeHasPlateUpdate(message)) {
-      baseline = bridgeNextBaseline(message, baseline, found);
+      baseline = bridgeNextBaseline(message, baseline, []);
       plateSeen = result.seen;
-      holdBack(found, message);
+      // A swapped part is MCP's now; the person's change to it lives on as the undo step.
+      for (const id of swaps) touched.delete(id);
       pruneTouched(desktopRows());
     }
     if (result.applied) refreshHumanContext?.();
-    receipt(message, !result.applied ? "stale" : found.length ? "conflict" : merged.diverged ? "diverged" : "applied", found);
+    receipt(message, !result.applied ? "stale" : merged.diverged ? "diverged" : "applied", { replaced: result.applied ? replaced : [] });
   };
+  // The window as it stands, for the undo step a swap makes: taken before anything below changes it.
+  const before = result.applied && swaps.length ? captureEdit() : null;
   const plateChanged = result.plate.length !== current.length || result.plate.some((obj, at) => obj.mesh || obj.extra !== current[at]?.extra || !samePose(obj, current[at]));
   if (!plateChanged) {
     if (settings) {
@@ -261,14 +287,13 @@ function apply(message: BridgeMessage): void {
     return;
   }
   const objects = result.plate.map(toPlateObject);
-  // A history comes with a new part, with a part the window showed as a mesh, or with MCP's next commit of a history it
-  // sent before. A history a person made or changed here is never replaced: that part was held above.
+  // A history comes with a new part and with every new shape of a part: MCP's shape and MCP's history together, over the
+  // window's own (kept by the undo step below). A pose-only change keeps the window's history.
   const incomingTrees = new Map<string, SavedTree<{ name: string; bytes: ArrayBuffer }>>();
   for (const object of objects) {
     const prior = current.find((row) => row.id === object.id);
     const row = result.plate.find((item) => item.id === object.id);
     if (prior && !row?.mesh) continue;
-    if (prior?.extra?.modelTree && holdsModel(prior, human)) continue;
     const saved = message.modelHistories?.[object.id];
     const decoded = saved && decodeBridgeHistory(saved);
     if (!decoded) {
@@ -284,14 +309,18 @@ function apply(message: BridgeMessage): void {
     state.sourcePos = null;
   } else {
     state.plate = mirroredPlate(objects, result.selectId ?? state.plate.selectedId);
-    if (incomingTrees.size && modelApi()) {
-      modelApi()!.adoptSavedTrees(incomingTrees);
-      for (const id of incomingTrees.keys()) {
-        const row = result.plate.find((item) => item.id === id);
-        if (row) adopted.set(id, row.meshHash);
-      }
-    }
+    if (incomingTrees.size && modelApi()) modelApi()!.adoptSavedTrees(incomingTrees);
     applySelectedToState(state.plate);
+  }
+  let label = "";
+  if (before) {
+    // One named step, before the trees are released, so the window's own trees stay reachable from it.
+    const names = swaps.map((id) => result.plate.find((row) => row.id === id)?.name ?? current.find((row) => row.id === id)?.name ?? id);
+    label = bridgeSwapLabel(message, names);
+    recordForeignStep(before, label);
+    // In Model on a swapped part, Model's Undo takes this step too, back to the window's tree.
+    const open = state.plate.selectedId;
+    if (open && swaps.includes(open) && state.plate.objects.some((obj) => obj.id === open && obj.modelTree)) modelApi()?.noteBridgeSwap(open);
   }
   modelApi()?.releaseModelTrees();
   place("load");
@@ -300,23 +329,25 @@ function apply(message: BridgeMessage): void {
   if (objects.length > 0 && state.stage !== "model" && state.stage !== "prepare") fx.setStage("prepare");
   modelApi()?.followSelection();
   keepWrittenPoses(result.plate, result.owned);
-  rebaseOnto(current);
+  rebaseOnto(current, new Set(swaps));
   renderChrome();
   accept();
+  if (label) sayReplaced(label, replaced);
 }
 
 /**
  * What this snapshot changed in the window is MCP's, not a step of the person's: their Undo history takes it as given, so
- * Undo takes back only their own edits (a held part's move, say) and never MCP's parts or moves.
+ * Undo takes back only their own edits and never MCP's parts or moves. The parts in `swapped` are the exception: the
+ * snapshot's own undo step puts the window's version of them back, so no step takes MCP's version of them as given.
  */
-function rebaseOnto(before: readonly MirrorObject<PlateObject>[]): void {
+function rebaseOnto(before: readonly MirrorObject<PlateObject>[], swapped: ReadonlySet<string> = new Set()): void {
   const was = new Map(before.map((row) => [row.id, row]));
   const now = desktopRows();
   const ids = new Set(now.filter((row) => {
     const old = was.get(row.id);
-    return !old || old.meshHash !== row.meshHash || !samePose(row, old);
+    return !swapped.has(row.id) && (!old || old.meshHash !== row.meshHash || !samePose(row, old));
   }).map((row) => row.id));
-  const removed = new Set(before.filter((row) => !now.some((item) => item.id === row.id)).map((row) => row.id));
+  const removed = new Set(before.filter((row) => !swapped.has(row.id) && !now.some((item) => item.id === row.id)).map((row) => row.id));
   if (ids.size === 0 && removed.size === 0) return;
   const plate = { ...state.plate, objects: state.plate.objects.filter((obj) => ids.has(obj.id)) };
   const pins = new Map(pinPlateMeshes(plate).map((pin) => [pin.id, pin]));
@@ -406,11 +437,7 @@ export function resetBridgeMirror(): void {
   owned = new Set();
   lastMissing = "";
   baseline.clear();
-  holds = [];
-  heldRemote.clear();
-  lastHeld = "";
   touched.clear();
-  adopted.clear();
   for (const item of activity.values()) clearTimeout(item.timer);
   activity.clear();
   showActivity();
@@ -433,9 +460,8 @@ export function mountBridge(): void {
       const human = humanTouched();
       // Only a person's changes are theirs to report; a pose the window drifted to by itself is not.
       const changes = bridgeHumanChanges(rows, baseline, human);
-      const standing = standingHolds(rows, human);
-      const conflicts = standing.slice(0, 8).map(({ object, name, kind, reason }) => ({ object, name, kind, reason }));
-      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: standing[0]?.name ?? null, conflicts, mirrorSession: plateSeen.session || null, mirrorSeq: plateSeen.session ? plateSeen.seq : null, humanChanges: changes.slice(0, 20), humanChangesTruncated: changes.length > 20 };
+      // Nothing is held back any more: MCP's version always applies, and the window's is an undo step (wave 8).
+      const context = { stage: state.stage, selected: selected?.name ?? null, gesture: !!state.poseHud, editing: focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || (focused instanceof HTMLElement && focused.isContentEditable), conflict: null, conflicts: [], mirrorSession: plateSeen.session || null, mirrorSeq: plateSeen.session ? plateSeen.seq : null, humanChanges: changes.slice(0, 20), humanChangesTruncated: changes.length > 20 };
       const encoded = JSON.stringify(context);
       if (encoded === lastContext) return;
       lastContext = encoded;
@@ -450,6 +476,7 @@ export function mountBridge(): void {
   for (const event of ["pointerdown", "pointerup", "click", "focusin", "focusout", "change"]) document.addEventListener(event, publishContext);
   watchTyping();
   publishContext();
+  mountBridgeLight();
   void import("@tauri-apps/api/event").then(({ listen }) => {
     void listen<BridgeMessage>("lime-bridge", (event) => {
       if (event.payload.activity) { receiveActivity(event.payload.activity); return; }

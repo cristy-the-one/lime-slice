@@ -21,6 +21,8 @@ import { editHistoryRefs } from "../history";
 import { freshTreeKey, modelTrees } from "../model-trees";
 import { isStepName } from "../settings";
 import { state } from "../state";
+import { bridgeSavedRoot, type BridgeHistoryShape } from "../../bridge";
+import { fnv1aHex } from "../../slice-action";
 import { exportsPieces } from "../../split-print.ts";
 import { userFontIdsOf } from "../../modeling/user-fonts";
 import { S } from "./shared";
@@ -229,6 +231,24 @@ export function adoptSavedTrees(saved: ReadonlyMap<string, SavedTree<{ name: str
     else unopened.add(key);
   }
   state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (keys.has(obj.id) ? { ...obj, modelTree: keys.get(obj.id) } : obj)) };
+}
+
+/**
+ * The history plate object `id` holds here, as the Tandem bridge compares it with the one MCP sends: its root and the
+ * steps up to the plate's step, joins naming their tool by object id as a project file does. Null without a history.
+ */
+export function bridgeHistoryOf(id: string): BridgeHistoryShape | null {
+  const key = state.plate.objects.find((obj) => obj.id === id)?.modelTree;
+  const tree = key ? modelTrees.get(key) : undefined;
+  if (!tree || tree.root.kind === "piece") return null;
+  const owner = (other: string) => state.plate.objects.find((obj) => obj.modelTree === other)?.id;
+  const body = savedTree(tree, tree.committed, owner);
+  const root = tree.root.kind === "primitive"
+    ? bridgeSavedRoot({ rootPrimitive: tree.root.solid })
+    : tree.root.kind === "feature"
+      ? bridgeSavedRoot({ rootFeature: tree.root.op })
+      : bridgeSavedRoot({ rootStep: { byteLength: tree.root.bytes.byteLength, hash: fnv1aHex(new Uint8Array(tree.root.bytes)) } });
+  return { root, nodes: body.nodes, committed: body.committed };
 }
 
 /**
