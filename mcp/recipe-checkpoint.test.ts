@@ -36,10 +36,10 @@ fn main() {
     let a = s.solid_new(ops::cuboid(10.0, 10.0, 2.0)).unwrap();
     s.checkpoint().unwrap();
     let _again = s.data("values").unwrap();
-    s.apply(&a, ops::boolean("fuse", ops::cuboid(1.0, 1.0, 1.0), [0.0, 0.0, 2.0])).unwrap();
+    let _fused = s.apply(&a, ops::boolean("fuse", ops::cuboid(1.0, 1.0, 1.0), [0.0, 0.0, 2.0])).unwrap();
     let b = s.solid_new(ops::cuboid(11.0, 10.0, 2.0)).unwrap();
     s.checkpoint().unwrap();
-    s.apply(&b, ops::boolean("fuse", ops::cuboid(1.0, 1.0, 1.0), [0.0, 0.0, 2.0])).unwrap();
+    let _fused = s.apply(&b, ops::boolean("fuse", ops::cuboid(1.0, 1.0, 1.0), [0.0, 0.0, 2.0])).unwrap();
     let _c = s.solid_new(ops::cuboid(12.0, 10.0, 2.0)).unwrap();
     s.done(&a);
 }

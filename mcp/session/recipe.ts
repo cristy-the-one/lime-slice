@@ -10,7 +10,7 @@ import { relativePose } from "../../src/model-space.ts";
 import { formatMm } from "../../src/model-plane.ts";
 import { editRequest } from "../../src/model-request.ts";
 import { solidView } from "../../src/modeling/model-calls.ts";
-import { dropped, pathTo, withNode, type ModelTree, type NodeId, type PluginStamp } from "../../src/model-tree.ts";
+import { dropped, pathTo, withNode, type ModelOp, type ModelTree, type NodeId, type PluginStamp } from "../../src/model-tree.ts";
 import { replayedTree, replayOps } from "../../src/recipe/rebuild.ts";
 import { markedRun, runEndingAt, runsOnPath, sameFingerprint, sameValues, stampValue, type StampedRun } from "../../src/plugin-step.ts";
 import { partNames, runSiblings } from "../../src/plugin-parts.ts";
@@ -23,6 +23,9 @@ import { apiVerdict, type ApiLevel, type ApiRefusalCode } from "../../src/recipe
 import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
+import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue.ts";
+import { builtText } from "../../src/recipe/host.ts";
+import { unreadApplyLines } from "../../src/recipe/unread-applies.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -39,6 +42,9 @@ import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, 
  * panic, a limit, a cancel, or dry mode takes back every object it made and every step it added; an apply that
  * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
  */
+/** --- docs/plan-native-recipes.md 7.1. Set on a run built again one by one after a queued boolean was refused late. */
+const QUEUE_REPLAY = "__queueReplay";
+
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
   const requested = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : typeof input.plugin === "string" ? input.plugin : "";
   const saved = requested && this.objects.length === 0 ? this.previousAutosave?.checkpoints?.[requested] : undefined;
@@ -404,6 +410,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       return structuredClone(entry.reply);
     }
     if (site.tool === "checkpoint") {
+      // --- docs/plan-native-recipes.md 7.1: what is queued is built before the parts are kept.
+      const flushed = await queue.flushAll(site);
+      if (flushed) return flushed;
       if (meshAtEnd) {
         const why = await ensureMeshes(this);
         if (why) return { ok: false, error: why };
@@ -448,9 +457,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       captureBaseline();
       return reply;
     }
-    if (mode !== "apply" || !mayCheckpoint) return call(site);
+    if (mode !== "apply" || !mayCheckpoint) return queued(site);
     const recordedSite = structuredClone(site);
-    const reply = await call(site);
+    const reply = await queued(site);
     if (mode === "apply" && !overflow) {
       const entry = { site: recordedSite, reply: structuredClone(reply) };
       journalBytes += Buffer.byteLength(JSON.stringify(entry));
@@ -461,10 +470,38 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const printer = this.printer();
   const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
+  // --- docs/plan-native-recipes.md 7.1. Queued booleans: lines whose apply reply the recipe does not read are held and
+  // built together; `replay` (set by an earlier attempt) runs the recipe one by one, as it was before queuing.
+  const replaying = input[QUEUE_REPLAY] as { line: number; reason: string } | undefined;
+  const bakedOps = new WeakMap<object, { op: ModelOp; typed: Record<string, unknown> }>();
+  const queue = new RecipeQueue({
+    tool: async (object, op) => {
+      const obj = this.find(object);
+      if (!obj || (object !== objectArg && !created.includes(object))) return null;
+      const found = await this.queueTool(obj, op);
+      if (found) bakedOps.set(op, found.baked);
+      return found ? { kind: found.kind, box: found.box, merge: found.merge } : null;
+    },
+    partBox: (object) => this.find(object)?.solid?.bounds ?? null,
+    build: async (object, ops: QueuedOp[], groups) => {
+      const obj = this.find(object);
+      if (!obj) return { ok: false, code: "no-object", reason: UNKNOWN_OBJECT };
+      touch(object);
+      const lastSite = ops[ops.length - 1]!.site;
+      this.noteStage(`recipe ${name}: call ${lastSite.id}, building ${ops.length} queued applies as ${groups.length} boolean${groups.length === 1 ? "" : "s"}, ${lineText(map, lastSite.line)}`);
+      const rows = ops.map((q) => ({ op: bakedOps.get(q.op)!.op, ...(typeof q.op.label === "string" ? { label: q.op.label } : {}) }));
+      const done = await this.applyQueued(obj, rows, groups, () => queue.stopped());
+      if (done.ok) applied += ops.length;
+      return done;
+    },
+    applyOne: (site) => call(site),
+  }, unreadApplyLines(builtText(built.source, resolved.suffix)), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected, signal: meta?.signal });
+  const queued = (site: RecipeCallSite) => queue.call(site, call);
   const timings = new Map<string, { line: number; tool: string; calls: number; ms: number; sink: KernelSink }>();
   /** The kernel's timing for this run's tree calls (mesh-end.ts); the calls that follow the recipe's end are kept apart. */
   const tap = input.profile === true ? newTap() : null;
   const profiledCall = async (site: RecipeCallSite): Promise<RecipeReply> => {
+    if (site.tool === "queue") return journalCall(site);
     const started = performance.now();
     const sink = newSink();
     if (tap) tap.current = sink;
@@ -506,6 +543,16 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   let out;
   try {
     out = await host.run(built.exe, start, input.profile === true ? profiledCall : journalCall, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
+    // --- docs/plan-native-recipes.md 7.1: `done` builds what is still queued, before the parts are kept.
+    if (out.ok && out.done && queue.holding) {
+      const flushed = await queue.flushAll();
+      // A cancel or the time limit that came while it built takes the whole run back, as during the run.
+      const stop = flushed && !flushed.ok ? flushed.error : queue.stopped();
+      if (stop) {
+        out.ok = false;
+        out.reason = stop;
+      }
+    }
   } finally {
     this.recipeDepth -= 1;
     this.kernelTap = null;
@@ -524,6 +571,14 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     if (closing) finish = { ms: performance.now() - started, sink: closing.all };
     if (why) { out.ok = false; out.reason = why; }
   }
+  // A queued boolean refused after the recipe moved on: the run is taken back and built again one by one, so the
+  // recipe sees the refusal at its own line. A run is deterministic, so this is the run it would have been.
+  if (queue.replay && !replaying && !meta?.signal?.aborted) {
+    await rollback();
+    return this.recipeRun({ ...input, [QUEUE_REPLAY]: queue.replay }, meta);
+  }
+  if (replaying) notes.push(`Built one by one: the tool at line ${locate(map, replaying.line).line} was refused inside a queued boolean (${replaying.reason}).`);
+  for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${locate(map, row.line).line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
   if (checkpoint && replay < checkpoint.events.length && out.ok) {
     out.ok = false;
     out.reason = "The recipe ended before reaching its saved checkpoint. The saved parts were kept; use the original run or discardCheckpoint:true.";
@@ -553,7 +608,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }),
   } : undefined;
   const savedCheckpoint = this.recipeCheckpoints.get(name);
-  const report = { calls: out.calls, ...(checkpoint ? { resumed: true, replayedCalls: replay } : {}), ...(!out.ok && savedCheckpoint ? { checkpoint: { name, objects: savedCheckpoint.objects.map((row) => row.id), resume: { name } } } : {}), ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
+  const report = { calls: out.calls, ...queueSummary(queue.report, (line) => locate(map, line).line), ...(replaying ? { replayed: { line: locate(map, replaying.line).line } } : {}), ...(checkpoint ? { resumed: true, replayedCalls: replay } : {}), ...(!out.ok && savedCheckpoint ? { checkpoint: { name, objects: savedCheckpoint.objects.map((row) => row.id), resume: { name } } } : {}), ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
   // --- I23. What the parts measured when a partial run stopped, before it is taken back.
   if (out.halted) {
     const sofar = Object.fromEntries([...created, ...touched.keys()].flatMap((id) => {

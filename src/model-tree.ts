@@ -432,6 +432,12 @@ export interface ModelNode {
   plugin?: PluginStamp;
   /** On every node of a recipe run: the run's id, this node's place in it (1-based) and its length. */
   run?: RunMark;
+  /**
+   * --- docs/plan-native-recipes.md 7.1. A recipe's queued step, built in one boolean with the steps from this node on
+   * to the last that carries the same mark; only that last one held a solid when it was built. Absent on a step built on
+   * its own. An app that does not know the mark reads it as an ordinary step.
+   */
+  builtWith?: NodeId;
 }
 
 /**
@@ -534,6 +540,23 @@ export function withChild(tree: ModelTree, parent: NodeId, child: Omit<ModelNode
   const lastChild = new Map(tree.lastChild);
   lastChild.set(parent, child.id);
   return { ...tree, nodes, lastChild, nextId: Math.max(tree.nextId, child.id + 1), current: child.id };
+}
+
+/**
+ * --- docs/plan-native-recipes.md 7.1. The steps `gone` (a recipe's queued booleans, built as groups under `from`)
+ * replaced by `chain`, one step per op as the recipe sent them, each the child of the one before. The last is shown.
+ */
+export function rechained(tree: ModelTree, from: NodeId, gone: readonly NodeId[], chain: readonly Omit<ModelNode, "parent">[]): ModelTree {
+  const drop = new Set(gone);
+  const nodes = new Map([...tree.nodes].filter(([id]) => !drop.has(id)));
+  const lastChild = new Map([...tree.lastChild].filter(([id]) => !drop.has(id)));
+  let parent = from;
+  for (const node of chain) {
+    nodes.set(node.id, { ...node, parent });
+    lastChild.set(parent, node.id);
+    parent = node.id;
+  }
+  return { ...tree, nodes, lastChild, current: parent, nextId: Math.max(tree.nextId, parent + 1) };
 }
 
 /** Show `id`. Redo from each node above it now leads back down to it. */

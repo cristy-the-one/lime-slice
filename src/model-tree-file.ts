@@ -39,6 +39,8 @@ interface SavedNode {
   /** --- Plugin steps (D8). The recipe a run of steps came from, on its first node, and the run on each of its nodes. */
   plugin?: PluginStamp;
   run?: RunMark;
+  /** --- docs/plan-native-recipes.md 7.1. A recipe's queued step: the first step it was built with. */
+  builtWith?: NodeId;
 }
 
 /**
@@ -89,6 +91,7 @@ export function savedTree(tree: ModelTree, committed: NodeId, owner: (key: strin
         ...(pins !== undefined ? { pins } : {}),
         ...(node.plugin ? { plugin: node.plugin } : {}),
         ...(node.run ? { run: node.run } : {}),
+        ...(node.builtWith !== undefined ? { builtWith: node.builtWith } : {}),
       };
     });
   return { nodes, current: tree.current, committed, nextId: tree.nextId };
@@ -162,6 +165,7 @@ export function loadedTree(saved: SavedTreeBody, key: string, root: ModelRoot, f
       ...(pins !== undefined ? { pins } : {}),
       ...(node.plugin ? { plugin: node.plugin } : {}),
       ...(node.run ? { run: node.run } : {}),
+      ...(node.builtWith !== undefined ? { builtWith: node.builtWith } : {}),
       ...(mesh && node.id === saved.committed ? { mesh } : {}),
     });
   }
@@ -240,6 +244,7 @@ function readNode(value: unknown): SavedNode | null {
     ...(value.pins !== undefined ? { pins: value.pins as string | null } : {}),
     ...(plugin ? { plugin } : {}),
     ...(run ? { run } : {}),
+    ...(isId(value.builtWith) ? { builtWith: value.builtWith } : {}),
   };
 }
 

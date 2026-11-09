@@ -346,6 +346,9 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-frame.test.ts
           # recipe_run {profile}'s kernel split (booleans, meshing, host, recipe adding up to the run) and {meshAtEnd}: the same solid and mesh, byte for byte, with one mesh at the end.
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-profile.test.ts
+          # Queued booleans (docs/plan-native-recipes.md 7.1): the same solid and History rows with queuing on and off, a
+          # read builds the queue first, a refusal inside a queued boolean is replayed to its own line.
+          LIME_RECIPE_REQUIRED=1 LIME_QUEUE_OCCT=1 node --experimental-strip-types mcp/recipe-queue.test.ts
 
   # Clippy and the stress solver's GPU feature: lint-only, about 5 minutes.
   rust-clippy:
