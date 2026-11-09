@@ -233,7 +233,7 @@ export class RecipeQueue {
     }
     // Every queued part the call names; a call that names no part reads the selected one, or, when the host cannot say
     // which that is, any of them.
-    const own = ["solid_new", "log", "data", "native_geometry", "text_outline"].includes(site.tool);
+    const own = ["solid_new", "log", "data", "native_geometry", "text_outline", "mesh_at_end"].includes(site.tool);
     const named = this.named(site.args, !own);
     const addressed = typeof site.args.object === "string" || Array.isArray(site.args.objects) || this.selected() !== null;
     const parts = named.length > 0 || addressed ? named : own ? [] : [...this.queues.keys()];

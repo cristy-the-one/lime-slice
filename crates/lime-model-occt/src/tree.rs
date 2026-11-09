@@ -73,6 +73,9 @@ const PATH_PIN_EVERY: u32 = 8;
 /// (`src/model-reply.ts`), so an engine and an app that do not match fail plainly.
 const SOLID_FORMAT: &str = "lime-solid-2";
 
+/// The reply of an Apply that asked for no mesh (`mesh: false`): the step and its fingerprint, no arrays.
+const LITE_FORMAT: &str = "lime-solid-lite";
+
 /// The first word of a solid saved in Open CASCADE's binary format (`Shape::brep_bytes`). Its header line is
 /// `LIMEBREP 1 <Open CASCADE version> <volume>`, then the BinTools bytes. A STEP file never starts with it.
 const BREP_MAGIC: &[u8] = b"LIMEBREP ";

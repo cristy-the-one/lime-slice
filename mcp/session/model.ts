@@ -29,6 +29,7 @@ import { exactVerdict, interference, SLIVER_MM3 } from "../../src/interference.t
 import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
 import { turnHinge } from "../../src/pose.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
+import { noteTreeCall } from "./mesh-end.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, type PlateObject, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -472,13 +473,19 @@ function lostReply(this: Session, err: unknown): Record<string, unknown> | null 
 async function treeCall(this: Session, body: Record<string, unknown>, label = "edit", budgetMs?: number): Promise<Record<string, unknown>> {
   const op = body.op && typeof body.op === "object" ? body.op as { kind?: unknown } : null;
   const kind = typeof op?.kind === "string" ? op.kind : label;
-  const text = await this.withBudget(kind, () => this.engine.modelTree(JSON.stringify(body)), undefined, budgetMs);
+  // A profiled recipe run asks the bridge for its own kernel timing (mesh-end.ts); any other call is sent as it was.
+  const tap = this.kernelTap;
+  const sent = tap ? JSON.stringify({ timing: true, ...body }) : JSON.stringify(body);
+  const started = tap ? performance.now() : 0;
+  const text = await this.withBudget(kind, () => this.engine.modelTree(sent), undefined, budgetMs);
+  const waited = tap ? performance.now() - started : 0;
   let reply: Record<string, unknown>;
   try {
     reply = JSON.parse(text) as Record<string, unknown>;
   } catch {
     throw new ProtocolError("The modeler returned a damaged reply.");
   }
+  if (tap) noteTreeCall(tap, waited, reply);
   const error = typeof reply.error === "string" ? reply.error : "";
   if (error.includes("was not found") || error.includes("Could not load the Open CASCADE bridge")) {
     throw new ProtocolError(occtHint(error));

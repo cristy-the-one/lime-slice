@@ -14,8 +14,8 @@
  */
 export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "solid_new", "model_describe", "faces_find", "edges_find", "surface_at", "model_probe", "model_apply", "model_apply_batch",
-  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint", "native_geometry",
-  // --- API 1.10 (docs/plan-native-recipes.md 7.1): build what is queued on a part now.
+  "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint", "mesh_at_end", "native_geometry",
+  // --- API 1.11 (docs/plan-native-recipes.md 7.1): build what is queued on a part now.
   "flush",
 ]);
 
@@ -302,7 +302,7 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
         if (lateParams.length < 50) lateParams.push({ name: String(late.name ?? ""), line: typeof late.line === "number" ? late.line : 0 });
         return;
       }
-      // --- API 1.10. `s.queue(on)`: silent queuing on or off for the rest of the run. Told to the caller as a call of
+      // --- API 1.11. `s.queue(on)`: silent queuing on or off for the rest of the run. Told to the caller as a call of
       // its own (`queue`), in order with the calls; it takes no reply and does not count.
       if (msg.queue && typeof msg.queue === "object") {
         const q = msg.queue as { silent?: unknown; line?: unknown };

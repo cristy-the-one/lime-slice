@@ -1,10 +1,10 @@
 //! ---
-//! plugin: corpus-queue-api-1-10
-//! title: Corpus queued booleans (API 1.10)
+//! plugin: corpus-queue-api-1-11
+//! title: Corpus queued booleans (API 1.11)
 //! version: 1
 //! description: Silent and explicit queued booleans, flush, apply_now and queue(false).
 //! author: Lime Slice corpus
-//! api: 1.10
+//! api: 1.11
 //! source-sha256: b0ab779583c3563da8b7a26500fd857adc4e2774af14ec05b0c66288bdffd1d5
 //! created: 2026-11-09
 //! target: new

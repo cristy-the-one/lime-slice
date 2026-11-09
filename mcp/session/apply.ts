@@ -24,6 +24,7 @@ import { isFeatureTool } from "../../src/model-features.ts";
 import { CHORD, NAME_LIMIT, type PlateObject, UNKNOWN_OBJECT, firstAfter, stableKey, typedExprs } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { ensureMeshes, lightSolid } from "./mesh-end.ts";
 
 /**
  * model_apply. A plain op needs a passed probe, or `probe: true` to check it here first. A composite op (pattern,
@@ -154,8 +155,10 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   const keep = baked.op.kind === "split" ? this.splitKeep(raw) : "both";
   const otherKey = baked.op.kind === "split" && keep === "both" ? `mcp-split-${obj.id}-${node}` : undefined;
   let reply: Record<string, unknown>;
+  // A recipe that meshes once at its end asks for no mesh after a plain step (mesh-end.ts).
+  const noMesh = this.meshDeferNow && (baked.op.kind === "boolean" || baked.op.kind === "extrude") && otherKey === undefined;
   try {
-    reply = await this.treeCall(applyRequest(tree.key, tree.current, node, baked.op, CHORD, otherKey), baked.op.kind, budgetMs);
+    reply = await this.treeCall({ ...applyRequest(tree.key, tree.current, node, baked.op, CHORD, otherKey), ...(noMesh ? { mesh: false } : {}) }, baked.op.kind, budgetMs);
   } catch (err) {
     const lost = this.lostReply(err);
     if (lost) return lost;
@@ -169,7 +172,8 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   const stored = storedOp(baked.op, reply);
   obj.tree = withChild(obj.tree, tree.current, { id: node, op: stored, label: opLabel(stored), fingerprint: null });
   const prior = obj.solid;
-  const solid = solidView(reply);
+  const lite = noMesh && reply.format === "lime-solid-lite";
+  const solid = lite ? lightSolid(reply, prior, baked.op) : solidView(reply);
   if (solid) obj.solid = solid;
   obj.probes.clear();
   // --- A9. Each piece of a group was already guarded. A group of cuts may remove more than half on purpose. ---
@@ -177,6 +181,14 @@ async function applyBaked(this: Session, obj: PlateObject, tree: ModelTree, bake
   if (guarded) {
     await this.takeBack(obj, tree.current, node);
     return { ok: false, code: "step-guard", ...guarded };
+  }
+  // The step has no mesh yet: the run asks for it when a call reads the part, and at its end. An engine that sent no box has it now.
+  if (lite) {
+    this.meshPending.set(obj.id, node);
+    if (!solid) {
+      const why = await ensureMeshes(this);
+      if (why) return { ok: false, code: "kernel-refused", reason: why };
+    }
   }
   const leftPlate = baked.op.kind === "join" && !baked.op.keepTool ? baked.op.tool.object : undefined;
   if (leftPlate) await this.followJoins(obj);

@@ -448,8 +448,8 @@ pub struct Part {
 /// as a `Section`). 1.4: a picked sphere's `centre` and a round face's `axis_point`; reads answer in the frame `apply`
 /// takes (model space for a moved or turned part), as they always should have. 1.5: progress and host context.
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
-/// 1.9: `Animation::background`. 1.10: the explicit queue (`apply_later`, `flush`, `apply_now`, `queue`).
-pub const API: (u32, u32) = (1, 10);
+/// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.11: the explicit queue (`apply_later`, `flush`, `apply_now`, `queue`).
+pub const API: (u32, u32) = (1, 11);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1377,7 +1377,7 @@ impl Session {
         Ok(Combined::from_json(&r))
     }
 
-    /// API 1.10: queues `op` on `part`. Nothing is built now: the host builds queued fuses and cuts whose tools lie
+    /// API 1.11: queues `op` on `part`. Nothing is built now: the host builds queued fuses and cuts whose tools lie
     /// apart in one boolean when the part is next read, placed, applied without the queue, at `flush`, or at `done`.
     /// An op the host refuses comes back from `flush` (or ends the run at `done`) with this line, not here.
     #[track_caller]
@@ -1386,7 +1386,7 @@ impl Session {
             .map(|_| ())
     }
 
-    /// API 1.10: builds what is queued on `part` now. `failures` lists each `apply_later` op the host refused, by its
+    /// API 1.11: builds what is queued on `part` now. `failures` lists each `apply_later` op the host refused, by its
     /// place among the ops queued since the last flush, and `Combined::lines` gives the recipe line of each.
     #[track_caller]
     pub fn flush(&mut self, part: &Part) -> Result<Combined, Refusal> {
@@ -1394,14 +1394,14 @@ impl Session {
         Ok(Combined::from_json(&r))
     }
 
-    /// API 1.10: builds what is queued on `part`, then `op` on its own, and answers as `apply` does (its node, its
+    /// API 1.11: builds what is queued on `part`, then `op` on its own, and answers as `apply` does (its node, its
     /// fingerprint): for a step whose own answer the recipe reads.
     #[track_caller]
     pub fn apply_now(&mut self, part: &Part, op: Json) -> Result<Json, Refusal> {
         self.call("model_apply", Json::obj().set("object", part.object.as_str()).set("op", op).set("probe", true).set("queue", "now"))
     }
 
-    /// API 1.10: `queue(false)` asks the host to build every later `apply` of this run one by one, as it is called,
+    /// API 1.11: `queue(false)` asks the host to build every later `apply` of this run one by one, as it is called,
     /// instead of holding plain fuses and cuts whose answer the recipe does not read. `queue(true)` allows it again.
     /// `apply_later` always queues.
     #[track_caller]
@@ -1424,6 +1424,16 @@ impl Session {
     #[track_caller]
     pub fn log(&mut self, text: &str) {
         let _ = self.call("log", Json::obj().set("text", text));
+    }
+
+    /// Asks the host to mesh each part once, when the run ends or when a call needs the mesh, and not after every step
+    /// (recipe API 1.10). The part, its solid and its mesh at the end are the same; a long run of plain steps (a
+    /// boolean with a primitive, an extrude with its own plane) is faster by what the meshing between them cost.
+    /// A step that reads the part's faces (a face selector, a pick, a section) meshes it first. A host that
+    /// does not know the request, as the Plugins window, runs as before. Call it once, before the steps.
+    #[track_caller]
+    pub fn mesh_at_end(&mut self) {
+        let _ = self.call("mesh_at_end", Json::obj());
     }
 
     /// Commit work so far and let the host resume this run after an interruption.
@@ -1550,7 +1560,7 @@ pub struct Combined {
 }
 
 impl Combined {
-    /// API 1.10: the recipe line of each failure, in the order of `failures` (0 when the host did not say).
+    /// API 1.11: the recipe line of each failure, in the order of `failures` (0 when the host did not say).
     pub fn lines(&self) -> Vec<u32> {
         let mut lines: Vec<u32> = Vec::new();
         if let Some(rows) = self.reply.get("failures").and_then(Json::as_array) {
@@ -3380,7 +3390,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 9));
+        assert_eq!(API, (1, 11));
     }
 
     #[test]
@@ -3491,7 +3501,7 @@ mod tests {
 
     #[test]
     fn a_flush_gives_each_refusal_its_line() {
-        // API 1.10: `flush` answers the explicit queue's refusals by their place and recipe line.
+        // API 1.11: `flush` answers the explicit queue's refusals by their place and recipe line.
         let r = Json::parse(r#"{"ok":true,"applied":2,"failures":[{"index":1,"reason":"no","line":41},{"index":3,"reason":"nor"}]}"#).unwrap();
         let c = Combined::from_json(&r);
         assert_eq!(c.applied, 2);

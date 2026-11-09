@@ -91,6 +91,11 @@ pub(super) enum Request {
         piece_keys: Vec<Option<String>>,
         /// --- Split to print only: the pins of its dowels open as the root of their own tree under this key.
         pins_key: Option<String>,
+        /// False: answer without meshing the new solid (`{id, format: "lime-solid-lite", fingerprint}`), for a
+        /// recipe that meshes the part once at its end. A later `goto` of the node meshes it. A split to print and a
+        /// split that start trees of their own are always meshed.
+        #[serde(default = "mesh_default")]
+        mesh: bool,
     },
     /// --- 3.1 F1. The steps from `parent` down to `last`, each already applied, become the one group `node` under
     /// `parent`, with the solid `last` holds: nothing is built again. `op` is the group, its steps the chain's ops in
@@ -457,4 +462,8 @@ pub(super) fn chord_key(chord: f64) -> u64 {
         chord.clamp(0.01, 2.0)
     };
     clamped.to_bits()
+}
+
+fn mesh_default() -> bool {
+    true
 }

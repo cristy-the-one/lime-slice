@@ -180,9 +180,71 @@ fn export_json(text: String) -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn lime_occt_tree(request: *const c_char) -> *mut c_char {
     let request = cstr(request);
-    let answer = std::panic::catch_unwind(|| tree(&request))
-        .unwrap_or_else(|_| "{\"error\":\"The history tree failed inside the bridge\"}".into());
+    let answer = std::panic::catch_unwind(|| {
+        if request.starts_with(TIMING_PREFIX) {
+            timed_tree(&request)
+        } else {
+            tree(&request)
+        }
+    })
+    .unwrap_or_else(|_| "{\"error\":\"The history tree failed inside the bridge\"}".into());
     export_json(answer)
+}
+
+/// A request that starts with this asks for its own kernel timing: the host's `recipe_run {profile: true}` puts it
+/// first in the body. Any other request is answered as it always was, with no extra work.
+const TIMING_PREFIX: &str = "{\"timing\":true,";
+
+/// One call, with `kernelUs` added to its answer: the microseconds the call spent in the bridge, and of those in
+/// booleans, volume integration, meshing, reading the mesh out, and measuring faces and edges (the kernel's own
+/// counters, taken before and after), and how many booleans and meshes it made. What is in `us` and in none of the
+/// others is the rest of the bridge: building the tools, checks, the history store, and the reply's text.
+fn timed_tree(request: &str) -> String {
+    let before = kernel_counts();
+    let started = std::time::Instant::now();
+    let text = tree(request);
+    let us = started.elapsed().as_micros() as u64;
+    let after = kernel_counts();
+    let delta = |name: &str| {
+        after
+            .get(name)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(before.get(name).copied().unwrap_or(0))
+    };
+    let kernel = format!(
+        "{{\"us\":{us},\"booleanUs\":{},\"volumeUs\":{},\"meshUs\":{},\"readoutUs\":{},\"describeUs\":{},\"builds\":{},\"meshes\":{}}}",
+        delta("booleanUs"),
+        delta("volumeUs"),
+        delta("meshUs"),
+        delta("readoutUs"),
+        delta("describeUs"),
+        delta("builds"),
+        delta("meshes"),
+    );
+    with_kernel_timing(&text, &kernel)
+}
+
+/// `text` (a JSON object) with `"kernelUs": kernel` as its last field; any other text is returned as it is.
+fn with_kernel_timing(text: &str, kernel: &str) -> String {
+    match text.strip_suffix('}') {
+        Some(body) if body.len() > 1 => format!("{body},\"kernelUs\":{kernel}}}"),
+        Some(_) => format!("{{\"kernelUs\":{kernel}}}"),
+        None => text.to_string(),
+    }
+}
+
+/// The kernel's work counters now, by the names `stats` gives them; empty without the kernel.
+fn kernel_counts() -> std::collections::HashMap<String, u64> {
+    let mut out = std::collections::HashMap::new();
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&stats()) {
+        for (name, value) in map {
+            if let Some(n) = value.as_u64() {
+                out.insert(name, n);
+            }
+        }
+    }
+    out
 }
 
 /// # Safety
@@ -228,6 +290,47 @@ mod native {
             .into_owned();
         unsafe { lime_model_occt_string_free(ptr) };
         text
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn kernel_timing_is_the_last_field_of_an_object_answer() {
+        assert_eq!(
+            with_kernel_timing("{\"id\":1}", "{\"us\":5}"),
+            "{\"id\":1,\"kernelUs\":{\"us\":5}}"
+        );
+        assert_eq!(
+            with_kernel_timing("{}", "{\"us\":5}"),
+            "{\"kernelUs\":{\"us\":5}}"
+        );
+        assert_eq!(with_kernel_timing("[1,2]", "{\"us\":5}"), "[1,2]");
+        let timed = with_kernel_timing("{\"a\":\"}\"}", "{\"us\":1}");
+        let value: serde_json::Value = serde_json::from_str(&timed).unwrap();
+        assert_eq!(value["a"], "}");
+        assert_eq!(value["kernelUs"]["us"], 1);
+    }
+
+    #[test]
+    fn only_a_request_that_starts_with_the_marker_is_timed() {
+        let ask = |request: &str| {
+            let text = CString::new(request).unwrap();
+            let answer = unsafe { lime_occt_tree(text.as_ptr()) };
+            let out = unsafe { CStr::from_ptr(answer) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { lime_occt_string_free(answer) };
+            out
+        };
+        let plain = ask("{\"call\":\"capabilities\"}");
+        assert!(!plain.contains("kernelUs"), "{plain}");
+        let timed = ask("{\"timing\":true,\"call\":\"capabilities\"}");
+        let value: serde_json::Value = serde_json::from_str(&timed).unwrap();
+        assert!(value["kernelUs"]["us"].is_u64(), "{timed}");
+        assert_eq!(value["kernelUs"]["booleanUs"], 0, "{timed}");
     }
 }
 

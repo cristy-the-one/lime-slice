@@ -34,6 +34,7 @@ import { NEXT, refuse } from "../refusals.ts";
 import { checkpointJson, checkpointSignature, CHECKPOINT_MAX_BYTES, type CheckpointEvent, type RecipeCheckpoint } from "../recipe-checkpoint.ts";
 import { autosavePath } from "../autosave.ts";
 import { readFile } from "node:fs/promises";
+import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, type KernelSink } from "./mesh-end.ts";
 
 /**
  * recipe_run: lust builds the recipe in a warm slot (applying its safe fixes), then runs it with each call it makes
@@ -271,7 +272,19 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const ctx: CallMeta = { progressToken: meta?.progressToken, signal: meta?.signal };
   /** --- API 1.2. What each given face or outline resolved to, kept in the step's stamp in its place. */
   const picked: Record<string, unknown> = {};
+  /** Mesh once at the end: set by recipe_run {meshAtEnd} or the recipe's s.mesh_at_end() (mesh-end.ts). */
+  let meshAtEnd = input.meshAtEnd === true;
   const call = async (site: RecipeCallSite): Promise<RecipeReply> => {
+    if (site.tool === "mesh_at_end") {
+      meshAtEnd = true;
+      return { ok: true, result: { ok: true } };
+    }
+    // A call that reads a part meshes it first; a plain model_apply carries on without (mesh-end.ts).
+    const deferring = meshAtEnd && skipsMesh(site.tool, site.args);
+    if (meshAtEnd && !deferring && this.meshPending.size > 0 && site.tool !== "native_geometry" && site.tool !== "log" && site.tool !== "data" && site.tool !== "text_outline") {
+      const why = await ensureMeshes(this);
+      if (why) return { ok: false, error: why };
+    }
     if (site.tool === "native_geometry") {
       const result = JSON.parse(await this.ask(this.engine.modelTree(JSON.stringify({ call: "nativeGeometry", args: site.args })))) as unknown;
       return Array.isArray(result) ? { ok: true, result } : { ok: false, error: "Native geometry is unavailable." };
@@ -335,10 +348,13 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     const about = this.recipeCallCounts.get(name);
     this.noteStage(`recipe ${name}: call ${site.id}${about !== undefined ? ` of about ${Math.max(about, site.id)}` : ""}, ${lineText(map, site.line)} (${site.tool})`);
     let value: Record<string, unknown>;
+    this.meshDeferNow = deferring;
     try {
       value = await this.runCall(site.tool, site.args, ctx, true);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      this.meshDeferNow = false;
     }
     if (site.tool === "solid_new" && typeof value.object === "string" && value.ok !== false) created.push(value.object);
     if (value.ok === false) {
@@ -390,12 +406,17 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     if (checkpoint && replay < checkpoint.events.length) {
       const entry = checkpoint.events[replay++]!;
       if (site.tool !== entry.site.tool || site.line !== entry.site.line || checkpointJson(site.args) !== checkpointJson(entry.site.args)) return { ok: false, error: `The recipe diverged before its checkpoint at line ${site.line}. The saved parts were kept; use the original run or discardCheckpoint:true.`, fatal: true };
+      if (entry.site.tool === "mesh_at_end") meshAtEnd = true;
       return structuredClone(entry.reply);
     }
     if (site.tool === "checkpoint") {
       // --- docs/plan-native-recipes.md 7.1: what is queued is built before the parts are kept.
       const flushed = await queue.flushAll(site);
       if (flushed) return flushed;
+      if (meshAtEnd) {
+        const why = await ensureMeshes(this);
+        if (why) return { ok: false, error: why };
+      }
       if (mode === "dry") return { ok: true, result: { ok: true } };
       if (!mayCheckpoint) return { ok: false, error: "Use s.checkpoint() directly so the run can be recorded from its start." };
       if (objectArg || replacing || rebuild) return { ok: false, error: "A checkpoint currently supports a new-part recipe without object or rebuild. Run it as a new recipe first." };
@@ -474,16 +495,22 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     applyOne: (site) => call(site),
   }, unreadApplyLines(builtText(built.source, resolved.suffix)), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected });
   const queued = (site: RecipeCallSite) => queue.call(site, call);
-  const timings = new Map<string, { line: number; tool: string; calls: number; ms: number }>();
+  const timings = new Map<string, { line: number; tool: string; calls: number; ms: number; sink: KernelSink }>();
+  /** The kernel's timing for this run's tree calls (mesh-end.ts); the calls that follow the recipe's end are kept apart. */
+  const tap = input.profile === true ? newTap() : null;
   const profiledCall = async (site: RecipeCallSite): Promise<RecipeReply> => {
     if (site.tool === "queue") return journalCall(site);
     const started = performance.now();
+    const sink = newSink();
+    if (tap) tap.current = sink;
     try { return await journalCall(site); }
     finally {
+      if (tap) tap.current = null;
       const key = `${site.line}:${site.tool}`;
-      const row = timings.get(key) ?? { line: site.line, tool: site.tool, calls: 0, ms: 0 };
+      const row = timings.get(key) ?? { line: site.line, tool: site.tool, calls: 0, ms: 0, sink: newSink() };
       row.calls += 1;
       row.ms += performance.now() - started;
+      addSink(row.sink, sink);
       timings.set(key, row);
     }
   };
@@ -510,6 +537,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return undone;
   };
   this.recipeDepth += 1;
+  this.kernelTap = tap;
   let out;
   try {
     out = await host.run(built.exe, start, input.profile === true ? profiledCall : journalCall, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
@@ -523,6 +551,21 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }
   } finally {
     this.recipeDepth -= 1;
+    this.kernelTap = null;
+    this.meshDeferNow = false;
+  }
+  // --- Mesh at the end: the parts the run left without a mesh get it now, once, before they are kept (mesh-end.ts).
+  let finish: { ms: number; sink: KernelSink } | null = null;
+  if (meshAtEnd && this.meshPending.size > 0) {
+    const closing = tap ? newTap() : null;
+    this.kernelTap = closing;
+    const started = performance.now();
+    let why: string | null = null;
+    if (out.ok) why = await ensureMeshes(this);
+    else this.meshPending.clear();
+    this.kernelTap = null;
+    if (closing) finish = { ms: performance.now() - started, sink: closing.all };
+    if (why) { out.ok = false; out.reason = why; }
   }
   // A queued boolean refused after the recipe moved on: the run is taken back and built again one by one, so the
   // recipe sees the refusal at its own line. A run is deterministic, so this is the run it would have been.
@@ -546,7 +589,18 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   }
   const refused = out.refused.map((row) => ({ ...row, ...locate(map, row.line) }));
   const totalCallsMs = [...timings.values()].reduce((sum, row) => sum + row.ms, 0);
-  const profile = input.profile === true ? { callsMs: Math.round(totalCallsMs), outsideCallsMs: Math.max(0, Math.round(out.ms - totalCallsMs)), lines: [...timings.values()].sort((a, b) => b.ms - a.ms).map((row) => ({ ...row, ...locate(map, row.line), ms: Math.round(row.ms) })) } : undefined;
+  const profile = input.profile === true && tap ? {
+    callsMs: Math.round(totalCallsMs),
+    outsideCallsMs: Math.max(0, Math.round(out.ms - totalCallsMs)),
+    // Where the run's time went, in parts that add up to runMs, and the kernel's own counters (mesh-end.ts).
+    split: splitOf(out.ms, totalCallsMs, tap.all),
+    ...(kernelRow(tap.all) ? { kernel: kernelRow(tap.all) } : {}),
+    ...(finish ? { meshAtEnd: { ms: Math.round(finish.ms * 10) / 10, ...(kernelRow(finish.sink) ?? {}) } } : {}),
+    lines: [...timings.values()].sort((a, b) => b.ms - a.ms).map(({ sink, ...row }) => {
+      const kernel = kernelRow(sink);
+      return { ...row, ...locate(map, row.line), ms: Math.round(row.ms), ...(kernel && kernel.kernelMs !== undefined ? { kernelMs: kernel.kernelMs, booleanMs: kernel.booleanMs, meshMs: Math.round(((kernel.meshMs ?? 0) + (kernel.readoutMs ?? 0)) * 10) / 10 } : {}) };
+    }),
+  } : undefined;
   const savedCheckpoint = this.recipeCheckpoints.get(name);
   const report = { calls: out.calls, ...queueSummary(queue.report, (line) => locate(map, line).line), ...(replaying ? { replayed: { line: locate(map, replaying.line).line } } : {}), ...(checkpoint ? { resumed: true, replayedCalls: replay } : {}), ...(!out.ok && savedCheckpoint ? { checkpoint: { name, objects: savedCheckpoint.objects.map((row) => row.id), resume: { name } } } : {}), ...(profile ? { profile } : {}), ...(refused.length ? { refused } : {}), ...(usedIngredients.length ? { ingredients: usedIngredients.map((row) => `${row.id} v${row.version}`) } : {}), ...(notes.length ? { notes } : {}), ...(out.lateParams?.length ? { lateParams: out.lateParams } : {}), ...(diagnostics.length ? { diagnostics } : {}), ...fixed, buildMs: built.ms, runMs: out.ms, ...(plugin ? { plugin: { id: plugin.id, version: plugin.version } } : {}) };
   // --- I23. What the parts measured when a partial run stopped, before it is taken back.

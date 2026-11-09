@@ -315,6 +315,8 @@ export class AppRecipeCalls {
       return Array.isArray(result) ? { ok: true, result } : { ok: false, error: "Native geometry is unavailable." };
     }
     if (site.tool === "checkpoint") return { ok: false, error: "Resumable checkpoints are available over MCP. Run this recipe over MCP to keep completed work." };
+    // Meshing once at the end is a speed choice over MCP; the window meshes each step as it always did, and the part is the same.
+    if (site.tool === "mesh_at_end") return { ok: true, result: { ok: true } };
     if (site.tool === "log") {
       if (this.notes.length < 200) this.notes.push(`line ${site.line}: ${String(args.message ?? args.text ?? "").slice(0, 400)}`);
       return { ok: true, result: { ok: true } };
