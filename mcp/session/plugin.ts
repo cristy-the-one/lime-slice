@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, isSlug, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginText, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "../plugins.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, isSlug, listLibrary, extraLibraries, listExtra, olderVersions, oneLine, paramSummary, parsePlugin, pluginText, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "../plugins.ts";
 import { carriedData, carriedDataProblem, splitPluginData, withPluginData } from "../../src/recipe/plugin-data.ts";
 import { checkImport, clashOf, exportName, exportText, keptBesideTitle, lessonsFor, marksText, rawHeader, readMarks, withMark, type ImportMark, type SharedPreset } from "../../src/plugins/share.ts";
 import { builtText, carriedIngredients, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
@@ -176,7 +176,7 @@ function lustBuild(this: Session): string | undefined {
  * A library plugin ready to run or show. A file whose body no longer matches its hash was edited by hand: its
  * parameters are read again (one describe run), its version goes up, and it is written back, with a note once.
  */
-async function pluginFile(this: Session, id: string): Promise<{ file: PluginFile; note?: string } | { reason: string }> {
+async function pluginFile(this: Session, id: string): Promise<{ file: PluginFile; note?: string; library?: string } | { reason: string }> {
   const dir = pluginsDir();
   const found = readPlugin(id, dir);
   if (!found) {
@@ -194,7 +194,17 @@ async function pluginFile(this: Session, id: string): Promise<{ file: PluginFile
       const file = parsePlugin(pluginText(header, body));
       if (!("reason" in file)) return { file };
     }
-    const names = listLibrary(dir).map((row) => row.header.plugin);
+    // A read-only library beside this one: the plugin runs from where it is, as an imported one, and is not copied.
+    const extra = isSlug(id) ? readExtra(id) : null;
+    if (extra) {
+      const note = `From the ${extra.library} library (read-only, not copied). It runs as an imported plugin, on your own parts only.`;
+      if (extra.matches) return { file: extra, library: extra.library, note };
+      const described = await this.recipeDescribe(extra.body);
+      if ("reason" in described) return { reason: `${id} in the ${extra.library} library was changed outside the app and no longer builds: ${described.reason}` };
+      const header: PluginHeader = { ...extra.header, params: described.params, target: extra.header.kind === "animation" ? "object" : described.target };
+      return { file: { ...extra, header }, library: extra.library, note };
+    }
+    const names = [...listLibrary(dir).map((row) => row.header.plugin), ...listExtra().map((row) => row.header.plugin)];
     return { reason: `No plugin is named ${id}.${names.length ? ` The library has: ${names.slice(0, 20).join(", ")}.` : " The library is empty."} nugget {action:"find", kind:"plugin"} lists them.` };
   }
   if ("reason" in found) return found;
@@ -237,6 +247,15 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       if (score === 0) continue;
       rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
+    // A read-only library beside the own one (the beta reads the release library; LIME_PLUGINS_EXTRA names more). The own wins a clash.
+    const own = new Set(rows.map(({ row }) => row.id));
+    for (const file of listExtra()) {
+      const h = file.header;
+      if (own.has(h.plugin)) continue;
+      const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
+      if (score === 0) continue;
+      rows.push({ score, row: { id: h.plugin, v: h.version, ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
+    }
     const listedIds = new Set(rows.map(({ row }) => row.id));
     for (const [name, animation] of this.animations) {
       if (listedIds.has(name)) continue;
@@ -253,7 +272,8 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       rows.push({ score, row: { id: `draft:${name}`, ...(draft.row.plugin ? { from: draft.row.plugin.id } : {}), params, data: { title: name } } });
     }
     rows.sort((a, b) => b.score - a.score);
-    return { ok: true, plugins: rows.slice(0, 20).map((r) => r.row), total: rows.length, library: dir };
+    const extras = extraLibraries();
+    return { ok: true, plugins: rows.slice(0, 20).map((r) => r.row), total: rows.length, library: dir, ...(extras.length ? { alsoReads: extras.map((row) => row.label), note: "A row with library came from a read-only library: it runs without being copied, as an imported plugin." } : {}) };
   }
   const id = typeof input.id === "string" ? input.id : "";
   if (action === "get") {
@@ -282,7 +302,8 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       ...(carriedIngredients(code).length ? { ingredients: carriedIngredients(code) } : {}),
       ...(recipeData.length ? { recipeData } : {}),
       older: olderVersions(h.plugin, dir),
-      ...(this.importMarks()[h.plugin] ? { imported: true } : {}),
+      ...(this.importMarks()[h.plugin] || got.library ? { imported: true } : {}),
+      ...(got.library ? { library: got.library } : {}),
       data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) },
       ...(got.note ? { note: got.note } : {}),
       // The code; the carried data is listed in recipeData, never sent back whole.

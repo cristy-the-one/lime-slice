@@ -321,6 +321,7 @@ jobs:
           node --experimental-strip-types mcp/assembly.test.ts
           node --experimental-strip-types mcp/large-profile.test.ts
           node --experimental-strip-types mcp/interference-exact.test.ts
+          node --experimental-strip-types mcp/assembly-friction-occt.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts
           # Tandem live shapes: a commit sends shape and Model history together, a fast-forward of what the window holds.
@@ -798,6 +799,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-share.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-extra.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient-stale.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient-import.test.ts

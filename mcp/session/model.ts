@@ -26,7 +26,8 @@ import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type
 import { primitiveFrom } from "../../src/modeling/compose.ts";
 import { typedView } from "../../src/modeling/typed-view.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../../src/interference.ts";
-import { assemblyOf } from "../../src/assembly.ts";
+import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
+import { turnHinge } from "../../src/pose.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, type PlateObject, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -131,6 +132,111 @@ async function commonVolume(this: Session, a: PlateObject, b: PlateObject): Prom
   return { volumeMm3: Math.abs(preview.volumeMm3), volumes, ...(box ? { boxMm: { min: box.min.map(mm), max: box.max.map(mm) } } : {}) };
 }
 
+/** Bisection stops when the crossing is pinned to this many degrees. */
+const SWEEP_REFINE_DEG = 0.5;
+/** Most angles one sweep tries before it refines, so a call stays bounded. */
+const SWEEP_MAX_STEPS = 120;
+
+/**
+ * `model_check {sweep:{from, to, step}}`: turn the part's hinge through the range, as model_place {angle} would (limits
+ * left out: this is for finding them), and stop at the first angle where it or anything that rides on it shares volume
+ * with a part that does not move. The mesh pass finds candidates; the kernel measures them, as model_check {interference,
+ * exact} does. The crossing is then bisected to SWEEP_REFINE_DEG. Poses are put back as they were, and nothing is undoable.
+ */
+async function jointSweep(this: Session, host: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const part = typeof spec.object === "string" ? this.find(spec.object) : host;
+  if (!part) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+  const assemblies = this.liveAssemblies();
+  const base = assemblyOf(assemblies, part.id);
+  const solved = base ? solveAssembly(base, (id) => this.find(id)?.modelPose, this.params).assembly : undefined;
+  const member = solved?.members.find((row) => row.object === part.id);
+  if (!base || !solved || !member || member.parent === null || member.joint?.kind !== "hinge") return refuse("bad-placement", "A sweep needs a part with a hinge in an assembly: model_place {joint} makes one.", undefined, NEXT.assembly);
+  const hinge = member.joint;
+  const { from, to } = spec as { from?: unknown; to?: unknown };
+  const step = spec.step === undefined ? 5 : spec.step;
+  if (typeof from !== "number" || typeof to !== "number" || !Number.isFinite(from) || !Number.isFinite(to) || typeof step !== "number" || !(step > 0) || !Number.isFinite(step)) return refuse("bad-argument", "A sweep needs finite from and to angles in degrees, and a positive step.");
+  const count = Math.floor(Math.abs(to - from) / step + 1e-9) + 1;
+  if (count > SWEEP_MAX_STEPS) return refuse("bad-argument", `That is ${count} steps; a sweep tries at most ${SWEEP_MAX_STEPS}. Give a larger step.`);
+  const direction = to >= from ? 1 : -1;
+  const angles = Array.from({ length: count }, (_, i) => from + direction * step * i);
+  if (Math.abs(angles[angles.length - 1]! - to) > 1e-9) angles.push(to);
+  // The part and every part that sits on it turn together; the rest stay.
+  const moving = new Set([part.id]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const row of solved.members) if (row.parent !== null && moving.has(row.parent) && !moving.has(row.object)) { moving.add(row.object); grew = true; }
+  }
+  const saved = new Map(solved.members.flatMap((row) => { const obj = this.find(row.object); return obj ? [[obj.id, { m: [...obj.modelPose.m], t: [...obj.modelPose.t] }] as const] : []; }));
+  const { min: _min, max: _max, ...open } = hinge;
+  const was = hinge.angle ?? 0;
+  let evaluations = 0;
+  const crossing = async (angle: number): Promise<{ pairs: Record<string, unknown>[] } | { reason: string }> => {
+    evaluations += 1;
+    const turned = turnHinge({ ...member, joint: open }, angle - was);
+    if ("reason" in turned) return { reason: turned.reason };
+    const placed = withMember(solved, { ...turned, joint: { ...hinge, angle } });
+    if ("reason" in placed) return { reason: placed.reason };
+    this.writeSolved(placed, "", false);
+    const cheap = this.meshInterference(part);
+    if (cheap.ok !== true) return { reason: String(cheap.reason ?? "The parts could not be checked.") };
+    const hits: Record<string, unknown>[] = [];
+    for (const row of cheap.pairs as Record<string, unknown>[]) {
+      if (moving.has(String(row.a)) === moving.has(String(row.b))) continue;
+      if (row.verdict !== "crossing" && !row.nested) continue;
+      const a = this.find(String(row.a)), b = this.find(String(row.b));
+      const measured = a && b ? await this.commonVolume(a, b) : { reason: "Part gone." };
+      if ("reason" in measured) {
+        hits.push({ a: row.a, b: row.b, names: row.names, exact: false, note: measured.reason });
+        continue;
+      }
+      const verdict = exactVerdict(measured.volumeMm3, [measured.volumes[0], measured.volumes[1]]);
+      if (verdict === "crossing") hits.push({ a: row.a, b: row.b, names: row.names, exact: true, volumeMm3: Math.round(measured.volumeMm3 * 1000) / 1000, ...(measured.boxMm ? { overlapMm: measured.boxMm } : {}) });
+    }
+    return { pairs: hits };
+  };
+  const round = (value: number) => Math.round(value * 100) / 100 + 0;
+  try {
+    let clear: number | null = null;
+    let hit: { angle: number; pairs: Record<string, unknown>[] } | null = null;
+    for (const angle of angles) {
+      const here = await crossing(angle);
+      if ("reason" in here) return refuse("bad-placement", here.reason);
+      if (here.pairs.length > 0) { hit = { angle, pairs: here.pairs }; break; }
+      clear = angle;
+    }
+    if (hit && clear !== null) {
+      let lo: number = clear;
+      // Pin the first crossing between the last clear angle and the first crossing one.
+      while (Math.abs(hit.angle - lo) > SWEEP_REFINE_DEG) {
+        const mid: number = (hit.angle + lo) / 2;
+        const here = await crossing(mid);
+        if ("reason" in here) return refuse("bad-placement", here.reason);
+        if (here.pairs.length > 0) hit = { angle: mid, pairs: here.pairs };
+        else lo = mid;
+      }
+      clear = lo;
+    }
+    const limits = { ...(hinge.min !== undefined ? { min: hinge.min } : {}), ...(hinge.max !== undefined ? { max: hinge.max } : {}) };
+    return {
+      ok: true,
+      object: part.id,
+      assembly: base.name,
+      sweep: { from, to, step },
+      ...(hit ? { firstCollisionDeg: round(hit.angle), collidesWith: hit.pairs.map((row) => ({ ...row, other: moving.has(String(row.a)) ? row.b : row.a })) } : { collision: null }),
+      clearRange: clear === null ? null : { fromDeg: from, toDeg: round(clear) },
+      ...(Object.keys(limits).length ? { limits } : {}),
+      evaluations,
+      note: hit
+        ? clear === null
+          ? "The part already crosses at the first angle: start the sweep from a clear pose."
+          : `Clear from ${from} to ${round(clear)}; it first crosses a fixed part by ${round(hit.angle)} (pinned to ${SWEEP_REFINE_DEG} degrees). Parts that ride on this one are swept with it. Poses are as they were.`
+        : `Clear over the whole sweep, ${from} to ${to}. Joint limits were not applied. Poses are as they were.`,
+    };
+  } finally {
+    for (const [id, pose] of saved) { const obj = this.find(id); if (obj) obj.modelPose = pose as typeof obj.modelPose; }
+  }
+}
+
 function meshInterference(this: Session, obj: PlateObject): Record<string, unknown> {
   const assembly = assemblyOf(this.liveAssemblies(), obj.id);
   if (!assembly) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
@@ -204,6 +310,12 @@ async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, 
 }
 
 async function modelCheck(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (input.sweep !== undefined) {
+    if (input.interference === true) return refuse("conflicting-arguments", "Sweep a joint or check interference, not both.");
+    const spec = input.sweep as Record<string, unknown>;
+    if (!spec || typeof spec !== "object" || Array.isArray(spec)) return refuse("bad-argument", "sweep is {from, to, step}, angles in degrees.");
+    return this.jointSweep(obj, spec);
+  }
   if (input.interference === true) return this.interferenceCheck(obj, input.exact === true, input.crossingsOnly === true);
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
@@ -676,6 +788,7 @@ function printUp(this: Session, obj: PlateObject): Record<string, unknown> {
 /** The methods this module adds to Session. */
 export const modelMethods = {
   interferenceCheck,
+  jointSweep,
   commonVolume,
   meshInterference,
   ghostMesh,

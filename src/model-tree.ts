@@ -94,6 +94,8 @@ type ModelOpBase =
    */
   | { kind: "chamfer"; edges: EdgePick[]; size: number; size2?: number; angleDeg?: number; flip?: true }
   | { kind: "scale"; factor: number }
+  /** Faces and edges earlier steps left on one surface or curve become one, so a fillet or chamfer can cross the old seam. */
+  | { kind: "unify" }
   /** Another object's solid at `tool`, placed by `relative`: its pose in this solid's own frame, worked out once at Apply. */
   | { kind: "join"; op: BooleanKind; tool: JoinTool; relative: Affine; keepTool: boolean }
   /** A new solid's primitive built again from other numbers, in place of the solid above: an edited root, right under the root. */
@@ -889,6 +891,8 @@ export function opLabel(op: ModelOp, parts?: number): string {
     }
     case "scale":
       return `Scale ${n(op.factor * 100)} %`;
+    case "unify":
+      return "Merge flush faces";
     case "join":
       return `${BOOLEAN_VERB[op.op]} ${op.tool.name}`;
     case "root":
