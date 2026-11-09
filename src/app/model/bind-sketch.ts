@@ -66,7 +66,7 @@ export function bindSketch() {
         const solid = viewed();
         if (!solid) return [];
         const pose = openPose();
-        return solid.edges.map((edge) => ({ id: edge.id, points: posePoints(edge.points, pose) }));
+        return solid.edges.filter((edge) => !solid.seams?.includes(edge.id)).map((edge) => ({ id: edge.id, points: posePoints(edge.points, pose) }));
       },
       outline(face) {
         const solid = viewed();
