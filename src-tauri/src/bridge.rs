@@ -44,9 +44,27 @@ static START: OnceLock<String> = OnceLock::new();
 static HUMAN_CONTEXT: Mutex<Option<Value>> = Mutex::new(None);
 static RECEIPTS: Mutex<VecDeque<Value>> = Mutex::new(VecDeque::new());
 
-/// Record a bounded outcome after the page has actually handled an MCP snapshot.
+/// A part the page held back, as text fields only, each cut short: `{object, name, kind}`.
+fn held_part(row: &Value) -> Option<Value> {
+    let field = |key: &str| {
+        row.get(key)
+            .and_then(Value::as_str)
+            .map(|text| text.chars().take(120).collect::<String>())
+    };
+    let kind = field("kind")?;
+    if !matches!(
+        kind.as_str(),
+        "model-history" | "both-changed" | "removed-here"
+    ) {
+        return None;
+    }
+    Some(serde_json::json!({ "object": field("object")?, "name": field("name")?, "kind": kind }))
+}
+
+/// Record a bounded outcome after the page has actually handled an MCP snapshot. A conflict names the parts it held
+/// back; the rest of that snapshot applied.
 #[tauri::command]
-pub fn bridge_receipt(session: String, seq: u64, outcome: String) {
+pub fn bridge_receipt(session: String, seq: u64, outcome: String, held: Option<Vec<Value>>) {
     if session.is_empty()
         || session.len() > 120
         || !matches!(
@@ -60,8 +78,17 @@ pub fn bridge_receipt(session: String, seq: u64, outcome: String) {
         if receipts.len() == 64 {
             receipts.pop_front();
         }
-        receipts
-            .push_back(serde_json::json!({ "session": session, "seq": seq, "outcome": outcome }));
+        let held: Vec<Value> = held
+            .unwrap_or_default()
+            .iter()
+            .take(20)
+            .filter_map(held_part)
+            .collect();
+        let mut receipt = serde_json::json!({ "session": session, "seq": seq, "outcome": outcome });
+        if !held.is_empty() {
+            receipt["held"] = Value::Array(held);
+        }
+        receipts.push_back(receipt);
     }
 }
 
@@ -95,6 +122,8 @@ pub struct HumanContext {
     gesture: bool,
     editing: bool,
     conflict: Option<String>,
+    #[serde(default)]
+    conflicts: Vec<Value>,
     mirror_session: Option<String>,
     mirror_seq: Option<u64>,
     human_changes: Vec<Value>,
@@ -109,11 +138,17 @@ pub fn bridge_human_context(context: HumanContext) {
         gesture,
         editing,
         conflict,
+        conflicts,
         mirror_session,
         mirror_seq,
         human_changes,
         human_changes_truncated,
     } = context;
+    let conflicts: Vec<Value> = conflicts
+        .into_iter()
+        .take(8)
+        .filter(|row| row.to_string().len() <= 1024)
+        .collect();
     let stage: String = stage.chars().take(32).collect();
     let selected = selected.map(|name| name.chars().take(120).collect::<String>());
     let conflict = conflict.map(|name| name.chars().take(120).collect::<String>());
@@ -128,7 +163,7 @@ pub fn bridge_human_context(context: HumanContext) {
         human_changes_truncated || human_changes.len() < human_changes_count;
     if let Ok(mut context) = HUMAN_CONTEXT.lock() {
         *context = Some(
-            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict, "mirrorSession": mirror_session, "mirrorSeq": mirror_seq, "humanChanges": human_changes, "humanChangesTruncated": human_changes_truncated }),
+            serde_json::json!({ "stage": stage, "selected": selected, "gesture": gesture, "editing": editing, "conflict": conflict, "conflicts": conflicts, "mirrorSession": mirror_session, "mirrorSeq": mirror_seq, "humanChanges": human_changes, "humanChangesTruncated": human_changes_truncated }),
         );
     }
 }
@@ -418,15 +453,29 @@ mod tests {
     #[test]
     fn receipts_are_bounded_and_ignore_invalid_outcomes() {
         RECEIPTS.lock().unwrap().clear();
-        bridge_receipt("s".into(), 0, "invented".into());
+        bridge_receipt("s".into(), 0, "invented".into(), None);
         assert!(RECEIPTS.lock().unwrap().is_empty());
         for seq in 0..70 {
-            bridge_receipt("s".into(), seq, "applied".into());
+            bridge_receipt("s".into(), seq, "applied".into(), None);
         }
+        {
+            let receipts = RECEIPTS.lock().unwrap();
+            assert_eq!(receipts.len(), 64);
+            assert_eq!(receipts.front().unwrap()["seq"], 6);
+            assert_eq!(receipts.back().unwrap()["seq"], 69);
+        }
+        let held = vec![
+            serde_json::json!({ "object": "obj-1", "name": "Sphere 1", "kind": "model-history", "extra": "dropped" }),
+            serde_json::json!({ "object": "obj_9", "name": "x", "kind": "invented" }),
+        ];
+        bridge_receipt("s".into(), 70, "conflict".into(), Some(held));
         let receipts = RECEIPTS.lock().unwrap();
-        assert_eq!(receipts.len(), 64);
-        assert_eq!(receipts.front().unwrap()["seq"], 6);
-        assert_eq!(receipts.back().unwrap()["seq"], 69);
+        let last = receipts.back().unwrap();
+        assert_eq!(last["outcome"], "conflict");
+        assert_eq!(
+            last["held"],
+            serde_json::json!([{ "object": "obj-1", "name": "Sphere 1", "kind": "model-history" }])
+        );
     }
 
     #[test]

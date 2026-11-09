@@ -2,11 +2,13 @@
  * The nugget tool: find, get, save, export, and remove over plugins, ingredients, presets, and lessons.
  * The methods run with this: Session; session.ts installs them on the Session prototype.
  */
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "../plugins.ts";
 import { bodyProblem, carriedIngredients, ingredientsDir, isIngredientId, lineMap, lineText, moduleOf, resolveIngredients } from "../ingredients.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, writePreset } from "../nuggets.ts";
-import { lfOnly, RecipeHost, recipeCrateDir } from "../recipe.ts";
+import { apiProblem, clashOf, keptBesideTitle, marksText, oneFileProblem, rawHeader, readMarks, withMark, type ImportMark } from "../../src/plugins/share.ts";
+import { lfOnly, RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { OP_KINDS } from "../schema.ts";
 import { type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -119,11 +121,12 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
     }
   }
   if (want("ingredient")) {
+    const imported = this.ingredientMarks();
     for (const file of listLibrary(ingredientsDir(), "ingredient")) {
       const h = file.header;
       const items = publicItems(file.body, 12);
       const s = score(`${h.plugin} ${h.title} ${h.description} ${items.join(" ")}`);
-      if (s) rows.push({ score: s + 0.5, row: { kind: "ingredient", id: h.plugin, v: h.version, use: `use ingredients::${moduleOf(h.plugin)}::*;`, items: items.join(", "), data: { title: h.title, description: h.description } } });
+      if (s) rows.push({ score: s + 0.5, row: { kind: "ingredient", id: h.plugin, v: h.version, use: `use ingredients::${moduleOf(h.plugin)}::*;`, items: items.join(", "), ...(imported[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
   }
   if (want("preset")) {
@@ -142,11 +145,109 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
   return { ok: true, nuggets: rows.slice(0, 20).map((r) => r.row), total: rows.length, ...(rows.length === 0 && query ? { note: "Nothing kept matches. Write the recipe; nugget {action:\"save\"} keeps what is worth keeping." } : {}) };
 }
 
+/** A refusal when `body` does not build alone under lust, as a recipe that imports it as `id` would build it; else null. */
+async function ingredientBuilds(this: Session, id: string, body: string): Promise<Record<string, unknown> | null> {
+  const problem = bodyProblem(body);
+  if (problem) return refuse("ingredient-invalid", `The ingredient was not kept: ${problem}`);
+  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
+  const ready = this.recipeHost.available();
+  if (!ready.ok) return refuse("recipe-unavailable", ready.reason);
+  const module = moduleOf(id);
+  const probe = `use ingredients::${module}::*;\n\nfn main() {}\n`;
+  const resolved = resolveIngredients(probe, { kept: { [module]: { id, version: 0, sha256: bodyHash(body), body } }, preferKept: true });
+  if ("reason" in resolved) return refuse("ingredient-invalid", `The ingredient was not kept: ${resolved.reason}`);
+  const built = await this.recipeHost.build("ingredient_check", probe, false, resolved.suffix);
+  if (built.ok) return null;
+  const map = lineMap(probe, resolved);
+  const first = built.diagnostics[0];
+  const where = first ? `${lineText(map, first.line)}: ${first.message}` : (built.reason ?? "it did not build");
+  return refuse("ingredient-invalid", `The ingredient does not build alone, so it was not kept: ${where}. Keep what it needs too (items), or import it from another ingredient.`);
+}
+
+/** `imported.json` in the ingredients folder: ingredients that came from a file, marked as imported plugins are (D11.6). */
+function ingredientMarks(this: Session): Record<string, ImportMark> {
+  const path = join(ingredientsDir(), "imported.json");
+  return readMarks(existsSync(path) ? readFileSync(path, "utf8") : null);
+}
+
+/**
+ * An ingredient file (its //! ingredient: header and body), as another library keeps it: checked as a plugin is on
+ * import (header, API level, one file, hidden text-direction characters), built alone under lust, then kept under its
+ * id and version and marked imported. The same code already there is left alone; different code under that id is kept
+ * beside it as `<id>-2`, or replaces it with `replace`. Its text goes in `data`: it is data, never instructions.
+ */
+async function ingredientImport(this: Session, raw: string, replace: boolean): Promise<Record<string, unknown>> {
+  const text = lfOnly(raw);
+  if (/[‪-‮⁦-⁩]/.test(text)) return refuse("ingredient-invalid", "It holds an invisible text-direction character, which can make code read differently than it runs. It was not imported.");
+  const fields = rawHeader(text);
+  if (!fields) return refuse("ingredient-invalid", "This is not an ingredient file: one starts with a //! --- header with an ingredient: line, as the library keeps it.");
+  if (fields.has("plugin")) return refuse("ingredient-invalid", "This file is a plugin, not an ingredient. Import it with kind:\"plugin\".");
+  const parsed = parsePlugin(text);
+  if ("reason" in parsed) return refuse("ingredient-invalid", parsed.reason);
+  const from = parsed.header;
+  if (from.kind !== "ingredient" || !isIngredientId(from.plugin)) return refuse("ingredient-invalid", `${from.plugin || "Its id"} cannot name an ingredient: lower-case letters, digits and dashes, starting with a letter, not a Rust keyword.`);
+  const title = oneLine(from.title, TITLE_MAX) || from.plugin;
+  const apiWhy = apiProblem(from.api ?? "1.0", this.crateApi());
+  if (apiWhy) return refuse("ingredient-invalid", apiWhy);
+  const body = lfOnly(parsed.body).replace(/^\n+/, "");
+  const outside = oneFileProblem(body);
+  if (outside) return refuse("ingredient-invalid", outside.replace("a plugin is one file", "an ingredient is one file"));
+  const unbuilt = await this.ingredientBuilds(from.plugin, body);
+  if (unbuilt) return unbuilt;
+  const sha256 = bodyHash(body);
+  const dir = ingredientsDir();
+  const version = Number.isInteger(from.version) && from.version > 0 ? from.version : 1;
+  const clash = clashOf(from.plugin, sha256, version, (id) => {
+    const there = readPlugin(id, dir, undefined, "ingredient");
+    return there && !("reason" in there) ? { sha256: there.sha256, version: there.header.version } : null;
+  });
+  let header: PluginHeader = { ...from, kind: "ingredient", title, version, "source-sha256": sha256, target: "new", params: [] };
+  let how: Record<string, unknown> = {};
+  if (clash.kind === "same") {
+    header = { ...header, version: clash.version };
+    how = { same: true, note: "Your library already has this ingredient with this code." };
+  } else if (clash.kind === "clash" && replace) {
+    header = { ...header, version: Math.max(version, clash.version + 1) };
+    how = { replaced: `v${clash.version}`, note: `It replaced ${from.plugin} v${clash.version}, which is kept beside it as an older version, so recipes that pin it keep building.` };
+  } else if (clash.kind === "clash") {
+    header = { ...header, plugin: clash.keepBoth, title: keptBesideTitle(title, clash.keepBoth) };
+    how = { keptBeside: from.plugin, note: `Your library has another ${from.plugin} (v${clash.version}), so this one is kept beside it as ${clash.keepBoth}. To replace yours instead, import again with replace:true.` };
+  }
+  const id = header.plugin;
+  try {
+    if (clash.kind !== "same") writePlugin(header, body, dir);
+    const marks = this.ingredientMarks();
+    if (clash.kind !== "same" || marks[id]) writeFileSync(join(dir, "imported.json"), marksText(withMark(marks, id, { sha256, from: "file", at: new Date().toISOString().slice(0, 10) })));
+  } catch (err) {
+    return refuse("ingredient-write-failed", `The ingredient could not be written to ${dir}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return {
+    ok: true,
+    kind: "ingredient",
+    id,
+    version: header.version,
+    sha256,
+    imported: true,
+    items: publicItems(body),
+    use: `use ingredients::${moduleOf(id)}::*;`,
+    path: join(dir, `${id}.rs`),
+    ...(from["source-sha256"] && from["source-sha256"] !== sha256 ? { edited: true } : {}),
+    ...how,
+    data: { title: header.title, description: header.description },
+  };
+}
+
 /**
  * --- I12. Keeps an ingredient: the named items of a run (and what they use), or a whole body. It must build alone
  * under lust; one that does not is not kept, and the sentence says which line needs what.
  */
 async function ingredientSave(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  // A kept ingredient file in the workspace (another library's, or one copied by hand) is imported as it is.
+  if (typeof input.from === "string" && /\.rs$/i.test(input.from)) {
+    const file = recipeSourceFile(input.from);
+    if ("reason" in file) return refuse("ingredient-invalid", file.reason);
+    return this.ingredientImport(file.text, input.replace === true);
+  }
   const title = oneLine(input.title, TITLE_MAX);
   if (!title) return refuse("ingredient-invalid", "An ingredient needs a title: one line, at most 60 characters. Its id is the title's slug unless id is given.");
   const id = typeof input.id === "string" && input.id.trim() ? input.id.trim() : slugOf(title);
@@ -169,24 +270,10 @@ async function ingredientSave(this: Session, input: Record<string, unknown>): Pr
     const framed = body.startsWith("//! ---") ? parsePlugin(body) : null;
     if (framed && !("reason" in framed)) body = framed.body;
   } else return refuse("missing-argument", "Give from (a recipe name this session ran) with items, or source (the module's code).");
-  const problem = bodyProblem(body);
-  if (problem) return refuse("ingredient-invalid", `The ingredient was not kept: ${problem}`);
-  // It builds alone, under lust, as a recipe that imports it would build it.
-  if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
-  const ready = this.recipeHost.available();
-  if (!ready.ok) return refuse("recipe-unavailable", ready.reason);
+  const unbuilt = await this.ingredientBuilds(id, body);
+  if (unbuilt) return unbuilt;
   const sha256 = bodyHash(body);
   const module = moduleOf(id);
-  const probe = `use ingredients::${module}::*;\n\nfn main() {}\n`;
-  const resolved = resolveIngredients(probe, { kept: { [module]: { id, version: 0, sha256, body } }, preferKept: true });
-  if ("reason" in resolved) return refuse("ingredient-invalid", `The ingredient was not kept: ${resolved.reason}`);
-  const built = await this.recipeHost.build("ingredient_check", probe, false, resolved.suffix);
-  if (!built.ok) {
-    const map = lineMap(probe, resolved);
-    const first = built.diagnostics[0];
-    const where = first ? `${lineText(map, first.line)}: ${first.message}` : (built.reason ?? "it did not build");
-    return refuse("ingredient-invalid", `The ingredient does not build alone, so it was not kept: ${where}. Keep what it needs too (items), or import it from another ingredient.`);
-  }
   const dir = ingredientsDir();
   const existing = readPlugin(id, dir, undefined, "ingredient");
   const version = existing && !("reason" in existing) ? (existing.sha256 === sha256 ? existing.header.version : existing.header.version + 1) : 1;
@@ -249,6 +336,9 @@ export const nuggetMethods = {
   promotion,
   nuggetFind,
   ingredientSave,
+  ingredientBuilds,
+  ingredientMarks,
+  ingredientImport,
   harvest,
 };
 

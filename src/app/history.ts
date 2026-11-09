@@ -4,7 +4,8 @@ import { presetKeys } from "../presets";
 import { KLIPPER_NUMBERS, saveProfile } from "../profiles";
 import { restoreFan, snapFan, withFan } from "../fan";
 import { emptyOverrides } from "../overrides";
-import { emptyPlate, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate } from "../plate";
+import { emptyPlate, meshTokenOf, pinPlateMeshes, recallPlateMeshes, revivePlate, snapPlate, type MeshPin, type PlateSnap } from "../plate";
+import { bridgeTouched, type BridgeTouchRow } from "../bridge";
 import { applySelectedToState, syncPlateFromState } from "./plate-sync";
 import { loadMachineLibrary, storeMachineLibrary } from "./machine-library";
 import { beltStamp, selectIn, selection, setActiveBelt, setActiveFirmware, setActiveFirmwareArcs, setAdvance, setFan, setNozzleTemp, setRetract, setTemps } from "../ui/machine-library";
@@ -23,6 +24,40 @@ import {
 } from "../ui/edit-history";
 
 let history: EditHistory = emptyHistory();
+/** Told which plate objects a person's step changed (Tandem counts only these as a person's changes). */
+let touchListener: ((ids: readonly string[]) => void) | null = null;
+
+/** Hear which plate objects each person's step changes: every pose a person sets lands here as one undo step does. */
+export function onPlateTouched(listener: ((ids: readonly string[]) => void) | null) {
+  touchListener = listener;
+}
+
+function touchRows(plate: PlateSnap | undefined, pins: readonly MeshPin[] | undefined): BridgeTouchRow[] {
+  const tokens = new Map((pins ?? []).map((pin) => [pin.id, pin.token]));
+  return (plate?.objects ?? []).map((obj) => ({ id: obj.id, name: obj.name, orient: obj.orient, partScale: obj.partScale, centered: obj.centered, offset: obj.offset, mesh: tokens.get(obj.id) }));
+}
+
+function noteTouched(before: EditSnap | null | undefined, after: EditSnap | null | undefined) {
+  if (!touchListener || !before || !after) return;
+  const ids = bridgeTouched(touchRows(before.plate, before.meshPins), touchRows(after.plate, after.meshPins));
+  if (ids.length) touchListener(ids);
+}
+
+/** The objects the gesture still open has changed so far: a drag or a typed value not yet a step. */
+export function pendingTouched(): string[] {
+  const start = history.pending;
+  if (!start) return [];
+  syncPlateFromState();
+  const live = state.plate.objects.map((obj) => ({ id: obj.id, name: obj.name, orient: obj.orient, partScale: obj.partScale, centered: obj.centered, offset: obj.offset, mesh: meshTokenOf(obj.bytes) }));
+  return bridgeTouched(touchRows(start.plate, start.meshPins), live);
+}
+
+/** Close the open gesture as a step and say which objects it changed. */
+function commitNow(current: EditSnap) {
+  const before = history.pending;
+  history = commitGesture(history, current);
+  if (before && !history.pending) noteTouched(before, current);
+}
 let timer = 0;
 let applying = false;
 /** A grab is open: moves keep its gesture going, however long the pointer rests. */
@@ -186,7 +221,7 @@ export function noteEdit() {
   settling = true;
   timer = window.setTimeout(() => {
     settling = false;
-    history = commitGesture(history, capture());
+    commitNow(capture());
     fx.releaseModelTrees?.();
     }, 280);
 }
@@ -198,7 +233,7 @@ export function noteEdit() {
 export function beginEdit() {
   if (applying || session.projectRestoring) return;
   window.clearTimeout(timer);
-  if (settling) history = commitGesture(history, capture());
+  if (settling) commitNow(capture());
   settling = false;
   history = beginGesture(history, capture());
 }
@@ -207,7 +242,7 @@ export function flushEdit() {
   window.clearTimeout(timer);
   settling = false;
   held = false;
-  history = commitGesture(history, capture());
+  commitNow(capture());
   // A step that lands can push the oldest one out or clear the redo steps, and their trees with them.
   fx.releaseModelTrees?.();
 }
@@ -226,7 +261,9 @@ export function cancelEdit() {
   held = false;
   const start = history.pending;
   history = { ...history, pending: null };
-  if (start) applySnap(start);
+  if (!start) return;
+  noteTouched(capture(), start);
+  applySnap(start);
 }
 
 /** What Model must keep for the steps here. */
@@ -280,9 +317,11 @@ export function newestEdits(): { undo: EditSnap | null; redo: EditSnap | null; p
 export function undoUserEdit(): boolean {
   window.clearTimeout(timer);
   settling = false;
-  const step = undoSnap(history, capture());
+  const now = capture();
+  const step = undoSnap(history, now);
   if (!step) return false;
   history = step.history;
+  noteTouched(now, step.restore);
   applySnap(step.restore);
   return true;
 }
@@ -290,9 +329,11 @@ export function undoUserEdit(): boolean {
 export function redoUserEdit(): boolean {
   window.clearTimeout(timer);
   settling = false;
-  const step = redoSnap(history, capture());
+  const now = capture();
+  const step = redoSnap(history, now);
   if (!step) return false;
   history = step.history;
+  noteTouched(now, step.restore);
   applySnap(step.restore);
   return true;
 }
