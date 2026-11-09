@@ -1600,7 +1600,7 @@ export const TOOLS: ToolSpec[] = [
         query: { type: "string", maxLength: 120, description: "Find: words." },
         id: { type: "string", maxLength: 120, description: "Preset: plugin/name. Lesson: op kind." },
         withSource: { type: "boolean", description: "Get: code." },
-        from: { type: "string", maxLength: 200, description: "Save: a recipe run here; import a .rs file, or project:<id>." },
+        from: { type: "string", maxLength: 200, description: "Save: a recipe run here; import a .rs plugin or ingredient file, or project:<id>." },
         replace: { type: "boolean", description: "Import: replace a clash." },
         items: { type: "array", maxItems: 40, items: { type: "string" }, description: "Ingredient: fns to lift." },
         data: { type: "array", maxItems: 20, items: { type: "string" }, description: "Save plugin id: carry workspace data." },

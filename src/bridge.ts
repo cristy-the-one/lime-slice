@@ -150,16 +150,162 @@ export function bridgeHasPlateUpdate(message: BridgeMessage): boolean {
   return message.ok !== false && !!message.tool && PLATE_TOOLS.has(message.tool) && !!message.plate;
 }
 
-/** Never replace or remove a desktop Model history with a mesh-only bridge snapshot. */
+/** Never replace or remove a desktop Model history with a mesh-only bridge snapshot. The first part it would, or null. */
 export function bridgeProtectedModel<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, owned: ReadonlySet<string>, hasModel: (extra: T | null) => boolean): string | null {
-  if (!bridgeIsNew(seen, message) || !bridgeHasPlateUpdate(message) || !message.plate) return null;
-  const incoming = new Map(message.plate.map((row) => [row.object, row]));
+  return bridgeHolds(current, message, seen, new Map(), owned, { protectedModel: (row) => hasModel(row.extra) }).find((hold) => hold.kind === "model-history")?.name ?? null;
+}
+
+/**
+ * Why the desktop held one part of a snapshot back. Only that part waits; the rest of the snapshot applies.
+ * - `model-history`: the window holds an editable Model history for it that MCP's new mesh (or removal) would discard.
+ * - `both-changed`: a person changed it here and MCP changed it too since the last shared version.
+ * - `removed-here`: a person removed it here and MCP changed it.
+ */
+export type BridgeHoldKind = "model-history" | "both-changed" | "removed-here";
+
+export interface BridgeHold {
+  object: string;
+  name: string;
+  kind: BridgeHoldKind;
+  /** One sentence: what was held and how to clear it. */
+  reason: string;
+}
+
+/** What to do about a held part, in a sentence a person or an agent can act on. */
+export function bridgeHoldReason(name: string, kind: BridgeHoldKind): string {
+  if (kind === "model-history") return `${name} has a Model history in the window, so MCP's new shape for it was held back; the rest of the plate updated. Undo the change in MCP (plate_undo) to keep the window's, or project_save from MCP and open that project in the window to take MCP's.`;
+  if (kind === "removed-here") return `${name} was removed in the window and changed by MCP, so MCP's update to it was held back; the rest of the plate updated. Undo the removal in the window to take MCP's version, or object_remove it in MCP.`;
+  return `${name} was changed both in the window and by MCP, so MCP's update to it was held back; the rest of the plate updated. Undo it in the window to take MCP's version, or plate_undo in MCP and tandem_pull the window's.`;
+}
+
+/** A person's change to `id` since the shared version. Without `touched`, any difference counts, as before Tandem knew. */
+function humanChanged<T>(id: string, before: MirrorObject<null>, human: MirrorObject<T> | undefined, touched?: ReadonlySet<string>): boolean {
+  return (!touched || touched.has(id)) && !sameBridgeObject(before, human);
+}
+
+function incomingRows(message: BridgeMessage): Map<string, MirrorObject<null>> {
+  return bridgeServerBaseline(message);
+}
+
+/**
+ * The parts of this snapshot the desktop must hold back, each with its reason. Everything else applies. A part counts as
+ * changed by a person only when `touched` names it (an edit the window recorded as an undo step); a pose the window
+ * drifted to by itself is not a person's change, so it never holds anything back and is put right by the snapshot.
+ */
+export function bridgeHolds<T>(
+  current: readonly MirrorObject<T>[],
+  message: BridgeMessage,
+  seen: BridgeSeen,
+  baseline: ReadonlyMap<string, MirrorObject<null>>,
+  owned: ReadonlySet<string>,
+  options: { protectedModel?: (row: MirrorObject<T>) => boolean; touched?: ReadonlySet<string> } = {},
+): BridgeHold[] {
+  if (!bridgeIsNew(seen, message) || !bridgeHasPlateUpdate(message) || !message.plate) return [];
+  const sameSession = (message.session ?? "") === seen.session;
+  const incoming = incomingRows(message);
+  const holds: BridgeHold[] = [];
+  const hold = (object: string, name: string, kind: BridgeHoldKind) => holds.push({ object, name, kind, reason: bridgeHoldReason(name, kind) });
   for (const row of current) {
-    if (!hasModel(row.extra)) continue;
+    if (!options.protectedModel?.(row)) continue;
     const next = incoming.get(row.id);
-    if ((next && (next.meshHash ?? "") !== row.meshHash) || (!next && (message.session ?? "") === seen.session && owned.has(row.id))) return row.name;
+    if ((next && next.meshHash !== row.meshHash) || (!next && sameSession && owned.has(row.id))) hold(row.id, row.name, "model-history");
   }
-  return null;
+  if (!sameSession) return holds;
+  const here = new Map(current.map((row) => [row.id, row]));
+  for (const [id, before] of baseline) {
+    if (holds.some((row) => row.object === id)) continue;
+    const human = here.get(id);
+    const remote = incoming.get(id);
+    if (!humanChanged(id, before, human, options.touched) || sameBridgeObject(human, remote)) continue;
+    if (!human) hold(id, before.name, "removed-here");
+    else if (!sameBridgeObject(before, remote)) hold(id, human.name, "both-changed");
+  }
+  return holds;
+}
+
+/**
+ * The snapshot as this desktop applies it: a held part keeps the desktop's version (or stays removed), a person's change
+ * to a part MCP left alone is carried forward, and every other row is MCP's. `diverged` says a person's change was kept.
+ */
+export function bridgeMerge<T>(
+  current: readonly MirrorObject<T>[],
+  message: BridgeMessage,
+  seen: BridgeSeen,
+  baseline: ReadonlyMap<string, MirrorObject<null>>,
+  holds: readonly BridgeHold[],
+  touched?: ReadonlySet<string>,
+): { message: BridgeMessage; diverged: boolean } {
+  if (!bridgeIsNew(seen, message) || !bridgeHasPlateUpdate(message) || !message.plate) return { message, diverged: false };
+  const sameSession = (message.session ?? "") === seen.session;
+  const here = new Map(current.map((row) => [row.id, row]));
+  const incoming = incomingRows(message);
+  const held = new Set(holds.map((row) => row.object));
+  const asRow = (human: MirrorObject<T>, row?: BridgePlateRow): BridgePlateRow => ({ ...(row ?? {}), object: human.id, name: human.name, scalePercent: human.scalePercent, centered: human.centered, offset: { ...human.offset }, orient: [...human.orient] as Mat3, meshHash: human.meshHash });
+  let diverged = false;
+  const plate: BridgePlateRow[] = [];
+  for (const row of message.plate) {
+    const human = here.get(row.object);
+    if (held.has(row.object)) {
+      if (human) plate.push(asRow(human, row));
+      continue;
+    }
+    const before = baseline.get(row.object);
+    if (sameSession && before && human && humanChanged(row.object, before, human, touched) && sameBridgeObject(before, incoming.get(row.object))) {
+      plate.push(asRow(human, row));
+      diverged = true;
+      continue;
+    }
+    plate.push(row);
+  }
+  // A held part MCP removed stays on the desktop, as the window has it.
+  for (const id of held) {
+    const human = here.get(id);
+    if (human && !incoming.has(id)) plate.push(asRow(human));
+  }
+  return { message: { ...message, plate }, diverged };
+}
+
+/** The shared version after a snapshot: MCP's rows, except that a held part keeps the version both last agreed on. */
+export function bridgeNextBaseline(message: BridgeMessage, previous: ReadonlyMap<string, MirrorObject<null>>, holds: readonly BridgeHold[]): Map<string, MirrorObject<null>> {
+  const next = bridgeServerBaseline(message);
+  for (const { object } of holds) {
+    const before = previous.get(object);
+    if (before) next.set(object, before);
+    else next.delete(object);
+  }
+  return next;
+}
+
+/** A plate object's pose and mesh, as a person's edit can change them. `mesh` is any token that changes with the mesh. */
+export interface BridgeTouchRow {
+  id: string;
+  name: string;
+  orient: readonly number[];
+  partScale: number;
+  centered: boolean;
+  offset: { x: number; y: number; z: number };
+  mesh?: string;
+}
+
+/** The objects an edit changed, added or removed: what goes in `touched`. */
+export function bridgeTouched(before: readonly BridgeTouchRow[], after: readonly BridgeTouchRow[]): string[] {
+  const was = new Map(before.map((row) => [row.id, row]));
+  const ids = new Set<string>();
+  for (const row of after) {
+    const old = was.get(row.id);
+    was.delete(row.id);
+    if (!old || old.name !== row.name || old.partScale !== row.partScale || old.centered !== row.centered || old.mesh !== row.mesh
+      || old.offset.x !== row.offset.x || old.offset.y !== row.offset.y || old.offset.z !== row.offset.z
+      || old.orient.some((value, index) => value !== row.orient[index])) ids.add(row.id);
+  }
+  for (const id of was.keys()) ids.add(id);
+  return [...ids];
+}
+
+/** Mirrored parts whose pose on the desktop is no longer the pose the mirror just wrote: the window moved them by itself. */
+export function bridgeDrifted<T>(written: readonly MirrorObject<T>[], now: readonly MirrorObject<T>[], owned: ReadonlySet<string>): string[] {
+  const here = new Map(now.map((row) => [row.id, row]));
+  return written.filter((row) => owned.has(row.id) && here.has(row.id) && !sameBridgeObject({ ...row, meshHash: "" }, { ...here.get(row.id)!, meshHash: "" })).map((row) => row.id);
 }
 
 /** A detached copy of the last plate state actually accepted by this desktop. */
@@ -185,46 +331,30 @@ function sameBridgeObject(a: MirrorObject<unknown> | undefined, b: MirrorObject<
     && a.orient.every((value, index) => value === b.orient[index]);
 }
 
-/** A small description of local edits to previously mirrored parts, without transferring meshes. */
-export function bridgeHumanChanges<T>(current: readonly MirrorObject<T>[], baseline: ReadonlyMap<string, MirrorObject<null>>): Array<Record<string, unknown>> {
+/**
+ * A small description of a person's edits to previously mirrored parts, without transferring meshes. With `touched`,
+ * only the parts a person edited count: a difference the window made by itself is not reported as theirs.
+ */
+export function bridgeHumanChanges<T>(current: readonly MirrorObject<T>[], baseline: ReadonlyMap<string, MirrorObject<null>>, touched?: ReadonlySet<string>): Array<Record<string, unknown>> {
   const here = new Map(current.map((row) => [row.id, row]));
   const changed: Array<Record<string, unknown>> = [];
   for (const [id, before] of baseline) {
     const row = here.get(id);
-    if (sameBridgeObject(before, row)) continue;
+    if (!humanChanged(id, before, row, touched)) continue;
     if (!row) changed.push({ object: id, name: before.name, removed: true });
     else changed.push({ object: id, name: row.name, scalePercent: row.scalePercent, centered: row.centered, offset: { ...row.offset }, orient: [...row.orient], meshChanged: row.meshHash !== before.meshHash, base: { name: before.name, scalePercent: before.scalePercent, centered: before.centered, offset: { ...before.offset }, orient: [...before.orient], meshHash: before.meshHash } });
   }
   return changed;
 }
 
-/** Refuse a snapshot that would overwrite a desktop edit since the last accepted snapshot. */
-export function bridgeConflict<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>): string | null {
-  if (!bridgeIsNew(seen, message) || (message.session ?? "") !== seen.session || !bridgeHasPlateUpdate(message) || !message.plate) return null;
-  const here = new Map(current.map((row) => [row.id, row]));
-  const incoming = new Map(message.plate.map((row) => [row.object, {
-    id: row.object, name: row.name, scalePercent: row.scalePercent, centered: row.centered,
-    offset: row.offset, orient: row.orient, meshHash: row.meshHash ?? "", extra: null,
-  }]));
-  for (const [id, before] of baseline) {
-    const human = here.get(id);
-    const remote = incoming.get(id);
-    if (!sameBridgeObject(before, human) && !sameBridgeObject(human, remote) && (!human || !sameBridgeObject(before, remote))) return human?.name ?? before.name;
-  }
-  return null;
+/** The first part a snapshot would overwrite after a desktop edit since the last accepted snapshot, or null. */
+export function bridgeConflict<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>, touched?: ReadonlySet<string>): string | null {
+  return bridgeHolds(current, message, seen, baseline, new Set(), { touched })[0]?.name ?? null;
 }
 
 /** Carry a desktop-only change forward when the incoming server row still equals the shared baseline. */
-export function bridgePreserveHuman<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>): BridgeMessage {
-  if (!bridgeIsNew(seen, message) || (message.session ?? "") !== seen.session || !bridgeHasPlateUpdate(message) || !message.plate) return message;
-  const here = new Map(current.map((row) => [row.id, row]));
-  const incoming = bridgeServerBaseline(message);
-  return { ...message, plate: message.plate.map((row) => {
-    const before = baseline.get(row.object);
-    const human = here.get(row.object);
-    if (!before || !human || sameBridgeObject(before, human) || !sameBridgeObject(before, incoming.get(row.object))) return row;
-    return { ...row, name: human.name, scalePercent: human.scalePercent, centered: human.centered, offset: { ...human.offset }, orient: [...human.orient] as Mat3, meshHash: human.meshHash };
-  }) };
+export function bridgePreserveHuman<T>(current: readonly MirrorObject<T>[], message: BridgeMessage, seen: BridgeSeen, baseline: ReadonlyMap<string, MirrorObject<null>>, touched?: ReadonlySet<string>): BridgeMessage {
+  return bridgeMerge(current, message, seen, baseline, [], touched).message;
 }
 
 /** True when this message is newer than what the window has, or comes from a new server process. */

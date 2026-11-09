@@ -15,13 +15,22 @@ import { NEXT, refuse } from "../refusals.ts";
 import { bridgeHumanContext, bridgeReceipts } from "../bridge-client.ts";
 import type { Mat3 } from "../../src/mesh-place.ts";
 
+/** Why the desktop holds parts back and what clears each, or "" when none is. Older desktops send only `conflict`. */
+function heldParts(human: Record<string, unknown>): string {
+  const rows = Array.isArray(human.conflicts) ? human.conflicts.filter((row): row is Record<string, unknown> => !!row && typeof row === "object") : [];
+  const said = rows.map((row) => (typeof row.reason === "string" ? row.reason : typeof row.name === "string" ? row.name : "")).filter(Boolean);
+  if (said.length) return `${said.join(" ")} Pull once that is cleared.`;
+  return typeof human.conflict === "string" && human.conflict ? `The desktop held back MCP's update to ${human.conflict}; reconcile it before pulling.` : "";
+}
+
 /** Pull plate placements only after every changed part passes the same baseline check. */
 async function tandemPull(this: Session): Promise<Record<string, unknown>> {
   const value = await bridgeHumanContext();
   if (!value || typeof value !== "object" || Array.isArray(value)) return refuse("tandem-unavailable", "The Tandem desktop is not connected or cannot provide context.");
   const human = value as Record<string, unknown>;
   if (human.mirrorSession !== this.bridgeSession) return refuse("tandem-conflict", "The desktop and MCP do not have the same mirrored session.");
-  if (typeof human.conflict === "string" && human.conflict) return refuse("tandem-conflict", `The desktop held back a conflicting update to ${human.conflict}; reconcile the two versions before pulling.`);
+  const held = heldParts(human);
+  if (held) return refuse("tandem-conflict", held);
   if (human.mirrorSeq !== this.bridgePlateSeq || this.bridgePlateSeq === 0) return refuse("tandem-busy", "The desktop has not applied the latest MCP plate snapshot. Wait for its receipt before pulling.");
   if (this.inflight !== 1) return refuse("tandem-busy", "Another MCP operation is still running. Wait for it before pulling.");
   if (human.gesture !== false || human.editing !== false) return refuse("tandem-busy", "Finish the active desktop edit before pulling its placements.");
@@ -66,7 +75,7 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   return {
     ok: true,
     serverVersion: appVersion(),
-    ...(human || receipts ? { tandem: { ...(human ? { human } : {}), ...(receipts ? { receipts: receipts.slice(-8) } : {}), note: "Use tandem_pull to import compatible human placements. Desktop and MCP are not atomically synchronized. A conflict means the desktop held back an MCP update; inspect both versions. Receipts are asynchronous; absence does not prove application." } } : {}),
+    ...(human || receipts ? { tandem: { ...(human ? { human } : {}), ...(receipts ? { receipts: receipts.slice(-8) } : {}), note: "Use tandem_pull to import compatible human placements. Desktop and MCP are not atomically synchronized. A conflict holds back only the parts named in its held list (human.conflicts says why and what clears each); the rest of that snapshot applied. Receipts are asynchronous; absence does not prove application." } } : {}),
     engine,
     ...(where ? { enginePath: where.path, ...(where.installed ? { engineNote: "This checkout has no engine built, so the installed app's engine of the same version answers." } : {}) } : {}),
     occt,

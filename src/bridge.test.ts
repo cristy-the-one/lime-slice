@@ -1,4 +1,4 @@
-import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeHumanChanges, bridgeIsNew, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
+import { BRIDGE_RESEND, bridgeBaseline, bridgeConflict, bridgeDrifted, bridgeHolds, bridgeHumanChanges, bridgeIsNew, bridgeMerge, bridgeNextBaseline, bridgePreserveHuman, bridgeProtectedModel, bridgeServerBaseline, bridgeSettings, bridgeTouched, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeMessage, type BridgePlateRow, type BridgeSeen, type MirrorObject } from "./bridge.ts";
 import { ID_MATRIX, rotZ, type Mat3 } from "./mesh-place.ts";
 
 let failed = 0;
@@ -173,6 +173,71 @@ const decodedHistory = decodeBridgeHistory(savedHistory);
 check("a self-contained history and solid are decoded", !!decodedHistory && !!decodedHistory.tree.rootStep && new TextDecoder().decode(decodedHistory.tree.rootStep.bytes) === "abc" && new TextDecoder().decode(decodedHistory.brep) === "def");
 check("a truncated root is refused", decodeBridgeHistory({ ...savedHistory, tree: { ...savedHistory.tree, rootStep: { name: "root.step", bytesBase64: "YWJj", byteLength: 4, hash: "test" } } }) === null);
 check("histories with linked split pieces are refused", decodeBridgeHistory({ ...savedHistory, tree: { ...savedHistory.tree, nodes: [{ ...savedHistory.tree.nodes[0]!, piece: "other" }] } }) === null);
+
+// --- Tandem beta, 2026-11-09. A: the window turned a mirrored sphere by itself as MCP added a duck; the turn was
+// reported as the person's and then held every update. B: one part in conflict froze the whole plate.
+const flipped = [-0.99539, -0.03253, -0.09025, -0.03253, 0.99947, -0.00147, 0.09025, 0.00147, -0.99592] as Mat3;
+const sphereSeen: BridgeSeen = { session: "s1", seq: 16 };
+const sphereRow = row("obj-1", "sphere", 0);
+const sphereBase = bridgeServerBaseline({ tool: "project_open", session: "s1", seq: 16, ok: true, plate: [sphereRow] });
+const drifted: MirrorObject<string>[] = [{ ...mine, id: "obj-1", name: "obj-1", centered: false, meshHash: "sphere", orient: flipped, extra: "own history" }];
+const duckAdded: BridgeMessage = { tool: "solid_new", session: "s1", seq: 17, ok: true, objectId: "obj_2", plate: [sphereRow, row("obj_2", "duck", 80)], meshes: { duck: mesh("duck.stl") } };
+const nobody = new Set<string>();
+check("A: a pose the window drifted to by itself is not a person's change", bridgeHumanChanges(drifted, sphereBase, nobody).length === 0);
+check("A: a drift holds nothing back", bridgeHolds(drifted, duckAdded, sphereSeen, sphereBase, new Set(["obj-1"]), { touched: nobody }).length === 0);
+const healed = bridgeMerge(drifted, duckAdded, sphereSeen, sphereBase, [], nobody);
+const healedPlate = mirrorPlate(drifted, healed.message, sphereSeen, new Set(["obj-1"]));
+const sphereAfter = healedPlate.plate.find((obj) => obj.id === "obj-1");
+check("A: adding a new object puts the other mirrored part back at MCP's pose", !healed.diverged && sphereAfter?.orient.every((value, at) => value === ID_MATRIX[at]) === true && sphereAfter.offset.x === 0 && healedPlate.plate.some((obj) => obj.id === "obj_2"));
+const clean: MirrorObject<string>[] = [{ ...drifted[0]!, orient: [...ID_MATRIX] as Mat3 }];
+const cleanPlate = mirrorPlate(clean, bridgeMerge(clean, duckAdded, sphereSeen, sphereBase, [], nobody).message, sphereSeen, new Set(["obj-1"]));
+const untouchedSphere = cleanPlate.plate.find((obj) => obj.id === "obj-1");
+check("A: a snapshot adding a new object leaves another mirrored object's orient and offset alone", untouchedSphere?.orient.every((value, at) => value === ID_MATRIX[at]) === true && untouchedSphere.offset.x === 0 && untouchedSphere.extra === "own history");
+check("A: and creates no human change", bridgeHumanChanges(cleanPlate.plate, bridgeServerBaseline(duckAdded), nobody).length === 0 && bridgeHumanChanges(cleanPlate.plate, bridgeServerBaseline(duckAdded)).length === 0);
+check("A: a part the mirror wrote and the window then moved is found", bridgeDrifted(cleanPlate.plate, drifted, cleanPlate.owned).join() === "obj-1" && bridgeDrifted(cleanPlate.plate, cleanPlate.plate, cleanPlate.owned).length === 0);
+const turnedByPerson = new Set(["obj-1"]);
+check("A: the same turn made by a person is reported as theirs", bridgeHumanChanges(drifted, sphereBase, turnedByPerson).length === 1);
+const kept = mirrorPlate(drifted, bridgeMerge(drifted, duckAdded, sphereSeen, sphereBase, [], turnedByPerson).message, sphereSeen, new Set(["obj-1"]));
+check("A: and a person's turn survives a snapshot that only adds a part", kept.plate.find((obj) => obj.id === "obj-1")?.orient[0] === flipped[0]);
+check("touched names the parts an edit changed, added or removed", bridgeTouched(
+  [{ id: "a", name: "a", orient: ID_MATRIX, partScale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, mesh: "m1" }, { id: "b", name: "b", orient: ID_MATRIX, partScale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, mesh: "m2" }, { id: "c", name: "c", orient: ID_MATRIX, partScale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, mesh: "m3" }],
+  [{ id: "a", name: "a", orient: ID_MATRIX, partScale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, mesh: "m1" }, { id: "b", name: "b", orient: rotZ(5), partScale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, mesh: "m2" }, { id: "d", name: "d", orient: ID_MATRIX, partScale: 1, centered: true, offset: { x: 0, y: 0, z: 0 }, mesh: "m4" }],
+).sort().join() === "b,c,d");
+
+// B: Sphere 1 holds a Model history here and MCP fused spheres onto it; it alone waits.
+const plateB: MirrorObject<string>[] = [
+  { ...mine, id: "obj-1", name: "Sphere 1", centered: false, meshHash: "sphere", extra: "own history" },
+  { ...mine, id: "obj_3", name: "Box", centered: false, meshHash: "box", offset: { x: 50, y: 0, z: 0 }, extra: null as unknown as string },
+];
+const ownedB = new Set(["obj-1", "obj_3"]);
+const baseB = bridgeServerBaseline({ tool: "plate_sync", session: "s1", seq: 20, ok: true, plate: [row("obj-1", "sphere"), row("obj_3", "box", 50)] });
+const seenB: BridgeSeen = { session: "s1", seq: 20 };
+const isModel = (obj: MirrorObject<string>) => obj.extra === "own history";
+const fusedAndMore: BridgeMessage = { tool: "object_duplicate", session: "s1", seq: 21, ok: true, objectId: "obj_22", plate: [row("obj-1", "fused"), row("obj_3", "box", 70), row("obj_22", "fused", 140)], meshes: { fused: mesh("fused.stl") } };
+const holdsB = bridgeHolds(plateB, fusedAndMore, seenB, baseB, ownedB, { protectedModel: isModel, touched: new Set() });
+check("B: only the part whose Model history MCP would discard is held, with a reason", holdsB.length === 1 && holdsB[0]?.object === "obj-1" && holdsB[0].kind === "model-history" && /plate_undo/.test(holdsB[0].reason) && /project_save/.test(holdsB[0].reason));
+const mergedB = bridgeMerge(plateB, fusedAndMore, seenB, baseB, holdsB, new Set());
+const appliedB = mirrorPlate(plateB, mergedB.message, seenB, ownedB);
+const sphereB = appliedB.plate.find((obj) => obj.id === "obj-1");
+check("B: the held part keeps the window's mesh, pose and history", appliedB.applied && !appliedB.missing && sphereB?.meshHash === "sphere" && sphereB.mesh === undefined && sphereB.extra === "own history");
+check("B: a new object (a duplicate) applies while one part is held", appliedB.plate.find((obj) => obj.id === "obj_22")?.offset.x === 140);
+check("B: an edit to a part not in conflict applies", appliedB.plate.find((obj) => obj.id === "obj_3")?.offset.x === 70);
+const nextBaseB = bridgeNextBaseline(fusedAndMore, baseB, holdsB);
+check("B: the held part keeps the shared version both last agreed on; the rest move on", nextBaseB.get("obj-1")?.meshHash === "sphere" && nextBaseB.get("obj_3")?.offset.x === 70 && nextBaseB.has("obj_22"));
+const arranged: BridgeMessage = { tool: "plate_arrange", session: "s1", seq: 22, ok: true, plate: [row("obj-1", "fused", 5), row("obj_3", "box", 90), row("obj_22", "fused", 160)] };
+const holdsB2 = bridgeHolds(appliedB.plate, arranged, appliedB.seen, nextBaseB, appliedB.owned, { protectedModel: isModel, touched: new Set() });
+const appliedB2 = mirrorPlate(appliedB.plate, bridgeMerge(appliedB.plate, arranged, appliedB.seen, nextBaseB, holdsB2, new Set()).message, appliedB.seen, appliedB.owned);
+check("B: a later arrange still moves every other part; the held one stays held", holdsB2.map((hold) => hold.object).join() === "obj-1" && appliedB2.plate.find((obj) => obj.id === "obj_3")?.offset.x === 90 && appliedB2.plate.find((obj) => obj.id === "obj_22")?.offset.x === 160 && appliedB2.plate.find((obj) => obj.id === "obj-1")?.meshHash === "sphere");
+const removedB: BridgeMessage = { tool: "object_remove", session: "s1", seq: 23, ok: true, plate: [row("obj_3", "box", 90)] };
+const holdsB3 = bridgeHolds(appliedB2.plate, removedB, appliedB2.seen, nextBaseB, appliedB2.owned, { protectedModel: isModel, touched: new Set() });
+const appliedB3 = mirrorPlate(appliedB2.plate, bridgeMerge(appliedB2.plate, removedB, appliedB2.seen, nextBaseB, holdsB3, new Set()).message, appliedB2.seen, appliedB2.owned);
+check("B: MCP removing the held part keeps it here; MCP's other removal applies", appliedB3.plate.some((obj) => obj.id === "obj-1") && !appliedB3.plate.some((obj) => obj.id === "obj_22"));
+// Two parts moved: the person moved Box here, MCP moved Box and Sphere. Box waits, Sphere moves.
+const plateC: MirrorObject<string>[] = [{ ...plateB[0]!, extra: "mesh only" }, { ...plateB[1]!, offset: { x: 55, y: 0, z: 0 } }];
+const movedBoth: BridgeMessage = { tool: "object_place", session: "s1", seq: 21, ok: true, plate: [row("obj-1", "sphere", 9), row("obj_3", "box", 70)] };
+const holdsC = bridgeHolds(plateC, movedBoth, seenB, baseB, ownedB, { protectedModel: isModel, touched: new Set(["obj_3"]) });
+const appliedC = mirrorPlate(plateC, bridgeMerge(plateC, movedBoth, seenB, baseB, holdsC, new Set(["obj_3"])).message, seenB, ownedB);
+check("B: a part both sides moved is held as both-changed; the other part's move applies", holdsC.length === 1 && holdsC[0]?.kind === "both-changed" && appliedC.plate.find((obj) => obj.id === "obj_3")?.offset.x === 55 && appliedC.plate.find((obj) => obj.id === "obj-1")?.offset.x === 9);
 
 if (failed) {
   console.error(`${failed} failed`);
