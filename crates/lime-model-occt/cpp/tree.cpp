@@ -2396,7 +2396,7 @@ LimeShape* lime_tree_combine(const LimeShape* from, const char* op, const LimeSh
 
 /// A recipe's queued tools (docs/plan-native-recipes.md 7.1), as `lime_tree_combine`, with `missed[i]` set to 1 for
 /// each tool that changed nothing. `missed` has `count` slots.
-LimeShape* lime_tree_combine_checked(const LimeShape* from, const char* op, const LimeShape* const* tools, int count, int* missed, char** error) {
+LimeShape* lime_tree_combine_checked(const LimeShape* from, const char* op, const LimeShape* const* tools, int count, int merge, int* missed, char** error) {
     try {
         LIME_CATCH_FAULTS;
         std::vector<TopoDS_Shape> shapes;
@@ -2409,7 +2409,7 @@ LimeShape* lime_tree_combine_checked(const LimeShape* from, const char* op, cons
         std::string message;
         std::vector<int> left;
         const TopoDS_Shape result = combine_tools_checked(
-            from->held.shape, from->held.volume, op == nullptr ? "" : op, shapes, volume, message, left);
+            from->held.shape, from->held.volume, op == nullptr ? "" : op, shapes, merge != 0, volume, message, left);
         if (!message.empty()) {
             set_error(error, message);
             return nullptr;

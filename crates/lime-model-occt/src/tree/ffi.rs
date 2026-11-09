@@ -473,6 +473,7 @@ extern "C" {
         op: *const c_char,
         tools: *const *const RawShape,
         count: c_int,
+        merge: c_int,
         missed: *mut c_int,
         error: *mut *mut c_char,
     ) -> *mut RawShape;

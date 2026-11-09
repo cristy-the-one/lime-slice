@@ -229,7 +229,7 @@ export class AppRecipeCalls {
         const max = reply.max as Box["max"] | undefined;
         if (!Array.isArray(min) || !Array.isArray(max)) return null;
         this.bakedOps.set(op, baked);
-        return { kind, box: { min, max } };
+        return { kind, box: { min, max }, merge: (baked.op as { merge?: unknown }).merge === true };
       },
       partBox: (object) => this.parts.get(object)?.solid?.bounds ?? null,
       build: async (object, ops, groups) => {

@@ -4681,6 +4681,7 @@ TopoDS_Shape combine_tools_checked(
     double before,
     const std::string& which,
     const std::vector<TopoDS_Shape>& tools,
+    bool merge,
     double& volume,
     std::string& error,
     std::vector<int>& missed) {
@@ -4699,7 +4700,7 @@ TopoDS_Shape combine_tools_checked(
         list.Append(tool);
     }
     Handle(BRepTools_History) history;
-    const TopoDS_Shape result = boolean_list(which, current, list, error, &history);
+    TopoDS_Shape result = boolean_list(which, current, list, error, &history);
     if (!error.empty()) {
         return {};
     }
@@ -4713,6 +4714,10 @@ TopoDS_Shape combine_tools_checked(
     if (which == "fuse" && count_of(result, TopAbs_SOLID) > bodies) {
         error = "This would add a separate body; place it touching the part.";
         return {};
+    }
+    // Plain booleans merge the faces left on one surface after each step; after the group, once, as they would have.
+    if (merge) {
+        result = merge_same_domain(result, &history);
     }
     // A tool that met the solid leaves at least one of its faces, whole or split, in the result: a cut's inside the
     // part as the hole's walls, a fuse's outside it. A tool whose every face is gone changed nothing, and alone it

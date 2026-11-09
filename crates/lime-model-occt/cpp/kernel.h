@@ -628,6 +628,7 @@ TopoDS_Shape combine_tools_checked(
     double before,
     const std::string& which,
     const std::vector<TopoDS_Shape>& tools,
+    bool merge,
     double& volume,
     std::string& error,
     std::vector<int>& missed);

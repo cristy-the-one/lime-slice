@@ -459,7 +459,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       if (!obj || (object !== objectArg && !created.includes(object))) return null;
       const found = await this.queueTool(obj, op);
       if (found) bakedOps.set(op, found.baked);
-      return found ? { kind: found.kind, box: found.box } : null;
+      return found ? { kind: found.kind, box: found.box, merge: found.merge } : null;
     },
     partBox: (object) => this.find(object)?.solid?.bounds ?? null,
     build: async (object, ops: QueuedOp[], groups) => {

@@ -600,7 +600,7 @@ async function applyCombined(this: Session, obj: PlateObject, raws: Record<strin
  * --- docs/plan-native-recipes.md 7.1. A recipe's op as a queued tool: its stored op, and its tool's kind and box from
  * the engine (the tool built alone). Null when it is not a plain fuse or cut, names a face, or its tool does not build.
  */
-async function queueTool(this: Session, obj: PlateObject, raw: Record<string, unknown>): Promise<{ kind: "fuse" | "cut"; box: Box; baked: { op: ModelOp; typed: Record<string, unknown> } } | null> {
+async function queueTool(this: Session, obj: PlateObject, raw: Record<string, unknown>): Promise<{ kind: "fuse" | "cut"; box: Box; merge: boolean; baked: { op: ModelOp; typed: Record<string, unknown> } } | null> {
   if (!queueableOp(raw)) return null;
   const tree = await this.opened(obj);
   if ("reason" in tree) return null;
@@ -617,7 +617,7 @@ async function queueTool(this: Session, obj: PlateObject, raw: Record<string, un
   const min = reply.min as Box["min"] | undefined;
   const max = reply.max as Box["max"] | undefined;
   if (!Array.isArray(min) || !Array.isArray(max) || min.length !== 3 || max.length !== 3) return null;
-  return { kind, box: { min, max }, baked };
+  return { kind, box: { min, max }, merge: (baked.op as { merge?: unknown }).merge === true, baked };
 }
 
 /**

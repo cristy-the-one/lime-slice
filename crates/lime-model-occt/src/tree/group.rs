@@ -388,9 +388,12 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
     // --- docs/plan-native-recipes.md 7.1: a recipe's queued tools also say which of them changed nothing.
     let queued = source.get("kind").and_then(Value::as_str) == Some("queue");
     let mut missed: Vec<c_int> = vec![0; raws.len()];
+    // Plain booleans merge faces on one surface after each step: a queued group of them merges once at its end. The
+    // host never groups them with ops that do not merge.
+    let merge = c_int::from(steps.iter().all(|step| matches!(step, Op::Boolean { merge: true, .. })));
     let kept = Shape::made(|error| unsafe {
         if queued {
-            lime_tree_combine_checked(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, missed.as_mut_ptr(), error)
+            lime_tree_combine_checked(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, merge, missed.as_mut_ptr(), error)
         } else {
             lime_tree_combine(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, error)
         }

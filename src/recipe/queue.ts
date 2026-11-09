@@ -31,13 +31,20 @@ const APART_MM = 1e-4;
 /** The part of the run's time limit after which nothing more is queued silently. */
 const LATE = 0.8;
 
+/** A queued op's tool: its kind, its box, and whether it is a plain boolean that merges faces after it (`merge`). */
+export interface QueueTool {
+  kind: QueueKind;
+  box: Box;
+  merge?: boolean;
+}
+
 /** One queued op: the call that sent it, its tool's kind and box (null: built on its own, in its place). */
 export interface QueuedOp {
   site: RecipeCallSite;
   /** The call's arguments without `queue`, as the op is applied. */
   args: Record<string, unknown>;
   op: Record<string, unknown>;
-  tool: { kind: QueueKind; box: Box } | null;
+  tool: QueueTool | null;
   explicit: boolean;
   /** Its place among the part's `apply_later` ops since the recipe's last `flush` of it. */
   index: number;
@@ -46,7 +53,7 @@ export interface QueuedOp {
 /** What a host does for the queue. */
 export interface QueuePort {
   /** A plain fuse or cut's tool kind and box, or null when the op is not one, or its tool does not build alone. */
-  tool(object: string, op: Record<string, unknown>): Promise<{ kind: QueueKind; box: Box } | null>;
+  tool(object: string, op: Record<string, unknown>): Promise<QueueTool | null>;
   /** The part's box as it stands, in the frame `tool` answers in. */
   partBox(object: string): Box | null;
   /**
@@ -120,17 +127,20 @@ function boxesMeet(a: Box, b: Box): boolean {
  * The groups for a run of plain ops, as indexes in the order sent: each op joins the earliest group of its kind it can
  * reach going back past groups whose every tool its box misses, and whose own tools it misses too; else a new group.
  */
-export function planGroups(tools: { kind: QueueKind; box: Box }[]): number[][] {
-  const groups: { kind: QueueKind; members: number[] }[] = [];
+export function planGroups(tools: QueueTool[]): number[][] {
+  const groups: { kind: QueueKind; merge: boolean; members: number[] }[] = [];
   tools.forEach((tool, index) => {
+    const merge = tool.merge === true;
     let target = -1;
     for (let g = groups.length - 1; g >= 0; g -= 1) {
       const group = groups[g]!;
       if (!group.members.every((m) => boxesApart(tools[m]!.box, tool.box))) break;
-      if (group.kind === tool.kind) target = g;
+      // A plain boolean merges the faces left on one surface after it, so it groups only with plain booleans, whose
+      // group merges once at its end.
+      if (group.kind === tool.kind && group.merge === merge) target = g;
     }
     if (target >= 0) groups[target]!.members.push(index);
-    else groups.push({ kind: tool.kind, members: [index] });
+    else groups.push({ kind: tool.kind, merge, members: [index] });
   });
   return groups.map((group) => group.members);
 }

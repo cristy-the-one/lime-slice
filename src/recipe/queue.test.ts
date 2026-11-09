@@ -27,6 +27,9 @@ eq("tools apart of one kind are one boolean", planGroups([tool("cut", 0), tool("
 eq("an overlapping cut after a fuse keeps its place", planGroups([tool("fuse", 0), tool("cut", 1), tool("fuse", 5)]), [[0, 2], [1]]);
 eq("a fuse over that cut does not move ahead of it", planGroups([tool("fuse", 0), tool("cut", 1), tool("fuse", 1.5)]), [[0], [1], [2]]);
 eq("overlapping tools of one kind stay apart", planGroups([tool("fuse", 0), tool("fuse", 1)]), [[0], [1]]);
+const merged = (kind: QueueKind, x: number) => ({ ...tool(kind, x), merge: true });
+eq("a merging boolean never joins an extrude's group", planGroups([merged("fuse", 0), tool("fuse", 5), merged("fuse", 10)]), [[0, 2], [1]]);
+eq("merging booleans apart are one boolean", planGroups([merged("cut", 0), merged("cut", 5)]), [[0, 1]]);
 
 // --- The queue, against a port that records what it was asked.
 interface Seen { kind: string; detail: unknown }
