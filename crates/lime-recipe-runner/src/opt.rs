@@ -2,7 +2,7 @@
 //! The same rules as the MCP server's `mcp/recipe-opt.ts`, which says why each is so:
 //!
 //! - zig: `LIME_ZIG`, else `zig/zig` in the bundled lust's folder (`mcp/lust/zig`). Without one, builds stay tcc.
-//! - `LIME_LUST_OPT`: `0` off, `now` a foreground `--opt` build, else `--opt=bg`.
+//! - `LIME_LUST_OPT`: `0` off, `now` a foreground `--opt` build, `1` `--opt=bg`; unset, `--opt=bg` on Windows only.
 //! - zig's cache is Lime Slice's own (`cache_root`), shared with the MCP server; until a one-shot warm-up without
 //!   lust's daemon has filled it, builds stay tcc (a cold zig cache would hold the daemon for about a minute).
 //! - Before a slot's file changes while lust's background builds run, those builds are untrusted, and their binaries
@@ -90,10 +90,16 @@ pub fn cache_root() -> PathBuf {
     var("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache")).join("lime-slice")
 }
 
+/// Where `--opt=bg` is on by default: Windows only, where the optimised program is proven to send tcc's bytes (on
+/// Linux zig's default glibc 2.28 target links the old `log@GLIBC_2.2.5`, whose NaN sign differs; macOS is not proven).
+pub const OPT_BY_DEFAULT: bool = cfg!(windows);
+
+/// `LIME_LUST_OPT`: `0` off, `now` foreground `--opt`, `1` (or `bg`) `--opt=bg` anywhere, unset the platform's default.
 fn mode() -> OptMode {
     match std::env::var("LIME_LUST_OPT").unwrap_or_default().trim().to_ascii_lowercase().as_str() {
         "0" | "off" | "false" => OptMode::Off,
         "now" => OptMode::Now,
+        "" if !OPT_BY_DEFAULT => OptMode::Off,
         _ => OptMode::Bg,
     }
 }

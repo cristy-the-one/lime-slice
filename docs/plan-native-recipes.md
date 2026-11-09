@@ -582,7 +582,11 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    (sha256 pinned in `tools/lust/ZIG_SHA256` from ziglang.org's index), and `tools/lust/stage.sh` puts it trimmed to the
    host's own target in `mcp/lust/zig` (Windows: 274 MB on disk, 6,079 files, about 46 MB compressed). The MCP host
    (`mcp/recipe-opt.ts`) and the app's runner (`crates/lime-recipe-runner/src/opt.rs`) build with `--opt=bg` when that
-   zig is there, tcc otherwise; `LIME_LUST_OPT=0` off, `now` foreground `--opt`; `profile.build` says which ran.
+   zig is there, tcc otherwise; `LIME_LUST_OPT=0` off, `1` on anywhere, `now` foreground `--opt`; `profile.build`
+   says which ran. On by default on Windows only: on Linux, CI's float maths found `ln` of a negative number giving a
+   NaN with the other sign bit (zig's default x86_64-linux-gnu target is glibc 2.28, so the program links the old
+   `log@GLIBC_2.2.5` wrapper, where tcc and rustc link `log@GLIBC_2.29`); macOS is not proven. Both stay tcc by
+   default until lust-lang PR #24 targets the host's glibc; CI's Linux `--opt` step keeps running, not blocking.
    Decisions: zig's cache is Lime Slice's own and shared (`%LOCALAPPDATA%\Lime Slice\cache\zig` and the like), filled
    by a one-shot warm-up without lust's daemon before the first `--opt=bg` (a cold zig cache held the daemon, and every
    build behind it, for 30 to 80 s); lust's cache, with the optimised binaries, stays each host's (`<root>/cache`), as

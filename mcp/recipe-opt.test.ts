@@ -2,8 +2,9 @@
  * lust's optimised builds in the recipe host (mcp/recipe-opt.ts), against real lust and zig.
  *
  * The same recipe built three ways sends the same calls, byte for byte: tcc (LIME_LUST_OPT=0), a foreground `--opt`
- * (LIME_LUST_OPT=now), and the default `--opt=bg` once zig's cache is warm and the background build has landed (the
- * first build after the warm-up is tcc, a later one is the cached optimised program). Then the untrusted-build rule.
+ * (LIME_LUST_OPT=now), and `--opt=bg` (LIME_LUST_OPT=1; the default on Windows only) once zig's cache is warm and
+ * the background build has landed (the first build after the warm-up is tcc, a later one is the cached optimised
+ * program). Then the untrusted-build rule.
  *
  * Needs lust (LIME_LUST) and zig (LIME_ZIG, or zig bundled beside lust); skips without them. LIME_RECIPE_REQUIRED=1 with
  * LIME_ZIG set (CI's opt steps) makes a missing one a failure. LIME_LUST_OPT_CACHE names zig's cache (else a temp
@@ -15,7 +16,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findLust, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
-import { distrustRunning, dropUntrusted, lustOptCacheRoot, zigFor } from "./recipe-opt.ts";
+import { distrustRunning, dropUntrusted, lustOptCacheRoot, OPT_BY_DEFAULT, optMode, zigFor } from "./recipe-opt.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -86,20 +87,27 @@ const now = await calls("now");
 check("--opt build runs the optimised program", now.ok && now.compiler === "opt", now);
 check("--opt sends the same calls as tcc, byte for byte", now.calls === tcc.calls, { tcc: tcc.calls.length, opt: now.calls.length });
 
-// The default: tcc until zig's cache is warm (the warm-up runs on its own), then --opt=bg.
+// Unset, --opt=bg is on only where it is proven (Windows); elsewhere the default is tcc.
+delete process.env.LIME_LUST_OPT;
+check("the default is --opt=bg on Windows only", optMode() === (process.platform === "win32" ? "bg" : "off") && OPT_BY_DEFAULT === (process.platform === "win32"), optMode());
+process.env.LIME_LUST_OPT = "1";
+check("LIME_LUST_OPT=1 forces --opt=bg anywhere", optMode() === "bg");
+
+// --opt=bg (LIME_LUST_OPT=1; the default where OPT_BY_DEFAULT): tcc until zig's cache is warm (the warm-up runs on its
+// own), then --opt=bg.
 const cache = lustOptCacheRoot();
 const warm = () => existsSync(cache) && readdirNames(cache).some((n) => n.startsWith("warm-mcp-"));
-const first = await calls(undefined);
-check("the default builds and runs", first.ok, first);
+const first = await calls("1");
+check("--opt=bg builds and runs", first.ok, first);
 check("zig's cache warms up in the background", await until(warm, 15 * 60_000), cache);
 // With zig warm, a build starts lust's background build (that build runs tcc's program, or the cached optimised one
 // when it already landed); the optimised binary lands in the host's own lust cache, and a later build runs it.
-const second = await calls(undefined);
+const second = await calls("1");
 check("a warm build runs", second.ok && second.calls === tcc.calls, second);
-const opt = join(hostRoot(undefined), "cache", "opt");
+const opt = join(hostRoot("1"), "cache", "opt");
 const landed = await until(() => existsSync(opt) && readdirNames(opt).some((n) => n.endsWith(".ok")), 10 * 60_000);
 check("the background build lands in the host's lust cache", landed, existsSync(opt) ? readdirNames(opt) : opt);
-const third = await calls(undefined);
+const third = await calls("1");
 check("a later build installs the optimised program", third.ok && third.compiler === "opt", third);
 check("the cached optimised program sends the same calls", third.calls === tcc.calls);
 console.log(`recipe-opt: builds ${tcc.ms} ms tcc, ${now.ms} ms --opt, ${second.ms} ms with the background build (${second.compiler}), ${third.ms} ms cached`);
