@@ -824,6 +824,36 @@ jobs:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/plugin-corpus.test.ts
 
+      # lust's optimised builds (mcp/recipe-opt.ts), with the zig the installers bundle (tools/lust/zig.sh): every
+      # build `--opt` (LIME_LUST_OPT=now), the corpus and the engine's native geometry send the same bytes as under
+      # tcc, a recipe's own libm calls give rustc's bits, and the default `--opt=bg` lands its background build.
+      - name: Cache zig
+        if: needs.changes.outputs.recipes == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/ZIG_VERSION', 'tools/lust/ZIG_SHA256') }}
+
+      # Not blocking on Linux, where --opt is off by default (mcp/recipe-opt.ts OPT_BY_DEFAULT): zig's default
+      # x86_64-linux-gnu target is glibc 2.28, so the optimised program links the old log@GLIBC_2.2.5, whose NaN for a
+      # negative input has the other sign bit than the log@GLIBC_2.29 tcc and rustc link (recipe-floatmath's `ln`).
+      # Kept running so it shows when lust-lang PR #24 targets the host's glibc; then --opt can go on here too.
+      - name: Recipes with lust --opt (zig cc)
+        if: needs.changes.outputs.recipes == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+          LIME_LUST_OPT_CACHE: ${{ runner.temp }}/lime-opt-cache
+        run: |
+          export LIME_ZIG="$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig"
+          test -x "$LIME_ZIG"
+          node --experimental-strip-types mcp/recipe-opt.test.ts
+          export LIME_LUST_OPT=now
+          node --experimental-strip-types mcp/recipe-floatmath.test.ts
+          node --experimental-strip-types mcp/recipe-native-bytes.test.ts
+          node --experimental-strip-types mcp/plugin-corpus.test.ts
+
   mcp-windows:
     name: MCP server (Windows)
     needs: changes
@@ -968,6 +998,32 @@ jobs:
         env:
           LIME_RECIPE_REQUIRED: "1"
         run: node --experimental-strip-types mcp/plugin-corpus.test.ts
+
+      # lust's optimised builds with the bundled zig, as on Linux: on Windows a recipe's libm calls must still reach
+      # the UCRT (lust's float.c forwarders), so the float maths and native geometry bytes run here too.
+      - name: Cache zig
+        if: needs.changes.outputs.recipes == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/ZIG_VERSION', 'tools/lust/ZIG_SHA256') }}
+
+      - name: Recipes with lust --opt (zig cc)
+        if: needs.changes.outputs.recipes == 'true'
+        timeout-minutes: 25
+        shell: bash
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+          LIME_LUST_OPT_CACHE: ${{ runner.temp }}/lime-opt-cache
+        run: |
+          set -euo pipefail
+          export LIME_ZIG="$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig.exe"
+          test -f "$LIME_ZIG"
+          node --experimental-strip-types mcp/recipe-opt.test.ts
+          export LIME_LUST_OPT=now
+          node --experimental-strip-types mcp/recipe-floatmath.test.ts
+          node --experimental-strip-types mcp/recipe-native-bytes.test.ts
+          node --experimental-strip-types mcp/plugin-corpus.test.ts
 
   mcp-macos:
     name: MCP server (macOS)

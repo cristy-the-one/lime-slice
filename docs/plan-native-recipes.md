@@ -595,6 +595,29 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    *Notice:* behind the switch only, until the go decision.
    *Tested by:* the corpus under both builds (same calls, byte for byte), the bench.
 
+   **As built (2026-11-09, `claude/lust-opt-zig`, for 6.2.0).** The owner took it on by default, with zig in the
+   installers, in one PR. lust is pinned at lust-lang PR #24's head (`--opt` and `--opt=bg`, lust-lang `docs/opt.md`);
+   the pin moves to its merge commit once #24 merges. `tools/lust/zig.sh` fetches the official zig 0.14.1 for the host
+   (sha256 pinned in `tools/lust/ZIG_SHA256` from ziglang.org's index), and `tools/lust/stage.sh` puts it trimmed to the
+   host's own target in `mcp/lust/zig` (Windows: 274 MB on disk, 6,079 files, about 46 MB compressed). The MCP host
+   (`mcp/recipe-opt.ts`) and the app's runner (`crates/lime-recipe-runner/src/opt.rs`) build with `--opt=bg` when that
+   zig is there, tcc otherwise; `LIME_LUST_OPT=0` off, `1` on anywhere, `now` foreground `--opt`; `profile.build`
+   says which ran. On by default on Windows only: on Linux, CI's float maths found `ln` of a negative number giving a
+   NaN with the other sign bit (zig's default x86_64-linux-gnu target is glibc 2.28, so the program links the old
+   `log@GLIBC_2.2.5` wrapper, where tcc and rustc link `log@GLIBC_2.29`); macOS is not proven. Both stay tcc by
+   default until lust-lang PR #24 targets the host's glibc; CI's Linux `--opt` step keeps running, not blocking.
+   Decisions: zig's cache is Lime Slice's own and shared (`%LOCALAPPDATA%\Lime Slice\cache\zig` and the like), filled
+   by a one-shot warm-up without lust's daemon before the first `--opt=bg` (a cold zig cache held the daemon, and every
+   build behind it, for 30 to 80 s); lust's cache, with the optimised binaries, stays each host's (`<root>/cache`), as
+   lust keys them by the slot's path; a slot rewritten while a background build runs marks that build untrusted, and
+   its binary is removed when it ends (the background build reads the file when it runs).
+   Measured on the owner's Windows machine, bench medians of 3 per way (`mcp/bench/recipe-bench.ts`), tcc then `--opt`:
+   the recipe's own code 578 to 84 ms (gears), 963 to 324 ms (spiderweb), 735 to 257 ms (moon); the run 649 to 161 ms,
+   2,201 to 1,569 ms, 798 to 332 ms; same solid and mesh. The optimised compile itself takes 4.7 to 6.5 s once per new
+   source, in lust's daemon, which holds a build that follows at once for that long. The corpus, the float maths
+   against rustc and the native geometry bytes pass with every build `--opt` (`mcp/recipe-opt.test.ts`, CI's "Recipes
+   with lust --opt" on Linux and Windows, and the release's staged copy).
+
 8. **A kernel gear step** (if decided). `gear` op with B-spline involute flanks, a Model tab card, an MCP op with its
    guide, and the crate builder `ops::gear`.
    *Notice:* a person adds a gear from the Model tab; an agent makes one with one op.

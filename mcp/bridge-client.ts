@@ -50,18 +50,22 @@ export async function bridgeHumanContext(): Promise<unknown | null> {
 /** This file's folder: in an installed app, the `mcp` folder beside the desktop program, with the beta's identity file. */
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BETA_ID = "com.limeslice.slicer.tandem-beta";
+const STABLE_ID = "com.limeslice.slicer";
 
 /**
  * The file the app keeps its bridge token in when the person turns the bridge on in the app (the Tandem light): the
- * app's config folder, as Tauri names it. `LIME_MCP_BRIDGE_FILE` names it for any server; without it, only the Tandem
- * beta's bundled server looks there, so a checkout or a test never mirrors into a running app by itself.
+ * app's config folder, as Tauri names it. `LIME_MCP_BRIDGE_FILE` names it for any server; without it, only a bundled
+ * server that an installer marked looks there: the Tandem beta's (`tandem-beta.identity`) at the beta app's file, a
+ * release's (`stable.identity`, .github/workflows/release.yml) at the stable app's. Each reads only its own app's file
+ * (the beta answers on its own port), and a checkout or a test never mirrors into a running app by itself.
  */
 export function bridgeTokenFile(): string | null {
   if (process.env.LIME_MCP_BRIDGE_FILE) return process.env.LIME_MCP_BRIDGE_FILE;
-  if (!existsSync(join(HERE, "tandem-beta.identity"))) return null;
-  if (process.platform === "win32") return process.env.APPDATA ? join(process.env.APPDATA, BETA_ID, "tandem-bridge.json") : null;
-  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", BETA_ID, "tandem-bridge.json");
-  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), BETA_ID, "tandem-bridge.json");
+  const id = existsSync(join(HERE, "tandem-beta.identity")) ? BETA_ID : existsSync(join(HERE, "stable.identity")) ? STABLE_ID : null;
+  if (!id) return null;
+  if (process.platform === "win32") return process.env.APPDATA ? join(process.env.APPDATA, id, "tandem-bridge.json") : null;
+  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", id, "tandem-bridge.json");
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), id, "tandem-bridge.json");
 }
 
 /** The file is read at most once a second: several reads in one call cost one. */

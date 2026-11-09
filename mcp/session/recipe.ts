@@ -594,6 +594,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const refused = out.refused.map((row) => ({ ...row, ...locate(map, row.line) }));
   const totalCallsMs = [...timings.values()].reduce((sum, row) => sum + row.ms, 0);
   const profile = input.profile === true && tap ? {
+    // The program that ran: lust's optimised build (zig cc, mcp/recipe-opt.ts) or tinycc's.
+    ...(built.compiler ? { build: built.compiler } : {}),
     callsMs: Math.round(totalCallsMs),
     outsideCallsMs: Math.max(0, Math.round(out.ms - totalCallsMs)),
     // Where the run's time went, in parts that add up to runMs, and the kernel's own counters (mesh-end.ts).

@@ -72,8 +72,8 @@ export class AppRecipes {
     const slot = this.slotFor(name);
     return buildRecipe(async (text) => {
       try {
-        const r = await this.invoke<{ code: number | null; stdout: string; stderr: string; exe: string | null; main: string }>("recipe_build", { slot, source: text });
-        return { code: r.code, stdout: r.stdout, stderr: r.stderr, ...(r.exe ? { exe: r.exe } : {}), main: r.main } satisfies CompileResult;
+        const r = await this.invoke<{ code: number | null; stdout: string; stderr: string; exe: string | null; main: string; compiler?: "opt" | "tcc" }>("recipe_build", { slot, source: text });
+        return { code: r.code, stdout: r.stdout, stderr: r.stderr, ...(r.exe ? { exe: r.exe } : {}), main: r.main, ...(r.compiler ? { compiler: r.compiler } : {}) } satisfies CompileResult;
       } catch (err) {
         return { code: -1, stdout: "", stderr: err instanceof Error ? err.message : String(err), main: "" };
       }

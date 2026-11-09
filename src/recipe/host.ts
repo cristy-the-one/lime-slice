@@ -58,6 +58,8 @@ export interface BuildResult {
   exe?: string;
   ms: number;
   reason?: string;
+  /** Which program the build left: lust's optimised one (`--opt`, zig cc) or tinycc's. Unset when the host does not say. */
+  compiler?: "opt" | "tcc";
 }
 
 /** A call the recipe made, as the caller sees it. */
@@ -135,6 +137,8 @@ export interface CompileResult {
   exe?: string;
   /** The path of the slot's `main.rs`, which lust's diagnostics name. */
   main: string;
+  /** Which program the build left (`BuildResult.compiler`). */
+  compiler?: "opt" | "tcc";
 }
 
 /** The text lust builds: the recipe, then its ingredients (`suffix`) on lines of their own, as `buildRecipe` joins them. */
@@ -161,7 +165,7 @@ export async function buildRecipe(compile: RecipeCompile, source: string, autofi
     const ownBytes = utf8Bytes(own);
     const r = await compile(suffix ? own + suffix : current);
     const diagnostics = parseDiagnostics(r.stdout, r.main).map((d) => (suffix && (d.line > ownLines || d.edits.some((e) => e.end > ownBytes)) ? { ...d, edits: [] } : d));
-    if (r.code === 0) return { ok: true, diagnostics, source: current, fixRounds: round, ...(r.exe ? { exe: r.exe } : {}), ms: Date.now() - started };
+    if (r.code === 0) return { ok: true, diagnostics, source: current, fixRounds: round, ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ms: Date.now() - started };
     if (diagnostics.length === 0) {
       return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
     }
