@@ -9,6 +9,7 @@ import { featurePanel, featureSource, type FeatureChoices } from "./model-featur
 import { repeatPanel, repeatSource, type RepeatChoices } from "./model-repeat.ts";
 import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
+import type { BoreShape } from "./model-gear.ts";
 import type { PrimitiveKind, PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, thenPose, type Affine } from "./model-space.ts";
 import { storedEdgeStep } from "./model-edge-step.ts";
@@ -292,6 +293,8 @@ export interface EditPanel {
   boolOp?: BooleanKind;
   /** A polygon sized across flats. */
   flats?: boolean;
+  /** A gear's bore shape, for the select beside Bore. */
+  boreShape?: BoreShape;
   /**
    * A split's base axis, and whether its normal is that axis turned around: a face split on a face that points down an
    * axis keeps the other side, which the panel's X, Y and Z cannot say on their own.
@@ -335,15 +338,22 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
   return op.exprs && Object.keys(op.exprs).length > 0 ? { ...panel, exprs: { ...op.exprs } } : panel;
 }
 
+/** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
+function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape"> {
+  if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
+  if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round" };
+  return {};
+}
+
 function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
   switch (op.kind) {
     case "root":
-      return { tool: "create", fields: sizeFields(op), primitive: op.primitive, ...(op.primitive === "polygon" ? { flats: op.flats ?? false } : {}) };
+      return { tool: "create", fields: sizeFields(op), primitive: op.primitive, ...shapeChoices(op) };
     case "boolean": {
       const placed = fromSolidOp(op, pose) as typeof op;
       const fields = { ...sizeFields(placed), modelX: placed.origin[0], modelY: placed.origin[1], modelZ: placed.origin[2] };
       const turned: Record<string, number> = placed.primitive === "sphere" ? {} : { modelRx: placed.turn[0], modelRy: placed.turn[1], modelRz: placed.turn[2] };
-      return { tool: "boolean", fields: { ...fields, ...turned }, primitive: placed.primitive, boolOp: placed.op, ...(placed.primitive === "polygon" ? { flats: placed.flats ?? false } : {}) };
+      return { tool: "boolean", fields: { ...fields, ...turned }, primitive: placed.primitive, boolOp: placed.op, ...shapeChoices(placed) };
     }
     case "hole": {
       const placed = fromSolidOp(op, pose) as typeof op;
