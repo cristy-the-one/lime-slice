@@ -308,6 +308,7 @@ const op = {
         label,
       },
     },
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "unify" }, label } },
     booleanOp,
     {
       type: "object",
@@ -771,6 +772,7 @@ export const OP_SUMMARY: Record<string, string> = {
   split: "split {origin, normal, keep}: cut in two.",
   partition: "partition {cuts:[{origin, normal, connectors}]}: split to print; model_probe plan:true proposes the cuts.",
   scale: "scale {factor}.",
+  unify: "unify: merge flush faces so a fillet can cross the seam.",
   extrude: "extrude {op, profile | loops, depth}: a sketch on the workplane or a face.",
   revolve: "revolve {op, profile, axisOrigin, axisDir, angleDeg}: a sketch about an in-plane axis.",
   loft: "loft {op, sections:[{origin, turn, radius | profile}]}: through cross-sections.",
@@ -1526,7 +1528,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_build",
-    description: "New solid, a batch of edits, and a commit, in one call. Called again after a refusal with the same base, it reuses the ops before the first changed one.",
+    description: "New solid, edits, and a commit in one call. Called again after a refusal with the same base, it reuses ops before the first changed one.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1659,7 +1661,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_history",
-    description: "One page of history: id, parent, and label.",
+    description: "A page of history: id, parent, label.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1668,27 +1670,27 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_goto",
-    description: "Show another history step. The plate mesh changes only after model_commit.",
+    description: "Show another step. The plate changes only after model_commit.",
     inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step } },
   },
   {
     name: "model_undo",
-    description: "Move to the parent step, or back over a whole batch or composite edit. At the root, nothing changes.",
+    description: "Back to the parent step, or over a whole batch or composite edit.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle } },
   },
   {
     name: "model_redo",
-    description: "Move to the step redo remembers. When redo is empty, nothing changes.",
+    description: "Move to the step redo remembers.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle } },
   },
   {
     name: "model_edit",
-    description: "Replace a probed step and replay the steps under it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: step, op: opPointer("The replacement plain edit.") } },
+    description: "Replace a probed step and replay the steps under it. Or patch one model_build step.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step, op: opPointer("The replacement plain edit."), patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." } } },
   },
   {
     name: "model_rename",
-    description: "After model_history. Renames one step. Then model_history.",
+    description: "Rename one step.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1698,12 +1700,12 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_drop",
-    description: "Delete a history branch. The root and the plated step are refused.",
+    description: "Delete a history branch, not the root or the plated step.",
     inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step } },
   },
   {
     name: "model_commit",
-    description: "After model_apply. Puts the solid on the plate and writes its STEP. The desktop reloads that file. Then slice_start.",
+    description: "After model_apply. Puts the solid on the plate and writes its STEP. Then slice_start.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle } },
   },
   {
@@ -2498,6 +2500,8 @@ function checkTool(name: string, input: unknown): string | null {
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };
+  if (name === "model_edit" && (input as { patch?: unknown }).patch !== undefined) return record.op !== undefined ? "model_edit takes op or patch, not both." : null;
+  if (name === "model_edit" && record.op === undefined) return "op is required (or patch, to change fields of a model_build step).";
   if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true, 0, name === "model_probe");
   if (name === "render_view" && record.op !== undefined) return checkOp(record.op, "op", true);
   if (name === "model_apply") return checkOp(record.op, "op", false);

@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { lfOnly } from "./recipe.ts";
@@ -310,4 +310,74 @@ export function removePlugin(id: string, dir = pluginsDir()): number {
 export function queryScore(row: { plugin: string; title: string; description: string }, query: string): number {
   const hay = `${row.plugin} ${row.title} ${row.description}`.toLowerCase();
   return query.toLowerCase().split(/[\s,]+/).filter((word) => word.length > 1).filter((word) => hay.includes(word)).length;
+}
+
+// --- Extra libraries (read-only). A plugin or ingredient in another library can be found, shown and run without
+// copying it into the own one: the Tandem beta reads the release library beside it, and LIME_PLUGINS_EXTRA (a path
+// list) names others, such as a workspace folder of `*.lime-plugin.rs` files. The own library wins a clash, and an
+// extra library's plugin is always treated as imported (it runs on the person's own parts only, and the app shows it
+// before its first run there).
+
+/** The data folder's `plugins` for an app id (the release app's, when the beta looks beside itself). */
+function libraryOf(appId: string): string {
+  if (process.platform === "win32") return join(process.env.APPDATA ?? join(homedir(), "AppData", "Roaming"), appId, "plugins");
+  if (process.platform === "darwin") return join(homedir(), "Library", "Application Support", appId, "plugins");
+  return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), appId, "plugins");
+}
+
+export interface ExtraLibrary {
+  dir: string;
+  /** What results call it: "release" for the beta's sibling, else the folder. */
+  label: string;
+}
+
+/** The read-only libraries, in the order they win: LIME_PLUGINS_EXTRA's folders, then (beta only) the release library. */
+export function extraLibraries(): ExtraLibrary[] {
+  const own = resolve(pluginsDir());
+  const out: ExtraLibrary[] = [];
+  const add = (dir: string, label: string) => {
+    const path = resolve(dir);
+    if (path !== own && !out.some((row) => resolve(row.dir) === path) && existsSync(path)) out.push({ dir, label });
+  };
+  for (const part of (process.env.LIME_PLUGINS_EXTRA ?? "").split(delimiter)) if (part.trim()) add(part.trim(), part.trim());
+  if (APP_ID !== "com.limeslice.slicer" && !process.env.LIME_PLUGINS_DIR) add(libraryOf("com.limeslice.slicer"), "release");
+  return out;
+}
+
+/** A plugin or ingredient file of an extra library, with the library it came from. */
+export type ExtraFile = PluginFile & { library: string };
+
+/** Every current file of `kind` in the extra libraries: `<id>.rs` or a shared `*.lime-plugin.rs` (the highest version of an id). */
+export function listExtra(kind: NuggetFileKind = "plugin"): ExtraFile[] {
+  const found = new Map<string, ExtraFile>();
+  for (const lib of extraLibraries()) {
+    const dir = kind === "ingredient" ? join(lib.dir, "ingredients") : lib.dir;
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir).sort();
+    } catch {
+      continue;
+    }
+    const mine = new Map<string, ExtraFile>();
+    for (const name of names) {
+      if (!/^[a-z0-9-]+\.rs$/.test(name) && !/^[a-z0-9-]+\.lime-plugin\.rs$/.test(name)) continue;
+      let parsed: PluginFile | { reason: string };
+      try {
+        parsed = parsePlugin(readFileSync(join(dir, name), "utf8"));
+      } catch {
+        continue;
+      }
+      if ("reason" in parsed || (parsed.header.kind === "ingredient" ? "ingredient" : "plugin") !== kind) continue;
+      const id = parsed.header.plugin;
+      const before = mine.get(id);
+      if (!before || parsed.header.version > before.header.version) mine.set(id, { ...parsed, library: lib.label });
+    }
+    for (const [id, file] of mine) if (!found.has(id)) found.set(id, file);
+  }
+  return [...found.values()];
+}
+
+/** One id from the extra libraries, or null. The caller has already looked in its own library. */
+export function readExtra(id: string, kind: NuggetFileKind = "plugin"): ExtraFile | null {
+  return listExtra(kind).find((file) => file.header.plugin === id) ?? null;
 }

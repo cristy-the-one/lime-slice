@@ -11,7 +11,7 @@
  */
 import { join } from "node:path";
 
-import { bodyHash, isSlug, listLibrary, olderVersions, pluginsDir, readPlugin, type PluginFile } from "./plugins.ts";
+import { bodyHash, isSlug, listLibrary, olderVersions, pluginsDir, readExtra, readPlugin, type PluginFile } from "./plugins.ts";
 import { lfOnly } from "./recipe.ts";
 import { bodyProblem, idOf, inlineIngredients, moduleOf, type IngredientRef, type KeptIngredient, type Resolved } from "../src/recipe/ingredients.ts";
 
@@ -72,12 +72,13 @@ function unknownText(id: string, dir: string): string {
 function fromLibrary(ref: IngredientRef, dir: string): KeptIngredient | { reason: string } {
   const id = idOf(ref.module);
   if (!isIngredientId(id)) return { reason: `ingredients::${ref.module} is not an ingredient name: lower-case letters, digits and underscores, starting with a letter.` };
-  const latest = readPlugin(id, dir, undefined, "ingredient");
+  // The own library first; a read-only one beside it (the beta reads the release library) when the own has no such name.
+  const latest = readPlugin(id, dir, undefined, "ingredient") ?? readExtra(id, "ingredient");
   if (!latest) return { reason: unknownText(id, dir) };
   if ("reason" in latest) return latest;
   let file: PluginFile = latest;
   if (ref.version !== undefined && ref.version !== latest.header.version) {
-    const older = readPlugin(id, dir, ref.version, "ingredient");
+    const older = "library" in latest ? null : readPlugin(id, dir, ref.version, "ingredient");
     if (!older) return { reason: `No version ${ref.version} of the ingredient ${id} is kept: ${versionsText(id, dir)}.` };
     if ("reason" in older) return older;
     file = older;

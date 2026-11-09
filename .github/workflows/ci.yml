@@ -797,6 +797,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-share.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-extra.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient-stale.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/ingredient-import.test.ts

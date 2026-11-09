@@ -398,6 +398,9 @@ pub enum Op {
     Scale {
         factor: f64,
     },
+    /// Faces and edges on one surface or curve, left apart by earlier steps, become one, so a fillet or chamfer can
+    /// cross the old seam. Nothing is added or removed.
+    Unify,
     /// Another tree's solid at `tool.node`, moved into this solid's frame by `relative`, which was
     /// worked out once at Apply, so moving either part later never moves a cut already made.
     Join {

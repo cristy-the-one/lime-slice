@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "../plugins.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, listExtra, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "../plugins.ts";
 import { bodyProblem, carriedIngredients, ingredientsDir, isIngredientId, lineMap, lineText, moduleOf, resolveIngredients } from "../ingredients.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, writePreset } from "../nuggets.ts";
 import { apiProblem, clashOf, keptBesideTitle, marksText, oneFileProblem, rawHeader, readMarks, withMark, type ImportMark } from "../../src/plugins/share.ts";
@@ -30,12 +30,12 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
   if (kind === "ingredient") {
     const dir = ingredientsDir();
     if (action === "get") {
-      const file = readPlugin(id, dir, undefined, "ingredient");
+      const file = readPlugin(id, dir, undefined, "ingredient") ?? readExtra(id, "ingredient");
       if (!file) return refuse("ingredient-not-found", `No ingredient is named ${id}.${this.ingredientNames().length ? ` The library has: ${this.ingredientNames().join(", ")}.` : ""}`, undefined, NEXT.ingredients);
       if ("reason" in file) return refuse("ingredient-invalid", file.reason);
       const h = file.header;
       const usedBy = this.pluginsCarrying(h.plugin);
-      return { ok: true, kind, id: h.plugin, version: h.version, api: h.api, sha256: file.sha256, created: h.created, items: publicItems(file.body), use: `use ingredients::${moduleOf(h.plugin)}::*;`, older: olderVersions(h.plugin, dir), ...(usedBy.length ? { usedBy } : {}), ...this.promotion(usedBy), data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) }, ...(input.withSource === true ? { source: file.body } : {}) };
+      return { ok: true, kind, id: h.plugin, ...("library" in file ? { library: file.library, imported: true } : {}), version: h.version, api: h.api, sha256: file.sha256, created: h.created, items: publicItems(file.body), use: `use ingredients::${moduleOf(h.plugin)}::*;`, older: olderVersions(h.plugin, dir), ...(usedBy.length ? { usedBy } : {}), ...this.promotion(usedBy), data: { title: h.title, description: h.description, author: h.author, ...(h["made-by"] ? { madeBy: h["made-by"] } : {}) }, ...(input.withSource === true ? { source: file.body } : {}) };
     }
     if (action === "save") return this.ingredientSave(input);
     if (action === "remove") {
@@ -113,6 +113,14 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
       const s = score(`${h.plugin} ${h.title} ${h.description}`);
       if (s) rows.push({ score: s + 0.5, row: { kind: "plugin", id: h.plugin, v: h.version, ...(h.kind === "animation" ? { pluginKind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
+    // A read-only library beside the own one: listed after it, never over it, and marked imported.
+    const ownIds = new Set(rows.map((r) => r.row.id));
+    for (const file of listExtra()) {
+      const h = file.header;
+      if (ownIds.has(h.plugin)) continue;
+      const s = score(`${h.plugin} ${h.title} ${h.description}`);
+      if (s) rows.push({ score: s, row: { kind: "plugin", id: h.plugin, v: h.version, ...(h.kind === "animation" ? { pluginKind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
+    }
     const names = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0]!).filter((n) => n !== "plugin_check"));
     for (const name of names) {
       const draft = this.latestDraft(name);
@@ -127,6 +135,14 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
       const items = publicItems(file.body, 12);
       const s = score(`${h.plugin} ${h.title} ${h.description} ${items.join(" ")}`);
       if (s) rows.push({ score: s + 0.5, row: { kind: "ingredient", id: h.plugin, v: h.version, use: `use ingredients::${moduleOf(h.plugin)}::*;`, items: items.join(", "), ...(imported[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+    }
+    const ownIngredients = new Set(listLibrary(ingredientsDir(), "ingredient").map((file) => file.header.plugin));
+    for (const file of listExtra("ingredient")) {
+      const h = file.header;
+      if (ownIngredients.has(h.plugin)) continue;
+      const items = publicItems(file.body, 12);
+      const s = score(`${h.plugin} ${h.title} ${h.description} ${items.join(" ")}`);
+      if (s) rows.push({ score: s, row: { kind: "ingredient", id: h.plugin, v: h.version, use: `use ingredients::${moduleOf(h.plugin)}::*;`, items: items.join(", "), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
     }
   }
   if (want("preset")) {

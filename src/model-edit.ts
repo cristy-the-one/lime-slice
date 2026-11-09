@@ -388,6 +388,9 @@ function panelForEdit(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
       };
     case "scale":
       return { tool: "scale", fields: { modelFactor: op.factor } };
+    case "unify":
+      // Nothing to type: the step has no numbers. The check panel is the one with no fields.
+      return { tool: "check", fields: {} };
     case "join":
       return { tool: "boolean", fields: {}, boolOp: op.op, join: { name: op.tool.name, keepTool: op.keepTool } };
     // P1. Push/Pull opens on the step's faces with its distance. A prism stays a prism when it is updated.
