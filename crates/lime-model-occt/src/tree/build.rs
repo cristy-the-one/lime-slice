@@ -20,6 +20,7 @@ use super::ffi::{
     lime_tree_scale,
     lime_tree_shell,
     lime_tree_split,
+    lime_tree_unify,
     RawShape,
 };
 use super::group::{build_combined, build_group};
@@ -353,6 +354,7 @@ pub(super) fn build(
         Op::Scale { factor } => {
             Shape::made(|error| unsafe { lime_tree_scale(from.raw(), *factor, error) })
         }
+        Op::Unify => Shape::made(|error| unsafe { lime_tree_unify(from.raw(), error) }),
         Op::Root { solid } => Shape::primitive(solid),
         Op::Extrude {
             op: which,

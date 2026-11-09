@@ -59,7 +59,8 @@ import { splitMethods } from "./session/split.ts";
 import { paintMethods, paintHandlers } from "./session/paint.ts";
 import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 import { stressMethods, stressHandlers } from "./session/stress.ts";
-import { refuse, withCode } from "./refusals.ts";
+import { NEXT, refuse, withCode } from "./refusals.ts";
+import { patchStep } from "./edit-patch.ts";
 import type { RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
@@ -254,6 +255,15 @@ export class Session {
   }
 
   runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+    // model_edit {node: label, patch}: the step's fields change in the build's own ops and the build runs again from there.
+    if (name === "model_edit" && args && typeof args === "object" && (args as Record<string, unknown>).patch !== undefined) {
+      const shape = validateTool(name, args);
+      if (shape) throw new ProtocolError(shape);
+      const rewritten = this.patchToBuild(args as Record<string, unknown>);
+      if ("refusal" in rewritten) return Promise.resolve(rewritten.refusal);
+      name = "model_build";
+      args = rewritten.args;
+    }
     const numbered = this.withNumbers(name, args);
     if ("reason" in numbered) return Promise.resolve(refuse("bad-argument", numbered.reason));
     const picked = edgePicksAsTyped(numbered.args);
@@ -476,6 +486,28 @@ export class Session {
       throw err;
     }
     return { args: input };
+  }
+
+  /**
+   * model_edit with patch, as the model_build it stands for: the object's typed ops with the one step's fields changed.
+   * The build's resume then reuses every step before it. Only an object model_build made has ops to patch.
+   */
+  patchToBuild(input: Record<string, unknown>): { args: Record<string, unknown> } | { refusal: Record<string, unknown> } {
+    if (input.op !== undefined) return { refusal: refuse("conflicting-arguments", "model_edit takes op or patch, not both.") };
+    const obj = this.find(typeof input.object === "string" && input.object !== "" ? input.object : this.selected);
+    if (!obj) return { refusal: refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate) };
+    const recipe = obj.recipe;
+    if (!recipe || !obj.buildLog) return { refusal: refuse("rebuild-refused", "A patch changes a step of an object model_build made. This one was not; pass op to replace a history step.") };
+    const kept = Object.fromEntries(Object.entries(recipe.params ?? {}).filter(([key]) => !Object.hasOwn(this.paramText, key)));
+    const check = (op: Record<string, unknown>): string | null => {
+      const n = this.withNumbers("model_apply", { op, params: kept });
+      if ("reason" in n) return n.reason;
+      const { params: _params, ...rest } = n.args as Record<string, unknown>;
+      return validateTool("model_apply", rest);
+    };
+    const patched = patchStep(recipe.ops as Record<string, unknown>[], input.node, input.patch, check);
+    if ("reason" in patched) return { refusal: refuse(patched.code, patched.reason, { object: obj.id }) };
+    return { args: { object: obj.id, base: structuredClone(recipe.base), ops: patched.ops, params: kept, ...(recipe.name ? { name: recipe.name } : {}) } };
   }
 
   /**

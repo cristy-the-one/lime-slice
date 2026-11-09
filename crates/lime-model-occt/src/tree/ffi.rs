@@ -249,6 +249,7 @@ extern "C" {
         factor: f64,
         error: *mut *mut c_char,
     ) -> *mut RawShape;
+    pub(super) fn lime_tree_unify(from: *const RawShape, error: *mut *mut c_char) -> *mut RawShape;
     pub(super) fn lime_tree_extrude(
         from: *const RawShape,
         op: *const c_char,

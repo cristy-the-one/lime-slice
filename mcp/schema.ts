@@ -308,6 +308,7 @@ const op = {
         label,
       },
     },
+    { type: "object", additionalProperties: false, required: ["kind"], properties: { kind: { const: "unify" }, label } },
     booleanOp,
     {
       type: "object",
@@ -771,6 +772,7 @@ export const OP_SUMMARY: Record<string, string> = {
   split: "split {origin, normal, keep}: cut in two.",
   partition: "partition {cuts:[{origin, normal, connectors}]}: split to print; model_probe plan:true proposes the cuts.",
   scale: "scale {factor}.",
+  unify: "unify: merge faces left on one surface so a fillet can cross the seam.",
   extrude: "extrude {op, profile | loops, depth}: a sketch on the workplane or a face.",
   revolve: "revolve {op, profile, axisOrigin, axisDir, angleDeg}: a sketch about an in-plane axis.",
   loft: "loft {op, sections:[{origin, turn, radius | profile}]}: through cross-sections.",
@@ -1682,8 +1684,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_edit",
-    description: "Replace a probed step and replay the steps under it.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node", "op"], properties: { object: handle, node: step, op: opPointer("The replacement plain edit.") } },
+    description: "Replace a probed step and replay the steps under it. Or patch one model_build step.",
+    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step, op: opPointer("The replacement plain edit."), patch: { type: "object", description: "With node a step label, not op: fields to set, {dx: 5}; null removes one." } } },
   },
   {
     name: "model_rename",
@@ -2497,6 +2499,8 @@ function checkTool(name: string, input: unknown): string | null {
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };
+  if (name === "model_edit" && (input as { patch?: unknown }).patch !== undefined) return record.op !== undefined ? "model_edit takes op or patch, not both." : null;
+  if (name === "model_edit" && record.op === undefined) return "op is required (or patch, to change fields of a model_build step).";
   if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true, 0, name === "model_probe");
   if (name === "render_view" && record.op !== undefined) return checkOp(record.op, "op", true);
   if (name === "model_apply") return checkOp(record.op, "op", false);

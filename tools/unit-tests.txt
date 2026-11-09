@@ -261,3 +261,5 @@ tools/ci/smoke-shards.test.mjs
 src/ui/html.test.ts
 src/ui/html-sinks.test.ts
 tools/ci/e2e-coverage.test.mjs
+mcp/edit-patch.test.ts
+mcp/plugin-extra.test.ts

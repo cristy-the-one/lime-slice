@@ -247,6 +247,7 @@ export function bakeOp(raw: unknown, ctx: BakeContext): Baked | { reason: string
     if (typeof factor !== "number" || !Number.isFinite(factor) || factor < 0.1 || factor > 20) return { reason: "Scale is a factor from 0.1 to 20." };
     return { op: toSolidOp({ kind: "scale", factor }, ctx.pose), typed: { kind: "scale", factor } };
   }
+  if (kind === "unify") return { op: toSolidOp({ kind: "unify" }, ctx.pose), typed: { kind: "unify" } };
   // --- Split to print. Defaults are filled from the plate's printer and settings now, as at Apply (D11).
   if (kind === "partition") {
     return ctx.partition ? ctx.partition(spec) : { reason: outsideSession("A split to print") };

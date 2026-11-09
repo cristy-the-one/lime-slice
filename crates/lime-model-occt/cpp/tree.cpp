@@ -1610,6 +1610,23 @@ LimeShape* lime_tree_scale(const LimeShape* from, double factor, char** error) {
     }
 }
 
+/// Faces and edges the earlier steps left on one surface or curve become one (ShapeUpgrade_UnifySameDomain), so a fillet or
+/// chamfer can cross the old seam. The face history runs through it: a merged face keeps the first parent face's node.
+LimeShape* lime_tree_unify(const LimeShape* from, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        Handle(BRepTools_History) history = new BRepTools_History();
+        const TopoDS_Shape merged = merge_same_domain(from->held.shape, &history);
+        return adopt(merged, volume_of(as_solid(merged)), "The merge removed the solid", error, from, history).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
 /// `p` is the plane's origin and turn, the depth, symmetric (0 or 1), then smooth, the corner count, and the corners.
 LimeShape* lime_tree_extrude(const LimeShape* from, const char* op, const double* p, const double* points, int count, char** error) {
     try {

@@ -127,6 +127,7 @@ fn group_step_refusal(step: &Op) -> Option<&'static str> {
         Op::Split { .. } => Some("A group cannot contain a split."),
         Op::Join { .. } => Some("A group cannot contain a join."),
         Op::Scale { .. } => Some("A group cannot contain a scale."),
+        Op::Unify => Some("A group cannot contain a merge of faces."),
         Op::Root { .. } => Some("A group cannot contain a new solid."),
         Op::Shell { .. } => Some("A group cannot contain a shell."),
         Op::FaceExtrude { .. } => Some("A group cannot contain a face extrude."),

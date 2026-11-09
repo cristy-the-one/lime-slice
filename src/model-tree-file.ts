@@ -390,6 +390,8 @@ function readOpBody(value: unknown): SavedOp | undefined {
     }
     case "scale":
       return finite(value.factor) ? { kind: "scale", factor: value.factor } : undefined;
+    case "unify":
+      return { kind: "unify" };
     case "join": {
       const tool = value.tool;
       const relative = readAffine(value.relative);
