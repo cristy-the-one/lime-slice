@@ -716,6 +716,26 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
      f64 (24 lines, about 200 tokens) answers a first check in about 145 tokens, 0.2 to 0.3 s; `autofix: "all"` builds
      it in four rounds, 1.7 to 1.9 s, in a reply of about 270 tokens. The schema's `autofix` became
      `true | false | "all"`: 7 tokens on the list (18,237 to 18,244 of 18,250).
+   - **Asking lust about a position** (`lust query type|def <file> <line>:<col>`). `recipe_run {source | path,
+     query: "type 12:9"}` answers `{type, of}`, and `query: "def 12:9"` answers `{def: {of, line, col, text}}`, with
+     `ingredient` or `in: "lime-recipe"` when the definition is not in the recipe (`RecipeHost.query`, `recipeQuery`
+     in `mcp/session/recipe.ts`). The shape was chosen for tokens: one string parameter (not `mode: "check"` with a
+     position object), and a reply that carries the definition's line as text, so a method of the crate comes back
+     with its signature and the agent needs no second call. Positions are the caller's: the recipe is first in the
+     built text, so its lines are the same there, and a line of the answer past it is mapped to its ingredient, as
+     diagnostics are. The query writes the slot's file and builds nothing; the program kept for a slot is keyed by its
+     text, so the text it was built from is not built again afterwards. Found on the way: lust 0.3.0's query writes
+     a program named after the file (`main.exe`) into the folder it is run from, at every query, and takes no `-o`;
+     run from the server's folder that is the person's own folder. The host runs it in `lime-recipes-<pid>/query` in
+     the temp folder (a later server removes it when this one is gone), not in the slot or the shared root, where on
+     this PC that write made a query 0.4 to 0.6 s (asked of lust-lang: a query should write no program). Measured
+     through `recipe_run`, a 200-line recipe: 63 to 68 ms a query (lust's own part about 35 ms), 118 ms after an
+     edit, 0.2 to 0.6 s the first time in a cold
+     session; replies of 12 to 37 tokens. `lust query` does not take `--max-memory`, so it runs in the plain sandbox
+     session beside the builds' one (lust-lang: `check` and `query` could take the flag and share the session). The
+     tool list: `query` costs 20 tokens and the list had 6 left, so six descriptions of `recipe_run` lost words that
+     the guide carries (`path`, `full`, `profile`, `meshAtEnd`, `plugin`, `keep`, and the tool's own first sentence);
+     the list is now at 18,250 of 18,250, with nothing left.
 
 ## 9. Done for the whole plan
 

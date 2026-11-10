@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildRecipe, DEFAULT_LIMITS, lfOnly, MARK_UNREAD_FN, RECIPE_MEMORY_BYTES, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
+import { buildRecipe, builtText, DEFAULT_LIMITS, lfOnly, MARK_UNREAD_FN, RECIPE_MEMORY_BYTES, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
@@ -30,6 +30,8 @@ export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, 
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
 
 const SLOTS = 4;
+/** A query that runs longer than this is stuck: a warm one takes a few milliseconds, a cold session about a second. */
+const QUERY_LIMIT_MS = 30_000;
 /** A build that runs longer than this is stuck: a cold one takes about half a second. */
 const BUILD_LIMIT_MS = 120_000;
 
@@ -59,7 +61,15 @@ export interface LustFeatures {
   maxMemory: boolean;
   /** Diagnostics carry rewrites for rejects, edits that are not `auto` (lust 0.3.0, which has `lust fix` for them). */
   rewrites: boolean;
+  /** `lust query type|def <file> <line>:<col>` (lust 0.3.0): the type or the definition at a position. */
+  query: boolean;
 }
+
+/** What `RecipeHost.query` answers: lust's type or definition for a position, with places as lines of the built text. */
+export type LustAnswer =
+  | { ok: true; kind: "type"; type: string; /** The source text lust took at the position, at most 80 characters. */ of: string; line: number; col: number }
+  | { ok: true; kind: "def"; /** What is defined: `local`, `fn`, `method`, `struct`, `enum`. */ of: string; /** In the built text (the recipe or an ingredient), or in lime-recipe. */ where: "recipe" | "crate"; line: number; col: number; /** The definition's line, trimmed. */ text: string }
+  | { ok: false; reason: string };
 
 const lustFeatureCache = new Map<string, LustFeatures>();
 
@@ -73,7 +83,7 @@ export function lustFeatures(lust: string): LustFeatures {
   if (!found) {
     const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
     const usage = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory"), rewrites: usage.includes("lust fix ") };
+    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory"), rewrites: usage.includes("lust fix "), query: usage.includes("lust query ") };
     lustFeatureCache.set(lust, found);
   }
   return found;
@@ -340,6 +350,65 @@ export class RecipeHost {
   }
 
   /**
+   * lust's answer about one position of a recipe (`lust query type|def`, lust 0.3.0): the type of the smallest
+   * expression or pattern there, or where the name there is defined. `line` and `col` are a 1-based line and byte
+   * column of `source`, as diagnostics give them; the built text is the recipe with its ingredients (`suffix`) after
+   * it, so a recipe line is the same line there. The text is written to the recipe's slot and checked in lust's
+   * daemon with the flags of a check, so a warm session answers in milliseconds and takes in an edit since the last
+   * one, and a type error in another fn does not stop the answer. Nothing is built or run: the program the slot
+   * holds stays the program of the text it was built from (`built`), so that text is not built again after a query.
+   */
+  async query(name: string, source: string, kind: "type" | "def", line: number, col: number, suffix = "", major?: number): Promise<LustAnswer> {
+    source = lfOnly(source);
+    const avail = this.available();
+    if (!avail.ok) return { ok: false, reason: avail.reason };
+    if (!this.features(avail.lust).query) return { ok: false, reason: "This lust has no query command: it is older than 0.3.0." };
+    const crateMajor = major ?? this.api()[0];
+    if (!this.crates().has(crateMajor)) return { ok: false, reason: `This Lime Slice has no recipe crate for API ${crateMajor}.x.` };
+    mkdirSync(this.root, { recursive: true });
+    const crate = this.crateCopy(crateMajor);
+    const slot = this.slotFor(name, crateMajor);
+    const main = join(slot, "src", "main.rs");
+    const text = builtText(source, suffix);
+    if (!existsSync(main) || readFileSync(main, "utf8") !== text) {
+      // A background optimised build reads the slot's file when it runs (recipe-opt.ts): one in flight is of the old text.
+      distrustRunning(join(this.root, "cache"));
+      writeFileSync(main, text);
+    }
+    // lust 0.3.0's query writes a program named after the file (`main`, `main.exe`) into the folder it is run from,
+    // at every query, and takes no `-o`. Run from the server's folder, that would be the person's own folder. So it
+    // runs in a folder of this process in the temp folder, which a later server removes when this one is gone
+    // (`sweepStaleRoots`, by the folder's name). Not the slot, and not the shared root: on the owner's PC a program
+    // written under `%LOCALAPPDATA%\Lime Slice` took 0.4 to 0.6 s a query, against under 0.1 s in the temp folder.
+    const out = join(tmpdir(), `lime-recipes-${process.pid}`, "query");
+    mkdirSync(out, { recursive: true });
+    const r = await run(avail.lust, ["query", kind, main, `${line}:${col}`, "--json", "--sandbox", "--manifest-path", join(slot, "Cargo.toml")], this.lustEnv(), QUERY_LIMIT_MS, out);
+    let answer: Record<string, unknown> | null = null;
+    for (const row of r.stdout.split("\n")) {
+      if (!row.startsWith("{")) continue;
+      try {
+        answer = JSON.parse(row) as Record<string, unknown>;
+        break;
+      } catch { /* not lust's answer */ }
+    }
+    const span = (answer?.span ?? {}) as Record<string, number>;
+    if (r.code !== 0 || !answer || typeof span.line !== "number") {
+      // lust's reason, without its `error:` and the slot's path.
+      const said = (r.stderr.trim().split("\n").find((row) => row.startsWith("error")) ?? r.stderr.trim().split("\n")[0] ?? "").replace(/^error(\[[A-Z0-9]+\])?: /, "").replace(/\S*main\.rs:(\d+:\d+)/, "$1");
+      return { ok: false, reason: said ? `lust has no answer there: ${said.slice(0, 300)}` : "lust gave no answer." };
+    }
+    const lineOf = (body: string, at: number) => (body.split("\n")[at - 1] ?? "").trim().slice(0, 200);
+    if (answer.kind === "type") {
+      const of = Buffer.from(text, "utf8").subarray(span.start, span.end).toString("utf8").replace(/\s+/g, " ").slice(0, 80);
+      return { ok: true, kind: "type", type: String(answer.type ?? ""), of, line: span.line, col: span.col ?? 0 };
+    }
+    const file = typeof answer.file === "string" ? answer.file : main;
+    if (file === main || file.endsWith("main.rs")) return { ok: true, kind: "def", of: String(answer.of ?? ""), where: "recipe", line: span.line, col: span.col ?? 0, text: lineOf(text, span.line) };
+    if (!/[\\/]lime-recipe(-\d+)?[\\/]src[\\/]lib\.rs$/.test(file)) return { ok: false, reason: "lust has no answer there: the definition is outside the recipe and lime-recipe." };
+    return { ok: true, kind: "def", of: String(answer.of ?? ""), where: "crate", line: span.line, col: span.col ?? 0, text: lineOf(readFileSync(join(crate, "src", "lib.rs"), "utf8"), span.line) };
+  }
+
+  /**
    * Runs a built recipe: the start line, then each call through `call`, until `done`, an exit, or a limit. The
    * program runs with an empty environment (SystemRoot only on Windows, which a process needs to start).
    */
@@ -382,9 +451,9 @@ export function nodeSpawn(exe: string, cwd: string): RecipeSpawn {
  * One lust command. It ends at the process's exit, not when its pipes close: on Windows the daemon lust starts can
  * inherit them and keep them open. Output still in flight gets a moment to arrive. A command past `limitMs` is killed.
  */
-function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, limitMs = BUILD_LIMIT_MS): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, limitMs = BUILD_LIMIT_MS, cwd?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...(cwd ? { cwd } : {}) });
     let stdout = "";
     let stderr = "";
     let settled = false;

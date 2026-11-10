@@ -151,6 +151,7 @@ mcp/ingredients-file.test.ts
 mcp/nuggets-file.test.ts
 mcp/plugin-hints.test.ts
 mcp/recipe-root.test.ts
+mcp/recipe-query.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts

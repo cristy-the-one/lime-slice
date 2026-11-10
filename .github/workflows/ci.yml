@@ -797,6 +797,8 @@ jobs:
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
+          # recipe_run {query}: lust's type and definition at a position of a recipe (lust 0.3.0's `lust query`).
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-query.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-run.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/pose-animate.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-plugin.test.ts
@@ -918,6 +920,8 @@ jobs:
           LIME_RECIPE_REQUIRED: "1"
         run: |
           node --experimental-strip-types mcp/recipe.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/recipe-query.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --experimental-strip-types mcp/recipe-cancel.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -1068,7 +1072,9 @@ jobs:
       - name: Recipes
         env:
           LIME_RECIPE_REQUIRED: "1"
-        run: node --experimental-strip-types mcp/recipe.test.ts
+        run: |
+          node --experimental-strip-types mcp/recipe.test.ts
+          node --experimental-strip-types mcp/recipe-query.test.ts
 
   bench:
     name: release bench smoke
