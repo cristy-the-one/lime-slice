@@ -137,6 +137,27 @@ export interface FaceOutlines {
 
 const outlines = new WeakMap<object, { triangles: ArrayLike<number>; faces: FaceOutlines }>();
 
+const trianglesByFace = new WeakMap<object, Map<number, number[]>>();
+
+/**
+ * Each face's triangles, lowest first, read once per `triangles` array (a mesh's is replaced, never written in place)
+ * and kept with it: an outline and a hover each want one face's triangles, not a walk over all of them.
+ */
+export function faceTriangles(triangles: ArrayLike<number>): ReadonlyMap<number, readonly number[]> {
+  const key = triangles as unknown as object;
+  let ofFace = trianglesByFace.get(key);
+  if (ofFace) return ofFace;
+  ofFace = new Map();
+  for (let tri = 0; tri < triangles.length; tri += 1) {
+    const at = triangles[tri] ?? 0;
+    const bag = ofFace.get(at);
+    if (bag) bag.push(tri);
+    else ofFace.set(at, [tri]);
+  }
+  trianglesByFace.set(key, ofFace);
+  return ofFace;
+}
+
 /**
  * [`faceBoundarySegments`], one face at a time: a face's outline is worked out when it is first read and kept with
  * the mesh. Only a selected or hovered face is ever read, so a part with thousands of faces no longer pays for all
@@ -146,21 +167,11 @@ export function faceOutlines(positions: ArrayLike<number>, triangles: ArrayLike<
   const key = positions as unknown as object;
   const kept = outlines.get(key);
   if (kept && kept.triangles === triangles) return kept.faces;
-  let ofFace: Map<number, number[]> | null = null;
   const done = new Map<number, number[] | undefined>();
   const faces: FaceOutlines = {
     get(face) {
       if (done.has(face)) return done.get(face);
-      if (!ofFace) {
-        ofFace = new Map();
-        for (let tri = 0; tri < triangles.length; tri += 1) {
-          const at = triangles[tri] ?? 0;
-          const bag = ofFace.get(at);
-          if (bag) bag.push(tri);
-          else ofFace.set(at, [tri]);
-        }
-      }
-      const tris = ofFace.get(face);
+      const tris = faceTriangles(triangles).get(face);
       let flat: number[] | undefined;
       if (tris) {
         // The same walk as `faceBoundarySegments`, over this face's triangles in their order in the mesh.

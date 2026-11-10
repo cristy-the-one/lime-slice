@@ -8,7 +8,7 @@ import { flushEdit, markModelEdit, noteEdit } from "../history";
 import { modelTrees } from "../model-trees";
 import { syncPlateFromState } from "../plate-sync";
 import { state } from "../state";
-import { closeCracks } from "../../mesh-check";
+import { closedReady, keepClosed, takeClosed } from "../../closed-ahead";
 import { S } from "./shared";
 import { recentSolid } from "./apply";
 import { placePiece } from "./create";
@@ -85,10 +85,68 @@ function liveKeep(): PrepareKeep {
   }) as PrepareKeep;
 }
 
+/** The worker that closes the shown solid's cracks ahead of the commit; started on first use, and again after it fails. */
+let aheadWorker: Worker | null = null;
+let aheadTimer = 0;
+let aheadJob = 0;
+let aheadDone = 0;
+/** The positions each job was sent for, until its answer lands. */
+const aheadSent = new Map<number, Float32Array>();
+/** Long enough that a run of undos or applies sends only the solid it ends on. */
+const AHEAD_MS = 250;
+
+/**
+ * The solid just shown is the one the plate takes when Model is left, and `meshOf` closes its cracks first: a third
+ * of a second on a part of 216k triangles, on the tab switch. This starts that in a worker while the solid is looked
+ * at. `meshOf` takes the result when it is there and works it out itself when it is not, or when the worker fails.
+ */
+export function warmMesh(solid: ParsedSolid) {
+  window.clearTimeout(aheadTimer);
+  if (solid.positions.length < 9) return;
+  aheadTimer = window.setTimeout(() => {
+    // Only the solid still shown, and only when the plate does not hold its mesh already.
+    if (S.open?.solid !== solid || treeOf(S.open)?.nodes.get(solid.id)?.mesh) return;
+    if (closedReady(solid.positions) || [...aheadSent.values()].includes(solid.positions)) return;
+    try {
+      aheadWorker ??= closeWorker();
+      const id = ++aheadJob;
+      const positions = new Float32Array(solid.positions);
+      aheadWorker.postMessage({ id, positions }, [positions.buffer]);
+      aheadSent.set(id, solid.positions);
+    } catch {
+      dropCloseWorker();
+    }
+  }, AHEAD_MS);
+}
+
+function closeWorker(): Worker {
+  const made = new Worker(new URL("../../close-cracks-worker.ts", import.meta.url), { type: "module" });
+  made.onmessage = (ev: MessageEvent<{ id: number; closed: Float32Array }>) => {
+    const source = aheadSent.get(ev.data.id);
+    aheadSent.delete(ev.data.id);
+    if (!source) return;
+    keepClosed(source, ev.data.closed);
+    aheadDone += 1;
+    // For a test to wait on: how many meshes have been closed ahead.
+    document.getElementById("model")?.setAttribute("data-mesh-ahead", String(aheadDone));
+  };
+  made.onerror = dropCloseWorker;
+  made.onmessageerror = dropCloseWorker;
+  return made;
+}
+
+/** A worker that fails costs nothing but the time it would have saved: the commit closes the cracks itself. */
+function dropCloseWorker() {
+  aheadWorker?.terminate();
+  aheadWorker = null;
+  aheadSent.clear();
+}
+
 export function meshOf(solid: ParsedSolid, named?: string): PlateMesh {
   // The kernel meshes faces apart; where two sample a shared curved edge at different points, the plate mesh would
-  // have a crack the slicer guesses across ("The mesh has gaps on 2333 layers"). Those cracks are closed here.
-  const positions = closeCracks(solid.positions);
+  // have a crack the slicer guesses across ("The mesh has gaps on 2333 layers"). Those cracks are closed here, or
+  // were already, by `warmMesh`: the same function on the same numbers.
+  const positions = takeClosed(solid.positions);
   const seat = settleBy(positions);
   const name = named ?? stlName(state.mesh?.name ?? "solid");
   const bytes = encodeStl(positions, name);

@@ -19,6 +19,12 @@ export function installLayout(ctx: ViewCtx): void {
   let ghostCache: { serial: number; pose: number; centre: THREE.Vector3; min: THREE.Vector3; max: THREE.Vector3; faces: Map<string, THREE.Vector3> } | null = null;
   /** What `data-faces` was last written for, so a still view does not redo it. */
   let facesSolid: ModelSolid | null = null;
+  /**
+   * `data-faces` is there for a test to find a face by, and nothing in the app reads it. Writing it for a part of
+   * thousands of faces is a string of 50–300 kB on every frame of an orbit, so it is written only when a driver runs
+   * the page (Playwright, WebDriver), read once here.
+   */
+  const facesRead = typeof navigator !== "undefined" && navigator.webdriver === true;
 
   /** Docked handles share one screen-fixed seat. A feature handle stays on the solid. */
   /** Where the grey context and the open solid land on screen, each as `x,y,w,h` canvas pixels, so a test can click or compare them. */
@@ -34,9 +40,10 @@ export function installLayout(ctx: ViewCtx): void {
   /**
    * P1. Each face's centre on the canvas and its outward normal in model space: `index:x,y:nx,ny,nz`.
    * The centres and normals are read once per solid; the text is redone only when the camera, the pose or the canvas changed.
+   * Only under a test's driver: see `facesRead`.
    */
   function publishFaces(width: number, height: number) {
-    if (!ctx.faceDrag || !ctx.solid) {
+    if (!facesRead || !ctx.faceDrag || !ctx.solid) {
       ctx.facesKey = "";
       if (canvas.dataset.faces) delete canvas.dataset.faces;
       return;

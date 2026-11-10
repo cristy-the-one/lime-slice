@@ -1,7 +1,8 @@
 /** Picking: face and edge hits, hover, object picking, section probes, and surface points for Measure. */
 import * as THREE from "three";
 import { EDGE_PX } from "./constants";
-import type { FaceHit, FacePointer, ModelPick } from "./types";
+import type { FaceHit, FacePointer, ModelPick, ModelSolid } from "./types";
+import { type ScreenEdges, nearestEdge, projectEdges } from "./edge-screen";
 import { MEASURE_KIND_LABEL, type MeasureKind } from "../measure-snap";
 import { type Vec3, lineParam } from "../model-drag";
 import { featureAtHit } from "../measure-feature";
@@ -115,26 +116,42 @@ export function installPicking(ctx: ViewCtx): void {
     };
   }
 
+  /** The edges on screen, and everything their place there was worked out from. */
+  let screen: { solid: ModelSolid; key: number[]; held: ScreenEdges } | null = null;
+
+  /**
+   * The solid's edges as screen segments. Projected again only when the camera, the solid's pose, the canvas's place
+   * and size, the section or the solid changed: a pointer moving over a still view projects nothing.
+   */
+  function edgesOnScreen(solid: ModelSolid, rect: DOMRect): ScreenEdges {
+    body.updateWorldMatrix(true, false);
+    // Exactly what `project` and `cutAwayLocal` read.
+    const key = [rect.left, rect.top, rect.width, rect.height, ...camera.matrixWorldInverse.elements, ...camera.projectionMatrix.elements, ...body.matrixWorld.elements];
+    for (const plane of ctx.sectionClip) key.push(plane.normal.x, plane.normal.y, plane.normal.z, plane.constant);
+    if (screen && screen.solid === solid && screen.key.length === key.length && screen.key.every((value, i) => value === key[i])) return screen.held;
+    // A seam is not an edge of the part: it is neither hovered nor picked (the MCP list keeps it, its index is unchanged).
+    const seams = solid.seams && solid.seams.length > 0 ? new Set(solid.seams) : null;
+    const held = projectEdges(
+      solid.edges,
+      seams,
+      (points, at, out) => {
+        const p = project(points[at]!, points[at + 1]!, points[at + 2]!, rect);
+        out[0] = p.x;
+        out[1] = p.y;
+        out[2] = p.z;
+      },
+      // A segment the section hides wholly cannot be picked; one it crosses can, as its shown part is drawn.
+      ctx.sectionClip.length > 0 ? cutAwayLocal : null,
+      screen?.held,
+    );
+    screen = { solid, key, held };
+    return held;
+  }
+
   function pickEdge(ev: PointerEvent): ModelPick | null {
     if (!ctx.solid) return null;
-    const rect = canvas.getBoundingClientRect();
-    let best: { index: number; distance: number } | null = null;
-    const seams = ctx.solid.seams && ctx.solid.seams.length > 0 ? new Set(ctx.solid.seams) : null;
-    for (const edge of ctx.solid.edges) {
-      // A seam is not an edge of the part: it is neither hovered nor picked (the MCP list keeps it, its index is unchanged).
-      if (seams?.has(edge.id)) continue;
-      const points = edge.points;
-      for (let i = 0; i + 5 < points.length; i += 3) {
-        // A segment the section hides wholly cannot be picked; one it crosses can, as its shown part is drawn.
-        if (ctx.sectionClip.length > 0 && cutAwayLocal(points, i) && cutAwayLocal(points, i + 3)) continue;
-        const a = project(points[i]!, points[i + 1]!, points[i + 2]!, rect);
-        const b = project(points[i + 3]!, points[i + 4]!, points[i + 5]!, rect);
-        if (a.z < -1 || a.z > 1 || b.z < -1 || b.z > 1) continue;
-        const distance = segmentDistance(ev.clientX, ev.clientY, a.x, a.y, b.x, b.y);
-        if (distance <= EDGE_PX && (best == null || distance < best.distance)) best = { index: edge.id, distance };
-      }
-    }
-    return best ? { kind: "edge", index: best.index } : null;
+    const index = nearestEdge(edgesOnScreen(ctx.solid, canvas.getBoundingClientRect()), ev.clientX, ev.clientY, EDGE_PX);
+    return index == null ? null : { kind: "edge", index };
   }
 
   const sectionProbe = new THREE.Vector3();

@@ -5,6 +5,7 @@ import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type TreeMock } from "./model-tree-mock";
 import { plateClick } from "./plate-rows";
 import { unpackLime } from "./lime-file";
+import { closeCracks } from "../src/mesh-check";
 
 type V = [number, number, number];
 
@@ -242,6 +243,90 @@ test("the piece a split adds opens as a solid of its own and splits again", asyn
   await expect(page.locator("#objectList .obj")).toHaveCount(3);
   const splits = calls.tree.of("apply");
   expect(splits.map((request) => request.key)).toEqual([splits[0]!.key, splits[0]!.otherKey]);
+});
+
+/**
+ * A box as a kernel can mesh it: the top is two quads, so its long borders have a corner in the middle that the side
+ * faces' triangles run past. The plate mesh has cracks there until those triangles are split.
+ */
+function crackedBox(size: V) {
+  const box = boxSolid(size);
+  const [sx, sy, sz] = size;
+  const top: V[][] = [
+    [[0, 0, sz], [sx / 2, 0, sz], [sx / 2, sy, sz], [0, sy, sz]],
+    [[sx / 2, 0, sz], [sx, 0, sz], [sx, sy, sz], [sx / 2, sy, sz]],
+  ];
+  // The whole top (face 1, triangles 2 and 3) makes way for the two halves.
+  const positions = [...box.positions.slice(0, 18), ...box.positions.slice(36)];
+  const triangles = [...box.triangles.slice(0, 2), ...box.triangles.slice(4)];
+  for (const q of top) {
+    for (const tri of [[0, 1, 2], [0, 2, 3]]) {
+      for (const i of tri) positions.push(...q[i]!);
+      triangles.push(1);
+    }
+  }
+  return { ...box, positions, triangles };
+}
+
+test("the plate gets the same mesh whether its cracks were closed ahead of leaving Model or on the way out", async ({ page }) => {
+  const cut = crackedBox([20, 20, 5]);
+  const closed = closeCracks(cut.positions);
+  expect(closed.length, "the mock's mesh has cracks to close").toBeGreaterThan(cut.positions.length);
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/mesh", (route) => route.fulfill({ json: { positions: SOLID.positions } }));
+  await mockModelTree(page, { open: () => SOLID, apply: () => cut, probe: () => ({ ok: true }) });
+  const canvas = page.locator("#model");
+
+  /** Apply a cut, leave Model, save: the bytes of the plate's mesh in the file. */
+  const committed = async (ahead: boolean): Promise<Buffer> => {
+    await openModel(page);
+    await page.locator("#modelToolBoolean").click();
+    await expect(page.locator("#modelApply")).toBeEnabled();
+    await page.locator("#modelApply").click();
+    await expect(page.locator("#modelReadout")).toContainText("Volume 2000 mm³");
+    if (ahead) await expect(canvas, "the worker closed the shown solid's cracks").toHaveAttribute("data-mesh-ahead", "1");
+    else {
+      await page.waitForTimeout(900);
+      expect(await canvas.getAttribute("data-mesh-ahead"), "no worker, so nothing was closed ahead").toBeNull();
+    }
+    await page.locator("#tabPrepare").click();
+    const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+    const doc = JSON.parse(unpackLime(fs.readFileSync((await download.path())!)).toString("utf8")) as { objects: { mesh: { bytesBase64: string } }[] };
+    return Buffer.from(doc.objects[0]!.mesh.bytesBase64, "base64");
+  };
+
+  const early = await committed(true);
+  expect(early.readUInt32LE(80), "the mesh on the plate has its cracks closed").toBe(closed.length / 9);
+  // The worker's script never loads: the commit closes the cracks itself, as it always did.
+  await page.route("**/*close-cracks-worker*", (route) => route.abort());
+  const late = await committed(false);
+  expect(late.equals(early), "the same bytes either way").toBe(true);
+});
+
+test("the list of faces a test clicks by is written under a driver, and not in a person's browser", async ({ page }) => {
+  await modeler(page);
+  const canvas = page.locator("#model");
+  /** The pointer over the middle of the solid: a face under it shows the grab cursor, so pushing a face is on. */
+  const overSolid = async () => {
+    await expect(canvas).toHaveAttribute("data-solid-screen", /\d/);
+    const screen = (await canvas.getAttribute("data-solid-screen"))!.split(",").map(Number);
+    const rect = (await canvas.boundingBox())!;
+    await page.mouse.move(rect.x + screen[0]! + screen[2]! / 2 - 3, rect.y + screen[1]! + screen[3]! / 2);
+    await page.mouse.move(rect.x + screen[0]! + screen[2]! / 2, rect.y + screen[1]! + screen[3]! / 2);
+    await expect.poll(() => canvas.evaluate((el) => (el as HTMLElement).style.cursor)).toBe("grab");
+  };
+
+  await openModel(page);
+  await overSolid();
+  await expect.poll(async () => ((await canvas.getAttribute("data-faces")) ?? "").split(" ").filter(Boolean).length, "Playwright drives the page: each face is listed").toBe(6);
+
+  // The same page as a person opens it. The list is a 50–300 kB string on every frame of an orbit of a big part.
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "webdriver", { get: () => false }));
+  await openModel(page);
+  expect(await page.evaluate(() => navigator.webdriver)).toBe(false);
+  await overSolid();
+  await page.waitForTimeout(300);
+  expect(await canvas.getAttribute("data-faces"), "nothing reads the list, so it is not written").toBeNull();
 });
 
 /**
