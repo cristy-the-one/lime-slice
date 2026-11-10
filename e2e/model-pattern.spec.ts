@@ -168,7 +168,9 @@ test("Build all copies at once makes the pattern one boolean, and an edit keeps 
   await expect(page.locator("#modelApply")).toHaveText("Update");
   await expect(choice).toBeChecked();
   await setField(page, "modelPatCount", "4");
+  await expect(page.locator("#modelApply")).toBeEnabled();
   await page.locator("#modelApply").click();
+  await expect(page.locator("#modelHistoryTree [role=treeitem]").filter({ hasText: "Pattern × 4" })).toHaveCount(1);
   const edited = tree.of("edit").at(-1)!.op as { combine?: string; source: { combine?: boolean }; steps: unknown[] };
   expect(edited.combine).toBe("cut");
   expect(edited.source.combine).toBe(true);
@@ -176,9 +178,13 @@ test("Build all copies at once makes the pattern one boolean, and an edit keeps 
 
   // Unticked in an edit, the pattern is built copy by copy again.
   await page.keyboard.press("Shift+E");
+  await expect(page.locator("#modelApply")).toHaveText("Update");
+  await expect(choice).toBeChecked();
   await choice.uncheck();
   await expect(page.locator("#modelApply")).toBeEnabled();
+  const edits = tree.of("edit").length;
   await page.locator("#modelApply").click();
+  await expect.poll(() => tree.of("edit").length).toBeGreaterThan(edits);
   const plain = tree.of("edit").at(-1)!.op as { combine?: string; source: { combine?: boolean } };
   expect(plain.combine).toBeUndefined();
   expect(plain.source.combine).toBeUndefined();
