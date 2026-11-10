@@ -84,6 +84,7 @@
 #include <BRepGProp_Face.hxx>
 #include <BRepGProp_Vinert.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <IMeshTools_Parameters.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -600,6 +601,28 @@ bool mesh_kept(const TopoDS_Face& face, double chord) {
     return !made.IsNull() && made->HasDeflection() && made->Deflection() == chord;
 }
 
+/// Mesh with Open CASCADE's Watson triangulation, as the bridge did before Delabella: set by a test, or for one run by
+/// LIME_OCCT_MESHER=watson in the environment, to compare the two. Never the default.
+std::atomic<bool> g_watson_mesher{[] {
+    const char* asked = std::getenv("LIME_OCCT_MESHER");
+    return asked != nullptr && std::string(asked) == "watson";
+}()};
+
+/// Every mesh the bridge makes: the faces of `shape` triangulated to within `chord`, half a radian between neighbouring
+/// segments, faces in parallel after their shared edges. The triangulation of each face is Open CASCADE's Delabella
+/// (a sweep-line Delaunay), not its default Watson: Watson's time on one face grows with the square of the face's
+/// holes (1.5 s for a plate face with 1,000 holes), Delabella's does not. The edges are cut the same either way, so
+/// the faces still meet point for point.
+void mesh_faces(const TopoDS_Shape& shape, double chord) {
+    IMeshTools_Parameters parameters;
+    parameters.Deflection = chord;
+    parameters.Angle = 0.5;
+    parameters.Relative = Standard_False;
+    parameters.InParallel = Standard_True;
+    parameters.MeshAlgo = g_watson_mesher.load() ? IMeshTools_MeshAlgoType_Watson : IMeshTools_MeshAlgoType_Delabella;
+    const BRepMesh_IncrementalMesh mesher(shape, parameters);
+}
+
 /// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the
 /// solid the step was built on. Meshing the whole solid would keep those meshes too, and would mesh the made faces against
 /// the same edges of the faces beside them, so the result is the same; it only checks every face first. False when that
@@ -634,7 +657,7 @@ bool mesh_around_made(Held& held, double chord) {
             builder.Add(around, held.faces(index));
         }
     }
-    const BRepMesh_IncrementalMesh mesher(around, chord, Standard_False, 0.5, Standard_True);
+    mesh_faces(around, chord);
     return true;
 }
 
@@ -649,8 +672,7 @@ Mesh tessellate(Held& held, double chord) {
         if (g_whole_meshes.load() || !mesh_around_made(held, chord)) {
             g_stats.full_meshes += 1;
             // In parallel: faces mesh apart, after their shared edges, so the mesh is the same as one thread's.
-            // The constructor meshes; a second `Perform` only checked every face again.
-            const BRepMesh_IncrementalMesh mesher(held.shape, chord, Standard_False, 0.5, Standard_True);
+            mesh_faces(held.shape, chord);
         }
         held.meshed = chord;
     }
@@ -7978,3 +8000,6 @@ extern "C" void lime_model_occt_string_free(char* text) { std::free(text); }
 
 /// Non-zero meshes every face of a solid, as before a step meshed only around the faces it made. For tests.
 extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0; }
+
+/// Non-zero meshes with the Watson triangulation the bridge used before Delabella. For tests and measurements.
+extern "C" void lime_model_occt_watson_mesher(int on) { g_watson_mesher = on != 0; }
