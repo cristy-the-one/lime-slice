@@ -683,6 +683,10 @@ export class Session {
         offset: { ...row.offset },
         orient: [...row.orient],
         meshHash: this.meshHashOf(row.bytes),
+        // The part's place in Model's shared space, for every part: the window takes it with a new part and with a
+        // new shape, so an edited part stays in its assembly there (src/bridge.ts `BridgePlateRow.modelPose`).
+        modelPose: { m: [...row.modelPose.m], t: [...row.modelPose.t] },
+        ...(row.frame === "part" ? { frame: row.frame } : {}),
         ...(row.sim ? { sim: row.sim } : {}),
       })),
       ...(Object.keys(meshes).length > 0 ? { meshes } : {}),

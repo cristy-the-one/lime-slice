@@ -9,6 +9,7 @@
  */
 import { base64ToBytes } from "./base64.ts";
 import type { Mat3 } from "./mesh-place.ts";
+import type { Affine, ObjectFrame } from "./model-space.ts";
 import type { PlateFileObject } from "./plate.ts";
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
 import type { SavedTree } from "./model-tree-file.ts";
@@ -34,6 +35,23 @@ export interface BridgePlateRow {
   orient: Mat3;
   /** `fnv1aHex` of the object's file bytes. A key of `meshes`. */
   meshHash?: string;
+  /**
+   * Where the part stands in Model's shared space (its place in an assembly), as the project file keeps it. A server
+   * that sends it sends it for every part, identity included; an older server sends none, and the window then keeps
+   * the pose it has. The window takes it with a new part and with a new shape of a part, not with a placement alone:
+   * a person's own pose in the window is not overwritten by a move on the plate.
+   */
+  modelPose?: Affine;
+  /** `"part"` when Model numbers are typed in the part's own frame; absent is model space. Read with `modelPose`. */
+  frame?: ObjectFrame;
+}
+
+/** A row's `modelPose` when it is one: nine and three finite numbers. Anything else is no pose. */
+export function bridgeModelPose(raw: unknown): Affine | null {
+  const pose = raw as { m?: unknown; t?: unknown } | null | undefined;
+  const numbers = (list: unknown, count: number): list is number[] => Array.isArray(list) && list.length === count && list.every((value) => typeof value === "number" && Number.isFinite(value));
+  if (!pose || !numbers(pose.m, 9) || !numbers(pose.t, 3)) return null;
+  return { m: [...pose.m] as Affine["m"], t: [...pose.t] as Affine["t"] };
 }
 
 /** A mesh as the server slices it: its file, and the triangles it read from that file. */
@@ -117,6 +135,11 @@ export interface MirrorObject<T = unknown> {
   meshHash: string;
   /** Set when the mesh came from this mirror message. Otherwise the desktop's own mesh stays. */
   mesh?: { fileName: string; bytes: Uint8Array; source: Float32Array; seatMm?: number };
+  /**
+   * The server's place for the part in Model's shared space, when the server sent one (`BridgePlateRow.modelPose`).
+   * It is no part of what makes two rows the same placement: the plate does not read it.
+   */
+  model?: { pose: Affine; frame?: ObjectFrame };
   extra: T | null;
 }
 
@@ -563,6 +586,7 @@ export function mirrorPlate<T>(
     const old = byId.get(row.object);
     const hash = row.meshHash ?? "";
     const mesh = old && old.meshHash === hash ? undefined : decoded.get(hash);
+    const modelPose = bridgeModelPose(row.modelPose);
     plate.push({
       id: row.object,
       name: row.name,
@@ -572,6 +596,7 @@ export function mirrorPlate<T>(
       orient: [...row.orient] as Mat3,
       meshHash: hash,
       ...(mesh ? { mesh } : {}),
+      ...(modelPose ? { model: { pose: modelPose, ...(row.frame === "part" ? { frame: "part" as const } : {}) } } : {}),
       extra: old ? old.extra : null,
     });
   }

@@ -4,6 +4,7 @@
  */
 import { bridgeDrifted, bridgeHasPlateUpdate, bridgeHistoryRelation, bridgeIsNew, bridgeHumanChanges, bridgeMerge, bridgeNextBaseline, bridgeOverrides, bridgeSavedRoot, bridgeSettings, bridgeShapeChanges, bridgeSwapLabel, decodeBridgeHistory, mirrorPlate, parkBridge, releaseBridge, type BridgeHold, type BridgeMessage, type BridgeReplaced, type BridgeSeen, type MirrorObject } from "../bridge.ts";
 import type { Mat3 } from "../mesh-place.ts";
+import { isIdentity } from "../model-space.ts";
 import { bridgedObject, emptyPlate, mirroredPlate, pinPlateMeshes, setMeshSeat, snapPlate, type PlateObject } from "../plate.ts";
 import { isTauri } from "../platform.ts";
 import { fnv1aHex } from "../slice-action.ts";
@@ -400,13 +401,27 @@ function toPlateObject(row: MirrorObject<PlateObject>): PlateObject {
     sourcePos: row.mesh.source,
     stepTolerance: row.extra?.stepTolerance ?? STEP_TOLERANCE_DEFAULT,
   };
-  if (!row.extra) return { ...bridgedObject(row.id, row.name, incoming), ...pose };
+  if (!row.extra) return withModelPlace({ ...bridgedObject(row.id, row.name, incoming), ...pose }, row);
   const next: PlateObject = { ...row.extra, ...pose, fileName: incoming.fileName, bytes, sourcePos: incoming.sourcePos };
   delete next.brep;
   delete next.modelTree;
-  delete next.modelPose;
-  delete next.frame;
   delete next.workplane;
+  return withModelPlace(next, row);
+}
+
+/**
+ * Where a part with a new mesh stands in Model's shared space: the server's place for it when the server sent one,
+ * else the place the window has. A new shape of a part is the same part in the same assembly, so its place is never
+ * dropped: without it the part reads as standing at the origin (`modelPoseOf`), and in Pose and the assembled view an
+ * edited part fell out of its assembly while the others stayed. The plate does not read this pose.
+ */
+function withModelPlace(object: PlateObject, row: MirrorObject<PlateObject>): PlateObject {
+  if (!row.model) return object;
+  const next = { ...object };
+  if (isIdentity(row.model.pose)) delete next.modelPose;
+  else next.modelPose = row.model.pose;
+  if (row.model.frame === "part") next.frame = "part";
+  else delete next.frame;
   return next;
 }
 
