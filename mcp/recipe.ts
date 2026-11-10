@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildRecipe, DEFAULT_LIMITS, lfOnly, MARK_UNREAD_FN, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
+import { buildRecipe, DEFAULT_LIMITS, lfOnly, MARK_UNREAD_FN, RECIPE_MEMORY_BYTES, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
@@ -55,6 +55,8 @@ export function findLust(moduleUrl?: string): string | null {
 export interface LustFeatures {
   /** `--mark-unread <fn>` (lust 0.3.0): a passing build lists the calls of a function whose result is never read. */
   markUnread: boolean;
+  /** `--sandbox --max-memory <bytes>` (lust 0.3.0): the built program stops itself past that much memory. */
+  maxMemory: boolean;
 }
 
 const lustFeatureCache = new Map<string, LustFeatures>();
@@ -69,7 +71,7 @@ export function lustFeatures(lust: string): LustFeatures {
   if (!found) {
     const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
     const usage = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    found = { markUnread: usage.includes("--mark-unread") };
+    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory") };
     lustFeatureCache.set(lust, found);
   }
   return found;
@@ -302,20 +304,24 @@ export class RecipeHost {
     if (opt.mode !== "off") dropUntrusted(cache);
     // lust says which `s.apply` calls the recipe never reads (docs/plan-native-recipes.md 7.1): the answer changes,
     // not the program. The marks are in the build's stdout, which a kept result keeps.
-    const mark = this.features(avail.lust).markUnread ? ["--mark-unread", MARK_UNREAD_FN] : [];
+    const features = this.features(avail.lust);
+    const mark = features.markUnread ? ["--mark-unread", MARK_UNREAD_FN] : [];
+    // The memory limit, built into the program: past it the recipe prints lust's L0532 line and exits 101, which
+    // `runRecipe` reads as the sentence the app says. The MCP host has no cap of its own (a child process of node).
+    const memory = features.maxMemory ? ["--max-memory", String(RECIPE_MEMORY_BYTES)] : [];
     return buildRecipe(async (text) => {
       // The program this slot holds was built from this text by this lust against this crate: it is the program a
       // build would make. A build of unchanged text still took 70 to 110 ms and left a new file, and Windows takes
       // about 0.3 s to start a program file it has not run before, against 3 ms for one it has. Values go in the
       // start line, so a rerun, a rebuild from other values and a describe all come here with the same text. While
       // lust's background build may still swap in the optimised program, lust is asked each time.
-      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args, mark]);
+      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args, mark, memory]);
       const kept = this.built.get(exe);
       if (kept && kept.key === key && existsSync(exe) && existsSync(main) && (opt.mode !== "bg" || kept.result.compiler === "opt")) return kept.result;
       this.built.delete(exe);
       if (opt.mode !== "off" && existsSync(main) && readFileSync(main, "utf8") !== text) distrustRunning(cache);
       writeFileSync(main, text);
-      const r = await run(avail.lust, ["build", "--sandbox", ...opt.args, "--json", ...mark, main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
+      const r = await run(avail.lust, ["build", "--sandbox", ...memory, ...opt.args, "--json", ...mark, main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
       const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr), ...(mark.length ? { marked: true } : {}) };
       if (r.code === 0) this.built.set(exe, { key, result });
       return result;

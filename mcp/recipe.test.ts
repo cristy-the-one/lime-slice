@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applyAutoEdits, findLust, lfOnly, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { applyAutoEdits, DEFAULT_LIMITS, findLust, lfOnly, lustFeatures, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -126,6 +126,31 @@ function stub(log: RecipeCallSite[]) {
 {
   const r = await host.build("fs", 'fn main() { let _ = std::fs::read("/etc/passwd"); }\n', true);
   check("std::fs is refused", !r.ok && r.diagnostics.some((d) => d.code === "L0532" && d.line === 1), r.diagnostics);
+}
+
+// --- Memory: the program is built with lust's limit (`--max-memory`, lust 0.3.0), 1 GiB as the app's runner caps it.
+// A recipe that keeps 32 MB more at each step stops itself there, and the run says what the app says. A lust
+// without the flag is not asked for it, and the recipe builds as before.
+{
+  const hog = 'use lime_recipe::Session;\n\nfn main() {\n    let mut s = Session::start();\n    let mut keep: Vec<Vec<u8>> = Vec::new();\n    loop {\n        keep.push(vec![1u8; 32 << 20]);\n        s.log(&format!("{} MB", keep.len() * 32));\n    }\n}\n';
+  if (lustFeatures(lust).maxMemory) {
+    const built = await host.build("hog", hog, false);
+    check("a recipe that would never stop allocating builds", built.ok, built);
+    const logs: string[] = [];
+    const out = await host.run(built.exe!, { params: {}, context: { units: "mm" } }, async (site) => {
+      logs.push(String(site.args.text));
+      return { ok: true, result: { ok: true } };
+    }, { ...DEFAULT_LIMITS, timeoutS: 60 });
+    check("it stops at lust's limit with the app's sentence", !out.ok && out.exitCode === 101 && out.reason === "The recipe used more than 1024 MB of memory and was stopped.", { reason: out.reason, code: out.exitCode, stderr: out.stderr });
+    // The stop comes within about a 64th of the limit: after the 30th, 31st or 32nd 32 MB block.
+    check("near 1 GiB, not before", logs.length >= 28 && logs.length <= 33, logs.length);
+    check("what it wrote before the stop arrived", logs[0] === "32 MB" && logs.at(-1) === `${logs.length * 32} MB`, logs.slice(-2));
+    const again = await host.build("hog", hog, false);
+    check("the limited program is kept for an unchanged text", again.ok && again.exe === built.exe && statSync(again.exe!).mtimeMs === statSync(built.exe!).mtimeMs);
+  } else console.log("recipe: the memory limit skipped (this lust has no --max-memory)");
+  const older = new RecipeHost({ crateDir, root: host.root, lust, features: { maxMemory: false, markUnread: false } });
+  const plain = await older.build("plain", example, false);
+  check("a lust that is not asked for the limit or the marks builds as before", plain.ok && plain.unread === undefined, plain);
 }
 
 // --- A call outside the allowlist, a panic, a time limit, a call limit.

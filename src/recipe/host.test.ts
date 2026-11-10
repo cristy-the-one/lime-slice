@@ -2,7 +2,7 @@
  * The shared recipe host (src/recipe/host.ts) over a scripted transport: no lust and no process. The script plays the
  * recipe's side of protocol v1, so the same run loop the MCP server and the app use is checked call for call.
  */
-import { applyAutoEdits, buildRecipe, parseDiagnostics, runRecipe, utf8Bytes, type CompileResult, type RecipeCallSite, type RecipeProcessEvents, type RecipeReply, type RecipeSpawn } from "./host.ts";
+import { applyAutoEdits, buildRecipe, memorySentence, parseDiagnostics, RECIPE_MEMORY_BYTES, runRecipe, utf8Bytes, type CompileResult, type RecipeCallSite, type RecipeProcessEvents, type RecipeReply, type RecipeSpawn } from "./host.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail: unknown = ""): void {
@@ -182,6 +182,40 @@ const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === 
   });
   const bad = await runRecipe(junk.spawn, {}, ok);
   check("a line that is not JSON stops the recipe", bad.reason === "The recipe wrote a line that is not JSON: hello", bad.reason);
+}
+
+// --- lust's memory limit (`--max-memory`, built into the program): exit code 101 and lust's line read as the app's
+// sentence, with the limit lust printed; a sandbox stop of another family keeps lust's own line.
+{
+  const p = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("1008 MB\nerror[L0532]: this program was built with --max-memory 1073741824 and tried to use more memory\n");
+      io.exit(101);
+    }
+  });
+  const out = await runRecipe(p.spawn, {}, ok);
+  check("lust's memory stop reads as the app's sentence", !out.ok && out.exitCode === 101 && out.reason === "The recipe used more than 1024 MB of memory and was stopped." && out.reason === memorySentence(RECIPE_MEMORY_BYTES), out);
+  const small = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("error[L0532]: this program was built with --max-memory 67108864 and tried to use more memory\n");
+      io.exit(101);
+    }
+  });
+  check("the megabytes are the limit the program was built with", (await runRecipe(small.spawn, {}, ok)).reason === "The recipe used more than 64 MB of memory and was stopped.");
+  const net = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("error[L0532]: this program was built with --sandbox and tried to use the network\n");
+      io.exit(101);
+    }
+  });
+  check("another sandbox stop keeps lust's line", (await runRecipe(net.spawn, {}, ok)).reason === "error[L0532]: this program was built with --sandbox and tried to use the network");
+  const echoed = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("error[L0532]: this program was built with --max-memory 1 and tried to use more memory\n");
+      io.exit(3);
+    }
+  });
+  check("the words alone, without lust's exit code, are not a memory stop", (await runRecipe(echoed.spawn, {}, ok)).reason?.startsWith("error[L0532]") === true);
 }
 
 // --- The runner's own stop (a memory cap) is the reason; a cancel is too.

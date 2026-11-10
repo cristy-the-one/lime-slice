@@ -32,6 +32,21 @@ export interface RecipeLimits {
 
 export const DEFAULT_LIMITS: RecipeLimits = { timeoutS: 30, maxCalls: 2000, maxLineBytes: 1 << 20 };
 
+/**
+ * The memory a recipe may hold (D11.2), in bytes: 1 GiB, the app's runner's cap (`Limits::memory_bytes`,
+ * crates/lime-recipe-runner). Both hosts build recipes with it as lust's `--max-memory` (lust 0.3.0), which stops the
+ * program at the allocation that passes it. One fixed value: a limit is its own session in lust's daemon.
+ */
+export const RECIPE_MEMORY_BYTES = 1 << 30;
+
+/** What a recipe stopped for its memory reads, from the MCP server and the app alike (the runner's `memory_sentence`). */
+export function memorySentence(bytes: number): string {
+  return `The recipe used more than ${Math.floor(bytes / (1 << 20))} MB of memory and was stopped.`;
+}
+
+/** lust's line when a program built with `--max-memory` passes its limit (lust-lang docs/sandbox.md); exit code 101. */
+const MEMORY_STOP = /error\[L0532\]: this program was built with --max-memory (\d+)/;
+
 /** The Plugins window keeps at most this many parts from one fresh run. */
 export const MAX_APP_RECIPE_PARTS = 100;
 
@@ -269,6 +284,9 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
         } else if (panic) {
           reason = `The recipe panicked at line ${panic.line}: ${panic.message}`;
           line = panic.line;
+        } else if (code === 101 && MEMORY_STOP.test(stderr)) {
+          // The limit lust built into the program (`--max-memory`): the sentence the app's runner says for its cap.
+          reason = memorySentence(Number(MEMORY_STOP.exec(stderr)![1]));
         } else if (/error\[L0532\]/.test(stderr)) {
           reason = stderr.trim().split("\n").find((l) => l.includes("L0532")) ?? "The sandbox stopped the recipe.";
         } else {

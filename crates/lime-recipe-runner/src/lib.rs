@@ -5,7 +5,8 @@
 //! the program with an empty environment, hand each line it writes to the caller, write replies back, and stop it.
 //! The limits are enforced here as well as in the host, so a stuck webview cannot leave a recipe running: wall time,
 //! lines, calls, line length, and a memory cap (D11.2; a job object on Windows, the process's peak resident size on
-//! Linux). Dropping a [`RecipeRun`] kills the recipe.
+//! Linux, and on every platform the limit lust builds into the program, [`MEMORY_BYTES`]). Dropping a [`RecipeRun`]
+//! kills the recipe.
 
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -50,17 +51,25 @@ impl Default for Limits {
 }
 
 impl Limits {
-    /// The host's three numbers, with room for notes and describe lines beside the calls, and the 1 GB cap.
+    /// The host's three numbers, with room for notes and describe lines beside the calls, and the 1 GiB cap.
     pub fn for_calls(timeout: Duration, max_calls: u32, max_line_bytes: usize) -> Limits {
         Limits {
             timeout,
             max_calls,
             max_lines: max_calls.saturating_mul(2).saturating_add(1000),
             max_line_bytes,
-            memory_bytes: 1 << 30,
+            memory_bytes: MEMORY_BYTES,
         }
     }
 }
+
+/// The memory a recipe may hold (D11.2): 1 GiB, `RECIPE_MEMORY_BYTES` in src/recipe/host.ts. It is enforced twice.
+/// lust builds it into the program (`--max-memory`, lust 0.3.0), which stops itself at the allocation that passes it:
+/// the only cap on macOS, where this runner cannot read a process's peak, and on Linux a stop at the limit, not at
+/// the next look 20 ms later. The runner keeps its own cap behind it (the watcher's peak, and on Windows the job
+/// object at twice the limit): lust's check runs when the program allocates, so memory reserved and touched later
+/// without another allocation is the runner's to stop, as is a recipe built by a lust without the flag.
+pub const MEMORY_BYTES: u64 = 1 << 30;
 
 /// What a running recipe reports, in order: its lines, then one exit.
 #[derive(Debug, Clone, PartialEq)]
@@ -99,6 +108,15 @@ pub fn lines_sentence(max_lines: u32) -> String {
 
 pub fn memory_sentence(memory_bytes: u64) -> String {
     format!("The recipe used more than {} MB of memory and was stopped.", memory_bytes >> 20)
+}
+
+/// The limit in lust's line for a program that passed the memory limit it was built with (lust-lang docs/sandbox.md:
+/// `error[L0532]: this program was built with --max-memory <bytes> and tried to use more memory`), when `stderr`
+/// holds one.
+pub fn lust_memory_stop(stderr: &str) -> Option<u64> {
+    const LINE: &str = "error[L0532]: this program was built with --max-memory ";
+    let rest = &stderr[stderr.find(LINE)? + LINE.len()..];
+    rest[..rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len())].parse().ok()
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -231,7 +249,13 @@ impl RecipeRun {
                 let _ = reader.join();
                 let stderr = errors.join().unwrap_or_default();
                 lock(&shared.stdin).take();
-                let reason = lock(&shared.reason).clone();
+                let mut reason = lock(&shared.reason).clone();
+                // A recipe that lust's own limit stopped (`--max-memory`, [`MEMORY_BYTES`]) exits by itself with code
+                // 101 and lust's line; where the watcher saw no peak past the cap (macOS, or between two looks), that
+                // line says why.
+                if reason.is_none() && code == Some(101) {
+                    reason = lust_memory_stop(&stderr).map(memory_sentence);
+                }
                 on_event(RunEvent::Exit(RunExit { code, reason, stderr }));
             });
         }
@@ -490,12 +514,14 @@ pub const MARK_UNREAD_FN: &str = "lime_recipe::Session::apply";
 pub struct LustFeatures {
     /// `--mark-unread <fn>` (lust 0.3.0).
     pub mark_unread: bool,
+    /// `--sandbox --max-memory <bytes>` (lust 0.3.0).
+    pub max_memory: bool,
 }
 
 impl LustFeatures {
     /// Read from lust's usage text, which names every flag.
     pub fn from_usage(usage: &str) -> LustFeatures {
-        LustFeatures { mark_unread: usage.contains("--mark-unread") }
+        LustFeatures { mark_unread: usage.contains("--mark-unread"), max_memory: usage.contains("--max-memory") }
     }
 }
 
@@ -552,7 +578,9 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     // lust says which `s.apply` calls the recipe never reads: the answer changes, not the program. The marks are in
     // the build's stdout, which a kept output keeps.
     let features = lust_features(lust);
-    let key = (text.to_owned(), lust.to_path_buf(), opt.mode, features);
+    // The memory limit is built into the program ([`MEMORY_BYTES`]), so it is part of what the slot holds.
+    let memory = features.max_memory.then_some(MEMORY_BYTES);
+    let key = (text.to_owned(), lust.to_path_buf(), opt.mode, features, memory);
     if let Some(kept) = built().get(&exe) {
         if kept.0 == key && exe.is_file() && main.is_file() && (opt.mode != opt::OptMode::Bg || kept.1.compiler == "opt") {
             return Ok(kept.1.clone());
@@ -566,6 +594,9 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     let err_path = dir.join("build.err");
     let mut command = quiet(lust);
     command.arg("build").arg("--sandbox");
+    if let Some(bytes) = memory {
+        command.arg("--max-memory").arg(bytes.to_string());
+    }
     if let Some(arg) = opt.arg() {
         command.arg(arg);
     }
@@ -609,7 +640,7 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     Ok(output)
 }
 
-type BuiltKey = (String, PathBuf, opt::OptMode, LustFeatures);
+type BuiltKey = (String, PathBuf, opt::OptMode, LustFeatures, Option<u64>);
 type Built = std::collections::HashMap<PathBuf, (BuiltKey, BuildOutput)>;
 
 /// Each slot's last good build, by its program's path: the text, the lust and the build mode that made it.
@@ -658,7 +689,16 @@ mod tests {
         assert!(host.contains("The recipe ran past its ${limits.timeoutS} s limit and was stopped."));
         assert!(host.contains("The recipe made more than ${limits.maxCalls} calls and was stopped."));
         assert!(host.contains("A recipe line passed ${limits.maxLineBytes} bytes."));
-        assert_eq!(memory_sentence(1 << 30), "The recipe used more than 1024 MB of memory and was stopped.");
+        assert_eq!(memory_sentence(MEMORY_BYTES), "The recipe used more than 1024 MB of memory and was stopped.");
+        // The host says the same of a recipe lust's own limit stopped, and builds with the same number of bytes.
+        assert!(host.contains("`The recipe used more than ${Math.floor(bytes / (1 << 20))} MB of memory and was stopped.`"));
+        assert!(host.contains("export const RECIPE_MEMORY_BYTES = 1 << 30;"));
+        assert_eq!(MEMORY_BYTES, 1 << 30);
+        assert!(host.contains(r"/error\[L0532\]: this program was built with --max-memory (\d+)/"));
+        let line = "12 MB\nerror[L0532]: this program was built with --max-memory 1073741824 and tried to use more memory\n";
+        assert_eq!(lust_memory_stop(line), Some(1 << 30));
+        assert_eq!(lust_memory_stop("error[L0532]: this program was built with --sandbox and tried to use the network"), None);
+        assert_eq!(lust_memory_stop("thread 'main' panicked"), None);
     }
 
     #[test]
@@ -666,8 +706,9 @@ mod tests {
         // lust 0.2.0's usage, and 0.3.0's.
         let old = "usage: lust <check|build|run> <file.rs> [--json] [--max-errors N] [--timings] [-o out] [-g] [--emit-c prefix] [-- args]";
         let new = "usage: lust <check|build|run> <file.rs> [--json] [--max-errors N] [--timings] [-o out] [-g] [--emit-c prefix] [--mark-unread <fn path>]... [-- args]";
-        assert!(!LustFeatures::from_usage(old).mark_unread);
-        assert!(LustFeatures::from_usage(new).mark_unread);
+        let new = format!("{new}\n       lust <check|build|run> <file.rs> [--sandbox [--max-memory <bytes|N[K|M|G]>]] [--opt | --opt=bg]");
+        assert_eq!(LustFeatures::from_usage(old), LustFeatures::default());
+        assert_eq!(LustFeatures::from_usage(&new), LustFeatures { mark_unread: true, max_memory: true });
         assert_eq!(LustFeatures::from_usage(""), LustFeatures::default());
         // The host reads the marks by the same name.
         let host = include_str!("../../../src/recipe/host.ts");

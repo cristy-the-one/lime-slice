@@ -676,6 +676,30 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    Fewer spline points (6 a flank) were no faster and less exact, so the gear keeps 9. The reason for the step is the
    teeth (true involutes that mesh within their backlash, and the volume the polyline loses), not speed.
 
+9. **What lust 0.3.0 adds** (not in the plan as first written; lust-lang's release after milestone 7's `--opt`).
+   *As built (2026-11-10, `claude/lust-release-package`, one commit a feature).* Each host asks a lust only for what
+   its `--help` names (`lustFeatures` in `mcp/recipe.ts`, `lust_features` in the runner), so an older lust in
+   `LIME_LUST` keeps building recipes as it did.
+   - **Unread applies by resolution** (`--mark-unread`): milestone 3's "Which lines queue", above.
+   - **A memory limit in the program** (`--sandbox --max-memory`). Both hosts build with 1 GiB
+     (`RECIPE_MEMORY_BYTES`, `MEMORY_BYTES`), the number the app's runner already capped at; one fixed value, since a
+     limit is its own session in lust's daemon (its first build took 0.67 s, once; warm builds of an unchanged text
+     35 ms and of a changed 200-line one 88 ms, against 86 ms without the limit). The MCP server had no memory limit before: a recipe was a child
+     process of node. Past the limit the program prints lust's `error[L0532]` line and exits with code 101, and
+     `runRecipe` turns exactly that (the code and the line) into the runner's sentence, with the megabytes lust
+     printed. *The app's runner passes it too, and keeps its own cap behind it.* Why pass it: on macOS the runner has
+     no cap of its own (`memory_peak` reads Windows and Linux only), so lust's limit is the first one there; on Linux
+     the stop comes at the allocation, not at the watcher's next look 20 ms later with nothing to hold the process in
+     between; the cost is one daemon session, as for the server. Why keep the runner's cap: lust checks when the
+     program allocates, so memory reserved and touched later is the runner's to stop (lust-lang docs/sandbox.md), a
+     lust without the flag builds no limit in, and Windows' job object ends a recipe that outruns both. The runner
+     also reads lust's line itself, so its exit carries the sentence where its watcher saw no peak. The program-reuse
+     keys of both hosts hold the limit. Measured (this PC, lust 0.3.0 build 181dbd83): a recipe keeping 32 MB blocks
+     stopped after 992 MB in 0.74 s under tcc and 0.52 s optimised; 2.8 million small allocations ran in 1,449 ms with
+     the limit against 1,415 ms without under tcc, and 441 against 434 ms optimised (medians of 9; the spread between
+     runs is as large); the corpus sends the same calls with the limit built in. `lust check` and `lust query` do not
+     take `--max-memory` (they answer their usage), so only builds pass it.
+
 ## 9. Done for the whole plan
 
 - A recipe's time is reported where it goes: its own code, the booleans, the meshing.

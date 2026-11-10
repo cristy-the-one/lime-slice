@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use lime_recipe_runner::{
     build, calls_sentence, find_lust, line_bytes_sentence, lines_sentence, lust_features, memory_sentence, timeout_sentence,
-    Limits, RecipeRun, RunEvent, RunExit, MARK_UNREAD_FN,
+    Limits, RecipeRun, RunEvent, RunExit, MARK_UNREAD_FN, MEMORY_BYTES,
 };
 
 fn probe() -> &'static Path {
@@ -157,6 +157,26 @@ fn a_real_recipe_that_only_logs() {
     }
     let kept = build(&lust, &root, &repo_crate(), 2, marking, Duration::from_secs(120)).unwrap();
     assert_eq!((kept.stdout.as_str(), kept.marked), (marked.stdout.as_str(), marked.marked), "a kept program keeps its marks");
+
+    // lust builds the 1 GiB limit into the program (0.3.0's --max-memory): a recipe that keeps allocating stops itself
+    // there with lust's line and exit code 101, and the runner says the sentence of its own cap. The runner's cap is
+    // set far above here, so the stop is lust's.
+    if lust_features(&lust).max_memory {
+        let hog = "fn main() {\n    let mut keep: Vec<Vec<u8>> = Vec::new();\n    loop {\n        keep.push(vec![1u8; 32 << 20]);\n    }\n}\n";
+        let built = build(&lust, &root, &repo_crate(), 3, hog, Duration::from_secs(120)).unwrap();
+        assert_eq!(built.code, Some(0), "{}\n{}", built.stdout, built.stderr);
+        let (tx, rx) = channel();
+        let limits = Limits { memory_bytes: 16 << 30, timeout: Duration::from_secs(60), ..Limits::default() };
+        let run = RecipeRun::start(&built.exe.unwrap(), &[], &root, limits, move |event| {
+            let _ = tx.send(event);
+        })
+        .unwrap();
+        let (_, exit) = until_exit(&rx, Duration::from_secs(60));
+        assert_eq!(exit.code, Some(101), "{exit:?}");
+        assert!(exit.stderr.contains(&format!("--max-memory {MEMORY_BYTES}")), "{}", exit.stderr);
+        assert_eq!(exit.reason.as_deref(), Some("The recipe used more than 1024 MB of memory and was stopped."));
+        drop(run);
+    }
 
     let broken = build(&lust, &root, &repo_crate(), 1, "fn main() { let x: f64 = 1; }\n", Duration::from_secs(120)).unwrap();
     assert_ne!(broken.code, Some(0));
