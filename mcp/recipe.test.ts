@@ -2,7 +2,7 @@
  * recipe_run's host (mcp/recipe.ts) against real lust, with a scripted stand-in for the session's calls.
  * Skips without lust (LIME_LUST, or lust on PATH); LIME_RECIPE_REQUIRED=1 (the CI job that builds lust) makes that a failure.
  */
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,16 @@ function stub(log: RecipeCallSite[]) {
 {
   const built = await host.build("bar", example, true);
   check("example builds", built.ok && built.fixRounds === 0, built);
+  // The same text again is the program the slot holds: no build, and the file a run starts is the one it started.
+  const made = statSync(built.exe!).mtimeMs;
+  const again = await host.build("bar", example, true);
+  check("unchanged text reuses the built program", again.ok && again.exe === built.exe && statSync(again.exe!).mtimeMs === made, again);
+  const edited = await host.build("bar", `${example}
+// edited
+`, true);
+  check("changed text builds again", edited.ok && statSync(edited.exe!).mtimeMs !== made, edited);
+  const back = await host.build("bar", example, true);
+  check("and the first text builds again after it", back.ok, back);
   const log: RecipeCallSite[] = [];
   const out = await host.run(built.exe!, { params: { width: 72, holes: 5 }, context: { units: "mm" } }, stub(log));
   check("run reaches done", out.ok && out.done?.object === "obj_1", out);

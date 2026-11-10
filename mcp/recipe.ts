@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
+import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
@@ -162,7 +162,10 @@ export class RecipeHost {
     const lib = readFileSync(join(crate.dir, "src", "lib.rs"), "utf8");
     mkdirSync(join(dir, "src"), { recursive: true });
     const libPath = join(dir, "src", "lib.rs");
-    if (!existsSync(libPath) || readFileSync(libPath, "utf8") !== lib) writeFileSync(libPath, lib);
+    if (!existsSync(libPath) || readFileSync(libPath, "utf8") !== lib) {
+      writeFileSync(libPath, lib);
+      this.built.clear();
+    }
     const manifest = '[package]\nname = "lime-recipe"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n\n[workspace]\n';
     const manPath = join(dir, "Cargo.toml");
     if (!existsSync(manPath) || readFileSync(manPath, "utf8") !== manifest) writeFileSync(manPath, manifest);
@@ -201,6 +204,9 @@ export class RecipeHost {
     return dir;
   }
 
+  /** The last good build of each slot's program, by the text and the lust that made it. */
+  private built = new Map<string, { key: string; result: Awaited<ReturnType<RecipeCompile>> }>();
+
   /** lust's environment for this host: its daemon socket, and its cache, where `opt/` keeps the optimised binaries. */
   private lustEnv(): NodeJS.ProcessEnv {
     // One daemon for every slot: its socket path is fixed under the root, not the current directory.
@@ -233,10 +239,21 @@ export class RecipeHost {
     const cache = join(this.root, "cache");
     if (opt.mode !== "off") dropUntrusted(cache);
     return buildRecipe(async (text) => {
+      // The program this slot holds was built from this text by this lust against this crate: it is the program a
+      // build would make. A build of unchanged text still took 70 to 110 ms and left a new file, and Windows takes
+      // about 0.3 s to start a program file it has not run before, against 3 ms for one it has. Values go in the
+      // start line, so a rerun, a rebuild from other values and a describe all come here with the same text. While
+      // lust's background build may still swap in the optimised program, lust is asked each time.
+      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args]);
+      const kept = this.built.get(exe);
+      if (kept && kept.key === key && existsSync(exe) && existsSync(main) && (opt.mode !== "bg" || kept.result.compiler === "opt")) return kept.result;
+      this.built.delete(exe);
       if (opt.mode !== "off" && existsSync(main) && readFileSync(main, "utf8") !== text) distrustRunning(cache);
       writeFileSync(main, text);
       const r = await run(avail.lust, ["build", "--sandbox", ...opt.args, "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
-      return { ...r, exe, main, compiler: builtWith(opt, r.stderr) };
+      const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr) };
+      if (r.code === 0) this.built.set(exe, { key, result });
+      return result;
     }, source, autofix, suffix);
   }
 

@@ -115,6 +115,8 @@ export interface RenderOptions {
   pixels?: boolean;
   /** The colour of empty pixels; default BACKGROUND. `transparent` still leaves them empty. */
   background?: Vec;
+  /** Size the picture to what is drawn, the long side `longEdge`, in place of a square. Not with `fit`. */
+  crop?: boolean;
 }
 
 /** Empty pixels unless a caller chooses: the pale paper every preview has always had. */
@@ -137,18 +139,6 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   if ("reason" in basis) throw new Error(basis.reason);
   const { eye, right, up } = basis;
   const edge = Math.max(32, Math.min(1024, Math.round(longEdge)));
-  const width = edge;
-  const height = edge;
-  const depth = new Float32Array(width * height);
-  depth.fill(-Infinity);
-  const color = new Uint8Array(width * height);
-  /** 0, or 1 + the tint index; 0xffffffff for the inside of a cut. */
-  const tintAt = new Uint32Array(width * height);
-  const ghostDepth = new Float32Array(width * height);
-  ghostDepth.fill(-Infinity);
-  const ghostShade = new Uint8Array(width * height);
-  /** The part's triangle in front at each pixel, or -1: an edge line is drawn only where one of its own triangles shows. */
-  const owner = new Int32Array(width * height).fill(-1);
   const project = (x: number, y: number, z: number): Vec => [
     x * right[0] + y * right[1] + z * right[2],
     x * up[0] + y * up[1] + z * up[2],
@@ -174,6 +164,22 @@ export function renderMesh(positions: Float32Array, camera: Camera | CameraSpec,
   const spanX = Math.max(maxX - minX, 1e-6);
   const spanY = Math.max(maxY - minY, 1e-6);
   const margin = edge * 0.08;
+  // Cropped, the long side of what is drawn takes the long edge and the short side takes what it needs: a plate
+  // seen from the front is a strip, not a square that is nine tenths paper. The scale is the square picture's.
+  const scale = (edge - margin * 2) / Math.max(spanX, spanY);
+  const crop = options.crop === true && !options.fit;
+  const width = crop ? Math.max(32, Math.min(edge, Math.ceil(spanX * scale + margin * 2))) : edge;
+  const height = crop ? Math.max(32, Math.min(edge, Math.ceil(spanY * scale + margin * 2))) : edge;
+  const depth = new Float32Array(width * height);
+  depth.fill(-Infinity);
+  const color = new Uint8Array(width * height);
+  /** 0, or 1 + the tint index; 0xffffffff for the inside of a cut. */
+  const tintAt = new Uint32Array(width * height);
+  const ghostDepth = new Float32Array(width * height);
+  ghostDepth.fill(-Infinity);
+  const ghostShade = new Uint8Array(width * height);
+  /** The part's triangle in front at each pixel, or -1: an edge line is drawn only where one of its own triangles shows. */
+  const owner = new Int32Array(width * height).fill(-1);
   const fit = Math.min((width - margin * 2) / spanX, (height - margin * 2) / spanY);
   const midX = (minX + maxX) / 2;
   const midY = (minY + maxY) / 2;

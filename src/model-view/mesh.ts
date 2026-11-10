@@ -7,7 +7,7 @@ import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import type { ModelSolid } from "./types";
 import { boxEdges, boxList, dashSegments, writeColor } from "./helpers";
-import { drawnEdgeSegments, smoothNormals } from "./smooth";
+import { drawnEdgeSegments, smoothNormalsOf } from "./smooth";
 import { facePaint } from "../model-look";
 import { hexToThree } from "../theme";
 import type { ViewCtx } from "./ctx";
@@ -90,7 +90,7 @@ export function installMesh(ctx: ViewCtx): void {
     const used = paintColours(shape, color, new Set(), null);
     publishFaceColours(used);
     geometry.setAttribute("color", new THREE.BufferAttribute(color, 3));
-    const smooth = smoothNormals(shape.positions, shape.triangles);
+    const smooth = smoothNormalsOf(shape.positions, shape.triangles);
     geometry.setAttribute("normal", new THREE.BufferAttribute(smooth.normals, 3));
     const shaded = new THREE.Mesh(geometry, solidMaterial);
     shaded.raycast = () => undefined;
@@ -147,9 +147,14 @@ export function installMesh(ctx: ViewCtx): void {
   function paintColours(shape: ModelSolid, into: Float32Array, selected: Set<number>, pickHover: number | null): Set<string> {
     const used = new Set<string>();
     const tint = ctx.removedFaces ? hexToThree(ctx.colors.danger) : ctx.datumPick ? hexToThree(ctx.colors.teal) : ctx.accent;
-    shape.triangles.forEach((face, triangle) => {
+    // A face has one colour, so it is worked out once a face, not once a triangle: with colour by step on, each
+    // call builds the step's colour from its hue, and a hover repaints every triangle of a part of thousands of faces.
+    const paints = new Map<number, ReturnType<typeof facePaint>>();
+    const paintOf = (face: number) => {
+      let painted = paints.get(face);
+      if (painted) return painted;
       const owner = shape.stepFaces && face < shape.stepFaces.length ? (shape.stepFaces[face] ?? null) : null;
-      const painted = facePaint({
+      painted = facePaint({
         index: face,
         owner,
         selected: selected.has(face),
@@ -160,6 +165,11 @@ export function installMesh(ctx: ViewCtx): void {
         study: shape === ctx.solid ? stressTint(face) : null,
       });
       if (painted.stepHex) used.add(painted.stepHex);
+      paints.set(face, painted);
+      return painted;
+    };
+    shape.triangles.forEach((face, triangle) => {
+      const painted = paintOf(face);
       const offset = triangle * 9;
       for (let vertex = 0; vertex < 3; vertex += 1) writeColor(painted.hex, into, offset + vertex * 3);
     });

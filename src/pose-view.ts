@@ -11,6 +11,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { ContextPart } from "./model-context";
 import { affineRows } from "./model-context";
 import { posedBounds } from "./model-space";
+import { sharpEdges } from "./mesh-edges";
 import type { Bounds } from "./mesh-place";
 import { hexToThree, themeColors, type ThemeColors } from "./theme";
 import { mountBedReference, mountStudioLights, mountViewHelper, renderViewHelper, viewHelperHit } from "./viewport-chrome";
@@ -111,7 +112,7 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const group = new THREE.Group();
   scene.add(group);
   /** One geometry and one outline per source array: a pose change rewrites matrices and uploads no vertex. */
-  const held = new Map<Float32Array, { geometry: THREE.BufferGeometry; edges: THREE.EdgesGeometry }>();
+  const held = new Map<Float32Array, { geometry: THREE.BufferGeometry; edges: THREE.BufferGeometry }>();
   let box: Bounds | null = null;
   let framed = false;
   let pickCb: ((id: string | null, hit?: PoseHit) => void) | null = null;
@@ -134,7 +135,11 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
       geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
       geometry.computeVertexNormals();
       geometry.computeBoundingSphere();
-      entry = { geometry, edges: new THREE.EdgesGeometry(geometry, EDGE_ANGLE_DEG) };
+      // The segments `EdgesGeometry` draws, in its order, from integer tables in place of its string keys: about
+      // a fifth of the time on a part of a few hundred thousand triangles, which every part pays on entering Pose.
+      const edges = new THREE.BufferGeometry();
+      edges.setAttribute("position", new THREE.BufferAttribute(sharpEdges(positions, EDGE_ANGLE_DEG), 3));
+      entry = { geometry, edges };
       held.set(positions, entry);
     }
     return entry;

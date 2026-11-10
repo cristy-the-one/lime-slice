@@ -2445,7 +2445,12 @@ export function validate(schema: Record<string, unknown>, value: unknown, path =
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(record)) {
         if (!(key in properties)) {
-          const hint = (path.endsWith(".cell") ? CELL_HINTS[key] : undefined) ?? FIELD_HINTS[key];
+          // The hints are written for an op's fields. On a tool's own fields they named a field the tool may not
+          // have ("Use label." where the tool takes id), which cost the caller a second refusal: name the tool's.
+          const names = Object.keys(properties);
+          const hint = path === "input"
+            ? (names.length > 0 ? `It takes ${names.slice(0, 16).join(", ")}${names.length > 16 ? ", ..." : ""}.` : undefined)
+            : (path.endsWith(".cell") ? CELL_HINTS[key] : undefined) ?? FIELD_HINTS[key];
           return `${path}.${key} is not a field of this tool.${hint ? ` ${hint}` : ""}`;
         }
       }

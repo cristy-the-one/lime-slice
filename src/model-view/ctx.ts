@@ -9,6 +9,7 @@ import type { CameraPose } from "../sketch/frame";
 import type { ContextPart } from "../model-context";
 import type { CutTrace } from "../cut-trace";
 import type { DragHandle, Vec3 } from "../model-drag";
+import type { FaceOutlines } from "../model-select";
 import type { Footprint, Screen, SnapAxis, SnapHit, SnapTarget } from "../place-snap";
 import type { GrabIntent } from "../viewport-grab";
 import type { HandleAspect } from "../handle-emphasis";
@@ -54,7 +55,7 @@ export interface ViewCtx {
   solidBox: Box | null;
   ownBox: Box | null;
   bedOn: boolean;
-  boundaries: Map<number, number[]>;
+  boundaries: FaceOutlines;
   center: THREE.Vector3;
   extent: number;
   mode: "face" | "edge";

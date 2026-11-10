@@ -129,6 +129,21 @@ export function smoothNormals(positions: ArrayLike<number>, triangles: ArrayLike
   return { normals, points: groups };
 }
 
+const smoothed = new WeakMap<object, { triangles: ArrayLike<number>; smooth: Smoothed }>();
+
+/**
+ * [`smoothNormals`], kept with the mesh: a solid shown again (undo, redo, a step of the history, a preview of the
+ * same shape) reads the normals it already has. Nothing writes to them after they are made.
+ */
+export function smoothNormalsOf(positions: ArrayLike<number>, triangles: ArrayLike<number>): Smoothed {
+  const key = positions as unknown as object;
+  const kept = smoothed.get(key);
+  if (kept && kept.triangles === triangles) return kept.smooth;
+  const smooth = smoothNormals(positions, triangles);
+  smoothed.set(key, { triangles, smooth });
+  return smooth;
+}
+
 /**
  * The line segments to draw for a solid's edges, three numbers a point, two points a segment. A seam (the edge where a
  * closed face meets itself) and a pole are left out: they are not a boundary anyone sees on the part. They stay in the

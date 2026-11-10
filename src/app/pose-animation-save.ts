@@ -61,7 +61,10 @@ export function showAnimationSave(context: SaveContext): void {
       let capture: ReturnType<PoseView["beginCapture"]> | null = null;
       try {
         const { sampleAnimation } = await import("../pose-anim.ts");
-        const sampled = sampleAnimation({ ...current.spec, fps: rate }, current.original, (id) => current.poses.get(id), current.parts);
+        // The script was checked for crossing parts when it ran. At its own frame rate the frames are the ones on
+        // screen; at another rate only the poses are worked out again, and the warnings stay the script's.
+        const again = rate === oldResult.fps ? oldResult : sampleAnimation({ ...current.spec, fps: rate }, current.original, (id) => current.poses.get(id), current.parts, { interference: false });
+        const sampled = "issues" in again || again === oldResult ? again : { ...again, warnings: oldResult.warnings, interferenceChecked: oldResult.interferenceChecked };
         if ("issues" in sampled) throw new Error(sampled.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; "));
         if (sampled.frames.length * px * px * 3 > 256 * 1024 * 1024) throw new Error("This export is too large. Lower its size, duration or FPS.");
         current.result = sampled; current.clock = new PosePlayback(sampled.frames.length, sampled.fps);

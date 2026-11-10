@@ -265,17 +265,32 @@ pub(super) fn narrow_run_tiles(region: &[Loop]) -> Vec<(Vec<Loop>, f64)> {
         return Vec::new();
     }
     let cell = |v: f64| (v / VOID_TILE_MM).floor() as i64;
-    let mut out = Vec::new();
-    for i in cell(lo[0])..=cell(hi[0]) {
-        for j in cell(lo[1])..=cell(hi[1]) {
-            let (x0, y0) = (i as f64 * VOID_TILE_MM, j as f64 * VOID_TILE_MM);
-            let (x1, y1) = (x0 + VOID_TILE_MM, y0 + VOID_TILE_MM);
-            let tile = vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-            let cut = drop_slivers(boolean_intersect(region, &[tile]), SKIN_SLIVER_MM2);
-            for piece in island_loops(&cut) {
-                let across = narrowest_way(&piece[0]);
-                out.push((piece, across));
+    // The piece is narrower than a tile everywhere, so no tile lies inside
+    // it whole: a tile holds some of the piece only where an edge of the
+    // piece reaches it. A ring around a wide part spans the part's whole
+    // box, and nearly all the tiles of that box are empty. The tiles are
+    // still visited column by column, so the pieces come out in the same
+    // order as a walk over the whole box.
+    let mut tiles = std::collections::BTreeSet::new();
+    for ring in region {
+        for (k, a) in ring.iter().enumerate() {
+            let b = ring[(k + 1) % ring.len()];
+            for i in cell(a[0].min(b[0]))..=cell(a[0].max(b[0])) {
+                for j in cell(a[1].min(b[1]))..=cell(a[1].max(b[1])) {
+                    tiles.insert((i, j));
+                }
             }
+        }
+    }
+    let mut out = Vec::new();
+    for (i, j) in tiles {
+        let (x0, y0) = (i as f64 * VOID_TILE_MM, j as f64 * VOID_TILE_MM);
+        let (x1, y1) = (x0 + VOID_TILE_MM, y0 + VOID_TILE_MM);
+        let tile = vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        let cut = drop_slivers(boolean_intersect(region, &[tile]), SKIN_SLIVER_MM2);
+        for piece in island_loops(&cut) {
+            let across = narrowest_way(&piece[0]);
+            out.push((piece, across));
         }
     }
     out
