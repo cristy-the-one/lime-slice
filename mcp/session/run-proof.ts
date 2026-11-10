@@ -32,6 +32,8 @@ export interface RunProof {
   from: number | null;
   /** The printer, nozzle, settings and project values (`environmentOf`). */
   environment: string;
+  /** How many other parts were on the plate when the run began. */
+  plateOthers: number;
   /** The start line's context, as sent. */
   context: string;
   /** The run's time, the queue built at done included. */
@@ -84,6 +86,9 @@ export function runProves(session: Session, proof: RunProof, body: string, param
   // The same part at the same step.
   if (proof.object !== object) return false;
   if (object !== undefined && (startAt === null || proof.from !== startAt || proof.treeKey === undefined || proof.treeKey !== treeKey)) return false;
+  // A plugin that builds its own parts is checked on an empty plate, in a session of its own: the check is also that
+  // it needs nothing the caller's plate holds. A run that began beside other parts does not show that.
+  if (object === undefined && proof.plateOthers !== 0) return false;
   // The same printer, nozzle, settings and project values.
   if (proof.environment !== environmentOf(session)) return false;
   // The start context differs between an apply and a dry run only in its limits (a dry run cannot checkpoint, and has

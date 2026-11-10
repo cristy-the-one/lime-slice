@@ -216,6 +216,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   }
   const buildHash = bodyHash(`${built.source}\n${resolved.suffix}`);
   const environmentHash = environmentOf(this);
+  // The parts on the plate beside the one the run is given, when it begins (run-proof.ts).
+  const plateOthers = this.objects.filter((row) => row.id !== input.object).length;
   if (checkpoint) {
     if (checkpoint.buildHash !== buildHash || checkpointJson(checkpoint.params) !== checkpointJson(params) || input.object !== undefined || replacing || rebuild) return refuse("recipe-failed", "The saved checkpoint belongs to different source, ingredients, parameters, or a different target. Use the original run's values, or pass discardCheckpoint:true to start a new run and leave the saved parts on the plate.");
     if (checkpoint.environmentHash !== environmentHash) return refuse("recipe-failed", "The printer, settings, or project parameters changed since the checkpoint. Restore them, or pass discardCheckpoint:true to start a new run.");
@@ -807,6 +809,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         ...(givenPart?.tree ? { treeKey: givenPart.tree.key } : {}),
         from: objectArg !== undefined ? touched.get(objectArg) ?? null : null,
         environment: environmentHash,
+        plateOthers,
         context: JSON.stringify(start.context),
         runMs: out.ms,
       }
