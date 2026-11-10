@@ -202,3 +202,76 @@ fn a_new_group_that_misses_everywhere_is_refused() {
     }));
     near(volume(&reopened), 1000.0);
 }
+
+fn merged(mut step: Value) -> Value {
+    step["merge"] = json!(true);
+    step
+}
+
+fn round_cut(x: f64, y: f64) -> Value {
+    merged(json!({ "kind": "boolean", "op": "cut", "primitive": "cylinder", "origin": [x, y, -1.0], "radius": 1.5, "height": 12.0 }))
+}
+
+/// A pattern typed with `combine: true` builds its copies in one boolean. The solid is the one the same copies give
+/// built one after another (volume, faces and edges), a copy that misses is counted, faces on one surface merge once
+/// at the end, every copy missing is the pattern's own refusal, and the group replays to the same solid.
+#[test]
+fn a_combined_pattern_is_one_boolean_and_the_same_solid() {
+    let opened = call(json!({ "call": "open", "key": "cp", "box": [40.0, 30.0, 10.0] }));
+    if opened.get("error").is_some() {
+        assert!(!require(), "OCCT was required: {opened}");
+        return;
+    }
+    let holes: Vec<Value> = (0..12).map(|i| round_cut(5.0 + 6.0 * f64::from(i % 6), 8.0 + 12.0 * f64::from(i / 6))).collect();
+    let typed = json!({ "kind": "pattern", "combine": true, "linear": { "step": [6, 0, 0], "count": 6, "step2": [0, 12, 0], "count2": 2 } });
+    let by_copy = ok(json!({ "call": "apply", "key": "cp", "parent": 0, "node": 1, "op": group("Pattern 6 × 2", Some(json!({ "kind": "pattern" })), holes.clone()) }));
+    let mut once = group("Pattern 6 × 2", Some(typed.clone()), holes.clone());
+    once["combine"] = json!("cut");
+    let probed = ok(json!({ "call": "probe", "key": "cp", "node": 0, "op": once }));
+    assert_eq!(probed["ok"], json!(true), "{probed}");
+    assert_eq!(probed["skipped"], json!(0), "{probed}");
+    let combined = ok(json!({ "call": "apply", "key": "cp", "parent": 0, "node": 2, "op": once }));
+    assert_eq!(combined["combined"]["tools"], json!(12), "{combined}");
+    assert_eq!(combined["fingerprint"]["faces"], by_copy["fingerprint"]["faces"], "{combined}");
+    assert_eq!(combined["fingerprint"]["edges"], by_copy["fingerprint"]["edges"], "{combined}");
+    near(volume(&combined), volume(&by_copy));
+    assert_eq!(combined["combined"]["missed"], json!([]), "{combined}");
+    assert_eq!(combined["op"]["combine"], "cut");
+    assert_eq!(combined["op"]["source"], typed);
+
+    // One copy off the plate: counted, the others still cut.
+    let mut some = holes.clone();
+    some[3] = round_cut(500.0, 0.0);
+    let mut partly = group("Pattern, one off", Some(typed.clone()), some);
+    partly["combine"] = json!("cut");
+    let probed = ok(json!({ "call": "probe", "key": "cp", "node": 0, "op": partly }));
+    assert_eq!(probed["skipped"], json!(1), "{probed}");
+    assert_eq!(probed["combined"]["missed"], json!([3]), "{probed}");
+
+    // Every copy off the plate: the pattern's refusal, and nothing is added to the history.
+    let mut away = group("Pattern away", Some(typed.clone()), vec![round_cut(500.0, 0.0), round_cut(600.0, 0.0)]);
+    away["combine"] = json!("cut");
+    let refused = call(json!({ "call": "apply", "key": "cp", "parent": 0, "node": 3, "op": away }));
+    assert_eq!(refused["error"], json!("None of its 2 steps changes the part."), "{refused}");
+
+    // Bosses side by side share the plate's top: fused in one boolean and merged once, they are the faces the same
+    // bosses give fused one after another, each merged.
+    let boss = |x: f64| merged(json!({ "kind": "boolean", "op": "fuse", "primitive": "box", "origin": [x, 5.0, 9.0], "size": [4.0, 4.0, 3.0] }));
+    let bosses: Vec<Value> = (0..5).map(|i| boss(2.0 + 4.0 * f64::from(i))).collect();
+    let each = ok(json!({ "call": "apply", "key": "cp", "parent": 0, "node": 4, "op": group("Bosses", Some(json!({ "kind": "pattern" })), bosses.clone()) }));
+    let mut fused = group("Bosses", Some(typed.clone()), bosses);
+    fused["combine"] = json!("fuse");
+    let all = ok(json!({ "call": "apply", "key": "cp", "parent": 0, "node": 5, "op": fused.clone() }));
+    assert_eq!(all["fingerprint"]["faces"], each["fingerprint"]["faces"], "{all}");
+    assert_eq!(all["fingerprint"]["edges"], each["fingerprint"]["edges"], "{all}");
+    near(volume(&all), volume(&each));
+
+    // The group replays from its saved op to the same solid.
+    let reopened = ok(json!({
+        "call": "open", "key": "cp2", "box": [40.0, 30.0, 10.0],
+        "nodes": [{ "id": 5, "parent": 0, "op": all["op"] }], "current": 5,
+    }));
+    assert_eq!(reopened["fingerprint"], all["fingerprint"], "{reopened}");
+    ok(json!({ "call": "close", "key": "cp" }));
+    ok(json!({ "call": "close", "key": "cp2" }));
+}
