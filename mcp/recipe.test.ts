@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applyAutoEdits, findLust, lfOnly, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { applyAutoEdits, DEFAULT_LIMITS, findLust, lfOnly, lustFeatures, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { optMode, zigFor } from "./recipe-opt.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -90,6 +91,68 @@ function stub(log: RecipeCallSite[]) {
   check("applyAutoEdits is the same fix", applyAutoEdits(lfOnly(broken), unfixed.diagnostics) === built.source);
 }
 
+// --- Rewrites for rejects (lust 0.3.0): valid Rust that lust refuses comes back with the lines lust would write
+// instead, and autofix "all" applies them. Four rejects that carry one, and a safe fix beside them: the attribute
+// (L0522), a closure in a static's initializer (L0630), a long assert! with no message (L0809), write! into the
+// recipe's own io::Write type (L0641), and an integer where an f64 goes (L0110, auto).
+const REJECTS = [
+  "#![no_implicit_prelude]",
+  "use std::io::Write;",
+  "use lime_recipe::{ops, Session};",
+  "",
+  "struct Sink(Vec<u8>);",
+  "impl Write for Sink {",
+  "    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { self.0.extend_from_slice(b); Ok(b.len()) }",
+  "    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }",
+  "}",
+  "",
+  "static SCALE: fn(f64) -> f64 = |x| x * 2.0;",
+  "",
+  "fn main() {",
+  "    let mut s = Session::start();",
+  '    let width = s.param_f64("width", 60.0);',
+  "    assert!(width > 1.0 && width < 1000.0 && width.is_finite() && SCALE(width) > 2.0 && width * 3.0 > 3.0 && width != 7.0);",
+  "    let mut sink = Sink(Vec::new());",
+  '    write!(sink, "w {}", width).unwrap();',
+  "    let p = s.solid_new(ops::cuboid(width, 20.0, 4.0)).unwrap();",
+  "    let n: f64 = 3;",
+  '    s.log(&format!("{n} {}", sink.0.len()));',
+  "    s.done(&p);",
+  "}",
+  "",
+].join("\n");
+if (lustFeatures(lust).rewrites) {
+  const shown = await host.build("rejects", REJECTS, true);
+  const first = shown.diagnostics[0];
+  check("a reject is not rewritten by the safe fixes", !shown.ok && shown.source === REJECTS && first?.code === "L0522" && first.edits.every((e) => !e.auto), shown.diagnostics);
+  check("its rewrite is shown as lines: the attribute's line goes", JSON.stringify(first?.rewrite) === JSON.stringify({ line: 1, lines: 1, with: [] }), first?.rewrite);
+  const closure = await host.build("rejects", REJECTS.slice(REJECTS.indexOf("\n") + 1), true);
+  check("the closure's rewrite names a fn and writes it after the item", closure.diagnostics[0]?.code === "L0630" && JSON.stringify(closure.diagnostics[0].rewrite) === JSON.stringify({ line: 10, lines: 1, with: ["static SCALE: fn(f64) -> f64 = scale_fn;", "", "fn scale_fn(x: f64) -> f64 { x * 2.0 }"] }), closure.diagnostics[0]);
+  const all = await host.build("rejects", REJECTS, "all");
+  check("autofix all builds it", all.ok && !!all.exe, all.diagnostics);
+  check("it names each reject it rewrote", JSON.stringify([...(all.rewrote ?? [])].sort()) === JSON.stringify(["L0522", "L0630", "L0641", "L0809"]), all.rewrote);
+  check("the text that built is plain Rust with the rewrites and the safe fix", !all.source.includes("no_implicit_prelude") && all.source.includes("static SCALE: fn(f64) -> f64 = scale_fn;") && all.source.includes("fn scale_fn(x: f64) -> f64 { x * 2.0 }") && all.source.includes('sink.write_all(format!("w {}", width).as_bytes()).unwrap();') && all.source.includes(', "assertion failed: width > 1.0 &&') && all.source.includes("let n: f64 = 3.0;"), all.source);
+  const logs: string[] = [];
+  const ran = await host.run(all.exe!, { params: {}, context: { units: "mm" } }, async (site) => {
+    if (site.tool === "log") logs.push(String(site.args.text));
+    return { ok: true, result: { ok: true, object: "obj_1" } };
+  });
+  check("and the rewritten recipe runs", ran.ok && logs[0] === "3 4", { reason: ran.reason, logs });
+
+  // Through recipe_run: the failed reply shows the rewrite and says how to take it; "all" answers what it rewrote.
+  const { fakeEngine } = await import("./engine.ts");
+  const { Session } = await import("./session.ts");
+  const session = new Session(fakeEngine());
+  const failed = await session.call("recipe_run", { source: REJECTS, name: "rejects", mode: "check" });
+  const diag = ((failed.diagnostics ?? []) as { code: string; line: number; rewrite?: unknown }[])[0];
+  check("session: a reject comes back with its rewrite", failed.ok === false && failed.code === "recipe-compile" && diag?.code === "L0522" && JSON.stringify(diag.rewrite) === JSON.stringify({ line: 1, lines: 1, with: [] }), failed);
+  check("session: the reason says how to take it", String(failed.reason).includes('autofix:"all"'), failed.reason);
+  const fixed = await session.call("recipe_run", { source: REJECTS, name: "rejects", mode: "check", autofix: "all" });
+  check("session: autofix all builds, and the reply names the rewrites beside the fixed text", fixed.ok === true && JSON.stringify([...((fixed.rewrote ?? []) as string[])].sort()) === JSON.stringify(["L0522", "L0630", "L0641", "L0809"]) && typeof fixed.fixedSource === "string" && Number(fixed.fixRounds) >= 3, fixed);
+  const plain = await session.call("recipe_run", { source: example, name: "rejects", mode: "check", autofix: "all" });
+  check("session: a recipe with nothing to rewrite says nothing of it", plain.ok === true && plain.rewrote === undefined && plain.fixedSource === undefined, plain);
+} else console.log("recipe: the rewrites skipped (this lust has no `lust fix`: it carries none)");
+
 // --- A CRLF recipe (a Windows checkout) takes the same fix at the same place.
 {
   const crlf = example.replace(/\r?\n/g, "\r\n").replace('let width = s.param_f64("width", 60.0);', "let width: f64 = 60;");
@@ -104,7 +167,10 @@ function stub(log: RecipeCallSite[]) {
   // The same text again is the program the slot holds: no build, and the file a run starts is the one it started.
   const made = statSync(built.exe!).mtimeMs;
   const again = await host.build("bar", example, true);
-  check("unchanged text reuses the built program", again.ok && again.exe === built.exe && statSync(again.exe!).mtimeMs === made, again);
+  // With a zig beside lust and the background optimised build on (`--opt=bg`), lust is asked at every build until
+  // the optimised program is in, so the file may be written again: the reuse is checked where it is promised.
+  const background = optMode() === "bg" && !!lust && !!zigFor(lust);
+  check("unchanged text reuses the built program", again.ok && again.exe === built.exe && (background || statSync(again.exe!).mtimeMs === made), again);
   const edited = await host.build("bar", `${example}
 // edited
 `, true);
@@ -126,6 +192,36 @@ function stub(log: RecipeCallSite[]) {
 {
   const r = await host.build("fs", 'fn main() { let _ = std::fs::read("/etc/passwd"); }\n', true);
   check("std::fs is refused", !r.ok && r.diagnostics.some((d) => d.code === "L0532" && d.line === 1), r.diagnostics);
+}
+
+// --- Memory: the program is built with lust's limit (`--max-memory`, lust 0.3.0), 1 GiB as the app's runner caps it.
+// A recipe that keeps 32 MB more at each step stops itself there, and the run says what the app says. A lust
+// without the flag is not asked for it, and the recipe builds as before.
+{
+  const hog = 'use lime_recipe::Session;\n\nfn main() {\n    let mut s = Session::start();\n    let mut keep: Vec<Vec<u8>> = Vec::new();\n    loop {\n        keep.push(vec![1u8; 32 << 20]);\n        s.log(&format!("{} MB", keep.len() * 32));\n    }\n}\n';
+  if (lustFeatures(lust).maxMemory) {
+    const built = await host.build("hog", hog, false);
+    check("a recipe that would never stop allocating builds", built.ok, built);
+    const logs: string[] = [];
+    const out = await host.run(built.exe!, { params: {}, context: { units: "mm" } }, async (site) => {
+      logs.push(String(site.args.text));
+      return { ok: true, result: { ok: true } };
+    }, { ...DEFAULT_LIMITS, timeoutS: 60 });
+    check("it stops at lust's limit with the app's sentence", !out.ok && out.exitCode === 101 && out.reason === "The recipe used more than 1024 MB of memory and was stopped.", { reason: out.reason, code: out.exitCode, stderr: out.stderr });
+    // The stop comes within about a 64th of the limit: after the 30th, 31st or 32nd 32 MB block. On macOS lust
+    // measures the peak resident set, and macOS compresses pages a program is not using (these blocks are one byte
+    // repeated), so they leave the resident set and the stop comes later: after 44 blocks, 1.4 GB, on the CI runner.
+    // It still comes, with the same sentence, so there the bound is twice the limit. The app's runner has no cap of
+    // its own on macOS, so this late stop is the only one there.
+    const most = process.platform === "darwin" ? 64 : 33;
+    check("near 1 GiB, not before", logs.length >= 28 && logs.length <= most, logs.length);
+    check("what it wrote before the stop arrived", logs[0] === "32 MB" && logs.at(-1) === `${logs.length * 32} MB`, logs.slice(-2));
+    const again = await host.build("hog", hog, false);
+    check("the limited program is kept for an unchanged text", again.ok && again.exe === built.exe && statSync(again.exe!).mtimeMs === statSync(built.exe!).mtimeMs);
+  } else console.log("recipe: the memory limit skipped (this lust has no --max-memory)");
+  const older = new RecipeHost({ crateDir, root: host.root, lust, features: { maxMemory: false, markUnread: false } });
+  const plain = await older.build("plain", example, false);
+  check("a lust that is not asked for the limit or the marks builds as before", plain.ok && plain.unread === undefined, plain);
 }
 
 // --- A call outside the allowlist, a panic, a time limit, a call limit.

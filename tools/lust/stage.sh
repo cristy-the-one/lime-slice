@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Lays a lust build (tools/lust/install.sh) out for the installers, beside the MCP server.
-# Usage: tools/lust/stage.sh <lust checkout> <dest> [zig]   (the installers use src-tauri/resources/mcp/lust, and the
-# folder tools/lust/zig.sh prints as [zig])
+# Lays lust's release package (tools/lust/install.sh) out for the installers, beside the MCP server.
+# Usage: tools/lust/stage.sh <package folder> <dest> [zig]
+#   <package folder>  the unpacked lust-<version>-<platform> folder: two levels up from the binary install.sh prints
+#   <dest>            the installers use src-tauri/resources/mcp/lust
+#   [zig]             the folder tools/lust/zig.sh prints
 #
-# The layout is lust's own release package (lust-lang scripts/release.sh). lust finds lib/lust from its own
-# executable, so nothing has to be set at run time:
+# The package already has the layout lust runs from (it finds lib/lust from its own executable, so nothing has to be
+# set at run time), and it is copied as it is. This adds zig and the licence names the installers carry:
 #   bin/lust, bin/lust-core            the client recipe_run calls and the compiler daemon it starts
 #   lib/lust/tcc/bin/tcc               the pinned tinycc, for parallel `tcc -c` (libtcc is linked into lust-core)
 #   lib/lust/tcc/lib/tcc/              libtcc1.a and tcc's headers (Windows: also the import .def files)
@@ -12,35 +14,34 @@
 #   zig/zig, zig/lib/                  zig cc for the optimised builds, when [zig] is given (see the end)
 #   LICENSE-lust, COPYING-tinycc, LICENSE-mimalloc, LICENSE-zig, SOURCES.txt
 set -euo pipefail
-src=${1:?usage: stage.sh <lust checkout> <dest> [zig]}
-dest=${2:?usage: stage.sh <lust checkout> <dest> [zig]}
+src=${1:?usage: stage.sh <package folder> <dest> [zig]}
+dest=${2:?usage: stage.sh <package folder> <dest> [zig]}
 zig=${3:-}
+here=$(cd "$(dirname "$0")" && pwd)
 exe=""
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=".exe" ;; esac
-tcc=$src/third_party/tcc
-for f in "$src/target/release/lust$exe" "$src/target/release/lust-core$exe" "$tcc/bin/tcc$exe" "$tcc/lib/tcc/libtcc1.a" "$src/third_party/tinycc/COPYING"; do
-  [ -f "$f" ] || { echo "stage.sh: $f is missing (run tools/lust/install.sh first)" >&2; exit 1; }
+for f in "bin/lust$exe" "bin/lust-core$exe" "lib/lust/tcc/bin/tcc$exe" "lib/lust/tcc/lib/tcc/libtcc1.a" "lib/lust/library" LICENSE tcc-COPYING mimalloc-LICENSE; do
+  [ -e "$src/$f" ] || { echo "stage.sh: $src/$f is missing (is $src the folder tools/lust/install.sh unpacked?)" >&2; exit 1; }
 done
-mimalloc_version=$(grep -A1 '^name = "libmimalloc-sys"' "$src/Cargo.lock" | sed -n 's/^version = "\(.*\)"$/\1/p')
-mimalloc_license=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/"libmimalloc-sys-$mimalloc_version/LICENSE.txt" 2>/dev/null | head -n 1 || true)
-[ -n "$mimalloc_license" ] || { echo "stage.sh: libmimalloc-sys $mimalloc_version's LICENSE.txt is not in the cargo registry" >&2; exit 1; }
+version=$(tr -d '[:space:]' < "$here/LUST_VERSION")
+package=$(basename "$src")
+pinned=$(awk -v p="$package" 'index($3, p) == 1 { print $2 }' "$here/LUST_SHA256")
+[ -n "$pinned" ] || { echo "stage.sh: tools/lust/LUST_SHA256 pins no package named $package" >&2; exit 1; }
 
 rm -rf "$dest"
-mkdir -p "$dest/bin" "$dest/lib/lust/tcc/bin" "$dest/lib/lust/tcc/lib"
-cp "$src/target/release/lust$exe" "$src/target/release/lust-core$exe" "$dest/bin/"
-cp "$tcc/bin/tcc$exe" "$dest/lib/lust/tcc/bin/"
-cp -r "$tcc/lib/tcc" "$dest/lib/lust/tcc/lib/"
-cp -r "$src/library" "$dest/lib/lust/library"
+mkdir -p "$dest"
+cp -r "$src/bin" "$src/lib" "$dest/"
 chmod 755 "$dest/bin/lust$exe" "$dest/bin/lust-core$exe" "$dest/lib/lust/tcc/bin/tcc$exe"
 cp "$src/LICENSE" "$dest/LICENSE-lust"
-cp "$src/third_party/tinycc/COPYING" "$dest/COPYING-tinycc"
-cp "$mimalloc_license" "$dest/LICENSE-mimalloc"
+cp "$src/tcc-COPYING" "$dest/COPYING-tinycc"
+cp "$src/mimalloc-LICENSE" "$dest/LICENSE-mimalloc"
 {
-  echo "lust $(git -C "$src" rev-parse HEAD), https://github.com/cristy-the-one/lust-lang (MIT, LICENSE-lust)."
-  echo "tinycc $(git -C "$src/third_party/tinycc" rev-parse HEAD), https://github.com/TinyCC/tinycc (LGPL 2.1, COPYING-tinycc),"
-  echo "  built by lust-lang's scripts/build-tcc.sh (Linux, macOS) or scripts/build-tcc.ps1 (Windows, with its PE patch)."
+  echo "lust $version, https://github.com/cristy-the-one/lust-lang (MIT, LICENSE-lust): its release package $package"
+  echo "  of the tag v$version, sha256 $pinned (pinned in tools/lust/LUST_SHA256 of Lime Slice), as published, not rebuilt."
+  echo "tinycc, https://github.com/TinyCC/tinycc (LGPL 2.1, COPYING-tinycc), at the commit lust-lang pins at that tag,"
+  echo "  built by its scripts/build-tcc.sh (Linux, macOS) or scripts/build-tcc.ps1 (Windows, with its PE patch)."
   echo "  libtcc is linked into lust-core; relink it against another libtcc by rebuilding lust with LUST_TCC_HOME."
-  echo "mimalloc (libmimalloc-sys $mimalloc_version), https://github.com/microsoft/mimalloc (MIT, LICENSE-mimalloc)."
+  echo "mimalloc, https://github.com/microsoft/mimalloc (MIT, LICENSE-mimalloc), linked into lust-core."
 } > "$dest/SOURCES.txt"
 
 # zig (tools/lust/zig.sh), for lust's optimised builds (`--opt=bg`): the zig binary and the part of its lib/ that

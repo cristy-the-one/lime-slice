@@ -32,6 +32,21 @@ export interface RecipeLimits {
 
 export const DEFAULT_LIMITS: RecipeLimits = { timeoutS: 30, maxCalls: 2000, maxLineBytes: 1 << 20 };
 
+/**
+ * The memory a recipe may hold (D11.2), in bytes: 1 GiB, the app's runner's cap (`Limits::memory_bytes`,
+ * crates/lime-recipe-runner). Both hosts build recipes with it as lust's `--max-memory` (lust 0.3.0), which stops the
+ * program at the allocation that passes it. One fixed value: a limit is its own session in lust's daemon.
+ */
+export const RECIPE_MEMORY_BYTES = 1 << 30;
+
+/** What a recipe stopped for its memory reads, from the MCP server and the app alike (the runner's `memory_sentence`). */
+export function memorySentence(bytes: number): string {
+  return `The recipe used more than ${Math.floor(bytes / (1 << 20))} MB of memory and was stopped.`;
+}
+
+/** lust's line when a program built with `--max-memory` passes its limit (lust-lang docs/sandbox.md); exit code 101. */
+const MEMORY_STOP = /error\[L0532\]: this program was built with --max-memory (\d+)/;
+
 /** The Plugins window keeps at most this many parts from one fresh run. */
 export const MAX_APP_RECIPE_PARTS = 100;
 
@@ -46,20 +61,40 @@ export interface RecipeDiagnostic {
   edits: { start: number; end: number; replacement: string; auto: boolean }[];
   /** True when the diagnostic is in lime-recipe, not the recipe. */
   inCrate?: boolean;
+  /**
+   * The rewrite lust carries for this reject (edits that are not `auto`: valid Rust that lust refuses, turned into
+   * Rust it accepts; lust 0.3.0), as the lines to put in place. Each changes something a program can observe, so it
+   * is shown, and applied only when the caller asks (`autofix: "all"`).
+   */
+  rewrite?: RecipeRewrite;
+}
+
+/** Lines of the recipe as an edit leaves them: put `with` in place of the `lines` lines that start at `line`. */
+export interface RecipeRewrite {
+  line: number;
+  lines: number;
+  with: string[];
 }
 
 export interface BuildResult {
   ok: boolean;
   diagnostics: RecipeDiagnostic[];
-  /** The source that was built: the input with every applied `auto` edit. */
+  /** The source that was built: the input with every applied edit (`auto` ones; with `autofix: "all"`, rewrites too). */
   source: string;
-  /** How many rounds of `auto` edits were applied. */
+  /** How many rounds of edits were applied. */
   fixRounds: number;
+  /** The codes of the rejects whose rewrite was applied (`autofix: "all"`), in the order applied. */
+  rewrote?: string[];
   exe?: string;
   ms: number;
   reason?: string;
   /** Which program the build left: lust's optimised one (`--opt`, zig cc) or tinycc's. Unset when the host does not say. */
   compiler?: "opt" | "tcc";
+  /**
+   * The `s.apply` calls of the built text whose reply the recipe never reads, as lust marked them (`--mark-unread`).
+   * Unset when lust was not asked: a lust older than 0.3.0, which has no such flag.
+   */
+  unread?: UnreadCall[];
 }
 
 /** A call the recipe made, as the caller sees it. */
@@ -68,6 +103,22 @@ export interface RecipeCallSite {
   tool: string;
   args: Record<string, unknown>;
   line: number;
+  /** The call's column on that line, as `Location::caller()` reports it (lime-recipe sends it with every call). */
+  col?: number;
+}
+
+/**
+ * --- docs/plan-native-recipes.md 7.1, "What queues silently". The function whose unread results lust marks
+ * (`lust build --json --mark-unread <fn>`): `s.apply`, the one call a host may hold back and build with others. lust
+ * finds it by resolution, so a recipe's own `fn apply` is not it, and a call in lime-recipe itself (`lettering`'s) is
+ * marked in the crate's file, which is not the recipe's.
+ */
+export const MARK_UNREAD_FN = "lime_recipe::Session::apply";
+
+/** One unread call: where it reports its caller location, in the built text (1-based line and column). */
+export interface UnreadCall {
+  line: number;
+  col: number;
 }
 
 /**
@@ -107,6 +158,8 @@ export interface RunOutcome {
 
 /** How many rounds of lust's `auto` edits a build applies before it gives up. */
 export const MAX_FIX_ROUNDS = 3;
+/** How many rounds a build asked for the rewrites too (`autofix: "all"`) applies: one closure of a table a round. */
+export const MAX_REWRITE_ROUNDS = 8;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -139,6 +192,8 @@ export interface CompileResult {
   main: string;
   /** Which program the build left (`BuildResult.compiler`). */
   compiler?: "opt" | "tcc";
+  /** True when lust was asked to mark unread `s.apply` calls (`MARK_UNREAD_FN`): its stdout then lists them. */
+  marked?: boolean;
 }
 
 /** The text lust builds: the recipe, then its ingredients (`suffix`) on lines of their own, as `buildRecipe` joins them. */
@@ -152,25 +207,41 @@ export type RecipeCompile = (text: string) => Promise<CompileResult>;
 
 /**
  * Builds `source` through `compile`. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
+ * With `autofix: "all"` it also applies the rewrites lust carries for rejects (edits that are not `auto`), up to
+ * eight rounds (a table of closures takes one round a closure), and names their codes in `rewrote`; without it, a
+ * reject that carries a rewrite comes back with the lines it would become (`RecipeDiagnostic.rewrite`).
  * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
  * it, and `source` in the result is the recipe without it. `source` is expected LF-only (lust's edits are byte offsets
  * in LF text).
  */
-export async function buildRecipe(compile: RecipeCompile, source: string, autofix: boolean, suffix = ""): Promise<BuildResult> {
+export async function buildRecipe(compile: RecipeCompile, source: string, autofix: boolean | "all", suffix = ""): Promise<BuildResult> {
   const started = Date.now();
   let current = source;
+  const rewrote: string[] = [];
+  const told = () => (rewrote.length ? { rewrote } : {});
   for (let round = 0; ; round += 1) {
     const own = current.endsWith("\n") || !suffix ? current : `${current}\n`;
     const ownLines = own.split("\n").length - 1;
     const ownBytes = utf8Bytes(own);
     const r = await compile(suffix ? own + suffix : current);
     const diagnostics = parseDiagnostics(r.stdout, r.main).map((d) => (suffix && (d.line > ownLines || d.edits.some((e) => e.end > ownBytes)) ? { ...d, edits: [] } : d));
-    if (r.code === 0) return { ok: true, diagnostics, source: current, fixRounds: round, ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ms: Date.now() - started };
-    if (diagnostics.length === 0) {
-      return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
+    if (r.code === 0) {
+      return { ok: true, diagnostics, source: current, fixRounds: round, ...told(), ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ...(r.marked ? { unread: parseUnread(r.stdout, r.main, suffix ? own + suffix : current) } : {}), ms: Date.now() - started };
     }
-    const fixed = autofix && round < MAX_FIX_ROUNDS ? applyAutoEdits(current, diagnostics) : null;
-    if (fixed === null || fixed === current) return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started };
+    if (diagnostics.length === 0) {
+      return { ok: false, diagnostics, source: current, fixRounds: round, ...told(), ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
+    }
+    const all = autofix === "all" && round < MAX_REWRITE_ROUNDS ? applyAllEdits(current, diagnostics) : null;
+    const fixed = all ? all.source : autofix && round < MAX_FIX_ROUNDS ? applyAutoEdits(current, diagnostics) : null;
+    if (fixed === null || fixed === current) {
+      // What is left carries its rewrite as lines, for a caller that would rather make the change itself.
+      const shown = diagnostics.map((d) => {
+        const rewrite = d.edits.some((e) => !e.auto) ? rewriteOf(current, d.edits) : null;
+        return rewrite ? { ...d, rewrite } : d;
+      });
+      return { ok: false, diagnostics: shown, source: current, fixRounds: round, ...told(), ms: Date.now() - started };
+    }
+    if (all) rewrote.push(...all.rewrote);
     current = fixed;
   }
 }
@@ -244,6 +315,9 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
         } else if (panic) {
           reason = `The recipe panicked at line ${panic.line}: ${panic.message}`;
           line = panic.line;
+        } else if (code === 101 && MEMORY_STOP.test(stderr)) {
+          // The limit lust built into the program (`--max-memory`): the sentence the app's runner says for its cap.
+          reason = memorySentence(Number(MEMORY_STOP.exec(stderr)![1]));
         } else if (/error\[L0532\]/.test(stderr)) {
           reason = stderr.trim().split("\n").find((l) => l.includes("L0532")) ?? "The sandbox stopped the recipe.";
         } else {
@@ -323,8 +397,8 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       }
       const id = typeof msg.id === "number" ? msg.id : -1;
       const tool = typeof msg.call === "string" ? msg.call : "";
-      const at = (msg.at && typeof msg.at === "object" ? msg.at : {}) as { line?: unknown };
-      const site: RecipeCallSite = { id, tool, args: (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>, line: typeof at.line === "number" ? at.line : 0 };
+      const at = (msg.at && typeof msg.at === "object" ? msg.at : {}) as { line?: unknown; col?: unknown };
+      const site: RecipeCallSite = { id, tool, args: (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>, line: typeof at.line === "number" ? at.line : 0, ...(typeof at.col === "number" ? { col: at.col } : {}) };
       calls += 1;
       if (calls > limits.maxCalls) return stop(`The recipe made more than ${limits.maxCalls} calls and was stopped.`, site.line);
       let answer: RecipeReply;
@@ -404,6 +478,140 @@ export function parseDiagnostics(stdout: string, mainPath: string): RecipeDiagno
     });
   }
   return out.sort((a, b) => Number(!!a.inCrate) - Number(!!b.inCrate));
+}
+
+/**
+ * lust's `unread_result` lines for `MARK_UNREAD_FN` in the recipe's file (`--mark-unread`, on a passing build): one
+ * per call whose result the program never reads, at the place the call reports through `Location::caller()`.
+ *
+ * lust's span names the line and the byte column; a call reports the line and the column as rustc counts it for
+ * `Location` (the display column: a tab is four wide, a wide character two). `text` is what was built, so each mark is
+ * turned into the column its call will report: one per character before it on the line, four per tab. A mark with
+ * anything else before it on its line (a character outside ASCII, a control character) is left out, since its width
+ * is not known for sure here: that call is then built in its place, which is always right.
+ */
+export function parseUnread(stdout: string, mainPath: string, text: string): UnreadCall[] {
+  const out: UnreadCall[] = [];
+  let lines: string[] | null = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.startsWith("{") || !line.includes('"unread_result"')) continue;
+    let d: Record<string, unknown>;
+    try {
+      d = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (d.kind !== "unread_result" || d.fn !== MARK_UNREAD_FN) continue;
+    if (typeof d.file !== "string" || (d.file !== mainPath && !d.file.endsWith("main.rs"))) continue;
+    const span = (d.span ?? {}) as Record<string, unknown>;
+    if (typeof span.line !== "number" || typeof span.col !== "number") continue;
+    lines ??= text.split("\n");
+    const col = reportedColumn(lines[span.line - 1] ?? "", span.col);
+    if (col !== null) out.push({ line: span.line, col });
+  }
+  return out;
+}
+
+/**
+ * The column a call at byte column `byteCol` (1-based) of `line` reports as its caller location, or null when the
+ * text before it holds a character whose width is not one or a tab's four.
+ */
+export function reportedColumn(line: string, byteCol: number): number | null {
+  let col = 1;
+  // Before the first character outside ASCII, a byte is a UTF-16 unit, so the byte column indexes the string.
+  for (let i = 0; i < byteCol - 1; i += 1) {
+    const c = line.charCodeAt(i);
+    if (c === 9) col += 4;
+    else if (c >= 0x20 && c < 0x7f) col += 1;
+    else return null;
+  }
+  return col;
+}
+
+/**
+ * The marks as the queue reads them (`src/recipe/queue.ts`): `line:col` of each unread call, or null when lust gave
+ * none (`BuildResult.unread` unset), which turns silent queuing off.
+ */
+export function unreadKeys(unread: readonly UnreadCall[] | undefined): ReadonlySet<string> | null {
+  return unread ? new Set(unread.map((u) => `${u.line}:${u.col}`)) : null;
+}
+
+type Edit = RecipeDiagnostic["edits"][number];
+
+/** `bytes` with `edits` applied; they are in order, in bounds, and do not overlap. */
+function spliced(bytes: Uint8Array, edits: readonly Edit[], from = 0, to = bytes.length): Uint8Array {
+  const parts: Uint8Array[] = [];
+  let at = from;
+  for (const e of edits) {
+    parts.push(bytes.subarray(at, e.start), encoder.encode(e.replacement));
+    at = e.end;
+  }
+  parts.push(bytes.subarray(at, to));
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let n = 0;
+  for (const p of parts) {
+    out.set(p, n);
+    n += p.length;
+  }
+  return out;
+}
+
+/** `edits` in order, or null when one is out of bounds or two overlap (two insertions at one place overlap too). */
+function ordered(edits: readonly Edit[], length: number): Edit[] | null {
+  const sorted = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
+  let before: Edit | null = null;
+  for (const e of sorted) {
+    if (e.start < 0 || e.end < e.start || e.end > length) return null;
+    if (before && (e.start < before.end || (e.start === before.start && e.end === e.start && before.end === before.start))) return null;
+    before = e;
+  }
+  return sorted;
+}
+
+/**
+ * The whole lines of `source` that one diagnostic's `edits` change, and what they become: the edits of a diagnostic
+ * go together. Null when it carries none, or they do not fit the text.
+ */
+export function rewriteOf(source: string, edits: readonly Edit[]): RecipeRewrite | null {
+  const bytes = encoder.encode(source);
+  const sorted = edits.length ? ordered(edits, bytes.length) : null;
+  if (!sorted) return null;
+  const first = sorted[0]!.start;
+  const last = sorted[sorted.length - 1]!.end;
+  let from = first;
+  while (from > 0 && bytes[from - 1] !== 10) from -= 1;
+  // To the end of the line that holds the last byte changed, its newline included.
+  let to = last > first ? last - 1 : last;
+  while (to < bytes.length && bytes[to] !== 10) to += 1;
+  if (to < bytes.length) to += 1;
+  const linesOf = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
+  let line = 1;
+  for (let i = 0; i < from; i += 1) if (bytes[i] === 10) line += 1;
+  return { line, lines: linesOf(decoder.decode(bytes.subarray(from, to))).length, with: linesOf(decoder.decode(spliced(bytes, sorted, from, to))) };
+}
+
+/**
+ * `source` with the edits of every diagnostic applied, the rewrites that are not `auto` too (`autofix: "all"`): the
+ * edits of one diagnostic together or not at all, and a diagnostic whose edits meet ones already taken left for the
+ * next round. `rewrote` has the codes of the diagnostics taken that carried a rewrite. Null when there are none.
+ */
+export function applyAllEdits(source: string, diagnostics: RecipeDiagnostic[]): { source: string; rewrote: string[] } | null {
+  const bytes = encoder.encode(source);
+  let taken: Edit[] = [];
+  const rewrote: string[] = [];
+  const seen = new Set<string>();
+  for (const d of diagnostics) {
+    if (d.edits.length === 0) continue;
+    const key = JSON.stringify(d.edits.map((e) => [e.start, e.end, e.replacement]));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const next = ordered([...taken, ...d.edits], bytes.length);
+    if (!next) continue;
+    taken = next;
+    if (d.edits.some((e) => !e.auto)) rewrote.push(d.code);
+  }
+  if (taken.length === 0) return null;
+  return { source: decoder.decode(spliced(bytes, taken)), rewrote };
 }
 
 /** `source` with every `auto` edit applied (byte offsets, last first, each span once). Null when there are none. */

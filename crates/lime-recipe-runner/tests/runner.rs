@@ -6,8 +6,8 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
 use lime_recipe_runner::{
-    build, calls_sentence, find_lust, line_bytes_sentence, lines_sentence, memory_sentence, timeout_sentence, Limits,
-    RecipeRun, RunEvent, RunExit,
+    build, calls_sentence, find_lust, line_bytes_sentence, lines_sentence, lust_features, memory_sentence, timeout_sentence,
+    Limits, RecipeRun, RunEvent, RunExit, MARK_UNREAD_FN, MEMORY_BYTES,
 };
 
 fn probe() -> &'static Path {
@@ -134,13 +134,56 @@ fn a_real_recipe_that_only_logs() {
     let made = std::fs::metadata(&exe).unwrap().modified().unwrap();
     let again = build(&lust, &root, &repo_crate(), 0, source, Duration::from_secs(120)).unwrap();
     assert_eq!(again.exe.as_deref(), Some(exe.as_path()));
-    assert_eq!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "unchanged text was built again");
+    // With a zig beside lust and the background optimised build on (`--opt=bg`), lust is asked at every build until
+    // the optimised program is in, so the file may be written again: the reuse is checked where it is promised.
+    let asked = std::env::var("LIME_LUST_OPT").unwrap_or_default().trim().to_lowercase();
+    let off = matches!(asked.as_str(), "0" | "off" | "false") || (asked.is_empty() && !cfg!(windows));
+    let background = !off && asked != "now" && lime_recipe_runner::opt::zig_for(&lust).is_some();
+    if !background {
+        assert_eq!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "unchanged text was built again");
+    }
     // Changed text, and then the first text after it, each build.
     let edited = build(&lust, &root, &repo_crate(), 0, &format!("{source}// edited\n"), Duration::from_secs(120)).unwrap();
     assert_eq!(edited.code, Some(0), "{}\n{}", edited.stdout, edited.stderr);
     assert_ne!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "changed text was not built");
     let built = build(&lust, &root, &repo_crate(), 0, source, Duration::from_secs(120)).unwrap();
     assert_eq!(built.code, Some(0), "{}\n{}", built.stdout, built.stderr);
+
+    // lust marks the `s.apply` whose reply the recipe never reads (0.3.0's --mark-unread); an older lust is not asked.
+    // The marks are lines of the build's output, which the program kept for an unchanged text keeps.
+    let marking = "use lime_recipe::{ops, Session};\n\nfn main() {\n    let mut s = Session::start();\n    let p = s.solid_new(ops::cuboid(1.0, 1.0, 1.0)).unwrap();\n    s.apply(&p, ops::cuboid(1.0, 1.0, 1.0)).unwrap();\n    let r = s.apply(&p, ops::cuboid(1.0, 1.0, 1.0)).unwrap();\n    s.log(&format!(\"{r}\"));\n}\n";
+    let marked = build(&lust, &root, &repo_crate(), 2, marking, Duration::from_secs(120)).unwrap();
+    assert_eq!(marked.code, Some(0), "{}\n{}", marked.stdout, marked.stderr);
+    assert_eq!(marked.marked, lust_features(&lust).mark_unread);
+    let marks: Vec<&str> = marked.stdout.lines().filter(|l| l.contains("\"kind\":\"unread_result\"")).collect();
+    if marked.marked {
+        assert_eq!(marks.len(), 1, "{}", marked.stdout);
+        assert!(marks[0].contains(MARK_UNREAD_FN) && marks[0].contains("\"line\":6,\"col\":7"), "{}", marks[0]);
+    } else {
+        assert!(marks.is_empty());
+    }
+    let kept = build(&lust, &root, &repo_crate(), 2, marking, Duration::from_secs(120)).unwrap();
+    assert_eq!((kept.stdout.as_str(), kept.marked), (marked.stdout.as_str(), marked.marked), "a kept program keeps its marks");
+
+    // lust builds the 1 GiB limit into the program (0.3.0's --max-memory): a recipe that keeps allocating stops itself
+    // there with lust's line and exit code 101, and the runner says the sentence of its own cap. The runner's cap is
+    // set far above here, so the stop is lust's.
+    if lust_features(&lust).max_memory {
+        let hog = "fn main() {\n    let mut keep: Vec<Vec<u8>> = Vec::new();\n    loop {\n        keep.push(vec![1u8; 32 << 20]);\n    }\n}\n";
+        let built = build(&lust, &root, &repo_crate(), 3, hog, Duration::from_secs(120)).unwrap();
+        assert_eq!(built.code, Some(0), "{}\n{}", built.stdout, built.stderr);
+        let (tx, rx) = channel();
+        let limits = Limits { memory_bytes: 16 << 30, timeout: Duration::from_secs(60), ..Limits::default() };
+        let run = RecipeRun::start(&built.exe.unwrap(), &[], &root, limits, move |event| {
+            let _ = tx.send(event);
+        })
+        .unwrap();
+        let (_, exit) = until_exit(&rx, Duration::from_secs(60));
+        assert_eq!(exit.code, Some(101), "{exit:?}");
+        assert!(exit.stderr.contains(&format!("--max-memory {MEMORY_BYTES}")), "{}", exit.stderr);
+        assert_eq!(exit.reason.as_deref(), Some("The recipe used more than 1024 MB of memory and was stopped."));
+        drop(run);
+    }
 
     let broken = build(&lust, &root, &repo_crate(), 1, "fn main() { let x: f64 = 1; }\n", Duration::from_secs(120)).unwrap();
     assert_ne!(broken.code, Some(0));

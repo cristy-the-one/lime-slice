@@ -2,7 +2,7 @@
  * The shared recipe host (src/recipe/host.ts) over a scripted transport: no lust and no process. The script plays the
  * recipe's side of protocol v1, so the same run loop the MCP server and the app use is checked call for call.
  */
-import { applyAutoEdits, buildRecipe, parseDiagnostics, runRecipe, utf8Bytes, type CompileResult, type RecipeCallSite, type RecipeProcessEvents, type RecipeReply, type RecipeSpawn } from "./host.ts";
+import { applyAllEdits, applyAutoEdits, buildRecipe, memorySentence, parseDiagnostics, RECIPE_MEMORY_BYTES, rewriteOf, runRecipe, utf8Bytes, type CompileResult, type RecipeCallSite, type RecipeProcessEvents, type RecipeReply, type RecipeSpawn } from "./host.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail: unknown = ""): void {
@@ -184,6 +184,40 @@ const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === 
   check("a line that is not JSON stops the recipe", bad.reason === "The recipe wrote a line that is not JSON: hello", bad.reason);
 }
 
+// --- lust's memory limit (`--max-memory`, built into the program): exit code 101 and lust's line read as the app's
+// sentence, with the limit lust printed; a sandbox stop of another family keeps lust's own line.
+{
+  const p = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("1008 MB\nerror[L0532]: this program was built with --max-memory 1073741824 and tried to use more memory\n");
+      io.exit(101);
+    }
+  });
+  const out = await runRecipe(p.spawn, {}, ok);
+  check("lust's memory stop reads as the app's sentence", !out.ok && out.exitCode === 101 && out.reason === "The recipe used more than 1024 MB of memory and was stopped." && out.reason === memorySentence(RECIPE_MEMORY_BYTES), out);
+  const small = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("error[L0532]: this program was built with --max-memory 67108864 and tried to use more memory\n");
+      io.exit(101);
+    }
+  });
+  check("the megabytes are the limit the program was built with", (await runRecipe(small.spawn, {}, ok)).reason === "The recipe used more than 64 MB of memory and was stopped.");
+  const net = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("error[L0532]: this program was built with --sandbox and tried to use the network\n");
+      io.exit(101);
+    }
+  });
+  check("another sandbox stop keeps lust's line", (await runRecipe(net.spawn, {}, ok)).reason === "error[L0532]: this program was built with --sandbox and tried to use the network");
+  const echoed = scripted((line, io) => {
+    if (JSON.parse(line).v === 1) {
+      io.stderr("error[L0532]: this program was built with --max-memory 1 and tried to use more memory\n");
+      io.exit(3);
+    }
+  });
+  check("the words alone, without lust's exit code, are not a memory stop", (await runRecipe(echoed.spawn, {}, ok)).reason?.startsWith("error[L0532]") === true);
+}
+
 // --- The runner's own stop (a memory cap) is the reason; a cancel is too.
 {
   const p = scripted((line, io) => {
@@ -251,6 +285,48 @@ const ok = async (site: RecipeCallSite): Promise<RecipeReply> => (site.tool === 
 
   const broken = await buildRecipe(async () => ({ code: 2, stdout: "", stderr: "lust-core crashed\n", main }), "fn main() {}\n", true);
   check("a build with no diagnostics says what lust said", broken.reason === "lust failed: lust-core crashed", broken.reason);
+}
+
+// --- Rewrites for rejects (lust 0.3.0): edits that are not `auto`. Shown as the lines they would become; applied only
+// when asked (`autofix: "all"`), the edits of one diagnostic together, an ingredient never touched.
+{
+  const main = "/slots/slot-0/src/main.rs";
+  const diag = (code: string, line: number, edits: { start: number; end: number; replacement: string; auto: boolean }[]) => JSON.stringify({ kind: "diagnostic", severity: "error", code, message: "rejected", file: main, span: { line, col: 1 }, fix: "write it the other way", edits });
+  const source = "#![no_implicit_prelude]\nstatic F: fn(f64) -> f64 = |x| x * 2.0;\nfn main() { let w: f64 = 60; }\n";
+  // A stand-in for lust: one reject a round, in the order lust's phases find them, with the edits lust carries.
+  const compile = async (text: string): Promise<CompileResult> => {
+    const prelude = text.indexOf("#![no_implicit_prelude]\n");
+    if (prelude >= 0) return { code: 1, stdout: diag("L0522", 1, [{ start: prelude, end: prelude + 24, replacement: "", auto: false }]), stderr: "", main };
+    const closure = text.indexOf("|x| x * 2.0");
+    if (closure >= 0) return { code: 1, stdout: diag("L0630", text.slice(0, closure).split("\n").length, [{ start: closure, end: closure + 11, replacement: "f_fn", auto: false }, { start: closure + 12, end: closure + 12, replacement: "\n\nfn f_fn(x: f64) -> f64 { x * 2.0 }", auto: false }]), stderr: "", main };
+    const int = text.indexOf("= 60;");
+    if (int >= 0) return { code: 1, stdout: diag("L0110", text.slice(0, int).split("\n").length, [{ start: int + 2, end: int + 4, replacement: "60.0", auto: true }]), stderr: "", main };
+    return { code: 0, stdout: "", stderr: "", exe: "/slots/slot-0/recipe", main };
+  };
+  const shown = await buildRecipe(compile, source, true);
+  check("a reject's rewrite is not applied by the safe fixes", !shown.ok && shown.source === source && shown.fixRounds === 0 && shown.rewrote === undefined, shown);
+  check("it comes back as the lines to put in place: the attribute's line goes", JSON.stringify(shown.diagnostics[0]!.rewrite) === JSON.stringify({ line: 1, lines: 1, with: [] }), shown.diagnostics[0]);
+  const second = await buildRecipe(compile, source.slice(24), false);
+  check("a rewrite of two edits is one change of whole lines", JSON.stringify(second.diagnostics[0]!.rewrite) === JSON.stringify({ line: 1, lines: 1, with: ["static F: fn(f64) -> f64 = f_fn;", "", "fn f_fn(x: f64) -> f64 { x * 2.0 }"] }), second.diagnostics[0]);
+  const all = await buildRecipe(compile, source, "all");
+  check("autofix all applies the rewrites and the safe fix, a round each", all.ok && all.fixRounds === 3 && all.source === "static F: fn(f64) -> f64 = f_fn;\n\nfn f_fn(x: f64) -> f64 { x * 2.0 }\nfn main() { let w: f64 = 60.0; }\n", all);
+  check("and names the rejects it rewrote, not the safe fix", JSON.stringify(all.rewrote) === JSON.stringify(["L0522", "L0630"]), all.rewrote);
+  const auto = await buildRecipe(compile, "fn main() { let w: f64 = 60; }\n", true);
+  check("a safe fix alone names no rewrite and shows none", auto.ok && auto.rewrote === undefined && auto.fixRounds === 1, auto);
+  const inIngredient = await buildRecipe(compile, "fn main() {}\n", "all", source);
+  check("a rewrite inside an ingredient is neither applied nor shown", !inIngredient.ok && inIngredient.source === "fn main() {}\n" && inIngredient.diagnostics[0]!.rewrite === undefined && inIngredient.rewrote === undefined, inIngredient);
+
+  // The edits of one diagnostic go together or not at all; a diagnostic that meets one already taken waits a round.
+  const text = "aaa bbb ccc\n";
+  const one = { code: "A", message: "", line: 1, col: 1, fix: "", edits: [{ start: 0, end: 3, replacement: "x", auto: false }, { start: 8, end: 11, replacement: "z", auto: false }] };
+  const meets = { code: "B", message: "", line: 1, col: 5, fix: "", edits: [{ start: 4, end: 7, replacement: "y", auto: false }, { start: 9, end: 10, replacement: "!", auto: false }] };
+  const apart = { code: "C", message: "", line: 1, col: 5, fix: "", edits: [{ start: 4, end: 7, replacement: "y", auto: true }] };
+  check("edits that meet are left for the next round, whole", JSON.stringify(applyAllEdits(text, [one, meets, apart, one])) === JSON.stringify({ source: "x y z\n", rewrote: ["A"] }), applyAllEdits(text, [one, meets, apart]));
+  check("no edits, nothing to apply", applyAllEdits(text, [{ ...one, edits: [] }]) === null);
+  check("an edit past the text is not a rewrite", rewriteOf(text, [{ start: 4, end: 99, replacement: "", auto: false }]) === null);
+  check("an insertion shows the line it lands on", JSON.stringify(rewriteOf("ab\ncd\n", [{ start: 4, end: 4, replacement: "X", auto: false }])) === JSON.stringify({ line: 2, lines: 1, with: ["cXd"] }));
+  check("a change across lines shows them all", JSON.stringify(rewriteOf("ab\ncd\nef\n", [{ start: 1, end: 4, replacement: "-", auto: false }])) === JSON.stringify({ line: 1, lines: 2, with: ["a-d"] }));
+  check("text outside ASCII keeps its bytes", JSON.stringify(rewriteOf("é = 1;\nb\n", [{ start: 5, end: 6, replacement: "2", auto: false }])) === JSON.stringify({ line: 1, lines: 1, with: ["é = 2;"] }));
 }
 
 // --- Diagnostics and edits.

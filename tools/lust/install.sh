@@ -1,49 +1,74 @@
 #!/usr/bin/env bash
-# Builds lust, the checker and compiler recipe_run uses, at the commit in tools/lust/LUST_REV.
-# Usage: tools/lust/install.sh [dir]   (default ~/.lime-slice/lust). Prints the lust binary's path last.
-# Linux, Apple silicon macOS, and Windows under Git Bash with Visual Studio's C++ tools (tcc is built with cl there); a
-# developer shell is loaded when cl is not on PATH. tools/lust/stage.sh lays the build out for the installers.
-# macOS: lust's scripts/build-tcc.sh needs bash 5 and the GNU userland first (brew install bash coreutils findutils
-# gnu-sed), as lust's own macos-arm64 job installs them; it patches tinycc's Mach-O output there. lust's macOS build is
-# proven on arm64 only, so the Intel dmg ships without lust.
+# Fetches lust, the checker and compiler recipe_run uses: lust-lang's release package of the version in
+# tools/lust/LUST_VERSION for this host, checked against the sha256 pinned in tools/lust/LUST_SHA256 and against the
+# .sha256 file the release carries, then unpacked. Nothing is built: no Rust toolchain, no C compiler, no tinycc build.
+# Usage: tools/lust/install.sh [dir]   (default ~/.lime-slice/lust-<version>). Prints the lust binary's path last;
+#        its package folder (two levels up) is what tools/lust/stage.sh takes.
+# Hosts: the three lust-lang packages: Windows x86_64 (Git Bash), Linux x86_64, macOS arm64. Intel macOS has none, so
+# the Intel dmg ships without lust.
+# A new lust: tools/lust/pin.sh <version> writes LUST_VERSION and LUST_SHA256 from that release.
+# A lust of your own (an unreleased commit): build it there and name its binary in LIME_LUST; nothing here is needed.
+# LUST_RELEASE_BASE names another place for the packages (a mirror, or file:///… for a package built locally), with
+# the same v<version>/<package> layout as https://github.com/cristy-the-one/lust-lang/releases/download.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
-rev=$(tr -d '[:space:]' < "$here/LUST_REV")
-dest=${1:-$HOME/.lime-slice/lust}
-repo=${LUST_REPO:-https://github.com/cristy-the-one/lust-lang.git}
-if [ ! -d "$dest/.git" ]; then
-  git clone -q "$repo" "$dest"
-fi
-if [ "$(git -C "$dest" rev-parse HEAD)" != "$rev" ]; then
-  git -C "$dest" fetch -q origin "$rev" 2>/dev/null || git -C "$dest" fetch -q origin
-  git -C "$dest" checkout -q --detach "$rev"
-fi
-exe=""
-case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*)
-    exe=".exe"
-    # Outside a Visual Studio developer shell, take its environment from vcvars64.bat (found with vswhere).
-    command -v cl.exe > /dev/null || . "$here/msvc-env.sh"
-    # PowerShell 7 (pwsh), as lust's CI runs it: Windows PowerShell 5.1 hands build-tcc.ps1's cl arguments over as
-    # one string ("D9002 ignoring unknown option '/nologo /O2 ...'").
-    ps=pwsh
-    command -v pwsh > /dev/null || ps=powershell.exe
-    [ -f "$dest/third_party/tcc/lib/tcc.lib" ] || "$ps" -NoProfile -ExecutionPolicy Bypass -File "$dest/scripts/build-tcc.ps1" >&2
-    # Git Bash's coreutils `link` comes before MSVC's link.exe on PATH, and rustc would call it.
-    msvc_link=$(where.exe link.exe 2>/dev/null | tr -d '\r' | grep -vi '\\Git\\' | head -n 1 || true)
-    if [ -z "$msvc_link" ]; then
-      echo "MSVC link.exe is not on PATH: run this from a Visual Studio developer shell" >&2
-      exit 1
-    fi
-    export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER="$msvc_link"
-    ;;
-  Darwin)
-    [ -f "$dest/third_party/tcc/lib/libtcc.a" ] || "$dest/scripts/build-tcc.sh" >&2
-    ;;
-  *)
-    [ -f "$dest/third_party/tcc/lib/libtcc.a" ] || "$dest/scripts/build-tcc.sh" >&2
-    ;;
+version=$(tr -d '[:space:]' < "$here/LUST_VERSION")
+case "$(uname -s)-$(uname -m)" in
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) key=x86_64-windows ext=zip exe=.exe ;;
+  Linux-x86_64) key=x86_64-linux ext=tar.gz exe="" ;;
+  Darwin-arm64) key=aarch64-macos ext=tar.gz exe="" ;;
+  *) echo "install.sh: lust-lang has no release package for $(uname -s) $(uname -m)" >&2; exit 1 ;;
 esac
-(cd "$dest" && LUST_TCC_HOME="$dest/third_party/tcc" cargo build --release --locked --bins >&2)
-"$dest/target/release/lust$exe" --version >&2
-echo "$dest/target/release/lust$exe"
+name="lust-$version-$key"
+want=$(awk -v k="$key" '$1 == k { print $2 }' "$here/LUST_SHA256")
+[ -n "$want" ] || { echo "install.sh: tools/lust/LUST_SHA256 has no line for $key (tools/lust/pin.sh $version writes it)" >&2; exit 1; }
+dest=${1:-$HOME/.lime-slice/lust-$version}
+lust="$dest/$name/bin/lust$exe"
+# Under Git Bash the path printed is a Windows one (C:/...), which node and the workflows can open.
+out() { if command -v cygpath > /dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+if [ -f "$lust" ] && [ -f "$dest/$name/.sha256-ok" ] && [ "$(cat "$dest/$name/.sha256-ok")" = "$want" ]; then
+  out "$lust"
+  exit 0
+fi
+sha256() { if command -v sha256sum > /dev/null; then sha256sum "$1" | cut -d' ' -f1 | tr -dc '0-9a-f'; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+base=${LUST_RELEASE_BASE:-https://github.com/cristy-the-one/lust-lang/releases/download}
+mkdir -p "$dest"
+archive="$dest/$name.$ext"
+if [ ! -f "$archive" ] || [ "$(sha256 "$archive")" != "$want" ]; then
+  curl -fsSL --retry 5 --retry-delay 5 -o "$archive.part" "$base/v$version/$name.$ext"
+  mv "$archive.part" "$archive"
+fi
+got=$(sha256 "$archive")
+if [ "$got" != "$want" ]; then
+  echo "install.sh: $name.$ext has sha256 $got, tools/lust/LUST_SHA256 pins $want" >&2
+  rm -f "$archive"
+  exit 1
+fi
+# The release's own .sha256 must name the same package: a pin copied from another version or platform fails here.
+curl -fsSL --retry 5 --retry-delay 5 -o "$archive.sha256" "$base/v$version/$name.$ext.sha256"
+theirs=$(tr -d '\r' < "$archive.sha256" | awk -v f="$name.$ext" '$2 == f || $2 == "*" f { print $1 }')
+if [ "$theirs" != "$want" ]; then
+  echo "install.sh: the release's $name.$ext.sha256 says '${theirs:-nothing for that file}', tools/lust/LUST_SHA256 pins $want" >&2
+  exit 1
+fi
+rm -rf "${dest:?}/$name"
+case "$ext" in
+  zip)
+    # Git Bash's tar cannot read a zip; Windows' own bsdtar can.
+    if command -v unzip > /dev/null; then unzip -q "$archive" -d "$dest"; else "$SYSTEMROOT/System32/tar.exe" -xf "$(cygpath -w "$archive")" -C "$(cygpath -w "$dest")"; fi
+    ;;
+  *) tar -xzf "$archive" -C "$dest" ;;
+esac
+for f in "bin/lust$exe" "bin/lust-core$exe" "lib/lust/tcc/bin/tcc$exe" "lib/lust/tcc/lib/tcc/libtcc1.a" "lib/lust/library" LICENSE tcc-COPYING; do
+  [ -e "$dest/$name/$f" ] || { echo "install.sh: $archive did not unpack $name/$f" >&2; exit 1; }
+done
+chmod 755 "$dest/$name/bin/lust$exe" "$dest/$name/bin/lust-core$exe" "$dest/$name/lib/lust/tcc/bin/tcc$exe"
+# The package says which lust it is: `lust --version` must name the pinned version.
+said=$("$lust" --version)
+case "$said" in
+  *"$version"*) ;;
+  *) echo "install.sh: $name answers '$said', not version $version" >&2; exit 1 ;;
+esac
+echo "$said" >&2
+echo "$want" > "$dest/$name/.sha256-ok"
+out "$lust"

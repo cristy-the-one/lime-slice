@@ -1,9 +1,12 @@
 /**
  * --- docs/plan-native-recipes.md 7.1. Queued booleans in a recipe run, shared by the MCP session and the app's runner.
  *
- * A recipe line whose `apply` reply the recipe does not read (`./unread-applies.ts`) is answered `{ok, queued}` at
- * once when its op is a plain fuse or cut whose tool builds alone and whose box meets the part: anything else is built
- * there and then, after what is queued, so its refusal comes back at its own line. `s.apply_later` always queues.
+ * An `s.apply` whose reply the recipe does not read is answered `{ok, queued}` at once when its op is a plain fuse or
+ * cut whose tool builds alone and whose box meets the part: anything else is built there and then, after what is
+ * queued, so its refusal comes back at its own line. `s.apply_later` always queues. Which calls are unread is lust's
+ * answer (`lust build --mark-unread lime_recipe::Session::apply`, `BuildResult.unread`): each by the line and column
+ * the call reports, which is what its call line carries (`at`). With no marks (a lust older than 0.3.0) nothing queues
+ * silently and every apply is built in its place.
  *
  * The queue of a part is built before any other call that names the part (a read, a probe, a place, an apply that does
  * not queue), at `s.flush`, a checkpoint, `done`, 200 ops, and near the run's time limit. The ops are grouped in the
@@ -225,7 +228,7 @@ export function queueSummary(report: QueueReport, at: (line: number) => number =
 }
 
 export class RecipeQueue {
-  /** Silent queuing: off for a replay, after `s.queue(false)`, or when the host has no marks. */
+  /** Silent queuing: off for a replay, after `s.queue(false)`, or when the host has no marks (`unread` null). */
   silent: boolean;
   /** Set when a late refusal of a silent op means the run must be built again one by one. */
   replay: { line: number; reason: string } | null = null;
@@ -237,17 +240,17 @@ export class RecipeQueue {
   private readonly started = Date.now();
 
   private readonly port: QueuePort;
-  /** The built text's lines whose apply reply the recipe does not read. */
-  private readonly unread: ReadonlySet<number>;
+  /** The built text's `s.apply` calls whose reply the recipe does not read, as `line:col` (`unreadKeys`); null: no marks. */
+  private readonly unread: ReadonlySet<string> | null;
   /** Whether `s.queue(true)` may turn silent queuing back on: not in a replay. */
   private readonly allowed: boolean;
 
-  constructor(port: QueuePort, unread: ReadonlySet<number>, opts: { silent: boolean; timeLimitS: number; selected?: () => string | null; signal?: AbortSignal }) {
+  constructor(port: QueuePort, unread: ReadonlySet<string> | null, opts: { silent: boolean; timeLimitS: number; selected?: () => string | null; signal?: AbortSignal }) {
     this.signal = opts.signal;
     this.port = port;
     this.unread = unread;
-    this.silent = opts.silent;
-    this.allowed = opts.silent;
+    this.silent = opts.silent && unread !== null;
+    this.allowed = this.silent;
     this.timeLimitMs = opts.timeLimitS * 1000;
     this.selected = opts.selected ?? (() => null);
   }
@@ -348,9 +351,11 @@ export class RecipeQueue {
     const object = typeof args.object === "string" ? args.object : this.selected() ?? "";
     const explicit = mode === "later";
     const late = Date.now() - this.started > this.timeLimitMs * LATE;
-    const silent = this.silent && mode === undefined && args.probe === true && this.unread.has(site.line) && !late;
+    const unread = this.unread?.has(`${site.line}:${site.col ?? 0}`) === true;
+    const silent = this.silent && mode === undefined && args.probe === true && unread && !late;
     if (!explicit && !silent) {
-      if (mode === undefined && !this.unread.has(site.line)) this.report.readLines.set(site.line, (this.report.readLines.get(site.line) ?? 0) + 1);
+      // With no marks at all nothing is known of the reads, so no line is blamed for one.
+      if (mode === undefined && this.unread && !unread) this.report.readLines.set(site.line, (this.report.readLines.get(site.line) ?? 0) + 1);
       const built = await this.flush(object, site);
       return built ?? inner(plain);
     }

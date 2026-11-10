@@ -492,6 +492,24 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
      `Ok` value is never read, `{"kind":"unread_result","fn":"lime_recipe::Session::apply","span":{"line":L,"col":C}}`,
      with the span the call reports through `Location::caller()`; lust's checker knows each value's uses, so it also
      covers what text cannot (a helper that returns the reply, a binding never read).
+     *Since lust 0.3.0 (2026-11-10, `claude/lust-release-package`):* lust has the flag, and the scan and its test are
+     gone. Both hosts build with `--mark-unread lime_recipe::Session::apply` (`mcp/recipe.ts`, the runner's `build`), a
+     passing build's stdout lists the unread calls, `buildRecipe` carries them as `BuildResult.unread`, and the queue
+     takes a call as unread by its line and column (`unreadKeys`), not by its line: a call line carries both (`at`).
+     A program kept for an unchanged text keeps its marks (they are in the kept output). What changed for recipes: a
+     recipe with a function of its own called `apply` now queues (the scan claimed nothing there), and of two applies
+     on one line the unread one queues (the scan gave up the line). What lust reports and a call reports differ in one
+     way: the span's column counts bytes, `Location::caller()` counts display columns as rustc does (a tab is four, a
+     wide character two; seen with `s.log("é 日本"); s.apply(..)`: 27 against 24, and a tab-indented call 4 against 7).
+     The host turns a mark into the reported column when everything before it on its line is ASCII or a tab, and
+     leaves the mark out otherwise, so that apply is built in its place (asked of lust-lang: the reported column in
+     the `unread_result` line). Only `Session::apply` is marked: `apply_later` and `apply_now` say what they want,
+     `lettering` sends a text op, which never queues, and no recipe in the corpus, the bench or the library sends a
+     queueable apply through `s.call("model_apply", ..)`. A lust without the flag (its `--help` does not name it; an
+     older build answers its usage and exit code 2 to it) is not asked: `unread` is unset, nothing queues silently, the
+     hint about read replies is not given, and the reply's notes say why. The browser tests' scripted runner builds
+     nothing and returns no marks, so they run with no silent queue, as they did (their engine stand-in has no
+     `toolBox`); `src/recipe/tauri.test.ts` covers marks through the app's transport.
    - **Host** (`src/recipe/queue.ts`, shared by the MCP session and the app's Plugins run and plugin-step rebuild): an
      unread line's plain fuse or cut (boolean, extrude, revolve, loft naming no face, edge or anchor) is answered
      `{ok, queued}` after a pre-check: the engine builds its tool alone (`toolBox`, a new stateless tree call) and its
@@ -657,6 +675,78 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
    A quarter fewer faces and two to four times the time: curved faces cost more than flat ones, as section 2.4 found.
    Fewer spline points (6 a flank) were no faster and less exact, so the gear keeps 9. The reason for the step is the
    teeth (true involutes that mesh within their backlash, and the volume the polyline loses), not speed.
+
+9. **What lust 0.3.0 adds** (not in the plan as first written; lust-lang's release after milestone 7's `--opt`).
+   *As built (2026-11-10, `claude/lust-release-package`, one commit a feature).* Each host asks a lust only for what
+   its `--help` names (`lustFeatures` in `mcp/recipe.ts`, `lust_features` in the runner), so an older lust in
+   `LIME_LUST` keeps building recipes as it did.
+   - **Unread applies by resolution** (`--mark-unread`): milestone 3's "Which lines queue", above.
+   - **A memory limit in the program** (`--sandbox --max-memory`). Both hosts build with 1 GiB
+     (`RECIPE_MEMORY_BYTES`, `MEMORY_BYTES`), the number the app's runner already capped at; one fixed value, since a
+     limit is its own session in lust's daemon (its first build took 0.67 s, once; warm builds of an unchanged text
+     35 ms and of a changed 200-line one 88 ms, against 86 ms without the limit). The MCP server had no memory limit before: a recipe was a child
+     process of node. Past the limit the program prints lust's `error[L0532]` line and exits with code 101, and
+     `runRecipe` turns exactly that (the code and the line) into the runner's sentence, with the megabytes lust
+     printed. *The app's runner passes it too, and keeps its own cap behind it.* Why pass it: on macOS the runner has
+     no cap of its own (`memory_peak` reads Windows and Linux only), so lust's limit is the first one there; on Linux
+     the stop comes at the allocation, not at the watcher's next look 20 ms later with nothing to hold the process in
+     between; the cost is one daemon session, as for the server. Why keep the runner's cap: lust checks when the
+     program allocates, so memory reserved and touched later is the runner's to stop (lust-lang docs/sandbox.md), a
+     lust without the flag builds no limit in, and Windows' job object ends a recipe that outruns both. The runner
+     also reads lust's line itself, so its exit carries the sentence where its watcher saw no peak. The program-reuse
+     keys of both hosts hold the limit. Measured (this PC, lust 0.3.0 build 181dbd83): a recipe keeping 32 MB blocks
+     stopped after 992 MB in 0.74 s under tcc and 0.52 s optimised; 2.8 million small allocations ran in 1,449 ms with
+     the limit against 1,415 ms without under tcc, and 441 against 434 ms optimised (medians of 9; the spread between
+     runs is as large); the corpus sends the same calls with the limit built in. `lust check` and `lust query` do not
+     take `--max-memory` (they answer their usage), so only builds pass it.
+   - **Rewrites for rejects.** lust 0.3.0's diagnostics carry edits that are not `auto` for four rejects (a long
+     `assert!` with no message L0809, `write!` into a user `io::Write` L0641, a closure in a `const` or `static`
+     initializer L0630, `#![no_implicit_prelude]` L0522; L0731's is `auto` and was applied already), and it has a
+     `lust fix [--all]` command. The host keeps its own loop (`buildRecipe`): the built file is the recipe with its
+     ingredients after it, and the loop is what never edits an ingredient. A reject with a rewrite comes back from
+     `recipe_run` as `rewrite: {line, lines, with}`, whole lines to put in place (`rewriteOf`), so an agent takes it
+     in one edit; `autofix: "all"` applies them (`applyAllEdits`: the edits of one diagnostic together, a diagnostic
+     that meets one already taken left for the next round, up to eight rounds) and the reply says which rejects were
+     rewritten (`rewrote`) beside the fixed text. Never by default: each rewrite changes something a program can
+     observe. Found on the way: `lust build --json` and `lust check --json` do not report the same thing for L0641
+     (the build names the writer type and has no edit; the check names the `write!` and has the edit, and lists the
+     other errors beside it), so the MCP host checks a build that failed and keeps the check's diagnostics when the
+     check fails too: one more lust call (about 0.1 s) on a failed build only. The app's Plugins panel builds kept
+     plugins without fixes and is unchanged. Measured: the test recipe with the four rejects and an integer for an
+     f64 (24 lines, about 200 tokens) answers a first check in about 145 tokens, 0.2 to 0.3 s; `autofix: "all"` builds
+     it in four rounds, 1.7 to 1.9 s, in a reply of about 270 tokens. The schema's `autofix` became
+     `true | false | "all"`: 7 tokens on the list (18,237 to 18,244 of 18,250).
+   - **Asking lust about a position** (`lust query type|def <file> <line>:<col>`). `recipe_run {source | path,
+     query: "type 12:9"}` answers `{type, of}`, and `query: "def 12:9"` answers `{def: {of, line, col, text}}`, with
+     `ingredient` or `in: "lime-recipe"` when the definition is not in the recipe (`RecipeHost.query`, `recipeQuery`
+     in `mcp/session/recipe.ts`). The shape was chosen for tokens: one string parameter (not `mode: "check"` with a
+     position object), and a reply that carries the definition's line as text, so a method of the crate comes back
+     with its signature and the agent needs no second call. Positions are the caller's: the recipe is first in the
+     built text, so its lines are the same there, and a line of the answer past it is mapped to its ingredient, as
+     diagnostics are. The query writes the slot's file and builds nothing; the program kept for a slot is keyed by its
+     text, so the text it was built from is not built again afterwards. Found on the way: lust 0.3.0's query writes
+     a program named after the file (`main.exe`) into the folder it is run from, at every query, and takes no `-o`;
+     run from the server's folder that is the person's own folder. The host runs it in `lime-recipes-<pid>/query` in
+     the temp folder (a later server removes it when this one is gone), not in the slot or the shared root, where on
+     this PC that write made a query 0.4 to 0.6 s (asked of lust-lang: a query should write no program). Measured
+     through `recipe_run`, a 200-line recipe: 63 to 68 ms a query (lust's own part about 35 ms), 118 ms after an
+     edit, 0.2 to 0.6 s the first time in a cold
+     session; replies of 12 to 37 tokens. `lust query` does not take `--max-memory`, so it runs in the plain sandbox
+     session beside the builds' one (lust-lang: `check` and `query` could take the flag and share the session). The
+     tool list: `query` costs 20 tokens and the list had 6 left, so six descriptions of `recipe_run` lost words that
+     the guide carries (`path`, `full`, `profile`, `meshAtEnd`, `plugin`, `keep`, and the tool's own first sentence);
+     the list is now at 18,250 of 18,250, with nothing left.
+   - **Optimised builds on macOS** (milestone 7's open end). lust 0.3.0 builds without LTO under `zig cc` on macOS,
+     which should end the release's "recipes with lust --opt failed on macOS" warning. `OPT_BY_DEFAULT` is unchanged
+     (Windows only): the default goes on where the optimised program is proven to send tcc's bytes, and macOS had no
+     such proof. CI's macOS MCP job now runs it, not blocking (`continue-on-error`), in the step "Recipes with lust
+     --opt (zig cc)": `recipe-floatmath`, `recipe-native-bytes` and `plugin-corpus` under tcc first (that job never
+     ran them, so a difference tcc has too is told apart), then `recipe-opt` and the same three with
+     `LIME_LUST_OPT=now`, each reported on its own line, a failed one as a warning. Not run here: there is no macOS
+     machine in this work, so the first CI run of the pull request is the first result. Turning the default on for
+     macOS is the owner's decision from that run (`mcp/recipe-opt.ts` and `crates/lime-recipe-runner/src/opt.rs`
+     hold the same rule and change together).
+   - **Not needed here:** long array literals now lower in linear time in lust; nothing in Lime Slice changes.
 
 ## 9. Done for the whole plan
 

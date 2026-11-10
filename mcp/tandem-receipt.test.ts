@@ -46,6 +46,12 @@ const snapshot = session.lastBridge as { plate: Array<{ meshHash: string }>; mes
 assert.equal(snapshot.plate.length, 2);
 assert.equal(snapshot.plate[0]!.meshHash, snapshot.plate[1]!.meshHash);
 assert.ok(snapshot.meshes?.[snapshot.plate[1]!.meshHash], "a new object carries its shared mesh even when that hash was sent before");
+// Every row says where its part stands in Model's shared space, so the window keeps an edited part in its assembly.
+const posed = session.lastBridge as { plate: Array<{ object: string; modelPose?: { m: number[]; t: number[] } }> };
+for (const sent of posed.plate) {
+  const held = session.objects.find((row) => row.id === sent.object)!;
+  assert.deepEqual(sent.modelPose, { m: [...held.modelPose.m], t: [...held.modelPose.t] }, "a row carries its part's model pose");
+}
 await mirror({ test: "drain" });
 delete process.env.LIME_MCP_BRIDGE;
 delete process.env.LIME_MCP_BRIDGE_TOKEN;

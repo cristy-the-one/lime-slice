@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
+import { buildRecipe, builtText, DEFAULT_LIMITS, lfOnly, MARK_UNREAD_FN, RECIPE_MEMORY_BYTES, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
@@ -30,6 +30,8 @@ export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, 
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
 
 const SLOTS = 4;
+/** A query that runs longer than this is stuck: a warm one takes a few milliseconds, a cold session about a second. */
+const QUERY_LIMIT_MS = 30_000;
 /** A build that runs longer than this is stuck: a cold one takes about half a second. */
 const BUILD_LIMIT_MS = 120_000;
 
@@ -49,6 +51,42 @@ export function findLust(moduleUrl?: string): string | null {
     if (r.status === 0) return c;
   }
   return null;
+}
+
+/** What a lust can be asked, beyond what every lust Lime Slice ran could. */
+export interface LustFeatures {
+  /** `--mark-unread <fn>` (lust 0.3.0): a passing build lists the calls of a function whose result is never read. */
+  markUnread: boolean;
+  /** `--sandbox --max-memory <bytes>` (lust 0.3.0): the built program stops itself past that much memory. */
+  maxMemory: boolean;
+  /** Diagnostics carry rewrites for rejects, edits that are not `auto` (lust 0.3.0, which has `lust fix` for them). */
+  rewrites: boolean;
+  /** `lust query type|def <file> <line>:<col>` (lust 0.3.0): the type or the definition at a position. */
+  query: boolean;
+}
+
+/** What `RecipeHost.query` answers: lust's type or definition for a position, with places as lines of the built text. */
+export type LustAnswer =
+  | { ok: true; kind: "type"; type: string; /** The source text lust took at the position, at most 80 characters. */ of: string; line: number; col: number }
+  | { ok: true; kind: "def"; /** What is defined: `local`, `fn`, `method`, `struct`, `enum`. */ of: string; /** In the built text (the recipe or an ingredient), or in lime-recipe. */ where: "recipe" | "crate"; line: number; col: number; /** The definition's line, trimmed. */ text: string }
+  | { ok: false; reason: string };
+
+const lustFeatureCache = new Map<string, LustFeatures>();
+
+/**
+ * What this lust can be asked, read once from its usage text (`lust --help` names every flag). A lust that does not
+ * know a flag answers its usage and exit code 2 to a build that passes it, which would fail every recipe: someone's
+ * own older build in LIME_LUST is asked only for what it has.
+ */
+export function lustFeatures(lust: string): LustFeatures {
+  let found = lustFeatureCache.get(lust);
+  if (!found) {
+    const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+    const usage = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory"), rewrites: usage.includes("lust fix "), query: usage.includes("lust query ") };
+    lustFeatureCache.set(lust, found);
+  }
+  return found;
 }
 
 /**
@@ -109,9 +147,14 @@ export class RecipeHost {
   private lust: string | null | undefined;
   private readonly moduleUrl: string | undefined;
   private found: Map<number, RecipeCrate> | undefined;
+  private readonly givenFeatures: Partial<LustFeatures>;
 
-  /** `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). */
-  constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string }) {
+  /**
+   * `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). `features` stands over
+   * what the lust says of itself (`lustFeatures`): tests turn one off to run as an older lust would.
+   */
+  constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string; features?: Partial<LustFeatures> }) {
+    this.givenFeatures = opts.features ?? {};
     this.crateDir = opts.crateDir;
     this.givenRoot = opts.root;
     this.lust = opts.lust;
@@ -151,6 +194,11 @@ export class RecipeHost {
     }
     if (!existsSync(join(this.crateDir, "src", "lib.rs"))) return refuse("recipe-unavailable", `The lime-recipe crate is missing (${this.crateDir}).`);
     return { ok: true, lust: this.lust };
+  }
+
+  /** What this host asks of its lust: what the lust has (`lustFeatures`), less what the host was told to leave. */
+  features(lust: string): LustFeatures {
+    return { ...lustFeatures(lust), ...this.givenFeatures };
   }
 
   /** The crate of each API major this host builds against (`recipeCrates`), read once. */
@@ -242,14 +290,15 @@ export class RecipeHost {
   }
 
   /**
-   * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
+   * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds;
+   * with `"all"`, the rewrites lust carries for rejects too (`buildRecipe`).
    * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
    * it, and `source` in the result is the recipe without it. `limitMs` stops one lust build that runs longer (D11.3: an
    * imported plugin's build is held to 30 s). `major` is the recipe API major the source was written for (D12): it
    * builds against that major's crate in that major's slots; the current major when omitted. A major this host does
    * not ship is refused without a build (`apiVerdict` says so first, with the sentence a person reads).
    */
-  async build(name: string, source: string, autofix: boolean, suffix = "", limitMs = BUILD_LIMIT_MS, major?: number): Promise<BuildResult> {
+  async build(name: string, source: string, autofix: boolean | "all", suffix = "", limitMs = BUILD_LIMIT_MS, major?: number): Promise<BuildResult> {
     // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
     // at the wrong place.
     source = lfOnly(source);
@@ -266,23 +315,97 @@ export class RecipeHost {
     const opt = optBuild(avail.lust);
     const cache = join(this.root, "cache");
     if (opt.mode !== "off") dropUntrusted(cache);
+    // lust says which `s.apply` calls the recipe never reads (docs/plan-native-recipes.md 7.1): the answer changes,
+    // not the program. The marks are in the build's stdout, which a kept result keeps.
+    const features = this.features(avail.lust);
+    const mark = features.markUnread ? ["--mark-unread", MARK_UNREAD_FN] : [];
+    // The memory limit, built into the program: past it the recipe prints lust's L0532 line and exits 101, which
+    // `runRecipe` reads as the sentence the app says. The MCP host has no cap of its own (a child process of node).
+    const memory = features.maxMemory ? ["--max-memory", String(RECIPE_MEMORY_BYTES)] : [];
     return buildRecipe(async (text) => {
       // The program this slot holds was built from this text by this lust against this crate: it is the program a
       // build would make. A build of unchanged text still took 70 to 110 ms and left a new file, and Windows takes
       // about 0.3 s to start a program file it has not run before, against 3 ms for one it has. Values go in the
       // start line, so a rerun, a rebuild from other values and a describe all come here with the same text. While
       // lust's background build may still swap in the optimised program, lust is asked each time.
-      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args]);
+      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args, mark, memory]);
       const kept = this.built.get(exe);
       if (kept && kept.key === key && existsSync(exe) && existsSync(main) && (opt.mode !== "bg" || kept.result.compiler === "opt")) return kept.result;
       this.built.delete(exe);
       if (opt.mode !== "off" && existsSync(main) && readFileSync(main, "utf8") !== text) distrustRunning(cache);
       writeFileSync(main, text);
-      const r = await run(avail.lust, ["build", "--sandbox", ...opt.args, "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
-      const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr) };
+      let r = await run(avail.lust, ["build", "--sandbox", ...memory, ...opt.args, "--json", ...mark, main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
+      // A failed build is checked as well, and where the check fails too its diagnostics are the ones kept: `lust
+      // check` names a reject where it is written and carries its rewrite, and lists what else is wrong beside it,
+      // where `lust build` may name another place and carry no edit (`write!` into the recipe's own writer, L0641:
+      // build names the writer type, check the `write!` with its edit). Only a failed build pays for it.
+      if (r.code !== 0 && r.code !== null && features.rewrites) {
+        const checked = await run(avail.lust, ["check", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml")], this.lustEnv(), limitMs);
+        if (checked.code !== 0 && checked.code !== null && checked.stdout.includes('"kind":"diagnostic"')) r = { ...r, stdout: checked.stdout };
+      }
+      const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr), ...(mark.length ? { marked: true } : {}) };
       if (r.code === 0) this.built.set(exe, { key, result });
       return result;
     }, source, autofix, suffix);
+  }
+
+  /**
+   * lust's answer about one position of a recipe (`lust query type|def`, lust 0.3.0): the type of the smallest
+   * expression or pattern there, or where the name there is defined. `line` and `col` are a 1-based line and byte
+   * column of `source`, as diagnostics give them; the built text is the recipe with its ingredients (`suffix`) after
+   * it, so a recipe line is the same line there. The text is written to the recipe's slot and checked in lust's
+   * daemon with the flags of a check, so a warm session answers in milliseconds and takes in an edit since the last
+   * one, and a type error in another fn does not stop the answer. Nothing is built or run: the program the slot
+   * holds stays the program of the text it was built from (`built`), so that text is not built again after a query.
+   */
+  async query(name: string, source: string, kind: "type" | "def", line: number, col: number, suffix = "", major?: number): Promise<LustAnswer> {
+    source = lfOnly(source);
+    const avail = this.available();
+    if (!avail.ok) return { ok: false, reason: avail.reason };
+    if (!this.features(avail.lust).query) return { ok: false, reason: "This lust has no query command: it is older than 0.3.0." };
+    const crateMajor = major ?? this.api()[0];
+    if (!this.crates().has(crateMajor)) return { ok: false, reason: `This Lime Slice has no recipe crate for API ${crateMajor}.x.` };
+    mkdirSync(this.root, { recursive: true });
+    const crate = this.crateCopy(crateMajor);
+    const slot = this.slotFor(name, crateMajor);
+    const main = join(slot, "src", "main.rs");
+    const text = builtText(source, suffix);
+    if (!existsSync(main) || readFileSync(main, "utf8") !== text) {
+      // A background optimised build reads the slot's file when it runs (recipe-opt.ts): one in flight is of the old text.
+      distrustRunning(join(this.root, "cache"));
+      writeFileSync(main, text);
+    }
+    // lust 0.3.0's query writes a program named after the file (`main`, `main.exe`) into the folder it is run from,
+    // at every query, and takes no `-o`. Run from the server's folder, that would be the person's own folder. So it
+    // runs in a folder of this process in the temp folder, which a later server removes when this one is gone
+    // (`sweepStaleRoots`, by the folder's name). Not the slot, and not the shared root: on the owner's PC a program
+    // written under `%LOCALAPPDATA%\Lime Slice` took 0.4 to 0.6 s a query, against under 0.1 s in the temp folder.
+    const out = join(tmpdir(), `lime-recipes-${process.pid}`, "query");
+    mkdirSync(out, { recursive: true });
+    const r = await run(avail.lust, ["query", kind, main, `${line}:${col}`, "--json", "--sandbox", "--manifest-path", join(slot, "Cargo.toml")], this.lustEnv(), QUERY_LIMIT_MS, out);
+    let answer: Record<string, unknown> | null = null;
+    for (const row of r.stdout.split("\n")) {
+      if (!row.startsWith("{")) continue;
+      try {
+        answer = JSON.parse(row) as Record<string, unknown>;
+        break;
+      } catch { /* not lust's answer */ }
+    }
+    const span = (answer?.span ?? {}) as Record<string, number>;
+    if (r.code !== 0 || !answer || typeof span.line !== "number") {
+      // lust's reason, without its `error:` and the slot's path.
+      const said = (r.stderr.trim().split("\n").find((row) => row.startsWith("error")) ?? r.stderr.trim().split("\n")[0] ?? "").replace(/^error(\[[A-Z0-9]+\])?: /, "").replace(/\S*main\.rs:(\d+:\d+)/, "$1");
+      return { ok: false, reason: said ? `lust has no answer there: ${said.slice(0, 300)}` : "lust gave no answer." };
+    }
+    const lineOf = (body: string, at: number) => (body.split("\n")[at - 1] ?? "").trim().slice(0, 200);
+    if (answer.kind === "type") {
+      const of = Buffer.from(text, "utf8").subarray(span.start, span.end).toString("utf8").replace(/\s+/g, " ").slice(0, 80);
+      return { ok: true, kind: "type", type: String(answer.type ?? ""), of, line: span.line, col: span.col ?? 0 };
+    }
+    const file = typeof answer.file === "string" ? answer.file : main;
+    if (file === main || file.endsWith("main.rs")) return { ok: true, kind: "def", of: String(answer.of ?? ""), where: "recipe", line: span.line, col: span.col ?? 0, text: lineOf(text, span.line) };
+    if (!/[\\/]lime-recipe(-\d+)?[\\/]src[\\/]lib\.rs$/.test(file)) return { ok: false, reason: "lust has no answer there: the definition is outside the recipe and lime-recipe." };
+    return { ok: true, kind: "def", of: String(answer.of ?? ""), where: "crate", line: span.line, col: span.col ?? 0, text: lineOf(readFileSync(join(crate, "src", "lib.rs"), "utf8"), span.line) };
   }
 
   /**
@@ -328,9 +451,9 @@ export function nodeSpawn(exe: string, cwd: string): RecipeSpawn {
  * One lust command. It ends at the process's exit, not when its pipes close: on Windows the daemon lust starts can
  * inherit them and keep them open. Output still in flight gets a moment to arrive. A command past `limitMs` is killed.
  */
-function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, limitMs = BUILD_LIMIT_MS): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function run(cmd: string, args: string[], env: NodeJS.ProcessEnv, limitMs = BUILD_LIMIT_MS, cwd?: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(cmd, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, ...(cwd ? { cwd } : {}) });
     let stdout = "";
     let stderr = "";
     let settled = false;

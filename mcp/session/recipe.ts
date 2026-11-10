@@ -24,8 +24,8 @@ import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
 import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue.ts";
-import { builtText } from "../../src/recipe/host.ts";
-import { unreadApplyLines } from "../../src/recipe/unread-applies.ts";
+import type { Resolved } from "../../src/recipe/ingredients.ts";
+import { builtText, unreadKeys } from "../../src/recipe/host.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -43,13 +43,40 @@ import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, 
  * panic, a limit, a cancel, or dry mode takes back every object it made and every step it added; an apply that
  * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
  */
+/**
+ * recipe_run {query}: lust's answer about one position of the recipe (`lust query`, lust 0.3.0; `RecipeHost.query`).
+ * `query` is `type <line>:<col>` or `def <line>:<col>`, a line and byte column of the recipe as the caller wrote it,
+ * as diagnostics give them. The reply is small: `{type, of}` (the type, and the text lust took at the position), or
+ * `{def: {of, line, col, text}}` (what is defined, where, and its line), with `ingredient` when it is in one and
+ * `in: "lime-recipe"` when it is in the crate.
+ */
+async function recipeQuery(host: RecipeHost, name: string, source: string, resolved: Resolved, query: string, major: number | undefined): Promise<Record<string, unknown>> {
+  const asked = /^(type|def)\s+(\d+):(\d+)$/.exec(query.trim());
+  if (!asked) return refuse("bad-argument", 'query reads "type 12:9" or "def 12:9": the type of the expression, or where the name is defined, at that line and column of the recipe (1-based, a column as diagnostics give it).');
+  const [line, col] = [Number(asked[2]), Number(asked[3])];
+  const lines = (source.endsWith("\n") ? source.slice(0, -1) : source).split("\n").length;
+  if (line < 1 || line > lines || col < 1) return refuse("recipe-query", `${line}:${col} is not a position in the recipe, which has ${lines} lines.`);
+  const answer = await host.query(name, source, asked[1] as "type" | "def", line, col, resolved.suffix, major);
+  if (!answer.ok) return refuse("recipe-query", answer.reason);
+  if (answer.kind === "type") return { ok: true, type: answer.type, of: answer.of };
+  if (answer.where === "crate") return { ok: true, def: { of: answer.of, in: "lime-recipe", line: answer.line, text: answer.text } };
+  const at = locate(lineMap(source, resolved), answer.line);
+  return { ok: true, def: { of: answer.of, ...(at.ingredient ? { ingredient: at.ingredient, line: at.line } : { line: at.line, col: answer.col }), text: answer.text } };
+}
+
+/** The longest rewrite a diagnostic shows as lines; a longer one is applied by autofix:"all" and read from the fixed text. */
+const REWRITE_MAX_CHARS = 800;
+
 /** --- docs/plan-native-recipes.md 7.1. Set on a run built again one by one after a queued boolean was refused late. */
 const QUEUE_REPLAY = "__queueReplay";
 
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
   const requested = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : typeof input.plugin === "string" ? input.plugin : "";
   const saved = requested && this.objects.length === 0 ? this.previousAutosave?.checkpoints?.[requested] : undefined;
-  if (saved && input.mode !== "check" && input.mode !== "dry") {
+  // --- A question to lust about one position (`query`): nothing is built, run or restored for it.
+  const asking = input.query !== undefined;
+  if (asking && (input.mode === "apply" || input.mode === "dry")) return refuse("conflicting-arguments", "query asks lust about a position of the recipe and runs nothing; leave mode out.");
+  if (saved && input.mode !== "check" && input.mode !== "dry" && !asking) {
     const restored = await this.projectOpen(this.previousAutosave!.path);
     if (restored.ok !== true) return refuse("recipe-failed", `The checkpoint's autosave could not be opened: ${String(restored.reason ?? "unknown error")}`);
   }
@@ -59,7 +86,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const host = this.recipeHost;
   const ready = host.available();
   if (!ready.ok) return refuse("recipe-unavailable", ready.reason);
-  const mode = input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
+  const mode = asking ? "check" : input.mode === "check" || input.mode === "dry" ? input.mode : "apply";
   // --- I23. A partial run stops after this many applied ops; it is always taken back.
   const maxSteps = typeof input.maxSteps === "number" ? input.maxSteps : undefined;
   if (maxSteps !== undefined && mode !== "dry") return refuse("conflicting-arguments", "maxSteps is for mode:\"dry\": a run stopped part way is always taken back.");
@@ -202,17 +229,22 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const resolved = resolveIngredients(source, { kept: checkpoint?.ingredients ?? replacing?.stored.ingredients ?? rebuild?.ingredients, preferKept: !!checkpoint || !!rerun || !!rebuild });
   if ("reason" in resolved) return refuse("recipe-source", resolved.reason);
   const usedIngredients = Object.values(resolved.used);
-  this.noteStage(`building recipe ${name}`, 0);
   // --- D12. A plugin builds against the crate of the API major it records, in that major's slots; anything else (a
   // draft, a source, a path) against the current crate.
   const major = plugin ? (apiLevel(plugin.api)?.[0] ?? undefined) : undefined;
-  const built = await host.build(name, source, input.autofix !== false, resolved.suffix, undefined, major);
+  if (asking) return recipeQuery(host, name, source, resolved, String(input.query), major);
+  this.noteStage(`building recipe ${name}`, 0);
+  // autofix: true (the default) applies lust's safe edits; "all" also the rewrites it carries for rejects, each of
+  // which changes something a program can observe, so the reply names them (`rewrote`) beside the fixed text.
+  const built = await host.build(name, source, input.autofix === "all" ? "all" : input.autofix !== false, resolved.suffix, undefined, major);
   if (meta?.signal?.aborted) return refuse("cancelled", "The recipe was cancelled while building; nothing changed.");
   const map = lineMap(built.source, resolved);
-  const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
-  const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
+  const fixed = built.source !== source ? { ...fixedReply(source, built.source, built.fixRounds, input.full === true), ...(built.rewrote?.length ? { rewrote: built.rewrote } : {}) } : {};
+  // A reject that carries a rewrite shows the lines it would become, when they are short enough to read in a reply.
+  const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}), ...(d.rewrite && d.rewrite.with.join("").length <= REWRITE_MAX_CHARS ? { rewrite: d.rewrite } : {}) }));
   if (!built.ok || !built.exe) {
-    return { ok: false, code: "recipe-compile", reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
+    const rewrites = built.diagnostics.some((d) => d.rewrite) ? ' Where a diagnostic has rewrite, put its with in place of that many lines from its line, or pass autofix:"all" to have lust\'s rewrites applied.' : "";
+    return { ok: false, code: "recipe-compile", reason: built.reason ?? `The recipe did not build. Fix the diagnostics and call recipe_run again.${rewrites}`, diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
   }
   const buildHash = bodyHash(`${built.source}\n${resolved.suffix}`);
   const environmentHash = environmentOf(this);
@@ -498,7 +530,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       return done;
     },
     applyOne: (site) => call(site),
-  }, unreadApplyLines(builtText(built.source, resolved.suffix)), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected, signal: meta?.signal });
+  }, unreadKeys(built.unread), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected, signal: meta?.signal });
   const queued = (site: RecipeCallSite) => queue.call(site, call);
   const timings = new Map<string, { line: number; tool: string; calls: number; ms: number; sink: KernelSink }>();
   /** The kernel's timing for this run's tree calls (mesh-end.ts); the calls that follow the recipe's end are kept apart. */
@@ -591,6 +623,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return this.recipeRun({ ...input, [QUEUE_REPLAY]: queue.replay }, meta);
   }
   if (replaying) notes.push(`Built one by one: the tool at line ${locate(map, replaying.line).line} was refused inside a queued boolean (${replaying.reason}).`);
+  // A lust older than 0.3.0 does not say which applies are unread (`--mark-unread`), so none queued silently.
+  if (!built.unread && applied >= 4 && queue.report.queued === 0 && !replaying && process.env.LIME_RECIPE_QUEUE !== "0") notes.push("This lust does not mark unread applies (it is older than 0.3.0), so each apply was built in its place; s.apply_later still queues.");
   for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${locate(map, row.line).line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
   if (checkpoint && replay < checkpoint.events.length && out.ok) {
     out.ok = false;

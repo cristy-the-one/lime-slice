@@ -275,16 +275,16 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # recipe_run checks and compiles recipes with lust, pinned in tools/lust/LUST_REV. mcp-macos builds it
-      # too, after Homebrew's bash 5 and GNU userland (see there).
+      # recipe_run checks and compiles recipes with lust: lust-lang's release package for this runner, pinned in
+      # tools/lust/LUST_VERSION and checked against tools/lust/LUST_SHA256. Nothing is built.
       - name: Cache lust
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/lust
-          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_VERSION', 'tools/lust/LUST_SHA256', 'tools/lust/install.sh') }}
 
-      - name: Build lust
-        timeout-minutes: 20
+      - name: Fetch lust
+        timeout-minutes: 5
         run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
 
       # The app's recipe runner with a real recipe built by lust (the workspace test skips it without lust).
@@ -747,16 +747,16 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # recipe_run checks and compiles recipes with lust, pinned in tools/lust/LUST_REV. mcp-macos builds it
-      # too, after Homebrew's bash 5 and GNU userland (see there).
+      # recipe_run checks and compiles recipes with lust: lust-lang's release package for this runner, pinned in
+      # tools/lust/LUST_VERSION and checked against tools/lust/LUST_SHA256. Nothing is built.
       - name: Cache lust
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/lust
-          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_VERSION', 'tools/lust/LUST_SHA256', 'tools/lust/install.sh') }}
 
-      - name: Build lust
-        timeout-minutes: 20
+      - name: Fetch lust
+        timeout-minutes: 5
         run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
 
       - name: Typecheck the server
@@ -797,6 +797,8 @@ jobs:
           node --experimental-strip-types mcp/batch4.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-floatmath.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe.test.ts
+          # recipe_run {query}: lust's type and definition at a position of a recipe (lust 0.3.0's `lust query`).
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-query.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-run.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/pose-animate.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-plugin.test.ts
@@ -893,16 +895,14 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/lust
-          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_VERSION', 'tools/lust/LUST_SHA256', 'tools/lust/install.sh') }}
 
-      # tcc is built with cl, so the Visual Studio developer shell is loaded first, as lust's own CI does.
-      - name: Build lust
-        timeout-minutes: 25
+      # lust-lang's Windows package, pinned and checked (tools/lust/install.sh). pwsh hands bash a Windows path, so
+      # the path that comes back is one node can open.
+      - name: Fetch lust
+        timeout-minutes: 5
         shell: pwsh
         run: |
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
-          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           $lust = bash tools/lust/install.sh "$env:RUNNER_TEMP/lust" | Select-Object -Last 1
           if ($LASTEXITCODE -ne 0) { throw "tools/lust/install.sh failed" }
           Add-Content -Path $env:GITHUB_ENV -Value "LIME_LUST=$lust"
@@ -920,6 +920,8 @@ jobs:
           LIME_RECIPE_REQUIRED: "1"
         run: |
           node --experimental-strip-types mcp/recipe.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --experimental-strip-types mcp/recipe-query.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --experimental-strip-types mcp/recipe-cancel.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -1056,25 +1058,64 @@ jobs:
           node --experimental-strip-types mcp/scenario.test.ts
           node --experimental-strip-types mcp/stdio.test.ts
 
-      # lust builds on Apple silicon since lust-lang's macos-arm64 job (tools/lust/LUST_REV). Its
-      # scripts/build-tcc.sh needs bash 5 and the GNU userland, which macOS does not ship; lust's job installs the same.
-      - name: Install bash 5 and GNU userland
-        run: brew install bash coreutils findutils gnu-sed
-
+      # lust-lang packages lust for Apple silicon (tools/lust/install.sh fetches it; there is no Intel macOS package).
       - name: Cache lust
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/lust
-          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_VERSION', 'tools/lust/LUST_SHA256', 'tools/lust/install.sh') }}
 
-      - name: Build lust
-        timeout-minutes: 30
+      - name: Fetch lust
+        timeout-minutes: 5
         run: echo "LIME_LUST=$(tools/lust/install.sh "$RUNNER_TEMP/lust")" >> "$GITHUB_ENV"
 
       - name: Recipes
         env:
           LIME_RECIPE_REQUIRED: "1"
-        run: node --experimental-strip-types mcp/recipe.test.ts
+        run: |
+          node --experimental-strip-types mcp/recipe.test.ts
+          node --experimental-strip-types mcp/recipe-query.test.ts
+
+      # lust's optimised builds on macOS, the proof Windows has (above): a recipe's own libm calls give rustc's bits,
+      # the engine's native geometry and the plugin corpus send the same bytes, with every build `--opt`
+      # (LIME_LUST_OPT=now). lust 0.3.0 builds without LTO under zig cc here, which is what failed before. Not
+      # blocking: --opt stays off by default on macOS (mcp/recipe-opt.ts OPT_BY_DEFAULT) until this step has shown
+      # the optimised program sends tcc's bytes. The same three tests run under tcc first, for the record too: this
+      # job did not run them, and a difference that tcc has as well is not the optimised build's.
+      - name: Cache zig
+        if: needs.changes.outputs.recipes == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/ZIG_VERSION', 'tools/lust/ZIG_SHA256') }}
+
+      - name: Recipes with lust --opt (zig cc)
+        if: needs.changes.outputs.recipes == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+          LIME_LUST_OPT_CACHE: ${{ runner.temp }}/lime-opt-cache
+        run: |
+          failed=0
+          run() {
+            echo "::group::$1: $2"
+            if node --experimental-strip-types "mcp/$2.test.ts"; then
+              echo "::endgroup::"
+              echo "$1: $2 passed"
+            else
+              echo "::endgroup::"
+              echo "::warning::$1: $2 failed on macOS"
+              failed=1
+            fi
+          }
+          for t in recipe-floatmath recipe-native-bytes plugin-corpus; do run "tcc" "$t"; done
+          export LIME_ZIG="$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig"
+          test -x "$LIME_ZIG"
+          run "lust --opt=bg" recipe-opt
+          export LIME_LUST_OPT=now
+          for t in recipe-floatmath recipe-native-bytes plugin-corpus; do run "lust --opt" "$t"; done
+          exit "$failed"
 
   bench:
     name: release bench smoke

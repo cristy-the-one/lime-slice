@@ -288,6 +288,16 @@ check("live: MCP removing a part with a Model history removes it here too (the u
 check("live: the parts whose shape a snapshot changes, for waiting on a Model edit", bridgeShapeChanges(framePlate, fused, frameSeen, frameOwned).join() === "obj_1" && bridgeShapeChanges(framePlate, bothMoved, frameSeen, frameOwned).length === 0);
 check("live: the undo step is named for MCP's change and the part, with no vendor", bridgeSwapLabel(fused, ["Glasses frame"]) === "Assistant: Fuse Ornament gear on Glasses frame" && bridgeSwapLabel({ tool: "plate_undo" }, ["A", "B", "C"]) === "Assistant: plate undo on A and 2 more parts");
 
+// A part's place in Model's shared space rides on its row: the window takes it with a new part and a new shape.
+{
+  const placed = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 28] } as BridgePlateRow["modelPose"];
+  const sent = mirrorPlate([], { tool: "plate_sync", session: "p1", seq: 1, ok: true, plate: [{ ...row("obj_1", "h1"), modelPose: placed, frame: "part" }, row("obj_2", "h1"), { ...row("obj_3", "h1"), modelPose: { m: [1, 0, 0], t: [0, 0, 0] } as unknown as BridgePlateRow["modelPose"] }], meshes: { h1: mesh("a.stl") } }, start);
+  const byId = new Map(sent.plate.map((item) => [item.id, item]));
+  check("a row's model pose reaches the mirrored part, with its frame", JSON.stringify(byId.get("obj_1")?.model) === JSON.stringify({ pose: placed, frame: "part" }), JSON.stringify(byId.get("obj_1")?.model));
+  check("a row with none carries none: the window keeps the pose it has", sent.applied && byId.get("obj_2")?.model === undefined);
+  check("a pose that is not nine and three numbers is no pose", byId.get("obj_3")?.model === undefined);
+  check("the copy is the window's own", byId.get("obj_1")?.model?.pose !== placed && byId.get("obj_1")?.model?.pose.t !== placed!.t);
+}
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

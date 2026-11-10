@@ -15,8 +15,7 @@ import { readBroken, readBuilt, solidView, type SolidView } from "../modeling/mo
 import { markedRun, sameFingerprint, sameValues, stampValue, type StampedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
-import { builtText, DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
-import { unreadApplyLines } from "./unread-applies.ts";
+import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, unreadKeys, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
 
 /** The steps on the way to the shown step that came after a run: what a rebuild of it replays. */
 export function laterSteps(tree: ModelTree, run: StampedRun): NodeId[] {
@@ -173,7 +172,7 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
     calls = new AppRecipeCalls({ ...part, tree: jumped(tree, run.before!), solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
-  const queue = calls.useQueue(unreadApplyLines(builtText(built.source, input.suffix ?? "")), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
+  const queue = calls.useQueue(unreadKeys(built.unread), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
   // `done` builds what is still queued.

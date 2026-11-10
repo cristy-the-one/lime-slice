@@ -12,7 +12,7 @@
  * LIME_LUST_OPT=now and LIME_ZIG set (every build `--opt`; the first build of each case is the optimised compile).
  *
  * It needs what the recipe tests need, and exits 2 saying what is missing otherwise:
- *   - lust (LIME_LUST, or on PATH): the pinned build, `tools/lust/LUST_REV`.
+ *   - lust (LIME_LUST, or on PATH): the pinned release, `tools/lust/LUST_VERSION` (`tools/lust/install.sh` fetches it).
  *   - the real engine and the Open CASCADE bridge: LIME_MCP_ENGINE (the library, else target/release), LIME_OCCT_BRIDGE
  *     (else beside the engine), with the Open CASCADE DLLs on PATH (Windows) or LD_LIBRARY_PATH.
  *
@@ -56,7 +56,7 @@ function missing(what: string): never {
   console.error(`The recipe bench needs ${what}.`);
   process.exit(2);
 }
-if (!findLust()) missing("lust (set LIME_LUST to the pinned build, tools/lust/LUST_REV)");
+if (!findLust()) missing("lust (set LIME_LUST to the pinned release: tools/lust/install.sh prints its path)");
 let engine;
 try {
   engine = loadEngineWorker(root);
