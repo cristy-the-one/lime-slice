@@ -24,6 +24,7 @@ import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
 import { builtWith, distrustRunning, dropUntrusted, optBuild, withEnv } from "./recipe-opt.ts";
+import { rootState, sharedRoot, slotDir, sweepStaleRootsOnce, writeWhole, type RootState } from "./recipe-root.ts";
 
 export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, RECIPE_TOOLS, runRecipe } from "../src/recipe/host.ts";
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
@@ -102,20 +103,42 @@ export function recipeCrates(crateDir: string): Map<number, RecipeCrate> {
 }
 
 export class RecipeHost {
-  readonly root: string;
+  private readonly givenRoot: string | undefined;
+  private pickedRoot: string | undefined;
   private readonly crateDir: string;
   private lust: string | null | undefined;
   private readonly moduleUrl: string | undefined;
   private found: Map<number, RecipeCrate> | undefined;
-  /** Per API major: recipe names in use order, most recent last, and the slot each holds. */
-  private readonly slotUse = new Map<number, { order: string[]; of: Map<string, number> }>();
 
   /** `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). */
   constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string }) {
     this.crateDir = opts.crateDir;
-    this.root = opts.root ?? join(tmpdir(), `lime-recipes-${process.pid}`);
+    this.givenRoot = opts.root;
     this.lust = opts.lust;
     this.moduleUrl = opts.moduleUrl;
+  }
+
+  /**
+   * Where the slots, the crate copies, lust's cache and its daemon's socket are: the root given, else the one this
+   * lust and these crates share between servers (mcp/recipe-root.ts), kept from one server to the next so a new
+   * server finds lust's daemon and its slots warm. Without lust, or where that folder cannot be written, a folder of
+   * this process's own in the temp folder, as it always was.
+   */
+  get root(): string {
+    if (this.givenRoot !== undefined) return this.givenRoot;
+    if (this.pickedRoot === undefined) {
+      const avail = this.available();
+      const libs = avail.ok ? [...this.crates()].map(([major, crate]) => ({ major, lib: readFileSync(join(crate.dir, "src", "lib.rs"), "utf8") })) : [];
+      this.pickedRoot = (avail.ok ? sharedRoot(avail.lust, libs) : null) ?? join(tmpdir(), `lime-recipes-${process.pid}`);
+      // The roots servers before this one left in the temp folder, when their process is gone.
+      if (avail.ok) sweepStaleRootsOnce();
+    }
+    return this.pickedRoot;
+  }
+
+  /** What every host of this root shares in this process: the slots held and what each was built from. */
+  private get state(): RootState {
+    return rootState(resolve(this.root));
   }
 
   /** Whether recipes can run here, and why not. */
@@ -161,14 +184,11 @@ export class RecipeHost {
     const dir = join(this.root, this.isCurrent(major) ? "lime-recipe" : `lime-recipe-${major}`);
     const lib = readFileSync(join(crate.dir, "src", "lib.rs"), "utf8");
     mkdirSync(join(dir, "src"), { recursive: true });
-    const libPath = join(dir, "src", "lib.rs");
-    if (!existsSync(libPath) || readFileSync(libPath, "utf8") !== lib) {
-      writeFileSync(libPath, lib);
-      this.built.clear();
-    }
+    // Whole or not at all: another server of this root may be building against the copy. A shared root's key holds
+    // the crate's hash, so there the copy is written once; a root that was given can see its crate change.
+    if (writeWhole(join(dir, "src", "lib.rs"), lib)) this.state.built.clear();
     const manifest = '[package]\nname = "lime-recipe"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n\n[workspace]\n';
-    const manPath = join(dir, "Cargo.toml");
-    if (!existsSync(manPath) || readFileSync(manPath, "utf8") !== manifest) writeFileSync(manPath, manifest);
+    writeWhole(join(dir, "Cargo.toml"), manifest);
     return dir;
   }
 
@@ -179,8 +199,9 @@ export class RecipeHost {
    * older one), bound to its crate's copy, so a build against one major never re-warms another's.
    */
   private slotFor(name: string, major: number): string {
-    let use = this.slotUse.get(major);
-    if (!use) this.slotUse.set(major, (use = { order: [], of: new Map() }));
+    const state = this.state;
+    let use = state.slotUse.get(major);
+    if (!use) state.slotUse.set(major, (use = { order: [], of: new Map() }));
     let index = use.of.get(name);
     if (index === undefined) {
       const taken = new Set(use.of.values());
@@ -194,7 +215,8 @@ export class RecipeHost {
     }
     use.order = use.order.filter((n) => n !== name).concat(name);
     const current = this.isCurrent(major);
-    const slot = current ? `slot-${index}` : `slot-${major}-${index}`;
+    // The root's slot this process holds for that index: other servers of the root hold others (recipe-root.ts).
+    const slot = slotDir(this.root, state, major, index, current);
     const dir = join(this.root, slot);
     mkdirSync(join(dir, "src"), { recursive: true });
     const crate = current ? "lime-recipe" : `lime-recipe-${major}`;
@@ -204,8 +226,14 @@ export class RecipeHost {
     return dir;
   }
 
-  /** The last good build of each slot's program, by the text and the lust that made it. */
-  private built = new Map<string, { key: string; result: Awaited<ReturnType<RecipeCompile>> }>();
+  /**
+   * The last good build of each slot's program, by the text and the lust that made it. Kept with the root, for every
+   * host of it in this process: a slot is this process's alone while it runs (recipe-root.ts), so what it last built
+   * there is what the slot holds. A new server starts with none, and asks lust.
+   */
+  private get built(): Map<string, { key: string; result: Awaited<ReturnType<RecipeCompile>> }> {
+    return this.state.built as Map<string, { key: string; result: Awaited<ReturnType<RecipeCompile>> }>;
+  }
 
   /** lust's environment for this host: its daemon socket, and its cache, where `opt/` keeps the optimised binaries. */
   private lustEnv(): NodeJS.ProcessEnv {
@@ -267,7 +295,7 @@ export class RecipeHost {
 
   /** The slot directories that exist, for tests. */
   slots(): string[] {
-    return existsSync(this.root) ? readdirSync(this.root).filter((n) => n.startsWith("slot-")) : [];
+    return [...new Set(this.state.dirs.values())].filter((name) => existsSync(join(this.root, name)));
   }
 }
 
