@@ -58,10 +58,14 @@ export function recipeCacheDir(): string {
   return dir;
 }
 
-/** A root's key: lust (where it is and what `--version` says) and each crate's `lib.rs`, by API major. */
-export function rootKey(lust: string, lustVersion: string, crateLibs: readonly { major: number; lib: string }[]): string {
+/**
+ * A root's key: lust (where it is and what `--version` says), each crate's `lib.rs` by API major, and `env`, what a
+ * daemon started for this root carries (`daemonEnvTag`, recipe-opt.ts): the root's one daemon compiles with the
+ * environment of the server that started it, so servers that would start it differently do not share it.
+ */
+export function rootKey(lust: string, lustVersion: string, crateLibs: readonly { major: number; lib: string }[], env = ""): string {
   const crates = [...crateLibs].sort((a, b) => a.major - b.major).map((row) => [row.major, createHash("sha256").update(row.lib).digest("hex")]);
-  return createHash("sha256").update(JSON.stringify([LAYOUT, lust, lustVersion, crates])).digest("hex").slice(0, 16);
+  return createHash("sha256").update(JSON.stringify(env ? [LAYOUT, lust, lustVersion, crates, env] : [LAYOUT, lust, lustVersion, crates])).digest("hex").slice(0, 16);
 }
 
 /** What `lust --version` prints, or "" when it does not answer. */
@@ -74,10 +78,10 @@ export function lustVersion(lust: string): string {
  * The shared root for this lust and these crates, made if it is not there, or null when it cannot be made or written
  * (the caller then builds in a folder of its own in the temp folder, as before).
  */
-export function sharedRoot(lust: string, crateLibs: readonly { major: number; lib: string }[]): string | null {
+export function sharedRoot(lust: string, crateLibs: readonly { major: number; lib: string }[], env = ""): string | null {
   let real = lust;
   try { real = realpathSync(lust); } catch { /* A lust on PATH is named as it was found. */ }
-  const root = join(recipeCacheDir(), rootKey(real, lustVersion(lust), crateLibs));
+  const root = join(recipeCacheDir(), rootKey(real, lustVersion(lust), crateLibs, env));
   // A home folder or a chosen cache with a space in it: build in the temp folder, as before.
   if (process.platform !== "win32" && /\s/.test(root)) return null;
   try {

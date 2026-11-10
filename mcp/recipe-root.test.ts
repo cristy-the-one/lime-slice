@@ -42,6 +42,11 @@ const scratch = mkdtempSync(join(tmpdir(), "lime-recipe-root-test-"));
   check("another lust path gives another", key !== rootKey("/opt/lust2", "lust 0.2.0 (build aa)", libs));
   check("a changed crate gives another", key !== rootKey("/opt/lust", "lust 0.2.0 (build aa)", [libs[0]!, { major: 1, lib: `${libs[1]!.lib} ` }]));
   check("one more crate gives another", key !== rootKey("/opt/lust", "lust 0.2.0 (build aa)", libs.slice(0, 1)));
+  // The root's daemon compiles with the environment of the server that started it: a server with the optimised build
+  // on (zig on the daemon's PATH) and one with it off do not share a root, nor do two with another zig.
+  check("no daemon environment keeps the key", key === rootKey("/opt/lust", "lust 0.2.0 (build aa)", libs, ""));
+  check("a zig for the daemon gives another root", key !== rootKey("/opt/lust", "lust 0.2.0 (build aa)", libs, "/opt/zig/zig|/cache/zig"));
+  check("another zig gives another", rootKey("/opt/lust", "lust 0.2.0 (build aa)", libs, "/opt/zig/zig|/cache/zig") !== rootKey("/opt/lust", "lust 0.2.0 (build aa)", libs, "/opt/zig2/zig|/cache/zig"));
 }
 
 // --- Holding a slot. The pids here are made up; `alive` says which of them run.
