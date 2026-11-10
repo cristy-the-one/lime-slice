@@ -204,7 +204,7 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
   const max = [-Infinity, -Infinity, -Infinity];
   let cursor: string | undefined;
   do {
-    const page = await call("faces_find", { object, limit: 100, ...(cursor ? { cursor } : {}) });
+    const page = await call("faces_find", { object, limit: 100, bbox: true, ...(cursor ? { cursor } : {}) });
     for (const face of (page.faces ?? []) as { bbox: { min: number[]; max: number[] } }[]) {
       for (let k = 0; k < 3; k += 1) {
         min[k] = Math.min(min[k]!, face.bbox.min[k]!);
@@ -634,7 +634,7 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
     ops: [{ kind: "extrude", op: "common", profile: side.map(([y, z]) => [y! - mid, z!]), depth: 20, origin: [-10, 0, 0], turn: [90, 0, 90] }],
   });
   const coupon = String(built.object);
-  const edges = ((await call("edges_find", { object: coupon, direction: [1, 0, 0], limit: 100 })).edges ?? []) as { index: number; mid: number[] }[];
+  const edges = ((await call("edges_find", { object: coupon, direction: [1, 0, 0], limit: 100, full: true })).edges ?? []) as { index: number; mid: number[] }[];
   const at = (y: number, z: number) => edges.find((edge) => Math.hypot(edge.mid[1]! - (y - mid), edge.mid[2]! - z) < 1e-3)?.index ?? -1;
   const corner = at(30, 20);
   const probed = await call("model_probe", { object: coupon, op: { kind: "transition", edges: [corner] } });
@@ -681,7 +681,7 @@ async function solidBox(object: string): Promise<{ min: number[]; max: number[] 
     ops: [{ kind: "extrude", op: "common", profile: side.map(([y, z]) => [y! - mid, z!]), depth: 20, origin: [-10, 0, 0], turn: [90, 0, 90] }],
   });
   const coupon = String(built.object);
-  const edges = ((await call("edges_find", { object: coupon, direction: [1, 0, 0], limit: 100 })).edges ?? []) as { index: number; mid: number[] }[];
+  const edges = ((await call("edges_find", { object: coupon, direction: [1, 0, 0], limit: 100, full: true })).edges ?? []) as { index: number; mid: number[] }[];
   const first = edges.find((edge) => Math.hypot(edge.mid[1]! - (20 - r - mid), edge.mid[2]! - (20 - r)) < 1e-3)?.index ?? -1;
   const probed = await call("model_probe", { object: coupon, op: { kind: "transition", edges: [first] } });
   const row = ((probed.transition ?? []) as Record<string, unknown>[])[0] ?? {};

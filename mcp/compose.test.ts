@@ -195,7 +195,7 @@ const model = info.model as { composite?: string[]; guides?: string[] };
 check("session_info lists composite ops and guides", !!model?.composite?.includes("texture") && !!model?.guides?.includes("ops"), JSON.stringify(info.model));
 const topics = await call("guide");
 check("guide lists its topics", JSON.stringify(topics).includes("compose"));
-const opsGuide = await call("guide", { topic: "ops" });
+const opsGuide = await call("guide", { topic: "ops", full: true });
 check("guide returns the op reference", typeof opsGuide.text === "string" && (opsGuide.text as string).includes("pocket"));
 check("an unknown guide names the topics", (await call("guide", { topic: "nope" })).ok === false);
 

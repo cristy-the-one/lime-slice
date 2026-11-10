@@ -845,7 +845,11 @@ async function build(this: Session, input: Record<string, unknown>): Promise<Rec
     const reason = await this.commitObject(obj);
     if (reason) return refuse("build-failed", reason, { object: obj.id });
   }
-  return { ...body, ...resumed, ...once, ...this.takeNotLinked(), applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null };
+  // One line on how to change it next, for a caller that sent the ops (not for model_edit's own rebuild, nor a recipe).
+  const viaPatch = this.patchedBuild;
+  this.patchedBuild = false;
+  const next = !viaPatch && this.recipeDepth === 0 && ops.length > 1 ? { edit: `To change steps, model_edit {object:"${obj.id}", patches:[{node: label or op number, patch:{field: value}}]} rebuilds from there without the ops sent again.` } : {};
+  return { ...body, ...resumed, ...once, ...this.takeNotLinked(), applied: reused + Number(body.applied ?? 0), object: obj.id, committed: input.commit !== false, bounds: obj.solid?.bounds ?? null, ...next };
 }
 
 /** --- Gaps A1. A new solid's root keeps the expressions its base was typed with, as the app's New solid does. */

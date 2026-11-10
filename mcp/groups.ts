@@ -62,4 +62,4 @@ const GROUP_TOOLS_SHORT: Record<string, string> = {
   stress: "sim_setup/run/field/sweep/cancel",
 };
 
-export const TOOLS_ENABLE_HELP = `Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: ${Object.keys(TOOL_GROUPS).map((group) => `${group} (${GROUP_TOOLS_SHORT[group]})`).join("; ")}. schemas:true returns the opened tools' schemas; tools narrows them.`;
+export const TOOLS_ENABLE_HELP = `Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: ${Object.keys(TOOL_GROUPS).map((group) => `${group} (${GROUP_TOOLS_SHORT[group]})`).join("; ")}.`;

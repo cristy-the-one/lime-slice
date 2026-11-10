@@ -52,7 +52,7 @@ const roundedArea = (w: number, h: number, r: number) => w * h - (4 - Math.PI) *
 async function cover(): Promise<string> {
   const made = await call("solid_new", { primitive: "box", dx: 150, dy: 60, dz: 8 });
   const object = String(made.object);
-  const upright = await call("edges_find", { object, direction: [0, 0, 1], limit: 10 });
+  const upright = await call("edges_find", { object, direction: [0, 0, 1], limit: 10, full: true });
   await apply(object, { kind: "fillet", edges: (upright.edges as Row[]).map((edge) => edge.index), size: 5 });
   return object;
 }
@@ -92,7 +92,7 @@ async function cover(): Promise<string> {
 {
   const made = await call("solid_new", { primitive: "box", dx: 20, dy: 20, dz: 20 });
   const object = String(made.object);
-  const along = await call("edges_find", { object, direction: [1, 0, 0], limit: 10 });
+  const along = await call("edges_find", { object, direction: [1, 0, 0], limit: 10, full: true });
   const edge = (along.edges as Row[]).find((row) => row.mid[1] === -10 && row.mid[2] === 20)!;
   const probe = await call("model_probe", { object, op: { kind: "chamfer", edges: [edge.index], size: 2.7, size2: 5 } });
   check("a chamfer by two sizes fits", probe.ok === true, JSON.stringify(probe));
@@ -125,7 +125,7 @@ async function cover(): Promise<string> {
   check("a flush fuse applies", fused.ok === true, JSON.stringify(fused));
   const ups = await call("faces_find", { object, normal: [0, 0, 1], limit: 10 });
   check("its top is one face", (ups.faces as Row[]).length === 1 && near((ups.faces as Row[])[0]!.areaMm2, 1600), JSON.stringify(ups.faces));
-  const long = await call("edges_find", { object, direction: [0, 1, 0], lengthMinMm: 39.9, limit: 10 });
+  const long = await call("edges_find", { object, direction: [0, 1, 0], lengthMinMm: 39.9, limit: 10, full: true });
   const edge = (long.edges as Row[]).find((row) => row.mid[0] === 20 && row.mid[2] === 10);
   check("the edge along the old seam is one 40 mm edge", !!edge && near(edge.lengthMm, 40), JSON.stringify(long.edges));
   const chamfer = edge ? await apply(object, { kind: "chamfer", edges: [edge.index], size: 2 }) : { ok: false };
@@ -167,7 +167,7 @@ async function cover(): Promise<string> {
   const object = String(made.object);
   const longer = (dx: number) => ({ kind: "boolean", op: "fuse", primitive: "box", origin: [5, -10, 0], dx, dy: 20, dz: 10 });
   await apply(object, longer(15));
-  const upright = await call("edges_find", { object, direction: [0, 0, 1], limit: 10 });
+  const upright = await call("edges_find", { object, direction: [0, 0, 1], limit: 10, full: true });
   const corner = (upright.edges as Row[]).find((edge) => edge.mid[0] === 20 && edge.mid[1] === -10)!;
   const roundOff = 10 * 4 * (1 - Math.PI / 4);
   const fillet = await apply(object, { kind: "fillet", edges: [corner.index], size: 2 });
@@ -176,7 +176,7 @@ async function cover(): Promise<string> {
   const edited = probe.ok === true ? await call("model_edit", { object, node: "node_1", op: longer(25) }) : probe;
   check("the fuse is edited and the fillet replayed", edited.ok === true && edited.broken === false, JSON.stringify(edited));
   check("the same corner is filleted, 10 mm further out", near(await volume(object), 40 * 20 * 10 - roundOff), String(await volume(object)));
-  const after = await call("edges_find", { object, direction: [0, 0, 1], limit: 10 });
+  const after = await call("edges_find", { object, direction: [0, 0, 1], limit: 10, full: true });
   const sharp = (after.edges as Row[]).map((edge) => edge.mid.slice(0, 2).join(","));
   check("the other three corners stay sharp", ["-10,-10", "-10,10", "30,10"].every((at) => sharp.includes(at)) && !sharp.includes("30,-10"), JSON.stringify(sharp));
 }

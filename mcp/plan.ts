@@ -15,13 +15,27 @@ const REFERENCE = /^\$([0-9]+)((?:\.[^.]+)*)$/;
 
 export const PLAN_HELP = [
   `Run up to ${MAX_PLAN_STEPS} tool calls in order, in one call. Each step is checked and applied as if called alone (same refusals, undo, and autosave).`,
-  "A string argument that is exactly \"$N.path\" becomes step N's result at that path: N is an earlier step's number, from 1; the path is field names and list indexes split by dots, e.g. \"$1.object\" or \"$2.faces.0.index\". \"$N\" alone is the whole result; a string starting \"$$\" is a literal \"$\".",
-  "The plan stops at the first refused or failed step and returns every step's result so far and failedStep.",
+  "A string argument that is exactly \"$N.path\" becomes step N's result at that path: N is an earlier step, from 1; the path is fields and list indexes split by dots, e.g. \"$1.object\" or \"$2.faces.0.index\". \"$N\" alone is the whole result; a string starting \"$$\" is a literal \"$\".",
+  "It stops at the first refused or failed step (failedStep). The reply has the result of the last step, a failed one and any a reference names; the others are {step, tool, ok}.",
   "plan_run cannot be a step. A plan past about 45 s answers with a job, like a long call: slice_wait {job} returns its result. guide {topic:\"plans\"}.",
 ].join(" ");
 
 function isReference(text: string): boolean {
   return text.startsWith("$") && !text.startsWith("$$");
+}
+
+/** The steps, by number, that a later step's reference names: their results are what the plan was written to read. */
+export function referencedSteps(steps: PlanStep[]): Set<number> {
+  const named = new Set<number>();
+  for (const step of steps) {
+    const found: { text: string; path: string }[] = [];
+    strings(step.args ?? {}, "args", found);
+    for (const { text } of found) {
+      const match = isReference(text) ? REFERENCE.exec(text) : null;
+      if (match) named.add(Number(match[1]));
+    }
+  }
+  return named;
 }
 
 /** Every string in a value, with its path under args. */

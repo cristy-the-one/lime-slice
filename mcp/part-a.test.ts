@@ -54,7 +54,7 @@ const call = (name: string, args: unknown = {}) => session.call(name, args);
 
 const cube = await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 });
 const box = String(cube.object);
-const described = await call("model_describe", { object: box, limit: 20 });
+const described = await call("model_describe", { object: box, limit: 20, full: true });
 const edges = described.edges as { mid?: number[]; start?: number[]; end?: number[]; dir?: number[] }[];
 const mids = new Set(edges.map((edge) => JSON.stringify(edge.mid)));
 const vertical = edges.find((edge) => near(edge.mid?.[0], 5) && near(edge.mid?.[1], -5) && near(edge.mid?.[2], 5));
