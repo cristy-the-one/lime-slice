@@ -71,6 +71,18 @@ export function optMode(): OptMode {
   return "bg";
 }
 
+/**
+ * What a lust daemon started by this process would carry for the optimised build: the zig it finds on its PATH and
+ * zig's cache folder, or "" when the optimised build is off or there is no zig. lust's daemon does the compiling
+ * with the environment it was started in, and outlives the server that started it; a server that reuses a daemon
+ * started without zig gets "no C compiler" (or whatever compiler that machine's PATH has) for every `--opt` build.
+ * So servers share a recipe root, and with it a daemon, only when this is the same (mcp/recipe-root.ts).
+ */
+export function daemonEnvTag(lust: string): string {
+  const zig = optMode() === "off" ? null : zigFor(lust);
+  return zig ? `${zig}|${join(lustOptCacheRoot(), "zig")}` : "";
+}
+
 /** The warm-up's marker: one per lust and zig pair (their paths and sizes). */
 function warmMarker(cache: string, lust: string, zig: string): string {
   const size = (p: string) => { try { return statSync(p).size; } catch { return 0; } };

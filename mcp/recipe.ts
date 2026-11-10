@@ -23,7 +23,7 @@ import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type 
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
-import { builtWith, distrustRunning, dropUntrusted, optBuild, withEnv } from "./recipe-opt.ts";
+import { builtWith, daemonEnvTag, distrustRunning, dropUntrusted, optBuild, withEnv } from "./recipe-opt.ts";
 import { rootState, sharedRoot, slotDir, sweepStaleRootsOnce, writeWhole, type RootState } from "./recipe-root.ts";
 
 export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, RECIPE_TOOLS, runRecipe } from "../src/recipe/host.ts";
@@ -129,7 +129,7 @@ export class RecipeHost {
     if (this.pickedRoot === undefined) {
       const avail = this.available();
       const libs = avail.ok ? [...this.crates()].map(([major, crate]) => ({ major, lib: readFileSync(join(crate.dir, "src", "lib.rs"), "utf8") })) : [];
-      this.pickedRoot = (avail.ok ? sharedRoot(avail.lust, libs) : null) ?? join(tmpdir(), `lime-recipes-${process.pid}`);
+      this.pickedRoot = (avail.ok ? sharedRoot(avail.lust, libs, daemonEnvTag(avail.lust)) : null) ?? join(tmpdir(), `lime-recipes-${process.pid}`);
       // The roots servers before this one left in the temp folder, when their process is gone.
       if (avail.ok) sweepStaleRootsOnce();
     }
