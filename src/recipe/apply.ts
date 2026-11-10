@@ -12,8 +12,7 @@ import { plainModelError } from "../app/model-error.ts";
 import { solidView, type SolidView } from "../modeling/model-calls.ts";
 import { markedRun, stampValue } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
-import { builtText, DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, type RecipeLimits } from "./host.ts";
-import { unreadApplyLines } from "./unread-applies.ts";
+import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, unreadKeys, type RecipeLimits } from "./host.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
 import type { RecipeRunner } from "./rebuild.ts";
 
@@ -119,7 +118,7 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
     calls = new AppRecipeCalls({ ...part, solid: startSolid }, engine, env);
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
-  const queue = calls.useQueue(unreadApplyLines(builtText(built.source, input.suffix ?? "")), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
+  const queue = calls.useQueue(unreadKeys(built.unread), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal, input.onProgress);
   // `done` builds what is still queued.

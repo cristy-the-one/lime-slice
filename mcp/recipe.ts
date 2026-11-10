@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildRecipe, DEFAULT_LIMITS, lfOnly, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
+import { buildRecipe, DEFAULT_LIMITS, lfOnly, MARK_UNREAD_FN, runRecipe, type BuildResult, type RecipeCompile, type RecipeCall, type RecipeLimits, type RecipeSpawn, type RunOutcome } from "../src/recipe/host.ts";
 import { crateApiOf, type ApiLevel } from "../src/recipe/api-level.ts";
 import { workspaceRoot } from "./workspace.ts";
 import { refuse } from "./refusals.ts";
@@ -49,6 +49,30 @@ export function findLust(moduleUrl?: string): string | null {
     if (r.status === 0) return c;
   }
   return null;
+}
+
+/** What a lust can be asked, beyond what every lust Lime Slice ran could. */
+export interface LustFeatures {
+  /** `--mark-unread <fn>` (lust 0.3.0): a passing build lists the calls of a function whose result is never read. */
+  markUnread: boolean;
+}
+
+const lustFeatureCache = new Map<string, LustFeatures>();
+
+/**
+ * What this lust can be asked, read once from its usage text (`lust --help` names every flag). A lust that does not
+ * know a flag answers its usage and exit code 2 to a build that passes it, which would fail every recipe: someone's
+ * own older build in LIME_LUST is asked only for what it has.
+ */
+export function lustFeatures(lust: string): LustFeatures {
+  let found = lustFeatureCache.get(lust);
+  if (!found) {
+    const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+    const usage = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    found = { markUnread: usage.includes("--mark-unread") };
+    lustFeatureCache.set(lust, found);
+  }
+  return found;
 }
 
 /**
@@ -109,9 +133,14 @@ export class RecipeHost {
   private lust: string | null | undefined;
   private readonly moduleUrl: string | undefined;
   private found: Map<number, RecipeCrate> | undefined;
+  private readonly givenFeatures: Partial<LustFeatures>;
 
-  /** `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). */
-  constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string }) {
+  /**
+   * `moduleUrl` is the server's own URL, where the bundled lust is looked for (`findLust`). `features` stands over
+   * what the lust says of itself (`lustFeatures`): tests turn one off to run as an older lust would.
+   */
+  constructor(opts: { crateDir: string; root?: string; lust?: string | null; moduleUrl?: string; features?: Partial<LustFeatures> }) {
+    this.givenFeatures = opts.features ?? {};
     this.crateDir = opts.crateDir;
     this.givenRoot = opts.root;
     this.lust = opts.lust;
@@ -151,6 +180,11 @@ export class RecipeHost {
     }
     if (!existsSync(join(this.crateDir, "src", "lib.rs"))) return refuse("recipe-unavailable", `The lime-recipe crate is missing (${this.crateDir}).`);
     return { ok: true, lust: this.lust };
+  }
+
+  /** What this host asks of its lust: what the lust has (`lustFeatures`), less what the host was told to leave. */
+  features(lust: string): LustFeatures {
+    return { ...lustFeatures(lust), ...this.givenFeatures };
   }
 
   /** The crate of each API major this host builds against (`recipeCrates`), read once. */
@@ -266,20 +300,23 @@ export class RecipeHost {
     const opt = optBuild(avail.lust);
     const cache = join(this.root, "cache");
     if (opt.mode !== "off") dropUntrusted(cache);
+    // lust says which `s.apply` calls the recipe never reads (docs/plan-native-recipes.md 7.1): the answer changes,
+    // not the program. The marks are in the build's stdout, which a kept result keeps.
+    const mark = this.features(avail.lust).markUnread ? ["--mark-unread", MARK_UNREAD_FN] : [];
     return buildRecipe(async (text) => {
       // The program this slot holds was built from this text by this lust against this crate: it is the program a
       // build would make. A build of unchanged text still took 70 to 110 ms and left a new file, and Windows takes
       // about 0.3 s to start a program file it has not run before, against 3 ms for one it has. Values go in the
       // start line, so a rerun, a rebuild from other values and a describe all come here with the same text. While
       // lust's background build may still swap in the optimised program, lust is asked each time.
-      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args]);
+      const key = JSON.stringify([text, avail.lust, opt.mode, opt.args, mark]);
       const kept = this.built.get(exe);
       if (kept && kept.key === key && existsSync(exe) && existsSync(main) && (opt.mode !== "bg" || kept.result.compiler === "opt")) return kept.result;
       this.built.delete(exe);
       if (opt.mode !== "off" && existsSync(main) && readFileSync(main, "utf8") !== text) distrustRunning(cache);
       writeFileSync(main, text);
-      const r = await run(avail.lust, ["build", "--sandbox", ...opt.args, "--json", main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
-      const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr) };
+      const r = await run(avail.lust, ["build", "--sandbox", ...opt.args, "--json", ...mark, main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
+      const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr), ...(mark.length ? { marked: true } : {}) };
       if (r.code === 0) this.built.set(exe, { key, result });
       return result;
     }, source, autofix, suffix);

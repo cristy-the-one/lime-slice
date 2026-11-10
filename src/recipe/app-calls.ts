@@ -212,10 +212,11 @@ export class AppRecipeCalls {
   private readonly bakedOps = new WeakMap<object, Baked>();
 
   /**
-   * Queues booleans for this run: `unread` are the built text's lines whose apply reply the recipe does not read
-   * (`unreadApplyLines`); `silent` is off for a run built again one by one.
+   * Queues booleans for this run: `unread` are the built text's `s.apply` calls whose reply the recipe does not read,
+   * as lust marked them (`unreadKeys(built.unread)`; null when it gave none); `silent` is off for a run built again
+   * one by one.
    */
-  useQueue(unread: ReadonlySet<number>, silent: boolean, timeLimitS: number, signal?: AbortSignal): RecipeQueue {
+  useQueue(unread: ReadonlySet<string> | null, silent: boolean, timeLimitS: number, signal?: AbortSignal): RecipeQueue {
     this.queue = new RecipeQueue({
       tool: async (object, op) => {
         const p = this.addressable(object);

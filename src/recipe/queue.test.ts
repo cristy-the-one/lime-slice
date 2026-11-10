@@ -4,7 +4,7 @@
  * a late refusal that asks for the run to be built again one by one.
  */
 import type { Box } from "../modeling/anchors.ts";
-import type { RecipeCallSite, RecipeReply } from "./host.ts";
+import { parseUnread, reportedColumn, unreadKeys, type RecipeCallSite, type RecipeReply } from "./host.ts";
 import type { ModelOp } from "../model-tree.ts";
 import type { SolidView } from "../modeling/model-calls.ts";
 import { groupSkipsMesh, guardReadsBefore, liteSolid, planGroups, queuedGuard, queueSummary, RecipeQueue, type QueueKind, type QueuePort } from "./queue.ts";
@@ -53,7 +53,10 @@ function stand(opts: { refuseGroup?: { reason: string; index?: number }; refuseO
   return { port, seen };
 }
 let id = 0;
-const site = (tool: string, line: number, args: Record<string, unknown>): RecipeCallSite => ({ id: ++id, tool, line, args });
+/** Every call of these tests is at column 7 of its line, unless it says otherwise. */
+const site = (tool: string, line: number, args: Record<string, unknown>, col = 7): RecipeCallSite => ({ id: ++id, tool, line, col, args });
+/** lust's marks for unread `s.apply` calls at column 7 of `lines`, as the queue takes them (`unreadKeys`). */
+const marks = (...lines: number[]) => unreadKeys(lines.map((line) => ({ line, col: 7 })));
 const cut = (line: number, x: number, extra: Record<string, unknown> = {}) => site("model_apply", line, { object: "obj_1", op: { kind: "boolean", op: "cut", x }, probe: true, ...extra });
 const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> => {
   seen.push({ kind: "inner", detail: `${s.tool}@${s.line}` });
@@ -62,7 +65,7 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
 
 {
   const { port, seen } = stand();
-  const q = new RecipeQueue(port, new Set([10]), { silent: true, timeLimitS: 30 });
+  const q = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 30 });
   const a = await q.call(cut(10, 0), inner(seen));
   const b = await q.call(cut(10, 5), inner(seen));
   eq("an unread line is answered queued", [a, b].map((r) => r.ok && (r.result as { queued?: boolean }).queued), [true, true]);
@@ -86,16 +89,66 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
 
 {
   const { port, seen } = stand();
-  const q = new RecipeQueue(port, new Set([10]), { silent: true, timeLimitS: 30 });
+  const q = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 30 });
   await q.call(site("queue", 5, { silent: false }), inner(seen));
   await q.call(cut(10, 0), inner(seen));
   eq("queue(false) builds every apply in its place", seen, [{ kind: "inner", detail: "model_apply@10" }]);
 }
 
 {
+  // Two applies on one line, one read and one not: lust marks the call, not the line, so only the unread one queues.
+  const { port, seen } = stand();
+  const q = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 30 });
+  const unread = await q.call(cut(10, 0), inner(seen));
+  const read = await q.call(site("model_apply", 10, { object: "obj_1", op: { kind: "boolean", op: "cut", x: 5 }, probe: true }, 52), inner(seen));
+  eq("the unread call of a line queues and the read one beside it is built", [unread.ok && (unread.result as { queued?: boolean }).queued, read.ok && (read.result as { queued?: boolean }).queued, seen], [true, undefined, [{ kind: "one", detail: 10 }, { kind: "inner", detail: "model_apply@10" }]]);
+  // A call that carries no column (a program that is not lime-recipe's) is never taken for a marked one.
+  const bare = await q.call({ id: ++id, tool: "model_apply", line: 10, args: { object: "obj_1", op: { kind: "boolean", op: "cut", x: 0 }, probe: true } }, inner(seen));
+  eq("a call without a column is built in its place", bare.ok && (bare.result as { queued?: boolean }).queued, undefined);
+}
+
+{
+  // No marks at all (a lust older than 0.3.0): nothing queues silently, s.queue(true) cannot turn it on, no line is
+  // blamed for a read, and the explicit queue still works.
+  const { port, seen } = stand();
+  const q = new RecipeQueue(port, unreadKeys(undefined), { silent: true, timeLimitS: 30 });
+  await q.call(site("queue", 5, { silent: true }), inner(seen));
+  for (let i = 0; i < 5; i += 1) await q.call(cut(10, i * 3), inner(seen));
+  eq("without marks every apply is built in its place", [q.silent, seen.length, seen.every((row) => row.kind === "inner")], [false, 5, true]);
+  eq("and the reply has no hint about reads", queueSummary(q.report), {});
+  const later = await q.call(cut(40, 0, { queue: "later" }), inner(seen));
+  eq("apply_later still queues", later.ok && (later.result as { queued?: boolean }).queued, true);
+}
+
+{
+  // lust's lines, as `lust build --json --mark-unread lime_recipe::Session::apply` writes them on a passing build.
+  const main = "C:\\slots\\slot-0\\src/main.rs";
+  const line = (fn: string, file: string, at: number, col: number) => JSON.stringify({ schema: 1, kind: "unread_result", fn, file, span: { start: 1, end: 6, line: at, col, end_line: at, end_col: col + 5 } });
+  const stdout = [
+    line("lime_recipe::Session::apply", main, 2, 7),
+    line("lime_recipe::Session::apply", "C:\\slots\\lime-recipe\\src/lib.rs", 3, 7),
+    line("lime_recipe::Session::call", main, 2, 7),
+    '{"schema":1,"kind":"diagnostic","code":"L0001","severity":"warning","span":{"line":2,"col":1}}',
+    "opt: cached optimised build",
+    line("lime_recipe::Session::apply", main, 3, 4),
+    line("lime_recipe::Session::apply", main, 4, 7),
+    line("lime_recipe::Session::apply", main, 5, 7),
+    line("lime_recipe::Session::apply", main, 5, 46),
+    line("lime_recipe::Session::apply", main, 9, 7),
+  ].join("\n");
+  // Line 3 is indented with a tab, line 4 with two and a space; line 5 has text outside ASCII between its two calls;
+  // line 9 is past the text.
+  const text = ["fn main() {", "    s.apply(a)?;", "\ts.apply(a)?;", "\t\t s\t.apply(a)?;", "    s.apply(a)?; s.log(\"é 日本\"); s.apply(b)?;", "}"].join("\n");
+  eq("only the recipe's own s.apply calls are marks, at the column each call reports", parseUnread(stdout, main, text), [{ line: 2, col: 7 }, { line: 3, col: 7 }, { line: 4, col: 16 }, { line: 5, col: 7 }]);
+  eq("a tab counts four, and a call after text outside ASCII is not claimed", [reportedColumn("\ts.apply", 4), reportedColumn("é s.apply", 6), reportedColumn("s.apply", 3)], [7, null, 3]);
+  eq("as line:col keys", [...(unreadKeys(parseUnread(stdout, main, text)) ?? [])].slice(0, 2), ["2:7", "3:7"]);
+  eq("no answer from lust is no marks, not an empty set", unreadKeys(undefined), null);
+}
+
+{
   // The explicit queue: refusals come back from flush, each with its line, built one by one to say which.
   const { port, seen } = stand({ refuseGroup: { reason: "Open CASCADE did not complete the boolean" }, refuseOne: (s) => (s.line === 41 ? "The cut does not change the part." : null) });
-  const q = new RecipeQueue(port, new Set(), { silent: true, timeLimitS: 30 });
+  const q = new RecipeQueue(port, marks(), { silent: true, timeLimitS: 30 });
   await q.call(cut(40, 0, { queue: "later" }), inner(seen));
   await q.call(cut(41, 5, { queue: "later" }), inner(seen));
   const flushed = await q.call(site("flush", 50, { object: "obj_1" }), inner(seen));
@@ -106,7 +159,7 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
 {
   // A silent op refused inside a group: the run must be built again one by one, naming the op's line.
   const { port, seen } = stand({ refuseGroup: { reason: "The cut does not change the part.", index: 1 } });
-  const q = new RecipeQueue(port, new Set([10, 11]), { silent: true, timeLimitS: 30 });
+  const q = new RecipeQueue(port, marks(10, 11), { silent: true, timeLimitS: 30 });
   await q.call(cut(10, 0), inner(seen));
   await q.call(cut(11, 5), inner(seen));
   const done = await q.flushAll();
@@ -117,7 +170,7 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
 {
   // Not a plain tool: built in its place, so its own answer comes back at its line.
   const { port, seen } = stand();
-  const q = new RecipeQueue(port, new Set([10, 12]), { silent: true, timeLimitS: 30 });
+  const q = new RecipeQueue(port, marks(10, 12), { silent: true, timeLimitS: 30 });
   await q.call(cut(10, 0), inner(seen));
   await q.call(site("model_apply", 12, { object: "obj_1", op: { kind: "fillet" }, probe: true }), inner(seen));
   eq("a fillet builds the queue, then itself", seen, [{ kind: "one", detail: 10 }, { kind: "inner", detail: "model_apply@12" }]);
@@ -127,12 +180,12 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
   // A cancel, or the run's time limit, stops the build before the next boolean: the run ends, with no replay.
   const { port, seen } = stand();
   const abort = new AbortController();
-  const q = new RecipeQueue(port, new Set([10]), { silent: true, timeLimitS: 30, signal: abort.signal });
+  const q = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 30, signal: abort.signal });
   await q.call(cut(10, 0), inner(seen));
   abort.abort();
   const done = await q.flushAll();
   eq("a cancel stops the queue's build", [done?.ok, (done as { error?: string })?.error, q.replay, seen.length], [false, "The recipe was cancelled.", null, 0]);
-  const late = new RecipeQueue(port, new Set([10]), { silent: true, timeLimitS: 0.001 });
+  const late = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 0.001 });
   await late.call(cut(10, 0), inner(seen));
   await new Promise((resolve) => setTimeout(resolve, 5));
   eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.001 s limit and was stopped.");

@@ -6,8 +6,8 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
 use lime_recipe_runner::{
-    build, calls_sentence, find_lust, line_bytes_sentence, lines_sentence, memory_sentence, timeout_sentence, Limits,
-    RecipeRun, RunEvent, RunExit,
+    build, calls_sentence, find_lust, line_bytes_sentence, lines_sentence, lust_features, memory_sentence, timeout_sentence,
+    Limits, RecipeRun, RunEvent, RunExit, MARK_UNREAD_FN,
 };
 
 fn probe() -> &'static Path {
@@ -141,6 +141,22 @@ fn a_real_recipe_that_only_logs() {
     assert_ne!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "changed text was not built");
     let built = build(&lust, &root, &repo_crate(), 0, source, Duration::from_secs(120)).unwrap();
     assert_eq!(built.code, Some(0), "{}\n{}", built.stdout, built.stderr);
+
+    // lust marks the `s.apply` whose reply the recipe never reads (0.3.0's --mark-unread); an older lust is not asked.
+    // The marks are lines of the build's output, which the program kept for an unchanged text keeps.
+    let marking = "use lime_recipe::{ops, Session};\n\nfn main() {\n    let mut s = Session::start();\n    let p = s.solid_new(ops::cuboid(1.0, 1.0, 1.0)).unwrap();\n    s.apply(&p, ops::cuboid(1.0, 1.0, 1.0)).unwrap();\n    let r = s.apply(&p, ops::cuboid(1.0, 1.0, 1.0)).unwrap();\n    s.log(&format!(\"{r}\"));\n}\n";
+    let marked = build(&lust, &root, &repo_crate(), 2, marking, Duration::from_secs(120)).unwrap();
+    assert_eq!(marked.code, Some(0), "{}\n{}", marked.stdout, marked.stderr);
+    assert_eq!(marked.marked, lust_features(&lust).mark_unread);
+    let marks: Vec<&str> = marked.stdout.lines().filter(|l| l.contains("\"kind\":\"unread_result\"")).collect();
+    if marked.marked {
+        assert_eq!(marks.len(), 1, "{}", marked.stdout);
+        assert!(marks[0].contains(MARK_UNREAD_FN) && marks[0].contains("\"line\":6,\"col\":7"), "{}", marks[0]);
+    } else {
+        assert!(marks.is_empty());
+    }
+    let kept = build(&lust, &root, &repo_crate(), 2, marking, Duration::from_secs(120)).unwrap();
+    assert_eq!((kept.stdout.as_str(), kept.marked), (marked.stdout.as_str(), marked.marked), "a kept program keeps its marks");
 
     let broken = build(&lust, &root, &repo_crate(), 1, "fn main() { let x: f64 = 1; }\n", Duration::from_secs(120)).unwrap();
     assert_ne!(broken.code, Some(0));

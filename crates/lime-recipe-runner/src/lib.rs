@@ -476,6 +476,43 @@ pub struct BuildOutput {
     pub main: PathBuf,
     /// Which program the build left: `opt` (lust's optimised build) or `tcc`.
     pub compiler: &'static str,
+    /// True when lust was asked to mark unread `s.apply` calls ([`MARK_UNREAD_FN`]): `stdout` then lists them.
+    pub marked: bool,
+}
+
+/// The function whose unread results lust marks (`--mark-unread`, docs/plan-native-recipes.md 7.1): `s.apply`, the
+/// one call the host may hold back and build with others. The same name as `MARK_UNREAD_FN` in src/recipe/host.ts,
+/// which reads the marks.
+pub const MARK_UNREAD_FN: &str = "lime_recipe::Session::apply";
+
+/// What a lust can be asked, beyond what every lust Lime Slice ran could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LustFeatures {
+    /// `--mark-unread <fn>` (lust 0.3.0).
+    pub mark_unread: bool,
+}
+
+impl LustFeatures {
+    /// Read from lust's usage text, which names every flag.
+    pub fn from_usage(usage: &str) -> LustFeatures {
+        LustFeatures { mark_unread: usage.contains("--mark-unread") }
+    }
+}
+
+/// What this lust can be asked, read once from `lust --help`. A lust that does not know a flag answers its usage and
+/// exit code 2 to a build that passes it, which would fail every recipe: someone's own older build in `LIME_LUST` is
+/// asked only for what it has.
+pub fn lust_features(lust: &Path) -> LustFeatures {
+    static FOUND: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, LustFeatures>>> = std::sync::LazyLock::new(Default::default);
+    if let Some(found) = lock(&FOUND).get(lust) {
+        return *found;
+    }
+    let mut command = quiet(lust);
+    command.arg("--help").stdin(Stdio::null());
+    let usage = command.output().map(|out| [out.stdout, out.stderr].concat()).unwrap_or_default();
+    let found = LustFeatures::from_usage(&String::from_utf8_lossy(&usage));
+    lock(&FOUND).insert(lust.to_path_buf(), found);
+    found
 }
 
 /// The slots a root holds, as the MCP server's host keeps them (mcp/recipe.ts): a warm crate per slot, one lust daemon.
@@ -512,7 +549,10 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     // to start a program file it has not run before, against a few milliseconds for one it has. Values go in the
     // start line, so a Live preview, an Apply and a rebuild from other values all come here with the same text.
     // While lust's background build may still swap in the optimised program, lust is asked each time.
-    let key = (text.to_owned(), lust.to_path_buf(), opt.mode);
+    // lust says which `s.apply` calls the recipe never reads: the answer changes, not the program. The marks are in
+    // the build's stdout, which a kept output keeps.
+    let features = lust_features(lust);
+    let key = (text.to_owned(), lust.to_path_buf(), opt.mode, features);
     if let Some(kept) = built().get(&exe) {
         if kept.0 == key && exe.is_file() && main.is_file() && (opt.mode != opt::OptMode::Bg || kept.1.compiler == "opt") {
             return Ok(kept.1.clone());
@@ -532,6 +572,7 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     command
         .envs(opt.env.iter().map(|(k, v)| (*k, v)))
         .arg("--json")
+        .args(if features.mark_unread { &["--mark-unread", MARK_UNREAD_FN][..] } else { &[] })
         .arg(&main)
         .arg("--manifest-path")
         .arg(dir.join("Cargo.toml"))
@@ -561,14 +602,14 @@ pub fn build(lust: &Path, root: &Path, crate_dir: &Path, slot: u32, text: &str, 
     let stderr = fs::read_to_string(&err_path).unwrap_or_default() + &note;
     let made = code == Some(0) && exe.is_file();
     let compiler = opt.built_with(&stderr);
-    let output = BuildOutput { code, stdout, stderr, exe: made.then_some(exe.clone()), main, compiler };
+    let output = BuildOutput { code, stdout, stderr, exe: made.then_some(exe.clone()), main, compiler, marked: features.mark_unread };
     if made {
         built().insert(exe, (key, output.clone()));
     }
     Ok(output)
 }
 
-type BuiltKey = (String, PathBuf, opt::OptMode);
+type BuiltKey = (String, PathBuf, opt::OptMode, LustFeatures);
 type Built = std::collections::HashMap<PathBuf, (BuiltKey, BuildOutput)>;
 
 /// Each slot's last good build, by its program's path: the text, the lust and the build mode that made it.
@@ -618,6 +659,19 @@ mod tests {
         assert!(host.contains("The recipe made more than ${limits.maxCalls} calls and was stopped."));
         assert!(host.contains("A recipe line passed ${limits.maxLineBytes} bytes."));
         assert_eq!(memory_sentence(1 << 30), "The recipe used more than 1024 MB of memory and was stopped.");
+    }
+
+    #[test]
+    fn a_lust_is_asked_only_for_what_its_usage_names() {
+        // lust 0.2.0's usage, and 0.3.0's.
+        let old = "usage: lust <check|build|run> <file.rs> [--json] [--max-errors N] [--timings] [-o out] [-g] [--emit-c prefix] [-- args]";
+        let new = "usage: lust <check|build|run> <file.rs> [--json] [--max-errors N] [--timings] [-o out] [-g] [--emit-c prefix] [--mark-unread <fn path>]... [-- args]";
+        assert!(!LustFeatures::from_usage(old).mark_unread);
+        assert!(LustFeatures::from_usage(new).mark_unread);
+        assert_eq!(LustFeatures::from_usage(""), LustFeatures::default());
+        // The host reads the marks by the same name.
+        let host = include_str!("../../../src/recipe/host.ts");
+        assert!(host.contains(&format!("export const MARK_UNREAD_FN = \"{MARK_UNREAD_FN}\";")));
     }
 
     #[test]

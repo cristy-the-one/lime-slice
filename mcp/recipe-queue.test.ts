@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { engineCandidates, fakeEngine, loadEngineWorker } from "./engine.ts";
-import { findLust } from "./recipe.ts";
+import { findLust, lustFeatures, RecipeHost } from "./recipe.ts";
 import { Session } from "./session.ts";
 import { pathTo, type ModelTree } from "../src/model-tree.ts";
 
@@ -24,6 +24,15 @@ if (!lust) {
     process.exit(1);
   }
   console.log("recipe-queue: skipped (set LIME_LUST to a lust build)");
+  process.exit(0);
+}
+// Silent queuing needs lust's marks of the unread applies (`--mark-unread`, lust 0.3.0).
+if (!lustFeatures(lust).markUnread) {
+  if (process.env.LIME_RECIPE_REQUIRED === "1") {
+    console.error("recipe-queue: this lust has no --mark-unread (it is older than 0.3.0)");
+    process.exit(1);
+  }
+  console.log("recipe-queue: skipped (this lust has no --mark-unread; it needs lust 0.3.0)");
   process.exit(0);
 }
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-mcp-queue-"));
@@ -139,6 +148,62 @@ fn main() {
   check("so its applies were built one by one, and the reply says so", (on.reply.queueHints as string[] | undefined)?.some((h) => h.startsWith("line 8 reads its apply's reply, so its 4 applies were built one by one")) === true, on.reply.queueHints);
   check("the unread apply at line 11 queued, and the volume read at line 12 saw it built", (on.reply.queued as R | undefined)?.applies === 1 && JSON.stringify(on.reply.metrics) === JSON.stringify(off.reply.metrics), { on: on.reply.metrics, off: off.reply.metrics });
   check("the same ops either way", JSON.stringify(on.ops) === JSON.stringify(off.ops));
+}
+
+// lust marks the call, not the line (`--mark-unread`, lust 0.3.0): of two applies on one line only the unread one
+// queues; a call split over lines and indented with tabs queues at the line of its method name, at the column the call
+// reports (a tab counts four); a recipe with a function of its own called `apply` still has its s.apply calls marked
+// (the text scan this replaced claimed none); and an apply after text outside ASCII on its line, whose reported column
+// the host does not work out, is built in its place.
+const MARKS = `use lime_recipe::{ops, Json, Part, Session};
+
+fn apply(s: &mut Session, p: &Part, x: f64) {
+\ts
+\t\t.apply(p, ops::boolean("cut", ops::cuboid(4.0, 4.0, 20.0), [x, 0.0, -5.0]))
+\t\t.unwrap();
+}
+
+fn main() {
+    let mut s = Session::start();
+    let p = s.solid_new(ops::cuboid(60.0, 20.0, 10.0)).unwrap();
+    s.apply(&p, ops::boolean("cut", ops::cuboid(4.0, 4.0, 20.0), [-24.0, 0.0, -5.0])).unwrap(); let r = s.apply(&p, ops::boolean("cut", ops::cuboid(4.0, 4.0, 20.0), [-12.0, 0.0, -5.0])).unwrap();
+    apply(&mut s, &p, 0.0);
+    apply(&mut s, &p, 12.0);
+    s.log("é 日本"); s.apply(&p, ops::boolean("cut", ops::cuboid(4.0, 4.0, 20.0), [24.0, 0.0, -5.0])).unwrap();
+    s.done_with(&p, Json::obj().set("read", r.get("node").is_some()));
+}
+`;
+{
+  const { on, off } = await runBoth(fake, MARKS);
+  check("a recipe with its own fn apply, a split call and a mixed line runs either way", on.reply.ok === true && off.reply.ok === true, { on: on.reply, off: off.reply });
+  // The unread apply of line 12 queues and is built (one boolean) when the read one beside it comes; the two calls of
+  // the helper (line 5, the method name's line) queue and are built together when line 15's apply comes.
+  check("the unread calls queued; the read one, and the one after text outside ASCII, did not", JSON.stringify(on.reply.queued) === JSON.stringify({ applies: 3, booleans: 2 }), on.reply.queued);
+  check("the read apply got its own answer", (on.reply.metrics as R | undefined)?.read === true && JSON.stringify(on.reply.metrics) === JSON.stringify(off.reply.metrics), on.reply.metrics);
+  check("the same stored ops and solid", on.ops.length === 6 && JSON.stringify(on.ops) === JSON.stringify(off.ops) && JSON.stringify(on.fingerprint) === JSON.stringify(off.fingerprint), { on: on.ops, off: off.ops });
+  const marked = on.history.filter((row) => row.builtWith !== undefined);
+  check("the helper's two cuts were built together", marked.length === 2, on.history);
+}
+
+// A lust that does not know --mark-unread (someone's own older build in LIME_LUST) is not asked for it: recipes run,
+// each apply built in its place, and the reply says why nothing queued.
+{
+  const session = fake();
+  const crate = fileURLToPath(new URL("../crates/lime-recipe/", import.meta.url));
+  const older = new RecipeHost({ crateDir: crate, features: { markUnread: false } });
+  (session as unknown as { recipeHost: RecipeHost }).recipeHost = older;
+  const built = await older.build("older", CUTS, false);
+  check("an older lust's build carries no marks", built.ok && built.unread === undefined, built);
+  const withMarks = await new RecipeHost({ crateDir: crate }).build("older", CUTS, false);
+  check("this lust's build marks the five cuts' line", withMarks.ok && JSON.stringify(withMarks.unread) === JSON.stringify([{ line: 7, col: 11 }]), withMarks.unread);
+  const again = await new RecipeHost({ crateDir: crate }).build("older", CUTS, false);
+  check("a program kept from an unchanged text keeps its marks", again.ok && again.exe === withMarks.exe && JSON.stringify(again.unread) === JSON.stringify(withMarks.unread), again.unread);
+  const reply = (await session.call("recipe_run", { source: CUTS, name: "older" })) as R;
+  check("with an older lust the recipe runs, one apply at a time", reply.ok === true && reply.queued === undefined && reply.queueHints === undefined, reply);
+  check("and a note says why nothing queued", (reply.notes as string[] | undefined)?.some((n) => n.startsWith("This lust does not mark unread applies")) === true, reply.notes);
+  const fresh = fake();
+  const now = (await fresh.call("recipe_run", { source: CUTS, name: "older" })) as R;
+  check("the same text under this lust queues again: the kept program's marks are its own", now.ok === true && JSON.stringify(now.queued) === JSON.stringify({ applies: 5, booleans: 1 }) && JSON.stringify(opsOf(fresh, String(now.object))) === JSON.stringify(opsOf(session, String(reply.object))), now);
 }
 
 // The explicit queue: apply_later holds, flush reports each refusal by its place and line; apply_now builds at once.

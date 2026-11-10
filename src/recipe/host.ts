@@ -60,6 +60,11 @@ export interface BuildResult {
   reason?: string;
   /** Which program the build left: lust's optimised one (`--opt`, zig cc) or tinycc's. Unset when the host does not say. */
   compiler?: "opt" | "tcc";
+  /**
+   * The `s.apply` calls of the built text whose reply the recipe never reads, as lust marked them (`--mark-unread`).
+   * Unset when lust was not asked: a lust older than 0.3.0, which has no such flag.
+   */
+  unread?: UnreadCall[];
 }
 
 /** A call the recipe made, as the caller sees it. */
@@ -68,6 +73,22 @@ export interface RecipeCallSite {
   tool: string;
   args: Record<string, unknown>;
   line: number;
+  /** The call's column on that line, as `Location::caller()` reports it (lime-recipe sends it with every call). */
+  col?: number;
+}
+
+/**
+ * --- docs/plan-native-recipes.md 7.1, "What queues silently". The function whose unread results lust marks
+ * (`lust build --json --mark-unread <fn>`): `s.apply`, the one call a host may hold back and build with others. lust
+ * finds it by resolution, so a recipe's own `fn apply` is not it, and a call in lime-recipe itself (`lettering`'s) is
+ * marked in the crate's file, which is not the recipe's.
+ */
+export const MARK_UNREAD_FN = "lime_recipe::Session::apply";
+
+/** One unread call: where it reports its caller location, in the built text (1-based line and column). */
+export interface UnreadCall {
+  line: number;
+  col: number;
 }
 
 /**
@@ -139,6 +160,8 @@ export interface CompileResult {
   main: string;
   /** Which program the build left (`BuildResult.compiler`). */
   compiler?: "opt" | "tcc";
+  /** True when lust was asked to mark unread `s.apply` calls (`MARK_UNREAD_FN`): its stdout then lists them. */
+  marked?: boolean;
 }
 
 /** The text lust builds: the recipe, then its ingredients (`suffix`) on lines of their own, as `buildRecipe` joins them. */
@@ -165,7 +188,9 @@ export async function buildRecipe(compile: RecipeCompile, source: string, autofi
     const ownBytes = utf8Bytes(own);
     const r = await compile(suffix ? own + suffix : current);
     const diagnostics = parseDiagnostics(r.stdout, r.main).map((d) => (suffix && (d.line > ownLines || d.edits.some((e) => e.end > ownBytes)) ? { ...d, edits: [] } : d));
-    if (r.code === 0) return { ok: true, diagnostics, source: current, fixRounds: round, ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ms: Date.now() - started };
+    if (r.code === 0) {
+      return { ok: true, diagnostics, source: current, fixRounds: round, ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ...(r.marked ? { unread: parseUnread(r.stdout, r.main, suffix ? own + suffix : current) } : {}), ms: Date.now() - started };
+    }
     if (diagnostics.length === 0) {
       return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
     }
@@ -323,8 +348,8 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       }
       const id = typeof msg.id === "number" ? msg.id : -1;
       const tool = typeof msg.call === "string" ? msg.call : "";
-      const at = (msg.at && typeof msg.at === "object" ? msg.at : {}) as { line?: unknown };
-      const site: RecipeCallSite = { id, tool, args: (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>, line: typeof at.line === "number" ? at.line : 0 };
+      const at = (msg.at && typeof msg.at === "object" ? msg.at : {}) as { line?: unknown; col?: unknown };
+      const site: RecipeCallSite = { id, tool, args: (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>, line: typeof at.line === "number" ? at.line : 0, ...(typeof at.col === "number" ? { col: at.col } : {}) };
       calls += 1;
       if (calls > limits.maxCalls) return stop(`The recipe made more than ${limits.maxCalls} calls and was stopped.`, site.line);
       let answer: RecipeReply;
@@ -404,6 +429,62 @@ export function parseDiagnostics(stdout: string, mainPath: string): RecipeDiagno
     });
   }
   return out.sort((a, b) => Number(!!a.inCrate) - Number(!!b.inCrate));
+}
+
+/**
+ * lust's `unread_result` lines for `MARK_UNREAD_FN` in the recipe's file (`--mark-unread`, on a passing build): one
+ * per call whose result the program never reads, at the place the call reports through `Location::caller()`.
+ *
+ * lust's span names the line and the byte column; a call reports the line and the column as rustc counts it for
+ * `Location` (the display column: a tab is four wide, a wide character two). `text` is what was built, so each mark is
+ * turned into the column its call will report: one per character before it on the line, four per tab. A mark with
+ * anything else before it on its line (a character outside ASCII, a control character) is left out, since its width
+ * is not known for sure here: that call is then built in its place, which is always right.
+ */
+export function parseUnread(stdout: string, mainPath: string, text: string): UnreadCall[] {
+  const out: UnreadCall[] = [];
+  let lines: string[] | null = null;
+  for (const line of stdout.split("\n")) {
+    if (!line.startsWith("{") || !line.includes('"unread_result"')) continue;
+    let d: Record<string, unknown>;
+    try {
+      d = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (d.kind !== "unread_result" || d.fn !== MARK_UNREAD_FN) continue;
+    if (typeof d.file !== "string" || (d.file !== mainPath && !d.file.endsWith("main.rs"))) continue;
+    const span = (d.span ?? {}) as Record<string, unknown>;
+    if (typeof span.line !== "number" || typeof span.col !== "number") continue;
+    lines ??= text.split("\n");
+    const col = reportedColumn(lines[span.line - 1] ?? "", span.col);
+    if (col !== null) out.push({ line: span.line, col });
+  }
+  return out;
+}
+
+/**
+ * The column a call at byte column `byteCol` (1-based) of `line` reports as its caller location, or null when the
+ * text before it holds a character whose width is not one or a tab's four.
+ */
+export function reportedColumn(line: string, byteCol: number): number | null {
+  let col = 1;
+  // Before the first character outside ASCII, a byte is a UTF-16 unit, so the byte column indexes the string.
+  for (let i = 0; i < byteCol - 1; i += 1) {
+    const c = line.charCodeAt(i);
+    if (c === 9) col += 4;
+    else if (c >= 0x20 && c < 0x7f) col += 1;
+    else return null;
+  }
+  return col;
+}
+
+/**
+ * The marks as the queue reads them (`src/recipe/queue.ts`): `line:col` of each unread call, or null when lust gave
+ * none (`BuildResult.unread` unset), which turns silent queuing off.
+ */
+export function unreadKeys(unread: readonly UnreadCall[] | undefined): ReadonlySet<string> | null {
+  return unread ? new Set(unread.map((u) => `${u.line}:${u.col}`)) : null;
 }
 
 /** `source` with every `auto` edit applied (byte offsets, last first, each span once). Null when there are none. */

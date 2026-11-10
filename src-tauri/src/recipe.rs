@@ -105,6 +105,8 @@ pub async fn recipe_build(app: AppHandle, slot: u32, source: String) -> Result<V
             "exe": out.exe.map(|p| p.to_string_lossy().into_owned()),
             "main": out.main.to_string_lossy(),
             "compiler": out.compiler,
+            // lust was asked for the unread `s.apply` calls; they are lines of `stdout` (src/recipe/host.ts).
+            "marked": out.marked,
         }))
     })
     .await

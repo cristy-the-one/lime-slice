@@ -15,7 +15,7 @@ function check(name: string, cond: boolean, detail: unknown = ""): void {
  * A runner stand-in. `recipe` plays the program: it gets each line the window sends and answers with lines or an
  * exit. Every command is logged.
  */
-function runner(recipe: (line: string, say: (line: string) => void, exit: (code: number | null, reason?: string) => void) => void, opts: { available?: boolean; buildCode?: number } = {}) {
+function runner(recipe: (line: string, say: (line: string) => void, exit: (code: number | null, reason?: string) => void) => void, opts: { available?: boolean; buildCode?: number; marks?: string } = {}) {
   const commands: { command: string; args: Record<string, unknown> }[] = [];
   const handlers = new Map<string, Set<(event: { payload: unknown }) => void>>();
   const emit = (event: string, payload: unknown) => setTimeout(() => {
@@ -27,7 +27,7 @@ function runner(recipe: (line: string, say: (line: string) => void, exit: (code:
     if (command === "recipe_available") return (opts.available === false ? { ok: false, reason: "Running plugins needs lust." } : { ok: true, lust: "lust" }) as T;
     if (command === "recipe_build") {
       const code = opts.buildCode ?? 0;
-      return { code, stdout: "", stderr: code ? "boom" : "", exe: code ? null : `/root/slot-${String(args.slot)}/recipe`, main: `/root/slot-${String(args.slot)}/src/main.rs` } as T;
+      return { code, stdout: opts.marks ?? "", ...(opts.marks !== undefined ? { marked: true } : {}), stderr: code ? "boom" : "", exe: code ? null : `/root/slot-${String(args.slot)}/recipe`, main: `/root/slot-${String(args.slot)}/src/main.rs` } as T;
     }
     if (command === "recipe_start") {
       current = String(args.run);
@@ -55,6 +55,8 @@ function runner(recipe: (line: string, say: (line: string) => void, exit: (code:
   return { invoke, listen, commands, listeners: () => [...handlers.values()].reduce((n, s) => n + s.size, 0) };
 }
 
+const pair = (r: { invoke: Invoke; listen: Listen }): [Invoke, Listen] => [r.invoke, r.listen];
+
 // --- A recipe that only logs, built and run through the runner.
 {
   const r = runner((line, say) => {
@@ -81,6 +83,19 @@ function runner(recipe: (line: string, say: (line: string) => void, exit: (code:
   check("every send names the run", r.commands.filter((c) => c.command === "recipe_send").every((c) => c.args.run === start.args.run));
   check("done closes the input", r.commands.some((c) => c.command === "recipe_close_input"));
   check("the listeners are gone after the exit", r.listeners() === 0, r.listeners());
+}
+
+// --- The unread s.apply calls lust marked come back with the build; a runner whose lust was not asked gives none.
+{
+  const mark = JSON.stringify({ schema: 1, kind: "unread_result", fn: "lime_recipe::Session::apply", file: "/root/slot-0/src/main.rs", span: { line: 2, col: 7 } });
+  // The mark is at byte column 7 of a line indented with a tab: the call reports column 10 (src/recipe/host.ts).
+  const SOURCE = "fn main() {\n\tlet s.apply(a)?;\n}\n";
+  const marked = await new AppRecipes(...pair(runner(() => {}, { marks: mark }))).build("m", SOURCE, false);
+  check("the marks of a build are its unread calls", JSON.stringify(marked.unread) === JSON.stringify([{ line: 2, col: 10 }]), marked);
+  const none = await new AppRecipes(...pair(runner(() => {}, { marks: "" }))).build("m", SOURCE, false);
+  check("a lust that was asked and marked nothing: no unread call", JSON.stringify(none.unread) === "[]", none);
+  const old = await new AppRecipes(...pair(runner(() => {}))).build("m", SOURCE, false);
+  check("a lust that was not asked: no marks at all", old.ok && old.unread === undefined, old);
 }
 
 // --- The runner's stop is the run's reason.

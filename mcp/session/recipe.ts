@@ -24,8 +24,7 @@ import { fixedReply } from "../line-diff.ts";
 import { lineMap, lineText, locate, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
 import { presetProblem, readPreset } from "../nuggets.ts";
 import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue.ts";
-import { builtText } from "../../src/recipe/host.ts";
-import { unreadApplyLines } from "../../src/recipe/unread-applies.ts";
+import { builtText, unreadKeys } from "../../src/recipe/host.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -498,7 +497,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       return done;
     },
     applyOne: (site) => call(site),
-  }, unreadApplyLines(builtText(built.source, resolved.suffix)), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected, signal: meta?.signal });
+  }, unreadKeys(built.unread), { silent: !replaying && maxSteps === undefined && process.env.LIME_RECIPE_QUEUE !== "0", timeLimitS: limits.timeoutS, selected: () => this.selected, signal: meta?.signal });
   const queued = (site: RecipeCallSite) => queue.call(site, call);
   const timings = new Map<string, { line: number; tool: string; calls: number; ms: number; sink: KernelSink }>();
   /** The kernel's timing for this run's tree calls (mesh-end.ts); the calls that follow the recipe's end are kept apart. */
@@ -591,6 +590,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return this.recipeRun({ ...input, [QUEUE_REPLAY]: queue.replay }, meta);
   }
   if (replaying) notes.push(`Built one by one: the tool at line ${locate(map, replaying.line).line} was refused inside a queued boolean (${replaying.reason}).`);
+  // A lust older than 0.3.0 does not say which applies are unread (`--mark-unread`), so none queued silently.
+  if (!built.unread && applied >= 4 && queue.report.queued === 0 && !replaying && process.env.LIME_RECIPE_QUEUE !== "0") notes.push("This lust does not mark unread applies (it is older than 0.3.0), so each apply was built in its place; s.apply_later still queues.");
   for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${locate(map, row.line).line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
   if (checkpoint && replay < checkpoint.events.length && out.ok) {
     out.ok = false;

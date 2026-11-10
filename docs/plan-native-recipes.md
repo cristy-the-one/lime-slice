@@ -492,6 +492,24 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
      `Ok` value is never read, `{"kind":"unread_result","fn":"lime_recipe::Session::apply","span":{"line":L,"col":C}}`,
      with the span the call reports through `Location::caller()`; lust's checker knows each value's uses, so it also
      covers what text cannot (a helper that returns the reply, a binding never read).
+     *Since lust 0.3.0 (2026-11-10, `claude/lust-release-package`):* lust has the flag, and the scan and its test are
+     gone. Both hosts build with `--mark-unread lime_recipe::Session::apply` (`mcp/recipe.ts`, the runner's `build`), a
+     passing build's stdout lists the unread calls, `buildRecipe` carries them as `BuildResult.unread`, and the queue
+     takes a call as unread by its line and column (`unreadKeys`), not by its line: a call line carries both (`at`).
+     A program kept for an unchanged text keeps its marks (they are in the kept output). What changed for recipes: a
+     recipe with a function of its own called `apply` now queues (the scan claimed nothing there), and of two applies
+     on one line the unread one queues (the scan gave up the line). What lust reports and a call reports differ in one
+     way: the span's column counts bytes, `Location::caller()` counts display columns as rustc does (a tab is four, a
+     wide character two; seen with `s.log("é 日本"); s.apply(..)`: 27 against 24, and a tab-indented call 4 against 7).
+     The host turns a mark into the reported column when everything before it on its line is ASCII or a tab, and
+     leaves the mark out otherwise, so that apply is built in its place (asked of lust-lang: the reported column in
+     the `unread_result` line). Only `Session::apply` is marked: `apply_later` and `apply_now` say what they want,
+     `lettering` sends a text op, which never queues, and no recipe in the corpus, the bench or the library sends a
+     queueable apply through `s.call("model_apply", ..)`. A lust without the flag (its `--help` does not name it; an
+     older build answers its usage and exit code 2 to it) is not asked: `unread` is unset, nothing queues silently, the
+     hint about read replies is not given, and the reply's notes say why. The browser tests' scripted runner builds
+     nothing and returns no marks, so they run with no silent queue, as they did (their engine stand-in has no
+     `toolBox`); `src/recipe/tauri.test.ts` covers marks through the app's transport.
    - **Host** (`src/recipe/queue.ts`, shared by the MCP session and the app's Plugins run and plugin-step rebuild): an
      unread line's plain fuse or cut (boolean, extrude, revolve, loft naming no face, edge or anchor) is answered
      `{ok, queued}` after a pre-check: the engine builds its tool alone (`toolBox`, a new stateless tree call) and its
