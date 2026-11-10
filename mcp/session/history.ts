@@ -116,7 +116,7 @@ async function step(this: Session, obj: PlateObject, direction: "undo" | "redo")
   return this.gotoNode(obj, target);
 }
 
-async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>): Promise<Record<string, unknown>> {
+async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: number, raw: unknown, exprs?: Record<string, string>, probe = false): Promise<Record<string, unknown>> {
   const refusal = editRefusal(tree, node);
   if (refusal) return refuse("step-kept", refusal);
   const baked = this.bake(obj, raw);
@@ -137,7 +137,8 @@ async function editRoot(this: Session, obj: PlateObject, tree: ModelTree, node: 
     return { ok: true, node: nodeHandle(node), stored: op, typed: baked.typed };
   }
   if (baked.op.kind !== "root" || tree.root.kind !== "primitive") return refuse("bad-op", "The new solid's first step takes a root edit.");
-  if (!obj.probes.has(probeKey(String(node), baked.op))) return refuse("not-probed", "Probe this edit first. It was not applied.", undefined, NEXT.probe);
+  // A root's probe only says its sizes can be rebuilt from; the reopen below is the check, so probe: true stands for it.
+  if (!probe && !obj.probes.has(probeKey(String(node), baked.op))) return refuse("not-probed", "Probe this edit first, or pass probe: true. It was not applied.", undefined, NEXT.probe);
   const { kind: _kind, exprs: _exprs, ...solid } = baked.op;
   // --- D25. The new sizes keep the expressions this call typed; typed numbers drop the old ones.
   const root = { kind: "primitive" as const, solid, ...(exprs ? { exprs } : {}) };
@@ -181,7 +182,12 @@ function rename(this: Session, obj: PlateObject, node: number | null, label: str
   return { ok: true, node: nodeHandle(node), label: row.label };
 }
 
-async function edit(this: Session, obj: PlateObject, node: number | null, raw: unknown): Promise<Record<string, unknown>> {
+/**
+ * model_edit {op}: replace a step and replay the steps under it. The op needs a passed probe, or `probe: true` to
+ * check it here first, on the solid the step is applied to (in the audited sessions six of nineteen edits were refused
+ * with "Probe this edit first", which had no probe: true to offer, as model_apply has).
+ */
+async function edit(this: Session, obj: PlateObject, node: number | null, raw: unknown, probe = false): Promise<Record<string, unknown>> {
   const typedText = this.pendingTexts[0];
   this.pendingTexts = [];
   const toolReason = await this.openJoinTool(raw);
@@ -193,7 +199,7 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
   const typed = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
   const first = typed ? this.bake(obj, structuredClone(typed)) : null;
   const exprs = typed && first && !("reason" in first) ? this.plainLinks(obj, typed, typedText, first.op) : undefined;
-  if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw, exprs);
+  if (parent === null || parent === undefined) return this.editRoot(obj, tree, node, raw, exprs, probe);
   // A split to print is planned on the solid it cuts, the parent's: a profile and connectors read its section there.
   let planned: ReturnType<Session["bake"]> = { reason: "The edit needs an op." };
   if ((raw as { kind?: unknown } | null)?.kind === "partition" && parent !== tree.current) {
@@ -205,8 +211,14 @@ async function edit(this: Session, obj: PlateObject, node: number | null, raw: u
   } else planned = this.bake(obj, raw);
   const baked = planned;
   if ("reason" in baked) return refuse("bad-op", baked.reason);
-  const probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
-  if (!probed) return refuse("not-probed", "Probe this edit first. It was not applied.", undefined, NEXT.probe);
+  let probed = [parent, node, tree.current].some((id) => obj.probes.has(probeKey(String(id), baked.op)));
+  if (!probed && probe) {
+    // The same check model_probe {node} makes, on the parent's solid; a refusal is the probe's own, and nothing changes.
+    const checked = await this.probe(obj, structuredClone(raw), nodeHandle(parent));
+    if (checked.ok !== true) return { ...checked, applied: false };
+    probed = true;
+  }
+  if (!probed) return refuse("not-probed", "Probe this edit first, or pass probe: true. It was not applied.", undefined, NEXT.probe);
   if (baked.op.kind === "split") {
     const note = this.splitCheck(obj, baked.op);
     if (note.bad) return refuse("does-not-fit", note.text);

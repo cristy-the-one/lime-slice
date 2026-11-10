@@ -34,6 +34,7 @@ import { NEXT, refuse } from "../refusals.ts";
 import { checkpointJson, checkpointSignature, CHECKPOINT_MAX_BYTES, type CheckpointEvent, type RecipeCheckpoint } from "../recipe-checkpoint.ts";
 import { autosavePath } from "../autosave.ts";
 import { readFile } from "node:fs/promises";
+import { environmentOf, proofData, proofText, startContext, type RunProof } from "./run-proof.ts";
 import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, type KernelSink } from "./mesh-end.ts";
 
 /**
@@ -214,7 +215,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return { ok: false, code: "recipe-compile", reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
   }
   const buildHash = bodyHash(`${built.source}\n${resolved.suffix}`);
-  const environmentHash = bodyHash(checkpointJson({ settings: this.settings, printer: this.printer(), nozzleMm: this.library.nozzleMm, params: this.params, paramText: this.paramText }));
+  const environmentHash = environmentOf(this);
+  // The parts on the plate beside the one the run is given, when it begins (run-proof.ts).
+  const plateOthers = this.objects.filter((row) => row.id !== input.object).length;
   if (checkpoint) {
     if (checkpoint.buildHash !== buildHash || checkpointJson(checkpoint.params) !== checkpointJson(params) || input.object !== undefined || replacing || rebuild) return refuse("recipe-failed", "The saved checkpoint belongs to different source, ingredients, parameters, or a different target. Use the original run's values, or pass discardCheckpoint:true to start a new run and leave the saved parts on the plate.");
     if (checkpoint.environmentHash !== environmentHash) return refuse("recipe-failed", "The printer, settings, or project parameters changed since the checkpoint. Restore them, or pass discardCheckpoint:true to start a new run.");
@@ -489,7 +492,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       touch(object);
       const lastSite = ops[ops.length - 1]!.site;
       this.noteStage(`recipe ${name}: call ${lastSite.id}, building ${ops.length} queued applies as ${groups.length} boolean${groups.length === 1 ? "" : "s"}, ${lineText(map, lastSite.line)}`);
-      const rows = ops.map((q) => ({ op: bakedOps.get(q.op)!.op, ...(typeof q.op.label === "string" ? { label: q.op.label } : {}) }));
+      const rows = ops.map((q) => ({ op: bakedOps.get(q.op)!.op, ...(typeof q.op.label === "string" ? { label: q.op.label } : {}), ...(q.tool ? { box: q.tool.box } : {}) }));
       const done = await this.applyQueued(obj, rows, groups, () => queue.stopped());
       if (done.ok) applied += ops.length;
       return done;
@@ -518,7 +521,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const start = {
     params,
-    context: { units: "mm", host: "mcp", nativeGeometry: true, limits: { canAssemble: true, canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild, timeLimitS: limits.timeoutS }, ...(objectArg ? { object: objectArg } : {}), bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    context: startContext(this, { canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild, timeLimitS: limits.timeoutS }, objectArg),
   };
   /** Takes the run back; a rebuild also shows the old branch again, where the part stood before it. */
   const rollback = async () => {
@@ -545,7 +548,17 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     out = await host.run(built.exe, start, input.profile === true ? profiledCall : journalCall, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
     // --- docs/plan-native-recipes.md 7.1: `done` builds what is still queued, before the parts are kept.
     if (out.ok && out.done && queue.holding) {
-      const flushed = await queue.flushAll();
+      // The recipe's program has ended, so its clock (`out.ms`) has stopped: this build is timed here and added to
+      // the run, and to the profile as the row `done`, so runMs, the split and a kept plugin's `built:` hold it.
+      const began = performance.now();
+      const sink = newSink();
+      if (tap) tap.current = sink;
+      let flushed: RecipeReply | null;
+      try { flushed = await queue.flushAll(); }
+      finally { if (tap) tap.current = null; }
+      const took = performance.now() - began;
+      out.ms += Math.round(took);
+      if (tap) timings.set("done", { line: 0, tool: "done", calls: 1, ms: took, sink });
       // A cancel or the time limit that came while it built takes the whole run back, as during the run.
       const stop = flushed && !flushed.ok ? flushed.error : queue.stopped();
       if (stop) {
@@ -783,6 +796,24 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     this.flushAutosave();
     await this.autosaveSettled();
   }
+  // --- recipe_run {keep}: what this apply proves about the plugin it is kept as (run-proof.ts). A run that could
+  // checkpoint, one asked to mesh at its end (its steps skip a guard), one with a late parameter (the check refuses
+  // it), a resumed run and a rebuild prove nothing the check could use: the check then makes its dry run.
+  const givenPart = objectArg !== undefined ? this.find(objectArg) : undefined;
+  const proof: RunProof | undefined = input.keep !== undefined && !checkpoint && !mayCheckpoint && !rebuild && input.meshAtEnd !== true && !out.lateParams?.length
+    ? {
+        text: proofText(builtText(built.source, resolved.suffix)),
+        params: structuredClone(params),
+        data: Object.fromEntries([...dataUsed].map(([key, row]) => [key, proofData(row.value)])),
+        ...(objectArg !== undefined ? { object: objectArg } : {}),
+        ...(givenPart?.tree ? { treeKey: givenPart.tree.key } : {}),
+        from: objectArg !== undefined ? touched.get(objectArg) ?? null : null,
+        environment: environmentHash,
+        plateOthers,
+        context: JSON.stringify(start.context),
+        runMs: out.ms,
+      }
+    : undefined;
   const nuggets = rerun || rebuild ? [] : this.harvest(key, built.source, refused, refusedArgs, plugin, input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : undefined, typeof input.preset === "string" ? input.preset : undefined);
   return {
     ok: true,
@@ -798,15 +829,15 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     ...(rebuilt ? { rebuilt } : {}),
     ...report,
     ...(nuggets.length && input.keep === undefined ? { nuggets } : {}),
-    ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null, data)),
+    ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null, data, proof)),
   };
 }
 
 /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
-async function keepRun(this: Session, keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null, data?: Record<string, RecipeData>): Promise<Record<string, unknown>> {
+async function keepRun(this: Session, keep: unknown, entryKey: string | null, source: string, name: string, objectArg: string | undefined, ingredients: Record<string, KeptIngredient>, objectFrom: number | null, data?: Record<string, RecipeData>, proof?: RunProof): Promise<Record<string, unknown>> {
   if (keep === undefined) return {};
   const k = (keep && typeof keep === "object" ? keep : {}) as { title?: unknown; description?: unknown };
-  const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, objectFrom, ingredients, ...(data ? { data } : {}) });
+  const saved = await this.pluginSave({ source, title: k.title, description: k.description, name, objectHint: objectArg, objectFrom, ingredients, ...(data ? { data } : {}), ...(proof ? { proof } : {}) });
   if ("reason" in saved) return { keepRefused: saved.reason };
   const row = entryKey ? this.rustRecipes.get(entryKey) : undefined;
   if (row) row.plugin = { id: saved.id, version: saved.version, sha256: saved.sha256 };

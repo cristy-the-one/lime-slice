@@ -64,7 +64,7 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_goto: (s, obj, input) => s.gotoNode(obj, s.nodeOf(obj, input.node)),
   model_undo: (s, obj) => s.step(obj, "undo"),
   model_redo: (s, obj) => s.step(obj, "redo"),
-  model_edit: (s, obj, input) => s.edit(obj, s.nodeOf(obj, input.node), input.op),
+  model_edit: (s, obj, input) => s.edit(obj, s.nodeOf(obj, input.node), input.op, input.probe === true),
   model_drop: (s, obj, input) => s.drop(obj, s.nodeOf(obj, input.node)),
   model_rename: (s, obj, input) => s.rename(obj, s.nodeOf(obj, input.node), String(input.label ?? "")),
   model_commit: (s, obj) => s.commit(obj),
@@ -297,18 +297,37 @@ async function ghostMesh(this: Session, obj: PlateObject, raw: unknown): Promise
   return { mesh, touches: disjointBoolean(obj.solid.bounds, spec, baked.op.op) === null };
 }
 
+/**
+ * `rays: [{point, direction} | {x, y}]` asks many rays of one solid in one call (in the audited sessions surface_at
+ * was called 224 times, 194 of them right after another): `hits` has one row per ray, in order, each what a single
+ * call answers without `ok` and `frame`; a ray that misses or is not a ray is {hit: false, reason}.
+ */
+function manyRays(solid: Parameters<typeof surfaceAtSolid>[0], input: Record<string, unknown>, frame: string): Record<string, unknown> | null {
+  if (!Array.isArray(input.rays)) return null;
+  if (input.point !== undefined || input.direction !== undefined || input.x !== undefined || input.y !== undefined) return refuse("conflicting-arguments", "surface_at takes rays, or one ray as point and direction or x and y, not both.");
+  const hits = input.rays.map((ray) => {
+    const { ok, ...rest } = surfaceAtSolid(solid, ray && typeof ray === "object" && !Array.isArray(ray) ? ray as Record<string, unknown> : {});
+    return ok === false ? { hit: false, ...rest } : rest;
+  });
+  return { ok: true, frame, hits };
+}
+
 async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   // --- R-B. A mesh has no solid: the ray meets its triangles where the plate holds them.
   if (this.meshBlock(obj)) {
     const placed = this.placed(obj);
-    const hit = surfaceAtSolid({ positions: placed.positions, triangles: new Uint32Array(0), bounds: { min: [...placed.bounds.min], max: [...placed.bounds.max] } }, input);
+    const mesh = { positions: placed.positions, triangles: new Uint32Array(0), bounds: { min: [...placed.bounds.min], max: [...placed.bounds.max] } } as Parameters<typeof surfaceAtSolid>[0];
+    const many = manyRays(mesh, input, "plate");
+    if (many) return many;
+    const hit = surfaceAtSolid(mesh, input);
     return hit.ok === false ? hit : { ...hit, frame: "plate" };
   }
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
   // The ray and the hit in the frame ops are typed in, so a cut at the hit point lands on it.
-  return { ...surfaceAtSolid(typedView(obj.solid, typedPoseOf(obj)), input), frame: obj.frame ?? "model" };
+  const view = typedView(obj.solid, typedPoseOf(obj));
+  return manyRays(view, input, obj.frame ?? "model") ?? { ...surfaceAtSolid(view, input), frame: obj.frame ?? "model" };
 }
 
 async function modelCheck(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {

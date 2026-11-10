@@ -27,12 +27,6 @@ export function failedGhostMaterial() {
 }
 // --- end A3 ---
 
-export function writeColor(hex: number, into: Float32Array, offset: number) {
-  into[offset] = ((hex >> 16) & 255) / 255;
-  into[offset + 1] = ((hex >> 8) & 255) / 255;
-  into[offset + 2] = (hex & 255) / 255;
-}
-
 /** A solid outline broken into short dashes, in millimetres along each segment, so it reads as removed. */
 export function dashSegments(positions: number[]): number[] {
   const dash = 1.8;
@@ -270,10 +264,4 @@ export function turnQuaternion(turn: Vec3 | undefined): THREE.Quaternion {
   const rad = Math.PI / 180;
   return new THREE.Quaternion().setFromEuler(new THREE.Euler(turn[0] * rad, turn[1] * rad, turn[2] * rad, "ZYX"));
 }
-export function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
-  const abx = bx - ax;
-  const aby = by - ay;
-  const length2 = abx * abx + aby * aby;
-  const t = length2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / length2));
-  return Math.hypot(px - (ax + abx * t), py - (ay + aby * t));
-}
+export { segmentDistance } from "./edge-screen";

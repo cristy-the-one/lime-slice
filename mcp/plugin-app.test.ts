@@ -554,6 +554,50 @@ if (viaData) {
   } else check("three part box: the library holds the plugin", false, file);
 }
 
+// --- 9. A flush meshes only what is read (the window's runner, as the MCP session's): four extruded pads and a bore
+// in each queue as two booleans, and the first, which holds no primitive boolean and is not the last, asks the engine
+// for no mesh. The solid, its mesh and the stored steps are those of a run whose every group was meshed. Real Open
+// CASCADE only: the stand-in builds no extrude alone, so there nothing but primitive booleans queue.
+if (real) {
+  const source = [
+    "use lime_recipe::{ops, Json, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    "    let p = s.solid_new(ops::cuboid(60.0, 60.0, 10.0)).unwrap();",
+    "    for c in [[-15.0, -15.0], [15.0, -15.0], [-15.0, 15.0], [15.0, 15.0]] {",
+    '        s.apply(&p, Json::obj().set("kind", "extrude").set("op", "fuse").set("origin", [c[0], c[1], 8.0]).set("profile", Json::arr(vec![[-4.0, -4.0], [4.0, -4.0], [4.0, 4.0], [-4.0, 4.0]])).set("depth", 8.0)).unwrap();',
+    '        s.apply(&p, ops::boolean("cut", ops::cylinder(1.5, 8.0), [c[0], c[1], 12.0])).unwrap();',
+    "    }",
+    "    s.done(&p);",
+    "}",
+    "",
+  ].join("\n");
+  const pads = async (meshAll: boolean) => {
+    const worker = loadEngineWorker(root);
+    const session = new Session(worker);
+    const printer = (session as unknown as Internal).printer();
+    const base = appEngine(worker);
+    const asked: boolean[] = [];
+    const engine: AppEngine = {
+      ...base,
+      tree: (key, node, request) => {
+        if (request.call === "apply" && (request.op as { source?: { kind?: string } } | undefined)?.source?.kind === "queue") asked.push(request.mesh === false);
+        const { mesh: _mesh, ...meshed } = request;
+        return base.tree(key, node, meshAll ? meshed : request);
+      },
+    };
+    const fresh = await runPluginFresh({ part: null, plugin: { id: "pads", version: 1, sha256: bodyHash(source), api: host.api().join(".") }, body: source, params: {}, context: { bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: (session as unknown as Internal).library.nozzleMm }, recipes: host, engine, env: envOf(session, "pads"), runId: "9a9b9c9d" });
+    const solid = fresh.ok ? JSON.stringify([fresh.solid.fingerprint, Array.from(fresh.solid.positions), Array.from(fresh.solid.triangles)]) : "none";
+    return { fresh, asked, solid, ops: fresh.ok ? pathOps(fresh.tree) : [] };
+  };
+  const lean = await pads(false);
+  const full = await pads(true);
+  check("pads: the window's run builds them", lean.fresh.ok === true && full.fresh.ok === true, lean.fresh.ok ? full.fresh : lean.fresh);
+  check("pads: two queued booleans, the first asked for no mesh, the last meshed", JSON.stringify(lean.asked) === JSON.stringify([true, false]) && full.asked.length === 2, { lean: lean.asked, full: full.asked });
+  check("pads: the same solid and mesh as with every group meshed", lean.solid !== "none" && lean.solid === full.solid, { lean: lean.solid.length, full: full.solid.length });
+  check("pads: the same stored steps, the root and one for each apply", lean.ops.length === 10 && JSON.stringify(lean.ops) === JSON.stringify(full.ops), { lean: lean.ops.length, full: full.ops.length });
+}
+
 if (failed) {
   console.error(`plugin-app: ${failed} failed`);
   process.exit(1);

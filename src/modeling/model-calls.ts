@@ -145,6 +145,8 @@ export function describeReply(own: SolidView, input: Record<string, unknown>, fr
     lengthMm: edge.lengthMm,
     ...(edge.dir ? { dir: edge.dir } : {}),
   })), input.edgesCursor, input.limit);
+  // limit: 0 asks how much there is, with no rows: the volume, the box and the two counts.
+  const counts = input.limit === 0;
   return {
     ok: true,
     ...extra,
@@ -153,10 +155,11 @@ export function describeReply(own: SolidView, input: Record<string, unknown>, fr
     fingerprint: solid.fingerprint,
     bounds: solid.bounds,
     frame,
-    faces: faces.rows,
-    edges: edges.rows,
-    ...(faces.nextCursor ? { facesNextCursor: faces.nextCursor, nextCursor: faces.nextCursor } : {}),
-    ...(edges.nextCursor ? { edgesNextCursor: edges.nextCursor } : {}),
+    faces: counts ? [] : faces.rows,
+    edges: counts ? [] : edges.rows,
+    ...(counts ? { faceCount: solid.faces.length, edgeCount: solid.edges.length } : {}),
+    ...(!counts && faces.nextCursor ? { facesNextCursor: faces.nextCursor, nextCursor: faces.nextCursor } : {}),
+    ...(!counts && edges.nextCursor ? { edgesNextCursor: edges.nextCursor } : {}),
   };
 }
 

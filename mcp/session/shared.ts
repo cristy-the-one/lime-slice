@@ -364,6 +364,8 @@ export interface Job {
   gcode?: string;
   wire?: Record<string, unknown>;
   error?: string;
+  /** A poll asked of the slicer and not yet answered: the next wait takes its answer rather than asking again. */
+  polling?: Promise<{ text: string } | { thrown: unknown }>;
 }
 
 export interface SliceSummary {

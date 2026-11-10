@@ -25,6 +25,7 @@ import { bridgeTarget, mirror, type BridgeLink } from "./bridge-client.ts";
 import { RECEIPT_WAIT_MS, tandemEarlier, tandemOutcome } from "./tandem-receipts.ts";
 import { ProtocolError, type Engine } from "./engine.ts";
 import { imagesOf, withImages } from "./inline.ts";
+import { leanReply } from "./lean.ts";
 import { RecipeHost } from "./recipe.ts";
 import { blendOf } from "./request.ts";
 import { guideByUri } from "./guides.ts";
@@ -61,11 +62,14 @@ import { paintMethods, paintHandlers } from "./session/paint.ts";
 import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 import { stressMethods, stressHandlers } from "./session/stress.ts";
 import { NEXT, refuse, withCode } from "./refusals.ts";
-import { patchStep } from "./edit-patch.ts";
+import { patchStep, patchSteps } from "./edit-patch.ts";
 import type { RecipeCheckpoint } from "./recipe-checkpoint.ts";
 
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
+
+/** The tools whose `commit: true` runs model_commit after them, in the same call. model_build commits by default. */
+const COMMIT_AFTER = new Set(["model_apply", "model_apply_batch"]);
 
 const HANDLERS: Record<string, ToolHandler> = {
   ...recipeHandlers,
@@ -181,6 +185,11 @@ export class Session {
   projectFonts: LimeProject["fonts"];
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   recipeDepth = 0;
+  /** The model_build about to run stands for a model_edit {patch | patches}: its reply does not teach the patch form. */
+  patchedBuild = false;
+  /** session_info has said its fixed parts in this session, and the bridge state its Tandem sentences were said for. */
+  infoSaid = false;
+  infoBridgeSaid = "";
   /** recipe_run {profile}: each tree call of the run asks the kernel for its timing and adds it here (mcp/session/mesh-end.ts). */
   kernelTap: import("./session/mesh-end.ts").KernelTap | null = null;
   /** recipe_run {meshAtEnd}: parts whose newest step has no mesh yet, by object id, and the step. */
@@ -265,13 +274,16 @@ export class Session {
     return opened ? done.then((value) => withImages({ ...value, groupOpened: opened }, imagesOf(value))) : done;
   }
 
-  runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+  runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean, nested = false): Promise<Record<string, unknown>> {
     // model_edit {node: label, patch}: the step's fields change in the build's own ops and the build runs again from there.
-    if (name === "model_edit" && args && typeof args === "object" && (args as Record<string, unknown>).patch !== undefined) {
+    // patches does the same for several steps, with insert and remove, in one rebuild.
+    const patching = name === "model_edit" && args && typeof args === "object";
+    if (patching && ((args as Record<string, unknown>).patch !== undefined || (args as Record<string, unknown>).patches !== undefined)) {
       const shape = validateTool(name, args);
       if (shape) throw new ProtocolError(shape);
       const rewritten = this.patchToBuild(args as Record<string, unknown>);
       if ("refusal" in rewritten) return Promise.resolve(rewritten.refusal);
+      this.patchedBuild = true;
       name = "model_build";
       args = rewritten.args;
     }
@@ -292,7 +304,7 @@ export class Session {
     this.inflight += 1;
     // A detachable call's work stops only for slice_cancel: the request's own cancel, which a client also sends when it
     // gives up waiting, hands the work to a background job instead of throwing it away.
-    const detachable = !inPlan && DETACHABLE.has(name);
+    const detachable = !inPlan && !nested && DETACHABLE.has(name);
     const stop = new AbortController();
     const ctx: CallMeta = detachable ? { progressToken: meta?.progressToken, signal: stop.signal } : (meta ?? {});
     let result: ReturnType<Session["dispatch"]>;
@@ -336,8 +348,21 @@ export class Session {
         this.scheduleAutosave();
       }
     });
-    if (!detachable) return work;
-    return this.detachable(name, input, work, ctx, stop, meta?.signal);
+    // commit: true on model_apply and model_apply_batch: when the edit applied, model_commit runs as a call of its own
+    // through this same path (its mirror, receipt and autosave), and its answer rides in the reply. A recipe's parts
+    // are committed when the run ends, so inside one it is left alone.
+    const chained = COMMIT_AFTER.has(name) && input.commit === true && this.recipeDepth === 0
+      ? work.then(async (answer) => {
+          if (answer.ok !== true) return answer;
+          const object = typeof input.object === "string" && input.object !== "" ? input.object : this.selected;
+          const { ok, ...commit } = await this.runOpenCall("model_commit", { object }, ctx, inPlan, true);
+          return { ...answer, committed: ok === true, commit: ok === true ? commit : { ok, ...commit } };
+        })
+      : work;
+    // A call from the chat reads the lean form (mcp/lean.ts); a step of a recipe or a plan reads the reply whole.
+    const said = inPlan || this.recipeDepth > 0 ? chained : chained.then((value) => leanReply(name, input, value));
+    if (!detachable) return said;
+    return this.detachable(name, input, said, ctx, stop, meta?.signal);
   }
 
 
@@ -509,7 +534,7 @@ export class Session {
    * The build's resume then reuses every step before it. Only an object model_build made has ops to patch.
    */
   patchToBuild(input: Record<string, unknown>): { args: Record<string, unknown> } | { refusal: Record<string, unknown> } {
-    if (input.op !== undefined) return { refusal: refuse("conflicting-arguments", "model_edit takes op or patch, not both.") };
+    if (input.op !== undefined || (input.patch !== undefined && input.patches !== undefined)) return { refusal: refuse("conflicting-arguments", "model_edit takes one of op, patch, or patches.") };
     const obj = this.find(typeof input.object === "string" && input.object !== "" ? input.object : this.selected);
     if (!obj) return { refusal: refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate) };
     const recipe = obj.recipe;
@@ -521,7 +546,10 @@ export class Session {
       const { params: _params, ...rest } = n.args as Record<string, unknown>;
       return validateTool("model_apply", rest);
     };
-    const patched = patchStep(recipe.ops as Record<string, unknown>[], input.node, input.patch, check);
+    // patches: several steps changed, removed or inserted, and one rebuild from the first of them.
+    const patched = input.patches !== undefined
+      ? patchSteps(recipe.ops as Record<string, unknown>[], input.patches, check)
+      : patchStep(recipe.ops as Record<string, unknown>[], input.node, input.patch, check);
     if ("reason" in patched) return { refusal: refuse(patched.code, patched.reason, { object: obj.id }) };
     return { args: { object: obj.id, base: structuredClone(recipe.base), ops: patched.ops, params: kept, ...(recipe.name ? { name: recipe.name } : {}) } };
   }

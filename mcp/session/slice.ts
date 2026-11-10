@@ -264,7 +264,28 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
   let stage = "";
   while (job.status === "running" && Date.now() < deadline) {
     if (meta?.signal?.aborted) return refuse("cancelled", "The wait was cancelled.", { job: job.handle, status: "cancelled" });
-    const poll = JSON.parse(await this.ask(this.engine.slicePoll(String(job.engineId)))) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
+    // The poll is asked of the slicer's process, which answers in turn: behind a calibration, a blend or a stress
+    // study it waits for that call, and a finished slice crosses over whole, G-code included. Neither may hold this
+    // wait past its limit, so the poll races the deadline. A poll still out when the wait ends stays on the job, and the
+    // next wait takes its answer: a finished result is asked for once and never dropped.
+    const asked = (job.polling ??= Promise.resolve()
+      .then(() => this.ask(this.engine.slicePoll(String(job.engineId))))
+      .then((text) => ({ text }), (thrown: unknown) => ({ thrown })));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const answered = await Promise.race([
+      asked,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+        meta?.signal?.addEventListener("abort", () => resolve(null), { once: true });
+      }),
+    ]);
+    clearTimeout(timer);
+    if (answered === null) break;
+    // Another wait on this job may have taken the same answer already; the job then is no longer running.
+    if (job.polling === asked) job.polling = undefined;
+    else if (job.status !== "running") break;
+    if ("thrown" in answered) throw answered.thrown;
+    const poll = JSON.parse(answered.text) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
     if (typeof poll.fraction === "number") {
       fraction = poll.fraction;
       stage = poll.stage ?? "";
@@ -410,7 +431,12 @@ function finished(this: Session, handle?: string): Job | null {
   return this.latest;
 }
 
-function gcodeSummary(this: Session, handle?: string): Record<string, unknown> {
+/**
+ * gcode_summary. The first and last 30 G-code lines were 60% of the reply and are rarely what the caller asked for
+ * (gcode_read reads any lines), and the numbers came unrounded. So: seconds whole, grams and cost to 0.01, and no head
+ * or tail. `lines: true` gives the reply as it was, lines and raw numbers.
+ */
+function gcodeSummary(this: Session, handle?: string, lines = false): Record<string, unknown> {
   const job = this.finished(handle);
   if (!job?.gcode || !job.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
@@ -420,6 +446,19 @@ function gcodeSummary(this: Session, handle?: string): Record<string, unknown> {
     custom: this.customBlocks(),
     maxNozzleC: this.printer().maxNozzleC,
   });
+  if (!lines && process.env.LIME_MCP_LEAN !== "0") {
+    return {
+      ok: true,
+      seconds: Math.round(summary.seconds),
+      grams: roundTo(summary.grams, 2),
+      cost: roundTo(summary.cost, 2),
+      features: summary.features.map((row) => ({ label: row.label, seconds: Math.round(row.seconds), grams: roundTo(row.grams, 2) })),
+      warnings: summary.warnings,
+      ...standsOnNothing(job.wire.partHold),
+      review: review.review,
+      custom: review.custom,
+    };
+  }
   return {
     ok: true,
     seconds: summary.seconds,
@@ -559,7 +598,7 @@ export const sliceHandlers: Record<string, ToolHandler> = {
   slice_start: (s, input) => s.sliceStart(input.cancelRunning === true, input.scope),
   slice_wait: (s, input, meta) => s.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined),
   slice_cancel: (s, input) => s.sliceCancel(String(input.job)),
-  gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined),
+  gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined, input.lines === true),
   gcode_export: (s, input) => s.gcodeExport(input),
   export_3mf: (s, input) => input.pieces === true ? s.exportPieceMeshes(input) : s.export3mf(String(input.name)),
   mesh_stats: (s, input) => s.meshStats(String(input.object)),

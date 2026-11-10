@@ -73,8 +73,19 @@ Session.prototype.recipeRun = function(input, meta) {
   return originalRecipeRun.call(this, input, meta);
 };
 const kept = await call("recipe_run", { source: flange(), name: "flange", keep: { title: "Bolt-circle flange", description: "A round flange with bolt holes on a circle and an optional centre bore." } });
+check("a run kept with its own defaults is the check: the recipe is not built a second time", checkPlateSize === undefined, checkPlateSize);
+{
+  // The same recipe kept from a run with another value: the defaults were not run, so the check runs them.
+  const lib = join(library, "bolt-circle-flange.rs");
+  const proven = readFileSync(lib, "utf8");
+  unlinkSync(lib);
+  const again = await call("recipe_run", { source: flange(), name: "flange_again", params: { holes: 7 }, keep: { title: "Bolt-circle flange", description: "A round flange with bolt holes on a circle and an optional centre bore." } });
+  check("a run kept with another value is checked with the defaults", again.ok === true && !!again.kept, again);
+  check("the default check for a new-part plugin runs on an empty plate", checkPlateSize === 0, checkPlateSize);
+  const strip = (text: string) => text.replace(/^\/\/! built: .*$/m, "//! built:");
+  check("the plugin file is the same bytes either way, but for its built time", strip(readFileSync(lib, "utf8")) === strip(proven) && /^\/\/! built: [\d.]+ s, reference plate$/m.test(proven), { proven: proven.slice(0, 500), checked: readFileSync(lib, "utf8").slice(0, 500) });
+}
 Session.prototype.recipeRun = originalRecipeRun;
-check("the default check for a new-part plugin runs on an empty plate", checkPlateSize === 0, checkPlateSize);
 const keptRow = kept.kept as { id: string; version: number; sha256: string } | undefined;
 check("keep saves the run as a plugin", kept.ok === true && keptRow?.id === "bolt-circle-flange" && keptRow.version === 1 && /^[0-9a-f]{64}$/.test(keptRow.sha256), kept);
 const file = join(library, "bolt-circle-flange.rs");
@@ -299,6 +310,74 @@ check("the part built with it stays", (await volume(String(byId.object))) > 0);
   ].join("\n");
   const big = await call("recipe_run", { source: dense, name: "dense", keep: { title: "Dense plate", description: "Reads a large table." } });
   check("data: keeping a plugin whose data is too large is refused in one sentence", big.ok === true && typeof big.keepRefused === "string" && /^The recipe data shapes\/dense is [\d.]+ MB as kept, over the 4 MB a plugin carries per name;/.test(String(big.keepRefused)) && !existsSync(join(library, "dense-plate.rs")), { keepRefused: big.keepRefused, ok: big.ok, reason: big.reason });
+}
+
+// --- recipe_run {keep}: when the run just kept proves the plugin's defaults (mcp/session/run-proof.ts), and when the
+// check still makes its dry run.
+{
+  let dryRuns = 0;
+  const inner = Session.prototype.recipeRun;
+  Session.prototype.recipeRun = function(input, meta) {
+    if (input.name === "plugin_check") dryRuns += 1;
+    return inner.call(this, input, meta);
+  };
+  const pegs = (extra = "", size = "8.0") => [
+    "use lime_recipe::{ops, Session};",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let n = s.count("pegs", 2).range(1, 6).get();',
+    `    let h = s.number("height", ${size}).range(1.0, 20.0).get();`,
+    "    let p = s.object().unwrap();",
+    extra,
+    "    for i in 0..n {",
+    '        s.apply(&p, ops::boolean("fuse", ops::cylinder(1.0, h), [-6.0 + 5.0 * i as f64, 0.0, 10.0])).unwrap();',
+    "    }",
+    "    s.done(&p);",
+    "}",
+  ].join("\n");
+  const keepOn = async (title: string, source: string, more: Record<string, unknown> = {}) => {
+    const part = String((await call("solid_new", { primitive: "box", dx: 30, dy: 20, dz: 10 })).object);
+    const before = dryRuns;
+    const history = async () => JSON.stringify((((await call("model_history", { object: part })).nodes ?? []) as { id: unknown; label: unknown; current?: unknown }[]).map((row) => [row.id, row.label, row.current === true]));
+    const reply = await call("recipe_run", { source, name: title.toLowerCase().replace(/ /g, "_"), object: part, ...more, keep: { title, description: "Pegs on a part." } });
+    return { reply, dry: dryRuns - before, part, history: await history() };
+  };
+  const a = await keepOn("Pegs a", pegs());
+  check("kept from a run with the defaults on a part: no second build", a.reply.ok === true && !!a.reply.kept && a.dry === 0, { reply: a.reply, dry: a.dry });
+  check("its built time is the run's own, on the part", /^[\d.]+ s, test part$/.test(String((a.reply.kept as { built?: string }).built)) && Math.abs(Number(String((a.reply.kept as { built?: string }).built).split(" ")[0]) - Number(a.reply.runMs) / 1000) <= 0.1, a.reply.kept);
+  const b = await keepOn("Pegs b", pegs("", "8.5"), { params: { pegs: 2, height: 8.5 } });
+  check("values given that are the defaults: no second build", b.reply.ok === true && !!b.reply.kept && b.dry === 0, { reply: b.reply, dry: b.dry });
+  const c = await keepOn("Pegs c", pegs("", "9.0"), { params: { pegs: 3 } });
+  check("a value that is not the default: the defaults are checked", c.reply.ok === true && !!c.reply.kept && c.dry === 1, { reply: c.reply, dry: c.dry });
+  {
+    // The part after a proven keep stands as after the same run kept through the check (another value given, which the recipe never reads).
+    const checked = await keepOn("Pegs a2", pegs("    // a2"), { params: { unused: 1 } });
+    check("the part ends the same whether the keep was proven or checked: the same steps, the same one shown", checked.dry === 1 && a.history.length > 20 && a.history === checked.history, { proven: a.history, checked: checked.history, dry: checked.dry });
+  }
+  const d = await keepOn("Pegs d", pegs("", "9.5"), { meshAtEnd: true });
+  check("a run asked to mesh at its end skips a guard, so the defaults are checked", d.reply.ok === true && !!d.reply.kept && d.dry === 1, { reply: d.reply, dry: d.dry });
+  const e = await keepOn("Pegs e", pegs('    let _bed = s.context().get("bedMm").is_some();', "10.0"), { timeoutS: 40 });
+  check("a recipe that reads its context, kept from a run with another time limit: checked", e.reply.ok === true && !!e.reply.kept && e.dry === 1, { reply: e.reply, dry: e.dry });
+  const f = await keepOn("Pegs f", pegs("", "10.5"), { timeoutS: 40 });
+  check("one that never reads its context: the time limit is nothing it can see", f.reply.ok === true && !!f.reply.kept && f.dry === 0, { reply: f.reply, dry: f.dry });
+  const g = await keepOn("Pegs g", pegs('    let _bed = s.context().get("bedMm").is_some();', "11.0"));
+  check("a recipe that reads its context, kept from a run the check's own context matches: no second build", g.reply.ok === true && !!g.reply.kept && g.dry === 0, { reply: g.reply, dry: g.dry });
+  // A new-part recipe: an apply may checkpoint and a dry run may not, which only a recipe reading its context sees.
+  const fresh = (extra = "", size = "12.0") => ["use lime_recipe::{ops, Session};", "fn main() {", "    let mut s = Session::start();", extra, `    let p = s.solid_new(ops::cuboid(${size}, 10.0, 4.0)).unwrap();`, "    s.done(&p);", "}"].join("\n");
+  let before = dryRuns;
+  const h = await call("recipe_run", { source: fresh(), name: "fresh_h", keep: { title: "Fresh h", description: "x" } });
+  check("a new-part recipe kept beside other parts is checked: the check is also that it needs nothing on the plate", h.ok === true && !!h.kept && dryRuns === before + 1, { h, dry: dryRuns - before });
+  before = dryRuns;
+  const alone = new Session(fakeEngine());
+  const h2 = await alone.call("recipe_run", { source: fresh("", "12.5"), name: "fresh_h2", keep: { title: "Fresh h2", description: "x" } });
+  check("a new-part recipe kept with its defaults on an empty plate: no second build", h2.ok === true && !!h2.kept && dryRuns === before, { h2, dry: dryRuns - before });
+  before = dryRuns;
+  const i = await call("recipe_run", { source: fresh('    let _c = s.context().at("limits.canCheckpoint");', "13.0"), name: "fresh_i", keep: { title: "Fresh i", description: "x" } });
+  check("a new-part recipe that reads its context is checked: an apply may checkpoint, a dry run may not", i.ok === true && !!i.kept && dryRuns === before + 1, { i, dry: dryRuns - before });
+  before = dryRuns;
+  const j = await call("recipe_run", { source: late.replace("10.0, 10.0, 10.0", "10.0, 10.0, 11.0"), name: "late_j", keep: { title: "Late j", description: "x" } });
+  check("a late parameter is still refused at keep, by the check's own run", j.ok === true && String(j.keepRefused).includes("Declare width before the first call (line 5)") && dryRuns === before + 1, { j, dry: dryRuns - before });
+  Session.prototype.recipeRun = inner;
 }
 
 if (failed > 0) {

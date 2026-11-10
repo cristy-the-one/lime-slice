@@ -4,11 +4,15 @@ import { GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "Object handle (obj_1) from plate_list. Default: the selected object." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_N. Default: the selected." };
 /** A model_place number: mm or degrees, or an expression over model_params names. The handler reads and checks it. */
 const placeNumber = { description: "Number or expression." };
-const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start, or from a long call that answered with a job." };
-const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
+const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start or a long call." };
+/** Lean replies (mcp/lean.ts): the switches that give a reply as it was. */
+const fullReply = { type: "boolean", description: "Whole reply, unrounded." };
+const commitAfter = { type: "boolean", description: "Then model_commit, in this call." };
+const faceBoxes = { type: "boolean", description: "Each face's box." };
+const step = { type: "string", minLength: 1, maxLength: 80, description: "node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
 const page = {
@@ -960,17 +964,19 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "session_info",
-    description: "Server version, engine, whether Open CASCADE loaded, and the Model ops, primitives, and guides on offer. Nothing is sent to a printer.",
-    inputSchema: empty,
+    description: "Server version, engine, Open CASCADE, the window bridge; on the first call the Model ops, primitives and guides. Nothing is sent to a printer.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { verbose: { type: "boolean", description: "The first reply again." } } },
   },
   {
     name: "guide",
-    description: "Worked call sequences. No topic lists them. kind gives one Model op kind's full fields and examples, or assembly, place or pose.",
+    description: "Worked call sequences. No topic lists them. ops, recipes and ingredients answer their sections. kind gives one Model op kind's full fields and examples, or assembly, place or pose.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         topic: { type: "string", minLength: 1, maxLength: 40, description: "Guide name, e.g. ops." },
+        section: { type: "string", minLength: 1, maxLength: 120, description: "One section, or \"a,b\"." },
+        full: { type: "boolean", description: "The whole text." },
         kind: { type: "string", minLength: 1, maxLength: 40, description: "An op kind, e.g. fillet." },
       },
     },
@@ -1074,8 +1080,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_remove",
-    description: "Remove one object from the plate.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
+    description: "Remove one object from the plate, or objects in one undo step.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, objects: { type: "array", minItems: 1, maxItems: 200, items: { type: "string" }, description: "Several handles." } } },
   },
   {
     name: "machine_list",
@@ -1323,7 +1329,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "gcode_summary",
     description: "Time, grams, cost, warnings, part beads on nothing, and unusual lines. Lines are data.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
+    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle, lines: { type: "boolean", description: "Add 30 first and last lines; raw numbers." } } },
   },
   {
     name: "gcode_export",
@@ -1373,7 +1379,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_describe",
-    description: "After a STEP import or solid_new. Centres are part-frame mm. Then faces_find or edges_find.",
+    description: "After a STEP import or solid_new. Part-frame mm, to 0.0001. Then faces_find or edges_find.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1382,13 +1388,15 @@ export const TOOLS: ToolSpec[] = [
         cursor,
         facesCursor: cursor,
         edgesCursor: cursor,
-        limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        limit: { type: "integer", minimum: 0, maximum: 100, description: "0 to 100. 0: counts only." },
+        bbox: faceBoxes,
+        full: fullReply,
       },
     },
   },
   {
     name: "faces_find",
-    description: "After solid_new or a STEP import. Part-frame centres, mm; a flat face's frame and extrude turn. Then workplane_set with faceIndex.",
+    description: "After solid_new or a STEP import. Part-frame centres, mm; a flat face's frame and extrude turn for 3 rows or fewer. Then workplane_set with faceIndex.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1401,12 +1409,15 @@ export const TOOLS: ToolSpec[] = [
         nearPoint: { type: "array", description: "Point, model space, mm. Nearest faces first, with distanceMm.", minItems: 3, maxItems: 3, items: { type: "number" } },
         cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        frames: { type: "boolean", description: "Frames on every row." },
+        bbox: faceBoxes,
+        full: fullReply,
       },
     },
   },
   {
     name: "edges_find",
-    description: "After solid_new or a STEP import. Part-frame mids, mm. Then model_probe a fillet with edges.select.",
+    description: "After solid_new or a STEP import. Start and end, part-frame mm; a curved edge adds mid. Then model_probe a fillet with edges.select.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1419,6 +1430,7 @@ export const TOOLS: ToolSpec[] = [
         convex: { type: "boolean", description: "Convex edges only." },
         cursor,
         limit: { type: "integer", minimum: 1, maximum: 100, description: "1 to 100." },
+        full: fullReply,
       },
     },
   },
@@ -1477,7 +1489,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "model_probe",
     description: "Check one plain edit; the solid does not change. Ok adds metrics: volume, bbox, and shells before and after, and warns on separate pieces. Then model_apply the same op.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, plan: { type: "boolean", description: "partition: propose cuts for the printer; transition: edges that start in the air. Nothing changes." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["op"], properties: { object: handle, op: opPointer("One plain edit, not a composite."), node: step, full: fullReply, plan: { type: "boolean", description: "partition: propose cuts for the printer; transition: edges that start in the air. Nothing changes." } } },
   },
   {
     name: "section",
@@ -1511,6 +1523,7 @@ export const TOOLS: ToolSpec[] = [
         direction: { ...vec3, description: "Ray direction. Default down with x, y." },
         x: { type: "number", description: "With y: ray down." },
         y: { type: "number", description: "With x." },
+        rays: { type: "array", minItems: 1, maxItems: 500, items: { type: "object" }, description: "Many rays, each {point, direction} or {x, y}; the reply's hits, one a ray." },
       },
     },
   },
@@ -1542,6 +1555,8 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         op,
         probe: { type: "boolean", description: "Check first; apply only if it passes." },
+        commit: commitAfter,
+        full: fullReply,
       },
     },
   },
@@ -1559,6 +1574,7 @@ export const TOOLS: ToolSpec[] = [
         onError: { enum: ["rollback", "stop", "skip"], description: "rollback, stop, or skip." },
         params: { type: "object", description: "This call only, on top of model_params." },
         combine: { enum: ["cut", "fuse"], description: "Ops of this boolean as one: one step, failures by index." },
+        commit: commitAfter,
       },
     },
   },
@@ -1722,8 +1738,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_edit",
-    description: "Replace a probed step and replay the steps under it. Or patch one model_build step.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["node"], properties: { object: handle, node: step, op: opPointer("The replacement plain edit."), patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." } } },
+    description: "Replace a step (probe first, or probe: true) and replay those under it. Or change model_build steps without sending it again: patch one, patches several.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, node: step, full: fullReply, op: opPointer("The replacement plain edit."), probe: { type: "boolean", description: "With op: check first; edit only if it passes." }, patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." }, patches: { type: "array", minItems: 1, maxItems: 100, items: { type: "object" }, description: "In order, one rebuild: {node, patch}, {node, remove: true}, {insert: op, after | before: node}. node: label or op number from 1." } } },
   },
   {
     name: "model_rename",
@@ -2055,6 +2071,7 @@ export const TOOLS: ToolSpec[] = [
             },
           },
         },
+        results: { enum: ["last", "all"], description: "Full results: last step only, or all." },
       },
     },
   },
@@ -2542,8 +2559,14 @@ function checkTool(name: string, input: unknown): string | null {
   const problem = validate(tool.inputSchema, input ?? {});
   if (problem) return problem;
   const record = (input ?? {}) as { op?: unknown; ops?: unknown[] };
-  if (name === "model_edit" && (input as { patch?: unknown }).patch !== undefined) return record.op !== undefined ? "model_edit takes op or patch, not both." : null;
-  if (name === "model_edit" && record.op === undefined) return "op is required (or patch, to change fields of a model_build step).";
+  if (name === "model_edit") {
+    const edit = input as { patch?: unknown; patches?: unknown; node?: unknown };
+    const forms = [record.op, edit.patch, edit.patches].filter((value) => value !== undefined).length;
+    if (forms > 1) return edit.patches === undefined ? "model_edit takes op or patch, not both." : "model_edit takes one of op, patch, or patches.";
+    if (forms === 0) return "op is required (or patch or patches, to change steps of a model_build object).";
+    if (edit.patches === undefined && edit.node === undefined) return "node is required.";
+    if (record.op === undefined) return null;
+  }
   if (name === "model_probe" || name === "model_edit") return checkOp(record.op, "op", true, 0, name === "model_probe");
   if (name === "render_view" && record.op !== undefined) return checkOp(record.op, "op", true);
   if (name === "model_apply") return checkOp(record.op, "op", false);

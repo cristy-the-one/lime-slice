@@ -155,6 +155,30 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   check("slice_wait on the plan's job returns the plan's result", done.ok === true && done.status === "done" && (done.steps as unknown[]).length === 3, JSON.stringify(done).slice(0, 400));
 }
 
+// Which steps' results the reply carries in full.
+{
+  const steps = [
+    { tool: "solid_new", args: { primitive: "box", dx: 40, dy: 30, dz: 10 } },
+    { tool: "model_describe", args: { object: "$1.object" } },
+    { tool: "faces_find", args: { object: "$1.object", normal: [0, 0, 1] } },
+    { tool: "edges_find", args: { object: "$1.object" } },
+    { tool: "workplane_set", args: { object: "$1.object", faceIndex: "$3.faces.0.index" } },
+  ];
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  const run = async (results?: string) => (await new Session(fakeEngine()).call("plan_run", { steps, ...(results ? { results } : {}) })) as { ok: boolean; steps: (StepRow & { ok?: boolean; object?: string })[] };
+  const usual = await run();
+  const last = await run("last");
+  const all = await run("all");
+  console.log(`a five-step plan: ${bytes(usual)} bytes by default, ${bytes(last)} with results last, ${bytes(all)} with results all`);
+  check("by default the last step and the steps a reference names are in full", usual.ok === true && usual.steps.length === 5 && usual.steps[0]!.result?.object !== undefined && usual.steps[2]!.result?.faces !== undefined && usual.steps[4]!.result?.ok === true, JSON.stringify(usual).slice(0, 600));
+  check("a step nobody read is {step, tool, ok} with its handles", JSON.stringify(usual.steps[1]) === JSON.stringify({ step: 2, tool: "model_describe", ok: true }) && JSON.stringify(usual.steps[3]) === JSON.stringify({ step: 4, tool: "edges_find", ok: true }), JSON.stringify(usual.steps[1]));
+  check("results last keeps only the last step in full, with the handles of the rest", last.steps[4]!.result?.ok === true && last.steps[2]!.result === undefined && JSON.stringify(last.steps[0]) === JSON.stringify({ step: 1, tool: "solid_new", ok: true, object: last.steps[0]!.object }) && typeof last.steps[0]!.object === "string", JSON.stringify(last.steps[0]));
+  check("results all gives every step's result", all.steps.every((row) => row.result !== undefined) && (all.steps[1]!.result as { faces?: unknown[] }).faces !== undefined);
+  check("the default is smaller than all, and last smaller still", bytes(last) < bytes(usual) && bytes(usual) < bytes(all));
+  const refusedPlan = (await new Session(fakeEngine()).call("plan_run", { results: "last", steps: [steps[0], steps[1], { tool: "model_describe", args: { object: "obj_99" } }, steps[3]] })) as { ok: boolean; failedStep?: number; steps: StepRow[] };
+  check("a refused step is in full whatever the mode", refusedPlan.ok === false && refusedPlan.failedStep === 3 && refusedPlan.steps.length === 3 && (refusedPlan.steps[2]!.result as { ok?: boolean; reason?: string }).ok === false && typeof (refusedPlan.steps[2]!.result as { reason?: string }).reason === "string", JSON.stringify(refusedPlan).slice(0, 500));
+}
+
 // The pure parts.
 check("$$ is a literal dollar", JSON.stringify(resolveReferences({ label: "$$5" }, [], 1)) === JSON.stringify({ value: { label: "$5" } }));
 check("$1 alone is the whole result", JSON.stringify(resolveReferences(["$1"], [{ ok: true }], 2)) === JSON.stringify({ value: [{ ok: true }] }));

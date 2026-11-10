@@ -160,10 +160,10 @@ GUIDES.push(
       "  A label names its own step and every step named under it: \"fish 0\" covers \"fish 0 body\" and \"fish 0 tail\".",
       "mirror: {kind:\"mirror\", op:{...}, plane:\"x\"|\"y\"|\"z\", origin}. It applies the op and its mirror image; keepOriginal:false applies only the image. No step already in the history is removed.",
       "  A pattern or mirror repeats a boolean, an extrude, a revolve, or a composite. An extrude or revolve is repeated whole, its plane moved and, in a mirror, its outline mirrored.",
-      "Any op takes label. It names that step. A composite is one group row under that label (or the feature's own name). model_goto, model_edit, model_drop, and model_rename take a label in place of node_N. model_edit {node:label, patch:{dx:5}} changes fields of one step of a model_build object (a dotted key such as \"with.w\" reaches into a use step; null removes a field) and rebuilds from it; an ambiguous label or a field the kind lacks is refused and nothing changes.",
+      "Any op takes label. It names that step. A composite is one group row under that label (or the feature's own name). model_goto, model_edit, model_drop, and model_rename take a label in place of node_N. model_edit {node:label, patch:{dx:5}} changes fields of one step of a model_build object (a dotted key such as \"with.w\" reaches into a use step; null removes a field) and rebuilds from it; an ambiguous label or a field the kind lacks is refused and nothing changes. model_edit {patches:[{node, patch}, {node, remove:true}, {insert:{...op}, after | before: node}]} makes several such changes in one rebuild, so an iteration does not send the build again; node is a label or the op's number, from 1.",
       "Composite ops (pocket, boss, texture, pattern, mirror, array, ribs, text) are checked step by step, stored as one group, rolled back on a refusal, and undone as one step. A refusal names the failing piece as failedStep. A step that would leave pieces meeting only along an edge is left out and reported as leftOut.",
       "A call that runs past about 45 s answers with a job: slice_wait {job} returns its result. One call makes at most 400 steps.",
-      "A plain op needs model_probe first, or model_apply {op, probe:true}. Then model_history to read the steps, and model_commit to put the solid on the plate.",
+      "A plain op needs model_probe first, or model_apply {op, probe:true}; model_edit {node, op, probe:true} likewise. Then model_history to read the steps, and model_commit to put the solid on the plate.",
     ].join("\n"),
   },
   {
@@ -257,7 +257,8 @@ GUIDES.push({
     "    {tool:\"workplane_set\", args:{object:\"$1.object\", faceIndex:\"$2.faces.0.index\"}},",
     "    {tool:\"model_apply\", args:{object:\"$1.object\", op:{kind:\"hole\", diameterMm:5, through:true, at:{u:0, v:0}}, probe:true}},",
     "    {tool:\"model_commit\", args:{object:\"$1.object\"}}]}",
-    "The plan stops at the first refused step. The reply has every step's result so far and failedStep; the steps before it stay applied, so fix that step and send the rest.",
+    "The plan stops at the first refused step, named in failedStep; the steps before it stay applied, so fix that step and send the rest.",
+    "The reply's steps give a result in full for the last step run, a refused one, and any step a later reference names; the others are {step, tool, ok} with the object, node or job they made. results:\"last\" keeps only the last and a refused one in full; results:\"all\" gives every step's result.",
     "Call the tools one by one instead when you need to look at a result first: which face, whether a probe fits, what a render shows.",
     "A plan past about 45 s answers with a job like a long call: slice_wait {job} returns the plan's result, and slice_cancel stops it at the step it is on.",
     "Each completed plan step is autosaved. If the server restarts, slice_wait for that lost plan restores the saved plate and lists the completed step numbers and tools; replies and unfinished work are not restored.",
@@ -440,4 +441,91 @@ GUIDES.push({
 
 export function guideByUri(uri: string): Guide | undefined {
   return GUIDES.find((guide) => guide.uri === uri);
+}
+
+/**
+ * The long guides in sections, so `guide {topic}` answers a short index and `guide {topic, section}` one part
+ * (an audit of 36 sessions: guide text was 18% of all reply text, and 37 reads repeated a guide already read).
+ * A section starts at the line that begins with its marker and runs to the next marker; the text itself stays one
+ * string, so `lime://guide/*` and `guide {topic, full:true}` are unchanged. Row: [names, marker, what it covers];
+ * names after a "|" are other names the section answers to (an op kind that shares its lines).
+ */
+const SECTION_MARKERS: Record<string, [string, string, string][]> = {
+  ops: [
+    ["basics", "Every Model edit", "units, frames, solid_new, local frames"],
+    ["fits", "solid_new {coupon", "fit coupon, machine_set fits"],
+    ["boolean", "boolean:", "primitives, origin, centre, turn"],
+    ["gear", "gear:", ""],
+    ["extrude", "extrude:", "profile, loops, draft, upTo"],
+    ["revolve", "revolve:", "and smooth profiles"],
+    ["loft", "loft:", ""],
+    ["sweep", "sweep:", ""],
+    ["shell", "shell:", ""],
+    ["faceExtrude", "faceExtrude:", ""],
+    ["moveFaces", "moveFaces:", ""],
+    ["hole", "hole:", ""],
+    ["fillet|chamfer", "fillet, chamfer:", "edge picks, two-size chamfer"],
+    ["transition", "transition:", ""],
+    ["split|scale", "split:", ""],
+    ["partition", "partition (split to print)", "cuts, shaped cuts, connectors, resin"],
+    ["join", "join:", ""],
+    ["pocket", "pocket:", "at, from, face picks, merged faces, unify"],
+    ["boss", "boss:", ""],
+    ["texture", "texture:", ""],
+    ["array", "array:", ""],
+    ["ribs", "ribs:", ""],
+    ["pattern", "pattern:", ""],
+    ["text", "text:", ""],
+    ["anchors", "Anchors:", "points named by label"],
+    ["mirror", "mirror:", ""],
+    ["labels", "Any op takes label", "labels, model_edit patch, composites"],
+    ["flow", "A call that runs past", "jobs, probe, history, commit"],
+  ],
+  recipes: [
+    ["find", "Before writing a recipe", "find a plugin first, run one"],
+    ["flow", "A recipe is a Rust main", "check, run, path, reply, transaction"],
+    ["keeping", "Keeping a new-part plugin", "defaults check, budget"],
+    ["speed", "recipe_run {profile:true}", "profile, grouped applies"],
+    ["refusals", "A refusal says which face", "picked face, nearPoint"],
+    ["rerun", "Keep the same name", "warm edits, saved recipes, plugin steps"],
+    ["maths", "Maths:", "f64 functions, constants"],
+    ["params", "Parameters, declared", "number, count, toggle, picks"],
+    ["frame", "One frame (API 1.4)", "one frame, text, curved faces"],
+    ["plugins", "Writing a plugin people can use", "rules, two before/afters"],
+    ["api", "The API (crate lime_recipe)", "Session calls, Json, an example"],
+    ["geometry", "2D geometry is in the crate", "geom2d, library ingredients, sections, many holes, data"],
+  ],
+  ingredients: [
+    ["basics", "Standard ingredients", "imports, units"],
+    ["shapes", "Shapes:", "shapes, Poly"],
+    ["regions", "Region (outlines", "booleans, measures"],
+    ["offsets", "Offsets:", "offsets, corners"],
+    ["output", "Output for extrude", "loops for an op"],
+    ["lattices", "Lattices:", ""],
+    ["own", "Your own ingredients", "library modules"],
+    ["gears", "Gears (API 1.12)", ""],
+    ["data", "Data:", ""],
+    ["example", "Example, a honeycomb", ""],
+  ],
+};
+
+export interface GuideSection {
+  /** The name `guide {topic, section}` takes. */
+  section: string;
+  /** Other names it answers to. */
+  also: string[];
+  about: string;
+  text: string;
+}
+
+/** A sectioned guide's parts in order, whose texts joined by a newline are the guide's text; null for a short guide. */
+export function guideSections(topic: string): GuideSection[] | null {
+  const markers = Object.hasOwn(SECTION_MARKERS, topic) ? SECTION_MARKERS[topic]! : null;
+  const lines = guideByUri(`lime://guide/${topic}`)?.text.split("\n");
+  if (!markers || !lines) return null;
+  const starts = markers.map(([, marker]) => lines.findIndex((line) => line.startsWith(marker)));
+  return markers.map(([names, , about], i) => {
+    const [section, ...also] = names.split("|");
+    return { section: section!, also, about, text: lines.slice(i === 0 ? 0 : starts[i]!, i + 1 < starts.length ? starts[i + 1]! : lines.length).join("\n") };
+  });
 }

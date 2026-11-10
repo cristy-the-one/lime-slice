@@ -5,7 +5,9 @@
  */
 import type { Box } from "../modeling/anchors.ts";
 import type { RecipeCallSite, RecipeReply } from "./host.ts";
-import { planGroups, queueSummary, RecipeQueue, type QueueKind, type QueuePort } from "./queue.ts";
+import type { ModelOp } from "../model-tree.ts";
+import type { SolidView } from "../modeling/model-calls.ts";
+import { groupSkipsMesh, guardReadsBefore, liteSolid, planGroups, queuedGuard, queueSummary, RecipeQueue, type QueueKind, type QueuePort } from "./queue.ts";
 
 let failed = 0;
 function eq(name: string, actual: unknown, expected: unknown): void {
@@ -134,6 +136,49 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
   await late.call(cut(10, 0), inner(seen));
   await new Promise((resolve) => setTimeout(resolve, 5));
   eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.001 s limit and was stopped.");
+}
+
+// --- A flush meshes only what is read: every group but the last skips its mesh unless it holds a primitive boolean.
+{
+  const prim = (op: "fuse" | "cut", x: number) => ({ kind: "boolean", op, primitive: "box", origin: [x, 0, 0], size: [2, 2, 2], radius: 0, height: 0, turn: [0, 0, 0] }) as unknown as ModelOp;
+  const extrude = { kind: "extrude", op: "fuse" } as unknown as ModelOp;
+  const skips = (groups: ModelOp[][]) => groups.map((_, g) => groupSkipsMesh(groups, g));
+  eq("gears, hubs, bores: only the gears' extrudes skip the mesh", skips([[extrude, extrude], [prim("fuse", 0)], [prim("cut", 0)]]), [true, false, false]);
+  eq("the last group is always meshed", skips([[extrude]]), [false]);
+  eq("extrudes before extrudes skip it", skips([[extrude], [extrude], [extrude]]), [true, true, false]);
+  eq("a group with one primitive boolean among extrudes is meshed", skips([[extrude, prim("fuse", 0)], [extrude]]), [false, false]);
+
+  // Three triangles on one edge: pieces meeting along a line, inside the box of a primitive at x 0.
+  const fan = (x: number) => [x, 1, 0, x, 1, 2, x + 1, 0, 1, x, 1, 0, x, 1, 2, x + 1, 2, 1, x, 1, 0, x, 1, 2, x - 1, 1, 1];
+  const clean = [0, 0, 0, 1, 0, 0, 0, 1, 0];
+  const solid = (positions: number[], volumeMm3 = 100) => ({ volumeMm3, positions });
+  eq("the guard reads the solid before only when pieces meet along an edge after", [guardReadsBefore([prim("fuse", 0)], solid(clean)), guardReadsBefore([prim("fuse", 0)], solid(fan(1))), guardReadsBefore([extrude], solid(fan(1))), guardReadsBefore([prim("fuse", 0)], null)], [false, true, false, false]);
+  // The same verdict with the mesh before left out whenever the guard does not read it.
+  const meshes = [clean, fan(1), [...fan(1), ...fan(1.5)]];
+  const opSets = [[prim("fuse", 0)], [prim("cut", 0)], [extrude], [extrude, prim("fuse", 0)], [prim("fuse", 0), prim("fuse", 40)]];
+  let same = 0;
+  let asked = 0;
+  for (const ops of opSets) {
+    for (const before of meshes) {
+      for (const after of meshes) {
+        for (const volumes of [[100, 101], [100, 50]]) {
+          const full = queuedGuard(ops, solid(before, volumes[0]), solid(after, volumes[1]));
+          const reads = guardReadsBefore(ops, solid(after, volumes[1]));
+          if (reads) asked += 1;
+          const lean = queuedGuard(ops, solid(reads ? before : [], volumes[0]), solid(after, volumes[1]));
+          if (full === lean) same += 1;
+        }
+      }
+    }
+  }
+  eq("the guard's verdict is the same without the mesh before, whenever it is not read", [same, asked > 0 && asked < 90], [90, true]);
+  eq("and a touching edge that was there before is still not this group's", queuedGuard([prim("fuse", 0)], solid(fan(1)), solid(fan(1))), null);
+
+  const prior = { id: 3, volumeMm3: 8000, editable: true, fingerprint: { volumeMm3: 8000, faces: 6, edges: 12 }, positions: new Float32Array(9), triangles: new Uint32Array(3), faces: [], edges: [], lines: [], bounds: { min: [0, 0, 0], max: [20, 20, 20] } } as unknown as SolidView;
+  const lite = liteSolid({ id: 7, format: "lime-solid-lite", fingerprint: { volumeMm3: 8100, faces: 10, edges: 24 } }, prior, [{ min: [18, 0, 0], max: [25, 5, 5] }, { min: [-3, 0, 0], max: [1, 5, 30] }]);
+  eq("an unmeshed group's solid: its step, volume and fingerprint, no faces, the box grown by its fuse tools", lite && [lite.id, lite.volumeMm3, lite.fingerprint, lite.positions.length, lite.bounds], [7, 8100, { volumeMm3: 8100, faces: 10, edges: 24 }, 0, { min: [-3, 0, 0], max: [25, 20, 30] }]);
+  eq("a cut group keeps the part's box", liteSolid({ id: 7, format: "lime-solid-lite", fingerprint: { volumeMm3: 7000, faces: 10, edges: 24 } }, prior, [])?.bounds, { min: [0, 0, 0], max: [20, 20, 20] });
+  eq("a meshed reply, or no solid before, is not a light solid", [liteSolid({ id: 7, format: "lime-solid", fingerprint: { volumeMm3: 1, faces: 1, edges: 1 } }, prior, []), liteSolid({ id: 7, format: "lime-solid-lite", fingerprint: { volumeMm3: 1, faces: 1, edges: 1 } }, null, [])], [null, null]);
 }
 
 if (failed > 0) {

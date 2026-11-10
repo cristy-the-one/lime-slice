@@ -133,6 +133,10 @@ mcp/tandem-live.test.ts
 mcp/beta-identity.test.ts
 mcp/recipe-followups.test.ts
 mcp/schema.test.ts
+mcp/guide-sections.test.ts
+mcp/lean.test.ts
+mcp/batch-forms.test.ts
+mcp/slice-wait.test.ts
 mcp/settings-rows.test.ts
 mcp/scenario.test.ts
 mcp/export.test.ts
@@ -146,6 +150,7 @@ mcp/plugins-file.test.ts
 mcp/ingredients-file.test.ts
 mcp/nuggets-file.test.ts
 mcp/plugin-hints.test.ts
+mcp/recipe-root.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts
@@ -268,3 +273,7 @@ tools/ci/e2e-coverage.test.mjs
 mcp/edit-patch.test.ts
 mcp/plugin-extra.test.ts
 src/model-view/smooth.test.ts
+src/model-view/solid-ray.test.ts
+src/model-view/face-colours.test.ts
+src/model-view/edge-screen.test.ts
+src/closed-ahead.test.ts

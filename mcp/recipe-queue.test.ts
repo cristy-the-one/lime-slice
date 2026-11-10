@@ -97,6 +97,26 @@ fn main() {
   check("the steps built together carry builtWith, the first of them", marked.length === 5 && marked.every((row) => row.builtWith === marked[0]!.id) && off.history.every((row) => row.builtWith === undefined), on.history);
 }
 
+// The queue built at `done` is part of the run's time: runMs and the profile hold it, as the row `done`.
+{
+  const engine = fakeEngine();
+  const inner = engine.modelTree.bind(engine);
+  // The combined boolean takes 120 ms here, so the time is seen in the numbers.
+  engine.modelTree = (body: string) => (body.includes('"call":"apply"') && body.includes('"kind":"group"') ? new Promise<string>((done) => setTimeout(() => done(inner(body) as string), 120)) : inner(body));
+  const session = new Session(engine);
+  const began = performance.now();
+  const reply = (await session.call("recipe_run", { source: CUTS, name: "timed", profile: true })) as R;
+  const wall = performance.now() - began;
+  const profile = (reply.profile ?? {}) as { lines?: { tool: string; line: number; ms: number; calls: number }[]; split?: Record<string, number>; callsMs?: number };
+  const row = profile.lines?.find((line) => line.tool === "done");
+  check("the queue built at done has a profile row of its own", reply.ok === true && !!row && row.calls === 1 && row.line === 0 && row.ms >= 115, reply);
+  check("runMs holds it, and stays inside the call's wall time", Number(reply.runMs) >= (row?.ms ?? Infinity) && Number(reply.runMs) <= wall + 1, { runMs: reply.runMs, wall, row });
+  check("the profile's calls hold it", Number(profile.callsMs) >= (row?.ms ?? Infinity) - 1, profile);
+  check("the split still adds up to runMs", Math.abs(Object.values(profile.split ?? {}).reduce((a, b) => a + b, 0) - Number(reply.runMs)) <= 1, { split: profile.split, runMs: reply.runMs });
+  const plain = (await new Session(engine).call("recipe_run", { source: CUTS, name: "timed" })) as R;
+  check("runMs holds it without a profile too", plain.ok === true && Number(plain.runMs) >= 115 && plain.profile === undefined, plain);
+}
+
 // A line that reads its apply's reply builds in its place; a read builds the queue first.
 const READS = `use lime_recipe::{ops, Json, Session};
 
@@ -241,6 +261,82 @@ fn main() {
   check("OCCT: the same faces and edges, and the volume to 1e-9", !!a && !!b && a.faces === b.faces && a.edges === b.edges && Math.abs(a.volumeMm3 - b.volumeMm3) <= 1e-9 * b.volumeMm3, { on: a, off: b });
   check("OCCT: the same History rows, in the order sent", JSON.stringify(on.ops) === JSON.stringify(off.ops) && on.ops.length === 13, { on: on.ops.length, off: off.ops.length });
   // Rebuilding a middle step from the steps before it gives that step's solid, as a rebuild does.
+  // A flush meshes only what is read. Extruded bosses, then cylinders cut into them: two booleans, and the first (no
+  // primitive boolean in it, not the last) asks for no mesh. The solid, its mesh and the steps are the ones of a run
+  // whose every group was meshed (the same engine, with `mesh: false` taken off each request).
+  const PADS = `use lime_recipe::{ops, Json, Session};
+
+fn main() {
+    let mut s = Session::start();
+    let p = s.object().expect("a sphere");
+    for c in [[-12.0, -12.0], [12.0, -12.0], [-12.0, 12.0], [12.0, 12.0]] {
+        s.apply(&p, Json::obj().set("kind", "extrude").set("op", "fuse").set("origin", [c[0], c[1], 50.0]).set("profile", Json::arr(vec![[-4.0, -4.0], [4.0, -4.0], [4.0, 4.0], [-4.0, 4.0]])).set("depth", 12.0)).unwrap();
+        s.apply(&p, ops::boolean("cut", ops::cylinder(1.5, 8.0), [c[0], c[1], 56.0])).unwrap();
+    }
+    s.done_with(&p, Json::obj());
+}
+`;
+  const meshOf = (session: Session, object: string) => {
+    const solid = (session as unknown as { find(id: string): { solid?: { positions: Float32Array; triangles: Uint32Array; fingerprint: unknown } } | undefined }).find(object)?.solid;
+    return solid ? JSON.stringify([solid.fingerprint, Array.from(solid.positions), Array.from(solid.triangles)]) : "none";
+  };
+  const padsRun = async (meshAll: boolean) => {
+    const asked: boolean[] = [];
+    const engine = { ...worker, modelTree: (body: string) => {
+      const group = body.includes('"call":"apply"') && body.includes('"kind":"queue"');
+      if (group) asked.push(body.includes('"mesh":false'));
+      return worker.modelTree(meshAll ? body.replace(',"mesh":false}', "}") : body);
+    } };
+    const session = new Session(engine);
+    const call = (n: string, a: unknown = {}) => session.call(n, a) as Promise<R>;
+    const { object } = await sphere(call);
+    const reply = await call("recipe_run", { source: PADS, name: "pads", object, timeoutS: 120 });
+    return { reply, asked, mesh: meshOf(session, object), ops: opsOf(session, object), check: await call("model_check", { object }) };
+  };
+  const lean = await padsRun(false);
+  const full = await padsRun(true);
+  check("OCCT: pads and bores queue as two booleans", lean.reply.ok === true && JSON.stringify(lean.reply.queued) === JSON.stringify({ applies: 8, booleans: 2 }), lean.reply);
+  check("OCCT: the first group asks for no mesh, the last one is meshed", JSON.stringify(lean.asked) === JSON.stringify([true, false]), lean.asked);
+  check("OCCT: the same solid, mesh and steps as with every group meshed", full.reply.ok === true && lean.mesh !== "none" && lean.mesh === full.mesh && JSON.stringify(lean.ops) === JSON.stringify(full.ops), { lean: lean.mesh.length, full: full.mesh.length });
+  check("OCCT: and the same model_check", JSON.stringify(lean.check) === JSON.stringify(full.check), { lean: lean.check, full: full.check });
+
+  // The one case the guard reads the solid before a group: pieces meet along an edge at a primitive after it. Two pads
+  // that share only a vertical edge (extrudes, which no guard refuses) are two unmeshed groups; the bore beside that
+  // edge is a primitive boolean, and its guard asks how many such edges there were before. The step before is meshed
+  // then (a goto of it, and back to the bore's), so the bore is not blamed for the pads' edge and nothing is built
+  // again one by one. A dry run: a part with such an edge is not committed to the plate.
+  const CORNERS = `use lime_recipe::{ops, Json, Session};
+
+fn main() {
+    let mut s = Session::start();
+    let p = s.object().expect("a block");
+    for c in [[-2.0, -2.0], [2.0, 2.0]] {
+        s.apply(&p, Json::obj().set("kind", "extrude").set("op", "fuse").set("origin", [c[0], c[1], 8.0]).set("profile", Json::arr(vec![[-2.0, -2.0], [2.0, -2.0], [2.0, 2.0], [-2.0, 2.0]])).set("depth", 6.0)).unwrap();
+    }
+    s.apply(&p, ops::boolean("cut", ops::cylinder(1.2, 8.0), [-1.6, -1.6, 10.0])).unwrap();
+    s.done_with(&p, Json::obj());
+}
+`;
+  const cornersRun = async (meshAll: boolean) => {
+    const seen: string[] = [];
+    const engine = { ...worker, modelTree: (body: string) => {
+      if (body.includes('"call":"apply"') && body.includes('"kind":"queue"')) seen.push(body.includes('"mesh":false') ? "apply unmeshed" : "apply");
+      else if (body.includes('"call":"goto"') && seen.length > 0 && !seen.includes("unfold")) seen.push("goto");
+      else if (body.includes('"call":"unfold"')) seen.push("unfold");
+      return worker.modelTree(meshAll ? body.replace(',"mesh":false}', "}") : body);
+    } };
+    const session = new Session(engine);
+    const call = (n: string, a: unknown = {}) => session.call(n, a) as Promise<R>;
+    const object = String((await call("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 10 })).object);
+    const reply = await call("recipe_run", { source: CORNERS, name: "corners", object, mode: "dry", timeoutS: 120 });
+    return { reply, seen };
+  };
+  const cornersLean = await cornersRun(false);
+  const cornersFull = await cornersRun(true);
+  check("OCCT: pads meeting along an edge and a bore beside it queue as three booleans, with every group meshed", cornersFull.reply.ok === true && JSON.stringify(cornersFull.reply.queued) === JSON.stringify({ applies: 3, booleans: 3 }) && cornersFull.reply.replayed === undefined && JSON.stringify(cornersFull.seen) === JSON.stringify(["apply unmeshed", "apply unmeshed", "apply", "unfold"]), cornersFull);
+  check("OCCT: unmeshed, the step before the bore is meshed for its guard (a goto of it, and back)", JSON.stringify(cornersLean.seen) === JSON.stringify(["apply unmeshed", "apply unmeshed", "apply", "goto", "goto", "unfold"]), cornersLean.seen);
+  check("OCCT: so the guard passes as it did, and nothing is built again one by one", cornersLean.reply.ok === true && cornersLean.reply.replayed === undefined && JSON.stringify(cornersLean.reply.queued) === JSON.stringify(cornersFull.reply.queued) && JSON.stringify(cornersLean.reply.metrics) === JSON.stringify(cornersFull.reply.metrics), cornersLean.reply);
+
   const mid = on.history.find((row) => row.builtWith !== undefined && row.current !== true);
   const shown = mid ? await on.session.call("model_goto", { object: on.object, node: mid.id }) : null;
   check("OCCT: going to a step built inside a group builds it", shown?.ok === true, shown);

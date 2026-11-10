@@ -562,19 +562,27 @@ async function closeTree(this: Session, obj: PlateObject): Promise<void> {
   }
 }
 
-async function objectRemove(this: Session, id: string): Promise<Record<string, unknown>> {
-  const index = this.objects.findIndex((obj) => obj.id === id);
-  if (index < 0) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+/**
+ * object_remove: one object, or `objects`, several in one call and one undo step. Every handle is checked before any
+ * object leaves, so an unknown one removes nothing.
+ */
+async function objectRemove(this: Session, which: string | string[]): Promise<Record<string, unknown>> {
+  const ids = [...new Set(Array.isArray(which) ? which : [which])];
+  const unknown = ids.filter((id) => !this.objects.some((obj) => obj.id === id));
+  if (unknown.length) return refuse("no-object", Array.isArray(which) ? `${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not on the plate. Nothing was removed.` : UNKNOWN_OBJECT, undefined, NEXT.plate);
   this.remember("Remove");
-  const leaving = this.objects[index];
-  if (leaving) await this.closeTree(leaving);
-  // Its children sit on its parent where they stand, as the app's Remove does.
-  if (leaving && this.objects.some((obj) => obj.chain?.parent === id)) {
-    const printer = this.printer();
-    this.writeLinks(removedMember(this.chainRows(), id, { x: printer.bedX, y: printer.bedY }));
+  for (const id of ids) {
+    const index = this.objects.findIndex((obj) => obj.id === id);
+    const leaving = this.objects[index];
+    if (leaving) await this.closeTree(leaving);
+    // Its children sit on its parent where they stand, as the app's Remove does.
+    if (leaving && this.objects.some((obj) => obj.chain?.parent === id)) {
+      const printer = this.printer();
+      this.writeLinks(removedMember(this.chainRows(), id, { x: printer.bedX, y: printer.bedY }));
+    }
+    this.objects.splice(index, 1);
+    if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
   }
-  this.objects.splice(index, 1);
-  if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
   return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
 }
 
@@ -887,7 +895,7 @@ export const plateHandlers: Record<string, ToolHandler> = {
   plate_redo: (s) => s.plateRedo(),
   object_select: (s, input) => s.objectSelect(String(input.object), input.name),
   object_place: (s, input) => s.objectPlace(input),
-  object_remove: (s, input) => s.objectRemove(String(input.object)),
+  object_remove: (s, input) => (Array.isArray(input.objects) ? (input.object !== undefined ? refuse("conflicting-arguments", "object_remove takes object or objects, not both.") : s.objectRemove(input.objects.map(String))) : typeof input.object === "string" ? s.objectRemove(input.object) : refuse("missing-argument", "object_remove needs object, or objects for several.")),
   object_duplicate: (s, input) => s.objectDuplicate(input),
   object_split_shells: (s, input) => s.splitShells(String(input.object)),
   plate_arrange: (s, input) => s.plateArrange(input),

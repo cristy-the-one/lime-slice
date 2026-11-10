@@ -16,6 +16,7 @@ import { resolveWrite } from "../workspace.ts";
 import { IMPORT_BUILD_LIMIT_MS, type RustRecipe, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { runProves, type RunProof } from "./run-proof.ts";
 
 /**
  * --- D3. Saving checks the plugin once more: a describe run for its parameters, then a dry run with its defaults
@@ -24,7 +25,7 @@ import { NEXT, refuse } from "../refusals.ts";
  * the part it already changed, a split there, a fuse into what it already added, or a cut through a hole it already
  * cut is refused, and the plugin could never be kept.
  */
-async function pluginCheck(this: Session, body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number): Promise<{ params: PluginParam[]; target: PluginTarget; built?: string; warning?: string } | { reason: string }> {
+async function pluginCheck(this: Session, body: string, objectHint: string | undefined, objectFrom: number | null = null, limitMs?: number, proof?: RunProof): Promise<{ params: PluginParam[]; target: PluginTarget; built?: string; warning?: string } | { reason: string }> {
   const described = await this.recipeDescribe(body, limitMs);
   if ("reason" in described) return { reason: `This plugin does not build with its own defaults: ${described.reason} Change the defaults or the code, then keep it.` };
   const budgetLine = /^\s*\/\/!\s*budget:\s*(.*?)\s*$/m.exec(body);
@@ -33,6 +34,16 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
   if (budgetLine && (!budget || budget < 1 || budget > 600)) return { reason: "The plugin budget must be 1–600 seconds, for example //! budget: 90s." };
   const timeoutS = limitMs === undefined ? budget ?? 30 : 30;
   let object = described.target === "new" ? undefined : objectHint && this.find(objectHint) ? objectHint : undefined;
+  // --- recipe_run {keep}. The run just kept was this dry run when it built the same text with the defaults on the same
+  // part at the same step, with the same printer and settings (run-proof.ts): then the part is not built a second time,
+  // and the plugin's `built:` time is that run's.
+  if (proof && limitMs === undefined && !(described.target === "object" && !object)) {
+    const tree = object ? this.find(object)?.tree : undefined;
+    const startAt = tree ? (objectFrom !== null && tree.nodes.has(objectFrom) ? objectFrom : tree.current) : null;
+    if (runProves(this, proof, body, described.params, object, tree?.key, startAt, timeoutS)) {
+      return { ...described, built: `${Math.max(0.1, Math.round(proof.runMs / 100) / 10)} s, ${object ? "test part" : "reference plate"}` };
+    }
+  }
   let block: string | undefined;
   if (described.target === "object" && !object) {
     const made = await this.runCall("solid_new", { primitive: "box", dx: 40, dy: 40, dz: 20 }, {}, true);
@@ -74,7 +85,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
   }
   const where = object ? "test part" : "reference plate";
   const slow = ((dry.profile as { lines?: { line: number; tool: string; ms: number }[] } | undefined)?.lines ?? []).slice(0, 5);
-  const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool} line ${row.line} (${row.ms} ms)`).join(", ")}.` : "";
+  const slowText = slow.length ? ` Slowest calls: ${slow.map((row) => `${row.tool === "done" ? "the queued applies built at done" : `${row.tool} line ${row.line}`} (${row.ms} ms)`).join(", ")}.` : "";
   const timedOut = dry.ok !== true && String(dry.reason ?? "").startsWith(`The recipe ran past its ${timeoutS} s limit`);
   if (timedOut && budget === undefined && limitMs === undefined) return { ...described, built: `over ${timeoutS} s, ${where}`, warning: `The defaults check ran past ${timeoutS} s and did not finish. The plugin was kept, but its defaults were not verified. Declare //! budget: 90s (up to 600s) to check a longer build.${slowText}` };
   if (dry.ok !== true) return { reason: `This plugin does not build with its own defaults: ${String(dry.reason ?? "the run failed.")} Change the defaults or the code, then keep it.${slowText}` };
@@ -88,7 +99,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
  * the same body keeps its version (new words only); with another body it is the next version when the run was of
  * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
  */
-async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData> }): Promise<{ id: string; version: number; sha256: string; built?: string; warning?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof }): Promise<{ id: string; version: number; sha256: string; built?: string; warning?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
   const title = oneLine(opts.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
   let body = lfOnly(opts.source);
@@ -111,7 +122,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
   body = withPluginData(body, data);
   const sha256 = bodyHash(body);
-  const checked = await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null);
+  const checked = await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null, undefined, opts.proof);
   if ("reason" in checked) return checked;
   const dir = pluginsDir();
   let id = slugOf(title) || slugOf(opts.name ?? "") || "plugin";
