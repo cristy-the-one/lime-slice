@@ -64,7 +64,7 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   model_goto: (s, obj, input) => s.gotoNode(obj, s.nodeOf(obj, input.node)),
   model_undo: (s, obj) => s.step(obj, "undo"),
   model_redo: (s, obj) => s.step(obj, "redo"),
-  model_edit: (s, obj, input) => s.edit(obj, s.nodeOf(obj, input.node), input.op),
+  model_edit: (s, obj, input) => s.edit(obj, s.nodeOf(obj, input.node), input.op, input.probe === true),
   model_drop: (s, obj, input) => s.drop(obj, s.nodeOf(obj, input.node)),
   model_rename: (s, obj, input) => s.rename(obj, s.nodeOf(obj, input.node), String(input.label ?? "")),
   model_commit: (s, obj) => s.commit(obj),

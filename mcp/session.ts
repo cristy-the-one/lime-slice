@@ -182,6 +182,8 @@ export class Session {
   projectFonts: LimeProject["fonts"];
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   recipeDepth = 0;
+  /** The model_build about to run stands for a model_edit {patch | patches}: its reply does not teach the patch form. */
+  patchedBuild = false;
   /** recipe_run {profile}: each tree call of the run asks the kernel for its timing and adds it here (mcp/session/mesh-end.ts). */
   kernelTap: import("./session/mesh-end.ts").KernelTap | null = null;
   /** recipe_run {meshAtEnd}: parts whose newest step has no mesh yet, by object id, and the step. */
@@ -275,6 +277,7 @@ export class Session {
       if (shape) throw new ProtocolError(shape);
       const rewritten = this.patchToBuild(args as Record<string, unknown>);
       if ("refusal" in rewritten) return Promise.resolve(rewritten.refusal);
+      this.patchedBuild = true;
       name = "model_build";
       args = rewritten.args;
     }
