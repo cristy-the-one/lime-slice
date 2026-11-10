@@ -17,6 +17,9 @@ const INSTRUCTIONS = [
   "slice_wait returns within about 20 seconds. When the status is running, call it again with the same job.",
   "A Model call that runs past about 45 seconds answers with a job instead: slice_wait on it returns the call's result.",
   "For a Model edit: faces_find, workplane_set, model_probe, model_apply, then model_commit so the plate uses the new solid.",
+  // The cheaper forms (docs/mcp-server.md, Lean replies): one sentence each, so a client that reads only this knows them.
+  "Fewer calls: model_apply {probe:true, commit:true} checks, applies and commits; surface_at {rays} and object_remove {objects} take many; change a model_build with model_edit {patches}, not a new build.",
+  "Replies are lean: guide {topic, section} reads one section of a long guide; faces and edges come without frames, boxes and mids unless asked (frames, bbox, full); plan_run gives full results for the last step and the ones a reference names (results:\"all\" for every step).",
   "Before writing a recipe, nugget {action:\"find\", query} with a word or two of what you need. Recipes: read before a loop of applies; reads flush the queue.",
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");
