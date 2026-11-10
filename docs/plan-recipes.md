@@ -1,8 +1,8 @@
 # Plan: recipes as code
 
 Status: the first slice is built. The lust side is merged on the fork's `next`
-branch (PR #11 of cristy-the-one/lust-lang, merge commit pinned in
-`tools/lust/LUST_REV`); the lime-slice side is `recipe_run` (`mcp/recipe.ts`,
+branch (PR #11 of cristy-the-one/lust-lang; lime-slice takes lust-lang's release
+package, pinned in `tools/lust/LUST_VERSION`); the lime-slice side is `recipe_run` (`mcp/recipe.ts`,
 `crates/lime-recipe`). The Windows and Linux installers ship lust, lust-core,
 tinycc and lust's library in `mcp/lust` beside `server.mjs`, and the server uses
 that copy unless `LIME_LUST` names another (S12; lust's daemon exits after 30

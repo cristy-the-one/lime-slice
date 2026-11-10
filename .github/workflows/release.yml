@@ -252,21 +252,16 @@ jobs:
         shell: bash
         run: touch src-tauri/resources/mcp/stable.identity
 
-      # recipe_run builds recipes with lust (tools/lust/LUST_REV) and its tinycc. They ship in mcp/lust beside
-      # server.mjs, which finds them there (mcp/recipe.ts findLust). The Intel dmg carries none: this runner is
-      # arm64, so its lust would be too, and lust's macOS build is proven on arm64 only. recipe_run answers
-      # "Recipes need lust" there.
-      # build-tcc.sh needs bash 5 and the GNU userland, as in lust-lang's macos-arm64 job.
-      - name: Install bash 5 and GNU userland (macOS)
-        if: matrix.label == 'macos-arm'
-        run: brew install bash coreutils findutils gnu-sed
-
+      # recipe_run builds recipes with lust and its tinycc: lust-lang's release package for this runner, pinned in
+      # tools/lust/LUST_VERSION and checked against tools/lust/LUST_SHA256, not built here. They ship in mcp/lust
+      # beside server.mjs, which finds them there (mcp/recipe.ts findLust). The Intel dmg carries none: lust-lang
+      # has no Intel macOS package. recipe_run answers "Recipes need lust" there.
       - name: Cache lust
         if: matrix.label != 'macos-intel'
         uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/lust
-          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_REV', 'tools/lust/install.sh') }}
+          key: lust-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/LUST_VERSION', 'tools/lust/LUST_SHA256', 'tools/lust/install.sh') }}
 
       # zig for lust's optimised recipe builds (`--opt=bg`, zig cc): the official release for this runner, checked
       # against tools/lust/ZIG_SHA256, staged trimmed in mcp/lust/zig by stage.sh.
@@ -277,16 +272,16 @@ jobs:
           path: ${{ runner.temp }}/zig
           key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/ZIG_VERSION', 'tools/lust/ZIG_SHA256') }}
 
-      # On Windows install.sh loads the Visual Studio developer environment itself (tools/lust/msvc-env.sh).
-      - name: Build lust and stage it beside the MCP server
+      - name: Fetch lust and stage it beside the MCP server
         if: matrix.label != 'macos-intel'
-        timeout-minutes: 30
+        timeout-minutes: 15
         shell: bash
         run: |
           set -euo pipefail
-          tools/lust/install.sh "$RUNNER_TEMP/lust" > /dev/null
+          lust=$(tools/lust/install.sh "$RUNNER_TEMP/lust" | tail -n 1)
           zig=$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)
-          tools/lust/stage.sh "$RUNNER_TEMP/lust" src-tauri/resources/mcp/lust "$zig"
+          # The package folder is two levels up from bin/lust.
+          tools/lust/stage.sh "$(dirname "$(dirname "$lust")")" src-tauri/resources/mcp/lust "$zig"
 
       # A recipe built and run by the staged copy, with the bundled server's engine; then the same with the staged
       # zig, every build lust's optimised one (LIME_LUST_OPT=now), and the background build landing (recipe-opt).
