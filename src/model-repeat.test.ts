@@ -2,6 +2,7 @@ import { actionsFor } from "./context-bar.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { editPanel } from "./model-edit.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
+import { COMBINE_BOTH } from "./modeling/compose.ts";
 import { renumberedSteps, type ModelOp } from "./model-tree.ts";
 import {
   HOLES_NOT_YET,
@@ -186,6 +187,20 @@ const mcpPattern: ModelOp = { kind: "group", label: "Pattern", source: { kind: "
 eq("an MCP pattern is not an app repeat", repeatSource(mcpPattern), null);
 const appPattern: ModelOp = { kind: "group", label: "Pattern × 3", source: { kind: "pattern", of: [1], linear: { step: [5, 0, 0], count: 3 } }, steps: [] };
 check("an app pattern still is", repeatSource(appPattern) !== null);
+
+// --- All copies at once: the choice is in the spec, the group's steps are the tools of one boolean, and it reopens.
+const atOnce = readRepeatSpec("pattern", read({ modelPatCount: 6, modelPatCx: 10, modelPatCy: 10, modelPatCz: 5, modelPatAngle: 360 }), choices({ mode: "polar", axis: "z", combine: true }));
+eq("the choice is in the pattern's spec", "reason" in atOnce ? null : atOnce.combine, true);
+eq("and is left out when it is off", "combine" in polar, false);
+const together = "reason" in atOnce ? null : expandRepeat(atOnce, [{ id: 1, op: cylinder }], IDENTITY_POSE);
+eq("the copies are the tools of one cut", together?.group?.combine, "cut");
+eq("with the same copies as one by one", JSON.stringify(together?.group?.steps), JSON.stringify(spun?.group?.steps));
+eq("built one by one, a group names no boolean", spun?.group?.combine, undefined);
+eq("an edit reopens with the choice", together?.group ? repeatPanel(together.group.source as Record<string, unknown>).repeat.combine : null, true);
+eq("a mirror never takes it", "combine" in readRepeatSpec("mirror", read({}), choices({ plane: "x", combine: true })), false);
+const both = "reason" in atOnce ? null : expandRepeat(atOnce, [{ id: 1, op: cylinder }, { id: 2, op: { ...cylinder, op: "fuse" } as ModelOp }], IDENTITY_POSE);
+eq("copies that cut and add are refused in a sentence", both?.note, COMBINE_BOTH);
+eq("and nothing is built", both?.group, null);
 
 if (failed > 0) {
   console.error(`${failed} failed`);

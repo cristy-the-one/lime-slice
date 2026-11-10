@@ -436,6 +436,7 @@ const DOCK = `
                 <button class="btn" id="modelPathDrop" type="button">Remove last</button>
               </div>
               <label class="model-keep" data-for="pattern" data-mode="path" data-tip="Each copy turns to follow the path."><input id="modelPatAlign" type="checkbox" checked> Align to the path</label>
+              <label class="model-keep" data-for="pattern" data-tip="Much faster for many copies. The copies are checked together, not one by one."><input id="modelPatCombine" type="checkbox"> Build all copies at once</label>
               <div class="modes" id="modelMirPlane" data-for="mirror" role="group" aria-label="Mirror plane">
                 <button class="btn mode" type="button" data-plane="x" aria-pressed="false">X</button>
                 <button class="btn mode" type="button" data-plane="y" aria-pressed="false">Y</button>

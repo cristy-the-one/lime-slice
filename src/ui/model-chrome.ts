@@ -637,7 +637,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // --- A4. Align to the path changes the group at once. ---
-    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPatAlign")) {
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelPatAlign" || ev.target.id === "modelPatCombine")) {
       refreshNote();
       refreshGhost();
       hooks?.paramsChanged();
@@ -3233,6 +3233,8 @@ function paintRepeat(choices: RepeatChoices) {
   paintNamed("modelMirPlane", "plane", choices.plane);
   const align = document.querySelector<HTMLInputElement>("#modelPatAlign");
   if (align) align.checked = choices.align;
+  const combine = document.querySelector<HTMLInputElement>("#modelPatCombine");
+  if (combine) combine.checked = choices.combine === true;
   paintPathList();
   paintRepeatSources(repeatSourceIds());
 }

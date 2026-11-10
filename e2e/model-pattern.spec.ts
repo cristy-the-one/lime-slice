@@ -140,6 +140,50 @@ test("a polar pattern of a cylinder is one row of six cuts", async ({ page }) =>
   expect(edited.steps).toHaveLength(3);
 });
 
+test("Build all copies at once makes the pattern one boolean, and an edit keeps the choice", async ({ page }) => {
+  const tree = await openModel(page);
+  await cutCylinder(page);
+  await page.locator("#modelToolPattern").click();
+  await page.locator("#modelPatMode [data-pat=polar]").click();
+  await setField(page, "modelPatCount", "6");
+
+  const choice = page.locator("#modelPatCombine");
+  await expect(choice, "off unless it is chosen").not.toBeChecked();
+  await expect(page.locator("label:has(#modelPatCombine)")).toHaveText("Build all copies at once");
+  await expect(page.locator("label:has(#modelPatCombine)")).toHaveAttribute("data-tip", "Much faster for many copies. The copies are checked together, not one by one.");
+  await choice.check();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+
+  const six = Math.round(4000 - 6 * Math.PI * 1.5 * 1.5 * 10);
+  await expect(page.locator("#modelReadout")).toContainText(`Volume ${six} mm³`);
+  const op = tree.of("apply").at(-1)!.op as { kind: string; combine?: string; source: { combine?: boolean }; steps: unknown[] };
+  expect(op.kind).toBe("group");
+  expect(op.combine, "the copies are the tools of one cut").toBe("cut");
+  expect(op.source.combine).toBe(true);
+  expect(op.steps).toHaveLength(5);
+
+  // The choice comes back with the step, and an edit keeps it.
+  await page.keyboard.press("Shift+E");
+  await expect(page.locator("#modelApply")).toHaveText("Update");
+  await expect(choice).toBeChecked();
+  await setField(page, "modelPatCount", "4");
+  await page.locator("#modelApply").click();
+  const edited = tree.of("edit").at(-1)!.op as { combine?: string; source: { combine?: boolean }; steps: unknown[] };
+  expect(edited.combine).toBe("cut");
+  expect(edited.source.combine).toBe(true);
+  expect(edited.steps).toHaveLength(3);
+
+  // Unticked in an edit, the pattern is built copy by copy again.
+  await page.keyboard.press("Shift+E");
+  await choice.uncheck();
+  await expect(page.locator("#modelApply")).toBeEnabled();
+  await page.locator("#modelApply").click();
+  const plain = tree.of("edit").at(-1)!.op as { combine?: string; source: { combine?: boolean } };
+  expect(plain.combine).toBeUndefined();
+  expect(plain.source.combine).toBeUndefined();
+});
+
 test("a step arrow drags the pattern distance", async ({ page }) => {
   await openModel(page);
   await page.locator("#modelToolPattern").click();

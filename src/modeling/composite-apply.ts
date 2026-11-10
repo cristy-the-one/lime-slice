@@ -6,7 +6,7 @@
  * a port.
  */
 import { latticeLoops, cellExtent } from "./cells.ts";
-import { cleanOp, expand, featureCopies, isComposite, shortenedBoxes, TOUCH_TRIM, type ExpandContext, type Piece } from "./compose.ts";
+import { cleanOp, COMBINE_BOTH, COMBINE_KIND, expand, featureCopies, isComposite, shortenedBoxes, TOUCH_TRIM, type ExpandContext, type Piece } from "./compose.ts";
 import { readLoopsField } from "./bake.ts";
 import { frameNumbers } from "./sections.ts";
 import { featureLabel, isFeatureTool } from "../model-features.ts";
@@ -210,8 +210,7 @@ export function wantsCombine(raw: Record<string, unknown>): boolean {
   return raw.kind === "pattern" && raw.combine === true;
 }
 
-export const COMBINE_BOTH = "A pattern in one boolean takes copies that all cut or all add, and this one does both. Leave combine out: each copy is then built and checked on its own.";
-export const COMBINE_KIND = "A pattern in one boolean takes boxes and other plain shapes, extrudes, revolves and lofts. Leave combine out for this one: each copy is then built and checked on its own.";
+export { COMBINE_BOTH, COMBINE_KIND };
 
 /** The one boolean every step is a tool of: cut or fuse. A sentence when the steps are of both, or of a kind that has no tool of its own. */
 export function combineOf(steps: readonly ModelOp[]): "cut" | "fuse" | { reason: string } {
