@@ -9,9 +9,10 @@ const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_
 const placeNumber = { description: "Number or expression." };
 const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start or a long call." };
 /** Lean replies (mcp/lean.ts): the switches that give a reply as it was. */
-const fullReply = { type: "boolean", description: "The whole reply: unrounded, every field." };
+const fullReply = { type: "boolean", description: "Whole reply, unrounded." };
+const commitAfter = { type: "boolean", description: "Then model_commit, in this call." };
 const faceBoxes = { type: "boolean", description: "Each face's box." };
-const step = { type: "string", minLength: 1, maxLength: 80, description: "History step: node_N from model_history, or a step or batch label." };
+const step = { type: "string", minLength: 1, maxLength: 80, description: "node_N from model_history, or a step or batch label." };
 const cursor = { type: "string", minLength: 1, description: "Page start." };
 const vec3 = { type: "array", description: "3 numbers.", minItems: 3, maxItems: 3, items: { type: "number" } };
 const page = {
@@ -1079,8 +1080,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_remove",
-    description: "Remove one object from the plate.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["object"], properties: { object: handle } },
+    description: "Remove one object from the plate, or objects in one undo step.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, objects: { type: "array", minItems: 1, maxItems: 200, items: { type: "string" }, description: "Several handles." } } },
   },
   {
     name: "machine_list",
@@ -1522,6 +1523,7 @@ export const TOOLS: ToolSpec[] = [
         direction: { ...vec3, description: "Ray direction. Default down with x, y." },
         x: { type: "number", description: "With y: ray down." },
         y: { type: "number", description: "With x." },
+        rays: { type: "array", minItems: 1, maxItems: 500, items: { type: "object" }, description: "Many rays, each {point, direction} or {x, y}; the reply's hits, one a ray." },
       },
     },
   },
@@ -1553,6 +1555,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         op,
         probe: { type: "boolean", description: "Check first; apply only if it passes." },
+        commit: commitAfter,
         full: fullReply,
       },
     },
@@ -1571,6 +1574,7 @@ export const TOOLS: ToolSpec[] = [
         onError: { enum: ["rollback", "stop", "skip"], description: "rollback, stop, or skip." },
         params: { type: "object", description: "This call only, on top of model_params." },
         combine: { enum: ["cut", "fuse"], description: "Ops of this boolean as one: one step, failures by index." },
+        commit: commitAfter,
       },
     },
   },
@@ -1734,8 +1738,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_edit",
-    description: "Replace a step (probe it first, or probe: true) and replay the steps under it. Or change model_build steps without sending the build again: patch one, patches several.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, node: step, full: fullReply, op: opPointer("The replacement plain edit."), probe: { type: "boolean", description: "With op: check first; edit only if it passes." }, patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." }, patches: { type: "array", minItems: 1, maxItems: 100, items: { type: "object" }, description: "In order, one rebuild: {node, patch}, {node, remove: true}, {insert: op, after | before: node}. node: a label or the op number, from 1." } } },
+    description: "Replace a step (probe first, or probe: true) and replay those under it. Or change model_build steps without sending it again: patch one, patches several.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, node: step, full: fullReply, op: opPointer("The replacement plain edit."), probe: { type: "boolean", description: "With op: check first; edit only if it passes." }, patch: { type: "object", description: "Fields to set on step node (a label), not op; null removes one." }, patches: { type: "array", minItems: 1, maxItems: 100, items: { type: "object" }, description: "In order, one rebuild: {node, patch}, {node, remove: true}, {insert: op, after | before: node}. node: label or op number from 1." } } },
   },
   {
     name: "model_rename",

@@ -68,6 +68,9 @@ import type { RecipeCheckpoint } from "./recipe-checkpoint.ts";
 export { typedExprs, STALE_FACES, meshHash } from "./session/shared.ts";
 export type { CallMeta, PlateObject, RustRecipe, Recipe } from "./session/shared.ts";
 
+/** The tools whose `commit: true` runs model_commit after them, in the same call. model_build commits by default. */
+const COMMIT_AFTER = new Set(["model_apply", "model_apply_batch"]);
+
 const HANDLERS: Record<string, ToolHandler> = {
   ...recipeHandlers,
   ...pluginHandlers,
@@ -268,7 +271,7 @@ export class Session {
     return opened ? done.then((value) => withImages({ ...value, groupOpened: opened }, imagesOf(value))) : done;
   }
 
-  runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+  runOpenCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean, nested = false): Promise<Record<string, unknown>> {
     // model_edit {node: label, patch}: the step's fields change in the build's own ops and the build runs again from there.
     // patches does the same for several steps, with insert and remove, in one rebuild.
     const patching = name === "model_edit" && args && typeof args === "object";
@@ -298,7 +301,7 @@ export class Session {
     this.inflight += 1;
     // A detachable call's work stops only for slice_cancel: the request's own cancel, which a client also sends when it
     // gives up waiting, hands the work to a background job instead of throwing it away.
-    const detachable = !inPlan && DETACHABLE.has(name);
+    const detachable = !inPlan && !nested && DETACHABLE.has(name);
     const stop = new AbortController();
     const ctx: CallMeta = detachable ? { progressToken: meta?.progressToken, signal: stop.signal } : (meta ?? {});
     let result: ReturnType<Session["dispatch"]>;
@@ -342,8 +345,19 @@ export class Session {
         this.scheduleAutosave();
       }
     });
+    // commit: true on model_apply and model_apply_batch: when the edit applied, model_commit runs as a call of its own
+    // through this same path (its mirror, receipt and autosave), and its answer rides in the reply. A recipe's parts
+    // are committed when the run ends, so inside one it is left alone.
+    const chained = COMMIT_AFTER.has(name) && input.commit === true && this.recipeDepth === 0
+      ? work.then(async (answer) => {
+          if (answer.ok !== true) return answer;
+          const object = typeof input.object === "string" && input.object !== "" ? input.object : this.selected;
+          const { ok, ...commit } = await this.runOpenCall("model_commit", { object }, ctx, inPlan, true);
+          return { ...answer, committed: ok === true, commit: ok === true ? commit : { ok, ...commit } };
+        })
+      : work;
     // A call from the chat reads the lean form (mcp/lean.ts); a step of a recipe or a plan reads the reply whole.
-    const said = inPlan || this.recipeDepth > 0 ? work : work.then((value) => leanReply(name, input, value));
+    const said = inPlan || this.recipeDepth > 0 ? chained : chained.then((value) => leanReply(name, input, value));
     if (!detachable) return said;
     return this.detachable(name, input, said, ctx, stop, meta?.signal);
   }
