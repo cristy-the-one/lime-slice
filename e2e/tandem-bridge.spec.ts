@@ -186,3 +186,43 @@ test("an MCP shape commit on a part with a Model history in the window shows liv
   await expect.poll(() => tip(page, "obj_1")).toContain(`${post.count} triangles`);
   expect(warnings).toEqual([]);
 });
+
+// Found with 6.3.0 on 2026-11-10 (a crab built over MCP): a helmet fused onto the carapace and committed showed in
+// Prepare, but in Pose the carapace stood below the crab. The window dropped the part's place in Model's shared space
+// when its new mesh arrived, and a part with none reads as standing at the origin.
+test("a part MCP gives a new shape keeps its place in the assembly", async ({ page }) => {
+  const warnings = tandemWarnings(page);
+  await openWithBridge(page);
+  const at = (z: number) => ({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, z] });
+  const part = (object: string, name: string, x: number, z: number, hash = H) => ({ ...row(object, name, x, hash), modelPose: at(z) });
+  const lift = async () => {
+    const raw = await page.locator("#pose").getAttribute("data-posed");
+    const box = Object.fromEntries((raw ?? "").split(" ").filter(Boolean).map((entry) => [entry.split(":")[0]!, entry.split(":")[1]!.split(",").map(Number)]));
+    return box.obj_2 && box.obj_1 ? box.obj_2[2]! - box.obj_1[2]! : NaN;
+  };
+  // The legs at the origin and the carapace 28 mm up, as model_place left them.
+  await emit(page, { tool: "plate_sync", session: "s1", seq: 1, ok: true, objectId: "obj_2", plate: [part("obj_1", "Legs", -40, 0), part("obj_2", "Carapace", 40, 28)], meshes });
+  expect((await receipt(page, 1)).outcome).toBe("applied");
+  await page.locator("#tabPose").click();
+  await expect.poll(lift, "a new part stands where MCP placed it").toBeCloseTo(28, 1);
+
+  // A commit from a server that sends no place (6.3.0 and older): the window keeps the one it has.
+  await emit(page, { tool: "model_commit", session: "s1", seq: 2, ok: true, objectId: "obj_2", change: "Fuse Helmet", commit: { object: "obj_2", meshHash: post.hash }, plate: [part("obj_1", "Legs", -40, 0), row("obj_2", "Carapace", 40, post.hash)], meshes: { [post.hash]: post.mesh } });
+  expect((await receipt(page, 2)).outcome).toBe("applied");
+  await page.locator("#tabPose").click();
+  await expect(page.locator("#pose")).toHaveAttribute("data-posed", /obj_2:/);
+  await expect.poll(lift, "the edited part stays in its assembly").toBeCloseTo(28, 1);
+
+  // A commit that carries a place: the new shape comes with the server's place for it.
+  await emit(page, { tool: "model_commit", session: "s1", seq: 3, ok: true, objectId: "obj_2", change: "Raise Carapace", commit: { object: "obj_2", meshHash: H }, plate: [part("obj_1", "Legs", -40, 0), part("obj_2", "Carapace", 40, 40)], meshes });
+  expect((await receipt(page, 3)).outcome).toBe("applied");
+  await page.locator("#tabPose").click();
+  await expect.poll(lift, "a new shape takes MCP's place for it").toBeCloseTo(40, 1);
+
+  // A placement alone leaves the window's place as it is: a person's pose is not overwritten by a move on the plate.
+  await emit(page, { tool: "object_place", session: "s1", seq: 4, ok: true, objectId: "obj_2", plate: [part("obj_1", "Legs", -40, 0), part("obj_2", "Carapace", 55, 12)], meshes });
+  expect((await receipt(page, 4)).outcome).toBe("applied");
+  await page.locator("#tabPose").click();
+  await expect.poll(lift, "a move on the plate does not change the place in the assembly").toBeCloseTo(40, 1);
+  expect(warnings).toEqual([]);
+});
