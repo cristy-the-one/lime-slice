@@ -8,7 +8,7 @@ import { rootSpec } from "../../src/model-primitive.ts";
 import { applyRequest, gotoRequest } from "../../src/model-request.ts";
 import { appliedReply, partExpandContext, typedPlaneOf, typedPointIn, stepGuard, storedOp, nodeHandle, parseNode, solidView, type SolidView } from "../../src/modeling/model-calls.ts";
 import { profilePlane } from "../../src/modeling/bake.ts";
-import { bakeCells, runComposite, storeGroup } from "../../src/modeling/composite-apply.ts";
+import { bakeCells, runCombined, runComposite, storeGroup, wantsCombine } from "../../src/modeling/composite-apply.ts";
 import { labelBox } from "../../src/modeling/part-reads.ts";
 import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../../src/modeling/anchors.ts";
 import { exprLeaves, linkedExprs, withLeaf } from "../../src/modeling/links.ts";
@@ -408,6 +408,48 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     const planned = twin === undefined || feature || "reason" in expanded ? null : make(structuredClone(raw));
     const links = planned ? this.linksOf(obj, raw, twin, make, planned) : [];
     if ((made += count) > MAX_PIECES) return fail({ index: index + offset, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+    // A pattern with combine: every copy in one boolean, one group, checked once (src/modeling/composite-apply.ts).
+    if (wantsCombine(raw)) {
+      const combined = await runCombined(raw, {
+        pose: () => typedPoseOf(obj),
+        context: () => context,
+        profilePlane: (spec) => this.profilePlane(obj, spec),
+        pieceOf: (op) => this.pieceOf(obj, op),
+        bakeCopy: (copy) => {
+          const baked = this.bake(obj, copy);
+          return "reason" in baked ? baked : baked.op;
+        },
+        solid: () => obj.solid,
+        current: () => obj.tree?.current ?? before,
+        probeApply: async (baked, budget) => {
+          const at = await this.opened(obj);
+          if ("reason" in at) {
+            const missed = refuse("bad-anchor", at.reason);
+            return { probed: missed, done: missed };
+          }
+          const probed = await this.probeBaked(obj, at, at.current, baked, false, false, budget);
+          const done = probed.ok === true ? await this.applyBaked(obj, at, baked, {}, budget) : probed;
+          return { probed, done };
+        },
+        back: async (from, node) => {
+          const back = await this.gotoNode(obj, from);
+          if (back.ok !== true) return String(back.reason ?? "The copies could not be taken back.");
+          if (obj.tree?.nodes.has(node)) this.drop(obj, node);
+          return null;
+        },
+        budgetMs: this.modelTimeoutMs(),
+        linked: (steps) => steps.map((step, j) => this.inDateExprs(step, links[j])),
+      }, label);
+      if ("refused" in combined) {
+        const ended = await endRun(combined.refused);
+        if (ended) return ended;
+        continue;
+      }
+      nodes.push(combined.node);
+      skipped += combined.skipped;
+      checkpoints.push(obj.tree?.current ?? null);
+      continue;
+    }
     const ran = await runComposite(raw, {
       pose: () => typedPoseOf(obj),
       context: () => context,

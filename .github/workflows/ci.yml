@@ -316,6 +316,8 @@ jobs:
           node --experimental-strip-types mcp/text-pen.test.ts
           # The Hershey pen fonts through the MCP text op, on a flat face and a cylinder.
           node --experimental-strip-types mcp/text-hershey.test.ts
+          # A pattern in one boolean (combine: true): every pattern kind against the per-copy solid, the refusals, undo, save and reopen.
+          node --experimental-strip-types mcp/pattern-combine.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
