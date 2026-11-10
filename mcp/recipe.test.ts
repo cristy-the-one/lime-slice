@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { applyAutoEdits, DEFAULT_LIMITS, findLust, lfOnly, lustFeatures, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { optMode, zigFor } from "./recipe-opt.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -166,7 +167,10 @@ if (lustFeatures(lust).rewrites) {
   // The same text again is the program the slot holds: no build, and the file a run starts is the one it started.
   const made = statSync(built.exe!).mtimeMs;
   const again = await host.build("bar", example, true);
-  check("unchanged text reuses the built program", again.ok && again.exe === built.exe && statSync(again.exe!).mtimeMs === made, again);
+  // With a zig beside lust and the background optimised build on (`--opt=bg`), lust is asked at every build until
+  // the optimised program is in, so the file may be written again: the reuse is checked where it is promised.
+  const background = optMode() === "bg" && !!lust && !!zigFor(lust);
+  check("unchanged text reuses the built program", again.ok && again.exe === built.exe && (background || statSync(again.exe!).mtimeMs === made), again);
   const edited = await host.build("bar", `${example}
 // edited
 `, true);

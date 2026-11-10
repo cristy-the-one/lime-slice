@@ -134,7 +134,14 @@ fn a_real_recipe_that_only_logs() {
     let made = std::fs::metadata(&exe).unwrap().modified().unwrap();
     let again = build(&lust, &root, &repo_crate(), 0, source, Duration::from_secs(120)).unwrap();
     assert_eq!(again.exe.as_deref(), Some(exe.as_path()));
-    assert_eq!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "unchanged text was built again");
+    // With a zig beside lust and the background optimised build on (`--opt=bg`), lust is asked at every build until
+    // the optimised program is in, so the file may be written again: the reuse is checked where it is promised.
+    let asked = std::env::var("LIME_LUST_OPT").unwrap_or_default().trim().to_lowercase();
+    let off = matches!(asked.as_str(), "0" | "off" | "false") || (asked.is_empty() && !cfg!(windows));
+    let background = !off && asked != "now" && lime_recipe_runner::opt::zig_for(&lust).is_some();
+    if !background {
+        assert_eq!(std::fs::metadata(&exe).unwrap().modified().unwrap(), made, "unchanged text was built again");
+    }
     // Changed text, and then the first text after it, each build.
     let edited = build(&lust, &root, &repo_crate(), 0, &format!("{source}// edited\n"), Duration::from_secs(120)).unwrap();
     assert_eq!(edited.code, Some(0), "{}\n{}", edited.stdout, edited.stderr);
