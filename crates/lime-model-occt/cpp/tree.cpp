@@ -26,6 +26,7 @@
 #include <TopLoc_Location.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <ShapeAnalysis_Surface.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Builder.hxx>
 #include <Bnd_Box.hxx>
@@ -3035,6 +3036,105 @@ LimeShape* lime_tree_test_nurbs(const LimeShape* shape, char** error) {
         }
         const TopoDS_Shape made = convert.Shape();
         return adopt(made, volume_of(as_solid(made)), "Open CASCADE did not convert the solid", error, nullptr).release();
+    } catch (const Standard_Failure& failure) {
+        set_failure(error, failure);
+        return nullptr;
+    } catch (...) {
+        set_error(error, "Open CASCADE failed");
+        return nullptr;
+    }
+}
+
+/// Debug builds only, for tests: how good the solid's mesh at `chord` is, as JSON text. `triangles`; `maxDeviationMm`,
+/// the farthest a triangle lies from its face's surface, measured at each triangle's middle and at the middle of each
+/// of its sides (the flat point against the nearest point of the surface, looked for from the mean of the corners'
+/// parameters, so a pole or a seam, where that mean is nowhere near, does not count); `minAngleDeg`, the
+/// sharpest corner of any triangle; `areaOffPct`, the most the triangles of one face of 1 mm² or more differ in area
+/// from the face itself, in percent (triangles folded over each other, or missing, show here); `slivers`, the triangles with a corner under 5 degrees; `flat`, the triangles of
+/// no area; and `unmeshed`, the faces with no triangles.
+char* lime_tree_test_mesh(LimeShape* shape, double chord, char** error) {
+    try {
+        LIME_CATCH_FAULTS;
+        tessellate(shape->held, chord);
+        long triangles = 0;
+        double worst_area = 0.0;
+        long slivers = 0;
+        long flat = 0;
+        int unmeshed = 0;
+        double deviation = 0.0;
+        double sharpest = 180.0;
+        for (int index = 1; index <= shape->held.faces.Extent(); ++index) {
+            const TopoDS_Face face = TopoDS::Face(shape->held.faces(index));
+            TopLoc_Location location;
+            const Handle(Poly_Triangulation)& mesh = BRep_Tool::Triangulation(face, location);
+            if (mesh.IsNull() || mesh->NbTriangles() == 0) {
+                unmeshed += 1;
+                continue;
+            }
+            const Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+            Handle(ShapeAnalysis_Surface) nearest;
+            if (!surface.IsNull()) {
+                nearest = new ShapeAnalysis_Surface(surface);
+            }
+            const gp_Trsf place = location.Transformation();
+            double covered = 0.0;
+            for (int t = 1; t <= mesh->NbTriangles(); ++t) {
+                int n[3] = {0, 0, 0};
+                mesh->Triangle(t).Get(n[0], n[1], n[2]);
+                gp_Pnt p[3];
+                for (int k = 0; k < 3; ++k) {
+                    p[k] = mesh->Node(n[k]).Transformed(place);
+                }
+                triangles += 1;
+                covered += 0.5 * gp_Vec(p[0], p[1]).Crossed(gp_Vec(p[0], p[2])).Magnitude();
+                double least = 180.0;
+                bool area = true;
+                for (int k = 0; k < 3; ++k) {
+                    const gp_Vec a(p[k], p[(k + 1) % 3]);
+                    const gp_Vec b(p[k], p[(k + 2) % 3]);
+                    if (a.Magnitude() < 1e-12 || b.Magnitude() < 1e-12) {
+                        area = false;
+                        break;
+                    }
+                    least = std::min(least, a.Angle(b) * 180.0 / 3.14159265358979323846);
+                }
+                if (!area || least < 1e-6) {
+                    flat += 1;
+                    continue;
+                }
+                sharpest = std::min(sharpest, least);
+                if (least < 5.0) {
+                    slivers += 1;
+                }
+                if (surface.IsNull() || !mesh->HasUVNodes()) {
+                    continue;
+                }
+                const gp_Pnt2d uv[3] = {mesh->UVNode(n[0]), mesh->UVNode(n[1]), mesh->UVNode(n[2])};
+                const double weights[4][3] = {{1.0 / 3, 1.0 / 3, 1.0 / 3}, {0.5, 0.5, 0.0}, {0.0, 0.5, 0.5}, {0.5, 0.0, 0.5}};
+                for (const auto& w : weights) {
+                    const double u = w[0] * uv[0].X() + w[1] * uv[1].X() + w[2] * uv[2].X();
+                    const double v = w[0] * uv[0].Y() + w[1] * uv[1].Y() + w[2] * uv[2].Y();
+                    const gp_XYZ flat_point = w[0] * p[0].XYZ() + w[1] * p[1].XYZ() + w[2] * p[2].XYZ();
+                    const gp_Pnt at(flat_point);
+                    double away = surface->Value(u, v).Distance(at);
+                    if (away > 1e-9) {
+                        const gp_Pnt2d found = nearest->NextValueOfUV(gp_Pnt2d(u, v), at, 1e-7);
+                        away = std::min(away, nearest->Value(found).Distance(at));
+                    }
+                    deviation = std::max(deviation, away);
+                }
+            }
+            GProp_GProps props;
+            BRepGProp::SurfaceProperties(face, props);
+            if (props.Mass() >= 1.0) {
+                worst_area = std::max(worst_area, 100.0 * std::abs(covered - props.Mass()) / props.Mass());
+            }
+        }
+        std::ostringstream out;
+        out.precision(9);
+        out << "{\"areaOffPct\":" << worst_area << ",\"triangles\":" << triangles << ",\"maxDeviationMm\":" << deviation << ",\"minAngleDeg\":" << sharpest
+            << ",\"slivers\":" << slivers << ",\"flat\":" << flat << ",\"unmeshed\":" << unmeshed << "}";
+        return alloc(out.str());
     } catch (const Standard_Failure& failure) {
         set_failure(error, failure);
         return nullptr;

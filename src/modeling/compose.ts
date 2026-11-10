@@ -27,6 +27,21 @@ export interface Piece {
   step?: Record<string, unknown>;
 }
 
+// --- A pattern in one boolean (`combine: true`): what one boolean cannot take, in a sentence. ---
+export const COMBINE_BOTH = "Building all copies at once takes copies that all cut or all add. This pattern does both, so build its copies one by one.";
+export const COMBINE_KIND = "Building all copies at once takes plain shapes, extrudes, revolves and lofts that cut or add. This pattern repeats another kind of step, so build its copies one by one.";
+
+/** The one boolean every piece is a tool of: cut or fuse. A sentence when the pieces are of both, keep an overlap, or are letters. */
+export function combineOfPieces(pieces: readonly Piece[]): "cut" | "fuse" | { reason: string } {
+  let which: "cut" | "fuse" | null = null;
+  for (const piece of pieces) {
+    if (piece.step || (piece.op !== "cut" && piece.op !== "fuse")) return { reason: COMBINE_KIND };
+    if (which !== null && which !== piece.op) return { reason: COMBINE_BOTH };
+    which = piece.op;
+  }
+  return which ?? { reason: COMBINE_KIND };
+}
+
 /** The kinds that expand. A plain `boolean` is a piece of one. */
 export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture", "array", "ribs", "text"] as const;
 export type CompositeKind = (typeof COMPOSITE_KINDS)[number];

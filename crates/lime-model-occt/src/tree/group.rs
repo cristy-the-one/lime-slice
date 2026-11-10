@@ -387,18 +387,34 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
     let raws: Vec<*const RawShape> = tools.iter().map(Shape::raw).collect();
     // --- docs/plan-native-recipes.md 7.1: a recipe's queued tools also say which of them changed nothing.
     let queued = source.get("kind").and_then(Value::as_str) == Some("queue");
+    // A pattern typed with `combine: true`: its copies in one boolean, checked once, as a queue's tools are. Faces on
+    // one surface merge once at the end, as they would have after each copy, and every copy that changed nothing is
+    // counted, a plain boolean too.
+    let repeated = source.get("kind").and_then(Value::as_str) == Some("pattern")
+        && source.get("combine").and_then(Value::as_bool) == Some(true);
     let mut missed: Vec<c_int> = vec![0; raws.len()];
     // Plain booleans merge faces on one surface after each step: a queued group of them merges once at its end. The
     // host never groups them with ops that do not merge.
     let merge = c_int::from(steps.iter().all(|step| matches!(step, Op::Boolean { merge: true, .. })));
     let kept = Shape::made(|error| unsafe {
-        if queued {
+        if queued || repeated {
             lime_tree_combine_checked(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, merge, missed.as_mut_ptr(), error)
         } else {
             lime_tree_combine(from.raw(), which.name().as_ptr(), raws.as_ptr(), raws.len() as c_int, error)
         }
     })
-    .map_err(BuildFail::plain)?;
+    .map_err(|message| {
+        // A pattern whose copies all miss says what the same pattern built copy by copy says.
+        if repeated && message.ends_with("does not change the part.") {
+            BuildFail::plain(if count == 1 {
+                "Its one step does not change the part.".to_owned()
+            } else {
+                format!("None of its {count} steps changes the part.")
+            })
+        } else {
+            BuildFail::plain(message)
+        }
+    })?;
     // Indexes of the steps, not of the tools that built. A plain boolean that misses is an ordinary step (it keeps the
     // solid as it was, built alone too); an extrude, revolve or loft that changes nothing is refused alone, so only
     // those count as missed.
@@ -408,12 +424,13 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
         .enumerate()
         .filter(|(_, m)| **m != 0)
         .filter_map(|(at, _)| built.get(at).copied())
-        .filter(|index| !matches!(steps[*index], Op::Boolean { .. }))
+        .filter(|index| repeated || !matches!(steps[*index], Op::Boolean { .. }))
         .collect();
     let mut report = json!({ "tools": tools.len(), "failed": failed });
-    if queued {
+    if queued || repeated {
         report["missed"] = json!(gone);
     }
+    let skipped = if repeated { gone.len() as u32 } else { 0 };
     Ok(Built {
         op: Op::Group {
             label,
@@ -427,7 +444,7 @@ pub(super) fn build_combined(from: &mut Shape, label: String, source: Value, ste
         pins: None,
         numbered: None,
         joined: None,
-        skipped: 0,
+        skipped,
         sides: Vec::new(),
         report: Some(("combined", report)),
     })

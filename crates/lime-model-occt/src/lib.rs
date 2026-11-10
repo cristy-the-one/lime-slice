@@ -156,6 +156,32 @@ pub fn stats() -> String {
     }
 }
 
+/// With `on`, triangulate faces with Open CASCADE's Watson algorithm, as the bridge did before it took Delabella, so a
+/// test or a measurement can compare the two. Without the kernel this does nothing.
+pub fn set_watson_mesher(on: bool) {
+    #[cfg(lime_occt)]
+    {
+        native::set_watson_mesher(on);
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = on;
+    }
+}
+
+/// With `on` false, a face the Delabella algorithm could not triangulate stays without triangles instead of being
+/// meshed by Watson, so a test can show what the fallback is for. Without the kernel this does nothing.
+pub fn set_mesher_fallback(on: bool) {
+    #[cfg(lime_occt)]
+    {
+        native::set_mesher_fallback(on);
+    }
+    #[cfg(not(lime_occt))]
+    {
+        let _ = on;
+    }
+}
+
 /// With `on`, mesh every face of a solid, as before a step meshed only around the faces it
 /// made, so a test can compare the two. Without the kernel this does nothing.
 pub fn set_whole_meshes(on: bool) {
@@ -274,6 +300,16 @@ mod native {
         fn lime_model_occt_stats() -> *mut c_char;
         fn lime_model_occt_string_free(text: *mut c_char);
         fn lime_model_occt_whole_meshes(on: std::os::raw::c_int);
+        fn lime_model_occt_watson_mesher(on: std::os::raw::c_int);
+        fn lime_model_occt_mesher_fallback(on: std::os::raw::c_int);
+    }
+
+    pub fn set_mesher_fallback(on: bool) {
+        unsafe { lime_model_occt_mesher_fallback(std::os::raw::c_int::from(on)) };
+    }
+
+    pub fn set_watson_mesher(on: bool) {
+        unsafe { lime_model_occt_watson_mesher(std::os::raw::c_int::from(on)) };
     }
 
     pub fn set_whole_meshes(on: bool) {

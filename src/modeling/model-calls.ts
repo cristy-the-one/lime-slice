@@ -244,6 +244,13 @@ export function probeVerdict(op: ModelOp, reply: Record<string, unknown>, pose: 
     const tooThick = op.kind === "shell" && note?.bad && /too thick/.test(note.text) ? { tooThick: note.text } : {};
     return { ok: false, body: { ok: false, reason: note?.text ?? "This does not fit.", ...(typeof reply.maxMm === "number" ? { maxMm: reply.maxMm } : {}), ...failedStep }, ...tooThick };
   }
+  // A pattern in one boolean is judged as that boolean: what it adds must join the part, and what it cuts must not
+  // sever a piece, as each copy of a pattern is judged.
+  const one = op.kind === "group" && op.combine && (op.source as { kind?: unknown } | undefined)?.kind === "pattern" ? { kind: "boolean", op: op.combine } : null;
+  if (one && view?.phase === "done" && (addsPiece(one, view.measure) || cutsOffPiece(one, view.measure))) {
+    const where = pieceReport(reply, (p) => applyPose(pose, p));
+    return { ok: false, body: { ok: false, reason: one.op === "fuse" ? separateReason(where) : splitReason(where), ...(where ? { where } : {}) } };
+  }
   if (view?.phase === "done" && addsPiece(op as { kind: string; op?: string }, view.measure)) {
     const where = pieceReport(reply, (p) => applyPose(pose, p));
     return { ok: false, body: { ok: false, reason: separateReason(where), ...(where ? { where } : {}) } };

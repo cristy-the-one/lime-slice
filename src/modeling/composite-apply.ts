@@ -6,13 +6,15 @@
  * a port.
  */
 import { latticeLoops, cellExtent } from "./cells.ts";
-import { cleanOp, expand, featureCopies, isComposite, shortenedBoxes, TOUCH_TRIM, type ExpandContext, type Piece } from "./compose.ts";
+import { cleanOp, COMBINE_BOTH, COMBINE_KIND, expand, featureCopies, isComposite, shortenedBoxes, TOUCH_TRIM, type ExpandContext, type Piece } from "./compose.ts";
 import { readLoopsField } from "./bake.ts";
 import { frameNumbers } from "./sections.ts";
 import { featureLabel, isFeatureTool } from "../model-features.ts";
 import type { PrimitiveSpec } from "../model-primitive.ts";
 import { repeatLabel } from "../model-repeat.ts";
-import { toSolidOp, type Affine } from "../model-space.ts";
+import { primitiveBox } from "../model-feasibility.ts";
+import { lostVolume, touchingEdges, touchingReason } from "./step-guard.ts";
+import { applyPose, toSolidOp, type Affine } from "../model-space.ts";
 import type { GroupOp, ModelOp, NodeId, ProfileLoop } from "../model-tree.ts";
 import { workplaneOwn, type Workplane } from "../workplane.ts";
 
@@ -200,6 +202,121 @@ export async function storeGroup(port: GroupPort, before: NodeId, firstPiece: No
   if (node === null) return { ok: false, failed: { reason: "These steps did not apply." } };
   return { ok: true, node };
 }
+
+// --- A pattern in one boolean (`combine: true`). Keep this block together. ---
+
+/** Whether a pattern asks for all its copies in one boolean. */
+export function wantsCombine(raw: Record<string, unknown>): boolean {
+  return raw.kind === "pattern" && raw.combine === true;
+}
+
+export { COMBINE_BOTH, COMBINE_KIND };
+
+/** The one boolean every step is a tool of: cut or fuse. A sentence when the steps are of both, or of a kind that has no tool of its own. */
+export function combineOf(steps: readonly ModelOp[]): "cut" | "fuse" | { reason: string } {
+  let which: "cut" | "fuse" | null = null;
+  for (const step of steps) {
+    if (step.kind !== "boolean" && step.kind !== "extrude" && step.kind !== "revolve" && step.kind !== "loft") return { reason: COMBINE_KIND };
+    const op = (step as { op?: unknown }).op;
+    if (op !== "cut" && op !== "fuse") return { reason: COMBINE_KIND };
+    if (which !== null && which !== op) return { reason: COMBINE_BOTH };
+    which = op;
+  }
+  return which ?? { reason: COMBINE_KIND };
+}
+
+/** What building a pattern in one boolean needs of the part it runs on. */
+export interface CombinedPort {
+  pose(): Affine;
+  context(): ExpandContext;
+  profilePlane(spec: Record<string, unknown>): { origin: [number, number, number]; turn: [number, number, number] } | { reason: string };
+  pieceOf(raw: Record<string, unknown>): Piece | { reason: string };
+  /** A repeated feature's copy, as typed, as the step it stores. */
+  bakeCopy(copy: Record<string, unknown>): ModelOp | { reason: string };
+  /** The part's mesh, in the solid's frame, and its volume, now. */
+  solid(): { positions: ArrayLike<number>; volumeMm3: number } | null;
+  /** The step the part is at. */
+  current(): NodeId;
+  /** The group probed, then applied, within `budgetMs`. */
+  probeApply(baked: BakedStep, budgetMs: number): Promise<{ probed: Record<string, unknown>; done: Record<string, unknown> }>;
+  /** Back to `before`, with `node` gone; a sentence when the engine refused. */
+  back(before: NodeId, node: NodeId): Promise<string | null>;
+  /** The time one model call may take. */
+  budgetMs: number;
+  /** Each step with the links it keeps, by its place in the expansion. */
+  linked?(steps: ModelOp[]): ModelOp[];
+}
+
+export type CombinedRun = { ok: true; node: NodeId; count: number; skipped: number } | { refused: Record<string, unknown> };
+
+/**
+ * A pattern with `combine: true`: its copies expanded as always, then built as one group whose steps are the tools of
+ * one boolean. No copy is checked on its own. What is checked, once: the group's probe (the result is one solid, with
+ * no piece cut off and no hollow sealed), that every copy's tool built, that a fuse lost none of the part, and on the
+ * final mesh that no copy left pieces meeting only along an edge. A refusal takes the group back, so the part is as
+ * it was. A copy that changes nothing is counted, not refused; every copy changing nothing is.
+ */
+export async function runCombined(raw: Record<string, unknown>, port: CombinedPort, label: string | undefined): Promise<CombinedRun> {
+  const context = port.context();
+  const copies = featureCopies(raw, context.plane, (spec) => port.profilePlane(spec));
+  const expanded = copies === null ? expand(raw, context, (op) => port.pieceOf(op)) : copies;
+  if ("reason" in expanded) return { refused: { reason: expanded.reason } };
+  const steps: ModelOp[] = [];
+  for (const one of expanded) {
+    if (copies !== null) {
+      const baked = port.bakeCopy(one as Record<string, unknown>);
+      if ("reason" in baked) return { refused: { reason: baked.reason } };
+      steps.push(baked);
+      continue;
+    }
+    const piece = one as Piece;
+    if (piece.step) return { refused: { reason: COMBINE_KIND } };
+    steps.push(toSolidOp({ kind: "boolean", op: piece.op, ...piece.spec, ...(piece.merge ? { merge: true as const } : {}) }, port.pose()));
+  }
+  const count = steps.length;
+  const combine = combineOf(steps);
+  if (typeof combine !== "string") return { refused: combine };
+  let source: unknown = raw;
+  try {
+    source = JSON.parse(JSON.stringify(raw)) as unknown;
+  } catch {
+    source = raw;
+  }
+  const group: GroupOp = { kind: "group", label: compositeGroupLabel(raw, label), source, steps: port.linked ? port.linked(steps) : steps, combine };
+  const before = port.current();
+  const prior = port.solid();
+  const { probed, done } = await port.probeApply({ op: group, typed: cleanOp(raw) }, Math.max(port.budgetMs, count * 250));
+  if (probed.ok !== true) return { refused: { reason: String(probed.reason ?? "These copies did not fit."), ...(probed.where ? { where: probed.where } : {}) } };
+  if (done.ok !== true) return { refused: { reason: String(done.reason ?? "These copies did not apply.") } };
+  const node = nodeOf(done.node);
+  if (node === null) return { refused: { reason: "These copies did not apply." } };
+  const refuse = async (body: Record<string, unknown>): Promise<CombinedRun> => {
+    const back = await port.back(before, node);
+    return { refused: back ? { reason: back } : body };
+  };
+  const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
+  const left = report.failed?.[0];
+  if (left) return refuse({ reason: `Copy ${left.index + 1} of ${count}: ${left.reason}`, step: left.index + 1, of: count, failedStep: left.index + 1 });
+  const after = port.solid();
+  if (prior && after) {
+    const lost = lostVolume({ kind: "boolean", op: combine }, prior.volumeMm3, after.volumeMm3, null);
+    if (lost) return refuse({ reason: lost });
+    if (prior.positions.length > 0 && after.positions.length > 0) {
+      for (let k = 0; k < steps.length; k += 1) {
+        const step = steps[k]!;
+        if (step.kind !== "boolean") continue;
+        const box = primitiveBox(step);
+        const now = touchingEdges(after.positions, box);
+        if (now.count > touchingEdges(prior.positions, box).count) {
+          const at = now.at ? (applyPose(port.pose(), now.at).map((v) => Math.round(v * 100) / 100) as [number, number, number]) : null;
+          return refuse({ reason: touchingReason(at), touching: true, step: k + 1, of: count, failedStep: k + 1 });
+        }
+      }
+    }
+  }
+  return { ok: true, node, count, skipped: report.missed?.length ?? 0 };
+}
+// --- end pattern in one boolean ---
 
 /** Whether an op is an array of loops cells (I20): one extrude of cells on a face, one step. */
 export function isCellArray(raw: Record<string, unknown>): boolean {

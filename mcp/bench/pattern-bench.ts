@@ -1,7 +1,7 @@
 /**
  * The pattern bench: `model_apply` of a pattern op on the real engine, with where each run's time went.
  *
- *   node --experimental-strip-types --no-warnings mcp/bench/pattern-bench.ts [--runs 3] [--only holes50,polar36] [--json out.json]
+ *   node --experimental-strip-types --no-warnings mcp/bench/pattern-bench.ts [--runs 3] [--only holes50,polar36] [--combine] [--json out.json]
  *
  * A pattern is not one kernel op: the server expands it to its copies, probes and applies each copy as a step (two tree
  * calls a copy, each Apply answering with the whole part, meshed), then folds the steps into one group. Each case makes
@@ -17,6 +17,9 @@
  * each copy trims the plate's two large faces again and they are meshed again), pockets round a disc, bosses, a pattern
  * of an extrude and of a pocket (features, not primitives), holes and cones on a plate that already carries some, and
  * 8 holes on a plate with 1,000 (3,000 edges): the case a reply's edge lines and a large face's mesh are measured on.
+ *
+ * With `--combine` every pattern is sent with `combine: true`: all its copies in one boolean, checked once. The solids'
+ * lines of a run with it and a run without say whether the two ways leave the same solid.
  *
  * To compare two builds, run it once with each (LIME_MCP_ENGINE and LIME_OCCT_BRIDGE), alternately when the machine
  * is busy, and compare the tables and the solids' lines.
@@ -43,6 +46,7 @@ function arg(name: string, fallback?: string): string | undefined {
 const runs = Math.max(1, Number(arg("runs", "3")));
 const only = arg("only")?.split(",");
 const jsonOut = arg("json");
+const combine = process.argv.includes("--combine");
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-pattern-bench-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -205,7 +209,7 @@ async function once(c: Case): Promise<Result> {
   const started = performance.now();
   let reply: Reply;
   try {
-    reply = await call("model_apply", { object, op: c.op });
+    reply = await call("model_apply", { object, op: combine ? { ...c.op, combine: true } : c.op });
   } finally {
     held.kernelTap = null;
   }

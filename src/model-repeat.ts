@@ -5,7 +5,7 @@
  */
 import { registerContextAction } from "./context-bar.ts";
 import { align, orientEuler } from "./mesh-place.ts";
-import { MAX_PIECES, mirrorMotion, movedSpec, patternMotions, type Motion, type Piece } from "./modeling/compose.ts";
+import { combineOfPieces, MAX_PIECES, mirrorMotion, movedSpec, patternMotions, type Motion, type Piece } from "./modeling/compose.ts";
 import { isPrimitiveKind, type PrimitiveSpec } from "./model-primitive.ts";
 import { fromSolidOp, toSolidOp, type Affine } from "./model-space.ts";
 import { groupFromPieces } from "./model-features.ts";
@@ -58,6 +58,8 @@ export interface RepeatChoices {
   normal: Vec3 | null;
   points: Vec3[];
   of: number[];
+  /** A pattern's copies built at once, in one boolean, and checked together. Off when absent. */
+  combine?: boolean;
 }
 
 export const REPEAT_CHOICE_DEFAULTS: RepeatChoices = {
@@ -107,6 +109,7 @@ function axisVector(choices: RepeatChoices): Vec3 | { reason: string } {
  */
 export function readRepeatSpec(tool: RepeatTool, read: (id: string) => number, choices: RepeatChoices): Record<string, unknown> | { reason: string } {
   const spec: Record<string, unknown> = { kind: tool, of: [...choices.of] };
+  if (tool === "pattern" && choices.combine === true) spec.combine = true;
   if (tool === "mirror") {
     const origin: Vec3 = [read("modelMirX"), read("modelMirY"), read("modelMirZ")];
     if (choices.plane === "face") {
@@ -222,6 +225,7 @@ export function repeatPanel(source: Record<string, unknown>): { tool: RepeatTool
     normal: plane === "face" ? vec3(source.normal, [0, 0, 1]) : null,
     points,
     of,
+    combine: tool === "pattern" && source.combine === true,
   };
   return { tool, fields, repeat };
 }
@@ -367,7 +371,14 @@ export function expandRepeat(spec: Record<string, unknown>, steps: readonly { id
   }
   if (out.length === 0) return emptyRepeat(REPEAT_NOTHING);
   const label = repeatLabel(spec);
-  return { note: null, pieces: out, group: groupFromPieces(label, spec, out) };
+  const group = groupFromPieces(label, spec, out);
+  // --- All copies at once: the group's steps are the tools of one boolean, which the kernel builds together.
+  if (spec.kind === "pattern" && spec.combine === true) {
+    const combine = combineOfPieces(out);
+    if (typeof combine !== "string") return emptyRepeat(combine.reason);
+    return { note: null, pieces: out, group: { ...group, combine } };
+  }
+  return { note: null, pieces: out, group };
 }
 
 /**
@@ -453,6 +464,7 @@ export function panelRepeatChoices(): RepeatChoices {
     normal: mirrorNormal ? [...mirrorNormal] : null,
     points: pathPoints.map((point) => [...point]),
     of: [...sourceIds],
+    combine: typeof document !== "undefined" && document.querySelector<HTMLInputElement>("#modelPatCombine")?.checked === true,
   };
 }
 

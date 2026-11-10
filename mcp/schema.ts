@@ -214,6 +214,7 @@ const repeatFields = (inner: Record<string, unknown>) => ({
           closed: { type: "boolean", description: "Back round to the first point." },
         },
       },
+      combine: { type: "boolean", description: "One boolean; copies unchecked." },
       label,
     },
   },

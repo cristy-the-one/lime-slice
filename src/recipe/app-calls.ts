@@ -14,7 +14,7 @@
  */
 import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../modeling/anchors.ts";
 import { bakeOp, bakeTransition, onFaceIndex, profilePlane as profilePlaneOf, type BakeContext, type Baked } from "../modeling/bake.ts";
-import { bakeCells, isCellArray, runComposite, runsAsComposite, storeGroup, type CompositePort, type GroupPort } from "../modeling/composite-apply.ts";
+import { bakeCells, isCellArray, runCombined, runComposite, runsAsComposite, storeGroup, wantsCombine, type CompositePort, type GroupPort } from "../modeling/composite-apply.ts";
 import { cleanOp, expand, featureCopies, isComposite, MAX_PIECES, primitiveFrom, TOUCH_TRIM, type Piece } from "../modeling/compose.ts";
 import { surfaceAt } from "../modeling/inspect.ts";
 import { appliedReply, boundsOf, describeReply, disjointRefusal, edgesReply, facesReply, nodeHandle, parseNode, partExpandContext, probeEcho, probeVerdict, solidSections, solidView, stepGuard, storedOp, typedPlaneOf, typedPointIn, type SolidView } from "../modeling/model-calls.ts";
@@ -1046,6 +1046,34 @@ export class AppRecipeCalls {
       const expanded = copies === null ? expand(raw, context, (op) => pieceOf(op, this.typedPlane(p))) : copies;
       const count = "reason" in expanded ? 0 : expanded.length;
       if ((made += count) > MAX_PIECES) return fail({ index, reason: `This makes more than ${MAX_PIECES} steps. Split it into smaller batches.` });
+      // A pattern with combine: every copy in one boolean, one group, checked once (src/modeling/composite-apply.ts).
+      if (wantsCombine(raw)) {
+        const port = this.compositePort(p);
+        const combined = await runCombined(raw, {
+          pose: port.pose,
+          context: port.context,
+          profilePlane: port.profilePlane,
+          pieceOf: port.pieceOf,
+          bakeCopy: (copy) => {
+            const baked = this.bake(p, copy);
+            return "reason" in baked ? baked : baked.op;
+          },
+          solid: () => p.solid,
+          current: () => p.tree.current,
+          probeApply: this.groupPort(p).probeApply,
+          back: (from, node) => this.back(p, from, node),
+          budgetMs: 0,
+        }, label);
+        if ("refused" in combined) {
+          const ended = await refuse(combined.refused);
+          if (ended) return ended;
+          continue;
+        }
+        nodes.push(combined.node);
+        skipped += combined.skipped;
+        checkpoints.push(p.tree.current);
+        continue;
+      }
       const ran = await runComposite(raw, this.compositePort(p));
       ownNodes.push(...ran.ownNodes);
       nodes.push(...ran.ownNodes);
