@@ -4,7 +4,7 @@
  */
 import { ProtocolError } from "../engine.ts";
 import { imagesOf, withImages, type InlineImage } from "../inline.ts";
-import { planProblem, resolveReferences, type PlanStep } from "../plan.ts";
+import { planProblem, referencedSteps, resolveReferences, type PlanStep } from "../plan.ts";
 import { validateTool } from "../schema.ts";
 import { isComposite } from "../../src/modeling/compose.ts";
 import { CHANGES_NOTHING, type CallMeta, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, WHILE_BUSY, type WorkJob, replySeconds } from "./shared.ts";
@@ -105,15 +105,34 @@ function planRun(this: Session, args: unknown, meta?: CallMeta): Promise<Record<
   if (this.inflight === 0) this.flushAutosave();
   const stop = new AbortController();
   const ctx: CallMeta = { progressToken: meta?.progressToken, signal: stop.signal, planJob: `job_${++this.jobSeq}` };
-  const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx));
+  const results = (args as { results?: unknown }).results;
+  const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx, results === "all" || results === "last" ? results : undefined));
   return this.detachable("plan_run", args as Record<string, unknown>, work, ctx, stop, meta?.signal);
 }
 
-async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta): Promise<Record<string, unknown>> {
+/**
+ * The plan's steps as its reply gives them. A plan is written to save round trips, and most of its steps hand a handle
+ * to the next one: their whole results were read by nobody. So a step's result is given in full when it is the last
+ * one run, when it was refused, or when a later step's reference names it (what the plan itself read); any other step
+ * is {step, tool, ok} with the handles it made. results: "last" gives only the last and a refused one in full, and
+ * results: "all" every step's, as before.
+ */
+function planSteps(done: Record<string, unknown>[], mode: "all" | "last" | undefined, named: Set<number>): Record<string, unknown>[] {
+  if (mode === "all") return done;
+  return done.map((row, i) => {
+    const result = row.result as Record<string, unknown> | undefined;
+    if (!result || result.ok === false || i === done.length - 1 || (mode === undefined && named.has(Number(row.step)))) return row;
+    const handles = Object.fromEntries(["object", "node", "job"].filter((key) => typeof result[key] === "string").map((key) => [key, result[key]]));
+    return { step: row.step, tool: row.tool, ok: true, ...handles };
+  });
+}
+
+async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta, mode?: "all" | "last"): Promise<Record<string, unknown>> {
   const results: Record<string, unknown>[] = [];
   const done: Record<string, unknown>[] = [];
   const images: InlineImage[] = [];
-  const end = (head: Record<string, unknown>) => withImages({ ...head, steps: done }, images);
+  const named = referencedSteps(steps);
+  const end = (head: Record<string, unknown>) => withImages({ ...head, steps: planSteps(done, mode, named) }, images);
   for (let i = 0; i < steps.length; i += 1) {
     const n = i + 1;
     const tool = steps[i]!.tool;

@@ -4,7 +4,7 @@ import { GROUP_NAMES, groupOf, TOOLS_ENABLE_HELP } from "./groups.ts";
 import { MAX_PLAN_STEPS, PLAN_HELP } from "./plan.ts";
 import { ALIGN_RELATIONS } from "../src/place-snap.ts";
 
-const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_N. Default: the selected object." };
+const handle = { type: "string", minLength: 1, maxLength: 64, description: "obj_N. Default: the selected." };
 /** A model_place number: mm or degrees, or an expression over model_params names. The handler reads and checks it. */
 const placeNumber = { description: "Number or expression." };
 const jobHandle ={ type: "string", minLength: 1, maxLength: 64, description: "job_N from slice_start or a long call." };
@@ -2071,6 +2071,7 @@ export const TOOLS: ToolSpec[] = [
             },
           },
         },
+        results: { enum: ["last", "all"], description: "Full results of the last step only, or of all." },
       },
     },
   },

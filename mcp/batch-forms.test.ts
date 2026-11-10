@@ -82,7 +82,7 @@ const batch = await call("model_apply_batch", { object, ops: [cut(0), cut(10)], 
 check("commit: true on model_apply_batch commits after the batch", batch.ok === true && batch.committed === true && typeof batch.commit.triangles === "number", batch);
 const refused = await call("model_apply", { object, op: { ...cut(0), centre: [500, 0, 0] }, probe: true, commit: true });
 check("a refused edit is not committed", refused.ok === false && refused.committed === undefined && refused.commit === undefined, refused);
-const planned = await call("plan_run", { steps: [{ tool: "model_apply", args: { object, op: cut(20), probe: true, commit: true } }, { tool: "plate_list", args: {} }] });
+const planned = await call("plan_run", { results: "all", steps: [{ tool: "model_apply", args: { object, op: cut(20), probe: true, commit: true } }, { tool: "plate_list", args: {} }] });
 check("commit: true works as a plan's step", planned.ok === true && planned.steps[0].result.committed === true, planned);
 console.log(`model_apply_batch then model_commit: ${bytes(batch)} bytes in one reply; two calls were ${bytes({ ...batch, committed: undefined, commit: undefined })} + ${bytes(separate)} bytes and one more round trip`);
 
