@@ -348,6 +348,13 @@ pub(super) enum Request {
     /// Debug builds only: the cheap checks of a text build next to the exact calls they stand in for, on the face of step `node`'s solid
     /// nearest `point`: the classifier, the edge gap, the validity checks, and the whole solid's volume.
     #[cfg(lime_occt_test_hooks)]
+    TestMesh {
+        key: String,
+        node: NodeId,
+        #[serde(rename = "chordMm")]
+        chord_mm: f64,
+    },
+    #[cfg(lime_occt_test_hooks)]
     TestText {
         key: String,
         node: NodeId,

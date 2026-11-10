@@ -608,11 +608,16 @@ std::atomic<bool> g_watson_mesher{[] {
     return asked != nullptr && std::string(asked) == "watson";
 }()};
 
+/// Leave a face Delabella could not mesh without triangles, for a test that shows why Watson stands behind it.
+std::atomic<bool> g_no_mesher_fallback{false};
+
 /// Every mesh the bridge makes: the faces of `shape` triangulated to within `chord`, half a radian between neighbouring
 /// segments, faces in parallel after their shared edges. The triangulation of each face is Open CASCADE's Delabella
 /// (a sweep-line Delaunay), not its default Watson: Watson's time on one face grows with the square of the face's
 /// holes (1.5 s for a plate face with 1,000 holes), Delabella's does not. The edges are cut the same either way, so
-/// the faces still meet point for point.
+/// the faces still meet point for point. Delabella gives up on some faces of some parts and leaves them with no
+/// triangles (239 of a 1,900-face STEP cover, which then had 8,917 open edges): when any face of `shape` is left so,
+/// the shape is meshed again with Watson, which keeps every face that has its triangles and meshes the rest.
 void mesh_faces(const TopoDS_Shape& shape, double chord) {
     IMeshTools_Parameters parameters;
     parameters.Deflection = chord;
@@ -621,6 +626,18 @@ void mesh_faces(const TopoDS_Shape& shape, double chord) {
     parameters.InParallel = Standard_True;
     parameters.MeshAlgo = g_watson_mesher.load() ? IMeshTools_MeshAlgoType_Watson : IMeshTools_MeshAlgoType_Delabella;
     const BRepMesh_IncrementalMesh mesher(shape, parameters);
+    if (parameters.MeshAlgo == IMeshTools_MeshAlgoType_Watson || g_no_mesher_fallback.load()) {
+        return;
+    }
+    for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+        TopLoc_Location location;
+        const Handle(Poly_Triangulation)& mesh = BRep_Tool::Triangulation(TopoDS::Face(explorer.Current()), location);
+        if (mesh.IsNull() || mesh->NbTriangles() == 0) {
+            parameters.MeshAlgo = IMeshTools_MeshAlgoType_Watson;
+            const BRepMesh_IncrementalMesh again(shape, parameters);
+            return;
+        }
+    }
 }
 
 /// Mesh only the faces a step made and the faces beside them, when every other face keeps the mesh it shares with the
@@ -8003,3 +8020,6 @@ extern "C" void lime_model_occt_whole_meshes(int on) { g_whole_meshes = on != 0;
 
 /// Non-zero meshes with the Watson triangulation the bridge used before Delabella. For tests and measurements.
 extern "C" void lime_model_occt_watson_mesher(int on) { g_watson_mesher = on != 0; }
+
+/// Non-zero leaves the faces Delabella could not mesh empty, instead of meshing them with Watson. For tests.
+extern "C" void lime_model_occt_mesher_fallback(int on) { g_no_mesher_fallback = on == 0; }

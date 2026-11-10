@@ -20,7 +20,7 @@ use super::ffi::{
     RawShape,
 };
 #[cfg(lime_occt_test_hooks)]
-use super::ffi::{lime_tree_test_fault, lime_tree_test_nurbs, lime_tree_test_text};
+use super::ffi::{lime_tree_test_fault, lime_tree_test_mesh, lime_tree_test_nurbs, lime_tree_test_text};
 
 /// One solid owned by the kernel. Freed when dropped.
 pub(super) struct Shape(pub(super) NonNull<RawShape>);
@@ -175,6 +175,17 @@ impl Shape {
     pub(super) fn test_nurbs(&self) -> Result<Vec<u8>, String> {
         // SAFETY: `self` is held for this call; the kernel returns a new shape or an error.
         Shape::made(|error| unsafe { lime_tree_test_nurbs(self.raw(), error) })?.brep_bytes()
+    }
+
+    /// Debug builds only: how good the solid's mesh at `chord` is (triangles, the farthest from the surface, the
+    /// sharpest corner, slivers).
+    #[cfg(lime_occt_test_hooks)]
+    pub(super) fn test_mesh(&mut self, chord: f64) -> Result<String, String> {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        // SAFETY: `self` is held for this call.
+        let raw = unsafe { lime_tree_test_mesh(self.0.as_ptr(), chord, &mut error) };
+        let message = take_text(error);
+        take_text(raw).ok_or_else(|| message.unwrap_or_else(|| "Open CASCADE failed".into()))
     }
 
     /// Debug builds only: the cheap checks of a text build against the exact ones, on the face nearest `point`.

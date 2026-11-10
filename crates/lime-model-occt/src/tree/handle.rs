@@ -352,6 +352,13 @@ impl Store {
                 ))
             }
             #[cfg(lime_occt_test_hooks)]
+            Request::TestMesh { key, node, chord_mm } => {
+                self.ensure(&key, node)?;
+                let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                let text = shape.test_mesh(chord_mm).map_err(Failure::Message)?;
+                Ok(Answer::Plain(text))
+            }
+            #[cfg(lime_occt_test_hooks)]
             Request::TestText { key, node, point } => {
                 self.ensure(&key, node)?;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
