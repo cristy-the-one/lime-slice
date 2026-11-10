@@ -24,7 +24,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { lustOptCacheRoot } from "./recipe-opt.ts";
@@ -49,7 +49,13 @@ export function pidAlive(pid: number): boolean {
 
 /** The folder the roots are in: `LIME_RECIPE_CACHE`, else `recipes` in Lime Slice's cache folder. */
 export function recipeCacheDir(): string {
-  return process.env.LIME_RECIPE_CACHE || join(lustOptCacheRoot(), "recipes");
+  if (process.env.LIME_RECIPE_CACHE) return process.env.LIME_RECIPE_CACHE;
+  const dir = join(lustOptCacheRoot(), "recipes");
+  // lust on macOS and Linux splits a build's path at a space ("lust failed: /Users/…/Library/Caches/Lime: No such
+  // file or directory" for `~/Library/Caches/Lime Slice`); on Windows a path with a space builds. So there the roots
+  // go where the path has none.
+  if (process.platform !== "win32" && /\s/.test(dir)) return join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "lime-slice", "recipes");
+  return dir;
 }
 
 /** A root's key: lust (where it is and what `--version` says) and each crate's `lib.rs`, by API major. */
@@ -72,6 +78,8 @@ export function sharedRoot(lust: string, crateLibs: readonly { major: number; li
   let real = lust;
   try { real = realpathSync(lust); } catch { /* A lust on PATH is named as it was found. */ }
   const root = join(recipeCacheDir(), rootKey(real, lustVersion(lust), crateLibs));
+  // A home folder or a chosen cache with a space in it: build in the temp folder, as before.
+  if (process.platform !== "win32" && /\s/.test(root)) return null;
   try {
     mkdirSync(join(root, "locks"), { recursive: true });
     const probe = join(root, "locks", `.probe-${process.pid}`);
