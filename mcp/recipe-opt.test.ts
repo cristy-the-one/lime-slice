@@ -118,14 +118,14 @@ console.log(`recipe-opt: builds ${tcc.ms} ms tcc, ${now.ms} ms --opt, ${second.m
   mkdirSync(join(dir, "opt"));
   for (const f of ["opt-a.exe.lock", "running.lock", "opt-b.exe", "opt-b.exe.ok"]) writeFileSync(join(dir, "opt", f), "");
   distrustRunning(dir);
-  check("a running build is listed as untrusted", readFileSync(join(dir, "opt-untrusted.txt"), "utf8") === "opt-a.exe\n");
+  check("a running build is listed as untrusted", JSON.stringify(readdirSync(join(dir, "opt-untrusted"))) === JSON.stringify(["opt-a.exe"]));
   dropUntrusted(dir);
-  check("it stays listed while it runs", existsSync(join(dir, "opt-untrusted.txt")));
+  check("it stays listed while it runs", existsSync(join(dir, "opt-untrusted", "opt-a.exe")));
   writeFileSync(join(dir, "opt", "opt-a.exe"), "");
   writeFileSync(join(dir, "opt", "opt-a.exe.ok"), "");
   rmSync(join(dir, "opt", "opt-a.exe.lock"));
   dropUntrusted(dir);
-  check("its binary goes when it ends", !existsSync(join(dir, "opt", "opt-a.exe")) && !existsSync(join(dir, "opt", "opt-a.exe.ok")) && !existsSync(join(dir, "opt-untrusted.txt")));
+  check("its binary goes when it ends", !existsSync(join(dir, "opt", "opt-a.exe")) && !existsSync(join(dir, "opt", "opt-a.exe.ok")) && readdirSync(join(dir, "opt-untrusted")).length === 0);
   check("a trusted binary stays", existsSync(join(dir, "opt", "opt-b.exe")));
 }
 

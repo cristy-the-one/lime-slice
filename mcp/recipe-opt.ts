@@ -21,7 +21,7 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
@@ -157,30 +157,31 @@ export function builtWith(opt: OptBuild, stderr: string): "opt" | "tcc" {
 /**
  * lust's background build reads the slot's files when it runs, not when it was asked for, and keys what it builds by
  * the text it was asked for. A slot written while one runs could leave a binary under the old text's key. So before a
- * slot's file changes while background builds are in flight, those are marked untrusted (`opt-untrusted.txt` beside
- * the cache), and once they end their binaries are removed (`dropUntrusted`, before each build).
+ * slot's file changes while background builds are in flight, those are marked untrusted (a file of the build's name
+ * in `opt-untrusted/` beside the cache), and once they end their binaries are removed (`dropUntrusted`, before each
+ * build). One file a mark, made and removed whole: the servers that share a root (mcp/recipe-root.ts) share this
+ * cache, and a list they each read and wrote back could lose a mark.
  */
 export function distrustRunning(cacheDir: string): void {
   const opt = join(cacheDir, "opt");
   let names: string[];
   try { names = readdirSync(opt).filter((n) => n.endsWith(".lock") && n !== "running.lock").map((n) => n.slice(0, -".lock".length)); } catch { return; }
   if (names.length === 0) return;
-  const list = join(cacheDir, "opt-untrusted.txt");
-  const known = existsSync(list) ? readFileSync(list, "utf8").split("\n").filter(Boolean) : [];
-  writeFileSync(list, [...new Set([...known, ...names])].join("\n") + "\n");
+  const marks = join(cacheDir, "opt-untrusted");
+  mkdirSync(marks, { recursive: true });
+  for (const name of names) writeFileSync(join(marks, name), "");
 }
 
 /** Removes the untrusted binaries whose background build has ended (`distrustRunning`). */
 export function dropUntrusted(cacheDir: string): void {
-  const list = join(cacheDir, "opt-untrusted.txt");
-  if (!existsSync(list)) return;
+  const marks = join(cacheDir, "opt-untrusted");
+  let names: string[];
+  try { names = readdirSync(marks); } catch { return; }
   const opt = join(cacheDir, "opt");
-  const left = readFileSync(list, "utf8").split("\n").filter(Boolean).filter((name) => {
-    if (existsSync(join(opt, `${name}.lock`))) return true;
+  for (const name of names) {
+    if (existsSync(join(opt, `${name}.lock`))) continue;
     rmSync(join(opt, `${name}.ok`), { force: true });
     rmSync(join(opt, name), { force: true });
-    return false;
-  });
-  if (left.length) writeFileSync(list, left.join("\n") + "\n");
-  else rmSync(list, { force: true });
+    rmSync(join(marks, name), { force: true });
+  }
 }

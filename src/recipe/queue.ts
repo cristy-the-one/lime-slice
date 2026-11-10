@@ -15,10 +15,11 @@
  * taken back and run again with silent queuing off (`replay`), which is exact because a run is deterministic. An
  * explicit queue's refusals come back from `s.flush` instead, each built one by one to say which.
  */
-import { hasAnchor, type Box } from "../modeling/anchors.ts";
+import { hasAnchor, unionBox, type Box } from "../modeling/anchors.ts";
 import { primitiveBox } from "../model-feasibility.ts";
 import type { PrimitiveSpec } from "../model-primitive.ts";
-import type { ModelOp } from "../model-tree.ts";
+import type { Fingerprint, ModelOp } from "../model-tree.ts";
+import type { SolidView } from "../modeling/model-calls.ts";
 import { lostVolume, touchingEdges, touchingReason } from "../modeling/step-guard.ts";
 import type { RecipeCallSite, RecipeReply } from "./host.ts";
 
@@ -113,6 +114,54 @@ export function queuedGuard(ops: readonly ModelOp[], before: Guarded | null, aft
     if (now.count > was.count) return touchingReason(now.at);
   }
   return null;
+}
+
+/**
+ * Whether group `g` of a flush may be built without a mesh. Only the last group's solid is shown; a group before it
+ * is read by the guards alone, and those read a mesh only around a primitive boolean (`queuedGuard`'s edge check), so
+ * a group that holds none is built unmeshed (`apply {mesh: false}`). The solid is the same, and so is the last
+ * group's mesh.
+ */
+export function groupSkipsMesh(groups: readonly (readonly ModelOp[])[], g: number): boolean {
+  return g < groups.length - 1 && !groups[g]!.some((op) => op.kind === "boolean");
+}
+
+/**
+ * Whether `queuedGuard` of `ops` reads the mesh of the solid before them: only when the solid after them has pieces
+ * meeting along an edge at one of their primitives, since the guard then asks how many there were before. With none
+ * after, it passes whatever the count before was. A host whose solid before has no mesh (`groupSkipsMesh`) asks this
+ * first, and meshes that step only when it is true.
+ */
+export function guardReadsBefore(ops: readonly ModelOp[], after: Guarded | null): boolean {
+  if (!after) return false;
+  return ops.some((op) => {
+    const box = op.kind === "boolean" ? primitiveBox(op as unknown as PrimitiveSpec) : null;
+    return !!box && touchingEdges(after.positions, box).count > 0;
+  });
+}
+
+/**
+ * The solid of a group built without a mesh (the engine's `lime-solid-lite` reply): its step, volume and fingerprint,
+ * no faces, and the box the part had grown by the group's fuse tools (`grow`), which is never smaller than the part.
+ * Null when the reply is not the light one or there is no solid to grow from: the host then meshes the step.
+ */
+export function liteSolid(reply: Record<string, unknown>, prior: SolidView | null, grow: readonly Box[]): SolidView | null {
+  const fingerprint = reply.fingerprint as Fingerprint | null | undefined;
+  if (reply.format !== "lime-solid-lite" || !fingerprint || typeof fingerprint.volumeMm3 !== "number" || !prior) return null;
+  let bounds: Box = { min: [...prior.bounds.min], max: [...prior.bounds.max] };
+  for (const box of grow) bounds = unionBox(bounds, box) ?? bounds;
+  return {
+    id: typeof reply.id === "number" ? reply.id : 0,
+    volumeMm3: fingerprint.volumeMm3,
+    editable: prior.editable,
+    fingerprint,
+    positions: new Float32Array(0),
+    triangles: new Uint32Array(0),
+    faces: [],
+    edges: [],
+    lines: [],
+    bounds: { min: [...bounds.min] as [number, number, number], max: [...bounds.max] as [number, number, number] },
+  };
 }
 
 export function boxesApart(a: Box, b: Box): boolean {
