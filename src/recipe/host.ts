@@ -61,15 +61,30 @@ export interface RecipeDiagnostic {
   edits: { start: number; end: number; replacement: string; auto: boolean }[];
   /** True when the diagnostic is in lime-recipe, not the recipe. */
   inCrate?: boolean;
+  /**
+   * The rewrite lust carries for this reject (edits that are not `auto`: valid Rust that lust refuses, turned into
+   * Rust it accepts; lust 0.3.0), as the lines to put in place. Each changes something a program can observe, so it
+   * is shown, and applied only when the caller asks (`autofix: "all"`).
+   */
+  rewrite?: RecipeRewrite;
+}
+
+/** Lines of the recipe as an edit leaves them: put `with` in place of the `lines` lines that start at `line`. */
+export interface RecipeRewrite {
+  line: number;
+  lines: number;
+  with: string[];
 }
 
 export interface BuildResult {
   ok: boolean;
   diagnostics: RecipeDiagnostic[];
-  /** The source that was built: the input with every applied `auto` edit. */
+  /** The source that was built: the input with every applied edit (`auto` ones; with `autofix: "all"`, rewrites too). */
   source: string;
-  /** How many rounds of `auto` edits were applied. */
+  /** How many rounds of edits were applied. */
   fixRounds: number;
+  /** The codes of the rejects whose rewrite was applied (`autofix: "all"`), in the order applied. */
+  rewrote?: string[];
   exe?: string;
   ms: number;
   reason?: string;
@@ -143,6 +158,8 @@ export interface RunOutcome {
 
 /** How many rounds of lust's `auto` edits a build applies before it gives up. */
 export const MAX_FIX_ROUNDS = 3;
+/** How many rounds a build asked for the rewrites too (`autofix: "all"`) applies: one closure of a table a round. */
+export const MAX_REWRITE_ROUNDS = 8;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -190,13 +207,18 @@ export type RecipeCompile = (text: string) => Promise<CompileResult>;
 
 /**
  * Builds `source` through `compile`. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
+ * With `autofix: "all"` it also applies the rewrites lust carries for rejects (edits that are not `auto`), up to
+ * eight rounds (a table of closures takes one round a closure), and names their codes in `rewrote`; without it, a
+ * reject that carries a rewrite comes back with the lines it would become (`RecipeDiagnostic.rewrite`).
  * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
  * it, and `source` in the result is the recipe without it. `source` is expected LF-only (lust's edits are byte offsets
  * in LF text).
  */
-export async function buildRecipe(compile: RecipeCompile, source: string, autofix: boolean, suffix = ""): Promise<BuildResult> {
+export async function buildRecipe(compile: RecipeCompile, source: string, autofix: boolean | "all", suffix = ""): Promise<BuildResult> {
   const started = Date.now();
   let current = source;
+  const rewrote: string[] = [];
+  const told = () => (rewrote.length ? { rewrote } : {});
   for (let round = 0; ; round += 1) {
     const own = current.endsWith("\n") || !suffix ? current : `${current}\n`;
     const ownLines = own.split("\n").length - 1;
@@ -204,13 +226,22 @@ export async function buildRecipe(compile: RecipeCompile, source: string, autofi
     const r = await compile(suffix ? own + suffix : current);
     const diagnostics = parseDiagnostics(r.stdout, r.main).map((d) => (suffix && (d.line > ownLines || d.edits.some((e) => e.end > ownBytes)) ? { ...d, edits: [] } : d));
     if (r.code === 0) {
-      return { ok: true, diagnostics, source: current, fixRounds: round, ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ...(r.marked ? { unread: parseUnread(r.stdout, r.main, suffix ? own + suffix : current) } : {}), ms: Date.now() - started };
+      return { ok: true, diagnostics, source: current, fixRounds: round, ...told(), ...(r.exe ? { exe: r.exe } : {}), ...(r.compiler ? { compiler: r.compiler } : {}), ...(r.marked ? { unread: parseUnread(r.stdout, r.main, suffix ? own + suffix : current) } : {}), ms: Date.now() - started };
     }
     if (diagnostics.length === 0) {
-      return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
+      return { ok: false, diagnostics, source: current, fixRounds: round, ...told(), ms: Date.now() - started, reason: `lust failed: ${(r.stderr || r.stdout).trim().slice(0, 600)}` };
     }
-    const fixed = autofix && round < MAX_FIX_ROUNDS ? applyAutoEdits(current, diagnostics) : null;
-    if (fixed === null || fixed === current) return { ok: false, diagnostics, source: current, fixRounds: round, ms: Date.now() - started };
+    const all = autofix === "all" && round < MAX_REWRITE_ROUNDS ? applyAllEdits(current, diagnostics) : null;
+    const fixed = all ? all.source : autofix && round < MAX_FIX_ROUNDS ? applyAutoEdits(current, diagnostics) : null;
+    if (fixed === null || fixed === current) {
+      // What is left carries its rewrite as lines, for a caller that would rather make the change itself.
+      const shown = diagnostics.map((d) => {
+        const rewrite = d.edits.some((e) => !e.auto) ? rewriteOf(current, d.edits) : null;
+        return rewrite ? { ...d, rewrite } : d;
+      });
+      return { ok: false, diagnostics: shown, source: current, fixRounds: round, ...told(), ms: Date.now() - started };
+    }
+    if (all) rewrote.push(...all.rewrote);
     current = fixed;
   }
 }
@@ -503,6 +534,84 @@ export function reportedColumn(line: string, byteCol: number): number | null {
  */
 export function unreadKeys(unread: readonly UnreadCall[] | undefined): ReadonlySet<string> | null {
   return unread ? new Set(unread.map((u) => `${u.line}:${u.col}`)) : null;
+}
+
+type Edit = RecipeDiagnostic["edits"][number];
+
+/** `bytes` with `edits` applied; they are in order, in bounds, and do not overlap. */
+function spliced(bytes: Uint8Array, edits: readonly Edit[], from = 0, to = bytes.length): Uint8Array {
+  const parts: Uint8Array[] = [];
+  let at = from;
+  for (const e of edits) {
+    parts.push(bytes.subarray(at, e.start), encoder.encode(e.replacement));
+    at = e.end;
+  }
+  parts.push(bytes.subarray(at, to));
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let n = 0;
+  for (const p of parts) {
+    out.set(p, n);
+    n += p.length;
+  }
+  return out;
+}
+
+/** `edits` in order, or null when one is out of bounds or two overlap (two insertions at one place overlap too). */
+function ordered(edits: readonly Edit[], length: number): Edit[] | null {
+  const sorted = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
+  let before: Edit | null = null;
+  for (const e of sorted) {
+    if (e.start < 0 || e.end < e.start || e.end > length) return null;
+    if (before && (e.start < before.end || (e.start === before.start && e.end === e.start && before.end === before.start))) return null;
+    before = e;
+  }
+  return sorted;
+}
+
+/**
+ * The whole lines of `source` that one diagnostic's `edits` change, and what they become: the edits of a diagnostic
+ * go together. Null when it carries none, or they do not fit the text.
+ */
+export function rewriteOf(source: string, edits: readonly Edit[]): RecipeRewrite | null {
+  const bytes = encoder.encode(source);
+  const sorted = edits.length ? ordered(edits, bytes.length) : null;
+  if (!sorted) return null;
+  const first = sorted[0]!.start;
+  const last = sorted[sorted.length - 1]!.end;
+  let from = first;
+  while (from > 0 && bytes[from - 1] !== 10) from -= 1;
+  // To the end of the line that holds the last byte changed, its newline included.
+  let to = last > first ? last - 1 : last;
+  while (to < bytes.length && bytes[to] !== 10) to += 1;
+  if (to < bytes.length) to += 1;
+  const linesOf = (text: string) => (text === "" ? [] : (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n"));
+  let line = 1;
+  for (let i = 0; i < from; i += 1) if (bytes[i] === 10) line += 1;
+  return { line, lines: linesOf(decoder.decode(bytes.subarray(from, to))).length, with: linesOf(decoder.decode(spliced(bytes, sorted, from, to))) };
+}
+
+/**
+ * `source` with the edits of every diagnostic applied, the rewrites that are not `auto` too (`autofix: "all"`): the
+ * edits of one diagnostic together or not at all, and a diagnostic whose edits meet ones already taken left for the
+ * next round. `rewrote` has the codes of the diagnostics taken that carried a rewrite. Null when there are none.
+ */
+export function applyAllEdits(source: string, diagnostics: RecipeDiagnostic[]): { source: string; rewrote: string[] } | null {
+  const bytes = encoder.encode(source);
+  let taken: Edit[] = [];
+  const rewrote: string[] = [];
+  const seen = new Set<string>();
+  for (const d of diagnostics) {
+    if (d.edits.length === 0) continue;
+    const key = JSON.stringify(d.edits.map((e) => [e.start, e.end, e.replacement]));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const next = ordered([...taken, ...d.edits], bytes.length);
+    if (!next) continue;
+    taken = next;
+    if (d.edits.some((e) => !e.auto)) rewrote.push(d.code);
+  }
+  if (taken.length === 0) return null;
+  return { source: decoder.decode(spliced(bytes, taken)), rewrote };
 }
 
 /** `source` with every `auto` edit applied (byte offsets, last first, each span once). Null when there are none. */

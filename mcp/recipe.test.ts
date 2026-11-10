@@ -90,6 +90,68 @@ function stub(log: RecipeCallSite[]) {
   check("applyAutoEdits is the same fix", applyAutoEdits(lfOnly(broken), unfixed.diagnostics) === built.source);
 }
 
+// --- Rewrites for rejects (lust 0.3.0): valid Rust that lust refuses comes back with the lines lust would write
+// instead, and autofix "all" applies them. Four rejects that carry one, and a safe fix beside them: the attribute
+// (L0522), a closure in a static's initializer (L0630), a long assert! with no message (L0809), write! into the
+// recipe's own io::Write type (L0641), and an integer where an f64 goes (L0110, auto).
+const REJECTS = [
+  "#![no_implicit_prelude]",
+  "use std::io::Write;",
+  "use lime_recipe::{ops, Session};",
+  "",
+  "struct Sink(Vec<u8>);",
+  "impl Write for Sink {",
+  "    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> { self.0.extend_from_slice(b); Ok(b.len()) }",
+  "    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }",
+  "}",
+  "",
+  "static SCALE: fn(f64) -> f64 = |x| x * 2.0;",
+  "",
+  "fn main() {",
+  "    let mut s = Session::start();",
+  '    let width = s.param_f64("width", 60.0);',
+  "    assert!(width > 1.0 && width < 1000.0 && width.is_finite() && SCALE(width) > 2.0 && width * 3.0 > 3.0 && width != 7.0);",
+  "    let mut sink = Sink(Vec::new());",
+  '    write!(sink, "w {}", width).unwrap();',
+  "    let p = s.solid_new(ops::cuboid(width, 20.0, 4.0)).unwrap();",
+  "    let n: f64 = 3;",
+  '    s.log(&format!("{n} {}", sink.0.len()));',
+  "    s.done(&p);",
+  "}",
+  "",
+].join("\n");
+if (lustFeatures(lust).rewrites) {
+  const shown = await host.build("rejects", REJECTS, true);
+  const first = shown.diagnostics[0];
+  check("a reject is not rewritten by the safe fixes", !shown.ok && shown.source === REJECTS && first?.code === "L0522" && first.edits.every((e) => !e.auto), shown.diagnostics);
+  check("its rewrite is shown as lines: the attribute's line goes", JSON.stringify(first?.rewrite) === JSON.stringify({ line: 1, lines: 1, with: [] }), first?.rewrite);
+  const closure = await host.build("rejects", REJECTS.slice(REJECTS.indexOf("\n") + 1), true);
+  check("the closure's rewrite names a fn and writes it after the item", closure.diagnostics[0]?.code === "L0630" && JSON.stringify(closure.diagnostics[0].rewrite) === JSON.stringify({ line: 10, lines: 1, with: ["static SCALE: fn(f64) -> f64 = scale_fn;", "", "fn scale_fn(x: f64) -> f64 { x * 2.0 }"] }), closure.diagnostics[0]);
+  const all = await host.build("rejects", REJECTS, "all");
+  check("autofix all builds it", all.ok && !!all.exe, all.diagnostics);
+  check("it names each reject it rewrote", JSON.stringify([...(all.rewrote ?? [])].sort()) === JSON.stringify(["L0522", "L0630", "L0641", "L0809"]), all.rewrote);
+  check("the text that built is plain Rust with the rewrites and the safe fix", !all.source.includes("no_implicit_prelude") && all.source.includes("static SCALE: fn(f64) -> f64 = scale_fn;") && all.source.includes("fn scale_fn(x: f64) -> f64 { x * 2.0 }") && all.source.includes('sink.write_all(format!("w {}", width).as_bytes()).unwrap();') && all.source.includes(', "assertion failed: width > 1.0 &&') && all.source.includes("let n: f64 = 3.0;"), all.source);
+  const logs: string[] = [];
+  const ran = await host.run(all.exe!, { params: {}, context: { units: "mm" } }, async (site) => {
+    if (site.tool === "log") logs.push(String(site.args.text));
+    return { ok: true, result: { ok: true, object: "obj_1" } };
+  });
+  check("and the rewritten recipe runs", ran.ok && logs[0] === "3 4", { reason: ran.reason, logs });
+
+  // Through recipe_run: the failed reply shows the rewrite and says how to take it; "all" answers what it rewrote.
+  const { fakeEngine } = await import("./engine.ts");
+  const { Session } = await import("./session.ts");
+  const session = new Session(fakeEngine());
+  const failed = await session.call("recipe_run", { source: REJECTS, name: "rejects", mode: "check" });
+  const diag = ((failed.diagnostics ?? []) as { code: string; line: number; rewrite?: unknown }[])[0];
+  check("session: a reject comes back with its rewrite", failed.ok === false && failed.code === "recipe-compile" && diag?.code === "L0522" && JSON.stringify(diag.rewrite) === JSON.stringify({ line: 1, lines: 1, with: [] }), failed);
+  check("session: the reason says how to take it", String(failed.reason).includes('autofix:"all"'), failed.reason);
+  const fixed = await session.call("recipe_run", { source: REJECTS, name: "rejects", mode: "check", autofix: "all" });
+  check("session: autofix all builds, and the reply names the rewrites beside the fixed text", fixed.ok === true && JSON.stringify([...((fixed.rewrote ?? []) as string[])].sort()) === JSON.stringify(["L0522", "L0630", "L0641", "L0809"]) && typeof fixed.fixedSource === "string" && Number(fixed.fixRounds) >= 3, fixed);
+  const plain = await session.call("recipe_run", { source: example, name: "rejects", mode: "check", autofix: "all" });
+  check("session: a recipe with nothing to rewrite says nothing of it", plain.ok === true && plain.rewrote === undefined && plain.fixedSource === undefined, plain);
+} else console.log("recipe: the rewrites skipped (this lust has no `lust fix`: it carries none)");
+
 // --- A CRLF recipe (a Windows checkout) takes the same fix at the same place.
 {
   const crlf = example.replace(/\r?\n/g, "\r\n").replace('let width = s.param_f64("width", 60.0);', "let width: f64 = 60;");

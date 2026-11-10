@@ -699,6 +699,23 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
      the limit against 1,415 ms without under tcc, and 441 against 434 ms optimised (medians of 9; the spread between
      runs is as large); the corpus sends the same calls with the limit built in. `lust check` and `lust query` do not
      take `--max-memory` (they answer their usage), so only builds pass it.
+   - **Rewrites for rejects.** lust 0.3.0's diagnostics carry edits that are not `auto` for four rejects (a long
+     `assert!` with no message L0809, `write!` into a user `io::Write` L0641, a closure in a `const` or `static`
+     initializer L0630, `#![no_implicit_prelude]` L0522; L0731's is `auto` and was applied already), and it has a
+     `lust fix [--all]` command. The host keeps its own loop (`buildRecipe`): the built file is the recipe with its
+     ingredients after it, and the loop is what never edits an ingredient. A reject with a rewrite comes back from
+     `recipe_run` as `rewrite: {line, lines, with}`, whole lines to put in place (`rewriteOf`), so an agent takes it
+     in one edit; `autofix: "all"` applies them (`applyAllEdits`: the edits of one diagnostic together, a diagnostic
+     that meets one already taken left for the next round, up to eight rounds) and the reply says which rejects were
+     rewritten (`rewrote`) beside the fixed text. Never by default: each rewrite changes something a program can
+     observe. Found on the way: `lust build --json` and `lust check --json` do not report the same thing for L0641
+     (the build names the writer type and has no edit; the check names the `write!` and has the edit, and lists the
+     other errors beside it), so the MCP host checks a build that failed and keeps the check's diagnostics when the
+     check fails too: one more lust call (about 0.1 s) on a failed build only. The app's Plugins panel builds kept
+     plugins without fixes and is unchanged. Measured: the test recipe with the four rejects and an integer for an
+     f64 (24 lines, about 200 tokens) answers a first check in about 145 tokens, 0.2 to 0.3 s; `autofix: "all"` builds
+     it in four rounds, 1.7 to 1.9 s, in a reply of about 270 tokens. The schema's `autofix` became
+     `true | false | "all"`: 7 tokens on the list (18,237 to 18,244 of 18,250).
 
 ## 9. Done for the whole plan
 

@@ -57,6 +57,8 @@ export interface LustFeatures {
   markUnread: boolean;
   /** `--sandbox --max-memory <bytes>` (lust 0.3.0): the built program stops itself past that much memory. */
   maxMemory: boolean;
+  /** Diagnostics carry rewrites for rejects, edits that are not `auto` (lust 0.3.0, which has `lust fix` for them). */
+  rewrites: boolean;
 }
 
 const lustFeatureCache = new Map<string, LustFeatures>();
@@ -71,7 +73,7 @@ export function lustFeatures(lust: string): LustFeatures {
   if (!found) {
     const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
     const usage = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory") };
+    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory"), rewrites: usage.includes("lust fix ") };
     lustFeatureCache.set(lust, found);
   }
   return found;
@@ -278,14 +280,15 @@ export class RecipeHost {
   }
 
   /**
-   * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds.
+   * Builds `source` in its slot. With `autofix`, applies lust's `auto` edits and builds again, up to three rounds;
+   * with `"all"`, the rewrites lust carries for rejects too (`buildRecipe`).
    * `suffix` (the recipe's ingredients, I10) is built after the source on lines of its own; lust's edits never reach
    * it, and `source` in the result is the recipe without it. `limitMs` stops one lust build that runs longer (D11.3: an
    * imported plugin's build is held to 30 s). `major` is the recipe API major the source was written for (D12): it
    * builds against that major's crate in that major's slots; the current major when omitted. A major this host does
    * not ship is refused without a build (`apiVerdict` says so first, with the sentence a person reads).
    */
-  async build(name: string, source: string, autofix: boolean, suffix = "", limitMs = BUILD_LIMIT_MS, major?: number): Promise<BuildResult> {
+  async build(name: string, source: string, autofix: boolean | "all", suffix = "", limitMs = BUILD_LIMIT_MS, major?: number): Promise<BuildResult> {
     // lust's fix edits are byte offsets in LF text: a CRLF recipe (a Windows checkout, a pasted file) would take them
     // at the wrong place.
     source = lfOnly(source);
@@ -321,7 +324,15 @@ export class RecipeHost {
       this.built.delete(exe);
       if (opt.mode !== "off" && existsSync(main) && readFileSync(main, "utf8") !== text) distrustRunning(cache);
       writeFileSync(main, text);
-      const r = await run(avail.lust, ["build", "--sandbox", ...memory, ...opt.args, "--json", ...mark, main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
+      let r = await run(avail.lust, ["build", "--sandbox", ...memory, ...opt.args, "--json", ...mark, main, "--manifest-path", join(slot, "Cargo.toml"), "-o", exe], withEnv(this.lustEnv(), opt.env), limitMs);
+      // A failed build is checked as well, and where the check fails too its diagnostics are the ones kept: `lust
+      // check` names a reject where it is written and carries its rewrite, and lists what else is wrong beside it,
+      // where `lust build` may name another place and carry no edit (`write!` into the recipe's own writer, L0641:
+      // build names the writer type, check the `write!` with its edit). Only a failed build pays for it.
+      if (r.code !== 0 && r.code !== null && features.rewrites) {
+        const checked = await run(avail.lust, ["check", "--sandbox", "--json", main, "--manifest-path", join(slot, "Cargo.toml")], this.lustEnv(), limitMs);
+        if (checked.code !== 0 && checked.code !== null && checked.stdout.includes('"kind":"diagnostic"')) r = { ...r, stdout: checked.stdout };
+      }
       const result = { ...r, exe, main, compiler: builtWith(opt, r.stderr), ...(mark.length ? { marked: true } : {}) };
       if (r.code === 0) this.built.set(exe, { key, result });
       return result;

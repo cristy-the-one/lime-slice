@@ -1632,7 +1632,7 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         mode: { enum: ["check", "dry", "apply"], description: "Default apply; dry undoes." },
         maxSteps: { type: "integer", minimum: 1, maximum: 1000, description: "Dry: stop after N ops." },
-        autofix: { type: "boolean", description: "Default true." },
+        autofix: { enum: [true, false, "all"], description: "Default true; all: rewrites too." },
         full: { type: "boolean", description: "Whole fixed text, not a diff." },
         profile: { type: "boolean", description: "Time by line and by kernel, meshing, host." },
         meshAtEnd: { type: "boolean", description: "Mesh once, at the end. Guide recipes." },

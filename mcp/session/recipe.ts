@@ -42,6 +42,9 @@ import { addSink, ensureMeshes, kernelRow, newSink, newTap, skipsMesh, splitOf, 
  * panic, a limit, a cancel, or dry mode takes back every object it made and every step it added; an apply that
  * reaches done commits what it touched, and each part it changed gets its steps as one undo step.
  */
+/** The longest rewrite a diagnostic shows as lines; a longer one is applied by autofix:"all" and read from the fixed text. */
+const REWRITE_MAX_CHARS = 800;
+
 /** --- docs/plan-native-recipes.md 7.1. Set on a run built again one by one after a queued boolean was refused late. */
 const QUEUE_REPLAY = "__queueReplay";
 
@@ -205,13 +208,17 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   // --- D12. A plugin builds against the crate of the API major it records, in that major's slots; anything else (a
   // draft, a source, a path) against the current crate.
   const major = plugin ? (apiLevel(plugin.api)?.[0] ?? undefined) : undefined;
-  const built = await host.build(name, source, input.autofix !== false, resolved.suffix, undefined, major);
+  // autofix: true (the default) applies lust's safe edits; "all" also the rewrites it carries for rejects, each of
+  // which changes something a program can observe, so the reply names them (`rewrote`) beside the fixed text.
+  const built = await host.build(name, source, input.autofix === "all" ? "all" : input.autofix !== false, resolved.suffix, undefined, major);
   if (meta?.signal?.aborted) return refuse("cancelled", "The recipe was cancelled while building; nothing changed.");
   const map = lineMap(built.source, resolved);
-  const fixed = built.source !== source ? fixedReply(source, built.source, built.fixRounds, input.full === true) : {};
-  const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}) }));
+  const fixed = built.source !== source ? { ...fixedReply(source, built.source, built.fixRounds, input.full === true), ...(built.rewrote?.length ? { rewrote: built.rewrote } : {}) } : {};
+  // A reject that carries a rewrite shows the lines it would become, when they are short enough to read in a reply.
+  const diagnostics = built.diagnostics.map((d) => ({ code: d.code, ...locate(map, d.line), col: d.col, message: d.message, ...(d.fix ? { fix: d.fix } : {}), ...(d.inCrate ? { inCrate: true } : {}), ...(d.rewrite && d.rewrite.with.join("").length <= REWRITE_MAX_CHARS ? { rewrite: d.rewrite } : {}) }));
   if (!built.ok || !built.exe) {
-    return { ok: false, code: "recipe-compile", reason: built.reason ?? "The recipe did not build. Fix the diagnostics and call recipe_run again.", diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
+    const rewrites = built.diagnostics.some((d) => d.rewrite) ? ' Where a diagnostic has rewrite, put its with in place of that many lines from its line, or pass autofix:"all" to have lust\'s rewrites applied.' : "";
+    return { ok: false, code: "recipe-compile", reason: built.reason ?? `The recipe did not build. Fix the diagnostics and call recipe_run again.${rewrites}`, diagnostics, ...fixed, buildMs: built.ms, next: NEXT.fix };
   }
   const buildHash = bodyHash(`${built.source}\n${resolved.suffix}`);
   const environmentHash = environmentOf(this);
