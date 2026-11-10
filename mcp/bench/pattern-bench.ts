@@ -4,18 +4,28 @@
  *   node --experimental-strip-types --no-warnings mcp/bench/pattern-bench.ts [--runs 3] [--only holes50,polar36] [--json out.json]
  *
  * A pattern is not one kernel op: the server expands it to its copies, probes and applies each copy as a step (two tree
- * calls a copy, each Apply answering with the whole part), then folds the steps into one group. Each case makes a plate
- * or a disc with `solid_new`, applies one pattern, and prints the wall time, the server's own share, the hop to the
- * engine, and the kernel's split of the rest (the bridge's `timing` marker, as `recipe_run {profile: true}` uses it):
- * booleans, volume, meshing, reading the mesh and the edge lines out, measuring faces and edges, and what is left
- * (building the tools, the checks, the store and the reply's text). The last column is the solid: its fingerprint
- * (volume, faces, edges) and three hashes, of the mesh in its read-out order, of the mesh's triangles whatever their
- * order, and of the faces in their numbering, so two builds can be compared on what a pattern leaves behind.
+ * calls a copy, each Apply answering with the whole part, meshed), then folds the steps into one group. Each case makes
+ * a plate or a disc with `solid_new`, applies one pattern `--runs` times (default 3) on a fresh part each time, and
+ * prints the medians: the wall time with its range, the server's own share, the hop to the engine, and the kernel's
+ * split of the rest (the bridge's `timing` marker, as `recipe_run {profile: true}` uses it): booleans, volume, meshing,
+ * reading the mesh and the edge lines out, measuring faces and edges, and what is left (building the tools, merging
+ * faces on one surface, the store and the reply's text). Then the solid each case leaves: its fingerprint (volume,
+ * faces, edges) and three hashes, of the mesh in its read-out order, of the mesh's triangles whatever their order, and
+ * of the faces and edges in their numbering, so two builds can be compared on what a pattern leaves behind.
+ *
+ * The cases: holes in a row and in grids of 50 and 100 (the cost of a copy grows with the copies before it, because
+ * each copy trims the plate's two large faces again and they are meshed again), pockets round a disc, bosses, a pattern
+ * of an extrude and of a pocket (features, not primitives), holes and cones on a plate that already carries some, and
+ * 8 holes on a plate with 1,000 (3,000 edges): the case a reply's edge lines and a large face's mesh are measured on.
+ *
+ * To compare two builds, run it once with each (LIME_MCP_ENGINE and LIME_OCCT_BRIDGE), alternately when the machine
+ * is busy, and compare the tables and the solids' lines.
  *
  * It needs the real engine and the Open CASCADE bridge: LIME_MCP_ENGINE (the library, else target/release),
  * LIME_OCCT_BRIDGE (else beside the engine), with the Open CASCADE DLLs beside the bridge (Windows) or on
  * LD_LIBRARY_PATH. It exits 2 saying what is missing otherwise. It reads and writes nothing outside the repository but
- * a temporary workspace. It is not a CI job: it is for the machine of whoever changes how a pattern is built.
+ * a temporary workspace, which it removes. It is not a CI job: it is for the machine of whoever changes how a pattern
+ * is built.
  */
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +47,8 @@ const jsonOut = arg("json");
 const workspace = mkdtempSync(join(tmpdir(), "lime-pattern-bench-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
 process.env.LIME_MCP_MODEL_TIMEOUT_S = "600";
+// A call past 45 s answers with a job; the bench waits for the call itself.
+process.env.LIME_MCP_REPLY_S = "3600";
 
 const { loadEngineWorker } = await import("../engine.ts");
 const { Session } = await import("../session.ts");
@@ -65,6 +77,8 @@ interface Case {
   base: Record<string, unknown>;
   /** Further ops applied before the pattern, outside the timing. */
   before?: Record<string, unknown>[];
+  /** Cuts made before the pattern in one boolean (model_apply_batch with combine), outside the timing. */
+  drilled?: Record<string, unknown>[];
   op: Record<string, unknown>;
 }
 
@@ -142,6 +156,13 @@ const cases: Case[] = [
     ],
     op: { kind: "pattern", op: { ...cone, centre: [-140, 0, 14] }, linear: { step: [4, 0, 0], count: 12, step2: [0, 4, 0], count2: 5 } },
   },
+  {
+    id: "holes8on1000",
+    title: "8 holes on a plate that already has 1,000 (3,000 edges; linear 8)",
+    base: { primitive: "box", dx: 300, dy: 150, dz: 8 },
+    drilled: Array.from({ length: 1000 }, (_, i) => ({ ...hole, radius: 1, origin: [-140 + 7 * (i % 40), -70 + 5 * Math.floor(i / 40), -2] })),
+    op: { kind: "pattern", op: { ...hole, radius: 1, origin: [-140, 65, -2] }, linear: { step: [35, 0, 0], count: 8 } },
+  },
 ];
 
 interface Result {
@@ -172,6 +193,10 @@ async function once(c: Case): Promise<Result> {
   const object = String(made.object);
   for (const op of c.before ?? []) {
     const done = await call("model_apply", { object, op });
+    if (done.ok !== true) throw new Error(`${c.id}: the setup failed: ${JSON.stringify(done).slice(0, 600)}`);
+  }
+  if (c.drilled) {
+    const done = await call("model_apply_batch", { object, ops: c.drilled, combine: "cut" });
     if (done.ok !== true) throw new Error(`${c.id}: the setup failed: ${JSON.stringify(done).slice(0, 600)}`);
   }
   const tap = newTap();
