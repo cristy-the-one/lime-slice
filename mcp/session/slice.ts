@@ -264,7 +264,28 @@ async function sliceWait(this: Session, handle: string, meta?: CallMeta, timeout
   let stage = "";
   while (job.status === "running" && Date.now() < deadline) {
     if (meta?.signal?.aborted) return refuse("cancelled", "The wait was cancelled.", { job: job.handle, status: "cancelled" });
-    const poll = JSON.parse(await this.ask(this.engine.slicePoll(String(job.engineId)))) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
+    // The poll is asked of the slicer's process, which answers in turn: behind a calibration, a blend or a stress
+    // study it waits for that call, and a finished slice crosses over whole, G-code included. Neither may hold this
+    // wait past its limit, so the poll races the deadline. A poll still out when the wait ends stays on the job, and the
+    // next wait takes its answer: a finished result is asked for once and never dropped.
+    const asked = (job.polling ??= Promise.resolve()
+      .then(() => this.ask(this.engine.slicePoll(String(job.engineId))))
+      .then((text) => ({ text }), (thrown: unknown) => ({ thrown })));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const answered = await Promise.race([
+      asked,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+        meta?.signal?.addEventListener("abort", () => resolve(null), { once: true });
+      }),
+    ]);
+    clearTimeout(timer);
+    if (answered === null) break;
+    // Another wait on this job may have taken the same answer already; the job then is no longer running.
+    if (job.polling === asked) job.polling = undefined;
+    else if (job.status !== "running") break;
+    if ("thrown" in answered) throw answered.thrown;
+    const poll = JSON.parse(answered.text) as { status?: string; stage?: string; fraction?: number; result?: string; error?: string };
     if (typeof poll.fraction === "number") {
       fraction = poll.fraction;
       stage = poll.stage ?? "";
