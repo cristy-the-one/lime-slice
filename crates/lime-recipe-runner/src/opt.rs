@@ -91,7 +91,8 @@ pub fn cache_root() -> PathBuf {
 }
 
 /// Where `--opt=bg` is on by default: Windows only, where the optimised program is proven to send tcc's bytes (on
-/// Linux zig's default glibc 2.28 target links the old `log@GLIBC_2.2.5`, whose NaN sign differs; macOS is not proven).
+/// Linux zig's default glibc 2.28 target links the old `log@GLIBC_2.2.5`, whose NaN sign differs; macOS is not proven:
+/// CI's macOS job runs the proof since lust 0.3.0, not blocking, and the default waits for its result).
 pub const OPT_BY_DEFAULT: bool = cfg!(windows);
 
 /// `LIME_LUST_OPT`: `0` off, `now` foreground `--opt`, `1` (or `bg`) `--opt=bg` anywhere, unset the platform's default.

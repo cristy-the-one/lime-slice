@@ -58,7 +58,9 @@ export function lustOptCacheRoot(): string {
  * Where `--opt=bg` is on by default: where the optimised program is proven to send the same bytes as tcc's. Windows
  * only for now. On Linux zig's default glibc target (2.28) links the old `log@GLIBC_2.2.5`, whose NaN for a negative
  * input has the other sign bit than the `log@GLIBC_2.29` tcc and rustc link (recipe-floatmath's `ln` in CI, lust-lang
- * PR #24); macOS is not proven yet.
+ * PR #24). macOS is not proven yet: lust 0.3.0 builds without LTO under zig cc there, which is what failed before,
+ * and CI's macOS job now runs the proof Windows has (the float maths, the native geometry bytes and the corpus with
+ * every build `--opt`), not blocking; the default waits for the owner's reading of that run.
  */
 export const OPT_BY_DEFAULT = process.platform === "win32";
 

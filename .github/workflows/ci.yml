@@ -1076,6 +1076,47 @@ jobs:
           node --experimental-strip-types mcp/recipe.test.ts
           node --experimental-strip-types mcp/recipe-query.test.ts
 
+      # lust's optimised builds on macOS, the proof Windows has (above): a recipe's own libm calls give rustc's bits,
+      # the engine's native geometry and the plugin corpus send the same bytes, with every build `--opt`
+      # (LIME_LUST_OPT=now). lust 0.3.0 builds without LTO under zig cc here, which is what failed before. Not
+      # blocking: --opt stays off by default on macOS (mcp/recipe-opt.ts OPT_BY_DEFAULT) until this step has shown
+      # the optimised program sends tcc's bytes. The same three tests run under tcc first, for the record too: this
+      # job did not run them, and a difference that tcc has as well is not the optimised build's.
+      - name: Cache zig
+        if: needs.changes.outputs.recipes == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/lust/ZIG_VERSION', 'tools/lust/ZIG_SHA256') }}
+
+      - name: Recipes with lust --opt (zig cc)
+        if: needs.changes.outputs.recipes == 'true'
+        continue-on-error: true
+        timeout-minutes: 25
+        env:
+          LIME_RECIPE_REQUIRED: "1"
+          LIME_LUST_OPT_CACHE: ${{ runner.temp }}/lime-opt-cache
+        run: |
+          failed=0
+          run() {
+            echo "::group::$1: $2"
+            if node --experimental-strip-types "mcp/$2.test.ts"; then
+              echo "::endgroup::"
+              echo "$1: $2 passed"
+            else
+              echo "::endgroup::"
+              echo "::warning::$1: $2 failed on macOS"
+              failed=1
+            fi
+          }
+          for t in recipe-floatmath recipe-native-bytes plugin-corpus; do run "tcc" "$t"; done
+          export LIME_ZIG="$(bash tools/lust/zig.sh "$RUNNER_TEMP/zig" | tail -n 1)/zig"
+          test -x "$LIME_ZIG"
+          run "lust --opt=bg" recipe-opt
+          export LIME_LUST_OPT=now
+          for t in recipe-floatmath recipe-native-bytes plugin-corpus; do run "lust --opt" "$t"; done
+          exit "$failed"
+
   bench:
     name: release bench smoke
     needs: changes

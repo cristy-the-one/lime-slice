@@ -736,6 +736,17 @@ Each is one PR to `main`, smallest useful first, with an "As built" note here an
      tool list: `query` costs 20 tokens and the list had 6 left, so six descriptions of `recipe_run` lost words that
      the guide carries (`path`, `full`, `profile`, `meshAtEnd`, `plugin`, `keep`, and the tool's own first sentence);
      the list is now at 18,250 of 18,250, with nothing left.
+   - **Optimised builds on macOS** (milestone 7's open end). lust 0.3.0 builds without LTO under `zig cc` on macOS,
+     which should end the release's "recipes with lust --opt failed on macOS" warning. `OPT_BY_DEFAULT` is unchanged
+     (Windows only): the default goes on where the optimised program is proven to send tcc's bytes, and macOS had no
+     such proof. CI's macOS MCP job now runs it, not blocking (`continue-on-error`), in the step "Recipes with lust
+     --opt (zig cc)": `recipe-floatmath`, `recipe-native-bytes` and `plugin-corpus` under tcc first (that job never
+     ran them, so a difference tcc has too is told apart), then `recipe-opt` and the same three with
+     `LIME_LUST_OPT=now`, each reported on its own line, a failed one as a warning. Not run here: there is no macOS
+     machine in this work, so the first CI run of the pull request is the first result. Turning the default on for
+     macOS is the owner's decision from that run (`mcp/recipe-opt.ts` and `crates/lime-recipe-runner/src/opt.rs`
+     hold the same rule and change together).
+   - **Not needed here:** long array literals now lower in linear time in lust; nothing in Lime Slice changes.
 
 ## 9. Done for the whole plan
 
