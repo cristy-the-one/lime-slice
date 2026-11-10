@@ -102,6 +102,32 @@ const plan = await call("plan_run", { steps: [{ tool: "faces_find", args: { obje
 check("a plan's reference reaches a frame the lean reply leaves out", plan.ok === true && plan.steps.length === 2, plan);
 check("the plan's reply carries the lean rows", plan.steps[0].result.faces.every((row: Reply) => row.frame === undefined));
 
+// session_info says what never changes once.
+{
+  const fresh = new Session(fakeEngine());
+  const first = (await fresh.call("session_info", {})) as Reply;
+  const second = (await fresh.call("session_info", {})) as Reply;
+  const verbose = (await fresh.call("session_info", { verbose: true })) as Reply;
+  console.log(`session_info: ${bytes(first)} bytes the first time, ${bytes(second)} after`);
+  check("the first session_info has the model block and the bridge sentences", first.model?.ops?.includes("boolean") && first.model.guides.includes("ops") && typeof first.tandem.note === "string" && typeof first.tandem.why === "string", first);
+  check("a later one leaves them out and keeps what can change", second.model === undefined && second.tandem.note === undefined && second.tandem.why === undefined && second.tandem.bridge === "absent" && second.serverVersion === first.serverVersion && second.printer === first.printer && second.workspace === first.workspace && second.plugins === first.plugins && second.printerSend === false, second);
+  check("verbose: true is the first reply again", same(verbose, first));
+  check("a later reply is under half the first", bytes(second) * 2 < bytes(first));
+}
+
+// gcode_summary: rounded, no G-code lines unless asked.
+{
+  await call("model_commit", { object });
+  const started = await call("slice_start", {});
+  const waited = await call("slice_wait", { job: started.job });
+  const summary = await call("gcode_summary", { job: started.job });
+  const withLines = await call("gcode_summary", { job: started.job, lines: true });
+  console.log(`gcode_summary: ${bytes(summary)} bytes, ${bytes(withLines)} with lines`);
+  check("the slice finished", waited.status === "done", waited);
+  check("gcode_summary has no head or tail, and whole seconds", summary.ok === true && summary.head === undefined && summary.tail === undefined && Number.isInteger(summary.seconds) && Array.isArray(summary.review) && Array.isArray(summary.warnings) && summary.features.every((row: Reply) => Number.isInteger(row.seconds) && Math.abs(row.grams * 100 - Math.round(row.grams * 100)) < 1e-9), summary);
+  check("lines: true gives the lines and the raw numbers, as before", Array.isArray(withLines.head) && withLines.head.length > 0 && Array.isArray(withLines.tail) && withLines.features.length === summary.features.length && withLines.features[0].grams !== summary.features[0].grams && same(withLines.review, summary.review) && Math.round(withLines.seconds) === summary.seconds, withLines.features);
+}
+
 if (failed > 0) {
   console.error(`${failed} checks failed`);
   process.exit(1);

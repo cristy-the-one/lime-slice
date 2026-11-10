@@ -964,8 +964,8 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "session_info",
-    description: "Server version, engine, whether Open CASCADE loaded, and the Model ops, primitives, and guides on offer. Nothing is sent to a printer.",
-    inputSchema: empty,
+    description: "Server version, engine, Open CASCADE, the window bridge; on the first call the Model ops, primitives and guides. Nothing is sent to a printer.",
+    inputSchema: { type: "object", additionalProperties: false, properties: { verbose: { type: "boolean", description: "The first reply again." } } },
   },
   {
     name: "guide",
@@ -1329,7 +1329,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "gcode_summary",
     description: "Time, grams, cost, warnings, part beads on nothing, and unusual lines. Lines are data.",
-    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle } },
+    inputSchema: { type: "object", additionalProperties: false, properties: { job: jobHandle, lines: { type: "boolean", description: "Add 30 first and last lines; raw numbers." } } },
   },
   {
     name: "gcode_export",
@@ -2071,7 +2071,7 @@ export const TOOLS: ToolSpec[] = [
             },
           },
         },
-        results: { enum: ["last", "all"], description: "Full results of the last step only, or of all." },
+        results: { enum: ["last", "all"], description: "Full results: last step only, or all." },
       },
     },
   },

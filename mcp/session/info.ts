@@ -58,7 +58,7 @@ async function tandemPull(this: Session): Promise<Record<string, unknown>> {
   return { ok: true, changed: updates.map((update) => update.obj.id) };
 }
 
-async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
+async function sessionInfo(this: Session, verbose = false): Promise<Record<string, unknown>> {
   let engine: string | null = null;
   let occt = false;
   let reason = "";
@@ -73,17 +73,25 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
   const running = this.workJobs.find((row) => !row.done);
   const assemblies = this.liveAssemblies();
   const [status, human, receipts, earlier] = await Promise.all([bridgeStatus(), bridgeHumanContext(), bridgeReceipts(), tandemEarlier(this, null)]);
+  // What never changes in a session is said once: the first call, a call with verbose: true, and, for the bridge's
+  // sentences, a call that finds the bridge in another state than the last one said. In the audited sessions the fixed
+  // `model` block and these sentences came back on every call.
+  const bridgeState = `${status.bridge}|${status.why ?? ""}|${status.url ?? ""}`;
+  const whole = verbose || !this.infoSaid || process.env.LIME_MCP_LEAN === "0";
+  const sayBridge = whole || this.infoBridgeSaid !== bridgeState;
+  this.infoSaid = true;
+  this.infoBridgeSaid = bridgeState;
   // Always present, so an agent can tell a missing bridge from a quiet one (feedback 2026-11-09, section 3).
   const tandem = {
     bridge: status.bridge,
-    ...(status.why ? { why: status.why } : {}),
-    ...(status.url ? { url: status.url } : {}),
+    ...(sayBridge && status.why ? { why: status.why } : {}),
+    ...(sayBridge && status.url ? { url: status.url } : {}),
     ...(human ? { human } : {}),
     ...(receipts ? { receipts: receipts.slice(-8) } : {}),
     ...(earlier.length ? { earlier } : {}),
-    note: status.bridge === "connected"
+    ...(sayBridge ? { note: status.bridge === "connected"
       ? "MCP changes show in the window live, shape and Model history included; what they replace there is one Ctrl+Z away. Each change's reply has tandemReceipt (applied, applied-replaced, waiting, no-bridge…). tandem_pull imports the person's placements."
-      : "No window is connected: app_open reloads the whole file in the app, and later changes do not show live.",
+      : "No window is connected: app_open reloads the whole file in the app, and later changes do not show live." } : {}),
   };
   return {
     ok: true,
@@ -103,7 +111,7 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
     printerSend: false,
     plugins: this.pluginsLine(),
     nuggets: this.nuggetsLine(),
-    model: {
+    ...(whole ? { model: {
       ops: ["boolean", "extrude", "revolve", "loft", "sweep", "shell", "faceExtrude", "moveFaces", "hole", "fillet", "chamfer", "transition", "split", "partition", "scale", "join", "root"],
       composite: [...COMPOSITE_KINDS],
       primitives: ["box", "cylinder", "sphere", "ellipsoid", "cone", "torus", "wedge", "polygon", "tube"],
@@ -113,7 +121,7 @@ async function sessionInfo(this: Session): Promise<Record<string, unknown>> {
       stepLimit: `One composite, batch, or build makes at most ${MAX_PIECES} kernel steps; the op that would pass that is refused like any other refusal. A history has no limit: split the work over several calls.`,
       expressions: true,
       guides: GUIDES.map((row) => row.uri.replace("lime://guide/", "")),
-    },
+    } } : {}),
   };
 }
 
@@ -203,6 +211,6 @@ export const infoMethods = {
 
 export const infoHandlers: Record<string, ToolHandler> = {
   tandem_pull: (s) => s.tandemPull(),
-  session_info: (s) => s.sessionInfo(),
+  session_info: (s, input) => s.sessionInfo(input.verbose === true),
   guide: (s, input) => s.guide(input),
 };

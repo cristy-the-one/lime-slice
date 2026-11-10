@@ -410,7 +410,12 @@ function finished(this: Session, handle?: string): Job | null {
   return this.latest;
 }
 
-function gcodeSummary(this: Session, handle?: string): Record<string, unknown> {
+/**
+ * gcode_summary. The first and last 30 G-code lines were 60% of the reply and are rarely what the caller asked for
+ * (gcode_read reads any lines), and the numbers came unrounded. So: seconds whole, grams and cost to 0.01, and no head
+ * or tail. `lines: true` gives the reply as it was, lines and raw numbers.
+ */
+function gcodeSummary(this: Session, handle?: string, lines = false): Record<string, unknown> {
   const job = this.finished(handle);
   if (!job?.gcode || !job.wire) return refuse("not-sliced", "Slice first.", undefined, NEXT.slice);
   const stale = this.staleReason(job);
@@ -420,6 +425,19 @@ function gcodeSummary(this: Session, handle?: string): Record<string, unknown> {
     custom: this.customBlocks(),
     maxNozzleC: this.printer().maxNozzleC,
   });
+  if (!lines && process.env.LIME_MCP_LEAN !== "0") {
+    return {
+      ok: true,
+      seconds: Math.round(summary.seconds),
+      grams: roundTo(summary.grams, 2),
+      cost: roundTo(summary.cost, 2),
+      features: summary.features.map((row) => ({ label: row.label, seconds: Math.round(row.seconds), grams: roundTo(row.grams, 2) })),
+      warnings: summary.warnings,
+      ...standsOnNothing(job.wire.partHold),
+      review: review.review,
+      custom: review.custom,
+    };
+  }
   return {
     ok: true,
     seconds: summary.seconds,
@@ -559,7 +577,7 @@ export const sliceHandlers: Record<string, ToolHandler> = {
   slice_start: (s, input) => s.sliceStart(input.cancelRunning === true, input.scope),
   slice_wait: (s, input, meta) => s.sliceWait(String(input.job), meta, typeof input.timeoutS === "number" ? input.timeoutS : undefined),
   slice_cancel: (s, input) => s.sliceCancel(String(input.job)),
-  gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined),
+  gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined, input.lines === true),
   gcode_export: (s, input) => s.gcodeExport(input),
   export_3mf: (s, input) => input.pieces === true ? s.exportPieceMeshes(input) : s.export3mf(String(input.name)),
   mesh_stats: (s, input) => s.meshStats(String(input.object)),

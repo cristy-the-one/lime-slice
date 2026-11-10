@@ -187,6 +187,9 @@ export class Session {
   recipeDepth = 0;
   /** The model_build about to run stands for a model_edit {patch | patches}: its reply does not teach the patch form. */
   patchedBuild = false;
+  /** session_info has said its fixed parts in this session, and the bridge state its Tandem sentences were said for. */
+  infoSaid = false;
+  infoBridgeSaid = "";
   /** recipe_run {profile}: each tree call of the run asks the kernel for its timing and adds it here (mcp/session/mesh-end.ts). */
   kernelTap: import("./session/mesh-end.ts").KernelTap | null = null;
   /** recipe_run {meshAtEnd}: parts whose newest step has no mesh yet, by object id, and the step. */
