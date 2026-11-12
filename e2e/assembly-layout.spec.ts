@@ -154,3 +154,39 @@ test("STEP saves the assembly as named solids at their assembled poses", async (
   expect(second.poses).toHaveLength(2);
   await expect(page.locator("#toasts")).not.toContainText("no longer has this solid");
 });
+
+// Found with 6.4.0 on a belt (a 69-part mechanism): Lay out left the gears standing on their narrow edge, as the
+// assembly holds them, and set the first parts flush with the bed's side, where their supports have no bed.
+test("Lay out lays a flat part on its wide face and keeps the parts off the bed's sides", async ({ page }) => {
+  await start(page);
+  await page.goto("/");
+  await autoSliceOff(page);
+  await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+  await expect(page.locator("[data-plate-id='part']")).toBeVisible();
+  // A disc, 24 x 24 x 6, turned to stand on its edge as a gear stands in a mechanism.
+  await page.locator("#plateAddFile").setInputFiles("samples/arc_post.stl");
+  await expect(page.locator("#objectList .obj")).toHaveCount(2);
+  const disc = (await page.locator("#prepare").getAttribute("data-plate-selected"))!;
+  await page.locator("#rotX").click();
+  const row = page.locator(`[data-plate-id='${disc}']`);
+  await expect(row, "the disc stands on its edge").toContainText("24 × 6 × 24 mm");
+
+  await page.locator("[data-plate-select='part']").click();
+  await page.locator(`[data-plate-attach='${disc}']`).click();
+  await expect(page.locator("[data-assembly-head]")).toContainText("2 parts");
+  await page.locator("[data-assembly-view='assembly']").click();
+  const assembled = await assembledBoxes(page);
+  await page.locator("[data-assembly-view='print']").click();
+
+  await page.locator("[data-assembly-layout]").click();
+  await expect(row, "laid out for print, the disc lies on its wide face").toContainText("24 × 24 × 6 mm");
+  await expect(page.locator("[data-plate-id='part']"), "the cube is no flat part and is not turned").toContainText("20 × 20 × 20 mm");
+  // Each part's middle is at least the 10 mm margin and half its width from the bed's side and front.
+  for (const [id, half] of [["part", 10], [disc, 12]] as const) {
+    await page.locator(`[data-plate-select='${id}']`).click();
+    expect(Number(await page.locator("#placeX").inputValue()), `${id} stays off the side`).toBeGreaterThanOrEqual(10 + half - 0.01);
+    expect(Number(await page.locator("#placeY").inputValue()), `${id} stays off the front`).toBeGreaterThanOrEqual(10 + half - 0.01);
+  }
+  await page.locator("[data-assembly-view='assembly']").click();
+  expect(await assembledBoxes(page), "the assembly stays as it is").toBe(assembled);
+});
