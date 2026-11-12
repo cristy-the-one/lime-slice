@@ -15,6 +15,7 @@
  */
 import type { ChainLink, JointLimits } from "./chain.ts";
 import { copyLimits, saneChains } from "./chain.ts";
+import { layFlatMatrix } from "./bed-rest.ts";
 import type { SavedTree } from "./model-tree-file.ts";
 import { cloneStudy } from "./sim/study-data.ts";
 import type { ObjectStudy } from "./sim/study.ts";
@@ -48,6 +49,12 @@ export const PRIMARY_OBJECT_ID = "part";
 
 /** Gap between arranged boxes, millimetres. Arrange does not rotate. */
 export const ARRANGE_GAP_MM = 2;
+
+/**
+ * What laying parts out keeps free along the bed's sides, millimetres: room for the supports, brim and skirt of a
+ * part at the end of a row. Flush with the side they had none, and on a belt they were planned at X below 0.
+ */
+export const ARRANGE_EDGE_MM = 10;
 
 /** Touching faces are not an overlap. Matches the bed warning slack. */
 export const OVERLAP_EPS_MM = 0.05;
@@ -982,20 +989,48 @@ export function overlapPairs(items: { id: string; name: string; bounds: Bounds }
   return pairs;
 }
 
+/** A part is flat when, lying on its widest face, it is at most this much of its shorter side high. */
+const FLAT_HEIGHT_RATIO = 0.5;
+/** A flat part is standing when it is more than this many times higher than it would lie. */
+const STANDING_RATIO = 1.5;
+
+/**
+ * `obj` lying on its widest face, when it is clearly a flat part standing on a narrow edge: a gear or a plate that
+ * the assembly holds upright. Lying, such a part is at most half as high as its shorter side; standing, it is more
+ * than one and a half times higher than that. Any other part keeps the orientation it has: a block, a rod, a part
+ * already lying, and a part with no flat face to lie on. Only the print orientation turns; the place in an
+ * assembly (`modelPose`) is not read or written.
+ */
+export function laidFlat(obj: PlateObject, bedX: number, bedY: number): PlateObject {
+  if (obj.sourcePos.length < 9) return obj;
+  const orient = layFlatMatrix(obj.sourcePos, obj.orient, obj.partScale);
+  if (orient.every((value, at) => value === obj.orient[at])) return obj;
+  const size = (item: PlateObject) => {
+    const { min, max } = placeObject({ ...item, centered: false, offset: { x: 0, y: 0, z: 0 } }, bedX, bedY).bounds;
+    return [max[0] - min[0], max[1] - min[1], max[2] - min[2]] as const;
+  };
+  const lying = { ...obj, orient };
+  const flat = size(lying);
+  if (flat[2] > FLAT_HEIGHT_RATIO * Math.min(flat[0], flat[1])) return obj;
+  if (size(obj)[2] <= STANDING_RATIO * flat[2]) return obj;
+  return lying;
+}
+
 /**
  * REAL: pack boxes left to right, then a new row. Does not rotate and does
  * not call the engine. A box wider than the bed starts at the left edge.
+ * `edge` is kept free along the bed's sides and its front: rows start there and end that far from the far side.
  */
-export function arrangeBoxes(boxes: ArrangeBox[], bedX: number, gap = ARRANGE_GAP_MM): ArrangeMove[] {
-  let x = 0;
-  let y = 0;
+export function arrangeBoxes(boxes: ArrangeBox[], bedX: number, gap = ARRANGE_GAP_MM, edge = 0): ArrangeMove[] {
+  let x = edge;
+  let y = edge;
   let rowH = 0;
   const out: ArrangeMove[] = [];
   for (const box of boxes) {
     const w = Math.max(0, box.maxX - box.minX);
     const h = Math.max(0, box.maxY - box.minY);
-    if (x > 0 && x + w > bedX + OVERLAP_EPS_MM) {
-      x = 0;
+    if (x > edge && x + w > bedX - edge + OVERLAP_EPS_MM) {
+      x = edge;
       y += rowH + gap;
       rowH = 0;
     }
@@ -1010,14 +1045,16 @@ export function arrangeBoxes(boxes: ArrangeBox[], bedX: number, gap = ARRANGE_GA
  * `gap` is the space left between objects; a one-at-a-time plate leaves its toolhead clearance. The objects `keep` names
  * stay where they are, and the others are laid out around them in turn, each where an added object would land: what a
  * split to print's lay out does with its new pieces (docs/plan-split-connectors.md, section 10).
+ * Every object laid out stays `ARRANGE_EDGE_MM` off the bed's sides: a part flush with the edge leaves its supports,
+ * brim and skirt no bed to stand on, and on a belt they came out at X below 0, which the printer refuses.
  */
-export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM, keep?: ReadonlySet<string>): PlateObject[] {
+export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM, keep?: ReadonlySet<string>, edge = ARRANGE_EDGE_MM): PlateObject[] {
   if (keep && keep.size > 0) {
     const around = objects.filter((obj) => keep.has(obj.id));
     const moved = new Map<string, PlateObject>();
     for (const obj of objects) {
       if (keep.has(obj.id)) continue;
-      const next = parkClear(obj, around, bedX, bedY, gap);
+      const next = parkClear(obj, around, bedX, bedY, gap, edge);
       around.push(next);
       moved.set(obj.id, next);
     }
@@ -1030,7 +1067,7 @@ export function arrangedObjects(objects: PlateObject[], bedX: number, bedY: numb
     minY: part.bounds.min[1],
     maxX: part.bounds.max[0],
     maxY: part.bounds.max[1],
-  })), bedX, gap);
+  })), bedX, gap, edge);
   const byId = new Map(moves.map((move) => [move.id, move]));
   return placed.map(({ obj, part }) => {
     const move = byId.get(obj.id);
@@ -1155,12 +1192,12 @@ export function boundsSize(bounds: Bounds): string {
   return bounds.max.map((value, index) => String(Number((value - bounds.min[index]).toFixed(1)))).join(" × ");
 }
 
-function parkClear(incoming: PlateObject, existing: readonly PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM): PlateObject {
+function parkClear(incoming: PlateObject, existing: readonly PlateObject[], bedX: number, bedY: number, gap = ARRANGE_GAP_MM, edge = ARRANGE_EDGE_MM): PlateObject {
   const parked = placeObject({ ...incoming, centered: false, offset: { x: 0, y: 0, z: 0 } }, bedX, bedY).bounds;
   const width = parked.max[0] - parked.min[0];
   const height = parked.max[1] - parked.min[1];
   const obstacles = existing.map((obj) => placeObject(obj, bedX, bedY).bounds);
-  const spot = clearSpot(obstacles, width, height, bedX, bedY, gap);
+  const spot = clearSpot(obstacles, width, height, bedX, bedY, gap, edge);
   return {
     ...incoming,
     centered: false,
@@ -1180,27 +1217,34 @@ function clearSpot(
   bedX: number,
   bedY: number,
   gap = ARRANGE_GAP_MM,
+  edge = 0,
 ): { minX: number; minY: number } {
-  const candidates: { minX: number; minY: number }[] = [{ minX: 0, minY: 0 }];
+  const candidates: { minX: number; minY: number }[] = [{ minX: edge, minY: edge }];
   for (const box of obstacles) {
-    candidates.push({ minX: round3(box.max[0] + gap), minY: round3(box.min[1]) });
-    candidates.push({ minX: round3(box.min[0]), minY: round3(box.max[1] + gap) });
+    candidates.push({ minX: round3(box.max[0] + gap), minY: round3(Math.max(edge, box.min[1])) });
+    candidates.push({ minX: round3(Math.max(edge, box.min[0])), minY: round3(box.max[1] + gap) });
+    // A new row starts at the edge margin, also when the object above it stands closer to the side than that.
+    if (edge > 0) candidates.push({ minX: edge, minY: round3(box.max[1] + gap) });
   }
   candidates.sort((a, b) => a.minY - b.minY || a.minX - b.minX);
-  const onBed = candidates.filter((spot) => fitsBed(spot, width, height, bedX, bedY) && spotClears(spot, width, height, obstacles, gap));
+  // First a spot that keeps the margin, then one that is at least on the bed, then anywhere clear.
+  const kept = candidates.filter((spot) => fitsBed(spot, width, height, bedX, bedY, edge) && spotClears(spot, width, height, obstacles, gap));
+  if (kept[0]) return kept[0];
+  const onBed = edge > 0 ? candidates.filter((spot) => fitsBed(spot, width, height, bedX, bedY, 0) && spotClears(spot, width, height, obstacles, gap)) : [];
   if (onBed[0]) return onBed[0];
   const anywhere = candidates.filter((spot) => spotClears(spot, width, height, obstacles, gap));
   if (anywhere[0]) return anywhere[0];
   let maxX = 0;
   for (const box of obstacles) maxX = Math.max(maxX, box.max[0]);
-  return { minX: round3(maxX + gap), minY: 0 };
+  return { minX: round3(Math.max(edge, maxX + gap)), minY: edge };
 }
 
-function fitsBed(spot: { minX: number; minY: number }, width: number, height: number, bedX: number, bedY: number): boolean {
-  return spot.minX >= -OVERLAP_EPS_MM
-    && spot.minY >= -OVERLAP_EPS_MM
-    && spot.minX + width <= bedX + OVERLAP_EPS_MM
-    && spot.minY + height <= bedY + OVERLAP_EPS_MM;
+/** Whether a box at `spot` lies on the bed, `edge` off its sides, its front and its back. */
+function fitsBed(spot: { minX: number; minY: number }, width: number, height: number, bedX: number, bedY: number, edge = 0): boolean {
+  return spot.minX >= edge - OVERLAP_EPS_MM
+    && spot.minY >= edge - OVERLAP_EPS_MM
+    && spot.minX + width <= bedX - edge + OVERLAP_EPS_MM
+    && spot.minY + height <= bedY - edge + OVERLAP_EPS_MM;
 }
 
 function spotClears(

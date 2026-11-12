@@ -783,7 +783,8 @@ function plateArrange(this: Session, input: Record<string, unknown>): Record<str
     const members = new Set(found.members.map((row) => row.object));
     keep = new Set(this.objects.filter((obj) => !members.has(obj.id)).map((obj) => obj.id));
   }
-  const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.bedY, gap, keep);
+  // A belt has no end along Y (as in a split's lay out): the parts go on along it, and none is set off the bed for want of length.
+  const arranged = arrangedObjects(this.objects.map((obj) => this.asBed(obj)), printer.bedX, printer.kind === "belt" ? 1e6 : printer.bedY, gap, keep);
   const moved = arranged.map((row) => {
     const live = this.find(row.id);
     const pose = live ? { ...live, centered: row.centered, offset: row.offset, scale: live.scale, source: live.source, orient: live.orient } : null;

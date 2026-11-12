@@ -1,5 +1,7 @@
 /** Select, duplicate, remove, and arrange plate objects. Adding a file is `addMeshBytes`. Pose tools keep editing the selection. */
-import { arrangedObjects, addedCopy, freshPlateId, placeObject, plateUnionBounds, type PlateObject } from "../plate.ts";
+import { arrangedObjects, addedCopy, freshPlateId, laidFlat, placeObject, plateUnionBounds, type PlateObject } from "../plate.ts";
+import { selection } from "../ui/machine-library.ts";
+import { loadMachineLibrary } from "./machine-library.ts";
 import { componentIds, copyName, duplicateChain, linkedTo, refreshLinks, removedChain, removedMember, unlinked } from "../chain.ts";
 import { bedToSourcePoint, centreOf, snapPivotPoint, usingCustomPivot, type Vec3 } from "../pivot.ts";
 import { fx } from "./fx.ts";
@@ -113,9 +115,12 @@ export function layOutAssembly(id: string) {
   const members = new Set(assembly.members.map((row) => row.object));
   const keep = new Set(state.plate.objects.filter((obj) => !members.has(obj.id)).map((obj) => obj.id));
   const clearance = sequentialClearance(currentRules(), { printOrder: state.printOrder, clearanceMm: state.sequentialClearance, gantryMm: state.sequentialGantry });
+  // For print, a member that is clearly flat lies on its wide face: the assembly holds a gear or a plate upright, and
+  // laid out as it stood it printed on its narrow edge. Its place in the assembly is not touched.
+  const lying = state.plate.objects.map((obj) => (members.has(obj.id) ? laidFlat(obj, state.profile.bedX, state.profile.bedY) : obj));
   state.plate = {
     ...state.plate,
-    objects: arrangedObjects(state.plate.objects, state.profile.bedX, state.profile.bedY, clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM, keep),
+    objects: arrangedObjects(lying, state.profile.bedX, layoutLength(), clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM, keep),
   };
   applySelectedToState(state.plate);
   place();
@@ -195,6 +200,14 @@ function frameBounds(bounds: Bounds) {
 /** A hair past the toolhead clearance, so float rounding never lands an object exactly on the engine's limit. */
 const CLEARANCE_SLACK_MM = 0.01;
 
+/** A belt has no end along Y: a lay out goes on along it, and no part is pushed off the bed for want of length. */
+const BELT_LENGTH_MM = 1e6;
+
+/** How long the bed is for a lay out: the printer's Y, or the belt's length. */
+function layoutLength(): number {
+  return selection(loadMachineLibrary())?.printer.kind === "belt" ? BELT_LENGTH_MM : state.profile.bedY;
+}
+
 export function arrangePlate() {
   if (state.plate.objects.length < 2) return;
   modelApi()?.commitModel();
@@ -206,7 +219,7 @@ export function arrangePlate() {
   state.plate = {
     ...state.plate,
     objects: refreshLinks(
-      arrangedObjects(state.plate.objects, state.profile.bedX, state.profile.bedY, clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM),
+      arrangedObjects(state.plate.objects, state.profile.bedX, layoutLength(), clearance === null ? undefined : clearance + CLEARANCE_SLACK_MM),
       { x: state.profile.bedX, y: state.profile.bedY },
     ),
   };

@@ -1,4 +1,4 @@
-import { encode3mf, ID_MATRIX, offBed, rotZ } from "./mesh-place.ts";
+import { encode3mf, ID_MATRIX, offBed, rotX, rotY, rotZ } from "./mesh-place.ts";
 import type { Affine } from "./model-space.ts";
 import { nextSplitAt } from "./split-at.ts";
 import { workplaneIn } from "./workplane.ts";
@@ -10,10 +10,12 @@ import {
   addedSolid,
   addedSplit,
   objectMarks,
+  ARRANGE_EDGE_MM,
   arrangeBoxes,
   arrangedObjects,
   boundsSize,
   boxesOverlapXY,
+  laidFlat,
   meshToModel,
   oneObjectPlate,
   overlapPairs,
@@ -120,8 +122,8 @@ for (const box of bounds) {
   check("arranged boxes stay inside the bed", box.min[0] >= -0.05 && box.min[1] >= -0.05 && box.max[0] <= bed + 0.05 && box.max[1] <= bed + 0.05, JSON.stringify(box));
 }
 check("arrange does not rotate", arranged.every((obj) => obj.orient.every((value, index) => value === ID_MATRIX[index])));
-check("the first box starts at the left edge", near(bounds[0]!.min[0], 0) && near(bounds[0]!.min[1], 0));
-check("the second box sits one gap to the right", near(bounds[1]!.min[0], 22) && near(bounds[1]!.min[1], 0));
+check("the first box starts the edge margin in from the corner", near(bounds[0]!.min[0], ARRANGE_EDGE_MM) && near(bounds[0]!.min[1], ARRANGE_EDGE_MM));
+check("the second box sits one gap to the right", near(bounds[1]!.min[0], ARRANGE_EDGE_MM + 22) && near(bounds[1]!.min[1], ARRANGE_EDGE_MM));
 
 // Split to print's lay out: the objects already on the plate stay; the new pieces go around them and each other.
 const keptObj = object(40, "kept", false, { x: 90, y: 90, z: 0 });
@@ -134,7 +136,7 @@ check("and stays where it was", JSON.stringify(piecesAt[0]) === JSON.stringify(k
 check("the pieces clear it and each other", !boxesOverlapXY(piecesAt[0]!, piecesAt[1]!) && !boxesOverlapXY(piecesAt[0]!, piecesAt[2]!) && !boxesOverlapXY(piecesAt[1]!, piecesAt[2]!), JSON.stringify(piecesAt));
 check("by the arrange gap or more", piecesAt.slice(1).every((box) => [piecesAt[0]!, ...piecesAt.slice(1).filter((other) => other !== box)].every((other) => box.min[0] >= other.max[0] + 2 - 1e-6 || other.min[0] >= box.max[0] + 2 - 1e-6 || box.min[1] >= other.max[1] + 2 - 1e-6 || other.min[1] >= box.max[1] + 2 - 1e-6)), JSON.stringify(piecesAt));
 check("on the bed", piecesAt.every((box) => box.min[0] >= -0.05 && box.min[1] >= -0.05 && box.max[0] <= bed + 0.05 && box.max[1] <= bed + 0.05), JSON.stringify(piecesAt));
-check("the first piece takes the first clear spot, the bed's corner", near(piecesAt[1]!.min[0], 0) && near(piecesAt[1]!.min[1], 0), JSON.stringify(piecesAt[1]));
+check("the first piece takes the first clear spot, the edge margin in from the bed's corner", near(piecesAt[1]!.min[0], ARRANGE_EDGE_MM) && near(piecesAt[1]!.min[1], ARRANGE_EDGE_MM), JSON.stringify(piecesAt[1]));
 check("an empty keep is the whole-plate arrange", JSON.stringify(arrangedObjects([keptObj, ...pieces], bed, bed, undefined, new Set())) === JSON.stringify(arrangedObjects([keptObj, ...pieces], bed, bed)));
 
 // --- Milestone 7 on a belt printer: the length is unbounded, so six 70 mm pieces on a 100 mm wide belt stack along Y
@@ -264,7 +266,7 @@ const atOrigin = object(20, "a", false, { x: 0, y: 0, z: 0 });
 atOrigin.name = "cube.stl";
 const parked = addedMesh({ objects: [atOrigin], selectedId: "a" }, incoming("cube.stl", cube(20), 0.05), bed, bed);
 const parkedBounds = placeObject(parked!.objects[1]!, bed, bed).bounds;
-check("a new part sits one gap to the right of a part at the origin", near(parkedBounds.min[0], 22) && near(parkedBounds.min[1], 0) && near(parkedBounds.min[2], 0));
+check("a new part sits one gap to the right of a part at the origin, off the bed's front edge", near(parkedBounds.min[0], 22) && near(parkedBounds.min[1], ARRANGE_EDGE_MM) && near(parkedBounds.min[2], 0));
 check("the part already on the bed stays put", parked!.objects[0] === atOrigin);
 check("the new part is selected", parked!.selectedId === parked!.objects[1]!.id && parked!.selectedId !== "a");
 check("a repeated file name is numbered and the file name stays the file's", parked!.objects[1]!.name === "cube.stl 2" && parked!.objects[1]!.fileName === "cube.stl");
@@ -276,7 +278,7 @@ check("undo keeps the new part's own mesh", revivedNew?.objects[1]?.fileName ===
 
 const corner = addedMesh({ objects: [firstMesh], selectedId: "part" }, incoming("off.stl", cube(20)), bed, bed);
 const cornerBounds = placeObject(corner!.objects[1]!, bed, bed).bounds;
-check("a centered part leaves the corner free", near(cornerBounds.min[0], 0) && near(cornerBounds.min[1], 0));
+check("a centered part leaves the corner free", near(cornerBounds.min[0], ARRANGE_EDGE_MM) && near(cornerBounds.min[1], ARRANGE_EDGE_MM));
 check("the centered part is not moved", corner!.objects[0]!.centered && corner!.objects[0]!.offset.x === 0);
 check("the new part clears the one already there", !boxesOverlapXY(placeObject(corner!.objects[0]!, bed, bed).bounds, cornerBounds));
 
@@ -285,15 +287,15 @@ for (let i = 2; i < lifted.length; i += 3) lifted[i] += 5;
 for (let i = 0; i < lifted.length; i += 3) lifted[i] -= 50;
 const laid = addedMesh({ objects: [firstMesh], selectedId: "part" }, incoming("lifted.stl", lifted), bed, bed);
 const laidBounds = placeObject(laid!.objects[1]!, bed, bed).bounds;
-check("a mesh that loads off the bed is laid on it", near(laidBounds.min[0], 0) && near(laidBounds.min[2], 0), JSON.stringify(laidBounds));
+check("a mesh that loads off the bed is laid on it", near(laidBounds.min[0], ARRANGE_EDGE_MM) && near(laidBounds.min[2], 0), JSON.stringify(laidBounds));
 
 const crowded = addedMesh({ objects: [atOrigin], selectedId: "a" }, incoming("wide.stl", cube(20)), 30, 30);
 const crowdedBounds = placeObject(crowded!.objects[1]!, 30, 30).bounds;
-check("a crowded bed still gets the part, past the edge", near(crowdedBounds.min[0], 22) && near(crowdedBounds.min[1], 0));
+check("a crowded bed still gets the part, past the edge", near(crowdedBounds.min[0], 22) && near(crowdedBounds.min[1], ARRANGE_EDGE_MM));
 const row2 = object(20, "b", false, { x: 22, y: 0, z: 0 });
 const wrapped = addedMesh({ objects: [atOrigin, row2], selectedId: "a" }, incoming("third.stl", cube(20)), 50, 50);
 const wrappedBounds = placeObject(wrapped!.objects[2]!, 50, 50).bounds;
-check("the next part wraps to a new row when the first row is full", near(wrappedBounds.min[0], 0) && near(wrappedBounds.min[1], 22));
+check("the next part wraps to a new row when the first row is full; a bed too small for the margin still keeps it on the bed", near(wrappedBounds.min[0], ARRANGE_EDGE_MM) && near(wrappedBounds.min[1], 22));
 check("an empty plate cannot gain a part this way", addedMesh({ objects: [], selectedId: null }, incoming("nope.stl", cube(10)), bed, bed) === null);
 
 // Model's New solid: its own id, tree, and model-space pose from the start.
@@ -431,6 +433,42 @@ check("an object's mesh goes up by its seat before its pose", JSON.stringify(mes
   check("the switch makes a new object, so an Undo snapshot keeps the old one", hook.frame === "part" && switched.objects[0] !== hook);
 }
 
+// --- A lay out keeps the bed's sides free: a part flush with the side leaves its supports no bed (on a belt they
+// were planned at X below 0).
+{
+  const ten = Array.from({ length: 10 }, (_, i) => object(20, `m${i}`, false, { x: i * 3, y: 0, z: 0 }));
+  const rows = arrangedObjects(ten, 100, 100).map((obj) => placeObject(obj, 100, 100).bounds);
+  check("every arranged part stays the margin off both sides and off the front", rows.every((box) => box.min[0] >= ARRANGE_EDGE_MM - 0.01 && box.max[0] <= 100 - ARRANGE_EDGE_MM + 0.01 && box.min[1] >= ARRANGE_EDGE_MM - 0.01), JSON.stringify(rows.map((box) => [box.min[0], box.max[0], box.min[1]])));
+  check("a row ends before the far margin and the next starts at the near one", near(rows[2]!.min[0], ARRANGE_EDGE_MM + 44) && near(rows[3]!.min[0], ARRANGE_EDGE_MM) && near(rows[3]!.min[1], ARRANGE_EDGE_MM + 22), JSON.stringify(rows[3]));
+  const flush = arrangedObjects(ten, 100, 100, undefined, undefined, 0).map((obj) => placeObject(obj, 100, 100).bounds);
+  check("with no margin asked the rows start at the corner, as they did", near(flush[0]!.min[0], 0) && near(flush[0]!.min[1], 0));
+  const around = arrangedObjects([object(20, "kept", false, { x: 0, y: 0, z: 0 }), ...ten.slice(0, 6)], 100, 100, undefined, new Set(["kept"])).slice(1).map((obj) => placeObject(obj, 100, 100).bounds);
+  check("parts laid out around a kept one keep the margin too, though the kept one stands at the side", around.every((box) => box.min[0] >= ARRANGE_EDGE_MM - 0.01 && box.max[0] <= 100 - ARRANGE_EDGE_MM + 0.01 && box.min[1] >= ARRANGE_EDGE_MM - 0.01), JSON.stringify(around.map((box) => [box.min[0], box.max[0], box.min[1]])));
+}
+
+// --- For print, a part that is clearly flat lies on its wide face; any other keeps the orientation it has.
+{
+  const slab = (x: number, y: number, z: number): Float32Array => {
+    const v = [[0, 0, 0], [x, 0, 0], [x, y, 0], [0, y, 0], [0, 0, z], [x, 0, z], [x, y, z], [0, y, z]];
+    const faces = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+    return Float32Array.from(faces.flatMap((f) => f.flatMap((i) => v[i]!)));
+  };
+  const part = (source: Float32Array, orient = [...ID_MATRIX]): PlateObject => ({ ...object(10, "flat", false), sourcePos: source, orient: orient as PlateObject["orient"] });
+  const height = (obj: PlateObject) => { const b = placeObject(obj, 200, 200).bounds; return b.max[2] - b.min[2]; };
+  const gear = part(slab(40, 40, 4), rotX(90));
+  const lying = laidFlat(gear, 200, 200);
+  check("a plate standing on its edge is laid on its wide face", near(height(gear), 40) && near(height(lying), 4), `${height(gear)} -> ${height(lying)}`);
+  check("only its orientation turns", lying.sourcePos === gear.sourcePos && lying.offset === gear.offset && lying.partScale === gear.partScale);
+  check("a plate already lying is the same object", laidFlat(lying, 200, 200) === lying);
+  const tilted = part(slab(40, 40, 4), rotX(55));
+  check("a plate leaning in the assembly is laid flat too", near(height(laidFlat(tilted, 200, 200)), 4), String(height(laidFlat(tilted, 200, 200))));
+  const block = part(slab(20, 30, 18), rotX(90));
+  check("a block keeps the orientation it has", laidFlat(block, 200, 200) === block);
+  const rod = part(slab(60, 6, 6), rotY(90));
+  check("a rod standing up is not a flat part and is left as it is", laidFlat(rod, 200, 200) === rod);
+  const thick = part(slab(40, 40, 24), rotX(90));
+  check("a part more than half as thick as it is wide is not flat and is left standing", laidFlat(thick, 200, 200) === thick);
+}
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);
