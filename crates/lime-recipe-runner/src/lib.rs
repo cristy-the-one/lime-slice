@@ -523,20 +523,34 @@ impl LustFeatures {
     pub fn from_usage(usage: &str) -> LustFeatures {
         LustFeatures { mark_unread: usage.contains("--mark-unread"), max_memory: usage.contains("--max-memory") }
     }
+
+    /// Read from the `interface` object of `lust capabilities --json` (lust after 0.3.0 states its command line
+    /// there: each command's flags), or `None` when the text has none: an older lust.
+    pub fn from_interface(json: &str) -> Option<LustFeatures> {
+        let read: serde_json::Value = serde_json::from_str(json).ok()?;
+        let build = read.get("interface")?.get("flags")?.get("build")?.as_array()?;
+        let has = |flag: &str| build.iter().any(|named| named.as_str() == Some(flag));
+        Some(LustFeatures { mark_unread: has("--mark-unread"), max_memory: has("--max-memory") })
+    }
 }
 
-/// What this lust can be asked, read once from `lust --help`. A lust that does not know a flag answers its usage and
-/// exit code 2 to a build that passes it, which would fail every recipe: someone's own older build in `LIME_LUST` is
-/// asked only for what it has.
+/// What this lust can be asked, read once: from the interface it states (`lust capabilities --json`), else from its
+/// usage text. A lust that does not know a flag answers its usage and exit code 2 to a build that passes it, which
+/// would fail every recipe: someone's own older build in `LIME_LUST` is asked only for what it has.
 pub fn lust_features(lust: &Path) -> LustFeatures {
     static FOUND: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, LustFeatures>>> = std::sync::LazyLock::new(Default::default);
     if let Some(found) = lock(&FOUND).get(lust) {
         return *found;
     }
-    let mut command = quiet(lust);
-    command.arg("--help").stdin(Stdio::null());
-    let usage = command.output().map(|out| [out.stdout, out.stderr].concat()).unwrap_or_default();
-    let found = LustFeatures::from_usage(&String::from_utf8_lossy(&usage));
+    let mut stated = quiet(lust);
+    stated.args(["capabilities", "--json"]).stdin(Stdio::null());
+    let from_interface = stated.output().ok().filter(|out| out.status.success()).and_then(|out| LustFeatures::from_interface(&String::from_utf8_lossy(&out.stdout)));
+    let found = from_interface.unwrap_or_else(|| {
+        let mut command = quiet(lust);
+        command.arg("--help").stdin(Stdio::null());
+        let usage = command.output().map(|out| [out.stdout, out.stderr].concat()).unwrap_or_default();
+        LustFeatures::from_usage(&String::from_utf8_lossy(&usage))
+    });
     lock(&FOUND).insert(lust.to_path_buf(), found);
     found
 }
@@ -710,6 +724,14 @@ mod tests {
         assert_eq!(LustFeatures::from_usage(old), LustFeatures::default());
         assert_eq!(LustFeatures::from_usage(&new), LustFeatures { mark_unread: true, max_memory: true });
         assert_eq!(LustFeatures::from_usage(""), LustFeatures::default());
+        // A lust that states its command line (`lust capabilities --json`, after 0.3.0) is read from that.
+        let stated = r#"{"schema":1,"interface":{"version":"0.3.0","commands":["check","build","fix","query"],"flags":{"check":["--json","--mark-unread"],"build":["--json","--mark-unread","--sandbox","--max-memory","--time-limit"]}}}"#;
+        assert_eq!(LustFeatures::from_interface(stated), Some(LustFeatures { mark_unread: true, max_memory: true }));
+        let fewer = r#"{"interface":{"commands":["build"],"flags":{"build":["--json","--sandbox"]}}}"#;
+        assert_eq!(LustFeatures::from_interface(fewer), Some(LustFeatures::default()));
+        // 0.3.0's capabilities have no interface, and text that is no JSON has none either: the usage text is read.
+        assert_eq!(LustFeatures::from_interface(r#"{"schema":1,"accepts":[]}"#), None);
+        assert_eq!(LustFeatures::from_interface("usage: lust"), None);
         // The host reads the marks by the same name.
         let host = include_str!("../../../src/recipe/host.ts");
         assert!(host.contains(&format!("export const MARK_UNREAD_FN = \"{MARK_UNREAD_FN}\";")));

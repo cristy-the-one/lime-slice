@@ -74,16 +74,42 @@ export type LustAnswer =
 const lustFeatureCache = new Map<string, LustFeatures>();
 
 /**
- * What this lust can be asked, read once from its usage text (`lust --help` names every flag). A lust that does not
- * know a flag answers its usage and exit code 2 to a build that passes it, which would fail every recipe: someone's
- * own older build in LIME_LUST is asked only for what it has.
+ * A lust's features from the `interface` object of `lust capabilities --json` (lust after 0.3.0 states its command
+ * line there: its commands, and each command's flags), or null when the text has none: an older lust.
+ */
+export function featuresFromInterface(json: string): LustFeatures | null {
+  let read: unknown;
+  try {
+    read = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const face = (read as { interface?: { commands?: unknown; flags?: unknown } } | null)?.interface;
+  if (!face || !Array.isArray(face.commands) || !face.flags || typeof face.flags !== "object") return null;
+  const flags = face.flags as Record<string, unknown>;
+  const has = (command: string, flag: string) => Array.isArray(flags[command]) && (flags[command] as unknown[]).includes(flag);
+  return { markUnread: has("build", "--mark-unread"), maxMemory: has("build", "--max-memory"), rewrites: face.commands.includes("fix"), query: face.commands.includes("query") };
+}
+
+/** The same from the usage text (`lust --help` names every flag), for a lust that does not state its interface. */
+export function featuresFromUsage(usage: string): LustFeatures {
+  return { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory"), rewrites: usage.includes("lust fix "), query: usage.includes("lust query ") };
+}
+
+/**
+ * What this lust can be asked, read once: from the interface it states (`lust capabilities --json`), else from its
+ * usage text. A lust that does not know a flag answers its usage and exit code 2 to a build that passes it, which
+ * would fail every recipe: someone's own older build in LIME_LUST is asked only for what it has.
  */
 export function lustFeatures(lust: string): LustFeatures {
   let found = lustFeatureCache.get(lust);
   if (!found) {
-    const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
-    const usage = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    found = { markUnread: usage.includes("--mark-unread"), maxMemory: usage.includes("--max-memory"), rewrites: usage.includes("lust fix "), query: usage.includes("lust query ") };
+    const stated = spawnSync(lust, ["capabilities", "--json"], { encoding: "utf8", timeout: 10_000, windowsHide: true, maxBuffer: 16 << 20 });
+    found = (stated.status === 0 ? featuresFromInterface(stated.stdout ?? "") : null) ?? undefined;
+    if (!found) {
+      const r = spawnSync(lust, ["--help"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+      found = featuresFromUsage(`${r.stdout ?? ""}${r.stderr ?? ""}`);
+    }
     lustFeatureCache.set(lust, found);
   }
   return found;

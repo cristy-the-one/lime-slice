@@ -2,12 +2,13 @@
  * recipe_run's host (mcp/recipe.ts) against real lust, with a scripted stand-in for the session's calls.
  * Skips without lust (LIME_LUST, or lust on PATH); LIME_RECIPE_REQUIRED=1 (the CI job that builds lust) makes that a failure.
  */
+import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { applyAutoEdits, DEFAULT_LIMITS, findLust, lfOnly, lustFeatures, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { applyAutoEdits, DEFAULT_LIMITS, featuresFromInterface, featuresFromUsage, findLust, lfOnly, lustFeatures, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
 import { optMode, zigFor } from "./recipe-opt.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -121,6 +122,17 @@ const REJECTS = [
   "}",
   "",
 ].join("\n");
+// What a lust can be asked comes from the interface it states (`lust capabilities --json`, after 0.3.0), else from
+// its usage text; both agree on this lust.
+{
+  const stated = '{"schema":1,"interface":{"version":"0.3.0","commands":["check","build","fix","query"],"flags":{"check":["--json","--mark-unread"],"build":["--json","--mark-unread","--sandbox","--max-memory"]}}}';
+  check("features are read from the interface a lust states", JSON.stringify(featuresFromInterface(stated)) === JSON.stringify({ markUnread: true, maxMemory: true, rewrites: true, query: true }), featuresFromInterface(stated));
+  check("a command or a flag it does not name is not asked for", JSON.stringify(featuresFromInterface('{"interface":{"commands":["build"],"flags":{"build":["--json"]}}}')) === JSON.stringify({ markUnread: false, maxMemory: false, rewrites: false, query: false }));
+  check("capabilities with no interface, or no JSON, give none: the usage text is read", featuresFromInterface('{"schema":1,"accepts":[]}') === null && featuresFromInterface("usage: lust") === null);
+  check("the usage text names the same", JSON.stringify(featuresFromUsage("lust build [--mark-unread <fn>] [--sandbox [--max-memory N]]\n lust query <def|type>\n lust fix <file.rs>")) === JSON.stringify({ markUnread: true, maxMemory: true, rewrites: true, query: true }));
+  const help = spawnSync(lust!, ["--help"], { encoding: "utf8" });
+  check("this lust's interface and its usage text agree", JSON.stringify(lustFeatures(lust!)) === JSON.stringify(featuresFromUsage(`${help.stdout ?? ""}${help.stderr ?? ""}`)), lustFeatures(lust!));
+}
 if (lustFeatures(lust).rewrites) {
   const shown = await host.build("rejects", REJECTS, true);
   const first = shown.diagnostics[0];
