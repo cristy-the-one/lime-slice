@@ -1078,10 +1078,10 @@ jobs:
 
       # lust's optimised builds on macOS, the proof Windows has (above): a recipe's own libm calls give rustc's bits,
       # the engine's native geometry and the plugin corpus send the same bytes, with every build `--opt`
-      # (LIME_LUST_OPT=now). lust 0.3.0 builds without LTO under zig cc here, which is what failed before. Not
-      # blocking: --opt stays off by default on macOS (mcp/recipe-opt.ts OPT_BY_DEFAULT) until this step has shown
-      # the optimised program sends tcc's bytes. The same three tests run under tcc first, for the record too: this
-      # job did not run them, and a difference that tcc has as well is not the optimised build's.
+      # (LIME_LUST_OPT=now). lust builds without LTO under zig cc here since 0.3.0, which is what failed before.
+      # Blocking: --opt is on by default on macOS (mcp/recipe-opt.ts OPT_BY_DEFAULT), so a recipe that sends other
+      # bytes under it stops the job, as on Windows. The same three tests run under tcc first: this job did not run
+      # them, and a difference that tcc has as well is not the optimised build's.
       - name: Cache zig
         if: needs.changes.outputs.recipes == 'true'
         uses: actions/cache@v6
@@ -1091,7 +1091,6 @@ jobs:
 
       - name: Recipes with lust --opt (zig cc)
         if: needs.changes.outputs.recipes == 'true'
-        continue-on-error: true
         timeout-minutes: 25
         env:
           LIME_RECIPE_REQUIRED: "1"

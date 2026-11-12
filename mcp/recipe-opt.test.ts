@@ -89,7 +89,7 @@ check("--opt sends the same calls as tcc, byte for byte", now.calls === tcc.call
 
 // Unset, --opt=bg is on only where it is proven (Windows); elsewhere the default is tcc.
 delete process.env.LIME_LUST_OPT;
-check("the default is --opt=bg on Windows only", optMode() === (process.platform === "win32" ? "bg" : "off") && OPT_BY_DEFAULT === (process.platform === "win32"), optMode());
+check("the default is --opt=bg on Windows and macOS, off on Linux", optMode() === (process.platform === "win32" || process.platform === "darwin" ? "bg" : "off") && OPT_BY_DEFAULT === (process.platform === "win32" || process.platform === "darwin"), optMode());
 process.env.LIME_LUST_OPT = "1";
 check("LIME_LUST_OPT=1 forces --opt=bg anywhere", optMode() === "bg");
 
