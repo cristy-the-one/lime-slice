@@ -125,19 +125,20 @@ fn centres_inside_the_backlash_are_too_close() {
 #[test]
 fn extra_centre_distance_widens_the_play() {
     let (driver, driven, _, phase) = mesh(12, 24, 2.0);
-    // 0.16 mm is past the 0.1 mm of play at the working distance, and inside it once the
-    // centres open up: allowance is (b1+b2)/2 + (distance - working) * tan(pressure).
-    for distance in [36.2, 37.0, 38.0, 39.9] {
+    // 0.16 mm is past the 0.1 mm of play at the working distance. The radial band is both
+    // backlashes, the same edge as tooClose: 36.2 mm is still on it, and past it is loose
+    // when nothing crosses. Tangential play is (b1+b2)/2 + (distance - working) * tan(pressure).
+    let on_edge = at(&driver, &driven, 36.2, phase, 0.16);
+    assert!(!on_edge.hit, "36.2 mm: a segment crossed");
+    assert_eq!(on_edge.verdict, PairVerdict::Meshing, "36.2 is the far edge of the band, not past it");
+    for distance in [37.0, 38.0, 39.9] {
         let report = at(&driver, &driven, distance, phase, 0.16);
-        assert_ne!(
-            report.verdict,
-            PairVerdict::ToothOnTooth,
-            "{distance} mm, 0.16 mm of turn is inside the widened play, got {}",
-            report.verdict.as_str()
-        );
         assert!(!report.hit, "{distance} mm: a segment crossed");
-        assert_eq!(report.verdict, PairVerdict::Meshing, "{distance}");
+        assert_eq!(report.verdict, PairVerdict::Loose, "{distance} mm is past the backlash band");
     }
+    let wide = at(&driver, &driven, 39.9, phase, 0.0);
+    assert_eq!(wide.verdict, PairVerdict::Loose, "12/24 m2 at 39.9 mm");
+    assert!(!wide.hit);
     // Closer than the working distance, the same allowance shrinks. 0.065 mm is inside the
     // centred 0.1 mm and past the play at 35.9 mm, and the outlines do not cross.
     let tight = at(&driver, &driven, 35.9, phase, 0.065);
@@ -162,9 +163,7 @@ fn an_outline_that_cannot_be_built_is_not_a_mesh() {
     let report = classify(&pointed, &mate, [0.0, 0.0], [distance, 0.0], 0.0, phase);
     assert!(!report.narrow, "the outlines were not compared");
     assert!(!report.hit);
-    assert_ne!(report.verdict, PairVerdict::Meshing);
-    // Placeholder until a refusal token exists: not a mesh, and not a new name.
-    assert_eq!(report.verdict, PairVerdict::ToothOnTooth);
+    assert_eq!(report.verdict, PairVerdict::Unbuildable);
 }
 
 #[test]

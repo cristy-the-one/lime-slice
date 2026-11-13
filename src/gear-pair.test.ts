@@ -5,7 +5,7 @@
 import { classify, drivenTurn, gearAt, gearPairRows, gearsInTree, nearestVerdict, placeGear, verdictSentence, worldPair, type Spur } from "./gear-pair.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
-import { newTree, type ModelTree } from "./model-tree.ts";
+import { newTree, withChild, type ModelTree } from "./model-tree.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -86,13 +86,19 @@ check("too close still compares outlines", close.narrow);
 const widened = spur(12, 2);
 const widenedMate = spur(24, 2);
 const widenedPhase = matePhase(0, 12, 0, 24);
-for (const distance of [36.2, 37, 38, 39.9]) {
+{
+  const deg = widenedPhase + (0.16 / 24) * (180 / Math.PI);
+  const onEdge = classify(widened, widenedMate, [0, 0], [36.2, 0], 0, deg);
+  check("36.2 mm has no segment hit", !onEdge.hit);
+  eq("36.2 mm is still in the band", onEdge.verdict, "meshing");
+}
+for (const distance of [37, 38, 39.9]) {
   const deg = widenedPhase + (0.16 / 24) * (180 / Math.PI);
   const report = classify(widened, widenedMate, [0, 0], [distance, 0], 0, deg);
-  check(`${distance} mm with 0.16 mm of turn is not tooth on tooth`, report.verdict !== "toothOnTooth", report.verdict);
   check(`${distance} mm has no segment hit`, !report.hit);
-  eq(`${distance} mm meshes`, report.verdict, "meshing");
+  eq(`${distance} mm is loose`, report.verdict, "loose");
 }
+eq("12/24 m2 at 39.9 mm is loose", classify(widened, widenedMate, [0, 0], [39.9, 0], 0, widenedPhase).verdict, "loose");
 const tightDeg = widenedPhase + (0.065 / 24) * (180 / Math.PI);
 const tight = classify(widened, widenedMate, [0, 0], [35.9, 0], 0, tightDeg);
 check("0.065 mm tight does not cross", !tight.hit);
@@ -110,8 +116,8 @@ const pointedPhase = matePhase(0, 6, 0, 12);
 const refused = classify(pointed, pointedMate, [0, 0], [pointedDistance, 0], 0, pointedPhase);
 check("a pointed gear is not compared", !refused.narrow);
 check("a pointed gear is not a hit", !refused.hit);
-check("a pointed gear is not meshing", refused.verdict !== "meshing", refused.verdict);
-eq("a pointed gear is the placeholder toothOnTooth", refused.verdict, "toothOnTooth");
+eq("a pointed gear is unbuildable", refused.verdict, "unbuildable");
+check("the card can name the refusal", (refused.reason ?? "").includes("come to a point"), refused.reason ?? "");
 
 function gearSpec(teeth: number, module: number, origin: [number, number, number], phaseDeg = 0): PrimitiveSpec {
   return { primitive: "gear", origin, size: [0, 0, 0], radius: 0, height: 6, turn: [0, 0, 0], teeth, module, phaseDeg };
@@ -137,7 +143,23 @@ const tree: ModelTree = newTree("k", { kind: "primitive", solid: root }, "Pinion
 const found = gearsInTree(tree, IDENTITY_POSE, "pin", "Pinion");
 eq("a root gear is the object's own", found.map((gear) => [gear.objectId, gear.step, gear.label, gear.spur.teeth]), [["pin", null, "Pinion", 12]]);
 
-eq("the sentences", [verdictSentence("Wheel", "apart"), verdictSentence("Wheel", "toothOnTooth"), verdictSentence("Wheel", "moduleMismatch")], ["Clear of Wheel.", "Teeth cross Wheel.", "Module does not match Wheel."]);
+const patterned = withChild(newTree("p", { kind: "primitive", solid: { primitive: "box", origin: [0, 0, 0], size: [10, 10, 10], radius: 0, height: 0, turn: [0, 0, 0] } }, "Box", null), 0, {
+  id: 1,
+  op: {
+    kind: "group",
+    label: "Pattern",
+    steps: [
+      { ...gearSpec(18, 1, [0, 0, 0]), kind: "boolean", op: "fuse" },
+      { kind: "group", label: "Batch", steps: [{ ...gearSpec(30, 1, [24, 0, 0]), kind: "boolean", op: "fuse" }] },
+    ],
+  },
+  label: "Pattern",
+  fingerprint: null,
+});
+const inGroup = gearsInTree(patterned, IDENTITY_POSE, "box", "Box");
+eq("a pattern and a nested batch both count", inGroup.map((gear) => [gear.step, gear.spur.teeth, gear.centre[0]]), [[1, 18, 0], [1, 30, 24]]);
+
+eq("the sentences", [verdictSentence("Wheel", "apart"), verdictSentence("Wheel", "toothOnTooth"), verdictSentence("Wheel", "loose"), verdictSentence("Wheel", "unbuildable", "These teeth come to a point below the tip.")], ["Clear of Wheel.", "Teeth cross Wheel.", "Too far from Wheel.", "Unbuildable with Wheel: These teeth come to a point below the tip."]);
 
 const self = gearAt(gearSpec(12, 2, [0, 0, 0]), "pin", "Pinion");
 const far = gearAt(gearSpec(24, 2, [200, 0, 0], 0), "far", "Far");

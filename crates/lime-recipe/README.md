@@ -85,7 +85,7 @@ compare them with the library copy in `tests/fixtures`), and `Gear`, true involu
 cutting rack's root fillet and undercut, arcs at tip and root, any pressure angle and profile shift, in the crate's own
 trig. `ops::gear` is the kernel's gear step, which builds the same outline (`guide {kind:"gear"}`).
 
-`gear_pair::classify` says how two external spur gears stand (`apart`, `meshing`, `tooClose`, `toothOnTooth`,
-`moduleMismatch`, `pressureMismatch`) from their centres and phases. `gear_pair::driven_turn` turns the driver by an
+`gear_pair::classify` says how two external spur gears stand (`apart`, `meshing`, `tooClose`, `loose`, `toothOnTooth`,
+`unbuildable`, `moduleMismatch`, `pressureMismatch`) from their centres and phases. `gear_pair::driven_turn` turns the driver by an
 angle and the driven gear by `mate_turn` before that check. The outlines are compared only when the tip circles meet
 (`docs/collision-prototype.md`).

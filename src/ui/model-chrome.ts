@@ -2115,7 +2115,7 @@ function paintGearMesh() {
     return;
   }
   const bad = nearest.report.verdict !== "meshing" && nearest.report.verdict !== "apart";
-  line.textContent = verdictSentence(nearest.other.label, nearest.report.verdict);
+  line.textContent = verdictSentence(nearest.other.label, nearest.report.verdict, nearest.report.reason);
   line.classList.toggle("is-bad", bad);
   line.hidden = false;
 }

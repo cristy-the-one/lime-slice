@@ -234,7 +234,8 @@ if (lib.status === 0) {
   check("ops::gear sends the gear op", JSON.stringify(gearCall?.args.op).startsWith('{"kind":"gear","op":"fuse","teeth":9,"module":1.5,"thickness":3'), gearCall?.args);
 
   const pairs = await runBoth("gear_pair", pairSource);
-  check("gear_pair: lust and rustc print the same verdicts", JSON.stringify(pairs.lustDone) === JSON.stringify(pairs.rustcDone) && JSON.stringify(pairs.lustDone).includes("meshing"), { lust: pairs.lustDone, rustc: pairs.rustcDone });
+  const pairText = JSON.stringify(pairs.lustDone);
+  check("gear_pair: lust and rustc print the same verdicts", pairText === JSON.stringify(pairs.rustcDone) && pairText.includes("meshing") && pairText.includes("loose") && pairText.includes("unbuildable"), { lust: pairs.lustDone, rustc: pairs.rustcDone });
 }
 
 if (failed > 0) {

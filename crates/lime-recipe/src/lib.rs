@@ -3922,8 +3922,13 @@ pub mod gear_pair {
         Meshing,
         /// The centres are closer than the working distance by more than both backlashes.
         TooClose,
+        /// The centres are farther than the working distance by more than both backlashes, the tip circles still
+        /// meet, and no tooth edges cross.
+        Loose,
         /// A tooth meets a tooth: the phase is off, or the outlines cross.
         ToothOnTooth,
+        /// `Gear::points` could not build an outline. The outlines were not compared.
+        Unbuildable,
         /// The modules differ, so the pair is not a mesh.
         ModuleMismatch,
         /// The pressure angles differ, so the pair is not a mesh.
@@ -3937,7 +3942,9 @@ pub mod gear_pair {
                 Self::Apart => "apart",
                 Self::Meshing => "meshing",
                 Self::TooClose => "tooClose",
+                Self::Loose => "loose",
                 Self::ToothOnTooth => "toothOnTooth",
+                Self::Unbuildable => "unbuildable",
                 Self::ModuleMismatch => "moduleMismatch",
                 Self::PressureMismatch => "pressureMismatch",
             }
@@ -4121,9 +4128,9 @@ pub mod gear_pair {
     /// Modules and pressure angles are compared first. Tip circles that do not meet are `Apart` and the outlines
     /// are not built. Otherwise the outlines are compared. Play along the pitch circle, one way from the centred
     /// mesh, is half both backlashes plus `(distance - working) * tan(pressure)`: a wider centre adds play and a
-    /// closer one takes it away. A segment that crosses is `ToothOnTooth` even inside that play. An outline
-    /// `Gear` cannot build is not a mesh (`narrow` is false). Until that has its own token, the verdict is
-    /// `ToothOnTooth`, or `TooClose` when the centres are inside the backlash.
+    /// closer one takes it away. The radial band is both backlashes either side of the working distance, the same
+    /// edge `TooClose` uses: past it on the far side, with no crossing, is `Loose`. A segment that crosses is
+    /// `ToothOnTooth` even inside that play. An outline `Gear` cannot build is `Unbuildable` and `narrow` is false.
     pub fn classify(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64) -> PairReport {
         if (driver.module - driven.module).abs() > 1e-9 {
             return clear(PairVerdict::ModuleMismatch);
@@ -4151,17 +4158,19 @@ pub mod gear_pair {
         let tan_a = if ca == 0.0 { 0.0 } else { sa / ca };
         let allowed = backlash / 2.0 + (distance - working) * tan_a;
         let past_play = err_mm > allowed + 1e-9;
-        // Gear::points failed: the existing refusal (teeth that come to a point, and the rest). Not a mesh, and
-        // not a new token. ToothOnTooth stands in until one is chosen.
+        // Farther than the working distance by more than both backlashes. The mirror of too_close, strict, so the
+        // edge itself (working + both backlashes) stays in the band.
+        let loose = distance > working + backlash + 1e-9;
         let Some((a, b)) = outlines else {
-            let verdict = if too_close { PairVerdict::TooClose } else { PairVerdict::ToothOnTooth };
-            return PairReport { verdict, narrow: false, hit: false };
+            return PairReport { verdict: PairVerdict::Unbuildable, narrow: false, hit: false };
         };
         let hit = outlines_cross(&a, &b);
         let verdict = if too_close {
             PairVerdict::TooClose
         } else if tooth || past_play || hit {
             PairVerdict::ToothOnTooth
+        } else if loose {
+            PairVerdict::Loose
         } else {
             PairVerdict::Meshing
         };

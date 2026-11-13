@@ -7,13 +7,13 @@
 import type { Affine } from "./model-space.ts";
 import { applyPose, IDENTITY_POSE } from "./model-space.ts";
 import type { PrimitiveSpec } from "./model-primitive.ts";
-import { pathTo, type ModelTree, type Vec3 } from "./model-tree.ts";
+import { pathTo, type ModelOp, type ModelTree, type Vec3 } from "./model-tree.ts";
 
 /** Steps along each fillet and each involute. The same count the recipe uses. */
 const PAIR_FLANK = 8;
 const PI = Math.PI;
 
-export type GearVerdict = "apart" | "meshing" | "tooClose" | "toothOnTooth" | "moduleMismatch" | "pressureMismatch";
+export type GearVerdict = "apart" | "meshing" | "tooClose" | "loose" | "toothOnTooth" | "unbuildable" | "moduleMismatch" | "pressureMismatch";
 
 export interface PairReport {
   verdict: GearVerdict;
@@ -21,6 +21,8 @@ export interface PairReport {
   narrow: boolean;
   /** Whether two tooth edges crossed. */
   hit: boolean;
+  /** `Gear::refusal` text when the outline cannot be built. */
+  reason?: string;
 }
 
 /** The numbers `Gear` carries. Backlash is millimetres at the pitch circle; shift is times the module. */
@@ -188,12 +190,23 @@ type Piece = { pts: Polar[] };
  * One flank, in polar `(radius, half-angle)`, as `Gear::side_with` builds it. Null when these numbers are not a gear.
  * The sampling matches the recipe's outline, including the undercut a small gear is cut with.
  */
-function flank(gear: Spur, steps: number): Piece[] | null {
-  if (!Number.isInteger(gear.teeth) || gear.teeth < 6 || gear.teeth > 150) return null;
-  if (!(gear.module >= 0.05 && gear.module <= 50)) return null;
-  if (!(gear.pressureDeg >= 10 && gear.pressureDeg <= 30)) return null;
-  if (!(gear.shift >= -1 && gear.shift <= 1)) return null;
-  if (!(gear.backlash >= 0 && gear.backlash <= gear.module)) return null;
+const COME_TO_A_POINT = "These teeth come to a point below the tip: use less profile shift, more teeth, or a smaller pressure angle.";
+const UNDERCUT = "The undercut cuts through these teeth: use more teeth or a positive profile shift.";
+const FILLET = "The root fillet does not meet the involute for these numbers.";
+
+/** The sentence `Gear::refusal` gives, or null when these numbers build an outline. */
+function numberRefusal(gear: Spur): string | null {
+  if (!Number.isInteger(gear.teeth) || gear.teeth < 6 || gear.teeth > 150) return "A gear takes 6 to 150 teeth.";
+  if (!(gear.module >= 0.05 && gear.module <= 50)) return "A gear's module is 0.05 to 50 mm.";
+  if (!(gear.pressureDeg >= 10 && gear.pressureDeg <= 30)) return "A gear's pressure angle is 10 to 30 degrees.";
+  if (!(gear.shift >= -1 && gear.shift <= 1)) return "A gear's profile shift is -1 to 1, times the module.";
+  if (!(gear.backlash >= 0 && gear.backlash <= gear.module)) return "A gear's backlash is 0 to one module, in mm at the pitch circle.";
+  return null;
+}
+
+function flank(gear: Spur, steps: number): Piece[] | string {
+  const refused = numberRefusal(gear);
+  if (refused) return refused;
   const rad = (gear.pressureDeg * PI) / 180;
   const sa = Math.sin(rad);
   const ca = Math.cos(rad);
@@ -209,7 +222,7 @@ function flank(gear: Spur, steps: number): Piece[] | null {
     const t = Math.sqrt(Math.max(0, rho * rho - rb * rb)) / rb;
     return halfTooth + invA - (t - Math.atan(t));
   };
-  if (invHalf(ra) <= 0) return null;
+  if (invHalf(ra) <= 0) return COME_TO_A_POINT;
   const wTip = (PI * m) / 4 + gear.backlash / 2 - 1.25 * m * tanA;
   const round = Math.max(0, Math.min(0.38 * m, m * (1.2 - gear.shift), (0.95 * wTip * ca) / (1 - sa)));
   const xc = rf + round;
@@ -301,7 +314,7 @@ function flank(gear: Spur, steps: number): Piece[] | null {
       prevS = s;
       prevG = g;
     }
-    if (crossings.length % 2 === 0) return null;
+    if (crossings.length % 2 === 0) return UNDERCUT;
     let from = sRoot;
     for (let k = 0; k < crossings.length; k += 1) {
       const s = crossings[k]!;
@@ -325,8 +338,8 @@ function flank(gear: Spur, steps: number): Piece[] | null {
     if (last) last.pts[last.pts.length - 1] = [rho0, invHalf(rho0)];
     join(involuteFrom(rho0, ra));
   }
-  if (!Number.isFinite(seam) || seam > 1e-6 * m) return null;
-  if (pieces.some((piece) => piece.pts.some((p) => p[1] <= 0 || p[0] > ra + 1e-9))) return null;
+  if (!Number.isFinite(seam) || seam > 1e-6 * m) return FILLET;
+  if (pieces.some((piece) => piece.pts.some((p) => p[1] <= 0 || p[0] > ra + 1e-9))) return UNDERCUT;
   const first = pieces[0]?.pts[0];
   if (first) first[0] = rf;
   return pieces;
@@ -336,7 +349,7 @@ function flank(gear: Spur, steps: number): Piece[] | null {
 export function gearPoints(gear: Spur, phaseDeg: number, perFlank = PAIR_FLANK): P2[] | null {
   const n = Math.max(2, perFlank);
   const side = flank(gear, n);
-  if (!side || side.length === 0) return null;
+  if (typeof side === "string" || side.length === 0) return null;
   const up: Polar[] = [];
   for (const piece of side) {
     const pts = up.length ? piece.pts.slice(1) : piece.pts;
@@ -392,11 +405,16 @@ export function classify(driver: Spur, driven: Spur, driverAt: P2, drivenAt: P2,
   const tanA = ca === 0 ? 0 : Math.sin(pressure) / ca;
   const allowed = backlash / 2 + (distance - working) * tanA;
   const pastPlay = errMm > allowed + 1e-9;
-  // The outline cannot be built (Gear refuses these numbers). Not a mesh, and not a new token:
-  // toothOnTooth stands in until one is chosen. Too close stays too close.
-  if (!a || !b) return { verdict: tooClose ? "tooClose" : "toothOnTooth", narrow: false, hit: false };
+  // Farther than the working distance by more than both backlashes. The mirror of tooClose, strict, so the edge stays in the band.
+  const loose = distance > working + backlash + 1e-9;
+  if (!a || !b) {
+    const driverSide = flank(driver, PAIR_FLANK);
+    const drivenSide = flank(driven, PAIR_FLANK);
+    const reason = typeof driverSide === "string" ? driverSide : typeof drivenSide === "string" ? drivenSide : undefined;
+    return { verdict: "unbuildable", narrow: false, hit: false, ...(reason ? { reason } : {}) };
+  }
   const hit = outlinesCross(a, b);
-  const verdict: GearVerdict = tooClose ? "tooClose" : tooth || pastPlay || hit ? "toothOnTooth" : "meshing";
+  const verdict: GearVerdict = tooClose ? "tooClose" : tooth || pastPlay || hit ? "toothOnTooth" : loose ? "loose" : "meshing";
   return { verdict, narrow: true, hit };
 }
 
@@ -474,7 +492,19 @@ export function placeGear(spec: PrimitiveSpec, pose: Affine, objectId: string, l
   };
 }
 
-/** Gears on the current history: the root, when it is a gear, and each fused gear step. */
+/** A fused gear, or the fused gears inside a group (a pattern, or a queued batch) and any group nested in it. */
+function gearsInOp(op: ModelOp, pose: Affine, objectId: string, objectName: string, step: number | null, into: WorldGear[]) {
+  if (op.kind === "group") {
+    for (const child of op.steps) gearsInOp(child, pose, objectId, objectName, step, into);
+    return;
+  }
+  if (op.kind === "boolean" && op.primitive === "gear" && op.op === "fuse") {
+    const gear = placeGear(op, pose, objectId, objectName, step);
+    if (gear) into.push(gear);
+  }
+}
+
+/** Gears on the current history: the root, when it is a gear, each fused gear step, and gears inside a group. */
 export function gearsInTree(tree: ModelTree, pose: Affine, objectId: string, objectName: string): WorldGear[] {
   let root: PrimitiveSpec | null = tree.root.kind === "primitive" ? tree.root.solid : null;
   const steps: WorldGear[] = [];
@@ -486,10 +516,7 @@ export function gearsInTree(tree: ModelTree, pose: Affine, objectId: string, obj
       root = op;
       continue;
     }
-    if (op.kind === "boolean" && op.primitive === "gear" && op.op === "fuse") {
-      const gear = placeGear(op, pose, objectId, node?.name ?? node?.label ?? objectName, id);
-      if (gear) steps.push(gear);
-    }
+    gearsInOp(op, pose, objectId, node?.name ?? node?.label ?? objectName, id, steps);
   }
   const own = root ? placeGear(root, pose, objectId, objectName, null) : null;
   return own ? [own, ...steps] : steps;
@@ -533,7 +560,7 @@ export function nearestVerdict(self: WorldGear, others: readonly WorldGear[]): {
 }
 
 /** The sentence on the gear card. */
-export function verdictSentence(name: string, verdict: GearVerdict): string {
+export function verdictSentence(name: string, verdict: GearVerdict, reason?: string): string {
   switch (verdict) {
     case "meshing":
       return `Meshes with ${name}.`;
@@ -541,8 +568,12 @@ export function verdictSentence(name: string, verdict: GearVerdict): string {
       return `Clear of ${name}.`;
     case "tooClose":
       return `Too close to ${name}.`;
+    case "loose":
+      return `Too far from ${name}.`;
     case "toothOnTooth":
       return `Teeth cross ${name}.`;
+    case "unbuildable":
+      return reason ? `Unbuildable with ${name}: ${reason}` : `Unbuildable with ${name}.`;
     case "moduleMismatch":
       return `Module does not match ${name}.`;
     case "pressureMismatch":

@@ -4,9 +4,9 @@ External spur gears on parallel axes. `lime_recipe::gear_pair::classify` takes t
 
 The check is tip circles, then the working centre distance and the mating phase, then a segment test on `Gear::points` when the tip circles meet. `Region::intersect` is not used. The gear card shows the verdict against the gear this one meshes with, or the nearest other gear. `model_check` lists the same pairs in `gears`. The Open CASCADE common-volume check is unchanged.
 
-Verdicts: `apart`, `meshing`, `tooClose`, `toothOnTooth`, `moduleMismatch`, `pressureMismatch`.
+Verdicts: `apart`, `meshing`, `tooClose`, `loose`, `toothOnTooth`, `unbuildable`, `moduleMismatch`, `pressureMismatch`.
 
-Play along the pitch circle, one way from the centred mesh, is half the sum of the two backlashes plus `(distance - working) * tan(pressure)`. A wider centre adds play and a closer one takes it away. At the working distance, with the usual 0.1 mm a tooth, that is 0.1 mm each way. Centres closer than the working distance by more than both backlashes are `tooClose`. A segment that crosses is `toothOnTooth` even when the arc is inside that play. A phase error is folded into half a tooth, because a gear looks the same turned by one tooth and `mate_phase` jumps by one tooth when its fraction wraps, while `mate_turn` does not. An outline `Gear` cannot build (its refusal, such as teeth that come to a point) is not a mesh: `narrow` is false. Until that has its own token, the verdict is `toothOnTooth`, or `tooClose` when the centres are inside the backlash.
+Play along the pitch circle, one way from the centred mesh, is half the sum of the two backlashes plus `(distance - working) * tan(pressure)`. A wider centre adds play and a closer one takes it away. At the working distance, with the usual 0.1 mm a tooth, that is 0.1 mm each way. The radial band is both backlashes either side of the working distance, the same edge on both sides: `distance < working - (b1 + b2)` is `tooClose`, and `distance > working + (b1 + b2)` is `loose` when the tip circles still meet and no edge crosses. The edge itself stays in the band (12 and 24 teeth of module 2 at 36.2 mm still mesh). A segment that crosses is `toothOnTooth` even inside that play, and even past the far edge. A phase error is folded into half a tooth, because a gear looks the same turned by one tooth and `mate_phase` jumps by one tooth when its fraction wraps, while `mate_turn` does not. An outline `Gear` cannot build is `unbuildable` and `narrow` is false. The card names `Gear::refusal` when it has that sentence. Gears inside a pattern or a queued batch are gears: those steps sit in a group's `steps`.
 
 ## Where lust fails
 
@@ -73,7 +73,6 @@ A one-file program that only prints a `HashMap` produced no `lust build` output 
 
 ## Choices left open
 
-- Centres farther than the working distance by more than both backlashes, while the tip circles still meet and no edges cross, are `meshing`. Only the close side of that band is `tooClose`.
 - A module or pressure-angle mismatch is reported even when the gears are far apart.
 - Axes more than a degree apart, or pointing opposite ways, are left out of the card and of `model_check`. The check is for external spur gears whose axes point the same way.
-- The segment test uses 8 steps along each fillet and each flank. At the working distance and the usual backlash, ±0.06 mm along the pitch circle does not cross and ±0.16 mm is `toothOnTooth` because it is past the 0.1 mm of play. The same 0.16 mm at 36.2 mm and beyond, for 12 and 24 teeth of module 2, is inside the widened play and is not `toothOnTooth` when no segment crosses.
+- The segment test uses 8 steps along each fillet and each flank. At the working distance and the usual backlash, ±0.06 mm along the pitch circle does not cross and ±0.16 mm is `toothOnTooth` because it is past the 0.1 mm of play. The same 0.16 mm at 36.2 mm, the far edge of the radial band, does not cross. At 39.9 mm the centres are past that band, so the verdict is `loose`.
