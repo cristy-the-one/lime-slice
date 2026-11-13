@@ -138,6 +138,48 @@ function stub(log: RecipeCallSite[]) {
   };
 }
 
+// The pair classifier, including a driven turn. The string is the verdicts; lust and rustc must print the same one.
+const pairSource = `use lime_recipe::{ops, Json, Session};
+use lime_recipe::gears::{mate_phase, Gear};
+use lime_recipe::gear_pair::{classify, driven_turn};
+
+fn row(name: &str, verdict: &str, narrow: bool, hit: bool) -> String {
+    let n = if narrow { "1" } else { "0" };
+    let h = if hit { "1" } else { "0" };
+    format!("{name}:{verdict}:{n}:{h}")
+}
+
+fn main() {
+    let mut s = Session::start();
+    let part = s.solid_new(ops::cuboid(2.0, 2.0, 2.0)).unwrap();
+    let mut rows: Vec<String> = Vec::new();
+    for (z1, z2, module) in [(12u32, 24u32, 2.0), (17, 31, 1.5), (9, 40, 1.0), (24, 24, 1.0)] {
+        let driver = Gear::new(z1, module);
+        let driven = Gear::new(z2, module);
+        let distance = driver.centre_distance(&driven);
+        let phase = mate_phase(0.0, z1, 0.0, z2);
+        for turn in [0.0, 0.06, -0.06, 0.16, -0.16] {
+            let deg = phase + (turn / driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+            let report = classify(&driver, &driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+            rows.push(row(&format!("{z1}-{z2}-{turn}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+        let half = std::f64::consts::PI * module / 2.0;
+        let deg = phase + (half / driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+        let report = classify(&driver, &driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+        rows.push(row(&format!("{z1}-{z2}-half"), report.verdict.as_str(), report.narrow, report.hit));
+        for angle in [0.0, 15.0, 90.0] {
+            let report = driven_turn(&driver, &driven, [0.0, 0.0], [distance, 0.0], 0.0, phase, angle);
+            rows.push(row(&format!("{z1}-{z2}-turn-{angle}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+    }
+    let apart = classify(&Gear::new(12, 2.0), &Gear::new(24, 2.0), [0.0, 0.0], [1000.0, 0.0], 0.0, 0.0);
+    rows.push(row("apart", apart.verdict.as_str(), apart.narrow, apart.hit));
+    let modules = classify(&Gear::new(12, 2.0), &Gear::new(24, 1.5), [0.0, 0.0], [36.0, 0.0], 0.0, 0.0);
+    rows.push(row("modules", modules.verdict.as_str(), modules.narrow, modules.hit));
+    s.done_with(&part, Json::obj().set("rows", rows.join(";")));
+}
+`;
+
 const rlib = join(dir, "liblime_recipe.rlib");
 const lib = spawnSync("rustc", ["--edition", "2024", "-O", "--crate-type", "rlib", "--crate-name", "lime_recipe", join(crateDir, "src", "lib.rs"), "-o", rlib], { encoding: "utf8" });
 check("rustc builds lime_recipe", lib.status === 0, lib.stderr);
@@ -177,6 +219,9 @@ if (lib.status === 0) {
   check("Gear outlines: the same area under lust and rustc", JSON.stringify(outlines.lustDone) === JSON.stringify(outlines.rustcDone), { lust: outlines.lustDone, rustc: outlines.rustcDone });
   const gearCall = outlines.lust.find((c) => (c.args.op as { kind?: string } | undefined)?.kind === "gear");
   check("ops::gear sends the gear op", JSON.stringify(gearCall?.args.op).startsWith('{"kind":"gear","op":"fuse","teeth":9,"module":1.5,"thickness":3'), gearCall?.args);
+
+  const pairs = await runBoth("gear_pair", pairSource);
+  check("gear_pair: lust and rustc print the same verdicts", JSON.stringify(pairs.lustDone) === JSON.stringify(pairs.rustcDone) && JSON.stringify(pairs.lustDone).includes("meshing"), { lust: pairs.lustDone, rustc: pairs.rustcDone });
 }
 
 if (failed > 0) {

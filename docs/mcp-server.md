@@ -606,6 +606,7 @@ Before recipe API 1.4 the reads answered in the solid's own frame while the cuts
 - `fit`: the size against the selected machine's build volume, and which axes are over.
 - `thinWalls`: surface where the part is thinner than `minWallMm` (default twice the nozzle, the thinnest wall a slicer fills with two lines), as up to eight `regions` (5 mm cells: centre, box, area, and `thinnestMm`). A warning names the thinnest place, and says when it is thinner than the nozzle and will not print.
 - `warnings` as sentences.
+- `gears`, when this solid is a gear or carries a fused gear, and another gear shares the plate: one row per pair, `a` and `b` the objects, `names`, `verdict` (`meshing`, `apart`, `tooClose`, `toothOnTooth`, `moduleMismatch`, `pressureMismatch`), `narrow` (the tooth outlines were compared), and `hit` (two edges crossed). `steps` is present when either gear is a step on its solid rather than the solid itself. The same check is `lime_recipe::gear_pair::classify`. It does not replace `interference`: a pair can mesh and still be measured by the mesh or by exact common volume. Axes more than a degree off parallel are left out. A driven gear turns with `gear_pair::driven_turn`, which applies `mate_turn`; that is not a joint on the assembly.
 
 **Assembly friction (wave 8).** Three changes make a posed assembly easier to work on.
 

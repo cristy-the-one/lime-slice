@@ -26,6 +26,7 @@ import { probeMetrics, solidMetrics, surfaceAt as surfaceAtSolid, toolMesh, type
 import { primitiveFrom } from "../../src/modeling/compose.ts";
 import { gearRefusal } from "../../src/model-gear.ts";
 import { typedView } from "../../src/modeling/typed-view.ts";
+import { gearPairRows, gearsInTree } from "../../src/gear-pair.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../../src/interference.ts";
 import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
 import { turnHinge } from "../../src/pose.ts";
@@ -330,7 +331,20 @@ async function surfaceAt(this: Session, obj: PlateObject, input: Record<string, 
   return manyRays(view, input, obj.frame ?? "model") ?? { ...surfaceAtSolid(view, input), frame: obj.frame ?? "model" };
 }
 
+/** Gear pairs that include `obj`, from each solid's own gear and its fused gear steps. The volume check is unchanged. */
+function gearPairs(objects: readonly PlateObject[], objectId: string) {
+  const gears = objects.flatMap((part) => (part.tree ? gearsInTree(part.tree, part.modelPose, part.id, shownName(part.name)) : []));
+  return gearPairRows(gears, objectId);
+}
+
 async function modelCheck(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const reply = await modelCheckBody.call(this, obj, input);
+  if (reply.ok !== true) return reply;
+  const gears = gearPairs(this.objects, obj.id);
+  return gears.length > 0 ? { ...reply, gears } : reply;
+}
+
+async function modelCheckBody(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   if (input.sweep !== undefined) {
     if (input.interference === true) return refuse("conflicting-arguments", "Sweep a joint or check interference, not both.");
     const spec = input.sweep as Record<string, unknown>;

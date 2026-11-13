@@ -25,6 +25,7 @@ import type { EdgeFilter } from "../model-tree";
 import { SCREWS, screwOf } from "../model-hole";
 import { holePointsSentence, refusedHole } from "../sketch/holes.ts";
 import { GEAR_DEFAULTS, gearRefusal, isBoreShape, type BoreShape, type GearFields } from "../model-gear";
+import { gearAt, nearestVerdict, verdictSentence, type WorldGear } from "../gear-pair";
 import { gearOf, isPrimitiveKind, primitiveBounds, primitiveMesh, primitiveSpec, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive";
 import { FEATURE_CHOICE_DEFAULTS, featureName, isFeatureTool, panelChoices, type FeatureChoices, type FeatureTool } from "../model-features";
 import { dropPathPoint, isRepeatTool, panelRepeatChoices, pathPointCount, pushPathPoint, repeatModeNow, repeatSourceIds, resetRepeatDraft, setLastPathPoint, setRepeatDraft, unlockMirrorFace, type RepeatChoices } from "../model-repeat";
@@ -121,6 +122,8 @@ interface ModelChromeHooks {
   printWUp(): void;
   /** `spec` where New solid would put it in model space: its root, moved to the origin or beside the other objects. */
   newSolidAt(spec: PrimitiveSpec): PrimitiveSpec;
+  /** Other gears in the view, for the mesh line on the gear card. The gear being edited is left out. */
+  gearMates(): WorldGear[];
   /** New solid opened with no solid open, or its ghost outgrew the view: the view looks at where the new one lands. */
   frameNewSolid(spec: PrimitiveSpec): void;
   /** The plate objects a Boolean with an object can take as its tool: the other solids, never a mesh or surfaces. */
@@ -1660,6 +1663,7 @@ function setPrimitive(kind: PrimitiveKind, focus: boolean) {
   syncFields();
   refreshGhost();
   keepNewSolidInView();
+  paintGearMesh();
   hooks?.paramsChanged();
 }
 
@@ -2092,7 +2096,28 @@ function refreshNote() {
   note.classList.toggle("is-bad", bad);
   note.classList.toggle("is-prompt", /^(Pick|Select|Switch|Choose) /.test(text));
   note.toggleAttribute("hidden", text.length === 0);
+  paintGearMesh();
   refreshShellFaces();
+}
+
+/** The gear card's mesh line: how this gear sits against the one it meshes with, or the nearest other gear. */
+function paintGearMesh() {
+  const line = document.querySelector<HTMLElement>("#modelGearMesh");
+  if (!line) return;
+  const open = (tool === "create" || tool === "boolean") && primitiveKind() === "gear" && !joinOpen() && gearRefused() === null;
+  const spec = open ? (tool === "create" ? hooks?.newSolidAt(fieldPrimitive()) ?? fieldPrimitive() : planePrimitive(fieldPrimitive(), toolFrame())) : null;
+  const self = spec ? gearAt(spec) : null;
+  const nearest = self ? nearestVerdict(self, hooks?.gearMates() ?? []) : null;
+  if (!nearest) {
+    line.textContent = "";
+    line.classList.remove("is-bad");
+    line.hidden = true;
+    return;
+  }
+  const bad = nearest.report.verdict !== "meshing" && nearest.report.verdict !== "apart";
+  line.textContent = verdictSentence(nearest.other.label, nearest.report.verdict);
+  line.classList.toggle("is-bad", bad);
+  line.hidden = false;
 }
 
 /**

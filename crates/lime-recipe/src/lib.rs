@@ -3898,6 +3898,273 @@ pub mod gears {
     }
 }
 
+/// External spur gears on parallel axes: whether two of them mesh, from their outlines, without a kernel.
+///
+/// A recipe calls `classify` or `driven_turn`. The window's gear card and `model_check` report the same verdicts
+/// (`docs/collision-prototype.md`). The check stays in this crate, so lust and rustc run it: tip circles first, then
+/// the centre distance and the mating phase, then a segment test on `Gear::points`. No `Region::intersect`.
+pub mod gear_pair {
+    use super::gears::{mate_phase, mate_turn, Gear, P2};
+    use super::geom2d::atan2;
+
+    const PI: f64 = std::f64::consts::PI;
+
+    /// Steps along each fillet and each involute for the segment test. Enough that a move of 0.06 mm along the pitch
+    /// circle, inside the usual backlash, does not read as a crossing, and the flanks are still the real outline.
+    const PAIR_FLANK: usize = 8;
+
+    /// How a pair of external spur gears stands.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PairVerdict {
+        /// The tip circles do not meet, so the tooth outlines were not compared.
+        Apart,
+        /// Centre distance and phase are in mesh, and no tooth edges cross.
+        Meshing,
+        /// The centres are closer than the working distance by more than both backlashes.
+        TooClose,
+        /// A tooth meets a tooth: the phase is off, or the outlines cross.
+        ToothOnTooth,
+        /// The modules differ, so the pair is not a mesh.
+        ModuleMismatch,
+        /// The pressure angles differ, so the pair is not a mesh.
+        PressureMismatch,
+    }
+
+    impl PairVerdict {
+        /// The name `model_check` and the gear card use.
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Apart => "apart",
+                Self::Meshing => "meshing",
+                Self::TooClose => "tooClose",
+                Self::ToothOnTooth => "toothOnTooth",
+                Self::ModuleMismatch => "moduleMismatch",
+                Self::PressureMismatch => "pressureMismatch",
+            }
+        }
+
+        /// The teeth cannot turn through this: the centres are too close, or a tooth meets a tooth.
+        pub fn interferes(self) -> bool {
+            matches!(self, Self::TooClose | Self::ToothOnTooth)
+        }
+    }
+
+    /// One classification. `narrow` is whether the segment test ran. `hit` is whether two edges crossed.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PairReport {
+        pub verdict: PairVerdict,
+        pub narrow: bool,
+        pub hit: bool,
+    }
+
+    fn clear(verdict: PairVerdict) -> PairReport {
+        PairReport { verdict, narrow: false, hit: false }
+    }
+
+    /// Direction from `a` to `b`, degrees, from the crate's arctangent so lust and rustc agree.
+    fn bearing_deg(a: P2, b: P2) -> f64 {
+        atan2(b[1] - a[1], b[0] - a[0]) * (180.0 / PI)
+    }
+
+    fn span(a: P2, b: P2) -> f64 {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    /// Phase error folded into half a tooth either way. A gear of `pitch` degrees per tooth looks the same turned by
+    /// a whole tooth, and `mate_phase` jumps by one tooth when its fraction wraps, while `mate_turn` does not.
+    /// `%` truncates toward zero, so a negative remainder is put back by hand.
+    fn tooth_err_deg(delta: f64, pitch: f64) -> f64 {
+        if pitch <= 0.0 {
+            return delta;
+        }
+        let mut d = delta % pitch;
+        let half = pitch / 2.0;
+        if d > half {
+            d -= pitch;
+        } else if d < -half {
+            d += pitch;
+        }
+        d
+    }
+
+    fn orient(a: P2, b: P2, c: P2) -> f64 {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    }
+
+    /// A proper crossing of the open segments. Touching at an endpoint, or lying on the same line, is not a hit:
+    /// a mesh with backlash has a gap, and a chord of a convex flank stays inside the tooth.
+    fn segments_cross(a: P2, b: P2, c: P2, d: P2) -> bool {
+        let o1 = orient(a, b, c);
+        let o2 = orient(a, b, d);
+        let o3 = orient(c, d, a);
+        let o4 = orient(c, d, b);
+        o1 * o2 < 0.0 && o3 * o4 < 0.0
+    }
+
+    fn boxes_apart(a: P2, b: P2, c: P2, d: P2) -> bool {
+        let (ax0, ax1) = if a[0] < b[0] { (a[0], b[0]) } else { (b[0], a[0]) };
+        let (ay0, ay1) = if a[1] < b[1] { (a[1], b[1]) } else { (b[1], a[1]) };
+        let (bx0, bx1) = if c[0] < d[0] { (c[0], d[0]) } else { (d[0], c[0]) };
+        let (by0, by1) = if c[1] < d[1] { (c[1], d[1]) } else { (d[1], c[1]) };
+        ax1 < bx0 || bx1 < ax0 || ay1 < by0 || by1 < ay0
+    }
+
+    fn placed(gear: &Gear, centre: P2, phase_deg: f64) -> Option<Vec<P2>> {
+        let local = gear.points(phase_deg, PAIR_FLANK).ok()?;
+        let mut world = Vec::new();
+        for p in local {
+            world.push([p[0] + centre[0], p[1] + centre[1]]);
+        }
+        Some(world)
+    }
+
+    /// Index of a coordinate in a grid that starts at `origin`. Truncates toward zero, then steps down when the
+    /// value was negative, which is what `floor` does for these small millimetre indexes.
+    fn cell_of(x: f64, origin: f64, cell: f64) -> i32 {
+        let t = (x - origin) / cell;
+        let n = t as i32;
+        if t < n as f64 { n - 1 } else { n }
+    }
+
+    fn outlines_cross(driver: &[P2], driven: &[P2]) -> bool {
+        if driver.len() < 2 || driven.len() < 2 {
+            return false;
+        }
+        let mut min_x = driven[0][0];
+        let mut min_y = driven[0][1];
+        let mut max_x = min_x;
+        let mut max_y = min_y;
+        for p in driven {
+            if p[0] < min_x { min_x = p[0]; }
+            if p[1] < min_y { min_y = p[1]; }
+            if p[0] > max_x { max_x = p[0]; }
+            if p[1] > max_y { max_y = p[1]; }
+        }
+        let cell = ((max_x - min_x).max(max_y - min_y) / 32.0).max(0.5);
+        let cols = cell_of(max_x, min_x, cell) + 2;
+        let rows = cell_of(max_y, min_y, cell) + 2;
+        let cols_n = if cols < 1 { 1 } else { cols };
+        let rows_n = if rows < 1 { 1 } else { rows };
+        let mut buckets: Vec<Vec<usize>> = Vec::new();
+        let n_buckets = (cols_n as usize).saturating_mul(rows_n as usize);
+        for _ in 0..n_buckets {
+            buckets.push(Vec::new());
+        }
+        let bucket = |x: i32, y: i32| -> usize {
+            let cx = if x < 0 { 0 } else if x >= cols_n { cols_n - 1 } else { x };
+            let cy = if y < 0 { 0 } else if y >= rows_n { rows_n - 1 } else { y };
+            (cy as usize) * (cols_n as usize) + cx as usize
+        };
+        let dn = driven.len();
+        for i in 0..dn {
+            let (a, b) = (driven[i], driven[(i + 1) % dn]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            if dx * dx + dy * dy < 1e-24 {
+                continue;
+            }
+            let x0 = cell_of(a[0].min(b[0]), min_x, cell);
+            let x1 = cell_of(a[0].max(b[0]), min_x, cell);
+            let y0 = cell_of(a[1].min(b[1]), min_y, cell);
+            let y1 = cell_of(a[1].max(b[1]), min_y, cell);
+            let mut y = y0;
+            while y <= y1 {
+                let mut x = x0;
+                while x <= x1 {
+                    buckets[bucket(x, y)].push(i);
+                    x += 1;
+                }
+                y += 1;
+            }
+        }
+        let an = driver.len();
+        for i in 0..an {
+            let (a, b) = (driver[i], driver[(i + 1) % an]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            if dx * dx + dy * dy < 1e-24 {
+                continue;
+            }
+            let x0 = cell_of(a[0].min(b[0]), min_x, cell);
+            let x1 = cell_of(a[0].max(b[0]), min_x, cell);
+            let y0 = cell_of(a[1].min(b[1]), min_y, cell);
+            let y1 = cell_of(a[1].max(b[1]), min_y, cell);
+            let mut seen: Vec<usize> = Vec::new();
+            let mut y = y0;
+            while y <= y1 {
+                let mut x = x0;
+                while x <= x1 {
+                    for &j in buckets[bucket(x, y)].iter() {
+                        let mut known = false;
+                        for s in seen.iter() {
+                            if *s == j { known = true; }
+                        }
+                        if known {
+                            continue;
+                        }
+                        seen.push(j);
+                        let (c, d) = (driven[j], driven[(j + 1) % dn]);
+                        if !boxes_apart(a, b, c, d) && segments_cross(a, b, c, d) {
+                            return true;
+                        }
+                    }
+                    x += 1;
+                }
+                y += 1;
+            }
+        }
+        false
+    }
+
+    /// Classify two external spur gears. `driver_phase_deg` is tooth 0 of the driver from +U, and
+    /// `driven_phase_deg` is tooth 0 of the driven gear, both in degrees in the same plane as the centres.
+    ///
+    /// Modules and pressure angles are compared first. Tip circles that do not meet are `Apart` and the outlines
+    /// are not built. Otherwise the outlines are compared, and the fit is the working centre distance within both
+    /// backlashes and the phase within a quarter of a tooth. Play along the pitch circle is half that backlash sum,
+    /// one way from the centred mesh.
+    pub fn classify(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64) -> PairReport {
+        if (driver.module - driven.module).abs() > 1e-9 {
+            return clear(PairVerdict::ModuleMismatch);
+        }
+        if (driver.pressure_deg - driven.pressure_deg).abs() > 1e-6 {
+            return clear(PairVerdict::PressureMismatch);
+        }
+        let distance = span(driver_at, driven_at);
+        let reach = driver.tip_radius() + driven.tip_radius();
+        if distance > reach + 1e-9 {
+            return clear(PairVerdict::Apart);
+        }
+        let hit = match (placed(driver, driver_at, driver_phase_deg), placed(driven, driven_at, driven_phase_deg)) {
+            (Some(a), Some(b)) => outlines_cross(&a, &b),
+            _ => false,
+        };
+        let working = driver.centre_distance(driven);
+        let backlash = driver.backlash + driven.backlash;
+        let too_close = distance + 1e-9 < working - backlash;
+        let expect = mate_phase(driver_phase_deg, driver.teeth, bearing_deg(driver_at, driven_at), driven.teeth);
+        let err_mm = tooth_err_deg(driven_phase_deg - expect, driven.pitch_deg()).abs() * (PI / 180.0) * driven.pitch_radius();
+        let quarter_mm = driven.pitch_radius() * (driven.pitch_deg() / 4.0) * (PI / 180.0);
+        let tooth = err_mm > quarter_mm + 1e-9;
+        let past_play = err_mm > backlash / 2.0 + 1e-9;
+        let verdict = if too_close {
+            PairVerdict::TooClose
+        } else if tooth || past_play || hit {
+            PairVerdict::ToothOnTooth
+        } else {
+            PairVerdict::Meshing
+        };
+        PairReport { verdict, narrow: true, hit }
+    }
+
+    /// `classify` after the driver turns `angle_deg` from `driver_phase_deg` and the driven gear turns with it
+    /// by `mate_turn`. The centres stay put. This is the turn of a meshing pair; it is not a joint in the
+    /// assembly pose.
+    pub fn driven_turn(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64, angle_deg: f64) -> PairReport {
+        let follow = driven_phase_deg + mate_turn(angle_deg, driver.teeth, driven.teeth);
+        classify(driver, driven, driver_at, driven_at, driver_phase_deg + angle_deg, follow)
+    }
+}
+
 /// Executes the recipe's geometry algorithms in the native host, without using the recipe protocol itself.
 pub fn native_geometry_request(text: &str) -> Option<String> {
     let args = Json::parse(text).ok()?;

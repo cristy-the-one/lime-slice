@@ -10,7 +10,7 @@ import { isRepeatTool, repeatSourceIds, setRepeatSources } from "../../model-rep
 import { applyPose, boxUnder, inversePose, isIdentity, placeFields, thenPose, toSolidOp, turnDir } from "../../model-space";
 import { LetteringOp, ROOT } from "../../model-tree";
 import { ModelPick } from "../../model-view";
-import { meshToModel, meshTokenOf } from "../../plate";
+import { meshToModel, meshTokenOf, modelPoseOf } from "../../plate";
 import { holeMarks, holeSizeRefusal, holesInModel } from "../../sketch/holes.ts";
 import { mountModelChrome, onModelSelection, openModelTool, syncModelChrome } from "../../ui/model-chrome";
 import { paintRepeatSources } from "../../ui/model-history";
@@ -22,6 +22,8 @@ import { fx } from "../fx";
 import { sketchHistoryButtons, sketchRedo, sketchUndo } from "../sketch";
 import { state } from "../state";
 import { applyTool } from "./apply";
+import { gearsInTree, type WorldGear } from "../../gear-pair";
+import { modelTrees } from "../model-trees";
 import { newSolidInView, plateBoxes } from "./create";
 import { blendTarget, edgeStepChoices, editUntouched, paintBlendHighlight, refreshStepEdges, treeOf } from "./edges";
 import { cancelEdit } from "./edit";
@@ -252,6 +254,22 @@ export function bindChrome() {
     },
     printWUp,
     newSolidAt: (spec) => newSolidInView(spec),
+    gearMates(): WorldGear[] {
+      const editing = S.editing;
+      const openId = S.open?.objectId ?? "";
+      const editingGear = !!editing && openId && (editing.op.kind === "root" || (editing.op.kind === "boolean" && editing.op.primitive === "gear"));
+      const except = editingGear && editing ? { objectId: openId, step: editing.op.kind === "root" ? null : editing.node } : null;
+      const gears: WorldGear[] = [];
+      for (const obj of livePlate()) {
+        const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+        if (!tree) continue;
+        for (const gear of gearsInTree(tree, inView(modelPoseOf(obj)), obj.id, obj.name)) {
+          if (except && gear.objectId === except.objectId && gear.step === except.step) continue;
+          gears.push(gear);
+        }
+      }
+      return gears;
+    },
     frameNewSolid(spec) {
       const others = plateBoxes();
       const frame = viewFrame();

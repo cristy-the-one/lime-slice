@@ -115,6 +115,16 @@ test("the tooth form under More is sent when changed, and a D bore sends its fla
   expect(sent.hubHeight).toBeUndefined();
 });
 
+test("a second gear says it is clear of the first", async ({ page }) => {
+  await start(page);
+  await pickGear(page);
+  await apply(page).click();
+  await expect(readout(page)).toContainText("Gear 1.");
+  await pickGear(page);
+  await expect(page.locator("#modelGearMesh")).toHaveText("Clear of Gear 1.");
+  await expect(page.locator("#modelGearMesh")).not.toHaveClass(/is-bad/);
+});
+
 test("editing a gear step reopens the card with its numbers and its bore shape", async ({ page }) => {
   await start(page);
   await pickGear(page);
