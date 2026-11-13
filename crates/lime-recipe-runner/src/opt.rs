@@ -2,7 +2,7 @@
 //! The same rules as the MCP server's `mcp/recipe-opt.ts`, which says why each is so:
 //!
 //! - zig: `LIME_ZIG`, else `zig/zig` in the bundled lust's folder (`mcp/lust/zig`). Without one, builds stay tcc.
-//! - `LIME_LUST_OPT`: `0` off, `now` a foreground `--opt` build, `1` `--opt=bg`; unset, `--opt=bg` on Windows only.
+//! - `LIME_LUST_OPT`: `0` off, `now` a foreground `--opt` build, `1` `--opt=bg`; unset, `--opt=bg` on Windows and macOS.
 //! - zig's cache is Lime Slice's own (`cache_root`), shared with the MCP server; until a one-shot warm-up without
 //!   lust's daemon has filled it, builds stay tcc (a cold zig cache would hold the daemon for about a minute).
 //! - Before a slot's file changes while lust's background builds run, those builds are untrusted, and their binaries
@@ -85,15 +85,16 @@ pub fn cache_root() -> PathBuf {
     }
     let home = var("HOME").unwrap_or_else(std::env::temp_dir);
     if cfg!(target_os = "macos") {
-        return home.join("Library").join("Caches").join("Lime Slice");
+        // No space in the path: lust splits a path at a space off Windows (mcp/recipe-opt.ts `lustOptCacheRoot`).
+        return home.join("Library").join("Caches").join("lime-slice");
     }
     var("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache")).join("lime-slice")
 }
 
-/// Where `--opt=bg` is on by default: Windows only, where the optimised program is proven to send tcc's bytes (on
-/// Linux zig's default glibc 2.28 target links the old `log@GLIBC_2.2.5`, whose NaN sign differs; macOS is not proven:
-/// CI's macOS job runs the proof since lust 0.3.0, not blocking, and the default waits for its result).
-pub const OPT_BY_DEFAULT: bool = cfg!(windows);
+/// Where `--opt=bg` is on by default: Windows and macOS, where the optimised program is proven to send tcc's bytes
+/// (CI's macOS job runs the proof Windows has, and it stops the job when it fails). Not Linux: zig's default glibc
+/// 2.28 target links the old `log@GLIBC_2.2.5`, whose NaN sign differs.
+pub const OPT_BY_DEFAULT: bool = cfg!(any(windows, target_os = "macos"));
 
 /// `LIME_LUST_OPT`: `0` off, `now` foreground `--opt`, `1` (or `bg`) `--opt=bg` anywhere, unset the platform's default.
 fn mode() -> OptMode {

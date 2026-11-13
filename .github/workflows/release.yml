@@ -299,15 +299,15 @@ jobs:
           LIME_LUST_OPT=0 node --experimental-strip-types mcp/recipe.test.ts
           test -x "src-tauri/resources/mcp/lust/zig/zig$exe"
           du -sh src-tauri/resources/mcp/lust src-tauri/resources/mcp/lust/zig
-          # --opt is on by default only on Windows (mcp/recipe-opt.ts OPT_BY_DEFAULT), so only there must it pass; on
-          # Linux and macOS it runs for the record (the Linux ln NaN sign, lust-lang PR #24) and does not stop the release.
+          # --opt is on by default on Windows and macOS (mcp/recipe-opt.ts OPT_BY_DEFAULT), so there it must pass; on
+          # Linux it runs for the record (the ln NaN sign, lust-lang PR #24) and does not stop the release.
           opt_ok=0
           LIME_LUST_OPT=now node --experimental-strip-types mcp/recipe.test.ts \
             && LIME_ZIG="$PWD/src-tauri/resources/mcp/lust/zig/zig$exe" LIME_LUST_OPT_CACHE="$RUNNER_TEMP/lime-opt-cache" node --experimental-strip-types mcp/recipe-opt.test.ts \
             || opt_ok=$?
           if [ "$opt_ok" != 0 ]; then
             echo "::warning::recipes with lust --opt failed on $RUNNER_OS"
-            [ "$RUNNER_OS" != "Windows" ] || exit "$opt_ok"
+            [ "$RUNNER_OS" = "Linux" ] || exit "$opt_ok"
           fi
 
       # Without these a Windows install that lacks the VC++ Redistributable

@@ -9,7 +9,7 @@
  *   Without one, builds stay tcc: a checkout without zig never fails a recipe because of this.
  * - `LIME_LUST_OPT`: `0` turns it off (tcc only, for debugging); `now` builds with `--opt` in the foreground (tests and
  *   the bench: every run is the optimised binary); `1` (or `bg`) is `--opt=bg` on any platform. Unset, `--opt=bg` is
- *   on where it is proven to send tcc's bytes, Windows (`OPT_BY_DEFAULT`), and builds are tcc elsewhere.
+ *   on where it is proven to send tcc's bytes, Windows and macOS (`OPT_BY_DEFAULT`), and builds are tcc elsewhere.
  * - zig's own cache (its libc and compiler_rt, built once per machine, about a minute) is Lime Slice's
  *   (`lustOptCacheRoot`), shared by the app and every MCP server. Until a one-shot warm-up build has filled it, builds
  *   stay tcc and the warm-up runs in the background on its own, without lust's daemon: the first `--opt` build in a
@@ -46,23 +46,28 @@ export function zigFor(lust: string): string | null {
   return existsSync(bundled) ? bundled : null;
 }
 
-/** Lime Slice's own cache folder, for zig's cache: `%LOCALAPPDATA%\Lime Slice\cache`, `~/Library/Caches/Lime Slice`, `$XDG_CACHE_HOME/lime-slice`. */
+/**
+ * Lime Slice's own cache folder, for zig's cache: `%LOCALAPPDATA%\Lime Slice\cache`, `~/Library/Caches/lime-slice`,
+ * `$XDG_CACHE_HOME/lime-slice`. Off Windows the path has no space in it: lust splits a path at a space there (the
+ * recipe roots under `~/Library/Caches/Lime Slice` failed every build on macOS), and the optimised build is on by
+ * default on macOS, so its cache must be a path lust and zig both take.
+ */
 export function lustOptCacheRoot(): string {
   if (process.env.LIME_LUST_OPT_CACHE) return process.env.LIME_LUST_OPT_CACHE;
   if (process.platform === "win32") return join(process.env.LOCALAPPDATA || tmpdir(), "Lime Slice", "cache");
-  if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "Lime Slice");
+  if (process.platform === "darwin") return join(homedir(), "Library", "Caches", "lime-slice");
   return join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "lime-slice");
 }
 
 /**
- * Where `--opt=bg` is on by default: where the optimised program is proven to send the same bytes as tcc's. Windows
- * only for now. On Linux zig's default glibc target (2.28) links the old `log@GLIBC_2.2.5`, whose NaN for a negative
- * input has the other sign bit than the `log@GLIBC_2.29` tcc and rustc link (recipe-floatmath's `ln` in CI, lust-lang
- * PR #24). macOS is not proven yet: lust 0.3.0 builds without LTO under zig cc there, which is what failed before,
- * and CI's macOS job now runs the proof Windows has (the float maths, the native geometry bytes and the corpus with
- * every build `--opt`), not blocking; the default waits for the owner's reading of that run.
+ * Where `--opt=bg` is on by default: where the optimised program is proven to send the same bytes as tcc's. Windows,
+ * and macOS on Apple silicon since lust 0.3.0 (it builds without LTO under zig cc there): CI's macOS job runs the
+ * proof Windows has (the float maths, the native geometry bytes and the corpus with every build `--opt`), it passed
+ * on the pull request that added it and on main, and it now stops the job when it fails. Not Linux: zig's default
+ * glibc target (2.28) links the old `log@GLIBC_2.2.5`, whose NaN for a negative input has the other sign bit than
+ * the `log@GLIBC_2.29` tcc and rustc link (recipe-floatmath's `ln`, still failing in CI under `--opt`).
  */
-export const OPT_BY_DEFAULT = process.platform === "win32";
+export const OPT_BY_DEFAULT = process.platform === "win32" || process.platform === "darwin";
 
 /** `LIME_LUST_OPT`: `0` off, `now` foreground `--opt`, `1` (or `bg`) `--opt=bg` anywhere, unset the platform's default. */
 export function optMode(): OptMode {
