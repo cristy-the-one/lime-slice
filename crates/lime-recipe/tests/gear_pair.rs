@@ -123,6 +123,51 @@ fn centres_inside_the_backlash_are_too_close() {
 }
 
 #[test]
+fn extra_centre_distance_widens_the_play() {
+    let (driver, driven, _, phase) = mesh(12, 24, 2.0);
+    // 0.16 mm is past the 0.1 mm of play at the working distance, and inside it once the
+    // centres open up: allowance is (b1+b2)/2 + (distance - working) * tan(pressure).
+    for distance in [36.2, 37.0, 38.0, 39.9] {
+        let report = at(&driver, &driven, distance, phase, 0.16);
+        assert_ne!(
+            report.verdict,
+            PairVerdict::ToothOnTooth,
+            "{distance} mm, 0.16 mm of turn is inside the widened play, got {}",
+            report.verdict.as_str()
+        );
+        assert!(!report.hit, "{distance} mm: a segment crossed");
+        assert_eq!(report.verdict, PairVerdict::Meshing, "{distance}");
+    }
+    // Closer than the working distance, the same allowance shrinks. 0.065 mm is inside the
+    // centred 0.1 mm and past the play at 35.9 mm, and the outlines do not cross.
+    let tight = at(&driver, &driven, 35.9, phase, 0.065);
+    assert!(!tight.hit, "0.065 mm does not cross; the verdict is the shrunk allowance");
+    assert_eq!(tight.verdict, PairVerdict::ToothOnTooth, "the close side shrinks the play");
+    // A crossing is still tooth on tooth when the arc would otherwise be allowed.
+    let crossed = at(&driver, &driven, 36.0, phase, std::f64::consts::PI);
+    assert!(crossed.hit, "half a tooth crosses");
+    assert_eq!(crossed.verdict, PairVerdict::ToothOnTooth);
+}
+
+#[test]
+fn an_outline_that_cannot_be_built_is_not_a_mesh() {
+    let pointed = Gear::new(6, 1.0).pressure(30.0).shift(1.0);
+    assert!(
+        pointed.refusal().unwrap().contains("come to a point"),
+        "the repro is the existing refusal"
+    );
+    let mate = Gear::new(12, 1.0).pressure(30.0);
+    let distance = pointed.centre_distance(&mate);
+    let phase = mate_phase(0.0, 6, 0.0, 12);
+    let report = classify(&pointed, &mate, [0.0, 0.0], [distance, 0.0], 0.0, phase);
+    assert!(!report.narrow, "the outlines were not compared");
+    assert!(!report.hit);
+    assert_ne!(report.verdict, PairVerdict::Meshing);
+    // Placeholder until a refusal token exists: not a mesh, and not a new name.
+    assert_eq!(report.verdict, PairVerdict::ToothOnTooth);
+}
+
+#[test]
 fn a_driven_turn_stays_in_mesh() {
     for (z1, z2, module) in PAIRS {
         let (driver, driven, distance, phase) = mesh(z1, z2, module);

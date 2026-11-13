@@ -172,6 +172,19 @@ fn main() {
             rows.push(row(&format!("{z1}-{z2}-turn-{angle}"), report.verdict.as_str(), report.narrow, report.hit));
         }
     }
+    let wide_driver = Gear::new(12, 2.0);
+    let wide_driven = Gear::new(24, 2.0);
+    let wide_phase = mate_phase(0.0, 12, 0.0, 24);
+    for (name, distance) in [("w362", 36.2_f64), ("w37", 37.0), ("w38", 38.0), ("w399", 39.9)] {
+        let deg = wide_phase + (0.16 / wide_driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+        let report = classify(&wide_driver, &wide_driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+        rows.push(row(name, report.verdict.as_str(), report.narrow, report.hit));
+    }
+    let pointed = Gear::new(6, 1.0).pressure(30.0).shift(1.0);
+    let pointed_mate = Gear::new(12, 1.0).pressure(30.0);
+    let pointed_phase = mate_phase(0.0, 6, 0.0, 12);
+    let pointed_report = classify(&pointed, &pointed_mate, [0.0, 0.0], [pointed.centre_distance(&pointed_mate), 0.0], 0.0, pointed_phase);
+    rows.push(row("pointed", pointed_report.verdict.as_str(), pointed_report.narrow, pointed_report.hit));
     let apart = classify(&Gear::new(12, 2.0), &Gear::new(24, 2.0), [0.0, 0.0], [1000.0, 0.0], 0.0, 0.0);
     rows.push(row("apart", apart.verdict.as_str(), apart.narrow, apart.hit));
     let modules = classify(&Gear::new(12, 2.0), &Gear::new(24, 1.5), [0.0, 0.0], [36.0, 0.0], 0.0, 0.0);

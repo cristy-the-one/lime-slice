@@ -380,14 +380,23 @@ export function classify(driver: Spur, driven: Spur, driverAt: P2, drivenAt: P2,
   if (distance > tipRadius(driver) + tipRadius(driven) + 1e-9) return clear("apart");
   const a = placed(driver, driverAt, driverPhaseDeg);
   const b = placed(driven, drivenAt, drivenPhaseDeg);
-  const hit = a && b ? outlinesCross(a, b) : false;
   const working = centreDistance(driver, driven);
   const backlash = driver.backlash + driven.backlash;
   const tooClose = distance + 1e-9 < working - backlash;
   const expect = matePhase(driverPhaseDeg, driver.teeth, bearingDeg(driverAt, drivenAt), driven.teeth);
   const errMm = Math.abs(toothErrDeg(drivenPhaseDeg - expect, pitchDeg(driven))) * (PI / 180) * pitchRadius(driven);
   const quarterMm = pitchRadius(driven) * (pitchDeg(driven) / 4) * (PI / 180);
-  const verdict: GearVerdict = tooClose ? "tooClose" : errMm > quarterMm + 1e-9 || errMm > backlash / 2 + 1e-9 || hit ? "toothOnTooth" : "meshing";
+  const tooth = errMm > quarterMm + 1e-9;
+  const pressure = (driver.pressureDeg * PI) / 180;
+  const ca = Math.cos(pressure);
+  const tanA = ca === 0 ? 0 : Math.sin(pressure) / ca;
+  const allowed = backlash / 2 + (distance - working) * tanA;
+  const pastPlay = errMm > allowed + 1e-9;
+  // The outline cannot be built (Gear refuses these numbers). Not a mesh, and not a new token:
+  // toothOnTooth stands in until one is chosen. Too close stays too close.
+  if (!a || !b) return { verdict: tooClose ? "tooClose" : "toothOnTooth", narrow: false, hit: false };
+  const hit = outlinesCross(a, b);
+  const verdict: GearVerdict = tooClose ? "tooClose" : tooth || pastPlay || hit ? "toothOnTooth" : "meshing";
   return { verdict, narrow: true, hit };
 }
 
@@ -514,7 +523,10 @@ export function nearestVerdict(self: WorldGear, others: readonly WorldGear[]): {
     const report = worldPair(self, other);
     if (!report) continue;
     const distance = Math.hypot(other.centre[0] - self.centre[0], other.centre[1] - self.centre[1], other.centre[2] - self.centre[2]);
-    const better = !best || (report.verdict === "meshing" && best.report.verdict !== "meshing") || (report.verdict === best.report.verdict && distance < best.distance);
+    const meshing = report.verdict === "meshing";
+    const bestMeshing = best?.report.verdict === "meshing";
+    // A mesh wins over anything else. Every other verdict is ranked by distance, not by plate order.
+    const better = !best || (meshing && !bestMeshing) || (meshing === bestMeshing && distance < best.distance);
     if (better) best = { other, report, distance };
   }
   return best ? { other: best.other, report: best.report } : null;

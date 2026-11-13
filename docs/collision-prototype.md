@@ -6,7 +6,7 @@ The check is tip circles, then the working centre distance and the mating phase,
 
 Verdicts: `apart`, `meshing`, `tooClose`, `toothOnTooth`, `moduleMismatch`, `pressureMismatch`.
 
-Play along the pitch circle is half the sum of the two backlashes, one way from the centred mesh (0.1 mm each way at the usual 0.1 mm a tooth). Centres closer than the working distance by more than that sum are `tooClose`. A phase error is folded into half a tooth, because a gear looks the same turned by one tooth and `mate_phase` jumps by one tooth when its fraction wraps, while `mate_turn` does not.
+Play along the pitch circle, one way from the centred mesh, is half the sum of the two backlashes plus `(distance - working) * tan(pressure)`. A wider centre adds play and a closer one takes it away. At the working distance, with the usual 0.1 mm a tooth, that is 0.1 mm each way. Centres closer than the working distance by more than both backlashes are `tooClose`. A segment that crosses is `toothOnTooth` even when the arc is inside that play. A phase error is folded into half a tooth, because a gear looks the same turned by one tooth and `mate_phase` jumps by one tooth when its fraction wraps, while `mate_turn` does not. An outline `Gear` cannot build (its refusal, such as teeth that come to a point) is not a mesh: `narrow` is false. Until that has its own token, the verdict is `toothOnTooth`, or `tooClose` when the centres are inside the backlash.
 
 ## Where lust fails
 
@@ -76,4 +76,4 @@ A one-file program that only prints a `HashMap` produced no `lust build` output 
 - Centres farther than the working distance by more than both backlashes, while the tip circles still meet and no edges cross, are `meshing`. Only the close side of that band is `tooClose`.
 - A module or pressure-angle mismatch is reported even when the gears are far apart.
 - Axes more than a degree apart, or pointing opposite ways, are left out of the card and of `model_check`. The check is for external spur gears whose axes point the same way.
-- The segment test uses 8 steps along each fillet and each flank. At the usual backlash, ±0.06 mm along the pitch circle does not cross and ±0.16 mm is `toothOnTooth` because it is past the play, whether or not a segment also hits.
+- The segment test uses 8 steps along each fillet and each flank. At the working distance and the usual backlash, ±0.06 mm along the pitch circle does not cross and ±0.16 mm is `toothOnTooth` because it is past the 0.1 mm of play. The same 0.16 mm at 36.2 mm and beyond, for 12 and 24 teeth of module 2, is inside the widened play and is not `toothOnTooth` when no segment crosses.

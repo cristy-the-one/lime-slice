@@ -83,6 +83,36 @@ const close = classify(spur(24, 1), spur(24, 1), [0, 0], [24 - 0.25, 0], 0, mate
 eq("inside the backlash", close.verdict, "tooClose");
 check("too close still compares outlines", close.narrow);
 
+const widened = spur(12, 2);
+const widenedMate = spur(24, 2);
+const widenedPhase = matePhase(0, 12, 0, 24);
+for (const distance of [36.2, 37, 38, 39.9]) {
+  const deg = widenedPhase + (0.16 / 24) * (180 / Math.PI);
+  const report = classify(widened, widenedMate, [0, 0], [distance, 0], 0, deg);
+  check(`${distance} mm with 0.16 mm of turn is not tooth on tooth`, report.verdict !== "toothOnTooth", report.verdict);
+  check(`${distance} mm has no segment hit`, !report.hit);
+  eq(`${distance} mm meshes`, report.verdict, "meshing");
+}
+const tightDeg = widenedPhase + (0.065 / 24) * (180 / Math.PI);
+const tight = classify(widened, widenedMate, [0, 0], [35.9, 0], 0, tightDeg);
+check("0.065 mm tight does not cross", !tight.hit);
+eq("35.9 mm shrinks the play", tight.verdict, "toothOnTooth");
+const crossedDeg = widenedPhase + (Math.PI / 24) * (180 / Math.PI);
+const crossed = classify(widened, widenedMate, [0, 0], [36, 0], 0, crossedDeg);
+check("half a tooth crosses", crossed.hit);
+eq("a crossing stays tooth on tooth", crossed.verdict, "toothOnTooth");
+
+const pointed = spur(6, 1, 30, 0.1, 1);
+const pointedMate = spur(12, 1, 30);
+// Working distance for shift 1 at 30°, the pose that would be a mesh if the outline existed.
+const pointedDistance = 9.889005006574346;
+const pointedPhase = matePhase(0, 6, 0, 12);
+const refused = classify(pointed, pointedMate, [0, 0], [pointedDistance, 0], 0, pointedPhase);
+check("a pointed gear is not compared", !refused.narrow);
+check("a pointed gear is not a hit", !refused.hit);
+check("a pointed gear is not meshing", refused.verdict !== "meshing", refused.verdict);
+eq("a pointed gear is the placeholder toothOnTooth", refused.verdict, "toothOnTooth");
+
 function gearSpec(teeth: number, module: number, origin: [number, number, number], phaseDeg = 0): PrimitiveSpec {
   return { primitive: "gear", origin, size: [0, 0, 0], radius: 0, height: 6, turn: [0, 0, 0], teeth, module, phaseDeg };
 }
@@ -108,6 +138,20 @@ const found = gearsInTree(tree, IDENTITY_POSE, "pin", "Pinion");
 eq("a root gear is the object's own", found.map((gear) => [gear.objectId, gear.step, gear.label, gear.spur.teeth]), [["pin", null, "Pinion", 12]]);
 
 eq("the sentences", [verdictSentence("Wheel", "apart"), verdictSentence("Wheel", "toothOnTooth"), verdictSentence("Wheel", "moduleMismatch")], ["Clear of Wheel.", "Teeth cross Wheel.", "Module does not match Wheel."]);
+
+const self = gearAt(gearSpec(12, 2, [0, 0, 0]), "pin", "Pinion");
+const far = gearAt(gearSpec(24, 2, [200, 0, 0], 0), "far", "Far");
+const near = gearAt(gearSpec(24, 2, [36, 0, 0], 0), "near", "Near");
+check("the card repro is three gears", !!self && !!far && !!near);
+if (self && far && near) {
+  eq("far then near names the nearer crossing", nearestVerdict(self, [far, near]) && verdictSentence(nearestVerdict(self, [far, near])!.other.label, nearestVerdict(self, [far, near])!.report.verdict), "Teeth cross Near.");
+  eq("near then far names the nearer crossing", nearestVerdict(self, [near, far]) && verdictSentence(nearestVerdict(self, [near, far])!.other.label, nearestVerdict(self, [near, far])!.report.verdict), "Teeth cross Near.");
+  const meshFar = gearAt(gearSpec(40, 2, [52, 0, 0], matePhase(0, 12, 0, 40)), "mesh", "Mesh");
+  if (meshFar) {
+    eq("the farther gear meshes", worldPair(self, meshFar)?.verdict, "meshing");
+    eq("a mesh wins over a nearer crossing", nearestVerdict(self, [near, meshFar])?.other.label, "Mesh");
+  }
+}
 
 if (failed > 0) {
   console.error(`${failed} failed`);

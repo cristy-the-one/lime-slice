@@ -3905,7 +3905,7 @@ pub mod gears {
 /// the centre distance and the mating phase, then a segment test on `Gear::points`. No `Region::intersect`.
 pub mod gear_pair {
     use super::gears::{mate_phase, mate_turn, Gear, P2};
-    use super::geom2d::atan2;
+    use super::geom2d::{atan2, sin_cos_deg};
 
     const PI: f64 = std::f64::consts::PI;
 
@@ -4119,9 +4119,11 @@ pub mod gear_pair {
     /// `driven_phase_deg` is tooth 0 of the driven gear, both in degrees in the same plane as the centres.
     ///
     /// Modules and pressure angles are compared first. Tip circles that do not meet are `Apart` and the outlines
-    /// are not built. Otherwise the outlines are compared, and the fit is the working centre distance within both
-    /// backlashes and the phase within a quarter of a tooth. Play along the pitch circle is half that backlash sum,
-    /// one way from the centred mesh.
+    /// are not built. Otherwise the outlines are compared. Play along the pitch circle, one way from the centred
+    /// mesh, is half both backlashes plus `(distance - working) * tan(pressure)`: a wider centre adds play and a
+    /// closer one takes it away. A segment that crosses is `ToothOnTooth` even inside that play. An outline
+    /// `Gear` cannot build is not a mesh (`narrow` is false). Until that has its own token, the verdict is
+    /// `ToothOnTooth`, or `TooClose` when the centres are inside the backlash.
     pub fn classify(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64) -> PairReport {
         if (driver.module - driven.module).abs() > 1e-9 {
             return clear(PairVerdict::ModuleMismatch);
@@ -4134,9 +4136,9 @@ pub mod gear_pair {
         if distance > reach + 1e-9 {
             return clear(PairVerdict::Apart);
         }
-        let hit = match (placed(driver, driver_at, driver_phase_deg), placed(driven, driven_at, driven_phase_deg)) {
-            (Some(a), Some(b)) => outlines_cross(&a, &b),
-            _ => false,
+        let outlines = match (placed(driver, driver_at, driver_phase_deg), placed(driven, driven_at, driven_phase_deg)) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
         };
         let working = driver.centre_distance(driven);
         let backlash = driver.backlash + driven.backlash;
@@ -4145,7 +4147,17 @@ pub mod gear_pair {
         let err_mm = tooth_err_deg(driven_phase_deg - expect, driven.pitch_deg()).abs() * (PI / 180.0) * driven.pitch_radius();
         let quarter_mm = driven.pitch_radius() * (driven.pitch_deg() / 4.0) * (PI / 180.0);
         let tooth = err_mm > quarter_mm + 1e-9;
-        let past_play = err_mm > backlash / 2.0 + 1e-9;
+        let (sa, ca) = sin_cos_deg(driver.pressure_deg);
+        let tan_a = if ca == 0.0 { 0.0 } else { sa / ca };
+        let allowed = backlash / 2.0 + (distance - working) * tan_a;
+        let past_play = err_mm > allowed + 1e-9;
+        // Gear::points failed: the existing refusal (teeth that come to a point, and the rest). Not a mesh, and
+        // not a new token. ToothOnTooth stands in until one is chosen.
+        let Some((a, b)) = outlines else {
+            let verdict = if too_close { PairVerdict::TooClose } else { PairVerdict::ToothOnTooth };
+            return PairReport { verdict, narrow: false, hit: false };
+        };
+        let hit = outlines_cross(&a, &b);
         let verdict = if too_close {
             PairVerdict::TooClose
         } else if tooth || past_play || hit {
