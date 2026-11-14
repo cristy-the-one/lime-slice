@@ -8,6 +8,7 @@
 use std::time::Instant;
 
 use base64::Engine;
+use lime_recipe::gear_pair::{classify, PairVerdict};
 use lime_recipe::gears::{self, Gear};
 use serde_json::{json, Value};
 
@@ -187,6 +188,19 @@ fn two_gears_mesh_at_their_centre_distance_within_their_backlash() {
         }
         // Half a tooth off, tooth meets tooth.
         assert!(common(&key, &mate(std::f64::consts::PI * module / 2.0)) > 1.0);
+        // The same poses, classified from the outlines. The volume above is the kernel; this is the recipe check.
+        let phase_at = |turn_mm: f64| (phase + (turn_mm / gb.pitch_radius()).to_degrees()) % 360.0;
+        let verdict = |turn_mm: f64| classify(&ga, &gb, [0.0, 0.0], [distance, 0.0], 0.0, phase_at(turn_mm));
+        assert_eq!(verdict(0.0).verdict, PairVerdict::Meshing, "{a} with {b}");
+        assert!(!verdict(0.0).hit, "{a} with {b}");
+        for turn in [0.06, -0.06] {
+            assert_eq!(verdict(turn).verdict, PairVerdict::Meshing, "{a} with {b} at {turn}");
+            assert!(!verdict(turn).hit, "{a} with {b} at {turn}");
+        }
+        for turn in [0.16, -0.16] {
+            assert!(verdict(turn).verdict.interferes(), "{a} with {b} at {turn}: {}", verdict(turn).verdict.as_str());
+        }
+        assert!(verdict(std::f64::consts::PI * module / 2.0).verdict.interferes());
     }
 }
 

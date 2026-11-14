@@ -1530,7 +1530,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_check",
-    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges, each with where it is.",
+    description: "Before slicing, the solid as it stands on the bed: overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges. gears: gear pairs.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

@@ -3898,6 +3898,248 @@ pub mod gears {
     }
 }
 
+/// External spur gears on parallel axes: whether two of them mesh, from their outlines, without a kernel.
+///
+/// A recipe calls `classify` or `driven_turn`. The window's gear card and `model_check` report the same verdicts
+/// (`docs/collision-prototype.md`). The check stays in this crate, so lust and rustc run it: tip circles first, then
+/// module and pressure angle, then the centre distance and the mating phase with a segment test on the teeth of
+/// `Gear::points` that face each other. No `Region::intersect`.
+pub mod gear_pair {
+    use super::gears::{mate_phase, mate_turn, Gear, P2};
+    use super::geom2d::{atan2, sin_cos_deg};
+
+    const PI: f64 = std::f64::consts::PI;
+
+    /// Steps along each fillet and each involute for the segment test. Enough that a move of 0.06 mm along the pitch
+    /// circle, inside the usual backlash, does not read as a crossing, and the flanks are still the real outline.
+    const PAIR_FLANK: usize = 8;
+
+    /// How a pair of external spur gears stands.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PairVerdict {
+        /// The tip circles do not meet, so the tooth outlines were not compared. Gears of different modules that do
+        /// not reach each other are apart too.
+        Apart,
+        /// Centre distance and phase are in mesh, and no tooth edges cross.
+        Meshing,
+        /// The centres are closer than the working distance by more than both backlashes.
+        TooClose,
+        /// The centres are farther than the working distance by more than both backlashes, the tip circles still
+        /// meet, and no tooth edges cross.
+        Loose,
+        /// A tooth meets a tooth: the outlines cross, or the turn is past the play of a pair in the band.
+        ToothOnTooth,
+        /// `Gear::points` could not build an outline. The outlines were not compared.
+        Unbuildable,
+        /// The gears reach each other and their modules differ, so the pair is not a mesh.
+        ModuleMismatch,
+        /// The gears reach each other and their pressure angles differ, so the pair is not a mesh.
+        PressureMismatch,
+    }
+
+    impl PairVerdict {
+        /// The name `model_check` and the gear card use.
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Self::Apart => "apart",
+                Self::Meshing => "meshing",
+                Self::TooClose => "tooClose",
+                Self::Loose => "loose",
+                Self::ToothOnTooth => "toothOnTooth",
+                Self::Unbuildable => "unbuildable",
+                Self::ModuleMismatch => "moduleMismatch",
+                Self::PressureMismatch => "pressureMismatch",
+            }
+        }
+
+        /// The teeth cannot turn through this: the centres are too close, or a tooth meets a tooth.
+        pub fn interferes(self) -> bool {
+            matches!(self, Self::TooClose | Self::ToothOnTooth)
+        }
+    }
+
+    /// One classification. `narrow` is whether the segment test ran. `hit` is whether two edges crossed.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PairReport {
+        pub verdict: PairVerdict,
+        pub narrow: bool,
+        pub hit: bool,
+    }
+
+    fn clear(verdict: PairVerdict) -> PairReport {
+        PairReport { verdict, narrow: false, hit: false }
+    }
+
+    /// Direction from `a` to `b`, degrees, from the crate's arctangent so lust and rustc agree.
+    fn bearing_deg(a: P2, b: P2) -> f64 {
+        atan2(b[1] - a[1], b[0] - a[0]) * (180.0 / PI)
+    }
+
+    fn span(a: P2, b: P2) -> f64 {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        (dx * dx + dy * dy).sqrt()
+    }
+
+    /// Phase error folded into half a tooth either way. A gear of `pitch` degrees per tooth looks the same turned by
+    /// a whole tooth, and `mate_phase` jumps by one tooth when its fraction wraps, while `mate_turn` does not.
+    /// `%` truncates toward zero, so a negative remainder is put back by hand.
+    fn tooth_err_deg(delta: f64, pitch: f64) -> f64 {
+        if pitch <= 0.0 {
+            return delta;
+        }
+        let mut d = delta % pitch;
+        let half = pitch / 2.0;
+        if d > half {
+            d -= pitch;
+        } else if d < -half {
+            d += pitch;
+        }
+        d
+    }
+
+    fn orient(a: P2, b: P2, c: P2) -> f64 {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    }
+
+    /// A proper crossing of the open segments. Touching at an endpoint, or lying on the same line, is not a hit:
+    /// a mesh with backlash has a gap, and a chord of a convex flank stays inside the tooth.
+    fn segments_cross(a: P2, b: P2, c: P2, d: P2) -> bool {
+        let o1 = orient(a, b, c);
+        let o2 = orient(a, b, d);
+        let o3 = orient(c, d, a);
+        let o4 = orient(c, d, b);
+        o1 * o2 < 0.0 && o3 * o4 < 0.0
+    }
+
+    fn boxes_apart(a: P2, b: P2, c: P2, d: P2) -> bool {
+        let (ax0, ax1) = if a[0] < b[0] { (a[0], b[0]) } else { (b[0], a[0]) };
+        let (ay0, ay1) = if a[1] < b[1] { (a[1], b[1]) } else { (b[1], a[1]) };
+        let (bx0, bx1) = if c[0] < d[0] { (c[0], d[0]) } else { (d[0], c[0]) };
+        let (by0, by1) = if c[1] < d[1] { (c[1], d[1]) } else { (d[1], c[1]) };
+        ax1 < bx0 || bx1 < ax0 || ay1 < by0 || by1 < ay0
+    }
+
+    fn placed(gear: &Gear, centre: P2, phase_deg: f64) -> Option<Vec<P2>> {
+        let local = gear.points(phase_deg, PAIR_FLANK).ok()?;
+        let mut world = Vec::new();
+        for p in local {
+            world.push([p[0] + centre[0], p[1] + centre[1]]);
+        }
+        Some(world)
+    }
+
+    /// Whether the segment `a`-`b` comes within `radius` of `centre`.
+    fn reaches(a: P2, b: P2, centre: P2, radius: f64) -> bool {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let along = if len2 > 0.0 { ((centre[0] - a[0]) * dx + (centre[1] - a[1]) * dy) / len2 } else { 0.0 };
+        let t = along.clamp(0.0, 1.0);
+        let (px, py) = (a[0] + t * dx - centre[0], a[1] + t * dy - centre[1]);
+        px * px + py * py <= radius * radius
+    }
+
+    /// The edges of a closed outline that come inside the other gear's tip circle. Two outlines can only cross
+    /// there, so a pair in mesh compares the few teeth that face each other and not every tooth with every tooth.
+    fn edges_within(outline: &[P2], centre: P2, radius: f64) -> Vec<(P2, P2)> {
+        let n = outline.len();
+        let mut edges = Vec::new();
+        for i in 0..n {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            if dx * dx + dy * dy < 1e-24 {
+                continue;
+            }
+            if reaches(a, b, centre, radius) {
+                edges.push((a, b));
+            }
+        }
+        edges
+    }
+
+    fn outlines_cross(driver: &[P2], driver_at: P2, driver_tip: f64, driven: &[P2], driven_at: P2, driven_tip: f64) -> bool {
+        if driver.len() < 2 || driven.len() < 2 {
+            return false;
+        }
+        let near = edges_within(driver, driven_at, driven_tip + 1e-6);
+        let far = edges_within(driven, driver_at, driver_tip + 1e-6);
+        for edge in &near {
+            let (a, b) = *edge;
+            for other in &far {
+                let (c, d) = *other;
+                if !boxes_apart(a, b, c, d) && segments_cross(a, b, c, d) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Classify two external spur gears. `driver_phase_deg` is tooth 0 of the driver from +U, and
+    /// `driven_phase_deg` is tooth 0 of the driven gear, both in degrees in the same plane as the centres.
+    ///
+    /// Tip circles that do not meet are `Apart`, whatever the gears are: two stages of a train with different
+    /// modules are not a fault. Gears that do reach each other are compared by module and pressure angle first,
+    /// then by their outlines. The radial band is both backlashes either side of the working distance: closer is
+    /// `TooClose`, and farther, with no edge crossing, is `Loose`. A segment that crosses is `ToothOnTooth` at
+    /// any distance. Inside the band, play along the pitch circle, one way from the centred mesh, is half both
+    /// backlashes plus `(distance - working) * tan(pressure)`: a turn past it is `ToothOnTooth` too, since the
+    /// flanks touch there before two chords of the outline cross. An outline `Gear` cannot build is `Unbuildable`
+    /// and `narrow` is false.
+    pub fn classify(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64) -> PairReport {
+        let distance = span(driver_at, driven_at);
+        let reach = driver.tip_radius() + driven.tip_radius();
+        if distance > reach + 1e-9 {
+            return clear(PairVerdict::Apart);
+        }
+        if (driver.module - driven.module).abs() > 1e-9 {
+            return clear(PairVerdict::ModuleMismatch);
+        }
+        if (driver.pressure_deg - driven.pressure_deg).abs() > 1e-6 {
+            return clear(PairVerdict::PressureMismatch);
+        }
+        let outlines = match (placed(driver, driver_at, driver_phase_deg), placed(driven, driven_at, driven_phase_deg)) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        };
+        let Some((a, b)) = outlines else {
+            return clear(PairVerdict::Unbuildable);
+        };
+        let working = driver.centre_distance(driven);
+        let backlash = driver.backlash + driven.backlash;
+        let too_close = distance + 1e-9 < working - backlash;
+        // Farther than the working distance by more than both backlashes. The mirror of too_close, strict, so the
+        // edge itself (working + both backlashes) stays in the band.
+        let loose = distance > working + backlash + 1e-9;
+        let expect = mate_phase(driver_phase_deg, driver.teeth, bearing_deg(driver_at, driven_at), driven.teeth);
+        let err_mm = tooth_err_deg(driven_phase_deg - expect, driven.pitch_deg()).abs() * (PI / 180.0) * driven.pitch_radius();
+        let (sa, ca) = sin_cos_deg(driver.pressure_deg);
+        let tan_a = if ca == 0.0 { 0.0 } else { sa / ca };
+        let allowed = backlash / 2.0 + (distance - working) * tan_a;
+        let past_play = err_mm > allowed + 1e-9;
+        let hit = outlines_cross(&a, driver_at, driver.tip_radius(), &b, driven_at, driven.tip_radius());
+        let verdict = if too_close {
+            PairVerdict::TooClose
+        } else if hit {
+            PairVerdict::ToothOnTooth
+        } else if loose {
+            PairVerdict::Loose
+        } else if past_play {
+            PairVerdict::ToothOnTooth
+        } else {
+            PairVerdict::Meshing
+        };
+        PairReport { verdict, narrow: true, hit }
+    }
+
+    /// `classify` after the driver turns `angle_deg` from `driver_phase_deg` and the driven gear turns with it
+    /// by `mate_turn`. The centres stay put. This is the turn of a meshing pair; it is not a joint in the
+    /// assembly pose.
+    pub fn driven_turn(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64, angle_deg: f64) -> PairReport {
+        let follow = driven_phase_deg + mate_turn(angle_deg, driver.teeth, driven.teeth);
+        classify(driver, driven, driver_at, driven_at, driver_phase_deg + angle_deg, follow)
+    }
+}
+
 /// Executes the recipe's geometry algorithms in the native host, without using the recipe protocol itself.
 pub fn native_geometry_request(text: &str) -> Option<String> {
     let args = Json::parse(text).ok()?;

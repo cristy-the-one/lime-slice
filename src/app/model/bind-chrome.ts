@@ -10,7 +10,7 @@ import { isRepeatTool, repeatSourceIds, setRepeatSources } from "../../model-rep
 import { applyPose, boxUnder, inversePose, isIdentity, placeFields, thenPose, toSolidOp, turnDir } from "../../model-space";
 import { LetteringOp, ROOT } from "../../model-tree";
 import { ModelPick } from "../../model-view";
-import { meshToModel, meshTokenOf } from "../../plate";
+import { meshToModel, meshTokenOf, modelPoseOf } from "../../plate";
 import { holeMarks, holeSizeRefusal, holesInModel } from "../../sketch/holes.ts";
 import { mountModelChrome, onModelSelection, openModelTool, syncModelChrome } from "../../ui/model-chrome";
 import { paintRepeatSources } from "../../ui/model-history";
@@ -22,6 +22,8 @@ import { fx } from "../fx";
 import { sketchHistoryButtons, sketchRedo, sketchUndo } from "../sketch";
 import { state } from "../state";
 import { applyTool } from "./apply";
+import { gearsInTree, type WorldGear } from "../../gear-pair";
+import { modelTrees } from "../model-trees";
 import { newSolidInView, plateBoxes } from "./create";
 import { blendTarget, edgeStepChoices, editUntouched, paintBlendHighlight, refreshStepEdges, treeOf } from "./edges";
 import { cancelEdit } from "./edit";
@@ -252,6 +254,19 @@ export function bindChrome() {
     },
     printWUp,
     newSolidAt: (spec) => newSolidInView(spec),
+    gearMates(onOpenSolid: boolean): WorldGear[] {
+      // The card's gear is part of the open solid when it is fused onto it or is one of its steps being edited. That
+      // solid's gears are one body with it, so none of them is a mate.
+      const own = onOpenSolid || S.editing ? (S.open?.objectId ?? "") : "";
+      const gears: WorldGear[] = [];
+      for (const obj of livePlate()) {
+        if (own && obj.id === own) continue;
+        const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+        if (!tree) continue;
+        gears.push(...gearsInTree(tree, inView(modelPoseOf(obj)), obj.id, obj.name));
+      }
+      return gears;
+    },
     frameNewSolid(spec) {
       const others = plateBoxes();
       const frame = viewFrame();

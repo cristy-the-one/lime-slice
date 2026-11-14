@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findLust, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
+import { centreDistance, classify, drivenTurn, matePhase, type PairReport, type Spur } from "../src/gear-pair.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -138,6 +139,107 @@ function stub(log: RecipeCallSite[]) {
   };
 }
 
+// The pair classifier, including a driven turn. The string is the verdicts; lust and rustc must print the same one.
+const pairSource = `use lime_recipe::{ops, Json, Session};
+use lime_recipe::gears::{mate_phase, Gear};
+use lime_recipe::gear_pair::{classify, driven_turn};
+
+fn row(name: &str, verdict: &str, narrow: bool, hit: bool) -> String {
+    let n = if narrow { "1" } else { "0" };
+    let h = if hit { "1" } else { "0" };
+    format!("{name}:{verdict}:{n}:{h}")
+}
+
+fn main() {
+    let mut s = Session::start();
+    let part = s.solid_new(ops::cuboid(2.0, 2.0, 2.0)).unwrap();
+    let mut rows: Vec<String> = Vec::new();
+    for (z1, z2, module) in [(12u32, 24u32, 2.0), (17, 31, 1.5), (9, 40, 1.0), (24, 24, 1.0)] {
+        let driver = Gear::new(z1, module);
+        let driven = Gear::new(z2, module);
+        let distance = driver.centre_distance(&driven);
+        let phase = mate_phase(0.0, z1, 0.0, z2);
+        for turn in [0.0, 0.06, -0.06, 0.16, -0.16] {
+            let deg = phase + (turn / driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+            let report = classify(&driver, &driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+            rows.push(row(&format!("{z1}-{z2}-{turn}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+        let half = std::f64::consts::PI * module / 2.0;
+        let deg = phase + (half / driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+        let report = classify(&driver, &driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+        rows.push(row(&format!("{z1}-{z2}-half"), report.verdict.as_str(), report.narrow, report.hit));
+        for angle in [0.0, 15.0, 90.0] {
+            let report = driven_turn(&driver, &driven, [0.0, 0.0], [distance, 0.0], 0.0, phase, angle);
+            rows.push(row(&format!("{z1}-{z2}-turn-{angle}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+    }
+    let wide_driver = Gear::new(12, 2.0);
+    let wide_driven = Gear::new(24, 2.0);
+    let wide_phase = mate_phase(0.0, 12, 0.0, 24);
+    for (name, distance) in [("w362", 36.2_f64), ("w37", 37.0), ("w38", 38.0), ("w399", 39.9)] {
+        let deg = wide_phase + (0.16 / wide_driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+        let report = classify(&wide_driver, &wide_driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+        rows.push(row(name, report.verdict.as_str(), report.narrow, report.hit));
+    }
+    let pointed = Gear::new(6, 1.0).pressure(30.0).shift(1.0);
+    let pointed_mate = Gear::new(12, 1.0).pressure(30.0);
+    let pointed_phase = mate_phase(0.0, 6, 0.0, 12);
+    let pointed_report = classify(&pointed, &pointed_mate, [0.0, 0.0], [pointed.centre_distance(&pointed_mate), 0.0], 0.0, pointed_phase);
+    rows.push(row("pointed", pointed_report.verdict.as_str(), pointed_report.narrow, pointed_report.hit));
+    let apart = classify(&Gear::new(12, 2.0), &Gear::new(24, 2.0), [0.0, 0.0], [1000.0, 0.0], 0.0, 0.0);
+    rows.push(row("apart", apart.verdict.as_str(), apart.narrow, apart.hit));
+    let modules = classify(&Gear::new(12, 2.0), &Gear::new(24, 1.5), [0.0, 0.0], [30.0, 0.0], 0.0, 0.0);
+    rows.push(row("modules", modules.verdict.as_str(), modules.narrow, modules.hit));
+    let stages = classify(&Gear::new(12, 2.0), &Gear::new(24, 1.5), [0.0, 0.0], [36.0, 0.0], 0.0, 0.0);
+    rows.push(row("stages", stages.verdict.as_str(), stages.narrow, stages.hit));
+    let pitch_mm = std::f64::consts::PI * 2.0;
+    for (name, distance, tooth) in [("l39", 39.0_f64, 0.2_f64), ("l395", 39.5, 0.26), ("t39", 39.0, 0.5), ("t38", 38.0, 0.2), ("c359", 35.9, 0.0), ("c35", 35.0, 0.0)] {
+        let deg = wide_phase + (tooth * pitch_mm / wide_driven.pitch_radius()) * (180.0 / std::f64::consts::PI);
+        let report = classify(&wide_driver, &wide_driven, [0.0, 0.0], [distance, 0.0], 0.0, deg);
+        rows.push(row(name, report.verdict.as_str(), report.narrow, report.hit));
+    }
+    s.done_with(&part, Json::obj().set("rows", rows.join(";")));
+}
+`;
+
+/**
+ * The rows `pairSource` prints, from the window's copy of the check (`src/gear-pair.ts`). The gear card and
+ * `model_check` run that copy and a recipe runs the crate's, so the two are held to the same verdicts here.
+ */
+function windowPairRows(): string {
+  const spur = (teeth: number, module: number, pressureDeg = 20, shift = 0): Spur => ({ teeth, module, pressureDeg, backlash: 0.1, shift });
+  const row = (name: string, report: PairReport) => `${name}:${report.verdict}:${report.narrow ? 1 : 0}:${report.hit ? 1 : 0}`;
+  const deg = 180 / Math.PI;
+  const rows: string[] = [];
+  for (const [z1, z2, module] of [[12, 24, 2], [17, 31, 1.5], [9, 40, 1], [24, 24, 1]] as const) {
+    const driver = spur(z1, module);
+    const driven = spur(z2, module);
+    const distance = centreDistance(driver, driven);
+    const phase = matePhase(0, z1, 0, z2);
+    const radius = (module * z2) / 2;
+    for (const turn of [0, 0.06, -0.06, 0.16, -0.16]) rows.push(row(`${z1}-${z2}-${turn}`, classify(driver, driven, [0, 0], [distance, 0], 0, phase + (turn / radius) * deg)));
+    rows.push(row(`${z1}-${z2}-half`, classify(driver, driven, [0, 0], [distance, 0], 0, phase + ((Math.PI * module) / 2 / radius) * deg)));
+    for (const angle of [0, 15, 90]) rows.push(row(`${z1}-${z2}-turn-${angle}`, drivenTurn(driver, driven, [0, 0], [distance, 0], 0, phase, angle)));
+  }
+  const wideDriver = spur(12, 2);
+  const wideDriven = spur(24, 2);
+  const widePhase = matePhase(0, 12, 0, 24);
+  for (const [name, distance] of [["w362", 36.2], ["w37", 37], ["w38", 38], ["w399", 39.9]] as const) {
+    rows.push(row(name, classify(wideDriver, wideDriven, [0, 0], [distance, 0], 0, widePhase + (0.16 / 24) * deg)));
+  }
+  const pointed = spur(6, 1, 30, 1);
+  const pointedMate = spur(12, 1, 30);
+  rows.push(row("pointed", classify(pointed, pointedMate, [0, 0], [centreDistance(pointed, pointedMate), 0], 0, matePhase(0, 6, 0, 12))));
+  rows.push(row("apart", classify(spur(12, 2), spur(24, 2), [0, 0], [1000, 0], 0, 0)));
+  rows.push(row("modules", classify(spur(12, 2), spur(24, 1.5), [0, 0], [30, 0], 0, 0)));
+  rows.push(row("stages", classify(spur(12, 2), spur(24, 1.5), [0, 0], [36, 0], 0, 0)));
+  const pitchMm = Math.PI * 2;
+  for (const [name, distance, tooth] of [["l39", 39, 0.2], ["l395", 39.5, 0.26], ["t39", 39, 0.5], ["t38", 38, 0.2], ["c359", 35.9, 0], ["c35", 35, 0]] as const) {
+    rows.push(row(name, classify(wideDriver, wideDriven, [0, 0], [distance, 0], 0, widePhase + ((tooth * pitchMm) / 24) * deg)));
+  }
+  return rows.join(";");
+}
+
 const rlib = join(dir, "liblime_recipe.rlib");
 const lib = spawnSync("rustc", ["--edition", "2024", "-O", "--crate-type", "rlib", "--crate-name", "lime_recipe", join(crateDir, "src", "lib.rs"), "-o", rlib], { encoding: "utf8" });
 check("rustc builds lime_recipe", lib.status === 0, lib.stderr);
@@ -177,6 +279,14 @@ if (lib.status === 0) {
   check("Gear outlines: the same area under lust and rustc", JSON.stringify(outlines.lustDone) === JSON.stringify(outlines.rustcDone), { lust: outlines.lustDone, rustc: outlines.rustcDone });
   const gearCall = outlines.lust.find((c) => (c.args.op as { kind?: string } | undefined)?.kind === "gear");
   check("ops::gear sends the gear op", JSON.stringify(gearCall?.args.op).startsWith('{"kind":"gear","op":"fuse","teeth":9,"module":1.5,"thickness":3'), gearCall?.args);
+
+  const pairs = await runBoth("gear_pair", pairSource);
+  const pairText = JSON.stringify(pairs.lustDone);
+  check("gear_pair: lust and rustc print the same verdicts", pairText === JSON.stringify(pairs.rustcDone) && pairText.includes("meshing") && pairText.includes("loose") && pairText.includes("unbuildable"), { lust: pairs.lustDone, rustc: pairs.rustcDone });
+  const crateRows = String((pairs.rustcDone as { rows?: string } | null)?.rows ?? "").split(";");
+  const windowRows = windowPairRows().split(";");
+  const differ = windowRows.filter((line, at) => line !== crateRows[at]);
+  check("gear_pair: the window's copy gives the crate's verdicts", crateRows.length === windowRows.length && differ.length === 0, { differ, crate: crateRows.filter((line, at) => line !== windowRows[at]) });
 }
 
 if (failed > 0) {

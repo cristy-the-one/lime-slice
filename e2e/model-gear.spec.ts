@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
+import { plateClick } from "./plate-rows";
 import { mockModelTree, type Body, type Built, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { primitiveMesh, type PrimitiveSpec } from "../src/model-primitive";
 
@@ -113,6 +116,58 @@ test("the tooth form under More is sent when changed, and a D bore sends its fla
   expect(sent).toMatchObject({ primitive: "gear", teeth: 20, module: 1.5, height: 6, pressureDeg: 25, profileShift: 0.2, bore: 6, boreShape: "d", boreFlat: 5 });
   expect(sent.hubDiameter, "a hub needs its height too").toBeUndefined();
   expect(sent.hubHeight).toBeUndefined();
+});
+
+test("the gear card says how a gear stands against the one it reaches: teeth crossing, meshing, too far", async ({ page }) => {
+  const shots = path.resolve("test-results/model-gear");
+  fs.mkdirSync(shots, { recursive: true });
+  await start(page);
+  const line = page.locator("#modelGearMesh");
+  await pickGear(page);
+  await apply(page).click();
+  await expect(readout(page)).toContainText("Gear 1.");
+  // New solid puts the second gear beside the first, out of reach: there is nothing to say.
+  await pickGear(page);
+  await expect(page.locator("#modelPanel")).toBeVisible();
+  await expect(line).toBeHidden();
+  await apply(page).click();
+  await expect(readout(page)).toContainText("Gear 2.");
+
+  // Two gears of 20 teeth, module 1.5, mesh with their centres 30 mm apart. The file is where Place, or an MCP client,
+  // would have put the second: `x` mm from the first, which stands at the origin.
+  const [download] = await Promise.all([page.waitForEvent("download"), page.keyboard.press("Control+s")]);
+  const saved = fs.readFileSync((await download.path())!).toString("utf8");
+  const editSecondAt = async (x: number) => {
+    const doc = JSON.parse(saved) as { objects: { modelPose?: { m: number[]; t: number[] } }[] };
+    doc.objects[1]!.modelPose = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [x, 0, 0] };
+    await page.reload();
+    await page.locator("#projectFile").setInputFiles({ name: "gears.lime", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(doc)) });
+    await expect(page.locator("#left [data-plate-select]")).toHaveCount(2);
+    await plateClick(page, "select", 1);
+    await page.locator("#tabModel").click();
+    await rows(page).first().locator(".mh-more").click();
+    await page.getByRole("menuitem", { name: /Edit step/ }).click();
+    await expect(page.locator("#modelPanel")).toBeVisible();
+    await page.locator("#modelGearMore").click();
+  };
+
+  // At 30 mm with both at phase 0 a tooth faces a tooth. Half a tooth round (9 of 18 degrees) it meshes.
+  await editSecondAt(30);
+  await expect(line).toHaveText("Teeth cross Gear 1.");
+  await expect(line).toHaveClass(/is-bad/);
+  await page.locator("#modelGearPhase").fill("9");
+  await page.locator("#modelGearPhase").press("Tab");
+  await expect(line).toHaveText("Meshes with Gear 1.");
+  await expect(line).not.toHaveClass(/is-bad/);
+  await page.screenshot({ path: path.join(shots, "gear-card-meshes.png") });
+
+  // 1 mm farther out the same phase crosses nothing, and the line says where the pair would mesh.
+  await editSecondAt(31);
+  await page.locator("#modelGearPhase").fill("9");
+  await page.locator("#modelGearPhase").press("Tab");
+  await expect(line).toHaveText("Too far from Gear 1: centres 31 mm apart, they mesh at 30 mm.");
+  await expect(line).toHaveClass(/is-bad/);
+  await page.screenshot({ path: path.join(shots, "gear-card-too-far.png") });
 });
 
 test("editing a gear step reopens the card with its numbers and its bore shape", async ({ page }) => {

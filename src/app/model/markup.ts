@@ -444,6 +444,7 @@ const DOCK = `
                 <button class="btn mode" type="button" data-plane="face" aria-pressed="false" data-tip="A picked flat face">Face</button>
               </div>
               <!-- --- end A4 --- -->
+              <p class="model-note" id="modelGearMesh" hidden role="status"></p>
               <p class="model-note" id="modelNote" hidden role="status"></p>
               <!-- --- Lessons (I15): what runs learned about the open tool's kind of step, from the library (ui/lessons-note.ts). -->
               <div class="model-lessons" id="modelLessons" aria-label="Seen in practice" hidden></div>

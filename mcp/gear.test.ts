@@ -80,15 +80,34 @@ async function verdict(object: string): Promise<Pair | undefined> {
   return ((reply.pairs as Pair[] | undefined) ?? []).find((row) => [row.a, row.b].includes(object) && [row.a, row.b].includes(pinion));
 }
 
+// model_check's own gear rows (src/gear-pair.ts): the pair this object is in, from the outlines, with no kernel call.
+type GearRow = { a: string; b: string; verdict: string; narrow: boolean; hit: boolean; distanceMm?: number; workingMm?: number };
+async function gearRow(object: string): Promise<GearRow | undefined> {
+  const reply = await call("model_check", { object });
+  return ((reply.gears as GearRow[] | undefined) ?? []).find((row) => [row.a, row.b].includes(object) && [row.a, row.b].includes(pinion));
+}
+
 const meshing = await mate(172.5);
 const clear = await verdict(meshing);
 check("two gears at their centre distance share no volume", !clear || clear.verdict !== "crossing", show(clear));
+const meshRow = await gearRow(meshing);
+check("model_check lists the pair as meshing, with its centre distance", meshRow?.verdict === "meshing" && meshRow.narrow && !meshRow.hit && meshRow.distanceMm === 36 && meshRow.workingMm === 36, show(meshRow));
+// The same wheel moved 1 mm out is too far, and the row says where it would mesh.
+const movedOut = await call("model_place", { object: meshing, to: pinion, x: 37, y: 0, z: 0 });
+const looseRow = await gearRow(meshing);
+check("moved 1 mm out, the pair is loose", movedOut.ok === true && looseRow?.verdict === "loose" && looseRow.distanceMm === 37 && looseRow.workingMm === 36, show(looseRow));
+// Lifted clear along the axis, the teeth do not share a slab: apart, and the outlines are not compared.
+const lifted = await call("model_place", { object: meshing, to: pinion, x: 36, y: 0, z: 10 });
+const liftedRow = await gearRow(meshing);
+check("lifted off the pinion's slab, the pair is apart", lifted.ok === true && liftedRow?.verdict === "apart" && !liftedRow.narrow, show(liftedRow));
 await call("object_remove", { object: meshing });
 
 // 0.1 mm off each tooth is 0.2 mm of play at the pitch circle: turned 0.3 mm of the wheel's pitch circle, they cross.
 const pastPlay = await mate(172.5 + (0.3 / 24) * (180 / Math.PI));
 const crossing = await verdict(pastPlay);
 check("turned past the backlash they cross", crossing?.verdict === "crossing" && crossing.exact === true && Number(crossing.volumeMm3) > 0, show(crossing));
+const crossRow = await gearRow(pastPlay);
+check("model_check lists that pair as tooth on tooth", crossRow?.verdict === "toothOnTooth", show(crossRow));
 await call("object_remove", { object: pastPlay });
 
 // A gear fused onto a plate as one step, its history row a gear, and its teeth chamfered from that step.
