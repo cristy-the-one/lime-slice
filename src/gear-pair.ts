@@ -55,6 +55,8 @@ export interface WorldGear {
   /** Unit direction of tooth 0, in the plane of the gear. */
   tooth0: Vec3;
   thickness: number;
+  /** A ring gear, its teeth pointing in (docs/plan-gear-kinds.md, stage 2). */
+  internal?: true;
 }
 
 export interface GearPairRow {
@@ -449,6 +451,145 @@ export function drivenTurn(driver: Spur, driven: Spur, driverAt: P2, drivenAt: P
   return classify(driver, driven, driverAt, drivenAt, driverPhaseDeg + angleDeg, drivenPhaseDeg + mateTurn(angleDeg, driver.teeth, driven.teeth));
 }
 
+// --- Ring gears (docs/plan-gear-kinds.md, stage 2): the same as `lime_recipe::gears::Ring` and
+// `gear_pair::classify_internal`, held to the same verdicts by `mcp/recipe-gears.test.ts`.
+
+/** A ring's tips, inside. */
+export function ringTipRadius(ring: Spur): number {
+  return pitchRadius(ring) - ring.module;
+}
+
+/** A ring's roots, outside. */
+export function ringRootRadius(ring: Spur): number {
+  return pitchRadius(ring) + 1.25 * ring.module;
+}
+
+/** Half a ring's space at radius `rho`: the external tooth of the same numbers, `backlash` wider at the pitch circle. */
+function ringSpaceHalf(ring: Spur, rho: number): number {
+  const rad = (ring.pressureDeg * PI) / 180;
+  const tanA = Math.sin(rad) / Math.cos(rad);
+  const r = pitchRadius(ring);
+  const rb = r * Math.cos(rad);
+  const space = PI / (2 * ring.teeth) + ring.backlash / (2 * r);
+  const at = rho < rb ? rb : rho;
+  const t = Math.sqrt(Math.max(0, at * at - rb * rb)) / rb;
+  return space + (tanA - Math.atan(tanA)) - (t - Math.atan(t));
+}
+
+/** The sentence `Ring::refusal` gives, or null when these numbers build a ring. */
+export function ringRefusal(ring: Spur): string | null {
+  if (!Number.isInteger(ring.teeth) || ring.teeth < 20 || ring.teeth > 150) return "A ring gear takes 20 to 150 teeth.";
+  if (!(ring.module >= 0.05 && ring.module <= 50)) return "A gear's module is 0.05 to 50 mm.";
+  if (!(ring.pressureDeg >= 10 && ring.pressureDeg <= 30)) return "A gear's pressure angle is 10 to 30 degrees.";
+  if (!(ring.backlash >= 0 && ring.backlash <= ring.module)) return "A gear's backlash is 0 to one module, in mm at the pitch circle.";
+  if (ringSpaceHalf(ring, ringRootRadius(ring)) <= 0) return "This ring's spaces come to a point before the root: use more teeth or a smaller pressure angle.";
+  if ((2 * PI) / ring.teeth - 2 * ringSpaceHalf(ring, ringTipRadius(ring)) <= 0) return "This ring's teeth come to a point at the tip: use more teeth or a smaller pressure angle.";
+  return null;
+}
+
+/** One space's flank from the tip circle out to the root, `(radius, half-angle)`, as `Ring::flank`. */
+function ringFlank(ring: Spur, steps: number): Polar[] {
+  const rb = pitchRadius(ring) * Math.cos((ring.pressureDeg * PI) / 180);
+  const ra = ringTipRadius(ring);
+  const rf = ringRootRadius(ring);
+  const out: Polar[] = [];
+  const start = ra < rb ? rb : ra;
+  if (ra < rb) out.push([ra, ringSpaceHalf(ring, rb)]);
+  const tOf = (rho: number) => Math.sqrt(Math.max(0, rho * rho - rb * rb)) / rb;
+  const t0 = tOf(start);
+  const t1 = tOf(rf);
+  const n = Math.max(2, steps);
+  for (let i = 0; i <= n; i += 1) {
+    const t = t0 + ((t1 - t0) * i) / n;
+    const rho = i === 0 ? start : i === n ? rf : rb * Math.sqrt(1 + t * t);
+    out.push([rho, ringSpaceHalf(ring, rho)]);
+  }
+  return out;
+}
+
+/** The ring's toothed hole as points, counter-clockwise, tooth 0 centred on `phaseDeg`; null when not a ring. */
+export function ringPoints(ring: Spur, phaseDeg: number, perFlank = PAIR_FLANK): P2[] | null {
+  if (ringRefusal(ring)) return null;
+  const side = ringFlank(ring, perFlank);
+  const pitch = (2 * PI) / ring.teeth;
+  const ra = ringTipRadius(ring);
+  const rf = ringRootRadius(ring);
+  const step = (3 * PI) / 180;
+  const pts: P2[] = [];
+  for (let k = 0; k < ring.teeth; k += 1) {
+    const c = (phaseDeg * PI) / 180 + pitch * (k + 0.5);
+    for (const p of side) pts.push(polar(p[0], c - p[1]));
+    const root = side[side.length - 1]![1];
+    const rootSteps = Math.max(1, Math.ceil((2 * root) / step));
+    for (let i = 1; i < rootSteps; i += 1) pts.push(polar(rf, c - root + (2 * root * i) / rootSteps));
+    for (let i = side.length - 1; i >= 0; i -= 1) pts.push(polar(side[i]![0], c + side[i]![1]));
+    const tip = side[0]![1];
+    const span = pitch - 2 * tip;
+    const tipSteps = Math.max(1, Math.ceil(span / step));
+    for (let i = 1; i < tipSteps; i += 1) pts.push(polar(ra, c + tip + (span * i) / tipSteps));
+  }
+  return pts;
+}
+
+/** The ring's phase that meets a pinion of `ownZ` teeth at `ownPhase`, whose centre lies `dir` degrees from the ring's. */
+export function matePhaseInternal(ownPhase: number, ownZ: number, dir: number, ringZ: number): number {
+  const ownPitch = 360 / ownZ;
+  const f = ((((dir - ownPhase) / ownPitch) % 1) + 1) % 1;
+  return dir - ((f + 0.5) * 360) / ringZ;
+}
+
+/** The edges of a closed outline that reach outside the circle of `radius` about `centre`. */
+function edgesBeyond(outline: P2[], centre: P2, radius: number): [P2, P2][] {
+  const edges: [P2, P2][] = [];
+  const r2 = radius * radius;
+  for (let i = 0; i < outline.length; i += 1) {
+    const a = outline[i]!;
+    const b = outline[(i + 1) % outline.length]!;
+    const da = (a[0] - centre[0]) ** 2 + (a[1] - centre[1]) ** 2;
+    const db = (b[0] - centre[0]) ** 2 + (b[1] - centre[1]) ** 2;
+    if (da >= r2 || db >= r2) edges.push([a, b]);
+  }
+  return edges;
+}
+
+/** An external pinion inside a ring, as `gear_pair::classify_internal`. Phases are tooth 0 of each, from +U. */
+export function classifyInternal(pinion: Spur, ring: Spur, pinionAt: P2, ringAt: P2, pinionPhaseDeg: number, ringPhaseDeg: number): PairReport {
+  const distance = span(ringAt, pinionAt);
+  if (distance + tipRadius(pinion) < ringTipRadius(ring) - 1e-9 || distance - tipRadius(pinion) > ringRootRadius(ring) + 1e-9) return clear("apart");
+  if (Math.abs(pinion.module - ring.module) > 1e-9) return clear("moduleMismatch");
+  if (Math.abs(pinion.pressureDeg - ring.pressureDeg) > 1e-6) return clear("pressureMismatch");
+  const a = placed(pinion, pinionAt, pinionPhaseDeg);
+  const local = ringPoints(ring, ringPhaseDeg);
+  if (!a || !local) {
+    const pinionSide = flank(pinion, PAIR_FLANK);
+    const reason = typeof pinionSide === "string" ? pinionSide : ringRefusal(ring) ?? undefined;
+    return { verdict: "unbuildable", narrow: false, hit: false, ...(reason ? { reason } : {}) };
+  }
+  const b = local.map((p): P2 => [p[0] + ringAt[0], p[1] + ringAt[1]]);
+  const working = pitchRadius(ring) - pitchRadius(pinion);
+  const backlash = pinion.backlash + ring.backlash;
+  const tooClose = distance > working + backlash + 1e-9;
+  const loose = distance + 1e-9 < working - backlash;
+  const expect = matePhaseInternal(pinionPhaseDeg, pinion.teeth, bearingDeg(ringAt, pinionAt), ring.teeth);
+  const errMm = Math.abs(toothErrDeg(ringPhaseDeg - expect, 360 / ring.teeth)) * (PI / 180) * pitchRadius(ring);
+  const pressure = (pinion.pressureDeg * PI) / 180;
+  const ca = Math.cos(pressure);
+  const tanA = ca === 0 ? 0 : Math.sin(pressure) / ca;
+  const allowed = backlash / 2 + (working - distance) * tanA;
+  const pastPlay = errMm > allowed + 1e-9;
+  const near = edgesBeyond(a, ringAt, ringTipRadius(ring) - 1e-6);
+  const far = edgesWithin(b, pinionAt, tipRadius(pinion) + 1e-6);
+  let hit = false;
+  for (const [p, q] of near) for (const [c, d] of far) if (!boxesApart(p, q, c, d) && segmentsCross(p, q, c, d)) hit = true;
+  const verdict: GearVerdict = tooClose ? "tooClose" : hit ? "toothOnTooth" : loose ? "loose" : pastPlay ? "toothOnTooth" : "meshing";
+  return { verdict, narrow: true, hit, distanceMm: distance, workingMm: working };
+}
+
+/** `classifyInternal` after the pinion turns `angleDeg` and the ring turns with it, the same way, by the tooth ratio. */
+export function internalTurn(pinion: Spur, ring: Spur, pinionAt: P2, ringAt: P2, pinionPhaseDeg: number, ringPhaseDeg: number, angleDeg: number): PairReport {
+  return classifyInternal(pinion, ring, pinionAt, ringAt, pinionPhaseDeg + angleDeg, ringPhaseDeg + (angleDeg * pinion.teeth) / ring.teeth);
+}
+
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
@@ -497,7 +638,7 @@ function spurOf(spec: PrimitiveSpec): Spur | null {
   const teeth = spec.teeth ?? 0;
   const module = spec.module ?? 0;
   if (!Number.isInteger(teeth) || !(module > 0)) return null;
-  return { teeth, module, pressureDeg: spec.pressureDeg ?? 20, backlash: spec.backlash ?? 0.1, shift: spec.profileShift ?? 0 };
+  return { teeth, module, pressureDeg: spec.pressureDeg ?? 20, backlash: spec.backlash ?? 0.1, shift: spec.internal ? 0 : spec.profileShift ?? 0 };
 }
 
 /** A gear primitive standing at `pose`. Null for any other primitive. */
@@ -515,6 +656,7 @@ export function placeGear(spec: PrimitiveSpec, pose: Affine, objectId: string, l
     axis: normalize(poseDir(pose, euler([0, 0, 1], spec.turn))),
     tooth0: normalize(poseDir(pose, euler([Math.cos(phase), Math.sin(phase), 0], spec.turn))),
     thickness: spec.height,
+    ...(spec.internal ? { internal: true as const } : {}),
   };
 }
 
@@ -567,6 +709,10 @@ export function worldPair(a: WorldGear, b: WorldGear): PairReport | null {
     return [dot(d, u), dot(d, v)];
   };
   const phase = (tooth: Vec3) => (Math.atan2(dot(tooth, v), dot(tooth, u)) * 180) / PI;
+  // A pinion inside a ring meshes by the inside rule; two rings never mesh.
+  if (a.internal && b.internal) return clear("apart");
+  if (a.internal) return classifyInternal(b.spur, a.spur, project(b.centre), [0, 0], phase(b.tooth0), phase(a.tooth0));
+  if (b.internal) return classifyInternal(a.spur, b.spur, [0, 0], project(b.centre), phase(a.tooth0), phase(b.tooth0));
   return classify(a.spur, b.spur, [0, 0], project(b.centre), phase(a.tooth0), phase(b.tooth0));
 }
 

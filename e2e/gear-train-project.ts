@@ -26,6 +26,28 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (process.argv.includes("--planetary")) {
+  // docs/plan-gear-kinds.md, stage 2: a ring of 36 (module 1) as the assembly's root, the housing; a sun of 12 and a
+  // carrier attached to it; three planets of 12 attached to the carrier, 12 mm out on 0, 120 and 240 degrees. Each at its
+  // mating phase, and no joint anywhere: Attach is all a person did.
+  const { matePhase, matePhaseInternal } = await import("../src/gear-pair.ts");
+  const planetPhase = (deg: number) => matePhase(0, 12, deg, 12);
+  const ring = String((await call("solid_new", { gear: { teeth: 36, module: 1, thickness: 6, internal: true, phaseDeg: matePhaseInternal(planetPhase(0), 12, 0, 36) }, name: "ring" })).object);
+  const sun = String((await call("solid_new", { gear: { teeth: 12, module: 1, thickness: 6 }, name: "sun" })).object);
+  const carrier = String((await call("solid_new", { primitive: "cylinder", radius: 15, height: 2, name: "carrier" })).object);
+  await call("model_place", { object: sun, to: ring, x: 0, y: 0, z: 0 });
+  await call("model_place", { object: carrier, to: ring, x: 0, y: 0, z: 6 });
+  const planets: string[] = [];
+  for (const [i, deg] of [0, 120, 240].entries()) {
+    const planet = String((await call("solid_new", { gear: { teeth: 12, module: 1, thickness: 6, phaseDeg: planetPhase(deg) }, name: `planet ${i + 1}` })).object);
+    await call("model_place", { object: planet, to: carrier, x: 12 * Math.cos((deg * Math.PI) / 180), y: 12 * Math.sin((deg * Math.PI) / 180), z: -6 });
+    planets.push(planet);
+  }
+  const saved = await call("project_save", { name: "pose-gears-planetary.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ ring, sun, carrier, planets }));
+  process.exit(0);
+}
 if (free) {
   const pinion = String((await call("solid_new", { gear: { teeth: 12, module: 2, thickness: 6, bore: 5 }, name: "pinion" })).object);
   const wheel = String((await call("solid_new", { gear: { teeth: 24, module: 2, thickness: 6, bore: 5, phaseDeg: 172.5 }, name: "wheel" })).object);

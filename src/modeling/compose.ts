@@ -109,9 +109,10 @@ export function primitiveFrom(input: Record<string, unknown>, fallback: Primitiv
 /** A gear's numbers as typed: teeth and module, and the optional ones only when given. */
 function gearFrom(input: Record<string, unknown>): GearFields {
   const gear: GearFields = { teeth: numOr(input.teeth, GEAR_DEFAULTS.teeth), module: numOr(input.module, GEAR_DEFAULTS.module) };
-  for (const key of ["pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight"] as const) {
+  for (const key of ["pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight", "rim"] as const) {
     if (typeof input[key] === "number" && Number.isFinite(input[key])) gear[key] = input[key] as number;
   }
+  if (input.internal === true) gear.internal = true;
   if (isBoreShape(input.boreShape)) gear.boreShape = input.boreShape;
   return gear;
 }
@@ -127,7 +128,7 @@ const READS: Record<PrimitiveKind, readonly string[]> = {
   ellipsoid: ["size"],
   torus: ["radius", "tubeRadius"],
   polygon: ["height", "sides", "across", "flats"],
-  gear: ["height", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreShape", "boreFlat", "hubDiameter", "hubHeight"],
+  gear: ["height", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreShape", "boreFlat", "hubDiameter", "hubHeight", "internal", "rim"],
 };
 
 /** An op as a caller reads it back: a primitive keeps only the fields its kind reads. */

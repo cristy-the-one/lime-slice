@@ -3896,6 +3896,189 @@ pub mod gears {
             a0 * ca / sin_cos(w).1
         }
     }
+
+    /// Phase (degrees) of a ring of `ring_z` teeth for a pinion of `own_z` teeth with tooth 0 at `own_phase_deg`, whose
+    /// centre lies in direction `dir_deg` from the ring's centre, so each pinion tooth meets a space of the ring. Inside
+    /// a ring both turn the same way, so a pinion tooth a fraction behind the pitch point meets a space as far behind it.
+    pub fn mate_phase_internal(own_phase_deg: f64, own_z: u32, dir_deg: f64, ring_z: u32) -> f64 {
+        let own_pitch = 360.0 / own_z as f64;
+        let f = (((dir_deg - own_phase_deg) / own_pitch) % 1.0 + 1.0) % 1.0;
+        dir_deg - (f + 0.5) * 360.0 / ring_z as f64
+    }
+
+    /// How far a ring of `ring_z` teeth turns when a pinion of `own_z` teeth inside it turns `own_turn_deg`: the same
+    /// way, by the tooth ratio.
+    pub fn ring_turn(own_turn_deg: f64, own_z: u32, ring_z: u32) -> f64 { own_turn_deg * own_z as f64 / ring_z as f64 }
+
+    /// An internal spur gear, a ring with its teeth pointing in (docs/plan-gear-kinds.md, stage 2). Its space between two
+    /// teeth is the tooth of an external gear of the same numbers: involute flanks from the tip circle `r - m` inside
+    /// to the root circle `r + 1.25 m` outside, `backlash` mm wider at the pitch circle. Below the base circle a flank is
+    /// a radial line. Tooth 0 is centred on the phase. No profile shift.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Ring {
+        pub teeth: u32,
+        pub module: f64,
+        pub pressure_deg: f64,
+        pub backlash: f64,
+    }
+
+    impl Ring {
+        /// `teeth` of module `module` mm at 20 degrees and 0.1 mm backlash.
+        pub fn new(teeth: u32, module: f64) -> Ring {
+            Ring { teeth, module, pressure_deg: 20.0, backlash: 0.1 }
+        }
+
+        pub fn pitch_radius(&self) -> f64 {
+            self.module * self.teeth as f64 / 2.0
+        }
+
+        pub fn base_radius(&self) -> f64 {
+            self.pitch_radius() * sin_cos_deg(self.pressure_deg).1
+        }
+
+        /// The tips of the teeth, inside: the smallest radius of the outline.
+        pub fn tip_radius(&self) -> f64 {
+            self.pitch_radius() - self.module
+        }
+
+        /// The bottom of the spaces, outside: the largest radius of the outline.
+        pub fn root_radius(&self) -> f64 {
+            self.pitch_radius() + 1.25 * self.module
+        }
+
+        pub fn pitch_deg(&self) -> f64 {
+            360.0 / self.teeth as f64
+        }
+
+        /// Half a space's angle at radius `rho`, from the involute; below the base circle the flank is radial.
+        fn space_half(&self, rho: f64) -> f64 {
+            let (sa, ca) = sin_cos_deg(self.pressure_deg);
+            let tan_a = sa / ca;
+            let r = self.pitch_radius();
+            let rb = r * ca;
+            let psi = PI / (2.0 * self.teeth as f64) + self.backlash / (2.0 * r);
+            let at = if rho < rb { rb } else { rho };
+            let t = (at * at - rb * rb).max(0.0).sqrt() / rb;
+            psi + (tan_a - atan(tan_a)) - (t - atan(t))
+        }
+
+        /// None when the numbers make a ring, else the sentence why not.
+        pub fn refusal(&self) -> Option<String> {
+            let ok = |v: f64, lo: f64, hi: f64| v.is_finite() && v >= lo && v <= hi;
+            if self.teeth < 20 || self.teeth > MAX_TEETH {
+                return Some(format!("A ring gear takes 20 to {MAX_TEETH} teeth."));
+            }
+            if !ok(self.module, 0.05, 50.0) {
+                return Some("A gear's module is 0.05 to 50 mm.".to_string());
+            }
+            if !ok(self.pressure_deg, 10.0, 30.0) {
+                return Some("A gear's pressure angle is 10 to 30 degrees.".to_string());
+            }
+            if !ok(self.backlash, 0.0, self.module) {
+                return Some("A gear's backlash is 0 to one module, in mm at the pitch circle.".to_string());
+            }
+            if self.space_half(self.root_radius()) <= 0.0 {
+                return Some("This ring's spaces come to a point before the root: use more teeth or a smaller pressure angle.".to_string());
+            }
+            let pitch = 2.0 * PI / self.teeth as f64;
+            if pitch - 2.0 * self.space_half(self.tip_radius()) <= 0.0 {
+                return Some("This ring's teeth come to a point at the tip: use more teeth or a smaller pressure angle.".to_string());
+            }
+            None
+        }
+
+        /// One space's flank from the tip circle out to the root circle, as (radius, half-angle): a radial line up to the
+        /// base circle when the tip is below it, then the involute in `steps` steps of its roll angle.
+        fn flank(&self, steps: usize) -> Vec<(f64, f64)> {
+            let rb = self.base_radius();
+            let (ra, rf) = (self.tip_radius(), self.root_radius());
+            let mut out: Vec<(f64, f64)> = Vec::new();
+            let start = if ra < rb { rb } else { ra };
+            if ra < rb {
+                out.push((ra, self.space_half(rb)));
+            }
+            let t_of = |rho: f64| (rho * rho - rb * rb).max(0.0).sqrt() / rb;
+            let (t0, t1) = (t_of(start), t_of(rf));
+            let n = if steps < 2 { 2 } else { steps };
+            for i in 0..=n {
+                let t = t0 + (t1 - t0) * i as f64 / n as f64;
+                let rho = if i == 0 { start } else if i == n { rf } else { rb * (1.0 + t * t).sqrt() };
+                out.push((rho, self.space_half(rho)));
+            }
+            out
+        }
+
+        /// The toothed hole as points, counter-clockwise: `per_flank` steps along each flank, the arcs in steps of at
+        /// most 3 degrees. Tooth 0 is centred on `phase_deg`, so space k is centred half a pitch after tooth k.
+        pub fn points(&self, phase_deg: f64, per_flank: usize) -> Result<Vec<P2>, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let flank = self.flank(per_flank);
+            let pitch = 2.0 * PI / self.teeth as f64;
+            let (ra, rf) = (self.tip_radius(), self.root_radius());
+            let step = 3.0 * PI / 180.0;
+            let mut pts: Vec<P2> = Vec::new();
+            for k in 0..self.teeth {
+                let c = phase_deg * (PI / 180.0) + pitch * (k as f64 + 0.5);
+                for p in flank.iter() {
+                    pts.push(polar(p.0, c - p.1));
+                }
+                let root = flank[flank.len() - 1].1;
+                let steps = ((2.0 * root / step).ceil() as usize).max(1);
+                for i in 1..steps {
+                    pts.push(polar(rf, c - root + 2.0 * root * i as f64 / steps as f64));
+                }
+                for p in flank.iter().rev() {
+                    pts.push(polar(p.0, c + p.1));
+                }
+                let tip = flank[0].1;
+                let span = pitch - 2.0 * tip;
+                let steps = ((span / step).ceil() as usize).max(1);
+                for i in 1..steps {
+                    pts.push(polar(ra, c + tip + span * i as f64 / steps as f64));
+                }
+            }
+            Ok(pts)
+        }
+
+        /// The toothed hole for `extrude.loops`, counter-clockwise: a line for a radial flank, a spline through each
+        /// involute, an arc across each root and each tooth tip.
+        pub fn outline(&self, phase_deg: f64) -> Result<Outline, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let flank = self.flank(FLANK_STEPS);
+            let radial = flank.len() > FLANK_STEPS + 1;
+            let pitch = 2.0 * PI / self.teeth as f64;
+            let (ra, rf) = (self.tip_radius(), self.root_radius());
+            let centre = |k: u32| phase_deg * (PI / 180.0) + pitch * (k as f64 + 0.5);
+            let tip = flank[0].1;
+            let start = polar(ra, centre(0) - tip);
+            let mut pieces: Vec<Piece> = Vec::new();
+            let involute = if radial { &flank[1..] } else { &flank[..] };
+            for k in 0..self.teeth {
+                let c = centre(k);
+                // Out along the clockwise flank, across the root, in along the counter-clockwise flank.
+                if radial {
+                    pieces.push(Piece::Line(polar(involute[0].0, c - involute[0].1)));
+                }
+                let out: Vec<P2> = involute.iter().map(|p| polar(p.0, c - p.1)).collect();
+                pieces.push(Piece::Spline(out[1..out.len() - 1].to_vec(), out[out.len() - 1]));
+                let root = involute[involute.len() - 1].1;
+                pieces.push(Piece::Arc(polar(rf, c), polar(rf, c + root)));
+                let back: Vec<P2> = involute.iter().rev().map(|p| polar(p.0, c + p.1)).collect();
+                pieces.push(Piece::Spline(back[1..back.len() - 1].to_vec(), back[back.len() - 1]));
+                if radial {
+                    pieces.push(Piece::Line(polar(ra, c + tip)));
+                }
+                // Across the tooth's tip to the next space.
+                let to = if k + 1 == self.teeth { start } else { polar(ra, centre(k + 1) - tip) };
+                pieces.push(Piece::Arc(polar(ra, c + pitch / 2.0), to));
+            }
+            Ok(Outline { start, pieces })
+        }
+    }
 }
 
 /// External spur gears on parallel axes: whether two of them mesh, from their outlines, without a kernel.
@@ -3905,7 +4088,7 @@ pub mod gears {
 /// module and pressure angle, then the centre distance and the mating phase with a segment test on the teeth of
 /// `Gear::points` that face each other. No `Region::intersect`.
 pub mod gear_pair {
-    use super::gears::{mate_phase, mate_turn, Gear, P2};
+    use super::gears::{mate_phase, mate_phase_internal, mate_turn, ring_turn, Gear, Ring, P2};
     use super::geom2d::{atan2, sin_cos_deg};
 
     const PI: f64 = std::f64::consts::PI;
@@ -4137,6 +4320,100 @@ pub mod gear_pair {
     pub fn driven_turn(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64, angle_deg: f64) -> PairReport {
         let follow = driven_phase_deg + mate_turn(angle_deg, driver.teeth, driven.teeth);
         classify(driver, driven, driver_at, driven_at, driver_phase_deg + angle_deg, follow)
+    }
+
+    /// The edges of a closed outline that reach outside the circle of `radius` about `centre`: a pinion inside a ring
+    /// can only meet the ring's teeth there.
+    fn edges_beyond(outline: &[P2], centre: P2, radius: f64) -> Vec<(P2, P2)> {
+        let n = outline.len();
+        let mut edges = Vec::new();
+        let r2 = radius * radius;
+        for i in 0..n {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            let da = (a[0] - centre[0]) * (a[0] - centre[0]) + (a[1] - centre[1]) * (a[1] - centre[1]);
+            let db = (b[0] - centre[0]) * (b[0] - centre[0]) + (b[1] - centre[1]) * (b[1] - centre[1]);
+            if da >= r2 || db >= r2 {
+                edges.push((a, b));
+            }
+        }
+        edges
+    }
+
+    /// An external pinion inside an internal ring (docs/plan-gear-kinds.md, stage 2), both turning the same way.
+    /// `pinion_phase_deg` is the pinion's tooth 0 and `ring_phase_deg` the ring's, from +U in the plane of the centres.
+    ///
+    /// The pinion's tips not reaching the ring's tip circle is `Apart`, and so is a pinion outside the ring. Modules and
+    /// pressure angles are compared, then the working distance `m (z_ring - z_pinion) / 2`: a pinion pushed farther out
+    /// than that into the ring's teeth by more than both backlashes is `TooClose`, and one held farther in is `Loose`.
+    /// The mating phase is `mate_phase_internal`; inside the band a turn past the play is `ToothOnTooth`, and two edges
+    /// that cross are `ToothOnTooth` at any distance. A ring with profile shift on its pinion is not covered here: the
+    /// pinion's shift moves the working distance, and a pair with a shifted pinion is compared at the unshifted one.
+    pub fn classify_internal(pinion: &Gear, ring: &Ring, pinion_at: P2, ring_at: P2, pinion_phase_deg: f64, ring_phase_deg: f64) -> PairReport {
+        let distance = span(ring_at, pinion_at);
+        if distance + pinion.tip_radius() < ring.tip_radius() - 1e-9 || distance - pinion.tip_radius() > ring.root_radius() + 1e-9 {
+            return clear(PairVerdict::Apart);
+        }
+        if (pinion.module - ring.module).abs() > 1e-9 {
+            return clear(PairVerdict::ModuleMismatch);
+        }
+        if (pinion.pressure_deg - ring.pressure_deg).abs() > 1e-6 {
+            return clear(PairVerdict::PressureMismatch);
+        }
+        let a = placed(pinion, pinion_at, pinion_phase_deg);
+        let b = match ring.points(ring_phase_deg, PAIR_FLANK) {
+            Ok(local) => {
+                let mut world = Vec::new();
+                for p in local {
+                    world.push([p[0] + ring_at[0], p[1] + ring_at[1]]);
+                }
+                Some(world)
+            }
+            Err(_) => None,
+        };
+        let (Some(a), Some(b)) = (a, b) else {
+            return clear(PairVerdict::Unbuildable);
+        };
+        let working = ring.pitch_radius() - pinion.pitch_radius();
+        let backlash = pinion.backlash + ring.backlash;
+        let too_close = distance > working + backlash + 1e-9;
+        let loose = distance + 1e-9 < working - backlash;
+        let expect = mate_phase_internal(pinion_phase_deg, pinion.teeth, bearing_deg(ring_at, pinion_at), ring.teeth);
+        let err_mm = tooth_err_deg(ring_phase_deg - expect, ring.pitch_deg()).abs() * (PI / 180.0) * ring.pitch_radius();
+        let (sa, ca) = sin_cos_deg(pinion.pressure_deg);
+        let tan_a = if ca == 0.0 { 0.0 } else { sa / ca };
+        let allowed = backlash / 2.0 + (working - distance) * tan_a;
+        let past_play = err_mm > allowed + 1e-9;
+        let near = edges_beyond(&a, ring_at, ring.tip_radius() - 1e-6);
+        let far = edges_within(&b, pinion_at, pinion.tip_radius() + 1e-6);
+        let mut hit = false;
+        for edge in &near {
+            let (p, q) = *edge;
+            for other in &far {
+                let (c, d) = *other;
+                if !boxes_apart(p, q, c, d) && segments_cross(p, q, c, d) {
+                    hit = true;
+                }
+            }
+        }
+        let verdict = if too_close {
+            PairVerdict::TooClose
+        } else if hit {
+            PairVerdict::ToothOnTooth
+        } else if loose {
+            PairVerdict::Loose
+        } else if past_play {
+            PairVerdict::ToothOnTooth
+        } else {
+            PairVerdict::Meshing
+        };
+        PairReport { verdict, narrow: true, hit }
+    }
+
+    /// `classify_internal` after the pinion turns `angle_deg` and the ring turns with it, the same way, by the tooth
+    /// ratio. The centres stay put.
+    pub fn internal_turn(pinion: &Gear, ring: &Ring, pinion_at: P2, ring_at: P2, pinion_phase_deg: f64, ring_phase_deg: f64, angle_deg: f64) -> PairReport {
+        let follow = ring_phase_deg + ring_turn(angle_deg, pinion.teeth, ring.teeth);
+        classify_internal(pinion, ring, pinion_at, ring_at, pinion_phase_deg + angle_deg, follow)
     }
 }
 

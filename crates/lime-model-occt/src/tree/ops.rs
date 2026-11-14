@@ -140,6 +140,12 @@ pub struct Solid {
     pub hub_diameter: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hub_height: Option<f64>,
+    /// An internal gear, a ring with its teeth pointing in (docs/plan-gear-kinds.md, stage 2). Written only when true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal: Option<bool>,
+    /// A ring's outside diameter, mm; at least two modules outside its root circle. Only on a ring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rim: Option<f64>,
 }
 
 impl Solid {

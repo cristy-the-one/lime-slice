@@ -158,6 +158,7 @@ const FIELD_PATH: Record<string, Path> = {
   modelGearBoreFlat: ["boreFlat"],
   modelGearHub: ["hubDiameter"],
   modelGearHubH: ["hubHeight"],
+  modelGearRim: ["rim"],
   modelHoleR: ["radius"],
   modelHoleD: ["depth"],
   modelBoreR: ["counterboreRadius"],

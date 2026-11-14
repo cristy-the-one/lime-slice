@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findLust, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
-import { centreDistance, classify, drivenTurn, matePhase, type PairReport, type Spur } from "../src/gear-pair.ts";
+import { centreDistance, classify, classifyInternal, drivenTurn, internalTurn, matePhase, matePhaseInternal, type PairReport, type Spur } from "../src/gear-pair.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -202,6 +202,73 @@ fn main() {
 }
 `;
 
+// A pinion inside a ring (docs/plan-gear-kinds.md, stage 2): classify_internal and internal_turn, the same rows from
+// lust, rustc and the window's copy.
+const ringSource = `use lime_recipe::{ops, Json, Session};
+use lime_recipe::gears::{mate_phase_internal, Gear, Ring};
+use lime_recipe::gear_pair::{classify_internal, internal_turn};
+
+fn row(name: &str, verdict: &str, narrow: bool, hit: bool) -> String {
+    let n = if narrow { "1" } else { "0" };
+    let h = if hit { "1" } else { "0" };
+    format!("{name}:{verdict}:{n}:{h}")
+}
+
+fn main() {
+    let mut s = Session::start();
+    let part = s.solid_new(ops::cuboid(2.0, 2.0, 2.0)).unwrap();
+    let mut rows: Vec<String> = Vec::new();
+    for (zp, zr, module, dir) in [(12u32, 36u32, 1.0, 0.0), (18, 48, 2.0, 120.0), (15, 60, 1.5, -75.0)] {
+        let pinion = Gear::new(zp, module);
+        let ring = Ring::new(zr, module);
+        let working = module * (zr - zp) as f64 / 2.0;
+        let (sn, cs) = ((dir * std::f64::consts::PI / 180.0).sin(), (dir * std::f64::consts::PI / 180.0).cos());
+        let at = [working * cs, working * sn];
+        let phase = mate_phase_internal(0.0, zp, dir, zr);
+        for turn in [0.0, 0.04, -0.04, 0.3, -0.3] {
+            let deg = phase + (turn / ring.pitch_radius()) * (180.0 / std::f64::consts::PI);
+            let report = classify_internal(&pinion, &ring, at, [0.0, 0.0], 0.0, deg);
+            rows.push(row(&format!("{zp}-{zr}-{turn}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+        for angle in [7.0, 45.0, 200.0] {
+            let report = internal_turn(&pinion, &ring, at, [0.0, 0.0], 0.0, phase, angle);
+            rows.push(row(&format!("{zp}-{zr}-turn-{angle}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+        for (name, d) in [("out", working + 0.5), ("in", working - 0.5)] {
+            let report = classify_internal(&pinion, &ring, [d * cs, d * sn], [0.0, 0.0], 0.0, mate_phase_internal(0.0, zp, dir, zr));
+            rows.push(row(&format!("{zp}-{zr}-{name}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+    }
+    let apart = classify_internal(&Gear::new(12, 2.0), &Ring::new(48, 2.0), [0.0, 0.0], [0.0, 0.0], 0.0, 0.0);
+    rows.push(row("apart", apart.verdict.as_str(), apart.narrow, apart.hit));
+    let small = classify_internal(&Gear::new(12, 2.0), &Ring::new(12, 2.0), [0.0, 0.0], [0.0, 0.0], 0.0, 0.0);
+    rows.push(row("small", small.verdict.as_str(), small.narrow, small.hit));
+    s.done_with(&part, Json::obj().set("rows", rows.join(";")));
+}
+`;
+
+/** The rows `ringSource` prints, from the window's copy. */
+function windowRingRows(): string {
+  const spur = (teeth: number, module: number): Spur => ({ teeth, module, pressureDeg: 20, backlash: 0.1, shift: 0 });
+  const row = (name: string, report: PairReport) => `${name}:${report.verdict}:${report.narrow ? 1 : 0}:${report.hit ? 1 : 0}`;
+  const rows: string[] = [];
+  for (const [zp, zr, module, dir] of [[12, 36, 1, 0], [18, 48, 2, 120], [15, 60, 1.5, -75]] as const) {
+    const pinion = spur(zp, module);
+    const ring = spur(zr, module);
+    const working = (module * (zr - zp)) / 2;
+    const at: [number, number] = [working * Math.cos((dir * Math.PI) / 180), working * Math.sin((dir * Math.PI) / 180)];
+    const phase = matePhaseInternal(0, zp, dir, zr);
+    for (const turn of [0, 0.04, -0.04, 0.3, -0.3]) rows.push(row(`${zp}-${zr}-${turn}`, classifyInternal(pinion, ring, at, [0, 0], 0, phase + (turn / ((module * zr) / 2)) * (180 / Math.PI))));
+    for (const angle of [7, 45, 200]) rows.push(row(`${zp}-${zr}-turn-${angle}`, internalTurn(pinion, ring, at, [0, 0], 0, phase, angle)));
+    for (const [name, d] of [["out", working + 0.5], ["in", working - 0.5]] as const) {
+      rows.push(row(`${zp}-${zr}-${name}`, classifyInternal(pinion, ring, [d * Math.cos((dir * Math.PI) / 180), d * Math.sin((dir * Math.PI) / 180)], [0, 0], 0, matePhaseInternal(0, zp, dir, zr))));
+    }
+  }
+  rows.push(row("apart", classifyInternal(spur(12, 2), spur(48, 2), [0, 0], [0, 0], 0, 0)));
+  rows.push(row("small", classifyInternal(spur(12, 2), spur(12, 2), [0, 0], [0, 0], 0, 0)));
+  return rows.join(";");
+}
+
 /**
  * The rows `pairSource` prints, from the window's copy of the check (`src/gear-pair.ts`). The gear card and
  * `model_check` run that copy and a recipe runs the crate's, so the two are held to the same verdicts here.
@@ -287,6 +354,14 @@ if (lib.status === 0) {
   const windowRows = windowPairRows().split(";");
   const differ = windowRows.filter((line, at) => line !== crateRows[at]);
   check("gear_pair: the window's copy gives the crate's verdicts", crateRows.length === windowRows.length && differ.length === 0, { differ, crate: crateRows.filter((line, at) => line !== windowRows[at]) });
+
+  const rings = await runBoth("gear_ring", ringSource);
+  const ringText = JSON.stringify(rings.lustDone);
+  check("ring gears: lust and rustc print the same verdicts", ringText === JSON.stringify(rings.rustcDone) && ringText.includes("meshing") && ringText.includes("toothOnTooth") && ringText.includes("tooClose"), { lust: rings.lustDone, rustc: rings.rustcDone });
+  const crateRing = String((rings.rustcDone as { rows?: string } | null)?.rows ?? "").split(";");
+  const windowRing = windowRingRows().split(";");
+  const ringDiffer = windowRing.filter((line, at) => line !== crateRing[at]);
+  check("ring gears: the window's copy gives the crate's verdicts", crateRing.length === windowRing.length && ringDiffer.length === 0, { ringDiffer, crate: crateRing.filter((line, at) => line !== windowRing[at]) });
 }
 
 if (failed > 0) {
