@@ -119,3 +119,27 @@ const reach = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Finger: { reach: {
 if ("issues" in reach) throw Error(JSON.stringify(reach.issues));
 assert.ok(reach.keys[0]!.reached && reach.keys[0]!.distanceMm! < 0.05);
 console.log("pose animation: interpolation, holds, names, validation, slerp and reach ok");
+
+// --- animationStale: what stops a built animation from playing. A part stored again is the same part.
+{
+  const { animationStale } = await import("./pose-anim.ts");
+  const hinge = { kind: "hinge" as const, pivot: [0, 0, 0] as [number, number, number], axis: [0, 0, 1] as [number, number, number], angle: 0 };
+  const built = { id: "a", name: "Train", members: [{ object: "frame", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }, { object: "wheel", parent: "frame", offset: [36, 0, 0], turn: [0, 0, 0], joint: hinge }] } as unknown as import("./assembly.ts").Assembly;
+  const at = (x: number) => ({ m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [x, 0, 0] }) as unknown as import("./model-space.ts").Affine;
+  const points = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const was = new Map([["frame", { name: "Frame", pose: undefined, points }], ["wheel", { name: "Wheel", pose: at(36), points }]]);
+  const same = (got: string | null, want: string | null, name: string) => { if (got !== want) throw new Error(`${name}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`); };
+  same(animationStale(built, structuredClone(built), was, was), null, "nothing changed");
+  // The same parts as new records: a copied pose and copied points, as a mirror from an MCP session leaves them.
+  const again = new Map([["frame", { name: "Frame", pose: undefined, points: new Float32Array(points) }], ["wheel", { name: "Wheel", pose: at(36), points: new Float32Array(points) }]]);
+  same(animationStale(built, structuredClone(built), was, again), null, "a part stored again is the same part");
+  same(animationStale(built, structuredClone(built), was, new Map([...again, ["wheel", { name: "Wheel", pose: at(37), points }]])), "Wheel moved", "a moved part is named");
+  same(animationStale(built, structuredClone(built), was, new Map([...again, ["wheel", { name: "Wheel", pose: at(36), points: new Float32Array([0, 0, 0, 2, 0, 0, 0, 1, 0]) }]])), "Wheel's shape changed", "a changed shape is named");
+  same(animationStale(built, structuredClone(built), was, new Map([...again, ["wheel", undefined]])), "Wheel was removed", "a removed part is named");
+  const turned = structuredClone(built);
+  (turned.members[1]!.joint as { angle: number }).angle = 20;
+  same(animationStale(built, turned, was, again), "The assembly's joints changed", "a turned hinge");
+  same(animationStale(built, { ...structuredClone(built), members: [built.members[0]!] }, was, again), "The assembly's parts changed", "a member that left");
+  same(animationStale(built, undefined, was, again), "The assembly was removed", "no assembly");
+  console.log("animationStale: ok");
+}

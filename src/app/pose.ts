@@ -156,8 +156,9 @@ async function playAnimation(): Promise<void> {
   try {
     const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts);
     if (ticket !== animationRun || state.stage !== "pose") return;
-    const current = selected()?.assembly;
-    if (!current || current.id !== assemblySnapshot.id || JSON.stringify(current) !== JSON.stringify(assemblySnapshot) || [...objects].some(([id, object]) => state.plate.objects.find((item) => item.id === id) !== object)) { message = "The assembly changed while the animation was building. Play it again."; renderPanel(); return; }
+    const { animationStale } = await import("../pose-anim.ts");
+    const stale = staleSince(animationStale, assemblySnapshot, poses, objects);
+    if (stale) { message = `${stale} while the animation was building. Play it again.`; renderPanel(); return; }
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; renderPanel(); return; }
     animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
@@ -171,6 +172,15 @@ async function playAnimation(): Promise<void> {
 function poseOf(id: string): Affine | undefined {
   const object = state.plate.objects.find((row) => row.id === id);
   return object ? modelPoseOf(object) : undefined;
+}
+
+/** What the animation was built from, against what stands now (`animationStale`, src/pose-anim.ts). */
+function staleSince(animationStale: typeof import("../pose-anim.ts").animationStale, snapshot: Assembly, poses: ReadonlyMap<string, Affine | undefined>, objects: ReadonlyMap<string, (typeof state.plate.objects)[number] | undefined>): string | null {
+  const parts = (of: (id: string) => (typeof state.plate.objects)[number] | undefined, pose: (id: string, part: (typeof state.plate.objects)[number]) => Affine | undefined) => new Map([...objects.keys()].map((id) => {
+    const part = of(id);
+    return [id, part ? { name: part.name, pose: pose(id, part), points: part.sourcePos } : undefined] as const;
+  }));
+  return animationStale(snapshot, liveAssemblies().find((row) => row.id === snapshot.id), parts((id) => objects.get(id), (id) => poses.get(id)), parts((id) => state.plate.objects.find((item) => item.id === id), (_id, part) => modelPoseOf(part)));
 }
 function selected(): { assembly: Assembly; member: Member } | null {
   const id = state.plate.selectedId;
