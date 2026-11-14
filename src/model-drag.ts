@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -112,6 +112,8 @@ export type HandleSeat =
 export interface DragContext {
   read(field: string): number;
   primitive: PrimitiveKind;
+  /** A gear card set to Ring (docs/plan-gear-kinds.md, stage 2): a rim knob in place of the bore's and hub's. */
+  ring?: boolean;
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
@@ -316,9 +318,13 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
       const teeth = Math.max(6, ctx.read("modelGearTeeth") || 20);
       const diag = (a: Vec3, b: Vec3) => normalize(add(a, b));
       const back = (v: Vec3): Vec3 => [-v[0], -v[1], -v[2]];
+      const module = knob("gear-module", "modelGearModule", axes[0], "accent", "Module", { rate: 1 / (teeth / 2 + 1), min: 0.05 });
+      const count = knob("gear-teeth", "modelGearTeeth", axes[1], "accent", "Teeth", { rate: 0.5, min: 6, max: 150, whole: true, unit: "count" });
+      // A ring's outside is its rim, a diameter: two millimetres a millimetre.
+      if (ctx.ring) return [module, count, height, knob("gear-rim", "modelGearRim", diag(axes[0], axes[1]), "accent", "Rim ⌀", { rate: 2, min: 0 })];
       return [
-        knob("gear-module", "modelGearModule", axes[0], "accent", "Module", { rate: 1 / (teeth / 2 + 1), min: 0.05 }),
-        knob("gear-teeth", "modelGearTeeth", axes[1], "accent", "Teeth", { rate: 0.5, min: 6, max: 150, whole: true, unit: "count" }),
+        module,
+        count,
         height,
         knob("gear-bore", "modelGearBore", diag(axes[0], axes[1]), "accent", "Bore", { rate: 2, min: 0 }),
         knob("gear-bore-flat", "modelGearBoreFlat", diag(axes[0], back(axes[1])), "accent", "Flat", { rate: 2, min: 0 }),

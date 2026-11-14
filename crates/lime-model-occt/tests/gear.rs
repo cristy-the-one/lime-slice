@@ -363,3 +363,77 @@ fn build_time_and_faces_against_the_library_polyline() {
         println!("{teeth} teeth: {}", row.join(" | "));
     }
 }
+
+/// A ring gear (docs/plan-gear-kinds.md, stage 2): `teeth` of module `module`, its rim `rim` across.
+fn ring(teeth: u32, module: f64, thickness: f64, rim: f64) -> Value {
+    with(gear(teeth, module, thickness, [0.0, 0.0, 0.0]), json!({ "internal": true, "rim": rim }))
+}
+
+#[test]
+fn a_pinion_meshes_inside_a_ring_within_its_backlash() {
+    if !kernel() {
+        return;
+    }
+    use lime_recipe::gear_pair::classify_internal;
+    use lime_recipe::gears::{mate_phase_internal, Ring};
+    for (zp, zr, module) in [(12u32, 36u32, 1.0), (18, 48, 2.0), (15, 60, 1.5)] {
+        let key = format!("ring-{zp}-{zr}");
+        let r = Ring::new(zr, module);
+        let rim = 2.0 * (r.root_radius() + 3.0 * module);
+        let opened = ok(json!({ "call": "open", "key": key, "primitive": ring(zr, module, 6.0, rim) }));
+        // The rim's disc less the toothed hole, from the outline's points.
+        let pts = r.points(0.0, 400).expect("a ring");
+        let mut a2 = 0.0;
+        for i in 0..pts.len() {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            a2 += p[0] * q[1] - p[1] * q[0];
+        }
+        let expect = (std::f64::consts::PI * rim * rim / 4.0 - a2 / 2.0) * 6.0;
+        assert!((volume(&opened) - expect).abs() < expect * 2e-3, "{zr}: {} against {expect}", volume(&opened));
+        let gp = Gear::new(zp, module);
+        let distance = module * f64::from(zr - zp) / 2.0;
+        let phase = 0.0;
+        let ring_phase = mate_phase_internal(phase, zp, 0.0, zr);
+        let pinion = |turn_mm: f64| {
+            let deg = phase + (turn_mm / gp.pitch_radius()).to_degrees();
+            with(gear(zp, module, 6.0, [distance, 0.0, 0.0]), json!({ "phaseDeg": deg }))
+        };
+        // The ring was built at phase 0; turn the pinion so the pair stands at the mating phase: the ring at ring_phase is
+        // the ring at 0 turned, and the pinion turned back by the same angle about the ring's centre is the same pose.
+        // Simpler: build the ring at ring_phase.
+        let key2 = format!("{key}-phased");
+        ok(json!({ "call": "open", "key": key2, "primitive": with(ring(zr, module, 6.0, rim), json!({ "phaseDeg": ring_phase })) }));
+        assert_eq!(common(&key2, &pinion(0.0)), 0.0, "{zp} in {zr}: they mesh without touching");
+        // A small pinion's undercut root meets the ring's tip corner before the involutes touch (12 in 36: at 0.055 mm
+        // of the 0.1 mm the backlashes give), so the play each way is checked at 0.04 mm.
+        for turn in [0.04, -0.04] {
+            assert_eq!(common(&key2, &pinion(turn)), 0.0, "{zp} in {zr}: {turn} mm is inside the play");
+        }
+        for turn in [0.2, -0.2] {
+            let crossing = common(&key2, &pinion(turn));
+            assert!(crossing > 1e-3, "{zp} in {zr}: turned {turn} mm past the backlash they cross ({crossing})");
+        }
+        // Turned together by ring_turn through one pitch of the pinion, in 12 steps, the solids never touch: this is the
+        // motion the coupling writes.
+        for k in 1..=12 {
+            let a = 360.0 / f64::from(zp) * f64::from(k) / 12.0;
+            let key3 = format!("{key}-turn-{k}");
+            ok(json!({ "call": "open", "key": key3, "primitive": with(ring(zr, module, 6.0, rim), json!({ "phaseDeg": ring_phase + gears::ring_turn(a, zp, zr) })) }));
+            let turned = with(gear(zp, module, 6.0, [distance, 0.0, 0.0]), json!({ "phaseDeg": phase + a }));
+            assert_eq!(common(&key3, &turned), 0.0, "{zp} in {zr}: turned {a} degrees together they touch");
+        }
+        let verdict = |turn_mm: f64| classify_internal(&gp, &r, [distance, 0.0], [0.0, 0.0], phase + (turn_mm / gp.pitch_radius()).to_degrees(), ring_phase).verdict;
+        assert_eq!(verdict(0.0), PairVerdict::Meshing, "{zp} in {zr}");
+        assert_eq!(verdict(0.04), PairVerdict::Meshing, "{zp} in {zr}");
+        assert_eq!(verdict(0.2), PairVerdict::ToothOnTooth, "{zp} in {zr}");
+    }
+    for (bad, why) in [
+        (with(ring(36, 1.0, 6.0, 30.0), json!({})), "rim"),
+        (with(ring(36, 1.0, 6.0, 60.0), json!({ "bore": 5.0 })), "no bore or hub"),
+        (with(ring(36, 1.0, 6.0, 60.0), json!({ "profileShift": 0.2 })), "no profile shift"),
+        (with(gear(36, 1.0, 6.0, [0.0, 0.0, 0.0]), json!({ "rim": 60.0 })), "Only a ring gear"),
+    ] {
+        let reply = call(json!({ "call": "open", "key": "ring-bad", "primitive": bad }));
+        assert!(reply.to_string().contains(why), "{why}: {}", short(&reply));
+    }
+}

@@ -22,6 +22,53 @@ export interface GearFields {
   boreFlat?: number;
   hubDiameter?: number;
   hubHeight?: number;
+  /** A ring gear, its teeth pointing in (docs/plan-gear-kinds.md, stage 2). No shift, bore or hub. */
+  internal?: boolean;
+  /** A ring's outside diameter, mm; two modules outside its root when absent. */
+  rim?: number;
+}
+
+/** A ring's smallest rim: two modules outside its root circle, across. The kernel's least too. */
+export function ringLeastRim(gear: GearFields): number {
+  return 2 * (pitchRadius(gear) + 1.25 * gear.module + 2 * gear.module);
+}
+
+/** A ring's outside diameter: its rim, or the least one. */
+export function ringRim(gear: GearFields): number {
+  return gear.rim ?? ringLeastRim(gear);
+}
+
+/**
+ * A ring's toothed hole for the ghost, counter-clockwise, tooth 0 centred on `phaseDeg`: the space between two teeth is
+ * the external tooth of the same numbers, from the tip circle `r - m` out to the root circle `r + 1.25 m`.
+ */
+export function ringGhostOutline(gear: GearFields, perFlank = 6): [number, number][] {
+  const z = gear.teeth;
+  const m = gear.module;
+  const alpha = ((gear.pressureDeg ?? 20) * Math.PI) / 180;
+  const r = pitchRadius(gear);
+  const rb = r * Math.cos(alpha);
+  const ra = r - m;
+  const rf = r + 1.25 * m;
+  if (!(ra > 0)) return [];
+  const space = Math.PI / (2 * z) + (gear.backlash ?? 0.1) / (2 * r);
+  const inv = (a: number) => Math.tan(a) - a;
+  const half = (rho: number) => space + inv(alpha) - inv(Math.acos(rb / Math.max(rho, rb)));
+  const up: [number, number][] = [];
+  const low = Math.max(ra, rb);
+  if (ra < rb) up.push([ra, half(rb)]);
+  for (let i = 0; i <= perFlank; i += 1) {
+    const rho = low + ((rf - low) * i) / perFlank;
+    up.push([rho, Math.max(half(rho), 0)]);
+  }
+  const out: [number, number][] = [];
+  const at = (rho: number, angle: number): [number, number] => [rho * Math.cos(angle), rho * Math.sin(angle)];
+  for (let k = 0; k < z; k += 1) {
+    const c = (((gear.phaseDeg ?? 0) + (360 * (k + 0.5)) / z) * Math.PI) / 180;
+    for (const [rho, a] of up) out.push(at(rho, c - a));
+    for (let i = up.length - 1; i >= 0; i -= 1) out.push(at(up[i]![0], c + up[i]![1]));
+  }
+  return out;
 }
 
 export const GEAR_DEFAULTS = { teeth: 20, module: 1.5, thickness: 6, pressureDeg: 20, backlash: 0.1, profileShift: 0, phaseDeg: 0 } as const;
@@ -47,6 +94,7 @@ export function rootRadius(gear: GearFields): number {
 export function gearLabel(gear: GearFields, height: number, n: (value: number) => string): string {
   const bore = gear.bore ? `, ${gear.boreShape === "hex" ? "hex " : gear.boreShape === "d" ? "D " : "⌀"}${n(gear.bore)} bore` : "";
   const hub = gear.hubDiameter && gear.hubHeight ? `, hub ⌀${n(gear.hubDiameter)}` : "";
+  if (gear.internal) return `ring gear ${gear.teeth} teeth m ${n(gear.module)} h ${n(height)}, rim ⌀${n(ringRim(gear))}`;
   return `gear ${gear.teeth} teeth m ${n(gear.module)} h ${n(height)}${bore}${hub}`;
 }
 
@@ -61,6 +109,14 @@ export function gearRefusal(gear: GearFields, height: number): string | null {
   const backlash = gear.backlash ?? 0.1;
   if (!(backlash >= 0 && backlash <= gear.module)) return "A gear's backlash is 0 to one module, in mm at the pitch circle.";
   if (!(height > 0 && height <= 1000)) return "A gear's thickness is above 0 and at most 1000 mm.";
+  if (gear.internal) {
+    if (gear.teeth < 20) return `A ring gear takes 20 to ${GEAR_TEETH.max} teeth.`;
+    if (shift !== 0) return "A ring gear takes no profile shift.";
+    if (gear.bore || gear.hubDiameter || gear.hubHeight) return "A ring gear takes no bore or hub: its hole is its teeth.";
+    const least = ringLeastRim(gear);
+    const rim = ringRim(gear);
+    if (!(rim >= least - 1e-9 && rim <= 4 * least)) return `A ring's rim is ${least.toFixed(2)} to ${(4 * least).toFixed(2)} mm across: at least two modules outside its root.`;
+  } else if (gear.rim !== undefined) return "Only a ring gear (internal) takes a rim.";
   return null;
 }
 

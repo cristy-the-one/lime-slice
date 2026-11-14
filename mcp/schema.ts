@@ -781,6 +781,8 @@ export const gearFields = {
   boreFlat: { type: "number", exclusiveMinimum: 0, description: "A D bore, flat to far side, mm. Default 0.9 bore." },
   hubDiameter: { type: "number", exclusiveMinimum: 0, description: "A hub on top; with hubHeight." },
   hubHeight: { type: "number", exclusiveMinimum: 0, description: "mm above the gear." },
+  internal: { type: "boolean", description: "A ring gear: teeth pointing in, a pinion turns inside it the same way round. 20 to 150 teeth; no profileShift, bore or hub." },
+  rim: { type: "number", exclusiveMinimum: 0, description: "A ring's outside diameter, mm. Default two modules outside its roots." },
 };
 const gearOp = {
   type: "object",

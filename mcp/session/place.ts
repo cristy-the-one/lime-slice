@@ -219,7 +219,7 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
     const poses = solveAssembly(mine, poseOf).poses;
     const gears = gearsAt(poses);
     if (gears.length < 2) return refuse("bad-assembly", "This assembly has fewer than two gears: a gear is a solid_new {gear} or a gear step.");
-    found = findCouplings(mine, gears, poses);
+    found = findCouplings(mine, gears, poses, (id) => shownName(this.find(id)?.name ?? id));
     assembly = withCouplings(mine, found.couplings);
   }
   const before = assemblyOf(this.assemblies, obj.id);
@@ -234,7 +234,7 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
     this.writeSolved(assembly, "", false);
     this.autosaveDirty = true;
   }
-  const couplings = (assembly.couplings ?? []).map((row) => ({ driver: row.driver, driven: row.driven, gears: [row.gears[0].name, row.gears[1].name], ratio: Math.round(row.ratio * 1e6) / 1e6 }));
+  const couplings = (assembly.couplings ?? []).map((row) => ({ driver: row.driver, driven: row.driven, gears: [row.gears[0].name, row.gears[1].name], ratio: Math.round(row.ratio * 1e6) / 1e6, ...(row.carrier ? { carrier: row.carrier.body, carrierRatio: Math.round(row.carrier.ratio * 1e6) / 1e6 } : {}) }));
   // Each train once: its lock, or the validator's sampled turn of its first body.
   const seen = new Set<string>();
   const locked: { gears: string[]; reason: string }[] = [];

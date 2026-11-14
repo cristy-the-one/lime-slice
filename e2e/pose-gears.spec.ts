@@ -234,3 +234,76 @@ test("Three free gears at mesh, no hinges and no frame: Couple gears makes the t
   expectFreeRatios((await downloadProject(page)).doc as unknown as FreeDoc, ids, "after reopening");
   await page.screenshot({ path: path.join(shots, "free-reopened-drag.png") });
 });
+
+/**
+ * Stage 2 of docs/plan-gear-kinds.md, by hand: a planetary stage a person attached together and nothing more. The ring
+ * (36, internal) is the root and the housing; the sun (12) and a carrier sit on it; three planets (12) sit on the
+ * carrier. Couple gears gives the carrier, the sun and the planets their hinges and couples six meshes through the
+ * carrier; a drag on the sun's ring turns the carrier a quarter as far and each planet -3/4 on it; the carrier's Angle
+ * field drives the sun; and after a save and reopen the stage turns again.
+ */
+type PlanetIds = { ring: string; sun: string; carrier: string; planets: string[] };
+
+function expectPlanetary(doc: FreeDoc, ids: PlanetIds, label: string): number {
+  const members = doc.assemblies?.[0]?.members ?? [];
+  const angle = (id: string) => members.find((row) => row.object === id)?.joint?.angle ?? NaN;
+  const s = angle(ids.sun);
+  expect(Math.abs(s), `${label}: the sun turned`).toBeGreaterThan(5);
+  expect(angle(ids.carrier), `${label}: carrier at s/4 for sun ${s}`).toBeCloseTo(s / 4, 9);
+  for (const planet of ids.planets) expect(angle(planet), `${label}: each planet at -3s/4 on the carrier`).toBeCloseTo((-3 * s) / 4, 9);
+  expect(members.find((row) => row.object === ids.ring)?.joint, `${label}: the ring is the housing`).toBeUndefined();
+  // The planets orbit with the carrier: planet 1 stands s/4 round, still 12 mm out.
+  const t = doc.objects.find((row) => row.id === ids.planets[0])!.modelPose!.t;
+  expect(Math.hypot(t[0], t[1])).toBeCloseTo(12, 6);
+  expect((Math.atan2(t[1], t[0]) * 180) / Math.PI).toBeCloseTo(s / 4, 6);
+  return s;
+}
+
+test("A planetary stage attached by hand: Couple gears hinges the carrier, sun and planets, and the sun turns the carrier a quarter as far", async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const file = info.outputPath("pose-gears-planetary.lime");
+  const printed = execFileSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "e2e/gear-train-project.ts", file, "--planetary"], { encoding: "utf8" });
+  const ids = JSON.parse(printed.trim().split("\n").at(-1)!) as PlanetIds;
+
+  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await openProject(page, file);
+  const panel = page.locator("#posePanel");
+  const gears = panel.locator("[data-pose-gears]");
+
+  await panel.locator(`[data-object='${ids.sun}']`).click();
+  await panel.getByRole("button", { name: "Couple gears" }).click();
+  await expect(gears).toContainText("Gave carrier, sun, planet 1, planet 2 and planet 3 a hinge about their axes.");
+  await expect(gears).toContainText("sun drives planet 1 on carrier, ×−1.");
+  await expect(gears).toContainText("planet 3 drives ring on carrier, ×0.333.");
+  await expect(gears, "nothing refused, locked or out of mesh over a turn").not.toContainText(/not coupled|locked|do not mesh|more than one way/);
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, "planetary-coupled.png") });
+
+  await dragRing(page);
+  await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
+  expectPlanetary((await downloadProject(page)).doc as unknown as FreeDoc, ids, "sun ring");
+  await page.screenshot({ path: path.join(shots, "planetary-drag.png") });
+
+  // The carrier's Angle field: carrier 10 brings the sun to 40.
+  await panel.locator(`[data-object='${ids.carrier}']`).click();
+  await panel.getByLabel("Angle °").fill("10");
+  await panel.getByLabel("Angle °").press("Tab");
+  const typed = await downloadProject(page);
+  expect(expectPlanetary(typed.doc as unknown as FreeDoc, ids, "carrier typed 10")).toBeCloseTo(40, 9);
+
+  await page.reload();
+  await autoSliceOff(page);
+  await openProject(page, { name: "pose-gears-planetary.lime", mimeType: "application/json", buffer: Buffer.from(typed.text) });
+  await panel.locator(`[data-object='${ids.sun}']`).click();
+  await expect(gears, "reopened, the couplings are read from the file").toContainText("sun drives planet 1 on carrier, ×−1.");
+  await panel.getByLabel("Angle °").fill("0");
+  await panel.getByLabel("Angle °").press("Tab");
+  await dragRing(page);
+  await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
+  expectPlanetary((await downloadProject(page)).doc as unknown as FreeDoc, ids, "after reopening");
+});

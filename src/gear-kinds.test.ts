@@ -214,7 +214,7 @@ const seated = (object: string, parent: string, offset: Vec3): Member => ({ obje
   eq("the held wheel gets no hinge", prepared.hinged, ["pin"]);
   const poses = solveAssembly(prepared.assembly!, p.poseOf).poses;
   const found = findCouplings(prepared.assembly!, p.gearsAt(poses), poses);
-  eq("and the train is locked, with its sentence", found.locked.map((row) => row.reason), ["Wheel and Pinion are locked: Wheel cannot turn, and the train meshes with it."]);
+  eq("and the train is locked, with its sentence", found.locked.map((row) => row.reason), ["Pinion and Wheel are locked: Wheel cannot turn, and the train meshes with it."]);
   eq("held survives the file", readAssemblies(JSON.parse(JSON.stringify([ringed])), [{ id: "frame" }, { id: "pin" }, { id: "wheel" }])[0]?.members[2]?.held, true);
   // A held root of a frameless pair stays fixed too.
   const q = plate({ pin: at(0), wheel: at(36) });
