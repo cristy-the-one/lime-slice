@@ -385,3 +385,20 @@ test("A free rack and pinion: Couple gears gives a hinge and a slide, and turnin
   await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
   expectRack((await downloadProject(page)).doc as unknown as FreeDoc, ids, "after reopening");
 });
+
+test("Two gears whose axes cross: Couple gears says bevel gears and worms are not covered, and makes nothing", async ({ page }, info) => {
+  test.setTimeout(60_000);
+  const file = info.outputPath("pose-gears-crossed.lime");
+  const printed = execFileSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "e2e/gear-train-project.ts", file, "--crossed"], { encoding: "utf8" });
+  const ids = JSON.parse(printed.trim().split("\n").at(-1)!) as { flat: string; standing: string };
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await page.goto("/");
+  await autoSliceOff(page);
+  await openOnPose(page, file, 2, ids.standing);
+  const panel = page.locator("#posePanel");
+  await panel.locator(`[data-object='${ids.flat}']`).click();
+  await panel.getByRole("button", { name: "Couple gears" }).click();
+  await expect(panel.locator("[data-pose-gears]")).toContainText("flat and standing are not coupled: their axes cross at 90°, and bevel gears and worms are not covered.");
+  expect(((await downloadProject(page)).doc as unknown as FreeDoc).assemblies ?? [], "nothing was made").toHaveLength(0);
+});

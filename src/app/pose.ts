@@ -2,7 +2,7 @@ import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
 import { assemblyOf, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
-import { couplingLine, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
+import { couplingLine, crossedNotes, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
 import { modelTrees } from "./model-trees.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
@@ -628,7 +628,12 @@ function coupleGears(start: string): void {
   const live = liveAssemblies();
   const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
   const prepared = prepareTrain(live, plateGears(), start, poseOf, freshAssemblyId(live));
-  if (!prepared.assembly) { gearNotes = { assembly: `free:${start}`, lines: ["This gear meshes with no gear of another part that stands in no assembly. The gear card in Model says when two gears mesh."] }; renderPanel(); return; }
+  if (!prepared.assembly) {
+    // Gears whose axes cross say so: bevel gears and worms are not covered (docs/plan-gear-kinds.md, stage 4).
+    const crossed = crossedNotes(plateGears().flatMap((part) => part.gears), start);
+    gearNotes = { assembly: `free:${start}`, lines: crossed.length ? crossed : ["This gear meshes with no gear of another part that stands in no assembly. The gear card in Model says when two gears mesh."] };
+    renderPanel(); return;
+  }
   const assembly = prepared.assembly;
   const poses = solveAssembly(assembly, poseOf).poses;
   const gears = assemblyGears(assembly, poses);

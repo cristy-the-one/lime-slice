@@ -7,7 +7,7 @@
  * uses it to judge sampled frames. A turn is `turnHinge` on each body by its share of one delta.
  */
 import { assemblyOf, bodyOf, couplingSeat, drives, frameOf, jointAt, memberFields, rootOf, solveAssembly, withCouplings, withRootAt, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
-import { worldPair, type GearVerdict, type WorldGear } from "./gear-pair.ts";
+import { gearReach, worldPair, type GearVerdict, type WorldGear } from "./gear-pair.ts";
 import { applyPose, inversePose, poseScale, relativePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { turnInAssembly } from "./pose.ts";
@@ -78,6 +78,26 @@ function slideLine(assembly: Assembly, poses: ReadonlyMap<string, Affine>, body:
 
 const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 
+/**
+ * The sentence for two gears whose axes are not parallel and whose teeth may reach each other (their bounding spheres
+ * meet): bevel gears and worms are not covered (docs/plan-gear-kinds.md, stage 4). Null when the axes are parallel or
+ * the gears stand clear.
+ */
+export function crossedSentence(a: WorldGear, b: WorldGear): string | null {
+  const cos = Math.abs(dot(a.axis, b.axis));
+  if (cos >= PARALLEL) return null;
+  const reach = (gear: WorldGear) => Math.hypot(gearReach(gear), gear.thickness / 2);
+  if (Math.hypot(...minus(a.centre, b.centre)) > reach(a) + reach(b)) return null;
+  const degrees = Math.round((Math.acos(Math.min(1, cos)) * 180) / Math.PI);
+  return `${a.label} and ${b.label} are not coupled: their axes cross at ${degrees}°, and bevel gears and worms are not covered.`;
+}
+
+/** Each gear of `start`'s that crosses another's axis within reach, one sentence each. */
+export function crossedNotes(gears: readonly WorldGear[], start: string): string[] {
+  const mine = gears.filter((gear) => gear.objectId === start);
+  return mine.flatMap((gear) => gears.filter((other) => other.objectId !== start).flatMap((other) => crossedSentence(gear, other) ?? []));
+}
+
 /** Whether `gear`'s centre lies on `line`, the axes parallel. */
 function onLine(gear: WorldGear, line: { axis: Vec3; point: Vec3 } | null): boolean {
   if (!line || Math.abs(dot(line.axis, gear.axis)) < PARALLEL) return false;
@@ -147,7 +167,13 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
         continue;
       }
       const report = worldPair(a, b);
-      if (!report || report.verdict === "apart") continue;
+      // Axes that cross (docs/plan-gear-kinds.md, stage 4): bevel gears and worms are not covered, and say so.
+      if (!report) {
+        const crossed = crossedSentence(a, b);
+        if (crossed) notCoupled.push({ names: [a.label, b.label], reason: crossed });
+        continue;
+      }
+      if (report.verdict === "apart") continue;
       const names: [string, string] = [a.label, b.label];
       if (report.verdict !== "meshing") {
         notCoupled.push({ names, verdict: report.verdict, reason: notCoupledSentence(a.label, b.label, report.verdict, report.distanceMm, report.workingMm, report.reason) });

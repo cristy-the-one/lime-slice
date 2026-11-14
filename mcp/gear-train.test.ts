@@ -286,3 +286,17 @@ console.log("MCP gear train: couple, turn, check, list, save, refusals and uncou
   assert.equal((await go("model_place", { object: pinion, travel: 10 })).ok, false, "a hinge takes angle, not travel");
   console.log("MCP rack: couple gives a hinge and a slide, the pinion moves the rack PI m z / 360 mm a degree, and back");
 }
+
+// --- Stage 4 (docs/plan-gear-kinds.md): two gears whose axes cross say so, and nothing is made.
+{
+  const t = new Session(fakeEngine());
+  const go = async (name: string, input: Reply = {}) => (await t.call(name, input)) as Reply;
+  const flat = String((await go("solid_new", { gear: { teeth: 20, module: 1, thickness: 6 }, name: "flat" })).object);
+  const standing = String((await go("solid_new", { gear: { teeth: 20, module: 1, thickness: 6 }, name: "standing" })).object);
+  assert.equal((await go("model_place", { object: standing, x: 12, y: 0, z: 14, turnX: 90 })).ok, true);
+  const crossed = await go("model_place", { object: flat, gears: "couple" });
+  assert.equal(crossed.ok, false, show(crossed));
+  assert.ok(String(crossed.reason ?? crossed.message).includes("flat and standing are not coupled: their axes cross at 90°, and bevel gears and worms are not covered."), show(crossed));
+  assert.equal(t.assemblies.length, 0, "nothing was made");
+  console.log("MCP crossed axes: bevel and worm pairs are refused with a sentence, and nothing is made");
+}

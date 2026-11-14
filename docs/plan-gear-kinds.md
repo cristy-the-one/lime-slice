@@ -1,6 +1,6 @@
 # Gear kinds: trains without hand-made hinges, rings, planets, racks, bevels and worms
 
-Status: plan. Stages 1 to 3 are built (one PR each); stage 4 are each built to this file in a PR of their own, and
+Status: built. Stages 1 to 3 are built and stage 4 decided, one PR each; each are each built to this file in a PR of their own, and
 each PR corrects its section where the code says otherwise. This file is the spec. It extends
 `docs/plan-gear-coupling.md` (what exists: couplings found by the mesh check, `trainTurn`, `trainCheck`).
 
@@ -260,12 +260,49 @@ the rack's Travel field, saved and reopened).
 
 ## Stage 4: bevel gears and worms
 
-- **Bevels** (intersecting axes): the kernel needs a conical tooth (a spherical involute, or the Tredgold
-  approximation: the back cone's equivalent spur outline swept to the apex). The mesh check needs the axes to meet at the
-  cones' apex and the cone angles to sum to the shaft angle; its outline test can run on the back cone's development as
-  a spur pair of equivalent tooth counts `z / cos δ`. The coupling ratio is `-z1 / z2` about the two axes.
-- **Worms** (skew axes): the kernel needs a helical thread and a throated or straight wheel. The mesh check is a lead
-  and centre-distance test; an outline test in one plane does not carry it, since the contact runs along a helix. The
-  ratio is `starts / z` and the worm is self-locking when its lead angle is below the friction angle.
-- Stage 4's PR decides, with measurements, whether each kind can be made reliable. One that cannot stays refused with a
-  sentence ("Bevel gears are not covered yet: their axes meet."), rather than half-working.
+Status: decided (the fourth PR). Both stay **refused, with a sentence**: neither can be made reliable to the owner's
+standard with what the kernel and the mesh check have, and a half-working kind is worse than an honest refusal. What
+changed: two gears whose axes cross used to be skipped in silence (`worldPair` returns null for axes more than a degree
+off parallel, so Couple gears said "No pair of these gears meshes" or nothing). Now a pair whose bounding spheres meet
+(each gear's reach, `gearReach`, with half its thickness) is said, in the window's Gears section, in `notCoupled`, and as
+`gears: "couple"`'s refusal for free gears: "Flat and Standing are not coupled: their axes cross at 90°, and bevel gears
+and worms are not covered." Nothing is hinged, nothing is made.
+
+### What a bevel pair would need
+
+- **Kernel.** No conical gear exists. A bevel gear's tooth is a spherical involute narrowing to the cone's apex. The usual
+  stand-in is Tredgold's: the tooth on the back cone is the involute of a virtual spur gear of `z / cos δ` teeth, and the
+  solid is a loft of that outline from the back cone toward the apex, scaled by the distance. OCCT can loft wires
+  (`lime_tree_feature_extrude_loops` does not; a ruled loft through two or three scaled outlines would be a new op), and
+  `Gear::points` gives the virtual outline. The faces are then not exact spherical involutes; the error grows with the face
+  width over the cone distance.
+- **Mesh check.** The axes must meet at the cones' common apex (one point, in 3D), and the pitch-cone angles must sum to
+  the shaft angle (`tan δ1 = sin Σ / (z2/z1 + cos Σ)`). Those are cheap and exact. The outline test, though, only carries
+  on one surface: the back cone's development is a plane where two virtual spur gears mesh, and a segment test there
+  judges that section. A pair can clear on the back cone and touch toward the apex (the loft's error, a wrong cone
+  angle), so a second development at the inner end is needed at least, and nothing between them is checked.
+- **Coupling.** Kinematically the easy part: `-z1/z2` about the two hinge axes (any axes: `trainTurn` turns each hinge
+  about its own), the sign from the axes against the apex. `trainCheck` would sample frames with the same two-section test.
+- **Why refused.** The verdict would rest on a polygon test at two cone sections of a lofted approximation, while the
+  owner's standard is that a person can rely on it. The only judge that sees the whole face is the kernel's exact common
+  volume, which is too slow to run on every sampled frame in the window. Until a conical tooth is built exactly (a real
+  spherical involute, or an octoid as cut) and the check is shown against exact volume over the face width, bevel gears
+  stay refused.
+
+### What a worm and wheel would need
+
+- **Kernel.** A worm is a helical thread: a trapezoid of the axial pitch `PI m` swept along a helix of lead `starts PI m`.
+  No helical sweep exists in the gear op (the kernel's sweep op could carry it, untested for this). The wheel is throated
+  (hobbed to the worm's curvature) or, for a printed toy, a helical spur gear, which the gear op does not make either.
+- **Mesh check.** The contact runs along a line on a helix, not in any one plane: the outline approach does not carry at
+  all. A check would be centre distance and lead (`tan λ = starts m / d1`), and the wheel's helix angle equal to the
+  lead angle, which says the pair is made right, not that it turns clear.
+- **Coupling.** `starts / z_wheel` turns of the wheel per worm turn, about axes at 90° that do not meet; a worm is
+  self-locking when its lead angle is under the friction angle, which a coupling can say (the wheel cannot drive the worm).
+- **Why refused.** No kernel geometry, and no check of the mesh that the window could trust.
+
+### Tests
+
+`src/gear-crossed.test.ts` (a right-angle pair within reach is refused with the angle, out of reach or parallel is not, a
+30° skew says 30°, an assembly's pair and Couple gears on free gears make nothing); `mcp/gear-train.test.ts` (the
+refusal over MCP, nothing made); `e2e/pose-gears.spec.ts` (the sentence in the window, nothing made).

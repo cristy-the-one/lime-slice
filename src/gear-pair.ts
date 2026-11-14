@@ -459,6 +459,16 @@ export function drivenTurn(driver: Spur, driven: Spur, driverAt: P2, drivenAt: P
 // --- Ring gears (docs/plan-gear-kinds.md, stage 2): the same as `lime_recipe::gears::Ring` and
 // `gear_pair::classify_internal`, held to the same verdicts by `mcp/recipe-gears.test.ts`.
 
+/**
+ * How far a gear's teeth reach from its `centre`, mm, in its plane: an external gear's tip circle, a ring's root circle
+ * and two modules, a rack's far end. With half its thickness it bounds the gear, for gears whose axes are not parallel.
+ */
+export function gearReach(gear: Pick<WorldGear, "spur" | "internal" | "rack">): number {
+  if (gear.rack) return (gear.spur.teeth + 1) * PI * gear.spur.module;
+  if (gear.internal) return ringRootRadius(gear.spur) + 2 * gear.spur.module;
+  return tipRadius(gear.spur);
+}
+
 /** A ring's tips, inside. */
 export function ringTipRadius(ring: Spur): number {
   return pitchRadius(ring) - ring.module;

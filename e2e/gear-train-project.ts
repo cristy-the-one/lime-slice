@@ -26,6 +26,16 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (process.argv.includes("--crossed")) {
+  // docs/plan-gear-kinds.md, stage 4: two gears of 20 whose axes cross at a right angle, within reach, as a bevel pair.
+  const flat = String((await call("solid_new", { gear: { teeth: 20, module: 1, thickness: 6 }, name: "flat" })).object);
+  const standing = String((await call("solid_new", { gear: { teeth: 20, module: 1, thickness: 6 }, name: "standing" })).object);
+  await call("model_place", { object: standing, x: 12, y: 0, z: 14, turnX: 90 });
+  const saved = await call("project_save", { name: "pose-gears-crossed.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ flat, standing }));
+  process.exit(0);
+}
 if (process.argv.includes("--rack")) {
   // docs/plan-gear-kinds.md, stage 3: a pinion of 12 over a rack of 40 (module 1), free and at mesh: the pinion's tooth 0
   // points down at the rack over U = 10 PI, and the rack's tooth 0 sits half a pitch on. No joint, no assembly.

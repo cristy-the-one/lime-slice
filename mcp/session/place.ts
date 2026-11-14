@@ -7,7 +7,7 @@ import { poseScale, posedBounds, relativePose, seatLift, thenPose, type ObjectFr
 import { boundsOf, orientEuler } from "../../src/mesh-place.ts";
 import { poseChain, solvePose, turnHinge } from "../../src/pose.ts";
 import type { Vec3 } from "../../src/model-tree.ts";
-import { couplingLine, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart, type Prepared } from "../../src/gear-train.ts";
+import { couplingLine, crossedNotes, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart, type Prepared } from "../../src/gear-train.ts";
 import { gearsInTree, type WorldGear } from "../../src/gear-pair.ts";
 import type { Affine } from "../../src/model-space.ts";
 import { assemblyOf, jointAt, turnsOnPlate, withRootAt, withCouplings, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
@@ -204,7 +204,11 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
       return gears.length ? [{ id: part.id, name: shownName(part.name), pose: part.modelPose, gears }] : [];
     });
     prepared = prepareTrain(assemblies, parts, obj.id, poseOf, this.newAssemblyId());
-    if (!prepared.assembly) return refuse("bad-assembly", "This gear meshes with no gear of another part that stands in no assembly: place gears at mesh first (model_check {gears} says where).");
+    if (!prepared.assembly) {
+      // Gears whose axes cross say so: bevel gears and worms are not covered (docs/plan-gear-kinds.md, stage 4).
+      const crossed = crossedNotes(parts.flatMap((part) => part.gears), obj.id);
+      return refuse("bad-assembly", crossed.length ? crossed.join(" ") : "This gear meshes with no gear of another part that stands in no assembly: place gears at mesh first (model_check {gears} says where).");
+    }
   }
   const mine = prepared?.assembly ?? assemblyOf(assemblies, obj.id);
   if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one, or gears:\"couple\" on a gear that meshes.", undefined, NEXT.assembly);
