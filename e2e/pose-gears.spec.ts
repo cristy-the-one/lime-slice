@@ -395,10 +395,9 @@ test("Two gears whose axes cross: Couple gears says bevel gears and worms are no
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   await page.goto("/");
   await autoSliceOff(page);
-  await page.locator("#projectFile").setInputFiles(file);
-  await page.locator("#tabPose").click();
+  await openOnPose(page, file, 2, ids.standing);
   const panel = page.locator("#posePanel");
-  await panel.locator(`[data-object='${ids.flat}']`).click({ timeout: 30_000 });
+  await panel.locator(`[data-object='${ids.flat}']`).click();
   await panel.getByRole("button", { name: "Couple gears" }).click();
   await expect(panel.locator("[data-pose-gears]")).toContainText("flat and standing are not coupled: their axes cross at 90°, and bevel gears and worms are not covered.");
   expect(((await downloadProject(page)).doc as unknown as FreeDoc).assemblies ?? [], "nothing was made").toHaveLength(0);
