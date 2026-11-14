@@ -146,6 +146,13 @@ pub struct Solid {
     /// A ring's outside diameter, mm; at least two modules outside its root circle. Only on a ring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rim: Option<f64>,
+    /// A straight rack (docs/plan-gear-kinds.md, stage 3): its teeth along its own +X, pointing +Y, the pitch line on
+    /// Y = 0 through the origin, tooth 0 centred on it. Written only when true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rack: Option<bool>,
+    /// A rack's bar under its roots, mm; 1.5 modules when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<f64>,
 }
 
 impl Solid {

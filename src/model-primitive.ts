@@ -4,7 +4,7 @@
  * The ghost never asks the engine: it is built here, from the sizes alone.
  */
 import { formatMm } from "./model-plane.ts";
-import { boreGhostOutline, gearGhostOutline, gearLabel, ringGhostOutline, ringRim, tipRadius, type GearFields } from "./model-gear.ts";
+import { boreGhostOutline, gearGhostOutline, gearLabel, rackBack, rackGhostOutline, ringGhostOutline, ringRim, tipRadius, type GearFields } from "./model-gear.ts";
 
 // Lives in ./model-space.ts, which loads with the app (the plate places solids with it), so it need not load this module.
 export { turnCentre } from "./model-space.ts";
@@ -72,13 +72,16 @@ export interface PrimitiveSpec {
   /** A ring gear, its teeth pointing in (docs/plan-gear-kinds.md, stage 2); `rim` its outside diameter. */
   internal?: boolean;
   rim?: number;
+  /** A straight rack (stage 3) and its bar under the roots. */
+  rack?: boolean;
+  back?: number;
 }
 
 /** A gear spec's gear numbers, or null for any other kind. */
 export function gearOf(spec: PrimitiveSpec): GearFields | null {
   if (spec.primitive !== "gear") return null;
-  const { teeth = 0, module = 0, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight, internal, rim } = spec;
-  return { teeth, module, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight, ...(internal ? { internal: true, ...(rim !== undefined ? { rim } : {}) } : {}) };
+  const { teeth = 0, module = 0, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight, internal, rim, rack, back } = spec;
+  return { teeth, module, pressureDeg, backlash, profileShift, phaseDeg, bore, boreShape, boreFlat, hubDiameter, hubHeight, ...(internal ? { internal: true, ...(rim !== undefined ? { rim } : {}) } : {}), ...(rack ? { rack: true, ...(back !== undefined ? { back } : {}) } : {}) };
 }
 
 /** Every number the panel offers a primitive, whichever kind reads it. */
@@ -175,6 +178,10 @@ export function primitiveBounds(spec: PrimitiveSpec): { min: Vec3; max: Vec3 } {
       return round(spec.radius, spec.height);
     case "gear": {
       const gear = gearOf(spec)!;
+      if (gear.rack) {
+        const p = Math.PI * gear.module;
+        return at([-p / 2, -1.25 * gear.module - rackBack(gear), 0], [(gear.teeth - 0.5) * p, gear.module, spec.height]);
+      }
       if (gear.internal) return round(ringRim(gear) / 2, spec.height);
       const hub = gear.hubDiameter && gear.hubHeight ? gear.hubHeight : 0;
       return round(Math.max(tipRadius(gear), hub > 0 ? (gear.hubDiameter ?? 0) / 2 : 0), spec.height + hub);
@@ -308,7 +315,8 @@ export function primitiveMesh(spec: PrimitiveSpec): Float32Array {
     case "gear": {
       const gear = gearOf(spec)!;
       if (!Number.isInteger(gear.teeth) || gear.teeth < 3 || gear.teeth > 400 || !ok(gear.module, spec.height)) break;
-      if (gear.internal) ringPrism(tri, quad, gear, spec.height);
+      if (gear.rack) rackPrism(tri, quad, gear, spec.height);
+      else if (gear.internal) ringPrism(tri, quad, gear, spec.height);
       else gearPrism(tri, quad, gear, spec.height);
       break;
     }
@@ -378,6 +386,25 @@ function gearPrism(tri: Tri, quad: Quad, gear: GearFields, height: number) {
   walls(quad, hub, height, top, true);
   ringCap(tri, hubBore, hub, top, true);
   walls(quad, hubBore, height, top, false);
+}
+
+/** A rack's ghost: its outline pushed up its thickness, the caps the bar's rectangle and each tooth's trapezoid. */
+function rackPrism(tri: Tri, quad: Quad, gear: GearFields, height: number) {
+  const outline = rackGhostOutline(gear);
+  walls(quad, outline, 0, height, true);
+  const cap = (a: [number, number], b: [number, number], c: [number, number]) => {
+    tri([a[0], a[1], 0], [c[0], c[1], 0], [b[0], b[1], 0]);
+    tri([a[0], a[1], height], [b[0], b[1], height], [c[0], c[1], height]);
+  };
+  const [b0, b1, b2] = [outline[0]!, outline[1]!, outline[2]!];
+  const b3 = outline[outline.length - 1]!;
+  cap(b0, b1, b2);
+  cap(b0, b2, b3);
+  for (let k = 0; k < gear.teeth; k += 1) {
+    const [r1, t1, t2, r2] = outline.slice(3 + 4 * k, 7 + 4 * k) as [number, number][];
+    cap(r2, r1, t1);
+    cap(r2, t1, t2);
+  }
 }
 
 /** A ring gear's ghost: the rim's disc with the toothed hole through it. */

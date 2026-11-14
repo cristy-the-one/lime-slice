@@ -3910,6 +3910,107 @@ pub mod gears {
     /// way, by the tooth ratio.
     pub fn ring_turn(own_turn_deg: f64, own_z: u32, ring_z: u32) -> f64 { own_turn_deg * own_z as f64 / ring_z as f64 }
 
+    /// How far a rack travels, mm, when a pinion of `own_z` teeth and module `m` turns `own_turn_deg`: its pitch circle
+    /// rolling along the rack's pitch line, `PI m z / 360` mm a degree.
+    pub fn rack_travel(own_turn_deg: f64, own_z: u32, m: f64) -> f64 { own_turn_deg * PI * m * own_z as f64 / 360.0 }
+
+    /// A straight rack (docs/plan-gear-kinds.md, stage 3): `teeth` teeth of module `module` along its own +U, pointing to
+    /// +V, the pitch line on V = 0. Straight flanks at the pressure angle, addendum m, dedendum 1.25 m, each tooth
+    /// `backlash` mm thinner at the pitch line, and a bar of `back` mm under the roots. Tooth k is centred on U = k PI m.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Rack {
+        pub teeth: u32,
+        pub module: f64,
+        pub pressure_deg: f64,
+        pub backlash: f64,
+    }
+
+    impl Rack {
+        /// `teeth` of module `module` mm at 20 degrees and 0.1 mm backlash.
+        pub fn new(teeth: u32, module: f64) -> Rack {
+            Rack { teeth, module, pressure_deg: 20.0, backlash: 0.1 }
+        }
+
+        /// One tooth to the next, mm.
+        pub fn pitch_mm(&self) -> f64 {
+            PI * self.module
+        }
+
+        /// Half a tooth along the pitch line, at the tip and at the root, mm.
+        fn halves(&self) -> (f64, f64, f64) {
+            let (sa, ca) = sin_cos_deg(self.pressure_deg);
+            let tan_a = sa / ca;
+            let half = self.pitch_mm() / 4.0 - self.backlash / 2.0;
+            (half, half - self.module * tan_a, half + 1.25 * self.module * tan_a)
+        }
+
+        /// The rack's ends along U: half a pitch before tooth 0 and after the last tooth.
+        pub fn ends(&self) -> (f64, f64) {
+            (-self.pitch_mm() / 2.0, (self.teeth as f64 - 0.5) * self.pitch_mm())
+        }
+
+        /// None when the numbers make a rack, else the sentence why not.
+        pub fn refusal(&self) -> Option<String> {
+            let ok = |v: f64, lo: f64, hi: f64| v.is_finite() && v >= lo && v <= hi;
+            if self.teeth < 1 || self.teeth > 400 {
+                return Some("A rack takes 1 to 400 teeth.".to_string());
+            }
+            if !ok(self.module, 0.05, 50.0) {
+                return Some("A gear's module is 0.05 to 50 mm.".to_string());
+            }
+            if !ok(self.pressure_deg, 10.0, 30.0) {
+                return Some("A gear's pressure angle is 10 to 30 degrees.".to_string());
+            }
+            if !ok(self.backlash, 0.0, self.module) {
+                return Some("A gear's backlash is 0 to one module, in mm at the pitch circle.".to_string());
+            }
+            let (_, tip, root) = self.halves();
+            if tip <= 0.0 {
+                return Some("These rack teeth come to a point below the tip: use a smaller pressure angle or less backlash.".to_string());
+            }
+            if 2.0 * root >= self.pitch_mm() {
+                return Some("These rack teeth leave no root between them: use a smaller pressure angle.".to_string());
+            }
+            None
+        }
+
+        /// The rack's outline, counter-clockwise: along the bar's back, up its far end, back across every tooth from the
+        /// last to the first, and down its near end. `phase_mm` moves every tooth along U; `back` is the bar under the roots.
+        pub fn points(&self, phase_mm: f64, back: f64) -> Result<Vec<P2>, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let m = self.module;
+            let (_, tip, root) = self.halves();
+            let (u0, u1) = self.ends();
+            let (yr, yb) = (-1.25 * m, -1.25 * m - back);
+            let mut pts: Vec<P2> = vec![[u0 + phase_mm, yb], [u1 + phase_mm, yb], [u1 + phase_mm, yr]];
+            let mut k = self.teeth;
+            while k > 0 {
+                k -= 1;
+                let c = phase_mm + k as f64 * self.pitch_mm();
+                pts.push([c + root, yr]);
+                pts.push([c + tip, m]);
+                pts.push([c - tip, m]);
+                pts.push([c - root, yr]);
+            }
+            pts.push([u0 + phase_mm, yr]);
+            Ok(pts)
+        }
+
+        /// The outline for `extrude.loops`: straight lines.
+        pub fn outline(&self, phase_mm: f64, back: f64) -> Result<Outline, String> {
+            let pts = self.points(phase_mm, back)?;
+            let start = pts[0];
+            let mut pieces: Vec<Piece> = Vec::new();
+            for p in pts[1..].iter() {
+                pieces.push(Piece::Line(*p));
+            }
+            pieces.push(Piece::Line(start));
+            Ok(Outline { start, pieces })
+        }
+    }
+
     /// An internal spur gear, a ring with its teeth pointing in (docs/plan-gear-kinds.md, stage 2). Its space between two
     /// teeth is the tooth of an external gear of the same numbers: involute flanks from the tip circle `r - m` inside
     /// to the root circle `r + 1.25 m` outside, `backlash` mm wider at the pitch circle. Below the base circle a flank is
@@ -4088,7 +4189,7 @@ pub mod gears {
 /// module and pressure angle, then the centre distance and the mating phase with a segment test on the teeth of
 /// `Gear::points` that face each other. No `Region::intersect`.
 pub mod gear_pair {
-    use super::gears::{mate_phase, mate_phase_internal, mate_turn, ring_turn, Gear, Ring, P2};
+    use super::gears::{mate_phase, mate_phase_internal, mate_turn, rack_travel, ring_turn, Gear, Rack, Ring, P2};
     use super::geom2d::{atan2, sin_cos_deg};
 
     const PI: f64 = std::f64::consts::PI;
@@ -4414,6 +4515,86 @@ pub mod gear_pair {
     pub fn internal_turn(pinion: &Gear, ring: &Ring, pinion_at: P2, ring_at: P2, pinion_phase_deg: f64, ring_phase_deg: f64, angle_deg: f64) -> PairReport {
         let follow = ring_phase_deg + ring_turn(angle_deg, pinion.teeth, ring.teeth);
         classify_internal(pinion, ring, pinion_at, ring_at, pinion_phase_deg + angle_deg, follow)
+    }
+
+    /// A pinion against a rack (docs/plan-gear-kinds.md, stage 3), in the rack's frame: the rack's teeth along +U point
+    /// to +V with tooth 0 at U = `rack_phase_mm` and the pitch line on V = 0; the pinion's centre is `pinion_at`, its tooth
+    /// 0 at `pinion_phase_deg` from +U. The rack's bar is taken as one module deep for the test; it never reaches a
+    /// pinion that meshes.
+    ///
+    /// Apart when the pinion's tips stand clear of the rack's tips, or off its ends. Then module and pressure angle; then
+    /// the working distance from the pitch line, the pinion's pitch radius plus its shift: nearer by more than both
+    /// backlashes is `TooClose`, farther is `Loose`. The mating phase: a pinion turning one way rolls its pitch circle along
+    /// the pitch line, so a tooth a fraction of a pitch behind the line's foot meets a space as far behind it. Inside the
+    /// band a turn past the play is `ToothOnTooth`, and two edges that cross are `ToothOnTooth` at any distance.
+    pub fn classify_rack(pinion: &Gear, rack: &Rack, pinion_at: P2, pinion_phase_deg: f64, rack_phase_mm: f64) -> PairReport {
+        let m = rack.module;
+        let d = pinion_at[1];
+        let (u0, u1) = rack.ends();
+        let (lo, hi) = (u0 + rack_phase_mm, u1 + rack_phase_mm);
+        let tip = pinion.tip_radius();
+        let off = if pinion_at[0] < lo { lo - pinion_at[0] } else if pinion_at[0] > hi { pinion_at[0] - hi } else { 0.0 };
+        if d - tip > m + 1e-9 || off > tip + 1e-9 || d < -1.25 * m - tip {
+            return clear(PairVerdict::Apart);
+        }
+        if (pinion.module - m).abs() > 1e-9 {
+            return clear(PairVerdict::ModuleMismatch);
+        }
+        if (pinion.pressure_deg - rack.pressure_deg).abs() > 1e-6 {
+            return clear(PairVerdict::PressureMismatch);
+        }
+        let a = placed(pinion, pinion_at, pinion_phase_deg);
+        let b = rack.points(rack_phase_mm, m).ok();
+        let (Some(a), Some(b)) = (a, b) else {
+            return clear(PairVerdict::Unbuildable);
+        };
+        let working = pinion.pitch_radius() + pinion.shift * m;
+        let backlash = pinion.backlash + rack.backlash;
+        let too_close = d + 1e-9 < working - backlash;
+        let loose = d > working + backlash + 1e-9;
+        // The foot of the pinion's centre on the pitch line is at -90 degrees from it; turning +, the pitch point moves +U.
+        let pitch = pinion.pitch_deg();
+        let f = (((-90.0 - pinion_phase_deg) / pitch) % 1.0 + 1.0) % 1.0;
+        let p_mm = rack.pitch_mm();
+        let expect = pinion_at[0] - f * p_mm + p_mm / 2.0;
+        let err_mm = tooth_err_deg(rack_phase_mm - expect, p_mm).abs();
+        let (sa, ca) = sin_cos_deg(pinion.pressure_deg);
+        let tan_a = if ca == 0.0 { 0.0 } else { sa / ca };
+        let allowed = backlash / 2.0 + (d - working) * tan_a;
+        let past_play = err_mm > allowed + 1e-9;
+        let near = edges_within(&b, pinion_at, tip + 1e-6);
+        let mut hit = false;
+        let n = a.len();
+        for i in 0..n {
+            let (p, q) = (a[i], a[(i + 1) % n]);
+            if p[1] > m + 1e-6 && q[1] > m + 1e-6 {
+                continue;
+            }
+            for other in &near {
+                let (c, e) = *other;
+                if !boxes_apart(p, q, c, e) && segments_cross(p, q, c, e) {
+                    hit = true;
+                }
+            }
+        }
+        let verdict = if too_close {
+            PairVerdict::TooClose
+        } else if hit {
+            PairVerdict::ToothOnTooth
+        } else if loose {
+            PairVerdict::Loose
+        } else if past_play {
+            PairVerdict::ToothOnTooth
+        } else {
+            PairVerdict::Meshing
+        };
+        PairReport { verdict, narrow: true, hit }
+    }
+
+    /// `classify_rack` after the pinion turns `angle_deg` and the rack travels with it, `rack_travel` mm along +U.
+    pub fn rack_turn(pinion: &Gear, rack: &Rack, pinion_at: P2, pinion_phase_deg: f64, rack_phase_mm: f64, angle_deg: f64) -> PairReport {
+        let travel = rack_travel(angle_deg, pinion.teeth, rack.module);
+        classify_rack(pinion, rack, pinion_at, pinion_phase_deg + angle_deg, rack_phase_mm + travel)
     }
 }
 

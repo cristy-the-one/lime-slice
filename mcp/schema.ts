@@ -783,6 +783,8 @@ export const gearFields = {
   hubHeight: { type: "number", exclusiveMinimum: 0, description: "mm above the gear." },
   internal: { type: "boolean", description: "A ring gear: teeth pointing in, a pinion turns inside it the same way round. 20 to 150 teeth; no profileShift, bore or hub." },
   rim: { type: "number", exclusiveMinimum: 0, description: "A ring's outside diameter, mm. Default two modules outside its roots." },
+  rack: { type: "boolean", description: "A straight rack: its teeth along its own +X, pointing +Y, the pitch line through origin with tooth 0 on it. 1 to 400 teeth; no profileShift, phaseDeg, bore, hub or rim. A pinion's angle moves it PI m z / 360 mm a degree." },
+  back: { type: "number", exclusiveMinimum: 0, description: "A rack's bar under its roots, mm. Default 1.5 modules." },
 };
 const gearOp = {
   type: "object",

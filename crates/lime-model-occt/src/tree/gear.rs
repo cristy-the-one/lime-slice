@@ -5,7 +5,7 @@
 
 use std::os::raw::c_int;
 
-use lime_recipe::gears::{Gear, Piece, Ring};
+use lime_recipe::gears::{Gear, Piece, Rack, Ring};
 
 use super::ffi::{lime_tree_extrude_loops, lime_tree_feature_extrude_loops};
 use super::k1::encode_loops;
@@ -165,6 +165,12 @@ fn turned(v: [f64; 3], turn: [f64; 3]) -> [f64; 3] {
 /// The gear `solid` describes, built against nothing: its base centred on `origin`, `height` thick along its own Z,
 /// turned about the middle of its axis like a cylinder, the hub on top.
 pub(super) fn build_gear(solid: &Solid) -> Result<Shape, String> {
+    if solid.rack == Some(true) {
+        return build_rack(solid);
+    }
+    if solid.back.is_some() {
+        return Err("Only a rack takes a back.".into());
+    }
     if solid.internal == Some(true) {
         return build_ring(solid);
     }
@@ -244,6 +250,57 @@ fn build_ring(solid: &Solid) -> Result<Shape, String> {
     let (ring, thickness, phase_deg, rim) = ring_spec(solid)?;
     let hole = ring.outline(phase_deg)?;
     let loops = vec![circle(rim / 2.0), ProfileLoop { start: hole.start, segments: hole.pieces.iter().map(segment).collect() }];
+    let [x, y, z] = solid.origin;
+    let [rx, ry, rz] = solid.turn;
+    let p = [x, y, z + thickness / 2.0, rx, ry, rz, thickness, 1.0];
+    let mut blob = Vec::new();
+    encode_loops(&loops, &mut blob);
+    Shape::made(|error| unsafe {
+        lime_tree_feature_extrude_loops(c"fuse".as_ptr(), p.as_ptr(), blob.as_ptr(), blob.len() as c_int, error)
+    })
+}
+
+/// The rack `solid` describes (docs/plan-gear-kinds.md, stage 3): `teeth`, `module`, `pressureDeg` and `backlash` as a
+/// gear's, `back` the bar under its roots. No profile shift, phase, bore, hub or rim. Or the one sentence why not.
+pub(super) fn rack_spec(solid: &Solid) -> Result<(Rack, f64, f64), String> {
+    let teeth = solid.teeth.unwrap_or(0.0);
+    if !(teeth.is_finite() && teeth.fract() == 0.0) {
+        return Err("A gear takes a whole number of teeth.".into());
+    }
+    if solid.internal == Some(true) || solid.rim.is_some() {
+        return Err("A rack is not a ring: give rack or internal, not both.".into());
+    }
+    if solid.profile_shift.is_some_and(|x| x != 0.0) || solid.phase_deg.is_some_and(|x| x != 0.0) {
+        return Err("A rack takes no profile shift or phase: place it along its length instead.".into());
+    }
+    if solid.bore.is_some_and(|x| x != 0.0) || solid.bore_shape.is_some() || solid.bore_flat.is_some() || solid.hub_diameter.is_some() || solid.hub_height.is_some() {
+        return Err("A rack takes no bore or hub.".into());
+    }
+    let rack = Rack {
+        teeth: teeth.clamp(0.0, 10_000.0) as u32,
+        module: solid.module.unwrap_or(0.0),
+        pressure_deg: solid.pressure_deg.unwrap_or(20.0),
+        backlash: solid.backlash.unwrap_or(0.1),
+    };
+    if let Some(why) = rack.refusal() {
+        return Err(why);
+    }
+    let thickness = solid.height;
+    if !(thickness.is_finite() && thickness > 0.0 && thickness <= MAX_MM) {
+        return Err("A gear's thickness is above 0 and at most 1000 mm.".into());
+    }
+    let back = solid.back.unwrap_or(1.5 * rack.module);
+    if !(back.is_finite() && back > 0.0 && back <= MAX_MM) {
+        return Err("A rack's back is above 0 and at most 1000 mm.".into());
+    }
+    Ok((rack, thickness, back))
+}
+
+/// A rack: its outline pushed its thickness along its own Z, one extrude of a loop.
+fn build_rack(solid: &Solid) -> Result<Shape, String> {
+    let (rack, thickness, back) = rack_spec(solid)?;
+    let outline = rack.outline(0.0, back)?;
+    let loops = vec![ProfileLoop { start: outline.start, segments: outline.pieces.iter().map(segment).collect() }];
     let [x, y, z] = solid.origin;
     let [rx, ry, rz] = solid.turn;
     let p = [x, y, z + thickness / 2.0, rx, ry, rz, thickness, 1.0];
