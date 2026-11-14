@@ -254,19 +254,16 @@ export function bindChrome() {
     },
     printWUp,
     newSolidAt: (spec) => newSolidInView(spec),
-    gearMates(): WorldGear[] {
-      const editing = S.editing;
-      const openId = S.open?.objectId ?? "";
-      const editingGear = !!editing && openId && (editing.op.kind === "root" || (editing.op.kind === "boolean" && editing.op.primitive === "gear"));
-      const except = editingGear && editing ? { objectId: openId, step: editing.op.kind === "root" ? null : editing.node } : null;
+    gearMates(onOpenSolid: boolean): WorldGear[] {
+      // The card's gear is part of the open solid when it is fused onto it or is one of its steps being edited. That
+      // solid's gears are one body with it, so none of them is a mate.
+      const own = onOpenSolid || S.editing ? (S.open?.objectId ?? "") : "";
       const gears: WorldGear[] = [];
       for (const obj of livePlate()) {
+        if (own && obj.id === own) continue;
         const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
         if (!tree) continue;
-        for (const gear of gearsInTree(tree, inView(modelPoseOf(obj)), obj.id, obj.name)) {
-          if (except && gear.objectId === except.objectId && gear.step === except.step) continue;
-          gears.push(gear);
-        }
+        gears.push(...gearsInTree(tree, inView(modelPoseOf(obj)), obj.id, obj.name));
       }
       return gears;
     },

@@ -23,6 +23,10 @@ export interface PairReport {
   hit: boolean;
   /** `Gear::refusal` text when the outline cannot be built. */
   reason?: string;
+  /** Centre distance, mm, in the plane of the gears. Present when the outlines were compared. */
+  distanceMm?: number;
+  /** The centre distance at which this pair meshes, mm. Present when the outlines were compared. */
+  workingMm?: number;
 }
 
 /** The numbers `Gear` carries. Backlash is millimetres at the pitch circle; shift is times the module. */
@@ -60,6 +64,9 @@ export interface GearPairRow {
   verdict: GearVerdict;
   narrow: boolean;
   hit: boolean;
+  /** Centre distance and the distance at which the pair meshes, mm. Present when the outlines were compared. */
+  distanceMm?: number;
+  workingMm?: number;
   /** Present when either gear is a step rather than the object's own solid. Null is that solid. */
   steps?: [number | null, number | null];
 }
@@ -85,7 +92,7 @@ function pitchDeg(gear: Spur): number {
 }
 
 /** Working centre distance, including profile shift. Zero shift is the sum of the pitch radii. */
-function centreDistance(a: Spur, b: Spur): number {
+export function centreDistance(a: Spur, b: Spur): number {
   const a0 = pitchRadius(a) + pitchRadius(b);
   const x = a.shift + b.shift;
   if (x === 0) return a0;
@@ -104,7 +111,7 @@ function centreDistance(a: Spur, b: Spur): number {
   return (a0 * ca) / Math.cos(w);
 }
 
-function matePhase(ownPhase: number, ownZ: number, dir: number, mateZ: number): number {
+export function matePhase(ownPhase: number, ownZ: number, dir: number, mateZ: number): number {
   const ownPitch = 360 / ownZ;
   const f = ((((dir - ownPhase) / ownPitch) % 1) + 1) % 1;
   return dir + 180 - (0.5 - f) * (360 / mateZ);
@@ -156,18 +163,36 @@ function boxesApart(a: P2, b: P2, c: P2, d: P2): boolean {
   return ax1 < bx0 || bx1 < ax0 || ay1 < by0 || by1 < ay0;
 }
 
-function outlinesCross(driver: P2[], driven: P2[]): boolean {
-  const an = driver.length;
-  const dn = driven.length;
-  if (an < 2 || dn < 2) return false;
-  for (let i = 0; i < an; i += 1) {
-    const a = driver[i]!;
-    const b = driver[(i + 1) % an]!;
+/** Whether the segment `a`-`b` comes within `radius` of `centre`. */
+function reaches(a: P2, b: P2, centre: P2, radius: number): boolean {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy;
+  const t = len2 > 0 ? Math.min(1, Math.max(0, ((centre[0] - a[0]) * dx + (centre[1] - a[1]) * dy) / len2)) : 0;
+  return Math.hypot(a[0] + t * dx - centre[0], a[1] + t * dy - centre[1]) <= radius;
+}
+
+/**
+ * The edges of a closed outline that come inside the other gear's tip circle. Two outlines can only cross there, so
+ * a pair in mesh compares the few teeth that face each other and not every tooth with every tooth.
+ */
+function edgesWithin(outline: P2[], centre: P2, radius: number): [P2, P2][] {
+  const edges: [P2, P2][] = [];
+  for (let i = 0; i < outline.length; i += 1) {
+    const a = outline[i]!;
+    const b = outline[(i + 1) % outline.length]!;
     if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-12) continue;
-    for (let j = 0; j < dn; j += 1) {
-      const c = driven[j]!;
-      const d = driven[(j + 1) % dn]!;
-      if (Math.hypot(d[0] - c[0], d[1] - c[1]) < 1e-12) continue;
+    if (reaches(a, b, centre, radius)) edges.push([a, b]);
+  }
+  return edges;
+}
+
+function outlinesCross(driver: P2[], driverAt: P2, driverTip: number, driven: P2[], drivenAt: P2, drivenTip: number): boolean {
+  if (driver.length < 2 || driven.length < 2) return false;
+  const near = edgesWithin(driver, drivenAt, drivenTip + 1e-6);
+  const far = edgesWithin(driven, driverAt, driverTip + 1e-6);
+  for (const [a, b] of near) {
+    for (const [c, d] of far) {
       if (!boxesApart(a, b, c, d) && segmentsCross(a, b, c, d)) return true;
     }
   }
@@ -387,35 +412,36 @@ function placed(gear: Spur, centre: P2, phaseDeg: number): P2[] | null {
  * A driver angle belongs to `drivenTurn`, which applies `mate_turn` and does not add a joint.
  */
 export function classify(driver: Spur, driven: Spur, driverAt: P2, drivenAt: P2, driverPhaseDeg: number, drivenPhaseDeg: number): PairReport {
+  const distance = span(driverAt, drivenAt);
+  // Gears that do not reach each other are apart, whatever they are: two stages of a train with different modules are not a fault.
+  if (distance > tipRadius(driver) + tipRadius(driven) + 1e-9) return clear("apart");
   if (Math.abs(driver.module - driven.module) > 1e-9) return clear("moduleMismatch");
   if (Math.abs(driver.pressureDeg - driven.pressureDeg) > 1e-6) return clear("pressureMismatch");
-  const distance = span(driverAt, drivenAt);
-  if (distance > tipRadius(driver) + tipRadius(driven) + 1e-9) return clear("apart");
   const a = placed(driver, driverAt, driverPhaseDeg);
   const b = placed(driven, drivenAt, drivenPhaseDeg);
-  const working = centreDistance(driver, driven);
-  const backlash = driver.backlash + driven.backlash;
-  const tooClose = distance + 1e-9 < working - backlash;
-  const expect = matePhase(driverPhaseDeg, driver.teeth, bearingDeg(driverAt, drivenAt), driven.teeth);
-  const errMm = Math.abs(toothErrDeg(drivenPhaseDeg - expect, pitchDeg(driven))) * (PI / 180) * pitchRadius(driven);
-  const quarterMm = pitchRadius(driven) * (pitchDeg(driven) / 4) * (PI / 180);
-  const tooth = errMm > quarterMm + 1e-9;
-  const pressure = (driver.pressureDeg * PI) / 180;
-  const ca = Math.cos(pressure);
-  const tanA = ca === 0 ? 0 : Math.sin(pressure) / ca;
-  const allowed = backlash / 2 + (distance - working) * tanA;
-  const pastPlay = errMm > allowed + 1e-9;
-  // Farther than the working distance by more than both backlashes. The mirror of tooClose, strict, so the edge stays in the band.
-  const loose = distance > working + backlash + 1e-9;
   if (!a || !b) {
     const driverSide = flank(driver, PAIR_FLANK);
     const drivenSide = flank(driven, PAIR_FLANK);
     const reason = typeof driverSide === "string" ? driverSide : typeof drivenSide === "string" ? drivenSide : undefined;
     return { verdict: "unbuildable", narrow: false, hit: false, ...(reason ? { reason } : {}) };
   }
-  const hit = outlinesCross(a, b);
-  const verdict: GearVerdict = tooClose ? "tooClose" : tooth || pastPlay || hit ? "toothOnTooth" : loose ? "loose" : "meshing";
-  return { verdict, narrow: true, hit };
+  const working = centreDistance(driver, driven);
+  const backlash = driver.backlash + driven.backlash;
+  const tooClose = distance + 1e-9 < working - backlash;
+  // Farther than the working distance by more than both backlashes. The mirror of tooClose, strict, so the edge stays in the band.
+  const loose = distance > working + backlash + 1e-9;
+  const expect = matePhase(driverPhaseDeg, driver.teeth, bearingDeg(driverAt, drivenAt), driven.teeth);
+  const errMm = Math.abs(toothErrDeg(drivenPhaseDeg - expect, pitchDeg(driven))) * (PI / 180) * pitchRadius(driven);
+  const pressure = (driver.pressureDeg * PI) / 180;
+  const ca = Math.cos(pressure);
+  const tanA = ca === 0 ? 0 : Math.sin(pressure) / ca;
+  const allowed = backlash / 2 + (distance - working) * tanA;
+  const pastPlay = errMm > allowed + 1e-9;
+  const hit = outlinesCross(a, driverAt, tipRadius(driver), b, drivenAt, tipRadius(driven));
+  // A crossing is tooth on tooth at any distance. Inside the band a turn past the play is too: the flanks touch there
+  // before two chords of the outline cross. Past the band only the outlines say, since the teeth are narrower there.
+  const verdict: GearVerdict = tooClose ? "tooClose" : hit ? "toothOnTooth" : loose ? "loose" : pastPlay ? "toothOnTooth" : "meshing";
+  return { verdict, narrow: true, hit, distanceMm: distance, workingMm: working };
 }
 
 /** `classify` after the driver turns `angleDeg` and the driven gear turns with it by the tooth ratio. */
@@ -523,11 +549,13 @@ export function gearsInTree(tree: ModelTree, pose: Affine, objectId: string, obj
 }
 
 /**
- * The pair in the plane of `a`'s axis. Null when the axes are not parallel within a degree, the same way up:
- * a flipped gear is not this check. Slabs that do not overlap along the axis are apart, and the outlines are not built.
+ * The pair in the plane of `a`'s axis. Null when the axes are not parallel within a degree. A gear lying the other way
+ * up is still this check: a spur tooth is the same on both sides of its centre line, so the flipped outline is the
+ * outline at the phase its tooth 0 shows in this plane. Slabs that do not overlap along the axis are apart, and the
+ * outlines are not built.
  */
 export function worldPair(a: WorldGear, b: WorldGear): PairReport | null {
-  const aligned = dot(a.axis, b.axis);
+  const aligned = Math.abs(dot(a.axis, b.axis));
   if (!(aligned > Math.cos((1 * PI) / 180))) return null;
   const along = Math.abs(dot([b.centre[0] - a.centre[0], b.centre[1] - a.centre[1], b.centre[2] - a.centre[2]], a.axis));
   if (along >= (a.thickness + b.thickness) / 2 - 1e-6) return clear("apart");
@@ -542,7 +570,10 @@ export function worldPair(a: WorldGear, b: WorldGear): PairReport | null {
   return classify(a.spur, b.spur, [0, 0], project(b.centre), phase(a.tooth0), phase(b.tooth0));
 }
 
-/** The mate to show: a meshing gear if there is one, otherwise the nearest gear this check can see. */
+/**
+ * The mate to show: a meshing gear if there is one, otherwise the nearest gear this one reaches, otherwise the
+ * nearest gear. A caller leaves out the gears of this gear's own solid: they are one body and cannot turn against it.
+ */
 export function nearestVerdict(self: WorldGear, others: readonly WorldGear[]): { other: WorldGear; report: PairReport } | null {
   let best: { other: WorldGear; report: PairReport; distance: number } | null = null;
   for (const other of others) {
@@ -550,26 +581,28 @@ export function nearestVerdict(self: WorldGear, others: readonly WorldGear[]): {
     const report = worldPair(self, other);
     if (!report) continue;
     const distance = Math.hypot(other.centre[0] - self.centre[0], other.centre[1] - self.centre[1], other.centre[2] - self.centre[2]);
-    const meshing = report.verdict === "meshing";
-    const bestMeshing = best?.report.verdict === "meshing";
-    // A mesh wins over anything else. Every other verdict is ranked by distance, not by plate order.
-    const better = !best || (meshing && !bestMeshing) || (meshing === bestMeshing && distance < best.distance);
+    // A mesh wins, then a gear this one reaches, then one it does not. Inside a rank the nearer wins, not plate order.
+    const rank = (verdict: GearVerdict) => (verdict === "meshing" ? 0 : verdict === "apart" ? 2 : 1);
+    const better = !best || rank(report.verdict) < rank(best.report.verdict) || (rank(report.verdict) === rank(best.report.verdict) && distance < best.distance);
     if (better) best = { other, report, distance };
   }
   return best ? { other: best.other, report: best.report } : null;
 }
 
 /** The sentence on the gear card. */
-export function verdictSentence(name: string, verdict: GearVerdict, reason?: string): string {
+export function verdictSentence(name: string, verdict: GearVerdict, reason?: string, distanceMm?: number, workingMm?: number): string {
+  // What to do about a wrong centre distance: where the centres are, and where they mesh.
+  const mm = (value: number) => String(Math.round(value * 100) / 100);
+  const centres = distanceMm !== undefined && workingMm !== undefined ? `: centres ${mm(distanceMm)} mm apart, they mesh at ${mm(workingMm)} mm.` : ".";
   switch (verdict) {
     case "meshing":
       return `Meshes with ${name}.`;
     case "apart":
       return `Clear of ${name}.`;
     case "tooClose":
-      return `Too close to ${name}.`;
+      return `Too close to ${name}${centres}`;
     case "loose":
-      return `Too far from ${name}.`;
+      return `Too far from ${name}${centres}`;
     case "toothOnTooth":
       return `Teeth cross ${name}.`;
     case "unbuildable":
@@ -585,7 +618,11 @@ function pairKey(gear: WorldGear): string {
   return `${gear.objectId}\0${gear.step ?? -1}\0${gear.label}`;
 }
 
-/** Every pair that includes `objectId`, in a stable order. Axes that are not parallel are left out. */
+/**
+ * Every pair that includes `objectId`, in a stable order. Axes that are not parallel are left out, and so are two
+ * gears of one solid: fused into one body they cannot turn against each other, and two on one axis (a compound gear)
+ * would read as too close.
+ */
 export function gearPairRows(gears: readonly WorldGear[], objectId: string): GearPairRow[] {
   const rows: { key: string; row: GearPairRow }[] = [];
   for (let i = 0; i < gears.length; i += 1) {
@@ -593,6 +630,7 @@ export function gearPairRows(gears: readonly WorldGear[], objectId: string): Gea
       const a = gears[i]!;
       const b = gears[j]!;
       if (a.objectId !== objectId && b.objectId !== objectId) continue;
+      if (a.objectId === b.objectId) continue;
       const report = worldPair(a, b);
       if (!report) continue;
       const [left, right] = pairKey(a) <= pairKey(b) ? [a, b] : [b, a];
@@ -604,6 +642,10 @@ export function gearPairRows(gears: readonly WorldGear[], objectId: string): Gea
         narrow: report.narrow,
         hit: report.hit,
       };
+      if (report.distanceMm !== undefined && report.workingMm !== undefined) {
+        row.distanceMm = Math.round(report.distanceMm * 1000) / 1000;
+        row.workingMm = Math.round(report.workingMm * 1000) / 1000;
+      }
       if (left.step !== null || right.step !== null) row.steps = [left.step, right.step];
       rows.push({ key: `${pairKey(left)}\0${pairKey(right)}`, row });
     }

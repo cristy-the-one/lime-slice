@@ -3902,7 +3902,8 @@ pub mod gears {
 ///
 /// A recipe calls `classify` or `driven_turn`. The window's gear card and `model_check` report the same verdicts
 /// (`docs/collision-prototype.md`). The check stays in this crate, so lust and rustc run it: tip circles first, then
-/// the centre distance and the mating phase, then a segment test on `Gear::points`. No `Region::intersect`.
+/// module and pressure angle, then the centre distance and the mating phase with a segment test on the teeth of
+/// `Gear::points` that face each other. No `Region::intersect`.
 pub mod gear_pair {
     use super::gears::{mate_phase, mate_turn, Gear, P2};
     use super::geom2d::{atan2, sin_cos_deg};
@@ -3916,7 +3917,8 @@ pub mod gear_pair {
     /// How a pair of external spur gears stands.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum PairVerdict {
-        /// The tip circles do not meet, so the tooth outlines were not compared.
+        /// The tip circles do not meet, so the tooth outlines were not compared. Gears of different modules that do
+        /// not reach each other are apart too.
         Apart,
         /// Centre distance and phase are in mesh, and no tooth edges cross.
         Meshing,
@@ -3925,13 +3927,13 @@ pub mod gear_pair {
         /// The centres are farther than the working distance by more than both backlashes, the tip circles still
         /// meet, and no tooth edges cross.
         Loose,
-        /// A tooth meets a tooth: the phase is off, or the outlines cross.
+        /// A tooth meets a tooth: the outlines cross, or the turn is past the play of a pair in the band.
         ToothOnTooth,
         /// `Gear::points` could not build an outline. The outlines were not compared.
         Unbuildable,
-        /// The modules differ, so the pair is not a mesh.
+        /// The gears reach each other and their modules differ, so the pair is not a mesh.
         ModuleMismatch,
-        /// The pressure angles differ, so the pair is not a mesh.
+        /// The gears reach each other and their pressure angles differ, so the pair is not a mesh.
         PressureMismatch,
     }
 
@@ -4026,97 +4028,47 @@ pub mod gear_pair {
         Some(world)
     }
 
-    /// Index of a coordinate in a grid that starts at `origin`. Truncates toward zero, then steps down when the
-    /// value was negative, which is what `floor` does for these small millimetre indexes.
-    fn cell_of(x: f64, origin: f64, cell: f64) -> i32 {
-        let t = (x - origin) / cell;
-        let n = t as i32;
-        if t < n as f64 { n - 1 } else { n }
+    /// Whether the segment `a`-`b` comes within `radius` of `centre`.
+    fn reaches(a: P2, b: P2, centre: P2, radius: f64) -> bool {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let along = if len2 > 0.0 { ((centre[0] - a[0]) * dx + (centre[1] - a[1]) * dy) / len2 } else { 0.0 };
+        let t = along.clamp(0.0, 1.0);
+        let (px, py) = (a[0] + t * dx - centre[0], a[1] + t * dy - centre[1]);
+        px * px + py * py <= radius * radius
     }
 
-    fn outlines_cross(driver: &[P2], driven: &[P2]) -> bool {
+    /// The edges of a closed outline that come inside the other gear's tip circle. Two outlines can only cross
+    /// there, so a pair in mesh compares the few teeth that face each other and not every tooth with every tooth.
+    fn edges_within(outline: &[P2], centre: P2, radius: f64) -> Vec<(P2, P2)> {
+        let n = outline.len();
+        let mut edges = Vec::new();
+        for i in 0..n {
+            let (a, b) = (outline[i], outline[(i + 1) % n]);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            if dx * dx + dy * dy < 1e-24 {
+                continue;
+            }
+            if reaches(a, b, centre, radius) {
+                edges.push((a, b));
+            }
+        }
+        edges
+    }
+
+    fn outlines_cross(driver: &[P2], driver_at: P2, driver_tip: f64, driven: &[P2], driven_at: P2, driven_tip: f64) -> bool {
         if driver.len() < 2 || driven.len() < 2 {
             return false;
         }
-        let mut min_x = driven[0][0];
-        let mut min_y = driven[0][1];
-        let mut max_x = min_x;
-        let mut max_y = min_y;
-        for p in driven {
-            if p[0] < min_x { min_x = p[0]; }
-            if p[1] < min_y { min_y = p[1]; }
-            if p[0] > max_x { max_x = p[0]; }
-            if p[1] > max_y { max_y = p[1]; }
-        }
-        let cell = ((max_x - min_x).max(max_y - min_y) / 32.0).max(0.5);
-        let cols = cell_of(max_x, min_x, cell) + 2;
-        let rows = cell_of(max_y, min_y, cell) + 2;
-        let cols_n = if cols < 1 { 1 } else { cols };
-        let rows_n = if rows < 1 { 1 } else { rows };
-        let mut buckets: Vec<Vec<usize>> = Vec::new();
-        let n_buckets = (cols_n as usize).saturating_mul(rows_n as usize);
-        for _ in 0..n_buckets {
-            buckets.push(Vec::new());
-        }
-        let bucket = |x: i32, y: i32| -> usize {
-            let cx = if x < 0 { 0 } else if x >= cols_n { cols_n - 1 } else { x };
-            let cy = if y < 0 { 0 } else if y >= rows_n { rows_n - 1 } else { y };
-            (cy as usize) * (cols_n as usize) + cx as usize
-        };
-        let dn = driven.len();
-        for i in 0..dn {
-            let (a, b) = (driven[i], driven[(i + 1) % dn]);
-            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            if dx * dx + dy * dy < 1e-24 {
-                continue;
-            }
-            let x0 = cell_of(a[0].min(b[0]), min_x, cell);
-            let x1 = cell_of(a[0].max(b[0]), min_x, cell);
-            let y0 = cell_of(a[1].min(b[1]), min_y, cell);
-            let y1 = cell_of(a[1].max(b[1]), min_y, cell);
-            let mut y = y0;
-            while y <= y1 {
-                let mut x = x0;
-                while x <= x1 {
-                    buckets[bucket(x, y)].push(i);
-                    x += 1;
+        let near = edges_within(driver, driven_at, driven_tip + 1e-6);
+        let far = edges_within(driven, driver_at, driver_tip + 1e-6);
+        for edge in &near {
+            let (a, b) = *edge;
+            for other in &far {
+                let (c, d) = *other;
+                if !boxes_apart(a, b, c, d) && segments_cross(a, b, c, d) {
+                    return true;
                 }
-                y += 1;
-            }
-        }
-        let an = driver.len();
-        for i in 0..an {
-            let (a, b) = (driver[i], driver[(i + 1) % an]);
-            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            if dx * dx + dy * dy < 1e-24 {
-                continue;
-            }
-            let x0 = cell_of(a[0].min(b[0]), min_x, cell);
-            let x1 = cell_of(a[0].max(b[0]), min_x, cell);
-            let y0 = cell_of(a[1].min(b[1]), min_y, cell);
-            let y1 = cell_of(a[1].max(b[1]), min_y, cell);
-            let mut seen: Vec<usize> = Vec::new();
-            let mut y = y0;
-            while y <= y1 {
-                let mut x = x0;
-                while x <= x1 {
-                    for &j in buckets[bucket(x, y)].iter() {
-                        let mut known = false;
-                        for s in seen.iter() {
-                            if *s == j { known = true; }
-                        }
-                        if known {
-                            continue;
-                        }
-                        seen.push(j);
-                        let (c, d) = (driven[j], driven[(j + 1) % dn]);
-                        if !boxes_apart(a, b, c, d) && segments_cross(a, b, c, d) {
-                            return true;
-                        }
-                    }
-                    x += 1;
-                }
-                y += 1;
             }
         }
         false
@@ -4125,52 +4077,54 @@ pub mod gear_pair {
     /// Classify two external spur gears. `driver_phase_deg` is tooth 0 of the driver from +U, and
     /// `driven_phase_deg` is tooth 0 of the driven gear, both in degrees in the same plane as the centres.
     ///
-    /// Modules and pressure angles are compared first. Tip circles that do not meet are `Apart` and the outlines
-    /// are not built. Otherwise the outlines are compared. Play along the pitch circle, one way from the centred
-    /// mesh, is half both backlashes plus `(distance - working) * tan(pressure)`: a wider centre adds play and a
-    /// closer one takes it away. The radial band is both backlashes either side of the working distance, the same
-    /// edge `TooClose` uses: past it on the far side, with no crossing, is `Loose`. A segment that crosses is
-    /// `ToothOnTooth` even inside that play. An outline `Gear` cannot build is `Unbuildable` and `narrow` is false.
+    /// Tip circles that do not meet are `Apart`, whatever the gears are: two stages of a train with different
+    /// modules are not a fault. Gears that do reach each other are compared by module and pressure angle first,
+    /// then by their outlines. The radial band is both backlashes either side of the working distance: closer is
+    /// `TooClose`, and farther, with no edge crossing, is `Loose`. A segment that crosses is `ToothOnTooth` at
+    /// any distance. Inside the band, play along the pitch circle, one way from the centred mesh, is half both
+    /// backlashes plus `(distance - working) * tan(pressure)`: a turn past it is `ToothOnTooth` too, since the
+    /// flanks touch there before two chords of the outline cross. An outline `Gear` cannot build is `Unbuildable`
+    /// and `narrow` is false.
     pub fn classify(driver: &Gear, driven: &Gear, driver_at: P2, driven_at: P2, driver_phase_deg: f64, driven_phase_deg: f64) -> PairReport {
+        let distance = span(driver_at, driven_at);
+        let reach = driver.tip_radius() + driven.tip_radius();
+        if distance > reach + 1e-9 {
+            return clear(PairVerdict::Apart);
+        }
         if (driver.module - driven.module).abs() > 1e-9 {
             return clear(PairVerdict::ModuleMismatch);
         }
         if (driver.pressure_deg - driven.pressure_deg).abs() > 1e-6 {
             return clear(PairVerdict::PressureMismatch);
         }
-        let distance = span(driver_at, driven_at);
-        let reach = driver.tip_radius() + driven.tip_radius();
-        if distance > reach + 1e-9 {
-            return clear(PairVerdict::Apart);
-        }
         let outlines = match (placed(driver, driver_at, driver_phase_deg), placed(driven, driven_at, driven_phase_deg)) {
             (Some(a), Some(b)) => Some((a, b)),
             _ => None,
         };
+        let Some((a, b)) = outlines else {
+            return clear(PairVerdict::Unbuildable);
+        };
         let working = driver.centre_distance(driven);
         let backlash = driver.backlash + driven.backlash;
         let too_close = distance + 1e-9 < working - backlash;
+        // Farther than the working distance by more than both backlashes. The mirror of too_close, strict, so the
+        // edge itself (working + both backlashes) stays in the band.
+        let loose = distance > working + backlash + 1e-9;
         let expect = mate_phase(driver_phase_deg, driver.teeth, bearing_deg(driver_at, driven_at), driven.teeth);
         let err_mm = tooth_err_deg(driven_phase_deg - expect, driven.pitch_deg()).abs() * (PI / 180.0) * driven.pitch_radius();
-        let quarter_mm = driven.pitch_radius() * (driven.pitch_deg() / 4.0) * (PI / 180.0);
-        let tooth = err_mm > quarter_mm + 1e-9;
         let (sa, ca) = sin_cos_deg(driver.pressure_deg);
         let tan_a = if ca == 0.0 { 0.0 } else { sa / ca };
         let allowed = backlash / 2.0 + (distance - working) * tan_a;
         let past_play = err_mm > allowed + 1e-9;
-        // Farther than the working distance by more than both backlashes. The mirror of too_close, strict, so the
-        // edge itself (working + both backlashes) stays in the band.
-        let loose = distance > working + backlash + 1e-9;
-        let Some((a, b)) = outlines else {
-            return PairReport { verdict: PairVerdict::Unbuildable, narrow: false, hit: false };
-        };
-        let hit = outlines_cross(&a, &b);
+        let hit = outlines_cross(&a, driver_at, driver.tip_radius(), &b, driven_at, driven.tip_radius());
         let verdict = if too_close {
             PairVerdict::TooClose
-        } else if tooth || past_play || hit {
+        } else if hit {
             PairVerdict::ToothOnTooth
         } else if loose {
             PairVerdict::Loose
+        } else if past_play {
+            PairVerdict::ToothOnTooth
         } else {
             PairVerdict::Meshing
         };

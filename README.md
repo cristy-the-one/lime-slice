@@ -50,7 +50,7 @@ Step-by-step examples, with the window at each click, are in [docs/tutorials](do
 
 ![Sketching two circles on the top face and drilling a hole at each centre.](docs/screenshots/clip-holes.gif)
 
-The rail's other Model tools are still there: New solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube, gear), fillet, chamfer, shell, split, scale, boolean, pattern, mirror, and the Features menu (pocket, boss, texture, array, ribs, text, Parameters). A gear is an involute spur. The card says how it sits against the gear it meshes with, or the nearest other gear: meshing, clear, too close, too far, teeth crossing, a gear that cannot be built, or a module or pressure angle that does not match. `model_check` reports the same pairs. Measure and Check sit under Inspect. Place and Workplane sit under Frame. Undo, Redo, and STEP sit at the foot of the rail.
+The rail's other Model tools are still there: New solid (box, cylinder, sphere, ellipsoid, cone, torus, wedge, polygon, tube, gear), fillet, chamfer, shell, split, scale, boolean, pattern, mirror, and the Features menu (pocket, boss, texture, array, ribs, text, Parameters). A gear is an involute spur. The card says how it sits against the gear it meshes with, or the nearest gear it reaches: meshing, too close or too far (with the centre distance and the distance they mesh at), teeth crossing, a gear that cannot be built, or a module or pressure angle that does not match. `model_check` reports the same pairs. Measure and Check sit under Inspect. Place and Workplane sit under Frame. Undo, Redo, and STEP sit at the foot of the rail.
 
 ### Push/pull and edge drag
 

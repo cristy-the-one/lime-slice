@@ -91,9 +91,13 @@ fn far_apart_skips_the_outlines() {
 fn different_modules_do_not_mesh() {
     let driver = Gear::new(12, 2.0);
     let driven = Gear::new(24, 1.5);
-    let report = classify(&driver, &driven, [0.0, 0.0], [36.0, 0.0], 0.0, 172.5);
+    // Tip radii 14 and 19.5 mm: at 30 mm the gears reach each other, and they cannot mesh.
+    let report = classify(&driver, &driven, [0.0, 0.0], [30.0, 0.0], 0.0, 172.5);
     assert_eq!(report.verdict, PairVerdict::ModuleMismatch);
     assert!(!report.narrow);
+    // At 36 mm they do not reach: two stages of a train with different modules are not a fault.
+    let stages = classify(&driver, &driven, [0.0, 0.0], [36.0, 0.0], 0.0, 172.5);
+    assert_eq!(stages.verdict, PairVerdict::Apart);
 }
 
 #[test]
@@ -192,5 +196,24 @@ fn a_driven_turn_stays_in_mesh() {
             );
             assert!(report.narrow);
         }
+    }
+}
+
+#[test]
+fn a_loose_pair_out_of_phase_crosses_only_when_its_outlines_do() {
+    let (driver, driven, _, phase) = mesh(12, 24, 2.0);
+    let pitch_mm = std::f64::consts::PI * 2.0;
+    // Past the band the teeth are narrow where they overlap, so there is more room than the pitch-circle play says.
+    // A fifth of a tooth at 39 mm, and just over a quarter at 39.5 mm, cross nothing: the pair is loose.
+    for (distance, tooth) in [(39.0, 0.2), (39.5, 0.26)] {
+        let report = at(&driver, &driven, distance, phase, tooth * pitch_mm);
+        assert!(!report.hit, "{distance} mm, {tooth} of a tooth: a segment crossed");
+        assert_eq!(report.verdict, PairVerdict::Loose, "{distance} mm, {tooth} of a tooth");
+    }
+    // Tip against tip does cross.
+    for (distance, tooth) in [(39.0, 0.5), (39.5, 0.5), (38.0, 0.2)] {
+        let report = at(&driver, &driven, distance, phase, tooth * pitch_mm);
+        assert!(report.hit, "{distance} mm, {tooth} of a tooth");
+        assert_eq!(report.verdict, PairVerdict::ToothOnTooth, "{distance} mm, {tooth} of a tooth");
     }
 }

@@ -72,9 +72,12 @@ for (const [z1, z2, module] of PAIRS) {
 const apart = classify(spur(12, 2), spur(24, 2), [0, 0], [1000, 0], 0, 172.5);
 eq("far apart", apart, { verdict: "apart", narrow: false, hit: false });
 
-const modules = classify(spur(12, 2), spur(24, 1.5), [0, 0], [36, 0], 0, 172.5);
-eq("modules 2 and 1.5", modules.verdict, "moduleMismatch");
+// Tip radii 14 and 19.5 mm: at 30 mm the gears reach each other and cannot mesh. At 36 mm they do not reach, and two
+// stages of a train with different modules are not a fault.
+const modules = classify(spur(12, 2), spur(24, 1.5), [0, 0], [30, 0], 0, 172.5);
+eq("modules 2 and 1.5 that reach each other", modules.verdict, "moduleMismatch");
 check("a module mismatch skips the outlines", !modules.narrow);
+eq("modules 2 and 1.5 that do not reach", classify(spur(12, 2), spur(24, 1.5), [0, 0], [36, 0], 0, 172.5).verdict, "apart");
 
 const pressure = classify(spur(12, 2), spur(24, 2, 25), [0, 0], [36, 0], 0, matePhase(0, 12, 0, 24));
 eq("pressure angles differ", pressure.verdict, "pressureMismatch");
@@ -108,6 +111,20 @@ const crossed = classify(widened, widenedMate, [0, 0], [36, 0], 0, crossedDeg);
 check("half a tooth crosses", crossed.hit);
 eq("a crossing stays tooth on tooth", crossed.verdict, "toothOnTooth");
 
+// Past the band the teeth are narrow where they overlap: a fifth of a tooth at 39 mm and just over a quarter at
+// 39.5 mm cross nothing, so the pair is loose. Tip against tip crosses.
+const pitchMm = Math.PI * 2;
+for (const [distance, tooth] of [[39, 0.2], [39.5, 0.26]] as const) {
+  const report = classify(widened, widenedMate, [0, 0], [distance, 0], 0, widenedPhase + ((tooth * pitchMm) / 24) * (180 / Math.PI));
+  check(`${distance} mm, ${tooth} of a tooth has no segment hit`, !report.hit);
+  eq(`${distance} mm, ${tooth} of a tooth is loose`, report.verdict, "loose");
+}
+for (const [distance, tooth] of [[39, 0.5], [39.5, 0.5], [38, 0.2]] as const) {
+  const report = classify(widened, widenedMate, [0, 0], [distance, 0], 0, widenedPhase + ((tooth * pitchMm) / 24) * (180 / Math.PI));
+  check(`${distance} mm, ${tooth} of a tooth crosses`, report.hit);
+  eq(`${distance} mm, ${tooth} of a tooth is tooth on tooth`, report.verdict, "toothOnTooth");
+}
+
 const pointed = spur(6, 1, 30, 0.1, 1);
 const pointedMate = spur(12, 1, 30);
 // Working distance for shift 1 at 30°, the pose that would be a mesh if the outline existed.
@@ -135,7 +152,18 @@ if (pinion && wheel) {
   const nearest = nearestVerdict(pinion, [stacked!, wheel]);
   eq("the card names the gear it meshes with", nearest && verdictSentence(nearest.other.label, nearest.report.verdict), "Meshes with Wheel.");
   const rows = gearPairRows([pinion, wheel], "pin");
-  eq("model_check rows", rows, [{ a: "pin", b: "wheel", names: ["Pinion", "Wheel"], verdict: "meshing", narrow: true, hit: false }]);
+  eq("model_check rows", rows, [{ a: "pin", b: "wheel", names: ["Pinion", "Wheel"], verdict: "meshing", narrow: true, hit: false, distanceMm: 36, workingMm: 36 }]);
+  // The wheel lying the other way up (turned 180° about X, about the middle of its axis) is the same gear: its
+  // tooth 0 shows at the mirrored phase in the pinion's plane.
+  const flipped = placeGear({ ...gearSpec(24, 2, [36, 0, 0], -matePhase(0, 12, 0, 24)), turn: [180, 0, 0] }, IDENTITY_POSE, "flip", "Flipped", null);
+  eq("a flipped wheel still meshes", flipped && worldPair(pinion, flipped)?.verdict, "meshing");
+  const flippedOff = placeGear({ ...gearSpec(24, 2, [36, 0, 0], matePhase(0, 12, 0, 24) + 7.5), turn: [180, 0, 0] }, IDENTITY_POSE, "flip", "Flipped", null);
+  eq("a flipped wheel half a tooth off crosses", flippedOff && worldPair(pinion, flippedOff)?.verdict, "toothOnTooth");
+  const square = placeGear({ ...gearSpec(24, 2, [36, 0, 0]), turn: [90, 0, 0] }, IDENTITY_POSE, "sq", "Square", null);
+  eq("axes at a right angle are not this check", square && worldPair(pinion, square), null);
+  const wide = gearAt(gearSpec(24, 2, [37, 0, 0], matePhase(0, 12, 0, 24)), "wide", "Wide");
+  const widePair = wide ? worldPair(pinion, wide) : null;
+  eq("a wide pair says where it meshes", widePair && verdictSentence("Wide", widePair.verdict, widePair.reason, widePair.distanceMm, widePair.workingMm), "Too far from Wide: centres 37 mm apart, they mesh at 36 mm.");
 }
 
 const root = gearSpec(12, 2, [0, 0, 0]);
@@ -157,6 +185,10 @@ const patterned = withChild(newTree("p", { kind: "primitive", solid: { primitive
   fingerprint: null,
 });
 const inGroup = gearsInTree(patterned, IDENTITY_POSE, "box", "Box");
+// Two gears of one solid are one body: no row between them, a row each against another object's gear.
+const loneWheel = gearAt(gearSpec(30, 1, [24, 0, 0]), "other", "Other");
+eq("gears of one solid are not a pair", gearPairRows(inGroup, "box"), []);
+eq("each is a pair with another solid's gear", loneWheel && gearPairRows([...inGroup, loneWheel], "box").map((row) => [row.a, row.b, row.steps]), [["box", "other", [1, null]], ["box", "other", [1, null]]]);
 eq("a pattern and a nested batch both count", inGroup.map((gear) => [gear.step, gear.spur.teeth, gear.centre[0]]), [[1, 18, 0], [1, 30, 24]]);
 
 eq("the sentences", [verdictSentence("Wheel", "apart"), verdictSentence("Wheel", "toothOnTooth"), verdictSentence("Wheel", "loose"), verdictSentence("Wheel", "unbuildable", "These teeth come to a point below the tip.")], ["Clear of Wheel.", "Teeth cross Wheel.", "Too far from Wheel.", "Unbuildable with Wheel: These teeth come to a point below the tip."]);
@@ -167,6 +199,8 @@ const near = gearAt(gearSpec(24, 2, [36, 0, 0], 0), "near", "Near");
 check("the card repro is three gears", !!self && !!far && !!near);
 if (self && far && near) {
   eq("far then near names the nearer crossing", nearestVerdict(self, [far, near]) && verdictSentence(nearestVerdict(self, [far, near])!.other.label, nearestVerdict(self, [far, near])!.report.verdict), "Teeth cross Near.");
+  const small = gearAt(gearSpec(6, 1, [20, 0, 0], 0), "small", "Small");
+  eq("a gear it reaches wins over a nearer one it does not", small && nearestVerdict(self, [small, near])?.other.label, "Near");
   eq("near then far names the nearer crossing", nearestVerdict(self, [near, far]) && verdictSentence(nearestVerdict(self, [near, far])!.other.label, nearestVerdict(self, [near, far])!.report.verdict), "Teeth cross Near.");
   const meshFar = gearAt(gearSpec(40, 2, [52, 0, 0], matePhase(0, 12, 0, 40)), "mesh", "Mesh");
   if (meshFar) {

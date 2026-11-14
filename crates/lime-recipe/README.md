@@ -87,5 +87,5 @@ trig. `ops::gear` is the kernel's gear step, which builds the same outline (`gui
 
 `gear_pair::classify` says how two external spur gears stand (`apart`, `meshing`, `tooClose`, `loose`, `toothOnTooth`,
 `unbuildable`, `moduleMismatch`, `pressureMismatch`) from their centres and phases. `gear_pair::driven_turn` turns the driver by an
-angle and the driven gear by `mate_turn` before that check. The outlines are compared only when the tip circles meet
-(`docs/collision-prototype.md`).
+angle and the driven gear by `mate_turn` before that check. Gears whose tip circles do not meet are `apart`, different modules included; the outlines are compared only
+when they do (`docs/collision-prototype.md`).
