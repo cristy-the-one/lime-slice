@@ -1476,7 +1476,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set an assembled pose or joint (mm, degrees); the print layout does not move. With to, join an assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
+    description: "Set an assembled pose or joint, in mm and degrees. The print layout does not move. With to, join an assembly. With gears, couple the gears that mesh so turning one turns its train. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1494,11 +1494,11 @@ export const TOOLS: ToolSpec[] = [
         joint: { oneOf: [{ type: "object" }, { enum: [null] }], description: "Joint or null. guide {kind:\"pose\"}." },
         angle: { type: "number", description: "Hinge angle in degrees." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
-        root: { const: true, description: "Make this member the fixed root." },
-        gears: { enum: ["couple", "list", "uncouple"], description: "Couple meshing gears." },
+        root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
+        gears: { enum: ["couple", "list", "uncouple"], description: "Gear train of this member's assembly. couple: find every pair of spur gears the mesh check calls meshing and couple them, so turning one gear (angle) turns the wheel, pinion and every gear of its train at the tooth ratio; replies couplings, notCoupled (each with its reason), locked trains and checked (a turn sampled for crossing teeth). list: the same rows, nothing changed. uncouple: drop them. Each gear needs a hinge about its own axis." },
         reply: { enum: ["angles"], description: "Pose: changed hinge angles only." },
-        compact: { type: "boolean", description: "Omit the note." },
-        objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, as they stand." },
+        compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
+        objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
       },
     },
   },
@@ -1550,7 +1550,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_check",
-    description: "Check a solid as it stands on the bed, before slicing. It reports overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges, each with where it is. Gear pairs that include this solid come back as gears: meshing, apart, tooClose, toothOnTooth, moduleMismatch, or pressureMismatch.",
+    description: "Check a solid as it stands on the bed, before slicing. It reports overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges, each with where it is. Gear pairs that include this solid come back as gears, each with a verdict: meshing, apart, tooClose, loose (too far), toothOnTooth, unbuildable, moduleMismatch, or pressureMismatch, and for gears that reach each other distanceMm and workingMm (where the centres are, and where the pair meshes).",
     inputSchema: {
       type: "object",
       additionalProperties: false,

@@ -165,10 +165,31 @@ export interface Hit {
   fields: string[];
 }
 
+let rarity: Map<string, number> | null = null;
+
+/**
+ * How much a word tells entries apart: 2 for a word one entry has, 0.5 for a word every entry has. "floating" in
+ * "why is my print floating" then outweighs "print", which half the catalogue says.
+ */
+function rarityOf(word: string): number {
+  if (!rarity) {
+    const rows = catalogue();
+    const seen = new Map<string, number>();
+    for (const entry of rows) {
+      const own = new Set<string>([...entry.name, ...entry.text]);
+      for (const field of entry.fields) for (const w of [...field.name, ...field.text]) own.add(w);
+      for (const w of own) seen.set(w, (seen.get(w) ?? 0) + 1);
+    }
+    const all = Math.log(Math.max(2, rows.length));
+    rarity = new Map([...seen].map(([w, count]) => [w, 0.5 + (1.5 * Math.log(rows.length / count)) / all]));
+  }
+  return rarity.get(word) ?? 1;
+}
+
 /**
  * The entries that share words with a query, best first. A word in a name or a field's name counts three, a word in a
- * text one; an exact name ranks first. A tool's matching fields come with it, so "couple gears" finds model_place
- * {gears}.
+ * text one, each times how rare the word is in the catalogue; an exact name ranks first. A tool's matching fields come
+ * with it, so "couple gears" finds model_place {gears}.
  */
 export function search(query: string, limit = 8): Hit[] {
   const asked = [...new Set(words(query))];
@@ -185,7 +206,7 @@ export function search(query: string, limit = 8): Hit[] {
         if (s > 0) fieldScore.set(field.field, (fieldScore.get(field.field) ?? 0) + s);
         best = Math.max(best, s);
       }
-      score += best;
+      score += best * rarityOf(word);
     }
     // Every word of the query found counts more than one word found often.
     const found = asked.filter((word) => entry.name.has(word) || entry.text.has(word) || entry.fields.some((field) => field.name.has(word) || field.text.has(word))).length;
