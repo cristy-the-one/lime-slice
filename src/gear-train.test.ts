@@ -168,6 +168,10 @@ const link = (driver: string, driven: string, ratio: number): Coupling => ({ dri
   const { found, coupled } = couple(fixed, gears);
   eq("the fixed gear is coupled and the train is locked", [found.couplings.length, found.locked.map((row) => row.reason)], [1, ["Ring and Pinion are locked: Ring cannot turn, and the train meshes with it."]]);
   check("turning the pinion is refused", "reason" in trainTurn(coupled, "pin", 5));
+  // The same pair with the pinion seated without a joint: they mesh and neither can turn. That is said, not skipped.
+  const { joint: _joint, ...seatedPin } = hinged("pin", "frame", [0, 0, 0]);
+  const seated = couple({ id: "s", name: "Seated", members: [FRAME, seatedPin] }, gears).found;
+  eq("two meshing gears with no hinge are named, not coupled", [seated.couplings.length, seated.notCoupled.map((row) => row.reason)], [0, ["Ring and Pinion are not coupled: they mesh, but neither has a hinge to turn on."]]);
 }
 
 // --- Pairs that do not mesh are not coupled, in one sentence each.

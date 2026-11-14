@@ -95,7 +95,12 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
       if (a.objectId === b.objectId) continue;
       const bodyA = bodyOf(assembly, a.objectId), bodyB = bodyOf(assembly, b.objectId);
       if (!bodyA || !bodyB) continue;
-      if ("body" in bodyA && "body" in bodyB && bodyA.body === bodyB.body) continue;
+      if ("body" in bodyA && "body" in bodyB && bodyA.body === bodyB.body) {
+        // One body: a shared shaft, which is never a pair. On the fixed body (neither gear has a hinge) a mesh is
+        // said, since silence there read as "No pair of these gears meshes."
+        if (bodyA.fixed && worldPair(a, b)?.verdict === "meshing") notCoupled.push({ names: [a.label, b.label], reason: `${a.label} and ${b.label} are not coupled: they mesh, but neither has a hinge to turn on.` });
+        continue;
+      }
       const report = worldPair(a, b);
       if (!report || report.verdict === "apart") continue;
       const names: [string, string] = [a.label, b.label];

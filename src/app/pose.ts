@@ -582,7 +582,7 @@ function coupleGears(assembly: Assembly): void {
   const gears = assemblyGears(assembly, poses);
   if (gears.length < 2) { gearNotes = { assembly: assembly.id, lines: ["This assembly has fewer than two gears that Model knows: open the gears' parts in Model once, then couple."] }; renderPanel(); return; }
   const found = findCouplings(assembly, gears, poses);
-  gearNotes = { assembly: assembly.id, lines: [...(found.couplings.length ? [] : ["No pair of these gears meshes."]), ...found.notCoupled.map((row) => row.reason)] };
+  gearNotes = { assembly: assembly.id, lines: [...(found.couplings.length || found.notCoupled.length ? [] : ["No pair of these gears meshes."]), ...found.notCoupled.map((row) => row.reason)] };
   editAssembly(withCouplings(assembly, found.couplings));
 }
 function panelClick(event: Event): void {
