@@ -18,7 +18,7 @@ sources:
 
 `TOOLS` in `mcp/schema.ts` has 91 tools. `groupOf` in `mcp/groups.ts` returns null for a core tool and a group name otherwise. Descriptions below are the `description` strings from `TOOLS`, copied as written.[^schema] [^groups]
 
-`listedTools` sends every tool except `tools_enable` when groups are off (`LIME_MCP_TOOL_GROUPS=0`). By default it sends the core tools, `tools_enable`, and the tools of each enabled group. A call to a tool whose group is not enabled opens the group and runs.[^schema] [^groups]
+`listedTools` sends every tool except `tools_enable` when groups are off (`LIME_MCP_TOOLS=all` or `LIME_MCP_TOOL_GROUPS=0`). By default it sends only `FIRST_TOOLS` (`guide`, `call`, `plan_run`, `session_info`), plus the tools of each group a client opened. `core` is the group of every tool outside a group, and `LIME_MCP_TOOLS=core` starts with it open. `guide` finds and explains every tool (`mcp/catalog.ts`), and `call {tool, args}` runs one without opening its group. A direct call to a tool whose group is not enabled opens the group and runs. See `docs/plan-mcp-discovery.md`.[^schema] [^groups]
 
 No tool name contains "send". Printer upload is a desktop command. See [GUI and MCP parity](gui-parity.md).
 

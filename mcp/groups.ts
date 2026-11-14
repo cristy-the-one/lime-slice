@@ -47,7 +47,32 @@ export function groupOf(tool: string): string | null {
 
 /** Whether this server starts with only the core tools listed: always, unless LIME_MCP_TOOL_GROUPS=0. */
 export function groupsOptedIn(): boolean {
-  return process.env.LIME_MCP_TOOL_GROUPS !== "0";
+  return listMode() !== "all";
+}
+
+/**
+ * The tools every client sees first, whatever else is listed (docs/plan-mcp-discovery.md D1). Fixed: a feature never
+ * joins them. guide finds and explains every other tool, call runs it.
+ */
+export const FIRST_TOOLS: readonly string[] = ["guide", "call", "plan_run", "session_info"];
+
+export type ListMode = "discovery" | "core" | "all";
+
+/**
+ * What tools/list starts with. LIME_MCP_TOOLS: discovery (the default: FIRST_TOOLS), core (every tool outside a group,
+ * and tools_enable, the list before discovery), all (every tool). LIME_MCP_TOOL_GROUPS=0 is all, as before.
+ */
+export function listMode(): ListMode {
+  const asked = (process.env.LIME_MCP_TOOLS ?? "").trim().toLowerCase();
+  if (asked === "all" || process.env.LIME_MCP_TOOL_GROUPS === "0") return "all";
+  if (asked === "core") return "core";
+  return "discovery";
+}
+
+/** The groups a session starts with open: none, or core; null lists every tool. */
+export function startingGroups(): Set<string> | null {
+  const mode = listMode();
+  return mode === "all" ? null : mode === "core" ? new Set(["core"]) : new Set();
 }
 
 /** Short names of what each group holds, so the opener's description says which group a tool is in. */
