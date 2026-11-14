@@ -1,6 +1,6 @@
 # Gear kinds: trains without hand-made hinges, rings, planets, racks, bevels and worms
 
-Status: plan. Stage 1 is built in the same branch; stages 2 to 4 are each built to this file in a PR of their own, and
+Status: plan. Stage 1 and stage 2 are built (one PR each); stages 3 and 4 are each built to this file in a PR of their own, and
 each PR corrects its section where the code says otherwise. This file is the spec. It extends
 `docs/plan-gear-coupling.md` (what exists: couplings found by the mesh check, `trainTurn`, `trainCheck`).
 
@@ -142,36 +142,72 @@ made one, `madeAssembly` (its name). Every other field is as before. No new tool
 
 ## Stage 2: internal (ring) gears and planetary stages
 
+Status: built (the second PR). Corrected from the outline where the code says otherwise.
+
 ### The ring gear
 
-- **Kernel.** `Gear` gains `internal: bool` (default false; the field rides in the gear op and in `PrimitiveSpec` as
-  `internal: true`, with `rim`, the ring's outside diameter). An internal gear's outline is the external outline of the
-  same numbers turned inside out: its teeth point in, its tip circle is `r - m (1 + shift)` and its root circle
-  `r + m (1.25 - shift)`. The solid is the rim's disc with that outline cut out. `Gear::refusal` adds the internal
-  limits: the tip circle above the base circle, and the rim outside the root circle.
-- **Mesh check, both copies** (`lime_recipe::gear_pair::classify` and `src/gear-pair.ts`, held to the same verdicts by
-  `mcp/recipe-gears.test.ts`): an external gear inside an internal one meshes at centre distance `m (z2 - z1) / 2`
-  (profile shift by the internal involute relation), the mating phase with the same bearing rule turned for an inside
-  mesh, and the outlines compared as for external pairs (the ring's outline is a hole: a crossing is an edge of the
-  pinion meeting an edge of the ring). New verdicts: none; `tooClose` and `loose` read against the inside distance. Two
-  internal gears never mesh ("apart"). A pinion whose tips reach the ring's tips past the inside limit
-  (`z2 - z1` too small: tip interference) is `toothOnTooth`.
-- **Coupling.** Same turning direction: ratio `+z1 / z2`, times the sign of the hinge axes' dot product.
+- **Kernel.** A new type `lime_recipe::gears::Ring { teeth, module, pressure_deg, backlash }`, not a field on `Gear`: a
+  field would break every `Gear { .. }` literal, recipes' included. Its space between two teeth is the external tooth
+  of the same numbers: involute flanks from the tip circle `r - m` (inside) out to the root circle `r + 1.25 m`
+  (outside), `backlash` wider at the pitch circle, a radial line below the base circle. No profile shift (refused: "A
+  ring gear takes no profile shift."), 20 to 150 teeth, and two refusals of its own (spaces or teeth that come to a
+  point). `Ring::points` and `Ring::outline` are the hole; `mate_phase_internal` and `ring_turn` are its train helpers.
+- The gear op and `PrimitiveSpec` take `internal: true` and `rim` (the outside diameter; two modules outside the roots
+  when absent, up to four times that). The kernel's ring (`build_ring` in `crates/lime-model-occt/src/tree/gear.rs`) is
+  the rim's disc with the toothed hole: one extrude of loops. A ring takes no bore or hub. An older app reads the gear
+  op without `internal` and builds an external gear of those numbers there.
+- **Mesh check, both copies** (`gear_pair::classify_internal`, `internal_turn`; `classifyInternal`, `internalTurn` in
+  `src/gear-pair.ts`; the same verdicts under lust 0.3.1, rustc and the window, `mcp/recipe-gears.test.ts`). Apart when
+  the pinion's tips do not reach the ring's (or it stands outside); then module and pressure angle; then the working
+  distance `m (z_ring - z_pinion) / 2`: pushed out into the ring's teeth past both backlashes is `tooClose`, held in is
+  `loose`. The mating phase is `mate_phase_internal` (the pair turns the same way, so a tooth behind the pitch point
+  meets a space as far behind it). The segment test compares the pinion's edges past the ring's tip circle with the
+  ring's edges inside the pinion's tip circle. Two rings never mesh. `worldPair` sends any pair with one ring here.
+- **Tip interference.** A small pinion meets the ring's tip corner with its undercut root before the involutes touch:
+  12 in 36 has 0.055 mm of play each way, not 0.1. Measured against the kernel's solids; the coupled motion never
+  touches (a whole pitch, exact volume). Said in `docs/collision-prototype.md`; not refused.
+- **Coupling.** Same turning direction: ratio `+z1 / z2`, times the sign of the hinge axes' dot product. Couple gears
+  also turns an internal pair through a pitch of the pinion and asks the mesh check at 12 steps; a pair that leaves its
+  mesh is not coupled: "Pinion and Ring are not coupled: their teeth cross as they turn."
+- **Window.** The gear card's **Gear** select: External or Ring (internal). A ring shows Rim and hides Bore, Hub and
+  Shift; its ghost is the rim's disc with the hole; its step reads "ring gear 36 teeth m 1 h 6, rim ⌀50".
 
 ### Planets on a carrier
 
-- A gear whose hinge sits on a turning part (a planet on a carrier) is covered when the carrier's hinge, the sun's and
-  the ring's are coaxial and sit on one frame. `findCouplings` records a **planetary stage**: `{kind: "planetary", sun,
-  ring, carrier, planets, zs, zr}` (with `zp` per planet), not a pair coupling.
-- **Motion.** The planetary relation `(ωs - ωc) / (ωr - ωc) = -zr / zs`, and each planet turns on its pin by
-  `ωp - ωc = -(zs / zp) (ωs - ωc)`. With one of sun, ring or carrier held (Held, or the fixed root), turning any other
-  member turns the rest. With none held it is two degrees of freedom: refused with a sentence ("Sun, ring and carrier
-  all turn: hold one of them.").
-- `trainScales` becomes a linear solve over the bodies' turns (a pair coupling is one equation, a planetary stage two),
-  with the held bodies at zero; a train whose equations disagree is locked, as a loop is now.
-- `trainCheck` places every planet at its orbit and checks sun–planet and planet–ring pairs by the mesh check.
-- Assembly rules: a planet's hinge sits on the carrier; a carrier hinged on a hinged root is a direct child, so it stays
-  on the plate's pin as stage 1 says.
+- **The coupling.** Not a stage record: each mesh stays a pair coupling, and a pair whose two gears hinge on different
+  parts carries `carrier: {body, name, ratio}` when one gear hinges on a part K (the carrier) and the other sits on the
+  part K turns on, its centre on K's hinge line. In K's frame the mesh is a fixed-axis one, `(b - K) = rho (a - K)`
+  about K's axis, so the driven body turns `ratio` per degree of the driver plus `carrier.ratio` per degree of K. Any
+  other pair on different parts is refused with its sentence. The seat holds K's pin as well, so moving the carrier's
+  pin drops the coupling; an older app computes a shorter seat and drops it rather than driving it as a fixed-axis one.
+- **Motion.** `trainScales` of a train with a carrier solves the couplings as linear equations (Gauss-Jordan), with every
+  body that has no hinge (the fixed root, a held part) at zero and the turned body at one. No solution is a lock, with
+  its sentence; more than one (sun, ring and carrier all free) is refused: "… turn more than one way: hold the sun, the
+  ring or the carrier (Joint: Held), and the others follow." A train with no carrier keeps the walk it had.
+- **Couple gears sets a stage up** (`prepareTrain`):
+  - a part without a joint, not the root and holding no gear, whose gears mesh with a ring seated elsewhere, is the
+    carrier: it gets a hinge about the ring's axis. Only a ring makes a carrier: a bracket that holds a gear against a
+    sun alone is a fixed axle. A carrier without a ring takes its hinge by hand (Joint: Hinge);
+  - a gear seated on a part that turns, off that part's hinge line, is a planet: it gets a hinge of its own on that part;
+  - a ring that is the assembly's root stays fixed in a stage with a carrier (the housing), so sun and carrier turn by it;
+  - a sun inside its ring shares the ring's axis in the ring's plane: two gears, not one shaft (`coaxial` needs the two
+    in planes of their own).
+- **Validation.** `trainCheck` turns the whole stage and asks the mesh check about every sun-planet and planet-ring pair.
+  The window's Couple gears now runs it too, over one turn in 24 steps, and says a frame that does not mesh.
+- A planet on a hinged root's turning part (seated on a part seated without a joint on the root) is still refused: the
+  parts hinged on a hinged root stay on the plate (stage 1), so a carrier is never the hinged root. A held or fixed
+  carrier is a star: its planets turn on fixed axes and the couplings carry no carrier.
+
+### Tests
+
+`crates/lime-recipe/tests/ring_gear.rs` (the outline; meshing at the inside distance and through 73 turns; a ring turned
+against the pinion, half a tooth off, out, in, apart); `crates/lime-model-occt/tests/gear.rs` (the ring's volume, the
+refusals, exact volume at mesh, inside the play, past it, and through a pitch turned together);
+`mcp/recipe-gears.test.ts` (lust, rustc and the window agree); `src/gear-planet.test.ts` (inside ratio, the stage with
+ring, sun or carrier held, none held, sampled meshes from three bodies, the file, a moved carrier, Couple gears' set-up);
+`mcp/gear-train.test.ts` and `mcp/gear-train-occt.test.ts` (the stage over MCP, and with real solids by exact volume at
+six turns of the sun); `e2e/model-gear.spec.ts` (the Ring card) and `e2e/pose-gears.spec.ts` (a stage attached by hand,
+coupled and turned in the window, saved and reopened).
 
 ## Stage 3: rack and pinion
 

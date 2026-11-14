@@ -192,3 +192,58 @@ console.log("MCP gear train: couple, turn, check, list, save, refusals and uncou
   assert.equal(nothing.ok, false, show(nothing));
   console.log("MCP free gears: couple makes the train, the root turns on the plate, save, reopen and one undo ok");
 }
+
+// --- Stage 2 (docs/plan-gear-kinds.md): a ring gear and a planetary stage over MCP. The ring (36, internal) is the root,
+// the sun and a carrier sit on it, three planets on the carrier; nothing has a joint.
+{
+  const { matePhase, matePhaseInternal } = await import("../src/gear-pair.ts");
+  const t = new Session(fakeEngine());
+  const go = async (name: string, input: Reply = {}) => (await t.call(name, input)) as Reply;
+  const make = async (input: Reply) => {
+    const made = await go("solid_new", input);
+    assert.equal(made.ok, true, show(made));
+    return String(made.object);
+  };
+  const planetPhase = (deg: number) => matePhase(0, 12, deg, 12);
+  const refusedRing = await go("solid_new", { gear: { teeth: 36, module: 1, thickness: 6, internal: true, profileShift: 0.2 } });
+  assert.equal(refusedRing.ok, false, "a ring takes no profile shift");
+  const ring = await make({ gear: { teeth: 36, module: 1, thickness: 6, internal: true, phaseDeg: matePhaseInternal(planetPhase(0), 12, 0, 36) }, name: "ring" });
+  const sun = await make({ gear: { teeth: 12, module: 1, thickness: 6 }, name: "sun" });
+  const carrier = await make({ primitive: "cylinder", radius: 15, height: 2, name: "carrier" });
+  assert.equal((await go("model_place", { object: sun, to: ring, x: 0, y: 0, z: 0 })).ok, true);
+  assert.equal((await go("model_place", { object: carrier, to: ring, x: 0, y: 0, z: 6 })).ok, true);
+  const planets: string[] = [];
+  for (const [i, deg] of [0, 120, 240].entries()) {
+    const planet = await make({ gear: { teeth: 12, module: 1, thickness: 6, phaseDeg: planetPhase(deg) }, name: `planet ${i + 1}` });
+    assert.equal((await go("model_place", { object: planet, to: carrier, x: 12 * Math.cos((deg * Math.PI) / 180), y: 12 * Math.sin((deg * Math.PI) / 180), z: -6 })).ok, true);
+    planets.push(planet);
+  }
+  const check = await go("model_check", { object: planets[0]! });
+  const ringRow = (check.gears as GearRow[] | undefined)?.find((one) => [one.a, one.b].includes(ring));
+  assert.equal(ringRow?.verdict, "meshing", `model_check calls the planet and the ring meshing: ${show(check.gears)}`);
+  const coupledStage = await go("model_place", { object: sun, gears: "couple" });
+  assert.equal(coupledStage.ok, true, show(coupledStage));
+  assert.deepEqual(coupledStage.hinged, ["carrier", "sun", "planet 1", "planet 2", "planet 3"], show(coupledStage));
+  const rows = coupledStage.couplings as (Row & { carrier?: string; carrierRatio?: number })[];
+  assert.equal(rows.length, 6, show(rows));
+  assert.ok(rows.every((row) => row.carrier === carrier), "every mesh goes through the carrier");
+  assert.equal(coupledStage.locked, undefined, show(coupledStage));
+  assert.deepEqual((coupledStage.checked as { bad: unknown[] }).bad, [], "the validator's sampled turn meshes everywhere");
+  const angle = (id: string) => { const joint = t.assemblies[0]!.members.find((row) => row.object === id)?.joint; return joint?.kind === "hinge" ? joint.angle ?? 0 : NaN; };
+  assert.equal((await go("model_place", { object: sun, angle: 40 })).ok, true);
+  assert.ok(Math.abs(angle(carrier) - 10) < 1e-9 && Math.abs(angle(planets[1]!) + 30) < 1e-9, `sun 40: carrier ${angle(carrier)}, planet ${angle(planets[1]!)}`);
+  const after = await go("model_check", { object: planets[1]! });
+  for (const other of [sun, ring]) {
+    const row = (after.gears as GearRow[] | undefined)?.find((one) => [one.a, one.b].includes(other));
+    assert.equal(row?.verdict, "meshing", `turned, planet 2 still meshes with ${other}: ${show(after.gears)}`);
+  }
+  // All three free (the ring given a hinge by hand) is refused with its sentence, and nothing moves.
+  assert.equal((await go("model_place", { object: ring, joint: { kind: "hinge", pivot: [0, 0, 3], axis: [0, 0, 1] } })).ok, true);
+  const free = await go("model_place", { object: sun, gears: "couple" });
+  assert.ok(String(show(free.locked)).includes("turn more than one way"), show(free));
+  // Held again: the ring is the housing and the stage turns.
+  assert.equal((await go("model_place", { object: ring, joint: { kind: "held" } })).ok, true);
+  const again = await go("model_place", { object: sun, gears: "couple" });
+  assert.equal(again.locked, undefined, show(again));
+  console.log("MCP planetary: a ring, a sun, three planets on a carrier: couple, turn, model_check meshing, hold one ok");
+}

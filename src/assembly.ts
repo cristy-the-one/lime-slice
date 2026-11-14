@@ -88,6 +88,12 @@ export interface Coupling {
   ratio: number;
   gears: [GearRef, GearRef];
   /**
+   * A planetary mesh (docs/plan-gear-kinds.md, stage 2): one gear hinges on a turning part, the carrier, and the other on
+   * the part the carrier turns on, coaxial with it. Then the driven body turns `ratio` per degree of the driver plus
+   * `carrier.ratio` per degree of the carrier's hinge. An older app drops such a coupling (its seat is longer).
+   */
+  carrier?: { body: string; name: string; ratio: number };
+  /**
    * Where the two gears sat when they were coupled (`couplingSeat`): each gear in its body's frame, and each body's hinge
    * pivot and axis on its frame. A hinge turn leaves it as it is; moving a gear, or its hinge's pivot or axis, does not,
    * and the coupling is then dropped rather than driving gears that may no longer mesh.
@@ -434,7 +440,7 @@ function chainPose(assembly: Assembly, from: string, to: string): Affine | null 
  * hinged body its pivot and axis in its parent's frame and that parent's pose on the body's frame. Null when a gear
  * has no body. Compared by `couplingFits`.
  */
-export function couplingSeat(assembly: Assembly, gears: readonly [GearRef, GearRef]): number[] | null {
+export function couplingSeat(assembly: Assembly, gears: readonly [GearRef, GearRef], carrier?: string): number[] | null {
   const out: number[] = [];
   const pose = (p: Affine | null) => (p ? [...p.m, ...p.t] : null);
   for (const gear of gears) {
@@ -444,26 +450,43 @@ export function couplingSeat(assembly: Assembly, gears: readonly [GearRef, GearR
     if (!inBody) return null;
     out.push(...inBody);
     if (body.fixed) continue;
-    const member = assembly.members.find((row) => row.object === body.body)!;
-    const frame = frameOf(assembly, body.body);
-    const joint = member.joint;
-    if (!frame || joint?.kind !== "hinge") return null;
-    // A hinged root's pin is its own: where the root stands moves the whole assembly, and every pin with it.
-    if (member.parent === null) { out.push(...joint.pivot, ...joint.axis); continue; }
-    const onFrame = pose(chainPose(assembly, member.parent, frame));
-    if (!onFrame) return null;
-    // On a hinged root, read in its ground frame: the root's turn taken out, so turning the root changes nothing here.
-    const frameMember = assembly.members.find((row) => row.object === frame);
-    const ground = turnsOnPlate(frameMember) && frameMember!.joint?.kind === "hinge" ? hingeTurn(frameMember!.joint, frameMember!.joint.angle ?? 0) : IDENTITY_POSE;
-    const local = thenPose(memberPose(member), ground);
-    out.push(...applyPose(local, joint.pivot), ...turnDir(local, joint.axis), ...onFrame);
+    const pin = pinSeat(assembly, body.body);
+    if (!pin) return null;
+    out.push(...pin);
+  }
+  // A planetary mesh also holds the carrier's pin.
+  if (carrier !== undefined) {
+    const pin = pinSeat(assembly, carrier);
+    if (!pin) return null;
+    out.push(...pin);
   }
   return out;
 }
 
+/**
+ * A hinged body's pin, as a hinge turn never changes it: its pivot and axis in its parent's frame, read in a hinged
+ * root's ground frame when it sits on one, and that parent's pose on the body's frame. A hinged root's pin is its own.
+ */
+function pinSeat(assembly: Assembly, body: string): number[] | null {
+  const pose = (p: Affine | null) => (p ? [...p.m, ...p.t] : null);
+  const member = assembly.members.find((row) => row.object === body);
+  const frame = frameOf(assembly, body);
+  const joint = member?.joint;
+  if (!member || !frame || joint?.kind !== "hinge") return null;
+  // A hinged root's pin is its own: where the root stands moves the whole assembly, and every pin with it.
+  if (member.parent === null) return [...joint.pivot, ...joint.axis];
+  const onFrame = pose(chainPose(assembly, member.parent, frame));
+  if (!onFrame) return null;
+  // On a hinged root, read in its ground frame: the root's turn taken out, so turning the root changes nothing here.
+  const frameMember = assembly.members.find((row) => row.object === frame);
+  const ground = turnsOnPlate(frameMember) && frameMember!.joint?.kind === "hinge" ? hingeTurn(frameMember!.joint, frameMember!.joint.angle ?? 0) : IDENTITY_POSE;
+  const local = thenPose(memberPose(member), ground);
+  return [...applyPose(local, joint.pivot), ...turnDir(local, joint.axis), ...onFrame];
+}
+
 /** Whether a coupling names one of `objects`, as a body or as a gear's object. */
 function touches(coupling: Coupling, objects: readonly string[]): boolean {
-  return [coupling.driver, coupling.driven, coupling.gears[0].object, coupling.gears[1].object].some((id) => objects.includes(id));
+  return [coupling.driver, coupling.driven, coupling.gears[0].object, coupling.gears[1].object, ...(coupling.carrier ? [coupling.carrier.body] : [])].some((id) => objects.includes(id));
 }
 
 /** `assembly` with `couplings`, the field left out when there are none. */
@@ -599,7 +622,13 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
     if (typeof row.driver !== "string" || typeof row.driven !== "string" || !row.driver || row.driver === row.driven) continue;
     if (!finite(row.ratio) || row.ratio === 0 || !gears || gears.some((gear) => gear === null)) continue;
     const seat = Array.isArray(row.seat) && row.seat.every(finite) ? (row.seat as number[]) : undefined;
-    out.push({ driver: row.driver, driven: row.driven, ratio: row.ratio, gears: [gears[0]!, gears[1]!], ...(seat ? { seat } : {}) });
+    let carrier: Coupling["carrier"];
+    if (row.carrier !== undefined) {
+      const raw = row.carrier as Record<string, unknown> | null;
+      if (!raw || typeof raw !== "object" || typeof raw.body !== "string" || !raw.body || typeof raw.name !== "string" || !finite(raw.ratio)) continue;
+      carrier = { body: raw.body, name: raw.name, ratio: raw.ratio };
+    }
+    out.push({ driver: row.driver, driven: row.driven, ratio: row.ratio, gears: [gears[0]!, gears[1]!], ...(carrier ? { carrier } : {}), ...(seat ? { seat } : {}) });
   }
   return out.length ? out : undefined;
 }
@@ -612,11 +641,12 @@ function couplingFits(assembly: Assembly, coupling: Coupling): boolean {
   };
   const member = (id: string) => assembly.members.some((row) => row.object === id);
   if (!body(coupling.driver) || !body(coupling.driven) || !member(coupling.gears[0].object) || !member(coupling.gears[1].object)) return false;
+  if (coupling.carrier && assembly.members.find((row) => row.object === coupling.carrier!.body)?.joint?.kind !== "hinge") return false;
   // The bodies are still the ones the gears turn on, and nothing has moved a gear or a hinge since the pair was coupled.
   const bodies = coupling.gears.map((gear) => bodyOf(assembly, gear.object));
   if (bodies.some((row) => !row || "reason" in row) || (bodies[0] as { body: string }).body !== coupling.driver || (bodies[1] as { body: string }).body !== coupling.driven) return false;
   if (!coupling.seat) return true;
-  const now = couplingSeat(assembly, coupling.gears);
+  const now = couplingSeat(assembly, coupling.gears, coupling.carrier?.body);
   return !!now && now.length === coupling.seat.length && now.every((value, i) => Math.abs(value - coupling.seat![i]!) <= 1e-6 * Math.max(1, Math.abs(value)));
 }
 

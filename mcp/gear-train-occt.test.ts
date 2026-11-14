@@ -93,9 +93,58 @@ const alone = await call("model_place", { object: wheel, angle: wheelAngle + 7.5
 const crossed = await exact(pinion, wheel);
 check("turned alone by half a tooth, the real gears cross", alone.ok === true && crossed?.verdict === "crossing" && Number(crossed.volumeMm3) > 0, show(crossed));
 
+// --- Stage 2: a real planetary stage. A ring of 36 (module 1) is the root and the housing; the sun and a carrier sit on
+// it; three planets on the carrier. Couple gears, then the sun turned through angles that are no whole tooth: every planet
+// shares no volume with the sun or the ring, by exact common volume.
+{
+  const { matePhase, matePhaseInternal } = await import("../src/gear-pair.ts");
+  const planetPhase = (deg: number) => matePhase(0, 12, deg, 12);
+  const solid = async (input: Reply) => {
+    const made = await call("solid_new", input);
+    if (made.ok !== true) throw new Error(show(made));
+    return String(made.object);
+  };
+  const ring = await solid({ gear: { teeth: 36, module: 1, thickness: 6, internal: true, phaseDeg: matePhaseInternal(planetPhase(0), 12, 0, 36) }, name: "ring" });
+  const sun = await solid({ gear: { teeth: 12, module: 1, thickness: 6, bore: 3 }, name: "sun" });
+  const carrier = await solid({ primitive: "cylinder", radius: 15, height: 2, name: "carrier" });
+  for (const [object, z] of [[sun, 0], [carrier, 6]] as const) {
+    const placed = await call("model_place", { object, to: ring, x: 0, y: 0, z });
+    if (placed.ok !== true) throw new Error(show(placed));
+  }
+  const planets: string[] = [];
+  for (const [i, deg] of [0, 120, 240].entries()) {
+    const planet = await solid({ gear: { teeth: 12, module: 1, thickness: 6, phaseDeg: planetPhase(deg) }, name: `planet ${i + 1}` });
+    const placed = await call("model_place", { object: planet, to: carrier, x: 12 * Math.cos((deg * Math.PI) / 180), y: 12 * Math.sin((deg * Math.PI) / 180), z: -6 });
+    if (placed.ok !== true) throw new Error(show(placed));
+    planets.push(planet);
+  }
+  const stage = await call("model_place", { object: sun, gears: "couple" });
+  check("the planetary stage couples through the carrier", stage.ok === true && (stage.couplings as unknown[]).length === 6 && stage.locked === undefined && (stage.checked as { bad: unknown[] }).bad.length === 0, show(stage));
+  let crossings = 0;
+  for (const angle of [0, 11, 37.5, 83, 151, 262]) {
+    const turned = await call("model_place", { object: sun, angle });
+    if (turned.ok !== true) { crossings += 1; console.error(show(turned)); continue; }
+    for (const planet of planets) {
+      for (const other of [sun, ring]) {
+        const pair = await exact(planet, other);
+        if (!clear(pair)) { crossings += 1; console.error(`sun ${angle}: ${show(pair)}`); }
+      }
+    }
+  }
+  check("at six turns of the sun no planet shares volume with the sun or the ring", crossings === 0);
+  const carrierAngle = (session.assemblies.find((row) => row.members.some((one) => one.object === carrier))!.members.find((one) => one.object === carrier)!.joint as { angle?: number }).angle ?? 0;
+  check("the carrier turned a quarter of the sun", Math.abs(carrierAngle - 262 / 4) < 1e-9, String(carrierAngle));
+  // The judge is real here too: the carrier turned alone by 5 degrees, its planets leave their mesh and cross.
+  await call("model_place", { object: sun, gears: "uncouple" });
+  await call("model_place", { object: carrier, angle: carrierAngle + 5 });
+  const crossed = await exact(planets[0]!, ring);
+  const crossedSun = await exact(planets[0]!, sun);
+  check("the carrier turned alone, a planet crosses the ring or the sun", crossed?.verdict === "crossing" || crossedSun?.verdict === "crossing", show([crossed, crossedSun]));
+}
+
 if (failed > 0) {
   console.error(`${failed} failed`);
   process.exit(1);
 }
-console.log("gear-train-occt: a train of real gears turns without crossing");
+console.log("gear-train-occt: a train of real gears turns without crossing, a planetary stage too");
 process.exit(0);

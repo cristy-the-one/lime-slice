@@ -2,7 +2,7 @@ import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
 import { assemblyOf, freshAssemblyId, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
-import { couplingLine, findCouplings, prepareTrain, preparedLines, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
+import { couplingLine, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
 import { modelTrees } from "./model-trees.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
@@ -24,6 +24,9 @@ import type { AnimationResult, AnimationPart, PoseAnimation } from "../pose-anim
 import { bodySha256, pluginFileText, readPluginFile, type PluginFileInfo, type PluginParamInfo } from "../plugin-file.ts";
 import { apiVerdict } from "../recipe/api-level.ts";
 import { RECIPE_API } from "../plugin-step.ts";
+
+/** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
+const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
 
 type Tool = "select" | "turn" | "joint" | "link" | "reach";
 let view: PoseView | null = null;
@@ -624,9 +627,23 @@ function coupleGears(start: string): void {
   const poses = solveAssembly(assembly, poseOf).poses;
   const gears = assemblyGears(assembly, poses);
   if (gears.length < 2) { gearNotes = { assembly: assembly.id, lines: ["This assembly has fewer than two gears that Model knows: open the gears' parts in Model once, then couple."] }; renderPanel(); return; }
-  const found = findCouplings(assembly, gears, poses);
+  const found = findCouplings(assembly, gears, poses, nameOf);
   const made = preparedLines(prepared, nameOf);
-  gearNotes = { assembly: assembly.id, made, lines: [...(found.couplings.length || found.notCoupled.length || made.length ? [] : ["No pair of these gears meshes."]), ...found.notCoupled.map((row) => row.reason)] };
+  // The validator, as the MCP runs it: each train turned through one turn of its first body in 24 steps and every
+  // coupled pair asked again by the mesh check. A frame that does not mesh is said; the driver never reads this.
+  const coupled = withCouplings(assembly, found.couplings);
+  const checked: string[] = [];
+  const seen = new Set<string>();
+  for (const row of found.couplings) {
+    if (seen.has(row.driver)) continue;
+    const train = trainScales(coupled, row.driver);
+    for (const id of train.scales.keys()) seen.add(id);
+    if (train.locked) continue;
+    const sweep = trainCheck(coupled, poseOf, (at) => assemblyGears(coupled, at), row.driver, CHECK_ANGLES);
+    const bad = "reason" in sweep ? undefined : sweep.bad[0];
+    if (bad) checked.push(`Turned ${Math.round(bad.angle)}°, ${bad.names[0]} and ${bad.names[1]} do not mesh: check where they stand, then couple again.`);
+  }
+  gearNotes = { assembly: assembly.id, made, lines: [...(found.couplings.length || found.notCoupled.length || made.length ? [] : ["No pair of these gears meshes."]), ...found.notCoupled.map((row) => row.reason), ...checked] };
   noteEdit();
   // The members that joined read their Model numbers in their own frame, as Attach gives them (D2).
   const root = assembly.members.find((member) => member.parent === null)?.object;

@@ -69,6 +69,42 @@ export function notCoupledSentence(a: string, b: string, verdict: GearVerdict, d
   return `${a} and ${b} are not coupled: ${why}.`;
 }
 
+/** Whether `gear`'s centre lies on `line`, the axes parallel. */
+function onLine(gear: WorldGear, line: { axis: Vec3; point: Vec3 } | null): boolean {
+  if (!line || Math.abs(dot(line.axis, gear.axis)) < PARALLEL) return false;
+  const along = minus(gear.centre, line.point);
+  const t = dot(along, line.axis);
+  return Math.hypot(along[0] - t * line.axis[0], along[1] - t * line.axis[1], along[2] - t * line.axis[2]) <= ON_AXIS_MM;
+}
+
+/** `gear` turned `degrees` about its own axis. */
+function turnedGear(gear: WorldGear, degrees: number): WorldGear {
+  const [x, y, z] = gear.axis;
+  const r = (degrees * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r), k = 1 - c;
+  const [a, b, d] = gear.tooth0;
+  const tooth0: Vec3 = [
+    (k * x * x + c) * a + (k * x * y - s * z) * b + (k * x * z + s * y) * d,
+    (k * x * y + s * z) * a + (k * y * y + c) * b + (k * y * z - s * x) * d,
+    (k * x * z - s * y) * a + (k * y * z + s * x) * b + (k * z * z + c) * d,
+  ];
+  return { ...gear, tooth0 };
+}
+
+/**
+ * Whether a pinion and a ring that mesh where they stand still mesh as they turn together, by the tooth ratio, the
+ * same way: twelve steps through a pitch of the pinion.
+ */
+function holdsAsItTurns(a: WorldGear, b: WorldGear): boolean {
+  const pinion = a.internal ? b : a, ring = a.internal ? a : b;
+  const same = Math.sign(dot(pinion.axis, ring.axis)) || 1;
+  for (let k = 1; k <= 12; k += 1) {
+    const turn = (360 / pinion.spur.teeth) * (k / 12);
+    const report = worldPair(turnedGear(pinion, turn), turnedGear(ring, same * turn * (pinion.spur.teeth / ring.spur.teeth)));
+    if (report?.verdict !== "meshing") return false;
+  }
+  return true;
+}
+
 function refOf(gear: WorldGear): GearRef {
   return { object: gear.objectId, step: gear.step, name: gear.label };
 }
@@ -77,7 +113,7 @@ function refOf(gear: WorldGear): GearRef {
  * The couplings of `assembly`'s gears at `poses`: every pair the mesh check calls `meshing`, on two bodies that turn
  * on one frame about the gears' own axes. `gears` are the members' gears placed at those poses.
  */
-export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], poses: ReadonlyMap<string, Affine>): Found {
+export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], poses: ReadonlyMap<string, Affine>, nameOfBody: (body: string) => string = (body) => gears.find((gear) => gear.objectId === body)?.label ?? body): Found {
   const couplings: Coupling[] = [];
   const notCoupled: NotCoupled[] = [];
   const offAxis = (gear: WorldGear, body: string): boolean => {
@@ -115,8 +151,18 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
       }
       if (bodyA.fixed && bodyB.fixed) continue;
       const frameA = frameOf(assembly, bodyA.body), frameB = frameOf(assembly, bodyB.body);
-      if (frameA === null || frameB === null || frameA !== frameB) {
-        notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: their hinges sit on different parts, and a gear that rides on another turning part is not covered.` });
+      // A planet (docs/plan-gear-kinds.md, stage 2): one gear hinges on a turning part K, the carrier, and the other
+      // on the part K turns on, coaxial with K's hinge. Either way round.
+      const carrierFor = (planetFrame: string | null, otherFrame: string | null, other: WorldGear): string | null => {
+        if (planetFrame === null || otherFrame === null) return null;
+        const k = memberOf(assembly, planetFrame);
+        if (k?.joint?.kind !== "hinge" || frameOf(assembly, planetFrame) !== otherFrame) return null;
+        return onLine(other, hingeLine(assembly, poses, planetFrame)) ? planetFrame : null;
+      };
+      const carrierBody = frameA === frameB ? null : carrierFor(frameA, frameB, b) ?? carrierFor(frameB, frameA, a);
+      if (frameA === null || frameB === null || (frameA !== frameB && carrierBody === null)) {
+        const why = frameA === null || frameB === null ? "a gear that rides on another turning part is not covered" : "a gear that rides on another turning part is covered only on a carrier whose hinge shares the other gear's axis";
+        notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: their hinges sit on different parts, and ${why}.` });
         continue;
       }
       const skew = [[a, bodyA] as const, [b, bodyB] as const].find(([gear, body]) => !body.fixed && offAxis(gear, body.body));
@@ -124,13 +170,29 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
         notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: ${skew[0].label}'s hinge does not turn about its gear's axis.` });
         continue;
       }
+      // An internal pair is checked through a pitch of its turn as well: a pinion too big for its ring turns into it.
+      const internal = !!a.internal !== !!b.internal;
+      if (internal && !holdsAsItTurns(a, b)) {
+        notCoupled.push({ names, verdict: "toothOnTooth", reason: `${a.label} and ${b.label} are not coupled: their teeth cross as they turn.` });
+        continue;
+      }
       // A fixed body has no hinge; its gear's axis stands in, as its sign does not matter to a train that cannot turn.
       const axisA = hingeLine(assembly, poses, bodyA.body)?.axis ?? a.axis;
       const axisB = hingeLine(assembly, poses, bodyB.body)?.axis ?? b.axis;
-      const ratio = -(a.spur.teeth / b.spur.teeth) * Math.sign(dot(axisA, axisB));
+      // Inside a ring both turn the same way; outside, the other way.
+      const rho = (internal ? 1 : -1) * (a.spur.teeth / b.spur.teeth);
+      const ratio = rho * Math.sign(dot(axisA, axisB));
       const gearRefs: [GearRef, GearRef] = [refOf(a), refOf(b)];
-      const seat = couplingSeat(assembly, gearRefs);
-      couplings.push({ driver: bodyA.body, driven: bodyB.body, ratio, gears: gearRefs, ...(seat ? { seat } : {}) });
+      let carrier: Coupling["carrier"];
+      if (carrierBody !== null) {
+        // In the carrier's frame the mesh is a fixed-axis one: (b - K) = rho (a - K), each about the carrier's axis u.
+        const u = hingeLine(assembly, poses, carrierBody)!.axis;
+        const sB = Math.sign(dot(axisB, u)) || 1;
+        const aOff = frameA === carrierBody ? 0 : 1, bOff = frameB === carrierBody ? 0 : 1;
+        carrier = { body: carrierBody, name: nameOfBody(carrierBody), ratio: sB * (bOff - rho * aOff) };
+      }
+      const seat = couplingSeat(assembly, gearRefs, carrierBody ?? undefined);
+      couplings.push({ driver: bodyA.body, driven: bodyB.body, ratio, gears: gearRefs, ...(carrier ? { carrier } : {}), ...(seat ? { seat } : {}) });
     }
   }
   const oriented = orientOutward(assembly, couplings);
@@ -144,7 +206,9 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
 function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
   const order = new Map(assembly.members.map((row, i) => [row.object, i]));
   const depth = new Map<string, number>();
-  const bodies = [...new Set(couplings.flatMap((row) => [row.driver, row.driven]))].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+  // A body that cannot turn (the fixed root, a held part) never leads: a train reads from a gear a person turns.
+  const fixed = (id: string) => assembly.members.find((row) => row.object === id)?.joint?.kind !== "hinge";
+  const bodies = [...new Set(couplings.flatMap((row) => [row.driver, row.driven]))].sort((a, b) => Number(fixed(a)) - Number(fixed(b)) || (order.get(a) ?? 0) - (order.get(b) ?? 0));
   for (const start of bodies) {
     if (depth.has(start)) continue;
     depth.set(start, 0);
@@ -159,8 +223,10 @@ function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
   return couplings.map((row) => {
     if (depth.get(row.driver)! <= depth.get(row.driven)!) return row;
     const gears: [GearRef, GearRef] = [row.gears[1], row.gears[0]];
-    const seat = couplingSeat(assembly, gears);
-    return { driver: row.driven, driven: row.driver, ratio: 1 / row.ratio, gears, ...(seat ? { seat } : {}) };
+    const seat = couplingSeat(assembly, gears, row.carrier?.body);
+    // driven = r driver + c carrier, so driver = driven / r - (c / r) carrier.
+    const carrier = row.carrier ? { ...row.carrier, ratio: -row.carrier.ratio / row.ratio } : undefined;
+    return { driver: row.driven, driven: row.driver, ratio: 1 / row.ratio, gears, ...(carrier ? { carrier } : {}), ...(seat ? { seat } : {}) };
   });
 }
 
@@ -188,6 +254,17 @@ function listed(names: readonly string[]): string {
  */
 export function trainScales(assembly: Assembly, start: string): Scales {
   const all = assembly.couplings ?? [];
+  // A train with a carrier in it is a set of linear equations (docs/plan-gear-kinds.md, stage 2).
+  const reached = new Set([start]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const row of all) {
+      const ends = [row.driver, row.driven, ...(row.carrier ? [row.carrier.body] : [])];
+      if (ends.some((id) => reached.has(id)) && ends.some((id) => !reached.has(id))) { for (const id of ends) reached.add(id); grew = true; }
+    }
+  }
+  const train = all.filter((row) => reached.has(row.driver));
+  if (train.some((row) => row.carrier)) return planetaryScales(assembly, start, [...reached], train);
   const scales = new Map<string, number>([[start, 1]]);
   const used = new Set<Coupling>();
   const queue = [start];
@@ -218,6 +295,62 @@ export function trainScales(assembly: Assembly, start: string): Scales {
   return { scales, couplings };
 }
 
+/**
+ * A train with a carrier: every coupling is `driven - ratio driver - carrier.ratio carrier = 0`, a body without a hinge
+ * (a fixed root, a held part) stands at 0, and `start` turns 1. Solved by elimination: no solution is a lock, more than
+ * one means sun, ring and carrier all turn freely, and one of them must be held.
+ */
+function planetaryScales(assembly: Assembly, start: string, bodies: string[], couplings: Coupling[]): Scales {
+  const index = new Map(bodies.map((id, i) => [id, i]));
+  const n = bodies.length;
+  const rows: number[][] = [];
+  for (const row of couplings) {
+    const eq = new Array<number>(n + 1).fill(0);
+    eq[index.get(row.driven)!]! += 1;
+    eq[index.get(row.driver)!]! -= row.ratio;
+    if (row.carrier) eq[index.get(row.carrier.body)!]! -= row.carrier.ratio;
+    rows.push(eq);
+  }
+  const fixed = bodies.filter((id) => memberOf(assembly, id)?.joint?.kind !== "hinge");
+  for (const id of fixed) { const eq = new Array<number>(n + 1).fill(0); eq[index.get(id)!] = 1; rows.push(eq); }
+  { const eq = new Array<number>(n + 1).fill(0); eq[index.get(start)!] = 1; eq[n] = 1; rows.push(eq); }
+  // Gauss-Jordan with partial pivoting.
+  let rank = 0;
+  const pivots: number[] = [];
+  for (let col = 0; col < n && rank < rows.length; col += 1) {
+    let best = rank;
+    for (let r = rank + 1; r < rows.length; r += 1) if (Math.abs(rows[r]![col]!) > Math.abs(rows[best]![col]!)) best = r;
+    if (Math.abs(rows[best]![col]!) < 1e-9) continue;
+    [rows[rank], rows[best]] = [rows[best]!, rows[rank]!];
+    const lead = rows[rank]![col]!;
+    for (let c = col; c <= n; c += 1) rows[rank]![c]! /= lead;
+    for (let r = 0; r < rows.length; r += 1) {
+      if (r === rank) continue;
+      const f = rows[r]![col]!;
+      if (f !== 0) for (let c = col; c <= n; c += 1) rows[r]![c]! -= f * rows[rank]![c]!;
+    }
+    pivots.push(col);
+    rank += 1;
+  }
+  const inconsistent = rows.slice(rank).some((row) => Math.abs(row[n]!) > 1e-7);
+  // A locked train still names every body that turns in it, so it is said once.
+  const all = () => { for (const id of bodies) if (!fixed.includes(id)) scales.set(id, id === start ? 1 : 0); };
+  const names = [...gearNames(couplings), ...new Set(couplings.flatMap((row) => (row.carrier ? [row.carrier.name] : [])))];
+  const scales = new Map<string, number>();
+  if (inconsistent || rank < n) all();
+  if (inconsistent) {
+    const held = fixed.flatMap((id) => couplings.flatMap((row) => (row.driver === id ? [row.gears[0].name] : row.driven === id ? [row.gears[1].name] : row.carrier?.body === id ? [row.carrier.name] : [])));
+    return { scales, couplings, locked: { gears: names, reason: held.length ? `${listed(names)} are locked: ${listed([...new Set(held)])} cannot turn, and the train meshes with it.` : `${listed(names)} are locked: they close a loop whose tooth ratios do not agree, so none of them can turn.` } };
+  }
+  if (rank < n) {
+    return { scales, couplings, locked: { gears: names, reason: `${listed(names)} turn more than one way: hold the sun, the ring or the carrier (Joint: Held), and the others follow.` } };
+  }
+  // A held body stands still: it is in the equations, not in the turn.
+  pivots.forEach((col, r) => { if (!fixed.includes(bodies[col]!)) scales.set(bodies[col]!, rows[r]![n]!); });
+  // The start first, as the walk gives it.
+  return { scales: new Map([[start, 1], ...[...scales].filter(([id]) => id !== start)]), couplings };
+}
+
 /** Each locked train of `couplings`, once. */
 function trainLocks(assembly: Assembly, couplings: Coupling[]): TrainLock[] {
   const coupled = withCouplings(assembly, couplings);
@@ -225,7 +358,8 @@ function trainLocks(assembly: Assembly, couplings: Coupling[]): TrainLock[] {
   const locks: TrainLock[] = [];
   for (const row of couplings) {
     for (const body of [row.driver, row.driven]) {
-      if (seen.has(body)) continue;
+      // A held body is not where a turn starts: in a planetary stage it holds the train, it does not lock it.
+      if (seen.has(body) || coupled.members.find((one) => one.object === body)?.joint?.kind !== "hinge") continue;
       const train = trainScales(coupled, body);
       for (const id of train.scales.keys()) seen.add(id);
       if (train.locked) locks.push(train.locked);
@@ -318,7 +452,8 @@ export function trainCheck(assembly: Assembly, poseOf: PoseOf, gearsAt: (poses: 
 /** One line a reply or the panel shows for a coupling. */
 export function couplingLine(row: Coupling): string {
   const ratio = Math.round(row.ratio * 1000) / 1000;
-  return `${row.gears[0].name} drives ${row.gears[1].name}, ×${ratio < 0 ? "−" : ""}${Math.abs(ratio)}`;
+  const on = row.carrier ? ` on ${row.carrier.name}` : "";
+  return `${row.gears[0].name} drives ${row.gears[1].name}${on}, ×${ratio < 0 ? "−" : ""}${Math.abs(ratio)}`;
 }
 
 /** A plate object that holds gears, at its pose in model space now. */
@@ -347,13 +482,17 @@ export interface Prepared {
 
 const IDENTITY: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
 
-/** Whether `gear`'s centre lies on one of `others`' axis lines, the axes parallel: one shaft. */
+/**
+ * Whether `gear` is on one shaft with one of `others`: its centre on that gear's axis line, the axes parallel, and the
+ * two in planes of their own. A sun inside its ring shares the ring's axis in the ring's plane: two gears, not a shaft.
+ */
 function coaxial(gear: WorldGear, others: readonly WorldGear[]): boolean {
   return others.some((other) => {
     if (Math.abs(dot(gear.axis, other.axis)) < PARALLEL) return false;
     const along = minus(gear.centre, other.centre);
     const t = dot(along, other.axis);
-    return Math.hypot(along[0] - t * other.axis[0], along[1] - t * other.axis[1], along[2] - t * other.axis[2]) <= ON_AXIS_MM;
+    const onAxis = Math.hypot(along[0] - t * other.axis[0], along[1] - t * other.axis[1], along[2] - t * other.axis[2]) <= ON_AXIS_MM;
+    return onAxis && Math.abs(t) >= (gear.thickness + other.thickness) / 2 - 1e-6;
   });
 }
 
@@ -435,10 +574,37 @@ export function prepareTrain(assemblies: readonly Assembly[], parts: readonly Ge
   const hinged: string[] = [];
   const refused: string[] = [];
   const member = (id: string) => assembly.members.find((row) => row.object === id);
+  // A carrier (docs/plan-gear-kinds.md, stage 2): a part that holds no gear, has no joint and is not the root, with
+  // gears seated on it that mesh with a ring seated elsewhere. It turns about the ring's axis.
+  const carriers = new Map<string, WorldGear>();
+  for (const row of assembly.members) {
+    if (row.parent === null || row.joint || row.held || byId.get(row.object)?.gears.length) continue;
+    const planets = assembly.members.filter((one) => one.parent === row.object && group.has(one.object));
+    const outside = scope.filter((part) => group.has(part.id) && part.id !== row.object && !planets.some((one) => one.object === part.id));
+    for (const planet of planets) {
+      const own = byId.get(planet.object)?.gears ?? [];
+      // Only a ring makes a part a carrier: a bracket that holds a gear by a sun alone is a fixed axle there. A carrier
+      // without a ring takes its hinge by hand (Joint: Hinge), and its gears then hinge on it.
+      const sun = outside.flatMap((part) => part.gears).find((gear) => gear.internal && own.some((mine) => worldPair(mine, gear)?.verdict === "meshing"));
+      if (sun) { carriers.set(row.object, sun); break; }
+    }
+  }
+  for (const [carrier, sun] of carriers) {
+    const pose = poseOf(carrier) ?? IDENTITY;
+    const inverse = inversePose(pose);
+    const axis = turnDir(inverse, sun.axis);
+    const length = Math.hypot(...axis);
+    const joint = { kind: "hinge" as const, pivot: applyPose(inverse, sun.centre), axis: axis.map((v) => v / length) as Vec3, angle: 0 };
+    assembly = { ...assembly, members: assembly.members.map((one) => (one.object === carrier ? { ...one, joint } : one)) };
+    hinged.push(carrier);
+  }
+  // A ring that is the root of a planetary stage stays fixed: it is the housing, so sun and carrier turn by it.
+  const housing = carriers.size > 0 && !!byId.get(root.object)?.gears.some((gear) => gear.internal);
   for (const part of scope) {
     const gear = meshingGear.get(part.id);
     const row = member(part.id);
     if (!gear || !row || !group.has(part.id) || row.joint || row.held) continue;
+    if (row.parent === null && housing) continue;
     let needs = row.parent === null;
     let reseat = false;
     for (let at = row.parent === null ? undefined : member(row.parent), seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : member(at.parent)) {
@@ -447,6 +613,12 @@ export function prepareTrain(assemblies: readonly Assembly[], parts: readonly Ge
       if (shaft?.gears.length) {
         // Seated on a gear: one shaft with it when they share an axis, otherwise a gear of its own, off that gear.
         if (!coaxial(gear, shaft.gears)) { needs = true; reseat = at.parent !== null; }
+        break;
+      }
+      if (at.joint?.kind === "hinge") {
+        // Seated on a part that turns: on its shaft when the gear is on its hinge's line, otherwise a planet on it.
+        const pose = poseOf(at.object) ?? IDENTITY;
+        if (!onLine(gear, { axis: turnDir(pose, at.joint.axis), point: applyPose(pose, at.joint.pivot) })) needs = true;
         break;
       }
       if (at.joint) break;

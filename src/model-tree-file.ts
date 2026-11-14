@@ -650,7 +650,7 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (!origin || !size || !turn || !finite(radius) || !finite(height)) return undefined;
   const spec: PrimitiveSpec = { primitive: value.primitive, origin, size, radius, height, turn };
   // A gear's numbers (src/model-gear.ts) ride with the same rule: kept only when there.
-  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight"] as const) {
+  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight", "rim"] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (!finite(raw)) return undefined;
@@ -663,6 +663,11 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (value.boreShape !== undefined) {
     if (!isBoreShape(value.boreShape)) return undefined;
     spec.boreShape = value.boreShape;
+  }
+  // A ring gear (docs/plan-gear-kinds.md, stage 2). An older app drops the flag and builds an external gear there.
+  if (value.internal !== undefined) {
+    if (typeof value.internal !== "boolean") return undefined;
+    if (value.internal) spec.internal = true;
   }
   return spec;
 }

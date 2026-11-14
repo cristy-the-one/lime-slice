@@ -203,3 +203,28 @@ test("editing a gear step reopens the card with its numbers and its bore shape",
   await expect(page.locator("#modelGearHubH")).toHaveValue("3");
   await expect(apply(page), "unchanged numbers would change nothing").toBeDisabled();
 });
+
+test("a ring gear: Ring hides the bore, hub and shift, shows Rim, draws the rim's ghost and sends internal and rim", async ({ page }) => {
+  const tree = await start(page);
+  await pickGear(page);
+  await page.locator("#modelGearKind").selectOption("ring");
+  await expect(page.locator("#modelGearRim"), "a ring shows its rim").toBeVisible();
+  await expect(page.locator("#modelGearBore"), "a ring has no bore").toBeHidden();
+  await expect(page.locator("#modelGearHub"), "nor a hub").toBeHidden();
+  await page.locator("#modelGearMore > summary").click();
+  await expect(page.locator("#modelGearShift"), "nor a profile shift").toBeHidden();
+  await page.locator("#modelGearTeeth").fill("12");
+  await expect(page.locator("#modelNote")).toHaveText("A ring gear takes 20 to 150 teeth.");
+  await expect(apply(page)).toBeDisabled();
+  await page.locator("#modelGearTeeth").fill("36");
+  await page.locator("#modelGearModule").fill("1");
+  await page.locator("#modelGearRim").fill("50");
+  await page.locator("#modelGearRim").press("Tab");
+  await expect.poll(async () => Number(((await ghost(page)) ?? "").split(" ")[3]), { message: "the ghost is the rim, 50 across" }).toBeCloseTo(50, 0);
+  await expect(apply(page)).toBeEnabled();
+  await apply(page).click();
+  const sent = tree.of("open").at(-1)!.primitive as Record<string, unknown>;
+  expect(sent).toMatchObject({ primitive: "gear", teeth: 36, module: 1, internal: true, rim: 50 });
+  expect(sent.bore, "a ring sends no bore").toBeUndefined();
+  await expect(rows(page).first()).toContainText(/ring gear 36 teeth m 1/i);
+});

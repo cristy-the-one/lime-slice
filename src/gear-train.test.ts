@@ -166,7 +166,7 @@ const link = (driver: string, driven: string, ratio: number): Coupling => ({ dri
   const fixed: Assembly = { id: "f", name: "Fixed", members: [FRAME, hinged("pin", "frame", [0, 0, 0])] };
   const gears = gearsWith({ frame: { spec: { ...gearSpec(24, WHEEL_PHASE), origin: [36, 0, 0] }, name: "Ring" }, pin: { spec: gearSpec(12), name: "Pinion" } });
   const { found, coupled } = couple(fixed, gears);
-  eq("the fixed gear is coupled and the train is locked", [found.couplings.length, found.locked.map((row) => row.reason)], [1, ["Ring and Pinion are locked: Ring cannot turn, and the train meshes with it."]]);
+  eq("the fixed gear is coupled and the train is locked", [found.couplings.length, found.locked.map((row) => row.reason)], [1, ["Pinion and Ring are locked: Ring cannot turn, and the train meshes with it."]]);
   check("turning the pinion is refused", "reason" in trainTurn(coupled, "pin", 5));
   // The same pair with the pinion seated without a joint: they mesh and neither can turn. That is said, not skipped.
   const { joint: _joint, ...seatedPin } = hinged("pin", "frame", [0, 0, 0]);
@@ -183,7 +183,10 @@ const link = (driver: string, driven: string, ratio: number): Coupling => ({ dri
   const offAxis: Assembly = { ...pair, members: [FRAME, hinged("pin", "frame", [0, 0, 0]), { ...hinged("wheel", "frame", [36, 0, 0]), joint: { kind: "hinge", pivot: [3, 0, 0], axis: [0, 0, 1], angle: 0 } }] };
   eq("a hinge off the gear's axis is not coupled", couple(offAxis, pairGears).found.notCoupled.map((row) => row.reason), ["Pinion and Wheel are not coupled: Wheel's hinge does not turn about its gear's axis."]);
   const planet: Assembly = { ...pair, members: [FRAME, hinged("pin", "frame", [0, 0, 0]), hinged("arm", "frame", [0, 0, 0], [0, 0, 1]), hinged("wheel", "arm", [36, 0, 0])] };
-  eq("a planet on a turning arm is not covered", couple(planet, pairGears).found.notCoupled.map((row) => row.reason), ["Pinion and Wheel are not coupled: their hinges sit on different parts, and a gear that rides on another turning part is not covered."]);
+  // A planet on an arm that turns about the pinion's axis is a planetary mesh (docs/plan-gear-kinds.md, stage 2).
+  eq("a planet on an arm coaxial with its sun is coupled through the arm", couple(planet, pairGears).found.couplings.map((row) => [row.driver, row.driven, row.ratio, row.carrier?.body]), [["pin", "wheel", -0.5, "arm"]]);
+  const offArm: Assembly = { ...pair, members: [FRAME, hinged("pin", "frame", [0, 0, 0]), hinged("arm", "frame", [5, 0, 0], [0, 0, 1]), hinged("wheel", "arm", [31, 0, 0])] };
+  eq("an arm off the sun's axis is not covered", couple(offArm, pairGears).found.notCoupled.map((row) => row.reason), ["Pinion and Wheel are not coupled: their hinges sit on different parts, and a gear that rides on another turning part is covered only on a carrier whose hinge shares the other gear's axis."]);
 }
 
 // --- The file: couplings round-trip, a damaged one is dropped, and a removed member or joint drops its couplings.

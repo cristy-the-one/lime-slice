@@ -628,7 +628,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
       return;
     }
     // A gear's bore shape shows or hides the D bore's Flat, and changes the ghost at once.
-    if (ev.target instanceof HTMLElement && ev.target.id === "modelGearBoreShape") {
+    if (ev.target instanceof HTMLElement && (ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind")) {
       syncFields();
       refreshGhost();
       refreshApply();
@@ -668,7 +668,7 @@ export function mountModelChrome(next: ModelChromeHooks) {
     if (typed === "modelAx" || typed === "modelAy" || typed === "modelAz") measureEnds.A = null;
     if (typed === "modelBx" || typed === "modelBy" || typed === "modelBz") measureEnds.B = null;
     // A box or the screw list changes on `change`, all at once.
-    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape")) return;
+    if (ev.target instanceof HTMLElement && (HOLE_CHOICES.has(ev.target.id) || ev.target.id === "modelShellClosed" || ev.target.id === "modelChamferFlip" || ev.target.id === "modelGearBoreShape" || ev.target.id === "modelGearKind")) return;
     if (tool === "place") {
       placeChanged(ev.target instanceof HTMLElement ? ev.target.id : "", "typed");
       return;
@@ -1070,6 +1070,8 @@ function fillEdit() {
   if (panel.primitive === "gear") {
     const shape = document.querySelector<HTMLSelectElement>("#modelGearBoreShape");
     if (shape) shape.value = panel.boreShape ?? "round";
+    const kind = document.querySelector<HTMLSelectElement>("#modelGearKind");
+    if (kind) kind.value = panel.ring ? "ring" : "external";
   }
   if (panel.plane) paintPlaneMode(panel.plane.mode);
   if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
@@ -1328,6 +1330,8 @@ function syncFields() {
   const kind = primitiveKind();
   const withMode = withObject ? "object" : "primitive";
   // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
+  // A field under a gear's More that only one kind of gear takes (Shift: an external gear's).
+  document.querySelectorAll<HTMLElement>("#modelPanel [data-gear-kind]:not([data-for])").forEach((node) => node.toggleAttribute("hidden", node.dataset.gearKind !== (gearRing() ? "ring" : "external")));
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for], #modelPanel [data-when], #modelPanel [data-fontkind]").forEach((node) => {
     const forOk = !node.dataset.for || (!!tool && node.dataset.for.split(" ").includes(tool));
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
@@ -1359,7 +1363,7 @@ function syncFields() {
     // --- Assemblies M11. The frame switch is for a member of an assembly.
     const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
     // --- A gear's Flat is for a D bore.
-    const gearBoreOk = !node.dataset.gearBore || node.dataset.gearBore === gearBoreShape();
+    const gearBoreOk = (!node.dataset.gearBore || (node.dataset.gearBore === gearBoreShape() && !gearRing())) && (!node.dataset.gearKind || node.dataset.gearKind === (gearRing() ? "ring" : "external"));
     node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk));
   });
   // --- A3 composite features ---
@@ -1603,6 +1607,11 @@ export function fieldPrimitive(): PrimitiveSpec {
 }
 
 /** The bore shape picked for a gear. */
+/** Whether the gear panel makes a ring gear (docs/plan-gear-kinds.md, stage 2). */
+function gearRing(): boolean {
+  return document.querySelector<HTMLSelectElement>("#modelGearKind")?.value === "ring";
+}
+
 function gearBoreShape(): BoreShape {
   const value = document.querySelector<HTMLSelectElement>("#modelGearBoreShape")?.value;
   return isBoreShape(value) ? value : "round";
@@ -1614,6 +1623,19 @@ function gearBoreShape(): BoreShape {
  */
 function gearFields(): GearFields {
   const out: GearFields = { teeth: num("#modelGearTeeth"), module: num("#modelGearModule") };
+  if (gearRing()) {
+    // A ring: no shift, bore or hub; its rim, or the least one.
+    out.internal = true;
+    const rim = num("#modelGearRim");
+    if (rim > 0) out.rim = rim;
+    const pressure = num("#modelGearPressure");
+    if (pressure !== GEAR_DEFAULTS.pressureDeg) out.pressureDeg = pressure;
+    const backlash = num("#modelGearBacklash");
+    if (backlash !== GEAR_DEFAULTS.backlash) out.backlash = backlash;
+    const phase = num("#modelGearPhase");
+    if (phase !== GEAR_DEFAULTS.phaseDeg) out.phaseDeg = phase;
+    return out;
+  }
   const pressure = num("#modelGearPressure");
   if (pressure !== GEAR_DEFAULTS.pressureDeg) out.pressureDeg = pressure;
   const backlash = num("#modelGearBacklash");
@@ -2189,6 +2211,7 @@ function dragContext(): DragContext {
   return {
     read: (field) => num(`#${field}`),
     primitive: primitiveKind(),
+    ring: gearRing(),
     center,
     extent,
     split: tool === "split" ? splitPlan() : null,
