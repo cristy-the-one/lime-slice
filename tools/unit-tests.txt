@@ -45,6 +45,7 @@ src/pose-playback.test.ts
 src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
+mcp/gear-train.test.ts
 mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
 src/interference.test.ts
@@ -119,6 +120,7 @@ src/plugins/share.test.ts
 src/model-hole.test.ts
 src/model-primitive.test.ts
 src/gear-pair.test.ts
+src/gear-train.test.ts
 src/model-request.test.ts
 src/model-edit.test.ts
 src/model-partition.test.ts
