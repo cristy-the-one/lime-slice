@@ -1,6 +1,6 @@
 # Gear kinds: trains without hand-made hinges, rings, planets, racks, bevels and worms
 
-Status: plan. Stage 1 and stage 2 are built (one PR each); stages 3 and 4 are each built to this file in a PR of their own, and
+Status: plan. Stages 1 to 3 are built (one PR each); stage 4 are each built to this file in a PR of their own, and
 each PR corrects its section where the code says otherwise. This file is the spec. It extends
 `docs/plan-gear-coupling.md` (what exists: couplings found by the mesh check, `trainTurn`, `trainCheck`).
 
@@ -211,16 +211,52 @@ coupled and turned in the window, saved and reopened).
 
 ## Stage 3: rack and pinion
 
-- **Joints.** The assembly has hinges and balls; there is no slide. Stage 3 adds `{kind: "slide", origin, axis, travel,
-  min, max}`: a member that moves along an axis in its own frame, `travel` mm from its zero, with limits. Pose gets an
-  arrow handle and a Travel field; `model_place {joint: {kind: "slide"}}` and `{travel}`; an older app drops the joint
-  (`readJoint` refuses an unknown kind) and reads the part as Fixed.
-- **Kernel.** A rack op: `{primitive: "rack", module, teeth, thickness, back}` from `lime_recipe::gears::rack_outline`,
-  which exists for recipes, with the same pressure angle, backlash and shift fields as `Gear`.
-- **Mesh check, both copies.** A pinion against a rack: the pitch line at the pinion's pitch radius (plus shift) from its
-  centre, the mating phase of the rack's teeth along the line, outlines compared as for gears.
-- **Coupling.** Pinion angle to rack travel: `π m z / 360` mm per degree, signed by the slide axis against the pinion's
-  turning direction at the pitch point.
+Status: built (the third PR). Corrected from the outline where the code says otherwise.
+
+- **The slide joint.** `Joint` gains `{kind: "slide", pivot, axis, travel, min, max}`: the part moves along `axis` in
+  its own frame, `travel` mm from its zero (`moveSlide`), clamped to its limits. `pivot` is a point on the line (kept so
+  every joint has one). Pose's Joint select offers **Slide** (not on a root), with Axis, **Travel mm** and Minimum and
+  Maximum mm; there is no ring for a slide, so a rack moves with its pinion's ring or by its Travel field. Rest takes a
+  slide back to 0 with its train; Make rest leaves a slide's zero as it is (its seat is read from it). Reach leaves a slide
+  where it is; an animation keys the pinion, not the slide ("A slide moves with its pinion: key the pinion's angle.").
+  `model_place {travel}` moves a slide (and its train), `{angle}` on a slide or `{travel}` on a hinge is refused, and
+  `joint: {kind: "slide", pivot, axis, min, max}` makes one. An older app drops the joint (`readJoint` refuses the kind)
+  and reads the rack as fixed; its coupling is dropped there with it.
+- **Kernel.** `lime_recipe::gears::Rack { teeth, module, pressure_deg, backlash }`, a type of its own (the library's
+  `rack_outline` is the adopted bit-for-bit copy, 0.9 m addendum, no backlash, and stays as it is): straight flanks at the
+  pressure angle, addendum m, dedendum 1.25 m, `backlash` off each tooth at the pitch line, 1 to 400 teeth, along its own +X
+  with teeth pointing +Y, the pitch line through the origin and tooth 0 on it. The gear solid takes `rack: true` and
+  `back` (the bar under the roots, 1.5 modules when absent); no profile shift, phase, bore, hub or rim (each refused with
+  its sentence). `rack_travel(turn, z, m)` is `PI m z / 360` mm a degree. An older app reads `rack` as unknown and builds a
+  spur gear of those numbers if it rebuilds the step.
+- **Mesh check, both copies** (`gear_pair::classify_rack`, `rack_turn`; `classifyRack`, `rackTurn`; the same verdicts
+  under lust 0.3.1, rustc and the window). In the rack's frame: apart when the pinion's tips stand clear of the rack's
+  tips or off its ends; module and pressure angle; the working distance from the pitch line is the pinion's pitch radius
+  plus its shift (`tooClose` nearer by more than both backlashes, `loose` farther); the mating phase as the pitch circle
+  rolls on the pitch line (a pinion tooth a fraction behind the foot meets a space as far behind it); a turn past the play
+  inside the band, or two edges that cross, is `toothOnTooth`. `worldPair` projects into the rack's frame from its
+  `tooth0` (along the rack) and `axis`; a rack with a ring or a rack is apart.
+- **Coupling.** A pinion on a hinge and a rack on a slide on one frame couple at `PI m z / 360` mm a degree (the coupling
+  row says `rack: "driven"` or `"driver"`, and its line reads "pinion drives rack, ×0.105 mm a degree"). The sign is the
+  geometry's: the pinion turned + about its own axis carries its pitch point along `teeth x axis`, and the rack travels
+  with it, read against the slide's axis and the pinion's hinge. Refused, each with its sentence: a rack on a hinge, a
+  pinion on a slide, a slide that does not run along the rack's teeth, and a rack and pinion on different frames. A held
+  rack locks its pinion. Limits are each joint's own: a slide's in mm, a hinge's in degrees.
+- **Couple gears** gives a rack that meshes a slide along its teeth (and a pinion its hinge), says "Gave rack a slide along
+  its teeth.", and never makes a rack the root of a new assembly: the first gear that is not a rack is. A rack that is the
+  root stays fixed, with a sentence. The MCP reply adds `slid`.
+
+### Tests
+
+`crates/lime-recipe/tests/rack_gear.rs` (the outline and its area; meshing and through ±280 degrees of sampled travel; a
+rack sent the wrong way caught; half a pitch off, near, far, apart); `crates/lime-model-occt/tests/gear.rs` (the rack's
+volume; exact volume at mesh, ±0.06 mm, a pitch turned with the rack moved by `rack_travel`, crossing past the play; the
+refusals); `mcp/recipe-gears.test.ts` (lust, rustc and the window agree); `src/gear-rack.test.ts` (the window's verdicts,
+the coupling and its sign, either side driving, a slide limit, 200 turns and reads, a rack moved by hand, the refusals,
+Couple gears from free parts); `mcp/gear-train.test.ts` (over MCP, `travel` and `angle` and their refusals) and
+`mcp/gear-train-occt.test.ts` (real solids by exact volume at five pinion turns, crossing when the rack moves alone);
+`e2e/model-gear.spec.ts` (the Rack card) and `e2e/pose-gears.spec.ts` (a free rack and pinion coupled and driven by hand,
+the rack's Travel field, saved and reopened).
 
 ## Stage 4: bevel gears and worms
 

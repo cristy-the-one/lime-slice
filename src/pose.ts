@@ -1,5 +1,5 @@
 /** Joint operations for assembled model-space poses. They never change the print layout. */
-import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, reparentJoint, rotationQuaternion, samePose, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
+import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, reparentJoint, rotationQuaternion, samePose, slideZero, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
 import { matMul, rotAbout, wrapDeg, type Mat3 } from "./mesh-place.ts";
 import { applyPose, inversePose, relativePose, thenPose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
@@ -25,6 +25,7 @@ function aroundPivot(pose: Affine, pivot: Vec3, rotation: Mat3): Affine {
 export function restOf(member: Member): Affine {
   const pose = memberPose(member), joint = member.joint;
   if (!joint) return pose;
+  if (joint.kind === "slide") return slideZero(pose, joint);
   const rotation = joint.kind === "hinge"
     ? matMul(pose.m, rotAbout(joint.axis, -radians(joint.angle ?? 0)))
     : joint.rest ? quaternionRotation(joint.rest) : pose.m;
@@ -59,6 +60,21 @@ export function turnHinge(member: Member, delta: number): PoseResult {
   return { ...plain, ...memberFields(aroundPivot(pose, joint.pivot, rotation)), joint: { ...joint, angle } };
 }
 
+/** Move a slide by `delta` mm along its own axis, clamping the travel to its limits. */
+export function moveSlide(member: Member, delta: number): PoseResult {
+  const joint = readJoint(member.joint);
+  if (member.parent === null) return { reason: "The assembly root is fixed." };
+  if (!joint || joint.kind !== "slide") return { reason: "This member has no valid slide." };
+  if (!Number.isFinite(delta)) return { reason: "A slide needs a finite move." };
+  const before = joint.travel ?? 0;
+  const travel = Math.max(joint.min ?? -Infinity, Math.min(joint.max ?? Infinity, before + delta));
+  const pose = memberPose(member);
+  const d = turnDir(pose, joint.axis);
+  const { exprs: _exprs, ...plain } = member;
+  const step = travel - before;
+  return { ...plain, ...memberFields({ m: pose.m, t: [pose.t[0] + d[0] * step, pose.t[1] + d[1] * step, pose.t[2] + d[2] * step] }), joint: { ...joint, travel } };
+}
+
 /**
  * Turn `object`'s hinge by `delta` degrees within `assembly`. A hinged root turns on the plate, and the parts hinged on it
  * stay where they are: their offsets are turned back by the root's turn, and a ball's rest with them, so a turning root
@@ -67,7 +83,8 @@ export function turnHinge(member: Member, delta: number): PoseResult {
 export function turnInAssembly(assembly: Assembly, object: string, delta: number): Assembly | { reason: string } {
   const member = assembly.members.find((row) => row.object === object);
   if (!member) return { reason: "This part is not in the assembly." };
-  const turned = turnHinge(member, delta);
+  // A slide moves `delta` mm (docs/plan-gear-kinds.md, stage 3).
+  const turned = member.joint?.kind === "slide" ? moveSlide(member, delta) : turnHinge(member, delta);
   if ("reason" in turned) return turned;
   if (member.parent !== null) return { ...assembly, members: assembly.members.map((row) => (row === member ? turned : row)) };
   const before = memberPose(member), after = memberPose(turned);
@@ -187,6 +204,8 @@ export function solvePose(
       const toEnd = minus(applyPose(poses.get(object)!, at), pivot);
       const toTarget = minus(target, pivot);
       let updated: PoseResult;
+      // A slide is a rack's, driven by its pinion: Reach leaves it where it is.
+      if (joint.kind === "slide") continue;
       if (joint.kind === "hinge") {
         const axis = turnDir(jointPose, joint.axis);
         const a = minus(toEnd, [axis[0] * dot(toEnd, axis), axis[1] * dot(toEnd, axis), axis[2] * dot(toEnd, axis)]);

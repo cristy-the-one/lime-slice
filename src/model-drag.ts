@@ -25,7 +25,7 @@ function isFeatureDrag(tool: ModelTool | null): tool is "pocket" | "boss" | "tex
 // --- end A3 ---
 
 /** A primitive's size fields, whichever kind shows them. New solid and Boolean share them. */
-const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim"];
+const SIZE_FIELDS = ["modelDx", "modelDy", "modelDz", "modelTopX", "modelRadius", "modelTopR", "modelTube", "modelInnerR", "modelSides", "modelAcross", "modelHeight", "modelGearTeeth", "modelGearModule", "modelGearBore", "modelGearBoreFlat", "modelGearHub", "modelGearHubH", "modelGearRim", "modelGearBack"];
 
 /** The fields a mouse can drag, per tool. The panel shows each of them as a number too. */
 export const DRAG_FIELDS: Record<ModelTool, readonly string[]> = {
@@ -114,6 +114,8 @@ export interface DragContext {
   primitive: PrimitiveKind;
   /** A gear card set to Ring (docs/plan-gear-kinds.md, stage 2): a rim knob in place of the bore's and hub's. */
   ring?: boolean;
+  /** A gear card set to Rack (stage 3): a back knob under its bar. */
+  rack?: boolean;
   /** Centre and largest side of the open solid. */
   center: Vec3;
   extent: number;
@@ -322,6 +324,8 @@ function sizeKnobs(ctx: DragContext, axes: [Vec3, Vec3, Vec3]): Spec[] {
       const count = knob("gear-teeth", "modelGearTeeth", axes[1], "accent", "Teeth", { rate: 0.5, min: 6, max: 150, whole: true, unit: "count" });
       // A ring's outside is its rim, a diameter: two millimetres a millimetre.
       if (ctx.ring) return [module, count, height, knob("gear-rim", "modelGearRim", diag(axes[0], axes[1]), "accent", "Rim ⌀", { rate: 2, min: 0 })];
+      // A rack's bar grows down, away from its teeth.
+      if (ctx.rack) return [module, count, height, knob("gear-back", "modelGearBack", back(axes[1]), "accent", "Back", { min: 0 })];
       return [
         module,
         count,

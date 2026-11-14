@@ -247,3 +247,42 @@ console.log("MCP gear train: couple, turn, check, list, save, refusals and uncou
   assert.equal(again.locked, undefined, show(again));
   console.log("MCP planetary: a ring, a sun, three planets on a carrier: couple, turn, model_check meshing, hold one ok");
 }
+
+// --- Stage 3 (docs/plan-gear-kinds.md): a rack and a pinion, free, at mesh. Couple gears gives the pinion a hinge and the
+// rack a slide along its teeth; the pinion's angle moves the rack PI m z / 360 mm a degree, and the rack's travel turns it.
+{
+  const t = new Session(fakeEngine());
+  const go = async (name: string, input: Reply = {}) => (await t.call(name, input)) as Reply;
+  const make = async (input: Reply) => {
+    const made = await go("solid_new", input);
+    assert.equal(made.ok, true, show(made));
+    return String(made.object);
+  };
+  const refusedRack = await go("solid_new", { gear: { teeth: 40, module: 1, thickness: 6, rack: true, bore: 3 } });
+  assert.equal(refusedRack.ok, false, "a rack takes no bore");
+  const pinion = await make({ gear: { teeth: 12, module: 1, thickness: 6, phaseDeg: -90 }, name: "pinion" });
+  const rack = await make({ gear: { teeth: 40, module: 1, thickness: 6, rack: true }, name: "rack" });
+  assert.equal((await go("model_place", { object: pinion, x: 10 * Math.PI, y: 6, z: 0 })).ok, true);
+  assert.equal((await go("model_place", { object: rack, x: Math.PI / 2, y: 0, z: 0 })).ok, true);
+  const check = await go("model_check", { object: rack });
+  assert.equal((check.gears as GearRow[] | undefined)?.find((one) => [one.a, one.b].includes(pinion))?.verdict, "meshing", show(check.gears));
+  const made = await go("model_place", { object: pinion, gears: "couple" });
+  assert.equal(made.ok, true, show(made));
+  assert.deepEqual([made.hinged, made.madeAssembly], [["pinion"], "Gear train"], show(made));
+  assert.ok(String(made.note).includes("Gave rack a slide along its teeth.") && show(made.slid) === show(["rack"]), show(made));
+  assert.deepEqual((made.couplings as Row[]).map((row) => [row.driver, row.driven, row.ratio]), [[pinion, rack, Math.round((Math.PI / 30) * 1e6) / 1e6]], show(made));
+  assert.deepEqual((made.checked as { bad: unknown[] }).bad, [], "the validator's sampled turn meshes everywhere");
+  const travel = () => { const joint = t.assemblies[0]!.members.find((row) => row.object === rack)?.joint; return joint?.kind === "slide" ? joint.travel ?? 0 : NaN; };
+  const turned = await go("model_place", { object: pinion, angle: 30, reply: "angles" });
+  assert.equal(turned.ok, true, show(turned));
+  assert.ok(Math.abs(travel() - Math.PI) < 1e-9, `pinion 30: the rack travels PI, not ${travel()}`);
+  assert.ok((turned.angles as { object: string; travel?: number }[]).some((row) => row.object === rack && Math.abs((row.travel ?? 0) - Math.PI) < 1e-9), show(turned));
+  const after = await go("model_check", { object: rack });
+  assert.equal((after.gears as GearRow[] | undefined)?.find((one) => [one.a, one.b].includes(pinion))?.verdict, "meshing", `turned, they still mesh: ${show(after.gears)}`);
+  assert.equal((await go("model_place", { object: rack, travel: 0 })).ok, true);
+  const pinAngle = (t.assemblies[0]!.members.find((row) => row.object === pinion)!.joint as { angle?: number }).angle ?? NaN;
+  assert.ok(Math.abs(pinAngle) < 1e-9, `the rack back to 0 brings the pinion to 0: ${pinAngle}`);
+  assert.equal((await go("model_place", { object: rack, angle: 10 })).ok, false, "a slide takes travel, not angle");
+  assert.equal((await go("model_place", { object: pinion, travel: 10 })).ok, false, "a hinge takes angle, not travel");
+  console.log("MCP rack: couple gives a hinge and a slide, the pinion moves the rack PI m z / 360 mm a degree, and back");
+}

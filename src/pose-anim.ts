@@ -66,6 +66,8 @@ function resolveAim(member: Member, aim: Aim): Value | string {
   const joint = readJoint(member.joint);
   // A root moves only on a hinge of its own, on the plate (docs/plan-gear-kinds.md).
   if (!joint || (member.parent === null && joint.kind !== "hinge")) return "This part has no movable joint.";
+  // A rack's slide moves with its pinion (docs/plan-gear-kinds.md, stage 3): key the pinion.
+  if (joint.kind === "slide") return "A slide moves with its pinion: key the pinion's angle.";
   if (typeof aim === "object" && aim !== null && "reach" in aim) {
     if (member.parent === null) return "A root turns on the plate; it has no chain to reach with.";
     return finiteVec(aim.reach?.at) && finiteVec(aim.reach?.to) ? { kind: "reach", at: aim.reach.at, to: aim.reach.to } : "Reach needs two finite three-number points.";
@@ -191,7 +193,7 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
     const assigned = new Set(explicit.flatMap(([pattern]) => rigGroup(rig, pattern).map((row) => row.object)));
     const items: [string, Aim][] = [];
     // A gear train rests through its lead alone: the others follow it (docs/plan-gear-coupling.md).
-    if (key.rest) for (const row of rig) if (row.joint && !assigned.has(row.object) && !followers.has(row.object)) items.push([row.name, "rest"]);
+    if (key.rest) for (const row of rig) if (row.joint && row.joint.kind !== "slide" && !assigned.has(row.object) && !followers.has(row.object)) items.push([row.name, "rest"]);
     items.push(...explicit);
     for (const [pattern, aim] of items) {
       const matched = rigGroup(rig, pattern);
