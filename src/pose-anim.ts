@@ -354,3 +354,39 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
   }
   return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
 }
+
+/** One member as an animation saw it, or as it stands now: its name, its model pose (absent is where it was made) and its points. */
+export interface StalePart { name: string; pose: Affine | undefined; points: ArrayLike<number> }
+
+/**
+ * What an animation was built from, against what stands now: null when nothing it used has changed, else a clause that
+ * names what did ("Wheel moved", "The assembly's joints changed"). The frames hold poses and meshes from the start of
+ * the build, so they are stale only when a member's pose, its shape, or the assembly itself is different.
+ *
+ * A part that was only stored again is the same part: a mirror from an MCP session, or a mesh the view finished
+ * preparing, makes a new record with the same pose and the same points. The window used to ask for the same record,
+ * and for the selection to still be on the assembly, so in such a session every Play answered "The assembly changed
+ * while the animation was building." however often it was pressed.
+ */
+export function animationStale(snapshot: Assembly, current: Assembly | undefined, was: ReadonlyMap<string, StalePart | undefined>, now: ReadonlyMap<string, StalePart | undefined>): string | null {
+  if (!current) return "The assembly was removed";
+  if (current.members.length !== snapshot.members.length || current.members.some((row, at) => row.object !== snapshot.members[at]!.object)) return "The assembly's parts changed";
+  const close = (a: Affine | undefined, b: Affine | undefined) => {
+    const flat = (pose: Affine | undefined) => (pose ? [...pose.m, ...pose.t] : [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+    const left = flat(a), right = flat(b);
+    return left.every((value, at) => Math.abs(value - right[at]!) <= 1e-9);
+  };
+  for (const [id, before] of was) {
+    const after = now.get(id);
+    if (!before && !after) continue;
+    if (!before || !after) return `${(after ?? before)!.name} was ${after ? "added" : "removed"}`;
+    if (!close(before.pose, after.pose)) return `${after.name} moved`;
+    const a = before.points, b = after.points;
+    if (a !== b) {
+      if (a.length !== b.length) return `${after.name}'s shape changed`;
+      for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return `${after.name}'s shape changed`;
+    }
+  }
+  if (JSON.stringify(current) !== JSON.stringify(snapshot)) return "The assembly's joints changed";
+  return null;
+}

@@ -26,6 +26,22 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (process.argv.includes("--compound")) {
+  // A free compound train, ten to one: a driver of 16 on a wheel of 40, and a pinion of 12 attached to that wheel (one
+  // shaft, no joint) on an output of 48. Module 1, each at its mating phase. Only the pinion is in an assembly.
+  const { matePhase } = await import("../src/gear-pair.ts");
+  const driver = String((await call("solid_new", { gear: { teeth: 16, module: 1, thickness: 6 }, name: "Driver" })).object);
+  const wheel = String((await call("solid_new", { gear: { teeth: 40, module: 1, thickness: 6, phaseDeg: matePhase(0, 16, 0, 40) }, name: "Compound wheel" })).object);
+  const pinion = String((await call("solid_new", { gear: { teeth: 12, module: 1, thickness: 6 }, name: "Compound pinion" })).object);
+  const output = String((await call("solid_new", { gear: { teeth: 48, module: 1, thickness: 6, phaseDeg: matePhase(0, 12, 0, 48) }, name: "Output" })).object);
+  await call("model_place", { object: wheel, x: 28, y: 0, z: 0 });
+  await call("model_place", { object: pinion, to: wheel, x: 0, y: 0, z: 8 });
+  await call("model_place", { object: output, x: 58, y: 0, z: 8 });
+  const saved = await call("project_save", { name: "pose-gears-compound.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ driver, wheel, pinion, output }));
+  process.exit(0);
+}
 if (process.argv.includes("--crossed")) {
   // docs/plan-gear-kinds.md, stage 4: two gears of 20 whose axes cross at a right angle, within reach, as a bevel pair.
   const flat = String((await call("solid_new", { gear: { teeth: 20, module: 1, thickness: 6 }, name: "flat" })).object);
