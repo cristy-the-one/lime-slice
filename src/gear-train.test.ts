@@ -195,6 +195,23 @@ const link = (driver: string, driven: string, ratio: number): Coupling => ({ dri
   const unjointed = { ...coupled, members: coupled.members.map((row) => (row.object === "wheel" ? { object: "wheel", parent: "frame", offset: row.offset, turn: row.turn } : row)) };
   eq("a body that lost its hinge drops its couplings", readAssemblies([unjointed], objects)[0]?.couplings, undefined);
   eq("withoutMember drops the couplings it touched", withoutMember(coupled, "pin", poseOf)?.couplings?.map((row) => row.driver), ["wheel"]);
+  // The seat: hinge turns never change it, so a train turned 600 times by odd steps keeps every coupling.
+  let worn: Assembly = coupled;
+  for (let i = 0; i < 600; i++) {
+    const step = trainTurn(worn, i % 3 === 0 ? "third" : "pin", 7.37 * (i % 2 ? -1 : 1.3));
+    if ("reason" in step) throw new Error(step.reason);
+    worn = step.assembly;
+  }
+  eq("600 turns later the couplings still read", readAssemblies([worn], objects)[0]?.couplings?.length, 2);
+  const wornCheck = trainCheck(readAssemblies([worn], objects)[0]!, poseOf, row3Gears, "pin", SWEEP);
+  check("and the train still meshes everywhere", !("reason" in wornCheck) && wornCheck.bad.length === 0, JSON.stringify(wornCheck));
+  // Moving a coupled gear, or its hinge's pivot, uncouples it: the joint never drives gears that may no longer mesh.
+  const moved = { ...coupled, members: coupled.members.map((row) => (row.object === "third" ? { ...row, offset: [79, 0, 0] as Vec3 } : row)) };
+  eq("a gear moved by hand drops its couplings", readAssemblies([moved], objects)[0]?.couplings?.map((row) => row.driven), ["wheel"]);
+  const pivoted = { ...coupled, members: coupled.members.map((row) => (row.object === "wheel" && row.joint?.kind === "hinge" ? { ...row, joint: { ...row.joint, pivot: [0, 1, 0] as Vec3 } } : row)) };
+  eq("a hinge whose pivot moved drops both couplings", readAssemblies([pivoted], objects)[0]?.couplings, undefined);
+  const zeroed = { ...worn, members: worn.members.map((row) => (row.joint?.kind === "hinge" ? { ...row, joint: { ...row.joint, angle: 0 } } : row)) };
+  eq("Make rest (a new zero, the same pose) keeps them", readAssemblies([zeroed], objects)[0]?.couplings?.length, 2);
   // An older app reads id, name and members: the same rows, without the couplings.
   const older = (JSON.parse(JSON.stringify([coupled])) as Record<string, unknown>[]).map(({ id, name, members }) => ({ id, name, members }));
   eq("what an older app keeps still opens", readAssemblies(older, objects)[0]?.members.length, 4);

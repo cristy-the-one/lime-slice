@@ -55,6 +55,12 @@ export interface Coupling {
   driven: string;
   ratio: number;
   gears: [GearRef, GearRef];
+  /**
+   * Where the two gears sat when they were coupled (`couplingSeat`): each gear in its body's frame, and each body's hinge
+   * pivot and axis on its frame. A hinge turn leaves it as it is; moving a gear, or its hinge's pivot or axis, does not,
+   * and the coupling is then dropped rather than driving gears that may no longer mesh.
+   */
+  seat?: number[];
 }
 
 export interface Assembly {
@@ -339,6 +345,76 @@ export function withoutMember(assembly: Assembly, object: string, poseOf: PoseOf
   return members.length >= 2 ? withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))) : null;
 }
 
+export type Body = { body: string; fixed: boolean } | { reason: string };
+
+/**
+ * The body that turns `object`'s gear: up through members seated without a joint to the first hinge, or to the fixed
+ * root. A ball on the way is not covered. Null for an object outside the assembly.
+ */
+export function bodyOf(assembly: Assembly, object: string): Body | null {
+  const memberOf = (id: string) => assembly.members.find((row) => row.object === id);
+  let at = memberOf(object);
+  if (!at) return null;
+  for (const seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : memberOf(at.parent)) {
+    seen.add(at.object);
+    if (at.joint?.kind === "hinge") return { body: at.object, fixed: false };
+    if (at.joint?.kind === "ball") return { reason: "turns on a ball joint, and only hinges drive gears" };
+    if (at.parent === null) return { body: at.object, fixed: true };
+  }
+  return null;
+}
+
+/** What a body's hinge sits on: the first jointed member above it, or the root. A fixed body is the root's frame. */
+export function frameOf(assembly: Assembly, body: string): string | null {
+  const memberOf = (id: string) => assembly.members.find((row) => row.object === id);
+  const member = memberOf(body);
+  if (!member) return null;
+  if (member.parent === null) return member.object;
+  for (let at = memberOf(member.parent), seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : memberOf(at.parent)) {
+    seen.add(at.object);
+    if (at.joint || at.parent === null) return at.object;
+  }
+  return null;
+}
+
+/** `from` in `to`'s frame, through the members between them; null when `to` is not above `from`. */
+function chainPose(assembly: Assembly, from: string, to: string): Affine | null {
+  let pose = IDENTITY_POSE;
+  for (let at = from, steps = 0; at !== to; steps += 1) {
+    const member = assembly.members.find((row) => row.object === at);
+    if (!member || member.parent === null || steps > assembly.members.length) return null;
+    pose = thenPose(pose, memberPose(member));
+    at = member.parent;
+  }
+  return pose;
+}
+
+/**
+ * The numbers a hinge turn never changes for a coupled pair: for each gear, its pose in its body's frame, and for a
+ * hinged body its pivot and axis in its parent's frame and that parent's pose on the body's frame. Null when a gear
+ * has no body. Compared by `couplingFits`.
+ */
+export function couplingSeat(assembly: Assembly, gears: readonly [GearRef, GearRef]): number[] | null {
+  const out: number[] = [];
+  const pose = (p: Affine | null) => (p ? [...p.m, ...p.t] : null);
+  for (const gear of gears) {
+    const body = bodyOf(assembly, gear.object);
+    if (!body || "reason" in body) return null;
+    const inBody = pose(chainPose(assembly, gear.object, body.body));
+    if (!inBody) return null;
+    out.push(...inBody);
+    if (body.fixed) continue;
+    const member = assembly.members.find((row) => row.object === body.body)!;
+    const frame = frameOf(assembly, body.body);
+    const joint = member.joint;
+    if (!frame || joint?.kind !== "hinge" || member.parent === null) return null;
+    const onFrame = pose(chainPose(assembly, member.parent, frame));
+    if (!onFrame) return null;
+    out.push(...applyPose(memberPose(member), joint.pivot), ...turnDir(memberPose(member), joint.axis), ...onFrame);
+  }
+  return out;
+}
+
 /** Whether a coupling names one of `objects`, as a body or as a gear's object. */
 function touches(coupling: Coupling, objects: readonly string[]): boolean {
   return [coupling.driver, coupling.driven, coupling.gears[0].object, coupling.gears[1].object].some((id) => objects.includes(id));
@@ -475,7 +551,8 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
     const gears = Array.isArray(row.gears) && row.gears.length === 2 ? row.gears.map(readGearRef) : null;
     if (typeof row.driver !== "string" || typeof row.driven !== "string" || !row.driver || row.driver === row.driven) continue;
     if (!finite(row.ratio) || row.ratio === 0 || !gears || gears.some((gear) => gear === null)) continue;
-    out.push({ driver: row.driver, driven: row.driven, ratio: row.ratio, gears: [gears[0]!, gears[1]!] });
+    const seat = Array.isArray(row.seat) && row.seat.every(finite) ? (row.seat as number[]) : undefined;
+    out.push({ driver: row.driver, driven: row.driven, ratio: row.ratio, gears: [gears[0]!, gears[1]!], ...(seat ? { seat } : {}) });
   }
   return out.length ? out : undefined;
 }
@@ -487,7 +564,13 @@ function couplingFits(assembly: Assembly, coupling: Coupling): boolean {
     return !!member && (member.parent === null || member.joint?.kind === "hinge");
   };
   const member = (id: string) => assembly.members.some((row) => row.object === id);
-  return body(coupling.driver) && body(coupling.driven) && member(coupling.gears[0].object) && member(coupling.gears[1].object);
+  if (!body(coupling.driver) || !body(coupling.driven) || !member(coupling.gears[0].object) || !member(coupling.gears[1].object)) return false;
+  // The bodies are still the ones the gears turn on, and nothing has moved a gear or a hinge since the pair was coupled.
+  const bodies = coupling.gears.map((gear) => bodyOf(assembly, gear.object));
+  if (bodies.some((row) => !row || "reason" in row) || (bodies[0] as { body: string }).body !== coupling.driver || (bodies[1] as { body: string }).body !== coupling.driven) return false;
+  if (!coupling.seat) return true;
+  const now = couplingSeat(assembly, coupling.gears);
+  return !!now && now.length === coupling.seat.length && now.every((value, i) => Math.abs(value - coupling.seat![i]!) <= 1e-6 * Math.max(1, Math.abs(value)));
 }
 
 /** One root, every member reached from it, and no object twice: the shape a solve can walk. */

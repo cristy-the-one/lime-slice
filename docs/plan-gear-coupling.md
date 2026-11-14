@@ -39,6 +39,10 @@ interface Assembly { id; name; members; couplings?: Coupling[] }
   whose hinges point opposite ways turn the same way about their own axes.
 - `gears` names the two gears of the mesh (object, gear step or null for the object's own solid, and the label), so the
   validator can find them again and a reply can name them.
+- `seat` records what a hinge turn never changes: each gear's pose on its body, and each hinged body's pivot and axis
+  on its parent with that parent's pose on the frame. The reader drops a coupling whose seat no longer matches (a gear
+  moved by hand, a pivot or axis edited), so the joint never drives gears that may have left their mesh. Couple again.
+- Couplings read outward from the train's first body in member order ("pinion drives wheel, wheel drives third").
 - No phase is stored. The phase is the pose: every turn moves all coupled bodies by their share of one delta, so the
   phase each pair had when it was coupled is kept. Redefining a hinge's zero (Make rest) changes nothing.
 
@@ -110,7 +114,10 @@ One field on `model_place`, no new tool: `gears: "couple" | "list" | "uncouple"`
   `meshing` at sampled angles, `list` reads it back, one Undo restores the train, the project round trips, a gear 1 mm
   too far is not coupled with its sentence, and a fixed gear locks the train. The gears are Model tree roots, so the
   fake engine is enough: no kernel call takes part in any of it, as `mcp/pose.test.ts`.
-- `e2e/pose-gears.spec.ts` (headless Chromium, smoke list): the same pinion and wheel, written by
-  `e2e/gear-train-project.ts` through the MCP session and opened in the app. Couple gears in the Pose panel reports the
-  coupling; the pinion's Angle field and a drag on its hinge ring each turn the wheel at `-0.5`; turning the wheel
-  drives the pinion back; one Undo restores both; the saved file keeps the coupling and the wheel's turned pose.
+- `e2e/pose-gears.spec.ts` (headless Chromium, smoke list), with no script or agent in the loop: a pinion (12), a wheel
+  (24), a third gear (18), and a compound stage (a 12-tooth gear seated on the wheel's shaft driving a 24), written by
+  `e2e/gear-train-project.ts` through the MCP session and opened in the app. Couple gears in the Pose panel lists the
+  three meshes; a drag on the pinion's hinge ring turns every gear at its tooth ratio (wheel -p/2, third +2p/3, out
+  +p/4, the small gear with its shaft); typing the third gear's angle drives the train back from the far end; one Undo
+  restores the train; and after a save and reopen the couplings come from the file and a second drag checks the ratios
+  again.

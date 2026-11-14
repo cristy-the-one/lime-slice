@@ -6,7 +6,7 @@
  * The code that moves gears never reads the mesh check: `findCouplings` uses it to wire the train, and `trainCheck`
  * uses it to judge sampled frames. A turn is `turnHinge` on each body by its share of one delta.
  */
-import { solveAssembly, withCouplings, withMember, type Assembly, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
+import { bodyOf, couplingSeat, frameOf, solveAssembly, withCouplings, withMember, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
 import { worldPair, type GearVerdict, type WorldGear } from "./gear-pair.ts";
 import { applyPose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
@@ -17,7 +17,7 @@ const ON_AXIS_MM = 0.05;
 /** Hinge and gear axes are parallel within a degree, as the mesh check's planes are. */
 const PARALLEL = Math.cos(Math.PI / 180);
 
-export type Body = { body: string; fixed: boolean } | { reason: string };
+export { bodyOf, frameOf, type Body };
 
 export interface NotCoupled {
   names: [string, string];
@@ -46,34 +46,6 @@ const unit = (v: Vec3): Vec3 => {
 
 function memberOf(assembly: Assembly, object: string): Member | undefined {
   return assembly.members.find((row) => row.object === object);
-}
-
-/**
- * The body that turns `object`'s gear: up through members seated without a joint to the first hinge, or to the fixed
- * root. A ball on the way is not covered. Null for an object outside the assembly.
- */
-export function bodyOf(assembly: Assembly, object: string): Body | null {
-  let at = memberOf(assembly, object);
-  if (!at) return null;
-  for (const seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : memberOf(assembly, at.parent)) {
-    seen.add(at.object);
-    if (at.joint?.kind === "hinge") return { body: at.object, fixed: false };
-    if (at.joint?.kind === "ball") return { reason: "turns on a ball joint, and only hinges drive gears" };
-    if (at.parent === null) return { body: at.object, fixed: true };
-  }
-  return null;
-}
-
-/** What a body's hinge sits on: the first jointed member above it, or the root. A fixed body is the root's frame. */
-export function frameOf(assembly: Assembly, body: string): string | null {
-  const member = memberOf(assembly, body);
-  if (!member) return null;
-  if (member.parent === null) return member.object;
-  for (let at = memberOf(assembly, member.parent), seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : memberOf(assembly, at.parent)) {
-    seen.add(at.object);
-    if (at.joint || at.parent === null) return at.object;
-  }
-  return null;
 }
 
 /** A hinge's axis and a point on it, in model space. Null for a body without a hinge. */
@@ -150,10 +122,40 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
       const axisA = hingeLine(assembly, poses, bodyA.body)?.axis ?? a.axis;
       const axisB = hingeLine(assembly, poses, bodyB.body)?.axis ?? b.axis;
       const ratio = -(a.spur.teeth / b.spur.teeth) * Math.sign(dot(axisA, axisB));
-      couplings.push({ driver: bodyA.body, driven: bodyB.body, ratio, gears: [refOf(a), refOf(b)] });
+      const gearRefs: [GearRef, GearRef] = [refOf(a), refOf(b)];
+      const seat = couplingSeat(assembly, gearRefs);
+      couplings.push({ driver: bodyA.body, driven: bodyB.body, ratio, gears: gearRefs, ...(seat ? { seat } : {}) });
     }
   }
-  return { couplings, notCoupled, locked: trainLocks(assembly, couplings) };
+  const oriented = orientOutward(assembly, couplings);
+  return { couplings: oriented, notCoupled, locked: trainLocks(assembly, oriented) };
+}
+
+/**
+ * Each coupling turned to read outward from its train's first body in member order, so a train reads "pinion drives
+ * wheel, wheel drives third" from the gear a person would turn. The ratio inverts with it; the motion is the same.
+ */
+function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
+  const order = new Map(assembly.members.map((row, i) => [row.object, i]));
+  const depth = new Map<string, number>();
+  const bodies = [...new Set(couplings.flatMap((row) => [row.driver, row.driven]))].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+  for (const start of bodies) {
+    if (depth.has(start)) continue;
+    depth.set(start, 0);
+    for (const queue = [start]; queue.length;) {
+      const at = queue.shift()!;
+      for (const row of couplings) {
+        const other = row.driver === at ? row.driven : row.driven === at ? row.driver : null;
+        if (other !== null && !depth.has(other)) { depth.set(other, depth.get(at)! + 1); queue.push(other); }
+      }
+    }
+  }
+  return couplings.map((row) => {
+    if (depth.get(row.driver)! <= depth.get(row.driven)!) return row;
+    const gears: [GearRef, GearRef] = [row.gears[1], row.gears[0]];
+    const seat = couplingSeat(assembly, gears);
+    return { driver: row.driven, driven: row.driver, ratio: 1 / row.ratio, gears, ...(seat ? { seat } : {}) };
+  });
 }
 
 export interface Scales {
