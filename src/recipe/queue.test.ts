@@ -185,10 +185,12 @@ const inner = (seen: Seen[]) => async (s: RecipeCallSite): Promise<RecipeReply> 
   abort.abort();
   const done = await q.flushAll();
   eq("a cancel stops the queue's build", [done?.ok, (done as { error?: string })?.error, q.replay, seen.length], [false, "The recipe was cancelled.", null, 0]);
-  const late = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 0.001 });
+  // The limit is long enough that the call itself is never late: at 80 % of the limit a call builds the queue on the
+  // spot, and with a 1 ms limit a slow machine reached that inside the call, so the flush below had nothing to stop.
+  const late = new RecipeQueue(port, marks(10), { silent: true, timeLimitS: 0.2 });
   await late.call(cut(10, 0), inner(seen));
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.001 s limit and was stopped.");
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  eq("so does the time limit", (await late.flushAll() as { error?: string })?.error, "The recipe ran past its 0.2 s limit and was stopped.");
 }
 
 // --- A flush meshes only what is read: every group but the last skips its mesh unless it holds a primitive boolean.
