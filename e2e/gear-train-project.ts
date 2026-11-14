@@ -26,6 +26,18 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (process.argv.includes("--rack")) {
+  // docs/plan-gear-kinds.md, stage 3: a pinion of 12 over a rack of 40 (module 1), free and at mesh: the pinion's tooth 0
+  // points down at the rack over U = 10 PI, and the rack's tooth 0 sits half a pitch on. No joint, no assembly.
+  const pinion = String((await call("solid_new", { gear: { teeth: 12, module: 1, thickness: 6, bore: 3, phaseDeg: -90 }, name: "pinion" })).object);
+  const rack = String((await call("solid_new", { gear: { teeth: 40, module: 1, thickness: 6, rack: true }, name: "rack" })).object);
+  await call("model_place", { object: pinion, x: 10 * Math.PI, y: 6, z: 0 });
+  await call("model_place", { object: rack, x: Math.PI / 2, y: 0, z: 0 });
+  const saved = await call("project_save", { name: "pose-gears-rack.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ pinion, rack }));
+  process.exit(0);
+}
 if (process.argv.includes("--planetary")) {
   // docs/plan-gear-kinds.md, stage 2: a ring of 36 (module 1) as the assembly's root, the housing; a sun of 12 and a
   // carrier attached to it; three planets of 12 attached to the carrier, 12 mm out on 0, 120 and 240 degrees. Each at its

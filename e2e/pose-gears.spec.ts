@@ -316,3 +316,72 @@ test("A planetary stage attached by hand: Couple gears hinges the carrier, sun a
   await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
   expectPlanetary((await downloadProject(page)).doc as unknown as FreeDoc, ids, "after reopening");
 });
+
+/**
+ * Stage 3 of docs/plan-gear-kinds.md, by hand: a pinion over a rack, both free, nothing jointed. Couple gears gives the
+ * pinion a hinge and the rack a slide along its teeth; a drag on the pinion's ring moves the rack PI m z / 360 mm a
+ * degree; the rack's Travel field turns the pinion; and after a save and reopen it works again.
+ */
+type RackIds = { pinion: string; rack: string };
+
+function expectRack(doc: FreeDoc, ids: RackIds, label: string): number {
+  const members = doc.assemblies?.[0]?.members ?? [];
+  const joint = (id: string) => members.find((row) => row.object === id)?.joint as { kind: string; angle?: number; travel?: number } | undefined;
+  const p = joint(ids.pinion)?.angle ?? NaN;
+  expect(Math.abs(p), `${label}: the pinion turned`).toBeGreaterThan(5);
+  expect(joint(ids.rack)?.kind).toBe("slide");
+  expect(joint(ids.rack)?.travel, `${label}: the rack travelled PI z m / 360 a degree`).toBeCloseTo((p * Math.PI * 12) / 360, 9);
+  const t = doc.objects.find((row) => row.id === ids.rack)!.modelPose!.t;
+  expect(t[0], `${label}: the rack stands where its travel says`).toBeCloseTo(Math.PI / 2 + (p * Math.PI * 12) / 360, 6);
+  expect(t[1]).toBeCloseTo(0, 6);
+  return p;
+}
+
+test("A free rack and pinion: Couple gears gives a hinge and a slide, and turning the pinion by hand moves the rack", async ({ page }, info) => {
+  test.setTimeout(120_000);
+  const file = info.outputPath("pose-gears-rack.lime");
+  const printed = execFileSync(process.execPath, ["--experimental-strip-types", "--no-warnings", "e2e/gear-train-project.ts", file, "--rack"], { encoding: "utf8" });
+  const ids = JSON.parse(printed.trim().split("\n").at(-1)!) as RackIds;
+
+  await page.addInitScript(() => localStorage.setItem("lime-slice-theme", "dark"));
+  await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/");
+  await autoSliceOff(page);
+  await openOnPose(page, file, 2, ids.rack);
+  const panel = page.locator("#posePanel");
+  const gears = panel.locator("[data-pose-gears]");
+
+  await panel.locator(`[data-object='${ids.pinion}']`).click();
+  await panel.getByRole("button", { name: "Couple gears" }).click();
+  await expect(gears).toContainText("Gave pinion a hinge about its axis.");
+  await expect(gears).toContainText("Gave rack a slide along its teeth.");
+  await expect(gears).toContainText("pinion drives rack, ×0.105 mm a degree.");
+  await expect(gears).not.toContainText(/not coupled|locked|do not mesh/);
+  fs.mkdirSync(shots, { recursive: true });
+
+  await dragRing(page);
+  await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
+  expectRack((await downloadProject(page)).doc as unknown as FreeDoc, ids, "pinion ring");
+  await page.screenshot({ path: path.join(shots, "rack-drag.png") });
+
+  // The rack's own Travel field: 3 PI mm turns the pinion to 90.
+  await panel.locator(`[data-object='${ids.rack}']`).click();
+  await expect(panel.getByLabel("Joint kind")).toHaveValue("slide");
+  await panel.getByLabel("Travel mm").fill(String(3 * Math.PI));
+  await panel.getByLabel("Travel mm").press("Tab");
+  const typed = await downloadProject(page);
+  expect(expectRack(typed.doc as unknown as FreeDoc, ids, "rack typed 3 PI")).toBeCloseTo(90, 6);
+
+  await page.reload();
+  await autoSliceOff(page);
+  await openOnPose(page, { name: "pose-gears-rack.lime", mimeType: "application/json", buffer: Buffer.from(typed.text) }, 2, ids.rack);
+  await panel.locator(`[data-object='${ids.pinion}']`).click();
+  await expect(gears, "reopened, the coupling is read from the file").toContainText("pinion drives rack, ×0.105 mm a degree.");
+  await panel.getByLabel("Angle °").fill("0");
+  await panel.getByLabel("Angle °").press("Tab");
+  await dragRing(page);
+  await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
+  expectRack((await downloadProject(page)).doc as unknown as FreeDoc, ids, "after reopening");
+});

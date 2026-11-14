@@ -18,6 +18,10 @@ The window's copy (`src/gear-pair.ts`) also gives the centre distance and the wo
 
 The kernel's ring is the rim's disc with that toothed hole, one extrude of loops. Against it, by exact common volume, a pinion at the mating phase shares nothing, turned through a whole pitch with the ring by `ring_turn` it shares nothing, and turned 0.2 mm past the play it crosses (`crates/lime-model-occt/tests/gear.rs`). A small pinion has less play inside a ring than the backlashes give: 12 teeth in 36 first touch at 0.055 mm of the 0.1 mm each way, because the ring's tip corner meets the pinion's undercut root before the involutes do (the ring's tip circle, 17 mm, is inside the interference point at `sqrt(rb^2 + (a sin a)^2)` = 17.4 mm). The mesh is still sound as it turns; the play is what is smaller.
 
+## A pinion and a rack
+
+`gears::Rack` is a straight rack (`docs/plan-gear-kinds.md`, stage 3): straight flanks at the pressure angle, addendum m, dedendum 1.25 m, `backlash` off each tooth at the pitch line. `gear_pair::classify_rack` (and `classifyRack`, the same verdicts under lust, rustc and the window) works in the rack's frame: the pinion's centre stands its pitch radius plus its shift from the pitch line, a pinion tooth a fraction of a pitch behind the line's foot meets a space as far behind it, and the band, the play and the segment test are the external pair's, the rack's edges inside the pinion's tip circle against the pinion's edges below the rack's tip line. Against the kernel's solids by exact volume, a pinion at the mating phase shares nothing, nor at ±0.06 mm, nor turned through a pitch with the rack moved by `rack_travel`; 0.2 mm past the play they cross.
+
 ## Where lust fails
 
 lust 0.3.1 (`tools/lust/LUST_VERSION`, build 63310d1d). `gear_pair` itself builds with `lust build --sandbox --json` and prints the same verdicts as rustc (`mcp/recipe-gears.test.ts`). The rejections below were reproduced with that command while writing the check. Each one is a one-line program. The workaround is what the classifier does instead.

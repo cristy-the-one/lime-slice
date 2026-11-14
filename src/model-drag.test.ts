@@ -92,7 +92,7 @@ for (const tool of MODEL_TOOLS) {
   // A feature's circle and polygon sizes show only for that shape, and have handles then.
   const features: Partial<DragContext>[] = [{}, { feature: { shape: "circle" } }, { feature: { shape: "arch" } }, { feature: { cell: "circle" } }, { feature: { cell: "polygon" } }, { feature: { along: "v" } }, { chamfer: "two" }, { chamfer: "angle" }];
   // --- A4. Polar and path fields are on screen only in that mode, and have handles then; a ring gear's rim with Ring. ---
-  const repeats: Partial<DragContext>[] = [{}, { repeat: { mode: "polar" } }, { repeat: { mode: "path" } }, { ring: true }];
+  const repeats: Partial<DragContext>[] = [{}, { repeat: { mode: "polar" } }, { repeat: { mode: "path" } }, { ring: true }, { rack: true }];
   for (const hole of [undefined, { through: false, counterbore: true }]) {
     for (const { kind: primitive } of PRIMITIVES) {
       for (const feature of features) {

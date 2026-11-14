@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { findLust, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
-import { centreDistance, classify, classifyInternal, drivenTurn, internalTurn, matePhase, matePhaseInternal, type PairReport, type Spur } from "../src/gear-pair.ts";
+import { centreDistance, classify, classifyInternal, classifyRack, drivenTurn, internalTurn, matePhase, matePhaseInternal, rackTurn, type PairReport, type Spur } from "../src/gear-pair.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const crateDir = join(root, "crates", "lime-recipe");
@@ -247,6 +247,70 @@ fn main() {
 }
 `;
 
+// A pinion against a rack (docs/plan-gear-kinds.md, stage 3): classify_rack and rack_turn, the same rows everywhere.
+const rackSource = `use lime_recipe::{ops, Json, Session};
+use lime_recipe::gears::{Gear, Rack};
+use lime_recipe::gear_pair::{classify_rack, rack_turn};
+
+fn row(name: &str, verdict: &str, narrow: bool, hit: bool) -> String {
+    let n = if narrow { "1" } else { "0" };
+    let h = if hit { "1" } else { "0" };
+    format!("{name}:{verdict}:{n}:{h}")
+}
+
+fn main() {
+    let mut s = Session::start();
+    let part = s.solid_new(ops::cuboid(2.0, 2.0, 2.0)).unwrap();
+    let mut rows: Vec<String> = Vec::new();
+    for (z, module) in [(12u32, 1.0), (18, 2.0), (9, 1.5)] {
+        let pinion = Gear::new(z, module);
+        let rack = Rack::new(40, module);
+        let x = 10.0 * rack.pitch_mm();
+        let at = [x, pinion.pitch_radius()];
+        let phase = -90.0;
+        let rack_phase = rack.pitch_mm() / 2.0;
+        for turn in [0.0, 0.06, -0.06, 0.3, -0.3] {
+            let report = classify_rack(&pinion, &rack, at, phase + turn / pinion.pitch_radius() * (180.0 / std::f64::consts::PI), rack_phase);
+            rows.push(row(&format!("{z}-{turn}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+        for angle in [7.0, 45.0, -80.0] {
+            let report = rack_turn(&pinion, &rack, at, phase, rack_phase, angle);
+            rows.push(row(&format!("{z}-turn-{angle}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+        for (name, d) in [("near", -0.5), ("far", 0.5)] {
+            let report = classify_rack(&pinion, &rack, [x, at[1] + d], phase, rack_phase);
+            rows.push(row(&format!("{z}-{name}"), report.verdict.as_str(), report.narrow, report.hit));
+        }
+    }
+    let apart = classify_rack(&Gear::new(12, 1.0), &Rack::new(10, 1.0), [5.0, 30.0], 0.0, 0.0);
+    rows.push(row("apart", apart.verdict.as_str(), apart.narrow, apart.hit));
+    let modules = classify_rack(&Gear::new(12, 2.0), &Rack::new(10, 1.0), [5.0, 12.0], 0.0, 0.0);
+    rows.push(row("modules", modules.verdict.as_str(), modules.narrow, modules.hit));
+    s.done_with(&part, Json::obj().set("rows", rows.join(";")));
+}
+`;
+
+/** The rows `rackSource` prints, from the window's copy. */
+function windowRackRows(): string {
+  const spur = (teeth: number, module: number): Spur => ({ teeth, module, pressureDeg: 20, backlash: 0.1, shift: 0 });
+  const row = (name: string, report: PairReport) => `${name}:${report.verdict}:${report.narrow ? 1 : 0}:${report.hit ? 1 : 0}`;
+  const rows: string[] = [];
+  for (const [z, module] of [[12, 1], [18, 2], [9, 1.5]] as const) {
+    const pinion = spur(z, module);
+    const rack = spur(40, module);
+    const x = 10 * Math.PI * module;
+    const at: [number, number] = [x, (module * z) / 2];
+    const phase = -90;
+    const rackPhase = (Math.PI * module) / 2;
+    for (const turn of [0, 0.06, -0.06, 0.3, -0.3]) rows.push(row(`${z}-${turn}`, classifyRack(pinion, rack, at, phase + (turn / ((module * z) / 2)) * (180 / Math.PI), rackPhase)));
+    for (const angle of [7, 45, -80]) rows.push(row(`${z}-turn-${angle}`, rackTurn(pinion, rack, at, phase, rackPhase, angle)));
+    for (const [name, d] of [["near", -0.5], ["far", 0.5]] as const) rows.push(row(`${z}-${name}`, classifyRack(pinion, rack, [x, at[1] + d], phase, rackPhase)));
+  }
+  rows.push(row("apart", classifyRack(spur(12, 1), spur(10, 1), [5, 30], 0, 0)));
+  rows.push(row("modules", classifyRack(spur(12, 2), spur(10, 1), [5, 12], 0, 0)));
+  return rows.join(";");
+}
+
 /** The rows `ringSource` prints, from the window's copy. */
 function windowRingRows(): string {
   const spur = (teeth: number, module: number): Spur => ({ teeth, module, pressureDeg: 20, backlash: 0.1, shift: 0 });
@@ -362,6 +426,14 @@ if (lib.status === 0) {
   const windowRing = windowRingRows().split(";");
   const ringDiffer = windowRing.filter((line, at) => line !== crateRing[at]);
   check("ring gears: the window's copy gives the crate's verdicts", crateRing.length === windowRing.length && ringDiffer.length === 0, { ringDiffer, crate: crateRing.filter((line, at) => line !== windowRing[at]) });
+
+  const racks = await runBoth("gear_rack", rackSource);
+  const rackText = JSON.stringify(racks.lustDone);
+  check("racks: lust and rustc print the same verdicts", rackText === JSON.stringify(racks.rustcDone) && rackText.includes("meshing") && rackText.includes("toothOnTooth") && rackText.includes("tooClose") && rackText.includes("loose"), { lust: racks.lustDone, rustc: racks.rustcDone });
+  const crateRack = String((racks.rustcDone as { rows?: string } | null)?.rows ?? "").split(";");
+  const windowRack = windowRackRows().split(";");
+  const rackDiffer = windowRack.filter((line, at) => line !== crateRack[at]);
+  check("racks: the window's copy gives the crate's verdicts", crateRack.length === windowRack.length && rackDiffer.length === 0, { rackDiffer, crate: crateRack.filter((line, at) => line !== windowRack[at]) });
 }
 
 if (failed > 0) {

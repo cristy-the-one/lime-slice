@@ -295,8 +295,9 @@ export interface EditPanel {
   flats?: boolean;
   /** A gear's bore shape, for the select beside Bore. */
   boreShape?: BoreShape;
-  /** A ring gear's step opens with the panel on Ring. */
+  /** A ring gear's step opens with the panel on Ring, a rack's on Rack. */
   ring?: boolean;
+  rack?: boolean;
   /**
    * A split's base axis, and whether its normal is that axis turned around: a face split on a face that points down an
    * axis keeps the other side, which the panel's X, Y and Z cannot say on their own.
@@ -341,9 +342,9 @@ export function editPanel(op: ModelOp, pose: Affine, center: Vec3): EditPanel {
 }
 
 /** The panel's choices that are not numbers: a polygon's Flats or Corners, a gear's bore shape. */
-function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring"> {
+function shapeChoices(spec: PrimitiveSpec): Pick<EditPanel, "flats" | "boreShape" | "ring" | "rack"> {
   if (spec.primitive === "polygon") return { flats: spec.flats ?? false };
-  if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round", ...(spec.internal ? { ring: true } : {}) };
+  if (spec.primitive === "gear") return { boreShape: spec.boreShape ?? "round", ...(spec.internal ? { ring: true } : {}), ...(spec.rack ? { rack: true } : {}) };
   return {};
 }
 
@@ -471,6 +472,7 @@ function sizeFields(spec: PrimitiveSpec): Record<string, number> {
         modelGearHub: spec.hubDiameter ?? 0,
         modelGearHubH: spec.hubHeight ?? 0,
         modelGearRim: spec.rim ?? 0,
+        modelGearBack: spec.back ?? 0,
       };
   }
 }

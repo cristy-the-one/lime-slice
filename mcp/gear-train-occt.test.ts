@@ -142,9 +142,41 @@ check("turned alone by half a tooth, the real gears cross", alone.ok === true &&
   check("the carrier turned alone, a planet crosses the ring or the sun", crossed?.verdict === "crossing" || crossedSun?.verdict === "crossing", show([crossed, crossedSun]));
 }
 
+// --- Stage 3: a real rack and pinion, free and at mesh. Couple gears gives the pinion a hinge and the rack a slide; at
+// every sampled turn of the pinion the rack has travelled with it and the two share no volume.
+{
+  const solid = async (input: Reply) => {
+    const made = await call("solid_new", input);
+    if (made.ok !== true) throw new Error(show(made));
+    return String(made.object);
+  };
+  const pin = await solid({ gear: { teeth: 12, module: 1, thickness: 6, bore: 3, phaseDeg: -90 }, name: "rack pinion" });
+  const bar = await solid({ gear: { teeth: 40, module: 1, thickness: 6, rack: true }, name: "rack" });
+  // Away from the other trains: the pinion over U = 10 PI of the rack, the rack's tooth 0 half a pitch on.
+  for (const [object, x, y] of [[pin, 300 + 10 * Math.PI, 6], [bar, 300 + Math.PI / 2, 0]] as const) {
+    const placed = await call("model_place", { object, x, y, z: 0 });
+    if (placed.ok !== true) throw new Error(show(placed));
+  }
+  check("a real rack and pinion share no volume at mesh", clear(await exact(pin, bar)));
+  const pair = await call("model_place", { object: pin, gears: "couple" });
+  check("Couple gears gives a hinge and a slide", pair.ok === true && show(pair.slid) === show(["rack"]) && (pair.couplings as unknown[]).length === 1 && (pair.checked as { bad: unknown[] }).bad.length === 0, show(pair));
+  let touching = 0;
+  for (const angle of [9, 33.3, 71, -47, -88]) {
+    const turned = await call("model_place", { object: pin, angle });
+    if (turned.ok !== true) { touching += 1; console.error(show(turned)); continue; }
+    if (!clear(await exact(pin, bar))) { touching += 1; console.error(`pinion ${angle}: crossing`); }
+  }
+  check("at five turns of the pinion the real rack and pinion share no volume", touching === 0);
+  await call("model_place", { object: pin, gears: "uncouple" });
+  const slid = session.assemblies.find((row) => row.members.some((one) => one.object === bar))!.members.find((one) => one.object === bar)!.joint as { travel?: number };
+  await call("model_place", { object: bar, travel: (slid.travel ?? 0) + Math.PI / 2 });
+  const crossed = await exact(pin, bar);
+  check("the rack moved alone by half a pitch, they cross", crossed?.verdict === "crossing", show(crossed));
+}
+
 if (failed > 0) {
   console.error(`${failed} failed`);
   process.exit(1);
 }
-console.log("gear-train-occt: a train of real gears turns without crossing, a planetary stage too");
+console.log("gear-train-occt: a train of real gears turns without crossing, a planetary stage and a rack too");
 process.exit(0);

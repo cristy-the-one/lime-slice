@@ -26,6 +26,37 @@ export interface GearFields {
   internal?: boolean;
   /** A ring's outside diameter, mm; two modules outside its root when absent. */
   rim?: number;
+  /**
+   * A straight rack (docs/plan-gear-kinds.md, stage 3): its teeth along its own +X, pointing +Y, the pitch line through
+   * the origin, tooth 0 on it. No shift, phase, bore, hub or rim. `back` is the bar under its roots.
+   */
+  rack?: boolean;
+  back?: number;
+}
+
+/** A rack's bar under its roots, mm: its `back`, or 1.5 modules. */
+export function rackBack(gear: GearFields): number {
+  return gear.back ?? 1.5 * gear.module;
+}
+
+/** A rack's outline for the ghost, counter-clockwise, as the kernel's: the bar, then every tooth from the last back. */
+export function rackGhostOutline(gear: GearFields): [number, number][] {
+  const m = gear.module;
+  const p = Math.PI * m;
+  const tan = Math.tan(((gear.pressureDeg ?? 20) * Math.PI) / 180);
+  const half = p / 4 - (gear.backlash ?? 0.1) / 2;
+  const tip = half - m * tan;
+  const root = half + 1.25 * m * tan;
+  const [u0, u1] = [-p / 2, (gear.teeth - 0.5) * p];
+  const yr = -1.25 * m;
+  const yb = yr - rackBack(gear);
+  const out: [number, number][] = [[u0, yb], [u1, yb], [u1, yr]];
+  for (let k = gear.teeth - 1; k >= 0; k -= 1) {
+    const c = k * p;
+    out.push([c + root, yr], [c + Math.max(tip, 0), m], [c - Math.max(tip, 0), m], [c - root, yr]);
+  }
+  out.push([u0, yr]);
+  return out;
 }
 
 /** A ring's smallest rim: two modules outside its root circle, across. The kernel's least too. */
@@ -94,12 +125,24 @@ export function rootRadius(gear: GearFields): number {
 export function gearLabel(gear: GearFields, height: number, n: (value: number) => string): string {
   const bore = gear.bore ? `, ${gear.boreShape === "hex" ? "hex " : gear.boreShape === "d" ? "D " : "⌀"}${n(gear.bore)} bore` : "";
   const hub = gear.hubDiameter && gear.hubHeight ? `, hub ⌀${n(gear.hubDiameter)}` : "";
+  if (gear.rack) return `rack ${gear.teeth} teeth m ${n(gear.module)} h ${n(height)}`;
   if (gear.internal) return `ring gear ${gear.teeth} teeth m ${n(gear.module)} h ${n(height)}, rim ⌀${n(ringRim(gear))}`;
   return `gear ${gear.teeth} teeth m ${n(gear.module)} h ${n(height)}${bore}${hub}`;
 }
 
 /** The one sentence the card shows before asking the engine, for numbers it would refuse anyway; null when fine. */
 export function gearRefusal(gear: GearFields, height: number): string | null {
+  if (gear.rack) {
+    if (!Number.isInteger(gear.teeth) || gear.teeth < 1 || gear.teeth > 400) return "A rack takes 1 to 400 teeth.";
+    if (!(gear.module >= 0.05 && gear.module <= 50)) return "A gear's module is 0.05 to 50 mm.";
+    if (gear.internal || gear.rim !== undefined) return "A rack is not a ring: give rack or internal, not both.";
+    if ((gear.profileShift ?? 0) !== 0 || (gear.phaseDeg ?? 0) !== 0) return "A rack takes no profile shift or phase: place it along its length instead.";
+    if (gear.bore || gear.hubDiameter || gear.hubHeight) return "A rack takes no bore or hub.";
+    if (!(height > 0 && height <= 1000)) return "A gear's thickness is above 0 and at most 1000 mm.";
+    if (!(rackBack(gear) > 0 && rackBack(gear) <= 1000)) return "A rack's back is above 0 and at most 1000 mm.";
+    return null;
+  }
+  if (gear.back !== undefined) return "Only a rack takes a back.";
   if (!Number.isInteger(gear.teeth) || gear.teeth < GEAR_TEETH.min || gear.teeth > GEAR_TEETH.max) return `A gear takes ${GEAR_TEETH.min} to ${GEAR_TEETH.max} teeth.`;
   if (!(gear.module >= 0.05 && gear.module <= 50)) return "A gear's module is 0.05 to 50 mm.";
   const pressure = gear.pressureDeg ?? 20;

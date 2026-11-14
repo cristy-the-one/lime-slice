@@ -228,3 +228,25 @@ test("a ring gear: Ring hides the bore, hub and shift, shows Rim, draws the rim'
   expect(sent.bore, "a ring sends no bore").toBeUndefined();
   await expect(rows(page).first()).toContainText(/ring gear 36 teeth m 1/i);
 });
+
+test("a rack: Rack shows Back and hides the bore, hub, rim, shift and phase, draws a straight ghost and sends rack", async ({ page }) => {
+  const tree = await start(page);
+  await pickGear(page);
+  await page.locator("#modelGearKind").selectOption("rack");
+  await expect(page.locator("#modelGearBack"), "a rack shows its back").toBeVisible();
+  for (const id of ["#modelGearBore", "#modelGearHub", "#modelGearRim"]) await expect(page.locator(id), `${id} is hidden for a rack`).toBeHidden();
+  await page.locator("#modelGearMore > summary").click();
+  await expect(page.locator("#modelGearShift"), "no profile shift").toBeHidden();
+  await expect(page.locator("#modelGearPhase"), "no phase: a rack is placed along its length").toBeHidden();
+  await page.locator("#modelGearTeeth").fill("10");
+  await page.locator("#modelGearModule").fill("1");
+  await page.locator("#modelGearBack").fill("3");
+  await page.locator("#modelGearBack").press("Tab");
+  // Ten teeth of module 1 are 10 PI long, half a pitch past each end tooth's centre.
+  await expect.poll(async () => Number(((await ghost(page)) ?? "").split(" ")[3]), { message: "the ghost is the rack's length" }).toBeCloseTo(10 * Math.PI, 0);
+  await apply(page).click();
+  const sent = tree.of("open").at(-1)!.primitive as Record<string, unknown>;
+  expect(sent).toMatchObject({ primitive: "gear", teeth: 10, module: 1, rack: true, back: 3 });
+  expect(sent.phaseDeg, "a rack sends no phase").toBeUndefined();
+  await expect(rows(page).first()).toContainText(/rack 10 teeth m 1/i);
+});

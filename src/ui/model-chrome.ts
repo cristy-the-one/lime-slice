@@ -1071,7 +1071,7 @@ function fillEdit() {
     const shape = document.querySelector<HTMLSelectElement>("#modelGearBoreShape");
     if (shape) shape.value = panel.boreShape ?? "round";
     const kind = document.querySelector<HTMLSelectElement>("#modelGearKind");
-    if (kind) kind.value = panel.ring ? "ring" : "external";
+    if (kind) kind.value = panel.rack ? "rack" : panel.ring ? "ring" : "external";
   }
   if (panel.plane) paintPlaneMode(panel.plane.mode);
   if (panel.hole) setHoleBoxes(panel.hole.through, panel.hole.counterbore);
@@ -1331,7 +1331,7 @@ function syncFields() {
   const withMode = withObject ? "object" : "primitive";
   // --- A5. `[data-when]` is the step-edge fields, shown with Fillet and Chamfer in that mode. ---
   // A field under a gear's More that only one kind of gear takes (Shift: an external gear's).
-  document.querySelectorAll<HTMLElement>("#modelPanel [data-gear-kind]:not([data-for])").forEach((node) => node.toggleAttribute("hidden", node.dataset.gearKind !== (gearRing() ? "ring" : "external")));
+  document.querySelectorAll<HTMLElement>("#modelPanel [data-gear-kind]:not([data-for])").forEach((node) => node.toggleAttribute("hidden", !node.dataset.gearKind!.split(" ").includes(gearKind())));
   document.querySelectorAll<HTMLElement>("#modelPanel [data-for], #modelPanel [data-when], #modelPanel [data-fontkind]").forEach((node) => {
     const forOk = !node.dataset.for || (!!tool && node.dataset.for.split(" ").includes(tool));
     const primOk = !node.dataset.prim || node.dataset.prim.split(" ").includes(kind);
@@ -1363,7 +1363,7 @@ function syncFields() {
     // --- Assemblies M11. The frame switch is for a member of an assembly.
     const memberOk = node.dataset.member === undefined || hooks?.placeFrame() != null;
     // --- A gear's Flat is for a D bore.
-    const gearBoreOk = (!node.dataset.gearBore || (node.dataset.gearBore === gearBoreShape() && !gearRing())) && (!node.dataset.gearKind || node.dataset.gearKind === (gearRing() ? "ring" : "external"));
+    const gearBoreOk = (!node.dataset.gearBore || (node.dataset.gearBore === gearBoreShape() && gearKind() === "external")) && (!node.dataset.gearKind || node.dataset.gearKind.split(" ").includes(gearKind()));
     node.toggleAttribute("hidden", !(forOk && primOk && withOk && editOk && boreOk && shapeOk && cellOk && chamferOk && whenOk && modeOk && holeOk && memberOk && fontOk && roundOk && flatOk && gearBoreOk));
   });
   // --- A3 composite features ---
@@ -1607,9 +1607,13 @@ export function fieldPrimitive(): PrimitiveSpec {
 }
 
 /** The bore shape picked for a gear. */
-/** Whether the gear panel makes a ring gear (docs/plan-gear-kinds.md, stage 2). */
+/** The gear card's kind: an external gear, a ring (stage 2) or a rack (stage 3) of docs/plan-gear-kinds.md. */
+function gearKind(): "external" | "ring" | "rack" {
+  const value = document.querySelector<HTMLSelectElement>("#modelGearKind")?.value;
+  return value === "ring" || value === "rack" ? value : "external";
+}
 function gearRing(): boolean {
-  return document.querySelector<HTMLSelectElement>("#modelGearKind")?.value === "ring";
+  return gearKind() === "ring";
 }
 
 function gearBoreShape(): BoreShape {
@@ -1623,6 +1627,17 @@ function gearBoreShape(): BoreShape {
  */
 function gearFields(): GearFields {
   const out: GearFields = { teeth: num("#modelGearTeeth"), module: num("#modelGearModule") };
+  if (gearKind() === "rack") {
+    // A rack: no shift, phase, bore, hub or rim; its back, or 1.5 modules.
+    out.rack = true;
+    const back = num("#modelGearBack");
+    if (back > 0) out.back = back;
+    const pressure = num("#modelGearPressure");
+    if (pressure !== GEAR_DEFAULTS.pressureDeg) out.pressureDeg = pressure;
+    const backlash = num("#modelGearBacklash");
+    if (backlash !== GEAR_DEFAULTS.backlash) out.backlash = backlash;
+    return out;
+  }
   if (gearRing()) {
     // A ring: no shift, bore or hub; its rim, or the least one.
     out.internal = true;
@@ -2212,6 +2227,7 @@ function dragContext(): DragContext {
     read: (field) => num(`#${field}`),
     primitive: primitiveKind(),
     ring: gearRing(),
+    rack: gearKind() === "rack",
     center,
     extent,
     split: tool === "split" ? splitPlan() : null,

@@ -57,6 +57,11 @@ export interface WorldGear {
   thickness: number;
   /** A ring gear, its teeth pointing in (docs/plan-gear-kinds.md, stage 2). */
   internal?: true;
+  /**
+   * A straight rack (stage 3): `centre` is tooth 0 on its pitch line, mid-thickness; `tooth0` runs along the rack, the
+   * way it travels; its teeth point along `axis` x `tooth0`.
+   */
+  rack?: true;
 }
 
 export interface GearPairRow {
@@ -590,6 +595,106 @@ export function internalTurn(pinion: Spur, ring: Spur, pinionAt: P2, ringAt: P2,
   return classifyInternal(pinion, ring, pinionAt, ringAt, pinionPhaseDeg + angleDeg, ringPhaseDeg + (angleDeg * pinion.teeth) / ring.teeth);
 }
 
+// --- Racks (docs/plan-gear-kinds.md, stage 3): the same as `lime_recipe::gears::Rack` and `gear_pair::classify_rack`,
+// held to the same verdicts by `mcp/recipe-gears.test.ts`. A rack's teeth run along +U and point to +V, the pitch line on
+// V = 0, tooth k centred on U = phase + k PI m.
+
+/** How far a rack travels, mm, for a pinion of `z` teeth and module `m` turned `turnDeg`. */
+export function rackTravel(turnDeg: number, z: number, m: number): number {
+  return (turnDeg * PI * m * z) / 360;
+}
+
+function rackHalves(rack: Spur): [number, number, number] {
+  const rad = (rack.pressureDeg * PI) / 180;
+  const tanA = Math.sin(rad) / Math.cos(rad);
+  const half = (PI * rack.module) / 4 - rack.backlash / 2;
+  return [half, half - rack.module * tanA, half + 1.25 * rack.module * tanA];
+}
+
+/** A rack's ends along U: half a pitch before tooth 0 and after its last tooth. */
+export function rackEnds(rack: Spur): [number, number] {
+  return [(-PI * rack.module) / 2, (rack.teeth - 0.5) * PI * rack.module];
+}
+
+/** The sentence `Rack::refusal` gives, or null when these numbers build a rack. */
+export function rackRefusal(rack: Spur): string | null {
+  if (!Number.isInteger(rack.teeth) || rack.teeth < 1 || rack.teeth > 400) return "A rack takes 1 to 400 teeth.";
+  if (!(rack.module >= 0.05 && rack.module <= 50)) return "A gear's module is 0.05 to 50 mm.";
+  if (!(rack.pressureDeg >= 10 && rack.pressureDeg <= 30)) return "A gear's pressure angle is 10 to 30 degrees.";
+  if (!(rack.backlash >= 0 && rack.backlash <= rack.module)) return "A gear's backlash is 0 to one module, in mm at the pitch circle.";
+  const [, tip, root] = rackHalves(rack);
+  if (tip <= 0) return "These rack teeth come to a point below the tip: use a smaller pressure angle or less backlash.";
+  if (2 * root >= PI * rack.module) return "These rack teeth leave no root between them: use a smaller pressure angle.";
+  return null;
+}
+
+/** The rack's outline, counter-clockwise, as `Rack::points`; null when not a rack. */
+export function rackPoints(rack: Spur, phaseMm: number, back: number): P2[] | null {
+  if (rackRefusal(rack)) return null;
+  const m = rack.module;
+  const [, tip, root] = rackHalves(rack);
+  const [u0, u1] = rackEnds(rack);
+  const yr = -1.25 * m;
+  const yb = yr - back;
+  const pts: P2[] = [[u0 + phaseMm, yb], [u1 + phaseMm, yb], [u1 + phaseMm, yr]];
+  for (let k = rack.teeth - 1; k >= 0; k -= 1) {
+    const c = phaseMm + k * PI * m;
+    pts.push([c + root, yr], [c + tip, m], [c - tip, m], [c - root, yr]);
+  }
+  pts.push([u0 + phaseMm, yr]);
+  return pts;
+}
+
+/** A pinion against a rack in the rack's frame, as `gear_pair::classify_rack`. */
+export function classifyRack(pinion: Spur, rack: Spur, pinionAt: P2, pinionPhaseDeg: number, rackPhaseMm: number): PairReport {
+  const m = rack.module;
+  const d = pinionAt[1];
+  const [u0, u1] = rackEnds(rack);
+  const lo = u0 + rackPhaseMm;
+  const hi = u1 + rackPhaseMm;
+  const tip = tipRadius(pinion);
+  const off = pinionAt[0] < lo ? lo - pinionAt[0] : pinionAt[0] > hi ? pinionAt[0] - hi : 0;
+  if (d - tip > m + 1e-9 || off > tip + 1e-9 || d < -1.25 * m - tip) return clear("apart");
+  if (Math.abs(pinion.module - m) > 1e-9) return clear("moduleMismatch");
+  if (Math.abs(pinion.pressureDeg - rack.pressureDeg) > 1e-6) return clear("pressureMismatch");
+  const a = placed(pinion, pinionAt, pinionPhaseDeg);
+  const b = rackPoints(rack, rackPhaseMm, m);
+  if (!a || !b) {
+    const pinionSide = flank(pinion, PAIR_FLANK);
+    const reason = typeof pinionSide === "string" ? pinionSide : rackRefusal(rack) ?? undefined;
+    return { verdict: "unbuildable", narrow: false, hit: false, ...(reason ? { reason } : {}) };
+  }
+  const working = pitchRadius(pinion) + pinion.shift * m;
+  const backlash = pinion.backlash + rack.backlash;
+  const tooClose = d + 1e-9 < working - backlash;
+  const loose = d > working + backlash + 1e-9;
+  const pitch = 360 / pinion.teeth;
+  const f = ((((-90 - pinionPhaseDeg) / pitch) % 1) + 1) % 1;
+  const pMm = PI * m;
+  const expect = pinionAt[0] - f * pMm + pMm / 2;
+  const errMm = Math.abs(toothErrDeg(rackPhaseMm - expect, pMm));
+  const pressure = (pinion.pressureDeg * PI) / 180;
+  const ca = Math.cos(pressure);
+  const tanA = ca === 0 ? 0 : Math.sin(pressure) / ca;
+  const allowed = backlash / 2 + (d - working) * tanA;
+  const pastPlay = errMm > allowed + 1e-9;
+  const near = edgesWithin(b, pinionAt, tip + 1e-6);
+  let hit = false;
+  for (let i = 0; i < a.length; i += 1) {
+    const p = a[i]!;
+    const q = a[(i + 1) % a.length]!;
+    if (p[1] > m + 1e-6 && q[1] > m + 1e-6) continue;
+    for (const [c, e] of near) if (!boxesApart(p, q, c, e) && segmentsCross(p, q, c, e)) hit = true;
+  }
+  const verdict: GearVerdict = tooClose ? "tooClose" : hit ? "toothOnTooth" : loose ? "loose" : pastPlay ? "toothOnTooth" : "meshing";
+  return { verdict, narrow: true, hit, distanceMm: d, workingMm: working };
+}
+
+/** `classifyRack` after the pinion turns `angleDeg` and the rack travels with it. */
+export function rackTurn(pinion: Spur, rack: Spur, pinionAt: P2, pinionPhaseDeg: number, rackPhaseMm: number, angleDeg: number): PairReport {
+  return classifyRack(pinion, rack, pinionAt, pinionPhaseDeg + angleDeg, rackPhaseMm + rackTravel(angleDeg, pinion.teeth, rack.module));
+}
+
 function dot(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
@@ -638,7 +743,7 @@ function spurOf(spec: PrimitiveSpec): Spur | null {
   const teeth = spec.teeth ?? 0;
   const module = spec.module ?? 0;
   if (!Number.isInteger(teeth) || !(module > 0)) return null;
-  return { teeth, module, pressureDeg: spec.pressureDeg ?? 20, backlash: spec.backlash ?? 0.1, shift: spec.internal ? 0 : spec.profileShift ?? 0 };
+  return { teeth, module, pressureDeg: spec.pressureDeg ?? 20, backlash: spec.backlash ?? 0.1, shift: spec.internal || spec.rack ? 0 : spec.profileShift ?? 0 };
 }
 
 /** A gear primitive standing at `pose`. Null for any other primitive. */
@@ -657,6 +762,7 @@ export function placeGear(spec: PrimitiveSpec, pose: Affine, objectId: string, l
     tooth0: normalize(poseDir(pose, euler([Math.cos(phase), Math.sin(phase), 0], spec.turn))),
     thickness: spec.height,
     ...(spec.internal ? { internal: true as const } : {}),
+    ...(spec.rack ? { rack: true as const } : {}),
   };
 }
 
@@ -709,6 +815,16 @@ export function worldPair(a: WorldGear, b: WorldGear): PairReport | null {
     return [dot(d, u), dot(d, v)];
   };
   const phase = (tooth: Vec3) => (Math.atan2(dot(tooth, v), dot(tooth, u)) * 180) / PI;
+  // A rack meshes with an external pinion, in the rack's own frame; with a ring or a rack, never.
+  if (a.rack || b.rack) {
+    if ((a.rack && b.rack) || a.internal || b.internal) return clear("apart");
+    const [rack, pinion] = a.rack ? [a, b] : [b, a];
+    const ru = rack.tooth0;
+    const rv = normalize(cross(rack.axis, ru));
+    const d: Vec3 = [pinion.centre[0] - rack.centre[0], pinion.centre[1] - rack.centre[1], pinion.centre[2] - rack.centre[2]];
+    const at: P2 = [dot(d, ru), dot(d, rv)];
+    return classifyRack(pinion.spur, rack.spur, at, (Math.atan2(dot(pinion.tooth0, rv), dot(pinion.tooth0, ru)) * 180) / PI, 0);
+  }
   // A pinion inside a ring meshes by the inside rule; two rings never mesh.
   if (a.internal && b.internal) return clear("apart");
   if (a.internal) return classifyInternal(b.spur, a.spur, project(b.centre), [0, 0], phase(b.tooth0), phase(a.tooth0));

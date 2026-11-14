@@ -650,7 +650,7 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (!origin || !size || !turn || !finite(radius) || !finite(height)) return undefined;
   const spec: PrimitiveSpec = { primitive: value.primitive, origin, size, radius, height, turn };
   // A gear's numbers (src/model-gear.ts) ride with the same rule: kept only when there.
-  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight", "rim"] as const) {
+  for (const key of ["topRadius", "tubeRadius", "innerRadius", "topX", "sides", "across", "cornerRadius", "teeth", "module", "pressureDeg", "backlash", "profileShift", "phaseDeg", "bore", "boreFlat", "hubDiameter", "hubHeight", "rim", "back"] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (!finite(raw)) return undefined;
@@ -668,6 +668,11 @@ function readPrimitive(value: unknown): PrimitiveSpec | undefined {
   if (value.internal !== undefined) {
     if (typeof value.internal !== "boolean") return undefined;
     if (value.internal) spec.internal = true;
+  }
+  // A rack (stage 3); an older app drops the flag and builds a spur gear of those numbers there.
+  if (value.rack !== undefined) {
+    if (typeof value.rack !== "boolean") return undefined;
+    if (value.rack) spec.rack = true;
   }
   return spec;
 }

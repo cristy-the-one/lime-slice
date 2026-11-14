@@ -1,6 +1,6 @@
 import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
-import { assemblyOf, freshAssemblyId, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
+import { assemblyOf, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
 import { couplingLine, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
 import { modelTrees } from "./model-trees.ts";
@@ -273,7 +273,7 @@ async function pickJoint(id: string, hit: PoseHit): Promise<void> {
     const current = selected();
     if (!current || current.member.object !== id) return;
     const old = current.member.joint;
-    const joint: Joint = old?.kind === "ball" ? { ...old, pivot } : { ...(old?.kind === "hinge" ? old : { kind: "hinge" as const, angle: 0 }), pivot, axis: axis ?? (old?.kind === "hinge" ? old.axis : [0, 0, 1]) };
+    const joint: Joint = old?.kind === "ball" ? { ...old, pivot } : old?.kind === "slide" ? { ...old, pivot, axis: axis ?? old.axis } : { ...(old?.kind === "hinge" ? old : { kind: "hinge" as const, angle: 0 }), pivot, axis: axis ?? (old?.kind === "hinge" ? old.axis : [0, 0, 1]) };
     message = solid ? "Joint placed on the cylindrical face." : "Pivot snapped. Type the joint axis.";
     replaceMember(current.assembly, { ...current.member, joint });
   } catch (error) {
@@ -424,7 +424,8 @@ export function syncPose(): void {
   const row = selected();
   const object = row && state.plate.objects.find((part) => part.id === row.member.object);
   let gizmo: { pivot: Vec3; axes: Vec3[]; radius: number } | undefined;
-  if (tool === "turn" && (row?.member.parent || turnsOnPlate(row?.member)) && row?.member.joint && object && sceneShift) {
+  // A slide has no ring: a rack moves with its pinion's ring, or by its Travel field.
+  if (tool === "turn" && (row?.member.parent || turnsOnPlate(row?.member)) && row?.member.joint && row.member.joint.kind !== "slide" && object && sceneShift) {
     const pose = modelPoseOf(object), joint = row.member.joint;
     const pivot = applyPose(sceneShift, applyPose(pose, joint.pivot));
     const axes: Vec3[] = joint.kind === "hinge" ? [turnDir(pose, joint.axis)] : [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map((axis) => turnDir(pose, axis));
@@ -540,7 +541,7 @@ function renderPanel(): void {
   const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", "Joint");
   const select = document.createElement("select"); select.dataset.poseField = "kind"; select.setAttribute("aria-label", "Joint kind");
   // A root turns only on a hinge, on the plate. Held: fixed on purpose, and Couple gears leaves it so.
-  const kinds = isRoot ? [["none", "Fixed"], ["hinge", "Hinge"], ["held", "Held"]] : [["none", "Fixed"], ["hinge", "Hinge"], ["ball", "Ball"], ["held", "Held"]];
+  const kinds = isRoot ? [["none", "Fixed"], ["hinge", "Hinge"], ["held", "Held"]] : [["none", "Fixed"], ["hinge", "Hinge"], ["ball", "Ball"], ["slide", "Slide"], ["held", "Held"]];
   for (const [value, name] of kinds) { const option = document.createElement("option"); option.value = value!; option.textContent = name!; select.append(option); }
   select.value = row.member.joint?.kind ?? (row.member.held ? "held" : "none"); label.append(select); panel.append(label);
   select.dataset.tip = "Fixed rides its parent. Held stays fixed on purpose: Couple gears never gives it a hinge.";
@@ -551,6 +552,11 @@ function renderPanel(): void {
       for (let i = 0; i < 3; i++) field(panel, `Axis ${"XYZ"[i]}`, `axis${i}`, joint.axis[i]);
       field(panel, "Angle °", "angle", joint.angle ?? 0);
       field(panel, "Minimum °", "min", joint.min, "Free"); field(panel, "Maximum °", "max", joint.max, "Free");
+    } else if (joint.kind === "slide") {
+      // A slide (docs/plan-gear-kinds.md, stage 3): along its axis, in mm.
+      for (let i = 0; i < 3; i++) field(panel, `Axis ${"XYZ"[i]}`, `axis${i}`, joint.axis[i]);
+      field(panel, "Travel mm", "travel", joint.travel ?? 0);
+      field(panel, "Minimum mm", "min", joint.min, "Free"); field(panel, "Maximum mm", "max", joint.max, "Free");
     } else field(panel, "Cone °", "cone", joint.cone, "Free");
   }
   const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
@@ -702,14 +708,16 @@ function panelClick(event: Event): void {
   for (const member of assembly.members) {
     if (!ids.has(member.object) || !member.joint) continue;
     let updated: Member = member;
-    if (action === "rest" && member.joint.kind === "hinge") {
-      // Through its gear train, if it has one: the train follows the gear back to rest.
+    if (action === "rest" && drives(member.joint)) {
+      // Through its gear train, if it has one: the train follows the gear (or the rack) back to rest.
       const live = assembly.members.find((row) => row.object === member.object)!;
-      const result = trainTurn(assembly, member.object, -(live.joint?.kind === "hinge" ? live.joint.angle ?? 0 : 0));
+      const result = trainTurn(assembly, member.object, -jointAt(live.joint));
       if ("reason" in result) { message = result.reason; renderPanel(); return; }
       assembly = result.assembly;
       continue;
     } else if (action === "make-rest") {
+      // A slide keeps its zero: its couplings are seated by it (couplingSeat), as a root's hinge's are.
+      if (member.joint.kind === "slide") continue;
       const joint = member.joint.kind === "hinge" ? { ...member.joint, angle: 0 } : { ...member.joint, rest: rotationQuaternion(memberPose(member).m) };
       // Limits are relative to rest; translate them with the hinge's zero point.
       if (joint.kind === "hinge" && member.joint.kind === "hinge") {
@@ -740,7 +748,7 @@ function panelChange(event: Event): void {
   if (name === "kind") {
     const kind = input.value;
     const pivot = row.member.joint?.pivot ?? [0, 0, 0];
-    const joint: Joint | undefined = kind === "hinge" ? { kind, pivot, axis: [0, 0, 1], angle: 0 } : kind === "ball" ? { kind, pivot, rest: rotationQuaternion(memberPose(row.member).m) } : undefined;
+    const joint: Joint | undefined = kind === "hinge" ? { kind, pivot, axis: [0, 0, 1], angle: 0 } : kind === "slide" ? { kind, pivot, axis: [1, 0, 0], travel: 0 } : kind === "ball" ? { kind, pivot, rest: rotationQuaternion(memberPose(row.member).m) } : undefined;
     const { joint: _joint, held: _held, ...plain } = row.member;
     let next: Member = joint ? { ...plain, joint } : kind === "held" ? { ...plain, held: true } : plain;
     if (!row.member.parent) {
@@ -756,6 +764,11 @@ function panelChange(event: Event): void {
   const optional = name === "min" || name === "max" || name === "cone";
   const value = input.value.trim() === "" && optional ? undefined : Number(input.value);
   if ((value === undefined && !optional) || (value !== undefined && (!Number.isFinite(value) || input.value.trim() === ""))) { message = "Enter a finite number."; renderPanel(); return; }
+  if (name === "travel" && old.kind === "slide") {
+    const next = trainTurn(row.assembly, row.member.object, value! - (old.travel ?? 0));
+    if ("reason" in next) { message = next.reason; renderPanel(); return; }
+    editAssembly(next.assembly); return;
+  }
   if (name === "angle" && old.kind === "hinge") {
     const next = trainTurn(row.assembly, row.member.object, value! - (old.angle ?? 0));
     if ("reason" in next) { message = next.reason; renderPanel(); return; }
@@ -763,8 +776,8 @@ function panelChange(event: Event): void {
   }
   const raw = structuredClone(old) as Joint;
   if (name.startsWith("pivot")) raw.pivot[Number(name.slice(-1))] = value!;
-  else if (name.startsWith("axis") && raw.kind === "hinge") raw.axis[Number(name.slice(-1))] = value!;
-  else if ((name === "min" || name === "max") && raw.kind === "hinge") { if (value === undefined) delete raw[name]; else raw[name] = value; }
+  else if (name.startsWith("axis") && (raw.kind === "hinge" || raw.kind === "slide")) raw.axis[Number(name.slice(-1))] = value!;
+  else if ((name === "min" || name === "max") && (raw.kind === "hinge" || raw.kind === "slide")) { if (value === undefined) delete raw[name]; else raw[name] = value; }
   else if (name === "cone" && raw.kind === "ball") { if (value === undefined) delete raw.cone; else raw.cone = value; }
   const checked = readJoint(raw);
   if (!checked) { message = "Check the axis, limits and current angle; the joint was not changed."; renderPanel(); return; }

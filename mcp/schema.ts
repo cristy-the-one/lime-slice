@@ -783,6 +783,8 @@ export const gearFields = {
   hubHeight: { type: "number", exclusiveMinimum: 0, description: "mm above the gear." },
   internal: { type: "boolean", description: "A ring gear: teeth pointing in, a pinion turns inside it the same way round. 20 to 150 teeth; no profileShift, bore or hub." },
   rim: { type: "number", exclusiveMinimum: 0, description: "A ring's outside diameter, mm. Default two modules outside its roots." },
+  rack: { type: "boolean", description: "A straight rack: its teeth along its own +X, pointing +Y, the pitch line through origin with tooth 0 on it. 1 to 400 teeth; no profileShift, phaseDeg, bore, hub or rim. A pinion's angle moves it PI m z / 360 mm a degree." },
+  back: { type: "number", exclusiveMinimum: 0, description: "A rack's bar under its roots, mm. Default 1.5 modules." },
 };
 const gearOp = {
   type: "object",
@@ -1495,6 +1497,7 @@ export const TOOLS: ToolSpec[] = [
         frame: { enum: ["part", "model"], description: "Frame of later Model numbers. Default part for a member, else model." },
         joint: { oneOf: [{ type: "object" }, { enum: [null] }], description: "Joint or null. guide {kind:\"pose\"}." },
         angle: { type: "number", description: "Hinge angle in degrees." },
+        travel: { type: "number", description: "A slide's travel in mm (a rack's joint, docs/plan-gear-kinds.md): a rack and pinion move together." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
         root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
         gears: { enum: ["couple", "list", "uncouple"], description: "Gear train of this member's assembly. couple: find every pair of spur gears the mesh check calls meshing and couple them, so turning one gear (angle) turns the wheel, pinion and every gear of its train at the tooth ratio; replies couplings, notCoupled (each with its reason), locked trains and checked (a turn sampled for crossing teeth). list: the same rows, nothing changed. uncouple: drop them. A meshing gear with no joint is given a hinge about its own axis (hinged in the reply), and gears in no assembly become one, Gear train, whose first gear turns on the plate (madeAssembly); joint {kind:\"held\"} keeps a gear fixed on purpose. A pinion inside a ring gear (internal) turns the same way; a planet on a carrier couples through the carrier (carrier and carrierRatio in the row), and the carrier of gears meshing a ring is given its hinge; hold one of sun, ring or carrier." },

@@ -437,3 +437,66 @@ fn a_pinion_meshes_inside_a_ring_within_its_backlash() {
         assert!(reply.to_string().contains(why), "{why}: {}", short(&reply));
     }
 }
+
+/// A rack (docs/plan-gear-kinds.md, stage 3): `teeth` of module `module` along +X from the origin, `thickness` thick.
+fn rack(teeth: u32, module: f64, thickness: f64, origin: [f64; 3]) -> Value {
+    with(gear(teeth, module, thickness, origin), json!({ "rack": true }))
+}
+
+#[test]
+fn a_pinion_meshes_with_a_rack_within_its_backlash_and_as_it_travels() {
+    if !kernel() {
+        return;
+    }
+    use lime_recipe::gear_pair::classify_rack;
+    use lime_recipe::gears::{rack_travel, Rack};
+    for (z, module) in [(12u32, 1.0), (18, 2.0)] {
+        let r = Rack::new(30, module);
+        let key = format!("rack-{z}");
+        let opened = ok(json!({ "call": "open", "key": key, "primitive": rack(30, module, 6.0, [0.0, 0.0, 0.0]) }));
+        let pts = r.points(0.0, 1.5 * module).expect("a rack");
+        let mut a2 = 0.0;
+        for i in 0..pts.len() {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            a2 += p[0] * q[1] - p[1] * q[0];
+        }
+        assert!((volume(&opened) - a2 / 2.0 * 6.0).abs() < 1e-3 * a2.abs(), "{z}: {} against {}", volume(&opened), a2 / 2.0 * 6.0);
+        let gp = Gear::new(z, module);
+        let x = 12.0 * r.pitch_mm();
+        let at = [x, gp.pitch_radius()];
+        // The pinion's tooth 0 points down at the rack (-90 degrees): it meets the space centred under it, so the rack's
+        // tooth 0 sits half a pitch off.
+        let phase = -90.0;
+        let pinion = |turn_mm: f64| with(gear(z, module, 6.0, [at[0], at[1], 0.0]), json!({ "phaseDeg": phase + (turn_mm / gp.pitch_radius()).to_degrees() }));
+        let rack_phase = r.pitch_mm() / 2.0;
+        let shifted = |phase_mm: f64, k: &str| {
+            let key = format!("{key}-{k}");
+            ok(json!({ "call": "open", "key": key, "primitive": rack(30, module, 6.0, [phase_mm, 0.0, 0.0]) }));
+            key
+        };
+        let at_mesh = shifted(rack_phase, "mesh");
+        assert_eq!(common(&at_mesh, &pinion(0.0)), 0.0, "{z}: they mesh without touching");
+        for turn in [0.06, -0.06] {
+            assert_eq!(common(&at_mesh, &pinion(turn)), 0.0, "{z}: {turn} mm is inside the backlash");
+        }
+        for turn in [0.2, -0.2] {
+            assert!(common(&at_mesh, &pinion(turn)) > 1e-3, "{z}: turned {turn} mm past the backlash they cross");
+        }
+        assert_eq!(classify_rack(&gp, &r, at, phase, rack_phase).verdict, PairVerdict::Meshing);
+        // The pinion turned and the rack moved with it by rack_travel: never touching, through a pitch in 12 steps.
+        for k in 1..=12 {
+            let a = 360.0 / f64::from(z) * f64::from(k) / 12.0;
+            let moved = shifted(rack_phase + rack_travel(a, z, module), &format!("t{k}"));
+            let turned = with(gear(z, module, 6.0, [at[0], at[1], 0.0]), json!({ "phaseDeg": phase + a }));
+            assert_eq!(common(&moved, &turned), 0.0, "{z}: turned {a} degrees with the rack they touch");
+        }
+    }
+    for (bad, why) in [
+        (with(rack(10, 1.0, 6.0, [0.0, 0.0, 0.0]), json!({ "phaseDeg": 5.0 })), "no profile shift or phase"),
+        (with(rack(10, 1.0, 6.0, [0.0, 0.0, 0.0]), json!({ "bore": 3.0 })), "no bore or hub"),
+        (with(gear(10, 1.0, 6.0, [0.0, 0.0, 0.0]), json!({ "back": 3.0 })), "Only a rack takes a back"),
+    ] {
+        let reply = call(json!({ "call": "open", "key": "rack-bad", "primitive": bad }));
+        assert!(reply.to_string().contains(why), "{why}: {}", short(&reply));
+    }
+}

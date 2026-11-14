@@ -23,7 +23,30 @@ export interface MemberExprs {
 /** A joint's pivot and hinge axis are in the member's own part frame. */
 export type Joint =
   | { kind: "hinge"; pivot: Vec3; axis: Vec3; angle?: number; min?: number; max?: number }
-  | { kind: "ball"; pivot: Vec3; cone?: number; rest?: [number, number, number, number] };
+  | { kind: "ball"; pivot: Vec3; cone?: number; rest?: [number, number, number, number] }
+  /**
+   * A slide (docs/plan-gear-kinds.md, stage 3): the part moves along `axis`, in its own frame, `travel` mm from its zero,
+   * within `min` and `max`. `pivot` is a point on its line, where Pose draws it. A rack drives on one.
+   */
+  | { kind: "slide"; pivot: Vec3; axis: Vec3; travel?: number; min?: number; max?: number };
+
+/** Whether a joint moves a part one way only, so a gear train can drive it: a hinge (degrees) or a slide (mm). */
+export function drives(joint: Joint | undefined): joint is Extract<Joint, { kind: "hinge" | "slide" }> {
+  return joint?.kind === "hinge" || joint?.kind === "slide";
+}
+
+/** A driven joint's position: a hinge's angle, a slide's travel. */
+export function jointAt(joint: Joint | undefined): number {
+  return joint?.kind === "hinge" ? joint.angle ?? 0 : joint?.kind === "slide" ? joint.travel ?? 0 : 0;
+}
+
+/** A slide's travel taken out of `pose`, the member's pose in its parent's frame: where it stands at travel 0. */
+export function slideZero(pose: Affine, joint: Extract<Joint, { kind: "slide" }>): Affine {
+  const d = turnDir(pose, joint.axis);
+  const length = Math.hypot(...joint.axis) || 1;
+  const t = (joint.travel ?? 0) / length;
+  return { m: pose.m, t: [pose.t[0] - d[0] * t, pose.t[1] - d[1] * t, pose.t[2] - d[2] * t] };
+}
 
 export interface Member {
   /** The plate object's id. */
@@ -93,6 +116,8 @@ export interface Coupling {
    * `carrier.ratio` per degree of the carrier's hinge. An older app drops such a coupling (its seat is longer).
    */
   carrier?: { body: string; name: string; ratio: number };
+  /** Which side of a rack and pinion is the rack (stage 3): its ratio is then millimetres a degree, or degrees a mm. */
+  rack?: "driver" | "driven";
   /**
    * Where the two gears sat when they were coupled (`couplingSeat`): each gear in its body's frame, and each body's hinge
    * pivot and axis on its frame. A hinge turn leaves it as it is; moving a gear, or its hinge's pivot or axis, does not,
@@ -400,8 +425,8 @@ export function bodyOf(assembly: Assembly, object: string): Body | null {
   if (!at) return null;
   for (const seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : memberOf(at.parent)) {
     seen.add(at.object);
-    if (at.joint?.kind === "hinge") return { body: at.object, fixed: false };
-    if (at.joint?.kind === "ball") return { reason: "turns on a ball joint, and only hinges drive gears" };
+    if (at.joint?.kind === "hinge" || at.joint?.kind === "slide") return { body: at.object, fixed: false };
+    if (at.joint?.kind === "ball") return { reason: "turns on a ball joint, and only hinges and slides drive gears" };
     if (at.parent === null) return { body: at.object, fixed: true };
   }
   return null;
@@ -472,7 +497,7 @@ function pinSeat(assembly: Assembly, body: string): number[] | null {
   const member = assembly.members.find((row) => row.object === body);
   const frame = frameOf(assembly, body);
   const joint = member?.joint;
-  if (!member || !frame || joint?.kind !== "hinge") return null;
+  if (!member || !frame || !drives(joint)) return null;
   // A hinged root's pin is its own: where the root stands moves the whole assembly, and every pin with it.
   if (member.parent === null) return [...joint.pivot, ...joint.axis];
   const onFrame = pose(chainPose(assembly, member.parent, frame));
@@ -480,7 +505,9 @@ function pinSeat(assembly: Assembly, body: string): number[] | null {
   // On a hinged root, read in its ground frame: the root's turn taken out, so turning the root changes nothing here.
   const frameMember = assembly.members.find((row) => row.object === frame);
   const ground = turnsOnPlate(frameMember) && frameMember!.joint?.kind === "hinge" ? hingeTurn(frameMember!.joint, frameMember!.joint.angle ?? 0) : IDENTITY_POSE;
-  const local = thenPose(memberPose(member), ground);
+  // A slide's own travel never changes its seat: read it where it stands at travel 0.
+  const own = joint.kind === "slide" ? slideZero(memberPose(member), joint) : memberPose(member);
+  const local = thenPose(own, ground);
   return [...applyPose(local, joint.pivot), ...turnDir(local, joint.axis), ...onFrame];
 }
 
@@ -503,7 +530,7 @@ export function withCouplings(assembly: Assembly, couplings: Coupling[] | undefi
 export function reversedJoint(joint: Joint | undefined, childPose: Affine): Joint | undefined {
   if (!joint) return undefined;
   const pivot = applyPose(childPose, joint.pivot);
-  if (joint.kind === "hinge") return { ...joint, pivot, axis: turnDir(childPose, joint.axis).map((v) => -v) as Vec3 };
+  if (joint.kind === "hinge" || joint.kind === "slide") return { ...joint, pivot, axis: turnDir(childPose, joint.axis).map((v) => -v) as Vec3 };
   const { rest, ...ball } = joint;
   return { ...ball, pivot, ...(rest ? { rest: [-rest[0], -rest[1], -rest[2], rest[3]] as [number, number, number, number] } : {}) };
 }
@@ -567,6 +594,18 @@ export function readJoint(value: unknown): Joint | undefined {
     return { kind: "hinge", pivot, axis: Math.abs(length - 1) < 1e-12 ? axis : axis.map((x) => x / length) as Vec3,
       ...(angle !== undefined ? { angle } : {}), ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) };
   }
+  if (row.kind === "slide") {
+    const axis = readVec(row.axis);
+    if (!axis || !Number.isFinite(Math.hypot(...axis)) || Math.hypot(...axis) < 1e-12) return undefined;
+    if ([row.travel, row.min, row.max].some((n) => n !== undefined && !finite(n))) return undefined;
+    const min = row.min as number | undefined, max = row.max as number | undefined;
+    if (min !== undefined && max !== undefined && min > max) return undefined;
+    const travel = row.travel as number | undefined;
+    if (travel !== undefined && ((min !== undefined && travel < min) || (max !== undefined && travel > max))) return undefined;
+    const length = Math.hypot(...axis);
+    return { kind: "slide", pivot, axis: Math.abs(length - 1) < 1e-12 ? axis : axis.map((x) => x / length) as Vec3,
+      ...(travel !== undefined ? { travel } : {}), ...(min !== undefined ? { min } : {}), ...(max !== undefined ? { max } : {}) };
+  }
   if (row.kind === "ball") {
     if (row.cone !== undefined && (!finite(row.cone) || row.cone < 0 || row.cone > 180)) return undefined;
     let rest: [number, number, number, number] | undefined;
@@ -628,7 +667,8 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
       if (!raw || typeof raw !== "object" || typeof raw.body !== "string" || !raw.body || typeof raw.name !== "string" || !finite(raw.ratio)) continue;
       carrier = { body: raw.body, name: raw.name, ratio: raw.ratio };
     }
-    out.push({ driver: row.driver, driven: row.driven, ratio: row.ratio, gears: [gears[0]!, gears[1]!], ...(carrier ? { carrier } : {}), ...(seat ? { seat } : {}) });
+    const rack = row.rack === "driver" || row.rack === "driven" ? row.rack : undefined;
+    out.push({ driver: row.driver, driven: row.driven, ratio: row.ratio, gears: [gears[0]!, gears[1]!], ...(carrier ? { carrier } : {}), ...(rack ? { rack } : {}), ...(seat ? { seat } : {}) });
   }
   return out.length ? out : undefined;
 }
@@ -637,7 +677,7 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
 function couplingFits(assembly: Assembly, coupling: Coupling): boolean {
   const body = (id: string) => {
     const member = assembly.members.find((row) => row.object === id);
-    return !!member && (member.parent === null || member.joint?.kind === "hinge");
+    return !!member && (member.parent === null || drives(member.joint));
   };
   const member = (id: string) => assembly.members.some((row) => row.object === id);
   if (!body(coupling.driver) || !body(coupling.driven) || !member(coupling.gears[0].object) || !member(coupling.gears[1].object)) return false;

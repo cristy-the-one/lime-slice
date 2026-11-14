@@ -6,7 +6,7 @@
  * The code that moves gears never reads the mesh check: `findCouplings` uses it to wire the train, and `trainCheck`
  * uses it to judge sampled frames. A turn is `turnHinge` on each body by its share of one delta.
  */
-import { assemblyOf, bodyOf, couplingSeat, frameOf, memberFields, rootOf, solveAssembly, withCouplings, withRootAt, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
+import { assemblyOf, bodyOf, couplingSeat, drives, frameOf, jointAt, memberFields, rootOf, solveAssembly, withCouplings, withRootAt, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
 import { worldPair, type GearVerdict, type WorldGear } from "./gear-pair.ts";
 import { applyPose, inversePose, poseScale, relativePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
@@ -68,6 +68,15 @@ export function notCoupledSentence(a: string, b: string, verdict: GearVerdict, d
     : "they do not mesh";
   return `${a} and ${b} are not coupled: ${why}.`;
 }
+
+/** A slide's direction in model space. Null for a body without a slide. */
+function slideLine(assembly: Assembly, poses: ReadonlyMap<string, Affine>, body: string): Vec3 | null {
+  const member = memberOf(assembly, body), pose = poses.get(body);
+  if (!member || !pose || member.joint?.kind !== "slide") return null;
+  return unit(turnDir(pose, member.joint.axis));
+}
+
+const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 
 /** Whether `gear`'s centre lies on `line`, the axes parallel. */
 function onLine(gear: WorldGear, line: { axis: Vec3; point: Vec3 } | null): boolean {
@@ -150,6 +159,43 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
         continue;
       }
       if (bodyA.fixed && bodyB.fixed) continue;
+      // A rack (docs/plan-gear-kinds.md, stage 3) drives on a slide along its own teeth, against a pinion's hinge.
+      if (a.rack || b.rack) {
+        const [rack, rackBody, pinion, pinionBody] = a.rack ? [a, bodyA, b, bodyB] : [b, bodyB, a, bodyA];
+        const rackJoint = memberOf(assembly, rackBody.body)?.joint;
+        if (!rackBody.fixed && rackJoint?.kind !== "slide") {
+          notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: ${rack.label} turns on a hinge, and a rack is driven only on a slide.` });
+          continue;
+        }
+        if (!pinionBody.fixed && memberOf(assembly, pinionBody.body)?.joint?.kind !== "hinge") {
+          notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: ${pinion.label} slides, and a rack's pinion turns on a hinge.` });
+          continue;
+        }
+        if (frameOf(assembly, rackBody.body) !== frameOf(assembly, pinionBody.body) || frameOf(assembly, rackBody.body) === null) {
+          notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: their joints sit on different parts, and a rack rides only on the part its pinion turns on.` });
+          continue;
+        }
+        const slide = rackBody.fixed ? null : slideLine(assembly, poses, rackBody.body);
+        if (slide && Math.abs(dot(slide, rack.tooth0)) < PARALLEL) {
+          notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: ${rack.label}'s slide does not run along its teeth.` });
+          continue;
+        }
+        if (!pinionBody.fixed && offAxis(pinion, pinionBody.body)) {
+          notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: ${pinion.label}'s hinge does not turn about its gear's axis.` });
+          continue;
+        }
+        // Turned + about its own axis, the pinion's pitch point runs along teeth x axis; the rack travels with it.
+        const teeth = unit(cross(rack.axis, rack.tooth0));
+        const run = unit(cross(teeth, pinion.axis));
+        const hinge = hingeLine(assembly, poses, pinionBody.body)?.axis ?? pinion.axis;
+        const along = slide ?? rack.tooth0;
+        const mmPerDeg = ((Math.PI * pinion.spur.module * pinion.spur.teeth) / 360) * (Math.sign(dot(run, along)) || 1) * (Math.sign(dot(pinion.axis, hinge)) || 1);
+        const ratio = a.rack ? 1 / mmPerDeg : mmPerDeg;
+        const gearRefs: [GearRef, GearRef] = [refOf(a), refOf(b)];
+        const seat = couplingSeat(assembly, gearRefs);
+        couplings.push({ driver: bodyA.body, driven: bodyB.body, ratio, gears: gearRefs, rack: a.rack ? "driver" : "driven", ...(seat ? { seat } : {}) });
+        continue;
+      }
       const frameA = frameOf(assembly, bodyA.body), frameB = frameOf(assembly, bodyB.body);
       // A planet (docs/plan-gear-kinds.md, stage 2): one gear hinges on a turning part K, the carrier, and the other
       // on the part K turns on, coaxial with K's hinge. Either way round.
@@ -207,7 +253,7 @@ function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
   const order = new Map(assembly.members.map((row, i) => [row.object, i]));
   const depth = new Map<string, number>();
   // A body that cannot turn (the fixed root, a held part) never leads: a train reads from a gear a person turns.
-  const fixed = (id: string) => assembly.members.find((row) => row.object === id)?.joint?.kind !== "hinge";
+  const fixed = (id: string) => !drives(assembly.members.find((row) => row.object === id)?.joint);
   const bodies = [...new Set(couplings.flatMap((row) => [row.driver, row.driven]))].sort((a, b) => Number(fixed(a)) - Number(fixed(b)) || (order.get(a) ?? 0) - (order.get(b) ?? 0));
   for (const start of bodies) {
     if (depth.has(start)) continue;
@@ -226,7 +272,8 @@ function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
     const seat = couplingSeat(assembly, gears, row.carrier?.body);
     // driven = r driver + c carrier, so driver = driven / r - (c / r) carrier.
     const carrier = row.carrier ? { ...row.carrier, ratio: -row.carrier.ratio / row.ratio } : undefined;
-    return { driver: row.driven, driven: row.driver, ratio: 1 / row.ratio, gears, ...(carrier ? { carrier } : {}), ...(seat ? { seat } : {}) };
+    const rack = row.rack === "driver" ? "driven" as const : row.rack === "driven" ? "driver" as const : undefined;
+    return { driver: row.driven, driven: row.driver, ratio: 1 / row.ratio, gears, ...(carrier ? { carrier } : {}), ...(rack ? { rack } : {}), ...(seat ? { seat } : {}) };
   });
 }
 
@@ -285,7 +332,7 @@ export function trainScales(assembly: Assembly, start: string): Scales {
   }
   const couplings = all.filter((row) => used.has(row));
   // A body without a hinge cannot turn: the fixed root, or a held part. A root with a hinge turns on the plate.
-  const fixed = [...scales.keys()].filter((body) => memberOf(assembly, body) !== undefined && memberOf(assembly, body)!.joint?.kind !== "hinge");
+  const fixed = [...scales.keys()].filter((body) => memberOf(assembly, body) !== undefined && !drives(memberOf(assembly, body)!.joint));
   const names = gearNames(couplings);
   if (loop) return { scales, couplings, locked: { gears: names, reason: `${listed(names)} are locked: they close a loop whose tooth ratios do not agree, so none of them can turn.` } };
   if (fixed.length && couplings.length) {
@@ -311,7 +358,7 @@ function planetaryScales(assembly: Assembly, start: string, bodies: string[], co
     if (row.carrier) eq[index.get(row.carrier.body)!]! -= row.carrier.ratio;
     rows.push(eq);
   }
-  const fixed = bodies.filter((id) => memberOf(assembly, id)?.joint?.kind !== "hinge");
+  const fixed = bodies.filter((id) => !drives(memberOf(assembly, id)?.joint));
   for (const id of fixed) { const eq = new Array<number>(n + 1).fill(0); eq[index.get(id)!] = 1; rows.push(eq); }
   { const eq = new Array<number>(n + 1).fill(0); eq[index.get(start)!] = 1; eq[n] = 1; rows.push(eq); }
   // Gauss-Jordan with partial pivoting.
@@ -359,7 +406,7 @@ function trainLocks(assembly: Assembly, couplings: Coupling[]): TrainLock[] {
   for (const row of couplings) {
     for (const body of [row.driver, row.driven]) {
       // A held body is not where a turn starts: in a planetary stage it holds the train, it does not lock it.
-      if (seen.has(body) || coupled.members.find((one) => one.object === body)?.joint?.kind !== "hinge") continue;
+      if (seen.has(body) || !drives(coupled.members.find((one) => one.object === body)?.joint)) continue;
       const train = trainScales(coupled, body);
       for (const id of train.scales.keys()) seen.add(id);
       if (train.locked) locks.push(train.locked);
@@ -370,8 +417,8 @@ function trainLocks(assembly: Assembly, couplings: Coupling[]): TrainLock[] {
 
 export interface Turned {
   assembly: Assembly;
-  /** Every hinge the turn moved, with its new angle, the turned one first. */
-  angles: { object: string; angle: number }[];
+  /** Every hinge the turn moved, with its new angle, and every slide with its new travel; the turned one first. */
+  angles: ({ object: string; angle: number } | { object: string; travel: number })[];
   /** True when a hinge limit held the train short of the asked turn. */
   clamped: boolean;
 }
@@ -389,8 +436,9 @@ export function trainTurn(assembly: Assembly, object: string, delta: number): Tu
   let low = -Infinity, high = Infinity;
   for (const [body, scale] of train.scales) {
     const joint = memberOf(assembly, body)?.joint;
-    if (joint?.kind !== "hinge") continue;
-    const angle = joint.angle ?? 0;
+    // A hinge's limits are degrees, a slide's millimetres: each is its own body's share of the step.
+    if (!drives(joint)) continue;
+    const angle = jointAt(joint);
     const lo = joint.min === undefined ? -Infinity : (joint.min - angle) / scale;
     const hi = joint.max === undefined ? Infinity : (joint.max - angle) / scale;
     low = Math.max(low, Math.min(lo, hi));
@@ -406,8 +454,8 @@ export function trainTurn(assembly: Assembly, object: string, delta: number): Tu
     if ("reason" in placed) return { reason: placed.reason };
     next = placed;
     const turned = memberOf(next, body)!;
-    const angle = turned.joint?.kind === "hinge" ? turned.joint.angle ?? 0 : 0;
-    if (body === object || angle !== (row.joint?.kind === "hinge" ? row.joint.angle ?? 0 : 0)) angles.push({ object: body, angle });
+    const angle = jointAt(turned.joint);
+    if (body === object || angle !== jointAt(row.joint)) angles.push(turned.joint?.kind === "slide" ? { object: body, travel: angle } : { object: body, angle });
   }
   return { assembly: next, angles, clamped: Math.abs(step - delta) > 1e-9 };
 }
@@ -453,7 +501,8 @@ export function trainCheck(assembly: Assembly, poseOf: PoseOf, gearsAt: (poses: 
 export function couplingLine(row: Coupling): string {
   const ratio = Math.round(row.ratio * 1000) / 1000;
   const on = row.carrier ? ` on ${row.carrier.name}` : "";
-  return `${row.gears[0].name} drives ${row.gears[1].name}${on}, ×${ratio < 0 ? "−" : ""}${Math.abs(ratio)}`;
+  const unit = row.rack === "driven" ? " mm a degree" : row.rack === "driver" ? " degrees a mm" : "";
+  return `${row.gears[0].name} drives ${row.gears[1].name}${on}, ×${ratio < 0 ? "−" : ""}${Math.abs(ratio)}${unit}`;
 }
 
 /** A plate object that holds gears, at its pose in model space now. */
@@ -472,6 +521,8 @@ export interface Prepared {
   assembly: Assembly | null;
   /** The objects given a hinge, in plate order. */
   hinged: string[];
+  /** The racks given a slide along their teeth, in plate order. */
+  slid: string[];
   /** The objects that joined an assembly, the new root included. */
   joined: string[];
   /** True when the gears stood in no assembly and one was made. */
@@ -554,14 +605,18 @@ export function prepareTrain(assemblies: readonly Assembly[], parts: readonly Ge
       if (!group.has(next)) { group.add(next); queue.push(next); }
     }
   }
-  if (!mine && group.size < 2) return { assemblies: [...assemblies], assembly: null, hinged: [], joined: [], made: false, refused: [] };
+  if (!mine && group.size < 2) return { assemblies: [...assemblies], assembly: null, hinged: [], slid: [], joined: [], made: false, refused: [] };
   const free = scope.filter((part) => group.has(part.id) && !assemblyOf(assemblies, part.id)).map((part) => part.id);
   const joined: string[] = [];
   let assembly: Assembly;
   if (mine) assembly = mine;
   else {
-    assembly = { id: newId, name: trainName(assemblies), members: [{ object: free[0]!, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }] };
-    joined.push(free[0]!);
+    // A rack slides; the root turns on the plate or stands. So the first gear that is not a rack is the root.
+    const first = free.find((id) => !byId.get(id)?.gears.some((gear) => gear.rack)) ?? free[0]!;
+    free.splice(free.indexOf(first), 1);
+    free.unshift(first);
+    assembly = { id: newId, name: trainName(assemblies), members: [{ object: first, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }] };
+    joined.push(first);
   }
   const root = rootOf(assembly)!;
   const rootPose = () => poseOf(root.object) ?? IDENTITY;
@@ -572,6 +627,7 @@ export function prepareTrain(assemblies: readonly Assembly[], parts: readonly Ge
   }
   // The hinges, in plate order.
   const hinged: string[] = [];
+  const slid: string[] = [];
   const refused: string[] = [];
   const member = (id: string) => assembly.members.find((row) => row.object === id);
   // A carrier (docs/plan-gear-kinds.md, stage 2): a part that holds no gear, has no joint and is not the root, with
@@ -626,6 +682,18 @@ export function prepareTrain(assemblies: readonly Assembly[], parts: readonly Ge
     }
     if (!needs) continue;
     const pose = poseOf(part.id) ?? IDENTITY;
+    if (gear.rack) {
+      // A rack slides along its own teeth (docs/plan-gear-kinds.md, stage 3). A rack that is the root stays fixed.
+      if (row.parent === null) { refused.push(`${part.name} is the assembly's root, and a root does not slide: make a gear the root.`); continue; }
+      const inverse = inversePose(pose);
+      const along = turnDir(inverse, gear.tooth0);
+      const length = Math.hypot(...along);
+      const joint = { kind: "slide" as const, pivot: applyPose(inverse, gear.centre), axis: along.map((v) => v / length) as Vec3, travel: 0 };
+      const seated: Member = reseat ? { object: row.object, parent: root.object, ...memberFields(relativePose(rootPose(), pose)), joint } : { ...row, joint };
+      assembly = { ...assembly, members: assembly.members.map((one) => (one === row ? seated : one)) };
+      slid.push(part.id);
+      continue;
+    }
     if (row.parent === null && Math.abs(poseScale(pose) - 1) > 1e-9) {
       refused.push(`${part.name} is scaled in model space, so it cannot turn on the plate.`);
       continue;
@@ -642,7 +710,7 @@ export function prepareTrain(assemblies: readonly Assembly[], parts: readonly Ge
     hinged.push(part.id);
   }
   const next = mine ? assemblies.map((one) => (one.id === mine.id ? assembly : one)) : [...assemblies, assembly];
-  return { assemblies: next, assembly, hinged, joined, made: !mine, refused };
+  return { assemblies: next, assembly, hinged, slid, joined, made: !mine, refused };
 }
 
 /** What Couple gears made, in sentences: the hinges given, and the new assembly. `nameOf` names an object. */
@@ -651,6 +719,10 @@ export function preparedLines(prepared: Prepared, nameOf: (id: string) => string
   if (prepared.hinged.length) {
     const names = prepared.hinged.map(nameOf);
     lines.push(`Gave ${listed(names)} a hinge about ${names.length === 1 ? "its axis" : "their axes"}.`);
+  }
+  if (prepared.slid.length) {
+    const names = prepared.slid.map(nameOf);
+    lines.push(`Gave ${listed(names)} a slide along ${names.length === 1 ? "its teeth" : "their teeth"}.`);
   }
   if (prepared.made && prepared.assembly) {
     const root = rootOf(prepared.assembly);
