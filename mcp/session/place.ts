@@ -3,14 +3,14 @@
  * The methods run with this: Session; session.ts installs them on the Session prototype.
  */
 import { frameNote, frameWhere, placeFree, placeNumbers } from "../../src/modeling/placing.ts";
-import { posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from "../../src/model-space.ts";
+import { poseScale, posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from "../../src/model-space.ts";
 import { boundsOf, orientEuler } from "../../src/mesh-place.ts";
 import { poseChain, solvePose, turnHinge } from "../../src/pose.ts";
 import type { Vec3 } from "../../src/model-tree.ts";
-import { couplingLine, findCouplings, trainCheck, trainScales, trainTurn } from "../../src/gear-train.ts";
+import { couplingLine, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart, type Prepared } from "../../src/gear-train.ts";
 import { gearsInTree, type WorldGear } from "../../src/gear-pair.ts";
 import type { Affine } from "../../src/model-space.ts";
-import { assemblyOf, withCouplings, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { assemblyOf, turnsOnPlate, withRootAt, withCouplings, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -193,10 +193,21 @@ const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
 function gearsMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
   if (input.gears !== "couple" && input.gears !== "list" && input.gears !== "uncouple") return refuse("bad-argument", 'gears is "couple", "list" or "uncouple".');
   if (Object.keys(input).some((key) => !["object", "gears", "compact"].includes(key))) return refuse("conflicting-arguments", "Give gears on its own.");
-  const assemblies = this.liveAssemblies();
-  const mine = assemblyOf(assemblies, obj.id);
-  if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
+  let assemblies = this.liveAssemblies();
   const poseOf = (id: string) => this.find(id)?.modelPose;
+  // Couple gears gives the gears that mesh a hinge where they need one, and gears in no assembly one of their own
+  // (docs/plan-gear-kinds.md, stage 1): the same step the window takes.
+  let prepared: Prepared | undefined;
+  if (input.gears === "couple") {
+    const parts: GearPart[] = this.objects.flatMap((part) => {
+      const gears = part.tree ? gearsInTree(part.tree, part.modelPose, part.id, shownName(part.name)) : [];
+      return gears.length ? [{ id: part.id, name: shownName(part.name), pose: part.modelPose, gears }] : [];
+    });
+    prepared = prepareTrain(assemblies, parts, obj.id, poseOf, this.newAssemblyId());
+    if (!prepared.assembly) return refuse("bad-assembly", "This gear meshes with no gear of another part that stands in no assembly: place gears at mesh first (model_check {gears} says where).");
+  }
+  const mine = prepared?.assembly ?? assemblyOf(assemblies, obj.id);
+  if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one, or gears:\"couple\" on a gear that meshes.", undefined, NEXT.assembly);
   const gearsAt = (poses: ReadonlyMap<string, Affine>): WorldGear[] => mine.members.flatMap((member) => {
     const part = this.find(member.object), pose = poses.get(member.object);
     return part?.tree && pose ? gearsInTree(part.tree, pose, part.id, shownName(part.name)) : [];
@@ -211,9 +222,16 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
     found = findCouplings(mine, gears, poses);
     assembly = withCouplings(mine, found.couplings);
   }
-  if (assembly !== mine) {
+  const before = assemblyOf(this.assemblies, obj.id);
+  if (assembly !== before) {
     this.remember("Gears");
-    this.assemblies = assemblies.map((row) => (row.id === mine.id ? assembly : row));
+    assemblies = (prepared?.assemblies ?? assemblies).map((row) => (row.id === mine.id ? assembly : row));
+    this.assemblies = assemblies;
+    for (const id of prepared?.joined ?? []) {
+      const part = this.find(id);
+      if (part && id !== rootOf(assembly)?.object) part.frame = "part";
+    }
+    this.writeSolved(assembly, "", false);
     this.autosaveDirty = true;
   }
   const couplings = (assembly.couplings ?? []).map((row) => ({ driver: row.driver, driven: row.driven, gears: [row.gears[0].name, row.gears[1].name], ratio: Math.round(row.ratio * 1e6) / 1e6 }));
@@ -232,7 +250,14 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
   }
   const notCoupled = found?.notCoupled.map((row) => ({ gears: row.names, reason: row.reason })) ?? [];
   const note = input.gears === "uncouple" ? "The gears turn on their own hinges again." : couplings.length ? `${(assembly.couplings ?? []).map(couplingLine).join("; ")}. Turning one turns its train: model_place {angle} or pose_animate.` : "No coupled gears.";
-  return { ok: true, assembly: assembly.name, couplings, ...(notCoupled.length ? { notCoupled } : {}), ...(locked.length ? { locked } : {}), ...(checked ? { checked } : {}), ...(input.compact === true ? {} : { note }) };
+  const name = (id: string) => shownName(this.find(id)?.name ?? id);
+  const made = prepared && (prepared.hinged.length || prepared.made || prepared.refused.length) ? {
+    ...(prepared.hinged.length ? { hinged: prepared.hinged.map(name) } : {}),
+    ...(prepared.made ? { madeAssembly: assembly.name } : {}),
+    ...(prepared.refused.length ? { notHinged: prepared.refused } : {}),
+  } : {};
+  const madeNote = prepared ? preparedLines(prepared, name).join(" ") : "";
+  return { ok: true, assembly: assembly.name, ...made, couplings, ...(notCoupled.length ? { notCoupled } : {}), ...(locked.length ? { locked } : {}), ...(checked ? { checked } : {}), ...(input.compact === true ? {} : { note: madeNote ? `${madeNote} ${note}` : note }) };
 }
 
 /** Change a joint and optionally move its chain, validating everything before writing a pose. */
@@ -242,14 +267,23 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
   const assemblies = this.liveAssemblies();
   let assembly = assemblyOf(assemblies, obj.id);
   let member = assembly?.members.find((row) => row.object === obj.id);
-  if (!assembly || !member || member.parent === null) return refuse("bad-placement", "Choose a linked child in an assembly; its root is fixed.");
+  if (!assembly || !member) return refuse("bad-placement", "Choose a linked child in an assembly; its root is fixed.");
+  // A root takes a hinge (it turns on the plate, docs/plan-gear-kinds.md), Held, or no joint, and turns on its hinge.
+  if (member.parent === null) {
+    const kind = input.joint === null ? null : input.joint !== undefined ? (input.joint as Record<string, unknown>).kind ?? member.joint?.kind : undefined;
+    if (input.reach !== undefined || (kind !== undefined && kind !== null && kind !== "hinge" && kind !== "held") || (input.joint === undefined && member.joint?.kind !== "hinge")) return refuse("bad-placement", "Choose a linked child in an assembly; its root is fixed. A root takes only a hinge (it turns on the plate) or held.");
+  }
   const original = assembly;
   assembly = solveAssembly(assembly, (id) => this.find(id)?.modelPose, this.params).assembly;
   member = assembly.members.find((row) => row.object === obj.id)!;
   if (input.joint !== undefined) {
-    const { joint: _old, ...plain } = member;
+    const { joint: _old, held: _held, ...plain } = member;
+    const given0 = input.joint as Record<string, unknown> | null;
     if (input.joint === null) member = plain;
-    else {
+    else if (given0?.kind === "held") {
+      if (Object.keys(given0).some((key) => key !== "kind")) return refuse("bad-placement", "held takes no other field: the part stays where it is and Couple gears never gives it a hinge.");
+      member = { ...plain, held: true };
+    } else {
       const given = input.joint as Record<string, unknown>;
       const old = original.members.find((one) => one.object === obj.id)?.joint ?? member.joint;
       // A joint redefined on a part that already has one of its kind keeps what it leaves out: its pivot and axis.
@@ -285,6 +319,13 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
         if ("reason" in turned) return refuse("bad-placement", turned.reason);
         member = { ...turned, joint: { ...held, angle: target ?? was } };
       }
+    }
+    // A root without a hinge stands at its model pose; a root given a hinge takes that pose as its offset and turn.
+    const wasHinged = turnsOnPlate(original.members.find((row) => row.object === obj.id));
+    if (member.parent === null && member.joint?.kind !== "hinge") member = { ...member, offset: [0, 0, 0], turn: [0, 0, 0] };
+    else if (member.parent === null && !wasHinged) {
+      if (Math.abs(poseScale(obj.modelPose) - 1) > 1e-9) return refuse("bad-placement", `${shownName(obj.name)} is scaled in model space, so it cannot turn on the plate.`);
+      member = { ...member, ...memberFields(obj.modelPose) };
     }
     const next = withMember(assembly, member);
     if ("reason" in next) return refuse("bad-placement", next.reason);
@@ -340,7 +381,8 @@ function placeFreeMethod(this: Session, obj: PlateObject, input: Record<string, 
   else delete obj.frame;
   let moved = {};
   if (mine) {
-    const renamed = named ? { ...mine, name: named } : mine;
+    // A hinged root carries its pin to where it was put.
+    const renamed = withRootAt(named ? { ...mine, name: named } : mine, obj.modelPose);
     this.assemblies = this.assemblies.map((row) => (row.id === mine.id ? renamed : row));
     moved = this.writeSolved(renamed, obj.id);
   }
@@ -374,7 +416,8 @@ function writeSolved(this: Session, assembly: Assembly, except: string, includeM
   for (const row of assembly.members) {
     const obj = this.find(row.object);
     const pose = solved.poses.get(row.object);
-    if (!obj || !pose || row.parent === null) continue;
+    // A fixed root stands where it was put; a hinged root turns on the plate and is written with the others.
+    if (!obj || !pose || (row.parent === null && !turnsOnPlate(row))) continue;
     const changed = !samePose(pose, obj.modelPose);
     obj.modelPose = pose;
     if (!changed || row.object === except || !includeMoved) continue;
