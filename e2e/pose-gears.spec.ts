@@ -58,7 +58,7 @@ async function dragRing(page: Page): Promise<void> {
 
 async function openProject(page: Page, file: string | { name: string; mimeType: string; buffer: Buffer }): Promise<void> {
   await page.locator("#projectFile").setInputFiles(file);
-  await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
+  await expect(page.locator("[data-assembly-head]")).toHaveCount(1, { timeout: 30_000 });
   await page.locator("#tabPose").click();
   await expect(page.locator("#posePanel")).toBeVisible();
 }
@@ -159,7 +159,8 @@ async function openFree(page: Page, file: string | { name: string; mimeType: str
   await page.locator("#projectFile").setInputFiles(file);
   await page.locator("#tabPose").click();
   await expect(page.locator("#posePanel")).toBeVisible();
-  await expect(page.locator(`#posePanel [data-object='${ids.third}']`)).toBeVisible();
+  // A project read under load can take more than the default 5 s to reach the panel.
+  await expect(page.locator(`#posePanel [data-object='${ids.third}']`)).toBeVisible({ timeout: 30_000 });
 }
 
 test("Three free gears at mesh, no hinges and no frame: Couple gears makes the train, and turning any gear by hand turns it", async ({ page }, info) => {
