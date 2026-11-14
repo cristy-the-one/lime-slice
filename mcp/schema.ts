@@ -1457,7 +1457,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set an assembled pose or joint, in mm and degrees. The print layout does not move. With to, join an assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
+    description: "Set an assembled pose or joint (mm, degrees); the print layout does not move. With to, join an assembly. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1475,10 +1475,11 @@ export const TOOLS: ToolSpec[] = [
         joint: { oneOf: [{ type: "object" }, { enum: [null] }], description: "Joint or null. guide {kind:\"pose\"}." },
         angle: { type: "number", description: "Hinge angle in degrees." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
-        root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
+        root: { const: true, description: "Make this member the fixed root." },
+        gears: { enum: ["couple", "list", "uncouple"], description: "Couple meshing gears." },
         reply: { enum: ["angles"], description: "Pose: changed hinge angles only." },
-        compact: { type: "boolean", description: "Omit the explanatory note from a successful reply." },
-        objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, preserving each assembled pose." },
+        compact: { type: "boolean", description: "Omit the note." },
+        objects: { type: "array", minItems: 1, maxItems: 1000, items: handle, description: "Join these parts to to, as they stand." },
       },
     },
   },

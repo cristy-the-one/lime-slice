@@ -7,7 +7,10 @@ import { posedBounds, relativePose, seatLift, thenPose, type ObjectFrame } from 
 import { boundsOf, orientEuler } from "../../src/mesh-place.ts";
 import { poseChain, solvePose, turnHinge } from "../../src/pose.ts";
 import type { Vec3 } from "../../src/model-tree.ts";
-import { assemblyOf, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { couplingLine, findCouplings, trainCheck, trainScales, trainTurn } from "../../src/gear-train.ts";
+import { gearsInTree, type WorldGear } from "../../src/gear-pair.ts";
+import type { Affine } from "../../src/model-space.ts";
+import { assemblyOf, withCouplings, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -62,7 +65,7 @@ function assemblyMerge(this: Session, input: Record<string, unknown>): Record<st
   const targetPart = targetRoot && this.find(targetRoot.object);
   if (!sourceRoot || !targetRoot || !sourcePart || !targetPart) return refuse("bad-assembly", "Both assemblies need a root on the plate.");
   const attached: Member = { object: sourceRoot.object, parent: targetRoot.object, ...memberFields(relativePose(targetPart.modelPose, sourcePart.modelPose)) };
-  const merged: Assembly = { ...target, members: [...target.members, ...source.members.map((member) => member.object === sourceRoot.object ? attached : member)] };
+  const merged: Assembly = withCouplings({ ...target, members: [...target.members, ...source.members.map((member) => member.object === sourceRoot.object ? attached : member)] }, [...(target.couplings ?? []), ...(source.couplings ?? [])]);
   this.assemblies = assemblies.filter((row) => row.id !== source.id).map((row) => row.id === target.id ? merged : row);
   return { ok: true, assembly: target.name, merged: source.name, objects: source.members.length, note: "Both assemblies keep their current poses and the destination assembly's name." };
 }
@@ -75,6 +78,7 @@ function assemblyMerge(this: Session, input: Record<string, unknown>): Record<st
 function modelPlace(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
   if (input.reply !== undefined && input.joint === undefined && input.angle === undefined && input.reach === undefined) return refuse("conflicting-arguments", "reply: angles is for a joint, angle or reach call.");
   if (input.root !== undefined) return rerootMember.call(this, obj, input);
+  if (input.gears !== undefined) return gearsMember.call(this, obj, input);
   if (input.joint !== undefined || input.angle !== undefined || input.reach !== undefined) return poseMember.call(this, obj, input);
   if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return refuse("bad-frame", 'frame is "part" or "model".');
   const assemblies = this.liveAssemblies();
@@ -178,6 +182,59 @@ function rerootMember(this: Session, obj: PlateObject, input: Record<string, unk
   };
 }
 
+/** One turn of a train's first gear, in steps that are no whole number of teeth for any gear a train is likely to have. */
+const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
+
+/**
+ * --- docs/plan-gear-coupling.md. gears: "couple" finds the assembly's meshing pairs and stores them, replacing the
+ * earlier couplings; "list" reads them back; "uncouple" drops them. Couple and list run the validator: the train turned
+ * through sampled angles, every coupled pair asked again by the mesh check.
+ */
+function gearsMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (input.gears !== "couple" && input.gears !== "list" && input.gears !== "uncouple") return refuse("bad-argument", 'gears is "couple", "list" or "uncouple".');
+  if (Object.keys(input).some((key) => !["object", "gears", "compact"].includes(key))) return refuse("conflicting-arguments", "Give gears on its own.");
+  const assemblies = this.liveAssemblies();
+  const mine = assemblyOf(assemblies, obj.id);
+  if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
+  const poseOf = (id: string) => this.find(id)?.modelPose;
+  const gearsAt = (poses: ReadonlyMap<string, Affine>): WorldGear[] => mine.members.flatMap((member) => {
+    const part = this.find(member.object), pose = poses.get(member.object);
+    return part?.tree && pose ? gearsInTree(part.tree, pose, part.id, shownName(part.name)) : [];
+  });
+  let assembly = mine;
+  let found: ReturnType<typeof findCouplings> | undefined;
+  if (input.gears === "uncouple") assembly = withCouplings(mine, undefined);
+  else if (input.gears === "couple") {
+    const poses = solveAssembly(mine, poseOf).poses;
+    const gears = gearsAt(poses);
+    if (gears.length < 2) return refuse("bad-assembly", "This assembly has fewer than two gears: a gear is a solid_new {gear} or a gear step.");
+    found = findCouplings(mine, gears, poses);
+    assembly = withCouplings(mine, found.couplings);
+  }
+  if (assembly !== mine) {
+    this.remember("Gears");
+    this.assemblies = assemblies.map((row) => (row.id === mine.id ? assembly : row));
+    this.autosaveDirty = true;
+  }
+  const couplings = (assembly.couplings ?? []).map((row) => ({ driver: row.driver, driven: row.driven, gears: [row.gears[0].name, row.gears[1].name], ratio: Math.round(row.ratio * 1e6) / 1e6 }));
+  // Each train once: its lock, or the validator's sampled turn of its first body.
+  const seen = new Set<string>();
+  const locked: { gears: string[]; reason: string }[] = [];
+  let checked: { frames: number; pairs: number; bad: unknown[] } | undefined;
+  for (const row of assembly.couplings ?? []) {
+    if (seen.has(row.driver)) continue;
+    const train = trainScales(assembly, row.driver);
+    for (const id of train.scales.keys()) seen.add(id);
+    if (train.locked) { locked.push(train.locked); continue; }
+    const sweep = trainCheck(assembly, poseOf, gearsAt, row.driver, CHECK_ANGLES);
+    if ("reason" in sweep) { locked.push({ gears: [], reason: sweep.reason }); continue; }
+    checked = { frames: (checked?.frames ?? 0) + sweep.frames, pairs: (checked?.pairs ?? 0) + sweep.pairs, bad: [...(checked?.bad ?? []), ...sweep.bad.map((bad) => ({ ...bad, angle: Math.round(bad.angle * 100) / 100 }))] };
+  }
+  const notCoupled = found?.notCoupled.map((row) => ({ gears: row.names, reason: row.reason })) ?? [];
+  const note = input.gears === "uncouple" ? "The gears turn on their own hinges again." : couplings.length ? `${(assembly.couplings ?? []).map(couplingLine).join("; ")}. Turning one turns its train: model_place {angle} or pose_animate.` : "No coupled gears.";
+  return { ok: true, assembly: assembly.name, couplings, ...(notCoupled.length ? { notCoupled } : {}), ...(locked.length ? { locked } : {}), ...(checked ? { checked } : {}), ...(input.compact === true ? {} : { note }) };
+}
+
 /** Change a joint and optionally move its chain, validating everything before writing a pose. */
 function poseMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
   if (input.to !== undefined || input.assembly !== undefined || input.frame !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Set a joint, angle or reach separately from placement and linking.");
@@ -233,13 +290,14 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
     if ("reason" in next) return refuse("bad-placement", next.reason);
     assembly = next;
   }
+  let train: { object: string; angle: number }[] = [];
   if (input.angle !== undefined) {
     if (!member.joint || member.joint.kind !== "hinge") return refuse("bad-placement", "Angle needs a hinge on this member.");
-    const turned = turnHinge(member, (input.angle as number) - (member.joint.angle ?? 0));
+    // A coupled hinge turns its gear train (docs/plan-gear-coupling.md); a locked train is refused and nothing moves.
+    const turned = trainTurn(assembly, obj.id, (input.angle as number) - (member.joint.angle ?? 0));
     if ("reason" in turned) return refuse("bad-placement", turned.reason);
-    const next = withMember(assembly, turned);
-    if ("reason" in next) return refuse("bad-placement", next.reason);
-    assembly = next; member = turned;
+    assembly = turned.assembly; member = assembly.members.find((row) => row.object === obj.id)!;
+    train = turned.angles.filter((row) => row.object !== obj.id);
   }
   let reach: ReturnType<typeof solvePose> | undefined;
   if (input.reach !== undefined) {
@@ -264,7 +322,7 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
     const joint = assembly!.members.find((row) => row.object === id)?.joint;
     const before = original.members.find((row) => row.object === id)?.joint;
     return joint?.kind === "hinge" && (before?.kind !== "hinge" || (joint.angle ?? 0) !== (before.angle ?? 0)) ? [{ object: id, angle: joint.angle ?? 0 }] : [];
-  });
+  }).concat(train);
   if (input.reply === "angles") return { ok: true, angles, ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}) };
   const current = assembly.members.find((row) => row.object === obj.id)!;
   return { ok: true, assembly: assembly.name, object: obj.id, ...(current.joint ? { joint: current.joint } : { joint: null }), ...moved,
