@@ -5,6 +5,7 @@ import { applyPose, boxUnder, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { alignedHinge, poseChain, solvePose, turnBall, turnHinge } from "./pose.ts";
 import { interference } from "./interference.ts";
+import { trainOf, trainTurn } from "./gear-train.ts";
 
 export type Quaternion = [number, number, number, number];
 export type Aim = number | "rest" | "aligned" | "min" | "max" | { fraction: number } | { rotation: Quaternion } | { reach: { at: Vec3; to: Vec3 } };
@@ -163,6 +164,15 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
   };
   let end = 0;
   const holds: { start: number; end: number; line?: number }[] = [];
+  // Each gear train has one lead, the body a key names, else the first in rig order; the rest of the train follows it.
+  const named = new Set(animation.keys.flatMap((key) => record(key) && record(key.set) ? Object.keys(key.set).flatMap((pattern) => rigGroup(rig, pattern).map((row) => row.object)) : []));
+  const followers = new Set<string>();
+  for (const row of rig) {
+    const train = trainOf(original, row.object);
+    if (!train.has(row.object) || followers.has(row.object)) continue;
+    const lead = rig.find((other) => train.has(other.object) && named.has(other.object)) ?? row;
+    for (const id of train) if (id !== lead.object) followers.add(id);
+  }
   const keys = animation.keys.map((key) => ({ t: record(key) && typeof key.t === "number" ? key.t : 0, ...(record(key) && typeof key.line === "number" ? { line: key.line } : {}) } as AnimationResult["keys"][number]));
   animation.keys.forEach((key, index) => {
     if (!record(key)) { issues.push({ reason: "Each key must be an object." }); return; }
@@ -178,7 +188,8 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
     const explicit = Object.entries(key.set ?? {});
     const assigned = new Set(explicit.flatMap(([pattern]) => rigGroup(rig, pattern).map((row) => row.object)));
     const items: [string, Aim][] = [];
-    if (key.rest) for (const row of rig) if (row.joint && !assigned.has(row.object)) items.push([row.name, "rest"]);
+    // A gear train rests through its lead alone: the others follow it (docs/plan-gear-coupling.md).
+    if (key.rest) for (const row of rig) if (row.joint && !assigned.has(row.object) && !followers.has(row.object)) items.push([row.name, "rest"]);
     items.push(...explicit);
     for (const [pattern, aim] of items) {
       const matched = rigGroup(rig, pattern);
@@ -230,6 +241,15 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
       points.unshift({ time: 0, until: 0, ease: "linear", value: initial, key: -1 });
     }
   }
+  const tracked = [...tracks.keys()];
+  for (let i = 0; i < tracked.length; i++) {
+    const train = trainOf(original, tracked[i]!);
+    const other = tracked.slice(i + 1).find((id) => train.has(id));
+    if (other) {
+      const name = (id: string) => rig.find((row) => row.object === id)!.name;
+      issues.push({ reason: `${name(tracked[i]!)} and ${name(other)} are one gear train; key only one of them.` });
+    }
+  }
   if (issues.length) return { issues };
   const count = Math.max(1, Math.round(end * animation.fps));
   let assembly = structuredClone(original), bounds: Bounds | null = null;
@@ -255,6 +275,13 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
     for (const [id, points] of tracks) {
       const value = atTime(points, time, activeTime), member = assembly.members.find((row) => row.object === id)!;
       if (value.kind === "reach") { reaches.push({ id, value }); continue; }
+      if (value.kind === "angle" && trainOf(assembly, id).has(id)) {
+        // A coupled hinge turns its whole gear train; a locked train refuses the animation.
+        const turned = trainTurn(assembly, id, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0));
+        if ("reason" in turned) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${turned.reason}` }] };
+        assembly = turned.assembly;
+        continue;
+      }
       const result = value.kind === "angle" ? turnHinge(member, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0)) : rotateBall(member, value.value, centre(id) ?? member.joint!.pivot);
       if ("reason" in result) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${result.reason}` }] };
       assembly = { ...assembly, members: assembly.members.map((row) => row.object === id ? result : row) };

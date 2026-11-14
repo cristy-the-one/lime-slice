@@ -1,6 +1,9 @@
 import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
-import { assemblyOf, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
+import { assemblyOf, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
+import { gearsInTree, type WorldGear } from "../gear-pair.ts";
+import { couplingLine, findCouplings, trainScales, trainTurn } from "../gear-train.ts";
+import { modelTrees } from "./model-trees.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
 import { meshSeat, modelPoseOf } from "../plate.ts";
@@ -31,6 +34,10 @@ let sceneShift: Affine | undefined;
 let chainSelected = false;
 let dragging = false;
 let dragStart: Member | null = null;
+/** The assembly at the start of a hinge drag: a gear train turns from it, so a drag never drifts. */
+let dragAssembly: Assembly | null = null;
+/** What the last Couple gears said: pairs not coupled and why, for the assembly it ran on. */
+let gearNotes: { assembly: string; lines: string[] } | null = null;
 let reachStart: { assembly: Assembly; object: string; at: Vec3; poses: Map<string, Affine>; centres: Map<string, Vec3>; shift: Affine } | null = null;
 let reachDistance: number | null = null;
 let lastClashes = new Set<string>();
@@ -292,12 +299,18 @@ function pick(id: string | null, hit?: PoseHit): void {
   else if (tool === "select") { chainSelected = !chainSelected; syncPose(); }
 }
 function turn(event: TurnEvent): void {
-  if (event.phase === "start") { const row = selected(); if (!row?.member.joint) return; holdEdit(); dragging = true; dragStart = structuredClone(row.member); return; }
-  if (event.phase === "end") { if (dragging) flushEdit(); dragging = false; dragStart = null; refreshPoseConsumers(); return; }
+  if (event.phase === "start") { const row = selected(); if (!row?.member.joint) return; holdEdit(); dragging = true; dragStart = structuredClone(row.member); dragAssembly = structuredClone(row.assembly); return; }
+  if (event.phase === "end") { if (dragging) flushEdit(); dragging = false; dragStart = null; dragAssembly = null; refreshPoseConsumers(); return; }
   const row = selected();
   if (!row?.member.joint || !dragStart?.joint || dragStart.object !== row.member.object) return;
   const joint = dragStart.joint;
   const axis: Vec3 = event.axis === 0 ? [1, 0, 0] : event.axis === 1 ? [0, 1, 0] : [0, 0, 1];
+  if (joint.kind === "hinge" && dragAssembly) {
+    // A coupled hinge turns its gear train with it (docs/plan-gear-coupling.md); a locked one says why and stays.
+    const train = trainTurn(dragAssembly, dragStart.object, event.delta);
+    if ("reason" in train) { message = train.reason; renderPanel(); return; }
+    writeAssembly(train.assembly); return;
+  }
   const turned = joint.kind === "hinge" ? turnHinge(dragStart, event.delta) : turnBall(dragStart, axis, event.delta, centre(row.member.object));
   if ("reason" in turned) { message = turned.reason; renderPanel(); return; }
   const next = withMember(row.assembly, turned);
@@ -515,6 +528,7 @@ function renderPanel(): void {
   addText(panel, "h3", state.plate.objects.find((item) => item.id === row.member.object)?.name ?? row.member.object);
   const parentName = state.plate.objects.find((item) => item.id === row.member.parent)?.name;
   addText(panel, "p", parentName ? `Parent: ${parentName}` : "Assembly root (fixed)");
+  gearSection(panel, row.assembly);
   if (!row.member.parent) return;
   const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", "Joint");
   const select = document.createElement("select"); select.dataset.poseField = "kind"; select.setAttribute("aria-label", "Joint kind");
@@ -531,6 +545,45 @@ function renderPanel(): void {
   }
   const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
   button(actions, "Rest", "rest"); button(actions, "Make rest", "make-rest"); button(actions, "Undo", "undo"); button(actions, "Redo", "redo");
+}
+/** The assembly's gears where they stand, from each member's Model history. Model fills the trees it holds. */
+function assemblyGears(assembly: Assembly, poses: ReadonlyMap<string, Affine>): WorldGear[] {
+  return assembly.members.flatMap((member) => {
+    const object = state.plate.objects.find((part) => part.id === member.object);
+    const tree = object?.modelTree ? modelTrees.get(object.modelTree) : undefined;
+    const pose = poses.get(member.object);
+    return object && tree && pose ? gearsInTree(tree, pose, object.id, object.name) : [];
+  });
+}
+/** Gears: the couplings, any locked train, what the last Couple gears said, and its buttons. */
+function gearSection(panel: HTMLElement, assembly: Assembly): void {
+  const couplings = assembly.couplings ?? [];
+  const notes = gearNotes?.assembly === assembly.id ? gearNotes.lines : [];
+  const gears = couplings.length || notes.length ? null : assemblyGears(assembly, solveAssembly(assembly, poseOf).poses);
+  if (!couplings.length && !notes.length && (gears?.length ?? 0) < 2) return;
+  addText(panel, "h3", "Gears");
+  const list = document.createElement("div"); list.dataset.poseGears = ""; panel.append(list);
+  for (const row of couplings) addText(list, "p", `${couplingLine(row)}.`);
+  const seen = new Set<string>();
+  for (const row of couplings) {
+    if (seen.has(row.driver)) continue;
+    const train = trainScales(assembly, row.driver);
+    for (const id of train.scales.keys()) seen.add(id);
+    if (train.locked) addText(list, "p", train.locked.reason);
+  }
+  for (const line of notes) addText(list, "p", line);
+  if (!couplings.length && !notes.length) addText(list, "p", "Couple the gears that mesh, so turning one turns its train.");
+  const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
+  button(actions, "Couple gears", "couple-gears").dataset.tip = "Find the gears that mesh, by the mesh check, and couple them: turning one turns its train at the tooth ratio.";
+  if (couplings.length) button(actions, "Uncouple", "uncouple-gears");
+}
+function coupleGears(assembly: Assembly): void {
+  const poses = solveAssembly(assembly, poseOf).poses;
+  const gears = assemblyGears(assembly, poses);
+  if (gears.length < 2) { gearNotes = { assembly: assembly.id, lines: ["This assembly has fewer than two gears that Model knows: open the gears' parts in Model once, then couple."] }; renderPanel(); return; }
+  const found = findCouplings(assembly, gears, poses);
+  gearNotes = { assembly: assembly.id, lines: [...(found.couplings.length || found.notCoupled.length ? [] : ["No pair of these gears meshes."]), ...found.notCoupled.map((row) => row.reason)] };
+  editAssembly(withCouplings(assembly, found.couplings));
 }
 function panelClick(event: Event): void {
   const target = (event.target as Element).closest<HTMLButtonElement>("[data-pose-action]");
@@ -567,6 +620,12 @@ function panelClick(event: Event): void {
     void exportAssembly(target.dataset.assembly).finally(() => { target.disabled = false; });
     return;
   }
+  if (action === "couple-gears" || action === "uncouple-gears") {
+    const row = selected(); if (!row) return;
+    if (action === "couple-gears") coupleGears(row.assembly);
+    else { gearNotes = null; editAssembly(withCouplings(row.assembly, undefined)); }
+    return;
+  }
   const row = selected(); if (!row || (action !== "rest" && action !== "make-rest")) return;
   const ids = poseChain([row.assembly], row.member.object);
   let assembly = row.assembly;
@@ -574,9 +633,12 @@ function panelClick(event: Event): void {
     if (!ids.has(member.object) || !member.joint) continue;
     let updated: Member = member;
     if (action === "rest" && member.joint.kind === "hinge") {
-      const result = turnHinge(member, -(member.joint.angle ?? 0));
+      // Through its gear train, if it has one: the train follows the gear back to rest.
+      const live = assembly.members.find((row) => row.object === member.object)!;
+      const result = trainTurn(assembly, member.object, -(live.joint?.kind === "hinge" ? live.joint.angle ?? 0 : 0));
       if ("reason" in result) { message = result.reason; renderPanel(); return; }
-      updated = result;
+      assembly = result.assembly;
+      continue;
     } else if (action === "make-rest") {
       const joint = member.joint.kind === "hinge" ? { ...member.joint, angle: 0 } : { ...member.joint, rest: rotationQuaternion(memberPose(member).m) };
       // Limits are relative to rest; translate them with the hinge's zero point.
@@ -618,9 +680,9 @@ function panelChange(event: Event): void {
   const value = input.value.trim() === "" && optional ? undefined : Number(input.value);
   if ((value === undefined && !optional) || (value !== undefined && (!Number.isFinite(value) || input.value.trim() === ""))) { message = "Enter a finite number."; renderPanel(); return; }
   if (name === "angle" && old.kind === "hinge") {
-    const next = turnHinge(row.member, value! - (old.angle ?? 0));
+    const next = trainTurn(row.assembly, row.member.object, value! - (old.angle ?? 0));
     if ("reason" in next) { message = next.reason; renderPanel(); return; }
-    replaceMember(row.assembly, next); return;
+    editAssembly(next.assembly); return;
   }
   const raw = structuredClone(old) as Joint;
   if (name.startsWith("pivot")) raw.pivot[Number(name.slice(-1))] = value!;
