@@ -6,6 +6,7 @@ import { appVersion } from "../export-gcode.ts";
 import { listLibrary, pluginsDir } from "../plugins.ts";
 import { ingredientLines, ingredientsDir } from "../ingredients.ts";
 import { listLessons, listPresets, seenInPractice } from "../nuggets.ts";
+import { AREA_NAMES, areaDoc, hitLine, mapDoc, nearestTools, search, toolDoc } from "../catalog.ts";
 import { GUIDES, guideByUri, guideSections, type GuideSection, KIND_GUIDES, TEXT_FONT_LINES, TEXT_OWN_FONT_LINES, TEXT_REFUSALS } from "../guides.ts";
 import { OP_KINDS, OP_SUMMARY, opSchemaFor } from "../schema.ts";
 import { COMPOSITE_KINDS, isComposite, MAX_PIECES } from "../../src/modeling/compose.ts";
@@ -151,6 +152,23 @@ function nuggetsLine(this: Session): string {
 
 /** The worked guides as a tool, for clients that do not read resources. */
 function guide(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+  // Discovery (docs/plan-mcp-discovery.md D2): search by task, one tool, one area; the map when nothing is asked.
+  if (typeof input.query === "string") {
+    const hits = search(input.query);
+    if (hits.length === 0) return { ok: true, query: input.query, found: [], note: "Nothing matched. Try other words, or browse an area.", ...mapDoc() };
+    return { ok: true, query: input.query, found: hits.map(hitLine), next: "Read one with the call after ->; run a tool with call {tool, args}." };
+  }
+  if (typeof input.tool === "string") {
+    const name = input.tool.trim();
+    const doc = toolDoc(name, input.schema === true);
+    if (doc) return doc;
+    const near = nearestTools(name);
+    return refuse("unknown-topic", `There is no tool named ${name}.${near.length ? ` Close: ${near.join(", ")}.` : ""} guide {query} finds tools by task.`, undefined, NEXT.guide);
+  }
+  if (typeof input.group === "string") {
+    const area = input.group.trim().toLowerCase();
+    return areaDoc(area) ?? refuse("unknown-topic", `There is no group named ${area}. Groups: ${AREA_NAMES.join(", ")}.`, undefined, NEXT.guide);
+  }
   if (typeof input.kind === "string") {
     const kind = input.kind.trim();
     if (kind === "recipes") return this.guide({ topic: "recipes" });
@@ -161,7 +179,7 @@ function guide(this: Session, input: Record<string, unknown>): Record<string, un
     return seen.length ? { ...answer, data: { seenInPractice: seen } } : answer;
   }
   const topic = typeof input.topic === "string" ? input.topic.trim().toLowerCase() : "";
-  if (!topic) return { ok: true, topics: GUIDES.map((row) => ({ topic: row.uri.replace("lime://guide/", ""), name: row.name, tools: row.tools })) };
+  if (!topic) return mapDoc();
   const found = guideByUri(`lime://guide/${topic}`);
   if (!found) return refuse("unknown-topic", `There is no guide named ${topic}. Topics: ${GUIDES.map((row) => row.uri.replace("lime://guide/", "")).join(", ")}.`, undefined, NEXT.guide);
   // The recipes guide ends with the user's kept ingredients by name, so one is found before a new one is written.

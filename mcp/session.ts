@@ -29,7 +29,8 @@ import { leanReply } from "./lean.ts";
 import { RecipeHost } from "./recipe.ts";
 import { blendOf } from "./request.ts";
 import { guideByUri } from "./guides.ts";
-import { GROUP_NAMES, groupOf, groupsOptedIn, SCHEMAS_REPLY_CAP, TOOL_GROUPS } from "./groups.ts";
+import { GROUP_NAMES, groupOf, SCHEMAS_REPLY_CAP, startingGroups } from "./groups.ts";
+import { groupTools, nearestTools } from "./catalog.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
 import { autosavePath, takePreviousAutosave, writeAutosave, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
 import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
@@ -142,7 +143,7 @@ export class Session {
   gantryMm = 0;
   onProgress: ((job: string, fraction: number, stage: string, token?: string | number) => void) | null = null;
   /** The tool groups enabled, when the server lists groups (the default; LIME_MCP_TOOL_GROUPS=0 lists every tool). */
-  toolGroups: Set<string> | null = groupsOptedIn() ? new Set() : null;
+  toolGroups: Set<string> | null = startingGroups();
   /** Called when tools_enable changes the tool list, so the client is told. */
   onToolsChanged: (() => void) | null = null;
   /** Names model ops may use in place of numbers. Set with model_params; the evaluated values. */
@@ -257,6 +258,16 @@ export class Session {
       this.startupChecked = true;
       this.previousAutosave = takePreviousAutosave();
     }
+    if (name === "call") {
+      // call {tool, args}: any tool, for a client that only calls the tools in its list (docs/plan-mcp-discovery.md D3).
+      // It runs as a direct call would, but never opens a group, so the client's tool list does not change.
+      const inner = unwrapCall(args);
+      const busy = this.busyRefusal(inner.tool);
+      if (busy) return Promise.resolve(busy);
+      if (inner.tool === "plan_run") return this.planRun(inner.args, meta);
+      return this.runOpenCall(inner.tool, inner.args, meta, false);
+    }
+    if (!toolByName(name)) throw new ProtocolError(unknownTool(name));
     const busy = this.busyRefusal(name);
     if (busy) return Promise.resolve(busy);
     if (name === "plan_run") return this.planRun(args, meta);
@@ -268,6 +279,11 @@ export class Session {
    * it never detaches on its own (the plan does, as a whole) and is not refused for the plan's own background job.
    */
   runCall(name: string, args: unknown, meta: CallMeta | undefined, inPlan: boolean): Promise<Record<string, unknown>> {
+    // A plan step may be a call {tool, args} too; it runs the tool it names, without opening a group.
+    if (name === "call") {
+      const inner = unwrapCall(args);
+      return this.runOpenCall(inner.tool, inner.args, meta, inPlan);
+    }
     const opened = this.openGroupFor(name);
     const done = this.runOpenCall(name, args, meta, inPlan);
     // The spread drops the non-enumerable inline images (layer_image, render_view), so carry them over.
@@ -381,18 +397,19 @@ export class Session {
 
   /** tools_enable: adds groups to the list and tells the client it changed. With groups off, every tool is already listed. */
   toolsEnable(input: Record<string, unknown>): Record<string, unknown> {
-    const asked = (input.groups as string[]).filter((group) => group in TOOL_GROUPS);
-    if (!this.toolGroups) return { ok: true, enabled: [...GROUP_NAMES], note: "Every tool is already listed." };
+    const names = ["core", ...GROUP_NAMES];
+    const asked = (input.groups as string[]).filter((group) => names.includes(group));
+    if (!this.toolGroups) return { ok: true, enabled: names, note: "Every tool is already listed." };
     const added = asked.filter((group) => !this.toolGroups!.has(group));
     for (const group of added) this.toolGroups.add(group);
     if (added.length > 0) this.onToolsChanged?.();
-    const addedTools = asked.flatMap((group) => TOOL_GROUPS[group]!.tools);
+    const addedTools = asked.flatMap((group) => groupTools(group));
     // The note comes first: a client that sets a long reply aside still reads its start.
     const reply: Record<string, unknown> = {
       ok: true,
-      note: "The tool list has changed. If these tools do not appear in yours, call them through plan_run {steps:[{tool, args}]}, or by name: a tool of any group opens its group.",
-      enabled: GROUP_NAMES.filter((group) => this.toolGroups!.has(group)),
-      added: added.flatMap((group) => TOOL_GROUPS[group]!.tools),
+      note: "The tool list has changed. If these tools do not appear in yours, run them with call {tool, args}; guide {tool} gives one tool's fields and an example.",
+      enabled: names.filter((group) => this.toolGroups!.has(group)),
+      added: added.flatMap((group) => groupTools(group)),
     };
     if (input.schemas === true) {
       const wanted = Array.isArray(input.tools) ? new Set(input.tools as string[]) : null;
@@ -780,3 +797,19 @@ export interface Session extends Installed {}
 Object.assign(Session.prototype, animationMethods, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods);
 
 export { blendOf };
+
+/** The tool and arguments of a call {tool, args}, or a ProtocolError a client reads as one short refusal. */
+function unwrapCall(args: unknown): { tool: string; args: Record<string, unknown> } {
+  const problem = validateTool("call", args ?? {});
+  if (problem) throw new ProtocolError(problem.replace(/^input\./, "call: "));
+  const { tool, args: inner } = args as { tool: string; args?: Record<string, unknown> };
+  if (tool === "call") throw new ProtocolError("call runs another tool; name that tool in tool.");
+  if (!toolByName(tool)) throw new ProtocolError(unknownTool(tool));
+  return { tool, args: inner ?? {} };
+}
+
+/** A tool name that is not a tool, with the nearest ones and the way to find the right one. */
+function unknownTool(name: string): string {
+  const near = nearestTools(name);
+  return `There is no tool named ${name}.${near.length ? ` Close: ${near.join(", ")}.` : ""} guide {query} finds tools by task.`;
+}

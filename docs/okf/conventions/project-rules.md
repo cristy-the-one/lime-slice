@@ -107,7 +107,7 @@ The words "no casual keyboard shortcuts" do not appear. The written rule is the 
 Some switches default the other way, and are opt-out:
 
 - Auto-slice loads as on unless `lime-slice-auto-slice` is `"0"`.[^pref]
-- MCP tool groups are on by default; `LIME_MCP_TOOL_GROUPS=0` lists every tool. A call to a closed group's tool opens it.[^groups]
+- The MCP lists four tools by default (`guide`, `call`, `plan_run`, `session_info`), and the rest are found with `guide` and run with `call`. `LIME_MCP_TOOLS=core` gives the older core list, and `LIME_MCP_TOOLS=all` or `LIME_MCP_TOOL_GROUPS=0` lists every tool. A direct call to a closed group's tool opens that group.[^groups]
 - The live desktop bridge is off unless its two variables are set. See [Desktop shell](../architecture/desktop.md).
 
 The phrase "defaults must be good" is not a sentence in the repository. The enforced pattern is the one above: a new slice field that would change G-code is omitted until asked for, and a few UI or server switches default on and store an off value.

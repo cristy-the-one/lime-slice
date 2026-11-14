@@ -1,5 +1,8 @@
 import { occtHint } from "./engine.ts";
-import { groupOf, TOOL_GROUPS } from "./groups.ts";
+import { AREA_NAMES, catalogTools, firstSentence, search, toolDoc } from "./catalog.ts";
+import { EXAMPLES } from "./examples.ts";
+import { FIRST_TOOLS, groupOf, TOOL_GROUPS } from "./groups.ts";
+import { DISCOVERY_INSTRUCTIONS } from "./protocol.ts";
 import { advertisedTools, annotationsFor, listedTools, OP_KINDS, OP_SUMMARY, TOOLS, UNLISTED_TOOLS, validateTool, type ToolSpec } from "./schema.ts";
 
 let failed = 0;
@@ -70,10 +73,12 @@ function missingDescriptions(node: unknown, missing: string[]): void {
 const undescribed: string[] = [];
 for (const tool of TOOLS) missingDescriptions(tool.inputSchema, undescribed);
 check("every property has a description", undescribed.length === 0);
-// Every client reads the whole tools/list each session, so it is held to a token budget. Tokens are estimated as
-// UTF-8 bytes / 4, rounded up: no tokenizer runs here, and compact JSON schema text comes out at about four bytes a
-// token for current tokenizers. The list was 78.8 KB (~19,700 tokens) before model_apply's op became kind names
-// and one line each (its full schema alone was 28.9 KB); guide {kind} serves a kind's full schema on demand.
+// Discovery (docs/plan-mcp-discovery.md D5). The one token bound is on first contact: the server's instructions and
+// the default tools/list, which every client reads every session. Everything else is read on demand through guide, so
+// a tool's words cost nothing until an agent asks for that tool, and adding a tool or a field touches no other tool.
+// Tokens are UTF-8 bytes / 4, rounded up: no tokenizer runs here, and compact JSON comes out at about four bytes a
+// token for current tokenizers. Before discovery the first list was 5,649 tokens (31 tools) against a 5,650 bound and
+// the flat list 18,249 against 18,250, so every new field was paid for by cutting another tool's description.
 const tokens = (text: string) => Math.ceil(Buffer.byteLength(text) / 4);
 const rowsOf = (tools: ToolSpec[]) => tools.map((tool) => ({
   name: tool.name,
@@ -81,69 +86,55 @@ const rowsOf = (tools: ToolSpec[]) => tools.map((tool) => ({
   inputSchema: tool.inputSchema,
   annotations: annotationsFor(tool.name),
 }));
-// Every tool, tools_enable too, for the per-tool budget; the default list (groups off) for the total.
 const rows = rowsOf(advertisedTools());
-const listed = JSON.stringify({ tools: rowsOf(listedTools(null)) });
-const core = JSON.stringify({ tools: rowsOf(listedTools(new Set())) });
-console.log(`with tool groups on, the first tools/list is ${Buffer.byteLength(core)} bytes, ~${tokens(core)} tokens, ${listedTools(new Set()).length} tools`);
-const TOOL_BUDGET = 750;
-/** Tools allowed past TOOL_BUDGET, each with its reason. */
-const TOOL_BUDGET_EXCEPTIONS: Record<string, { budget: number; reason: string }> = {
-  model_apply: { budget: 900, reason: "lists every op kind with one line each, the map a caller picks a kind from" },
-};
-// 14,500 on main; the five stress tools (sim_*, ~1,500 tokens, each inside its own budget) add the rest. With
-// tool groups on they are in the stress group and stay out of the first list. The transition kind's line in model_apply
-// (docs/plan-belt-transitions.md, step 2) adds about 25 tokens to a list that was at 15,999. Step 5's auto-find
-// (model_probe plan:true for a transition, named in the plan field) adds 11 to a list at 16,049. support_edit's
-// grow action and its count add 24 to a list at 16,060. object_split_shells names that a committed
-// model of several solids gives each object only its own solid, 19 tokens on a list at 16,084. recipe_run
-// (docs/plan-recipes.md) adds 249 to a list at 16,103; it is in the model group, so the first list with groups on
-// does not grow, and one recipe stands in for a probe-and-apply round trip per op. section (docs/plan-recipe-ingredients.md
-// I5–I6 and the groovi R-B ask: a face's outline, plane cuts of a solid, and cuts of a mesh, in one tool rather than
-// three) and model_apply_batch's combine (I19) add 308 to a list at 16,351. section is in the model group, so the first
-// list with groups on does not grow; one section call replaces an outside script that read the STL by hand.
-// recipe_run's path (the source read from a workspace file, so an edit and rerun sends a path instead of the source:
-// about 5,000 tokens a call for the groovi skin) and maxSteps (a partial dry run) add 50 more (16,710 together), in the model group as well.
-// section's saveAs (the answer written as recipe data, so a mesh's measured sections, tens of kilobytes, never pass
-// through the model) adds 29 to a list at 16,710, in the model group.
-// Plugins (docs/plan-recipe-plugins.md D14, milestones 1–2): the plugin tool (list, get, save, remove: one tool with an
-// action, as the plan chose over four) and recipe_run's plugin and keep add 281 to a list at 16,740 (the plan estimated
-// about 260). Both are in the model group, so the first list with groups on does not grow, and one plugin list plus a
-// recipe_run {plugin} replaces writing and sending a recipe again: thousands of tokens a reuse.
-// Nuggets (docs/plan-recipe-ingredients.md I12–I16, Q2): one nugget tool for plugins, ingredients, presets and lessons,
-// in place of the plugin tool (which still answers, unlisted) and the three more tools the plan sketched, and
-// recipe_run's preset, add 102 to a list at 17,021. nugget is in the model group, so the first list with groups on does
-// not grow, and one find before writing replaces rewriting helpers a library already holds.
-// Plugin data (a kept plugin carries the recipe data it read): nugget's data, the names a library plugin carries from
-// the workspace without running it again, adds 29 to a list at 17,123, in the model group; the other way to carry it
-// is a whole recipe_run with keep.
-// Sharing (docs/plan-recipe-plugins.md milestone 8): nugget's export action, from naming a plugin file or a project's
-// copy to import, and replace for a name clash add 31 to a list at 17,152, in the model group. One export or import call
-// moves a plugin with its ingredients, data, presets and lessons, in place of pasting its source into a chat.
-// Tool groups are the default now (docs/mcp-server.md), so the budget that matters to a client is FIRST_LIST_BUDGET, the
-// list it reads every session; TOTAL_BUDGET is the flat list (LIME_MCP_TOOL_GROUPS=0) and every group opened, raised from
-// 17,190 to measured + 3% (17,187 -> 17,700) so a tool added to a group does not need a budget edit; the first list is tight.
-// Raised again to measured + 3% (17,712 -> 18,250) when model_place took root:true.
-const TOTAL_BUDGET = 18_250;
-// Raised from 4,600 to 5,300 (measured 5,260) when model_place and model_export_step became core: posing and saving the pose as STEP need
-// no Model edit, and a client that never re-reads the list after tools_enable could not call them by name. With
-// model_place root:true the first list measures 5,285.
-// pose_animate is a core tool (animation plan D7): one call replaces many pose and render calls.
-const FIRST_LIST_BUDGET = 5_650;
-const sized = rows.map((row) => ({ name: row.name, tokens: tokens(JSON.stringify(row)) })).sort((a, b) => b.tokens - a.tokens);
-const over = sized.filter((row) => row.tokens > (TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET));
-const overText = over.map((row) => `${row.name} is ~${row.tokens} tokens, over its ${TOOL_BUDGET_EXCEPTIONS[row.name]?.budget ?? TOOL_BUDGET}`).join("; ");
-check(`every tool fits its token budget${over.length ? `: ${overText}` : ""}`, over.length === 0);
-const total = tokens(listed);
-console.log(`tools/list is ${Buffer.byteLength(listed)} bytes, ~${total} tokens, ${listedTools(null).length} tools`);
-const largest = sized.slice(0, 10).map((row) => `${row.name} ~${row.tokens}`).join(", ");
-check(`tools/list fits ${TOTAL_BUDGET} tokens${total > TOTAL_BUDGET ? ` (it is ~${total}; largest: ${largest})` : ""}`, total <= TOTAL_BUDGET);
-const firstTokens = tokens(core);
-check(`the first tools/list (groups on, none opened) fits ${FIRST_LIST_BUDGET} tokens${firstTokens > FIRST_LIST_BUDGET ? ` (it is ~${firstTokens})` : ""}`, firstTokens <= FIRST_LIST_BUDGET);
+const firstList = JSON.stringify({ tools: rowsOf(listedTools(new Set())) });
+const firstContact = tokens(firstList) + tokens(DISCOVERY_INSTRUCTIONS);
+console.log(`first contact: instructions ~${tokens(DISCOVERY_INSTRUCTIONS)} tokens, tools/list ~${tokens(firstList)} tokens (${listedTools(new Set()).length} tools), ~${firstContact} together`);
+console.log(`for comparison, not bound: core list ~${tokens(JSON.stringify({ tools: rowsOf(listedTools(new Set(["core"]))) }))} tokens, flat list ~${tokens(JSON.stringify({ tools: rowsOf(listedTools(null)) }))}`);
+/** Instructions and the default tools/list together. A feature never enters first contact, so this has no feature history. */
+const FIRST_CONTACT_BUDGET = 1_500;
+check(`first contact fits ${FIRST_CONTACT_BUDGET} tokens (it is ~${firstContact})`, firstContact <= FIRST_CONTACT_BUDGET);
+check("the default list is exactly the four first tools", JSON.stringify(listedTools(new Set()).map((tool) => tool.name).sort()) === JSON.stringify([...FIRST_TOOLS].sort()));
+check("the instructions name no tool outside the first four and the slice path", (() => {
+  const named = TOOLS.map((tool) => tool.name).filter((name) => new RegExp(`\\b${name}\\b`).test(DISCOVERY_INSTRUCTIONS));
+  return named.every((name) => FIRST_TOOLS.includes(name) || ["mesh_import", "slice_wait"].includes(name));
+})());
+check("the instructions map every area", AREA_NAMES.every((area) => DISCOVERY_INSTRUCTIONS.includes(`${area}: `)));
+check("every group is an area", Object.keys(TOOL_GROUPS).every((group) => AREA_NAMES.includes(group)) && AREA_NAMES.length === Object.keys(TOOL_GROUPS).length + 1);
+
+// Reachability: every tool, field and op kind is found and explained through guide, with an example.
+const reachable = catalogTools();
+check("discovery covers every tool but the old aliases", reachable.length === TOOLS.length - UNLISTED_TOOLS.size);
+const notFirst = reachable.filter((tool) => search(tool.name, 3)[0]?.label !== tool.name).map((tool) => tool.name);
+check(`a search for a tool's name finds it first${notFirst.length ? `: not ${notFirst.join(", ")}` : ""}`, notFirst.length === 0);
+const docProblems: string[] = [];
+const REPLY_BUDGET = 3_000;
+for (const tool of reachable) {
+  const doc = toolDoc(tool.name, false);
+  if (!doc) { docProblems.push(`${tool.name}: no doc`); continue; }
+  const fields = Object.keys((tool.inputSchema.properties ?? {}) as Record<string, unknown>);
+  const lines = doc.fields as string[];
+  const missing = fields.filter((field) => !lines.some((line) => line.startsWith(`${field} (`)));
+  if (missing.length) docProblems.push(`${tool.name}: no line for ${missing.join(", ")}`);
+  if ((doc.examples as string[]).length === 0) docProblems.push(`${tool.name}: no example`);
+  const sentence = firstSentence(tool.description);
+  if (!/[.!?]$/.test(sentence) || sentence.length > 200 || sentence.length < 20) docProblems.push(`${tool.name}: first sentence "${sentence}" must stand alone, 20 to 200 characters`);
+  // Bounds this tool's own reply only: growing one tool never touches another.
+  const size = tokens(JSON.stringify(doc));
+  if (size > REPLY_BUDGET) docProblems.push(`${tool.name}: guide {tool} is ~${size} tokens, over ${REPLY_BUDGET}`);
+}
+check(`guide {tool} explains every tool: a description, a line per field, an example${docProblems.length ? `: ${docProblems.join("; ")}` : ""}`, docProblems.length === 0);
+const badExamples = Object.entries(EXAMPLES).flatMap(([name, list]) => list.map((args) => [name, validateTool(name, args)] as const).filter(([, problem]) => problem !== null).map(([n, problem]) => `${n}: ${problem}`));
+check(`every example is a valid call${badExamples.length ? `: ${badExamples.join("; ")}` : ""}`, badExamples.length === 0);
+check("every example is of a tool", Object.keys(EXAMPLES).every((name) => names.has(name)));
+check("a search for an op kind finds it", OP_KINDS.every((kind) => search(kind, 3).some((hit) => hit.label === `op ${kind}`)));
+check("a search by task finds the tool", search("paint a seam")[0]?.label === "paint_seam" && search("slice a mesh").some((hit) => hit.label === "slice_start") && search("export step").some((hit) => hit.label === "model_export_step"));
+check("a search finds a field by its name", search("hinge angle").some((hit) => hit.label === "model_place" && hit.fields.includes("angle")));
+check("a field cut from a refusal points at guide {tool}", String(validateTool("settings_apply", { nope: 1 })).includes("guide {tool:\"settings_apply\"}") || !String(validateTool("settings_apply", { nope: 1 })).includes(", ..."));
 const grouped = Object.values(TOOL_GROUPS).flatMap((row) => row.tools);
 check("every grouped tool is a tool, in one group", grouped.every((name) => names.has(name)) && new Set(grouped).size === grouped.length);
-check("groups off lists every tool but tools_enable and the unlisted ones", listedTools(null).length === TOOLS.length - 1 - UNLISTED_TOOLS.size && !listedTools(null).some((tool) => UNLISTED_TOOLS.has(tool.name)) &&!listedTools(null).some((tool) => tool.name === "tools_enable"));
-check("groups on lists the core and tools_enable first", listedTools(new Set()).every((tool) => groupOf(tool.name) === null) && listedTools(new Set()).some((tool) => tool.name === "tools_enable") && listedTools(new Set()).some((tool) => tool.name === "slice_start"));
+check("groups off lists every tool but tools_enable and the unlisted ones", listedTools(null).length === TOOLS.length - 1 - UNLISTED_TOOLS.size && !listedTools(null).some((tool) => UNLISTED_TOOLS.has(tool.name)) && !listedTools(null).some((tool) => tool.name === "tools_enable"));
+check("the core list is the first tools, every tool outside a group, and tools_enable", listedTools(new Set(["core"])).every((tool) => groupOf(tool.name) === null) && listedTools(new Set(["core"])).some((tool) => tool.name === "tools_enable") && listedTools(new Set(["core"])).some((tool) => tool.name === "slice_start") && listedTools(new Set(["core"])).some((tool) => tool.name === "call"));
 check("an enabled group adds its tools", listedTools(new Set(["paint"]).add("model")).some((tool) => tool.name === "model_apply" && listedTools(new Set(["paint"])).every((row) => row.name !== "model_apply")));
 check("model_apply lists every op kind by name",JSON.stringify(rows.find((row) => row.name === "model_apply")!.inputSchema).includes('"enum":["hole","fillet"'));
 
