@@ -56,11 +56,23 @@ async function dragRing(page: Page): Promise<void> {
   await page.mouse.up();
 }
 
-async function openProject(page: Page, file: string | { name: string; mimeType: string; buffer: Buffer }): Promise<void> {
+/**
+ * Open a project and show Pose. Opening a project switches the app to Prepare when its load finishes, so a click on Pose
+ * made before then is undone: wait until the plate holds the project's `parts`, then click Pose until the Pose panel
+ * lists `last` (a click that a late load undid is made again).
+ */
+async function openOnPose(page: Page, file: string | { name: string; mimeType: string; buffer: Buffer }, parts: number, last: string): Promise<void> {
   await page.locator("#projectFile").setInputFiles(file);
-  await expect(page.locator("[data-assembly-head]")).toHaveCount(1, { timeout: 30_000 });
-  await page.locator("#tabPose").click();
-  await expect(page.locator("#posePanel")).toBeVisible();
+  await expect(page.locator("[data-plate-select]")).toHaveCount(parts, { timeout: 30_000 });
+  await expect(async () => {
+    if ((await page.locator("#tabPose").getAttribute("aria-selected")) !== "true") await page.locator("#tabPose").click();
+    await expect(page.locator(`#posePanel [data-object='${last}']`)).toBeVisible({ timeout: 1_000 });
+  }).toPass({ timeout: 30_000 });
+}
+
+async function openProject(page: Page, file: string | { name: string; mimeType: string; buffer: Buffer }, parts: number, last: string): Promise<void> {
+  await openOnPose(page, file, parts, last);
+  await expect(page.locator("[data-assembly-head]")).toHaveCount(1);
 }
 
 test("Couple a three-gear train with a compound stage; turning the pinion by hand turns every gear, before and after reopening", async ({ page }, info) => {
@@ -75,7 +87,7 @@ test("Couple a three-gear train with a compound stage; turning the pinion by han
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await autoSliceOff(page);
-  await openProject(page, file);
+  await openProject(page, file, 6, ids.out);
   const panel = page.locator("#posePanel");
   const gears = panel.locator("[data-pose-gears]");
 
@@ -112,7 +124,7 @@ test("Couple a three-gear train with a compound stage; turning the pinion by han
   const saved = await downloadProject(page);
   await page.reload();
   await autoSliceOff(page);
-  await openProject(page, { name: "pose-gears.lime", mimeType: "application/json", buffer: Buffer.from(saved.text) });
+  await openProject(page, { name: "pose-gears.lime", mimeType: "application/json", buffer: Buffer.from(saved.text) }, 6, ids.out);
   await panel.locator(`[data-object='${ids.pinion}']`).click();
   await expect(gears, "reopened, the couplings are read from the file").toContainText("pinion drives wheel, ×−0.5.");
   await expect(gears).toContainText("small drives out, ×−0.5.");
@@ -156,11 +168,7 @@ function expectFreeRatios(doc: FreeDoc, ids: FreeIds, label: string): number {
 }
 
 async function openFree(page: Page, file: string | { name: string; mimeType: string; buffer: Buffer }, ids: FreeIds): Promise<void> {
-  await page.locator("#projectFile").setInputFiles(file);
-  await page.locator("#tabPose").click();
-  await expect(page.locator("#posePanel")).toBeVisible();
-  // A project read under load can take more than the default 5 s to reach the panel.
-  await expect(page.locator(`#posePanel [data-object='${ids.third}']`)).toBeVisible({ timeout: 30_000 });
+  await openOnPose(page, file, 3, ids.third);
 }
 
 test("Three free gears at mesh, no hinges and no frame: Couple gears makes the train, and turning any gear by hand turns it", async ({ page }, info) => {
@@ -272,7 +280,7 @@ test("A planetary stage attached by hand: Couple gears hinges the carrier, sun a
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await autoSliceOff(page);
-  await openProject(page, file);
+  await openProject(page, file, 6, ids.planets[2]!);
   const panel = page.locator("#posePanel");
   const gears = panel.locator("[data-pose-gears]");
 
@@ -299,7 +307,7 @@ test("A planetary stage attached by hand: Couple gears hinges the carrier, sun a
 
   await page.reload();
   await autoSliceOff(page);
-  await openProject(page, { name: "pose-gears-planetary.lime", mimeType: "application/json", buffer: Buffer.from(typed.text) });
+  await openProject(page, { name: "pose-gears-planetary.lime", mimeType: "application/json", buffer: Buffer.from(typed.text) }, 6, ids.planets[2]!);
   await panel.locator(`[data-object='${ids.sun}']`).click();
   await expect(gears, "reopened, the couplings are read from the file").toContainText("sun drives planet 1 on carrier, ×−1.");
   await panel.getByLabel("Angle °").fill("0");
@@ -341,10 +349,8 @@ test("A free rack and pinion: Couple gears gives a hinge and a slide, and turnin
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/");
   await autoSliceOff(page);
-  await page.locator("#projectFile").setInputFiles(file);
-  await page.locator("#tabPose").click();
+  await openOnPose(page, file, 2, ids.rack);
   const panel = page.locator("#posePanel");
-  await expect(panel.locator(`[data-object='${ids.rack}']`)).toBeVisible({ timeout: 30_000 });
   const gears = panel.locator("[data-pose-gears]");
 
   await panel.locator(`[data-object='${ids.pinion}']`).click();
@@ -370,9 +376,8 @@ test("A free rack and pinion: Couple gears gives a hinge and a slide, and turnin
 
   await page.reload();
   await autoSliceOff(page);
-  await page.locator("#projectFile").setInputFiles({ name: "pose-gears-rack.lime", mimeType: "application/json", buffer: Buffer.from(typed.text) });
-  await page.locator("#tabPose").click();
-  await panel.locator(`[data-object='${ids.pinion}']`).click({ timeout: 30_000 });
+  await openOnPose(page, { name: "pose-gears-rack.lime", mimeType: "application/json", buffer: Buffer.from(typed.text) }, 2, ids.rack);
+  await panel.locator(`[data-object='${ids.pinion}']`).click();
   await expect(gears, "reopened, the coupling is read from the file").toContainText("pinion drives rack, ×0.105 mm a degree.");
   await panel.getByLabel("Angle °").fill("0");
   await panel.getByLabel("Angle °").press("Tab");
