@@ -29,6 +29,7 @@ export const GUIDES: Guide[] = [
       "To rest a part on the bed, object_place {object, layFlat:true} drops its flattest face, the one with the most contact. {object, rotX:5, settle:true} turns it and snaps it to the nearest flat face within 12 degrees, or keeps the angle when none is near; the reply gives rotationDeg and contactMm2.",
       "A refusal is {ok:false, code, reason}: branch on code (a short stable word such as no-object or not-sliced), read reason for the sentence. next, when one call is the obvious way on, names it.",
       "Nothing is sent to a printer.",
+      "A tool that is not in your tool list runs with call {tool, args}, e.g. call {tool:\"mesh_import\", args:{path:\"part.stl\"}}; guide {tool} gives any tool's fields and an example.",
     ].join("\n"),
   },
   {

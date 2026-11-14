@@ -217,9 +217,9 @@ const sdk = new StdioClientTransport({
 const client = new Client({ name: "lime-mcp-test", version: "0.0.0" });
 await client.connect(sdk);
 const listed = await client.listTools();
-check("the SDK client lists the core tools by default", listed.tools.length >= 25 && listed.tools.some((tool) => tool.name === "tools_enable"), String(listed.tools.length));
+check("the SDK client lists the four first tools by default", JSON.stringify(listed.tools.map((tool) => tool.name).sort()) === JSON.stringify(["call", "guide", "plan_run", "session_info"]), listed.tools.map((tool) => tool.name).join(","));
 check("every tool has annotations", listed.tools.every((tool) => tool.annotations && typeof tool.annotations.readOnlyHint === "boolean"));
-check("initialize carries instructions", (client.getInstructions() ?? "").includes("faces_find") && (client.getInstructions() ?? "").includes("slice_wait"));
+check("initialize carries instructions: find with guide, run with call", (client.getInstructions() ?? "").includes("guide {query") && (client.getInstructions() ?? "").includes("call {tool") && (client.getInstructions() ?? "").includes("slice_wait"));
 const info = await client.callTool({ name: "session_info", arguments: {} });
 const infoText = toolText(info.content);
 const infoBody = JSON.parse(infoText) as { ok?: boolean; engine?: string };
@@ -311,14 +311,15 @@ broken.child.kill();
   check("with LIME_MCP_TOOL_GROUPS=0, every tool is listed and tools_enable is not", plainNames.includes("model_apply") && plainNames.includes("calibration_tower") && !plainNames.includes("tools_enable") && plainNames.length > 80, String(plainNames.length));
   plain.child.kill();
 
-  const grouped = startRaw();
+  // LIME_MCP_TOOLS=core: the list before discovery, and what tools_enable and a closed group's tool do with it.
+  const grouped = startRaw({ LIME_MCP_TOOLS: "core" });
   grouped.send(rpc(1, "initialize", init));
   const groupedInit = JSON.parse(await grouped.next()) as Row;
   check("with groups, initialize declares tools.listChanged", groupedInit.result?.capabilities?.tools?.listChanged === true, JSON.stringify(groupedInit.result?.capabilities));
   const firstList = await listNames(grouped, 2);
   check(
-    "with groups, the first tools/list is the core set and tools_enable",
-    firstList.includes("tools_enable") && firstList.includes("mesh_import") && firstList.includes("slice_start") && firstList.includes("guide") && !firstList.includes("model_apply") && firstList.length < 35,
+    "with LIME_MCP_TOOLS=core, the first tools/list is the core set and tools_enable",
+    firstList.includes("tools_enable") && firstList.includes("mesh_import") && firstList.includes("slice_start") && firstList.includes("guide") && firstList.includes("call") && !firstList.includes("model_apply") && firstList.length < 40,
     firstList.join(","),
   );
   check("posing and its STEP export are core tools", firstList.includes("model_place") && firstList.includes("model_export_step"), firstList.join(","));
@@ -349,8 +350,8 @@ broken.child.kill();
     if (row.id === 4) enabledText = row.result?.content?.[0]?.text ?? "";
   }
   check("tools_enable sends notifications/tools/list_changed", changed, enabledText);
-  check("tools_enable names the tools it added", enabledText.includes("paint_supports") && enabledText.includes("inputSchema") && enabledText.includes("\"enabled\":[\"model\",\"paint\"]"), enabledText);
-  check("tools_enable puts the plan_run note before the schemas", enabledText.indexOf("plan_run") >= 0 && enabledText.indexOf("plan_run") < enabledText.indexOf("inputSchema"), enabledText.slice(0, 300));
+  check("tools_enable names the tools it added", enabledText.includes("paint_supports") && enabledText.includes("inputSchema") && enabledText.includes("\"enabled\":[\"core\",\"model\",\"paint\"]"), enabledText);
+  check("tools_enable puts the call note before the schemas", enabledText.indexOf("call {tool, args}") >= 0 && enabledText.indexOf("call {tool, args}") < enabledText.indexOf("inputSchema"), enabledText.slice(0, 300));
   // A whole Model group's schemas are tens of kilobytes; the reply stays short and says how to ask for a few.
   const enableReply = async (id: number, args: Record<string, unknown>) => {
     grouped.send(rpc(id, "tools/call", { name: "tools_enable", arguments: args }));
@@ -366,6 +367,73 @@ broken.child.kill();
   const nextList = await listNames(grouped, 5);
   check("the next tools/list has the opened groups only", nextList.includes("model_apply") && nextList.includes("paint_supports") && !nextList.includes("calibration_tower"), nextList.join(","));
   grouped.child.kill();
+}
+
+// Discovery (docs/plan-mcp-discovery.md): a client that knows only tools/list and tools/call, reads the list once and
+// never again, finds a tool by task, reads it, and runs it through call. Nothing it does changes its tool list.
+{
+  type Row = { id?: number; method?: string; result?: { instructions?: string; tools?: { name: string }[]; content?: { text?: string }[]; isError?: boolean } };
+  const io = startRaw();
+  const notes: string[] = [];
+  const reply = async (id: number): Promise<Row> => {
+    for (;;) {
+      const row = JSON.parse(await io.next()) as Row;
+      if (row.method) notes.push(row.method);
+      if (row.id === id) return row;
+    }
+  };
+  let next = 100;
+  const tool = async (name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> => {
+    const id = next++;
+    io.send(rpc(id, "tools/call", { name, arguments: args }));
+    const row = await reply(id);
+    return { text: row.result?.content?.[0]?.text ?? "", isError: row.result?.isError === true };
+  };
+  io.send(rpc(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "once", version: "0" } }));
+  const init = await reply(1);
+  io.send(rpc(2, "tools/list"));
+  const once = (await reply(2)).result?.tools?.map((row) => row.name) ?? [];
+  check("discovery: the one list a client reads is guide, call, plan_run, session_info", JSON.stringify([...once].sort()) === JSON.stringify(["call", "guide", "plan_run", "session_info"]), once.join(","));
+  check("discovery: the instructions carry the map of areas", ["model: ", "paint: ", "stress: "].every((area) => (init.result?.instructions ?? "").includes(area)));
+
+  const found = await tool("guide", { query: "paint a seam" });
+  check("discovery: guide {query} finds a tool by task, with the call that reads it", found.text.includes("paint_seam") && found.text.includes("guide {tool:"), found.text.slice(0, 300));
+  const doc = JSON.parse((await tool("guide", { tool: "mesh_import" })).text) as { description?: string; fields?: string[]; examples?: string[] };
+  check("discovery: guide {tool} gives the description, every field and an example", (doc.description ?? "").length > 20 && (doc.fields ?? []).some((line) => line.startsWith("path (required")) && (doc.examples ?? []).some((line) => line.startsWith("call {tool:\"mesh_import\"")), JSON.stringify(doc).slice(0, 300));
+  const area = JSON.parse((await tool("guide", { group: "paint" })).text) as { tools?: string[] };
+  check("discovery: guide {group} lists an area's tools", (area.tools ?? []).some((line) => line.startsWith("paint_seam:")));
+  const map = JSON.parse((await tool("guide", {})).text) as { groups?: string[]; topics?: string[] };
+  check("discovery: guide {} is the map", (map.groups ?? []).some((line) => line.startsWith("model (")) && (map.topics ?? []).some((line) => line.startsWith("slice")));
+
+  const imported = await tool("call", { tool: "mesh_import", args: { path: cube } });
+  check("discovery: call runs a tool that is not in the list", !imported.isError && imported.text.includes("obj_1"), imported.text.slice(0, 200));
+  const opened = await tool("call", { tool: "model_check", args: { object: "obj_1" } });
+  check("discovery: call runs a tool of a closed group without opening it", !opened.text.includes("groupOpened"), opened.text.slice(0, 200));
+  const wrong = await tool("call", { tool: "workplane_set", args: { face: 3 } });
+  check("discovery: a wrong field through call answers with the tool's fields in one sentence", wrong.isError && wrong.text.includes("It takes object, source, faceIndex"), wrong.text);
+  const unknown = await tool("call", { tool: "mesh_inport", args: { path: cube } });
+  check("discovery: an unknown tool through call names the close ones and guide {query}", unknown.isError && unknown.text.includes("mesh_import") && unknown.text.includes("guide {query}"), unknown.text);
+  const loop = await tool("call", { tool: "call", args: {} });
+  check("discovery: call does not call itself", loop.isError && loop.text.includes("another tool"), loop.text);
+  const planned = await tool("plan_run", { steps: [{ tool: "call", args: { tool: "plate_list", args: {} } }] });
+  check("discovery: a plan step may be a call", !planned.isError && planned.text.includes("obj_1"), planned.text.slice(0, 300));
+  check("discovery: guide and call never change the tool list", !notes.includes("notifications/tools/list_changed"), notes.join(","));
+
+  // Compatibility: a call that worked before discovery works the same way, by name, though the tool is not listed.
+  const direct = await tool("plate_list", {});
+  check("compatibility: a direct call of an unlisted core tool still runs", !direct.isError && direct.text.includes("obj_1"), direct.text.slice(0, 200));
+  const directWrong = await tool("object_place", { object: "obj_1", scalePercent: 9 });
+  check("compatibility: a direct call is checked as before", directWrong.isError && directWrong.text === "scalePercent must be at least 10.", directWrong.text);
+  const kind = JSON.parse((await tool("guide", { kind: "fillet" })).text) as { schema?: unknown };
+  check("compatibility: guide {kind} still gives an op kind's schema", kind.schema !== undefined);
+  const section = JSON.parse((await tool("guide", { topic: "ops", section: "hole" })).text) as { text?: string };
+  check("compatibility: guide {topic, section} still reads one section", (section.text ?? "").startsWith("hole:"), (section.text ?? "").slice(0, 80));
+  const enabled = await tool("tools_enable", { groups: ["paint"] });
+  check("compatibility: tools_enable still opens a group and says so", enabled.text.includes("paint_supports") && notes.includes("notifications/tools/list_changed"), enabled.text.slice(0, 200));
+  io.send(rpc(3, "tools/list"));
+  const after = (await reply(3)).result?.tools?.map((row) => row.name) ?? [];
+  check("compatibility: a client that re-reads sees the opened group beside the first tools", after.includes("paint_supports") && after.includes("call") && !after.includes("mesh_import"), after.join(","));
+  io.child.kill();
 }
 
 const slow = startRaw({ LIME_MCP_FAKE_BLOCK_MS: "400" });

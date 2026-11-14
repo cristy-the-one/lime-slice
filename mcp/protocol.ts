@@ -1,6 +1,7 @@
 /**
  * MCP over stdio. One JSON-RPC message per line. Logs stay off stdout.
  */
+import { AREA_NAMES, AREAS } from "./catalog.ts";
 import { GROUP_NAMES } from "./groups.ts";
 import { GUIDES } from "./guides.ts";
 import { imagesOf } from "./inline.ts";
@@ -24,7 +25,26 @@ const INSTRUCTIONS = [
   "A refusal is a sentence and does not change the solid. Nothing is sent to a printer.",
 ].join(" ");
 
-const GROUPS_NOTE = `Only the core tools are listed. tools_enable {groups} adds a group: ${GROUP_NAMES.join(", ")}; a Model edit needs model. Calling a tool of a closed group opens it.`;
+const GROUPS_NOTE = `Only the core tools are listed. tools_enable {groups} adds a group: ${GROUP_NAMES.join(", ")}; a Model edit needs model. Calling a tool of a closed group opens it. guide {query} finds any tool by task, and call {tool, args} runs one that is not in your list.`;
+
+/**
+ * First contact with the default list (docs/plan-mcp-discovery.md D1): how to find and call, and the map of areas. It
+ * names no tool beyond the four listed and the slice path, so it does not grow when a tool is added; schema.test.ts
+ * bounds it with the list.
+ */
+export const DISCOVERY_INSTRUCTIONS = [
+  "Lime Slice is a filament slicer and a solid modeler. Four tools are listed: guide finds and explains every tool, call runs any tool by name, plan_run runs several calls in one, session_info shows the server and plate.",
+  "Find: guide {query:\"a few words of the task\"} lists matching tools, fields, Model op kinds and guide sections. guide {tool:\"mesh_import\"} gives one tool's full description, fields and an example; guide {kind:\"fillet\"} one Model op; guide {topic:\"slice\"} a worked sequence; guide {} the map.",
+  "Call: call {tool:\"mesh_import\", args:{path:\"part.stl\"}}. A tool in your list may be called directly. A wrong field is refused with the fields the tool takes; a refusal changes nothing.",
+  `Areas, for guide {group}: ${AREA_NAMES.map((area) => `${area}: ${AREAS[area]}`).join("; ")}.`,
+  "To slice: guide {topic:\"slice\"}. A long call answers with a job; slice_wait {job} returns its result. Nothing is sent to a printer.",
+].join(" ");
+
+/** The instructions for a session's list mode. */
+export function instructionsFor(groups: ReadonlySet<string> | null): string {
+  if (groups === null) return `${INSTRUCTIONS} guide {query} finds any tool by task.`;
+  return groups.has("core") ? `${INSTRUCTIONS} ${GROUPS_NOTE}` : DISCOVERY_INSTRUCTIONS;
+}
 
 function guideText(name: "slice" | "model" | "paint" | "calibrate"): string {
   return GUIDES.find((guide) => guide.uri === `lime://guide/${name}`)?.text ?? "";
@@ -111,7 +131,7 @@ export async function handleRpc(session: Session, message: RpcMessage, meta?: Ca
         protocolVersion,
         capabilities: { tools: session.toolGroups ? { listChanged: true } : {}, resources: {}, prompts: {} },
         serverInfo: { name: "lime-slice", version: appVersion() },
-        instructions: session.toolGroups ? `${INSTRUCTIONS} ${GROUPS_NOTE}` : INSTRUCTIONS,
+        instructions: instructionsFor(session.toolGroups),
       });
     }
     if (method === "ping") return result(id, {});
