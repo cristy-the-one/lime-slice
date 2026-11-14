@@ -123,15 +123,15 @@ Calls that work today keep working:
 - `tools_enable` works and still sends `list_changed`; `guide {topic, section, kind}` answer as before.
 - `LIME_MCP_TOOL_GROUPS=0` still lists every tool. A new `LIME_MCP_TOOLS` picks the list: `discovery` (default), `core` (today's 31 core tools and `tools_enable`), `all` (every tool, same as `LIME_MCP_TOOL_GROUPS=0`).
 
-Interface text for three tasks, today and under the plan. "Today" assumes the client re-reads the list after `tools_enable` (the cheapest case for today); the plan counts every discovery reply. Estimated from section 1's measurements; the implementation PR replaces this table with measured numbers from a test that drives the replies.
+Interface text for three tasks, before and after. "Before" assumes the client re-reads the list after `tools_enable`, the cheapest case it had. "After" counts every discovery reply and the `call` wrappers (about 7 tokens a call). Measured by `mcp/bench/discovery-cost.ts`: the lists from before are the numbers in section 1, and every guide reply is measured live.
 
-| Task | Today | Plan (estimate) |
-|---|---|---|
-| Slice an imported mesh | 6,027 (instructions + first list) | ≈2,000 (first contact + `guide {topic:"slice"}` + one `guide {tool}`) |
-| Build and edit a small model | ≈14,200 (+ model group 6,998 + two `guide {kind}`) | ≈3,800 (+ query + `guide {tool}` for `model_build`, `model_edit` + one `guide {kind}`) |
-| Couple and turn a gear train | ≈14,900 (+ model group + `guide {kind}` gear, pose, place) | ≈4,100 (+ query + `guide {kind:"gear"}` + `guide {tool}` for `model_place`, `pose_animate`) |
+| Task | Before | After | What the agent reads after |
+|---|---|---|---|
+| Slice an imported mesh | 6,027 | **2,049** (34 %) | first contact 1,440; `guide {topic:"slice"}` 556; 7 wrappers 53 |
+| Build and edit a small model | 13,871 | **3,335** (24 %) | + `guide {query:"build a part"}` 289, `{tool:"model_build"}` 553, `{kind:"hole"}` 403, `{kind:"fillet"}` 289, `{tool:"model_edit"}` 340 |
+| Couple and turn a gear train | 15,341 | **4,540** (30 %) | + `guide {query:"gear train"}` 297, `{kind:"gear"}` 1,120, `{kind:"assembly"}` 509, `{kind:"pose"}` 533, `{tool:"model_place"}` 369, `{tool:"pose_animate"}` 222 |
 
-Each call through `call` adds about 10 tokens of wrapper. If the measured numbers show discovery costing more on a common task, the PR says so and says what was done (for example a fuller `guide {topic:"slice"}` that names every field the slice path uses, so no `guide {tool}` is needed).
+Discovery costs more only when a session reads many tool docs one at a time. More than about ten `guide {tool}` replies for core tools (300–550 tokens each) pass the old 6,027-token core list. The worked guides keep that rare: `guide {topic:"slice"}` names the slice path's fields, and a real client sliced from it with no `guide {tool}` at all (section 4). Anyone who prefers the old trade sets `LIME_MCP_TOOLS=core`.
 
 ### D7. Rollout
 
@@ -139,7 +139,25 @@ Each call through `call` adds about 10 tokens of wrapper. If the measured number
 2. **What an older client sees:** four tools and the map. A client that never re-reads the list does everything through `call` (or `plan_run`). An agent or saved prompt that names `mesh_import` reads the instructions' "any tool by name through call" and calls `call {tool:"mesh_import", args}`; a client that can call unlisted tools by name keeps doing so. Anyone who wants today's list sets `LIME_MCP_TOOLS=core` in their own client config (the server never edits it).
 3. **Later, not in this PR:** the open #674 trims restored once it lands; `GROUP_TOOLS_SHORT` and `TOOLS_ENABLE_HELP` reduced to the area lines once `tools_enable` is used only by re-reading clients.
 
-## 3. Non-goals
+## 3. What the implementation learned (changes to this plan)
+
+- **First contact measures 1,440 tokens**: instructions 401, `tools/list` 1,039 (the four tools; `plan_run`'s step schema is most of it). That is under the 1,500 target.
+- **`call` is listed in every mode**, `core` and `all` included, so even a client on the old lists can reach a tool outside them.
+- **`tools_enable` accepts `core`**, so a re-reading client can ask for the old core tools natively. `LIME_MCP_TOOLS=core` starts a session with that group open.
+- **A direct call of an unknown tool** answers with the close names too, not only one made through `call`.
+- **The first sentence of a description is the search and area line**, so 55 descriptions that began "After X." or were a bare noun phrase ("Solve.", "Trees from the last slice.") were rewritten to say what the tool does first. The test requires 20–200 characters and a full stop.
+- **Restored text:** `model_check`'s gear verdicts (#673); `recipe_run` and its `path`, `query`, `full`, `profile`, `meshAtEnd`, `plugin`, `keep` (#670); `model_undo`, `model_redo`, `model_drop`, `model_goto`, `model_history`, `model_rename`, `model_commit`, `model_build`, `model_edit {patch}` and `unify` (`ccf8e8f4`). #674 is still open, so its trims of `model_place` are not touched here: that file belongs to the gear-coupling work.
+- **The core list and the flat list grow** with the restored and rewritten text: about 6,180 and 19,270 tokens. Nothing bounds them now. They are opt-in.
+- **Examples:** `mcp/examples.ts` has 142 examples for 99 tools (the `plugin` alias included), all checked by `validateTool`.
+
+## 4. Clients checked
+
+- **Claude Code 2.1.312, installed server, Code tab.** `tools_enable` sent `list_changed`, but the opened tools never appeared in the session.
+- **Claude Code CLI 2.1.312, new server (`claude -p --model haiku`, scratch config, fake engine).** Asked to import a cube, slice it and report time and grams, it loaded `guide`, `call` and `session_info`. It read `guide {topic:"slice"}` and `session_info`, then ran `call` for `mesh_import`, `machine_list`, `machine_select`, `slice_start`, `slice_wait` and `gcode_summary`, all right the first time, with no refusal.
+- **MCP SDK client (`mcp/stdio.test.ts`).** Covers discovery and compatibility with a client that reads the list once.
+- **Not checked:** Claude Desktop, Cursor, ChatGPT, Grok.
+
+## 5. Non-goals
 
 - No new transport or MCP extension; only `initialize`, `tools/list`, `tools/call`, resources and prompts as today.
 - No change to any tool's behaviour or reply (gear coupling in `mcp/session/place.ts` is left alone).
