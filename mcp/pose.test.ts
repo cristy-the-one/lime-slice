@@ -24,7 +24,11 @@ const before = structuredClone(s.assemblies);
 const rootBefore = [...at(root)], layout = s.objects.map((o) => structuredClone(o.offset));
 const bad = await call("model_place", { object: leg, joint: { ...hinge, axis: [0, 0, 0] }, angle: 20 });
 assert.equal(bad.ok, false); assert.deepEqual(s.assemblies, before);
-assert.equal((await call("model_place", { object: root, joint: hinge })).ok, false);
+assert.equal((await call("model_place", { object: root, joint: { kind: "ball", pivot: [0, 0, 0] } })).ok, false);
+// A root may take a hinge: it turns on the plate (docs/plan-gear-kinds.md). Undo puts the fixed root back.
+assert.equal((await call("model_place", { object: root, joint: hinge })).ok, true);
+assert.equal((await call("plate_undo")).ok, true);
+assert.deepEqual(s.assemblies, before);
 assert.equal((await call("model_place", { object: leg, angle: 5, reach: { at: [0, 0, 0], to: [0, 1, 0] } })).ok, false);
 const turned = await call("model_place", { object: leg, angle: 120 });
 assert.equal(turned.ok, true);

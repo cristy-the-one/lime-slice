@@ -1,7 +1,7 @@
 /** Joint operations for assembled model-space poses. They never change the print layout. */
-import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, rotationQuaternion, samePose, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
+import { assemblyOf, attached, memberFields, memberPose, readJoint, quaternionRotation, reparentJoint, rotationQuaternion, samePose, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
 import { matMul, rotAbout, wrapDeg, type Mat3 } from "./mesh-place.ts";
-import { applyPose, inversePose, turnDir, type Affine } from "./model-space.ts";
+import { applyPose, inversePose, relativePose, thenPose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 
 export type PoseResult = Member | { reason: string };
@@ -46,7 +46,8 @@ export function alignedHinge(member: Member): number | null {
 /** Turn by delta degrees about the hinge's own axis, clamping the accumulated angle. */
 export function turnHinge(member: Member, delta: number): PoseResult {
   const joint = readJoint(member.joint);
-  if (member.parent === null) return { reason: "The assembly root is fixed." };
+  // A root turns only on a hinge of its own, on the plate (docs/plan-gear-kinds.md); its offset and turn are its model pose.
+  if (member.parent === null && joint?.kind !== "hinge") return { reason: "The assembly root is fixed." };
   if (!joint || joint.kind !== "hinge") return { reason: "This member has no valid hinge." };
   if (!Number.isFinite(delta) || !unit(joint.axis)) return { reason: "A hinge needs a finite turn and a nonzero axis." };
   const before = joint.angle ?? 0;
@@ -56,6 +57,30 @@ export function turnHinge(member: Member, delta: number): PoseResult {
   const rotation = matMul(pose.m, rotAbout(joint.axis, radians(angle - before)));
   const { exprs: _exprs, ...plain } = member;
   return { ...plain, ...memberFields(aroundPivot(pose, joint.pivot, rotation)), joint: { ...joint, angle } };
+}
+
+/**
+ * Turn `object`'s hinge by `delta` degrees within `assembly`. A hinged root turns on the plate, and the parts hinged on it
+ * stay where they are: their offsets are turned back by the root's turn, and a ball's rest with them, so a turning root
+ * never carries another pin round. A part seated on it without a joint turns with it.
+ */
+export function turnInAssembly(assembly: Assembly, object: string, delta: number): Assembly | { reason: string } {
+  const member = assembly.members.find((row) => row.object === object);
+  if (!member) return { reason: "This part is not in the assembly." };
+  const turned = turnHinge(member, delta);
+  if ("reason" in turned) return turned;
+  if (member.parent !== null) return { ...assembly, members: assembly.members.map((row) => (row === member ? turned : row)) };
+  const before = memberPose(member), after = memberPose(turned);
+  return {
+    ...assembly,
+    members: assembly.members.map((row) => {
+      if (row === member) return turned;
+      if (row.parent !== object || !row.joint) return row;
+      const { exprs: _exprs, ...plain } = row;
+      const joint = reparentJoint(row.joint, before, after);
+      return { ...plain, ...memberFields(relativePose(after, thenPose(memberPose(row), before))), ...(joint ? { joint } : {}) };
+    }),
+  };
 }
 
 /**

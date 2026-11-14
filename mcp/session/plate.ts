@@ -370,6 +370,7 @@ function plateList(this: Session, input: Record<string, unknown>): Record<string
       ...(obj.frame === "part" ? { frame: "part" as const } : {}),
       ...(assembly ? { assembly } : {}),
       ...(joint ? { joint: structuredClone(joint) } : {}),
+      ...(member?.held ? { held: true } : {}),
       ...(aligned !== null ? { aligned } : {}),
       scalePercent: obj.scale * 100,
       notes: this.plateNotes(obj, placed.bounds),

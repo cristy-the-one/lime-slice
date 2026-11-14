@@ -10,7 +10,7 @@
  * joins, Explode, and the MCP read; the assembly only says how to work it out again.
  */
 import { evaluate, ExprError, expressionMentions, type Params } from "./modeling/expr.ts";
-import { eulerOrient, matMul, orientEuler, type Mat3 } from "./mesh-place.ts";
+import { eulerOrient, matMul, orientEuler, rotAbout, type Mat3 } from "./mesh-place.ts";
 import { applyPose, IDENTITY_POSE, poseScale, relativePose, thenPose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 
@@ -36,6 +36,38 @@ export interface Member {
   turn: Vec3;
   exprs?: MemberExprs;
   joint?: Joint;
+  /**
+   * Held on purpose (`docs/plan-gear-kinds.md`): the part does not move, as a part without a joint, and Couple gears never
+   * gives it a hinge. Never with a joint. An older app drops it and reads the part as fixed.
+   */
+  held?: true;
+}
+
+/**
+ * A root with a hinge turns on the plate (`docs/plan-gear-kinds.md`, stage 1). Its `offset` and `turn`, unused for a
+ * fixed root, then hold its pose in model space, so the assembly says by itself where the turned root stands.
+ */
+export function turnsOnPlate(member: Pick<Member, "parent" | "joint"> | undefined): boolean {
+  return !!member && member.parent === null && member.joint?.kind === "hinge";
+}
+
+/** Rotation by `degrees` about a hinge's line, in the hinged part's own frame: the turn `turnHinge` applies. */
+export function hingeTurn(joint: { pivot: Vec3; axis: Vec3 }, degrees: number): Affine {
+  const m = rotAbout(joint.axis, (degrees * Math.PI) / 180);
+  const p = joint.pivot;
+  const moved = [m[0] * p[0] + m[1] * p[1] + m[2] * p[2], m[3] * p[0] + m[4] * p[1] + m[5] * p[2], m[6] * p[0] + m[7] * p[1] + m[8] * p[2]];
+  return { m, t: [p[0] - moved[0]!, p[1] - moved[1]!, p[2] - moved[2]!] };
+}
+
+/**
+ * `assembly` with a hinged root's `offset` and `turn` set from `pose`, its pose in model space. A fixed root, or no pose,
+ * leaves it as it is. Call it whenever the root is moved by hand, so its pin moves with it.
+ */
+export function withRootAt(assembly: Assembly, pose: Affine | undefined): Assembly {
+  const root = rootOf(assembly);
+  if (!root || !turnsOnPlate(root) || !pose) return assembly;
+  const fields = memberFields(pose);
+  return { ...assembly, members: assembly.members.map((row) => (row === root ? { ...row, ...fields } : row)) };
 }
 
 /** One gear of a coupled mesh: its object, its gear step (null for the object's own solid) and its label. */
@@ -179,7 +211,8 @@ export function solveAssembly(assembly: Assembly, poseOf: PoseOf, params?: Param
   const poses = new Map<string, Affine>();
   const root = members.find((member) => member.parent === null);
   if (root) {
-    poses.set(root.object, poseOf(root.object) ?? IDENTITY_POSE);
+    // A hinged root's own numbers say where it has turned to; a fixed root stands at its model pose.
+    poses.set(root.object, turnsOnPlate(root) ? memberPose(root) : poseOf(root.object) ?? IDENTITY_POSE);
     const queue = [root.object];
     while (queue.length > 0) {
       const parent = queue.shift()!;
@@ -248,9 +281,13 @@ export function samePose(a: Affine, b: Affine): boolean {
 export function movedTo(assembly: Assembly, object: string, pose: Affine, poseOf: PoseOf): { assembly: Assembly; poses: Map<string, Affine> } {
   const member = assembly.members.find((row) => row.object === object);
   const at: PoseOf = (id) => (id === object ? pose : poseOf(id));
-  if (!member || member.parent === null) return { assembly, poses: solveAssembly(assembly, at).poses };
+  if (!member || member.parent === null) {
+    // A hinged root carries its pin, and the assembly with it.
+    const moved = member ? withRootAt(assembly, pose) : assembly;
+    return { assembly: moved, poses: solveAssembly(moved, at).poses };
+  }
   const parentPose = poseOf(member.parent) ?? IDENTITY_POSE;
-  const next = { ...assembly, members: assembly.members.map((row) => (row === member ? { object, parent: member.parent, ...memberFields(relativePose(parentPose, pose)), ...(member.joint ? { joint: member.joint } : {}) } : row)) };
+  const next = { ...assembly, members: assembly.members.map((row) => (row === member ? { object, parent: member.parent, ...memberFields(relativePose(parentPose, pose)), ...(member.joint ? { joint: member.joint } : {}), ...(member.held ? { held: true as const } : {}) } : row)) };
   return { assembly: next, poses: solveAssembly(next, poseOf).poses };
 }
 
@@ -289,7 +326,7 @@ export function attached(assemblies: readonly Assembly[], child: string, parent:
   const old = base.members.find((member) => member.object === child);
   const oldParent = old?.parent ? poseOf(old.parent) ?? IDENTITY_POSE : IDENTITY_POSE;
   const joint = reparentJoint(old?.joint, oldParent, parentPose);
-  const written = withMember(base, { object: child, parent, ...memberFields(relativePose(parentPose, poseOf(child) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}) });
+  const written = withMember(base, { object: child, parent, ...memberFields(relativePose(parentPose, poseOf(child) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}), ...(old?.held ? { held: true as const } : {}) });
   if ("reason" in written) return written;
   return theirs ? assemblies.map((row) => (row === theirs ? written : row)) : [...assemblies, written];
 }
@@ -333,14 +370,14 @@ export function withoutMember(assembly: Assembly, object: string, poseOf: PoseOf
     const heir = children.find((member) => member.object === newRoot) ?? children[0];
     if (!heir) return members.length >= 2 ? withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))) : null;
     parent = heir.object;
-    members = members.map((member) => (member === heir ? { object: member.object, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] } : member));
+    members = members.map((member) => (member === heir ? { object: member.object, parent: null, offset: [0, 0, 0], turn: [0, 0, 0], ...(member.held ? { held: true as const } : {}) } : member));
   }
   const parentPose = poseOf(parent) ?? IDENTITY_POSE;
   members = members.map((member) => {
     if (member.parent !== object) return member;
     const oldParent = poseOf(object) ?? IDENTITY_POSE;
     const joint = reparentJoint(member.joint, oldParent, parentPose);
-    return { object: member.object, parent, ...memberFields(relativePose(parentPose, poseOf(member.object) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}) };
+    return { object: member.object, parent, ...memberFields(relativePose(parentPose, poseOf(member.object) ?? IDENTITY_POSE)), ...(joint ? { joint } : {}), ...(member.held ? { held: true as const } : {}) };
   });
   return members.length >= 2 ? withCouplings({ ...assembly, members }, assembly.couplings?.filter((row) => !touches(row, [object]))) : null;
 }
@@ -372,6 +409,9 @@ export function frameOf(assembly: Assembly, body: string): string | null {
   if (member.parent === null) return member.object;
   for (let at = memberOf(member.parent), seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : memberOf(at.parent)) {
     seen.add(at.object);
+    // A part hinged on a hinged root stays on the plate (`turnInAssembly`): its frame is the root's ground. One seated on
+    // the root through a part without a joint turns with the root: it rides a turning part, and has no frame here.
+    if (turnsOnPlate(at) && at.object !== member.parent) return null;
     if (at.joint || at.parent === null) return at.object;
   }
   return null;
@@ -407,10 +447,16 @@ export function couplingSeat(assembly: Assembly, gears: readonly [GearRef, GearR
     const member = assembly.members.find((row) => row.object === body.body)!;
     const frame = frameOf(assembly, body.body);
     const joint = member.joint;
-    if (!frame || joint?.kind !== "hinge" || member.parent === null) return null;
+    if (!frame || joint?.kind !== "hinge") return null;
+    // A hinged root's pin is its own: where the root stands moves the whole assembly, and every pin with it.
+    if (member.parent === null) { out.push(...joint.pivot, ...joint.axis); continue; }
     const onFrame = pose(chainPose(assembly, member.parent, frame));
     if (!onFrame) return null;
-    out.push(...applyPose(memberPose(member), joint.pivot), ...turnDir(memberPose(member), joint.axis), ...onFrame);
+    // On a hinged root, read in its ground frame: the root's turn taken out, so turning the root changes nothing here.
+    const frameMember = assembly.members.find((row) => row.object === frame);
+    const ground = turnsOnPlate(frameMember) && frameMember!.joint?.kind === "hinge" ? hingeTurn(frameMember!.joint, frameMember!.joint.angle ?? 0) : IDENTITY_POSE;
+    const local = thenPose(memberPose(member), ground);
+    out.push(...applyPose(local, joint.pivot), ...turnDir(local, joint.axis), ...onFrame);
   }
   return out;
 }
@@ -457,11 +503,11 @@ export function rerooted(assembly: Assembly, object: string, poseOf: PoseOf): As
   }
   if (path[path.length - 1]!.parent !== null) return { reason: "This part does not reach the assembly's root." };
   const pose = (id: string) => poseOf(id) ?? IDENTITY_POSE;
-  const next = new Map<string, Member>([[object, { object, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }]]);
+  const next = new Map<string, Member>([[object, { object, parent: null, offset: [0, 0, 0], turn: [0, 0, 0], ...(target.held ? { held: true as const } : {}) }]]);
   for (let i = 0; i + 1 < path.length; i += 1) {
     const child = path[i]!.object, parent = path[i + 1]!.object;
     const joint = reversedJoint(path[i]!.joint, relativePose(pose(parent), pose(child)));
-    next.set(parent, { object: parent, parent: child, ...memberFields(relativePose(pose(child), pose(parent))), ...(joint ? { joint } : {}) });
+    next.set(parent, { object: parent, parent: child, ...memberFields(relativePose(pose(child), pose(parent))), ...(joint ? { joint } : {}), ...(path[i + 1]!.held ? { held: true as const } : {}) });
   }
   // A reversed link moves its hinge to the other part, so a coupling through it no longer names the turning body.
   const turned = path.map((member) => member.object);
@@ -530,6 +576,7 @@ function readMember(value: unknown): Member | null {
   }
   const joint = readJoint(row.joint);
   if (joint) member.joint = joint;
+  else if (row.held === true) member.held = true;
   return member;
 }
 
@@ -614,6 +661,15 @@ export function readAssemblies(value: unknown, objects: readonly { id: string; m
       if (claimed.has(member.object) || !objects.some((obj) => obj.id === member.object)) assembly = withoutMember(assembly, member.object, poseOf);
     }
     if (!assembly) continue;
+    // A hinged root stands where its model pose says: a root moved by hand carries its pin. A scale cannot ride on a pin.
+    const root = rootOf(assembly);
+    if (root && turnsOnPlate(root)) {
+      const at = poseOf(root.object);
+      if (Math.abs(poseScale(at ?? IDENTITY_POSE) - 1) > 1e-9) {
+        const { joint: _joint, ...fixed } = root;
+        assembly = { ...assembly, members: assembly.members.map((row) => (row === root ? { ...fixed, offset: [0, 0, 0], turn: [0, 0, 0] } : row)) };
+      } else assembly = withRootAt(assembly, at);
+    }
     if (assembly.couplings) assembly = withCouplings(assembly, assembly.couplings.filter((coupling) => couplingFits(assembly!, coupling)));
     for (const member of assembly.members) claimed.add(member.object);
     out.push(assembly);

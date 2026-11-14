@@ -5,6 +5,10 @@
  * is coupled yet. Built by the MCP session on the fake
  * engine, so the gears are Model tree roots exactly as the app saves them. Run with Node:
  * `node --experimental-strip-types --no-warnings e2e/gear-train-project.ts <out.lime>`.
+ *
+ * With `--free` (docs/plan-gear-kinds.md, stage 1): the pinion, the wheel and the third gear only, each placed at mesh
+ * in model space and nothing else: no frame, no hinge, no assembly. What a person has after making three gears in Model
+ * and putting them where the gear card says they mesh.
  */
 import { copyFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,6 +17,7 @@ import { fakeEngine } from "../mcp/engine.ts";
 import { Session } from "../mcp/session.ts";
 
 const out = process.argv[2];
+const free = process.argv.includes("--free");
 if (!out) throw new Error("Give the .lime path to write.");
 process.env.LIME_MCP_WORKSPACE = mkdtempSync(join(tmpdir(), "lime-pose-gears-"));
 const session = new Session(fakeEngine());
@@ -21,6 +26,17 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (free) {
+  const pinion = String((await call("solid_new", { gear: { teeth: 12, module: 2, thickness: 6, bore: 5 }, name: "pinion" })).object);
+  const wheel = String((await call("solid_new", { gear: { teeth: 24, module: 2, thickness: 6, bore: 5, phaseDeg: 172.5 }, name: "wheel" })).object);
+  const third = String((await call("solid_new", { gear: { teeth: 18, module: 2, thickness: 6, bore: 5, phaseDeg: 180 }, name: "third" })).object);
+  for (const [object, x] of [[wheel, 36], [third, 78]] as const) await call("model_place", { object, x, y: 0, z: 0 });
+  if (session.assemblies.length) throw new Error("free gears must stand in no assembly");
+  const saved = await call("project_save", { name: "pose-gears-free.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ pinion, wheel, third }));
+  process.exit(0);
+}
 const frame = String((await call("solid_new", { primitive: "box", dx: 90, dy: 50, dz: 4, name: "frame" })).object);
 const pinion = String((await call("solid_new", { gear: { teeth: 12, module: 2, thickness: 6, bore: 5 }, name: "pinion" })).object);
 const wheel = String((await call("solid_new", { gear: { teeth: 24, module: 2, thickness: 6, bore: 5, phaseDeg: 172.5 }, name: "wheel" })).object);

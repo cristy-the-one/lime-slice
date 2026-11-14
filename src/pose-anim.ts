@@ -64,8 +64,10 @@ export function rigGroup(rig: readonly RigMember[], pattern: string): RigMember[
 
 function resolveAim(member: Member, aim: Aim): Value | string {
   const joint = readJoint(member.joint);
-  if (!joint || member.parent === null) return "This part has no movable joint.";
+  // A root moves only on a hinge of its own, on the plate (docs/plan-gear-kinds.md).
+  if (!joint || (member.parent === null && joint.kind !== "hinge")) return "This part has no movable joint.";
   if (typeof aim === "object" && aim !== null && "reach" in aim) {
+    if (member.parent === null) return "A root turns on the plate; it has no chain to reach with.";
     return finiteVec(aim.reach?.at) && finiteVec(aim.reach?.to) ? { kind: "reach", at: aim.reach.at, to: aim.reach.to } : "Reach needs two finite three-number points.";
   }
   if (joint.kind === "ball") {
@@ -275,8 +277,9 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
     for (const [id, points] of tracks) {
       const value = atTime(points, time, activeTime), member = assembly.members.find((row) => row.object === id)!;
       if (value.kind === "reach") { reaches.push({ id, value }); continue; }
-      if (value.kind === "angle" && trainOf(assembly, id).has(id)) {
-        // A coupled hinge turns its whole gear train; a locked train refuses the animation.
+      if (value.kind === "angle" && (trainOf(assembly, id).has(id) || member.parent === null)) {
+        // A coupled hinge turns its whole gear train, and a hinged root keeps the parts hinged on it on their pins; a
+        // locked train refuses the animation.
         const turned = trainTurn(assembly, id, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0));
         if ("reason" in turned) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${turned.reason}` }] };
         assembly = turned.assembly;

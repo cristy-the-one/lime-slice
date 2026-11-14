@@ -6,11 +6,11 @@
  * The code that moves gears never reads the mesh check: `findCouplings` uses it to wire the train, and `trainCheck`
  * uses it to judge sampled frames. A turn is `turnHinge` on each body by its share of one delta.
  */
-import { bodyOf, couplingSeat, frameOf, solveAssembly, withCouplings, withMember, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
+import { assemblyOf, bodyOf, couplingSeat, frameOf, memberFields, rootOf, solveAssembly, withCouplings, withRootAt, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
 import { worldPair, type GearVerdict, type WorldGear } from "./gear-pair.ts";
-import { applyPose, turnDir, type Affine } from "./model-space.ts";
+import { applyPose, inversePose, poseScale, relativePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
-import { turnHinge } from "./pose.ts";
+import { turnInAssembly } from "./pose.ts";
 
 /** A gear's centre may sit this far from its hinge's line, mm. */
 const ON_AXIS_MM = 0.05;
@@ -114,7 +114,8 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
         continue;
       }
       if (bodyA.fixed && bodyB.fixed) continue;
-      if (frameOf(assembly, bodyA.body) !== frameOf(assembly, bodyB.body)) {
+      const frameA = frameOf(assembly, bodyA.body), frameB = frameOf(assembly, bodyB.body);
+      if (frameA === null || frameB === null || frameA !== frameB) {
         notCoupled.push({ names, reason: `${a.label} and ${b.label} are not coupled: their hinges sit on different parts, and a gear that rides on another turning part is not covered.` });
         continue;
       }
@@ -206,7 +207,8 @@ export function trainScales(assembly: Assembly, start: string): Scales {
     }
   }
   const couplings = all.filter((row) => used.has(row));
-  const fixed = [...scales.keys()].filter((body) => memberOf(assembly, body)?.parent === null || (memberOf(assembly, body) !== undefined && memberOf(assembly, body)!.joint?.kind !== "hinge"));
+  // A body without a hinge cannot turn: the fixed root, or a held part. A root with a hinge turns on the plate.
+  const fixed = [...scales.keys()].filter((body) => memberOf(assembly, body) !== undefined && memberOf(assembly, body)!.joint?.kind !== "hinge");
   const names = gearNames(couplings);
   if (loop) return { scales, couplings, locked: { gears: names, reason: `${listed(names)} are locked: they close a loop whose tooth ratios do not agree, so none of them can turn.` } };
   if (fixed.length && couplings.length) {
@@ -265,11 +267,11 @@ export function trainTurn(assembly: Assembly, object: string, delta: number): Tu
   const angles: Turned["angles"] = [];
   for (const [body, scale] of train.scales) {
     const row = memberOf(next, body)!;
-    const turned = turnHinge(row, scale * step);
-    if ("reason" in turned) return { reason: turned.reason };
-    const placed = withMember(next, turned);
-    if ("reason" in placed) return placed;
+    // A hinged root keeps the parts hinged on it on their pins (turnInAssembly).
+    const placed = turnInAssembly(next, body, scale * step);
+    if ("reason" in placed) return { reason: placed.reason };
     next = placed;
+    const turned = memberOf(next, body)!;
     const angle = turned.joint?.kind === "hinge" ? turned.joint.angle ?? 0 : 0;
     if (body === object || angle !== (row.joint?.kind === "hinge" ? row.joint.angle ?? 0 : 0)) angles.push({ object: body, angle });
   }
@@ -317,4 +319,171 @@ export function trainCheck(assembly: Assembly, poseOf: PoseOf, gearsAt: (poses: 
 export function couplingLine(row: Coupling): string {
   const ratio = Math.round(row.ratio * 1000) / 1000;
   return `${row.gears[0].name} drives ${row.gears[1].name}, ×${ratio < 0 ? "−" : ""}${Math.abs(ratio)}`;
+}
+
+/** A plate object that holds gears, at its pose in model space now. */
+export interface GearPart {
+  id: string;
+  name: string;
+  pose: Affine;
+  /** Its gears placed at `pose`. */
+  gears: WorldGear[];
+}
+
+export interface Prepared {
+  /** Every assembly after the step; `assembly` among them. */
+  assemblies: Assembly[];
+  /** The assembly Couple gears then couples: with the hinges given and the gears taken in. Null when nothing meshes. */
+  assembly: Assembly | null;
+  /** The objects given a hinge, in plate order. */
+  hinged: string[];
+  /** The objects that joined an assembly, the new root included. */
+  joined: string[];
+  /** True when the gears stood in no assembly and one was made. */
+  made: boolean;
+  /** Gears that could not be given a hinge, one sentence each. */
+  refused: string[];
+}
+
+const IDENTITY: Affine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
+
+/** Whether `gear`'s centre lies on one of `others`' axis lines, the axes parallel: one shaft. */
+function coaxial(gear: WorldGear, others: readonly WorldGear[]): boolean {
+  return others.some((other) => {
+    if (Math.abs(dot(gear.axis, other.axis)) < PARALLEL) return false;
+    const along = minus(gear.centre, other.centre);
+    const t = dot(along, other.axis);
+    return Math.hypot(along[0] - t * other.axis[0], along[1] - t * other.axis[1], along[2] - t * other.axis[2]) <= ON_AXIS_MM;
+  });
+}
+
+/** A name for a new gear train that no assembly has. */
+function trainName(assemblies: readonly Assembly[]): string {
+  const taken = new Set(assemblies.map((row) => row.name));
+  for (let n = 1; ; n += 1) {
+    const name = n === 1 ? "Gear train" : `Gear train ${n}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
+/**
+ * Couple gears' first step (`docs/plan-gear-kinds.md`, stage 1): the gears that mesh with `start`'s, and a hinge for each
+ * that needs one, so a train turns without hinges made by hand or a frame part.
+ *
+ * - `start` in an assembly, or free and meshing with an assembly's gear: that assembly's gears, and the free gears that
+ *   mesh with them (taken in, seated on its root).
+ * - `start` free: the free gears in its meshing group become a new assembly, the first in plate order its root.
+ * - A gear needs a hinge when it meshes with a gear of another part, has no joint and is not held, and does not turn: it
+ *   is the root, or seated without a joint on a root that holds no gear, or seated on a gear whose axis it does not
+ *   share (then it is seated on the root instead, where it stands). A gear on another gear's axis is one shaft with it.
+ *
+ * `parts` are every plate object that holds gears, in plate order; `poseOf` gives every object's model pose. Nothing
+ * here reads or writes the window: the app and the MCP session both call it, then `findCouplings` on `assembly`.
+ */
+export function prepareTrain(assemblies: readonly Assembly[], parts: readonly GearPart[], start: string, poseOf: PoseOf, newId: string): Prepared {
+  // A free gear that meshes with an assembly's gear is taken into that assembly, as if Couple gears ran there.
+  const own = parts.find((part) => part.id === start);
+  const mine = assemblyOf(assemblies, start) ?? assemblies.find((assembly) => own && parts.some((part) =>
+    part.id !== start && assembly.members.some((row) => row.object === part.id) && part.gears.some((gear) => own.gears.some((mate) => worldPair(mate, gear)?.verdict === "meshing"))));
+  const inScope = (id: string) => (mine ? mine.members.some((row) => row.object === id) : false) || !assemblyOf(assemblies, id);
+  const scope = parts.filter((part) => inScope(part.id));
+  const byId = new Map(scope.map((part) => [part.id, part]));
+  // Which gear of each part meshes with a gear of another part, and the parts each part meshes with.
+  const meshes = new Map<string, Set<string>>();
+  const meshingGear = new Map<string, WorldGear>();
+  for (let i = 0; i < scope.length; i += 1) {
+    for (let j = i + 1; j < scope.length; j += 1) {
+      const a = scope[i]!, b = scope[j]!;
+      for (const ga of a.gears) {
+        for (const gb of b.gears) {
+          if (worldPair(ga, gb)?.verdict !== "meshing") continue;
+          if (!meshes.has(a.id)) meshes.set(a.id, new Set());
+          if (!meshes.has(b.id)) meshes.set(b.id, new Set());
+          meshes.get(a.id)!.add(b.id);
+          meshes.get(b.id)!.add(a.id);
+          if (!meshingGear.has(a.id)) meshingGear.set(a.id, ga);
+          if (!meshingGear.has(b.id)) meshingGear.set(b.id, gb);
+        }
+      }
+    }
+  }
+  // The meshing group: from the assembly's members, or from the free gear alone.
+  const seeds = mine ? mine.members.map((row) => row.object).filter((id) => meshes.has(id)) : meshes.has(start) ? [start] : [];
+  const group = new Set(seeds);
+  for (const queue = [...seeds]; queue.length;) {
+    for (const next of meshes.get(queue.shift()!) ?? []) {
+      if (!group.has(next)) { group.add(next); queue.push(next); }
+    }
+  }
+  if (!mine && group.size < 2) return { assemblies: [...assemblies], assembly: null, hinged: [], joined: [], made: false, refused: [] };
+  const free = scope.filter((part) => group.has(part.id) && !assemblyOf(assemblies, part.id)).map((part) => part.id);
+  const joined: string[] = [];
+  let assembly: Assembly;
+  if (mine) assembly = mine;
+  else {
+    assembly = { id: newId, name: trainName(assemblies), members: [{ object: free[0]!, parent: null, offset: [0, 0, 0], turn: [0, 0, 0] }] };
+    joined.push(free[0]!);
+  }
+  const root = rootOf(assembly)!;
+  const rootPose = () => poseOf(root.object) ?? IDENTITY;
+  for (const id of free) {
+    if (id === root.object) continue;
+    assembly = { ...assembly, members: [...assembly.members, { object: id, parent: root.object, ...memberFields(relativePose(rootPose(), poseOf(id) ?? IDENTITY)) }] };
+    joined.push(id);
+  }
+  // The hinges, in plate order.
+  const hinged: string[] = [];
+  const refused: string[] = [];
+  const member = (id: string) => assembly.members.find((row) => row.object === id);
+  for (const part of scope) {
+    const gear = meshingGear.get(part.id);
+    const row = member(part.id);
+    if (!gear || !row || !group.has(part.id) || row.joint || row.held) continue;
+    let needs = row.parent === null;
+    let reseat = false;
+    for (let at = row.parent === null ? undefined : member(row.parent), seen = new Set<string>(); at && !seen.has(at.object); at = at.parent === null ? undefined : member(at.parent)) {
+      seen.add(at.object);
+      const shaft = byId.get(at.object);
+      if (shaft?.gears.length) {
+        // Seated on a gear: one shaft with it when they share an axis, otherwise a gear of its own, off that gear.
+        if (!coaxial(gear, shaft.gears)) { needs = true; reseat = at.parent !== null; }
+        break;
+      }
+      if (at.joint) break;
+      if (at.parent === null) { needs = true; break; }
+    }
+    if (!needs) continue;
+    const pose = poseOf(part.id) ?? IDENTITY;
+    if (row.parent === null && Math.abs(poseScale(pose) - 1) > 1e-9) {
+      refused.push(`${part.name} is scaled in model space, so it cannot turn on the plate.`);
+      continue;
+    }
+    const inverse = inversePose(pose);
+    const axis = turnDir(inverse, gear.axis);
+    const length = Math.hypot(...axis);
+    const joint = { kind: "hinge" as const, pivot: applyPose(inverse, gear.centre), axis: axis.map((v) => v / length) as Vec3, angle: 0 };
+    const seated: Member = reseat
+      ? { object: row.object, parent: root.object, ...memberFields(relativePose(rootPose(), pose)), joint }
+      : { ...row, joint };
+    assembly = { ...assembly, members: assembly.members.map((one) => (one === row ? seated : one)) };
+    if (row.parent === null) assembly = withRootAt(assembly, pose);
+    hinged.push(part.id);
+  }
+  const next = mine ? assemblies.map((one) => (one.id === mine.id ? assembly : one)) : [...assemblies, assembly];
+  return { assemblies: next, assembly, hinged, joined, made: !mine, refused };
+}
+
+/** What Couple gears made, in sentences: the hinges given, and the new assembly. `nameOf` names an object. */
+export function preparedLines(prepared: Prepared, nameOf: (id: string) => string): string[] {
+  const lines: string[] = [];
+  if (prepared.hinged.length) {
+    const names = prepared.hinged.map(nameOf);
+    lines.push(`Gave ${listed(names)} a hinge about ${names.length === 1 ? "its axis" : "their axes"}.`);
+  }
+  if (prepared.made && prepared.assembly) {
+    const root = rootOf(prepared.assembly);
+    const turns = root?.joint?.kind === "hinge" ? ` ${nameOf(root.object)} turns on the plate.` : "";
+    lines.push(`They stand in a new assembly, ${prepared.assembly.name}.${turns}`);
+  }
+  return [...lines, ...prepared.refused];
 }
