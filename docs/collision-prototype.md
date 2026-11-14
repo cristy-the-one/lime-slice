@@ -87,6 +87,6 @@ A one-file program that only prints a `HashMap` produced no `lust build` output 
 
 ## Choices left open
 
-- Axes more than a degree off parallel are left out of the card and of `model_check`. The check is for external spur gears on parallel axes.
+- Axes more than a degree off parallel are left out of the card and of `model_check`. The check is for spur gears, rings and racks on parallel axes. Couple gears says such a pair within reach is not covered (bevel gears and worms, `docs/plan-gear-kinds.md` stage 4, says why the outline test does not carry there).
 - The card and `model_check` give no phase to turn to when teeth cross. `mate_phase` has it.
 - The segment test uses 8 steps along each fillet and each flank. At the working distance and the usual backlash, ±0.06 mm along the pitch circle does not cross and ±0.16 mm is `toothOnTooth` because it is past the 0.1 mm of play. The same 0.16 mm at 36.2 mm, the far edge of the radial band, does not cross. At 39.9 mm the centres are past that band, so the verdict is `loose`.
