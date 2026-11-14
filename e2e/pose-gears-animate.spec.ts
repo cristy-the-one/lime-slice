@@ -7,10 +7,34 @@ import { autoSliceOff } from "./auto-slice";
 /**
  * An animation on a coupled gear train (docs/plan-gear-coupling.md): a free compound train, ten to one, coupled in the
  * window, then an animation plugin that turns only the driver. Play builds and plays, from rest and again from a turned
- * train with another gear selected. What counts as "changed while the animation was building" is `animationStale`
- * (src/pose-anim.test.ts).
+ * train with another gear selected.
+ *
+ * Found on 6.7.0 with a compound train an agent built over MCP: in the desktop app every Play answered "The assembly
+ * changed while the animation was building. Play it again." The desktop's bridge stores the selected part again 50 ms
+ * after any click, and the window took the new record for a change. The bridge is stubbed here and the build takes
+ * 400 ms, as a real one takes longer than 50 ms. What counts as changed is `animationStale` (src/pose-anim.test.ts).
  */
 test("An animation that turns the driver plays on a coupled compound train", async ({ page }, info) => {
+  // The desktop's bridge, stubbed (the Tauri IPC only). In the desktop app every click publishes the person's context to
+  // an MCP session 50 ms later, and that stores the selected part again as a new record with the same pose and points
+  // (src/app/bridge-mount.ts). Play is a click, and a real build takes longer than 50 ms.
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>;
+    const callbacks = new Map<number, (value: unknown) => void>();
+    let next = 1;
+    w.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
+      transformCallback(callback: (value: unknown) => void) { const id = next++; callbacks.set(id, callback); return id; },
+      unregisterCallback(id: number) { callbacks.delete(id); },
+      convertFileSrc: (file: string) => file,
+      invoke(cmd: string) {
+        if (cmd === "plugin:event|listen") return Promise.resolve(1);
+        if (cmd === "bridge_status") return Promise.resolve({ state: "connected", beta: true, port: 43129, source: "app", url: "http://127.0.0.1:43129/" });
+        if (cmd === "bridge_receipt" || cmd === "bridge_human_context" || cmd === "bridge_ready") return Promise.resolve(null);
+        return Promise.reject(new Error(`No ${cmd} in this test.`));
+      },
+    };
+  });
   await page.addInitScript(() => {
     (window as unknown as { __limePluginLibrary: unknown }).__limePluginLibrary = {
       invoke: async (command: string) => {
@@ -25,6 +49,7 @@ test("An animation that turns the driver plays on a coupled compound train", asy
     (window as unknown as { __limeRecipeRunner: unknown }).__limeRecipeRunner = {
       invoke: async (command: string, args: Record<string, unknown> = {}) => {
         if (command === "recipe_available") return { ok: true, lust: "scripted" };
+        if (command === "recipe_build") await new Promise((resolve) => setTimeout(resolve, 400));
         if (command === "recipe_build") return { code: 0, stdout: "", stderr: "", exe: "/scripted/recipe", main: "/scripted/main.rs" };
         if (command === "recipe_start") { run = String(args.run); step = 0; return null; }
         if (command === "recipe_send") {
