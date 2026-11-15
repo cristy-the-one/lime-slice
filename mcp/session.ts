@@ -5,6 +5,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import { bytesToBase64 } from "../src/base64.ts";
 import { bridgeHasPlateUpdate, type BridgeMessage } from "../src/bridge.ts";
@@ -32,7 +33,7 @@ import { guideByUri } from "./guides.ts";
 import { GROUP_NAMES, groupOf, SCHEMAS_REPLY_CAP, startingGroups } from "./groups.ts";
 import { groupTools, nearestTools } from "./catalog.ts";
 import { annotationsFor, EXPRESSION_TOOLS, OP_WORDS, toolByName, validateTool } from "./schema.ts";
-import { autosavePath, takePreviousAutosave, writeAutosave, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
+import { autosavePath, readIdentity, sameProject, shelveAutosave, takePreviousAutosave, writeAutosave, type AutosaveIdentity, type PlanRecovery, type PreviousAutosave } from "./autosave.ts";
 import { withBoxAnchor, isComposite } from "../src/modeling/compose.ts";
 import { expressionMentions, isPlainNumber } from "../src/modeling/params.ts";
 import type { Assembly } from "../src/assembly.ts";
@@ -234,6 +235,10 @@ export class Session {
   autosaveWriting: Promise<void> = Promise.resolve();
   /** This session has successfully written its own snapshot, rather than another session's file at the same path. */
   autosaveSnapshot = false;
+  /** The id this plate's autosaves carry (autosave.ts): minted at the first write, carried on by opening the previous plate. */
+  autosaveProject = "";
+  /** A new plate or another project was opened since the last write: that write first keeps a file of the old project. */
+  autosaveShelf = false;
   inflight = 0;
   /** The progress token and cancel signal of the call each piece of work belongs to. */
   readonly callContext = new AsyncLocalStorage<CallMeta>();
@@ -470,7 +475,14 @@ export class Session {
       const prepared = prepareProject(doc);
       if (plan) prepared.wire.mcpPlanRecovery = structuredClone(plan);
       if (this.recipeCheckpoints.size) prepared.wire.mcpRecipeCheckpoints = structuredClone(Object.fromEntries(this.recipeCheckpoints));
+      if (!this.autosaveProject) this.autosaveProject = randomUUID().replace(/-/g, "").slice(0, 12);
+      const identity: AutosaveIdentity = { project: this.autosaveProject, ...(this.sourcePath && !/^autosave-/.test(basename(this.sourcePath)) ? { source: this.sourcePath } : {}) };
+      prepared.wire.mcpAutosave = identity;
+      const shelve = this.autosaveShelf;
+      this.autosaveShelf = false;
       this.autosaveWriting = this.autosaveWriting.then(async () => {
+        // This file is the last plate's: a new project does not replace it.
+        if (shelve && existsSync(path) && !sameProject(readIdentity(path), identity)) shelveAutosave(path);
         await writeAutosave(path, await finishProject(prepared));
         this.autosaveSnapshot = true;
       }).catch(() => undefined);

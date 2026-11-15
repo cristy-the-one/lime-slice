@@ -99,7 +99,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
  * the same body keeps its version (new words only); with another body it is the next version when the run was of
  * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
  */
-async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof }): Promise<{ id: string; version: number; sha256: string; built?: string; warning?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof }): Promise<{ id: string; version: number; sha256: string; built?: string; warning?: string; note?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
   const title = oneLine(opts.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
   let body = lfOnly(opts.source);
@@ -127,6 +127,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   const dir = pluginsDir();
   let id = slugOf(title) || slugOf(opts.name ?? "") || "plugin";
   let version = 1;
+  let note: string | undefined;
   const same = (found: ReturnType<typeof readPlugin>) => !!found && !("reason" in found) && found.sha256 === sha256;
   const existing = readPlugin(id, dir);
   if (existing && !("reason" in existing)) {
@@ -137,6 +138,8 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
         const candidate = `${id.slice(0, 45).replace(/-+$/, "")}-${n}`;
         const there = readPlugin(candidate, dir);
         if (!there || "reason" in there || same(there)) {
+          // Never silent: the run asked for no version of the plugin that holds this title.
+          if (!there || "reason" in there) note = `A plugin titled "${title}" already exists as "${existing.header.plugin}" (version ${existing.header.version}), so this was saved as the new plugin "${candidate}"; run with name: "${existing.header.plugin}" to add a version to "${existing.header.plugin}" instead.`;
           id = candidate;
           version = there && !("reason" in there) ? there.header.version : 1;
           break;
@@ -167,7 +170,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   const carried = carriedIngredients(splitPluginData(body).code).map((row) => `${row.id} v${row.version}`);
   const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
   const hints = pluginHints({ params: checked.params, target: checked.target, description: header.description }, splitPluginData(body).code);
-  return { id, version, sha256, ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
+  return { id, version, sha256, ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(note ? { note } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
 }
 
 /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
