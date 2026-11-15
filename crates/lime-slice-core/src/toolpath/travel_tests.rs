@@ -201,13 +201,13 @@ fn a_support_tip_is_a_loop_of_24_sides() {
         r,
         node: crate::support::NodeId(0),
     };
-    let tip = plan_tree_support(&[disk(0.39)], &[], &strategy, 0.45);
+    let tip = plan_tree_support(&[disk(0.39)], &[], None, &strategy, 0.45);
     assert_eq!(tip.len(), 1);
     assert_eq!(tip[0].points.len(), 25);
     assert_eq!(tip[0].points[0], tip[0].points[24]);
     // A trunk is the outline of its disks pulled in by half a bead, and
     // then a second loop inside it.
-    let trunk = plan_tree_support(&[disk(1.5)], &[], &strategy, 0.45);
+    let trunk = plan_tree_support(&[disk(1.5)], &[], None, &strategy, 0.45);
     assert_eq!(trunk.len(), 2);
     assert!(trunk.iter().all(|p| p.points.len() == 25));
 }

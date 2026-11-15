@@ -5,8 +5,8 @@ use super::scarf::polyline_len;
 use super::seams::dist2;
 use super::{extrusion, Extrusion, PathKind};
 use crate::poly::{
-    in_solid, loop_bounds, offset_loops, point_in_loop, principal_axis, resolve_nonzero,
-    signed_area, Loop,
+    boolean_intersect, in_solid, loop_bounds, offset_loops, point_in_loop, principal_axis,
+    resolve_nonzero, signed_area, Loop,
 };
 use crate::strategy::ResolvedStrategy;
 use crate::support::Disk;
@@ -133,6 +133,32 @@ pub fn plan_belt_support(
     paths
 }
 
+/// One support wall along each grid column the slender rule widened that is
+/// too narrow for the fill lines to cross: lines `line_width / density`
+/// apart leave such a column as loose stubs, each a card one bead thick.
+/// The wall runs half a bead inside the column's outline and ties them.
+pub fn plan_support_walls(
+    walls: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    density: f64,
+) -> Vec<Extrusion> {
+    if walls.is_empty() || density <= 0.01 {
+        return Vec::new();
+    }
+    let spacing = (line_width / density).clamp(line_width * 1.05, 8.0);
+    let speed = crate::strategy::support_speed(strategy, false);
+    let mut paths = Vec::new();
+    for comp in crate::support::components(walls) {
+        if !offset_loops(&comp, -(spacing + line_width) * 0.5).is_empty() {
+            continue;
+        }
+        let inset = offset_loops(&comp, -line_width * 0.5);
+        emit_support_loops(&mut paths, &inset, strategy, line_width, speed);
+    }
+    paths
+}
+
 /// The line through a strip's centroid along its major axis, inside it.
 fn strip_spine(comp: &[Loop]) -> Vec<Vec<[f64; 2]>> {
     let (Some((c, angle)), Some((min, max))) = (principal_axis(&comp[0]), loop_bounds(comp)) else {
@@ -148,9 +174,12 @@ fn strip_spine(comp: &[Loop]) -> Vec<Vec<[f64; 2]>> {
 
 /// Organic branches: thin tips are one loop, thicker trunks are perimeters of the
 /// union of their cross-sections so nearby branches melt into one shape.
+/// `feet` are filled inside their walls; `fill`, when given, limits that
+/// fill to the part of them it covers.
 pub fn plan_tree_support(
     disks: &[Disk],
     feet: &[Loop],
+    fill: Option<&[Loop]>,
     strategy: &ResolvedStrategy,
     line_width: f64,
 ) -> Vec<Extrusion> {
@@ -192,14 +221,17 @@ pub fn plan_tree_support(
     emit_support_loops(&mut paths, &inner, strategy, line_width, speed);
     // A foot is wider than the trunk it carries, so it is filled: the trunk's
     // own loops then stand on beads, not on the foot's hollow middle.
-    let mut fill: Vec<Loop> = inner
-        .iter()
-        .filter(|l| {
-            l.iter()
-                .any(|p| feet.iter().any(|f| point_in_loop(f, p[0], p[1])))
-        })
-        .cloned()
-        .collect();
+    let mut fill: Vec<Loop> = match fill {
+        Some(zone) => boolean_intersect(&inner, zone),
+        None => inner
+            .iter()
+            .filter(|l| {
+                l.iter()
+                    .any(|p| feet.iter().any(|f| point_in_loop(f, p[0], p[1])))
+            })
+            .cloned()
+            .collect(),
+    };
     for _ in 0..16 {
         fill = offset_loops(&fill, -line_width * 0.95);
         fill.retain(|l| signed_area(l).abs() >= 0.35 && l.len() >= 3);

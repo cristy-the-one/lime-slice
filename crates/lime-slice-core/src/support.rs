@@ -41,6 +41,11 @@ pub struct SupportLayer {
     pub interface: Vec<Loop>,
     /// Organic branch cross-sections. Empty for the grid style.
     pub disks: Vec<Disk>,
+    /// Grid style only: each column the slender rule widened, as wide as it
+    /// prints, `sparse` included. It is filled with the grid lines of
+    /// `sparse` carried on, and a column too narrow for those lines to cross
+    /// prints a wall along its outline, which ties them into one piece.
+    pub walls: Vec<Loop>,
 }
 
 /// A tree-support cross-section on one layer. `node` is the walk node that printed it.
@@ -101,6 +106,9 @@ pub struct SupportOpts {
     /// The part's bead width, mm. On a belt a strip of part narrower than
     /// this still prints a whole bead, which needs holding.
     pub line_width: f64,
+    /// The most a tall tree or grid column may stand against its base
+    /// width: see [`Sturdy`]. `0` grows supports as they come.
+    pub slender_limit: f64,
 }
 
 /// How wide a gap between enforce dabs on one layer is filled when the
@@ -156,6 +164,121 @@ impl FloorPlane {
     }
 }
 
+/// Supports shorter than this, in lab height, grow as they come: most G-code
+/// does not move, and below about 40 mm a tree's own flare already keeps it
+/// within the rule.
+const STURDY_FROM_MM: f64 = 15.0;
+/// The widest a trunk is made for the slender rule, radius mm: a 240 mm
+/// tall support on a flat bed.
+const STURDY_MAX_R: f64 = 12.0;
+/// A support keeps its full base width over its lowest `STURDY_BASE_MM`,
+/// then narrows linearly to its own section at `STURDY_TAPER_TO` of its height.
+const STURDY_BASE_MM: f64 = 5.0;
+const STURDY_TAPER_TO: f64 = 1.0 / 3.0;
+/// The taper is never steeper than this much width per millimetre of
+/// height: a column grown on one side by a fifth of a bead a layer still
+/// rests each bead of its outline on the one under it. A short support's
+/// taper starts higher than a third of its height to keep to it.
+const STURDY_WIDEN_PER_MM: f64 = 0.4;
+/// A grid column piece whose lowest point is this close to the belt stands on it.
+const STURDY_ON_FLOOR_MM: f64 = 0.6;
+/// A piece of a grid column's widening the part has cut off from the column
+/// is kept only this wide, two beads, or wider.
+const STURDY_SLIVER_MM: f64 = 0.9;
+/// A grid column piece shorter than this every way prints no line of its
+/// own: `plan_support` drops shorter ones.
+const STURDY_SPECK_MM: f64 = 0.4;
+/// Grid column pieces closer than twice this are measured as one column.
+const STURDY_JOIN_MM: f64 = 1.0;
+/// A printed circle is a polygon of 20 to 24 sides, a little thinner across
+/// its flats than its diameter. Sizing the base this much wider still meets
+/// the rule there.
+const STURDY_MARGIN: f64 = 1.05;
+
+/// The slender rule: a free-standing tree or grid column stands at most
+/// `ratio` times taller than its base is wide, in its thinnest horizontal
+/// direction along real gravity. A support `tall` mm high is `tall / ratio`
+/// wide over its lowest `STURDY_BASE_MM` and narrows linearly to its own
+/// section at a third of its height, or higher where `STURDY_WIDEN_PER_MM`
+/// asks; supports under `STURDY_FROM_MM` are left alone.
+///
+/// Heights are lab heights above the bed or the belt. A tree trunk on a belt
+/// falls plumb, so a layer of slice Z is `1 / cos a` of its lab height, and
+/// its round disk in the tilted nozzle plane is only `cos a` as long along
+/// the belt as across: the radius is sized for the along-belt width.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Sturdy {
+    ratio: f64,
+    floor: Option<FloorPlane>,
+    /// Cosine of the belt angle; 1 on a flat bed.
+    cos_a: f64,
+}
+
+impl Sturdy {
+    fn of(opts: &SupportOpts) -> Option<Self> {
+        (opts.slender_limit > 0.0).then(|| Self {
+            ratio: opts.slender_limit,
+            floor: opts.floor,
+            cos_a: opts.floor.map_or(1.0, |f| 1.0 / f.tan_a.hypot(1.0)),
+        })
+    }
+
+    /// Lab height above the bed or the belt of a point on the layer whose
+    /// top is slice `z`.
+    fn above_floor(&self, xy: [f64; 2], z: f64) -> f64 {
+        match self.floor {
+            Some(floor) => (z - floor.z_at(xy[1])) * self.cos_a,
+            None => z,
+        }
+    }
+
+    /// The least width, mm, a support `tall` mm high needs `h` mm above the floor.
+    fn width(&self, tall: f64, h: f64) -> f64 {
+        if tall < STURDY_FROM_MM {
+            return 0.0;
+        }
+        let full = tall / self.ratio * STURDY_MARGIN;
+        let end = (tall * STURDY_TAPER_TO).max(STURDY_BASE_MM + full / STURDY_WIDEN_PER_MM);
+        let k = ((end - h) / (end - STURDY_BASE_MM)).clamp(0.0, 1.0);
+        full * k
+    }
+
+    /// The thinnest width of `region` in the lab, in any direction: across a
+    /// belt as it is, along it `cos a` of the slice frame's Y.
+    fn lab_width(&self, region: &[Loop]) -> f64 {
+        thinnest(region, self.cos_a)
+    }
+
+    /// The least radius a trunk node at `xy` needs on the layer whose top is
+    /// slice `z`, after it has fallen `dist` mm of slice Z from its highest tip.
+    fn radius(&self, xy: [f64; 2], dist: f64, z: f64) -> f64 {
+        let h = self.above_floor(xy, z);
+        let tall = h + dist / self.cos_a;
+        (self.width(tall, h) * 0.5 / self.cos_a).min(STURDY_MAX_R)
+    }
+}
+
+/// The thinnest width of `region` over 36 directions, its Y scaled by `along`.
+fn thinnest(region: &[Loop], along: f64) -> f64 {
+    const DIRECTIONS: usize = 36;
+    let mut least = f64::INFINITY;
+    for d in 0..DIRECTIONS {
+        let (s, c) = (d as f64 * std::f64::consts::PI / DIRECTIONS as f64).sin_cos();
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for p in region.iter().flatten() {
+            let t = p[0] * c + p[1] * along * s;
+            lo = lo.min(t);
+            hi = hi.max(t);
+        }
+        least = least.min(hi - lo);
+    }
+    if least.is_finite() {
+        least
+    } else {
+        0.0
+    }
+}
+
 /// Drop loops and disks that would print through the belt.
 fn clip_support_layer(layer: &mut SupportLayer, y_max: f64) {
     if !layer.interface.is_empty() {
@@ -163,6 +286,9 @@ fn clip_support_layer(layer: &mut SupportLayer, y_max: f64) {
     }
     if !layer.sparse.is_empty() {
         layer.sparse = clip_half(&layer.sparse, y_max);
+    }
+    if !layer.walls.is_empty() {
+        layer.walls = clip_half(&layer.walls, y_max);
     }
     clip_disks(&mut layer.disks, y_max);
 }
@@ -236,6 +362,7 @@ impl Default for SupportOpts {
             paint_join_mm: 0.0,
             bead_width: 0.45,
             line_width: 0.45,
+            slender_limit: crate::audit::SLENDER_LIMIT,
         }
     }
 }
@@ -317,6 +444,8 @@ struct Demand {
     interface: Vec<Vec<Loop>>,
     /// Grid style only: the column printed under the interface.
     sparse: Vec<Vec<Loop>>,
+    /// Grid style only: each column the slender rule widened, as wide as it prints.
+    walls: Vec<Vec<Loop>>,
 }
 
 /// The tree-support walk as it ran. `limbs[k]` is the lineage of `NodeId(k + 1)`.
@@ -540,11 +669,13 @@ impl Supports {
             .interface
             .into_iter()
             .zip(demand.sparse)
+            .zip(demand.walls)
             .zip(disks)
-            .map(|((interface, sparse), disks)| SupportLayer {
+            .map(|(((interface, sparse), walls), disks)| SupportLayer {
                 sparse,
                 interface,
                 disks,
+                walls,
             })
             .collect();
         Some(Self {
@@ -578,16 +709,20 @@ impl Supports {
                         [d.xy[0] + d.r, d.xy[1] + d.r],
                     )
                 });
-                [loop_bounds(&layer.sparse), loop_bounds(&layer.interface)]
-                    .into_iter()
-                    .flatten()
-                    .chain(disks)
-                    .reduce(|(amn, amx), (bmn, bmx)| {
-                        (
-                            [amn[0].min(bmn[0]), amn[1].min(bmn[1])],
-                            [amx[0].max(bmx[0]), amx[1].max(bmx[1])],
-                        )
-                    })
+                [
+                    loop_bounds(&layer.sparse),
+                    loop_bounds(&layer.interface),
+                    loop_bounds(&layer.walls),
+                ]
+                .into_iter()
+                .flatten()
+                .chain(disks)
+                .reduce(|(amn, amx), (bmn, bmx)| {
+                    (
+                        [amn[0].min(bmn[0]), amn[1].min(bmn[1])],
+                        [amx[0].max(bmx[0]), amx[1].max(bmx[1])],
+                    )
+                })
             })
             .collect()
     }
@@ -804,6 +939,7 @@ impl Demand {
             born: vec![Vec::new(); n],
             interface: vec![Vec::new(); n],
             sparse: vec![Vec::new(); n],
+            walls: vec![Vec::new(); n],
         };
         if n == 0 {
             return Some(demand);
@@ -946,7 +1082,185 @@ impl Demand {
             let underside = bands[i].z - bands[i].height;
             pending.push((underside - opts.z_gap, overhang.clone()));
         }
+        if let Some(sturdy) = Sturdy::of(opts).filter(|_| !tree) {
+            sturdy_columns(&mut demand, bands, &gaps, sturdy);
+        }
         Some(demand)
+    }
+}
+
+/// Widen the grid columns the slender rule finds too thin, toward the floor.
+///
+/// A column is followed down from the layer it starts on, as `Demand::new`
+/// carried it: each piece of a layer's column region knows the lab height of
+/// the highest column it is part of, and whether it stands on the bed or the
+/// belt through the pieces under it. A column that ends on the part is left
+/// as it is. A piece of a standing column thinner than the rule asks at its
+/// height is grown outward to that width, less the xy gap around the part.
+/// The grown region falls with the column to the floor, as the column does,
+/// and stops at the belt, so every layer of it stands on the one under it or
+/// on the floor. Its outline is kept in `demand.walls`: a column too narrow
+/// for its fill lines to cross prints a wall along it, so it stands as one piece.
+/// `demand.sparse` stays the column as it was, which pins its fill lines.
+fn sturdy_columns(demand: &mut Demand, bands: &[LayerBand], gaps: &[Vec<Loop>], sturdy: Sturdy) {
+    let n = bands.len();
+    // Pieces this close print as one column: under a sloped face the column
+    // region is a comb of strips, one born each layer, a fraction of a
+    // millimetre apart, and together they stand as one block.
+    let pieces: Vec<Vec<(Vec<Loop>, Bounds)>> = demand
+        .sparse
+        .par_iter()
+        .map(|sparse| {
+            if sparse.is_empty() {
+                return Vec::new();
+            }
+            let joined = offset_loops(&offset_loops(sparse, STURDY_JOIN_MM), -STURDY_JOIN_MM);
+            components(&joined)
+                .into_iter()
+                .filter_map(|comp| loop_bounds(&comp).map(|bb| (comp, bb)))
+                .collect()
+        })
+        .collect();
+    // How far a column falls along slice Y from layer `i` to layer `i - 1`.
+    let fall = |i: usize| match (sturdy.floor, bands.get(i)) {
+        (Some(floor), Some(band)) => floor.fall(band.height),
+        _ => 0.0,
+    };
+    let shifted = |loops: &[Loop], dy: f64| -> Vec<Loop> {
+        loops
+            .iter()
+            .map(|l| l.iter().map(|p| [p[0], p[1] + dy]).collect())
+            .collect()
+    };
+    // True when `other`, moved `dy` along slice Y, overlaps `piece`.
+    let meets = |piece: &(Vec<Loop>, Bounds), other: &(Vec<Loop>, Bounds), dy: f64| {
+        let (bb, obb) = (piece.1, other.1);
+        let obb = ([obb.0[0], obb.0[1] + dy], [obb.1[0], obb.1[1] + dy]);
+        boxes_within(Some(bb), Some(obb), 0.0) && overlaps(&shifted(&other.0, dy), &piece.0, 0.01)
+    };
+    // The lab height of each piece's top, top-down: its own highest point,
+    // or that of a piece on the layer above that it lies under.
+    let mut tops: Vec<Vec<f64>> = vec![Vec::new(); n];
+    for i in (0..n).rev() {
+        let here: Vec<f64> = pieces[i]
+            .iter()
+            .map(|piece| {
+                let mut top = sturdy.above_floor(piece.1 .0, bands[i].z);
+                if i + 1 < n {
+                    for (up, &t) in pieces[i + 1].iter().zip(&tops[i + 1]) {
+                        if t > top && meets(piece, up, fall(i + 1)) {
+                            top = t;
+                        }
+                    }
+                }
+                top
+            })
+            .collect();
+        tops[i] = here;
+    }
+    // Which pieces stand on the floor, bottom-up: those on the bed layer,
+    // those whose lowest point is on the belt, and those over a standing piece.
+    let mut stands: Vec<Vec<bool>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let here: Vec<bool> = pieces[i]
+            .iter()
+            .map(|piece| {
+                i == 0
+                    || sturdy.above_floor([piece.1 .0[0], piece.1 .1[1]], bands[i].z)
+                        <= STURDY_ON_FLOOR_MM
+                    || pieces[i - 1]
+                        .iter()
+                        .zip(&stands[i - 1])
+                        .any(|(low, &on)| on && meets(piece, low, -fall(i)))
+            })
+            .collect();
+        stands[i] = here;
+    }
+    let grown: Vec<Vec<Loop>> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let mut out: Vec<Loop> = Vec::new();
+            for (((comp, bb), &top), &on) in pieces[i].iter().zip(&tops[i]).zip(&stands[i]) {
+                if !on {
+                    continue;
+                }
+                let mid = [(bb.0[0] + bb.1[0]) * 0.5, (bb.0[1] + bb.1[1]) * 0.5];
+                let need = sturdy.width(top, sturdy.above_floor(mid, bands[i].z));
+                let have = sturdy.lab_width(comp);
+                let speck = (bb.1[0] - bb.0[0]).max(bb.1[1] - bb.0[1]) < STURDY_SPECK_MM;
+                if need <= have || speck {
+                    continue;
+                }
+                // Grow each side by half the shortfall, or one side by all of
+                // it where the part's gap holds the other side back. Either
+                // grows smoothly with the need, so each layer's outline stays
+                // within a fraction of a bead of the one under it.
+                let shortfall = (need - have) / sturdy.cos_a;
+                let grown = |grow: f64| {
+                    let wide = offset_loops(comp, grow);
+                    if gaps[i].is_empty() {
+                        wide
+                    } else {
+                        boolean_diff(&wide, &gaps[i])
+                    }
+                };
+                let mut wide = grown(shortfall * 0.5);
+                if sturdy.lab_width(&wide) < need - 1e-3 {
+                    wide = grown(shortfall);
+                }
+                // What the part's gap cut off from the column is no part of it.
+                let wide: Vec<Loop> = components(&wide)
+                    .into_iter()
+                    .filter(|piece| overlaps(piece, comp, 0.01))
+                    .flatten()
+                    .collect();
+                // A column the part hems in on both sides has no room to
+                // widen: it is left as it is, and the report shows it.
+                if sturdy.lab_width(&wide) < have + 0.5 * (need - have) {
+                    continue;
+                }
+                out.extend(wide);
+            }
+            out
+        })
+        .collect();
+    // Each layer's widening falls with the column to the floor.
+    let mut carried: Vec<Loop> = Vec::new();
+    for i in (0..n).rev() {
+        if !carried.is_empty() {
+            carried = shifted(&carried, fall(i + 1));
+        }
+        if !grown[i].is_empty() {
+            carried = boolean_union(&carried, &grown[i]);
+        }
+        if carried.is_empty() {
+            continue;
+        }
+        if !gaps[i].is_empty() {
+            carried = boolean_diff(&carried, &gaps[i]);
+        }
+        if let Some(floor) = sturdy.floor {
+            carried = clip_half(&carried, floor.y_max(bands[i].z));
+        }
+        carried = drop_slivers(carried, 0.05);
+        // The widening falls past the part's features as the column does;
+        // a strip of it the part leaves too thin to print as a column, cut
+        // off from the column, is dropped. On a belt, the last of it running
+        // into the belt is kept: it stands there.
+        let column = &demand.sparse[i];
+        let belt_line = sturdy.floor.map(|floor| floor.y_max(bands[i].z));
+        carried = components(&carried)
+            .into_iter()
+            .filter(|piece| {
+                sturdy.lab_width(piece) >= STURDY_SLIVER_MM
+                    || overlaps(piece, column, 0.01)
+                    || belt_line.is_some_and(|y_max| {
+                        loop_bounds(piece).is_some_and(|bb| bb.1[1] > y_max - STURDY_SLIVER_MM)
+                    })
+            })
+            .flatten()
+            .collect();
+        demand.walls[i] = drop_slivers(boolean_diff(&carried, &demand.interface[i]), 0.05);
     }
 }
 
@@ -986,7 +1300,13 @@ fn grow(
         }
         walk.arrive(i, &demand.born[i], &demand.interface[i]);
         forest.record(i, &walk.nodes);
-        disks[i] = organic_disks(&walk.nodes, walk.part(i), opts.xy_gap);
+        disks[i] = organic_disks(
+            &walk.nodes,
+            walk.part(i),
+            opts.xy_gap,
+            walk.sturdy,
+            bands[i].z,
+        );
         walk.descend(i, &mut none, &mut forest);
         watch.tick();
     }
@@ -1022,6 +1342,8 @@ struct Walk<'a> {
     ended: Vec<(NodeId, End)>,
     /// A grow's walk: each new tip leans on its own to a kept knot.
     solo: bool,
+    /// The slender rule trunks are thickened by toward the floor.
+    sturdy: Option<Sturdy>,
 }
 
 impl<'a> Walk<'a> {
@@ -1074,6 +1396,7 @@ impl<'a> Walk<'a> {
             next_id,
             ended: Vec::new(),
             solo: false,
+            sturdy: Sturdy::of(opts),
         }
     }
 
@@ -1237,6 +1560,8 @@ impl<'a> Walk<'a> {
                 .floor
                 .map_or(0.0, |floor| floor.fall(self.bands[i].height)),
             solo: self.solo,
+            sturdy: self.sturdy,
+            z_next: self.bands[i - 1].z,
         };
         let nodes = std::mem::take(&mut self.nodes);
         let avoid = self.avoidance.as_ref().map(|areas| (areas, i - 1));
@@ -1799,11 +2124,20 @@ pub(crate) struct Node {
     to_bed: bool,
 }
 
-/// Trunk disks to print on this layer. A disk that would reach into the XY gap
-/// is drawn smaller rather than dropped, so the trunk under it never breaks.
-/// Flooring that disk through the wall would leave support inside the mesh, so
-/// a centre closer than the minimum radius is omitted and the trunk stops.
-fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> Vec<Disk> {
+/// Trunk disks to print on the layer whose top is slice `z`. A disk that
+/// would reach into the XY gap is drawn smaller rather than dropped, so the
+/// trunk under it never breaks. Flooring that disk through the wall would
+/// leave support inside the mesh, so a centre closer than the minimum radius
+/// is omitted and the trunk stops. `sturdy` widens a tall trunk's disk
+/// toward the floor; the walk itself grows, leans and merges on the node's
+/// own radius, so the rule never moves a trunk.
+fn organic_disks(
+    nodes: &[Node],
+    part: &[Loop],
+    xy_gap: f64,
+    sturdy: Option<Sturdy>,
+    z: f64,
+) -> Vec<Disk> {
     let mut disks = Vec::new();
     for n in nodes {
         if n.freeze > 0 {
@@ -1820,9 +2154,10 @@ fn organic_disks(nodes: &[Node], part: &[Loop], xy_gap: f64) -> Vec<Disk> {
             continue;
         }
         let room = dist - xy_gap;
+        let radius = sturdy.map_or(n.radius, |s| n.radius.max(s.radius(n.xy, n.dist, z)));
         disks.push(Disk {
             xy: n.xy,
-            r: n.radius.min(room).max(MIN_DISK_R),
+            r: radius.min(room).max(MIN_DISK_R),
             node: NodeId(n.id),
         });
     }
@@ -1845,6 +2180,21 @@ struct Grow {
     drift: f64,
     /// Nodes pair with and merge into kept knots only, never each other.
     solo: bool,
+    /// The slender rule, which widens tall trunks' disks toward the floor.
+    sturdy: Option<Sturdy>,
+    /// Slice Z of the top of the layer being stepped onto.
+    z_next: f64,
+}
+
+impl Grow {
+    /// The radius `n`'s disk prints at on the layer being stepped onto, as
+    /// `organic_disks` widens it, before the part's room cuts it. A trunk
+    /// stands on the belt until its whole printed disk is past it.
+    fn printed_r(&self, n: &Node) -> f64 {
+        self.sturdy.map_or(n.radius, |s| {
+            n.radius.max(s.radius(n.xy, n.dist, self.z_next))
+        })
+    }
 }
 
 /// Pitch actually left standing. An explicit `max_tip_spacing` wins; otherwise
@@ -1921,7 +2271,7 @@ fn propagate_nodes(
         // stops once its whole disk is past the belt.
         if grow
             .floor_y_max
-            .is_some_and(|y_max| n.xy[1] - n.radius > y_max)
+            .is_some_and(|y_max| n.xy[1] - grow.printed_r(&n) > y_max)
         {
             ended.push((NodeId(n.id), End::Landed));
             continue;
@@ -2004,7 +2354,7 @@ fn propagate_nodes(
         }
         if grow
             .floor_y_max
-            .is_some_and(|y_max| n.xy[1] - n.radius > y_max)
+            .is_some_and(|y_max| n.xy[1] - grow.printed_r(&n) > y_max)
         {
             ended.push((NodeId(n.id), End::Landed));
             continue;
@@ -3589,6 +3939,8 @@ mod tests {
                     floor_y_max: None,
                     drift: 0.0,
                     solo: false,
+                    sturdy: None,
+                    z_next: 0.0,
                 };
                 let got = pair_steps(&nodes, &[], &grow, 0.17, None);
                 let want = pair_steps_by_scan(&nodes, &grow, 0.17);
@@ -3838,6 +4190,7 @@ mod tests {
                     r: 1.2,
                     node: NodeId(0),
                 }],
+                walls: Vec::new(),
             },
             SupportLayer {
                 sparse: Vec::new(),
@@ -3854,6 +4207,7 @@ mod tests {
                         node: NodeId(2),
                     },
                 ],
+                walls: Vec::new(),
             },
         ];
         project(
@@ -4077,7 +4431,7 @@ mod tests {
                 .map(|l| l.knots[l.top - i])
                 .collect();
             assert_eq!(
-                organic_disks(&live, part, opts.xy_gap),
+                organic_disks(&live, part, opts.xy_gap, Sturdy::of(opts), bands[i].z),
                 walked.layers[i].disks,
                 "layer {i}: the knots do not give back the walk's disks"
             );
@@ -4477,6 +4831,8 @@ mod tests {
             floor_y_max: None,
             drift: 0.0,
             solo: false,
+            sturdy: None,
+            z_next: 0.0,
         };
         let pair = |load| {
             vec![[0.0, 0.0], [0.5, 0.0]]
@@ -4754,5 +5110,188 @@ mod tests {
             !on.layers.iter().all(|layer| layer.disks.is_empty()),
             "avoidance dropped every disk"
         );
+    }
+
+    #[test]
+    fn the_slender_rule_widens_a_tall_support_over_its_lowest_third_only() {
+        let flat = Sturdy::of(&SupportOpts::default()).unwrap();
+        // Short supports are left as they grow.
+        assert_eq!(flat.width(STURDY_FROM_MM - 0.1, 0.0), 0.0);
+        // An 80 mm support is a tenth of that wide over its base, and as it
+        // grew from a third of its height up.
+        let base = 80.0 / crate::audit::SLENDER_LIMIT * STURDY_MARGIN;
+        assert!((flat.width(80.0, 0.0) - base).abs() < 1e-9);
+        assert!((flat.width(80.0, STURDY_BASE_MM) - base).abs() < 1e-9);
+        assert_eq!(flat.width(80.0, 80.0 / 3.0), 0.0);
+        // It narrows upward, never faster than the taper allows, short
+        // supports too.
+        for tall in [16.0, 20.0, 40.0, 80.0, 200.0] {
+            let mut below = flat.width(tall, 0.0);
+            for k in 1..=2000 {
+                let w = flat.width(tall, k as f64 * 0.05);
+                assert!(w <= below + 1e-12, "{tall} mm at {k}");
+                assert!(
+                    below - w <= STURDY_WIDEN_PER_MM * 0.05 + 1e-9,
+                    "{tall} mm at {k}"
+                );
+                below = w;
+            }
+        }
+        // A trunk's radius counts the height it fell from its tip.
+        assert!((flat.radius([0.0, 0.0], 79.0, 1.0) - base * 0.5).abs() < 1e-9);
+        assert!(Sturdy::of(&SupportOpts {
+            slender_limit: 0.0,
+            ..SupportOpts::default()
+        })
+        .is_none());
+        // On a 45° belt a slice layer of fall is 1.41 mm of lab height, and
+        // a round disk is 0.71 as long along the belt as across: the radius
+        // is sized for the along-belt width.
+        let belt = Sturdy::of(&SupportOpts {
+            floor: Some(FloorPlane::new(1.0, 0.0, 0.0)),
+            ..SupportOpts::default()
+        })
+        .unwrap();
+        let c = std::f64::consts::FRAC_1_SQRT_2;
+        // On the layer at slice Z 1, the belt line is at Y 1: a point there
+        // is on the belt, and each mm uphill of it 0.71 mm over it.
+        assert!(belt.above_floor([0.0, 1.0], 1.0).abs() < 1e-9);
+        assert!((belt.above_floor([0.0, 0.0], 1.0) - c).abs() < 1e-9);
+        let r = belt.radius([0.0, 0.0], 56.0, 0.0);
+        let tall = 56.0 / c;
+        let want = tall / crate::audit::SLENDER_LIMIT * STURDY_MARGIN * 0.5 / c;
+        assert!((r - want).abs() < 1e-9, "{r} {want}");
+        // Widths in the lab: across the belt as drawn, along it shortened.
+        let strip = vec![rect(0.0, 0.0, 10.0, 2.0)];
+        assert!((flat.lab_width(&strip) - 2.0).abs() < 1e-9);
+        assert!((belt.lab_width(&strip) - 2.0 * c).abs() < 1e-9);
+    }
+
+    /// A 4 mm pad 60 mm up with nothing under it: one lone tall support.
+    fn tall_pad() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
+        let bands = layers(300);
+        let mut contours = vec![Vec::new(); bands.len()];
+        for contour in contours.iter_mut().skip(296) {
+            *contour = vec![rect(0.0, 0.0, 4.0, 4.0)];
+        }
+        (bands, contours)
+    }
+
+    #[test]
+    fn a_lone_tall_tree_is_widened_toward_the_bed_and_left_alone_above() {
+        let (bands, contours) = tall_pad();
+        let opts = SupportOpts {
+            style: SupportStyle::Tree,
+            density: 0.15,
+            load_factor: 5.2,
+            max_tip_spacing: 10.8,
+            ..SupportOpts::default()
+        };
+        let sturdy = Supports::build(&bands, &contours, &opts).unwrap().layers;
+        let grown = Supports::build(
+            &bands,
+            &contours,
+            &SupportOpts {
+                slender_limit: 0.0,
+                ..opts
+            },
+        )
+        .unwrap()
+        .layers;
+        let top = sturdy.iter().rposition(|l| !l.disks.is_empty()).unwrap();
+        let tall = bands[top].z;
+        let widest = |l: &SupportLayer| l.disks.iter().map(|d| d.r).fold(0.0, f64::max);
+        // 4 mm up, the trunk as it grew is at most the 4.2 mm trunk, a
+        // fourteenth of its height; the rule makes it a tenth of its height.
+        assert!(widest(&grown[20]) <= 2.1 + 1e-9);
+        assert!(
+            2.0 * widest(&sturdy[20]) >= tall / crate::audit::SLENDER_LIMIT,
+            "{} mm wide, {tall} mm tall",
+            2.0 * widest(&sturdy[20])
+        );
+        // Above a third of its height it is the trunk it was.
+        for i in (top / 3 + 2)..bands.len() {
+            assert_eq!(sturdy[i].disks, grown[i].disks, "layer {i}");
+        }
+        // It narrows upward, so every disk stands on the one under it.
+        for i in 1..=top {
+            let (r, below) = (widest(&sturdy[i]), widest(&sturdy[i - 1]));
+            assert!(r <= below + 1e-9, "layer {i}: {r} over {below}");
+        }
+    }
+
+    #[test]
+    fn a_tall_grid_column_is_widened_toward_the_bed() {
+        let (bands, contours) = tall_pad();
+        let opts = SupportOpts::default();
+        let sturdy = Supports::build(&bands, &contours, &opts).unwrap().layers;
+        let grown = Supports::build(
+            &bands,
+            &contours,
+            &SupportOpts {
+                slender_limit: 0.0,
+                ..opts
+            },
+        )
+        .unwrap()
+        .layers;
+        assert!(grown.iter().all(|l| l.walls.is_empty()));
+        let flat = Sturdy::of(&opts).unwrap();
+        let top = sturdy.iter().rposition(|l| !l.sparse.is_empty()).unwrap();
+        let tall = bands[top].z;
+        // The column itself is as it was; the widening is kept beside it.
+        for (a, b) in sturdy.iter().zip(&grown) {
+            assert_eq!(a.sparse, b.sparse);
+        }
+        let low = flat.lab_width(&sturdy[10].walls);
+        assert!(
+            low >= tall / crate::audit::SLENDER_LIMIT,
+            "{low} mm wide, {tall} mm tall"
+        );
+        // Nothing is widened above a third of the column, and lower down
+        // each layer's widening lies within the one under it.
+        assert!(sturdy[top / 3 + 2..].iter().all(|l| l.walls.is_empty()));
+        for i in 1..top {
+            if sturdy[i].walls.is_empty() {
+                continue;
+            }
+            let outside = boolean_diff(&sturdy[i].walls, &sturdy[i - 1].walls);
+            assert!(solid_area(&outside) < 1e-3, "layer {i}");
+        }
+    }
+
+    #[test]
+    fn a_tall_belt_grid_column_is_widened_down_to_the_belt() {
+        // The belt at 45° under the pad. Every layer of the widening stands
+        // on the layer under it, carried down along gravity, or on the belt.
+        let floor = FloorPlane::new(1.0, 2.0, 0.0);
+        let (bands, contours) = tall_pad();
+        let opts = SupportOpts {
+            floor: Some(floor),
+            ..SupportOpts::default()
+        };
+        let layers = Supports::build(&bands, &contours, &opts).unwrap().layers;
+        assert!(layers.iter().any(|l| !l.walls.is_empty()));
+        for i in 1..layers.len() {
+            if layers[i].walls.is_empty() {
+                continue;
+            }
+            let fall = floor.fall(bands[i].height);
+            let below: Vec<Loop> = layers[i - 1]
+                .walls
+                .iter()
+                .map(|l| l.iter().map(|p| [p[0], p[1] - fall]).collect())
+                .collect();
+            // What the layer under it does not hold lies within a layer's
+            // fall of the belt line: on the belt.
+            let loose = boolean_diff(&layers[i].walls, &below);
+            let on_belt = floor.y_max(bands[i - 1].z) - fall - 0.25;
+            let hanging = clip_to_rect(&loose, [-1.0e5, -1.0e5], [1.0e5, on_belt]);
+            assert!(
+                solid_area(&hanging) < 0.05,
+                "layer {i}: {}",
+                solid_area(&hanging)
+            );
+        }
     }
 }

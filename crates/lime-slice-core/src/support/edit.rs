@@ -810,7 +810,7 @@ impl Supports {
         let hi = dirty.iter().rposition(|&d| d).unwrap_or(lo);
         let mut fresh = (lo..=hi)
             .into_par_iter()
-            .map(|i| dirty[i].then(|| self.fresh(i, contours)))
+            .map(|i| dirty[i].then(|| self.fresh(i, bands, contours)))
             .collect::<Vec<_>>()
             .into_iter();
         let lean = lean_of(&self.opts);
@@ -828,7 +828,7 @@ impl Supports {
                 }
                 continue;
             }
-            let mut layer = pre.unwrap_or_else(|| self.fresh(i, contours));
+            let mut layer = pre.unwrap_or_else(|| self.fresh(i, bands, contours));
             if i > 0 {
                 stand(
                     &mut layer,
@@ -878,7 +878,7 @@ impl Supports {
     /// the layer below: the disks of the knots still printed, and the
     /// demanded interface less what only pruned tips held and no later
     /// regrow restored.
-    fn fresh(&self, i: usize, contours: &[Vec<Loop>]) -> SupportLayer {
+    fn fresh(&self, i: usize, bands: &[LayerBand], contours: &[Vec<Loop>]) -> SupportLayer {
         let mut live = Vec::new();
         let mut pruned = Vec::new();
         for &k in &self.forest.at[i] {
@@ -905,7 +905,14 @@ impl Supports {
                 pitch.keep + pitch.fine,
                 &self.restored[i],
             ),
-            disks: organic_disks(&live, part, self.opts.xy_gap),
+            disks: organic_disks(
+                &live,
+                part,
+                self.opts.xy_gap,
+                super::Sturdy::of(&self.opts),
+                bands[i].z,
+            ),
+            walls: self.stood_layer(i).walls.clone(),
         }
     }
 }
@@ -1239,7 +1246,7 @@ impl Supports {
     pub(crate) fn rebuilt(&self, bands: &[LayerBand], contours: &[Vec<Loop>]) -> Vec<SupportLayer> {
         let mut layers: Vec<SupportLayer> = (0..self.layers.len())
             .into_par_iter()
-            .map(|i| self.fresh(i, contours))
+            .map(|i| self.fresh(i, bands, contours))
             .collect();
         super::project(
             &mut layers,
@@ -1286,6 +1293,17 @@ mod tests {
         (bands, contours)
     }
 
+    /// A 30 x 10 mm plate 60 mm up with nothing under it: trunks tall
+    /// enough for the slender rule to widen toward the bed.
+    fn tall_plate() -> (Vec<LayerBand>, Vec<Vec<Loop>>) {
+        let bands = layers(300);
+        let mut contours = vec![Vec::new(); bands.len()];
+        for contour in contours.iter_mut().skip(296) {
+            *contour = vec![rect(0.0, 0.0, 30.0, 10.0)];
+        }
+        (bands, contours)
+    }
+
     fn fixtures() -> Vec<(&'static str, Fixture)> {
         let speed = SupportOpts {
             style: SupportStyle::Tree,
@@ -1301,7 +1319,9 @@ mod tests {
         let (pb, pc) = plate();
         let (lb, lc) = ledge();
         let (fb, fc) = pad_over_flank();
+        let (tb, tc) = tall_plate();
         vec![
+            ("tall plate speed", (tb, tc, speed)),
             ("plate", (pb.clone(), pc.clone(), plate_opts())),
             ("plate toughness", (pb, pc, tough)),
             ("ledge speed", (lb.clone(), lc.clone(), speed)),
@@ -1805,6 +1825,7 @@ mod tests {
             sparse: Vec::new(),
             interface: Vec::new(),
             disks: Vec::new(),
+            walls: Vec::new(),
         };
         let mut s = Supports {
             forest: Forest { limbs, at },
@@ -2183,6 +2204,7 @@ mod tests {
             sparse: Vec::new(),
             interface: Vec::new(),
             disks: Vec::new(),
+            walls: Vec::new(),
         };
         let mut s = Supports {
             forest: Forest {

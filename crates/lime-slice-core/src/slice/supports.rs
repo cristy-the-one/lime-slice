@@ -5,7 +5,7 @@ use super::parts::{Contours, SupportPlan};
 use super::regions::{split_edge, split_extrusions, split_rects, support_half_rects, RegionSplit};
 use super::resolve::{resolve, shaft_scales};
 use super::zones::layer_strategy;
-use crate::poly::{boolean_union, clip_to_rect, Loop};
+use crate::poly::{boolean_union, clip_to_rect, loop_bounds, Loop};
 use crate::strategy::{
     pure, support_density, support_interface_density, support_speed, ResolvedStrategy,
 };
@@ -13,7 +13,7 @@ use crate::support::tree::Foot;
 use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
 use crate::toolpath::{
     bed_feet, plan_belt_support, plan_brim_lines, plan_support, plan_support_brim,
-    plan_tree_support, Extrusion,
+    plan_support_walls, plan_tree_support, Extrusion,
 };
 use crate::{
     BlendMode, PathKind, SliceSettings, Stage, StrategyId, SupportSource, SupportStyle, Watch,
@@ -199,9 +199,10 @@ pub(super) fn support_paths(
     belt_anchor: Option<&BeltBrim>,
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
-    let (disks, foot) = belt_trunks(&layer.disks, feet, floor, z, contours, settings);
+    let (disks, foot, foot_fill) = belt_trunks(&layer.disks, feet, floor, z, contours, settings);
     // On a flat bed the trunks of layer 0 are their feet, filled as a belt
     // foot is. `disks` stays whole for the support brim.
+    let foot_fill = foot_fill.as_deref();
     let (trunks, foot) = if floor.is_none() && layer_index == 0 && !disks.is_empty() {
         let (thin, feet) = bed_feet(&disks, line_width);
         (Cow::Owned(thin), feet)
@@ -212,6 +213,27 @@ pub(super) fn support_paths(
     // Y from layer to layer. Its lines fall with it, through a point fixed
     // in the lab, so each layer's lines stand on the lines below.
     let through = floor.map(|floor| [0.0, -z * floor.tan_a()]);
+    // A column the slender rule widened is filled with its own grid lines
+    // carried on: on a belt they are pinned in the lab already, and on a flat
+    // bed they start from the edge of the column as it was, so they stand on
+    // the lines under them as the widening grows.
+    let widened;
+    let walls_strategy = (!layer.walls.is_empty()).then(|| match blend {
+        BlendMode::ByRegion { .. } => resolve(pure(StrategyId::Toughness), settings),
+        other => layer_strategy(other, z, settings),
+    });
+    let (sparse, through) = match &walls_strategy {
+        None => (&layer.sparse[..], through),
+        Some(strategy) => {
+            let spacing = (line_width / support_density(strategy)).clamp(line_width * 1.05, 8.0);
+            let pin = through.or_else(|| {
+                loop_bounds(&layer.sparse)
+                    .map(|(min, max)| [max[0] - spacing * 0.5, min[1] + spacing * 0.5])
+            });
+            widened = boolean_union(&layer.sparse, &layer.walls);
+            (&widened[..], pin)
+        }
+    };
     // Only supports standing on layer 0 are on the bed. A belt has no flat
     // bed there (`skirt` is off); its brim comes from `belt_brim`.
     let brim_mm = if layer_index == 0 && settings.skirt {
@@ -227,10 +249,11 @@ pub(super) fn support_paths(
             let speed = resolve(pure(StrategyId::Speed), settings);
             emit_supports(
                 &mut paths,
-                &layer.sparse,
+                sparse,
                 &layer.interface,
                 &trunks,
                 &foot,
+                foot_fill,
                 shaft_scale,
                 height,
                 &tough,
@@ -244,10 +267,11 @@ pub(super) fn support_paths(
             let resolved = layer_strategy(other, z, settings);
             emit_supports(
                 &mut paths,
-                &layer.sparse,
+                sparse,
                 &layer.interface,
                 &trunks,
                 &foot,
+                foot_fill,
                 shaft_scale,
                 height,
                 &resolved,
@@ -257,6 +281,16 @@ pub(super) fn support_paths(
                 through,
             );
         }
+    }
+    if let Some(strategy) = walls_strategy.as_ref().filter(|_| shaft_scale > 0.0) {
+        let density = support_density(strategy);
+        let mut walls = plan_support_walls(&layer.walls, strategy, line_width, density);
+        if shaft_scale > 1.01 {
+            for path in &mut walls {
+                path.bead_height = height * shaft_scale;
+            }
+        }
+        paths.extend(walls);
     }
     if let Some(anchor) = belt_anchor {
         // The anchor crosses the support beads on its line, which ties the
@@ -283,7 +317,7 @@ pub(super) fn support_paths(
             other => layer_strategy(other, z, settings),
         };
         if brim_mm > 1e-6 {
-            let region = boolean_union(&layer.sparse, &layer.interface);
+            let region = boolean_union(sparse, &layer.interface);
             let gap = settings
                 .support_xy_gap_mm
                 .unwrap_or_else(|| SupportOpts::default().xy_gap);
@@ -383,6 +417,7 @@ pub(super) fn emit_supports(
     interface: &[Loop],
     disks: &[Disk],
     feet: &[Loop],
+    foot_fill: Option<&[Loop]>,
     shaft_scale: f64,
     layer_height: f64,
     low: &ResolvedStrategy,
@@ -418,7 +453,7 @@ pub(super) fn emit_supports(
                     through,
                 )
             } else {
-                plan_tree_support(disks, feet, strategy, line_width)
+                plan_tree_support(disks, feet, foot_fill, strategy, line_width)
             };
             if shaft_scale > 1.01 {
                 for path in &mut sparse {
@@ -442,7 +477,7 @@ pub(super) fn emit_supports(
         // beads on the plane, so a trunk that leans across the cut is not
         // drawn twice and a trunk outside the outline is not dropped.
         if (!disks.is_empty() || !feet.is_empty()) && shaft_scale > 0.0 {
-            let mut trunks = plan_tree_support(disks, feet, low, line_width);
+            let mut trunks = plan_tree_support(disks, feet, foot_fill, low, line_width);
             if shaft_scale > 1.01 {
                 for path in &mut trunks {
                     path.bead_height = layer_height * shaft_scale;

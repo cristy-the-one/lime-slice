@@ -693,9 +693,13 @@ fn floor_supports_grow_along_gravity() {
         let sliced = slice_request(&req, Job::default()).unwrap();
         assert!(sliced.sanity.ok, "{style}: {:?}", sliced.sanity.notes);
         // Under the wedge, below its lowest edge, where nothing else grows.
+        // The slender rule widens the grid column toward the belt on the
+        // side the wedge leaves free, which moves the middle of its beads
+        // off the plumb line by a couple of degrees more.
         let lean = support_lean(&sliced.gcode, 45.0, 13.0);
+        let most = if style == "grid" { 12.5 } else { 10.0 };
         assert!(
-            lean < 10.0,
+            lean < most,
             "{style} supports lean {lean:.1}° from the lab vertical"
         );
         let feet = trunk_feet(&sliced.gcode, 45.0);
@@ -870,9 +874,10 @@ fn belt_supports_under_a_roof_stand_in_gravity() {
             }
             if style == "tree" && angle > 50.0 {
                 // Main grew about 13,500 mm of trunks here. Tips under every
-                // stretch of a row must not multiply them.
+                // stretch of a row must not multiply them. The slender rule
+                // widens the feet of the trunks over 15 mm tall a little.
                 let (total, _) = in_the_air(&beads, "SUPPORT", 0.5);
-                assert!(total < 16_000.0, "trees at {angle}° grew {total:.0} mm of support");
+                assert!(total < 17_000.0, "trees at {angle}° grew {total:.0} mm of support");
             }
         }
     }
