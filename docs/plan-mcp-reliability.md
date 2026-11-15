@@ -93,6 +93,9 @@ run parallel to the caps.
 
 **Decided.** The scan counts a hit as the far side of a wall only when that face turns back toward the face the ray
 started from by more than 45°. A wall's two sides face each other, as does a knife edge's (a wedge under 45°); a corner
-of 45° or more (a rim at 90°, a facet leaning at it) is not a wall. The real kernel case is an MCP test that runs in CI's
-"MCP server against real Open CASCADE" job: a plate with a spline window and the same window as a polyline. It is not
-run on this machine, which has no Open CASCADE bridge built.
+of 45° or more (a rim at 90°, a facet leaning at it) is not a wall. On the clock's kept meshes the regions go from 2 to 8
+a part to none; the pendulum of that version, whose point was not yet rounded, keeps its real knife edge (0.007 mm).
+`thinWalls(..., { facingDeg: 180 })` gives the old reading. The real kernel case is `mcp/thin-spline-occt.test.ts`, in
+CI's "MCP server against real Open CASCADE" job: a plate with a spline window and the same window as a polyline, no
+thin wall in either, and the old rule's reading on the same mesh printed to the log. It is not run on this machine,
+which has no Open CASCADE bridge built, so whether that plate's mesh reproduces the leaning facets is unverified.
