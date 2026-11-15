@@ -29,7 +29,7 @@ import { typedView } from "../../src/modeling/typed-view.ts";
 import { gearPairRows, gearsInTree } from "../../src/gear-pair.ts";
 import { CONTACT_MM, exactVerdict, interference, MESH_TOLERANCE_MM, SLIVER_MM3 } from "../../src/interference.ts";
 import { assemblyOf, drives, solveAssembly, type Assembly } from "../../src/assembly.ts";
-import { firstContact, type ContactPart } from "../../src/contact.ts";
+import { firstContact, KERNEL_CALLS, kernelContact, pairClearance, type ContactPart, type KernelVerdict } from "../../src/contact.ts";
 import { trainTurn } from "../../src/gear-train.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
 import { noteTreeCall } from "./mesh-end.ts";
@@ -287,7 +287,10 @@ function contactParts(this: Session, assembly: Assembly): ContactPart[] {
     if (!part) return [];
     const solid = !!part.solid && part.solid.positions.length >= 9;
     const positions = solid ? part.solid!.positions : posedPositions(part.source, seatLift(part.seatMm));
-    return positions.length >= 9 ? [{ object: part.id, positions: positions instanceof Float32Array ? positions : new Float32Array(positions) }] : [];
+    // A solid's mesh is the kernel's, at the session's chord (or a STEP's own tolerance): its curved facets lie within
+    // that of the true face. A mesh part is its own triangles.
+    const chord = solid ? { chordMm: Math.max(CHORD, part.stepTolerance || CHORD) } : {};
+    return positions.length >= 9 ? [{ object: part.id, positions: positions instanceof Float32Array ? positions : new Float32Array(positions), ...chord }] : [];
   });
 }
 
@@ -323,7 +326,8 @@ async function placeUntil(this: Session, obj: PlateObject, input: Record<string,
   const poseOf = (id: string) => this.find(id)?.modelPose;
   const solved = solveAssembly(base, poseOf, this.params).assembly;
   const name = (id: string) => shownName(this.find(id)?.name ?? id);
-  const found = firstContact(solved, poseOf, contactParts.call(this, solved), {
+  const parts = contactParts.call(this, solved);
+  const found = firstContact(solved, poseOf, parts, {
     object: obj.id, dir: until.dir, against, nameOf: name,
     ...(typeof until.max === "number" ? { max: until.max } : {}),
     ...(typeof until.tolerance === "number" ? { toleranceMm: until.tolerance } : {}),
@@ -339,53 +343,100 @@ async function placeUntil(this: Session, obj: PlateObject, input: Record<string,
     return refuse("no-contact", `Nothing is touched turning ${name(found.body)} from ${searched.from} to ${searched.to} ${unit}${stop}. Nothing moved.`, { searched, evaluations: found.evaluations, ...ignored });
   }
   const pair = found.pair!;
-  // The kernel's word on the pair, at the answer and just past it. Poses are put back after.
+  const meshAnswer = found.mesh ?? { value: found.value, past: found.past!, clearanceMm: found.clearanceMm!, pair };
+  // The answer to place: the shared solve's (the mesh pass, short of it by the chords on curved faces), or the kernel's.
+  let placed = { value: found.value, assembly: found.assembly, angles: found.angles, past: found.past!, pair, clearanceMm: found.clearanceMm!, boundMm: found.boundMm ?? 0, check: "mesh" as "mesh" | "kernel" };
+  // The kernel's word on the pair (section 6): at the mesh pass's answer, then backed off until it calls the pair clear
+  // or a touch when it finds them crossing, within KERNEL_CALLS checks. Poses are put back after.
   let exact: Record<string, unknown> | undefined;
   if (until.exact !== false) {
     const a = this.find(pair.moving), b = this.find(pair.other);
     const saved = new Map(solved.members.flatMap((row) => { const one = this.find(row.object); return one ? [[one.id, { m: [...one.modelPose.m], t: [...one.modelPose.t] }] as const] : []; }));
-    const measure = async (assembly: Assembly): Promise<Record<string, unknown>> => {
-      this.writeSolved(assembly, "", false);
+    const turnedTo = (value: number) => (value === found.value ? { assembly: found.assembly, angles: found.angles } : trainTurn(solved, found.body, value - found.from));
+    const measure = async (value: number): Promise<KernelVerdict | { reason: string }> => {
+      const turned = turnedTo(value);
+      if ("reason" in turned) return { reason: turned.reason };
+      this.writeSolved(turned.assembly, "", false);
       const measured = a && b ? await this.commonVolume(a, b) : { reason: "Part gone." };
-      if ("reason" in measured) return { measured: false, note: measured.reason };
+      if ("reason" in measured) return { reason: measured.reason };
       const volumeMm3 = Math.round(measured.volumeMm3 * 1000) / 1000;
       return { verdict: measured.volumeMm3 === 0 ? "clear" : exactVerdict(measured.volumeMm3, [measured.volumes[0], measured.volumes[1]]), volumeMm3 };
     };
+    const started = Date.now();
     try {
-      const atContact = await measure(found.assembly);
-      const pastTurn = trainTurn(solved, found.body, found.past! - found.from);
-      const past = "reason" in pastTurn ? { measured: false, note: pastTurn.reason } : await measure(pastTurn.assembly);
-      exact = { atContact, past, ...(atContact.measured === false ? {} : { agrees: atContact.verdict !== "crossing" }) };
+      const kernel = await kernelContact(found, measure);
+      if ("reason" in kernel) exact = { atContact: { measured: false, note: kernel.reason } };
+      else {
+        const past = await measure(meshAnswer.past);
+        const backedOff = r6(kernel.backedOff);
+        exact = {
+          atContact: kernel.at,
+          meshAnswer: kernel.meshAnswer,
+          past: "reason" in past ? { measured: false, note: past.reason } : past,
+          agrees: kernel.meshAnswer.verdict !== "crossing",
+          // The kernel placed it when it moved the joint, or confirmed a pose the margin chose; on flat faces it agrees.
+          placed: kernel.reached && (found.mesh || kernel.meshAnswer.verdict === "crossing") ? "kernel" : "mesh",
+          backedOff: { [unit]: backedOff, travelMm: Math.round(kernel.backedOffMm * 1e4) / 1e4 + 0 },
+          kernelCalls: kernel.calls + 1,
+          budget: KERNEL_CALLS,
+          kernelMs: Date.now() - started,
+        };
+        if (exact.placed === "kernel" && kernel.value !== found.value) {
+          const turned = turnedTo(kernel.value);
+          if (!("reason" in turned)) {
+            const gap = pairClearance(turned.assembly, poseOf, parts, pair.moving, pair.other);
+            placed = { value: kernel.value, assembly: turned.assembly, angles: turned.angles, past: kernel.crossingAt ?? meshAnswer.past, pair, clearanceMm: "reason" in gap ? 0 : gap.mm, boundMm: "reason" in gap ? 0 : gap.boundMm ?? 0, check: "kernel" };
+          }
+        } else if (exact.placed === "kernel") placed = { ...placed, check: "kernel" };
+      }
     } finally {
       for (const [id, pose] of saved) { const one = this.find(id); if (one) one.modelPose = pose as typeof one.modelPose; }
     }
   }
   this.remember("Pose");
-  this.assemblies = assemblies.map((row) => (row.id === base.id ? found.assembly : row));
-  const moved = this.writeSolved(found.assembly, "", true);
+  this.assemblies = assemblies.map((row) => (row.id === base.id ? placed.assembly : row));
+  const moved = this.writeSolved(placed.assembly, "", true);
   this.autosaveDirty = true;
-  const clearance = Math.round(found.clearanceMm! * 1e5) / 1e5 + 0;
-  const value = r6(found.value);
-  const exactNote = !exact ? " The kernel was not asked (exact: false)."
-    : exact.agrees === undefined ? ` The kernel could not measure the pair: ${String((exact.atContact as { note?: string }).note ?? "")}`
-    : exact.agrees === false ? ` The kernel disagrees: it finds ${String((exact.atContact as { volumeMm3?: number }).volumeMm3)} mm³ shared at this pose, where the mesh pass finds the parts clear; the facets are short of the true surface there. The pose is the mesh pass's.`
-    : (exact.past as { verdict?: string }).verdict === "clear" ? " The kernel finds no shared volume at this pose, nor just past it: the facets meet a little before the true surfaces do, within the kernel's chord tolerance."
-    : " The kernel finds no shared volume at this pose, and shared volume just past it.";
-  const rows = found.angles.filter((row) => row.object !== found.body);
+  const mm5 = (value: number) => Math.round(value * 1e5) / 1e5 + 0;
+  const clearance = mm5(placed.clearanceMm);
+  const value = r6(placed.value);
+  const bound = mm5(placed.boundMm);
+  const meshPlaced = r6(meshAnswer.value);
+  const shortOf = found.mesh ? r6(Math.abs(meshAnswer.value - found.value)) : 0;
+  // What the mesh pass alone can say on curved faces: how the pose stands to the facets' own contact.
+  const marginNote = placed.check === "kernel" ? ""
+    : found.mesh ? ` Curved faces there are meshed to within ${bound} mm of the true faces, so it stopped ${shortOf} ${unit} short of the facets' contact (${meshPlaced}): the true parts cannot overlap, and stand at most ${mm5(clearance + bound)} mm apart.`
+    : found.marginKept === false ? ` Curved faces there are meshed to within ${bound} mm of the true faces and the parts already stood that close where it started, so this is the facets' contact: the true parts may overlap by up to ${mm5(Math.max(0, bound - clearance))} mm.`
+    : "";
+  const verdictOf = (row: unknown) => row as { verdict?: string; volumeMm3?: number; note?: string };
+  let exactNote: string;
+  if (!exact) exactNote = " The kernel was not asked (exact: false).";
+  else if (exact.agrees === undefined) exactNote = ` The kernel could not measure the pair: ${String(verdictOf(exact.atContact).note ?? "")}`;
+  else {
+    const atMesh = verdictOf(exact.meshAnswer), here = verdictOf(exact.atContact), cost = `${String(exact.kernelCalls)} kernel checks, ${(Number(exact.kernelMs) / 1000).toFixed(1)} s`;
+    if (exact.placed === "mesh") exactNote = ` The kernel finds ${String(atMesh.volumeMm3)} mm³ shared at the facets' contact (${meshPlaced}) and found no pose it calls clear within ${KERNEL_CALLS} checks: the pose is the mesh pass's, where the kernel finds ${String(here.volumeMm3)} mm³ (${String(here.verdict)}). ${cost}.`;
+    else if (exact.agrees === false) exactNote = ` At the facets' contact (${meshPlaced}) the kernel finds ${String(atMesh.volumeMm3)} mm³ shared (the facets lie inside the true round face), so the joint backed off ${r6(Math.abs(meshAnswer.value - placed.value))} ${unit} (at most ${String((exact.backedOff as { travelMm: number }).travelMm)} mm of travel) to where the kernel finds ${here.verdict === "clear" ? "no shared volume" : `${String(here.volumeMm3)} mm³, a touch`}. The pose is the kernel's, to ${found.toleranceMm} mm of travel; ${cost}.`;
+    else if (found.mesh) exactNote = ` The kernel finds ${atMesh.verdict === "clear" ? "no shared volume" : `${String(atMesh.volumeMm3)} mm³, a touch,`} at the facets' contact, so the joint stands there rather than short of it. ${cost}.`;
+    else if (verdictOf(exact.past).verdict === "clear") exactNote = " The kernel finds no shared volume at this pose, nor just past it: the facets meet a little before the true surfaces do, within the kernel's chord tolerance.";
+    else exactNote = " The kernel finds no shared volume at this pose, and shared volume just past it.";
+  }
+  const rows = placed.angles.filter((row) => row.object !== found.body);
+  const placedPair = placed.pair;
   return {
     ok: true,
-    assembly: found.assembly.name,
+    assembly: placed.assembly.name,
     object: obj.id,
     joint: found.body,
     [key]: value,
-    contact: { moving: pair.moving, other: pair.other, names: [name(pair.moving), name(pair.other)], clearanceMm: clearance, toleranceMm: found.toleranceMm, past: r6(found.past!), check: "mesh" },
+    contact: { moving: placedPair.moving, other: placedPair.other, names: [name(placedPair.moving), name(placedPair.other)], clearanceMm: clearance, boundMm: bound, toleranceMm: found.toleranceMm, past: r6(placed.past), check: placed.check },
+    ...(placed.value !== meshAnswer.value ? { mesh: { [key]: meshPlaced, past: r6(meshAnswer.past), clearanceMm: mm5(meshAnswer.clearanceMm) } } : {}),
     searched,
     evaluations: found.evaluations,
     ...ignored,
     ...(rows.length ? { angles: rows } : {}),
     ...moved,
     ...(exact ? { exact } : {}),
-    note: `${name(found.body)} turned to ${value} ${unit}, where ${name(pair.moving)} touches ${name(pair.other)} with ${clearance} mm left (the mesh pass, to ${found.toleranceMm} mm).${exactNote} One Undo puts it back.`,
+    note: `${name(found.body)} turned to ${value} ${unit}, where ${name(placedPair.moving)} touches ${name(placedPair.other)} with ${clearance} mm left between the meshes (${placed.check === "kernel" ? "placed by the kernel" : `the mesh pass, to ${found.toleranceMm} mm`}).${marginNote}${exactNote} One Undo puts it back.`,
   };
 }
 

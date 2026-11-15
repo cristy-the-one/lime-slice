@@ -457,7 +457,9 @@ pub struct Part {
 /// 1.16: recipes that use plugins (docs/plan-plugin-recipes.md): `run_plugin` runs a kept plugin as a nested run and
 /// hands back the parts it made (`PluginRun`); `attach`, `hinge`, `slide`, `hold`, `joint`, `turn_joint` and
 /// `couple_gears` build an assembly of the parts the run made, where the host can assemble (`context.limits.canAssemble`).
-pub const API: (u32, u32) = (1, 16);
+/// 1.17: an animation's frames fall at whole multiples of `1/fps`, from 0 to the first at or after the end, and
+/// `anim::frame_times` gives those times (docs/plan-pose-animation.md).
+pub const API: (u32, u32) = (1, 17);
 
 /// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
 /// part it made and left on the plate, in the order made, and the numbers it ended with. The parts are this run's from
@@ -6355,7 +6357,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 16));
+        assert_eq!(API, (1, 17));
     }
 
     #[test]
@@ -7109,17 +7111,21 @@ pub mod anim {
         Ok(Some(Touch { angle, moving, other, clearance_mm, past }))
     }
 
-    /// The times the host samples an animation's frames at (API 1.15): `end * i / (n - 1)` for `n = round(end * fps)`
-    /// frames, or one frame at 0. A key on each of these times is shown as keyed, with nothing interpolated between.
+    /// The times the host samples an animation's frames at (API 1.15; whole multiples of `1/fps` since 1.17): frame `k`
+    /// at exactly `k / fps` for `k = 0 ..= n`, where `n = ceil(end * fps)` is the first whole frame at or after `end` (an
+    /// end within a millionth of a frame past a grid time ends on it). An end between two grid times is shown by the next
+    /// one, which holds the final pose. `end = 0` is one frame at 0. A key on each of these times is shown as keyed, with
+    /// nothing interpolated between; `k as f64 / fps as f64` is the same number.
     pub fn frame_times(fps: u32, end: f64) -> Vec<f64> {
-        let n = (end * fps as f64).round();
+        let rate = fps as f64;
+        let mut last = (end * rate - 1e-6).ceil();
+        if last < 0.0 { last = 0.0; }
+        let n = last as u64;
         let mut times = Vec::new();
-        if n <= 1.0 { times.push(0.0); return times; }
-        let count = n as u64;
-        let mut i = 0u64;
-        while i < count {
-            times.push(end * i as f64 / (count - 1) as f64);
-            i += 1;
+        let mut k = 0u64;
+        while k <= n {
+            times.push(k as f64 / rate);
+            k += 1;
         }
         times
     }
@@ -7234,14 +7240,22 @@ mod animation_tests {
 
     #[test]
     fn frame_times_are_the_hosts() {
-        // The host: n = max(1, round(end * fps)) frames at end * i / (n - 1) (src/pose-anim.ts).
+        // The host (src/pose-anim.ts, frameTimes): frame k at k / fps for k = 0 ..= ceil(end * fps). The same cases are
+        // asserted there, so the two cannot drift apart.
         assert_eq!(frame_times(12, 0.0), vec![0.0]);
-        assert_eq!(frame_times(4, 0.1), vec![0.0]);
-        let times = frame_times(12, 2.0);
-        assert_eq!(times.len(), 24);
+        assert_eq!(frame_times(4, 0.1), vec![0.0, 0.25]);
+        let times = frame_times(12, 3.0);
+        assert_eq!(times.len(), 37);
         assert_eq!(times[0], 0.0);
-        assert_eq!(times[23], 2.0);
-        assert_eq!(times[5].to_bits(), (2.0 * 5.0 / 23.0f64).to_bits());
+        assert_eq!(times[36], 3.0);
+        for (k, time) in times.iter().enumerate() { assert_eq!(time.to_bits(), (k as f64 / 12.0).to_bits()); }
+        // Off the grid, the end is shown by the next whole frame.
+        let off = frame_times(12, 2.95);
+        assert_eq!(off.len(), 37);
+        assert_eq!(off[36], 3.0);
+        // Within a millionth of a frame past the grid is rounding, not another frame.
+        assert_eq!(frame_times(12, 35.0 / 12.0).len(), 36);
+        assert_eq!(frame_times(30, 0.1 + 0.2).len(), 10);
     }
 
     #[test]

@@ -1,0 +1,33 @@
+{
+  "run": {},
+  "api": "1.17",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 12,
+        "dy": 6,
+        "dz": 3
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-6,-3,0],\"size\":[12,6,3],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null"
+  ],
+  "fingerprint": {
+    "volumeMm3": 216,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "frames": 37,
+    "last": 3,
+    "offFrames": 37,
+    "offLast": 3,
+    "still": 1,
+    "onGrid": true
+  },
+  "log": []
+}

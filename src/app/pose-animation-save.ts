@@ -60,7 +60,7 @@ export function showAnimationSave(context: SaveContext): void {
       const oldResult = current.result, oldClock = current.clock, oldSwatches = current.swatches;
       let capture: ReturnType<PoseView["beginCapture"]> | null = null;
       try {
-        const { sampleAnimation } = await import("../pose-anim.ts");
+        const { endsWhereItStarts, sampleAnimation } = await import("../pose-anim.ts");
         // The script was checked for crossing parts when it ran. At its own frame rate the frames are the ones on
         // screen; at another rate only the poses are worked out again, and the warnings stay the script's.
         const again = rate === oldResult.fps ? oldResult : sampleAnimation({ ...current.spec, fps: rate }, current.original, (id) => current.poses.get(id), current.parts, { interference: false });
@@ -79,13 +79,16 @@ export function showAnimationSave(context: SaveContext): void {
         capture = view.beginCapture(px, preset);
         const gifFrames: { rgb: Uint8Array; delayCs: number }[] = [];
         const pngFrames: { name: string; bytes: Uint8Array }[] = [];
-        for (let i = 0; i < sampled.frames.length; i++) {
+        // A GIF loops: a last frame that shows the first one's poses and colours is left out of it, so the loop does not
+        // hold that pose twice (endsWhereItStarts). PNG frames keep every frame.
+        const count = format.value === "gif" && endsWhereItStarts(sampled.frames) ? sampled.frames.length - 1 : sampled.frames.length;
+        for (let i = 0; i < count; i++) {
           if (cancelled || context.active() !== current || !context.isPose()) throw new Error("Animation export cancelled.");
           current.clock.seek(i); context.sync();
           const frame = await capture.frame(format.value === "png");
           if (format.value === "gif") gifFrames.push({ rgb: frame.rgb, delayCs: Math.round((i + 1) * 100 / rate) - Math.round(i * 100 / rate) });
           else pngFrames.push({ name: `frame-${String(i + 1).padStart(3, "0")}.png`, bytes: frame.png! });
-          status.textContent = `Rendering frame ${i + 1} / ${sampled.frames.length}`;
+          status.textContent = `Rendering frame ${i + 1} / ${count}`;
         }
         if (cancelled) throw new Error("Animation export cancelled.");
         const { saveBytes, saveBytesToFolder } = await import("./save-bytes.ts");

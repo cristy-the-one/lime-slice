@@ -71,7 +71,8 @@ const frameNow = (page: Page) => page.locator("[data-pose-progress-bar]").evalua
 test("Preparing a long animation shows its stages and frames, stays responsive, cancels, and the finished one plays", async ({ page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await longAnimation(page, 600);
+  // 599 s at 30 fps: frames at k/30 s from 0 to 599 s, 17971 of them (600 s would be 18001, over the cap).
+  await longAnimation(page, 599);
   const play = page.locator("[data-pose-action='animation-play']");
   await play.click();
   await page.locator("#pluginTrust [data-choice='run']").click();
@@ -80,11 +81,11 @@ test("Preparing a long animation shows its stages and frames, stays responsive, 
   const progress = page.locator("[data-pose-progress]");
   await expect(progress).toBeVisible();
   await expect(progress).toHaveAttribute("data-stage", "frames", { timeout: 30_000 });
-  await expect(page.locator("[data-pose-progress-text]")).toHaveText(/^Preparing frame \d+ of 18000$/);
+  await expect(page.locator("[data-pose-progress-text]")).toHaveText(/^Preparing frame \d+ of 17971$/);
   await expect(page.locator("#posePanel progress")).toHaveCount(0);
   const bar = page.locator("[data-pose-progress-bar]");
   await expect(bar).toHaveAttribute("role", "progressbar");
-  await expect(bar).toHaveAttribute("aria-valuemax", "18000");
+  await expect(bar).toHaveAttribute("aria-valuemax", "17971");
   await expect(page.locator(".pose-progress-steps li[data-state='done']")).toHaveCount(2);
   await expect(page.locator(".pose-progress-steps li[data-state='active']")).toHaveText("Prepare frames");
 
@@ -122,7 +123,7 @@ test("Preparing a long animation shows its stages and frames, stays responsive, 
   await play.click();
   await expect(page.locator("[data-pose-animation-frame]")).toBeVisible({ timeout: 30_000 });
   await expect(progress).toHaveCount(0);
-  await expect(page.locator("[data-pose-animation-count]")).toHaveText(/^Frame \d+ \/ 120$/);
+  await expect(page.locator("[data-pose-animation-count]")).toHaveText(/^Frame \d+ \/ 121$/);
   await expect(pose).not.toHaveAttribute("data-posed", before!);
   expect(await page.evaluate(() => (window as unknown as TestWindow).__starts)).toBe(2);
 });
@@ -131,14 +132,15 @@ test("Without a worker the frames are prepared on the window's thread in slices:
   test.setTimeout(180_000);
   await page.route("**/pose-anim-worker*", (route) => route.abort());
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await longAnimation(page, 600);
+  // 599 s at 30 fps: frames at k/30 s from 0 to 599 s, 17971 of them (600 s would be 18001, over the cap).
+  await longAnimation(page, 599);
   await page.locator("[data-pose-action='animation-play']").click();
   await page.locator("#pluginTrust [data-choice='run']").click();
   const progress = page.locator("[data-pose-progress]");
   await expect(progress).toHaveAttribute("data-stage", "frames", { timeout: 30_000 });
   const first = await frameNow(page);
   await expect.poll(() => frameNow(page)).toBeGreaterThan(first);
-  await expect(page.locator("[data-pose-progress-text]")).toHaveText(/^Preparing frame \d+ of 18000$/);
+  await expect(page.locator("[data-pose-progress-text]")).toHaveText(/^Preparing frame \d+ of 17971$/);
   await page.locator("[data-pose-action='animation-cancel']").click();
   await expect(progress).toHaveCount(0);
   await expect(page.locator("#posePanel")).toContainText("Animation cancelled.");

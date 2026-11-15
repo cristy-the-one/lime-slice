@@ -34,7 +34,7 @@ fn main() {
 const result = await runAnimation(host, source, {}, assembly, () => IDENTITY_POSE, parts);
 assert.equal(result.ok, true, JSON.stringify(result));
 if (result.ok) {
-  assert.equal(result.result.frames.length, 4);
+  assert.equal(result.result.frames.length, 5, "0 to 1 s at 4 fps: frames at 0, 1/4, 2/4, 3/4 and 1 s");
   const last = result.result.frames.at(-1)!.assembly.members[1]!.joint!;
   assert.equal(last.kind === "hinge" && last.angle, 60);
 }
