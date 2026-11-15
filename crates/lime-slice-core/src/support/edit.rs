@@ -839,6 +839,7 @@ impl Supports {
                     lean,
                     self.opts.floor,
                     super::bridge_of(&self.opts),
+                    super::foot_taper(&self.opts),
                     &mut near,
                 );
             }
@@ -1248,6 +1249,7 @@ impl Supports {
             lean_of(&self.opts),
             self.opts.floor,
             super::bridge_of(&self.opts),
+            super::foot_taper(&self.opts),
             &crate::progress::Watch::idle(),
             self.opts.job,
         );
@@ -2233,8 +2235,9 @@ mod tests {
         assert_eq!(beside.len(), 30, "both trunks print on layers 0 to 29");
         let overlapping: Vec<usize> = beside.iter().filter(|b| b.1).map(|b| b.0).collect();
         // It steps clear one lean step a layer under the column's top, and
-        // overlaps again only where every trunk widens for the bed.
-        assert_eq!(overlapping, vec![0, 26, 27, 28, 29]);
+        // overlaps again only where every trunk widens for the bed: its
+        // foot, and the layers its disk narrows over from that foot.
+        assert_eq!(overlapping, vec![0, 1, 2, 3, 4, 5, 6, 26, 27, 28, 29]);
         assert_eq!(s.layers, s.rebuilt(&bands, &contours));
     }
 
