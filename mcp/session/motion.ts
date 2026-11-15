@@ -10,7 +10,9 @@ import { animationRig, sampleAnimationSteps, type AnimationPart, type AnimationR
 import { DEFAULTS, LIMITS, motionJob, prepareMotion, type MotionSpec } from "../../src/motion.ts";
 import type { DynPart } from "../../src/dynamics.ts";
 import { eventLoopTurn } from "../animation-run.ts";
-import { BACKGROUND, readBackground } from "../render.ts";
+import { join } from "node:path";
+import { BACKGROUND, readBackground, readCamera } from "../render.ts";
+import { resolveWrite } from "../workspace.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { posedPositions, shownName, type CallMeta, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -73,6 +75,14 @@ async function motionRun(this: Session, input: Input, meta?: CallMeta): Promise<
   const out = input.out as { gif?: string; frames?: string } | undefined;
   const fps = num(input.fps) ?? (out || input.keys === true ? 10 : 0);
   if (fps) spec.fps = fps;
+  // What a run of minutes would end on is checked before it starts: where the files go, and the view.
+  if (out) {
+    if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
+    if (out.gif) resolveWrite(out.gif, ".gif");
+    if (out.frames) resolveWrite(join(out.frames, "frame-001.png"), ".png");
+    const view = readCamera(input.camera ?? "iso");
+    if ("reason" in view) return refuse("bad-view", view.reason);
+  }
 
   // Each member's triangles in its own frame and its pose, as model_mass weighs it and pose_animate draws it.
   const parts: DynPart[] = [];
