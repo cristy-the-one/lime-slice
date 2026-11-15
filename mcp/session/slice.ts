@@ -152,6 +152,9 @@ function notSliced(this: Session): string[] {
   return [];
 }
 
+/** The most colliding pairs a whole-plate slice reply lists. */
+const COLLISION_CAP = 20;
+
 async function sliceStart(this: Session, cancelRunning: boolean, scope?: unknown): Promise<Record<string, unknown>> {
   if (this.running && this.running.status === "running") {
     if (!cancelRunning) {
@@ -168,7 +171,11 @@ async function sliceStart(this: Session, cancelRunning: boolean, scope?: unknown
   const skipped = this.notSliced();
   const built = this.sliceBody(obj, scope);
   built.body.partHold = true;
-  const collisions = this.plateCollisions();
+  // Replies stay lean: a one-object slice lists the pairs that name that object, a plate slice at most COLLISION_CAP
+  // of them, the most overlapped first, with the count of the rest.
+  const allPairs = this.plateCollisions(true);
+  const collisions = built.plate ? allPairs.slice(0, COLLISION_CAP) : allPairs.filter((pair) => pair.a === obj.id || pair.b === obj.id);
+  const collisionsMore = built.plate ? allPairs.length - collisions.length : 0;
   const plateBody = Array.isArray(built.body.objects);
   const started = JSON.parse(await this.ask(this.engine.sliceStart(JSON.stringify(built.body), plateBody ? undefined : built.mesh))) as { id?: number; error?: string };
   if (typeof started.id !== "number") return refuse("slice-failed", humanEngineError(started.error ?? "The slice did not start."));
@@ -197,6 +204,7 @@ async function sliceStart(this: Session, cancelRunning: boolean, scope?: unknown
     status: "running",
     ...identity,
     collisions,
+    ...(collisionsMore > 0 ? { collisionsMore } : {}),
     objects: this.objects.map((row) => row.id),
   };
 }
