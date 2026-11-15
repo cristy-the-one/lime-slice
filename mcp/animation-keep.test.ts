@@ -94,7 +94,7 @@ const refused = await call("pose_animate", { object: second, plugin: "escapement
 assert.equal(refused.ok, false); assert.equal(refused.code, "animation-refused");
 assert.equal(refused.reason, 'This assembly has no member matching "Escape wheel", which the parameter wheel names: set wheel to one of its members (Frame, Pallets, Escapement).');
 const played = await call("pose_animate", { object: second, plugin: "escapement-motion", params: { wheel: "Escapement", anchor: "Pallets" } });
-assert.equal(played.ok, true, JSON.stringify(played)); assert.equal(played.frames, 4);
+assert.equal(played.ok, true, JSON.stringify(played)); assert.equal(played.frames, 5);
 const pattern = await call("pose_animate", { object: second, plugin: "escapement-motion", params: { wheel: "Escape*", anchor: "Pal*" } });
 assert.equal(pattern.ok, true, JSON.stringify(pattern));
 const gif = await call("pose_animate", { object: second, plugin: "escapement-motion", params: { wheel: "Escapement", anchor: "Pallets" }, longEdge: 32, out: { gif: "second.gif" } });

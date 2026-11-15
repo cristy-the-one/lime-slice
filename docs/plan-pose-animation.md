@@ -121,7 +121,7 @@ Named aims answer L1 and most of L2: the script says "straight" or "90 % closed"
 `s.animate(&a)` sends the whole animation once: keyframes, holds, easing, camera, fps. The host:
 
 1. Checks it (D8) and refuses with every problem at once, each with its key's line.
-2. Samples the frames: `round(duration × fps)` frames, each joint interpolated between the keys that set it (linear, or `Ease::InOut` smoothstep; a joint no key sets keeps its current angle), clamped to its limits. A ball interpolates by quaternion slerp. A `Reach` key is solved per frame from the previous frame's pose with `solvePose` (`plan-pose.md` section 3), so a reach tracks smoothly rather than jumping to one solution.
+2. Samples the frames: frame `k` at exactly `k / fps`, for `k = 0 … ceil(duration × fps)` (6.8.0; an end off that grid is shown by the next frame, which holds the final pose, and `durationS` is the last frame's time; before, `round(duration × fps)` frames were spread over `[0, duration]`), each joint interpolated between the keys that set it (linear, or `Ease::InOut` smoothstep; a joint no key sets keeps its current angle), clamped to its limits. A ball interpolates by quaternion slerp. A `Reach` key is solved per frame from the previous frame's pose with `solvePose` (`plan-pose.md` section 3), so a reach tracks smoothly rather than jumping to one solution.
 3. Computes **one framing** for all frames (D5) and renders them.
 4. Answers `{frames, durationS, fps, keys: [{t, line, reached?, distanceMm?, clamped?: [names]}], files?}`: one line per key, never one per frame or per part (L4).
 

@@ -123,7 +123,8 @@ clearance left, at most 0.01 mm); `first_contact_with` takes a `ContactAsk` (a p
 `rig.clearance` is the least distance between two members (mm, 0 when touching or crossing), `rig.crossing` the mesh
 pass's verdict, and `rig.angle` a member's angle there (a gear train's follower as its lead turns it). `at` is a `Pose`,
 resolved as a key at time 0 would be; nothing moves and nothing is kept between reads. `anim::frame_times(fps, end)` are
-the times the host samples frames at, so keys put there are shown as read. The numbers are the host's: the crate sends
+the times the host samples frames at, so keys put there are shown as read: since API 1.17, `k / fps` for
+`k = 0 ..= ceil(end * fps)`, every frame `1/fps` apart, an end off that grid shown by the next frame. The numbers are the host's: the crate sends
 JSON and reads JSON, so lust and rustc builds send the same calls and get the same answers.
 
 ## Recipes that use plugins (API 1.16)
@@ -136,3 +137,11 @@ asks for one version. Where the host can assemble (`context.limits.canAssemble`)
 `joint`, `hinge`, `slide`, `hold`, `turn_joint` and `couple_gears` place the parts the run made, set their joints and
 couple their gears, as `model_place` does. The crate only sends and reads JSON, so lust and rustc builds send the same
 calls (`mcp/plugin-recipes.test.ts`). See `docs/plan-plugin-recipes.md`.
+
+## Frames on the 1/fps grid (API 1.17)
+
+The host samples every animation at frame `k` = `k / fps`, for `k = 0 ..= ceil(end * fps)`, where `end` is the last key
+time with its hold; an end off that grid is shown by the next frame, which holds the final pose. `anim::frame_times(fps,
+end)` returns exactly those times (before 1.17 it returned the old `round(end * fps)` frames spread over `[0, end]`), and
+`k as f64 / fps as f64` is the same number, so a script that keys every `1/fps` puts each key on a frame. A plugin of an
+earlier level built against this crate gets the new times too: they are the host's. See `docs/plan-pose-animation.md`.

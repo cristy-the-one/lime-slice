@@ -33,26 +33,64 @@ fn main() {
 }`;
 const dry = await call("pose_animate", { object: finger, source });
 assert.equal(dry.ok, true, JSON.stringify(dry));
-assert.equal(dry.frames, 4);
+// Frames at 0, 1/4, 2/4, 3/4 and 1 s (docs/plan-pose-animation.md): one every 1/fps, the end included.
+assert.equal(dry.frames, 5);
+assert.equal(dry.durationS, 1);
 assert.ok(Array.isArray(dry.rig));
 const saved = await call("pose_animate", { object: finger, source, longEdge: 64, out: { gif: "arm.gif", frames: "arm-frames" } });
 assert.equal(saved.ok, true, JSON.stringify(saved));
-assert.equal(saved.frames, 4);
+assert.equal(saved.frames, 5);
 assert.ok(JSON.stringify(saved).length < 4000);
 assert.equal(readFileSync(join(workspace, "arm.gif")).subarray(0, 6).toString(), "GIF89a");
-assert.ok(existsSync(join(workspace, "arm-frames", "frame-001.png")) && existsSync(join(workspace, "arm-frames", "frame-004.png")));
-assert.notDeepEqual(readFileSync(join(workspace, "arm-frames", "frame-001.png")), readFileSync(join(workspace, "arm-frames", "frame-004.png")));
+assert.ok(existsSync(join(workspace, "arm-frames", "frame-001.png")) && existsSync(join(workspace, "arm-frames", "frame-005.png")) && !existsSync(join(workspace, "arm-frames", "frame-006.png")));
+assert.notDeepEqual(readFileSync(join(workspace, "arm-frames", "frame-001.png")), readFileSync(join(workspace, "arm-frames", "frame-005.png")));
+assert.equal(readGif(readFileSync(join(workspace, "arm.gif"))).frames.length, 5, "the arm ends turned and blue: every frame is in the GIF");
+assert.equal((saved.files as { gifFrames?: number }).gifFrames, undefined);
 assert.deepEqual(session.assemblies, before);
 assert.deepEqual(session.objects.map((row) => row.modelPose), poses);
 assert.equal(dry.frameTiming, undefined, "keys at 0 and 1 s fall on the first and last frames");
-// A key between frames is said (docs/plan-mcp-reliability.md, item 2): 4 frames from 0 to 1 s are 1/3 s apart.
-const between = await call("pose_animate", { object: finger, source: source.replace("a.key(1.0,", "a.key(0.5, Pose::new().set_all(&rig.group(\"Finger\"), Aim::Degrees(30.0)));\n  a.key(1.0,") });
+// A key on the 1/fps grid is on a frame; one off it is said (docs/plan-mcp-reliability.md, item 2).
+const onGrid = await call("pose_animate", { object: finger, source: source.replace("a.key(1.0,", "a.key(0.5, Pose::new().set_all(&rig.group(\"Finger\"), Aim::Degrees(30.0)));\n  a.key(1.0,") });
+assert.equal(onGrid.ok, true, JSON.stringify(onGrid));
+assert.equal(onGrid.frameTiming, undefined, "0.5 s is frame 2 at 4 fps");
+const between = await call("pose_animate", { object: finger, source: source.replace("a.key(1.0,", "a.key(0.4, Pose::new().set_all(&rig.group(\"Finger\"), Aim::Degrees(30.0)));\n  a.key(1.0,") });
 assert.equal(between.ok, true, JSON.stringify(between));
-assert.ok(String(between.frameTiming).startsWith("1 of 3 keys fall between frames: the 4 frames are spread from 0 to 1 s, 0.3333 s apart (not 1/4 s)"), String(between.frameTiming));
+assert.ok(String(between.frameTiming).startsWith("1 of 3 keys fall between frames: frames are at whole multiples of 1/4 s"), String(between.frameTiming));
+// A script that keys on anim::frame_times has every key on a frame.
+const gridKeys = await call("pose_animate", { object: finger, source: `use lime_recipe::{anim::*, Session};
+fn main() {
+  let mut s = Session::start();
+  let mut a = Animation::new(12);
+  let times = frame_times(12, 1.0);
+  let mut k = 0usize;
+  while k < times.len() { a.key(times[k], Pose::new().set("Finger", 5.0 * k as f64)); k += 1; }
+  s.animate(&a).unwrap();
+}` });
+assert.equal(gridKeys.ok, true, JSON.stringify(gridKeys));
+assert.equal(gridKeys.frames, 13);
+assert.equal(gridKeys.frameTiming, undefined, "keys on frame_times fall on frames");
+// A GIF loops: an arm that swings out and back ends where it starts, so the GIF leaves out the last frame (the first
+// one's pose again) and the PNG frames keep it.
+const swing = `use lime_recipe::{anim::*, Session};
+fn main() {
+  let mut s = Session::start();
+  let mut a = Animation::new(4);
+  a.key(0.0, Pose::rest());
+  a.key(0.5, Pose::new().set("Finger", 60.0));
+  a.key(1.0, Pose::rest());
+  s.animate(&a).unwrap();
+}`;
+const looped = await call("pose_animate", { object: finger, source: swing, longEdge: 32, out: { gif: "swing.gif", frames: "swing-frames" } });
+assert.equal(looped.ok, true, JSON.stringify(looped));
+assert.equal(looped.frames, 5);
+assert.equal((looped.files as { gifFrames?: number }).gifFrames, 4);
+assert.equal((looped.files as { count?: number }).count, 5);
+assert.equal(readGif(readFileSync(join(workspace, "swing.gif"))).frames.length, 4);
+assert.ok(existsSync(join(workspace, "swing-frames", "frame-005.png")));
 const longSource = source.replace("Animation::new(4)", "Animation::new(15)").replace("a.key(1.0,", "a.key(4.0,");
 const long = await call("pose_animate", { object: finger, source: longSource, longEdge: 32, out: { gif: "long.gif" } });
 assert.equal(long.ok, true, JSON.stringify(long));
-assert.equal(long.frames, 60);
+assert.equal(long.frames, 61);
 assert.ok(JSON.stringify(long).length < 4000);
 const bad = await call("pose_animate", { object: finger, source: source.replace('rig.group("Finger")', 'rig.group("missing")') });
 assert.equal(bad.ok, false);
@@ -66,7 +104,7 @@ const backdrop = async (name: string, script: string, background: string | undef
   assert.equal(made.ok, true, JSON.stringify(made));
   assert.deepEqual(pngCorner(join(workspace, name, "frame-001.png")), want, name);
   const gif = readGif(readFileSync(join(workspace, `${name}.gif`)));
-  assert.equal(gif.frames.length, 4);
+  assert.equal(gif.frames.length, 5);
   assert.equal(gif.localPalettes, 0);
   for (const frame of gif.frames) assert.deepEqual([...frame.subarray(0, 3)], want, name);
 };
@@ -98,9 +136,9 @@ assert.equal((busy.job as { job?: string } | undefined)?.job, early.job, "the se
 let finished = early;
 while (finished.status === "running") finished = await call("slice_wait", { job: early.job, timeoutS: 30 });
 assert.equal(finished.ok, true, JSON.stringify(finished));
-assert.equal(finished.frames, 120);
-assert.equal(readGif(readFileSync(join(workspace, "job.gif"))).frames.length, 120);
-assert.ok(existsSync(join(workspace, "job-frames", "frame-120.png")));
+assert.equal(finished.frames, 121);
+assert.equal(readGif(readFileSync(join(workspace, "job.gif"))).frames.length, 121);
+assert.ok(existsSync(join(workspace, "job-frames", "frame-121.png")));
 assert.deepEqual(leftovers(workspace), []);
 const second = await call("pose_animate", { object: finger, source: longer, longEdge: 1024, out: { gif: "cancel.gif", frames: "cancel-frames" } });
 assert.equal(second.status, "running", JSON.stringify(second));
