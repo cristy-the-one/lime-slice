@@ -130,6 +130,7 @@ src/model-hole.test.ts
 src/model-primitive.test.ts
 src/gear-pair.test.ts
 src/gear-train.test.ts
+src/assembly-edit.test.ts
 src/gear-kinds.test.ts
 src/gear-planet.test.ts
 src/gear-rack.test.ts
