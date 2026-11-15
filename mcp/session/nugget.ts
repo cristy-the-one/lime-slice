@@ -14,6 +14,14 @@ import { type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { SESSION_URL } from "../session-url.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { needsLine } from "../../src/anim-members.ts";
+
+/** What a find row says of an animation plugin: that it is one, the tool that plays it, and the members it needs. */
+export function animationFields(h: PluginHeader): Record<string, unknown> {
+  if (h.kind !== "animation") return {};
+  const needs = needsLine(h.params, h["member-params"], h["member-names"]);
+  return { pluginKind: "animation", run: "pose_animate", ...(needs ? { needs } : {}) };
+}
 
 /**
  * --- I16. nugget {action: find | get | save | remove, kind}: plugins, ingredients, presets and lessons in one tool
@@ -24,8 +32,10 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
   const action = input.action;
   const kind = typeof input.kind === "string" ? input.kind : undefined;
   if (action === "find") return this.nuggetFind(typeof input.query === "string" ? input.query.trim() : "", kind);
-  if (!kind) return refuse("bad-action", `${String(action)} needs kind: plugin, ingredient, preset, or lesson.`);
+  if (!kind) return refuse("bad-action", `${String(action)} needs kind: plugin, animation, ingredient, preset, or lesson.`);
   if (kind === "plugin") return this.pluginTool({ ...input, action });
+  // --- docs/plan-animation-plugins.md A1: an animation plugin, by the plugin tool, restricted to animations.
+  if (kind === "animation") return this.pluginTool({ ...input, action, animationOnly: true });
   const id = typeof input.id === "string" ? input.id.trim() : "";
   if (kind === "ingredient") {
     const dir = ingredientsDir();
@@ -80,7 +90,7 @@ async function nuggetTool(this: Session, input: Record<string, unknown>): Promis
     if (action === "remove" && shipped) return refuse("bad-action", "This lesson ships with Lime Slice and stays.");
     if (action === "remove") return removeLesson(n) ? { ok: true, kind, id } : refuse("lesson-not-found", `No lesson ${id}.`);
   }
-  return refuse("bad-action", "action is find, get, save, or remove; kind is plugin, ingredient, preset, or lesson.");
+  return refuse("bad-action", "action is find, get, save, or remove; kind is plugin, animation, ingredient, preset, or lesson.");
 }
 
 function ingredientNames(this: Session): string[] {
@@ -107,23 +117,33 @@ function promotion(this: Session, usedBy: string[]): Record<string, unknown> {
 function nuggetFind(this: Session, query: string, kind: string | undefined): Record<string, unknown> {
   const rows: { score: number; row: Record<string, unknown> }[] = [];
   const score = (hay: string) => (query ? queryScore({ plugin: hay, title: "", description: "" }, query) : 1);
-  const want = (k: string) => kind === undefined || kind === k;
+  const want = (k: string) => kind === undefined || kind === k || (k === "plugin" && kind === "animation");
+  // find {kind: "animation"}: the animation plugins only.
+  const fits = (h: PluginHeader) => kind !== "animation" || h.kind === "animation";
   if (want("plugin")) {
     const marks = this.importMarks();
     for (const file of listLibrary(pluginsDir())) {
       const h = file.header;
+      if (!fits(h)) continue;
       const s = score(`${h.plugin} ${h.title} ${h.description}`);
-      if (s) rows.push({ score: s + 0.5, row: { kind: "plugin", id: h.plugin, v: h.version, ...(h.kind === "animation" ? { pluginKind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+      if (s) rows.push({ score: s + 0.5, row: { kind: "plugin", id: h.plugin, v: h.version, ...animationFields(h), target: h.target, params: paramSummary(h.params), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
     // A read-only library beside the own one: listed after it, never over it, and marked imported.
     const ownIds = new Set(rows.map((r) => r.row.id));
     for (const file of listExtra()) {
       const h = file.header;
-      if (ownIds.has(h.plugin)) continue;
+      if (ownIds.has(h.plugin) || !fits(h)) continue;
       const s = score(`${h.plugin} ${h.title} ${h.description}`);
-      if (s) rows.push({ score: s, row: { kind: "plugin", id: h.plugin, v: h.version, ...(h.kind === "animation" ? { pluginKind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
+      if (s) rows.push({ score: s, row: { kind: "plugin", id: h.plugin, v: h.version, ...animationFields(h), target: h.target, params: paramSummary(h.params), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
     }
-    const names = new Set([...this.rustRecipes.keys()].map((key) => key.split("@")[0]!).filter((n) => n !== "plugin_check"));
+    // The animations this project keeps that the library does not hold: what a keep would add.
+    const listed = new Set(rows.map((r) => r.row.id));
+    for (const [name, animation] of this.animations) {
+      if (listed.has(name) || (animation.plugin && listed.has(animation.plugin))) continue;
+      const s = score(`${name} animation`);
+      if (s) rows.push({ score: s, row: { kind: "plugin", id: name, pluginKind: "animation", run: "pose_animate", project: true, keep: `nugget {action:"save", kind:"animation", from:"${name}", title}` } });
+    }
+    const names = new Set(kind === "animation" ? [] : [...this.rustRecipes.keys()].map((key) => key.split("@")[0]!).filter((n) => n !== "plugin_check"));
     for (const name of names) {
       const draft = this.latestDraft(name);
       const s = draft ? score(name) : 0;

@@ -4,6 +4,7 @@
  * Crypto's. The MCP server writes these files (`mcp/plugins.ts`); this reads the same format.
  */
 import type { PluginValue } from "./model-tree.ts";
+import { memberListText, readMemberList } from "./anim-members.ts";
 
 /** One declared parameter, as the header's `params` caches it. */
 export interface PluginParamInfo {
@@ -34,6 +35,10 @@ export interface PluginFileInfo {
   params: PluginParamInfo[];
   /** Whether a run needs a part (`object`), may take one (`either`), or makes its own (`new`). */
   target: PluginTarget;
+  /** An animation's text parameters that name assembly members (docs/plan-animation-plugins.md A2). */
+  memberParams?: string[];
+  /** The member names or patterns an animation uses as written, that no parameter sets. */
+  memberNames?: string[];
   /** The header's `source-sha256`: the body the header was written for. */
   headerSha: string;
   created: string;
@@ -81,6 +86,9 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
     params = [];
   }
   const target = fields.get("target");
+  const animation = fields.get("kind") === "animation";
+  const memberParams = animation ? readMemberList(fields.get("member-params")) : null;
+  const memberNames = animation ? readMemberList(fields.get("member-names")) : null;
   return {
     plugin,
     ...(fields.get("kind") === "animation" ? { kind: "animation" as const } : {}),
@@ -92,6 +100,8 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
     api: fields.get("api") ?? "1.0",
     params,
     target: target === "object" || target === "either" ? target : "new",
+    ...(memberParams?.length ? { memberParams } : {}),
+    ...(memberNames?.length ? { memberNames } : {}),
     headerSha: fields.get("source-sha256") ?? "",
     created: fields.get("created") ?? "",
     lust: fields.get("lust") ?? "",
@@ -116,6 +126,8 @@ export interface PluginHeaderOut {
   created: string;
   target: PluginTarget;
   params: PluginParamInfo[];
+  memberParams?: string[];
+  memberNames?: string[];
 }
 
 /** The file text: the front matter as inner doc comments, then the body, so the file is a valid main.rs as it stands. */
@@ -134,6 +146,8 @@ export function pluginFileText(header: PluginHeaderOut, body: string): string {
     ["created", header.created],
     ["target", header.target],
     ["params", JSON.stringify(header.params)],
+    ["member-params", header.kind === "animation" ? memberListText(header.memberParams) : undefined],
+    ["member-names", header.kind === "animation" ? memberListText(header.memberNames) : undefined],
   ];
   const lines = fields.filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => `//! ${key}: ${value}`);
   return [FENCE, ...lines, FENCE, body.replace(/\r\n?/g, "\n").replace(/^\n+/, "")].join("\n");

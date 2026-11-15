@@ -61,6 +61,7 @@ import {
 import { DEMO_PLUGIN, DEMO_TRY } from "../plugins/demo";
 import { RECIPE_API } from "../plugin-step";
 import { apiVerdict } from "../recipe/api-level";
+import { needsLine } from "../anim-members";
 import { KIND_PURPOSE, PURPOSE, REASON } from "./plugins-panel-text";
 import { setLessons } from "./lessons-note";
 import { pickField, sketchValue, type SketchChoice } from "./pick-field";
@@ -616,7 +617,11 @@ function trustBox(plugin: PanelPlugin): HTMLElement | null {
 
 /** "Builds a new part", "Changes Part 1", or what to do when it needs a part and none is open. */
 function targetLine(plugin: PanelPlugin): string {
-  if (plugin.file.kind === "animation") return "Poses an assembly. Open Pose to play it.";
+  if (plugin.file.kind === "animation") {
+    // docs/plan-animation-plugins.md A4: the members it needs, so a person knows which assemblies it fits.
+    const needs = needsLine(plugin.file.params, plugin.file.memberParams, plugin.file.memberNames);
+    return needs ? `Poses ${needs}. Open Pose to play it.` : "Poses an assembly. Open Pose to play it.";
+  }
   const part = host?.partName() ?? null;
   const target = plugin.file.target === "new" ? "Builds a new part."
     : plugin.file.target === "object" ? part ? `Changes ${part}.` : REASON.needsPart

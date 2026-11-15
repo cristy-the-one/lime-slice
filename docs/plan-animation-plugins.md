@@ -58,7 +58,8 @@ word. Its reply adds `kept: {id, version, sha256, memberParams?, memberNames?, n
 - `nugget {action: "save", kind: "animation", from | source, title, description?, members?}` keeps one too:
   `from` names an animation kept with this project (`mcpModel.animations`, the name `pose_animate` gave it), `source`
   is code. `kind: "plugin"` with `from` falls back to the project's animations when no recipe run has that name, and a
-  `source` whose header says `kind: animation` is kept as one. `nugget` `get`, `export` and `remove` take
+  `source` whose header says `kind: animation`, or code that uses `anim::` and sends `.animate(&…)`, is kept as one
+  (a recipe's defaults check could only refuse it). `nugget` `get`, `export` and `remove` take
   `kind: "animation"` as `plugin` restricted to animations, and `find {kind: "animation"}` lists only them.
 
 ### A2. Member names are `text` parameters, marked in the header

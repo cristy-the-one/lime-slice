@@ -1992,3 +1992,6 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-animation-save label { display: grid; grid-template-columns: 1fr minmax(90px, 150px); gap: 12px; align-items: center; margin: 8px 0; }
 .pose-animation-save input, .pose-animation-save select { max-width: 100%; }
 .pose-animation-save .pose-buttons { display: flex; gap: 8px; margin-top: 16px; }
+.pose-animation-keep label { grid-template-columns: 1fr; gap: 4px; }
+.pose-animation-keep input, .pose-animation-keep textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.pose-animation-keep p { margin: 0 0 12px; color: var(--muted); }
