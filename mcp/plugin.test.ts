@@ -142,6 +142,12 @@ check("a changed body kept under the plugin's name is version 2", edited.ok === 
 const other = await call("recipe_run", { source: flange(" + 2.0"), name: "other", keep: { title: "Bolt-circle flange", description: "Someone else's." } });
 check("another recipe with the same title is kept beside it", other.ok === true && (other.kept as { id: string } | undefined)?.id === "bolt-circle-flange-2", other);
 
+check("and the reply says why: the existing plugin, its id, and the name that versions it", (() => {
+  const note = String((other.kept as { note?: string } | undefined)?.note);
+  return note.includes('"bolt-circle-flange"') && note.includes('"bolt-circle-flange-2"') && note.includes('name: "bolt-circle-flange"') && !/[\r\n]/.test(note);
+})(), (other.kept as { note?: string } | undefined)?.note ?? "no note");
+check("a keep that makes a new version carries no note", (edited.kept as { note?: string } | undefined)?.note === undefined, edited.kept as object);
+
 // --- A file edited by hand: the hash and parameters are worked out again, the version goes up, and it says so.
 const path2 = join(library, "bolt-circle-flange-2.rs");
 writeFileSync(path2, readFileSync(path2, "utf8").replace('s.count("holes", 6)', 's.count("holes", 5)'));
