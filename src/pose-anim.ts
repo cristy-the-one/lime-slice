@@ -123,12 +123,32 @@ function rotateBall(member: Member, target: Quaternion, centre: Vec3): Member | 
   return turnBall(member, [delta[0] / sin, delta[1] / sin, delta[2] / sin], 2 * Math.atan2(sin, delta[3]) * 180 / Math.PI, centre);
 }
 
-/** Validate all keys before returning any frame; never mutate the given assembly or poses. */
+/** How far sampling has come: `frame` frames of `count` are ready. */
+export interface SampleStep { frame: number; count: number }
+export type SampleOutcome = AnimationResult | { issues: AnimationIssue[] };
 /**
- * `options.interference: false` leaves the parts' crossing check out: a second sampling of a script that was already
- * checked (an export at another frame rate) only needs the poses.
+ * `interference: false` leaves the parts' crossing check out: a second sampling of a script that was already checked
+ * (an export at another frame rate) only needs the poses. `onProgress` hears each frame as it is ready (frame of count),
+ * the parts' crossing check of that frame included.
  */
-export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { interference?: boolean } = {}): AnimationResult | { issues: AnimationIssue[] } {
+export interface SampleOptions { interference?: boolean; onProgress?: (frame: number, count: number) => void }
+
+/** Validate all keys before returning any frame; never mutate the given assembly or poses. */
+export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: SampleOptions = {}): SampleOutcome {
+  const steps = sampleAnimationSteps(animation, original, poseOf, parts, options);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+    options.onProgress?.(step.value.frame, step.value.count);
+  }
+}
+
+/**
+ * `sampleAnimation` one frame at a time: it yields how many frames are ready of how many (0 of N first, once the keys
+ * are read), and returns what `sampleAnimation` returns. A caller that must not hold the thread (the window, when no
+ * worker can be made) runs it in slices; `sampleAnimation` runs it to the end. One body, so both answer the same.
+ */
+export function* sampleAnimationSteps(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: SampleOptions = {}): Generator<SampleStep, SampleOutcome, void> {
   if (!record(animation)) return { issues: [{ reason: "An animation must be an object." }] };
   const issues: AnimationIssue[] = [], warnings: AnimationIssue[] = [];
   const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
@@ -271,6 +291,7 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
   const frameTimes = Array.from({ length: count }, (_, frame) => count === 1 ? 0 : end * frame / (count - 1));
   const frameNumbers = new Map(frameTimes.map((time, frame) => [time, frame]));
   const times = [...new Set([...frameTimes, ...keys.map((key) => key.t)])].sort((a, b) => a - b);
+  yield { frame: 0, count };
   for (const time of times) {
     while (colorIndex < colorEvents.length && colorEvents[colorIndex]!.time <= time) {
       const event = colorEvents[colorIndex++]!; colors.set(event.id, event.color);
@@ -351,6 +372,7 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
     }
     // The assembly is replaced, never written to, from one time to the next, so a frame can hold it as it is.
     frames.push({ time, assembly, poses: new Map(poses), colors: new Map(colors) });
+    yield { frame: frames.length, count };
   }
   return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
 }

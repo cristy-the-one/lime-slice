@@ -143,3 +143,45 @@ console.log("pose animation: interpolation, holds, names, validation, slerp and 
   same(animationStale(built, undefined, was, again), "The assembly was removed", "no assembly");
   console.log("animationStale: ok");
 }
+
+// --- Progress, and the window's ways of sampling: each frame is told as it is ready, and every way answers the same.
+{
+  const { sampleAnimationSteps } = await import("./pose-anim.ts");
+  const { sampleAnimationInBackground, sampleAnimationSliced, CANCELLED } = await import("./pose-anim-sample.ts");
+  const spec: PoseAnimation = { fps: 10, colors: { "Finger*": "#e07040" }, keys: [{ t: 0, rest: true }, { t: 0.55, line: 4, set: { Finger: { reach: { at: [10, 0, 0], to: [0, 10, 0] } } } }, { t: 2, set: { Finger: 30 } }] };
+  const heard: [number, number][] = [];
+  const plain = sampleAnimation(spec, clashRig, poseOf, clashParts);
+  const told = sampleAnimation(spec, clashRig, poseOf, clashParts, { onProgress: (frame, count) => heard.push([frame, count]) });
+  if ("issues" in told || "issues" in plain) throw Error("the progress animation was refused");
+  assert.equal(told.frames.length, 20);
+  // 0 of 20 once the keys are read, then 1 … 20: one call per frame, in order, never past the count.
+  assert.deepEqual(heard, Array.from({ length: 21 }, (_, frame) => [frame, 20]));
+  assert.deepEqual(told, plain, "a progress callback changes nothing in the answer");
+  assert.ok(told.warnings.length > 0 && told.interferenceChecked, "the crossing check ran in the frames progress counts");
+  // A refused animation says nothing of frames.
+  const refusedHeard: number[] = [];
+  const refused = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { missing: 1 } }] }, rig, poseOf, parts, { onProgress: (frame) => refusedHeard.push(frame) });
+  assert.ok("issues" in refused && refusedHeard.length === 0);
+  // The steps run to the end are sampleAnimation.
+  const steps = sampleAnimationSteps(spec, clashRig, poseOf, clashParts);
+  let step = steps.next();
+  while (!step.done) step = steps.next();
+  assert.deepEqual(step.value, plain);
+  // The window's thread in slices, and the background call where no Worker exists (node): the same answer.
+  const slicedHeard: number[] = [];
+  const sliced = await sampleAnimationSliced(spec, clashRig, poseOf, clashParts, { onProgress: (frame) => slicedHeard.push(frame) });
+  assert.deepEqual(sliced, plain);
+  assert.deepEqual(slicedHeard, Array.from({ length: 21 }, (_, frame) => frame));
+  assert.deepEqual(await sampleAnimationInBackground(spec, clashRig, poseOf, clashParts), plain);
+  // What a worker sends back crosses by structured clone: the Maps, the frames' assemblies and the warnings intact.
+  const crossed = structuredClone(plain);
+  assert.deepEqual(crossed, plain);
+  assert.ok(crossed.frames[3]!.poses instanceof Map && crossed.frames[3]!.colors.get("upper") === "#e07040");
+  // The frames' shared assemblies stay shared: a clone keeps one object where the sampler kept one.
+  const shared = plain.frames.findIndex((frame, at) => at > 0 && frame.assembly === plain.frames[at - 1]!.assembly);
+  if (shared > 0) assert.equal(crossed.frames[shared]!.assembly, crossed.frames[shared - 1]!.assembly);
+  // A cancel stops between frames, and says so.
+  const abort = new AbortController();
+  await assert.rejects(sampleAnimationSliced(spec, clashRig, poseOf, clashParts, { signal: abort.signal, onProgress: (frame) => { if (frame === 3) abort.abort(); } }), new RegExp(CANCELLED));
+  console.log("sampleAnimation progress, slices and clone equality: ok");
+}
