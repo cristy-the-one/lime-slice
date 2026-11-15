@@ -38,9 +38,9 @@ test("the panel lists every kind of nugget, filters by kind, searches them all, 
 
   // All: each kind with its count, plugins first, then ingredients, presets and lessons.
   const chips = card(page).locator(".pp-kind");
-  await expect(chips).toHaveText(["All", "Plugins 3", "Ingredients 1", "Presets 1", "Lessons 2"]);
+  await expect(chips).toHaveText(["All", "Plugins 8", "Ingredients 1", "Presets 1", "Lessons 2"]);
   await expect(card(page).locator('.pp-kind[data-kind="all"]')).toHaveAttribute("aria-pressed", "true");
-  await expect(card(page).locator(".pp-section-title")).toHaveText(["Your plugins", "Ingredients", "Presets", "Lessons"]);
+  await expect(card(page).locator(".pp-section-title")).toHaveText(["Your plugins", "Built in", "Ingredients", "Presets", "Lessons"]);
   await page.screenshot({ path: `${shots}/all.png` });
 
   // A chip shows one kind; the choice stays for the next visit.

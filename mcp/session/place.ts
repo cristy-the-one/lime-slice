@@ -14,6 +14,7 @@ import { assemblyOf, DECLARED_KINDS, jointAt, turnsOnPlate, withFound, withRootA
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+import { ratchetFromStamps } from "../../src/plugins/clock-parts.ts";
 
 /** Join several parts at their current poses, validating the entire assembly before changing it. */
 function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<string, unknown> {
@@ -288,8 +289,9 @@ function couplingRow(row: Coupling): Record<string, unknown> {
  */
 function coupleMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
   if (Object.keys(input).some((key) => !["object", "couple", "compact"].includes(key))) return refuse("conflicting-arguments", "Give couple on its own.");
-  const given = input.couple as Record<string, unknown> | null;
+  let given = input.couple as Record<string, unknown> | null;
   if (!given || typeof given !== "object" || Array.isArray(given)) return refuse("bad-argument", "couple is {driven, kind, ...}: see guide {kind:\"pose\"}.");
+  let read: string[] = [];
   const allowed = ["driven", "kind", "ratio", "radius", "wind", "free", "click", "teeth", "tip", "root", "remove"];
   const extra = Object.keys(given).find((key) => !allowed.includes(key));
   if (extra) return refuse("bad-argument", `couple takes no ${extra}: it takes ${allowed.join(", ")}.`);
@@ -325,6 +327,16 @@ function coupleMember(this: Session, obj: PlateObject, input: Record<string, unk
       const box = this.assembledBox(click);
       if (box) clickCentre = [0, 1, 2].map((i) => (box.min[i]! + box.max[i]!) / 2) as Vec3;
     }
+    // --- docs/plan-clock-parts.md. A ratchet's numbers left out are read from its parts' stamps (Ratchet wheel, Ratchet click).
+    if (kind === "ratchet" && clickId !== undefined) {
+      const clickPart = this.find(clickId)!;
+      const wheelJoint = mine.members.find((row) => row.object === obj.id)?.joint;
+      const stamped = ratchetFromStamps({ name: shownName(obj.name), tree: obj.tree, hingeAxis: wheelJoint?.kind === "hinge" ? wheelJoint.axis : undefined }, { name: shownName(clickPart.name), tree: clickPart.tree, pose: clickPart.modelPose }, { teeth: given.teeth as number | undefined, tip: given.tip as number | undefined, root: given.root as number | undefined, free: given.free as 1 | -1 | undefined }, (sha) => this.projectPlugins.get(sha));
+      if ("reason" in stamped) return refuse("bad-assembly", stamped.reason);
+      given = { ...given, ...stamped.fill };
+      if (stamped.clickCentre) clickCentre = stamped.clickCentre;
+      read = stamped.said;
+    }
     const spec: DeclareSpec = {
       driver: obj.id, driven: driven.id, kind: kind as DeclareSpec["kind"],
       ...(given.ratio !== undefined ? { ratio: given.ratio as number } : {}),
@@ -351,8 +363,9 @@ function coupleMember(this: Session, obj: PlateObject, input: Record<string, unk
     ok: true,
     assembly: assembly.name,
     ...(made ? { coupling: couplingRow(made) } : { removed: [obj.id, driven.id] }),
+    ...(read.length ? { read } : {}),
     couplings: rows.map(couplingRow),
-    ...(input.compact === true ? {} : { note: made ? `${couplingLine(made)}. Turning either part now moves the other: model_place {angle} or {travel}, or pose_animate. Nothing moved yet.` : "The declared coupling is gone; each part moves on its own joint again." }),
+    ...(input.compact === true ? {} : { note: made ? `${couplingLine(made)}.${read.length ? ` ${read.join(" ")}` : ""} Turning either part now moves the other: model_place {angle} or {travel}, or pose_animate. Nothing moved yet.` : "The declared coupling is gone; each part moves on its own joint again." }),
   };
 }
 

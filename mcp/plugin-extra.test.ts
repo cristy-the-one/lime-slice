@@ -57,7 +57,7 @@ session.clientName = "plugin-extra-test";
 const call = (name: string, args: unknown = {}) => session.call(name, args);
 
 const listed = await call("plugin", { action: "list" });
-const rows = (listed.plugins ?? []) as { id: string; library?: string; imported?: boolean; data: { title: string } }[];
+const rows = ((listed.plugins ?? []) as { shipped?: boolean }[]).filter((row) => !row.shipped) as { id: string; library?: string; imported?: boolean; data: { title: string } }[];
 const ids = rows.map((row) => row.id).sort();
 check("plugin list shows the own and the shared plugins", JSON.stringify(ids) === JSON.stringify(["clash", "gear-wheel", "tray"]), ids);
 check("a shared row names its library and is imported", rows.find((row) => row.id === "gear-wheel")?.library === shared && rows.find((row) => row.id === "gear-wheel")?.imported === true, rows);
