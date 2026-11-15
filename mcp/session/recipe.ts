@@ -32,6 +32,7 @@ import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRe
 import type { Session } from "../session.ts";
 import { nestedLimits, nestedRefusal, nestedResult, nestingRefusal, pickPluginCode, pinsOf, readPluginRun, type PluginCode } from "../../src/recipe/nested.ts";
 import type { PluginPins } from "../../src/model-tree.ts";
+import { rerunAssemblies } from "../../src/recipe/rerun-assembly.ts";
 import { SESSION_URL } from "../session-url.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { checkpointJson, checkpointSignature, CHECKPOINT_MAX_BYTES, type CheckpointEvent, type RecipeCheckpoint } from "../recipe-checkpoint.ts";
@@ -610,6 +611,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     if (rebuild && branchRebuild && rebuild.obj.tree?.current !== rebuild.from) await this.gotoNode(rebuild.obj, rebuild.from).catch(() => ({ ok: false }));
     return undone;
   };
+  // --- API 1.16. The plate as it stood: one plate undo step for a run that placed or assembled parts (`remember`).
+  const plateBefore = nested ? null : this.capture(`Recipe ${name}`);
+  if (!nested) this.recipeRemembered = false;
   this.recipeDepth += 1;
   if (!nested) this.kernelTap = tap;
   if (!nested) deadline = Date.now() + limits.timeoutS * 1000;
@@ -808,6 +812,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const replaced: string[] = [];
   const removed: string[] = [];
   const repositioned = new Set<string>();
+  /** --- API 1.16. Each new part's id and the old handle it took: what the assemblies the run built name. */
+  const handed = new Map<string, string>();
   if (replacing) {
     const old = replacing.stored.objects.filter((id) => !created.includes(id) && this.find(id));
     for (const [i, oldId] of old.entries()) {
@@ -817,12 +823,16 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         continue;
       }
       await this.takeOver(oldId, newId, !placed.has(newId), !modelPlaced.has(newId), rebuild?.run.before === null && rebuild.obj.id === oldId);
+      handed.set(newId, oldId);
       if (modelPlaced.has(newId)) repositioned.add(oldId);
       created[i] = oldId;
       if (object === newId) object = oldId;
       replaced.push(oldId);
     }
   }
+  // --- API 1.16. The assemblies the new run built take the place of the old run's, under the old handles, with their
+  // joints and couplings (src/recipe/rerun-assembly.ts).
+  if (handed.size) this.assemblies = rerunAssemblies(this.assemblies, handed);
   // A replaced part can have a new assembled pose. Refresh its stored parent offset (and its children's offsets)
   // after all replacements, so a later solve does not put it back at the previous recipe's pose.
   if (repositioned.size) {
@@ -904,6 +914,12 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         runMs: out.ms,
       }
     : undefined;
+  if (plateBefore && this.recipeRemembered) {
+    this.undoStack.push(plateBefore);
+    if (this.undoStack.length > 32) this.undoStack.shift();
+    this.redoStack = [];
+  }
+  this.recipeRemembered = false;
   const nuggets = rerun || rebuild ? [] : this.harvest(key, built.source, refused, refusedArgs, plugin, input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : undefined, typeof input.preset === "string" ? input.preset : undefined);
   return {
     ok: true,

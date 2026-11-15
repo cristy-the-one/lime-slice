@@ -455,7 +455,8 @@ pub struct Part {
 /// 1.15: reads of an animation's rig at a pose (`Rig::first_contact`, `first_contact_with`, `clearance`, `crossing`,
 /// `angle`) and `anim::frame_times` (docs/plan-contact-poses.md).
 /// 1.16: recipes that use plugins (docs/plan-plugin-recipes.md): `run_plugin` runs a kept plugin as a nested run and
-/// hands back the parts it made (`PluginRun`).
+/// hands back the parts it made (`PluginRun`); `attach`, `hinge`, `slide`, `hold`, `joint`, `turn_joint` and
+/// `couple_gears` build an assembly of the parts the run made, where the host can assemble (`context.limits.canAssemble`).
 pub const API: (u32, u32) = (1, 16);
 
 /// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
@@ -1497,6 +1498,63 @@ impl Session {
         let line = std::panic::Location::caller().line();
         let r = self.call("plugin_run", Json::obj().set("plugin", id).set("version", version).set("params", params))?;
         PluginRun::from_json(&r).ok_or(Refusal { reason: format!("plugin_run of {id} gave no part"), line })
+    }
+
+    /// Puts `part` in an assembly on `parent` (API 1.16): `at` is its offset in mm and `turn` its turns about X, Y and Z
+    /// in degrees, in the parent's frame. `model_place {object, to, x, y, z, turnX, turnY, turnZ}`; both parts must be
+    /// this run's, and the host must allow assembling (`context.limits.canAssemble`).
+    #[track_caller]
+    pub fn attach(&mut self, part: &Part, parent: &Part, at: [f64; 3], turn: [f64; 3]) -> Result<Json, Refusal> {
+        let args = Json::obj()
+            .set("object", part.object.as_str())
+            .set("to", parent.object.as_str())
+            .set("x", at[0])
+            .set("y", at[1])
+            .set("z", at[2])
+            .set("turnX", turn[0])
+            .set("turnY", turn[1])
+            .set("turnZ", turn[2]);
+        self.call("model_place", args)
+    }
+
+    /// Sets `part`'s joint to its parent (API 1.16): `joint` as `model_place {joint}` takes it (`kind` hinge, slide,
+    /// ball or held, with `pivot`, `axis`, `min`, `max`, `cone`, `zero`), or `Json::Null` to fix it again.
+    #[track_caller]
+    pub fn joint(&mut self, part: &Part, joint: Json) -> Result<Json, Refusal> {
+        self.call("model_place", Json::obj().set("object", part.object.as_str()).set("joint", joint))
+    }
+
+    /// A hinge (API 1.16): `part` turns about `axis` through `pivot`, both in its own frame.
+    #[track_caller]
+    pub fn hinge(&mut self, part: &Part, pivot: [f64; 3], axis: [f64; 3]) -> Result<Json, Refusal> {
+        self.joint(part, Json::obj().set("kind", "hinge").set("pivot", pivot).set("axis", axis))
+    }
+
+    /// A slide (API 1.16): `part` moves along `axis` from `pivot`, both in its own frame.
+    #[track_caller]
+    pub fn slide(&mut self, part: &Part, pivot: [f64; 3], axis: [f64; 3]) -> Result<Json, Refusal> {
+        self.joint(part, Json::obj().set("kind", "slide").set("pivot", pivot).set("axis", axis))
+    }
+
+    /// Held (API 1.16): `part` stays where it is, and Couple gears never gives it a hinge.
+    #[track_caller]
+    pub fn hold(&mut self, part: &Part) -> Result<Json, Refusal> {
+        self.joint(part, Json::obj().set("kind", "held"))
+    }
+
+    /// Turns `part`'s hinge to `angle` degrees from its zero (a slide: moves it `angle` mm), and a coupled train with it
+    /// (API 1.16): `model_place {object, angle}`.
+    #[track_caller]
+    pub fn turn_joint(&mut self, part: &Part, angle: f64) -> Result<Json, Refusal> {
+        self.call("model_place", Json::obj().set("object", part.object.as_str()).set("angle", angle))
+    }
+
+    /// Couples the gears of `part`'s assembly that mesh (API 1.16): `model_place {object, gears: "couple"}`, with the
+    /// same checks and refusals as the tool. Gears in no assembly get a hinge and an assembly of their own. The reply
+    /// lists the `couplings`, and any pair `notCoupled` or `locked` with the reason.
+    #[track_caller]
+    pub fn couple_gears(&mut self, part: &Part) -> Result<Json, Refusal> {
+        self.call("model_place", Json::obj().set("object", part.object.as_str()).set("gears", "couple"))
     }
 
     /// Commit work so far and let the host resume this run after an interruption.

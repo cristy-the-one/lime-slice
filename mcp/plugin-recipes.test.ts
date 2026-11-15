@@ -208,6 +208,148 @@ check("the project opens", opened.ok === true, opened);
 const offline = await call("recipe_run", { object: wheel, params: { teeth: 40 } });
 check("with the library gone, the rerun builds the pinned v1 from the project's copy", offline.ok === true && (offline.metrics as Reply)?.rev === 1 && offline.object === wheel, offline);
 
+// --- Stages 2 and 3. "Gear train": runs gear-on-arbor three times with tooth counts from horology::count_train, puts
+// the gears on a plate it makes at their centre distances with mating phases, hinges and couples them. One parameter.
+keep("gear-on-arbor", gearOnArbor(1), 1, "Gear on arbor");
+const gearTrain = [
+  "use lime_recipe::{gears, horology::{count_train, TrainLimits}, ops, Json, Part, Session};",
+  "",
+  "fn main() {",
+  "    let mut s = Session::start();",
+  '    let module = s.number("module", 1.0).range(0.5, 3.0).unit("mm").label("Module").get();',
+  '    let train = match count_train(0.75, 30, 3, &TrainLimits::new(40, 64, 8, 10)) { Ok(t) => t, Err(e) => s.refuse(&e) };',
+  "    let teeth = [train.stages[0].0, train.stages[0].1, train.stages[1].0];",
+  '    let names = ["centre wheel", "third pinion", "third wheel"];',
+  "    // Along +X: each gear at its centre distance from the one before, at the phase that meets its gap.",
+  "    let mut x = [0.0, 0.0, 0.0];",
+  "    let mut phase = [0.0, 0.0, 0.0];",
+  "    for i in 1..3 {",
+  "        x[i] = x[i - 1] + gears::pitch_radius(teeth[i - 1], module) + gears::pitch_radius(teeth[i], module);",
+  "        phase[i] = gears::mate_phase(phase[i - 1], teeth[i - 1], 0.0, teeth[i]);",
+  "    }",
+  "    let tip = gears::pitch_radius(teeth[0], module) + module;",
+  "    let length = x[2] + gears::pitch_radius(teeth[2], module) + module + tip + 4.0;",
+  '    let plate = s.solid_new(ops::cuboid(length, 2.0 * tip + 4.0, 3.0).set("name", "plate")).unwrap();',
+  "    let mut parts: Vec<Part> = Vec::new();",
+  "    for i in 0..3 {",
+  '        let run = s.run_plugin("gear-on-arbor", Json::obj().set("teeth", teeth[i]).set("module", module).set("phase", phase[i]).set("name", names[i])).unwrap();',
+  "        let gear = run.part;",
+  "        s.attach(&gear, &plate, [x[i] - length / 2.0 + tip + 2.0, 0.0, 6.0], [0.0, 0.0, 0.0]).unwrap();",
+  "        s.hinge(&gear, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]).unwrap();",
+  "        parts.push(gear);",
+  "    }",
+  "    let coupled = s.couple_gears(&parts[0]).unwrap();",
+  '    let couplings = coupled.get("couplings").and_then(Json::as_array).map(|c| c.len()).unwrap_or(0);',
+  '    s.done_with(&plate, Json::obj().set("couplings", couplings).set("teeth", Json::Arr(vec![Json::from(teeth[0]), Json::from(teeth[1]), Json::from(teeth[2])])).set("centres", Json::Arr(vec![Json::from(x[1]), Json::from(x[2])])));',
+  "}",
+  "",
+].join("\n");
+keep("gear-train", gearTrain, 1, "Gear train");
+const before3 = ids().length;
+const built = await call("recipe_run", { plugin: "gear-train" });
+check("one call builds a coupled train: three gears from a nested plugin on a plate", built.ok === true && (built.metrics as Reply)?.couplings === 2 && (built.created as string[] | undefined)?.length === 4 && ids().length === before3 + 4, built);
+const trainOf = () => session.assemblies.find((row) => row.members.some((m) => m.object === String(built.object)));
+const couplingsOf = () => (trainOf()?.couplings ?? []).map((row) => [row.driver, row.driven, Math.round(row.ratio * 1e6) / 1e6]);
+const teeth = ((built.metrics as Reply)?.teeth ?? []) as number[];
+console.log(`     train: ${JSON.stringify(teeth)} teeth, centres ${JSON.stringify((built.metrics as Reply)?.centres)}, couplings ${JSON.stringify(couplingsOf())}`);
+const gearIds = ((built.created ?? []) as string[]).filter((id) => id !== built.object);
+check("the plate is the root and each gear sits on it on a hinge", trainOf()?.members.length === 4 && gearIds.every((id) => { const m = trainOf()?.members.find((row) => row.object === id); return m?.parent === built.object && m?.joint?.kind === "hinge"; }), trainOf());
+check("the couplings run centre wheel to pinion to wheel at the tooth ratios", couplingsOf().length === 2 && Math.abs(Math.abs(Number(couplingsOf()[0]![2])) - teeth[0]! / teeth[1]!) < 1e-6 || Math.abs(Math.abs(Number(couplingsOf()[0]![2])) - teeth[1]! / teeth[0]!) < 1e-6, couplingsOf());
+const angleOf = (id: string) => {
+  const joint = trainOf()?.members.find((row) => row.object === id)?.joint;
+  return joint?.kind === "hinge" ? joint.angle ?? 0 : NaN;
+};
+const turned = await call("model_place", { object: gearIds[0], angle: 30 });
+check("turning the centre wheel turns the train", turned.ok === true && Math.abs(angleOf(gearIds[1]!) + 30 * teeth[0]! / teeth[1]!) < 1e-6 && Math.abs(angleOf(gearIds[2]!) - 30 * teeth[0]! / teeth[2]!) < 1e-6, { a: angleOf(gearIds[1]!), b: angleOf(gearIds[2]!) });
+const meshing = await call("model_check", { object: gearIds[1] });
+check("and the mesh check calls both pairs meshing after the turn", ((meshing.gears ?? []) as { verdict: string }[]).filter((row) => row.verdict === "meshing").length === 2, meshing.gears);
+await call("model_place", { object: gearIds[0], angle: 0 });
+
+// A rerun with a new module: the same handles, the gears bigger, the assembly rebuilt with its joints and couplings.
+const plateId = String(built.object);
+const plateCount = ids().length;
+const rebuilt = await call("recipe_run", { object: plateId, params: { module: 1.5 } });
+check("a rerun with module 1.5 rebuilds the train under the same handles", rebuilt.ok === true && rebuilt.object === plateId && JSON.stringify([...((rebuilt.replaced ?? []) as string[])].sort()) === JSON.stringify([plateId, ...gearIds].sort()) && rebuilt.created === undefined, rebuilt);
+const centres = ((rebuilt.metrics as Reply)?.centres ?? []) as number[];
+check("the centres grew with the module", Math.abs(centres[0]! - 1.5 * (teeth[0]! + teeth[1]!) / 2) < 1e-9, centres);
+check("one assembly holds the plate and the three gears, still hinged", session.assemblies.filter((row) => row.members.some((m) => [plateId, ...gearIds].includes(m.object))).length === 1 && trainOf()?.members.length === 4 && gearIds.every((id) => trainOf()?.members.find((row) => row.object === id)?.joint?.kind === "hinge"), session.assemblies);
+check("and still coupled, between the same handles", couplingsOf().length === 2 && couplingsOf().every(([a, b]) => gearIds.includes(String(a)) && gearIds.includes(String(b))), couplingsOf());
+const turnedAgain = await call("model_place", { object: gearIds[0], angle: 45 });
+check("the rebuilt train turns as one", turnedAgain.ok === true && Math.abs(angleOf(gearIds[2]!) - 45 * teeth[0]! / teeth[2]!) < 1e-6, angleOf(gearIds[2]!));
+const meshingAgain = await call("model_check", { object: gearIds[1] });
+check("and meshes at the new module", ((meshingAgain.gears ?? []) as { verdict: string }[]).filter((row) => row.verdict === "meshing").length === 2, meshingAgain.gears);
+await call("model_place", { object: gearIds[0], angle: 0 });
+// Undo takes the rerun back in one step: the module 1 train, its assembly as it was.
+// The turns since are undo steps of their own ("Pose"); the rerun is the one before them.
+const labels: string[] = [];
+let undone: Reply = {};
+for (let i = 0; i < 4; i += 1) {
+  undone = await call("plate_undo");
+  labels.push(String(undone.label));
+  if (undone.ok !== true || !/^Pose/.test(String(undone.label))) break;
+}
+console.log(`     undo: ${labels.join(", ")}`);
+const spacing = () => Math.abs((session.find(gearIds[1]!)?.modelPose.t[0] ?? 0) - (session.find(gearIds[0]!)?.modelPose.t[0] ?? 0));
+check("one undo takes the rerun back to the module 1 train, still coupled", undone.ok === true && /^Recipe gear-train/.test(String(undone.label)) && Math.abs(spacing() - 29.5) < 1e-6 && couplingsOf().length === 2 && ids().length === plateCount, { undone, spacing: spacing(), couplings: couplingsOf(), ids: ids() });
+let redone: Reply = {};
+for (let i = 0; i < labels.length; i += 1) redone = await call("plate_redo");
+check("and redo brings the module 1.5 train back", redone.ok === true && Math.abs(spacing() - 44.25) < 1e-6 && couplingsOf().length === 2 && ids().length === plateCount, { redone, spacing: spacing(), ids: ids() });
+
+// Saved and reopened: the assembly, its hinges and couplings, and the pins come back; a rerun still couples.
+await call("project_save", { name: "train.lime" });
+session = new Session(fakeEngine());
+session.clientName = "plugin-recipes-test";
+await call("project_open", { path: "train.lime" });
+check("after reopening, the train is one assembly, coupled", couplingsOf().length === 2 && trainOf()?.members.length === 4, session.assemblies);
+const again = await call("recipe_run", { object: plateId, params: { module: 2 } });
+check("and a rerun there rebuilds it at module 2, still coupled", again.ok === true && couplingsOf().length === 2 && trainOf()?.members.length === 4, { again, couplings: couplingsOf() });
+
+// --- lust and rustc: the gear train built by both sends the same calls (run_plugin, attach, hinge, couple_gears) with
+// the same numbers, against the same scripted answers.
+{
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const { RecipeHost } = await import("./recipe.ts");
+  type Site = import("./recipe.ts").RecipeCallSite;
+  type Answer = import("./recipe.ts").RecipeReply;
+  const crateDir = join(fileURLToPath(new URL("..", import.meta.url)), "crates", "lime-recipe");
+  const dir = mkdtempSync(join(tmpdir(), "lime-plugin-recipes-rustc-"));
+  const host = new RecipeHost({ crateDir, root: join(dir, "host"), lust });
+  const answer = (log: string[]) => {
+    let n = 0;
+    return async (site: Site): Promise<Answer> => {
+      let result: Record<string, unknown> = { ok: true };
+      if (site.tool === "solid_new") result = { ok: true, object: "plate" };
+      if (site.tool === "plugin_run") {
+        n += 1;
+        result = { ok: true, object: `gear_${n}`, objects: [`gear_${n}`], metrics: { rev: 1 }, plugin: { id: "gear-on-arbor", version: 1 } };
+      }
+      if (site.tool === "model_place" && site.args.gears === "couple") result = { ok: true, couplings: [{}, {}] };
+      log.push(JSON.stringify({ tool: site.tool, args: site.args, result }));
+      return { ok: true, result };
+    };
+  };
+  const viaLust: string[] = [];
+  const viaRustc: string[] = [];
+  const built = await host.build("gear-train-parity", gearTrain, false);
+  check("lust builds the gear train", built.ok, built.diagnostics);
+  const rlib = join(dir, "liblime_recipe.rlib");
+  const lib = spawnSync("rustc", ["--edition", "2024", "-O", "--crate-type", "rlib", "--crate-name", "lime_recipe", join(crateDir, "src", "lib.rs"), "-o", rlib], { encoding: "utf8" });
+  check("rustc builds lime_recipe", lib.status === 0, lib.stderr);
+  const src = join(dir, "gear_train.rs");
+  writeFileSync(src, gearTrain);
+  const exe = join(dir, `gear_train${process.platform === "win32" ? ".exe" : ""}`);
+  const r = lib.status === 0 ? spawnSync("rustc", ["--edition", "2024", "-O", src, "--extern", `lime_recipe=${rlib}`, "-o", exe], { encoding: "utf8" }) : { status: 1, stderr: "no rlib" };
+  check("rustc builds the gear train", r.status === 0, r.stderr);
+  if (built.ok && built.exe && r.status === 0) {
+    const start = { params: { module: 1.25 }, context: { units: "mm", host: "mcp", limits: { canAssemble: true } } };
+    const a = await host.run(built.exe, start, answer(viaLust));
+    const b = await host.run(exe, start, answer(viaRustc));
+    const differ = viaLust.findIndex((line, i) => line !== viaRustc[i]);
+    check(`lust and rustc send the same ${viaLust.length} calls`, a.ok && b.ok && viaLust.length === 11 && viaLust.length === viaRustc.length && differ < 0, differ >= 0 ? { lust: viaLust[differ], rustc: viaRustc[differ] } : { a: a.reason, b: b.reason, n: viaLust.length });
+  }
+}
+
 // --- In the app (src/recipe/apply.ts and app-nested.ts): the same plugins through the window's run, as the Plugins
 // panel runs them with nothing open, the calls answered by AppRecipeCalls against the engine's trees.
 {

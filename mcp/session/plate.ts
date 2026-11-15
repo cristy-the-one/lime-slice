@@ -201,6 +201,11 @@ function install(this: Session, snap: PlateSnap): void {
 }
 
 function remember(this: Session, label: string): void {
+  // A recipe's placing and assembling is one plate step with the rest of the run (`recipeRun`).
+  if (this.recipeDepth > 0) {
+    this.recipeRemembered = true;
+    return;
+  }
   this.undoStack.push(this.capture(label));
   if (this.undoStack.length > 32) this.undoStack.shift();
   this.redoStack = [];
