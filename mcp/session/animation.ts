@@ -1,12 +1,12 @@
 /** MCP animation execution and export; sampling is always performed on a copy of the rig. */
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { assemblyOf } from "../../src/assembly.ts";
 import { seatLift } from "../../src/model-space.ts";
 import { animationRig, type AnimationPart } from "../../src/pose-anim.ts";
 import { apiVerdict } from "../../src/recipe/api-level.ts";
-import { runAnimation } from "../animation-run.ts";
-import { animatedGif, type GifFrame } from "../animation-gif.ts";
+import { eventLoopTurn, runAnimation } from "../animation-run.ts";
+import { GIF_END, gifFrame, gifHead } from "../animation-gif.ts";
 import { BACKGROUND, readBackground, readCamera, renderMesh } from "../render.ts";
 import { listExtra, parsePlugin, pluginsDir, readPlugin, slugOf, type PluginHeader } from "../plugins.ts";
 import { explainNoMember, missingMember } from "../../src/anim-members.ts";
@@ -79,53 +79,74 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
   if (!result.ok) return { ok: false, code: "animation-refused", reason: explainNoMember(result.reason, params, rig), ...(result.issues ? { issues: result.issues.map((issue) => ({ ...issue, reason: explainNoMember(issue.reason, params, rig) })) } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
-  // Repeated intersections are one warning per pair, not one line per frame.
-  const warningCounts = new Map<string, { first: string; count: number }>();
-  for (const warning of sampled.warnings) {
-    const reason = warning.reason.replace(/^Frame \d+: /, "");
-    const seen = warningCounts.get(reason);
-    if (seen) seen.count++;
-    else warningCounts.set(reason, { first: warning.reason, count: 1 });
-  }
-  const warnings = [...warningCounts.values()].map(({ first, count }) => ({ reason: count > 1 ? `${first} (${count} frames)` : first }));
+  // Crossings come one warning a pair already (frameInterference), with the frames they hold and the check that made
+  // them. A warning a key repeats (a colour set twice) is said once.
+  const seen = new Set<string>();
+  const warnings = sampled.warnings.filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
+  const timing = frameTiming(sampled);
   const out = input.out as { gif?: string; frames?: string } | undefined;
   // Checked already: the tool's by readBackground above, the script's by sampleAnimation.
   const scripted = result.background ? readBackground(result.background) : undefined;
   const background = asked && "rgb" in asked ? asked.rgb : scripted && "rgb" in scripted ? scripted.rgb : BACKGROUND;
-  const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
-  // --- docs/plan-animation-plugins.md A1. keep: this run is the check; the plugin records the members it used.
-  const kept = keep ? await this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params) : {};
-  if (!out) return { ...summary, ...kept, rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
+  const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(timing ? { frameTiming: timing } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
+  // --- docs/plan-animation-plugins.md A1. keep: this run is the check; the plugin records the members it used. It is
+  // kept only once the run has done all it was asked: after sampling for a dry run, after the last frame is written for
+  // an export (which may have become a job; its slice_wait result then carries kept). A cancel or a failure keeps nothing.
+  const keepNow = async (): Promise<Record<string, unknown>> => {
+    if (!keep) return {};
+    if (meta?.signal?.aborted) return { keepRefused: "The run was cancelled, so the animation was not kept." };
+    return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params);
+  };
+  if (!out) return { ...summary, ...(await keepNow()), rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
   if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
   if (!sampled.bounds) return refuse("no-mesh", "The assembly has no renderable geometry.");
   const read = readCamera(input.camera ?? result.camera ?? "iso");
   if ("reason" in read) return refuse("bad-view", read.reason);
   const edge = typeof input.longEdge === "number" ? input.longEdge : 640;
-  if (out.gif && sampled.frames.length * edge * edge * 3 > 256 * 1024 * 1024) return refuse("bad-argument", "This GIF is too large to encode in memory. Lower the size, duration or fps.");
   const gifPath = out.gif ? resolveWrite(out.gif, ".gif") : undefined;
   const files: string[] = [];
   if (out.frames) for (let i = 0; i < sampled.frames.length; i++) files.push(resolveWrite(join(out.frames, `frame-${String(i + 1).padStart(3, "0")}.png`), ".png"));
-  const gifFrames: GifFrame[] = [];
-  for (let i = 0; i < sampled.frames.length; i++) {
-    if (meta?.signal?.aborted) return refuse("cancelled", "The animation was cancelled.");
-    const frame = sampled.frames[i]!;
-    let start = 0;
-    const tints: { start: number; end: number; rgb: [number, number, number] }[] = [];
-    const meshes = parts.map((part) => {
-      const positions = part.positions!, pose = frame.poses.get(part.object);
-      const mesh = pose ? posedPositions(positions, pose) : positions;
-      const end = start + mesh.length / 9;
-      const color = frame.colors.get(part.object);
-      if (color) { const n = parseInt(color.replace(/^#/, ""), 16); tints.push({ start, end, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] }); }
-      start = end;
-      return mesh;
-    });
-    const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: !!gifPath, background });
-    if (files[i]) writeFileSync(files[i]!, drawn.png);
-    if (gifPath) gifFrames.push({ rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) });
-    this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
+  // Every file is written under a .partial name and takes its own name only when the last frame is done: a cancel, a
+  // failure or a restart part way leaves no half-written GIF or a short run of frames under the names asked for. One
+  // frame is held at a time: the GIF's palette is fixed (3/3/2 with the background exact), so each frame is encoded and
+  // written as it is drawn, and memory does not grow with the frame count.
+  const partial = (path: string) => `${path}.partial`;
+  const written: string[] = [];
+  let gif: number | undefined;
+  const clean = () => {
+    if (gif !== undefined) { try { closeSync(gif); } catch { /* already closed */ } gif = undefined; }
+    for (const path of written) rmSync(path, { force: true });
+  };
+  try {
+    if (gifPath) { gif = openSync(partial(gifPath), "w"); written.push(partial(gifPath)); writeSync(gif, gifHead(edge, edge, background)); }
+    for (let i = 0; i < sampled.frames.length; i++) {
+      // A turn of the event loop before each frame: the server answers other calls and hears slice_cancel meanwhile.
+      await eventLoopTurn();
+      if (meta?.signal?.aborted) { clean(); return refuse("cancelled", `The animation was cancelled at frame ${i + 1} of ${sampled.frames.length}; no file was written.`); }
+      const frame = sampled.frames[i]!;
+      let start = 0;
+      const tints: { start: number; end: number; rgb: [number, number, number] }[] = [];
+      const meshes = parts.map((part) => {
+        const positions = part.positions!, pose = frame.poses.get(part.object);
+        const mesh = pose ? posedPositions(positions, pose) : positions;
+        const end = start + mesh.length / 9;
+        const color = frame.colors.get(part.object);
+        if (color) { const n = parseInt(color.replace(/^#/, ""), 16); tints.push({ start, end, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] }); }
+        start = end;
+        return mesh;
+      });
+      const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: gif !== undefined, background });
+      if (files[i]) { writeFileSync(partial(files[i]!), drawn.png); written.push(partial(files[i]!)); }
+      if (gif !== undefined) writeSync(gif, gifFrame(edge, edge, { rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) }));
+      this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
+    }
+    if (gif !== undefined) { writeSync(gif, GIF_END); closeSync(gif); gif = undefined; }
+    for (const path of written) renameSync(path, path.slice(0, -".partial".length));
+  } catch (err) {
+    clean();
+    throw err;
   }
-  if (gifPath) writeFileSync(gifPath, animatedGif(edge, edge, gifFrames, background));
+  const kept = await keepNow();
   const keptAs = "kept" in kept ? kept.kept as { id: string } : undefined;
   this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(keptAs ? { plugin: keptAs.id } : typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
   if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
@@ -183,6 +204,19 @@ function animationHeader(this: Session, id: string, source?: string): PluginHead
     if (!("reason" in file) && file.header.plugin === id && file.header.kind === "animation") return file.header;
   }
   return listExtra().find((file) => file.header.plugin === id && file.header.kind === "animation")?.header;
+}
+
+/**
+ * A sentence when keys fall between frames, else null. `round(duration × fps)` frames are spread from 0 to the end, so
+ * they are `duration / (frames - 1)` s apart, not 1/fps: a script that keys every 1/fps s has frames that fall between
+ * its keys, interpolated between them. A pose checked at a key is then not the pose a frame shows.
+ */
+function frameTiming(sampled: { frames: { time: number }[]; keys: { t: number }[]; durationS: number; fps: number }): string | null {
+  const times = sampled.frames.map((frame) => frame.time);
+  const between = sampled.keys.filter((key) => !times.some((time) => Math.abs(time - key.t) <= 1e-9)).length;
+  if (between === 0 || times.length < 2) return null;
+  const spacing = Math.round(sampled.durationS / (times.length - 1) * 10000) / 10000;
+  return `${between} of ${sampled.keys.length} keys fall between frames: the ${times.length} frames are spread from 0 to ${sampled.durationS} s, ${spacing} s apart (not 1/${sampled.fps} s), and a frame between two keys is interpolated between them. A warning gives its frame and time.`;
 }
 
 export const animationMethods = { poseAnimate, keepAnimation, animationSaveFrom, animationHeader };

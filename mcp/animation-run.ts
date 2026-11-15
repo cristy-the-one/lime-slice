@@ -1,11 +1,14 @@
 /** Run an animation script against a fixed rig and sample it without changing the plate. */
-import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../src/pose-anim.ts";
+import { animationRig, sampleAnimationSteps, type AnimationPart, type AnimationResult, type PoseAnimation } from "../src/pose-anim.ts";
 import { RIG_READ_TOOLS, rigRead } from "../src/rig-reads.ts";
 import type { Assembly, PoseOf } from "../src/assembly.ts";
 import { resolveIngredients } from "./ingredients.ts";
 import { splitPluginData } from "../src/recipe/plugin-data.ts";
 import { namesInCall } from "../src/anim-members.ts";
 import { ANIMATION_LIMITS, recipeDataFile, recipeDataMissing, type RecipeHost } from "./recipe.ts";
+
+/** A turn of the event loop: timers, other requests and a cancel run before the work goes on. */
+export const eventLoopTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 /** `used`: the member names and patterns the script sent (docs/plan-animation-plugins.md A2), for a keep. */
 export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; background?: string; notes: string[]; used: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
@@ -46,7 +49,18 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
       camera = site.args.camera;
       if (typeof site.args.background === "string") background = site.args.background;
       const input = { ...site.args, ...(options.fps !== undefined ? { fps: options.fps } : {}) } as unknown as PoseAnimation;
-      const result = sampleAnimation(input, assembly, poseOf, parts);
+      // The window's steps (sampleAnimationSteps: each frame posed and checked for crossings), with a turn of the event
+      // loop between frames: a scene of many parts takes seconds a frame, and the server must go on answering (and hear
+      // a cancel) meanwhile.
+      const steps = sampleAnimationSteps(input, assembly, poseOf, parts);
+      let step = steps.next();
+      while (!step.done) {
+        if (options.signal?.aborted) return { ok: false, error: "The animation was cancelled." };
+        options.progress?.(step.value.count ? step.value.frame / step.value.count : 0, `Posing and checking frame ${step.value.frame}/${step.value.count}`);
+        await eventLoopTurn();
+        step = steps.next();
+      }
+      const result = step.value;
       if ("issues" in result) { issues = result.issues; return { ok: false, error: issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") }; }
       sampled = result;
       return { ok: true, result: { frames: result.frames.length, durationS: result.durationS, fps: result.fps, keys: result.keys } };

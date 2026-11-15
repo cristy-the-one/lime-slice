@@ -1,4 +1,4 @@
-import { exactVerdict, interference, trianglesCross } from "./interference.ts";
+import { exactVerdict, interference, MESH_TOLERANCE_MM, trianglesCross } from "./interference.ts";
 import { eulerOrient } from "./mesh-place.ts";
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 
@@ -118,6 +118,43 @@ check("and the pass takes under a second", farMs < 1000, `${farMs.toFixed(0)} ms
 const crossStart = performance.now();
 eq("two balls pushed together cross", interference({ positions: ball, pose: IDENTITY_POSE }, { positions: ball, pose: at(12, 0, 0) }).verdict, "crossing");
 check("and answer as fast", performance.now() - crossStart < 1000);
+
+// The crossing's point is on the cut line: on the rim's top face, inside the hook's footprint.
+check("a crossing's point lies where the two parts cut", !!sunk.at && sunk.at[0] >= 10 - 1e-6 && sunk.at[0] <= 16 + 1e-6 && sunk.at[1] >= 10 - 1e-6 && sunk.at[1] <= 16 + 1e-6, JSON.stringify(sunk.at));
+const tilted = interference(body, { positions: hook, pose: at(30, 10, 9, [0, 0, 30]) });
+check("and so it is for a turned part", !!tilted.at && Math.abs(tilted.at[2] - 10) < 1e-4 && tilted.at[0] > 20 && tilted.at[0] < 40, JSON.stringify(tilted.at));
+
+// docs/plan-mcp-reliability.md, item 2: a tolerance for meshes made to the kernel's 0.05 mm chord. An axle in a round
+// hole of its own radius touches in the solids. Meshed alike it touches; turned half a segment, or meshed with another
+// count, the meshes overlap by up to the chord, and only the tolerance reads that as the touch it is.
+function tube(rOut: number, rIn: number, h: number, n: number, phase = 0): Float32Array {
+  const out: number[] = [];
+  const p = (r: number, k: number, z: number) => { const a = phase + (2 * Math.PI * k) / n; return [r * Math.cos(a), r * Math.sin(a), z]; };
+  for (let k = 0; k < n; k += 1) {
+    out.push(...p(rOut, k, 0), ...p(rOut, k + 1, 0), ...p(rOut, k + 1, h), ...p(rOut, k, 0), ...p(rOut, k + 1, h), ...p(rOut, k, h));
+    if (rIn > 0) {
+      out.push(...p(rIn, k, 0), ...p(rIn, k + 1, h), ...p(rIn, k + 1, 0), ...p(rIn, k, 0), ...p(rIn, k, h), ...p(rIn, k + 1, h));
+      out.push(...p(rOut, k, 0), ...p(rIn, k, 0), ...p(rIn, k + 1, 0), ...p(rOut, k, 0), ...p(rIn, k + 1, 0), ...p(rOut, k + 1, 0));
+      out.push(...p(rOut, k, h), ...p(rOut, k + 1, h), ...p(rIn, k + 1, h), ...p(rOut, k, h), ...p(rIn, k + 1, h), ...p(rIn, k, h));
+    } else {
+      out.push(0, 0, 0, ...p(rOut, k + 1, 0), ...p(rOut, k, 0), 0, 0, h, ...p(rOut, k, h), ...p(rOut, k + 1, h));
+    }
+  }
+  return new Float32Array(out);
+}
+const radius = 2.35, segments = Math.ceil(Math.PI / Math.acos(1 - MESH_TOLERANCE_MM / radius));
+const bearing = { positions: tube(8, radius, 6, segments), pose: IDENTITY_POSE };
+const arbor = (r: number, n: number, phase: number) => ({ positions: tube(r, 0, 6, n, phase), pose: IDENTITY_POSE });
+eq("an arbor meshed as its hole touches", interference(bearing, arbor(radius, segments, 0)).verdict, "touch");
+eq("turned half a segment, the meshes cross by the old 0.001 mm", interference(bearing, arbor(radius, segments, Math.PI / segments)).verdict, "crossing");
+eq("and touch within the mesh tolerance", interference(bearing, arbor(radius, segments, Math.PI / segments), { toleranceMm: MESH_TOLERANCE_MM }).verdict, "touch");
+eq("meshed with another count, they touch within it too", interference(bearing, arbor(radius, segments + 3, 0.1), { toleranceMm: MESH_TOLERANCE_MM }).verdict, "touch");
+eq("an arbor 0.1 mm over its hole still crosses", interference(bearing, arbor(radius + 0.1, segments, Math.PI / segments), { toleranceMm: MESH_TOLERANCE_MM }).verdict, "crossing");
+eq("a hook sunk 0.04 mm touches within the tolerance", interference(body, { positions: hook, pose: at(10, 10, 9.96) }, { toleranceMm: MESH_TOLERANCE_MM }).verdict, "touch");
+eq("but crosses at the old 0.001 mm", interference(body, { positions: hook, pose: at(10, 10, 9.96) }).verdict, "crossing");
+eq("a hook sunk 0.1 mm crosses within it", interference(body, { positions: hook, pose: at(10, 10, 9.9) }, { toleranceMm: MESH_TOLERANCE_MM }).verdict, "crossing");
+eq("a peg 0.2 mm over its hole, flush top and bottom, crosses within it", interference(plate, { positions: box(6.2, 6.2, 10), pose: at(-3.1, -3.1, 0) }, { toleranceMm: MESH_TOLERANCE_MM }).verdict, "crossing");
+eq("a part wholly inside another is nested within it", interference(body, { positions: box(4, 4, 4), pose: at(20, 20, 3) }, { toleranceMm: MESH_TOLERANCE_MM }), { verdict: "touch", nested: true });
 
 // D11: the exact pass's sliver threshold.
 eq("a common volume of 0.009 mm³ is a touch", exactVerdict(0.009, [100, 100]), "touch");

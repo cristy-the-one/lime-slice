@@ -1,10 +1,10 @@
 /** Shared, side-effect-free sampling of named assembly poses. Times and angles are seconds and degrees. */
 import { memberPose, readJoint, rotationQuaternion, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
 import { boundsOf, type Bounds } from "./mesh-place.ts";
-import { applyPose, boxUnder, type Affine } from "./model-space.ts";
+import { applyPose, boxUnder, inversePose, thenPose, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { alignedHinge, poseChain, solvePose, turnBall, turnHinge } from "./pose.ts";
-import { interference } from "./interference.ts";
+import { interference, MESH_TOLERANCE_MM } from "./interference.ts";
 import { trainOf, trainTurn } from "./gear-train.ts";
 import { memberNamesOf, nameMatcher } from "./anim-members.ts";
 
@@ -19,8 +19,13 @@ export const isBackground = (value: unknown): value is string => typeof value ==
 export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3 }
 export interface RigMember { object: string; name: string; parent: string | null; joint: Member["joint"]; aligned?: number }
 export interface AnimationIssue { line?: number; reason: string }
+/**
+ * A warning. One about two parts that cross names them (`pair`), says on how many frames (`frames`), the first of them
+ * (1-based) and its time, or that they already overlap at rest and the animation keeps them so (`atRest`).
+ */
+export interface AnimationWarning extends AnimationIssue { pair?: [string, string]; frames?: number; firstFrame?: number; timeS?: number; atRest?: boolean }
 export interface AnimationFrame { time: number; assembly: Assembly; poses: Map<string, Affine>; colors: Map<string, string> }
-export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationIssue[]; interferenceChecked: boolean }
+export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationWarning[]; interferenceChecked: boolean }
 type Value = { kind: "angle"; value: number } | { kind: "rotation"; value: Quaternion } | { kind: "reach"; at: Vec3; to: Vec3; blend?: number; segment?: number };
 type Point = { time: number; until: number; ease: "linear" | "inOut"; value: Value; key: number };
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -123,9 +128,9 @@ export type SampleOutcome = AnimationResult | { issues: AnimationIssue[] };
 /**
  * `interference: false` leaves the parts' crossing check out: a second sampling of a script that was already checked
  * (an export at another frame rate) only needs the poses. `onProgress` hears each frame as it is ready (frame of count),
- * the parts' crossing check of that frame included.
+ * the parts' crossing check of that frame included. `toleranceMm` is the crossing check's (default `MESH_TOLERANCE_MM`).
  */
-export interface SampleOptions { interference?: boolean; onProgress?: (frame: number, count: number) => void }
+export interface SampleOptions { interference?: boolean; toleranceMm?: number; onProgress?: (frame: number, count: number) => void }
 
 /** Validate all keys before returning any frame; never mutate the given assembly or poses. */
 export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: SampleOptions = {}): SampleOutcome {
@@ -144,7 +149,7 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
  */
 export function* sampleAnimationSteps(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: SampleOptions = {}): Generator<SampleStep, SampleOutcome, void> {
   if (!record(animation)) return { issues: [{ reason: "An animation must be an object." }] };
-  const issues: AnimationIssue[] = [], warnings: AnimationIssue[] = [];
+  const issues: AnimationIssue[] = [], warnings: AnimationWarning[] = [];
   const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
   const members = new Map(original.members.map((member) => [member.object, member]));
   const tracks = new Map<string, Point[]>();
@@ -279,8 +284,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
   const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
   const centre = partCentre;
   const checkPairs = options.interference !== false;
-  const pairSeen = new Map<number, { pa: Affine; pb: Affine; hit: boolean }>();
-  const samePose = (p: Affine, q: Affine) => p === q || (p.m.every((v, k) => v === q.m[k]) && p.t.every((v, k) => v === q.t[k]));
+  const crossings = checkPairs ? crossingCheck(original, poseOf, parts, options.toleranceMm ?? MESH_TOLERANCE_MM) : null;
   // Solve at key times too: a key between exported frames must report its own target, not a later sample.
   const frameTimes = Array.from({ length: count }, (_, frame) => count === 1 ? 0 : end * frame / (count - 1));
   const frameNumbers = new Map(frameTimes.map((time, frame) => [time, frame]));
@@ -348,27 +352,92 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       const one = boxUnder(part.box, pose);
       bounds = bounds ? { min: bounds.min.map((v, i) => Math.min(v, one.min[i]!)) as Vec3, max: bounds.max.map((v, i) => Math.max(v, one.max[i]!)) as Vec3 } : one;
     }
-    const frameBoxes = checkPairs ? usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; }) : [];
-    for (let i = 0; checkPairs && i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
-      const a = usable[i]!, b = usable[j]!, pa = poses.get(a.id), pb = poses.get(b.id), ba = frameBoxes[i], bb = frameBoxes[j];
-      if (!pa || !pb || !ba || !bb || ba.min.some((v, axis) => v > bb.max[axis]! || bb.min[axis]! > ba.max[axis]!)) continue;
-      // Two parts that stand as they stood the last time they were tested cross as they did: most pairs of a
-      // mechanism do not move in most frames. The poses must be the same numbers, so the answer is the test's own.
-      const slot = i * usable.length + j, last = pairSeen.get(slot);
-      let hit: boolean;
-      if (last && samePose(last.pa, pa) && samePose(last.pb, pb)) hit = last.hit;
-      else {
-        const result = interference({ positions: a.positions, pose: pa }, { positions: b.positions, pose: pb });
-        hit = result.verdict === "crossing" || !!result.nested;
-        pairSeen.set(slot, { pa, pb, hit });
-      }
-      if (hit) warnings.push({ reason: `Frame ${frame + 1}: ${rig.find((r) => r.object === a.id)!.name} intersects ${rig.find((r) => r.object === b.id)!.name}.` });
-    }
+    crossings?.frame(frame, time, poses);
     // The assembly is replaced, never written to, from one time to the next, so a frame can hold it as it is.
     frames.push({ time, assembly, poses: new Map(poses), colors: new Map(colors) });
     yield { frame: frames.length, count };
   }
+  if (crossings) warnings.push(...crossings.warnings(frames.length));
   return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
+}
+
+/**
+ * The parts' crossing check, fed one frame at a time by `sampleAnimationSteps` (so the window's worker, its sliced
+ * fallback and the MCP server, which gives the event loop a turn between steps, all run the same check), and read once
+ * at the end: one warning a pair.
+ *
+ * It is the mesh pass (`interference`) at `toleranceMm`, by default `MESH_TOLERANCE_MM`: the kernel meshes each face to
+ * within that of its surface, so two meshes that overlap less than that deep may be faces that only touch (an arbor
+ * turning in a hole of its own size). Overlap deeper than that is a crossing; `model_check {interference, exact}`
+ * measures a pose's common volume. Two parts that already overlap at rest (as the plate holds them, before any key),
+ * and stand on a frame as they stood at rest to each other, are one warning with `atRest`: the same overlap, not one a
+ * frame. Frames where they have moved and still cross are counted as crossings.
+ */
+function crossingCheck(original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], tolerance: number) {
+  const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
+  const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
+  const nameOf = (id: string) => rig.find((row) => row.object === id)!.name;
+  const pairSeen = new Map<number, { pa: Affine; pb: Affine; hit: boolean }>();
+  const samePose = (p: Affine, q: Affine) => p === q || (p.m.every((v, k) => v === q.m[k]) && p.t.every((v, k) => v === q.t[k]));
+  // Two relative poses within these are the same: a pair that turns together keeps its rest pose to rounding.
+  const sameRelative = (p: Affine, q: Affine) => p.m.every((v, k) => Math.abs(v - q.m[k]!) <= 1e-9) && p.t.every((v, k) => Math.abs(v - q.t[k]!) <= 1e-6);
+  const crosses = (a: (typeof usable)[number], b: (typeof usable)[number], pa: Affine, pb: Affine) => {
+    const result = interference({ positions: a.positions, pose: pa }, { positions: b.positions, pose: pb }, { toleranceMm: tolerance });
+    return result.verdict === "crossing" || !!result.nested;
+  };
+  let rest: Map<string, Affine> | undefined;
+  // Per pair: whether it overlaps at rest (tested the first time the pair crosses on a frame), and its relative pose then.
+  const atRest = new Map<number, { hit: boolean; relative?: Affine }>();
+  const counts = new Map<number, { a: string; b: string; rest: number; moving: number; first?: number; time?: number }>();
+  return {
+    /** Frame `frame` (0-based) at `time`, its parts at `poses`. */
+    frame(frame: number, time: number, poses: ReadonlyMap<string, Affine>): void {
+      const frameBoxes = usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; });
+      for (let i = 0; i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
+        const a = usable[i]!, b = usable[j]!, pa = poses.get(a.id), pb = poses.get(b.id), ba = frameBoxes[i], bb = frameBoxes[j];
+        if (!pa || !pb || !ba || !bb || ba.min.some((v, axis) => v > bb.max[axis]! || bb.min[axis]! > ba.max[axis]!)) continue;
+        // Two parts that stand as they stood the last time they were tested cross as they did: most pairs of a
+        // mechanism do not move in most frames. The poses must be the same numbers, so the answer is the test's own.
+        const slot = i * usable.length + j, last = pairSeen.get(slot);
+        let hit: boolean;
+        if (last && samePose(last.pa, pa) && samePose(last.pb, pb)) hit = last.hit;
+        else {
+          hit = crosses(a, b, pa, pb);
+          pairSeen.set(slot, { pa, pb, hit });
+        }
+        if (!hit) continue;
+        let start = atRest.get(slot);
+        if (!start) {
+          rest ??= solveAssembly(original, poseOf).poses;
+          const ra = rest.get(a.id), rb = rest.get(b.id);
+          start = ra && rb && crosses(a, b, ra, rb) ? { hit: true, relative: thenPose(rb, inversePose(ra)) } : { hit: false };
+          atRest.set(slot, start);
+        }
+        const row = counts.get(slot) ?? { a: nameOf(a.id), b: nameOf(b.id), rest: 0, moving: 0 };
+        if (start.hit && sameRelative(thenPose(pb, inversePose(pa)), start.relative!)) row.rest += 1;
+        else {
+          row.moving += 1;
+          if (row.first === undefined) { row.first = frame; row.time = time; }
+        }
+        counts.set(slot, row);
+      }
+    },
+    /** One warning a pair, over `total` frames: overlaps at rest first, then crossings by their first frame. */
+    warnings(total: number): AnimationWarning[] {
+      const check = `mesh pass: the meshes overlap deeper than ${tolerance} mm`;
+      const out: AnimationWarning[] = [];
+      for (const row of counts.values()) if (row.rest > 0) {
+        const kept = row.rest === total ? "every frame keeps them so" : `${row.rest} of ${total} frames keep them so`;
+        out.push({ reason: `${row.a} overlaps ${row.b} at rest, and ${kept} (${check}). Said once: the overlap is the plate's own, not the animation's.`, pair: [row.a, row.b], frames: row.rest, atRest: true });
+      }
+      const moving = [...counts.values()].filter((row) => row.moving > 0).sort((x, y) => x.first! - y.first!);
+      for (const row of moving) {
+        const time = Math.round(row.time! * 1000) / 1000;
+        out.push({ reason: `${row.a} intersects ${row.b} on ${row.moving} of ${total} frame${total === 1 ? "" : "s"}, first frame ${row.first! + 1} at ${time} s (${check}).`, pair: [row.a, row.b], frames: row.moving, firstFrame: row.first! + 1, timeS: time });
+      }
+      return out;
+    },
+  };
 }
 
 /** One member as an animation saw it, or as it stands now: its name, its model pose (absent is where it was made) and its points. */

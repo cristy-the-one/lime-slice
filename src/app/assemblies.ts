@@ -153,7 +153,9 @@ export function assemblyClashes(): Clash[] {
         const key = `${arrayId(a.obj.sourcePos)}|${arrayId(b.obj.sourcePos)}|${JSON.stringify(a.pose)}|${JSON.stringify(b.pose)}`;
         let result = clashCache.get(key);
         if (!result) {
-          result = engine!.interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose });
+          // At the kernel's mesh chord, as model_check {interference} and pose_animate read the same pair: faces that
+          // touch in the solids (an axle in a hole of its size) overlap up to that much in their meshes.
+          result = engine!.interference({ positions: a.obj.sourcePos, pose: a.pose }, { positions: b.obj.sourcePos, pose: b.pose }, { toleranceMm: engine!.MESH_TOLERANCE_MM });
           clashCache.set(key, result);
         }
         if (result.verdict !== "crossing" && !result.nested) continue;

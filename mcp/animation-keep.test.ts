@@ -122,6 +122,30 @@ const kb = beside.kept as { id: string; note?: string };
 assert.equal(kb.id, "escapement-motion-2", JSON.stringify(beside));
 assert.match(String(kb.note), /already exists as "escapement-motion"/);
 
+// 4b. An export long enough to become a job keeps when its last frame is written: slice_wait's result carries kept. A
+// cancelled one keeps nothing.
+const replyS = process.env.LIME_MCP_REPLY_S;
+process.env.LIME_MCP_REPLY_S = "0.05";
+const long = { object: first, source: edited, params: { fps: 30 }, longEdge: 1024 };
+const job = await call("pose_animate", { ...long, out: { gif: "job.gif" }, keep: { title: "Escapement as a job" } });
+assert.equal(job.status, "running", JSON.stringify(job));
+let jobDone = job;
+while (jobDone.status === "running") jobDone = await call("slice_wait", { job: job.job, timeoutS: 30 });
+assert.equal(jobDone.ok, true, JSON.stringify(jobDone));
+assert.equal((jobDone.kept as { id: string } | undefined)?.id, "escapement-as-a-job", JSON.stringify(jobDone));
+assert.ok(readPlugin("escapement-as-a-job", library));
+const stopped = await call("pose_animate", { ...long, source: edited.replace("#888888", "#222222"), out: { gif: "stopped.gif" }, keep: { title: "Escapement cancelled" } });
+assert.equal(stopped.status, "running", JSON.stringify(stopped));
+let stage = stopped;
+for (let round = 0; stage.status === "running" && !String(stage.stage ?? "").startsWith("Rendering frame") && round < 2000; round++) stage = await call("slice_wait", { job: stopped.job, timeoutS: 0.05 });
+assert.equal(stage.status, "running", `the export ended before it could be cancelled: ${JSON.stringify(stage)}`);
+let cancelled = await call("slice_cancel", { job: stopped.job });
+while (cancelled.status === "cancelling" || cancelled.status === "running") cancelled = await call("slice_wait", { job: stopped.job, timeoutS: 30 });
+assert.equal(cancelled.code, "cancelled", JSON.stringify(cancelled));
+assert.equal(readPlugin("escapement-cancelled", library), null, "a cancelled run keeps nothing");
+if (replyS === undefined) delete process.env.LIME_MCP_REPLY_S;
+else process.env.LIME_MCP_REPLY_S = replyS;
+
 // 5. nugget save: an animation this project keeps (exported, so kept under its name), and source with members named.
 const tick = await call("pose_animate", { object: first, source: edited.replace("#888888", "#666666"), name: "tick", longEdge: 32, out: { gif: "tick.gif" } });
 assert.equal(tick.ok, true, JSON.stringify(tick));
@@ -157,4 +181,4 @@ assert.equal(imported.ok, true, JSON.stringify(imported));
 const there = readPlugin("escapement-motion", process.env.LIME_PLUGINS_DIR);
 assert.ok(there && !("reason" in there));
 if (there && !("reason" in there)) { assert.deepEqual(there.header["member-params"], ["wheel", "anchor"]); assert.deepEqual(there.header["member-names"], ["Frame"]); }
-console.log("animation-keep: keep, find, members as parameters, refusals, versions, nugget save and sharing passed");
+console.log("animation-keep: keep, find, members as parameters, refusals, versions, keep on a job and on a cancel, nugget save and sharing passed");
