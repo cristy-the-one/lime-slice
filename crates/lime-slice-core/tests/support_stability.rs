@@ -257,19 +257,16 @@ fn belt_grid_under_the_table_is_a_one_bead_curtain_today() {
     assert_eq!(s.unrested_mm, 0.0, "{s:?}");
 }
 
-/// Belt grid under the small hanging pad: loose dashes that reach neither
-/// the belt nor the pad. Flips with plan step 3.
+/// Belt grid under the small hanging pad was loose dashes that reached
+/// neither the belt nor the pad. Plan step 3 prints a line along each strip,
+/// so it is one column standing on the belt, all the way up to the pad.
 #[test]
-fn belt_grid_under_the_tall_pad_is_loose_dashes_today() {
+fn belt_grid_under_the_tall_pad_is_one_column_on_the_belt() {
     let s = stability(&tall_pad(), Bed::Belt, "grid");
-    assert!(s.supports > 10, "{s:?}");
-    assert!(s.support_mm < 50.0, "{s:?}");
-    assert!(
-        s.most_slender
-            .iter()
-            .all(|c| c.stands_on == Stand::Air && c.height_mm < 3.0),
-        "{s:?}"
-    );
+    assert_eq!(s.supports, 1, "{s:?}");
+    let column = &s.most_slender[0];
+    assert_eq!(column.stands_on, Stand::Belt, "{column:?}");
+    assert!(column.height_mm > 75.0, "{column:?}");
 }
 
 /// Flat grid columns stand whole: every bead rests on the one below.
