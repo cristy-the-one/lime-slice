@@ -147,7 +147,7 @@ let crossing = rig.crossing(&mut s, &at, "Wheel", "Pallet")?;    // the mesh pas
 let a = rig.angle(&mut s, &at, "Third wheel")?;                  // a follower's angle at that pose
 ```
 
-- `anim::frame_times(fps, end)`: the times the host samples frames at (`end * i / (n - 1)`, `n = round(end * fps)`).
+- `anim::frame_times(fps, end)`: the times the host samples frames at (since API 1.17 and app 6.8.0, `k / fps` for `k = 0 … ceil(end * fps)`; before, `end * i / (n - 1)`, `n = round(end * fps)`).
   Keys put on these times are what the frames show, with no interpolation between them: a pose keyed from a contact
   read is shown as read. Linear interpolation between two contact poses can cross on a curved face, so a script that
   must never show a crossing keys every frame time.

@@ -99,7 +99,7 @@ test("a kept animation plays on another assembly by its members, and Keep in lib
   await page.locator("[data-pose-action='animation-play']").click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __animationParams?: { wheel?: string } }).__animationParams?.wheel)).toBe("Escapement");
   await expect(page.locator("[data-pose-animation-frame]")).toBeVisible();
-  await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "3"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "4"; el.dispatchEvent(new Event("input", { bubbles: true })); });
   await expect(pose).not.toHaveAttribute("data-posed", before);
   await expect(pose).toHaveAttribute("data-animation-colors", new RegExp(`${child}:#0000ff`));
   await expect(page.locator("[data-pose-action='animation-library']")).toHaveCount(0);

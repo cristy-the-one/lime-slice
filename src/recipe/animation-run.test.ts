@@ -23,14 +23,14 @@ const recipes = {
 const output = await runAppAnimation(recipes, "test", "fn main() {}", {}, assembly, () => IDENTITY_POSE, [{ object: "root", name: "Root" }, { object: "finger", name: "Finger" }]);
 assert.ok(output.ok, JSON.stringify(output));
 assert.ok(givenRig);
-if (output.ok) assert.equal(output.result.frames.length, 4);
+if (output.ok) assert.equal(output.result.frames.length, 5);
 assert.deepEqual(assembly, before);
 console.log("app animation: rig and sampled frames without mutation passed");
 // The Pose panel hears each stage in order: build, run, every frame, finish.
 const stages: string[] = [];
 const told = await runAppAnimation(recipes, "test", "fn main() {}", {}, assembly, () => IDENTITY_POSE, [{ object: "root", name: "Root" }, { object: "finger", name: "Finger" }], { onStage: (stage) => stages.push(stage.stage === "frames" ? `frames ${stage.frame}/${stage.count}` : stage.stage) });
 assert.ok(told.ok);
-assert.deepEqual(stages, ["build", "run", "frames 0/4", "frames 1/4", "frames 2/4", "frames 3/4", "frames 4/4", "finish"]);
+assert.deepEqual(stages, ["build", "run", "frames 0/5", "frames 1/5", "frames 2/5", "frames 3/5", "frames 4/5", "frames 5/5", "finish"]);
 // A cancel before the script runs answers that it was cancelled.
 const abort = new AbortController(); abort.abort();
 const cancelled = await runAppAnimation(recipes, "test", "fn main() {}", {}, assembly, () => IDENTITY_POSE, [{ object: "root", name: "Root" }, { object: "finger", name: "Finger" }], { signal: abort.signal });
