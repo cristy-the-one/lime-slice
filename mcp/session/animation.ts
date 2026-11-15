@@ -8,7 +8,8 @@ import { apiVerdict } from "../../src/recipe/api-level.ts";
 import { eventLoopTurn, runAnimation } from "../animation-run.ts";
 import { GIF_END, gifFrame, gifHead } from "../animation-gif.ts";
 import { BACKGROUND, readBackground, readCamera, renderMesh } from "../render.ts";
-import { slugOf } from "../plugins.ts";
+import { listExtra, parsePlugin, pluginsDir, readPlugin, slugOf, type PluginHeader } from "../plugins.ts";
+import { explainNoMember, missingMember } from "../../src/anim-members.ts";
 import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { resolveWrite } from "../workspace.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -30,6 +31,8 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   let pluginCopy: { sha256: string; text: string } | undefined;
   let savedParams: Record<string, unknown> = {};
   let api: string | undefined;
+  // The header of the plugin run (or of a source that carries one): its parameters and the members it needs.
+  let header: PluginHeader | undefined;
   if (typeof input.path === "string") {
     const file = recipeSourceFile(input.path);
     if ("reason" in file) return refuse("recipe-source", file.reason);
@@ -37,14 +40,18 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   }
   if (typeof input.plugin === "string") {
     const kept = this.animations.get(input.plugin);
-    if (kept) { source = kept.source; savedParams = kept.params; api = kept.api; }
+    if (kept) { source = kept.source; savedParams = kept.params; api = kept.api; header = this.animationHeader(kept.plugin ?? input.plugin, kept.source); }
     else {
       const plugin = await this.pluginFile(input.plugin);
       if ("reason" in plugin) return refuse("recipe-source", plugin.reason);
       if (plugin.file.header.kind !== "animation") return refuse("bad-argument", `"${input.plugin}" is a recipe plugin. Use recipe_run for it.`);
-      source = plugin.file.body; api = plugin.file.header.api; pluginCopy = { sha256: plugin.file.sha256, text: plugin.file.text };
+      source = plugin.file.body; api = plugin.file.header.api; pluginCopy = { sha256: plugin.file.sha256, text: plugin.file.text }; header = plugin.file.header;
     }
+  } else {
+    const framed = source.startsWith("//! ---") ? parsePlugin(source) : null;
+    if (framed && !("reason" in framed) && framed.header.kind === "animation") header = framed.header;
   }
+  const keep = input.keep === undefined ? undefined : (input.keep && typeof input.keep === "object" ? input.keep : {}) as { title?: unknown; description?: unknown; members?: unknown };
   const name = slugOf(typeof input.name === "string" ? input.name : defaultName);
   if (!name) return refuse("bad-argument", "Give the animation a name with letters or digits.");
   if (api) {
@@ -59,9 +66,18 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const solid = row.solid && row.solid.positions.length >= 9;
     parts.push({ object: row.id, name: row.name, positions: solid ? row.solid!.positions : posedPositions(row.source, seatLift(row.seatMm)) });
   }
+  // Member names kept with the project's animation are for the assembly it played on; another assembly starts from the defaults.
+  const keptOn = typeof input.plugin === "string" ? this.animations.get(input.plugin)?.assembly : undefined;
+  if (keptOn !== undefined && keptOn !== assembly.id) for (const member of header?.["member-params"] ?? []) delete savedParams[member];
   const params = { ...savedParams, ...(input.params ?? {}) as Record<string, unknown> };
+  // --- docs/plan-animation-plugins.md A3. A member the plugin needs and this assembly lacks: refused before the build.
+  const rig = animationRig(assembly, parts);
+  if (header) {
+    const missing = missingMember(rig, header["member-params"], header["member-names"], header.params, params);
+    if (missing) return refuse("animation-refused", missing);
+  }
   const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
-  if (!result.ok) return { ok: false, code: "animation-refused", reason: result.reason, ...(result.issues ? { issues: result.issues } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
+  if (!result.ok) return { ok: false, code: "animation-refused", reason: explainNoMember(result.reason, params, rig), ...(result.issues ? { issues: result.issues.map((issue) => ({ ...issue, reason: explainNoMember(issue.reason, params, rig) })) } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
   // Crossings come one warning a pair already (frameInterference), with the frames they hold and the check that made
   // them. A warning a key repeats (a colour set twice) is said once.
@@ -73,7 +89,15 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const scripted = result.background ? readBackground(result.background) : undefined;
   const background = asked && "rgb" in asked ? asked.rgb : scripted && "rgb" in scripted ? scripted.rgb : BACKGROUND;
   const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(timing ? { frameTiming: timing } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
-  if (!out) return { ...summary, rig: animationRig(assembly, parts).map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
+  // --- docs/plan-animation-plugins.md A1. keep: this run is the check; the plugin records the members it used. It is
+  // kept only once the run has done all it was asked: after sampling for a dry run, after the last frame is written for
+  // an export (which may have become a job; its slice_wait result then carries kept). A cancel or a failure keeps nothing.
+  const keepNow = async (): Promise<Record<string, unknown>> => {
+    if (!keep) return {};
+    if (meta?.signal?.aborted) return { keepRefused: "The run was cancelled, so the animation was not kept." };
+    return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params);
+  };
+  if (!out) return { ...summary, ...(await keepNow()), rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
   if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
   if (!sampled.bounds) return refuse("no-mesh", "The assembly has no renderable geometry.");
   const read = readCamera(input.camera ?? result.camera ?? "iso");
@@ -122,11 +146,66 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     clean();
     throw err;
   }
-  this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
+  const kept = await keepNow();
+  const keptAs = "kept" in kept ? kept.kept as { id: string } : undefined;
+  this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(keptAs ? { plugin: keptAs.id } : typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
   if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
+  if (keptAs) {
+    const file = readPlugin(keptAs.id, pluginsDir());
+    if (file && !("reason" in file)) this.projectPlugins.set(file.sha256, file.text);
+  }
   this.autosaveDirty = true;
-  return { ...summary, files: { ...(gifPath ? { gif: gifPath } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
+  return { ...summary, ...kept, files: { ...(gifPath ? { gif: gifPath } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
 }
+/**
+ * --- docs/plan-animation-plugins.md A1. pose_animate {keep} and nugget save: the script kept as a `kind: animation`
+ * plugin by `pluginSave` (its versions, its title clash note), with the member names the run used. A refused keep is a
+ * sentence in the reply; the run stands.
+ */
+async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...(name ? { name } : {}), animation: { ...(used ? { used } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
+  return "reason" in saved ? { keepRefused: saved.reason } : { kept: saved };
+}
+
+/**
+ * nugget {action: "save", kind: "animation", from}: an animation this project keeps, by the name pose_animate gave it.
+ * When its assembly is still here, it runs once more (a dry run) so the plugin records the members it uses; else it is
+ * kept from its code and values alone.
+ */
+async function animationSaveFrom(this: Session, from: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const key = this.animations.has(from) ? from : slugOf(from);
+  const row = this.animations.get(key);
+  if (!row) return refuse("no-draft", `No animation named ${from} is kept with this project.${this.animations.size ? ` It keeps: ${[...this.animations.keys()].slice(0, 20).join(", ")}.` : " pose_animate {object, source, name, out} keeps one with the project, or keep it in the library at once with pose_animate {keep}."}`);
+  const keep = { title: input.title, description: input.description, ...(input.members !== undefined ? { members: input.members } : {}) };
+  const member = this.liveAssemblies().find((assembly) => assembly.id === row.assembly)?.members.find((m) => this.find(m.object));
+  if (member) {
+    const ran = await this.poseAnimate({ object: member.object, source: row.source, params: row.params, name: row.plugin ?? key, keep });
+    if (ran.ok !== true) return refuse("plugin-invalid", `The animation did not run on its assembly, so it was not kept: ${String(ran.reason ?? "it failed.")}`);
+    if (typeof ran.keepRefused === "string") return refuse("plugin-invalid", ran.keepRefused);
+    const kept = ran.kept as { id: string };
+    return { ok: true, ...(ran.kept as Record<string, unknown>), path: join(pluginsDir(), `${kept.id}.rs`) };
+  }
+  const saved = await this.pluginSave({ source: row.source, title: keep.title, description: keep.description, name: row.plugin ?? key, animation: { values: row.params, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
+  if ("reason" in saved) return refuse("plugin-invalid", saved.reason);
+  return { ok: true, ...saved, note: "Its assembly is not on the plate, so the members it uses were not read from a run: name its member parameters with members.", path: join(pluginsDir(), `${saved.id}.rs`) };
+}
+
+/**
+ * The header of an animation plugin by id, from the library, this project's copies or a read-only library; or of
+ * `source` when it carries one. Never a describe run.
+ */
+function animationHeader(this: Session, id: string, source?: string): PluginHeader | undefined {
+  const framed = source?.startsWith("//! ---") ? parsePlugin(source) : null;
+  if (framed && !("reason" in framed) && framed.header.kind === "animation") return framed.header;
+  const own = readPlugin(id, pluginsDir());
+  if (own && !("reason" in own) && own.header.kind === "animation") return own.header;
+  for (const text of this.projectPlugins.values()) {
+    const file = parsePlugin(text);
+    if (!("reason" in file) && file.header.plugin === id && file.header.kind === "animation") return file.header;
+  }
+  return listExtra().find((file) => file.header.plugin === id && file.header.kind === "animation")?.header;
+}
+
 /**
  * A sentence when keys fall between frames, else null. `round(duration × fps)` frames are spread from 0 to the end, so
  * they are `duration / (frames - 1)` s apart, not 1/fps: a script that keys every 1/fps s has frames that fall between
@@ -140,5 +219,5 @@ function frameTiming(sampled: { frames: { time: number }[]; keys: { t: number }[
   return `${between} of ${sampled.keys.length} keys fall between frames: the ${times.length} frames are spread from 0 to ${sampled.durationS} s, ${spacing} s apart (not 1/${sampled.fps} s), and a frame between two keys is interpolated between them. A warning gives its frame and time.`;
 }
 
-export const animationMethods = { poseAnimate };
+export const animationMethods = { poseAnimate, keepAnimation, animationSaveFrom, animationHeader };
 export const animationHandlers: Record<string, ToolHandler> = { pose_animate: (session, input, meta) => session.poseAnimate(input, meta) };

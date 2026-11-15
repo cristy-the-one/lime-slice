@@ -27,6 +27,7 @@ import { bodySha256, pluginFileText, readPluginFile, type PluginFileInfo, type P
 import { apiVerdict } from "../recipe/api-level.ts";
 import { RECIPE_API } from "../plugin-step.ts";
 import type { ContactJob, ContactJobReply } from "../contact-worker.ts";
+import { memberNamesOf, membersMatching, missingMember } from "../anim-members.ts";
 
 /** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
 const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
@@ -54,7 +55,14 @@ const animationParameters = new Map<string, Record<string, string | number | boo
 let animationParameterProject: unknown;
 let animationParameterPlugins: unknown;
 let animationRun = 0;
-export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined }
+/**
+ * The member each animation's member parameters name, per assembly (docs/plan-animation-plugins.md A5): keyed
+ * `<plugin>\u0000<assembly id>`, so one animation keeps its own choice on each assembly it plays on.
+ */
+const animationMembers = new Map<string, Record<string, string>>();
+/** The code the plugin library holds, by hash: an animation played from other code can be kept there. */
+let libraryShas = new Set<string>();
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[] }
 let animation: PoseAnimationState | null = null;
 /** "Until contact" (docs/plan-contact-poses.md): the solve running, and what the last one said, for the part it ran on. */
 let contactBusy = false;
@@ -95,8 +103,9 @@ async function refreshAnimations(): Promise<void> {
   const { loadLibrary, pluginLibrary } = await import("../ui/plugins-panel.ts");
   await loadLibrary();
   if (animationParameterProject !== session.mcpModel || animationParameterPlugins !== session.plugins) {
-    animationParameters.clear(); animationParameterProject = session.mcpModel; animationParameterPlugins = session.plugins;
+    animationParameters.clear(); animationMembers.clear(); animationParameterProject = session.mcpModel; animationParameterPlugins = session.plugins;
   }
+  libraryShas = new Set(pluginLibrary().bySha.keys());
   const files = [...pluginLibrary().plugins.values()].map((row) => row.file);
   for (const text of Object.values(session.plugins ?? {})) {
     const file = readPluginFile(text); if (file) files.push(file);
@@ -104,13 +113,15 @@ async function refreshAnimations(): Promise<void> {
   const saved = session.mcpModel?.animations;
   if (saved && typeof saved === "object" && !Array.isArray(saved)) {
     for (const [name, value] of Object.entries(saved)) {
-      const row = value as { source?: unknown; api?: unknown; params?: unknown } | null;
+      const row = value as { source?: unknown; api?: unknown; params?: unknown; assembly?: unknown } | null;
       if (!row || typeof row.source !== "string") continue;
       const existing = readPluginFile(row.source);
       const id = existing?.kind === "animation" ? existing.plugin : name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "animation";
       if (!animationParameters.has(id) && row.params && typeof row.params === "object" && !Array.isArray(row.params)) {
         const values = Object.entries(row.params).filter((entry): entry is [string, string | number | boolean] => ["string", "number", "boolean"].includes(typeof entry[1]));
         animationParameters.set(id, Object.fromEntries(values));
+        // The names it was saved with are its members' on the assembly it played on, not on another.
+        if (typeof row.assembly === "string") animationMembers.set(memberKey(id, row.assembly), Object.fromEntries(values.filter((entry): entry is [string, string] => typeof entry[1] === "string")));
       }
       if (existing?.kind === "animation") { files.push(existing); continue; }
       if (files.some((file) => file.kind === "animation" && file.plugin === id)) continue;
@@ -156,6 +167,9 @@ async function playAnimation(): Promise<void> {
   if (!row || !file) { message = "Select an assembly and an animation."; renderPanel(); return; }
   const verdict = apiVerdict(file.api, [RECIPE_API]);
   if (!verdict.ok) { message = verdict.reason; renderPanel(); return; }
+  // A member the animation needs that this assembly lacks: said before anything builds (docs/plan-animation-plugins.md A3).
+  const missing = missingMember(rigNamesOf(row.assembly), file.memberParams, file.memberNames, file.params, animationValues(file, row.assembly));
+  if (missing) { message = missing; renderPanel(); return; }
   if (animation && animation.assembly === row.assembly.id) {
     if (animation.clock.playing) animation.clock.pause(performance.now());
     else { animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); }
@@ -197,7 +211,7 @@ async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assem
     if (seat) for (let i = 2; i < positions.length; i += 3) positions[i] += seat;
     return [{ object: part.id, name: part.name, positions }];
   });
-  const params = { ...Object.fromEntries(file.params.filter((param) => param.default !== null).map((param) => [param.name, param.default])), ...animationParameters.get(file.plugin) };
+  const params = animationValues(file, live);
   try {
     const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts, { signal, transfer: true, onStage: (stage) => setPreparingStage(ticket, stage) });
     if (!current()) return;
@@ -206,7 +220,7 @@ async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assem
     if (stale) { message = `${stale} while the animation was building. Play it again.`; return; }
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; return; }
     preparing = null;
-    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, used: result.used, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
     animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); renderPanel();
   } catch (error) {
@@ -214,6 +228,41 @@ async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assem
   }
 }
 
+
+function memberKey(plugin: string, assembly: string): string {
+  return `${plugin}\u0000${assembly}`;
+}
+/** The assembly's members as an animation names them (`animationRig`'s names, src/pose-anim.ts). */
+function rigNamesOf(assembly: Assembly): { name: string }[] {
+  const names = memberNamesOf(assembly.members, (id) => state.plate.objects.find((item) => item.id === id)?.name);
+  return assembly.members.map((member) => ({ name: names.get(member.object)! }));
+}
+/**
+ * The values an animation runs with on `assembly`: its defaults, then the values set in the panel, then, for a member
+ * parameter, the member chosen on this assembly (another assembly's choice never carries over).
+ */
+function animationValues(file: PluginFileInfo, assembly: Assembly | null): Record<string, unknown> {
+  const members = new Set(file.memberParams ?? []);
+  const set = Object.entries(animationParameters.get(file.plugin) ?? {}).filter(([name]) => !members.has(name));
+  const chosen = assembly ? animationMembers.get(memberKey(file.plugin, assembly.id)) ?? {} : {};
+  const picked = Object.entries(chosen).filter(([name]) => members.has(name));
+  return { ...Object.fromEntries(file.params.filter((param) => param.default !== null).map((param) => [param.name, param.default])), ...Object.fromEntries(set), ...Object.fromEntries(picked) };
+}
+
+/**
+ * A member parameter's control: a select of the assembly's members. A pattern the value holds stays an option with how
+ * many parts it matches; a value that matches none shows "Choose a member", and Play then says which to set.
+ */
+function memberSelect(name: string, label: string, value: string, rig: { name: string }[]): HTMLSelectElement {
+  const input = document.createElement("select"); input.dataset.poseAnimationMember = name; input.setAttribute("aria-label", label);
+  const option = (text: string, optionValue: string) => { const item = document.createElement("option"); item.value = optionValue; item.textContent = text; input.append(item); };
+  const matched = value ? membersMatching(rig, value) : [];
+  if (!matched.length) option("Choose a member", "");
+  if (matched.length && !rig.some((row) => row.name === value)) option(`${value} (${matched.length} ${matched.length === 1 ? "part" : "parts"})`, value);
+  for (const row of rig) option(row.name, row.name);
+  input.value = matched.length ? value : "";
+  return input;
+}
 
 function poseOf(id: string): Affine | undefined {
   const object = state.plate.objects.find((row) => row.id === id);
@@ -618,11 +667,18 @@ function renderPanel(): void {
     for (const file of animationFiles) { const option = document.createElement("option"); option.value = file.plugin; option.textContent = file.title; select.append(option); }
     select.value = animationChoice; panel.append(select);
     const file = animationFiles.find((item) => item.plugin === animationChoice);
+    const on = selected()?.assembly ?? null;
+    const values = file ? animationValues(file, on) : {};
     for (const param of file?.params ?? []) {
       if (param.kind === "face" || param.kind === "outline") continue;
       const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", param.label || param.name);
-      const value = animationParameters.get(file!.plugin)?.[param.name] ?? param.default;
-      if (param.kind === "choice") {
+      const value = values[param.name] ?? param.default;
+      if (param.kind === "text" && file!.memberParams?.includes(param.name)) {
+        // A member parameter: the selected assembly's members, so the same animation plays on parts named otherwise. A
+        // stacked row, so a long member name shows whole.
+        label.classList.add("pose-field-stacked");
+        label.append(memberSelect(param.name, param.label || param.name, String(value ?? ""), on ? rigNamesOf(on) : []));
+      } else if (param.kind === "choice") {
         const input = document.createElement("select"); input.dataset.poseAnimationParam = param.name; input.setAttribute("aria-label", param.label || param.name);
         for (const item of param.options ?? []) { const option = document.createElement("option"); option.value = item; option.textContent = item; input.append(option); }
         input.value = String(value ?? ""); label.append(input);
@@ -640,6 +696,8 @@ function renderPanel(): void {
     if (!preparing) button(actions, animation?.clock.playing ? "Pause" : "Play", "animation-play");
     if (animation && !preparing) {
       button(actions, "Stop", "animation-stop"); button(actions, "Keep this frame", "animation-keep"); button(actions, "Save animation…", "animation-save");
+      // Code the library does not hold yet (a project's animation, an edited one): keep it there, for any assembly.
+      if (!libraryShas.has(animation.plugin.sha)) button(actions, "Keep in library…", "animation-library").dataset.tip = "Keep this animation in your plugin library, so it plays on any assembly, its member names chosen there.";
       const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = String(animation.result.frames.length - 1); slider.value = String(animation.clock.frame(performance.now())); slider.dataset.poseAnimationFrame = ""; slider.setAttribute("aria-label", "Animation frame"); panel.append(slider);
       const label = addText(panel, "p", `Frame ${Number(slider.value) + 1} / ${animation.result.frames.length}`); label.dataset.poseAnimationCount = "";
     }
@@ -924,6 +982,26 @@ function panelClick(event: Event): void {
     }
     return;
   }
+  if (action === "animation-library") {
+    if (animation) {
+      const current = animation;
+      void import("./pose-animation-keep.ts").then(({ showAnimationKeep }) => {
+        if (animation !== current || state.stage !== "pose") return;
+        const file = animationFiles.find((item) => item.plugin === current.plugin.name);
+        showAnimationKeep({ current, file, done: (id, said) => {
+          message = said;
+          // The kept plugin starts from the values it was played with, its members' on this assembly included.
+          const played = Object.entries(current.plugin.params).filter((entry): entry is [string, string | number | boolean] => ["string", "number", "boolean"].includes(typeof entry[1]));
+          animationParameters.set(id, Object.fromEntries(played));
+          animationMembers.set(memberKey(id, current.original.id), Object.fromEntries(played.filter((entry): entry is [string, string] => typeof entry[1] === "string")));
+          // The keep added its file to the project's plugins: the same project, so the values set here stay.
+          animationParameterPlugins = session.plugins;
+          void refreshAnimations().then(() => { if (animationFiles.some((item) => item.plugin === id)) { animationChoice = id; renderPanel(); } });
+        } });
+      });
+    }
+    return;
+  }
   if (action === "animation-stop") { stopAnimation(); message = ""; syncPose(); return; }
   if (action === "animation-keep" && animation) {
     const frame = animation.result.frames[animation.clock.frame(performance.now())];
@@ -988,6 +1066,13 @@ function panelClick(event: Event): void {
 function panelChange(event: Event): void {
   const input = event.target as HTMLInputElement | HTMLSelectElement;
   if (input.dataset.poseAnimation === "choice") { stopAnimation(); cancelPreparation(""); animationChoice = input.value; syncPose(); return; }
+  if (input.dataset.poseAnimationMember) {
+    const assembly = selected()?.assembly;
+    if (!assembly) return;
+    const key = memberKey(animationChoice, assembly.id);
+    animationMembers.set(key, { ...animationMembers.get(key), [input.dataset.poseAnimationMember]: input.value });
+    message = ""; stopAnimation(); cancelPreparation(""); syncPose(); return;
+  }
   if (input.dataset.poseAnimationParam) {
     const name = input.dataset.poseAnimationParam, previous = animationParameters.get(animationChoice) ?? {};
     const value = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;

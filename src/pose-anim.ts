@@ -6,6 +6,7 @@ import type { Vec3 } from "./model-tree.ts";
 import { alignedHinge, poseChain, solvePose, turnBall, turnHinge } from "./pose.ts";
 import { interference, MESH_TOLERANCE_MM } from "./interference.ts";
 import { trainOf, trainTurn } from "./gear-train.ts";
+import { memberNamesOf, nameMatcher } from "./anim-members.ts";
 
 export type Quaternion = [number, number, number, number];
 export type Aim = number | "rest" | "aligned" | "min" | "max" | { fraction: number } | { rotation: Quaternion } | { reach: { at: Vec3; to: Vec3 } };
@@ -47,14 +48,7 @@ export function slerp(a: Quaternion, b: Quaternion, t: number): Quaternion {
 /** Names are stable, unique and matched as displayed; a duplicate receives -2, -3, … . */
 export function animationRig(assembly: Assembly, parts: readonly AnimationPart[]): RigMember[] {
   const partById = new Map(parts.map((part) => [part.object, part]));
-  const used = new Set<string>();
-  const names = new Map<string, string>();
-  for (const member of assembly.members) {
-    const base = partById.get(member.object)?.name.trim() || "Part";
-    let name = base;
-    for (let n = 2; used.has(name); n++) name = `${base}-${n}`;
-    used.add(name); names.set(member.object, name);
-  }
+  const names = memberNamesOf(assembly.members, (object) => partById.get(object)?.name);
   return assembly.members.map((member) => {
     const aligned = alignedHinge(member);
     return { object: member.object, name: names.get(member.object)!, parent: member.parent ? names.get(member.parent) ?? null : null, joint: member.joint ? structuredClone(member.joint) : undefined, ...(aligned === null ? {} : { aligned }) };
@@ -63,8 +57,8 @@ export function animationRig(assembly: Assembly, parts: readonly AnimationPart[]
 
 /** A glob union; names with no matching member are not silently ignored. */
 export function rigGroup(rig: readonly RigMember[], pattern: string): RigMember[] {
-  const matchers = pattern.split("|").map((part) => new RegExp(`^${part.trim().split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`));
-  return rig.filter((row) => matchers.some((matcher) => matcher.test(row.name)));
+  const match = nameMatcher(pattern);
+  return rig.filter((row) => match(row.name));
 }
 
 function resolveAim(member: Member, aim: Aim): Value | string {

@@ -14,6 +14,7 @@ import type { PluginValue } from "../src/model-tree.ts";
 import { pickText } from "../src/recipe/picks.ts";
 import { apiVerdict, parseApiLevel, type ApiLevel, type ApiRefusalCode } from "../src/recipe/api-level.ts";
 import { REFUSAL_CODES } from "./refusals.ts";
+import { memberListText, readMemberList } from "../src/anim-members.ts";
 
 /** The app's identifier (src-tauri/tauri.conf.json): the library sits in its data folder. */
 export function pluginAppId(moduleDir: string): string {
@@ -72,6 +73,10 @@ export interface PluginHeader {
   created: string;
   target: PluginTarget;
   params: PluginParam[];
+  /** An animation's text parameters that name assembly members (docs/plan-animation-plugins.md A2). */
+  "member-params"?: string[];
+  /** The member names or patterns an animation uses as written, that no parameter sets. */
+  "member-names"?: string[];
 }
 
 /** A plugin file read back: its header, its body (the recipe), and whether the body still matches the hash. */
@@ -151,6 +156,8 @@ export function pluginText(header: PluginHeader, body: string): string {
     ["created", header.created],
     ["target", ingredient ? undefined : header.target],
     ["params", ingredient ? undefined : JSON.stringify(header.params)],
+    ["member-params", header.kind === "animation" ? memberListText(header["member-params"]) : undefined],
+    ["member-names", header.kind === "animation" ? memberListText(header["member-names"]) : undefined],
   ];
   const lines = fields.filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => `//! ${key}: ${value}`);
   const rest = lfOnly(body).replace(/^\n+/, "");
@@ -196,9 +203,16 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
     created: fields.get("created") ?? "",
     target: target === "object" || target === "either" ? target : "new",
     params,
+    ...(kind === "animation" ? memberLists(fields) : {}),
   };
   const sha256 = bodyHash(body);
   return { header, body, sha256, matches: sha256 === header["source-sha256"], text };
+}
+
+/** An animation's member lists from its header; a list that does not read is left out (an import checks it first). */
+function memberLists(fields: Map<string, string>): Pick<PluginHeader, "member-params" | "member-names"> {
+  const params = readMemberList(fields.get("member-params")), names = readMemberList(fields.get("member-names"));
+  return { ...(params?.length ? { "member-params": params } : {}), ...(names?.length ? { "member-names": names } : {}) };
 }
 
 /** `major.minor` as numbers, or null. */
