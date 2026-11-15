@@ -77,7 +77,7 @@ export async function runNestedInApp(args: Record<string, unknown>, parent: AppR
   const deeper: AppNestedRun = { ...run, env: { ...env, carried: split.data }, stack: [...run.stack, ask.id], limits };
   child.onPluginRun = (inner) => runNestedInApp(inner, child, deeper);
   const queue = child.useQueue(unreadKeys(built.unread), true, limits.timeoutS, run.signal);
-  const start = { params: ask.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: limits.timeoutS }, bedMm: run.context.bedMm, nozzleMm: run.context.nozzleMm } };
+  const start = { params: ask.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: true, canCheckpoint: false, timeLimitS: limits.timeoutS }, bedMm: run.context.bedMm, nozzleMm: run.context.nozzleMm } };
   const out = await run.recipes.run(built.exe, start, child.call, limits, run.signal);
   if (out.ok && out.done && queue.holding) {
     const flushed = await queue.flushAll();

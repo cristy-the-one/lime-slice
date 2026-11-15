@@ -23,7 +23,7 @@ test("without lust the panel lists plugins and shows their forms read-only, with
   await page.locator("#modelFeatureMore").click();
   await page.locator("#modelMenuPlugins").click();
   const card = page.locator("#modelPlugins");
-  await expect(card.locator(".pp-pick")).toHaveCount(3);
+  await expect(card.locator(".pp-pick:not([data-section=builtin])")).toHaveCount(3);
   await card.locator('.pp-pick[data-key="library:stud-row"]').click();
   await expect(card.locator("#modelPluginsReadOnly")).toHaveText(MAC);
   const studs = card.locator('.mh-plugin-control[data-name="studs"]');

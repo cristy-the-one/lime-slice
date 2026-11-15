@@ -49,6 +49,7 @@ import {
   rangeText,
   readLibrary,
   searched,
+  shippedLibrary,
   settingsText,
   type FormValue,
   type LibraryIngredient,
@@ -193,7 +194,7 @@ export async function loadLibrary(): Promise<PluginLibrary> {
   const io = await libraryIo();
   if (!io) {
     libraryNote = LIBRARY_NEEDS_APP;
-    library = EMPTY_LIBRARY;
+    library = await shippedLibrary();
   } else {
     try {
       library = await readLibrary(await io.list());
@@ -395,7 +396,7 @@ function list(): HTMLElement {
   const k = shownKind();
   let any = false;
   if (k === "all" || k === "plugin") {
-    const sections: PanelSection[] = ["project", "library", "samples"];
+    const sections: PanelSection[] = ["project", "library", "builtin", "samples"];
     for (const sec of sections) {
       const items = shown.filter((row) => row.section === sec);
       if (items.length === 0) continue;
@@ -443,6 +444,7 @@ function listRow(row: PanelPlugin): HTMLElement {
   const button = el("button", "pp-pick") as HTMLButtonElement;
   button.type = "button";
   button.dataset.key = row.key;
+  button.dataset.section = row.section;
   button.dataset.badgeTarget = row.file.target;
   button.dataset.tip = row.file.description || row.file.title;
   const title = el("span", "pp-title");
@@ -585,7 +587,9 @@ function menu(plugin: PanelPlugin): HTMLElement {
   item("source", "View source", PURPOSE.source);
   item("export", "Export…", PURPOSE.exportFile);
   const noLibrary = libraryNote && libraryNote !== "loading" ? "Your library is read by the desktop app. Open this project there." : "";
-  if (plugin.section === "library") {
+  if (plugin.section === "builtin") {
+    // Built in: it ships with the app, so there is no file to reveal and nothing to remove or add.
+  } else if (plugin.section === "library") {
     item("reveal", "Reveal in folder", PURPOSE.reveal, noLibrary);
     item("remove", "Remove from library…", PURPOSE.remove, noLibrary);
   } else {
@@ -1174,7 +1178,7 @@ async function ingredientAction(act: string) {
 function presetBlocked(plugin: PanelPlugin): string | null {
   if (demo) return REASON.demoPreset;
   if (libraryNote && libraryNote !== "loading") return "Presets are kept by the desktop app. Open this project there.";
-  if (plugin.section !== "library") return REASON.presetNeedsLibrary;
+  if (plugin.section !== "library" && plugin.section !== "builtin") return REASON.presetNeedsLibrary;
   if (busy) return REASON.busy;
   return formProblem(plugin.file.params, Object.fromEntries(values));
 }

@@ -4,7 +4,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, listExtra, listLibrary, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "../plugins.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, listExtra, listLibrary, listShipped, olderVersions, oneLine, paramSummary, parsePlugin, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginHeader } from "../plugins.ts";
 import { bodyProblem, carriedIngredients, ingredientsDir, isIngredientId, lineMap, lineText, moduleOf, resolveIngredients } from "../ingredients.ts";
 import { addLesson, harvestFunctions, isAbout, LESSON_MAX, liftItems, listLessons, listPresets, presetId, presetProblem, publicItems, readPreset, removeLesson, removePreset, SHIPPED_LESSONS, writePreset } from "../nuggets.ts";
 import { apiProblem, clashOf, keptBesideTitle, marksText, oneFileProblem, rawHeader, readMarks, withMark, type ImportMark } from "../../src/plugins/share.ts";
@@ -127,6 +127,14 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
       if (!fits(h)) continue;
       const s = score(`${h.plugin} ${h.title} ${h.description}`);
       if (s) rows.push({ score: s + 0.5, row: { kind: "plugin", id: h.plugin, v: h.version, ...animationFields(h), target: h.target, params: paramSummary(h.params), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+    }
+    // --- docs/plan-clock-parts.md. The plugins that ship with the app, as the shipped lessons are: `shipped: true`.
+    if (kind !== "animation") {
+      for (const file of listShipped(pluginsDir())) {
+        const h = file.header;
+        const s = score(`${h.plugin} ${h.title} ${h.description}`);
+        if (s) rows.push({ score: s + 0.25, row: { kind: "plugin", id: h.plugin, v: h.version, target: h.target, params: paramSummary(h.params), shipped: true, data: { title: h.title, description: h.description } } });
+      }
     }
     // A read-only library beside the own one: listed after it, never over it, and marked imported.
     const ownIds = new Set(rows.map((r) => r.row.id));

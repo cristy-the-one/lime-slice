@@ -55,10 +55,9 @@ moving parts travels more than `tolerance` between the two. So the clearance at 
 the pass's own 0.001 mm contact band), and it is measured, not assumed: `clearanceMm` is the least distance between the
 two meshes at the answer (`meshDistance`, below). Default `tolerance` 0.01 mm, from 0.002 to 1 mm.
 
-The triangles are not the solid: a curved face is a set of flat facets within the kernel's chord tolerance (0.01 to
-0.05 mm on the parts here), so on a round face the mesh contact can differ from the exact one by that much. The window
-has no kernel to ask, so the shared solve uses the mesh alone. Over MCP the kernel is asked as well (section 2), and a
-disagreement is reported, not hidden.
+The triangles are not the solid: a curved face is a set of flat facets within the kernel's chord tolerance (0.05 mm on
+the parts here), so on a round face the facets' contact can be late by that much. Since 6.8.0 the solve keeps curved
+facets their chord apart, so the true parts cannot overlap, and over MCP the kernel decides the pose: section 6.
 
 **How it searches: no step to choose.** Conservative advancement. At each pose the solve measures the least distance
 `d` between the moving parts and the parts they may touch, and a bound `v` on how far any point of the moving parts
@@ -111,7 +110,8 @@ answer clear or a touch. When the kernel finds shared volume at the answer (the 
 `agrees` is false and the note says so in one sentence, with the volume; the pose is still the mesh's answer, so the
 reply says which check placed it. When the kernel finds nothing at `past` the mesh pass was early by up to the chord
 tolerance; that is reported too (`past.verdict: "clear"`) and is not a disagreement about the answer, which is clear by
-both. A part with no solid (a mesh) is not measured, and `exact` says why.
+both. A part with no solid (a mesh) is not measured, and `exact` says why. (6.8.0: the pose is no longer left where the
+kernel finds shared volume; section 6.)
 
 ### `model_check {sweep}`
 
@@ -147,7 +147,7 @@ let crossing = rig.crossing(&mut s, &at, "Wheel", "Pallet")?;    // the mesh pas
 let a = rig.angle(&mut s, &at, "Third wheel")?;                  // a follower's angle at that pose
 ```
 
-- `anim::frame_times(fps, end)`: the times the host samples frames at (`end * i / (n - 1)`, `n = round(end * fps)`).
+- `anim::frame_times(fps, end)`: the times the host samples frames at (since API 1.17 and app 6.8.0, `k / fps` for `k = 0 … ceil(end * fps)`; before, `end * i / (n - 1)`, `n = round(end * fps)`).
   Keys put on these times are what the frames show, with no interpolation between them: a pose keyed from a contact
   read is shown as read. Linear interpolation between two contact poses can cross on a curved face, so a script that
   must never show a crossing keys every frame time.
@@ -189,13 +189,103 @@ and "Turn on until contact", or Slide for a slide). A press runs the same solve 
 plate meshes (each with its seat lift, as the clash check and animations take them), and moves the joint and its train
 to the answer as one Undo step. One line under the buttons (a status, read by a screen reader) says what happened:
 "Arm meets Stop at 15.79°, 0.003 mm left.", or "Nothing met turning Arm from 0° to -30°, where a joint limit stops it.
-Nothing moved.", with any pair left out as already crossing named. The kernel is not asked in the window.
+Nothing moved.", with any pair left out as already crossing named. The kernel is not asked by the press; on curved faces
+the line says the bound, and the desktop app offers "Exact contact" (section 6).
 
 The solve runs in a worker (`src/contact-worker.ts`; on the UI thread only if no worker can be made), with the buttons
 disabled and "Finding contact…" shown meanwhile, because it is not always short: measured in Node on two copies of
 `samples/lime_hull.stl` (4,800 triangles each), about 220 ms for 11 poses, and on two copies of `samples/dragon_2_5.stl`
 (38,000 triangles each) about 1.3 s for 14 poses; a grazing approach takes more poses. If the assembly changed while it
 ran, the answer is dropped and the line says to press again. `e2e/pose-contact.spec.ts` covers it.
+
+## 6. Curved faces: the facets' error, and the kernel's word (6.8.0)
+
+CI's kernel test (`mcp/contact-occt.test.ts`) gave the first real evidence. On flat faces the mesh pass and the kernel
+agree (`73.454864°` against `73.455128°` by hand; the kernel calls the answer clear and just past it a touch). On a round
+pin of radius 3 they did not: at the mesh pass's answer, `71.283465°`, the kernel found `0.011 mm³` shared, and
+`0.022 mm³` just past it. "Until contact" on a round face put the parts a hair inside each other, and the reply said only
+that the two checks disagreed.
+
+### What the error is
+
+- **The chord.** Every kernel mesh here is Open CASCADE's `BRepMesh_IncrementalMesh` with an absolute `Deflection`
+  (the chord tolerance) and `Angle` 0.5 rad (`mesh_faces`, `crates/lime-model-occt/cpp/kernel.cpp`). Over MCP that is
+  `CHORD` = 0.05 mm (`mcp/session/shared.ts`; a STEP part's own `stepTolerance`, also 0.05 by default). In the app it
+  is `state.stepTolerance` (`STEP_TOLERANCE_DEFAULT`, 0.05 mm), and each plate part records the tolerance it was read or
+  made with (`PlateObject.stepTolerance`, saved as `placement.stepTolerance`). The kernel records the deflection with
+  each face's triangulation (`mesh_kept`) but does not send it, so the mesh in a reply carries no chord: the callers
+  pass it (`ContactPart.chordMm`). An STL is its own triangles and has none.
+- **Which way.** The mesher puts every node on the true surface, and a facet is within the deflection of it. On a convex
+  face (a pin, a shaft) every facet lies inside the solid, by up to the chord at the facet's middle (the sagitta,
+  `r (1 - cos(pi / n))`: 0.0456 mm for 18 facets on radius 3). On a concave face (a hole) it lies outside, in the hole.
+  Flat faces are exact.
+- **The bound.** For a pair whose meshes stand `c` apart, the true faces stand between `c - (da + db)` and `c + (da +
+  db)` apart, where `da`, `db` are the parts' chords on curved facets there and 0 on flat ones. So the mesh pass's
+  contact (`c` at most the tolerance) can leave the true solids overlapping by up to `da + db - c`: late on convex faces,
+  early on concave ones. In travel, the answer is late by up to `(da + db)` over the speed of the contact point along
+  the contact normal: about 0.22 degrees on CI's pin (lever about 12.8 mm).
+- **Measured** (`src/contact-curved.test.ts`, synthetic meshes made the way the kernel makes them): a flat arm on a pin of
+  radius 3 in 18 facets, at eight phases of the facets, the true contact in closed form: the mesh pass's answer is up to
+  0.041 mm inside the true pin (the sagitta is 0.0456). Two such pins of radius 2 against each other: up to 0.083 mm
+  (both sagittas 0.087). CI's 0.011 mm³ on the real kernel's pin fits: about 0.008 mm deep.
+
+### What the solve does now (no kernel: the window, scripts, `exact: false`)
+
+Decided: **stop short by the bound**, rather than keep the answer and report it. A person or a script relying on "Until
+contact" must never get parts inside each other; a gap of up to the chord (0.05 mm) is under any printer's resolution,
+and the line says it is there.
+
+- **Which facets are curved.** `curvedTriangles(positions)` (`src/contact.ts`), from the mesh itself: two facets that
+  share an edge lie on one curved face when their normals differ by less than 0.6 rad (the kernel keeps 0.5 between
+  neighbours; a sharper fold is a real edge) and the far corner of one stands off the other's plane by more than 0.001
+  mm (far over float noise on a flat face). A facet that shares a corner with one is counted too: a flat cap's rim is a
+  chord of the true circle. A box is all flat, so flat parts never change.
+- **The margin.** `meshGap(a, b, offA, offB)` is `meshDistance` with each triangle's offset (its part's chord on curved
+  facets, else 0): the least of distance less both offsets over every pair, `marginMm`. The true faces cannot overlap
+  while it is not negative. When any watched pair has curved facets, after the mesh pass's own search the same search
+  runs again from where the joint stands to the mesh pass's answer, with the margin as the distance it steps by and
+  "margin below 0 or crossing" as contact, bisected to the tolerance. The answer is its last safe pose; `mesh` keeps the
+  mesh pass's own (`value`, `past`, `clearanceMm`, `pair`). When the margin holds all the way (a flat contact on a part
+  with round faces elsewhere), the answer is the mesh pass's, exactly. When the parts already stood within their chords
+  where the joint stood, the answer is the mesh pass's and `marginKept: false` says the true parts may overlap by up to
+  the bound.
+- **What it says.** `boundMm`: the two chords where the meshes are closest at the answer (0 on flat faces);
+  `clearanceMm` stays the meshes' measured distance. Pose: "Arm meets Pin at 9.16°, clear by at most 0.102 mm. On curved faces it stops just short, so the parts cannot overlap." (the
+  flat line is unchanged: "Arm meets Stop at 15.79°, 0.003 mm left."). `rig.first_contact`'s reply adds `boundMm` and
+  `mesh`; `rig.clearance`'s adds `boundMm` on curved faces. The lust `Touch` reads the fields it read before.
+- **Kept.** Flat-face answers are the same to the bit (the same poses are evaluated, `mcp/contact.test.ts`'s output is
+  unchanged line for line), the same question gives the same answer, and `firstContact`'s signature is unchanged: a
+  caller that passes no `chordMm` gets the mesh pass's answer as before.
+
+### The kernel's word (over MCP; Pose's "Exact contact" in the desktop app)
+
+`kernelContact(answer, measure, budget)` (`src/contact.ts`, no kernel of its own: `measure(value)` poses the joint and
+asks for the pair's common volume). It measures the facets' contact first. Clear or a touch there (`exactVerdict`: under
+`SLIVER_MM3`, 0.01 mm³), that is the answer: flat faces end here, and nothing moves. Crossing, the joint backs off: to
+the margin's answer when the solve stopped short, else in steps that double from the chord's travel, until the kernel
+calls a pose clear or a touch; the two are then bisected to the tolerance of travel. The answer never goes past the
+facets' contact. At most `KERNEL_CALLS` = 12 checks; each is a boolean `common` of the two solids, timed in the
+reply (`kernelMs`; not yet measured on the real kernel). The count: flat faces 1 (2 over MCP, which also measures just
+past the answer, as before); a round pin up to 6 in the synthetic tests (7 over MCP). When no clear pose is found within
+the budget, the pose stays the solve's answer and the reply says so with both verdicts.
+
+- **MCP** (`placeUntil`): with `exact` (default) on two solids, the pose placed is the kernel's (`contact.check:
+  "kernel"`, `exact.placed: "kernel"`), and `exact` gives `atContact` (the kernel there), `meshAnswer`, `past`, `agrees`
+  (false: shared volume at the facets' contact), `backedOff: {degrees | mm, travelMm}` from the facets' contact,
+  `kernelCalls`, `budget` and `kernelMs`. The note says how far it backed off and what the kernel finds there.
+- **The window**: after a press that stopped short on curved faces of two solids, in the desktop app, an "Exact
+  contact" button asks the kernel the same way (`commonVolume` in `src/app/model/assembly.ts`, now at given poses) and
+  moves the joint there as one Undo: "Arm meets Pin at <angle> by the kernel: no shared volume there, <angle> short of the
+  facets' contact (<n> kernel checks, <t> s)." The browser build has no kernel and shows no button.
+
+### Unverified until CI
+
+`mcp/contact-occt.test.ts` runs only in CI's "MCP server against real Open CASCADE" job (no engine build here). It now
+asks that the round pin ends where the kernel calls the pair clear or a touch (and `model_check {interference, exact}`
+agrees), that the reply says how far it backed off, that `exact: false` stops short by the chord where the kernel calls
+it clear, and that flat faces take two checks and do not move. The desktop app's "Exact contact" needs the engine and
+has no automated test; it shares `kernelContact` with MCP, which `src/contact-curved.test.ts` tests with an exact
+stand-in for the kernel.
 
 ## What it does not do
 

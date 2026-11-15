@@ -6,7 +6,7 @@
  * after the run (a frame the train was mounted on), stays where it was, and so does the link that mounts a part of the
  * run on it.
  */
-import { withCouplings, type Assembly, type Coupling, type GearRef, type Member } from "../assembly.ts";
+import { freshAssemblyId, withCouplings, type Assembly, type Coupling, type GearRef, type Member } from "../assembly.ts";
 
 /** `coupling` with every object it names passed through `to`. */
 function renamedCoupling(coupling: Coupling, to: (id: string) => string): Coupling {
@@ -52,4 +52,20 @@ export function rerunAssemblies(assemblies: readonly Assembly[], renamed: Readon
     out = [...out.slice(0, at).filter((row) => !old.includes(row)), next, ...out.slice(at).filter((row) => !old.includes(row))];
   }
   return out;
+}
+
+/**
+ * --- docs/plan-plugin-recipes.md, section 6.4. The window's rebuild of a run that made several parts: the new run's
+ * parts (`made`, in the order it made them) take the old parts' handles (`old`, in the order the run made them, which is
+ * their plate order), one for one, and the assemblies the new run built (`built`, naming the new ids) take the place of
+ * the old run's in `live`. Refused, with the two counts, when the new values make a different number of parts.
+ */
+export function rerunSet(old: readonly string[], made: readonly string[], live: readonly Assembly[], built: readonly Assembly[]): { renamed: Map<string, string>; assemblies: Assembly[] } | { made: number; had: number } {
+  if (made.length !== old.length) return { made: made.length, had: old.length };
+  const renamed = new Map(made.map((id, i) => [id, old[i]!] as const));
+  // A built assembly whose id the project has is renewed first, in case no old assembly takes it in (`rerunAssemblies`
+  // gives a merged one the old one's id).
+  const all: Assembly[] = [...live];
+  for (const row of built) all.push(all.some((other) => other.id === row.id) ? { ...row, id: freshAssemblyId([...all, ...built]) } : row);
+  return { renamed, assemblies: rerunAssemblies(all, renamed) };
 }

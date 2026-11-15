@@ -179,7 +179,7 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
   const queue = calls.useQueue(unreadKeys(built.unread), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
-  const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
+  const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: true, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   // --- API 1.16. Plugins run from inside this one run the versions the stamp pinned.
   const top = topNested(input.limits);
   const used = new Map<string, PluginCode>();

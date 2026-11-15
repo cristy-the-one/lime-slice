@@ -61,7 +61,7 @@ const root = await make(), finger = await make(); b.find(finger)!.name = "Finger
 assert.equal((await b.call("model_place", { object: finger, to: root, x: 4 })).ok, true);
 assert.equal((await b.call("model_place", { object: finger, joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] } })).ok, true);
 const run = await b.call("pose_animate", { object: finger, plugin: "wave" });
-assert.equal(run.ok, true, JSON.stringify(run)); assert.equal(run.frames, 4);
+assert.equal(run.ok, true, JSON.stringify(run)); assert.equal(run.frames, 5);
 const rendered = await b.call("pose_animate", { object: finger, plugin: "wave", longEdge: 32, out: { gif: "wave.gif" } });
 assert.equal(rendered.ok, true, JSON.stringify(rendered));
 const direct = await b.call("pose_animate", { object: finger, source: `\n${body}`, name: "direct-wave", longEdge: 32, out: { gif: "direct.gif" } });
@@ -80,7 +80,7 @@ assert.equal(future.ok, false); assert.equal(future.code, "plugin-unsupported");
 reopened.animations.set("wave", held);
 const restored = await reopened.call("pose_animate", { object: finger, plugin: "wave" });
 assert.equal(restored.ok, true, JSON.stringify(restored));
-assert.equal(restored.frames, 4);
+assert.equal(restored.frames, 5);
 const projectList = await reopened.call("plugin", { action: "list" });
 assert.ok(JSON.stringify(projectList).includes('"kind":"animation"'), JSON.stringify(projectList));
 const reexported = await reopened.call("nugget", { action: "export", kind: "plugin", id: "wave" });

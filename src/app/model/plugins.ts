@@ -23,7 +23,15 @@ import { pluginLibrary } from "../../ui/plugins-panel";
 import { approveFirstRun, needsFirstRun } from "../../ui/plugin-import";
 import { type PluginLibrary } from "../../plugins/library";
 import { draftSources, readRow, rowKey, stepLabel, type PluginEnv, type RowKey } from "../../model-history";
-import { freshPlateId, modelPoseOf, withModelPose, type PlateObject } from "../../plate";
+import { freshPlateId, modelPoseOf, withFrame, withModelPose, withPieceMesh, type PlateObject } from "../../plate";
+import type { Assembly } from "../../assembly";
+import type { PluginStamp } from "../../model-tree";
+import type { StampedRun } from "../../plugin-step";
+import { laterSteps, type RecipeRunner } from "../../recipe/rebuild";
+import { runPluginFresh, type KeptPart } from "../../recipe/apply";
+import { rerunSet } from "../../recipe/rerun-assembly";
+import { liveAssemblies, replaceRunAssemblies, syncAssemblyView } from "../assemblies";
+import { applySelectedToState } from "../plate-sync";
 import { place } from "../files";
 import { flushEdit, markModelEdit, newestEdits, noteEdit, redoUserEdit, undoUserEdit } from "../history";
 import { freshTreeKey, modelTrees } from "../model-trees";
@@ -110,13 +118,17 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
   const copy = env?.copies.get(stamp.sha256) ?? (libraryCopy ? { file: libraryCopy, intact: true } : undefined);
   const draft = env?.drafts.get(stamp.sha256);
   const title = swap?.file.title || copy?.file?.title || stamp.plugin;
-  // --- One run, several parts (O4 as built): they change together or not at all, and the window does not rebuild a
-  // set yet, so a change on one part says so before anything runs.
+  // --- One run, several parts (O4 as built): they change together or not at all (docs/plan-plugin-recipes.md 6.4). A
+  // run that made every part rebuilds them all, under the same handles; anything else says why before anything runs.
   const siblings = runSiblings(state.plate.objects.map((obj) => ({ id: obj.id, tree: obj.modelTree ? modelTrees.get(obj.modelTree) : undefined })), run.id, at.objectId);
+  let set: string[] | null = null;
   if (siblings.length > 0) {
-    const names = partNames(siblings.map((id) => state.plate.objects.find((obj) => obj.id === id)?.name ?? id));
-    readout(`${title} made this part in one run with ${names}, and the window cannot yet change the values of a run of several parts, so nothing changed. Run ${title} again from Plugins with the new values, then remove the old parts.`);
-    return null;
+    const checked = setOfRun(at.objectId, siblings, run.id, title);
+    if (typeof checked === "string") {
+      readout(checked);
+      return null;
+    }
+    set = checked;
   }
   let body: string;
   if (swap) {
@@ -155,6 +167,10 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
   }
   const obj = openObject();
   if (!obj) return null;
+  // A null change drops a picked face or outline back to the plugin's default (API 1.2).
+  const runValues = swap ? swap.params : (Object.fromEntries(Object.entries({ ...stamp.params, ...changes }).filter(([, v]) => v !== null)) as Record<string, PluginValue>);
+  const said = Object.entries(changes).map(([name, value]) => `${copy?.file?.params.find((p) => p.name === name)?.label?.trim() || name} ${String(value)}`).join(", ");
+  if (set) return rebuildSet(at, set, { ...run, stamp }, { title, body, suffix: resolved.suffix, params: runValues, said, recipes, ...(swap ? { swap } : {}), ...(libraryCopy ? { libraryCopy: libraryCopy.text } : {}), changedCopy: edited && !!copy?.file && !copy.intact ? copy.file : null });
   const from = tree.current;
   const mine = S.ticket;
   const madeIt = run.before === null;
@@ -168,8 +184,7 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
       run: { ...run, stamp },
       body,
       suffix: resolved.suffix,
-      // A null change drops a picked face or outline back to the plugin's default (API 1.2).
-      params: swap ? swap.params : (Object.fromEntries(Object.entries({ ...stamp.params, ...changes }).filter(([, v]) => v !== null)) as Record<string, PluginValue>),
+      params: runValues,
       context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
       recipes,
       engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
@@ -239,6 +254,168 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
   // The run's own row: folded under its first step's key, or that step's row when it is one step.
   const head = rowKey([], result.ids[0]!);
   return result.ids.length > 1 ? `fold:${head}` : head;
+}
+
+/**
+ * --- docs/plan-plugin-recipes.md 6.4. The parts of run `runId`, in plate order (the order the run made them), when the
+ * window can rebuild them as one: the run made every one of them, and none has a step after it. Else the sentence why.
+ */
+function setOfRun(open: string, siblings: readonly string[], runId: string, title: string): string[] | string {
+  const ids = state.plate.objects.map((obj) => obj.id).filter((id) => id === open || siblings.includes(id));
+  for (const id of ids) {
+    const obj = state.plate.objects.find((row) => row.id === id)!;
+    const tree = obj.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+    const own = tree ? runsOnPath(tree).find((item) => item.id === runId) : undefined;
+    if (!tree || !own) return `The history of ${obj.name} could not be read, so ${title} was not rebuilt.`;
+    if (own.before !== null) return `${title} changed ${obj.name}, a part it was given, in the same run that made the others, and the window rebuilds a run of several parts only when the run made them all, so nothing changed. Run ${title} again from Plugins with the new values.`;
+    if (laterSteps(tree, own).length > 0) return `${obj.name} has steps after ${title}'s run, and the window rebuilds a run of several parts only as the plugin made them, so nothing changed. Undo those steps first, or run ${title} again from Plugins with the new values.`;
+  }
+  return ids;
+}
+
+/** What a set rebuild runs: the code and values `rebuildPluginRow` read, and where the code came from. */
+interface SetCode {
+  title: string;
+  body: string;
+  suffix: string;
+  params: Record<string, PluginValue>;
+  /** The changed values as the readout says them. */
+  said: string;
+  recipes: RecipeRunner;
+  swap?: LibrarySwap;
+  /** The library's file, when the project lacked a copy: the project keeps one. */
+  libraryCopy?: string;
+  /** The project's copy, changed outside the app and approved to run: kept under its own hash. */
+  changedCopy: PluginFileInfo | null;
+}
+
+/**
+ * --- docs/plan-plugin-recipes.md 6.4. Rebuild a run that made several parts (`ids`, in the order it made them): the
+ * plugin runs fresh with the new values and the versions the stamp pinned, each new part takes the old part's handle,
+ * name and place on the bed (and its model pose, unless the run posed it), and the run's assemblies take the old ones'
+ * place under the old handles, hinged and coupled, solved from where their roots stand. One Prepare step, so one Undo
+ * goes back to the old set. A run that makes a different number of parts changes nothing and says so.
+ */
+async function rebuildSet(at: Opened, ids: string[], run: StampedRun & { stamp: PluginStamp }, code: SetCode): Promise<RowKey | null> {
+  const { stamp } = run;
+  const { title } = code;
+  const sha256 = code.swap ? code.swap.sha256 : code.changedCopy ? await bodySha256(code.changedCopy.body) : stamp.sha256;
+  const plugin = { id: stamp.plugin, version: code.swap ? code.swap.file.version : stamp.version, sha256, api: code.swap ? code.swap.file.api : stamp.api };
+  const mine = S.ticket;
+  S.busy = true;
+  syncUndo();
+  readout(`Rebuilding ${title} and its ${ids.length} parts…`);
+  let result: Awaited<ReturnType<typeof runPluginFresh>>;
+  try {
+    result = await runPluginFresh({
+      part: null,
+      plugin,
+      body: code.body,
+      suffix: code.suffix,
+      params: code.params,
+      context: { bedMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], nozzleMm: state.profile.nozzleDiameter ?? stamp.context.nozzleMm },
+      recipes: code.recipes,
+      engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
+      env: recipeEnv("", false, stamp.sha256),
+      runId: freshRunId(),
+      plugins: appPluginSources(),
+      pins: stamp.uses ?? {},
+    });
+  } finally {
+    if (mine === S.ticket) S.busy = false;
+    syncUndo();
+  }
+  const closeAll = () => {
+    for (const key of result.close ?? []) void post({ call: "close", key });
+  };
+  if (!result.ok || mine !== S.ticket || S.open?.key !== at.key || state.stage !== "model") {
+    closeAll();
+    if (!result.ok && mine === S.ticket) {
+      const where = result.line !== undefined && !/line \d+/.test(result.reason) ? ` (line ${result.line})` : "";
+      readout(`${title} was not rebuilt: ${sentence(result.reason)}${where} The parts are as they were.`);
+    }
+    return null;
+  }
+  const made = result.kept.filter((row) => row.part.origin === "made");
+  const matched = rerunSet(ids, made.map((row) => row.part.id), liveAssemblies(), result.assemblies);
+  if ("had" in matched) {
+    closeAll();
+    readout(`With these values ${title} makes ${matched.made} parts where its run made ${matched.had}, and the window rebuilds a run of several parts only part for part, so nothing changed. Run ${title} from Plugins with these values to get a new set.`);
+    return null;
+  }
+  const solids: ParsedSolid[] = [];
+  for (const row of made) {
+    const parsed = decodeSolid(row.body);
+    if (typeof parsed === "string") {
+      closeAll();
+      readout(`${title} was not rebuilt: ${sentence(parsed)} The parts are as they were.`);
+      return null;
+    }
+    solids.push(parsed);
+  }
+  const open = ids.indexOf(at.objectId);
+  swapMadeSet(at, ids, made, solids, matched.assemblies);
+  // The project keeps the code that ran, as a rebuild of one part does.
+  if (code.swap) session.plugins = { ...(session.plugins ?? {}), [code.swap.sha256]: code.swap.file.text };
+  else if (code.changedCopy) session.plugins = { ...(session.plugins ?? {}), [sha256]: code.changedCopy.text.replace(/^\/\/! source-sha256: .*$/m, `//! source-sha256: ${sha256}`) };
+  else if (code.libraryCopy) session.plugins = { ...(session.plugins ?? {}), [stamp.sha256]: code.libraryCopy };
+  keepUsedPlugins(result.used);
+  keepRunTrees(S.open!, result.others);
+  markProjectDirty();
+  const assembled = matched.assemblies.filter((row) => row.members.some((member) => ids.includes(member.object)));
+  const kept = assembled.length ? ` ${partNames(assembled.map((row) => row.name))} keeps its parts${assembled.some((row) => row.couplings?.length) ? ", hinged and coupled" : ""}.` : "";
+  const notes = result.notes.filter((note) => !/^line \d+: /.test(note)).map((note) => ` ${sentence(note)}`).join("");
+  present(solids[open]!, `Rebuilt “${title}”${code.swap ? ` with v${code.swap.file.version} from your library` : ""}${code.said ? ` with ${code.said}` : ""}: its ${ids.length} parts (${partNames(ids.map((id) => state.plate.objects.find((obj) => obj.id === id)?.name ?? id))}) under the same handles, which one Undo takes back.${kept} ${about(solids[open]!)}${notes}${code.swap?.note ? ` ${code.swap.note}` : ""}`);
+  noteParametersBuilt();
+  syncAssemblyView();
+  const head = rowKey([], made[open]!.ids[0]!);
+  return made[open]!.ids.length > 1 ? `fold:${head}` : head;
+}
+
+/**
+ * The parts of a rebuilt set swapped in, in one Prepare step: each plate object keeps its id, name and place on the bed
+ * and takes its new tree and mesh; the assemblies are the rebuilt run's, solved. Model shows the open part's new tree,
+ * and Model's Undo is that step (`swapBack`), as after a rebuild of one part.
+ */
+function swapMadeSet(at: Opened, ids: readonly string[], made: readonly KeptPart[], solids: readonly ParsedSolid[], assemblies: readonly Assembly[]) {
+  commitModel();
+  const meshes = made.map((row, i) => {
+    const obj = state.plate.objects.find((item) => item.id === ids[i]);
+    const mesh = meshOf(solids[i]!, obj?.fileName);
+    modelTrees.set(row.tree.key, { ...withNode(row.tree, row.tree.current, { mesh }), committed: row.tree.current });
+    keepSolid(row.tree.key, solids[i]!.id, state.stepTolerance, solids[i]!);
+    return mesh;
+  });
+  noteEdit();
+  syncPlateFromState();
+  // A root of the run's assembly stays where it stands (the train moves with it); a part the run posed outside an
+  // assembly takes that pose; the assembly's members are solved below.
+  const roots = new Set(assemblies.flatMap((row) => row.members.filter((member) => member.parent === null).map((member) => member.object)));
+  made.forEach((row, i) => {
+    const id = ids[i]!;
+    const obj = state.plate.objects.find((item) => item.id === id);
+    if (!obj) return;
+    state.plate = withPieceMesh(state.plate, id, { fileName: obj.fileName, bytes: meshes[i]!.bytes, sourcePos: meshes[i]!.sourcePos }, row.tree.key);
+    if (row.part.posed && !roots.has(id)) state.plate = withModelPose(state.plate, id, row.part.modelPose);
+    if (row.part.frame === "part") state.plate = withFrame(state.plate, id, "part");
+  });
+  replaceRunAssemblies(assemblies, ids);
+  applySelectedToState(state.plate);
+  if (ids.includes(state.plate.selectedId ?? "")) {
+    state.supportEdits = [];
+    state.supportPaint = [];
+    state.seamPaint = [];
+    state.reinforcement = [];
+    syncPlateFromState();
+  }
+  place();
+  flushEdit();
+  markModelEdit();
+  const open = ids.indexOf(at.objectId);
+  const key = made[open]!.tree.key;
+  S.editBack = null;
+  S.open = { objectId: at.objectId, key, solid: solids[open]! };
+  swapBack = { id: at.objectId, key, tip: made[open]!.tree.current, step: newestEdits().undo, undone: false };
 }
 
 /**

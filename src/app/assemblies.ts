@@ -3,7 +3,7 @@
  * carries a root's members or re-seats a member, Attach and Ungroup from the object list, and the assembly view, which
  * draws every object at its pose in model space on Prepare's viewport.
  */
-import { assemblyOf, attached, movedTo, readAssemblies, samePose, type Assembly } from "../assembly.ts";
+import { assemblyOf, attached, freshAssemblyId, movedTo, readAssemblies, samePose, solveAssembly, type Assembly } from "../assembly.ts";
 import type { Bounds } from "../mesh-place.ts";
 import type { PairResult } from "../interference.ts";
 import type { ContextPart } from "../model-context.ts";
@@ -78,6 +78,41 @@ export function groupAsBuilt(root: string, ids: readonly string[], name: string)
   }
   session.assemblies = next;
   if (joined.size > 0) state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (joined.has(obj.id) ? { ...obj, frame: "part" as const } : obj)) };
+}
+
+/**
+ * --- docs/plan-plugin-recipes.md, section 6. The assemblies a plugin run built of the parts it just put on the plate:
+ * each added (its id renewed when the project has it), and solved, its poses written as Pose writes them. Call it
+ * inside the edit that added the parts, so one Undo takes both back. Returns the assemblies as added.
+ */
+export function addBuiltAssemblies(built: readonly Assembly[]): Assembly[] {
+  const added: Assembly[] = [];
+  for (const row of built) {
+    const taken = [...session.assemblies, ...added];
+    const next = taken.some((other) => other.id === row.id) ? { ...row, id: freshAssemblyId(taken) } : row;
+    added.push(next);
+  }
+  session.assemblies = [...session.assemblies, ...added];
+  for (const assembly of added) writeSolvedPoses(assembly);
+  return added;
+}
+
+/**
+ * --- Section 6.4. A rebuilt run's assemblies in place of the old (`rerunSet`): the project's list is `next`, and every
+ * assembly that holds one of `parts` is solved from its root where it stands, its poses written as Pose writes them.
+ * Call it inside the edit that swapped the parts.
+ */
+export function replaceRunAssemblies(next: readonly Assembly[], parts: readonly string[]): void {
+  session.assemblies = [...next];
+  for (const assembly of liveAssemblies()) if (assembly.members.some((member) => parts.includes(member.object))) writeSolvedPoses(assembly);
+}
+
+/** Every member of `assembly` at its solved pose in model space; identity drops the key. */
+function writeSolvedPoses(assembly: Assembly): void {
+  for (const [object, pose] of solveAssembly(assembly, poseOf).poses) {
+    const now = poseOf(object);
+    if (now && !samePose(now, pose)) state.plate = withModelPose(state.plate, object, pose);
+  }
 }
 
 /** The assembly is gone; its parts keep the poses they have. */

@@ -214,7 +214,7 @@ if (!lust) {
   check("the pallet stops the wheel and is lifted again and again", stops >= 4, logged);
   check("the clearance read is the 4 mm-odd gap at rest, and the angle read is the pose's", /gap (\d+(\.\d+)?)/.test(logged) && Number(/gap ([\d.]+)/.exec(logged)![1]) > 1 && / angle 33$/.test(logged), logged);
   check("no frame shows a crossing pair", dry.warnings === undefined, dry.warnings);
-  check("a frame for every key: 48 frames", dry.frames === 48, dry.frames);
+  check("a frame for every key: 49 frames, at k/8 s from 0 to 6 s", dry.frames === 49 && dry.frameTiming === undefined, dry);
   // The control: the same frame check does see a tooth keyed 2 degrees past the contact.
   const past = await call("pose_animate", { object: hub, source: `use lime_recipe::{anim::*, Session};
 fn main() {

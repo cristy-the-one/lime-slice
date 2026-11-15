@@ -15,6 +15,7 @@ import { isPickValue, pickProblem } from "../recipe/picks.ts";
 import { carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
 import { carriedData } from "../recipe/plugin-data.ts";
 import { readMarks, type ImportMark } from "./share.ts";
+import { SHIPPED_PLUGINS } from "./clock-parts.ts";
 
 /**
  * What the shell lists: every plugin `.rs` file of the folder (current and older versions), the presets, the settings,
@@ -63,6 +64,8 @@ export interface LibraryPlugin {
   intact: boolean;
   /** Older versions kept beside it (`<id>.vN.rs`), lowest first. */
   older: number[];
+  /** --- docs/plan-clock-parts.md. It ships with the app (no file in the folder): listed as Built in, never imported. */
+  shipped?: boolean;
 }
 
 export interface Preset {
@@ -138,9 +141,36 @@ export async function readLibrary(listing: LibraryListing): Promise<PluginLibrar
     const row = plugins.get(id);
     if (row) plugins.set(id, { ...row, older: versions.sort((a, b) => a - b) });
   }
+  await addShipped(plugins, bySha);
   const presets = new Map<string, Preset[]>();
   for (const { plugin, text } of listing.presets) presets.set(plugin, readPresets(text));
   return { dir: listing.dir, plugins, bySha, presets, ingredients: readIngredients(listing.ingredients ?? []), lessons: readLessons(listing.lessons ?? null), author: readAuthor(listing.settings), imported: readMarks(listing.imported) };
+}
+
+/**
+ * --- docs/plan-clock-parts.md. The plugins that ship with the app, read once: added to a library that has no file of
+ * their id (a file of the same id in the folder wins), as the library's own, so they run without a first-run view, a
+ * project's step finds its code by hash, and History offers Use vN when an update ships a newer version.
+ */
+let shippedRead: Promise<{ file: PluginFileInfo; sha256: string }[]> | null = null;
+async function addShipped(plugins: Map<string, LibraryPlugin>, bySha: Map<string, PluginFileInfo>): Promise<void> {
+  shippedRead ??= Promise.all(SHIPPED_PLUGINS.map(async (text) => {
+    const file = readPluginFile(text)!;
+    return { file, sha256: await bodySha256(file.body) };
+  }));
+  for (const { file, sha256 } of await shippedRead) {
+    if (plugins.has(file.plugin)) continue;
+    plugins.set(file.plugin, { file, sha256, intact: sha256 === file.headerSha, older: [], shipped: true });
+    if (!bySha.has(sha256)) bySha.set(sha256, file);
+  }
+}
+
+/** The library where the folder cannot be read (the browser build): the shipped plugins alone. */
+export async function shippedLibrary(): Promise<PluginLibrary> {
+  const plugins = new Map<string, LibraryPlugin>();
+  const bySha = new Map<string, PluginFileInfo>();
+  await addShipped(plugins, bySha);
+  return { ...EMPTY_LIBRARY, plugins, bySha };
 }
 
 /** The `//! key: value` lines of a `//! ---` header, or null when the text has none. */
@@ -443,7 +473,7 @@ export function stampedShas(objects: unknown): string[] {
 // The panel's list.
 // ---------------------------------------------------------------------------
 
-export type PanelSection = "project" | "library" | "samples";
+export type PanelSection = "project" | "library" | "builtin" | "samples";
 
 /** One plugin the panel lists. */
 export interface PanelPlugin {
@@ -469,9 +499,13 @@ export function panelPlugins(library: PluginLibrary, project: ReadonlyMap<string
     rows.push({ key: `project:${sha}`, section: "project", file, sha256: sha, inLibrary: false, badges: badgesOf(file), usedAt: usedAt[file.plugin] ?? 0 });
   }
   for (const [id, row] of library.plugins) {
+    if (row.shipped) {
+      rows.push({ key: `library:${id}`, section: "builtin", file: row.file, sha256: row.sha256, inLibrary: true, badges: ["built in", ...badgesOf(row.file)], usedAt: usedAt[id] ?? 0 });
+      continue;
+    }
     rows.push({ key: `library:${id}`, section: "library", file: row.file, sha256: row.sha256, inLibrary: true, badges: [...(library.imported[id] ? ["imported"] : []), ...badgesOf(row.file), ...(row.intact ? [] : ["edited"])], usedAt: usedAt[id] ?? 0 });
   }
-  const order: PanelSection[] = ["project", "library", "samples"];
+  const order: PanelSection[] = ["project", "library", "builtin", "samples"];
   return rows.sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section) || b.usedAt - a.usedAt || a.file.title.localeCompare(b.file.title));
 }
 
@@ -492,7 +526,7 @@ export function searched(rows: readonly PanelPlugin[], query: string): PanelPlug
   return rows.map((row, i) => ({ row, i, score: searchScore(row.file, query) })).filter((item) => item.score > 0).sort((a, b) => (a.row.section === b.row.section ? b.score - a.score || a.i - b.i : a.i - b.i)).map((item) => item.row);
 }
 
-export const SECTION_TITLE: Readonly<Record<PanelSection, string>> = { project: "In this project", library: "Your plugins", samples: "Samples" };
+export const SECTION_TITLE: Readonly<Record<PanelSection, string>> = { project: "In this project", library: "Your plugins", builtin: "Built in", samples: "Samples" };
 
 // ---------------------------------------------------------------------------
 // The other nuggets in the panel's list (docs/plan-recipe-ingredients.md I16: one place to look).

@@ -61,6 +61,7 @@ mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
 src/interference.test.ts
 src/contact.test.ts
+src/contact-curved.test.ts
 src/project-blank.test.ts
 src/project-codec.test.ts
 src/project-held.test.ts
@@ -133,6 +134,7 @@ src/model-hole.test.ts
 src/model-primitive.test.ts
 src/gear-pair.test.ts
 src/gear-train.test.ts
+src/assembly-edit.test.ts
 src/gear-kinds.test.ts
 src/gear-planet.test.ts
 src/gear-rack.test.ts
@@ -174,6 +176,8 @@ mcp/recipe-root.test.ts
 mcp/recipe-query.test.ts
 mcp/recipe-horology.test.ts
 mcp/graham-port.test.ts
+mcp/clock-parts.test.ts
+mcp/clock-couple.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts
