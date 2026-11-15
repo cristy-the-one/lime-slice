@@ -3,7 +3,7 @@ import { closeSync, openSync, renameSync, rmSync, writeFileSync, writeSync } fro
 import { join } from "node:path";
 import { assemblyOf } from "../../src/assembly.ts";
 import { seatLift } from "../../src/model-space.ts";
-import { animationRig, endsWhereItStarts, frameTiming, type AnimationPart } from "../../src/pose-anim.ts";
+import { animationRig, endsWhereItStarts, frameTiming, type AnimationPart, type AnimationResult } from "../../src/pose-anim.ts";
 import { apiVerdict } from "../../src/recipe/api-level.ts";
 import { eventLoopTurn, runAnimation } from "../animation-run.ts";
 import { GIF_END, gifFrame, gifHead } from "../animation-gif.ts";
@@ -98,11 +98,34 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params);
   };
   if (!out) return { ...summary, ...(await keepNow()), rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
+  const written = await this.writeAnimationFrames(sampled, parts, { out, camera: input.camera ?? result.camera, longEdge: input.longEdge, background }, meta);
+  if ("ok" in written) return written;
+  const kept = await keepNow();
+  const keptAs = "kept" in kept ? kept.kept as { id: string } : undefined;
+  this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(keptAs ? { plugin: keptAs.id } : typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
+  if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
+  if (keptAs) {
+    const file = readPlugin(keptAs.id, pluginsDir());
+    if (file && !("reason" in file)) this.projectPlugins.set(file.sha256, file.text);
+  }
+  this.autosaveDirty = true;
+  return { ...summary, ...kept, files: written.files };
+}
+
+/**
+ * Sampled frames drawn and written as pose_animate writes them (docs/plan-mcp-reliability.md): a GIF and/or numbered PNG
+ * frames, each file under a .partial name until the last frame is done, a frame encoded and written as it is drawn, a
+ * turn of the event loop before each frame so slice_cancel is heard, and every file removed on a cancel or a failure.
+ * Shared by pose_animate and motion_run.
+ */
+async function writeAnimationFrames(this: Session, sampled: AnimationResult, parts: readonly AnimationPart[], options: { out: { gif?: string; frames?: string }; camera?: unknown; longEdge?: unknown; background: [number, number, number] }, meta?: CallMeta): Promise<{ files: Record<string, unknown> } | Record<string, unknown>> {
+  const out = options.out;
+  const background = options.background;
   if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
   if (!sampled.bounds) return refuse("no-mesh", "The assembly has no renderable geometry.");
-  const read = readCamera(input.camera ?? result.camera ?? "iso");
+  const read = readCamera(options.camera ?? "iso");
   if ("reason" in read) return refuse("bad-view", read.reason);
-  const edge = typeof input.longEdge === "number" ? input.longEdge : 640;
+  const edge = typeof options.longEdge === "number" ? options.longEdge : 640;
   const gifPath = out.gif ? resolveWrite(out.gif, ".gif") : undefined;
   const files: string[] = [];
   if (out.frames) for (let i = 0; i < sampled.frames.length; i++) files.push(resolveWrite(join(out.frames, `frame-${String(i + 1).padStart(3, "0")}.png`), ".png"));
@@ -152,16 +175,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     clean();
     throw err;
   }
-  const kept = await keepNow();
-  const keptAs = "kept" in kept ? kept.kept as { id: string } : undefined;
-  this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(keptAs ? { plugin: keptAs.id } : typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
-  if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
-  if (keptAs) {
-    const file = readPlugin(keptAs.id, pluginsDir());
-    if (file && !("reason" in file)) this.projectPlugins.set(file.sha256, file.text);
-  }
-  this.autosaveDirty = true;
-  return { ...summary, ...kept, files: { ...(gifPath ? { gif: gifPath } : {}), ...(gifPath && gifCount !== sampled.frames.length ? { gifFrames: gifCount } : {}),...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
+  return { files: { ...(gifPath ? { gif: gifPath } : {}), ...(gifPath && gifCount !== sampled.frames.length ? { gifFrames: gifCount } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
 }
 /**
  * --- docs/plan-animation-plugins.md A1. pose_animate {keep} and nugget save: the script kept as a `kind: animation`
@@ -212,5 +226,5 @@ function animationHeader(this: Session, id: string, source?: string): PluginHead
   return listExtra().find((file) => file.header.plugin === id && file.header.kind === "animation")?.header;
 }
 
-export const animationMethods = { poseAnimate, keepAnimation, animationSaveFrom, animationHeader };
+export const animationMethods = { poseAnimate, keepAnimation, animationSaveFrom, animationHeader, writeAnimationFrames };
 export const animationHandlers: Record<string, ToolHandler> = { pose_animate: (session, input, meta) => session.poseAnimate(input, meta) };

@@ -1970,6 +1970,12 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-panel .pose-coupling p { flex: 1; margin: 4px 0; font-size: 12px; }
 .pose-panel .pose-couple-lead { margin: 10px 0 2px; font-size: 12px; }
 .pose-panel .pose-couple-help { margin: 6px 0 0; font-size: 11px; color: var(--text-dim); }
+/* Run (docs/plan-hinge-dynamics.md): its help line, and the report: the verdict, then one sentence a line. */
+.pose-panel .pose-help { margin: 4px 0 6px; font-size: 11px; color: var(--text-dim); }
+.pose-panel [data-pose-motion-report] p { margin: 6px 0; font-size: 12px; line-height: 1.4; }
+.pose-panel [data-pose-motion-report] .pose-motion-verdict { margin-top: 10px; font-size: 13px; font-weight: 600; }
+.pose-panel .pose-motion-verdict[data-verdict="runs"] { color: var(--ok); }
+.pose-panel .pose-motion-verdict[data-verdict="stalls"], .pose-panel .pose-motion-verdict[data-verdict="not converged"] { color: var(--danger); }
 /*
  * Preparing an animation: the three steps (a check once done, a filled dot on the one running), what is happening in
  * words with its share, and the app's own bar (the slicing bar's track and accent, rounded to sit in the panel).

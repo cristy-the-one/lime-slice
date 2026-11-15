@@ -83,6 +83,7 @@ export const REFUSAL_CODES = {
   "recipe-failed": "The recipe ran and failed, or a rebuild after it did.",
   "recipe-query": "lust has no answer about that position of the recipe.",
   "animation-refused": "The animation could not be built, run or sampled.",
+  "motion-refused": "The motion run cannot be set up: the assembly, the drive or the escapement is outside what the dynamics model covers.",
   "recipe-commit": "A recipe's result could not be committed to the plate.",
   "recipe-source": "The recipe source or data file is missing, too large or unreadable.",
   "plugin-not-found": "No plugin of that id is in the library or the project.",
