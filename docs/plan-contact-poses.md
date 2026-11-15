@@ -250,8 +250,7 @@ and the line says it is there.
   where the joint stood, the answer is the mesh pass's and `marginKept: false` says the true parts may overlap by up to
   the bound.
 - **What it says.** `boundMm`: the two chords where the meshes are closest at the answer (0 on flat faces);
-  `clearanceMm` stays the meshes' measured distance. Pose: "Arm meets Pin at 9.16°, clear by at most 0.102 mm: curved
-  faces are meshed to within 0.05 mm, and the search keeps the meshes that far apart, so the parts cannot overlap." (the
+  `clearanceMm` stays the meshes' measured distance. Pose: "Arm meets Pin at 9.16°, clear by at most 0.102 mm. On curved faces it stops just short, so the parts cannot overlap." (the
   flat line is unchanged: "Arm meets Stop at 15.79°, 0.003 mm left."). `rig.first_contact`'s reply adds `boundMm` and
   `mesh`; `rig.clearance`'s adds `boundMm` on curved faces. The lust `Touch` reads the fields it read before.
 - **Kept.** Flat-face answers are the same to the bit (the same poses are evaluated, `mcp/contact.test.ts`'s output is

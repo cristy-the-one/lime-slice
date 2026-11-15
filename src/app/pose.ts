@@ -846,7 +846,7 @@ function contactLine(answer: ContactAnswer, nameOf: (id: string) => string, at: 
   const bound = answer.boundMm ?? 0, left = answer.clearanceMm!;
   if (!(bound > 0)) return `${meets}, ${mmText(left)} left.${ignored}`;
   if (answer.marginKept === false) return `${meets}, ${mmText(left)} left between the meshes; their curved faces are meshed to within ${mmText(bound)}, and they already stood that close, so the parts may overlap by up to ${mmText(Math.max(0, bound - left))}.${ignored}`;
-  return `${meets}, clear by at most ${mmText(left + bound)}: curved faces are meshed to within ${mmText(bound)}, and the search keeps the meshes that far apart, so the parts cannot overlap.${ignored}`;
+  return `${meets}, clear by at most ${mmText(left + bound)}. On curved faces it stops just short, so the parts cannot overlap.${ignored}`;
 }
 /** A solve off the UI thread; on the UI thread when no worker can be made. */
 async function solveContact(job: ContactJob): Promise<ContactJobReply> {
