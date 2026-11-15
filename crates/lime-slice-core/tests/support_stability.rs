@@ -280,9 +280,8 @@ fn belt_table_trees_are_wide_enough_along_the_belt() {
 }
 
 /// Belt grid under the table's leading edge was a sheet one bead thick. It
-/// is widened along the belt toward its foot now. Where the widening grows
-/// past what its grid lines cross alone, its wall stops: the wall's last
-/// layer bridges from line to line of the grid under it, on two layers.
+/// is widened along the belt toward its foot now, by ribs across the sheet
+/// that each stand on the rib under it: no bead of it rests on nothing.
 #[test]
 fn belt_grid_under_the_table_is_widened_along_the_belt() {
     let s = stability(&table(), Bed::Belt, "grid");
@@ -292,8 +291,29 @@ fn belt_grid_under_the_table_is_widened_along_the_belt() {
         "{sheet:?}"
     );
     assert_eq!(sheet.stands_on, Stand::Belt, "{sheet:?}");
-    assert!(s.unrested_layers <= 2, "{s:?}");
-    assert!(s.unrested_mm < 0.01 * s.support_mm, "{s:?}");
+    assert_eq!(s.unrested_mm, 0.0, "{s:?}");
+}
+
+/// The widened belt grid adds no beads in the air but at its feet: on the
+/// cantilevers, where a rib meets the belt beside the wall, under 10 mm of
+/// its 7.5 m, all within a millimetre and a half of the belt. The tall
+/// pad's column had 540 mm unrested before the rule (#710 left them), and
+/// fewer after.
+#[test]
+fn belt_grid_ribs_rest_on_the_ribs_under_them() {
+    for (name, stl, most) in [
+        ("tall pad", tall_pad(), 600.0),
+        ("table", table(), 0.0),
+        ("cantilevers", cantilevers(), 10.0),
+    ] {
+        let s = stability(&stl, Bed::Belt, "grid");
+        assert!(s.unrested_mm <= most, "{name}: {s:?}");
+        if name == "cantilevers" {
+            for c in &s.most_unrested {
+                assert!(c.unrested_at.unwrap()[2] < 1.5, "{name}: {c:?}");
+            }
+        }
+    }
 }
 
 /// Belt grid under the small hanging pad was loose dashes that reached

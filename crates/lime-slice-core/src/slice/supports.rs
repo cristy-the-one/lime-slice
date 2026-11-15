@@ -13,7 +13,7 @@ use crate::support::tree::Foot;
 use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
 use crate::toolpath::{
     bed_feet, plan_belt_support, plan_brim_lines, plan_support, plan_support_brim,
-    plan_support_walls, plan_tree_support, Extrusion,
+    plan_support_ribs, plan_support_walls, plan_tree_support, Extrusion,
 };
 use crate::{
     BlendMode, PathKind, SliceSettings, Stage, StrategyId, SupportSource, SupportStyle, Watch,
@@ -213,10 +213,11 @@ pub(super) fn support_paths(
     // Y from layer to layer. Its lines fall with it, through a point fixed
     // in the lab, so each layer's lines stand on the lines below.
     let through = floor.map(|floor| [0.0, -z * floor.tan_a()]);
-    // A column the slender rule widened is filled with its own grid lines
-    // carried on: on a belt they are pinned in the lab already, and on a flat
-    // bed they start from the edge of the column as it was, so they stand on
-    // the lines under them as the widening grows.
+    // A column the slender rule widened. On a flat bed it is filled with its
+    // own grid lines carried on, which start from the edge of the column as
+    // it was, so they stand on the lines under them as the widening grows.
+    // On a belt the column prints as it did, and the widening adds only ribs
+    // across its thin direction (`plan_support_ribs`, below).
     let widened;
     let walls_strategy = (!layer.walls.is_empty()).then(|| match blend {
         BlendMode::ByRegion { .. } => resolve(pure(StrategyId::Toughness), settings),
@@ -224,6 +225,7 @@ pub(super) fn support_paths(
     });
     let (sparse, through) = match &walls_strategy {
         None => (&layer.sparse[..], through),
+        Some(_) if floor.is_some() => (&layer.sparse[..], through),
         Some(strategy) => {
             let spacing = (line_width / support_density(strategy)).clamp(line_width * 1.05, 8.0);
             let pin = through.or_else(|| {
@@ -284,7 +286,16 @@ pub(super) fn support_paths(
     }
     if let Some(strategy) = walls_strategy.as_ref().filter(|_| shaft_scale > 0.0) {
         let density = support_density(strategy);
-        let mut walls = plan_support_walls(&layer.walls, strategy, line_width, density);
+        let mut walls = match floor {
+            Some(_) => plan_support_ribs(
+                &layer.walls,
+                strategy,
+                line_width,
+                density,
+                through.unwrap_or_default(),
+            ),
+            None => plan_support_walls(&layer.walls, strategy, line_width, density),
+        };
         if shaft_scale > 1.01 {
             for path in &mut walls {
                 path.bead_height = height * shaft_scale;

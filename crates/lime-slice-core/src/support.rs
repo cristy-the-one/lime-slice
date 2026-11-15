@@ -258,6 +258,34 @@ impl Sturdy {
     }
 }
 
+/// `region` swept from `-by` to `+by`: its two ends and every edge's band,
+/// each wound counter-clockwise so the union fills holes too.
+fn sweep(region: &[Loop], by: [f64; 2]) -> Vec<Loop> {
+    let moved = |p: [f64; 2], t: f64| [p[0] + by[0] * t, p[1] + by[1] * t];
+    let mut parts: Vec<Loop> = Vec::new();
+    for l in region {
+        for t in [-1.0, 1.0] {
+            parts.push(l.iter().map(|&p| moved(p, t)).collect());
+        }
+        for (k, &a) in l.iter().enumerate() {
+            let b = l[(k + 1) % l.len()];
+            parts.push(vec![
+                moved(a, -1.0),
+                moved(b, -1.0),
+                moved(b, 1.0),
+                moved(a, 1.0),
+            ]);
+        }
+    }
+    for l in &mut parts {
+        if signed_area(l) < 0.0 {
+            l.reverse();
+        }
+    }
+    parts.retain(|l| l.len() >= 3);
+    resolve_nonzero(parts)
+}
+
 /// The thinnest width of `region` over 36 directions, its Y scaled by `along`.
 fn thinnest(region: &[Loop], along: f64) -> f64 {
     const DIRECTIONS: usize = 36;
@@ -1195,9 +1223,21 @@ fn sturdy_columns(demand: &mut Demand, bands: &[LayerBand], gaps: &[Vec<Loop>], 
                 // it where the part's gap holds the other side back. Either
                 // grows smoothly with the need, so each layer's outline stays
                 // within a fraction of a bead of the one under it.
+                // On a belt a column grows only along the belt, its thin way
+                // there (a blade standing across the belt), so its ends stay
+                // where they were and every rib across it (`plan_support_ribs`)
+                // crosses the column's own line. One thinner across the belt
+                // is left as it is.
+                let thin_along = (bb.1[1] - bb.0[1]) * sturdy.cos_a <= bb.1[0] - bb.0[0];
+                if sturdy.floor.is_some() && !thin_along {
+                    continue;
+                }
                 let shortfall = (need - have) / sturdy.cos_a;
                 let grown = |grow: f64| {
-                    let wide = offset_loops(comp, grow);
+                    let wide = match sturdy.floor {
+                        None => offset_loops(comp, grow),
+                        Some(_) => sweep(comp, [0.0, grow]),
+                    };
                     if gaps[i].is_empty() {
                         wide
                     } else {
