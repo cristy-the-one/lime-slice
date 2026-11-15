@@ -112,7 +112,7 @@ test("Until contact on a round pin stops short of the facets by the chord, and s
   await panel.getByRole("button", { name: "Turn on until contact" }).click();
   const note = panel.locator("[data-pose-contact-note]");
   await expect(note).toContainText("Arm meets Pin at");
-  await expect(note).toContainText("curved faces are meshed to within 0.05 mm");
+  await expect(note).toContainText("On curved faces it stops just short");
   await expect(note).toContainText("the parts cannot overlap");
   await expect(note, "no claim of a few thousandths left on a round face").not.toContainText("mm left.");
   const reached = Number(await angle.inputValue());
