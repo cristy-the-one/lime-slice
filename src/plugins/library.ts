@@ -430,8 +430,10 @@ export function stampedShas(objects: unknown): string[] {
     const nodes = (obj as { modelTree?: { nodes?: unknown } } | null)?.modelTree?.nodes;
     if (!Array.isArray(nodes)) continue;
     for (const node of nodes) {
-      const sha = (node as { plugin?: { sha256?: unknown; version?: unknown } } | null)?.plugin;
+      const sha = (node as { plugin?: { sha256?: unknown; version?: unknown; uses?: unknown } } | null)?.plugin;
       if (sha && typeof sha.sha256 === "string" && typeof sha.version === "number" && sha.version > 0) out.add(sha.sha256);
+      // --- API 1.16. The plugins the run ran from inside it: the project keeps their code too.
+      if (sha?.uses && typeof sha.uses === "object") for (const pin of Object.values(sha.uses as Record<string, { sha256?: unknown }>)) if (typeof pin?.sha256 === "string") out.add(pin.sha256);
     }
   }
   return [...out];

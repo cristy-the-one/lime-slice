@@ -1,0 +1,167 @@
+{
+  "run": {
+    "library": [
+      "corpus-gear-api-1-16.rs"
+    ]
+  },
+  "api": "1.16",
+  "calls": [
+    {
+      "tool": "solid_new",
+      "args": {
+        "primitive": "box",
+        "dx": 60,
+        "dy": 30,
+        "dz": 3
+      }
+    },
+    {
+      "tool": "plugin_run",
+      "args": {
+        "plugin": "corpus-gear-api-1-16",
+        "params": {
+          "teeth": 12,
+          "module": 1
+        }
+      }
+    },
+    {
+      "tool": "solid_new",
+      "args": {
+        "gear": {
+          "teeth": 12,
+          "module": 1,
+          "thickness": 4,
+          "bore": 0,
+          "phaseDeg": 0
+        },
+        "name": "gear"
+      }
+    },
+    {
+      "tool": "plugin_run",
+      "args": {
+        "plugin": "corpus-gear-api-1-16",
+        "params": {
+          "teeth": 24,
+          "module": 1,
+          "phase": 172.5
+        }
+      }
+    },
+    {
+      "tool": "solid_new",
+      "args": {
+        "gear": {
+          "teeth": 24,
+          "module": 1,
+          "thickness": 4,
+          "bore": 0,
+          "phaseDeg": 172.5
+        },
+        "name": "gear"
+      }
+    },
+    {
+      "tool": "plugin_run",
+      "args": {
+        "plugin": "corpus-no-such-plugin",
+        "params": {}
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "to": "obj_1",
+        "x": -15,
+        "y": 0,
+        "z": 3,
+        "turnX": 0,
+        "turnY": 0,
+        "turnZ": 0
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_3",
+        "to": "obj_1",
+        "x": 3,
+        "y": 0,
+        "z": 3,
+        "turnX": 0,
+        "turnY": 0,
+        "turnZ": 0
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "joint": {
+          "kind": "hinge",
+          "pivot": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_3",
+        "joint": {
+          "kind": "hinge",
+          "pivot": [
+            0,
+            0,
+            0
+          ],
+          "axis": [
+            0,
+            0,
+            1
+          ]
+        }
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "gears": "couple"
+      }
+    },
+    {
+      "tool": "model_place",
+      "args": {
+        "object": "obj_2",
+        "angle": 30
+      }
+    }
+  ],
+  "ops": [
+    "{\"primitive\":\"box\",\"origin\":[-30,-15,0],\"size\":[60,30,3],\"radius\":0,\"height\":0,\"turn\":[0,0,0]}",
+    "null"
+  ],
+  "fingerprint": {
+    "volumeMm3": 5400,
+    "faces": 6,
+    "edges": 12
+  },
+  "metrics": {
+    "couplings": 1,
+    "missing": true,
+    "version": 1,
+    "parts": 2
+  },
+  "log": []
+}

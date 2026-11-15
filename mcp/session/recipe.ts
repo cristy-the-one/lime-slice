@@ -17,7 +17,7 @@ import { partNames, runSiblings } from "../../src/plugin-parts.ts";
 import { answerPick } from "../../src/recipe/picks.ts";
 import { answerTextOutline } from "../../src/recipe/text-outline.ts";
 import { fontById, isPenFont, isUserFont } from "../../src/modeling/text-fonts.ts";
-import { apiLevel, bodyHash, isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin, type PluginFile, type PluginParam, type PluginTarget } from "../plugins.ts";
+import { apiLevel, bodyHash, isSlug, olderVersions, parsePlugin, pluginsDir, readExtra, readPlugin, type PluginFile, type PluginParam, type PluginTarget } from "../plugins.ts";
 import { splitPluginData } from "../../src/recipe/plugin-data.ts";
 import { apiVerdict, type ApiLevel, type ApiRefusalCode } from "../../src/recipe/api-level.ts";
 import { fixedReply } from "../line-diff.ts";
@@ -27,8 +27,12 @@ import { queueSummary, RecipeQueue, type QueuedOp } from "../../src/recipe/queue
 import type { Resolved } from "../../src/recipe/ingredients.ts";
 import { builtText, unreadKeys } from "../../src/recipe/host.ts";
 import { DEFAULT_LIMITS, lfOnly, RecipeHost, recipeCrateDir, recipeDataFile, recipeDataMissing, recipeSourceFile, type RecipeCallSite, type RecipeData, type RecipeReply } from "../recipe.ts";
+import type { RecipeLimits } from "../../src/recipe/host.ts";
 import { CHORD, type CallMeta, type PlateObject, type PluginRebuild, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
+import { nestedLimits, nestedRefusal, nestedResult, nestingRefusal, pickPluginCode, pinsOf, readPluginRun, type PluginCode } from "../../src/recipe/nested.ts";
+import type { PluginPins } from "../../src/model-tree.ts";
+import { rerunAssemblies } from "../../src/recipe/rerun-assembly.ts";
 import { SESSION_URL } from "../session-url.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { checkpointJson, checkpointSignature, CHECKPOINT_MAX_BYTES, type CheckpointEvent, type RecipeCheckpoint } from "../recipe-checkpoint.ts";
@@ -70,9 +74,25 @@ const REWRITE_MAX_CHARS = 800;
 /** --- docs/plan-native-recipes.md 7.1. Set on a run built again one by one after a queued boolean was refused late. */
 const QUEUE_REPLAY = "__queueReplay";
 
+/**
+ * --- API 1.16 (docs/plan-plugin-recipes.md). Set on a plugin run from inside another recipe (`plugin_run`): the runs
+ * around it, outermost first, the pins of the outermost run's record, the one deadline and call budget of the whole
+ * tree, and the code picked to run. Such a run builds, runs and takes itself back on a failure as any run does, but
+ * keeps nothing: its parts go back to the recipe that ran it, which commits or takes back the whole.
+ */
+const NESTED = "__nested";
+interface NestedFrame {
+  stack: string[];
+  pins: PluginPins;
+  deadline: number;
+  spent: { calls: number };
+  code: PluginCode;
+}
+
 async function recipeRun(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
+  const nested = input[NESTED] as NestedFrame | undefined;
   const requested = typeof input.name === "string" ? input.name.replace(/[^A-Za-z0-9_-]/g, "_") : typeof input.plugin === "string" ? input.plugin : "";
-  const saved = requested && this.objects.length === 0 ? this.previousAutosave?.checkpoints?.[requested] : undefined;
+  const saved = requested && !nested && this.objects.length === 0 ? this.previousAutosave?.checkpoints?.[requested] : undefined;
   // --- A question to lust about one position (`query`): nothing is built, run or restored for it.
   const asking = input.query !== undefined;
   if (asking && (input.mode === "apply" || input.mode === "dry")) return refuse("conflicting-arguments", "query asks lust about a position of the recipe and runs nothing; leave mode out.");
@@ -80,7 +100,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     const restored = await this.projectOpen(this.previousAutosave!.path);
     if (restored.ok !== true) return refuse("recipe-failed", `The checkpoint's autosave could not be opened: ${String(restored.reason ?? "unknown error")}`);
   }
-  const pending = requested ? this.recipeCheckpoints.get(requested) : undefined;
+  const pending = requested && !nested ? this.recipeCheckpoints.get(requested) : undefined;
   if (pending && input.source === undefined && input.path === undefined && input.plugin === undefined && input.object === undefined) input = { ...input, source: pending.source };
   if (!this.recipeHost) this.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(SESSION_URL), moduleUrl: SESSION_URL });
   const host = this.recipeHost;
@@ -149,7 +169,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   }
   if (typeof input.plugin === "string" && !rebuild) {
     if (input.plugin.startsWith("draft:")) return refuse("conflicting-arguments", `A draft runs again from its object (recipe_run {object, params}), or keep it first: nugget {action:"save", kind:"plugin", from:"${input.plugin.slice(6)}", title, description}.`);
-    const got = await this.pluginFile(input.plugin);
+    // A nested run runs the code its caller picked (`pickPluginCode`): the pinned version, or the library's.
+    const got = nested ? fileOf(nested.code.text) : await this.pluginFile(input.plugin);
     if ("reason" in got) return refuse("recipe-source", got.reason);
     const h = got.file.header;
     if (h.kind === "animation") return refuse("bad-argument", `"${h.plugin}" is an animation. Use pose_animate with an assembly member.`);
@@ -223,7 +244,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }
     if (this.previousAutosave?.checkpoints) delete this.previousAutosave.checkpoints[name];
   }
-  const checkpoint = mode === "apply" ? this.recipeCheckpoints.get(name) : undefined;
+  const checkpoint = mode === "apply" && !nested ? this.recipeCheckpoints.get(name) : undefined;
   // --- I10. The ingredients the source imports, from the library (a rerun: the copies its last apply built), built
   // after the recipe as inline modules, the same text under lust and rustc.
   const resolved = resolveIngredients(source, { kept: checkpoint?.ingredients ?? replacing?.stored.ingredients ?? rebuild?.ingredients, preferKept: !!checkpoint || !!rerun || !!rebuild });
@@ -309,10 +330,25 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const picked: Record<string, unknown> = {};
   /** Mesh once at the end: set by recipe_run {meshAtEnd} or the recipe's s.mesh_at_end() (mesh-end.ts). */
   let meshAtEnd = input.meshAtEnd === true;
+  // --- API 1.16. The plugins this run ran from inside it, by id, with the code that ran: pinned with the run's parts,
+  // and copied into the project. A rerun or a rebuild runs the pinned code again (`pickPluginCode`).
+  const usedPlugins = new Map<string, PluginCode>();
+  const pins: PluginPins = nested?.pins ?? { ...(replacing?.stored.uses ?? {}), ...(rebuild?.stamp.uses ?? {}) };
+  const selfId = plugin?.id ?? (rebuild ? rebuild.stamp.plugin : name);
+  /** When the whole tree of runs must end: the outermost run's limit, handed down. Set as the run starts. */
+  let deadline = nested?.deadline ?? 0;
   const call = async (site: RecipeCallSite): Promise<RecipeReply> => {
     if (site.tool === "mesh_at_end") {
       meshAtEnd = true;
       return { ok: true, result: { ok: true } };
+    }
+    // --- API 1.16. A kept plugin run inside this one: the parts it made become this run's, to place and keep or take back.
+    if (site.tool === "plugin_run") {
+      const ran = await this.pluginRunNested(site.args, { stack: [...(nested?.stack ?? []), selfId], pins, deadline, limits, meta });
+      for (const id of ran.made) if (!created.includes(id)) created.push(id);
+      for (const [id, code] of ran.used) if (!usedPlugins.has(id)) usedPlugins.set(id, code);
+      for (const note of ran.notes) if (notes.length < 200) notes.push(note);
+      return ran.reply;
     }
     // A call that reads a part meshes it first; a plain model_apply carries on without (mesh-end.ts).
     const deferring = meshAtEnd && skipsMesh(site.tool, site.args);
@@ -444,6 +480,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
       if (entry.site.tool === "mesh_at_end") meshAtEnd = true;
       return structuredClone(entry.reply);
     }
+    if (site.tool === "checkpoint" && nested) return { ok: false, error: "A plugin run from inside another recipe cannot checkpoint: the recipe that ran it keeps or takes back the whole." };
     if (site.tool === "checkpoint") {
       // --- docs/plan-native-recipes.md 7.1: what is queued is built before the parts are kept.
       const flushed = await queue.flushAll(site);
@@ -504,7 +541,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return reply;
   };
   const printer = this.printer();
-  const limits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}) };
+  // --- API 1.16. One budget of calls for a recipe and the plugins it runs (`src/recipe/nested.ts`).
+  const limits: RecipeLimits = { ...DEFAULT_LIMITS, ...(typeof input.timeoutS === "number" ? { timeoutS: input.timeoutS } : {}), spent: nested?.spent ?? { calls: 0 } };
   // --- docs/plan-native-recipes.md 7.1. Queued booleans: lines whose apply reply the recipe does not read are held and
   // built together; `replay` (set by an earlier attempt) runs the recipe one by one, as it was before queuing.
   const replaying = input[QUEUE_REPLAY] as { line: number; reason: string } | undefined;
@@ -553,7 +591,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   };
   const start = {
     params,
-    context: startContext(this, { canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild, timeLimitS: limits.timeoutS }, objectArg),
+    context: startContext(this, { canCheckpoint: mode === "apply" && !objectArg && !replacing && !rebuild && !nested, timeLimitS: limits.timeoutS }, objectArg),
   };
   /** Takes the run back; a rebuild also shows the old branch again, where the part stood before it. */
   const rollback = async () => {
@@ -573,8 +611,12 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     if (rebuild && branchRebuild && rebuild.obj.tree?.current !== rebuild.from) await this.gotoNode(rebuild.obj, rebuild.from).catch(() => ({ ok: false }));
     return undone;
   };
+  // --- API 1.16. The plate as it stood: one plate undo step for a run that placed or assembled parts (`remember`).
+  const plateBefore = nested ? null : this.capture(`Recipe ${name}`);
+  if (!nested) this.recipeRemembered = false;
   this.recipeDepth += 1;
-  this.kernelTap = tap;
+  if (!nested) this.kernelTap = tap;
+  if (!nested) deadline = Date.now() + limits.timeoutS * 1000;
   let out;
   try {
     out = await host.run(built.exe, start, input.profile === true ? profiledCall : journalCall, limits, meta?.signal, (fraction, message) => this.noteStage(message || `recipe ${name}`, fraction));
@@ -600,7 +642,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     }
   } finally {
     this.recipeDepth -= 1;
-    this.kernelTap = null;
+    if (!nested) this.kernelTap = null;
     this.meshDeferNow = false;
   }
   // --- Mesh at the end: the parts the run left without a mesh get it now, once, before they are kept (mesh-end.ts).
@@ -623,6 +665,20 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     return this.recipeRun({ ...input, [QUEUE_REPLAY]: queue.replay }, meta);
   }
   if (replaying) notes.push(`Built one by one: the tool at line ${locate(map, replaying.line).line} was refused inside a queued boolean (${replaying.reason}).`);
+  // --- API 1.16. A nested run keeps nothing itself: a failure takes its own parts back at once, so the recipe that ran
+  // it can carry on; a run that reached done hands its parts, its notes and the plugins it ran in turn to that recipe.
+  if (nested) {
+    for (const note of out.notes ?? []) if (notes.length < 200) notes.push(note);
+    if (plugin?.note) notes.unshift(plugin.note);
+    if (!out.ok || !out.done) {
+      await rollback();
+      const at = out.line !== undefined ? locate(map, out.line).line : undefined;
+      const where = at !== undefined && !/line \d+/.test(out.reason ?? "") ? ` (its line ${at})` : "";
+      return { ok: false, code: "recipe-failed", reason: `${out.reason ?? "The plugin failed."}${where}`, notes };
+    }
+    const made = created.filter((id) => this.find(id));
+    return { ok: true, ...nestedResult(selfId, plugin?.version ?? 0, out, made), notes, [NESTED]: [...usedPlugins] };
+  }
   // A lust older than 0.3.0 does not say which applies are unread (`--mark-unread`), so none queued silently.
   if (!built.unread && applied >= 4 && queue.report.queued === 0 && !replaying && process.env.LIME_RECIPE_QUEUE !== "0") notes.push("This lust does not mark unread applies (it is older than 0.3.0), so each apply was built in its place; s.apply_later still queues.");
   for (const row of queue.unreported()) if (notes.length < 200) notes.push(`line ${locate(map, row.line).line}: apply_later was refused (${row.reason}); s.flush(&part) reports these.`);
@@ -679,6 +735,9 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   // Plugins panel does (O4 as built, 2026-11-06). A part the run made and then joined into another (a tool, keepTool
   // false) left the plate: it is no part of its own.
   const label = `recipe ${name}`;
+  // --- API 1.16. The plugins the run ran from inside it: pinned in its stamp and its record, their code in the project.
+  const usedPins = pinsOf(usedPlugins);
+  for (const code of usedPlugins.values()) this.projectPlugins.set(code.sha256, code.text);
   const parts = [...created.filter((id) => this.find(id)), ...[...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id)];
   const api = this.crateApi();
   const stampFields: Omit<PluginStamp, "fingerprint"> = {
@@ -688,6 +747,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     api: plugin?.api ?? `${api[0]}.${api[1]}`,
     params: Object.fromEntries(Object.entries({ ...params, ...picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"],
     context: { bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm },
+    ...(usedPins ? { uses: usedPins } : {}),
   };
   const only = parts.length === 1 && name !== "plugin_check" ? this.find(parts[0]!) : undefined;
   const stamped = only ? this.stampRun(only, touched.get(only.id) ?? null, created.includes(only.id), stampFields) : null;
@@ -752,6 +812,8 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   const replaced: string[] = [];
   const removed: string[] = [];
   const repositioned = new Set<string>();
+  /** --- API 1.16. Each new part's id and the old handle it took: what the assemblies the run built name. */
+  const handed = new Map<string, string>();
   if (replacing) {
     const old = replacing.stored.objects.filter((id) => !created.includes(id) && this.find(id));
     for (const [i, oldId] of old.entries()) {
@@ -761,12 +823,16 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         continue;
       }
       await this.takeOver(oldId, newId, !placed.has(newId), !modelPlaced.has(newId), rebuild?.run.before === null && rebuild.obj.id === oldId);
+      handed.set(newId, oldId);
       if (modelPlaced.has(newId)) repositioned.add(oldId);
       created[i] = oldId;
       if (object === newId) object = oldId;
       replaced.push(oldId);
     }
   }
+  // --- API 1.16. The assemblies the new run built take the place of the old run's, under the old handles, with their
+  // joints and couplings (src/recipe/rerun-assembly.ts).
+  if (handed.size) this.assemblies = rerunAssemblies(this.assemblies, handed);
   // A replaced part can have a new assembled pose. Refresh its stored parent offset (and its children's offsets)
   // after all replacements, so a later solve does not put it back at the previous recipe's pose.
   if (repositioned.size) {
@@ -810,7 +876,7 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
   // an entry whose parts are still on the plate, as `<name>@<part>`.
   const sha256 = bodyHash(built.source);
   const changed = [...touched].filter(([id, before]) => (this.find(id)?.tree?.current ?? null) !== before).map(([id]) => id);
-  const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}), ...(usedIngredients.length ? { ingredients: resolved.used } : {}) };
+  const entry: RustRecipe = { source: built.source, params, objects: [...created], ...(data ? { data } : {}), ...(file ? { path: file.path } : {}), sha256, at: (this.recipeSeq += 1), ...(changed.length ? { changed } : {}), ...(plugin ? { plugin: { id: plugin.id, version: plugin.version, sha256: plugin.sha256 } } : {}), ...(usedIngredients.length ? { ingredients: resolved.used } : {}), ...(usedPins ? { uses: usedPins } : {}) };
   this.recipePreviewHashes.delete(name);
   let entryKey: string | null = null;
   if (created.length) entryKey = key;
@@ -848,6 +914,12 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
         runMs: out.ms,
       }
     : undefined;
+  if (plateBefore && this.recipeRemembered) {
+    this.undoStack.push(plateBefore);
+    if (this.undoStack.length > 32) this.undoStack.shift();
+    this.redoStack = [];
+  }
+  this.recipeRemembered = false;
   const nuggets = rerun || rebuild ? [] : this.harvest(key, built.source, refused, refusedArgs, plugin, input.params && typeof input.params === "object" ? (input.params as Record<string, unknown>) : undefined, typeof input.preset === "string" ? input.preset : undefined);
   return {
     ok: true,
@@ -865,6 +937,87 @@ async function recipeRun(this: Session, input: Record<string, unknown>, meta?: C
     ...(nuggets.length && input.keep === undefined ? { nuggets } : {}),
     ...(await this.keepRun(input.keep, entryKey, built.source, name, objectArg, resolved.used, objectArg !== undefined ? touched.get(objectArg) ?? null : null, data, proof)),
   };
+}
+
+/** A plugin file's text as `pluginFile` answers it: the parsed file, or why it cannot be read. */
+function fileOf(text: string): { file: PluginFile; note?: string } | { reason: string } {
+  const file = parsePlugin(text);
+  return "reason" in file ? file : { file };
+}
+
+/** What the recipe that runs a plugin hands its nested run (API 1.16). */
+interface NestedCaller {
+  /** The runs around the new one, outermost first, the caller last. */
+  stack: string[];
+  pins: PluginPins;
+  deadline: number;
+  limits: RecipeLimits;
+  meta?: CallMeta;
+}
+
+/**
+ * --- Recipe API 1.16 (docs/plan-plugin-recipes.md). A recipe's `plugin_run`: the kept plugin `args.plugin` runs inside
+ * the recipe's run, as a run of its own (its build, its parameters, its own parts only), within the time and calls the
+ * outer run has left. The code is the pinned version, an asked one, or the library's current (`pickPluginCode`); a
+ * plugin marked imported, which no person has run yet, or one from a read-only library never runs from inside another.
+ * A refusal comes back to the recipe as its `Err` with nothing of the nested run left; the parts of one that reached
+ * done are the recipe's from then on.
+ */
+async function pluginRunNested(this: Session, args: Record<string, unknown>, caller: NestedCaller): Promise<{ reply: RecipeReply; made: string[]; used: Map<string, PluginCode>; notes: string[] }> {
+  const no = (error: string): { reply: RecipeReply; made: string[]; used: Map<string, PluginCode>; notes: string[] } => ({ reply: { ok: false, error: error }, made: [], used: new Map(), notes: [] });
+  const ask = readPluginRun(args);
+  if ("reason" in ask) return no(ask.reason);
+  const loop = nestingRefusal(caller.stack, ask.id);
+  if (loop) return no(loop);
+  const dir = pluginsDir();
+  const codeOf = (file: PluginFile): PluginCode => ({ version: file.header.version, sha256: file.sha256, text: file.text });
+  const picked = pickPluginCode(ask, caller.pins[ask.id], {
+    project: (sha256) => {
+      const text = this.projectPlugins.get(sha256);
+      const file = text === undefined ? null : parsePlugin(text);
+      return file && !("reason" in file) && file.header.plugin === ask.id && file.sha256 === sha256 ? codeOf(file) : null;
+    },
+    library: (version) => {
+      const file = readPlugin(ask.id, dir, version);
+      return file && !("reason" in file) && file.matches ? codeOf(file) : null;
+    },
+    olderVersions: () => olderVersions(ask.id, dir),
+  });
+  if ("reason" in picked) {
+    const edited = readPlugin(ask.id, dir);
+    if (edited && !("reason" in edited) && !edited.matches) return no(`${ask.id}.rs was changed outside the app. Run it once on its own (recipe_run {plugin:"${ask.id}"}) so it is kept as a new version, then run this recipe again.`);
+    if (readExtra(ask.id)) return no(`${ask.id} is in a read-only library, and a recipe runs only plugins of your own library. Import it (nugget {action:"import"}) and run it once in the app's Plugins panel, then run this recipe again.`);
+    return no(picked.reason);
+  }
+  const file = parsePlugin(picked.code.text);
+  if ("reason" in file) return no(file.reason);
+  const h = file.header;
+  if (h.kind === "animation") return no(`${h.title} is an animation; a recipe runs plugins that make parts.`);
+  if (h.target === "object") return no(`${h.title} changes a part it is given, and a plugin run from a recipe makes its own parts, so it did not run.`);
+  const verdict = apiVerdict(h.api, this.crateLevels());
+  if (!verdict.ok) return no(verdict.reason);
+  // --- Trust (D11.6). A plugin from someone else is shown to a person before its first run, in the app. One that is
+  // still marked imported never runs hidden inside another, over MCP or in the app.
+  const mark = this.importMarks()[ask.id];
+  const current = mark ? readPlugin(ask.id, dir) : null;
+  if (mark && (mark.sha256 === file.sha256 || (current && !("reason" in current) && current.sha256 === file.sha256))) {
+    return no(`${h.title} was imported and no person has run it yet, so it does not run from inside another plugin. Run it once from the app's Plugins panel, where its code is shown, then run this recipe again.`);
+  }
+  const limits = nestedLimits(caller.limits, caller.deadline);
+  if ("reason" in limits) return no(limits.reason);
+  let out: Record<string, unknown>;
+  try {
+    const frame: NestedFrame = { stack: caller.stack, pins: caller.pins, deadline: caller.deadline, spent: limits.spent!, code: picked.code };
+    out = await this.recipeRun({ plugin: ask.id, params: ask.params, timeoutS: limits.timeoutS, [NESTED]: frame }, caller.meta);
+  } catch (err) {
+    return no(nestedRefusal(h.title, err instanceof Error ? err.message : String(err)));
+  }
+  const notes = ((out.notes ?? []) as string[]).map((note) => `${ask.id}: ${note}`);
+  if (picked.note) notes.unshift(picked.note);
+  if (out.ok !== true) return { ...no(nestedRefusal(h.title, String(out.reason ?? "The plugin failed."))), notes };
+  const used = new Map<string, PluginCode>([[ask.id, picked.code], ...((out[NESTED] ?? []) as [string, PluginCode][])]);
+  const { [NESTED]: _inner, notes: _notes, ...result } = out;
+  return { reply: { ok: true, result }, made: (out.objects ?? []) as string[], used, notes };
 }
 
 /** --- D1. recipe_run {keep}: the apply that just reached done, saved as a plugin. A failed check is a sentence. */
@@ -1083,6 +1236,7 @@ async function recipeRollback(this: Session, created: string[], touched: Map<str
 /** The methods this module adds to Session. */
 export const recipeMethods = {
   recipeRun,
+  pluginRunNested,
   keepRun,
   promoteStamps,
   crateApi,

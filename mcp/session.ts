@@ -187,6 +187,11 @@ export class Session {
   projectFonts: LimeProject["fonts"];
   /** Recipes running now: their calls are recipe_run's, so the tool groups do not gate them. */
   recipeDepth = 0;
+  /**
+   * --- API 1.16. A plate step (a place, a joint, Couple gears) a recipe made while it ran: not a step of its own, since
+   * the whole run is one (`recipeRun` keeps the plate as it stood before the run as that one step).
+   */
+  recipeRemembered = false;
   /** The model_build about to run stands for a model_edit {patch | patches}: its reply does not teach the patch form. */
   patchedBuild = false;
   /** session_info has said its fixed parts in this session, and the bridge state its Tandem sentences were said for. */

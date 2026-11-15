@@ -16,7 +16,9 @@
  * Parts 2 and 3 need lust and skip without it (LIME_RECIPE_REQUIRED=1, as in CI's Linux and Windows MCP jobs, makes
  * that a failure). The engine is the stand-in, so the record is the same on every platform. To record a new level's
  * plugin: put the file and a `<name>.expected.json` holding `{"run": {...}}` in the folder, then run this with
- * LIME_CORPUS_RECORD=1 and LIME_LUST set. Never re-record an old level: its record is the contract.
+ * LIME_CORPUS_RECORD=1 and LIME_LUST set. Never re-record an old level: its record is the contract. A plugin that runs
+ * other plugins (API 1.16) names them in `run.library`; their files are in `companions/`, and its record holds the
+ * nested runs' calls in the order they were made.
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,7 +116,8 @@ if (!lust) {
 
 // --- 2. The corpus: one plugin per level, each the same calls, ops, solid and metrics as recorded.
 interface Expected {
-  run: { part?: Record<string, unknown>; place?: Record<string, unknown>; params?: Record<string, unknown> };
+  /** `library`: plugins the run needs in the library (API 1.16, a recipe that runs plugins), from `companions/`. */
+  run: { part?: Record<string, unknown>; place?: Record<string, unknown>; params?: Record<string, unknown>; library?: string[] };
   api?: string;
   calls?: unknown[];
   ops?: string[];
@@ -144,6 +147,7 @@ for (const name of files) {
   }
   const expected = JSON.parse(readFileSync(expectedPath, "utf8")) as Expected;
   writeFileSync(join(library, `${header.plugin}.rs`), text);
+  for (const companion of expected.run.library ?? []) copyFileSync(join(corpusDir, "companions", companion), join(library, companion));
   const host = new TapHost({ crateDir: recipeCrateDir(import.meta.url), root: hostRoot, lust });
   const { session, call } = await sessionWith(host);
   const object = expected.run.part ? String((await call("solid_new", expected.run.part)).object) : undefined;
@@ -207,6 +211,7 @@ for (const name of files) {
     check(`${name}: and the part is kept as built`, JSON.stringify((await call("model_describe", { object: made, limit: 1 })).fingerprint) === JSON.stringify(before));
   }
   rmSync(join(library, `${header.plugin}.rs`), { force: true });
+  for (const companion of expected.run.library ?? []) rmSync(join(library, companion), { force: true });
 }
 const missing: string[] = [];
 for (const [major, minor] of crateLevels) for (let m = 0; m <= minor; m += 1) if (!levels.has(`${major}.${m}`)) missing.push(`${major}.${m}`);
