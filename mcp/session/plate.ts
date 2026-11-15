@@ -810,20 +810,21 @@ function plateArrange(this: Session, input: Record<string, unknown>): Record<str
   return { ok: true, moved: moved.filter((row) => !keep?.has(row.object)).map(({ object, centre }) => ({ object, centre })), fits: outside.length === 0, ...(outside.length ? { outside } : {}), ...(input.dryRun === true ? { dryRun: true } : { stale: true }), label: "Arrange" };
 }
 
-function plateCollisions(this: Session): { a: string; b: string }[] {
+function plateCollisions(this: Session, worstFirst = false): { a: string; b: string }[] {
   const placed = this.objects.map((obj) => ({ id: obj.id, bounds: this.placed(obj).bounds }));
   const clearance = this.printOrder === "sequential" ? (sequentialClearance(this.sliceRules(this.objects.length), this.order()) ?? 0) : 0;
-  const pairs: { a: string; b: string }[] = [];
+  const pairs: { a: string; b: string; gap: number }[] = [];
   for (let i = 0; i < placed.length; i += 1) {
     for (let j = i + 1; j < placed.length; j += 1) {
       const left = placed[i]!;
       const right = placed[j]!;
       const gap = xyGap(left.bounds, right.bounds);
       const hit = clearance > 0 ? gap < clearance - 1e-6 : gap <= 0.05;
-      if (hit) pairs.push({ a: left.id, b: right.id });
+      if (hit) pairs.push({ a: left.id, b: right.id, gap });
     }
   }
-  return pairs;
+  if (worstFirst) pairs.sort((x, y) => x.gap - y.gap);
+  return pairs.map(({ a, b }) => ({ a, b }));
 }
 
 function printOrderSet(this: Session, input: Record<string, unknown>): Record<string, unknown> {

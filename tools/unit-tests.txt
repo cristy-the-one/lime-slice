@@ -46,6 +46,7 @@ src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
 mcp/render-unnamed.test.ts
+mcp/slice-collisions.test.ts
 mcp/gear-train.test.ts
 mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
