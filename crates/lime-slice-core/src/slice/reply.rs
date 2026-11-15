@@ -93,6 +93,10 @@ pub struct SliceResponse {
     /// The first belt copy only; the others print the same layers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_hold: Option<crate::audit::PartHold>,
+    /// How the supports stand, when the request set `supportStability`.
+    /// The first belt copy only, as `partHold`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_stability: Option<crate::audit::SupportStability>,
     /// The emitted beads, when `slice_beads` asked for them. Never on the wire.
     #[serde(skip)]
     pub beads: Option<Arc<SlicedBeads>>,
