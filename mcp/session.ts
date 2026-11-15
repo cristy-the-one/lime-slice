@@ -481,7 +481,7 @@ export class Session {
       if (plan) prepared.wire.mcpPlanRecovery = structuredClone(plan);
       if (this.recipeCheckpoints.size) prepared.wire.mcpRecipeCheckpoints = structuredClone(Object.fromEntries(this.recipeCheckpoints));
       if (!this.autosaveProject) this.autosaveProject = randomUUID().replace(/-/g, "").slice(0, 12);
-      const identity: AutosaveIdentity = { project: this.autosaveProject, ...(this.sourcePath && !/^autosave-/.test(basename(this.sourcePath)) ? { source: this.sourcePath } : {}) };
+      const identity: AutosaveIdentity = { project: this.autosaveProject, writtenAt: Date.now(), ...(this.sourcePath && !/^autosave-/.test(basename(this.sourcePath)) ? { source: this.sourcePath } : {}) };
       prepared.wire.mcpAutosave = identity;
       const shelve = this.autosaveShelf;
       this.autosaveShelf = false;
