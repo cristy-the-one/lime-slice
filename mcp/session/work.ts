@@ -45,7 +45,8 @@ function detachable(this: Session, name: string, input: Record<string, unknown>,
 function startWorkJob(this: Session, name: string, input: Record<string, unknown>, work: Promise<Record<string, unknown>>, ctx: CallMeta, stop: AbortController): WorkJob {
   if (!ctx.planJob) this.jobSeq += 1;
   const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
-  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+  // pose_animate stops between frames and removes the files it had begun; it changes no part.
+  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
   const job: WorkJob = { handle: ctx.planJob ?? `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
   job.settled = work.then((value) => {
     job.result = value;

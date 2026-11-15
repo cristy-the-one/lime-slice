@@ -1816,7 +1816,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "pose_animate",
-    description: "Sample an assembly animation and optionally export a GIF or PNG frames; leaves the pose unchanged.",
+    description: "Run an animation script (source, path or plugin) against an assembly and sample its frames; the assembly's pose is left as it was. Without out it answers the frame count, keys, the rig and any warnings. With out it also draws every frame and writes a GIF (out.gif) and/or numbered PNG frames (out.frames, a folder) in the workspace. An export can run for minutes: past about 45 s the call answers with a job, slice_wait {job} returns the result when the last frame is written, and slice_cancel stops it between frames. Files are written under a .partial name and take their own names only when the last frame is done, so a cancel or a failure leaves no half-written GIF or short run of frames. The GIF is encoded a frame at a time, so its length is not limited by memory.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       object: handle,
       name: { type: "string", minLength: 1, maxLength: 80, description: "Name kept with the project." },

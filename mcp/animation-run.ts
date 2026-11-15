@@ -1,9 +1,12 @@
 /** Run an animation script against a fixed rig and sample it without changing the plate. */
-import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../src/pose-anim.ts";
+import { animationRig, frameInterference, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../src/pose-anim.ts";
 import type { Assembly, PoseOf } from "../src/assembly.ts";
 import { resolveIngredients } from "./ingredients.ts";
 import { splitPluginData } from "../src/recipe/plugin-data.ts";
 import { ANIMATION_LIMITS, recipeDataFile, recipeDataMissing, type RecipeHost } from "./recipe.ts";
+
+/** A turn of the event loop: timers, other requests and a cancel run before the work goes on. */
+export const eventLoopTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; background?: string; notes: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
 
@@ -39,8 +42,17 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
       camera = site.args.camera;
       if (typeof site.args.background === "string") background = site.args.background;
       const input = { ...site.args, ...(options.fps !== undefined ? { fps: options.fps } : {}) } as unknown as PoseAnimation;
-      const result = sampleAnimation(input, assembly, poseOf, parts);
+      // The poses first, then the crossing check a frame at a time with a turn of the event loop between frames: a
+      // scene of many parts takes seconds a frame, and the server must go on answering (and hear a cancel) meanwhile.
+      const result = sampleAnimation(input, assembly, poseOf, parts, { interference: false });
       if ("issues" in result) { issues = result.issues; return { ok: false, error: issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") }; }
+      const pass = frameInterference(result, assembly, parts);
+      for (let step = pass.next(); ; step = pass.next()) {
+        if (step.done) { result.warnings.push(...step.value.warnings); result.interferenceChecked = step.value.checked; break; }
+        if (options.signal?.aborted) return { ok: false, error: "The animation was cancelled." };
+        options.progress?.(0, `Checking frame ${step.value}/${result.frames.length} for crossings`);
+        await eventLoopTurn();
+      }
       sampled = result;
       return { ok: true, result: { frames: result.frames.length, durationS: result.durationS, fps: result.fps, keys: result.keys } };
     }

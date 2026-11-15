@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
@@ -77,4 +77,38 @@ const badScript = await call("pose_animate", { object: finger, source: source.re
 assert.equal(badScript.ok, false);
 assert.equal(badScript.code, "animation-refused");
 assert.ok(JSON.stringify(badScript).includes("#rrggbb"));
-console.log("pose-animate: sample, GIF, PNG, background, refusal and unchanged pose passed");
+// A long export (docs/plan-mcp-reliability.md, item 1). It used to draw and encode every frame in one synchronous run:
+// the server answered nothing, not even a cancel, until it was done, and a client that gave up restarted it. Past the
+// reply time it is now a job: the server answers other calls while it draws, slice_wait returns its result, and
+// slice_cancel stops it between frames with no file left under the names asked for.
+const leftovers = (dir: string) => readdirSync(dir, { recursive: true }).map(String).filter((name) => name.endsWith(".partial"));
+const reply = process.env.LIME_MCP_REPLY_S;
+process.env.LIME_MCP_REPLY_S = "0.05";
+const longer = source.replace("Animation::new(4)", "Animation::new(30)").replace("a.key(1.0,", "a.key(4.0,");
+const early = await call("pose_animate", { object: finger, source: longer, longEdge: 1024, out: { gif: "job.gif", frames: "job-frames" } });
+assert.equal(early.status, "running", JSON.stringify(early));
+assert.equal(early.tool, "pose_animate");
+const busy = await call("session_info", {});
+assert.equal((busy.job as { job?: string } | undefined)?.job, early.job, "the server answers while the export runs");
+let finished = early;
+while (finished.status === "running") finished = await call("slice_wait", { job: early.job, timeoutS: 30 });
+assert.equal(finished.ok, true, JSON.stringify(finished));
+assert.equal(finished.frames, 120);
+assert.equal(readGif(readFileSync(join(workspace, "job.gif"))).frames.length, 120);
+assert.ok(existsSync(join(workspace, "job-frames", "frame-120.png")));
+assert.deepEqual(leftovers(workspace), []);
+const second = await call("pose_animate", { object: finger, source: longer, longEdge: 1024, out: { gif: "cancel.gif", frames: "cancel-frames" } });
+assert.equal(second.status, "running", JSON.stringify(second));
+let stage = second;
+for (let round = 0; stage.status === "running" && !String(stage.stage ?? "").startsWith("Rendering frame") && round < 2000; round++) stage = await call("slice_wait", { job: second.job, timeoutS: 0.05 });
+assert.equal(stage.status, "running", `the export ended before it could be cancelled: ${JSON.stringify(stage)}`);
+let cancelled = await call("slice_cancel", { job: second.job });
+while (cancelled.status === "cancelling" || cancelled.status === "running") cancelled = await call("slice_wait", { job: second.job, timeoutS: 30 });
+assert.equal(cancelled.ok, false, JSON.stringify(cancelled));
+assert.equal(cancelled.code, "cancelled");
+assert.ok(!existsSync(join(workspace, "cancel.gif")), "no GIF under the name asked for");
+assert.deepEqual(existsSync(join(workspace, "cancel-frames")) ? readdirSync(join(workspace, "cancel-frames")) : [], [], "no frame under the names asked for");
+assert.deepEqual(leftovers(workspace), [], "and no .partial file left");
+if (reply === undefined) delete process.env.LIME_MCP_REPLY_S;
+else process.env.LIME_MCP_REPLY_S = reply;
+console.log("pose-animate: sample, GIF, PNG, background, refusal, unchanged pose, export job and cancel passed");

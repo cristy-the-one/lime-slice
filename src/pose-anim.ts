@@ -265,8 +265,6 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
   const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
   const centre = partCentre;
   const checkPairs = options.interference !== false;
-  const pairSeen = new Map<number, { pa: Affine; pb: Affine; hit: boolean }>();
-  const samePose = (p: Affine, q: Affine) => p === q || (p.m.every((v, k) => v === q.m[k]) && p.t.every((v, k) => v === q.t[k]));
   // Solve at key times too: a key between exported frames must report its own target, not a later sample.
   const frameTimes = Array.from({ length: count }, (_, frame) => count === 1 ? 0 : end * frame / (count - 1));
   const frameNumbers = new Map(frameTimes.map((time, frame) => [time, frame]));
@@ -333,8 +331,36 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
       const one = boxUnder(part.box, pose);
       bounds = bounds ? { min: bounds.min.map((v, i) => Math.min(v, one.min[i]!)) as Vec3, max: bounds.max.map((v, i) => Math.max(v, one.max[i]!)) as Vec3 } : one;
     }
-    const frameBoxes = checkPairs ? usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; }) : [];
-    for (let i = 0; checkPairs && i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
+    // The assembly is replaced, never written to, from one time to the next, so a frame can hold it as it is.
+    frames.push({ time, assembly, poses: new Map(poses), colors: new Map(colors) });
+  }
+  const sampled: AnimationResult = { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: false };
+  if (checkPairs) {
+    const pass = frameInterference(sampled, original, parts);
+    let step = pass.next();
+    while (!step.done) step = pass.next();
+    warnings.push(...step.value.warnings);
+    sampled.interferenceChecked = step.value.checked;
+  }
+  return sampled;
+}
+
+/**
+ * The parts' crossing check over the frames `sampleAnimation` made, one frame a step: each step yields the number of
+ * frames checked, so a caller that must keep answering (the MCP server) can give the event loop a turn between frames.
+ * Returns the warnings, and whether every member had a mesh to check.
+ */
+export function* frameInterference(sampled: Pick<AnimationResult, "frames">, original: Assembly, parts: readonly AnimationPart[]): Generator<number, { warnings: AnimationIssue[]; checked: boolean }> {
+  const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
+  const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
+  const nameOf = (id: string) => rig.find((row) => row.object === id)!.name;
+  const warnings: AnimationIssue[] = [];
+  const pairSeen = new Map<number, { pa: Affine; pb: Affine; hit: boolean }>();
+  const samePose = (p: Affine, q: Affine) => p === q || (p.m.every((v, k) => v === q.m[k]) && p.t.every((v, k) => v === q.t[k]));
+  for (let frame = 0; frame < sampled.frames.length; frame++) {
+    const poses = sampled.frames[frame]!.poses;
+    const frameBoxes = usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; });
+    for (let i = 0; i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
       const a = usable[i]!, b = usable[j]!, pa = poses.get(a.id), pb = poses.get(b.id), ba = frameBoxes[i], bb = frameBoxes[j];
       if (!pa || !pb || !ba || !bb || ba.min.some((v, axis) => v > bb.max[axis]! || bb.min[axis]! > ba.max[axis]!)) continue;
       // Two parts that stand as they stood the last time they were tested cross as they did: most pairs of a
@@ -347,12 +373,11 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
         hit = result.verdict === "crossing" || !!result.nested;
         pairSeen.set(slot, { pa, pb, hit });
       }
-      if (hit) warnings.push({ reason: `Frame ${frame + 1}: ${rig.find((r) => r.object === a.id)!.name} intersects ${rig.find((r) => r.object === b.id)!.name}.` });
+      if (hit) warnings.push({ reason: `Frame ${frame + 1}: ${nameOf(a.id)} intersects ${nameOf(b.id)}.` });
     }
-    // The assembly is replaced, never written to, from one time to the next, so a frame can hold it as it is.
-    frames.push({ time, assembly, poses: new Map(poses), colors: new Map(colors) });
+    yield frame + 1;
   }
-  return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
+  return { warnings, checked: usable.length === original.members.length };
 }
 
 /** One member as an animation saw it, or as it stands now: its name, its model pose (absent is where it was made) and its points. */

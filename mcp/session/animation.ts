@@ -1,12 +1,12 @@
 /** MCP animation execution and export; sampling is always performed on a copy of the rig. */
-import { writeFileSync } from "node:fs";
+import { closeSync, openSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { assemblyOf } from "../../src/assembly.ts";
 import { seatLift } from "../../src/model-space.ts";
 import { animationRig, type AnimationPart } from "../../src/pose-anim.ts";
 import { apiVerdict } from "../../src/recipe/api-level.ts";
-import { runAnimation } from "../animation-run.ts";
-import { animatedGif, type GifFrame } from "../animation-gif.ts";
+import { eventLoopTurn, runAnimation } from "../animation-run.ts";
+import { GIF_END, gifFrame, gifHead } from "../animation-gif.ts";
 import { BACKGROUND, readBackground, readCamera, renderMesh } from "../render.ts";
 import { slugOf } from "../plugins.ts";
 import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
@@ -83,31 +83,49 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const read = readCamera(input.camera ?? result.camera ?? "iso");
   if ("reason" in read) return refuse("bad-view", read.reason);
   const edge = typeof input.longEdge === "number" ? input.longEdge : 640;
-  if (out.gif && sampled.frames.length * edge * edge * 3 > 256 * 1024 * 1024) return refuse("bad-argument", "This GIF is too large to encode in memory. Lower the size, duration or fps.");
   const gifPath = out.gif ? resolveWrite(out.gif, ".gif") : undefined;
   const files: string[] = [];
   if (out.frames) for (let i = 0; i < sampled.frames.length; i++) files.push(resolveWrite(join(out.frames, `frame-${String(i + 1).padStart(3, "0")}.png`), ".png"));
-  const gifFrames: GifFrame[] = [];
-  for (let i = 0; i < sampled.frames.length; i++) {
-    if (meta?.signal?.aborted) return refuse("cancelled", "The animation was cancelled.");
-    const frame = sampled.frames[i]!;
-    let start = 0;
-    const tints: { start: number; end: number; rgb: [number, number, number] }[] = [];
-    const meshes = parts.map((part) => {
-      const positions = part.positions!, pose = frame.poses.get(part.object);
-      const mesh = pose ? posedPositions(positions, pose) : positions;
-      const end = start + mesh.length / 9;
-      const color = frame.colors.get(part.object);
-      if (color) { const n = parseInt(color.replace(/^#/, ""), 16); tints.push({ start, end, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] }); }
-      start = end;
-      return mesh;
-    });
-    const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: !!gifPath, background });
-    if (files[i]) writeFileSync(files[i]!, drawn.png);
-    if (gifPath) gifFrames.push({ rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) });
-    this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
+  // Every file is written under a .partial name and takes its own name only when the last frame is done: a cancel, a
+  // failure or a restart part way leaves no half-written GIF or a short run of frames under the names asked for. One
+  // frame is held at a time: the GIF's palette is fixed (3/3/2 with the background exact), so each frame is encoded and
+  // written as it is drawn, and memory does not grow with the frame count.
+  const partial = (path: string) => `${path}.partial`;
+  const written: string[] = [];
+  let gif: number | undefined;
+  const clean = () => {
+    if (gif !== undefined) { try { closeSync(gif); } catch { /* already closed */ } gif = undefined; }
+    for (const path of written) rmSync(path, { force: true });
+  };
+  try {
+    if (gifPath) { gif = openSync(partial(gifPath), "w"); written.push(partial(gifPath)); writeSync(gif, gifHead(edge, edge, background)); }
+    for (let i = 0; i < sampled.frames.length; i++) {
+      // A turn of the event loop before each frame: the server answers other calls and hears slice_cancel meanwhile.
+      await eventLoopTurn();
+      if (meta?.signal?.aborted) { clean(); return refuse("cancelled", `The animation was cancelled at frame ${i + 1} of ${sampled.frames.length}; no file was written.`); }
+      const frame = sampled.frames[i]!;
+      let start = 0;
+      const tints: { start: number; end: number; rgb: [number, number, number] }[] = [];
+      const meshes = parts.map((part) => {
+        const positions = part.positions!, pose = frame.poses.get(part.object);
+        const mesh = pose ? posedPositions(positions, pose) : positions;
+        const end = start + mesh.length / 9;
+        const color = frame.colors.get(part.object);
+        if (color) { const n = parseInt(color.replace(/^#/, ""), 16); tints.push({ start, end, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] }); }
+        start = end;
+        return mesh;
+      });
+      const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: gif !== undefined, background });
+      if (files[i]) { writeFileSync(partial(files[i]!), drawn.png); written.push(partial(files[i]!)); }
+      if (gif !== undefined) writeSync(gif, gifFrame(edge, edge, { rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) }));
+      this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
+    }
+    if (gif !== undefined) { writeSync(gif, GIF_END); closeSync(gif); gif = undefined; }
+    for (const path of written) renameSync(path, path.slice(0, -".partial".length));
+  } catch (err) {
+    clean();
+    throw err;
   }
-  if (gifPath) writeFileSync(gifPath, animatedGif(edge, edge, gifFrames, background));
   this.animations.set(name, { source, assembly: assembly.id, params, ...(api ? { api } : {}), ...(typeof input.plugin === "string" ? { plugin: input.plugin } : {}) });
   if (pluginCopy) this.projectPlugins.set(pluginCopy.sha256, pluginCopy.text);
   this.autosaveDirty = true;
