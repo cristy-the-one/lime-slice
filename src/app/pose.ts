@@ -6,7 +6,8 @@ import { couplingLine, crossedNotes, findCouplings, prepareTrain, preparedLines,
 import { modelTrees } from "./model-trees.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
-import { meshSeat, modelPoseOf } from "../plate.ts";
+import { meshSeat, meshToModel, modelPoseOf } from "../plate.ts";
+import { aboutAxis, bodyOf as massBodyOf, movingBody, partIntegrals, swing, type BodyPart } from "../mass.ts";
 import { linked, poseChain, solvePose, turnBall, turnHinge } from "../pose.ts";
 import { createPoseView, type PoseCamera, type PoseHit, type PoseView, type ReachEvent, type TurnEvent } from "../pose-view.ts";
 import { cylinderJoint } from "../pose-cylinder.ts";
@@ -571,6 +572,47 @@ function renderPanel(): void {
   }
   const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
   button(actions, "Rest", "rest"); button(actions, "Make rest", "make-rest"); button(actions, "Undo", "undo"); button(actions, "Redo", "redo");
+  massSection(panel, row.assembly, row.member.object);
+}
+/**
+ * The selected member's body weighed, as model_mass weighs it (docs/plan-mass-properties.md): the part and what rides
+ * on it without a joint, a solid at the filament's density, its centre of gravity in model space and, on a hinge, its
+ * inertia, lever arm and period as a pendulum. Read-only; a mesh that does not close says so instead.
+ */
+function massSection(panel: HTMLElement, assembly: Assembly, object: string): void {
+  const moving = movingBody(assembly, object);
+  if (!moving) return;
+  const box = document.createElement("div"); box.dataset.poseMass = ""; panel.append(box);
+  addText(box, "h3", "Mass");
+  const density = state.profile.filamentDensityGCm3;
+  const parts: BodyPart[] = [];
+  const names: string[] = [];
+  for (const id of moving.parts) {
+    const part = state.plate.objects.find((item) => item.id === id);
+    if (!part || part.sourcePos.length < 9) continue;
+    const integrals = partIntegrals(part.sourcePos, part.name);
+    if ("reason" in integrals) { addText(box, "p", integrals.reason, "pose-error"); return; }
+    parts.push({ integrals, pose: meshToModel(part), densityGCm3: density });
+    names.push(part.name);
+  }
+  if (!parts.length) return;
+  const body = massBodyOf(parts);
+  const fixed = (value: number, digits: number) => (Math.round(value * 10 ** digits) / 10 ** digits + 0).toLocaleString(undefined, { maximumFractionDigits: digits });
+  if (names.length > 1) addText(box, "p", `Body: ${names.join(", ")}`);
+  addText(box, "p", `${fixed(body.massG, 2)} g, ${fixed(body.volumeMm3, 0)} mm³ solid at ${density} g/cm³. A print with infill weighs less.`);
+  addText(box, "p", `Centre of gravity (model): ${body.centreMm.map((v) => fixed(v, 2)).join(", ")} mm`);
+  const member = assembly.members.find((item) => item.object === moving.body);
+  const joint = member?.joint;
+  const hinged = state.plate.objects.find((item) => item.id === moving.body);
+  if (joint?.kind !== "hinge" || !hinged) return;
+  const pose = modelPoseOf(hinged);
+  const point = applyPose(pose, joint.pivot), axis = turnDir(pose, joint.axis);
+  const about = aboutAxis(body, point, axis);
+  if ("reason" in about) return;
+  addText(box, "p", `About the hinge: ${fixed(about.inertiaGmm2, 0)} g·mm², lever ${fixed(about.leverMm, 2)} mm`);
+  const swung = swing(body, point, axis);
+  if ("reason" in swung) { addText(box, "p", swung.reason); return; }
+  addText(box, "p", `Period ${fixed(swung.periodS, 3)} s for small swings (simple pendulum ${fixed(swung.lengthMm, 1)} mm), gravity along −Z${swung.offRestDeg > 0.5 ? `; turned ${fixed(swung.offRestDeg, 1)}° from rest` : ""}`);
 }
 /** The assembly's gears where they stand, from each member's Model history. Model fills the trees it holds. */
 function assemblyGears(assembly: Assembly, poses: ReadonlyMap<string, Affine>): WorldGear[] {

@@ -931,6 +931,7 @@ const READ_ONLY = new Set([
   "gcode_summary",
   "layer_summary",
   "measure",
+  "model_mass",
   "surface_at",
   "section",
   "model_check",
@@ -1806,6 +1807,25 @@ export const TOOLS: ToolSpec[] = [
         faceA: { type: "integer", minimum: 0 },
         faceB: { type: "integer", minimum: 0 },
         frame: { enum: ["model", "workplane"] },
+      },
+    },
+  },
+  {
+    name: "model_mass",
+    description: "Weigh a part from its closed mesh: volume (mm³), mass (g), centre of gravity (mm), and principal moments of inertia about the centre of gravity (g·mm²), by the exact integrals over the triangles. The body is the part plus what moves with it: an assembly member is weighed with every part seated on it without a joint, up to the member whose joint carries them, at their assembled poses (body, parts). Mass is of a solid body at the selected filament's density, or density in g/cm³; a printed part with infill weighs less, and the reply says so. When the last slice is of this part alone and current, sliced gives its grams (the part's own beads; supports, skirt and brim left out) and the inertia scaled to them, assuming the printed mass is spread as the solid's. about:\"hinge\" (the body's hinge) or about {point, axis} (a line, in the part's frame) adds the moment of inertia about that line, leverMm (its distance to the centre of gravity) and, for an axis that is not vertical, the small-swing period as a compound pendulum T = 2π √(I / (m g d)) with lengthMm, the simple pendulum of the same period; gravity is 9806.65 mm/s² along -Z of model space. Points and axes answer in frame (model space, or the part's own after model_place {frame:\"part\"}, with centreOfGravityModelMm too). A mesh with open edges is refused with where the first is.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: handle,
+        about: {
+          oneOf: [
+            { enum: ["hinge"] },
+            { type: "object", additionalProperties: false, required: ["point", "axis"], properties: { point: { ...vec3, description: "A point on the line, mm." }, axis: { ...vec3, description: "The line's direction." } } },
+          ],
+          description: "\"hinge\" (the body's hinge) or {point, axis}: the line to take inertia, lever arm and period about.",
+        },
+        density: { type: "number", exclusiveMinimum: 0, maximum: 25, description: "Material density in g/cm³; default the selected filament's." },
       },
     },
   },
