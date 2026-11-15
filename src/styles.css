@@ -77,8 +77,14 @@ input[type="checkbox"], input[type="range"] { accent-color: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.brand { font-weight: 600; letter-spacing: -0.01em; font-size: var(--fs-4); flex: 0 0 auto; }
-.brand span { color: var(--accent-text); }
+/* The app's mark, a lime slice with a wedge cut (as its icon), drawn for 22 px; its name and version are in its tip. */
+.brand { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; line-height: 0; }
+.brand-mark { display: block; width: 22px; height: 22px; }
+.brand-rind { fill: var(--brand-rind); }
+.brand-flesh { fill: var(--brand-flesh); stroke: var(--brand-pith); stroke-width: 1.2; stroke-linejoin: round; }
+.brand-spokes { fill: none; stroke: var(--brand-pith); stroke-width: 1.1; stroke-linecap: round; }
+.brand-core { fill: var(--brand-pith); }
+.brand small { font-size: var(--fs-1); font-weight: 600; line-height: 1; color: var(--accent-text); }
 .action-row { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
 .action-row .btn { flex: 0 0 auto; }
 /* Slice, Show result, Re-slice, Loading…, and Slicing… share one slot. Cancel and Send sit left of it, so neither moves it. */
@@ -1957,6 +1963,28 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-panel input, .pose-panel select { width: 100%; min-width: 0; }
 .pose-panel .pose-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .pose-panel .pose-error { color: var(--danger); }
+/*
+ * Preparing an animation: the three steps (a check once done, a filled dot on the one running), what is happening in
+ * words with its share, and the app's own bar (the slicing bar's track and accent, rounded to sit in the panel).
+ */
+.pose-progress { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.pose-progress-steps { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 8px; padding: 0; list-style: none; font-size: var(--fs-1); color: var(--text-dim); }
+.pose-progress-steps li { display: inline-flex; align-items: center; gap: 5px; }
+.pose-progress-steps li[data-state="active"] { color: var(--text); font-weight: 600; }
+.pose-progress-mark { box-sizing: border-box; display: inline-grid; place-items: center; width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--border); }
+.pose-progress-steps li[data-state="active"] .pose-progress-mark { border: 3px solid var(--accent-text); }
+.pose-progress-steps li[data-state="done"] .pose-progress-mark { border-color: var(--ok); background: var(--ok); }
+.pose-progress-steps li[data-state="done"] .pose-progress-mark::after { content: ""; width: 3px; height: 6px; margin-top: -1px; border: solid var(--on-accent); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); }
+.pose-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; font-size: var(--fs-2); color: var(--text); }
+.pose-progress-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pose-progress-share { flex: 0 0 auto; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-dim); }
+.pose-progress-bar { position: relative; height: 6px; border-radius: 3px; overflow: hidden; background: var(--progress-track); }
+.pose-progress-bar > span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width 120ms linear; }
+.pose-progress-bar.indeterminate > span { width: 30%; animation: slide 1.2s ease-in-out infinite; }
+.pose-progress-foot { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.pose-progress-foot .btn { flex: 0 0 auto; margin-left: auto; }
+.pose-panel .pose-progress-detail { flex: 1 1 auto; margin: 0; font-size: var(--fs-1); }
+.pose-panel .pose-progress-detail[hidden] { display: none; }
 
 .pose-animation-save { width: min(460px, 90vw); max-height: 85vh; overflow-y: auto; padding: 20px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 .pose-animation-save::backdrop { background: #0009; }

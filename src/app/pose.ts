@@ -21,6 +21,7 @@ import { exportAssembly } from "./plate-actions.ts";
 import { session, state } from "./state.ts";
 import { PosePlayback } from "../pose-playback.ts";
 import type { AnimationResult, AnimationPart, PoseAnimation } from "../pose-anim.ts";
+import type { AnimationStage } from "../recipe/animation-run.ts";
 import { bodySha256, pluginFileText, readPluginFile, type PluginFileInfo, type PluginParamInfo } from "../plugin-file.ts";
 import { apiVerdict } from "../recipe/api-level.ts";
 import { RECIPE_API } from "../plugin-step.ts";
@@ -54,9 +55,14 @@ let animationRun = 0;
 export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined }
 let animation: PoseAnimationState | null = null;
 let animationRequest = 0;
+/**
+ * An animation being prepared: its script built and run, its frames made off the window's thread. One at a time: Play
+ * does nothing while one is prepared, and Cancel (or Esc) stops it and leaves the panel as it was.
+ */
+let preparing: { ticket: number; controller: AbortController; stage: AnimationStage | { stage: "start" } } | null = null;
+let progressRequest = 0;
 
 function stopAnimation(): void {
-  animationRun++;
   if (animationRequest) cancelAnimationFrame(animationRequest);
   animationRequest = 0;
   animation = null;
@@ -119,7 +125,26 @@ async function refreshAnimations(): Promise<void> {
   if (!animationFiles.some((file) => file.plugin === animationChoice)) animationChoice = animationFiles[0]?.plugin ?? "";
   if (state.stage === "pose") renderPanel();
 }
+/** Stop the animation being prepared: its build, its script and its frames' worker. `said` replaces the message. */
+function cancelPreparation(said?: string): void {
+  if (!preparing) return;
+  preparing.controller.abort();
+  preparing = null;
+  animationRun++;
+  if (said !== undefined) message = said;
+  renderPanel();
+}
+/** The progress the panel shows, one stage at a time, in place: the panel is not rebuilt for a frame. */
+function setPreparingStage(ticket: number, stage: AnimationStage): void {
+  if (!preparing || preparing.ticket !== ticket) return;
+  if (state.stage !== "pose") { cancelPreparation(""); return; }
+  const before = preparing.stage.stage;
+  preparing.stage = stage;
+  if (before !== stage.stage) { renderPanel(); return; }
+  if (!progressRequest) progressRequest = requestAnimationFrame(() => { progressRequest = 0; drawProgress(); });
+}
 async function playAnimation(): Promise<void> {
+  if (preparing) return;
   const row = selected(), file = animationFiles.find((item) => item.plugin === animationChoice);
   if (!row || !file) { message = "Select an assembly and an animation."; renderPanel(); return; }
   const verdict = apiVerdict(file.api, [RECIPE_API]);
@@ -129,23 +154,36 @@ async function playAnimation(): Promise<void> {
     else { animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); }
     renderPanel(); return;
   }
+  // Another assembly's animation stops: the view shows the assembly as it stands while the new one is prepared.
+  stopAnimation();
   const ticket = ++animationRun;
-  const assemblySnapshot = structuredClone(row.assembly);
-  const poses = new Map(row.assembly.members.map((member) => [member.object, poseOf(member.object)]));
-  const objects = new Map(row.assembly.members.map((member) => [member.object, state.plate.objects.find((item) => item.id === member.object)]));
-  message = "Building animation…"; renderPanel();
+  const controller = new AbortController();
+  preparing = { ticket, controller, stage: { stage: "start" } };
+  message = ""; renderPanel();
+  try {
+    await prepareAnimation(ticket, controller.signal, row.assembly, file);
+  } finally {
+    if (preparing?.ticket === ticket) { preparing = null; renderPanel(); }
+  }
+}
+async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assembly, file: PluginFileInfo): Promise<void> {
+  const current = () => ticket === animationRun && state.stage === "pose";
+  const assemblySnapshot = structuredClone(live);
+  const poses = new Map(live.members.map((member) => [member.object, poseOf(member.object)]));
+  const objects = new Map(live.members.map((member) => [member.object, state.plate.objects.find((item) => item.id === member.object)]));
   const [{ recipeRuntime }, { runAppAnimation }, sha] = await Promise.all([import("../recipe/runtime.ts"), import("../recipe/animation-run.ts"), bodySha256(file.body)]);
   const recipes = await recipeRuntime();
-  if (ticket !== animationRun || state.stage !== "pose") return;
-  if (!recipes) { message = "Playing an animation needs the desktop app."; renderPanel(); return; }
+  if (!current()) return;
+  if (!recipes) { message = "Playing an animation needs the desktop app."; return; }
   const [{ needsFirstRun, approveFirstRun }, { pluginLibrary, loadLibrary }] = await Promise.all([import("../ui/plugin-import.ts"), import("../ui/plugins-panel.ts")]);
   if (needsFirstRun(file, sha, pluginLibrary())) {
     const approved = await approveFirstRun(file, sha, undefined, pluginLibrary());
-    if (ticket !== animationRun || state.stage !== "pose") return;
-    if (!approved) { message = "Animation cancelled."; renderPanel(); return; }
+    if (!current()) return;
+    if (!approved) { message = "Animation cancelled."; return; }
     await loadLibrary();
   }
-  const parts: AnimationPart[] = row.assembly.members.flatMap((member) => {
+  // Copies made for this animation: their buffers are lent to the frames' worker and come back with the frames.
+  const parts: AnimationPart[] = live.members.flatMap((member) => {
     const part = state.plate.objects.find((item) => item.id === member.object);
     if (!part) return [];
     const seat = meshSeat(part.bytes) ?? 0, positions = part.sourcePos.slice();
@@ -154,17 +192,18 @@ async function playAnimation(): Promise<void> {
   });
   const params = { ...Object.fromEntries(file.params.filter((param) => param.default !== null).map((param) => [param.name, param.default])), ...animationParameters.get(file.plugin) };
   try {
-    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts);
-    if (ticket !== animationRun || state.stage !== "pose") return;
+    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts, { signal, transfer: true, onStage: (stage) => setPreparingStage(ticket, stage) });
+    if (!current()) return;
     const { animationStale } = await import("../pose-anim.ts");
     const stale = staleSince(animationStale, assemblySnapshot, poses, objects);
-    if (stale) { message = `${stale} while the animation was building. Play it again.`; renderPanel(); return; }
-    if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; renderPanel(); return; }
-    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: row.assembly.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
+    if (stale) { message = `${stale} while the animation was building. Play it again.`; return; }
+    if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; return; }
+    preparing = null;
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
     animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); renderPanel();
   } catch (error) {
-    if (ticket === animationRun) { message = error instanceof Error ? error.message : String(error); renderPanel(); }
+    if (ticket === animationRun) message = error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -407,7 +446,8 @@ function mount(): PoseView | null {
   });
   window.addEventListener("keydown", (event) => {
     if (state.stage !== "pose") return;
-    if (event.key === "Escape" && animation) { stopAnimation(); message = ""; syncPose(); }
+    if (event.key === "Escape" && preparing) cancelPreparation("Animation cancelled.");
+    else if (event.key === "Escape" && animation) { stopAnimation(); message = ""; syncPose(); }
     else if (event.key === "Escape") setTool("select");
     else if (event.code === "Space" && animation && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) { event.preventDefault(); void playAnimation(); }
   });
@@ -416,6 +456,7 @@ function mount(): PoseView | null {
 }
 export function showPose(): void {
   stopAnimation();
+  cancelPreparation();
   const poseView = mount();
   if (!poseView) return;
   sceneShift = undefined;
@@ -477,6 +518,66 @@ function field(parent: HTMLElement, label: string, name: string, value: number |
   addText(wrap, "span", label);
   const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.poseField = name; input.value = value === undefined ? "" : String(Math.round(value * 10000) / 10000); input.placeholder = placeholder; input.setAttribute("aria-label", label); wrap.append(input); parent.append(wrap);
 }
+/** The three steps of preparing an animation, in the order they run, as the panel names them. */
+const PREPARE_STEPS = [["build", "Build script"], ["run", "Run script"], ["frames", "Prepare frames"]] as const;
+/** Where a preparation stands, in words: what is happening, the bar's share (null while it cannot be known), a note. */
+function progressWords(stage: AnimationStage | { stage: "start" }): { title: string; share: number | null; detail: string; step: number; live: string } {
+  switch (stage.stage) {
+    case "start": return { title: "Getting the animation ready…", share: null, detail: "", step: 0, live: "Getting the animation ready" };
+    case "build": return { title: "Building the animation script…", share: null, detail: "The script is compiled once; a script built before is quick.", step: 0, live: "Building the animation script" };
+    case "run": return { title: "Running the animation script…", share: null, detail: "The script reads the assembly and sets its keys.", step: 1, live: "Running the animation script" };
+    case "frames": return {
+      title: stage.frame >= stage.count ? `Prepared ${stage.count} ${stage.count === 1 ? "frame" : "frames"}` : `Preparing frame ${stage.frame + 1} of ${stage.count}`,
+      share: stage.count ? stage.frame / stage.count : 0,
+      detail: "Each frame poses the assembly and checks it for parts that cross.",
+      step: 2,
+      live: `Preparing ${stage.count} ${stage.count === 1 ? "frame" : "frames"}`,
+    };
+    case "finish": return { title: "Finishing…", share: 1, detail: "", step: 3, live: "Finishing" };
+  }
+}
+/** The progress block of the Animations section, while one is prepared. `drawProgress` fills it. */
+function progressBlock(panel: HTMLElement): void {
+  const block = document.createElement("div"); block.className = "pose-progress"; block.dataset.poseProgress = "";
+  const steps = document.createElement("ol"); steps.className = "pose-progress-steps"; steps.setAttribute("aria-hidden", "true");
+  for (const [, label] of PREPARE_STEPS) { const item = document.createElement("li"); const mark = document.createElement("span"); mark.className = "pose-progress-mark"; item.append(mark, document.createTextNode(label)); steps.append(item); }
+  const head = document.createElement("div"); head.className = "pose-progress-head";
+  const title = addText(head, "span", "", "pose-progress-title"); title.dataset.poseProgressText = "";
+  const share = addText(head, "span", "", "pose-progress-share"); share.dataset.poseProgressShare = "";
+  const bar = document.createElement("div"); bar.className = "pose-progress-bar"; bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", "Preparing the animation"); bar.dataset.poseProgressBar = "";
+  bar.append(document.createElement("span"));
+  const detail = document.createElement("p"); detail.className = "pose-progress-detail";
+  const foot = document.createElement("div"); foot.className = "pose-progress-foot"; foot.append(detail);
+  const cancel = button(foot, "Cancel", "animation-cancel");
+  cancel.dataset.tip = "Stop preparing this animation (Esc).";
+  // Said once per stage, not per frame: the bar's value is there for whoever asks for it.
+  const live = document.createElement("span"); live.className = "sr-only"; live.setAttribute("aria-live", "polite"); live.dataset.poseProgressLive = "";
+  block.append(steps, head, bar, foot, live);
+  panel.append(block);
+  drawProgress();
+}
+function drawProgress(): void {
+  const block = document.querySelector<HTMLElement>("[data-pose-progress]");
+  if (!block || !preparing) return;
+  const words = progressWords(preparing.stage);
+  block.dataset.stage = preparing.stage.stage;
+  block.querySelectorAll<HTMLElement>(".pose-progress-steps > li").forEach((item, at) => { item.dataset.state = at < words.step ? "done" : at === words.step ? "active" : "todo"; });
+  block.querySelector<HTMLElement>("[data-pose-progress-text]")!.textContent = words.title;
+  block.querySelector<HTMLElement>("[data-pose-progress-share]")!.textContent = words.share === null ? "" : `${Math.floor(words.share * 100)}%`;
+  const bar = block.querySelector<HTMLElement>("[data-pose-progress-bar]")!;
+  bar.classList.toggle("indeterminate", words.share === null);
+  if (preparing.stage.stage === "frames") {
+    bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", String(preparing.stage.count));
+    bar.setAttribute("aria-valuenow", String(preparing.stage.frame)); bar.setAttribute("aria-valuetext", `${preparing.stage.frame} of ${preparing.stage.count} frames`);
+  } else for (const name of ["aria-valuemin", "aria-valuemax", "aria-valuenow"]) bar.removeAttribute(name);
+  if (preparing.stage.stage !== "frames") bar.setAttribute("aria-valuetext", words.title.replace(/…$/, ""));
+  (bar.firstElementChild as HTMLElement).style.width = words.share === null ? "" : `${Math.max(0, Math.min(100, words.share * 100))}%`;
+  const detail = block.querySelector<HTMLElement>(".pose-progress-detail")!;
+  detail.textContent = words.detail; detail.hidden = !words.detail;
+  // A live region is read when its text changes after it is in the page, so a new block says its stage a moment later.
+  const live = block.querySelector<HTMLElement>("[data-pose-progress-live]")!;
+  if (live.dataset.said !== words.live) { live.dataset.said = words.live; window.setTimeout(() => { live.textContent = words.live; }, 100); }
+}
 function renderPanel(): void {
   const panel = document.querySelector<HTMLElement>("#posePanel");
   if (!panel || state.stage !== "pose") return;
@@ -527,9 +628,10 @@ function renderPanel(): void {
       }
       panel.append(label);
     }
-    const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
-    button(actions, animation?.clock.playing ? "Pause" : "Play", "animation-play");
-    if (animation) {
+    if (preparing) progressBlock(panel);
+    const actions = document.createElement("div"); actions.className = "pose-buttons"; if (!preparing) panel.append(actions);
+    if (!preparing) button(actions, animation?.clock.playing ? "Pause" : "Play", "animation-play");
+    if (animation && !preparing) {
       button(actions, "Stop", "animation-stop"); button(actions, "Keep this frame", "animation-keep"); button(actions, "Save animation…", "animation-save");
       const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = String(animation.result.frames.length - 1); slider.value = String(animation.clock.frame(performance.now())); slider.dataset.poseAnimationFrame = ""; slider.setAttribute("aria-label", "Animation frame"); panel.append(slider);
       const label = addText(panel, "p", `Frame ${Number(slider.value) + 1} / ${animation.result.frames.length}`); label.dataset.poseAnimationCount = "";
@@ -679,6 +781,7 @@ function panelClick(event: Event): void {
   const action = target.dataset.poseAction;
   if (animation && action && !action.startsWith("animation-")) stopAnimation();
   if (action === "animation-play") { void playAnimation(); return; }
+  if (action === "animation-cancel") { cancelPreparation("Animation cancelled."); return; }
   if (action === "animation-save") {
     if (animation && view && sceneShift) {
       const current = animation, poseView = view, shift = sceneShift;
@@ -748,12 +851,12 @@ function panelClick(event: Event): void {
 }
 function panelChange(event: Event): void {
   const input = event.target as HTMLInputElement | HTMLSelectElement;
-  if (input.dataset.poseAnimation === "choice") { stopAnimation(); animationChoice = input.value; syncPose(); return; }
+  if (input.dataset.poseAnimation === "choice") { stopAnimation(); cancelPreparation(""); animationChoice = input.value; syncPose(); return; }
   if (input.dataset.poseAnimationParam) {
     const name = input.dataset.poseAnimationParam, previous = animationParameters.get(animationChoice) ?? {};
     const value = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
     if (typeof value === "number" && (!Number.isFinite(value) || input.value.trim() === "")) { message = "Enter a finite animation parameter."; renderPanel(); return; }
-    animationParameters.set(animationChoice, { ...previous, [name]: value }); stopAnimation(); syncPose(); return;
+    animationParameters.set(animationChoice, { ...previous, [name]: value }); stopAnimation(); cancelPreparation(""); syncPose(); return;
   }
   if (input.hasAttribute("data-pose-animation-frame") && animation) { animation.clock.seek(Number(input.value)); syncPose(); renderPanel(); return; }
   const name = input.dataset.poseField;
