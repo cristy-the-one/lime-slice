@@ -112,7 +112,7 @@ export class AppRecipes {
       ]).then(async (stops) => {
         unlisten = stops;
         if (ended) end();
-        await this.invoke("recipe_start", { run, exe, limits: { timeoutS: limits.timeoutS, maxCalls: limits.maxCalls, maxLineBytes: limits.maxLineBytes } });
+        await this.invoke("recipe_start", { run, exe, limits: { timeoutS: limits.wallS ?? limits.timeoutS, maxCalls: limits.maxCalls, maxLineBytes: limits.maxLineBytes } });
       }).catch((err: unknown) => {
         ended = true;
         end();
