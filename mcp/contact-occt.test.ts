@@ -70,18 +70,50 @@ check("the wheel stops on the flat pallet", flat.ok === true && Math.abs(flat.an
 check("with at most the tolerance left", flat.contact?.clearanceMm <= 0.011, flat.contact);
 check("the kernel was asked at the answer and past it", flat.exact?.atContact?.verdict !== undefined && flat.exact?.past !== undefined, flat.exact);
 check("and on flat faces it agrees: no shared volume at the answer", flat.exact?.agrees === true && flat.exact.atContact.verdict !== "crossing", flat.exact);
+// Flat faces keep the mesh pass's answer (6.8.0 changes nothing there): no margin, no second answer, two kernel checks.
+check("flat faces: the mesh pass placed it, with no chord margin", flat.contact?.check === "mesh" && flat.contact?.boundMm === 0 && flat.mesh === undefined && flat.exact?.placed === "mesh", flat);
+check("flat faces: two kernel checks, at the answer and just past it", flat.exact?.kernelCalls === 2 && flat.exact?.backedOff?.degrees === 0, flat.exact);
 console.log(`     flat: ${flat.angle} deg (by hand ${expected.toFixed(6)}), exact ${JSON.stringify(flat.exact)}`);
 await call("plate_undo");
 
-// A round pin: the mesh pass sees its facets. Whatever the kernel says at the answer is in the reply.
+/** The kernel's verdict on the wheel's tooth and `other` where they stand (model_check {interference, exact}). */
+type Pair = { a: string; b: string; verdict: string; volumeMm3?: number };
+const kernelSays = async (other: string): Promise<Pair | undefined> => {
+  const reply = await call("model_check", { object: tooth, interference: true, exact: true });
+  return ((reply.pairs as Pair[] | undefined) ?? []).find((row) => [row.a, row.b].includes(tooth) && [row.a, row.b].includes(other));
+};
+const clearOrTouch = (pair: Pair | undefined) => !pair || pair.verdict !== "crossing";
+
+// A round pin: its mesh is facets within the chord (0.05 mm) inside the true cylinder, so the facets meet late. Before
+// 6.8.0 the pose was the facets' contact (71.283465 deg in CI), where the kernel found 0.011 mm³ shared (0.022 mm³ just
+// past it). Now the kernel decides: it backs off from the facets' contact to a pose it calls clear or a touch.
 await call("object_remove", { object: pallet });
 const pin = await solid({ primitive: "cylinder", radius: 3, height: 5, name: "Pin" });
 await place({ object: pin, to: frame, x: 0, y: 14, z: 6 });
+
+// Without the kernel, the mesh pass keeps the pin's chord: short of the facets' contact, and the kernel calls it clear.
+const margin = await call("model_place", { object: hub, until: { contact: pin, dir: 1, exact: false } });
+check("exact false: the wheel stops on the round pin", margin.ok === true && margin.contact?.other === pin && margin.exact === undefined, margin);
+check("exact false: the bound is the pin's chord, and it stopped short of the facets' contact", Math.abs(Number(margin.contact?.boundMm) - 0.05) < 1e-6 && typeof margin.mesh?.angle === "number" && margin.angle < margin.mesh.angle, margin);
+check("exact false: the note says the true parts cannot overlap", /cannot overlap/.test(String(margin.note)), margin.note);
+const marginPair = await kernelSays(pin);
+check("exact false: the kernel calls the margin's pose clear or a touch", clearOrTouch(marginPair), marginPair);
+console.log(`     round pin, mesh pass with the chord margin: ${margin.angle} deg (facets meet at ${margin.mesh?.angle}), kernel ${JSON.stringify(marginPair ?? "clear")}`);
+await call("plate_undo");
+
 const round = await call("model_place", { object: hub, until: { contact: pin, dir: 1 } });
 check("the wheel stops on the round pin", round.ok === true && round.contact?.other === pin, round);
-check("exact says whether it agrees, with the volume, and the note says so", typeof round.exact?.agrees === "boolean" && typeof round.exact.atContact.volumeMm3 === "number" && /kernel/.test(String(round.note)), round);
-console.log(`     round pin: ${round.angle} deg, exact ${JSON.stringify(round.exact)}`);
-if (round.exact?.agrees === false) console.log("     the mesh pass and the kernel disagree on the round pin, as reported in the reply");
+check("exact says whether the facets' contact agrees, with the volume, and the note says so", typeof round.exact?.agrees === "boolean" && typeof round.exact.meshAnswer?.volumeMm3 === "number" && /kernel/.test(String(round.note)), round);
+check("the pose is the kernel's: clear or a touch there", round.exact?.placed === "kernel" && round.contact?.check === "kernel" && round.exact.atContact?.verdict !== undefined && round.exact.atContact.verdict !== "crossing", round.exact);
+const facets = typeof round.mesh?.angle === "number" ? round.mesh.angle : round.angle;
+check("never past the facets' contact", round.angle <= facets + 1e-9, { angle: round.angle, facets });
+check("the reply says how far it backed off from the facets' contact", typeof round.exact?.backedOff?.degrees === "number" && Math.abs(round.exact.backedOff.degrees - (facets - round.angle)) < 2e-6 && typeof round.exact.backedOff.travelMm === "number", round.exact);
+if (round.exact?.agrees === false) check("where the kernel found shared volume at the facets' contact, the note says it backed off", round.exact.backedOff.degrees > 0 && /backed off/.test(String(round.note)), round.note);
+check("within the budget of kernel checks, and the cost is said", round.exact?.kernelCalls <= round.exact?.budget + 1 && typeof round.exact?.kernelMs === "number", round.exact);
+const roundPair = await kernelSays(pin);
+check("model_check {interference, exact} agrees: the wheel and the pin do not cross where it stopped", clearOrTouch(roundPair), roundPair);
+console.log(`     round pin: ${round.angle} deg (facets meet at ${facets}), exact ${JSON.stringify(round.exact)}, kernel now ${JSON.stringify(roundPair ?? "clear")}`);
+console.log(`     note: ${String(round.note)}`);
 
 if (failed) {
   console.error(`contact-occt: ${failed} failed`);

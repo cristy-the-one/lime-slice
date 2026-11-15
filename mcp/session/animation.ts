@@ -14,7 +14,7 @@ import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { resolveWrite } from "../workspace.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { SESSION_URL } from "../session-url.ts";
-import { joinedPositions, posedPositions, type CallMeta, type ToolHandler } from "./shared.ts";
+import { CHORD, joinedPositions, posedPositions, type CallMeta, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 
 async function poseAnimate(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
@@ -64,7 +64,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const row = this.find(member.object);
     if (!row) return refuse("bad-assembly", `Assembly member ${member.object} is missing.`);
     const solid = row.solid && row.solid.positions.length >= 9;
-    parts.push({ object: row.id, name: row.name, positions: solid ? row.solid!.positions : posedPositions(row.source, seatLift(row.seatMm)) });
+    parts.push({ object: row.id, name: row.name, positions: solid ? row.solid!.positions : posedPositions(row.source, seatLift(row.seatMm)), ...(solid ? { chordMm: Math.max(CHORD, row.stepTolerance || CHORD) } : {}) });
   }
   // Member names kept with the project's animation are for the assembly it played on; another assembly starts from the defaults.
   const keptOn = typeof input.plugin === "string" ? this.animations.get(input.plugin)?.assembly : undefined;
