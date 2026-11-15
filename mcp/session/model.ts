@@ -32,6 +32,7 @@ import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
 import { turnHinge } from "../../src/pose.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
 import { noteTreeCall } from "./mesh-end.ts";
+import { modelMass } from "./mass.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, type PlateObject, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -75,6 +76,7 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
     return input.pieces === true ? s.exportPieceStep(obj, String(input.name)) : s.exportStep(obj, String(input.name));
   },
   measure: (s, obj, input) => s.measure(obj, input),
+  model_mass: (s, obj, input) => modelMass(s, obj, input),
 };
 
 /**

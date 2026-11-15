@@ -77,6 +77,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   model_commit: [{ object: "obj_1" }],
   model_export_step: [{ object: "obj_1", name: "bracket.step" }, { object: "obj_2", name: "lamp.step", assembly: true }],
   measure: [{ object: "obj_1", a: [0, 0, 0], b: [10, 0, 0], frame: "model" }, { object: "obj_1", faceA: 2, faceB: 3 }],
+  model_mass: [{ object: "obj_1" }, { object: "obj_2", about: "hinge" }, { object: "obj_2", about: { point: [0, 0, 120], axis: [1, 0, 0] }, density: 1.04 }],
   layer_summary: [{ job: "job_1" }],
   pose_animate: [{ object: "obj_2", plugin: "wave", fps: 10, longEdge: 320, out: { gif: "wave.gif" } }],
   render_view: [{ object: "obj_1", camera: "front", longEdge: 800 }, { object: "obj_1", views: ["iso"], section: { normal: [0, -1, 0], point: [0, 0, 5] } }],
