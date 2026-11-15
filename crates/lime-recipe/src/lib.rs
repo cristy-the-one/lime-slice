@@ -450,7 +450,8 @@ pub struct Part {
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
 /// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.11: the explicit queue (`apply_later`, `flush`, `apply_now`, `queue`).
 /// 1.12: `gears` (the library's involute gears, and true involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
-pub const API: (u32, u32) = (1, 12);
+/// 1.13: `mech` (pendulum periods and lengths, docs/plan-mass-properties.md).
+pub const API: (u32, u32) = (1, 13);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -4182,6 +4183,63 @@ pub mod gears {
     }
 }
 
+/// Pendulums (API 1.13, docs/plan-mass-properties.md): a simple pendulum's period from its length and its length from a
+/// period, and a compound pendulum's period from what `model_mass {about:"hinge"}` reports (its moment of inertia about
+/// the hinge, its mass, and the distance from the hinge to its centre of gravity). Small swings, standard gravity, no
+/// friction. Only `*`, `/` and `sqrt`, so lust and rustc give the same bits; the window's `src/mass.ts` computes the same.
+///
+/// A pendulum recipe can take its period as the parameter and solve its own length:
+/// `let rod = mech::pendulum_length(s.number("period", 0.75).get());`
+pub mod mech {
+    /// Standard gravity, mm/s².
+    pub const G_MM_S2: f64 = 9806.65;
+
+    /// A simple pendulum's period in seconds for a length in mm: `2π √(L / g)`.
+    pub fn pendulum_period(length_mm: f64) -> f64 {
+        2.0 * std::f64::consts::PI * (length_mm / G_MM_S2).sqrt()
+    }
+
+    /// The simple pendulum's length in mm that swings with a period in seconds: `g (T / 2π)²`.
+    pub fn pendulum_length(period_s: f64) -> f64 {
+        let k = period_s / (2.0 * std::f64::consts::PI);
+        G_MM_S2 * k * k
+    }
+
+    /// A compound pendulum's small-swing period in seconds: `2π √(I / (m g d))`, with `inertia_g_mm2` its moment of
+    /// inertia about the hinge in g·mm², `mass_g` its mass in g and `d_mm` the hinge's distance to its centre of gravity.
+    pub fn compound_period(inertia_g_mm2: f64, mass_g: f64, d_mm: f64) -> f64 {
+        2.0 * std::f64::consts::PI * (inertia_g_mm2 / (mass_g * G_MM_S2 * d_mm)).sqrt()
+    }
+
+    /// The simple pendulum with the same period as that compound one, mm: `I / (m d)`.
+    pub fn equivalent_length(inertia_g_mm2: f64, mass_g: f64, d_mm: f64) -> f64 {
+        inertia_g_mm2 / (mass_g * d_mm)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_clock_note_pendulum() {
+            // 139.73 mm swings in 0.75 s, the note's seconds-beating half.
+            assert!((pendulum_period(139.73) - 0.75).abs() < 1e-4);
+            assert!((pendulum_length(0.75) - 139.73).abs() < 0.01);
+            assert!((pendulum_length(pendulum_period(321.5)) - 321.5).abs() < 1e-9);
+        }
+
+        #[test]
+        fn a_rod_about_its_end() {
+            // A thin uniform rod of length L hung by its end: I = m L² / 3, d = L / 2, so T = 2π √(2L / 3g).
+            let (l, m) = (200.0, 3.0);
+            let t = compound_period(m * l * l / 3.0, m, l / 2.0);
+            assert!((t - 2.0 * std::f64::consts::PI * (2.0 * l / (3.0 * G_MM_S2)).sqrt()).abs() < 1e-12);
+            assert!((equivalent_length(m * l * l / 3.0, m, l / 2.0) - 2.0 * l / 3.0).abs() < 1e-9);
+            assert!((pendulum_period(equivalent_length(m * l * l / 3.0, m, l / 2.0)) - t).abs() < 1e-12);
+        }
+    }
+}
+
 /// External spur gears on parallel axes: whether two of them mesh, from their outlines, without a kernel.
 ///
 /// A recipe calls `classify` or `driven_turn`. The window's gear card and `model_check` report the same verdicts
@@ -4687,7 +4745,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 12));
+        assert_eq!(API, (1, 13));
     }
 
     #[test]
