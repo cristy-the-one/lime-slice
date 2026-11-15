@@ -118,16 +118,30 @@ Decided: **Moreau's midpoint time stepping** (Moreau–Jean), fixed step.
   0.75 s pendulum.
 - Contacts, impacts and every Coulomb friction (pivots, pallets, clutch) are velocity impulses solved together at the
   midpoint of each step (projected Gauss–Seidel over a handful of rows: normal impulses ≥ 0, friction within its bound,
-  restitution on the approach speed). A contact is active when its gap at the midpoint is ≤ 0. A click's seat moves on
-  at the step where the wheel passes a pitch.
-- Impacts are captured at the step they happen in, not located inside it: this is first order at an impact. That is why
-  the convergence check below is part of every run, not an option.
-- Default `dt` 0.0001 s (7,500 steps a period of a 0.75 s pendulum); 1e-6 to 0.002 s may be given.
+  restitution on the approach speed). A click's seat moves on at the step where the wheel passes a pitch.
+- **Speculative contacts.** A tooth tip within half a step's travel of a face gets its row before it touches: its
+  velocity may close the gap by the step's end and no more (with restitution `e > 0` it rebounds instead). Found by
+  measurement: activating a contact only once its gap is ≤ 0 lets it go in by up to a step's travel, and the rate then
+  moved 24 s a day between `dt` 1e-4 and 5e-5.
+- **Events.** A step in which a contact is made or broken (the contacts within 0.1 µm at its start and at its predicted
+  end differ) or a speculative contact closes is made again as 8 sub-steps, and once more inside those: an impact, a
+  lock or a let-off is placed to `dt / 64`. Between events the step stays `dt`, so the free motion keeps its symplectic
+  step and the cost is that of a fixed step (a few events a beat).
+- A tip sliding off the impulse face past its let-off corner leaves it: that corner is a contact only for directions
+  between the impulse face's normal and the pallet's back (found by a run whose amplitude dropped by a third once in 25
+  beats: the corner had been taken as a wall along the slide).
+- Default `dt` 0.00005 s (15,000 steps a period of a 0.75 s pendulum); 1e-6 to 0.002 s may be given. Measured on the
+  test clock (section 8): the period at 1e-4, 5e-5 and 2.5e-5 s differs by 2.8 and then 0.6 s a day.
 
 **Convergence, in every run.** The run is repeated at `dt / 2`. The period, the steady amplitude, the rate, whether it
-self-starts and whether it stalls must agree: the rate to 1 s a day, the amplitude to 1 % (or 0.02 degrees), the
+self-starts and whether it stalls must agree: the period to 1 s a day, the amplitude to 1 % (or 0.02 degrees), the
 verdicts exactly. If they do not, the reply says **not converged** and gives both values and both steps, never one
 number. The sweep's runs (section 4) are made at `dt` only and say so.
+
+**Overswing.** The locking faces end at half the swing plus the supplementary arc. An anchor that swings further has
+left the geometry horology drew (in the print, the tooth would run off the pallet onto the arm), so the run reports the
+overswing, when and how far, and gives no amplitude or rate. Found by a run with frictionless pallets, whose amplitude
+grew past 4 degrees.
 
 ## 4. What a run answers
 
@@ -191,3 +205,26 @@ A. Free and driven bodies: the model from the assembly, the integrator, pivot fr
    restitution, stall. C. `motion_run` over MCP. D. Run in Pose.
 
 ## 8. Measured (filled in as each stage lands)
+
+The test clock (`src/escapement.test.ts`): horology's 30-tooth wheel, tip 22.5, root 17.5, lean 12°, span 7.5 teeth,
+default lock, impulse and drop, extruded 4 mm thick; a 3 × 3 × 140 mm rod and a 30 × 6 × 30 mm bob on the anchor (8 g,
+free period 0.7386 s); 0.25 N·mm on the escape wheel; friction 0.3 on 1.5 mm pins; PLA 1.24 g/cm³.
+
+| Check | Measured |
+|---|---|
+| Compound pendulum at 1° against `swing()` with its elliptic correction | 3.0e-8 relative |
+| The same at 30° against the elliptic period | 2.6e-8 relative |
+| Frictionless, 100 swings: energy | within 1.8e-7 of the swing's |
+| Weight on a drum with pivot friction, θ(1 s) against ½αt² | 2.6e-13 relative |
+| Weight on a winch, fall in 0.1 s against ½at² | 4.5e-14 relative |
+| Two wheels coupled at 3 against τ/(I₁ + 9I₂) | exact to 1e-9 |
+| Wheel stopped by pivot friction, turns against Iω²/(2τ) | 3.3e-10 relative |
+| Stop with e 0.5: rebound speed | 0.5 to 1e-9 |
+| Graham port against the crate under lust (4 escapements, about 1,000 numbers each) | within 7.5e-14 mm |
+| Escapement fitted to its meshes: corners; element gap against `meshDistance` | 0.00000 mm; 0.1204 against 0.1204 mm |
+| The anchor's pendulum alone at 1°, period against `swing()` | 7.2e-9 relative |
+| Test clock from a 3.5° push: steady 3.124°, one tooth a period, energy per beat | drive 26.18 µJ = losses 26.18 µJ; residual 0.0000 % |
+| Its period against the free period at that amplitude | +5.97 % (the pallets' friction on an 8 g pendulum) |
+| 27 g bob, 0.18 N·mm, friction 0.15: period against free | within 1 % (0.86 %) |
+| Period at dt 1e-4 / 5e-5 / 2.5e-5 s (test clock) | 0.7828060 / 0.7827808 / 0.7827754 s |
+| Cost a step, the test clock | about 3.5 µs |

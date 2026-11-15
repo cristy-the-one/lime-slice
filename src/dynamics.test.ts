@@ -16,6 +16,7 @@ import { buildSystem, largeSwingPeriod, restOf, Stepper, SwingMeter, turnVec, N_
 import { bodyOf, G_MM_S2, meshIntegrals, swing, type Integrals } from "./mass.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
 import { turnHinge } from "./pose.ts";
+import { box } from "./box-mesh.ts";
 
 let failed = 0;
 function check(name: string, cond: boolean, detail: unknown = ""): void {
@@ -24,17 +25,6 @@ function check(name: string, cond: boolean, detail: unknown = ""): void {
   console.error(`FAIL ${name}${detail === "" ? "" : `: ${JSON.stringify(detail)}`}`);
 }
 const rel = (a: number, b: number) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-300);
-
-/** A box's twelve triangles, outward, about `c`. */
-export function box(dx: number, dy: number, dz: number, c: [number, number, number] = [0, 0, 0]): Float32Array {
-  const p = (i: number, j: number, k: number) => [c[0] + (i - 0.5) * dx, c[1] + (j - 0.5) * dy, c[2] + (k - 0.5) * dz];
-  const quad = (a: number[], b: number[], cc: number[], d: number[]) => [...a, ...b, ...cc, ...a, ...cc, ...d];
-  return Float32Array.from([
-    ...quad(p(0, 0, 0), p(0, 1, 0), p(1, 1, 0), p(1, 0, 0)), ...quad(p(0, 0, 1), p(1, 0, 1), p(1, 1, 1), p(0, 1, 1)),
-    ...quad(p(0, 0, 0), p(1, 0, 0), p(1, 0, 1), p(0, 0, 1)), ...quad(p(0, 1, 0), p(0, 1, 1), p(1, 1, 1), p(1, 1, 0)),
-    ...quad(p(0, 0, 0), p(0, 0, 1), p(0, 1, 1), p(0, 1, 0)), ...quad(p(1, 0, 0), p(1, 1, 0), p(1, 1, 1), p(1, 0, 1)),
-  ]);
-}
 
 const PLA = 1.24;
 const inputs = (over: Partial<DynamicsInputs> = {}): DynamicsInputs => ({ densityGCm3: PLA, friction: 0, pinRadiusMm: 1.5, restitution: 0, ...over });

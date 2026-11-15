@@ -53,6 +53,7 @@ mcp/gear-train.test.ts
 mcp/couplings.test.ts
 src/mass.test.ts
 src/dynamics.test.ts
+src/escapement.test.ts
 mcp/mass.test.ts
 mcp/contact.test.ts
 mcp/assembly-friction.test.ts
@@ -171,6 +172,7 @@ mcp/plugin-hints.test.ts
 mcp/recipe-root.test.ts
 mcp/recipe-query.test.ts
 mcp/recipe-horology.test.ts
+mcp/graham-port.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts

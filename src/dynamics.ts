@@ -107,6 +107,12 @@ export interface Row {
   /** A friction row's coefficient and its normal row. */
   mu?: number;
   normal?: number;
+  /**
+   * A normal row's gap at the midpoint, mm or radians (0 or less: touching). A row offered while still apart is
+   * speculative: its velocity may close the gap by the step's end, and no more; at an impact it rebounds by the
+   * restitution instead.
+   */
+  gap?: number;
   /** Where its work goes in the ledger. */
   ledger: string;
 }
@@ -117,6 +123,11 @@ export interface Element {
   rows(q: Float64Array, v: Float64Array, h: number, out: Row[]): void;
   /** After a step: a click's seat moves on, a counter. */
   after?(q: Float64Array): void;
+  /**
+   * Which contacts are made at `q`, within a band far wider than a resting contact's stray: a step whose start and
+   * predicted end differ makes or breaks a contact, and is refined.
+   */
+  signature?(q: ArrayLike<number>): string;
 }
 
 export interface System {
@@ -339,7 +350,7 @@ export function buildSystem(assembly: Assembly, parts: readonly DynPart[], input
   }
 
   const elements: Element[] = [];
-  for (const [c, coord] of coords.entries()) if (Number.isFinite(coord.lo) || Number.isFinite(coord.hi)) elements.push(limitElement(c, coord, coords.length, inputs.restitution));
+  for (const [c, coord] of coords.entries()) if (Number.isFinite(coord.lo) || Number.isFinite(coord.hi)) elements.push(limitElement(c, coord, coords.length));
   for (const row of assembly.couplings ?? []) {
     if (row.kind === "ratchet") {
       const element = ratchetElement(row, bodies, bodyIndex, coords.length, nameOf);
@@ -359,13 +370,15 @@ export function buildSystem(assembly: Assembly, parts: readonly DynPart[], input
 const round = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits;
 
 /** A coordinate's joint limits as stops. */
-function limitElement(c: number, coord: Coord, n: number, e: number): Element {
-  void e;
+function limitElement(c: number, coord: Coord, n: number): Element {
   return {
     kind: "limit",
-    rows(q, _v, _h, out) {
-      if (q[c]! <= coord.lo) { const j = new Float64Array(n); j[c] = 1; out.push({ j, kind: "normal", lo: 0, hi: Infinity, ledger: "stops" }); }
-      if (q[c]! >= coord.hi) { const j = new Float64Array(n); j[c] = -1; out.push({ j, kind: "normal", lo: 0, hi: Infinity, ledger: "stops" }); }
+    signature: (q) => (q[c]! - coord.lo <= BAND ? "lo" : coord.hi - q[c]! <= BAND ? "hi" : ""),
+    rows(q, v, h, out) {
+      // Speculative, as a contact: offered once the rest of the step would reach the stop.
+      const below = q[c]! - coord.lo, above = coord.hi - q[c]!;
+      if (below <= 0.5 * h * Math.max(0, -v[c]!)) { const j = new Float64Array(n); j[c] = 1; out.push({ j, kind: "normal", lo: 0, hi: Infinity, ledger: "stops", gap: below }); }
+      if (above <= 0.5 * h * Math.max(0, v[c]!)) { const j = new Float64Array(n); j[c] = -1; out.push({ j, kind: "normal", lo: 0, hi: Infinity, ledger: "stops", gap: above }); }
     },
   };
 }
@@ -383,11 +396,12 @@ function ratchetElement(row: Coupling, bodies: Body[], index: Map<string, number
   const ratio = row.ratio || 1;
   const pitch = row.click ? 360 / row.click.teeth : 0;
   // Relative turn, degrees: the wheel's against the part's.
-  const rel = (q: Float64Array) => jointRate(wheel) * q[wheel.coord]! - (part ? (jointRate(part) * q[part.coord]!) / ratio : 0);
+  const rel = (q: ArrayLike<number>) => jointRate(wheel) * q[wheel.coord]! - (part ? (jointRate(part) * q[part.coord]!) / ratio : 0);
   let seat = -free * (row.click?.phase ?? 0);
   const element: Element & { clicks: number } = {
     kind: "ratchet",
     clicks: 0,
+    signature: (q) => (free * (rel(q) - seat) * DEG <= BAND ? "held" : ""),
     rows(q, _v, _h, out) {
       if (free * (rel(q) - seat) > 0) return;
       const j = new Float64Array(n);
@@ -457,6 +471,14 @@ export class Stepper {
     if (v0) this.v.set(v0);
     this.inv = Float64Array.from(system.coords, (c) => 1 / c.inertia);
     this.f = new Float64Array(this.n);
+    // The pins' friction: one bound row a coordinate, the same every step.
+    this.pivotRows = [];
+    for (let c = 0; c < this.n; c += 1) {
+      const F = system.coords[c]!.friction;
+      if (!(F > 0)) continue;
+      const j = new Float64Array(this.n); j[c] = 1;
+      this.pivotRows.push({ j, kind: "bound", lo: -h * F, hi: h * F, ledger: `pivot:${c}` });
+    }
     this.energy0 = this.kinetic() + this.potential(false);
     this.driveStart = this.potential(true);
   }
@@ -493,11 +515,28 @@ export class Stepper {
   }
 
   private readonly f: Float64Array;
+  private readonly pivotRows: Row[];
   private readonly driveStart: number;
   private torqueWork = 0;
 
+  /** One step of `h`, refined where a contact starts, closes or ends (docs/plan-hinge-dynamics.md, section 3). */
   step(): void {
-    const { n, h, system } = this;
+    this.advance(this.h, 0);
+    this.steps += 1;
+    this.ledger.driveIn = this.driveStart - this.potential(true) + this.torqueWork;
+  }
+
+  /** Steps refined into sub-steps, for a caller that reports the cost. */
+  refined = 0;
+  refinedClosing = 0;
+
+  private pivotFor(h: number): Row[] {
+    if (h === this.h) return this.pivotRows;
+    return this.pivotRows.map((row) => ({ ...row, lo: (row.lo * h) / this.h, hi: (row.hi * h) / this.h }));
+  }
+
+  private advance(h: number, depth: number): void {
+    const { n, system } = this;
     const q0 = this.q, v0 = this.v;
     const qm = new Float64Array(n);
     for (let c = 0; c < n; c += 1) qm[c] = q0[c]! + 0.5 * h * v0[c]!;
@@ -513,18 +552,30 @@ export class Stepper {
       v[c] = damped;
     }
     // The impulse problem: pins' friction, then the elements' rows at the midpoint.
-    const rows: Row[] = [];
-    for (let c = 0; c < n; c += 1) {
-      const F = system.coords[c]!.friction;
-      if (!(F > 0)) continue;
-      const j = new Float64Array(n); j[c] = 1;
-      rows.push({ j, kind: "bound", lo: -h * F, hi: h * F, ledger: `pivot:${c}` });
-    }
+    const rows: Row[] = this.pivotFor(h).slice();
     for (const element of system.elements) element.rows(qm, v0, h, rows);
+    // An event in this step: a contact closing (a speculative row) or a contact made or broken between the step's start
+    // and its predicted end. Its timing is first order in the step, so the step is made again as REFINE sub-steps,
+    // twice over at most: h/64 at an event.
+    if (depth < 2) {
+      let closing = false;
+      for (const row of rows) if (row.kind === "normal" && row.gap !== undefined && row.gap > CLOSING) closing = true;
+      let changes = closing;
+      if (!changes) {
+        const end = new Float64Array(n);
+        for (let c = 0; c < n; c += 1) end[c] = q0[c]! + h * v0[c]!;
+        for (const element of system.elements) if (element.signature && element.signature(q0) !== element.signature(end)) { changes = true; break; }
+      }
+      if (changes) {
+        if (depth === 0) { this.refined += 1; if (closing) this.refinedClosing += 1; }
+        for (let k = 0; k < REFINE; k += 1) this.advance(h / REFINE, depth + 1);
+        return;
+      }
+    }
     // Normal rows first, then friction, then the bounds.
     const order = rows.map((_, i) => i).sort((a, b) => rank(rows[a]!) - rank(rows[b]!));
     const p = new Float64Array(rows.length);
-    if (rows.length) solveRows(rows, order, p, v, v0, this.inv, system.restitution);
+    if (rows.length) solveRows(rows, order, p, v, v0, this.inv, system.restitution, h);
     // The work each impulse did, over the step's mean velocity.
     this.lastRows = [];
     for (let k = 0; k < rows.length; k += 1) {
@@ -542,14 +593,19 @@ export class Stepper {
     this.v = v;
     for (const element of system.elements) element.after?.(q);
     this.t += h;
-    this.steps += 1;
-    this.ledger.driveIn = this.driveStart - this.potential(true) + this.torqueWork;
   }
 
   private add(key: string, value: number): void {
     this.ledger.out[key] = (this.ledger.out[key] ?? 0) + value;
   }
 }
+
+/** A contact counts as made within this, mm (or radians on a stop): far wider than a resting contact's stray. */
+export const BAND = 1e-4;
+/** Sub-steps a step is cut into at an event. */
+export const REFINE = 8;
+/** A speculative row further apart than this (mm, or radians on a stop) is a contact still to be made: an event. A sliding or resting contact strays from its face by far less (curvature times the step squared). */
+const CLOSING = 1e-5;
 
 const rank = (row: Row) => (row.kind === "normal" ? 0 : row.kind === "friction" ? 1 : 2);
 
@@ -558,16 +614,21 @@ const rank = (row: Row) => (row.kind === "normal" ? 0 : row.kind === "friction" 
  * least the restitution's rebound; a friction row's stays within μ times its normal's; a bound row's within its bounds.
  * `v` comes in as the free velocity and leaves as the step's.
  */
-function solveRows(rows: Row[], order: number[], p: Float64Array, v: Float64Array, v0: Float64Array, inv: Float64Array, e: number): void {
-  const n = v.length;
-  const w = rows.map((row) => Float64Array.from(row.j, (x, c) => x * inv[c]!));
-  const d = rows.map((row, k) => { let s = 0; for (let c = 0; c < n; c += 1) s += row.j[c]! * w[k]![c]!; return s; });
-  const target = rows.map((row) => {
-    if (row.kind !== "normal") return 0;
-    let a = 0;
-    for (let c = 0; c < n; c += 1) a += row.j[c]! * v0[c]!;
-    return a < 0 ? -e * a : 0;
-  });
+function solveRows(rows: Row[], order: number[], p: Float64Array, v: Float64Array, v0: Float64Array, inv: Float64Array, e: number, h: number): void {
+  const n = v.length, m = rows.length;
+  const w: Float64Array[] = new Array(m), d = new Float64Array(m), target = new Float64Array(m);
+  for (let k = 0; k < m; k += 1) {
+    const j = rows[k]!.j, wk = new Float64Array(n);
+    let dk = 0, a = 0;
+    for (let c = 0; c < n; c += 1) { wk[c] = j[c]! * inv[c]!; dk += j[c]! * wk[c]!; a += j[c]! * v0[c]!; }
+    w[k] = wk; d[k] = dk;
+    const row = rows[k]!;
+    if (row.kind !== "normal") target[k] = 0;
+    else {
+      const close = row.gap !== undefined && row.gap > 0 ? (-2 * row.gap) / h : 0;
+      target[k] = e > 0 && a < 0 ? Math.max(-e * a, close) : close;
+    }
+  }
   for (let sweep = 0; sweep < 400; sweep += 1) {
     let change = 0, size = 0;
     for (const k of order) {
