@@ -27,6 +27,7 @@ import { bodySha256, pluginFileText, readPluginFile, type PluginFileInfo, type P
 import { apiVerdict } from "../recipe/api-level.ts";
 import { RECIPE_API } from "../plugin-step.ts";
 import type { ContactJob, ContactJobReply } from "../contact-worker.ts";
+import type { ContactAnswer, KernelVerdict } from "../contact.ts";
 import { memberNamesOf, membersMatching, missingMember } from "../anim-members.ts";
 
 /** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
@@ -82,6 +83,11 @@ let contactBusy = false;
 let contactNote: { object: string; text: string } | null = null;
 let contactWorker: Worker | null = null;
 let contactJob = 0;
+/**
+ * The last answer that stopped short of curved faces by their chords, on two solids in the desktop app, so the kernel
+ * can be asked for the exact one (docs/plan-contact-poses.md section 6): the assembly before the press and after it.
+ */
+let contactExact: { object: string; before: Assembly; after: string; answer: ContactAnswer } | null = null;
 let animationRequest = 0;
 /**
  * An animation being prepared: its script built and run, its frames made off the window's thread. One at a time: Play
@@ -222,7 +228,8 @@ async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assem
     if (!part) return [];
     const seat = meshSeat(part.bytes) ?? 0, positions = part.sourcePos.slice();
     if (seat) for (let i = 2; i < positions.length; i += 3) positions[i] += seat;
-    return [{ object: part.id, name: part.name, positions }];
+    const chordMm = contactChord(part);
+    return [{ object: part.id, name: part.name, positions, ...(chordMm ? { chordMm } : {}) }];
   });
   const params = animationValues(file, live);
   try {
@@ -817,8 +824,29 @@ function contactSection(panel: HTMLElement, assembly: Assembly, member: Member):
   back.dataset.tip = `${verb} ${what} backwards (${slide ? "against its axis" : "clockwise about its axis"}), with its gear train, until a part it moves first touches another part of the assembly, and stop there. One Undo.`;
   on.dataset.tip = `${verb} ${what} forwards (${slide ? "along its axis" : "anticlockwise about its axis"}), with its gear train, until a part it moves first touches another part of the assembly, and stop there. One Undo.`;
   for (const one of [back, on]) one.disabled = contactBusy;
-  const line = contactBusy ? "Finding contact…" : contactNote?.object === member.object ? contactNote.text : "";
+  if (!contactBusy && contactExact?.object === member.object) {
+    const exact = button(actions, "Exact contact", "contact-exact");
+    exact.dataset.tip = `Ask the kernel for the exact contact on these curved faces: it checks the solids' common volume, at most ${KERNEL_CHECKS} times (each a boolean of the two solids, so it can take some seconds), and moves the joint to the last pose it calls clear or a touch. One Undo.`;
+  }
+  const line = contactBusy ? (contactBusyText ?? "Finding contact…") : contactNote?.object === member.object ? contactNote.text : "";
   if (line) { const note = addText(panel, "p", line); note.dataset.poseContactNote = ""; note.setAttribute("role", "status"); }
+}
+/** KERNEL_CALLS in src/contact.ts, kept here so the panel does not load the solve to draw a tip. */
+const KERNEL_CHECKS = 12;
+let contactBusyText: string | null = null;
+/** The chord a plate part's mesh was made at when the kernel made it (a Model solid or a STEP); none for a mesh file, which is its own triangles. */
+function contactChord(part: (typeof state.plate.objects)[number]): number | undefined {
+  const solid = !!part.modelTree || !!part.brep || /\.(step|stp)$/i.test(part.fileName);
+  return solid ? Math.max(part.stepTolerance || 0, state.stepTolerance || 0) || undefined : undefined;
+}
+const mmText = (value: number) => `${Math.round(value * 1000) / 1000} mm`;
+/** The line under the buttons for a contact found by the shared solve: on curved faces, what the facets can and cannot say. */
+function contactLine(answer: ContactAnswer, nameOf: (id: string) => string, at: (value: number) => string, ignored: string): string {
+  const pair = answer.pair!, meets = `${nameOf(pair.moving)} meets ${nameOf(pair.other)} at ${at(answer.value)}`;
+  const bound = answer.boundMm ?? 0, left = answer.clearanceMm!;
+  if (!(bound > 0)) return `${meets}, ${mmText(left)} left.${ignored}`;
+  if (answer.marginKept === false) return `${meets}, ${mmText(left)} left between the meshes; their curved faces are meshed to within ${mmText(bound)}, and they already stood that close, so the parts may overlap by up to ${mmText(Math.max(0, bound - left))}.${ignored}`;
+  return `${meets}, clear by at most ${mmText(left + bound)}. On curved faces it stops just short, so the parts cannot overlap.${ignored}`;
 }
 /** A solve off the UI thread; on the UI thread when no worker can be made. */
 async function solveContact(job: ContactJob): Promise<ContactJobReply> {
@@ -854,11 +882,12 @@ async function untilContact(dir: 1 | -1): Promise<void> {
     // The plate mesh in its CAD frame, up by its seat, as the animation and the clash check take it.
     const seat = meshSeat(part.bytes) ?? 0, positions = new Float32Array(part.sourcePos);
     if (seat) for (let i = 2; i < positions.length; i += 3) positions[i] += seat;
-    return [{ object: part.id, positions }];
+    const chordMm = contactChord(part);
+    return [{ object: part.id, positions, ...(chordMm ? { chordMm } : {}) }];
   });
   const poses = assembly.members.flatMap((member) => { const pose = poseOf(member.object); return pose ? [[member.object, pose] as [string, Affine]] : []; });
   const job: ContactJob = { id: ++contactJob, assembly: structuredClone(assembly), poses, parts, object, dir, names: assembly.members.map((member) => [member.object, nameOf(member.object)]) };
-  contactBusy = true; contactNote = null; renderPanel();
+  contactBusy = true; contactNote = null; contactExact = null; renderPanel();
   let reply: ContactJobReply;
   try {
     reply = await solveContact(job);
@@ -880,8 +909,70 @@ async function untilContact(dir: 1 | -1): Promise<void> {
     renderPanel(); return;
   }
   const pair = answer.pair!;
-  contactNote = { object, text: `${nameOf(pair.moving)} meets ${nameOf(pair.other)} at ${at(answer.value)}, ${Math.round(answer.clearanceMm! * 1000) / 1000} mm left.${ignored}` };
+  contactNote = { object, text: contactLine(answer, nameOf, at, ignored) };
+  // On curved faces of two solids, the desktop app can ask the kernel for the exact contact.
+  const solidOf = (id: string) => { const part = state.plate.objects.find((item) => item.id === id); return !!part && contactChord(part) !== undefined; };
+  const offer = (answer.boundMm ?? 0) > 0 && fx.isTauri() && solidOf(pair.moving) && solidOf(pair.other);
+  const before = structuredClone(assembly);
   editAssembly(answer.assembly);
+  if (offer) { contactExact = { object, before, after: JSON.stringify(liveAssemblies().find((item) => item.id === assembly.id)), answer }; renderPanel(); }
+}
+/**
+ * "Exact contact": the kernel's contact from the last answer on curved faces (`kernelContact`, the same as model_place
+ * {until} over MCP). It asks the kernel for the pair's common volume at the facets' own contact and between, at most
+ * KERNEL_CALLS times, and moves the joint to the last pose it calls clear or a touch: one Undo. Nothing moves when it
+ * finds none within the budget, and the line says so.
+ */
+async function exactContact(): Promise<void> {
+  const held = contactExact;
+  const row = selected();
+  if (!held || !row || contactBusy || row.member.object !== held.object) return;
+  const object = held.object, answer = held.answer, pair = answer.pair!;
+  const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
+  const live = () => liveAssemblies().find((item) => item.id === held.before.id);
+  if (JSON.stringify(live()) !== held.after) { contactExact = null; contactNote = { object, text: "The assembly changed since contact was found. Press Until contact again." }; renderPanel(); return; }
+  const [{ kernelContact }, { exactVerdict, meshVolume }, model] = await Promise.all([import("../contact.ts"), import("../interference.ts"), loadModel()]);
+  const partOf = (id: string) => state.plate.objects.find((item) => item.id === id);
+  const a = partOf(pair.moving), b = partOf(pair.other);
+  if (!a || !b) return;
+  const volumes: [number, number] = [meshVolume(a.sourcePos), meshVolume(b.sourcePos)];
+  const measure = async (value: number): Promise<KernelVerdict | { reason: string }> => {
+    const turned = trainTurn(held.before, answer.body, value - answer.from);
+    if ("reason" in turned) return { reason: turned.reason };
+    const poses = solveAssembly(turned.assembly, poseOf).poses;
+    const pa = poses.get(a.id), pb = poses.get(b.id);
+    if (!pa || !pb) return { reason: "Both parts need a pose in the assembly." };
+    const volume = await model.commonVolume(a.id, b.id, [pa, pb]);
+    if (typeof volume === "string") return { reason: volume };
+    return { verdict: volume === 0 ? "clear" : exactVerdict(volume, volumes), volumeMm3: Math.round(volume * 1000) / 1000 };
+  };
+  contactBusy = true; contactBusyText = "Asking the kernel…"; renderPanel();
+  const started = performance.now();
+  let kernel: Awaited<ReturnType<typeof kernelContact>>;
+  try {
+    kernel = await kernelContact(answer, measure);
+  } catch (error) {
+    kernel = { reason: error instanceof Error ? error.message : String(error) };
+  }
+  contactBusy = false; contactBusyText = null;
+  const seconds = ((performance.now() - started) / 1000).toFixed(1);
+  if (state.stage !== "pose") return;
+  if (JSON.stringify(live()) !== held.after) { contactExact = null; contactNote = { object, text: "The assembly changed while the kernel was asked. Press Until contact again." }; renderPanel(); return; }
+  contactExact = null;
+  if ("reason" in kernel) { contactNote = { object, text: `The kernel could not measure ${nameOf(pair.moving)} and ${nameOf(pair.other)}: ${kernel.reason} Nothing moved.` }; renderPanel(); return; }
+  const slide = answer.kind === "slide";
+  const at = (value: number) => `${Math.round(value * 100) / 100}${slide ? " mm" : "°"}`;
+  const checks = `${kernel.calls} kernel check${kernel.calls === 1 ? "" : "s"}, ${seconds} s`;
+  if (!kernel.reached) {
+    contactNote = { object, text: `The kernel finds ${kernel.meshAnswer.volumeMm3} mm³ shared at the facets' contact (${at(kernel.meshValue)}) and found no pose it calls clear within ${checks}. Nothing moved: the pose stays at ${at(answer.value)}.` };
+    renderPanel(); return;
+  }
+  const turned = trainTurn(held.before, answer.body, kernel.value - answer.from);
+  if ("reason" in turned) { contactNote = { object, text: turned.reason }; renderPanel(); return; }
+  const there = kernel.at.verdict === "clear" ? "no shared volume" : `${kernel.at.volumeMm3} mm³ shared, a touch`;
+  const short = kernel.backedOff > 0 ? `, ${at(kernel.backedOff)} short of the facets' contact` : ", at the facets' own contact";
+  contactNote = { object, text: `${nameOf(pair.moving)} meets ${nameOf(pair.other)} at ${at(kernel.value)} by the kernel: ${there} there${short} (${checks}).` };
+  editAssembly(turned.assembly);
 }
 /** The assembly's gears where they stand, from each member's Model history. Model fills the trees it holds. */
 function assemblyGears(assembly: Assembly, poses: ReadonlyMap<string, Affine>): WorldGear[] {
@@ -1136,6 +1227,7 @@ function panelClick(event: Event): void {
   }
   if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
   if (action === "contact-back" || action === "contact-on") { void untilContact(action === "contact-on" ? 1 : -1); return; }
+  if (action === "contact-exact") { void exactContact(); return; }
   if (action === "couple-declared") { coupleDeclared(); return; }
   if (action === "remove-coupling") {
     const row = selected(), index = Number(target.dataset.index);

@@ -32,9 +32,92 @@ export const DEFAULT_MAX_DEG = 360;
 export const MAX_RANGE_DEG = 3600;
 export const MAX_RANGE_MM = 10000;
 
-/** A part's triangles in its own part frame, as the animation export takes them. */
-export interface ContactPart { object: string; positions: Float32Array }
+/**
+ * A part's triangles in its own part frame, as the animation export takes them. `chordMm`: the chord tolerance the
+ * kernel meshed a solid at, so each facet of a curved face lies within that of the true face (inside a convex face,
+ * outside a concave one). Absent or 0: the mesh is the part itself (an STL), and no margin is kept.
+ */
+export interface ContactPart { object: string; positions: Float32Array; chordMm?: number }
 export interface Placed { positions: Float32Array; pose: Affine }
+
+// --- Curved faces in a kernel mesh (docs/plan-contact-poses.md section 6).
+
+/**
+ * Two facets that share an edge lie on one curved face when the far corner of one stands off the other's plane by more
+ * than this, mm (float noise on a flat face is far under it), and their normals differ by less than CURVED_MAX_RAD.
+ */
+export const CURVED_MIN_MM = 1e-3;
+/** The kernel meshes with half a radian between neighbouring facets on a curved face; a sharper fold is a real edge. */
+export const CURVED_MAX_RAD = 0.6;
+const curvedKept = new WeakMap<Float32Array, Uint8Array>();
+
+/**
+ * Per triangle, 1 where the true face may differ from the facet: a facet of a curved face (it and an edge neighbour
+ * fold by a little), or a facet that shares a corner with one (a flat cap whose rim is a chord of the true circle).
+ * Flat faces meeting at real edges are 0, so a box is all 0. Kept per array.
+ */
+export function curvedTriangles(positions: Float32Array): Uint8Array {
+  const kept = curvedKept.get(positions);
+  if (kept) return kept;
+  const count = Math.floor(positions.length / 9);
+  const flags = new Uint8Array(count);
+  const ids = new Map<string, number>();
+  const vertex = new Int32Array(count * 3);
+  for (let t = 0; t < count; t += 1) {
+    for (let k = 0; k < 3; k += 1) {
+      const o = t * 9 + k * 3;
+      const key = `${positions[o]},${positions[o + 1]},${positions[o + 2]}`;
+      let id = ids.get(key);
+      if (id === undefined) { id = ids.size; ids.set(key, id); }
+      vertex[t * 3 + k] = id;
+    }
+  }
+  const point = (t: number, k: number): V => { const o = t * 9 + k * 3; return [positions[o]!, positions[o + 1]!, positions[o + 2]!]; };
+  const normals = new Float64Array(count * 3);
+  for (let t = 0; t < count; t += 1) {
+    const a = point(t, 0), n = cross(sub(point(t, 1), a), sub(point(t, 2), a)), l = Math.hypot(n[0], n[1], n[2]);
+    if (l > 1e-12) normals.set([n[0] / l, n[1] / l, n[2] / l], t * 3);
+  }
+  const edges = new Map<number, number[]>();
+  const vertices = ids.size;
+  for (let t = 0; t < count; t += 1) {
+    for (let k = 0; k < 3; k += 1) {
+      const p = vertex[t * 3 + k]!, q = vertex[t * 3 + ((k + 1) % 3)]!;
+      if (p === q) continue;
+      const key = Math.min(p, q) * vertices + Math.max(p, q);
+      const list = edges.get(key);
+      if (list) list.push(t * 3 + ((k + 2) % 3)); else edges.set(key, [t * 3 + ((k + 2) % 3)]);
+    }
+  }
+  const cosMax = Math.cos(CURVED_MAX_RAD);
+  const curved = new Uint8Array(count);
+  for (const list of edges.values()) {
+    for (let i = 0; i < list.length; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const t = Math.floor(list[i]! / 3), u = Math.floor(list[j]! / 3);
+        const nt: V = [normals[t * 3]!, normals[t * 3 + 1]!, normals[t * 3 + 2]!], nu: V = [normals[u * 3]!, normals[u * 3 + 1]!, normals[u * 3 + 2]!];
+        if (dot(nt, nt) === 0 || dot(nu, nu) === 0 || dot(nt, nu) < cosMax) continue;
+        // The far corner of each, off the other's plane.
+        const off = Math.max(Math.abs(dot(nt, sub(point(u, list[j]! % 3), point(t, 0)))), Math.abs(dot(nu, sub(point(t, list[i]! % 3), point(u, 0)))));
+        if (off > CURVED_MIN_MM) { curved[t] = 1; curved[u] = 1; }
+      }
+    }
+  }
+  const near = new Uint8Array(vertices);
+  for (let t = 0; t < count; t += 1) if (curved[t]) for (let k = 0; k < 3; k += 1) near[vertex[t * 3 + k]!] = 1;
+  for (let t = 0; t < count; t += 1) if (near[vertex[t * 3]!] || near[vertex[t * 3 + 1]!] || near[vertex[t * 3 + 2]!]) flags[t] = 1;
+  curvedKept.set(positions, flags);
+  return flags;
+}
+
+/** Per triangle, how far the true face may lie from it, mm: the part's chord on curved facets, else 0. Null when all 0. */
+export function chordOffsets(part: ContactPart): Float64Array | null {
+  const chord = part.chordMm ?? 0;
+  if (!(chord > 0)) return null;
+  const flags = curvedTriangles(part.positions);
+  if (!flags.some((flag) => flag === 1)) return null;
+  return Float64Array.from(flags, (flag) => flag * chord);
+}
 
 // --- Distances between triangles (after Ericson, Real-Time Collision Detection, 5.1).
 
@@ -131,9 +214,25 @@ export function triangleDistance(t: [V, V, V], u: [V, V, V]): number {
  * uniform scale.
  */
 export function meshDistance(a: Placed, b: Placed): number {
+  return meshGap(a, b, null, null).mm;
+}
+
+/**
+ * Two meshes at their poses, with how far each triangle's true face may lie from it (`chordOffsets`, part mm, or null):
+ * `mm` the least distance between the meshes, `boundMm` the two offsets at the closest triangles, and `marginMm` the
+ * least of distance less both offsets over every triangle pair. The true faces are at least `marginMm` apart (they
+ * cannot overlap while it is not negative). With no offsets `mm` is `meshDistance`'s, by the same steps.
+ */
+export function meshGap(a: Placed, b: Placed, offA: Float64Array | null, offB: Float64Array | null): { mm: number; boundMm: number; marginMm: number } {
   const ta = treeOf(a.positions), tb = treeOf(b.positions);
-  if (ta.nodes === 0 || tb.nodes === 0) return Infinity;
+  if (ta.nodes === 0 || tb.nodes === 0) return { mm: Infinity, boundMm: 0, marginMm: Infinity };
   const scale = poseScale(a.pose);
+  // b's offsets in a's frame, where the distances are taken.
+  const bInA = offB ? poseScale(b.pose) / scale : 0;
+  let maxA = 0, maxB = 0;
+  if (offA) for (const o of offA) maxA = Math.max(maxA, o);
+  if (offB) for (const o of offB) maxB = Math.max(maxB, o * bInA);
+  const maxOff = maxA + maxB;
   // b's triangles come into a's own frame.
   const rel = thenPose(b.pose, inversePose(a.pose));
   const boxB = new Float64Array(tb.nodes * 6);
@@ -182,16 +281,17 @@ export function meshDistance(a: Placed, b: Placed): number {
   };
   const extentA = (n: number) => { const o = n * 6; return Math.max(ta.boxes[o + 3]! - ta.boxes[o]!, ta.boxes[o + 4]! - ta.boxes[o + 1]!, ta.boxes[o + 5]! - ta.boxes[o + 2]!); };
   const extentB = (n: number) => { const o = boxOf(n); return Math.max(boxB[o + 3]! - boxB[o]!, boxB[o + 4]! - boxB[o + 1]!, boxB[o + 5]! - boxB[o + 2]!); };
-  let best = Infinity;
+  let best = Infinity, bestOff = 0, margin = Infinity;
   const visit = (na: number, nb: number, bound: number): void => {
-    if (best <= 0 || bound >= best) return;
+    if (best <= 0 || (bound >= best && bound - maxOff >= margin)) return;
     const leafA = ta.left[na]! < 0, leafB = tb.left[nb]! < 0;
     if (leafA && leafB) {
       for (let i = ta.start[na]!; i < ta.end[na]!; i += 1) {
-        const t = triA(ta.order[i]!);
+        const ia = ta.order[i]!, t = triA(ia), oa = offA ? offA[ia]! : 0;
         for (let j = tb.start[nb]!; j < tb.end[nb]!; j += 1) {
-          const d = triangleDistance(t, triB(tb.order[j]!));
-          if (d < best) best = d;
+          const ib = tb.order[j]!, d = triangleDistance(t, triB(ib)), o = oa + (offB ? offB[ib]! * bInA : 0);
+          if (d < best) { best = d; bestOff = o; }
+          if (d - o < margin) margin = d - o;
           if (best <= 0) return;
         }
       }
@@ -206,7 +306,9 @@ export function meshDistance(a: Placed, b: Placed): number {
     }
   };
   visit(0, 0, gap(0, 0));
-  return best * scale;
+  // Meshes that meet: the true faces may overlap by up to the offsets there.
+  if (best <= 0 && margin > -bestOff) margin = -bestOff;
+  return { mm: best * scale, boundMm: bestOff * scale, marginMm: margin * scale };
 }
 
 /** Two parts at their poses: crossing by the mesh pass (distance then 0, its depth unmeasured), or their least distance. */
@@ -246,8 +348,24 @@ export interface ContactAnswer {
   /** The first value found crossing, within tolerance of travel past `value`. */
   past?: number;
   pair?: ContactPair;
-  /** The least distance between the pair at `value`, mm. */
+  /** The least distance between the pair's meshes at `value`, mm. */
   clearanceMm?: number;
+  /**
+   * How far the true faces may lie from the facets where the pair is closest at `value`, mm: the sum of the two parts'
+   * chords on curved faces, 0 where both faces are flat or a mesh is the part itself. The true clearance is between
+   * `clearanceMm - boundMm` and `clearanceMm + boundMm`.
+   */
+  boundMm?: number;
+  /**
+   * The mesh pass's own first contact, when the answer stops short of it so that curved faces, meshed within their
+   * chord, cannot overlap: the joint there, the first value found crossing, and the meshes' clearance. Absent when the
+   * answer is the mesh pass's.
+   */
+  mesh?: { value: number; past: number; clearanceMm: number; pair: ContactPair };
+  /** False when the parts already stood within their chords where the joint stood: the answer is then the mesh pass's. */
+  marginKept?: boolean;
+  /** How far, mm, a point of the moving parts travels per unit of the joint near the answer (with the margin): mm of travel per degree or mm. */
+  mmPerUnit?: number;
   searched: { from: number; to: number; limit: boolean };
   toleranceMm: number;
   evaluations: number;
@@ -416,14 +534,159 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
   }
   const pair = hit.crossing!;
   const clearance = meshDistance(placed(pair.moving, clear.poses), placed(pair.other, clear.poses));
-  return answer(clearAt, clear.posed, { contact: true, past: hitAt, pair, clearanceMm: clearance }, evaluations, ignored);
+  const offsets = new Map<string, Float64Array | null>();
+  for (const id of new Set(pairs.flatMap((row) => [row.moving, row.other]))) offsets.set(id, chordOffsets(parts.find((part) => part.object === id && part.positions.length >= 9)!));
+  const margined = pairs.filter((row) => offsets.get(row.moving) || offsets.get(row.other));
+  if (margined.length === 0) return answer(clearAt, clear.posed, { contact: true, past: hitAt, pair, clearanceMm: clearance, boundMm: 0, mmPerUnit: v }, evaluations, ignored);
+
+  // Curved faces (section 6): a facet lies within its part's chord of the true face, so the true faces of a pair cannot
+  // overlap while the meshes keep the two chords apart there. The same search again, from where the joint stands to
+  // the mesh pass's answer, stopping where any pair's margin (distance less the chords) first goes below 0.
+  const gapOf = (row: ContactPair, poses: Map<string, Affine>) => meshGap(placed(row.moving, poses), placed(row.other, poses), offsets.get(row.moving) ?? null, offsets.get(row.other) ?? null);
+  const meshAnswer = { value: clearAt, past: hitAt, clearanceMm: clearance, pair };
+  type Kept = { blocked: ContactPair | null; margin: number; posed: { turned: Turned }; poses: Map<string, Affine> };
+  const keep = (value: number): Kept | { reason: string } => {
+    const state = evaluate(value);
+    if ("reason" in state) return state;
+    if (state.crossing) return { blocked: state.crossing, margin: 0, posed: state.posed, poses: state.poses };
+    let margin = state.d, worst: ContactPair | null = null;
+    for (const row of margined) {
+      const g = gapOf(row, state.poses);
+      if (g.marginMm < margin) { margin = g.marginMm; worst = row; }
+    }
+    return { blocked: margin < 0 ? worst : null, margin, posed: state.posed, poses: state.poses };
+  };
+  const fallback = (kept: boolean) => {
+    const g = gapOf(pair, clear.poses);
+    return answer(clearAt, clear.posed, { contact: true, past: hitAt, pair, clearanceMm: clearance, boundMm: g.boundMm, mmPerUnit: v, ...(kept ? {} : { marginKept: false }) }, evaluations, ignored);
+  };
+  const stopAt = clearAt;
+  const toward = (value: number) => (ask.dir > 0 ? Math.min(value, stopAt) : Math.max(value, stopAt));
+  let safe = keep(from);
+  if ("reason" in safe) return safe;
+  if (safe.blocked) return fallback(false);
+  let safeAt = from;
+  let over: Kept | null = null;
+  let overAt = from;
+  let w = v;
+  while (safeAt !== stopAt) {
+    const measured = speed(safeAt, safe.poses);
+    if (typeof measured !== "number") return measured;
+    w = measured;
+    const next = toward(safeAt + (ask.dir * Math.max(safe.margin, FLOOR_MM)) / w);
+    const state = keep(next);
+    if ("reason" in state) return state;
+    if (state.blocked) { over = state; overAt = next; break; }
+    safe = state;
+    safeAt = next;
+    if (evaluations > MAX_EVALUATIONS) return tooLong;
+  }
+  // The meshes keep their chords apart all the way: the mesh pass's answer stands.
+  if (!over) return fallback(true);
+  while (Math.abs(overAt - safeAt) * w > tolerance && Math.abs(overAt - safeAt) > 1e-12 * Math.max(1, Math.abs(safeAt))) {
+    const mid = (safeAt + overAt) / 2;
+    const state = keep(mid);
+    if ("reason" in state) return state;
+    if (state.blocked) { over = state; overAt = mid; } else { safe = state; safeAt = mid; }
+    if (evaluations > MAX_EVALUATIONS) return tooLong;
+  }
+  const near = over.blocked!;
+  const g = gapOf(near, safe.poses);
+  return answer(safeAt, safe.posed, { contact: true, past: overAt, pair: near, clearanceMm: g.mm, boundMm: g.boundMm, mesh: meshAnswer, mmPerUnit: w }, evaluations, ignored);
+}
+
+// --- The kernel's word (section 6): over MCP and in the desktop app, where the exact check can be asked.
+
+/** The most kernel checks one contact answer may take. Each is a common-volume boolean on the two solids. */
+export const KERNEL_CALLS = 12;
+
+/** The kernel's verdict on the pair at one pose: its common volume and what that makes it (`exactVerdict`). */
+export interface KernelVerdict { verdict: "clear" | "touch" | "crossing"; volumeMm3: number }
+
+export interface KernelContact {
+  /** The joint where the kernel calls the pair clear or a touch, nearest the mesh pass's answer within the tolerance. */
+  value: number;
+  /** The kernel at `value`. */
+  at: KernelVerdict;
+  /** The kernel at the mesh pass's own answer. */
+  meshAnswer: KernelVerdict;
+  /** The mesh pass's answer, and how far `value` is short of it: joint units, and mm of travel of the farthest point. */
+  meshValue: number;
+  backedOff: number;
+  backedOffMm: number;
+  /** True when `value` is a pose the kernel calls clear or a touch. False: the budget ran out first (`value` is then the solve's own answer). */
+  reached: boolean;
+  /** The first value the kernel was found to call crossing, when one was. */
+  crossingAt?: number;
+  calls: number;
+}
+
+/**
+ * The kernel's contact, from the shared solve's answer. `measure(value)` asks the kernel for the pair's common volume
+ * with the joint (and its train) at `value`. The mesh pass's answer is measured first: when the kernel calls it clear or
+ * a touch, it is the answer (flat faces end here, unchanged). When it calls it crossing (the facets of a convex face are
+ * inside the true face), the joint backs off: to the solve's own answer when it stopped short by the chords, else in
+ * steps that double from the chords' travel, until the kernel calls a pose clear or a touch; then the two are bisected to
+ * the tolerance of travel. At most `budget` checks; the answer never goes past the mesh pass's.
+ */
+export async function kernelContact(answer: ContactAnswer, measure: (value: number) => Promise<KernelVerdict | { reason: string }>, budget = KERNEL_CALLS): Promise<KernelContact | { reason: string }> {
+  if (!answer.contact) return { reason: "There is no contact to check." };
+  const meshValue = answer.mesh?.value ?? answer.value;
+  const from = answer.from, dir = Math.sign(answer.searched.to - answer.searched.from) || 1;
+  const perUnit = answer.mmPerUnit && answer.mmPerUnit > 0 ? answer.mmPerUnit : 1;
+  const ok = (row: KernelVerdict) => row.verdict !== "crossing";
+  let calls = 0;
+  const said = new Map<number, KernelVerdict>();
+  const ask = async (value: number) => {
+    calls += 1;
+    const here = await measure(value);
+    if (!("reason" in here)) said.set(value, here);
+    return here;
+  };
+  const done = (value: number, at: KernelVerdict, meshAnswer: KernelVerdict, reached: boolean, crossingAt?: number): KernelContact => ({
+    value, at, meshAnswer, meshValue, backedOff: Math.abs(meshValue - value), backedOffMm: Math.abs(meshValue - value) * perUnit, reached, ...(crossingAt !== undefined ? { crossingAt } : {}), calls,
+  });
+  const first = await ask(meshValue);
+  if ("reason" in first) return first;
+  if (ok(first)) return done(meshValue, first, first, true);
+  let hi = meshValue;
+  let lo = meshValue, low: KernelVerdict | null = null;
+  // A pose the kernel calls clear: the solve's own answer when it stopped short, else a step back that doubles.
+  let step = Math.max(answer.boundMm ?? 0, answer.toleranceMm) / perUnit;
+  let next = answer.value !== meshValue ? answer.value : meshValue - dir * step;
+  while (calls < budget) {
+    const clamped = dir > 0 ? Math.max(next, from) : Math.min(next, from);
+    const here = await ask(clamped);
+    if ("reason" in here) return here;
+    if (ok(here)) { lo = clamped; low = here; break; }
+    hi = clamped;
+    if (clamped === from) break;
+    step = Math.max(step * 2, Math.abs(meshValue - clamped) * 2);
+    next = meshValue - dir * step;
+  }
+  if (!low) {
+    // No pose the kernel calls clear within the budget: the solve's answer stands, and the reply says so.
+    return done(answer.value, said.get(answer.value) ?? first, first, false, hi);
+  }
+  while (calls < budget && Math.abs(hi - lo) * perUnit > answer.toleranceMm) {
+    const mid = (lo + hi) / 2;
+    const here = await ask(mid);
+    if ("reason" in here) return here;
+    if (ok(here)) { lo = mid; low = here; } else hi = mid;
+  }
+  return done(lo, low, first, true, hi);
 }
 
 /** Two members at the assembly's present pose: whether they cross by the mesh pass, and their least distance. */
-export function pairClearance(assembly: Assembly, poseOf: PoseOf, parts: readonly ContactPart[], a: string, b: string): { crossing: boolean; mm: number } | { reason: string } {
+export function pairClearance(assembly: Assembly, poseOf: PoseOf, parts: readonly ContactPart[], a: string, b: string): { crossing: boolean; mm: number; boundMm?: number } | { reason: string } {
   const poses = solveAssembly(assembly, poseOf).poses;
-  const meshA = parts.find((part) => part.object === a)?.positions, meshB = parts.find((part) => part.object === b)?.positions;
+  const partA = parts.find((part) => part.object === a), partB = parts.find((part) => part.object === b);
+  const meshA = partA?.positions, meshB = partB?.positions;
   const pa = poses.get(a), pb = poses.get(b);
   if (!meshA || meshA.length < 9 || !meshB || meshB.length < 9 || !pa || !pb) return { reason: "Both parts need a mesh and a pose in the assembly." };
-  return pairState({ positions: meshA, pose: pa }, { positions: meshB, pose: pb });
+  const state = pairState({ positions: meshA, pose: pa }, { positions: meshB, pose: pb });
+  const offA = chordOffsets(partA!), offB = chordOffsets(partB!);
+  if (!offA && !offB) return state;
+  // How far the true faces may lie from the facets where the meshes are closest (section 6).
+  return { ...state, boundMm: meshGap({ positions: meshA, pose: pa }, { positions: meshB, pose: pb }, offA, offB).boundMm };
 }

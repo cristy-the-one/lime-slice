@@ -16,7 +16,8 @@ export interface PoseAnimation { fps: number; keys: PoseKey[]; colors?: Record<s
 export const BACKGROUND_REFUSAL = "A background is a colour written #rrggbb, such as #e07040.";
 export const isBackground = (value: unknown): value is string => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
 /** `positions` and `centre` are in the part frame, before its model pose. */
-export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3 }
+/** `chordMm`: a solid's kernel mesh carries the chord it was made at, for contact reads (src/contact.ts `ContactPart`). */
+export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3; chordMm?: number }
 export interface RigMember { object: string; name: string; parent: string | null; joint: Member["joint"]; aligned?: number }
 export interface AnimationIssue { line?: number; reason: string }
 /**
