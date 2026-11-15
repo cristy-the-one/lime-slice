@@ -136,9 +136,9 @@ Three things changed under them, in the MCP host:
 | `run_plugin` | yes | yes (`src/recipe/app-nested.ts`): built by the app's runner, answered by an `AppRecipeCalls` of its own, parts adopted (`adopt`) |
 | pins, project copies | stamp and record; `projectPlugins` | stamp; `session.plugins` (`keepUsedPlugins`) |
 | trust | imported marks, read-only libraries | `needsFirstRun` |
-| assembling (`canAssemble`) | yes | **no**, refused with its sentence |
+| assembling (`canAssemble`) | yes | yes since 6.8.0 (section 6); before, refused with its sentence |
 
-Why the app still says `canAssemble: false`: the app's run hands its parts back to the panel, which commits each as a
+Section 6 builds what this paragraph asked for. Why the app said `canAssemble: false` in 6.7: the app's run hands its parts back to the panel, which commits each as a
 new plate object (`addMadeObjects`). Placing in an assembly, joints and Couple gears live in `mcp/session/place.ts` as
 methods of the MCP `Session` (its `find`, `assemblies`, `writeSolved`, parameters), and the window's own assembly code
 (`src/app/assemblies.ts`, `src/app/pose.ts`) edits `session.assemblies` of the open project directly. Lifting it safely
@@ -167,8 +167,72 @@ twice from its companion in `companions/`, a missing plugin handled as `Err`, at
 
 ## 5. Not done
 
-- Assembling in the app's runs (section 3.8).
-- The app's rebuild of a run of several parts (a train) is refused as before ("the window cannot yet change the values
-  of a run of several parts"); over MCP it rebuilds.
+- ~~Assembling in the app's runs (section 3.8).~~ Built for 6.8.0: section 6.
+- ~~The app's rebuild of a run of several parts (a train)~~: built for a run that made all its parts (section 6.4).
 - A nested plugin may not take a part from the outer run (`target: object`); a recipe that wants a plugin to change one
   of its parts runs that plugin's code as an ingredient.
+
+## 6. Assembling in the app (6.8.0)
+
+The owner's standard: a person in the window, with no agent, applies "Gear train" from the Plugins panel and gets the
+assembled, coupled, turning train; one Undo takes it all back; another module rebuilds it under the same parts, still
+coupled. So the app's host answers a recipe's assembly calls itself, and says `canAssemble: true`.
+
+### 6.1 What moves, what stays
+
+- **Moves** to `src/assembly-edit.ts` (no DOM, no session): what `model_place` does to assemblies. Attach (`to`), a
+  member's offset and turn (numbers or expressions), the root's own pose (`withRootAt`), joints (hinge, slide, ball,
+  held, none), `angle` and `travel` with the train they drive (`trainTurn`), `reach`, `root`, `gears` (couple, list,
+  uncouple, with the validator's sweep), `couple` (ratio, winch, ratchet, clutch, remove), and `objects` joined at their
+  poses. Each is a function of a world (the assemblies, the plate's parts with name, model pose, frame and Model tree,
+  the parameters, and the host's box and centre of a part) that returns the new assemblies, the poses and frames it
+  wrote, the undo label to remember first and the reply; or a refusal (code, sentence, which next step), with nothing
+  changed. This is the shape `src/gear-train.ts` already has.
+- **Stays** in `mcp/session/place.ts`: reading the session into that world (`assemblyWorld`), writing an edit back
+  (`applyAssemblyEdit`: `remember`, `assemblies`, frames, poses, autosave), the wording of a refusal's next step
+  (`NEXT`), `assembly_merge`, `writeSolved` (contact's `placeUntil` uses it), and `until`, which asks the kernel and
+  belongs to the contact work.
+- Why a world and not the session: the window's run holds its parts in `AppRecipeCalls` (copies of trees, poses, solids
+  that reach the plate only at Apply), not plate objects, so the same code must run over either. The proof that MCP did
+  not change is a probe of 110 `model_place` calls (every reply, the assemblies and every pose after each) that is
+  byte-identical before and after, and the MCP tests' logs.
+
+### 6.2 The app's host assembles
+
+- `AppRecipeCalls` keeps the run's own assemblies. `model_place` is answered by `placeEdit` over a world of the run's
+  made parts only (a nested run's parts are made parts once adopted), so the MCP rule holds unchanged: a recipe places,
+  joints and couples only what it made, and a `to`, `objects`, `driven` or `click` that names anything else is refused
+  with the sentence MCP gives. `until` is refused with a sentence (it asks the kernel for contact).
+- A nested run assembles in its own `AppRecipeCalls`; `adopt` takes its assemblies with its parts (an id that clashes
+  is renewed).
+- Every start context of the window's runs (fresh, nested, rebuild) says `canAssemble: true`.
+
+### 6.3 One undo step
+
+The Plugins panel's Apply already puts the made parts on the plate in one Prepare step (`addMadeObjects`, inside
+`noteEdit`/`flushEdit`, whose snapshot holds `session.assemblies`). The run's assemblies are added in that same step:
+their ids renewed against the project's, members' frames set as the run set them, and each assembly solved and its
+poses written as Pose writes them (`writeAssembly`: identity drops the key). The parts the run assembled keep the run's
+model poses (they are "posed"), so the train stands as built; the print layout of the parts already on the plate does
+not move, and the new parts are laid out as every new part is.
+
+### 6.4 Rerun and rebuild
+
+- The History card's Rebuild on any part of a run of several parts now rebuilds the whole set, when the run made every
+  part (each part's root carries the run) and no part has steps after the run. The plugin runs fresh with the changed
+  values and the stamp's pins; its made parts are matched to the old parts in plate order (the order the run made them),
+  each old object takes its new tree and mesh and keeps its handle, name, place on the bed and, unless the run posed
+  it, its model pose. The run's assemblies are renamed to the old handles and take the old assembly's place
+  (`rerunAssemblies`, as over MCP), hinged and coupled; the assembly is solved and its poses written. One Prepare step,
+  so one Undo goes back to the old set.
+- It refuses with a sentence, and changes nothing, when: the new values make a different number of parts; a part has
+  steps after the run (they would have to be replayed on several trees, which the window does not do); or the run
+  changed a part it was given as well as making others.
+- Saved and reopened, the project holds the assembly (members, joints, couplings) and the plugin's code, so the set
+  rebuilds from the file.
+
+### 6.5 The app's part cap
+
+`MAX_APP_RECIPE_PARTS` stays 100. An assembling run's parts are the same plate objects a several-part run already makes;
+the clock that motivated this (section 1) has about twenty, the gear train four. Nothing in assembling adds parts, so
+there is no measured reason to raise it.

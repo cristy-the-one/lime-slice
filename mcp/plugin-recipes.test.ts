@@ -407,6 +407,104 @@ check("and a rerun there rebuilds it at module 2, still coupled", again.ok === t
   check("in the app, a plugin that runs itself is refused with the loop", selfish.ok === false && selfish.reason.includes("wheel-pair runs wheel-pair: a plugin cannot run itself"), selfish);
   const none = await runPluginFresh({ part: null, plugin: { id: "wheel-pair", version: 1, sha256: bodyHash(pairBody), api: "1.16" }, body: pairBody, params: {}, context, recipes: host, engine: appEngine, env, runId: "a1b2c3d5" });
   check("a run given no plugin sources says it cannot run other plugins", none.ok === false && none.reason.includes("cannot run other plugins"), none);
+
+  // --- Section 6 of docs/plan-plugin-recipes.md: the app's host assembles. "Gear train" through the window's run, as
+  // the Plugins panel runs it with nothing open: four parts, one assembly, hinged and coupled at the tooth ratios.
+  const { placeEdit, partsAfter } = await import("../src/assembly-edit.ts");
+  const { rerunSet } = await import("../src/recipe/rerun-assembly.ts");
+  const { readAssemblies } = await import("../src/assembly.ts");
+  const { assembledBox } = await import("../src/modeling/placing.ts");
+  type Kept = import("../src/recipe/apply.ts").KeptPart;
+  const library = libraryOf({ ...gears, "gear-train": textOf("gear-train", gearTrain, "Gear train") });
+  const runTrain = (module: number, body = gearTrain, id = "gear-train") => runPluginFresh({ part: null, plugin: { id, version: 1, sha256: bodyHash(body), api: "1.16" }, body, params: { module }, context, recipes: host, engine: appEngine, env, runId: "c0ffee01", plugins: library, pins: {} });
+  const appTrain = await runTrain(1);
+  check("in the app, Gear train runs with nothing open and keeps four parts", appTrain.ok === true && appTrain.kept.map((row) => row.part.name).join(",") === "plate,centre wheel,third pinion,third wheel", appTrain.ok ? appTrain.kept.map((row) => row.part.name) : appTrain);
+  if (appTrain.ok) {
+    const parts = appTrain.kept.map((row) => row.part);
+    const [plateApp, ...gearsApp] = parts.map((row) => row.id) as [string, ...string[]];
+    const asm = appTrain.assemblies;
+    // count_train gives the same teeth as the MCP run above.
+    const appTeeth = teeth;
+    check("one assembly: the plate the root, each gear on it on a hinge", asm.length === 1 && asm[0]!.members.length === 4 && asm[0]!.members.find((m) => m.parent === null)?.object === plateApp && gearsApp.every((id) => { const m = asm[0]!.members.find((row) => row.object === id); return m?.parent === plateApp && m?.joint?.kind === "hinge"; }), asm);
+    const appCouplings = (asm[0]?.couplings ?? []).map((row) => [row.driver, row.driven, Math.round(row.ratio * 1e6) / 1e6]);
+    check("coupled centre wheel to pinion to wheel at the tooth ratios, as over MCP", appCouplings.length === 2 && Math.abs(Math.abs(Number(appCouplings[0]![2])) - appTeeth[0]! / appTeeth[1]!) < 1e-6 && Math.abs(Math.abs(Number(appCouplings[1]![2])) - appTeeth[1]! / appTeeth[2]!) < 1e-6, appCouplings);
+    check("every member keeps the pose the run gave it (posed), the gears 6 mm over the plate", parts.every((row) => row.posed) && gearsApp.every((id) => Math.abs((parts.find((row) => row.id === id)!.modelPose.t[2]) - 6) < 1e-9), parts.map((row) => [row.id, row.posed, row.modelPose.t]));
+    check("the gears read their numbers in their own frame, as Attach sets them", gearsApp.every((id) => parts.find((row) => row.id === id)!.frame === "part"), parts.map((row) => row.frame));
+    // The window turns the centre wheel through the same code: the train follows at the tooth ratios.
+    let plate = parts.map((row) => ({ id: row.id, name: row.name, modelPose: row.modelPose, ...(row.frame ? { frame: row.frame } : {}), tree: row.tree, solid: row.solid }));
+    let live = asm;
+    const world = () => ({ assemblies: live, parts: plate, params: {}, box: (id: string, pose: import("../src/model-space.ts").Affine) => assembledBox(plate.find((row) => row.id === id)?.solid?.positions, pose), centre: () => undefined });
+    const turnApp = (angle: number) => {
+      const edit = placeEdit(world(), plate.find((row) => row.id === gearsApp[0])!, { object: gearsApp[0], angle });
+      if (edit.ok) { if (edit.assemblies) live = edit.assemblies; plate = partsAfter(plate, edit); }
+      return edit;
+    };
+    const hingeOf = (id: string) => { const joint = live[0]?.members.find((row) => row.object === id)?.joint; return joint?.kind === "hinge" ? joint.angle ?? 0 : NaN; };
+    const appTurn = turnApp(30);
+    check("turning the centre wheel turns the others at the tooth ratios", appTurn.ok === true && Math.abs(hingeOf(gearsApp[1]!) + 30 * appTeeth[0]! / appTeeth[1]!) < 1e-6 && Math.abs(hingeOf(gearsApp[2]!) - 30 * appTeeth[0]! / appTeeth[2]!) < 1e-6, { a: hingeOf(gearsApp[1]!), b: hingeOf(gearsApp[2]!) });
+    turnApp(0);
+
+    // A rerun at module 1.5 (the History card's Rebuild of the set): new parts, matched one for one to the old handles,
+    // and the new run's assembly in the old one's place, still hinged and coupled.
+    const again = await runTrain(1.5);
+    check("in the app, the train runs again at module 1.5", again.ok === true && again.kept.length === 4, again.ok ? again.kept.length : again);
+    if (again.ok) {
+      const madeIds = again.kept.map((row: Kept) => row.part.id);
+      const set = rerunSet(parts.map((row) => row.id), madeIds, live, again.assemblies);
+      check("the rebuilt set takes the old handles, one for one", "renamed" in set && [...set.renamed.values()].join(",") === parts.map((row) => row.id).join(","), set);
+      if ("renamed" in set) {
+        const one = set.assemblies.filter((row) => row.members.some((m) => parts.some((p) => p.id === m.object)));
+        check("one assembly, the old one's id, its members the old handles", set.assemblies.length === 1 && one.length === 1 && one[0]!.id === live[0]!.id && one[0]!.members.map((m) => m.object).sort().join() === parts.map((row) => row.id).sort().join(), set.assemblies);
+        check("still hinged and coupled between the old handles", (one[0]?.couplings ?? []).length === 2 && (one[0]?.couplings ?? []).every((row) => gearsApp.includes(row.driver) && gearsApp.includes(row.driven)) && gearsApp.every((id) => one[0]!.members.find((m) => m.object === id)?.joint?.kind === "hinge"), one[0]?.couplings);
+        const spread = Math.abs(again.kept[2]!.part.modelPose.t[0] - again.kept[1]!.part.modelPose.t[0]);
+        check("at the new module: the pinion's centre distance grew to 1.5 times", Math.abs(spread - 1.5 * (appTeeth[0]! + appTeeth[1]!) / 2) < 1e-9, spread);
+        // Saved and read back (the project's JSON, against the parts at their poses): still coupled.
+        plate = again.kept.map((row: Kept, i: number) => ({ id: parts[i]!.id, name: row.part.name, modelPose: row.part.modelPose, ...(row.part.frame ? { frame: row.part.frame } : {}), tree: row.part.tree, solid: row.part.solid }));
+        live = readAssemblies(JSON.parse(JSON.stringify(set.assemblies)), plate);
+        check("read back from the saved JSON, the train is coupled", (live[0]?.couplings ?? []).length === 2, live);
+        const turnedAgain = turnApp(45);
+        check("and turns as one at the new module", turnedAgain.ok === true && Math.abs(hingeOf(gearsApp[2]!) - 45 * appTeeth[0]! / appTeeth[2]!) < 1e-6, hingeOf(gearsApp[2]!));
+      }
+      const fewer = rerunSet(parts.map((row) => row.id), madeIds.slice(0, 3), live, again.assemblies);
+      check("a rebuild that makes a different number of parts is refused with both counts", "had" in fewer && fewer.made === 3 && fewer.had === 4, fewer);
+    }
+  }
+
+  // A plugin that runs Gear train from inside it: the nested run's assembly comes with its parts (`adopt`).
+  const boxBody = [
+    "use lime_recipe::{Json, Session};",
+    "",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    '    let train = s.run_plugin("gear-train", Json::obj().set("module", 1.0)).unwrap();',
+    "    s.done(&train.part);",
+    "}",
+    "",
+  ].join("\n");
+  const boxed = await runTrain(1, boxBody, "train-box");
+  check("in the app, a nested run's assembly comes back with its parts", boxed.ok === true && boxed.kept.length === 4 && boxed.assemblies.length === 1 && (boxed.assemblies[0]!.couplings ?? []).length === 2, boxed.ok ? boxed.assemblies : boxed);
+
+  // The rule over MCP holds in the app: a run places, joints and couples only the parts it made.
+  const reaching = [
+    "use lime_recipe::{ops, Json, Session};",
+    "",
+    "fn main() {",
+    "    let mut s = Session::start();",
+    "    let a = s.solid_new(ops::cuboid(5.0, 5.0, 5.0)).unwrap();",
+    '    let said = match s.call("model_place", Json::obj().set("object", a.object.as_str()).set("to", "someone-else")) { Ok(_) => "placed".to_string(), Err(e) => e.reason };',
+    '    let coupled = match s.call("model_place", Json::obj().set("object", a.object.as_str()).set("couple", Json::obj().set("driven", "someone-else"))) { Ok(_) => "coupled".to_string(), Err(e) => e.reason };',
+    '    let touching = match s.call("model_place", Json::obj().set("object", a.object.as_str()).set("until", Json::obj().set("dir", 1.0))) { Ok(_) => "moved".to_string(), Err(e) => e.reason };',
+    "    s.log(&said);",
+    "    s.log(&coupled);",
+    "    s.log(&touching);",
+    "    s.done(&a);",
+    "}",
+    "",
+  ].join("\n");
+  const reached = await runPluginFresh({ part: null, plugin: { id: "reaching", version: 1, sha256: bodyHash(reaching), api: "1.16" }, body: reaching, params: {}, context, recipes: host, engine: appEngine, env, runId: "c0ffee02", plugins: library });
+  const reachNotes = reached.ok ? reached.notes : [];
+  check("in the app, attaching to a part the run did not make is refused with MCP's sentence", reachNotes.filter((note) => note.includes("model_place in a recipe places only the objects this run made (solid_new)")).length === 2, reached.ok ? reachNotes : reached);
+  check("and until (contact) is refused with a sentence", reachNotes.some((note) => note.includes("until asks the kernel where parts touch")), reachNotes);
 }
 
 if (failed > 0) {

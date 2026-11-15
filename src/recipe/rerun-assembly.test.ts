@@ -4,7 +4,7 @@
  * kinds must come through a rerun under the old handles.
  */
 import type { Assembly, Coupling } from "../assembly.ts";
-import { rerunAssemblies } from "./rerun-assembly.ts";
+import { rerunAssemblies, rerunSet } from "./rerun-assembly.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -33,6 +33,18 @@ eq("every coupling came through, found and declared", rows.map((row) => [row.kin
 eq("a found mesh's gears name the old handles", rows[0]!.gears?.map((gear) => gear.object), ["o1", "o2"]);
 eq("a declared coupling still has no gears", [rows[1]!.gears, rows[2]!.gears], [undefined, undefined]);
 eq("a ratchet's click names the old handle", rows[2]!.click?.object, "o4");
+
+// --- The window's rebuild of a set (docs/plan-plugin-recipes.md 6.4): the new parts, in the order made, take the old
+// handles one for one; the new run's assembly, with an id the project already has, still lands in the old one's place.
+{
+  const clash: Assembly = { ...built, id: "a_old" } as Assembly;
+  const set = rerunSet(["o0", "o1", "o2", "o3", "o4"], ["n0", "n1", "n2", "n3", "n4"], [old], [clash]);
+  eq("a set: the handles one for one", "renamed" in set ? [...set.renamed] : set, [["n0", "o0"], ["n1", "o1"], ["n2", "o2"], ["n3", "o3"], ["n4", "o4"]]);
+  eq("a set: one assembly, the old id, the old handles, coupled", "renamed" in set ? set.assemblies.map((row) => [row.id, row.members.map((m) => m.object).join(), (row.couplings ?? []).length]) : set, [["a_old", "o0,o1,o2,o3,o4", 3]]);
+  eq("a set that grew is refused with both counts", rerunSet(["o0", "o1"], ["n0", "n1", "n2"], [old], [clash]), { made: 3, had: 2 });
+  const none = rerunSet(["o0", "o1", "o2", "o3", "o4"], ["n0", "n1", "n2", "n3", "n4"], [], [built]);
+  eq("with no old assembly, the new one comes in under the old handles", "renamed" in none ? none.assemblies.map((row) => [row.id, row.members[0]!.object]) : none, [["a_new", "o0"]]);
+}
 
 if (failed > 0) {
   console.error(`${failed} failed`);
