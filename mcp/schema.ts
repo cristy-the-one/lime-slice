@@ -1856,7 +1856,7 @@ export const TOOLS: ToolSpec[] = [
         fit: { type: "object", description: "Fixed model-space box {min,max} of [x,y,z]." },
         background: { type: "string", description: "#rrggbb." },
         inline: { type: "boolean", description: "Default true." },
-        name: { type: "string", minLength: 1 },
+        name: { type: "string", minLength: 1, description: "File name in the workspace. Without it the PNG goes to renders/ and never replaces an earlier one." },
         longEdge: { type: "integer", minimum: 32, maximum: 1024 },
       },
     },

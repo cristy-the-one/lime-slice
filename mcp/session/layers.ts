@@ -3,7 +3,8 @@
  * The methods run with this: Session; session.ts installs them on the Session prototype.
  */
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
 import { applyPose, inversePose, seatLift, thenPose, turnDir, typedPoseOf } from "../../src/model-space.ts";
 import type { PathColumns } from "../../src/preview-wire.ts";
 import { readsStress, type ColorMode } from "../../src/colors.ts";
@@ -19,6 +20,15 @@ import { resolveWrite } from "../workspace.ts";
 import { type Ghost, LAYER_ROWS, type PlateObject, STRESS_LAYER_NEEDS, type ToolHandler, joinedPositions, posedPositions } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
+
+/** renders/<file>, or renders/<stem>-2.png and so on when that name is taken. */
+function freshRenderPath(file: string): string {
+  const stem = file.replace(/\.png$/i, "");
+  for (let n = 1; ; n += 1) {
+    const path = resolveWrite(join("renders", n === 1 ? `${stem}.png` : `${stem}-${n}.png`), ".png");
+    if (!existsSync(path)) return path;
+  }
+}
 
 async function renderView(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const fit = input.fit as { min: [number, number, number]; max: [number, number, number] } | undefined;
@@ -106,7 +116,8 @@ async function renderView(this: Session, input: Record<string, unknown>): Promis
   cameras.forEach(({ label, camera }, index) => {
     const drawn = renderMesh(mesh, camera, edge, ghost?.mesh, { ...looks.options, ...(fit ? { fit } : { crop: true }), ...(background ? { background: background.rgb } : {}) });
     const file = many ? `${stem}-${label}${cameras.filter((row) => row.label === label).length > 1 ? `-${index + 1}` : ""}.png` : typeof input.name === "string" ? input.name : `${obj.name}-${label}.png`;
-    const path = resolveWrite(file, ".png");
+    // No name: the file goes to renders/ and never replaces an earlier one. A name is the caller's: it goes where it says.
+    const path = typeof input.name === "string" ? resolveWrite(file, ".png") : freshRenderPath(file);
     writeFileSync(path, drawn.png);
     views.push({ camera: label, path, width: drawn.width, height: drawn.height });
     pictures.push(pngImage(drawn.png));

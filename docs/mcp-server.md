@@ -766,7 +766,7 @@ Warnings included in `slice_wait` and `gcode_summary`, using the existing senten
 | `model_describe` | phase 2 | faces and edges, paged |
 | `measure` | phase 2 | one distance |
 | `layer_summary` | after a slice that was asked for `includePreview: true` on a follow-up, or from counts on the reply | layer count, Z of first and last, per-layer seconds if present. Not the polylines |
-| `render_view` | any time | the PNG inline, and its path in the workspace |
+| `render_view` | any time | the PNG inline, and its path in the workspace (without `name`: `renders/`, never replacing an earlier file) |
 
 `render_view` has no engine support. It draws the stored tessellation with the server's own renderer: a key light from the upper left, a weaker fill from the right, and a sky term, so faces that look the same way to the camera still read apart, then CAD-style lines over the shading (`edgeInk` in `mcp/render.ts`). A line is an open boundary, a crease sharper than 25°, or a silhouette, found on the mesh and drawn only where no nearer face covers it. A tessellated curve's facets meet at less than 25°, so a cylinder shows its outline and not its facets. Before this, a headlight was the only light, and every face square to the view was one grey: a front view of a wall with windows was a blank shape. The tool result is the path, the camera name, and the pixel size, and the same PNG comes back as an MCP image content block (`type: "image"`, base64, `image/png`) after the text block. `inline: false` returns the path alone. `layer_image` does the same. A default long edge of 768 px is enough for a model to see a hole. It is not a mesh.
 
