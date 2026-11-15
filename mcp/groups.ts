@@ -10,12 +10,12 @@
 
 export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   model: {
-    holds: "solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, recipes, history, commit, measure",
+    holds: "solids and Model edits: solid_new, faces and edges, workplane, probe, apply, batch, build, recipes, history, commit, measure, mass",
     tools: [
       "solid_new", "model_describe", "faces_find", "edges_find", "workplane_set", "workplane_print_up", "assembly_merge", "model_probe",
       "surface_at", "section", "model_check", "model_apply", "model_apply_batch", "model_build", "recipe_run", "nugget", "model_define", "model_anchors", "model_params",
       "model_history", "model_goto", "model_undo", "model_redo", "model_edit", "model_rename", "model_drop", "model_commit",
-      "measure",
+      "measure", "model_mass",
     ],
   },
   paint: { holds: "support, seam, and reinforcement paint", tools: ["paint_supports", "paint_seam", "reinforce_add", "paint_list", "paint_clear"] },
@@ -77,7 +77,7 @@ export function startingGroups(): Set<string> | null {
 
 /** Short names of what each group holds, so the opener's description says which group a tool is in. */
 const GROUP_TOOLS_SHORT: Record<string, string> = {
-  model: "solid_new, model_apply/probe/build/commit, faces_find, edges_find, section, measure, recipe_run, nugget, model history",
+  model: "solid_new, model_apply/probe/build/commit, faces_find, edges_find, section, measure, model_mass, recipe_run, nugget, model history",
   paint: "paint_supports, paint_seam, reinforce_add, paint_list, paint_clear",
   supports: "support_trees, support_edit",
   plate: "tandem_pull, duplicate, arrange, split shells, print order, ranges, modifiers, overrides",

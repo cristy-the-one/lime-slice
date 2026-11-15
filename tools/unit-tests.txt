@@ -46,6 +46,8 @@ src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
 mcp/gear-train.test.ts
+src/mass.test.ts
+mcp/mass.test.ts
 mcp/contact.test.ts
 mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
@@ -161,6 +163,7 @@ mcp/nuggets-file.test.ts
 mcp/plugin-hints.test.ts
 mcp/recipe-root.test.ts
 mcp/recipe-query.test.ts
+mcp/recipe-horology.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts
