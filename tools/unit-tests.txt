@@ -52,6 +52,7 @@ mcp/autosave-projects.test.ts
 mcp/gear-train.test.ts
 mcp/couplings.test.ts
 src/mass.test.ts
+src/dynamics.test.ts
 mcp/mass.test.ts
 mcp/contact.test.ts
 mcp/assembly-friction.test.ts
