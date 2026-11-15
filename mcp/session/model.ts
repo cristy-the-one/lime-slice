@@ -27,7 +27,7 @@ import { primitiveFrom } from "../../src/modeling/compose.ts";
 import { gearRefusal } from "../../src/model-gear.ts";
 import { typedView } from "../../src/modeling/typed-view.ts";
 import { gearPairRows, gearsInTree } from "../../src/gear-pair.ts";
-import { exactVerdict, interference, SLIVER_MM3 } from "../../src/interference.ts";
+import { CONTACT_MM, exactVerdict, interference, MESH_TOLERANCE_MM, SLIVER_MM3 } from "../../src/interference.ts";
 import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
 import { turnHinge } from "../../src/pose.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
@@ -82,7 +82,10 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
  * touch or crossing, and nested for a part wholly inside another. Pairs that are clear are counted, not listed.
  */
 async function interferenceCheck(this: Session, obj: PlateObject, exact: boolean, crossingsOnly = false): Promise<Record<string, unknown>> {
-  const cheap = this.meshInterference(obj);
+  // The mesh pass at the meshes' own chord: faces that touch in the solids (an axle in a hole of its size) can overlap
+  // that much in their meshes. pose_animate's check reads them the same way. The exact pass measures every pair the
+  // mesh pass did not clear, touches included.
+  const cheap = this.meshInterference(obj, MESH_TOLERANCE_MM);
   if (cheap.ok !== true) return cheap;
   if (!exact) return crossingsOnly ? { ...cheap, pairs: (cheap.pairs as Record<string, unknown>[]).filter((row) => row.verdict !== "touch" || row.nested) } : cheap;
   // --- Assemblies M7. Each pair the mesh pass did not clear is measured: the common volume of the two solids.
@@ -240,7 +243,11 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
   }
 }
 
-function meshInterference(this: Session, obj: PlateObject): Record<string, unknown> {
+/**
+ * The mesh pass over `obj`'s assembly. `toleranceMm` is how deep two meshes may overlap and still touch: model_check
+ * {interference} gives the kernel's chord; the joint sweep keeps CONTACT_MM, since the exact pass measures what it finds.
+ */
+function meshInterference(this: Session, obj: PlateObject, toleranceMm = CONTACT_MM): Record<string, unknown> {
   const assembly = assemblyOf(this.liveAssemblies(), obj.id);
   if (!assembly) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
   const members = assembly.members.flatMap((row) => {
@@ -256,7 +263,7 @@ function meshInterference(this: Session, obj: PlateObject): Record<string, unkno
     for (let j = i + 1; j < members.length; j += 1) {
       const a = members[i]!;
       const b = members[j]!;
-      const result = interference(a, b);
+      const result = interference(a, b, { toleranceMm });
       if (result.verdict === "clear") {
         clear += 1;
         continue;
@@ -276,11 +283,12 @@ function meshInterference(this: Session, obj: PlateObject): Record<string, unkno
     ok: true,
     assembly: assembly.name,
     pass: "mesh",
+    toleranceMm,
     pairs,
     clearPairs: clear,
     note: crossing > 0
-      ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume by the mesh. Nothing is blocked: a press fit is meant to cross.`
-      : "No pair shares volume by the mesh. A touch is faces or edges resting on each other.",
+      ? `${crossing} pair${crossing === 1 ? "" : "s"} share volume by the mesh: the meshes overlap deeper than ${toleranceMm} mm. Nothing is blocked: a press fit is meant to cross.`
+      : `No pair shares volume by the mesh. A touch is faces or edges resting on each other, or meshes that overlap no deeper than ${toleranceMm} mm.`,
   };
 }
 

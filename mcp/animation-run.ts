@@ -46,7 +46,7 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
       // scene of many parts takes seconds a frame, and the server must go on answering (and hear a cancel) meanwhile.
       const result = sampleAnimation(input, assembly, poseOf, parts, { interference: false });
       if ("issues" in result) { issues = result.issues; return { ok: false, error: issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") }; }
-      const pass = frameInterference(result, assembly, parts);
+      const pass = frameInterference(result, assembly, poseOf, parts);
       for (let step = pass.next(); ; step = pass.next()) {
         if (step.done) { result.warnings.push(...step.value.warnings); result.interferenceChecked = step.value.checked; break; }
         if (options.signal?.aborted) return { ok: false, error: "The animation was cancelled." };

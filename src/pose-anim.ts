@@ -1,10 +1,10 @@
 /** Shared, side-effect-free sampling of named assembly poses. Times and angles are seconds and degrees. */
 import { memberPose, readJoint, rotationQuaternion, solveAssembly, type Assembly, type Member, type PoseOf } from "./assembly.ts";
 import { boundsOf, type Bounds } from "./mesh-place.ts";
-import { applyPose, boxUnder, type Affine } from "./model-space.ts";
+import { applyPose, boxUnder, inversePose, thenPose, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { alignedHinge, poseChain, solvePose, turnBall, turnHinge } from "./pose.ts";
-import { interference } from "./interference.ts";
+import { interference, MESH_TOLERANCE_MM } from "./interference.ts";
 import { trainOf, trainTurn } from "./gear-train.ts";
 
 export type Quaternion = [number, number, number, number];
@@ -18,8 +18,13 @@ export const isBackground = (value: unknown): value is string => typeof value ==
 export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3 }
 export interface RigMember { object: string; name: string; parent: string | null; joint: Member["joint"]; aligned?: number }
 export interface AnimationIssue { line?: number; reason: string }
+/**
+ * A warning. One about two parts that cross names them (`pair`), says on how many frames (`frames`), the first of them
+ * (1-based) and its time, or that they already overlap at rest and the animation keeps them so (`atRest`).
+ */
+export interface AnimationWarning extends AnimationIssue { pair?: [string, string]; frames?: number; firstFrame?: number; timeS?: number; atRest?: boolean }
 export interface AnimationFrame { time: number; assembly: Assembly; poses: Map<string, Affine>; colors: Map<string, string> }
-export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationIssue[]; interferenceChecked: boolean }
+export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationWarning[]; interferenceChecked: boolean }
 type Value = { kind: "angle"; value: number } | { kind: "rotation"; value: Quaternion } | { kind: "reach"; at: Vec3; to: Vec3; blend?: number; segment?: number };
 type Point = { time: number; until: number; ease: "linear" | "inOut"; value: Value; key: number };
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -130,7 +135,7 @@ function rotateBall(member: Member, target: Quaternion, centre: Vec3): Member | 
  */
 export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { interference?: boolean } = {}): AnimationResult | { issues: AnimationIssue[] } {
   if (!record(animation)) return { issues: [{ reason: "An animation must be an object." }] };
-  const issues: AnimationIssue[] = [], warnings: AnimationIssue[] = [];
+  const issues: AnimationIssue[] = [], warnings: AnimationWarning[] = [];
   const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
   const members = new Map(original.members.map((member) => [member.object, member]));
   const tracks = new Map<string, Point[]>();
@@ -336,7 +341,7 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
   }
   const sampled: AnimationResult = { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: false };
   if (checkPairs) {
-    const pass = frameInterference(sampled, original, parts);
+    const pass = frameInterference(sampled, original, poseOf, parts);
     let step = pass.next();
     while (!step.done) step = pass.next();
     warnings.push(...step.value.warnings);
@@ -348,15 +353,32 @@ export function sampleAnimation(animation: PoseAnimation, original: Assembly, po
 /**
  * The parts' crossing check over the frames `sampleAnimation` made, one frame a step: each step yields the number of
  * frames checked, so a caller that must keep answering (the MCP server) can give the event loop a turn between frames.
- * Returns the warnings, and whether every member had a mesh to check.
+ * Returns one warning a pair, and whether every member had a mesh to check.
+ *
+ * It is the mesh pass (`interference`) at `MESH_TOLERANCE_MM`: the kernel meshes each face to within that of its
+ * surface, so two meshes that overlap less than that deep may be faces that only touch (an arbor turning in a hole of
+ * its own size). Overlap deeper than that is a crossing; `model_check {interference, exact}` measures a pose's common
+ * volume. Two parts that already overlap at rest (as the plate holds them, before any key), and stand on a frame as they
+ * stood at rest to each other, are one warning with `atRest`: the same overlap, not one a frame. Frames where they have
+ * moved and still cross are counted as crossings.
  */
-export function* frameInterference(sampled: Pick<AnimationResult, "frames">, original: Assembly, parts: readonly AnimationPart[]): Generator<number, { warnings: AnimationIssue[]; checked: boolean }> {
+export function* frameInterference(sampled: Pick<AnimationResult, "frames">, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { toleranceMm?: number } = {}): Generator<number, { warnings: AnimationWarning[]; checked: boolean }> {
+  const tolerance = options.toleranceMm ?? MESH_TOLERANCE_MM;
   const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
   const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
   const nameOf = (id: string) => rig.find((row) => row.object === id)!.name;
-  const warnings: AnimationIssue[] = [];
   const pairSeen = new Map<number, { pa: Affine; pb: Affine; hit: boolean }>();
   const samePose = (p: Affine, q: Affine) => p === q || (p.m.every((v, k) => v === q.m[k]) && p.t.every((v, k) => v === q.t[k]));
+  // Two relative poses within these are the same: a pair that turns together keeps its rest pose to rounding.
+  const sameRelative = (p: Affine, q: Affine) => p.m.every((v, k) => Math.abs(v - q.m[k]!) <= 1e-9) && p.t.every((v, k) => Math.abs(v - q.t[k]!) <= 1e-6);
+  const crosses = (a: (typeof usable)[number], b: (typeof usable)[number], pa: Affine, pb: Affine) => {
+    const result = interference({ positions: a.positions, pose: pa }, { positions: b.positions, pose: pb }, { toleranceMm: tolerance });
+    return result.verdict === "crossing" || !!result.nested;
+  };
+  const rest = solveAssembly(original, poseOf).poses;
+  // Per pair: whether it overlaps at rest (tested the first time the pair crosses on a frame), and its relative pose then.
+  const atRest = new Map<number, { hit: boolean; relative?: Affine }>();
+  const counts = new Map<number, { a: string; b: string; rest: number; moving: number; first?: number; time?: number }>();
   for (let frame = 0; frame < sampled.frames.length; frame++) {
     const poses = sampled.frames[frame]!.poses;
     const frameBoxes = usable.map((part) => { const pose = poses.get(part.id); return pose ? boxUnder(part.box, pose) : null; });
@@ -369,13 +391,37 @@ export function* frameInterference(sampled: Pick<AnimationResult, "frames">, ori
       let hit: boolean;
       if (last && samePose(last.pa, pa) && samePose(last.pb, pb)) hit = last.hit;
       else {
-        const result = interference({ positions: a.positions, pose: pa }, { positions: b.positions, pose: pb });
-        hit = result.verdict === "crossing" || !!result.nested;
+        hit = crosses(a, b, pa, pb);
         pairSeen.set(slot, { pa, pb, hit });
       }
-      if (hit) warnings.push({ reason: `Frame ${frame + 1}: ${nameOf(a.id)} intersects ${nameOf(b.id)}.` });
+      if (!hit) continue;
+      let start = atRest.get(slot);
+      if (!start) {
+        const ra = rest.get(a.id), rb = rest.get(b.id);
+        start = ra && rb && crosses(a, b, ra, rb) ? { hit: true, relative: thenPose(rb, inversePose(ra)) } : { hit: false };
+        atRest.set(slot, start);
+      }
+      const row = counts.get(slot) ?? { a: nameOf(a.id), b: nameOf(b.id), rest: 0, moving: 0 };
+      if (start.hit && sameRelative(thenPose(pb, inversePose(pa)), start.relative!)) row.rest += 1;
+      else {
+        row.moving += 1;
+        if (row.first === undefined) { row.first = frame; row.time = sampled.frames[frame]!.time; }
+      }
+      counts.set(slot, row);
     }
     yield frame + 1;
+  }
+  const total = sampled.frames.length;
+  const check = `mesh pass: the meshes overlap deeper than ${tolerance} mm`;
+  const warnings: AnimationWarning[] = [];
+  for (const row of counts.values()) if (row.rest > 0) {
+    const kept = row.rest === total ? "every frame keeps them so" : `${row.rest} of ${total} frames keep them so`;
+    warnings.push({ reason: `${row.a} overlaps ${row.b} at rest, and ${kept} (${check}). Said once: the overlap is the plate's own, not the animation's.`, pair: [row.a, row.b], frames: row.rest, atRest: true });
+  }
+  const moving = [...counts.values()].filter((row) => row.moving > 0).sort((x, y) => x.first! - y.first!);
+  for (const row of moving) {
+    const time = Math.round(row.time! * 1000) / 1000;
+    warnings.push({ reason: `${row.a} intersects ${row.b} on ${row.moving} of ${total} frame${total === 1 ? "" : "s"}, first frame ${row.first! + 1} at ${time} s (${check}).`, pair: [row.a, row.b], frames: row.moving, firstFrame: row.first! + 1, timeS: time });
   }
   return { warnings, checked: usable.length === original.members.length };
 }

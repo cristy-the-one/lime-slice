@@ -63,20 +63,16 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
   if (!result.ok) return { ok: false, code: "animation-refused", reason: result.reason, ...(result.issues ? { issues: result.issues } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
-  // Repeated intersections are one warning per pair, not one line per frame.
-  const warningCounts = new Map<string, { first: string; count: number }>();
-  for (const warning of sampled.warnings) {
-    const reason = warning.reason.replace(/^Frame \d+: /, "");
-    const seen = warningCounts.get(reason);
-    if (seen) seen.count++;
-    else warningCounts.set(reason, { first: warning.reason, count: 1 });
-  }
-  const warnings = [...warningCounts.values()].map(({ first, count }) => ({ reason: count > 1 ? `${first} (${count} frames)` : first }));
+  // Crossings come one warning a pair already (frameInterference), with the frames they hold and the check that made
+  // them. A warning a key repeats (a colour set twice) is said once.
+  const seen = new Set<string>();
+  const warnings = sampled.warnings.filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
+  const timing = frameTiming(sampled);
   const out = input.out as { gif?: string; frames?: string } | undefined;
   // Checked already: the tool's by readBackground above, the script's by sampleAnimation.
   const scripted = result.background ? readBackground(result.background) : undefined;
   const background = asked && "rgb" in asked ? asked.rgb : scripted && "rgb" in scripted ? scripted.rgb : BACKGROUND;
-  const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
+  const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(timing ? { frameTiming: timing } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
   if (!out) return { ...summary, rig: animationRig(assembly, parts).map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
   if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
   if (!sampled.bounds) return refuse("no-mesh", "The assembly has no renderable geometry.");
@@ -131,5 +127,18 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   this.autosaveDirty = true;
   return { ...summary, files: { ...(gifPath ? { gif: gifPath } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
 }
+/**
+ * A sentence when keys fall between frames, else null. `round(duration × fps)` frames are spread from 0 to the end, so
+ * they are `duration / (frames - 1)` s apart, not 1/fps: a script that keys every 1/fps s has frames that fall between
+ * its keys, interpolated between them. A pose checked at a key is then not the pose a frame shows.
+ */
+function frameTiming(sampled: { frames: { time: number }[]; keys: { t: number }[]; durationS: number; fps: number }): string | null {
+  const times = sampled.frames.map((frame) => frame.time);
+  const between = sampled.keys.filter((key) => !times.some((time) => Math.abs(time - key.t) <= 1e-9)).length;
+  if (between === 0 || times.length < 2) return null;
+  const spacing = Math.round(sampled.durationS / (times.length - 1) * 10000) / 10000;
+  return `${between} of ${sampled.keys.length} keys fall between frames: the ${times.length} frames are spread from 0 to ${sampled.durationS} s, ${spacing} s apart (not 1/${sampled.fps} s), and a frame between two keys is interpolated between them. A warning gives its frame and time.`;
+}
+
 export const animationMethods = { poseAnimate };
 export const animationHandlers: Record<string, ToolHandler> = { pose_animate: (session, input, meta) => session.poseAnimate(input, meta) };

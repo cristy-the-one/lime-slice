@@ -42,7 +42,9 @@ TypeScript rasterizer, and the reproduction ran on the fake engine.
   intersects the pallet anchor. An independent measure on the same meshes (z-ray intervals, 0.02 mm grid) gives a common
   volume of 0.66 to 2.05 mm³, 0.46 to 1.21 mm deep, on exactly those frames and 0 on the others: real crossings of the
   frames as sampled. The script keys every 1/12 s and turns the escape wheel a whole number of teeth from key to key, so
-  every key is in step with the pallets, and the exact check was run at those key poses. But 3 s at 12 fps is
+  every key is in step with the pallets, and the exact check was run at those key poses (the script's own comment says
+  so). The report's 30 of 36 came from an earlier state of the parts that the clock project no longer holds; the
+  mechanism is the same. But 3 s at 12 fps is
   `round(3 × 12) = 36` frames spread from 0 to 3 s, 3/35 s apart: only the first and last frames fall on keys, and a
   frame between keys turns the wheel part of a tooth into the pallets.
 - The gear train (`lime-workspace/gears/compound-gear-train.lime`): "Frame intersects Axle driver" on all 30 frames. The

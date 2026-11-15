@@ -44,6 +44,11 @@ assert.ok(existsSync(join(workspace, "arm-frames", "frame-001.png")) && existsSy
 assert.notDeepEqual(readFileSync(join(workspace, "arm-frames", "frame-001.png")), readFileSync(join(workspace, "arm-frames", "frame-004.png")));
 assert.deepEqual(session.assemblies, before);
 assert.deepEqual(session.objects.map((row) => row.modelPose), poses);
+assert.equal(dry.frameTiming, undefined, "keys at 0 and 1 s fall on the first and last frames");
+// A key between frames is said (docs/plan-mcp-reliability.md, item 2): 4 frames from 0 to 1 s are 1/3 s apart.
+const between = await call("pose_animate", { object: finger, source: source.replace("a.key(1.0,", "a.key(0.5, Pose::new().set_all(&rig.group(\"Finger\"), Aim::Degrees(30.0)));\n  a.key(1.0,") });
+assert.equal(between.ok, true, JSON.stringify(between));
+assert.ok(String(between.frameTiming).startsWith("1 of 3 keys fall between frames: the 4 frames are spread from 0 to 1 s, 0.3333 s apart (not 1/4 s)"), String(between.frameTiming));
 const longSource = source.replace("Animation::new(4)", "Animation::new(15)").replace("a.key(1.0,", "a.key(4.0,");
 const long = await call("pose_animate", { object: finger, source: longSource, longEdge: 32, out: { gif: "long.gif" } });
 assert.equal(long.ok, true, JSON.stringify(long));
