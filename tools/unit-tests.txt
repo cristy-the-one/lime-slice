@@ -47,6 +47,7 @@ mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
 mcp/render-unnamed.test.ts
 mcp/slice-collisions.test.ts
+mcp/autosave-projects.test.ts
 mcp/gear-train.test.ts
 mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
