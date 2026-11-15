@@ -15,9 +15,10 @@ import { unopened, type Body } from "./shared";
 
 /**
  * --- Assemblies M7. The common volume of two plate parts at their assembled poses, by the kernel: a dry run of a join
- * `common` on `a`'s step with `b` as its tool. Nothing is applied. A mesh part, or a refusal, is a sentence.
+ * `common` on `a`'s step with `b` as its tool. Nothing is applied. A mesh part, or a refusal, is a sentence. `poses`:
+ * the two parts' model poses to measure at instead of where they stand (Pose's exact contact, src/app/pose.ts).
  */
-export async function commonVolume(aId: string, bId: string): Promise<number | string> {
+export async function commonVolume(aId: string, bId: string, poses?: [Affine, Affine]): Promise<number | string> {
   const a = livePlate().find((obj) => obj.id === aId);
   const b = livePlate().find((obj) => obj.id === bId);
   if (!a || !b) return "That part is no longer on the plate.";
@@ -25,7 +26,7 @@ export async function commonVolume(aId: string, bId: string): Promise<number | s
   if (typeof at === "string") return at;
   const tool = await toolTreeOf(b);
   if (typeof tool === "string") return tool;
-  const op = joinOp("common", { object: b.id, key: tool.key, node: tool.node, name: b.name }, modelPoseOf(a), modelPoseOf(b), true);
+  const op = joinOp("common", { object: b.id, key: tool.key, node: tool.node, name: b.name }, poses?.[0] ?? modelPoseOf(a), poses?.[1] ?? modelPoseOf(b), true);
   const body = await treeCall(at.key, at.node, probeRequest(at.key, at.node, op, state.stepTolerance));
   if (body.ok !== true) {
     const said = typeof body.error === "string" ? body.error : "";

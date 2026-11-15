@@ -28,7 +28,8 @@ function posedAt(pose: unknown, assembly: Assembly, poseOf: PoseOf, parts: reado
 /**
  * Answer one read: `rig_angle {pose, member}` (a hinge's angle or a slide's travel), `rig_clearance {pose, a, b}` (mm,
  * and whether the mesh pass calls them crossing), `rig_contact {pose, member, dir, against?, max?, tolerance?}` (the
- * contact solve from that pose). Names are the rig's.
+ * contact solve from that pose). Names are the rig's. No kernel is asked: on curved faces of a solid the contact stops
+ * short of the facets by their chords (`boundMm`), so the true faces cannot overlap.
  */
 export function rigRead(tool: string, args: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[]): RigReadReply {
   const rig = animationRig(assembly, parts);
@@ -36,7 +37,8 @@ export function rigRead(tool: string, args: Record<string, unknown>, assembly: A
   const nameOf = (id: string) => rig.find((row) => row.object === id)?.name ?? id;
   const posed = posedAt(args.pose, assembly, poseOf, parts);
   if (typeof posed === "string") return { ok: false, error: posed };
-  const meshes: ContactPart[] = parts.flatMap((part) => (part.positions && part.positions.length >= 9 ? [{ object: part.object, positions: part.positions }] : []));
+  // A solid's kernel mesh carries its chord, so contact on its curved faces keeps the true faces apart (section 6).
+  const meshes: ContactPart[] = parts.flatMap((part) => (part.positions && part.positions.length >= 9 ? [{ object: part.object, positions: part.positions, ...(part.chordMm ? { chordMm: part.chordMm } : {}) }] : []));
   if (tool === "rig_angle") {
     const id = idOf(args.member);
     if (!id) return { ok: false, error: `No member is named ${String(args.member)}.` };
@@ -51,7 +53,7 @@ export function rigRead(tool: string, args: Record<string, unknown>, assembly: A
     if (a === b) return { ok: false, error: "A clearance needs two different members." };
     const gap = pairClearance(posed, poseOf, meshes, a, b);
     if ("reason" in gap) return { ok: false, error: gap.reason };
-    return { ok: true, result: { mm: gap.mm, crossing: gap.crossing } };
+    return { ok: true, result: { mm: gap.mm, crossing: gap.crossing, ...(gap.boundMm ? { boundMm: gap.boundMm } : {}) } };
   }
   if (tool === "rig_contact") {
     const id = idOf(args.member);
@@ -71,7 +73,10 @@ export function rigRead(tool: string, args: Record<string, unknown>, assembly: A
       result: {
         contact: found.contact,
         angle: found.value,
-        ...(found.contact ? { past: found.past, moving: nameOf(found.pair!.moving), other: nameOf(found.pair!.other), clearanceMm: found.clearanceMm } : {}),
+        ...(found.contact ? { past: found.past, moving: nameOf(found.pair!.moving), other: nameOf(found.pair!.other), clearanceMm: found.clearanceMm, boundMm: found.boundMm ?? 0 } : {}),
+        // Stopped short of the facets' own contact on curved faces: where that was.
+        ...(found.mesh ? { mesh: { angle: found.mesh.value, past: found.mesh.past, clearanceMm: found.mesh.clearanceMm } } : {}),
+        ...(found.marginKept === false ? { marginKept: false } : {}),
         searched: found.searched,
         ...(found.ignored.length ? { ignored: found.ignored.map((row) => [nameOf(row.moving), nameOf(row.other)]) } : {}),
         evaluations: found.evaluations,
