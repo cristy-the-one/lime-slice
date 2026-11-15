@@ -41,11 +41,14 @@ body's hash and the parameters its describe run declares; `shippedText` writes t
   the folder keyed by id). The panel lists them in their own section, **Built in**, with a "built in" badge; their menu
   has View source and Export only (no file to reveal, nothing to remove). The browser build, with no folder, lists the
   shipped plugins alone (`shippedLibrary`).
-- **MCP**: `readPlugin` falls back to `readShipped` when the library has no file of that id, so `recipe_run {plugin}`,
+- **MCP**: `readPlugin` answers a shipped id with `readShipped`, so `recipe_run {plugin}`,
   nested runs, rebuilds and project copies find them as library plugins; `plugin list` and `nugget find` list them with
   `shipped: true`; `plugin remove` refuses ("ships with Lime Slice and stays"). `writePlugin` never keeps the shipped
   text as an older version.
-- **A library file of the same id wins** (a person who saved an edited copy keeps it).
+- **The shipped plugin wins its id** (owner, 2026-11-15: "the built-in should win"). A library file of the same id
+  is passed over and left on disk; its code is still found by hash, so a part made with it rebuilds. Nothing is saved
+  under a shipped id: a changed copy is kept beside it (`<id>-2`), and `writePlugin` refuses the id itself.
+  `plugin remove` of such a leftover file removes the file; the shipped plugin stays.
 - **Versions across updates**: only the current version ships. Changing a body changes its hash: record it again
   (`LIME_CLOCK_RECORD=1`) and raise its version. Parts made with the old code keep it in their project and rebuild with
   it; History offers Use vN for the new one.

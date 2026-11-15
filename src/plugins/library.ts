@@ -148,8 +148,8 @@ export async function readLibrary(listing: LibraryListing): Promise<PluginLibrar
 }
 
 /**
- * --- docs/plan-clock-parts.md. The plugins that ship with the app, read once: added to a library that has no file of
- * their id (a file of the same id in the folder wins), as the library's own, so they run without a first-run view, a
+ * --- docs/plan-clock-parts.md. The plugins that ship with the app, read once: added to the library as its own, each
+ * under its id (a file of the same id in the folder is passed over, but its code is still found by hash), so they run without a first-run view, a
  * project's step finds its code by hash, and History offers Use vN when an update ships a newer version.
  */
 let shippedRead: Promise<{ file: PluginFileInfo; sha256: string }[]> | null = null;
@@ -159,7 +159,6 @@ async function addShipped(plugins: Map<string, LibraryPlugin>, bySha: Map<string
     return { file, sha256: await bodySha256(file.body) };
   }));
   for (const { file, sha256 } of await shippedRead) {
-    if (plugins.has(file.plugin)) continue;
     plugins.set(file.plugin, { file, sha256, intact: sha256 === file.headerSha, older: [], shipped: true });
     if (!bySha.has(sha256)) bySha.set(sha256, file);
   }
@@ -400,7 +399,8 @@ export function savePlan(library: PluginLibrary, title: string, sha256: string, 
   const existing = library.plugins.get(id);
   if (!existing) return { id, version: 1, same: false };
   if (existing.sha256 === sha256) return { id, version: existing.file.version, same: true };
-  if (ranAs !== undefined && ranAs === id) return { id, version: existing.file.version + 1, same: false };
+  // A shipped plugin's id takes no save: a changed copy of it is kept beside it, as any clash is.
+  if (ranAs !== undefined && ranAs === id && !existing.shipped) return { id, version: existing.file.version + 1, same: false };
   for (let n = 2; ; n += 1) {
     const candidate = `${id.slice(0, 45).replace(/-+$/, "")}-${n}`;
     const there = library.plugins.get(candidate);

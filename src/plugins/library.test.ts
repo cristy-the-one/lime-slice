@@ -87,7 +87,9 @@ eq("the shipped clock parts are in the library read, marked shipped and intact",
 eq("each shipped plugin's code is found by its hash, so a project's step names it", shippedIds.every((id) => library.bySha.get(library.plugins.get(id)!.sha256)?.plugin === id), true);
 eq("the browser build's library holds the shipped plugins alone", [...(await shippedLibrary()).plugins.keys()].sort(), shippedIds);
 const overridden = await readLibrary({ dir: "lib", files: [{ name: "clock-ratchet-wheel.rs", text: header("clock-ratchet-wheel", "My ratchet", 4, body(1), "new") }], presets: [], settings: null });
-eq("a library file of a shipped id wins over the shipped one", [overridden.plugins.get("clock-ratchet-wheel")?.file.title, overridden.plugins.get("clock-ratchet-wheel")?.shipped], ["My ratchet", undefined]);
+eq("the shipped plugin wins its id over a library file of that id", [overridden.plugins.get("clock-ratchet-wheel")?.file.title, overridden.plugins.get("clock-ratchet-wheel")?.shipped], [library.plugins.get("clock-ratchet-wheel")?.file.title, true]);
+eq("the passed-over file's code is still found by its hash", overridden.bySha.get(sha(body(1)))?.title, "My ratchet");
+eq("a changed copy of a shipped plugin is kept beside it, not under its id", savePlan(library, library.plugins.get("clock-ratchet-wheel")!.file.title, sha(body(9)), "clock-ratchet-wheel").id !== "clock-ratchet-wheel", true);
 eq("older versions are found", library.plugins.get("stud-row")?.older, [1, 2]);
 eq("every version is found by its hash", [sha(body(1)), sha(body(2)), sha(body(3))].map((h) => library.bySha.get(h)?.version), [1, 2, 3]);
 eq("a file edited by hand is not intact", [library.plugins.get("stud-row")?.intact, library.plugins.get("flange")?.intact], [true, false]);

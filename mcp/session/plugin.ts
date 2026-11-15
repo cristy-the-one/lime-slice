@@ -313,8 +313,8 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       if (score === 0) continue;
       rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, ...animationListFields(h), target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
-    // --- docs/plan-clock-parts.md. The plugins that ship with the app, where the library has no file of their id.
-    for (const file of listShipped(dir)) {
+    // --- docs/plan-clock-parts.md. The plugins that ship with the app.
+    for (const file of listShipped()) {
       const h = file.header;
       const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
       if (score === 0) continue;
@@ -444,7 +444,8 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     if (!existsSync(join(dir, `${id}.rs`)) && readShipped(id)) return refuse("bad-action", `${id} ships with Lime Slice and stays.`);
     const files = removePlugin(id, dir);
     if (files === 0) return refuse("plugin-not-found", `No plugin is named ${id}.`, undefined, NEXT.plugins);
-    return { ok: true, id, files, note: "Parts built with it keep their recipe in the project." };
+    // A file left under a shipped plugin's id (saved before that plugin shipped): the file goes, the shipped plugin stays.
+    return { ok: true, id, files, note: readShipped(id) ? `The library's own file of that id is gone. ${id} itself ships with Lime Slice and stays.` : "Parts built with it keep their recipe in the project." };
   }
   return refuse("bad-action", "action is list, get, save, export, or remove.");
 }
