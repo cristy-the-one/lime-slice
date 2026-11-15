@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parsePlugin } from "./plugins.ts";
+import { listLibrary, listShipped, parsePlugin, pluginText, readPlugin, shippedIdTaken, writePlugin } from "./plugins.ts";
 import { findLust, RecipeHost, type RecipeCallSite, type RecipeReply } from "./recipe.ts";
 import { CLOCK_SOURCES, SHIPPED_PLUGINS, type ShippedRecord } from "../src/plugins/clock-parts.ts";
 
@@ -29,6 +29,23 @@ const callsFile = join(root, "e2e", "fixtures", "clock-parts-calls.json");
 const record = process.env.LIME_CLOCK_RECORD === "1";
 
 let failed = 0;
+/** A shipped plugin wins its id: a library file of that id is passed over, and nothing is saved under it. */
+function shippedWinsItsId(): void {
+  const dir = mkdtempSync(join(tmpdir(), "lime-shipped-id-"));
+  const shipped = parsePlugin(SHIPPED_PLUGINS[0]!);
+  if ("reason" in shipped) { check("the first shipped plugin reads", false, shipped.reason); return; }
+  const id = shipped.header.plugin;
+  const body = "fn main() {}\n";
+  const own = { ...shipped.header, title: "My own", version: 7, "source-sha256": createHash("sha256").update(body).digest("hex") };
+  writeFileSync(join(dir, `${id}.rs`), pluginText(own, body));
+  const read = readPlugin(id, dir);
+  check("a library file under a shipped id is passed over: the shipped plugin is read", !!read && !("reason" in read) && read.header.title === shipped.header.title && read.header.version === shipped.header.version, read);
+  check("and the library's list leaves that file out, the shipped list keeps the plugin", !listLibrary(dir).some((file) => file.header.plugin === id) && listShipped().some((file) => file.header.plugin === id));
+  let said = "";
+  try { writePlugin(own, body, dir); } catch (err) { said = (err as Error).message; }
+  check("nothing is saved under a shipped id, with a sentence", said === shippedIdTaken(id), said);
+}
+
 function check(name: string, ok: boolean, detail: unknown = "") {
   if (ok) {
     console.log(`ok   ${name}`);
@@ -56,6 +73,7 @@ if (!record) {
   }
 }
 
+shippedWinsItsId();
 const lust = findLust();
 if (!lust) {
   if (process.env.LIME_RECIPE_REQUIRED === "1") {

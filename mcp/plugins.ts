@@ -259,6 +259,8 @@ export function listLibrary(dir = pluginsDir(), kind: NuggetFileKind = "plugin")
   for (const name of readdirSync(dir).sort()) {
     const m = /^([a-z0-9-]+)\.rs$/.exec(name);
     if (!m || !isSlug(m[1]!)) continue;
+    // A file under a shipped plugin's id is not the library's plugin of that id: the shipped one is (readPlugin).
+    if (kind === "plugin" && shippedPlugin(m[1]!)) continue;
     const read = readPlugin(m[1]!, dir, undefined, kind);
     if (read && !("reason" in read)) out.push(read);
   }
@@ -268,8 +270,11 @@ export function listLibrary(dir = pluginsDir(), kind: NuggetFileKind = "plugin")
 /** `<id>.rs` from the library, or `<id>.v<version>.rs` for an older version. Null when there is no such file. */
 export function readPlugin(id: string, dir = pluginsDir(), version?: number, kind: NuggetFileKind = "plugin"): PluginFile | { reason: string } | null {
   if (!isSlug(id)) return null;
+  // A plugin that ships with the app wins its id: a library file of the same id does not stand in for it.
+  const shipped = kind === "plugin" ? readShipped(id, version) : null;
+  if (shipped) return shipped;
   const path = join(dir, version === undefined ? `${id}.rs` : `${id}.v${version}.rs`);
-  if (!existsSync(path)) return kind === "plugin" ? readShipped(id, version) : null;
+  if (!existsSync(path)) return null;
   const parsed = parsePlugin(readFileSync(path, "utf8"));
   if ("reason" in parsed) return parsed;
   if (parsed.header.plugin !== id) return { reason: `${id}.rs names itself ${parsed.header.plugin}.` };
@@ -278,9 +283,10 @@ export function readPlugin(id: string, dir = pluginsDir(), version?: number, kin
 }
 
 /**
- * --- docs/plan-clock-parts.md. A plugin that ships with the app (`src/plugins/clock-parts.ts`), found where the library
- * has no file of its id: it runs, rebuilds and is listed as the library's own, and is never imported (its code is the
- * app's). A file of the same id in the library wins. Only its current version ships; a project keeps older code.
+ * --- docs/plan-clock-parts.md. A plugin that ships with the app (`src/plugins/clock-parts.ts`): it runs, rebuilds and is
+ * listed as the library's own, and is never imported (its code is the app's). It wins its id: a file of the same id in
+ * the library is passed over, and nothing is saved under that id (`writePlugin`). Only its current version ships; a
+ * project keeps older code.
  */
 export function readShipped(id: string, version?: number): PluginFile | null {
   const text = shippedPlugin(id);
@@ -289,13 +295,16 @@ export function readShipped(id: string, version?: number): PluginFile | null {
   return file;
 }
 
-/** Every shipped plugin the library does not override with a file of its own id. */
-export function listShipped(dir = pluginsDir()): PluginFile[] {
+/** Every shipped plugin. */
+export function listShipped(): PluginFile[] {
   return SHIPPED_PLUGINS.flatMap((text) => {
     const file = parsePlugin(text);
-    return "reason" in file || existsSync(join(dir, `${file.header.plugin}.rs`)) ? [] : [file];
+    return "reason" in file ? [] : [file];
   });
 }
+
+/** The sentence for a save under a shipped plugin's id. */
+export const shippedIdTaken = (id: string) => `${id} is the id of a plugin that ships with Lime Slice, so nothing is saved under it. Save this under another name.`;
 
 /** Writes a whole file through a temporary name and a rename, so a reader never sees half of it. */
 function writeWhole(path: string, text: string): void {
@@ -310,9 +319,9 @@ function writeWhole(path: string, text: string): void {
  */
 export function writePlugin(header: PluginHeader, body: string, dir = pluginsDir()): string {
   if (!isSlug(header.plugin)) throw new Error(`Not a plugin id: ${header.plugin}`);
+  if (header.kind !== "ingredient" && shippedPlugin(header.plugin)) throw new Error(shippedIdTaken(header.plugin));
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${header.plugin}.rs`);
-  // A shipped plugin of this id is not the library's file: it is not kept as an older version here.
   const old = existsSync(path) ? readPlugin(header.plugin, dir, undefined, header.kind === "ingredient" ? "ingredient" : "plugin") : null;
   if (old && !("reason" in old) && old.header.version !== header.version) writeWhole(join(dir, `${header.plugin}.v${old.header.version}.rs`), old.text);
   writeWhole(path, pluginText(header, body));

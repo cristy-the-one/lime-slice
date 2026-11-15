@@ -130,7 +130,7 @@ function nuggetFind(this: Session, query: string, kind: string | undefined): Rec
     }
     // --- docs/plan-clock-parts.md. The plugins that ship with the app, as the shipped lessons are: `shipped: true`.
     if (kind !== "animation") {
-      for (const file of listShipped(pluginsDir())) {
+      for (const file of listShipped()) {
         const h = file.header;
         const s = score(`${h.plugin} ${h.title} ${h.description}`);
         if (s) rows.push({ score: s + 0.25, row: { kind: "plugin", id: h.plugin, v: h.version, target: h.target, params: paramSummary(h.params), shipped: true, data: { title: h.title, description: h.description } } });
