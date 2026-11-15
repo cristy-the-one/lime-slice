@@ -30,6 +30,9 @@ export { applyAutoEdits, buildRecipe, ANIMATION_LIMITS, DEFAULT_LIMITS, lfOnly, 
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
 
 const SLOTS = 4;
+
+/** --- API 1.16. The programs running now, by path: a slot that holds one is not rebuilt for another recipe. */
+const RUNNING = new Map<string, number>();
 /** A query that runs longer than this is stuck: a warm one takes a few milliseconds, a cold session about a second. */
 const QUERY_LIMIT_MS = 30_000;
 /** A build that runs longer than this is stuck: a cold one takes about half a second. */
@@ -281,7 +284,15 @@ export class RecipeHost {
       const taken = new Set(use.of.values());
       index = [...Array(SLOTS).keys()].find((i) => !taken.has(i));
       if (index === undefined) {
-        const oldest = use.order.shift()!;
+        // --- API 1.16. A slot whose program is running (an outer recipe waiting on the plugin it runs) is never
+        // taken: its program would be rebuilt under it. The least recently used of the others is.
+        const exeOf = (i: number) => {
+          const dir = state.dirs.get(`${major}:${i}`);
+          return dir ? join(this.root, dir, process.platform === "win32" ? "recipe.exe" : "recipe") : "";
+        };
+        const oldest = use.order.find((n) => !RUNNING.has(exeOf(use!.of.get(n)!)));
+        if (oldest === undefined) throw new Error(`Every recipe slot is running a recipe (${SLOTS}), so no other can be built now.`);
+        use.order = use.order.filter((n) => n !== oldest);
         index = use.of.get(oldest)!;
         use.of.delete(oldest);
       }
@@ -439,7 +450,12 @@ export class RecipeHost {
    * program runs with an empty environment (SystemRoot only on Windows, which a process needs to start).
    */
   run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal, onProgress?: (fraction: number, message: string) => void): Promise<RunOutcome> {
-    return runRecipe(nodeSpawn(exe, this.root), start, call, limits, signal, onProgress);
+    RUNNING.set(exe, (RUNNING.get(exe) ?? 0) + 1);
+    return runRecipe(nodeSpawn(exe, this.root), start, call, limits, signal, onProgress).finally(() => {
+      const left = (RUNNING.get(exe) ?? 1) - 1;
+      if (left > 0) RUNNING.set(exe, left);
+      else RUNNING.delete(exe);
+    });
   }
 
   /** The slot directories that exist, for tests. */

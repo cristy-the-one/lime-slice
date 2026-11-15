@@ -15,6 +15,8 @@ import { readBroken, readBuilt, solidView, type SolidView } from "../modeling/mo
 import { markedRun, sameFingerprint, sameValues, stampValue, type StampedRun } from "../plugin-step.ts";
 import { AppRecipeCalls, runSteps, type AppEngine, type AppRecipePart, type AppRunEnv, type RunPart } from "./app-calls.ts";
 import { carriedEnv, splitPluginData } from "./plugin-data.ts";
+import { runNestedInApp, topNested, type AppPluginSources } from "./app-nested.ts";
+import { pinsOf, type PluginCode } from "./nested.ts";
 import { DEFAULT_LIMITS, MAX_APP_RECIPE_PARTS, unreadKeys, type BuildResult, type RecipeCall, type RecipeLimits, type RunOutcome } from "./host.ts";
 
 /** The steps on the way to the shown step that came after a run: what a rebuild of it replays. */
@@ -76,6 +78,8 @@ export interface RebuildInput {
   signal?: AbortSignal;
   /** A fresh run id (eight hex characters, as the MCP writes them). */
   runId: string;
+  /** --- API 1.16. Where a `plugin_run` finds the plugins it runs; the stamp's pins choose the versions. */
+  plugins?: AppPluginSources;
 }
 
 export type RebuildResult =
@@ -101,6 +105,8 @@ export type RebuildResult =
       made: RunPart | null;
       /** Other trees the run left that the part's steps name: a split's half, a split to print's pieces, a joined tool. */
       others: RunPart[];
+      /** --- API 1.16. The plugins the run ran from inside it, with their code: the project keeps a copy of each. */
+      used: PluginCode[];
     }
   | {
       ok: false;
@@ -174,7 +180,14 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
   calls.params = input.params;
   const queue = calls.useQueue(unreadKeys(built.unread), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(madeIt ? {} : { object: part.id }), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
-  const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal);
+  // --- API 1.16. Plugins run from inside this one run the versions the stamp pinned.
+  const top = topNested(input.limits);
+  const used = new Map<string, PluginCode>();
+  if (input.plugins) {
+    const plugins = input.plugins;
+    calls.onPluginRun = (args) => runNestedInApp(args, calls, { recipes: input.recipes, engine, env, plugins, context: input.context, stack: [run.stamp.plugin], pins: run.stamp.uses ?? {}, limits: top.limits, deadline: top.deadline, ...(input.signal ? { signal: input.signal } : {}), used });
+  }
+  const out = await input.recipes.run(built.exe, start, calls.call, top.limits, input.signal);
   // `done` builds what is still queued.
   if (out.ok && out.done && queue.holding) {
     const flushed = await queue.flushAll();
@@ -213,7 +226,9 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
   if (ids.length === 0) return refuse("With these values the plugin changed nothing, so the step was left as it was.");
   if (!target.solid) return refuse("The solid the plugin built could not be read.");
   const values = Object.fromEntries(Object.entries({ ...input.params, ...calls.picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"];
-  const stamp: PluginStamp = { ...run.stamp, params: values, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, fingerprint: target.solid.fingerprint ?? run.stamp.fingerprint };
+  const { uses: _oldUses, ...stamped } = run.stamp;
+  const uses = pinsOf(used);
+  const stamp: PluginStamp = { ...stamped, params: values, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, fingerprint: target.solid.fingerprint ?? run.stamp.fingerprint, ...(uses ? { uses } : {}) };
   let next = markedRun(target.tree, ids, input.runId, stamp);
   const sameSolid = sameValues(run.stamp.params, values) ? sameFingerprint(target.solid.fingerprint ?? null, run.stamp.fingerprint) : undefined;
   if (sameSolid === false) notes.push("This plugin built a different solid from the same values; the plugin or the app changed since.");
@@ -245,7 +260,7 @@ async function rebuildOnce(input: RebuildInput, silent: boolean): Promise<Rebuil
     }
   }
   const others = calls.all.filter((row) => row !== target && row.origin !== "given" && (row.origin !== "made" || row.consumed));
-  return { ok: true, tree: next, body, solid, stamp, ids, replayed: later.length, broken, ...(sameSolid !== undefined ? { sameSolid } : {}), notes, made: madeIt ? target : null, others };
+  return { ok: true, tree: next, body, solid, stamp, ids, replayed: later.length, broken, ...(sameSolid !== undefined ? { sameSolid } : {}), notes, made: madeIt ? target : null, others, used: [...used.values()] };
 }
 
 /** A run id as the MCP writes them: eight hex characters. */

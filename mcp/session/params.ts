@@ -12,6 +12,7 @@ import { renumberedSteps } from "../../src/model-tree.ts";
 import { readParameters } from "../../src/project.ts";
 import { workplaneOwn } from "../../src/workplane.ts";
 import { keptIngredient } from "../ingredients.ts";
+import { readPins } from "../../src/model-tree-file.ts";
 import { OP_WORDS } from "../schema.ts";
 import { evaluateTable } from "../../src/modeling/params.ts";
 import { resolveForParameters, readAssemblies } from "../../src/assembly.ts";
@@ -99,6 +100,9 @@ function adoptMcpModel(this: Session, value: Record<string, unknown> | undefined
         return ok ? [[ref, ok]] : [];
       })) : {};
       if (Object.keys(ingredients).length) Object.assign(stamp, { ingredients });
+      // --- API 1.16. The plugins the run ran from inside it, pinned.
+      const uses = readPins((row as { uses?: unknown }).uses);
+      if (uses) Object.assign(stamp, { uses });
       this.rustRecipes.set(key, { source: row.source, params: row.params && typeof row.params === "object" ? row.params : {}, objects, ...(Object.keys(data).length ? { data } : {}), ...(typeof row.path === "string" ? { path: row.path } : {}), ...(typeof row.sha256 === "string" ? { sha256: row.sha256 } : {}), ...(typeof row.at === "number" ? { at: row.at } : {}), ...(changed.length ? { changed } : {}), ...stamp });
     }
   }

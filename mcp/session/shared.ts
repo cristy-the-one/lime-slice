@@ -8,7 +8,7 @@ import type { Bounds, Mat3 } from "../../src/mesh-place.ts";
 import type { SolidView } from "../../src/modeling/model-calls.ts";
 import { EDGES_SHAPE } from "../../src/modeling/bake.ts";
 import { applyPose, type Affine, type ObjectFrame } from "../../src/model-space.ts";
-import { type ModelTree, type PluginStamp } from "../../src/model-tree.ts";
+import { type ModelTree, type PluginPins, type PluginStamp } from "../../src/model-tree.ts";
 import type { StampedRun } from "../../src/plugin-step.ts";
 import type { PresetSettings } from "../../src/presets.ts";
 import type { OverrideDocument } from "../../src/overrides.ts";
@@ -321,6 +321,8 @@ export interface RustRecipe {
    * a rerun builds these, and a plugin kept from this run carries them (I11).
    */
   ingredients?: Record<string, KeptIngredient>;
+  /** --- API 1.16. The plugins the run ran from inside it, pinned (docs/plan-plugin-recipes.md): a rerun runs the same code. */
+  uses?: PluginPins;
 }
 
 /** --- Plugin steps (D8). A recipe_run that rebuilds a stamped run: the part, the run, and where the part stood. */

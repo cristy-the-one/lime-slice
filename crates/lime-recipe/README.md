@@ -125,3 +125,14 @@ pass's verdict, and `rig.angle` a member's angle there (a gear train's follower 
 resolved as a key at time 0 would be; nothing moves and nothing is kept between reads. `anim::frame_times(fps, end)` are
 the times the host samples frames at, so keys put there are shown as read. The numbers are the host's: the crate sends
 JSON and reads JSON, so lust and rustc builds send the same calls and get the same answers.
+
+## Recipes that use plugins (API 1.16)
+
+`s.run_plugin(id, params)` runs a kept plugin from inside a recipe and hands back what it made: `PluginRun {plugin,
+version, part, parts, metrics}`. The host runs it as a run of its own (its build, its parameters, its own parts only)
+inside this run's transaction, time and calls, pins the version that ran with this run's parts, and keeps its code with
+the project. A refusal is an `Err` with the plugin's sentence; nothing of that nested run is left. `run_plugin_version`
+asks for one version. Where the host can assemble (`context.limits.canAssemble`), `attach(&part, &parent, at, turn)`,
+`joint`, `hinge`, `slide`, `hold`, `turn_joint` and `couple_gears` place the parts the run made, set their joints and
+couple their gears, as `model_place` does. The crate only sends and reads JSON, so lust and rustc builds send the same
+calls (`mcp/plugin-recipes.test.ts`). See `docs/plan-plugin-recipes.md`.

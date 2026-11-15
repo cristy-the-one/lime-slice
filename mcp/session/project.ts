@@ -530,6 +530,24 @@ function pluginCopies(this: Session): Record<string, string> | null {
     const file = parsePlugin(text);
     if (!("reason" in file) && file.header.kind === "animation") out[sha] = text;
   }
+  // --- API 1.16. The plugins a run ran from inside it, as pinned: the project keeps their code too, so it rebuilds alone.
+  const used = [...this.stamps().flatMap((stamp) => Object.entries(stamp.uses ?? {})), ...[...this.rustRecipes.values()].flatMap((row) => Object.entries(row.uses ?? {}))];
+  for (const [plugin, pin] of used) {
+    if (out[pin.sha256] !== undefined) continue;
+    const kept = this.projectPlugins.get(pin.sha256);
+    if (kept !== undefined) {
+      out[pin.sha256] = kept;
+      continue;
+    }
+    if (!isSlug(plugin)) continue;
+    for (const version of [undefined, ...olderVersions(plugin)]) {
+      const file = readPlugin(plugin, pluginsDir(), version);
+      if (file && !("reason" in file) && file.sha256 === pin.sha256) {
+        out[pin.sha256] = file.text;
+        break;
+      }
+    }
+  }
   for (const stamp of this.stamps()) {
     if (stamp.version === 0 || out[stamp.sha256] !== undefined) continue;
     const kept = this.projectPlugins.get(stamp.sha256);

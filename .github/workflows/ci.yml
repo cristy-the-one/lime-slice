@@ -816,6 +816,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/contact.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-native-bytes.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
+          # Recipe API 1.16: recipes that run plugins and build assemblies (docs/plan-plugin-recipes.md).
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-recipes.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-app.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-picks.test.ts

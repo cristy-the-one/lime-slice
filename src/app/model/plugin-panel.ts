@@ -63,7 +63,7 @@ import { forgetWorkplaneSteps, openObject } from "./workplane";
 import { recipesUnavailable } from "../../recipe/runtime";
 import { mountPluginAuthor, mountPluginsPanel } from "../../ui/plugins-panel";
 import { cancelPluginFacePick, plateSketches, startPluginFacePick } from "./pick";
-import { projectPluginFiles, syncPluginEnv } from "./plugins";
+import { appPluginSources, keepUsedPlugins, projectPluginFiles, syncPluginEnv } from "./plugins";
 import { viewed } from "./view";
 
 /** D9's Use vN: rebuild the row's plugin step with the library's current version of the plugin. Never automatic. */
@@ -140,6 +140,7 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
       env: recipeEnv(at?.objectId ?? "", false, plugin.sha256),
       onProgress: (fraction, message) => { if (mine === S.ticket) readout(`${message || `Running ${title}`} (${Math.round(fraction * 100)}%)`); },
       runId: freshRunId(),
+      plugins: appPluginSources(),
     });
   } finally {
     if (mine === S.ticket) S.busy = false;
@@ -193,6 +194,7 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
   }
   // D7: the project carries the code its plugin steps name, so it rebuilds where the library lacks it.
   if (!session.plugins?.[plugin.sha256]) session.plugins = { ...(session.plugins ?? {}), [plugin.sha256]: plugin.file.text };
+  keepUsedPlugins(result.used);
   const values = Object.entries(params).map(([name, value]) => `${plugin.file.params.find((p) => p.name === name)?.label?.trim() || name} ${String(value)}`).join(", ");
   const notes = result.notes.filter((note) => !/^line \d+: /.test(note)).map((note) => ` ${sentence(note)}`).join("");
   const applied = `Applied “${title}” v${plugin.file.version}${values ? ` with ${values}` : ""}`;

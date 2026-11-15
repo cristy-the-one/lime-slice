@@ -11,7 +11,7 @@ import { readSketch } from "./sketch/model.ts";
 import { SPLINE_THROUGH_MAX } from "./sketch/geom.ts";
 import { isRigid, type Affine } from "./model-space.ts";
 import { MAX_PIECES_HARD_STOP, type CutInput, type Labels, type Profile, type Target } from "./modeling/partition.ts";
-import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
+import { jumped, opLabel, partsOf, rootLabel, type PartitionModelOp, type BooleanKind, type EdgePick, type EdgeSig, type FaceRef, type FeatureOp, type Fingerprint, type JoinTool, type LoftSection, type ModelOp, type ModelRoot, type ModelTree, type ModelNode, type NodeId, type PlateMesh, type PluginPins, type PluginStamp, type RunMark, type ProfileLoop, type ProfileSegment, type Vec2, type Vec3 } from "./model-tree.ts";
 
 // A project file reads and writes a tree's body without loading the readers here (./saved-tree-body.ts).
 import { savedToolObjects, treeBody } from "./saved-tree-body.ts";
@@ -265,7 +265,19 @@ export function readStamp(value: unknown): PluginStamp | undefined {
   const fingerprint = value.fingerprint === null || value.fingerprint === undefined ? null : readFingerprint(value.fingerprint);
   if (fingerprint === undefined) return undefined;
   const exprs = readExprs(value.exprs);
-  return { plugin: value.plugin, version: value.version, sha256: value.sha256, api: value.api, params, ...(exprs ? { exprs } : {}), context: { bedMm: bed, nozzleMm: value.context.nozzleMm as number }, fingerprint };
+  const uses = readPins(value.uses);
+  return { plugin: value.plugin, version: value.version, sha256: value.sha256, api: value.api, params, ...(exprs ? { exprs } : {}), context: { bedMm: bed, nozzleMm: value.context.nozzleMm as number }, fingerprint, ...(uses ? { uses } : {}) };
+}
+
+/** --- API 1.16. The plugins a run ran from inside it, pinned; undefined when absent or damaged (the stamp keeps the rest). */
+export function readPins(value: unknown): PluginPins | undefined {
+  if (!isRecord(value)) return undefined;
+  const out: PluginPins = {};
+  for (const [id, pin] of Object.entries(value)) {
+    if (!id || id.length > 80 || !isRecord(pin) || !isId(pin.version) || typeof pin.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(pin.sha256)) return undefined;
+    out[id] = { version: pin.version as number, sha256: pin.sha256 };
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 function readRun(value: unknown): RunMark | undefined {
