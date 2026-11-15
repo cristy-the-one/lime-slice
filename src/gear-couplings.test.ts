@@ -9,7 +9,7 @@ import { clickAngle, couplingLine, declareCoupling, removeDeclared, trainOf, tra
 import { IDENTITY_POSE, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { sampleAnimation } from "./pose-anim.ts";
-import { clickGeometry, clickLift, faceMiddle } from "./ratchet-click.ts";
+import { clickGeometry, clickLift, clickOutline, faceMiddle, ratchetOutline, toothDepth } from "./ratchet-click.ts";
 
 let failed = 0;
 function eq(name: string, got: unknown, want: unknown) {
@@ -93,7 +93,7 @@ function reread(assembly: Assembly): Assembly {
   check("a loop whose ratios agree turns", !("reason" in loopTurn) && near(at(loopTurn.assembly, "a"), 2) && near(at(loopTurn.assembly, "c"), -2), JSON.stringify(loopTurn));
   eq("a part that cannot move is refused", refused(base, { driver: "a", driven: "frame", kind: "ratio", ratio: 1 }), "frame has no hinge or slide: couple two parts that turn or slide.");
   eq("one part twice is refused", refused(base, { driver: "a", driven: "a", kind: "ratio", ratio: 1 }), "a and a are one part: they already move together.");
-  eq("a zero ratio is refused", refused(base, { driver: "a", driven: "b", kind: "ratio", ratio: 0 }), "A ratio is a finite number other than 0: degrees (or mm) the driven part moves for one of the driver's.");
+  eq("a zero ratio is refused", refused(base, { driver: "a", driven: "b", kind: "ratio", ratio: 0 }), "The ratio must be a number other than 0.");
   // A part seated on a hinged part without a joint couples through that part's hinge (its body).
   const seated: Assembly = { ...base, members: [...base.members, { object: "arm", parent: "b", offset: [5, 0, 0], turn: [0, 0, 0] }] };
   const viaBody = declare(seated, { driver: "a", driven: "arm", kind: "ratio", ratio: 1 });
@@ -131,7 +131,7 @@ function reread(assembly: Assembly): Assembly {
   const asm = declare(base, { driver: "drum", driven: "weight", kind: "winch", radius: 12 });
   const row = asm.couplings![0]!;
   check("a winch is 2 pi r / 360 mm a degree, toward the drum winding in", near(row.ratio, (2 * Math.PI * 12) / 360), JSON.stringify(row));
-  eq("its line", couplingLine(row), "drum winds weight in turning forward, on a 12 mm drum: ×0.209 mm a degree");
+  eq("its line", couplingLine(row), "drum winds in weight as it turns forward: 12 mm drum, 0.209 mm a degree");
   const wound = turn(asm, "drum", 360);
   check("one turn of the drum draws the weight 2 pi r toward it", !("reason" in wound) && near(at(wound.assembly, "weight"), 2 * Math.PI * 12), JSON.stringify(wound));
   const cord = !("reason" in wound) ? poses(wound.assembly).get("cord")! : IDENTITY_POSE;
@@ -227,11 +227,11 @@ function reread(assembly: Assembly): Assembly {
 
   // Refusals.
   eq("a click off the driven part is refused", refused({ ...clock, members: clock.members.map((row) => (row.object === "pawl" ? hinge("pawl", [0, 15, 0]) : row)) }, { driver: "drum", driven: "great", kind: "ratchet", click: "pawl", ...TEETH }), "pawl must sit on great, the part its click is mounted on.");
-  eq("a carrier off the wheel's axis is refused", refused({ ...clock, members: clock.members.map((row) => (row.object === "great" ? hinge("great", [5, 0, 0]) : row)) }, { driver: "drum", driven: "great", kind: "ratchet" }), "great does not turn about drum's axis: a ratchet's click rides on a part coaxial with the wheel, or on one that stays.");
-  eq("a click without the wheel's numbers is refused", refused(clock, { driver: "drum", driven: "great", kind: "ratchet", click: "pawl", teeth: 20 }), "A ratchet's click needs the wheel's teeth, tip radius and root radius (horology's Ratchet).");
+  eq("a carrier off the wheel's axis is refused", refused({ ...clock, members: clock.members.map((row) => (row.object === "great" ? hinge("great", [5, 0, 0]) : row)) }, { driver: "drum", driven: "great", kind: "ratchet" }), "great does not turn on drum's axis: a ratchet's click sits on a part that turns on the wheel's own axis, or on the frame.");
+  eq("a click without the wheel's numbers is refused", refused(clock, { driver: "drum", driven: "great", kind: "ratchet", click: "pawl", teeth: 20 }), "A click needs the ratchet wheel's teeth, tip radius and root radius: the numbers the wheel was made with.");
   eq("horology's limits hold", refused(clock, { driver: "drum", driven: "great", kind: "ratchet", click: "pawl", teeth: 4, tip: 12, root: 10 }), "A ratchet takes 6 to 200 teeth.");
   eq("a click hinged inside the teeth is refused", refused({ ...base, members: base.members.map((row) => (row.object === "click" ? hinge("click", [0, 9, 0]) : row)) }, { driver: "wheel", driven: "frame", kind: "ratchet", click: "click", ...TEETH }), "click's hinge stands inside wheel's teeth: a click pivots outside the tips.");
-  eq("a click of the other hand is refused", refused(base, { driver: "wheel", driven: "frame", kind: "ratchet", click: "click", ...TEETH, clickCentre: [3.5, 11.4, 0] }), "click does not reach back toward its notch the way wheel runs free: check free, or which hand the click is.");
+  eq("a click of the other hand is refused", refused(base, { driver: "wheel", driven: "frame", kind: "ratchet", click: "click", ...TEETH, clickCentre: [3.5, 11.4, 0] }), "click points the wrong way for wheel to run free turning forward: choose the other way, or mirror the click.");
   check("the same click with free the other way is the right hand", refused(base, { driver: "wheel", driven: "frame", kind: "ratchet", free: -1, click: "click", ...TEETH, clickCentre: [3.5, 11.4, 0] }) === "(declared)");
 }
 
@@ -331,6 +331,20 @@ function reread(assembly: Assembly): Assembly {
   }
 }
 
+// The whole outlines the e2e project builds (e2e/gear-train-project.ts --ratchet): seated, every corner of the click is
+// clear of the teeth, and its nose is horology's.
+{
+  const shape = { teeth: 20, tip: 12, root: 10.2, arm: 10 };
+  const outline = clickOutline(shape);
+  check("horology builds this click", !!outline);
+  if (outline) {
+    check("the outline starts at the nose", near(outline[0]![0], clickGeometry(shape).nose[0]) && near(outline[0]![1], 0));
+    const deepest = Math.max(...outline.map((point) => toothDepth(shape, point)));
+    check(`seated, no corner of the click is inside a tooth (deepest ${deepest.toFixed(6)} mm)`, deepest <= 1e-9);
+  }
+  eq("the ratchet's outline has a face and a back a tooth", ratchetOutline(shape).length, 40);
+}
+
 // ---- Stage 4: friction clutch. ----
 {
   // The centre wheel drives the cannon pinion (the minute hand) through a friction clutch; the hand drives the hour wheel
@@ -339,7 +353,7 @@ function reread(assembly: Assembly): Assembly {
   let asm = declare(base, { driver: "third", driven: "centre", kind: "ratio", ratio: -0.5 });
   asm = declare(asm, { driver: "centre", driven: "cannon", kind: "clutch" });
   asm = declare(asm, { driver: "cannon", driven: "hour", kind: "ratio", ratio: 1 / 12 });
-  eq("its line says no torque is computed", couplingLine(asm.couplings![1]!), "centre drives cannon through a clutch, ×1; it slips when cannon is held or turned on its own (no torque is computed)");
+  eq("its line says no torque is computed", couplingLine(asm.couplings![1]!), "centre drives cannon through a clutch, ×1. No torque is computed: it slips only when cannon is held, stuck or turned by itself");
   const ran = turn(asm, "third", -60);
   check("the train carries the hands through the clutch", !("reason" in ran) && near(at(ran.assembly, "centre"), 30) && near(at(ran.assembly, "cannon"), 30) && near(at(ran.assembly, "hour"), 2.5) && !ran.slipped, JSON.stringify(ran));
   const set = turn(asm, "cannon", 90);

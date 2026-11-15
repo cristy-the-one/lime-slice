@@ -41,6 +41,47 @@ if (process.argv.includes("--contact")) {
   console.log(JSON.stringify({ frame, arm, stop }));
   process.exit(0);
 }
+if (process.argv.includes("--ratchet")) {
+  // docs/plan-coupling-kinds.md, stage 3: a real ratchet wheel and its click, from lime_recipe::horology's outlines
+  // (ported in src/ratchet-click.ts): Ratchet::new(20, 12, 10.2) and its click of length 10 (click_size), seated in tooth
+  // 0's notch. Each part is a box cut to its outline by an extrude `common`, 3 mm thick, so the kernel builds the teeth
+  // and the click as solids. Both stand 6 mm above a frame, the wheel on a hinge about +Z at its centre, the click on a
+  // hinge at its pivot. Horology's wheel runs free clockwise seen from +Z: free -1 on that hinge.
+  // `--real` builds them with the real kernel (target/release/lime_mcp_engine.dll, loadEngineWorker), so Pose draws the
+  // teeth; without it the fake engine stands in boxes. `--coupled` also declares the ratchet with its click (needs the
+  // real kernel's solids: the click's hand is read from its box).
+  const { clickGeometry, clickOutline, ratchetOutline } = await import("../src/ratchet-click.ts");
+  const shape = { teeth: 20, tip: 12, root: 10.2, arm: 10 };
+  const loop = (points: [number, number][]) => ({ start: points[0], segments: [...points.slice(1), points[0]].map((to) => ({ kind: "line", to })) });
+  const wheelPoints = ratchetOutline(shape), clickPoints = clickOutline(shape);
+  if (!clickPoints) throw new Error("horology refuses this click");
+  const real = process.argv.includes("--real");
+  const sessionNow = real ? new Session((await import("../mcp/engine.ts")).loadEngineWorker(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"))) : session;
+  const ask = async (name: string, input: Record<string, unknown> = {}) => {
+    const reply = (await sessionNow.call(name, input)) as Record<string, unknown>;
+    if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
+    return reply;
+  };
+  const cutTo = async (name: string, points: [number, number][]) => {
+    const reach = Math.max(...points.flatMap(([x, y]) => [Math.abs(x), Math.abs(y)])) + 2;
+    const object = String((await ask("solid_new", { primitive: "box", dx: 2 * reach, dy: 2 * reach, dz: 3, name })).object);
+    await ask("model_apply", { object, probe: true, op: { kind: "extrude", op: "common", loops: [loop(points)], origin: [0, 0, -10], depth: 20 } });
+    return object;
+  };
+  const frame = String((await ask("solid_new", { primitive: "box", dx: 80, dy: 80, dz: 4, name: "Frame" })).object);
+  const ratchet = await cutTo("Ratchet", wheelPoints);
+  const click = await cutTo("Click", clickPoints);
+  const { pivot } = clickGeometry(shape);
+  await ask("model_place", { object: ratchet, to: frame, x: 0, y: 0, z: 6 });
+  await ask("model_place", { object: ratchet, joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] } });
+  await ask("model_place", { object: click, to: frame, x: 0, y: 0, z: 6 });
+  await ask("model_place", { object: click, joint: { kind: "hinge", pivot: [pivot[0], pivot[1], 0], axis: [0, 0, 1] } });
+  if (process.argv.includes("--coupled")) await ask("model_place", { object: ratchet, couple: { driven: frame, kind: "ratchet", free: -1, click, teeth: shape.teeth, tip: shape.tip, root: shape.root } });
+  const saved = await ask("project_save", { name: "pose-ratchet.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ frame, ratchet, click, teeth: shape.teeth, tip: shape.tip, root: shape.root, free: -1, liftDeg: clickGeometry(shape).liftDeg }));
+  process.exit(0);
+}
 if (process.argv.includes("--couplings")) {
   // docs/plan-coupling-kinds.md: parts on joints and nothing coupled, for a person to couple in Pose. A frame (the root);
   // a centre arbor and a wheel on hinges (a ratio); a hand on a hinge over the arbor (a clutch); a drum on a hinge with a

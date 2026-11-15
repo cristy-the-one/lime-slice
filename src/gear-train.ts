@@ -747,7 +747,7 @@ const shown = (value: number, places = 3) => {
 /** One line a reply or the panel shows for a coupling. */
 export function couplingLine(row: Coupling): string {
   const [a, b] = couplingNames(row);
-  if (row.kind === "winch") return `${a} winds ${b} ${row.wind === "out" ? "out" : "in"} turning forward, on a ${shown(row.radius ?? 0, 2)} mm drum: ×${shown(row.ratio)} mm a degree`;
+  if (row.kind === "winch") return `${a} ${row.wind === "out" ? "lets out" : "winds in"} ${b} as it turns forward: ${shown(row.radius ?? 0, 2)} mm drum, ${shown(Math.abs(row.ratio))} mm a degree`;
   if (row.kind === "ratchet") {
     const forward = row.free === 1;
     const click = row.click ? ` under ${row.click.name} (${row.click.teeth} teeth, lift ${shown(Math.abs(row.click.lift), 2)}°)` : "";
@@ -755,7 +755,7 @@ export function couplingLine(row: Coupling): string {
     return `${a} drives ${b} turning ${forward ? "back" : "forward"}; turning ${forward ? "forward" : "back"} it runs free${click}`;
   }
   const unit = row.kind !== undefined ? declaredUnit(row) : row.rack === "driven" ? " mm a degree" : row.rack === "driver" ? " degrees a mm" : "";
-  if (row.kind === "clutch") return `${a} drives ${b} through a clutch, ×${shown(row.ratio)}${unit}; it slips when ${b} is held or turned on its own (no torque is computed)`;
+  if (row.kind === "clutch") return `${a} drives ${b} through a clutch, ×${shown(row.ratio)}${unit}. No torque is computed: it slips only when ${b} is held, stuck or turned by itself`;
   const on = row.carrier ? ` on ${row.carrier.name}` : "";
   return `${a} drives ${b}${on}, ×${shown(row.ratio)}${unit}`;
 }
@@ -816,7 +816,7 @@ export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, A
   const finiteNonzero = (value: number | undefined): value is number => typeof value === "number" && Number.isFinite(value) && value !== 0;
   if (spec.kind === "ratio") {
     if (useA === "fixed" || useB === "fixed") return { reason: `${useA === "fixed" ? nameA : nameB} has no hinge or slide: couple two parts that turn or slide.` };
-    if (!finiteNonzero(spec.ratio)) return { reason: "A ratio is a finite number other than 0: degrees (or mm) the driven part moves for one of the driver's." };
+    if (!finiteNonzero(spec.ratio)) return { reason: "The ratio must be a number other than 0." };
     row = { driver: a.body, driven: b.body, ratio: spec.ratio, kind: "ratio", names: [nameA, nameB], on: [useA, useB] };
   } else if (spec.kind === "winch") {
     if (useA !== "hinge" || useB !== "slide") return { reason: `A winch turns a drum on a hinge (${nameA}) and pulls a load on a slide (${nameB}).` };
@@ -833,7 +833,7 @@ export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, A
     row = { driver: a.body, driven: b.body, ratio: (wind === "in" ? 1 : -1) * Math.sign(toward) * mmPerDeg, kind: "winch", names: [nameA, nameB], on: ["hinge", "slide"], radius: spec.radius, wind };
   } else if (spec.kind === "ratchet") {
     if (useA !== "hinge") return { reason: `A ratchet wheel turns on a hinge: give ${nameA} one.` };
-    if (useB === "slide") return { reason: `A ratchet's click rides on a part that turns about the wheel's axis, or on one that stays: ${nameB} slides.` };
+    if (useB === "slide") return { reason: `A ratchet's click sits on a part that turns on the wheel's own axis, or on the frame: ${nameB} slides.` };
     const free = spec.free ?? 1;
     if (free !== 1 && free !== -1) return { reason: "free is 1 (the wheel runs free turning forward) or -1 (turning back)." };
     const wheel = line(a.body);
@@ -841,10 +841,10 @@ export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, A
     let ratio = 1;
     if (useB === "hinge") {
       const carrier = line(b.body);
-      if (!carrier || Math.abs(dot(wheel.axis, carrier.axis)) < PARALLEL) return { reason: `${nameB} does not turn about ${nameA}'s axis: a ratchet's click rides on a part coaxial with the wheel, or on one that stays.` };
+      if (!carrier || Math.abs(dot(wheel.axis, carrier.axis)) < PARALLEL) return { reason: `${nameB} does not turn on ${nameA}'s axis: a ratchet's click sits on a part that turns on the wheel's own axis, or on the frame.` };
       const along = minus(wheel.point, carrier.point);
       const t = dot(along, carrier.axis);
-      if (Math.hypot(along[0] - t * carrier.axis[0], along[1] - t * carrier.axis[1], along[2] - t * carrier.axis[2]) > ON_AXIS_MM) return { reason: `${nameB} does not turn about ${nameA}'s axis: a ratchet's click rides on a part coaxial with the wheel, or on one that stays.` };
+      if (Math.hypot(along[0] - t * carrier.axis[0], along[1] - t * carrier.axis[1], along[2] - t * carrier.axis[2]) > ON_AXIS_MM) return { reason: `${nameB} does not turn on ${nameA}'s axis: a ratchet's click sits on a part that turns on the wheel's own axis, or on the frame.` };
       ratio = Math.sign(dot(wheel.axis, carrier.axis)) || 1;
     }
     row = { driver: a.body, driven: b.body, ratio, kind: "ratchet", names: [nameA, nameB], on: ["hinge", useB], free };
@@ -856,9 +856,9 @@ export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, A
       const carried = bodyOf(assembly, click.parent);
       if (!carried || "reason" in carried || carried.body !== b.body) return { reason: `${clickName} must sit on ${nameB}, the part its click is mounted on.` };
       if (spec.click === a.body || all.some((other) => other.click?.object === spec.click && !between(other)) || all.some((other) => other.driver === spec.click || other.driven === spec.click)) return { reason: `${clickName} is coupled already: a click moves only with its ratchet.` };
-      if (typeof spec.teeth !== "number" || typeof spec.tip !== "number" || typeof spec.root !== "number") return { reason: "A ratchet's click needs the wheel's teeth, tip radius and root radius (horology's Ratchet)." };
+      if (typeof spec.teeth !== "number" || typeof spec.tip !== "number" || typeof spec.root !== "number") return { reason: "A click needs the ratchet wheel's teeth, tip radius and root radius: the numbers the wheel was made with." };
       const hinge = line(spec.click);
-      if (!hinge || Math.abs(dot(hinge.axis, wheel.axis)) < PARALLEL) return { reason: `${clickName}'s hinge does not lie along ${nameA}'s axis: a click lifts in the wheel's plane.` };
+      if (!hinge || Math.abs(dot(hinge.axis, wheel.axis)) < PARALLEL) return { reason: `${clickName}'s hinge is not parallel to ${nameA}'s axis: a click must swing flat against the wheel.` };
       // The click's arm from where its hinge stands: horology puts the pivot on the tangent through the face's middle.
       const out = minus(hinge.point, wheel.point);
       const axial = dot(out, wheel.axis);
@@ -879,7 +879,7 @@ export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, A
         const noseDir = toward.map((v, i) => v * Math.cos(along) - side[i]! * Math.sin(along)) as Vec3;
         const nose = wheel.point.map((v, i) => v + axial * wheel.axis[i]! + geometry.nose[0] * noseDir[i]!) as Vec3;
         // The click lies on the nose's side of the line from the wheel's axis through its pivot, or it is the other hand.
-        if (dot(minus(spec.clickCentre, hinge.point), side) * dot(minus(nose, hinge.point), side) <= 0) return { reason: `${clickName} does not reach back toward its notch the way ${nameA} runs free: check free, or which hand the click is.` };
+        if (dot(minus(spec.clickCentre, hinge.point), side) * dot(minus(nose, hinge.point), side) <= 0) return { reason: `${clickName} points the wrong way for ${nameA} to run free turning ${free === 1 ? "forward" : "back"}: choose the other way, or mirror the click.` };
       }
       const sense: 1 | -1 = dot(hinge.axis, normal) > 0 ? 1 : -1;
       const angle = click.joint.angle ?? 0;
@@ -892,7 +892,7 @@ export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, A
       const lineA = line(a.body), lineB = line(b.body);
       ratio = lineA && lineB ? Math.sign(dot(lineA.axis, lineB.axis)) || 1 : 1;
     }
-    if (!finiteNonzero(ratio)) return { reason: "A clutch's ratio is a finite number other than 0." };
+    if (!finiteNonzero(ratio)) return { reason: "The ratio must be a number other than 0." };
     row = { driver: a.body, driven: b.body, ratio, kind: "clutch", names: [nameA, nameB], on: [useA, useB] };
   }
   const kept = all.filter((other) => !(other.kind !== undefined && between(other)));

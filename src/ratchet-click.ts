@@ -53,7 +53,7 @@ export function clickRefusal(shape: ClickShape): string | null {
   if (!Number.isInteger(teeth) || teeth < 6 || teeth > 200) return "A ratchet takes 6 to 200 teeth.";
   if (!(tip >= 1 && tip <= 500) || !(root >= 0.3 * tip && root <= 0.97 * tip)) return "A ratchet's tip radius is 1 to 500 mm, its root radius 0.3 to 0.97 of it.";
   const h = tip - root;
-  if (!(arm >= 0.5 * h && arm <= 20 * tip)) return "The click's pivot stands 0.5 tooth depths to 20 tip radii along the tangent from the face it bears on.";
+  if (!(arm >= 0.5 * h && arm <= 20 * tip)) return "The click's hinge is too near the wheel or too far from it for a click on this ratchet.";
   return null;
 }
 
@@ -83,6 +83,53 @@ export function clickGeometry(shape: ClickShape): ClickGeometry {
     lift = Math.min(lift, turn);
   }
   return { pivot, nose, under, liftDeg: ((outward ? 1 : -1) * lift) / DEG, pitchDeg: 360 / teeth, midRadius: 0.5 * (small + gap + big) };
+}
+
+/**
+ * The ratchet's outline (`Ratchet::outline` with tooth 0's face at 0 degrees), counter-clockwise: from each face's root,
+ * the back up to the next tip, then that face down to its root.
+ */
+export function ratchetOutline(shape: Pick<ClickShape, "teeth" | "tip" | "root">): P[] {
+  const pitch = (2 * Math.PI) / shape.teeth;
+  const out: P[] = [polar(shape.root, 0)];
+  for (let k = 1; k <= shape.teeth; k += 1) {
+    out.push(polar(shape.tip, k * pitch));
+    if (k < shape.teeth) out.push(polar(shape.root, k * pitch));
+  }
+  return out;
+}
+
+/**
+ * The whole click's outline seated in tooth 0's notch, in the wheel's frame (`Ratchet::click`, ported): the nose, up the
+ * face to `rise` above the tips, the edge tangent to the hub, round the hub (`arcSteps` chords), the edge back to the
+ * underside's far end, and the underside to the nose. Null when horology would refuse the click.
+ */
+export function clickOutline(shape: ClickShape, arcSteps = 24): P[] | null {
+  const { teeth, tip: big, root: small, arm } = shape;
+  const h = big - small, gap = 0.1 * h, rise = 0.6 * h, hub = h;
+  const geometry = clickGeometry(shape);
+  const { pivot, nose, under } = geometry;
+  const top = polar(big + rise, 0);
+  if (len(pivot) - hub <= big + gap || teeth < 6) return null;
+  const cross = (a: P, b: P) => a[0] * b[1] - a[1] * b[0];
+  const tangent = (from: P, toHub: boolean): P | null => {
+    const d = len(sub(from, pivot));
+    if (d <= hub) return null;
+    const base = ang(sub(from, pivot)), o = Math.acos(hub / d);
+    for (const a of [base + o, base - o]) {
+      const t = add(pivot, polar(hub, a));
+      const left = toHub ? cross(sub(t, from), sub(pivot, from)) : cross(sub(from, t), sub(pivot, t));
+      if (left > 0) return t;
+    }
+    return null;
+  };
+  const up = tangent(top, true), low = tangent(under, false);
+  if (!up || !low || arm < 0.5 * h) return null;
+  const a0 = ang(sub(up, pivot));
+  let a1 = ang(sub(low, pivot));
+  while (a1 <= a0) a1 += 2 * Math.PI;
+  const arc = Array.from({ length: arcSteps - 1 }, (_, i) => add(pivot, polar(hub, a0 + ((a1 - a0) * (i + 1)) / arcSteps)));
+  return [nose, top, up, ...arc, low, under];
 }
 
 /** How far `p` (in the wheel's frame) lies inside the teeth, mm: positive inside, negative outside. */

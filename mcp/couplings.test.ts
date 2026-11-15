@@ -93,7 +93,7 @@ await ok("model_place", { object: click, to: frame, x: -3.5, y: -60 + 11.4, z: 4
 await ok("model_place", { object: click, joint: { kind: "hinge", pivot: [3.5, 3.6, 0], axis: [0, 0, 1] } });
 const wrongHand = await call("model_place", { object: ratchet, couple: { driven: frame, kind: "ratchet", free: -1, click, teeth: 20, tip: 12, root: 10.2 } });
 assert.equal(wrongHand.ok, false, show(wrongHand));
-assert.match(String(wrongHand.reason ?? wrongHand.error ?? show(wrongHand)), /does not reach back toward its notch/);
+assert.match(String(wrongHand.reason ?? wrongHand.error ?? show(wrongHand)), /points the wrong way for Ratchet to run free turning back/);
 const pawl = await ok("model_place", { object: ratchet, couple: { driven: frame, kind: "ratchet", free: 1, click, teeth: 20, tip: 12, root: 10.2 } });
 const row = pawl.coupling as { click: { liftDeg: number; armMm: number } };
 assert.ok(row.click.liftDeg < 0 && Math.abs(row.click.liftDeg) > 5, show(pawl));
@@ -119,7 +119,7 @@ await ok("model_place", { object: hand, to: frame, x: 0, y: 0, z: 40 });
 await ok("model_place", { object: hand, joint: { kind: "hinge", pivot: [-20, 0, 0], axis: [0, 0, 1] } });
 const clutch = await ok("model_place", { object: arbor, couple: { driven: hand, kind: "clutch" } });
 assert.equal((clutch.coupling as { ratio: number }).ratio, 1, show(clutch));
-assert.match(String(clutch.note), /no torque is computed/);
+assert.match(String(clutch.note), /No torque is computed/);
 await ok("model_place", { object: arbor, angle: 20 });
 assert.ok(near(at(hand), 25) && near(at(wheel), 60), `the arbor carries the hand: ${at(hand)} ${at(wheel)}`);
 const set = await ok("model_place", { object: hand, angle: 100 });

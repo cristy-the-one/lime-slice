@@ -964,7 +964,7 @@ function couplingSection(panel: HTMLElement, assembly: Assembly, member: Member)
   if (moves) {
     const own = (body as { body: string }).body;
     const draft = coupleDraft;
-    const kinds: [CoupleKind, string][] = [["ratio", "Ratio"], ["winch", "Winch (drum to load)"], ["ratchet", "Ratchet (one way)"], ["clutch", "Friction clutch"]];
+    const kinds: [CoupleKind, string][] = [["ratio", "Ratio"], ["winch", "Winch: drum and cord"], ["ratchet", "Ratchet: one way only"], ["clutch", "Clutch: can slip"]];
     addText(box, "p", `${nameOf(own)} drives:`, "pose-couple-lead");
     const others = assembly.members.filter((row) => {
       const other = bodyOf(assembly, row.object);
@@ -972,7 +972,7 @@ function couplingSection(panel: HTMLElement, assembly: Assembly, member: Member)
     });
     coupleSelect(box, "Other part", "driven", [["", "Choose a part"], ...others.map((row) => [row.object, nameOf(row.object)] as [string, string])], draft.driven);
     coupleSelect(box, "Kind", "kind", kinds, draft.kind);
-    if (draft.kind === "ratio") coupleField(box, "Ratio (° or mm per ° or mm)", "ratio", draft.ratio, "1");
+    if (draft.kind === "ratio") coupleField(box, "Ratio", "ratio", draft.ratio, "1");
     if (draft.kind === "winch") {
       coupleField(box, "Drum radius mm", "radius", draft.radius, "");
       coupleSelect(box, "Turning the drum forward", "wind", [["in", "winds the cord in"], ["out", "pays the cord out"]], draft.wind);
@@ -989,10 +989,10 @@ function couplingSection(panel: HTMLElement, assembly: Assembly, member: Member)
     }
     if (draft.kind === "clutch") coupleField(box, "Ratio", "ratio", draft.ratio, "1");
     const help: Record<CoupleKind, string> = {
-      ratio: "The other part moves this many degrees (or mm, on a slide) for each degree (or mm) of this one, both ways.",
-      winch: "This part is the drum on a hinge, the other the load on a slide: the cord moves 2πr/360 mm a degree.",
-      ratchet: "This part is the ratchet wheel; the other is the part its click sits on, or the frame. It carries that part one way and runs free the other. With a click (in its notch now) and the wheel's numbers, the click rides each tooth and drops.",
-      clutch: "The other part follows one to one unless it is held or turned on its own: then the clutch slips. No torque is computed.",
+      ratio: "The other part moves this many degrees (or mm on a slide) for each degree (or mm) of this one. Either part can be turned.",
+      winch: "This part is the drum. The other part is the load on a slide: it moves the length of cord the drum winds, 2πr for each turn.",
+      ratchet: "This part is the ratchet wheel. The other part is what its click is mounted on, or the frame. Turned one way, the wheel carries that part; the other way it runs free. Add the click, seated in a tooth now, and the wheel's teeth and radii: the click rides each tooth and drops.",
+      clutch: "No torque is computed: the clutch slips only when the other part is held, stuck or turned by itself.",
     };
     addText(box, "p", help[draft.kind], "pose-couple-help");
     const actions = document.createElement("div"); actions.className = "pose-buttons"; box.append(actions);

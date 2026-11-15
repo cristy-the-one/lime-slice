@@ -101,8 +101,8 @@ in such a train is refused ("not covered: a ratchet or a clutch in a train with 
 ## 2. Winch
 
 A winch is the hinge-to-slide coupling with its ratio worked out from the drum's radius `r`: `2πr/360` mm a degree,
-offered as its own kind so a person types the radius, not a ratio, and the line says what it is ("Drum winds Weight in
-turning forward, on a 12 mm drum: ×0.209 mm a degree").
+offered as its own kind so a person types the radius, not a ratio, and the line says what it is ("Drum winds in Weight as
+it turns forward: 12 mm drum, 0.209 mm a degree").
 
 - **Which way the cord winds.** `wind: "in"` (default) means turning the drum forward (its hinge's +) winds the cord in:
   the load moves toward the drum. "Toward" is read from the model: the load's slide direction against the line from the
@@ -163,8 +163,8 @@ passes. It is the geometry's own answer, the same each time, and it costs micros
 - Refused, each with its sentence: a click whose hinge does not lie along the wheel's axis, one hinged inside the teeth,
   a click not seated on the driven part, horology's own limits (6 to 200 teeth, root 0.3 to 0.97 of the tip, an arm of
   0.5 depths to 20 tip radii), and **a click of the other hand**: its body (the part's box centre) lies off the side of the
-  pivot's radial line where horology's nose would be, so it would bite the wrong way ("check free, or which hand the
-  click is").
+  pivot's radial line where horology's nose would be, so it would bite the wrong way ("choose the other way, or mirror
+  the click").
 - **The proof**, `src/gear-couplings.test.ts`: three ratchets (20, 30 and 12 teeth) with the click built by a second,
   independent port of horology's construction in the test; at 200 phases over a pitch, no point of the nose or the
   underside is inside a tooth and no tip is inside the click (deepest 0.000000 mm), every lifted pose touches a tooth
@@ -180,7 +180,8 @@ passes. It is the geometry's own answer, the same each time, and it costs micros
 ## 4. Friction clutch (slips above a torque)
 
 There are no forces in the app (dynamics is F2), so no torque is computed and none is typed. The kinematic meaning, as
-the rule, said in the plan, the panel's help line, the coupling's line ("no torque is computed") and the MCP description:
+the rule, said in the plan, the panel's help line, the coupling's line ("No torque is computed: it slips only when Hand is held, stuck or turned by
+itself.") and the MCP description:
 
 A clutch couples a **driver** side and a **driven** side at `ratio` (default one to one, the hinges' senses taken in). In
 any turn:

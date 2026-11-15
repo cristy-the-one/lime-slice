@@ -90,10 +90,10 @@ test("Couple a ratio, a clutch, a winch and a ratchet with its click in Pose, an
   // Stage 1 and stage 4: the centre arbor drives the wheel at 3, and the hand through a clutch.
   await panel.locator(`[data-object='${ids.centre}']`).click();
   await expect(panel.getByRole("heading", { name: "Couplings" })).toBeVisible();
-  await couple("Wheel", "ratio", { "Ratio (° or mm per ° or mm)": "3" });
+  await couple("Wheel", "ratio", { Ratio: "3" });
   await expect(note).toHaveText("Coupled: Centre drives Wheel, ×3.");
   await couple("Hand", "clutch");
-  await expect(couplings).toContainText("Centre drives Hand through a clutch, ×1; it slips when Hand is held or turned on its own (no torque is computed).");
+  await expect(couplings).toContainText("Centre drives Hand through a clutch, ×1. No torque is computed: it slips only when Hand is held, stuck or turned by itself.");
   await page.screenshot({ path: path.join(shots, "couplings-form.png") });
   await dragRing(page);
   await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
@@ -117,7 +117,7 @@ test("Couple a ratio, a clutch, a winch and a ratchet with its click in Pose, an
   // Stage 2: the drum winds the weight; its ring draws the weight 2 pi r / 360 mm a degree, the cord with it.
   await panel.locator(`[data-object='${ids.drum}']`).click();
   await couple("Weight", "winch", { "Drum radius mm": "12" });
-  await expect(note).toHaveText("Coupled: Drum winds Weight in turning forward, on a 12 mm drum: ×0.209 mm a degree.");
+  await expect(note).toHaveText("Coupled: Drum winds in Weight as it turns forward: 12 mm drum, 0.209 mm a degree.");
   await dragRing(page);
   await expect.poll(async () => Math.abs(Number(await panel.getByLabel("Angle °").inputValue()))).toBeGreaterThan(5);
   doc = await downloadProject(page);
