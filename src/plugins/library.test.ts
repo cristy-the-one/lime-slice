@@ -34,6 +34,7 @@ import {
   projectCopies,
   readAuthor,
   readLibrary,
+  shippedLibrary,
   savePlan,
   searched,
   settingsText,
@@ -78,7 +79,15 @@ const listing: LibraryListing = {
   settings: settingsText(null, "  Marius   C. "),
 };
 const library = await readLibrary(listing);
-eq("current versions by id; files that are not plugins or name another are left out", [...library.plugins.keys()].sort(), ["flange", "stud-row"]);
+const own = (lib: typeof library) => [...lib.plugins].filter(([, row]) => !row.shipped).map(([id]) => id).sort();
+eq("current versions by id; files that are not plugins or name another are left out", own(library), ["flange", "stud-row"]);
+// --- docs/plan-clock-parts.md. The shipped plugins join every library read, as its own (not imported), Built in.
+const shippedIds = ["clock-escape-wheel", "clock-graham-anchor", "clock-ratchet-click", "clock-ratchet-wheel", "clock-wheel-pinion"];
+eq("the shipped clock parts are in the library read, marked shipped and intact", [...library.plugins].filter(([, row]) => row.shipped && row.intact).map(([id]) => id).sort(), shippedIds);
+eq("each shipped plugin's code is found by its hash, so a project's step names it", shippedIds.every((id) => library.bySha.get(library.plugins.get(id)!.sha256)?.plugin === id), true);
+eq("the browser build's library holds the shipped plugins alone", [...(await shippedLibrary()).plugins.keys()].sort(), shippedIds);
+const overridden = await readLibrary({ dir: "lib", files: [{ name: "clock-ratchet-wheel.rs", text: header("clock-ratchet-wheel", "My ratchet", 4, body(1), "new") }], presets: [], settings: null });
+eq("a library file of a shipped id wins over the shipped one", [overridden.plugins.get("clock-ratchet-wheel")?.file.title, overridden.plugins.get("clock-ratchet-wheel")?.shipped], ["My ratchet", undefined]);
 eq("older versions are found", library.plugins.get("stud-row")?.older, [1, 2]);
 eq("every version is found by its hash", [sha(body(1)), sha(body(2)), sha(body(3))].map((h) => library.bySha.get(h)?.version), [1, 2, 3]);
 eq("a file edited by hand is not intact", [library.plugins.get("stud-row")?.intact, library.plugins.get("flange")?.intact], [true, false]);
@@ -89,13 +98,16 @@ eq("no settings is no author; an empty name clears it", [readAuthor(null), readA
 // --- The panel's list: the project's plugins the library lacks first, then the library; search; last used first.
 const project = new Map([[sha(body(3)), read!], [sha(body(7)), readPluginFile(header("hook", "Wall hook", 1, body(7), "new", "A hook for a wall."))!]]);
 project.set(sha(body(3)), readPluginFile(header("stud-row", "Stud row", 3, body(3)))!);
-const rows = panelPlugins(library, project, { flange: 5 });
+const allRows = panelPlugins(library, project, { flange: 5 });
+eq("the shipped plugins are listed after the library, as Built in", allRows.filter((r) => r.section === "builtin").map((r) => [r.file.plugin, r.badges.join(",")]).sort(), shippedIds.map((id) => [id, "built in"]));
+eq("sections run project, library, built in", [...new Set(allRows.map((r) => r.section))], ["project", "library", "builtin"]);
+const rows = allRows.filter((r) => r.section !== "builtin");
 eq("sections in order; a project copy the library holds at that hash is listed once", rows.map((r) => [r.section, r.file.plugin]), [["project", "hook"], ["library", "flange"], ["library", "stud-row"]]);
 eq("badges: needs a part, edited", rows.map((r) => r.badges), [[], ["edited"], ["needs a part"]]);
 eq("search by a word of the title or description", searched(rows, "bolt").map((r) => r.file.plugin), ["flange"]);
 eq("search ranks within a section and drops non-matches", searched(rows, "row studs wall").map((r) => r.file.plugin), ["hook", "stud-row"]);
 eq("a one-letter query is no search", searched(rows, "a").length, 3);
-eq("last used moves up", panelPlugins(library, new Map(), { "stud-row": 9, flange: 5 }).map((r) => r.file.plugin), ["stud-row", "flange"]);
+eq("last used moves up", panelPlugins(library, new Map(), { "stud-row": 9, flange: 5 }).filter((r) => r.section === "library").map((r) => r.file.plugin), ["stud-row", "flange"]);
 
 // --- The form.
 eq("a value outside its range names the range and the fix", formProblem(params, { studs: "12" }), "Studs is 1 to 10. Type a value in that range.");

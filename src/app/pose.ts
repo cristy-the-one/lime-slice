@@ -29,6 +29,7 @@ import { RECIPE_API } from "../plugin-step.ts";
 import type { ContactJob, ContactJobReply } from "../contact-worker.ts";
 import type { ContactAnswer, KernelVerdict } from "../contact.ts";
 import { memberNamesOf, membersMatching, missingMember } from "../anim-members.ts";
+import { clickFits, freeWayOf, ratchetFromStamps, ratchetStamp, readRatchet, RATCHET_CLICK, RATCHET_WHEEL, type CouplingPart } from "../plugins/clock-parts.ts";
 
 /** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
 const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
@@ -46,8 +47,12 @@ let dragStart: Member | null = null;
 let dragAssembly: Assembly | null = null;
 /** The Couplings form (docs/plan-coupling-kinds.md): what is typed, kept while the panel is drawn again. */
 type CoupleKind = DeclaredKind;
-interface CoupleDraft { driven: string; kind: CoupleKind; ratio: string; radius: string; wind: string; free: string; click: string; teeth: string; tip: string; root: string }
-const EMPTY_DRAFT: CoupleDraft = { driven: "", kind: "ratio", ratio: "", radius: "", wind: "in", free: "1", click: "", teeth: "", tip: "", root: "" };
+/**
+ * `manual` is "1" once the person chose to type a ratchet's numbers over those read from its parts; `freeSet` and
+ * `clickSet` once they chose the free way or the click themselves, so what the stamps suggest no longer replaces it.
+ */
+interface CoupleDraft { driven: string; kind: CoupleKind; ratio: string; radius: string; wind: string; free: string; click: string; teeth: string; tip: string; root: string; manual: string; freeSet: string; clickSet: string }
+const EMPTY_DRAFT: CoupleDraft = { driven: "", kind: "ratio", ratio: "", radius: "", wind: "in", free: "1", click: "", teeth: "", tip: "", root: "", manual: "", freeSet: "", clickSet: "" };
 let coupleDraft: CoupleDraft = { ...EMPTY_DRAFT };
 /** The part the form was filled for: another selection starts it again. */
 let coupleDraftFor: string | null = null;
@@ -1068,21 +1073,12 @@ function couplingSection(panel: HTMLElement, assembly: Assembly, member: Member)
       coupleField(box, "Drum radius mm", "radius", draft.radius, "");
       coupleSelect(box, "Turning the drum forward", "wind", [["in", "winds the cord in"], ["out", "pays the cord out"]], draft.wind);
     }
-    if (draft.kind === "ratchet") {
-      coupleSelect(box, "Runs free turning", "free", [["1", "forward"], ["-1", "back"]], draft.free);
-      const clicks = assembly.members.filter((row) => row.joint?.kind === "hinge" && row.parent !== null && row.object !== own);
-      coupleSelect(box, "Click", "click", [["", "None"], ...clicks.map((row) => [row.object, nameOf(row.object)] as [string, string])], draft.click);
-      if (draft.click) {
-        coupleField(box, "Teeth", "teeth", draft.teeth, "");
-        coupleField(box, "Tip radius mm", "tip", draft.tip, "");
-        coupleField(box, "Root radius mm", "root", draft.root, "");
-      }
-    }
+    if (draft.kind === "ratchet") ratchetFields(box, assembly, member, own);
     if (draft.kind === "clutch") coupleField(box, "Ratio", "ratio", draft.ratio, "1");
     const help: Record<CoupleKind, string> = {
       ratio: "The other part moves this many degrees (or mm on a slide) for each degree (or mm) of this one. Either part can be turned.",
       winch: "This part is the drum. The other part is the load on a slide: it moves the length of cord the drum winds, 2πr for each turn.",
-      ratchet: "This part is the ratchet wheel. The other part is what its click is mounted on, or the frame. Turned one way, the wheel carries that part; the other way it runs free. Add the click, seated in a tooth now, and the wheel's teeth and radii: the click rides each tooth and drops.",
+      ratchet: "This part is the ratchet wheel. The other part is what its click is mounted on, or the frame. Turned one way, the wheel carries that part; the other way it runs free. Add the click, seated in a tooth now: the click rides each tooth and drops. A wheel or click made by the built-in Ratchet wheel and Ratchet click gives its numbers itself.",
       clutch: "No torque is computed: the clutch slips only when the other part is held, stuck or turned by itself.",
     };
     addText(box, "p", help[draft.kind], "pose-couple-help");
@@ -1091,6 +1087,57 @@ function couplingSection(panel: HTMLElement, assembly: Assembly, member: Member)
     go.dataset.tip = "Couple this part's joint to the other part's, as set above. Turning either then moves the other. One Undo.";
   }
   if (coupleNote?.assembly === assembly.id) { const note = addText(box, "p", coupleNote.text); note.dataset.poseCoupleNote = ""; note.setAttribute("role", "status"); }
+}
+/** A part's Model tree, where a plugin's stamp is. */
+function treeOfPart(id: string) {
+  const obj = state.plate.objects.find((part) => part.id === id);
+  return obj?.modelTree ? modelTrees.get(obj.modelTree) : undefined;
+}
+const projectCode = (sha256: string) => session.plugins?.[sha256];
+/** The parts of a ratchet coupling as the stamp readers take them. */
+function couplingParts(assembly: Assembly, wheel: string, click: string | null): { wheel: CouplingPart; click: CouplingPart | null } {
+  const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
+  const joint = assembly.members.find((row) => row.object === wheel)?.joint;
+  return {
+    wheel: { name: nameOf(wheel), tree: treeOfPart(wheel), hingeAxis: joint?.kind === "hinge" ? joint.axis : undefined },
+    click: click ? { name: nameOf(click), tree: treeOfPart(click), pose: poseOf(click) } : null,
+  };
+}
+/**
+ * The ratchet's own fields (docs/plan-clock-parts.md): the free way, the click (those made by Ratchet click for this
+ * wheel first, and chosen when the person has not), and the wheel's teeth, tip and root, shown as read from the parts'
+ * stamps, with Type them for a wheel made another way. Without a stamp the numbers are typed, as before.
+ */
+function ratchetFields(box: HTMLElement, assembly: Assembly, member: Member, own: string): void {
+  const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
+  const wheelId = member.object;
+  const wheelStamp = ratchetStamp(treeOfPart(wheelId), projectCode, [RATCHET_WHEEL]);
+  const { wheel } = couplingParts(assembly, wheelId, null);
+  const free = wheelStamp && wheel.hingeAxis ? freeWayOf(wheel.hingeAxis) : null;
+  if (free && coupleDraft.freeSet !== "1") coupleDraft = { ...coupleDraft, free: String(free) };
+  const clicks = assembly.members.filter((row) => row.joint?.kind === "hinge" && row.parent !== null && row.object !== own && row.object !== wheelId);
+  const stamps = new Map(clicks.map((row) => [row.object, ratchetStamp(treeOfPart(row.object), projectCode, [RATCHET_CLICK])] as const));
+  const fits = (id: string) => !!stamps.get(id) && (!wheelStamp || clickFits(stamps.get(id)!, wheelStamp.numbers));
+  const ordered = [...clicks.filter((row) => fits(row.object)), ...clicks.filter((row) => !fits(row.object))];
+  if (!coupleDraft.click && coupleDraft.clickSet !== "1" && ordered[0] && fits(ordered[0].object)) coupleDraft = { ...coupleDraft, click: ordered[0].object };
+  const draft = coupleDraft;
+  coupleSelect(box, "Runs free turning", "free", [["1", "forward"], ["-1", "back"]], draft.free);
+  if (free && draft.freeSet !== "1") addText(box, "p", `As ${wheelStamp!.title} cuts its teeth, ${nameOf(wheelId)} runs free turning ${free === 1 ? "forward" : "back"} on its hinge.`, "pose-couple-help");
+  coupleSelect(box, "Click", "click", [["", "None"], ...ordered.map((row) => [row.object, fits(row.object) ? `${nameOf(row.object)} (made for this wheel)` : nameOf(row.object)] as [string, string])], draft.click);
+  if (!draft.click) return;
+  const parts = couplingParts(assembly, wheelId, draft.click);
+  const read = readRatchet(parts.wheel, parts.click, projectCode);
+  if (read && !("reason" in read) && draft.manual !== "1") {
+    const line = addText(box, "p", `Read from the parts: ${read.said}`, "pose-couple-read");
+    line.dataset.poseCoupleRead = read.from;
+    const type = button(box, "Type them", "couple-type");
+    type.dataset.tip = "Type the wheel's teeth and radii yourself, for a wheel made another way.";
+    return;
+  }
+  if (read && "reason" in read) addText(box, "p", read.reason, "pose-couple-help").dataset.poseCoupleRead = "refused";
+  coupleField(box, "Teeth", "teeth", draft.teeth, "");
+  coupleField(box, "Tip radius mm", "tip", draft.tip, "");
+  coupleField(box, "Root radius mm", "root", draft.root, "");
 }
 function coupleSelect(parent: HTMLElement, label: string, name: keyof CoupleDraft, options: [string, string][], value: string): void {
   const wrap = document.createElement("label"); wrap.className = "pose-field";
@@ -1104,6 +1151,12 @@ function coupleField(parent: HTMLElement, label: string, name: keyof CoupleDraft
   addText(wrap, "span", label);
   const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.poseCouple = name; input.value = value; input.placeholder = placeholder; input.setAttribute("aria-label", label);
   wrap.append(input); parent.append(wrap);
+}
+/** Whether the parts give the ratchet's numbers, so the form shows them read. */
+function readsRatchet(assembly: Assembly, wheel: string, click: string): boolean {
+  const parts = couplingParts(assembly, wheel, click);
+  const read = readRatchet(parts.wheel, parts.click, projectCode);
+  return !!read && !("reason" in read);
 }
 /** Couple the selected part's joint to the chosen part's, as the form says: one edit, one Undo. */
 function coupleDeclared(): void {
@@ -1120,9 +1173,16 @@ function coupleDeclared(): void {
     spec.free = draft.free === "-1" ? -1 : 1;
     if (draft.click) {
       spec.click = draft.click;
-      for (const key of ["teeth", "tip", "root"] as const) { const value = number(draft[key]); if (value !== undefined) spec[key] = value; }
+      if (draft.manual === "1" || !readsRatchet(row.assembly, row.member.object, draft.click)) for (const key of ["teeth", "tip", "root"] as const) { const value = number(draft[key]); if (value !== undefined) spec[key] = value; }
       const pose = poseOf(draft.click);
       if (pose) spec.clickCentre = applyPose(pose, centre(draft.click));
+      // docs/plan-clock-parts.md: what the person did not type is read from the stamps, and a stamped click's hand from
+      // its own outline.
+      const parts = couplingParts(row.assembly, row.member.object, draft.click);
+      const stamped = ratchetFromStamps(parts.wheel, parts.click, { teeth: spec.teeth, tip: spec.tip, root: spec.root, free: spec.free }, projectCode);
+      if ("reason" in stamped) { say(stamped.reason); return; }
+      Object.assign(spec, stamped.fill);
+      if (stamped.clickCentre) spec.clickCentre = stamped.clickCentre;
     }
   }
   for (const value of [spec.ratio, spec.radius, spec.teeth, spec.tip, spec.root]) if (value !== undefined && !Number.isFinite(value)) { say("Enter finite numbers."); return; }
@@ -1229,6 +1289,16 @@ function panelClick(event: Event): void {
   if (action === "contact-back" || action === "contact-on") { void untilContact(action === "contact-on" ? 1 : -1); return; }
   if (action === "contact-exact") { void exactContact(); return; }
   if (action === "couple-declared") { coupleDeclared(); return; }
+  if (action === "couple-type") {
+    // Type the numbers over those read: the fields start from them.
+    const row = selected();
+    const parts = row && coupleDraft.click ? couplingParts(row.assembly, row.member.object, coupleDraft.click) : null;
+    const read = parts ? readRatchet(parts.wheel, parts.click, projectCode) : null;
+    const numbers = read && !("reason" in read) ? read.numbers : null;
+    coupleDraft = { ...coupleDraft, manual: "1", ...(numbers ? { teeth: String(numbers.teeth), tip: String(numbers.tip), root: String(numbers.root) } : {}) };
+    renderPanel();
+    return;
+  }
   if (action === "remove-coupling") {
     const row = selected(), index = Number(target.dataset.index);
     const gone = row?.assembly.couplings?.[index];
@@ -1303,9 +1373,9 @@ function panelChange(event: Event): void {
   if (couple) {
     // A new kind starts its numbers afresh: a ratio typed for one kind means something else in another.
     if (couple === "kind" && input.value === coupleDraft.kind) return;
-    coupleDraft = couple === "kind" ? { ...EMPTY_DRAFT, driven: coupleDraft.driven, kind: input.value as CoupleKind } : { ...coupleDraft, [couple]: input.value } as CoupleDraft;
+    coupleDraft = couple === "kind" ? { ...EMPTY_DRAFT, driven: coupleDraft.driven, kind: input.value as CoupleKind } : { ...coupleDraft, [couple]: input.value, ...(couple === "free" ? { freeSet: "1" } : couple === "click" ? { clickSet: "1", manual: "" } : {}) } as CoupleDraft;
     // A choice that changes which fields the form shows draws it again; a typed number waits for Couple.
-    if (couple === "kind" || couple === "click" || couple === "driven") { coupleNote = null; renderPanel(); }
+    if (couple === "kind" || couple === "click" || couple === "driven" || couple === "free") { coupleNote = null; renderPanel(); }
     return;
   }
   const name = input.dataset.poseField;

@@ -172,6 +172,8 @@ mcp/plugin-hints.test.ts
 mcp/recipe-root.test.ts
 mcp/recipe-query.test.ts
 mcp/recipe-horology.test.ts
+mcp/clock-parts.test.ts
+mcp/clock-couple.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts
