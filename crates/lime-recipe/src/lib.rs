@@ -452,7 +452,9 @@ pub struct Part {
 /// 1.12: `gears` (the library's involute gears, and true involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
 /// 1.13: `mech` (pendulum periods and lengths, docs/plan-mass-properties.md).
 /// 1.14: `horology`, clock ingredients (going trains, the Graham escapement, ratchet and click, BS 978-2 cycloidal teeth, bores).
-pub const API: (u32, u32) = (1, 14);
+/// 1.15: reads of an animation's rig at a pose (`Rig::first_contact`, `first_contact_with`, `clearance`, `crossing`,
+/// `angle`) and `anim::frame_times` (docs/plan-contact-poses.md).
+pub const API: (u32, u32) = (1, 15);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -6237,7 +6239,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 14));
+        assert_eq!(API, (1, 15));
     }
 
     #[test]
@@ -6829,7 +6831,7 @@ D {:?}", sampled_area(&d, [0.0, 0.0], [12.0, 12.0], 240), d.area(), a, b, d);
 
 /// A declarative pose animation. The host owns sampling, limits and rendering (recipe API 1.8).
 pub mod anim {
-    use super::Json;
+    use super::{Json, Refusal, Session};
 
     /// One joint target in the member's part frame, or a model-space Reach target.
     #[derive(Clone, Debug, PartialEq)]
@@ -6895,6 +6897,100 @@ pub mod anim {
             }
             Group { pattern: pattern.to_string(), names }
         }
+
+        /// Recipe API 1.15: drive `member`'s joint from where it stands at `at`, in `dir` (1 or -1, the joint's own
+        /// sense), until a part it moves first touches any part that stays, within 360 degrees (a slide: its limit) and
+        /// 0.01 mm. `None` when nothing is met. Nothing moves: the script keys what it reads.
+        #[track_caller]
+        pub fn first_contact(&self, s: &mut Session, at: &Pose, member: &str, dir: i32) -> Result<Option<Touch>, Refusal> {
+            let line = std::panic::Location::caller().line();
+            read_contact(s, at, &ContactAsk::new(member, dir), line)
+        }
+
+        /// `first_contact` with a named part to touch, a range and a tolerance.
+        #[track_caller]
+        pub fn first_contact_with(&self, s: &mut Session, at: &Pose, ask: &ContactAsk) -> Result<Option<Touch>, Refusal> {
+            let line = std::panic::Location::caller().line();
+            read_contact(s, at, ask, line)
+        }
+
+        /// The least distance between two members' meshes at `at`, mm: 0.0 when they touch or cross.
+        #[track_caller]
+        pub fn clearance(&self, s: &mut Session, at: &Pose, a: &str, b: &str) -> Result<f64, Refusal> {
+            let line = std::panic::Location::caller().line();
+            let reply = s.call("rig_clearance", Json::obj().set("pose", at.read_json()).set("a", a).set("b", b))?;
+            reply.get("mm").and_then(Json::as_f64).ok_or(Refusal { reason: "The host gave no clearance.".to_string(), line })
+        }
+
+        /// Whether two members cross at `at`, by the mesh pass the frames are checked with.
+        #[track_caller]
+        pub fn crossing(&self, s: &mut Session, at: &Pose, a: &str, b: &str) -> Result<bool, Refusal> {
+            let line = std::panic::Location::caller().line();
+            let reply = s.call("rig_clearance", Json::obj().set("pose", at.read_json()).set("a", a).set("b", b))?;
+            reply.get("crossing").and_then(Json::as_bool).ok_or(Refusal { reason: "The host gave no crossing.".to_string(), line })
+        }
+
+        /// A member's hinge angle (degrees) or slide travel (mm) at `at`: a gear train's follower as its lead turns it.
+        #[track_caller]
+        pub fn angle(&self, s: &mut Session, at: &Pose, member: &str) -> Result<f64, Refusal> {
+            let line = std::panic::Location::caller().line();
+            let reply = s.call("rig_angle", Json::obj().set("pose", at.read_json()).set("member", member))?;
+            reply.get("angle").and_then(Json::as_f64).ok_or(Refusal { reason: "The host gave no angle.".to_string(), line })
+        }
+    }
+
+    /// What a contact read found (API 1.15): the driven joint's value at first contact (degrees, or mm for a slide), the
+    /// moving part and the part it touches, the clearance left (mm, at most the tolerance), and the first value found
+    /// crossing.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Touch { pub angle: f64, pub moving: String, pub other: String, pub clearance_mm: f64, pub past: f64 }
+
+    /// A contact read's question (API 1.15): the member to drive and its direction, and optionally the part to touch
+    /// (default any part that stays), the range (degrees or mm) and the tolerance (mm).
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ContactAsk { member: String, dir: i32, against: Option<String>, max: Option<f64>, tolerance: Option<f64> }
+    impl ContactAsk {
+        pub fn new(member: &str, dir: i32) -> Self { ContactAsk { member: member.to_string(), dir, against: None, max: None, tolerance: None } }
+        pub fn against(mut self, name: &str) -> Self { self.against = Some(name.to_string()); self }
+        pub fn max(mut self, value: f64) -> Self { self.max = Some(value); self }
+        pub fn tolerance(mut self, mm: f64) -> Self { self.tolerance = Some(mm); self }
+        pub(crate) fn json(&self, at: &Pose) -> Json {
+            let mut out = Json::obj().set("pose", at.read_json()).set("member", self.member.as_str()).set("dir", self.dir);
+            if let Some(name) = &self.against { out = out.set("against", name.as_str()); }
+            if let Some(value) = self.max { out = out.set("max", value); }
+            if let Some(mm) = self.tolerance { out = out.set("tolerance", mm); }
+            out
+        }
+    }
+
+    fn no_answer(line: u32) -> Refusal { Refusal { reason: "The host gave no contact answer.".to_string(), line } }
+
+    #[track_caller]
+    fn read_contact(s: &mut Session, at: &Pose, ask: &ContactAsk, line: u32) -> Result<Option<Touch>, Refusal> {
+        let reply = s.call("rig_contact", ask.json(at))?;
+        let contact = reply.get("contact").and_then(Json::as_bool).ok_or(no_answer(line))?;
+        if !contact { return Ok(None); }
+        let angle = reply.get("angle").and_then(Json::as_f64).ok_or(no_answer(line))?;
+        let moving = reply.get("moving").and_then(Json::as_str).ok_or(no_answer(line))?.to_string();
+        let other = reply.get("other").and_then(Json::as_str).ok_or(no_answer(line))?.to_string();
+        let clearance_mm = reply.get("clearanceMm").and_then(Json::as_f64).ok_or(no_answer(line))?;
+        let past = reply.get("past").and_then(Json::as_f64).ok_or(no_answer(line))?;
+        Ok(Some(Touch { angle, moving, other, clearance_mm, past }))
+    }
+
+    /// The times the host samples an animation's frames at (API 1.15): `end * i / (n - 1)` for `n = round(end * fps)`
+    /// frames, or one frame at 0. A key on each of these times is shown as keyed, with nothing interpolated between.
+    pub fn frame_times(fps: u32, end: f64) -> Vec<f64> {
+        let n = (end * fps as f64).round();
+        let mut times = Vec::new();
+        if n <= 1.0 { times.push(0.0); return times; }
+        let count = n as u64;
+        let mut i = 0u64;
+        while i < count {
+            times.push(end * i as f64 / (count - 1) as f64);
+            i += 1;
+        }
+        times
     }
     fn matches(pattern: &str, name: &str) -> bool {
         let pieces: Vec<&str> = pattern.split('*').collect();
@@ -6918,6 +7014,11 @@ pub mod anim {
         pub fn set_all(mut self, group: &Group, aim: Aim) -> Self { self.set.push((group.pattern.clone(), aim)); self }
         /// A colour change at this key is a cut, not an interpolation.
         pub fn colour(mut self, name: &str, hex: &str) -> Self { self.colors.push((name.to_string(), hex.to_string())); self }
+        /// The pose a read of the rig is taken at (API 1.15): rest and the named aims, as a key at time 0 would pose them.
+        pub(crate) fn read_json(&self) -> Json {
+            let (set, _) = self.json();
+            Json::obj().set("rest", self.rest).set("set", set)
+        }
         fn json(&self) -> (Json, Json) {
             let mut set = Json::obj(); let mut colors = Json::obj();
             for (name, aim) in &self.set { set = set.set(name, aim.json()); }
@@ -6971,7 +7072,7 @@ pub mod anim {
 
 #[cfg(test)]
 mod animation_tests {
-    use super::{anim::{Aim, Animation, Ease, Pose, Rig}, Json};
+    use super::{anim::{frame_times, Aim, Animation, ContactAsk, Ease, Pose, Rig}, Json};
 
     #[test]
     fn animation_encodes_keys_and_rig_groups() {
@@ -6998,5 +7099,33 @@ mod animation_tests {
         assert!(anim.to_json().at("background").is_none(), "a 1.8 animation must send the same call as before");
         anim.background("#204060");
         assert_eq!(anim.to_json().at("background").and_then(Json::as_str), Some("#204060"));
+    }
+
+    #[test]
+    fn frame_times_are_the_hosts() {
+        // The host: n = max(1, round(end * fps)) frames at end * i / (n - 1) (src/pose-anim.ts).
+        assert_eq!(frame_times(12, 0.0), vec![0.0]);
+        assert_eq!(frame_times(4, 0.1), vec![0.0]);
+        let times = frame_times(12, 2.0);
+        assert_eq!(times.len(), 24);
+        assert_eq!(times[0], 0.0);
+        assert_eq!(times[23], 2.0);
+        assert_eq!(times[5].to_bits(), (2.0 * 5.0 / 23.0f64).to_bits());
+    }
+
+    #[test]
+    fn contact_reads_send_the_pose_as_a_key_would() {
+        let at = Pose::new().set("Anchor", 8.0).colour("Anchor", "#ff0000");
+        let read = at.read_json();
+        assert_eq!(read.at("set.Anchor").and_then(Json::as_f64), Some(8.0));
+        assert_eq!(read.get("rest").and_then(Json::as_bool), Some(false));
+        assert!(read.get("colors").is_none(), "a read takes no colours");
+        let ask = ContactAsk::new("Wheel", -1).against("Pallet").max(30.0).tolerance(0.005).json(&at);
+        assert_eq!(ask.get("member").and_then(Json::as_str), Some("Wheel"));
+        assert_eq!(ask.get("dir").and_then(Json::as_f64), Some(-1.0));
+        assert_eq!(ask.get("against").and_then(Json::as_str), Some("Pallet"));
+        assert_eq!(ask.get("max").and_then(Json::as_f64), Some(30.0));
+        assert_eq!(ask.get("tolerance").and_then(Json::as_f64), Some(0.005));
+        assert!(ContactAsk::new("Wheel", 1).json(&at).get("against").is_none(), "any part, unless one is named");
     }
 }

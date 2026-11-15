@@ -12,6 +12,7 @@ export const REFUSAL_CODES = {
   "no-assembly": "The part is in no assembly, or the named assembly does not exist.",
   "bad-placement": "The parts cannot be joined or placed that way (not on the plate, different assemblies, itself).",
   "bad-assembly": "The assemblies cannot be selected or merged as requested.",
+  "no-contact": "A joint driven until contact touched nothing within the range searched; nothing moved.",
   "nothing-to-undo": "The plate history has nothing to undo.",
   "nothing-to-redo": "The plate history has nothing to redo.",
   "single-shell": "The mesh is one shell, so there is nothing to split.",

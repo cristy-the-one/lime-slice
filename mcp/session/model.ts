@@ -13,7 +13,7 @@ import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHan
 import { onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
 import { exprLeaves } from "../../src/modeling/links.ts";
-import { IDENTITY_POSE, isIdentity, posedBounds, seatLift, thenPose, typedPoseOf } from "../../src/model-space.ts";
+import { type Affine, IDENTITY_POSE, isIdentity, posedBounds, seatLift, thenPose, typedPoseOf } from "../../src/model-space.ts";
 import { newTree, pathTo, type ModelOp, type ModelTree, type NodeId } from "../../src/model-tree.ts";
 import { sketchOutline, type PickReads } from "../../src/recipe/picks.ts";
 import { transitionStaleBy } from "../../src/model-transition.ts";
@@ -28,12 +28,13 @@ import { gearRefusal } from "../../src/model-gear.ts";
 import { typedView } from "../../src/modeling/typed-view.ts";
 import { gearPairRows, gearsInTree } from "../../src/gear-pair.ts";
 import { exactVerdict, interference, SLIVER_MM3 } from "../../src/interference.ts";
-import { assemblyOf, solveAssembly, withMember } from "../../src/assembly.ts";
-import { turnHinge } from "../../src/pose.ts";
+import { assemblyOf, drives, solveAssembly, type Assembly } from "../../src/assembly.ts";
+import { firstContact, type ContactPart } from "../../src/contact.ts";
+import { trainTurn } from "../../src/gear-train.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
 import { noteTreeCall } from "./mesh-end.ts";
 import { modelMass } from "./mass.ts";
-import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, type PlateObject, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
+import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, PLACE_KEYS, type PlateObject, posedPositions, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
 
@@ -44,10 +45,14 @@ const MODEL_TOOLS: Record<string, ObjectToolHandler> = {
   workplane_set: (s, obj, input) => s.workplaneSet(obj, input),
   workplane_print_up: (s, obj) => s.printUp(obj),
   model_place: (s, obj, input) => {
-    const result = s.modelPlace(obj, input);
-    if (input.compact !== true || result.ok !== true) return result;
-    const { note: _note, ...compact } = result;
-    return compact;
+    const compacted = (result: Record<string, unknown>) => {
+      if (input.compact !== true || result.ok !== true) return result;
+      const { note: _note, ...compact } = result;
+      return compact;
+    };
+    // Contact in poses (docs/plan-contact-poses.md): drive the joint until it touches. It may ask the kernel, so it waits.
+    if (input.until !== undefined) return s.placeUntil(obj, input).then(compacted);
+    return compacted(s.modelPlace(obj, input));
   },
   model_probe: (s, obj, input) => {
     const anchored = s.anchored(obj, input.op as Record<string, unknown>);
@@ -137,51 +142,78 @@ async function commonVolume(this: Session, a: PlateObject, b: PlateObject): Prom
   return { volumeMm3: Math.abs(preview.volumeMm3), volumes, ...(box ? { boxMm: { min: box.min.map(mm), max: box.max.map(mm) } } : {}) };
 }
 
-/** Bisection stops when the crossing is pinned to this many degrees. */
+/** Bisection stops when the crossing is pinned to this many degrees, unless the call gives its own tolerance. */
 const SWEEP_REFINE_DEG = 0.5;
 /** Most angles one sweep tries before it refines, so a call stays bounded. */
-const SWEEP_MAX_STEPS = 120;
+const SWEEP_MAX_STEPS = 1000;
+/** The finest step a sweep takes, degrees. */
+const SWEEP_MIN_STEP = 0.01;
+
+/** `assembly` with no joint limits, so a sweep can find them. */
+function unlimited(assembly: Assembly): Assembly {
+  return { ...assembly, members: assembly.members.map((row) => {
+    if (!drives(row.joint)) return row;
+    const { min: _min, max: _max, ...open } = row.joint;
+    return { ...row, joint: open };
+  }) };
+}
+
+/** The members whose solved pose differs between two solves. */
+function movedMembers(before: Map<string, Affine>, after: Map<string, Affine>, ids: readonly string[]): string[] {
+  const same = (p: Affine | undefined, q: Affine | undefined) => !!p && !!q && p.m.every((v, k) => Math.abs(v - q.m[k]!) <= 1e-9) && p.t.every((v, k) => Math.abs(v - q.t[k]!) <= 1e-9);
+  return ids.filter((id) => !same(before.get(id), after.get(id)));
+}
 
 /**
- * `model_check {sweep:{from, to, step}}`: turn the part's hinge through the range, as model_place {angle} would (limits
- * left out: this is for finding them), and stop at the first angle where it or anything that rides on it shares volume
- * with a part that does not move. The mesh pass finds candidates; the kernel measures them, as model_check {interference,
- * exact} does. The crossing is then bisected to SWEEP_REFINE_DEG. Poses are put back as they were, and nothing is undoable.
+ * `model_check {sweep:{from, to, step, tolerance}}`: turn the part's hinge through the range, as model_place {angle}
+ * would, its gear train with it (docs/plan-contact-poses.md: a coupled train follows; limits left out: this is for
+ * finding them), and stop at the first angle where it or anything that moves with it shares volume with a part that
+ * does not move. The mesh pass finds candidates; the kernel measures them, as model_check {interference, exact} does.
+ * The crossing is then bisected to `tolerance` degrees. Poses are put back as they were, and nothing is undoable.
  */
 async function jointSweep(this: Session, host: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
   const part = typeof spec.object === "string" ? this.find(spec.object) : host;
   if (!part) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
   const assemblies = this.liveAssemblies();
   const base = assemblyOf(assemblies, part.id);
-  const solved = base ? solveAssembly(base, (id) => this.find(id)?.modelPose, this.params).assembly : undefined;
+  const poseOf = (id: string) => this.find(id)?.modelPose;
+  const solved = base ? solveAssembly(base, poseOf, this.params).assembly : undefined;
   const member = solved?.members.find((row) => row.object === part.id);
-  if (!base || !solved || !member || member.parent === null || member.joint?.kind !== "hinge") return refuse("bad-placement", "A sweep needs a part with a hinge in an assembly: model_place {joint} makes one.", undefined, NEXT.assembly);
+  if (!base || !solved || !member || member.joint?.kind !== "hinge") return refuse("bad-placement", "A sweep needs a part with a hinge in an assembly: model_place {joint} makes one.", undefined, NEXT.assembly);
   const hinge = member.joint;
   const { from, to } = spec as { from?: unknown; to?: unknown };
   const step = spec.step === undefined ? 5 : spec.step;
+  const refine = spec.tolerance === undefined ? SWEEP_REFINE_DEG : spec.tolerance;
   if (typeof from !== "number" || typeof to !== "number" || !Number.isFinite(from) || !Number.isFinite(to) || typeof step !== "number" || !(step > 0) || !Number.isFinite(step)) return refuse("bad-argument", "A sweep needs finite from and to angles in degrees, and a positive step.");
+  if (step < SWEEP_MIN_STEP) return refuse("bad-argument", `The finest sweep step is ${SWEEP_MIN_STEP} degrees; give tolerance to pin the crossing finer.`);
+  if (typeof refine !== "number" || !Number.isFinite(refine) || refine < 0.001 || refine > 45) return refuse("bad-argument", "tolerance is degrees, from 0.001 to 45: the bisection pins the crossing to it.");
   const count = Math.floor(Math.abs(to - from) / step + 1e-9) + 1;
   if (count > SWEEP_MAX_STEPS) return refuse("bad-argument", `That is ${count} steps; a sweep tries at most ${SWEEP_MAX_STEPS}. Give a larger step.`);
   const direction = to >= from ? 1 : -1;
   const angles = Array.from({ length: count }, (_, i) => from + direction * step * i);
   if (Math.abs(angles[angles.length - 1]! - to) > 1e-9) angles.push(to);
-  // The part and every part that sits on it turn together; the rest stay.
-  const moving = new Set([part.id]);
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const row of solved.members) if (row.parent !== null && moving.has(row.parent) && !moving.has(row.object)) { moving.add(row.object); grew = true; }
+  const was = hinge.angle ?? 0;
+  // The hinge turns its train (trainTurn), limits left out. A locked train is refused with its own sentence.
+  const open = unlimited(solved);
+  const turnTo = (angle: number) => trainTurn(open, part.id, angle - was);
+  const ids = solved.members.map((row) => row.object);
+  const start = solveAssembly(solved, poseOf).poses;
+  // The parts that move are those whose pose changes, as trainTurn makes it: what rides on the part, and its train.
+  const moving = new Set<string>([part.id]);
+  let followers: string[] = [];
+  for (const delta of [1, 37]) {
+    const turned = turnTo(was + delta);
+    if ("reason" in turned) return refuse("bad-placement", turned.reason);
+    for (const id of movedMembers(start, solveAssembly(turned.assembly, poseOf).poses, ids)) moving.add(id);
+    followers = turned.angles.filter((row) => row.object !== part.id).map((row) => row.object);
   }
   const saved = new Map(solved.members.flatMap((row) => { const obj = this.find(row.object); return obj ? [[obj.id, { m: [...obj.modelPose.m], t: [...obj.modelPose.t] }] as const] : []; }));
-  const { min: _min, max: _max, ...open } = hinge;
-  const was = hinge.angle ?? 0;
   let evaluations = 0;
   const crossing = async (angle: number): Promise<{ pairs: Record<string, unknown>[] } | { reason: string }> => {
     evaluations += 1;
-    const turned = turnHinge({ ...member, joint: open }, angle - was);
+    const turned = turnTo(angle);
     if ("reason" in turned) return { reason: turned.reason };
-    const placed = withMember(solved, { ...turned, joint: { ...hinge, angle } });
-    if ("reason" in placed) return { reason: placed.reason };
-    this.writeSolved(placed, "", false);
+    this.writeSolved(turned.assembly, "", false);
     const cheap = this.meshInterference(part);
     if (cheap.ok !== true) return { reason: String(cheap.reason ?? "The parts could not be checked.") };
     const hits: Record<string, unknown>[] = [];
@@ -199,7 +231,8 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
     }
     return { pairs: hits };
   };
-  const round = (value: number) => Math.round(value * 100) / 100 + 0;
+  const decimals = refine < 0.01 ? 1e4 : 100;
+  const round = (value: number) => Math.round(value * decimals) / decimals + 0;
   try {
     let clear: number | null = null;
     let hit: { angle: number; pairs: Record<string, unknown>[] } | null = null;
@@ -212,7 +245,7 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
     if (hit && clear !== null) {
       let lo: number = clear;
       // Pin the first crossing between the last clear angle and the first crossing one.
-      while (Math.abs(hit.angle - lo) > SWEEP_REFINE_DEG) {
+      while (Math.abs(hit.angle - lo) > refine) {
         const mid: number = (hit.angle + lo) / 2;
         const here = await crossing(mid);
         if ("reason" in here) return refuse("bad-placement", here.reason);
@@ -222,11 +255,13 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
       clear = lo;
     }
     const limits = { ...(hinge.min !== undefined ? { min: hinge.min } : {}), ...(hinge.max !== undefined ? { max: hinge.max } : {}) };
+    const trainNote = followers.length ? ` Its gear train turned with it (${followers.map((id) => shownName(this.find(id)?.name ?? id)).join(", ")}).` : "";
     return {
       ok: true,
       object: part.id,
       assembly: base.name,
-      sweep: { from, to, step },
+      sweep: { from, to, step, tolerance: refine },
+      ...(followers.length ? { train: followers } : {}),
       ...(hit ? { firstCollisionDeg: round(hit.angle), collidesWith: hit.pairs.map((row) => ({ ...row, other: moving.has(String(row.a)) ? row.b : row.a })) } : { collision: null }),
       clearRange: clear === null ? null : { fromDeg: from, toDeg: round(clear) },
       ...(Object.keys(limits).length ? { limits } : {}),
@@ -234,12 +269,121 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
       note: hit
         ? clear === null
           ? "The part already crosses at the first angle: start the sweep from a clear pose."
-          : `Clear from ${from} to ${round(clear)}; it first crosses a fixed part by ${round(hit.angle)} (pinned to ${SWEEP_REFINE_DEG} degrees). Parts that ride on this one are swept with it. Poses are as they were.`
-        : `Clear over the whole sweep, ${from} to ${to}. Joint limits were not applied. Poses are as they were.`,
+          : `Clear from ${from} to ${round(clear)}; it first crosses a fixed part by ${round(hit.angle)} (pinned to ${refine} degrees). Parts that ride on this one are swept with it.${trainNote} Poses are as they were.`
+        : `Clear over the whole sweep, ${from} to ${to}.${trainNote} Joint limits were not applied. Poses are as they were.`,
     };
   } finally {
     for (const [id, pose] of saved) { const obj = this.find(id); if (obj) obj.modelPose = pose as typeof obj.modelPose; }
   }
+}
+
+/** Each member's triangles in its own part frame: a solid's kernel mesh, or a mesh part with its seat lift. */
+function contactParts(this: Session, assembly: Assembly): ContactPart[] {
+  return assembly.members.flatMap((row) => {
+    const part = this.find(row.object);
+    if (!part) return [];
+    const solid = !!part.solid && part.solid.positions.length >= 9;
+    const positions = solid ? part.solid!.positions : posedPositions(part.source, seatLift(part.seatMm));
+    return positions.length >= 9 ? [{ object: part.id, positions: positions instanceof Float32Array ? positions : new Float32Array(positions) }] : [];
+  });
+}
+
+const UNTIL_KEYS = ["contact", "dir", "max", "tolerance", "exact"];
+
+/**
+ * `model_place {object, until:{contact, dir, max?, tolerance?, exact?}}` (docs/plan-contact-poses.md section 2): drive
+ * the part's joint, with its train, until a part it moves first touches `contact` (or any part that stays), by the
+ * shared solve (src/contact.ts), and move it there as one Undo step. With `exact` (default), the kernel's common volume
+ * of the touching pair is taken at the answer and just past it, and a disagreement with the mesh pass is reported.
+ */
+async function placeUntil(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const others = ["to", "assembly", "frame", "joint", "angle", "travel", "reach", "gears", "root", "reply", ...PLACE_KEYS];
+  if (others.some((key) => input[key] !== undefined)) return refuse("conflicting-arguments", "Give until on its own: it drives the part's joint and sets nothing else.");
+  const until = input.until as Record<string, unknown>;
+  if (!until || typeof until !== "object" || Array.isArray(until)) return refuse("bad-argument", "until is {contact, dir, max, tolerance, exact}.");
+  const extra = Object.keys(until).filter((key) => !UNTIL_KEYS.includes(key));
+  if (extra.length) return refuse("bad-argument", `until takes contact, dir, max, tolerance and exact, not ${extra.join(", ")}.`);
+  if (typeof until.contact !== "string" || until.contact === "") return refuse("missing-argument", "until needs contact: the part to touch, or any.");
+  if (until.dir !== 1 && until.dir !== -1) return refuse("bad-argument", "until needs dir: 1 or -1, the joint's own sense or against it.");
+  if (until.max !== undefined && (typeof until.max !== "number" || !Number.isFinite(until.max))) return refuse("bad-argument", "max is a number: degrees for a hinge, mm for a slide.");
+  if (until.tolerance !== undefined && (typeof until.tolerance !== "number" || !Number.isFinite(until.tolerance))) return refuse("bad-argument", "tolerance is a number of mm.");
+  if (until.exact !== undefined && typeof until.exact !== "boolean") return refuse("bad-argument", "exact is true or false.");
+  const assemblies = this.liveAssemblies();
+  const base = assemblyOf(assemblies, obj.id);
+  if (!base) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one, and {joint} gives it a hinge or a slide.", undefined, NEXT.assembly);
+  let against = "any";
+  if (until.contact !== "any") {
+    const other = this.find(until.contact);
+    if (!other) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+    against = other.id;
+  }
+  const poseOf = (id: string) => this.find(id)?.modelPose;
+  const solved = solveAssembly(base, poseOf, this.params).assembly;
+  const name = (id: string) => shownName(this.find(id)?.name ?? id);
+  const found = firstContact(solved, poseOf, contactParts.call(this, solved), {
+    object: obj.id, dir: until.dir, against, nameOf: name,
+    ...(typeof until.max === "number" ? { max: until.max } : {}),
+    ...(typeof until.tolerance === "number" ? { toleranceMm: until.tolerance } : {}),
+  });
+  if ("reason" in found) return refuse("bad-placement", found.reason);
+  const unit = found.kind === "hinge" ? "degrees" : "mm";
+  const key = found.kind === "hinge" ? "angle" : "travel";
+  const r6 = (value: number) => Math.round(value * 1e6) / 1e6 + 0;
+  const searched = { from: r6(found.searched.from), to: r6(found.searched.to), ...(found.searched.limit ? { limit: true } : {}) };
+  const ignored = found.ignored.length ? { ignored: found.ignored.map((row) => ({ moving: row.moving, other: row.other, names: [name(row.moving), name(row.other)] })) } : {};
+  if (!found.contact) {
+    const stop = found.searched.limit ? ", where a joint limit stops it" : "";
+    return refuse("no-contact", `Nothing is touched turning ${name(found.body)} from ${searched.from} to ${searched.to} ${unit}${stop}. Nothing moved.`, { searched, evaluations: found.evaluations, ...ignored });
+  }
+  const pair = found.pair!;
+  // The kernel's word on the pair, at the answer and just past it. Poses are put back after.
+  let exact: Record<string, unknown> | undefined;
+  if (until.exact !== false) {
+    const a = this.find(pair.moving), b = this.find(pair.other);
+    const saved = new Map(solved.members.flatMap((row) => { const one = this.find(row.object); return one ? [[one.id, { m: [...one.modelPose.m], t: [...one.modelPose.t] }] as const] : []; }));
+    const measure = async (assembly: Assembly): Promise<Record<string, unknown>> => {
+      this.writeSolved(assembly, "", false);
+      const measured = a && b ? await this.commonVolume(a, b) : { reason: "Part gone." };
+      if ("reason" in measured) return { measured: false, note: measured.reason };
+      const volumeMm3 = Math.round(measured.volumeMm3 * 1000) / 1000;
+      return { verdict: measured.volumeMm3 === 0 ? "clear" : exactVerdict(measured.volumeMm3, [measured.volumes[0], measured.volumes[1]]), volumeMm3 };
+    };
+    try {
+      const atContact = await measure(found.assembly);
+      const pastTurn = trainTurn(solved, found.body, found.past! - found.from);
+      const past = "reason" in pastTurn ? { measured: false, note: pastTurn.reason } : await measure(pastTurn.assembly);
+      exact = { atContact, past, ...(atContact.measured === false ? {} : { agrees: atContact.verdict !== "crossing" }) };
+    } finally {
+      for (const [id, pose] of saved) { const one = this.find(id); if (one) one.modelPose = pose as typeof one.modelPose; }
+    }
+  }
+  this.remember("Pose");
+  this.assemblies = assemblies.map((row) => (row.id === base.id ? found.assembly : row));
+  const moved = this.writeSolved(found.assembly, "", true);
+  this.autosaveDirty = true;
+  const clearance = Math.round(found.clearanceMm! * 1e5) / 1e5 + 0;
+  const value = r6(found.value);
+  const exactNote = !exact ? " The kernel was not asked (exact: false)."
+    : exact.agrees === undefined ? ` The kernel could not measure the pair: ${String((exact.atContact as { note?: string }).note ?? "")}`
+    : exact.agrees === false ? ` The kernel disagrees: it finds ${String((exact.atContact as { volumeMm3?: number }).volumeMm3)} mm³ shared at this pose, where the mesh pass finds the parts clear; the facets are short of the true surface there. The pose is the mesh pass's.`
+    : (exact.past as { verdict?: string }).verdict === "clear" ? " The kernel finds no shared volume at this pose, nor just past it: the facets meet a little before the true surfaces do, within the kernel's chord tolerance."
+    : " The kernel finds no shared volume at this pose, and shared volume just past it.";
+  const rows = found.angles.filter((row) => row.object !== found.body);
+  return {
+    ok: true,
+    assembly: found.assembly.name,
+    object: obj.id,
+    joint: found.body,
+    [key]: value,
+    contact: { moving: pair.moving, other: pair.other, names: [name(pair.moving), name(pair.other)], clearanceMm: clearance, toleranceMm: found.toleranceMm, past: r6(found.past!), check: "mesh" },
+    searched,
+    evaluations: found.evaluations,
+    ...ignored,
+    ...(rows.length ? { angles: rows } : {}),
+    ...moved,
+    ...(exact ? { exact } : {}),
+    note: `${name(found.body)} turned to ${value} ${unit}, where ${name(pair.moving)} touches ${name(pair.other)} with ${clearance} mm left (the mesh pass, to ${found.toleranceMm} mm).${exactNote} One Undo puts it back.`,
+  };
 }
 
 function meshInterference(this: Session, obj: PlateObject): Record<string, unknown> {
@@ -837,6 +981,7 @@ function printUp(this: Session, obj: PlateObject): Record<string, unknown> {
 export const modelMethods = {
   interferenceCheck,
   jointSweep,
+  placeUntil,
   commonVolume,
   meshInterference,
   ghostMesh,

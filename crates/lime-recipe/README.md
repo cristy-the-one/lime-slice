@@ -114,3 +114,14 @@ counter-clockwise; `outline_points` turns one into a polyline.
 - **Bores.** `hole`, `shaft` and `pin_bore` add the mean clearance of an ISO 286 fit (running H9/d9, sliding H7/h6, press
   H7/p6) and a printing allowance you measure; `bearing` knows 20 small ball bearings (608, 623 to 626, 683 to 685, 693 to
   695, MR63 to MR115) with their seats and shafts.
+## Reads of an animation's rig (API 1.15)
+
+An animation script names keys; the host poses the frames. To key from the geometry, a script reads the rig at a pose it
+states (`docs/plan-contact-poses.md`): `rig.first_contact(&mut s, &at, "Wheel", 1)` drives the wheel's joint from where
+it stands at `at` until a part it moves first touches a part that stays (`Option<Touch>`: the angle, the two parts, the
+clearance left, at most 0.01 mm); `first_contact_with` takes a `ContactAsk` (a part to touch, a range, a tolerance);
+`rig.clearance` is the least distance between two members (mm, 0 when touching or crossing), `rig.crossing` the mesh
+pass's verdict, and `rig.angle` a member's angle there (a gear train's follower as its lead turns it). `at` is a `Pose`,
+resolved as a key at time 0 would be; nothing moves and nothing is kept between reads. `anim::frame_times(fps, end)` are
+the times the host samples frames at, so keys put there are shown as read. The numbers are the host's: the crate sends
+JSON and reads JSON, so lust and rustc builds send the same calls and get the same answers.

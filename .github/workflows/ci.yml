@@ -327,6 +327,8 @@ jobs:
           node --experimental-strip-types mcp/gear.test.ts
           # A train of real gears with no frame or hand-made hinge: Couple gears, the root turning on the plate, exact volume at each turn (docs/plan-gear-kinds.md).
           node --experimental-strip-types mcp/gear-train-occt.test.ts
+          # Contact in poses with exact: the kernel's word at the answer and past it, on a flat pallet and a round pin.
+          node --experimental-strip-types mcp/contact-occt.test.ts
           node --experimental-strip-types mcp/assembly-friction-occt.test.ts
           node --experimental-strip-types mcp/assembly-export.test.ts
           node --experimental-strip-types mcp/assembly-part-frame.test.ts
@@ -810,6 +812,8 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-gears.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-mech.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-horology.test.ts
+          # Contact in poses (docs/plan-contact-poses.md): model_place {until}, sweep on a train, an escapement animation keyed from rig reads, lust and rustc alike.
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/contact.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-native-bytes.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/plugin-step.test.ts

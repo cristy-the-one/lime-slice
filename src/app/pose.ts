@@ -1,6 +1,6 @@
 import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
-import { assemblyOf, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
+import { assemblyOf, bodyOf, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
 import { couplingLine, crossedNotes, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
 import { modelTrees } from "./model-trees.ts";
@@ -26,6 +26,7 @@ import type { AnimationStage } from "../recipe/animation-run.ts";
 import { bodySha256, pluginFileText, readPluginFile, type PluginFileInfo, type PluginParamInfo } from "../plugin-file.ts";
 import { apiVerdict } from "../recipe/api-level.ts";
 import { RECIPE_API } from "../plugin-step.ts";
+import type { ContactJob, ContactJobReply } from "../contact-worker.ts";
 
 /** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
 const CHECK_ANGLES = Array.from({ length: 24 }, (_, i) => (i * 360) / 23);
@@ -55,6 +56,11 @@ let animationParameterPlugins: unknown;
 let animationRun = 0;
 export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined }
 let animation: PoseAnimationState | null = null;
+/** "Until contact" (docs/plan-contact-poses.md): the solve running, and what the last one said, for the part it ran on. */
+let contactBusy = false;
+let contactNote: { object: string; text: string } | null = null;
+let contactWorker: Worker | null = null;
+let contactJob = 0;
 let animationRequest = 0;
 /**
  * An animation being prepared: its script built and run, its frames made off the window's thread. One at a time: Play
@@ -672,6 +678,7 @@ function renderPanel(): void {
       field(panel, "Minimum mm", "min", joint.min, "Free"); field(panel, "Maximum mm", "max", joint.max, "Free");
     } else field(panel, "Cone °", "cone", joint.cone, "Free");
   }
+  contactSection(panel, row.assembly, row.member);
   const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
   button(actions, "Rest", "rest"); button(actions, "Make rest", "make-rest"); button(actions, "Undo", "undo"); button(actions, "Redo", "redo");
   massSection(panel, row.assembly, row.member.object);
@@ -715,6 +722,92 @@ function massSection(panel: HTMLElement, assembly: Assembly, object: string): vo
   const swung = swing(body, point, axis);
   if ("reason" in swung) { addText(box, "p", swung.reason); return; }
   addText(box, "p", `Period ${fixed(swung.periodS, 3)} s for small swings (simple pendulum ${fixed(swung.lengthMm, 1)} mm), gravity along −Z${swung.offRestDeg > 0.5 ? `; turned ${fixed(swung.offRestDeg, 1)}° from rest` : ""}`);
+}
+/** The driven joint of a selected member: its own hinge or slide, or that of the part it is seated on without a joint. */
+function contactBody(assembly: Assembly, member: Member): Member | null {
+  const body = bodyOf(assembly, member.object);
+  if (!body || "reason" in body || body.fixed) return null;
+  const driven = assembly.members.find((row) => row.object === body.body);
+  return driven && drives(driven.joint) ? driven : null;
+}
+/** "Until contact", one button for each way, and what the last press found. */
+function contactSection(panel: HTMLElement, assembly: Assembly, member: Member): void {
+  const body = contactBody(assembly, member);
+  if (!body) return;
+  const slide = body.joint?.kind === "slide";
+  const verb = slide ? "Slide" : "Turn";
+  const actions = document.createElement("div"); actions.className = "pose-buttons"; actions.dataset.poseContact = ""; panel.append(actions);
+  const back = button(actions, "◀ Until contact", "contact-back"), on = button(actions, "Until contact ▶", "contact-on");
+  back.setAttribute("aria-label", `${verb} back until contact`); on.setAttribute("aria-label", `${verb} on until contact`);
+  const what = body.object === member.object ? `this part's ${slide ? "slide" : "hinge"}` : `the ${slide ? "slide" : "hinge"} it rides on`;
+  back.dataset.tip = `${verb} ${what} backwards (${slide ? "against its axis" : "clockwise about its axis"}), with its gear train, until a part it moves first touches another part of the assembly, and stop there. One Undo.`;
+  on.dataset.tip = `${verb} ${what} forwards (${slide ? "along its axis" : "anticlockwise about its axis"}), with its gear train, until a part it moves first touches another part of the assembly, and stop there. One Undo.`;
+  for (const one of [back, on]) one.disabled = contactBusy;
+  const line = contactBusy ? "Finding contact…" : contactNote?.object === member.object ? contactNote.text : "";
+  if (line) { const note = addText(panel, "p", line); note.dataset.poseContactNote = ""; note.setAttribute("role", "status"); }
+}
+/** A solve off the UI thread; on the UI thread when no worker can be made. */
+async function solveContact(job: ContactJob): Promise<ContactJobReply> {
+  let worker: Worker;
+  try {
+    contactWorker ??= new Worker(new URL("../contact-worker.ts", import.meta.url), { type: "module" });
+    worker = contactWorker;
+  } catch {
+    contactWorker = null;
+    const { solveContactJob } = await import("../contact-worker.ts");
+    return solveContactJob(job);
+  }
+  return await new Promise<ContactJobReply>((resolve, reject) => {
+    const done = (ev: MessageEvent<ContactJobReply>) => { if (ev.data.id !== job.id) return; worker.removeEventListener("message", done); resolve(ev.data); };
+    worker.addEventListener("message", done);
+    worker.addEventListener("error", () => { worker.terminate(); if (contactWorker === worker) contactWorker = null; reject(new Error("The contact search stopped: press again.")); }, { once: true });
+    worker.postMessage(job, job.parts.map((part) => part.positions.buffer as ArrayBuffer));
+  });
+}
+/**
+ * Drive the selected part's joint (with its train) until a part it moves first touches another, by the shared solve
+ * (src/contact.ts, the same as model_place {until}), and move it there: one Undo. Nothing moves when nothing is met.
+ */
+async function untilContact(dir: 1 | -1): Promise<void> {
+  const row = selected();
+  if (!row || contactBusy) return;
+  const object = row.member.object, assembly = row.assembly;
+  if (!contactBody(assembly, row.member)) return;
+  const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
+  const parts = assembly.members.flatMap((member) => {
+    const part = state.plate.objects.find((item) => item.id === member.object);
+    if (!part || part.sourcePos.length < 9) return [];
+    // The plate mesh in its CAD frame, up by its seat, as the animation and the clash check take it.
+    const seat = meshSeat(part.bytes) ?? 0, positions = new Float32Array(part.sourcePos);
+    if (seat) for (let i = 2; i < positions.length; i += 3) positions[i] += seat;
+    return [{ object: part.id, positions }];
+  });
+  const poses = assembly.members.flatMap((member) => { const pose = poseOf(member.object); return pose ? [[member.object, pose] as [string, Affine]] : []; });
+  const job: ContactJob = { id: ++contactJob, assembly: structuredClone(assembly), poses, parts, object, dir, names: assembly.members.map((member) => [member.object, nameOf(member.object)]) };
+  contactBusy = true; contactNote = null; renderPanel();
+  let reply: ContactJobReply;
+  try {
+    reply = await solveContact(job);
+  } catch (error) {
+    contactBusy = false; contactNote = { object, text: error instanceof Error ? error.message : String(error) }; renderPanel(); return;
+  }
+  contactBusy = false;
+  document.querySelector("#posePanel")?.setAttribute("data-contact-ms", String(Math.round(reply.ms)));
+  if (state.stage !== "pose") return;
+  const now = liveAssemblies().find((item) => item.id === assembly.id);
+  if (!now || JSON.stringify(now) !== JSON.stringify(assembly)) { contactNote = { object, text: "The assembly changed while contact was being found. Press again." }; renderPanel(); return; }
+  const answer = reply.answer;
+  if ("reason" in answer) { contactNote = { object, text: answer.reason }; renderPanel(); return; }
+  const slide = answer.kind === "slide";
+  const at = (value: number) => `${Math.round(value * 100) / 100}${slide ? " mm" : "°"}`;
+  const ignored = answer.ignored.length ? ` Left out, already crossing where it stood: ${answer.ignored.map((pair) => `${nameOf(pair.moving)} and ${nameOf(pair.other)}`).join("; ")}.` : "";
+  if (!answer.contact) {
+    contactNote = { object, text: `Nothing met ${slide ? "sliding" : "turning"} ${nameOf(answer.body)} from ${at(answer.searched.from)} to ${at(answer.searched.to)}${answer.searched.limit ? ", where a joint limit stops it" : ""}. Nothing moved.${ignored}` };
+    renderPanel(); return;
+  }
+  const pair = answer.pair!;
+  contactNote = { object, text: `${nameOf(pair.moving)} meets ${nameOf(pair.other)} at ${at(answer.value)}, ${Math.round(answer.clearanceMm! * 1000) / 1000} mm left.${ignored}` };
+  editAssembly(answer.assembly);
 }
 /** The assembly's gears where they stand, from each member's Model history. Model fills the trees it holds. */
 function assemblyGears(assembly: Assembly, poses: ReadonlyMap<string, Affine>): WorldGear[] {
@@ -846,6 +939,7 @@ function panelClick(event: Event): void {
     syncPose(); return;
   }
   if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
+  if (action === "contact-back" || action === "contact-on") { void untilContact(action === "contact-on" ? 1 : -1); return; }
   if (action === "undo") { undoUserEdit(); syncPose(); return; }
   if (action === "redo") { redoUserEdit(); syncPose(); return; }
   if (action === "step" && target.dataset.assembly) {

@@ -26,6 +26,21 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (process.argv.includes("--contact")) {
+  // docs/plan-contact-poses.md: a frame (z 0 to 4), an arm 20 x 2 x 5 hinged about +z at its near end (the origin), and a
+  // stop 2 x 2 x 5 at x 12 to 14, y 5 to 7, both standing at z 6. Turning +z, the arm's face y = 1 first meets the stop's
+  // corner (14, 5). The hinge stops at -30 the other way, where nothing is in reach.
+  const frame = String((await call("solid_new", { primitive: "box", dx: 60, dy: 60, dz: 4, name: "Frame" })).object);
+  const arm = String((await call("solid_new", { primitive: "box", dx: 20, dy: 2, dz: 5, name: "Arm" })).object);
+  const stop = String((await call("solid_new", { primitive: "box", dx: 2, dy: 2, dz: 5, name: "Stop" })).object);
+  await call("model_place", { object: arm, to: frame, x: 10, y: 0, z: 6 });
+  await call("model_place", { object: arm, joint: { kind: "hinge", pivot: [-10, 0, 0], axis: [0, 0, 1], min: -30 } });
+  await call("model_place", { object: stop, to: frame, x: 13, y: 6, z: 6 });
+  const saved = await call("project_save", { name: "pose-contact.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ frame, arm, stop }));
+  process.exit(0);
+}
 if (process.argv.includes("--compound")) {
   // A free compound train, ten to one: a driver of 16 on a wheel of 40, and a pinion of 12 attached to that wheel (one
   // shaft, no joint) on an output of 48. Module 1, each at its mating phase. Only the pinion is in an assembly.
