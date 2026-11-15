@@ -12,7 +12,8 @@ use crate::strategy::{
 use crate::support::tree::Foot;
 use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
 use crate::toolpath::{
-    bed_feet, plan_brim_lines, plan_support, plan_support_brim, plan_tree_support, Extrusion,
+    bed_feet, plan_belt_support, plan_brim_lines, plan_support, plan_support_brim,
+    plan_tree_support, Extrusion,
 };
 use crate::{
     BlendMode, PathKind, SliceSettings, Stage, StrategyId, SupportSource, SupportStyle, Watch,
@@ -45,6 +46,7 @@ pub(super) fn plan_supports(
         max_tip_spacing: support_tip_spacing(blend),
         job: settings.job,
         bead_width: settings.line_width,
+        line_width: settings.line_width,
         ..SupportOpts::default()
     };
     opts.floor = floor;
@@ -392,6 +394,13 @@ pub(super) fn emit_supports(
     if support.is_empty() && interface.is_empty() && disks.is_empty() && feet.is_empty() {
         return;
     }
+    // `through` is set only on a belt, where a patch thinner than its line
+    // spacing prints a line along it.
+    let fill = if through.is_some() {
+        plan_belt_support
+    } else {
+        plan_support
+    };
     let paint = |paths: &mut Vec<Extrusion>,
                  region_s: &[Loop],
                  region_i: &[Loop],
@@ -400,7 +409,7 @@ pub(super) fn emit_supports(
                  strategy: &ResolvedStrategy| {
         if shaft_scale > 0.0 {
             let mut sparse = if disks.is_empty() && feet.is_empty() {
-                plan_support(
+                fill(
                     region_s,
                     strategy,
                     line_width,
@@ -418,7 +427,7 @@ pub(super) fn emit_supports(
             }
             paths.extend(sparse);
         }
-        paths.extend(plan_support(
+        paths.extend(fill(
             region_i,
             strategy,
             line_width,
@@ -463,7 +472,7 @@ pub(super) fn emit_supports(
                     strategy,
                 );
             } else {
-                paths.extend(plan_support(
+                paths.extend(fill(
                     &clip_to_rect(interface, rect.0, rect.1),
                     strategy,
                     line_width,

@@ -16,7 +16,7 @@ use crate::poly::{boolean_diff, offset_loops, signed_area, Loop};
 use crate::strategy::pure;
 use crate::support::Disk;
 use crate::toolpath::{
-    plan_support, plan_tree_support, CapFeed, PartLayout, PathFeatures, Slowdown,
+    plan_belt_support, plan_support, plan_tree_support, CapFeed, PartLayout, PathFeatures, Slowdown,
 };
 use crate::{
     outline_tolerance_mm, slice_configured, slice_request, BlendMode, Job, Mesh, PathKind,
@@ -1370,4 +1370,88 @@ fn shallow_skins_leave_a_steep_slope_to_the_walls() {
     let (bands, contours) = sliding_slab(0.1);
     let on = &skin_regions(&bands, &contours, 0.9, true, false)[0][12];
     assert!(area(&on.top) < 1e-6 && area(&on.bottom) < 1e-6);
+}
+
+/// A belt cuts a flat underside in one nozzle plane, a strip narrower than
+/// the interface line spacing. Wherever the strip lies, and however thin it
+/// is, its interface prints one line its whole length.
+#[test]
+fn a_belt_interface_strip_prints_one_line_along_it_wherever_it_lies() {
+    let strategy = resolve(pure(StrategyId::Speed), &SliceSettings::default());
+    let density = crate::strategy::support_interface_density(&strategy);
+    for width in [0.02, 0.1, 0.2, 0.3, 0.44] {
+        for k in 0..9 {
+            let y = 5.0 + 0.071 * k as f64;
+            let strip = vec![[8.5, y], [33.0, y], [33.0, y + width], [8.5, y + width]];
+            let paths = plan_belt_support(&[strip], &strategy, 0.45, density, true, None);
+            let along: f64 = paths
+                .iter()
+                .filter(|p| p.kind == PathKind::SupportInterface)
+                .flat_map(|p| p.points.windows(2))
+                .map(|w| (w[1][0] - w[0][0]).abs())
+                .sum();
+            assert!(
+                along > 24.0,
+                "{width} mm strip at y {y}: {along} mm along it"
+            );
+        }
+    }
+    // A patch wide enough for its scan lines prints exactly as off the belt.
+    let wide = [square_loop(50.0, 0.0, 5.0)];
+    let on_belt = plan_belt_support(&wide, &strategy, 0.45, density, true, None);
+    let flat = plan_support(&wide, &strategy, 0.45, density, true, None);
+    let points = |paths: &[crate::toolpath::Extrusion]| -> Vec<Vec<[f64; 2]>> {
+        paths.iter().map(|p| p.points.clone()).collect()
+    };
+    assert_eq!(points(&on_belt), points(&flat));
+}
+
+/// The grid column under a belt strip is as thin as the strip. Where no
+/// line pinned in the lab crosses it, it prints a line along it; where one
+/// does, it keeps that line, so a column stays on the lines under it.
+#[test]
+fn a_thin_belt_column_prints_a_line_only_where_no_grid_line_crosses_it() {
+    let strategy = resolve(pure(StrategyId::Speed), &SliceSettings::default());
+    let density = crate::strategy::support_density(&strategy);
+    let strip = vec![[8.5, 5.0], [33.0, 5.0], [33.0, 5.2], [8.5, 5.2]];
+    let along = |paths: &[crate::toolpath::Extrusion]| -> f64 {
+        paths
+            .iter()
+            .flat_map(|p| p.points.windows(2))
+            .map(|w| (w[1][0] - w[0][0]).abs())
+            .sum()
+    };
+    // Rows at y = 2 + k·spacing all miss a strip at 5.0..5.2 for this density.
+    let spacing = (0.45 / density).clamp(0.45 * 1.05, 8.0);
+    let miss = [0.0, 5.0 - spacing * 0.5];
+    let bare = plan_belt_support(
+        &[strip.clone()],
+        &strategy,
+        0.45,
+        density,
+        false,
+        Some(miss),
+    );
+    assert!(plan_support(
+        &[strip.clone()],
+        &strategy,
+        0.45,
+        density,
+        false,
+        Some(miss)
+    )
+    .is_empty());
+    assert!(along(&bare) > 24.0, "{} mm along the column", along(&bare));
+    // A row through the strip's middle is kept as it is.
+    let hit = [0.0, 5.1];
+    assert_eq!(
+        plan_belt_support(&[strip.clone()], &strategy, 0.45, density, false, Some(hit))
+            .iter()
+            .map(|p| p.points.clone())
+            .collect::<Vec<_>>(),
+        plan_support(&[strip], &strategy, 0.45, density, false, Some(hit))
+            .iter()
+            .map(|p| p.points.clone())
+            .collect::<Vec<_>>(),
+    );
 }

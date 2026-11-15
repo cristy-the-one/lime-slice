@@ -196,23 +196,22 @@ fn the_report_is_opt_in_and_leaves_the_gcode_alone() {
     }
 }
 
-/// Bug F1 of the plan: on a flat bed the tree foot is a hollow two-wall
-/// ring, and the trunk's second layer prints inside it over bare bed. The
-/// floating-support audit passes it; this report does not. Flips when the
-/// foot is filled (plan step 1).
+/// Bug F1 of the plan: on a flat bed the tree foot was a hollow two-wall
+/// ring, and the trunk's second layer printed inside it over bare bed. Plan
+/// step 1 fills the foot and narrows the trunk from it half a bead a layer,
+/// so the foot and the layers just over it all rest.
 #[test]
-fn flat_tree_foot_on_the_bridge_span_rests_on_nothing_today() {
+fn flat_tree_foot_on_the_bridge_span_rests_on_its_filled_foot() {
     let s = stability(&bridge_span_sample(), Bed::Flat, "tree");
     assert_eq!(s.supports, 1, "{s:?}");
-    assert!(s.unrested_mm > 5.0, "{s:?}");
-    let tree = &s.most_unrested[0];
+    let tree = &s.most_slender[0];
     assert_eq!(tree.stands_on, Stand::Bed, "{tree:?}");
-    // The first unrested bead is on the second layer, inside the foot ring.
-    let at = tree.unrested_at.expect("an unrested bead");
-    assert!(at[2] < 0.45, "{tree:?}");
-    // The foot is about 4 mm across; the trunk above it far thinner.
+    // The foot is still about 4 mm across, and nothing on the foot's own
+    // layers or the taper just over it rests on nothing.
     assert!(tree.foot_min_mm > 3.5, "{tree:?}");
-    assert!(tree.base_min_mm < 2.0, "{tree:?}");
+    if let Some(at) = tree.unrested_at {
+        assert!(at[2] > 1.0, "{tree:?}");
+    }
 }
 
 /// No limit on height against width: the lone tree under the tall pad is
@@ -257,19 +256,16 @@ fn belt_grid_under_the_table_is_a_one_bead_curtain_today() {
     assert_eq!(s.unrested_mm, 0.0, "{s:?}");
 }
 
-/// Belt grid under the small hanging pad: loose dashes that reach neither
-/// the belt nor the pad. Flips with plan step 3.
+/// Belt grid under the small hanging pad was loose dashes that reached
+/// neither the belt nor the pad. Plan step 3 prints a line along each strip,
+/// so it is one column standing on the belt, all the way up to the pad.
 #[test]
-fn belt_grid_under_the_tall_pad_is_loose_dashes_today() {
+fn belt_grid_under_the_tall_pad_is_one_column_on_the_belt() {
     let s = stability(&tall_pad(), Bed::Belt, "grid");
-    assert!(s.supports > 10, "{s:?}");
-    assert!(s.support_mm < 50.0, "{s:?}");
-    assert!(
-        s.most_slender
-            .iter()
-            .all(|c| c.stands_on == Stand::Air && c.height_mm < 3.0),
-        "{s:?}"
-    );
+    assert_eq!(s.supports, 1, "{s:?}");
+    let column = &s.most_slender[0];
+    assert_eq!(column.stands_on, Stand::Belt, "{column:?}");
+    assert!(column.height_mm > 75.0, "{column:?}");
 }
 
 /// Flat grid columns stand whole: every bead rests on the one below.
