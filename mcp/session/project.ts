@@ -34,7 +34,7 @@ import { isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin } from "../p
 import { stlBytes } from "../request.ts";
 import { readAssemblies } from "../../src/assembly.ts";
 import { basename } from "node:path";
-import { readIdentity } from "../autosave.ts";
+import { readIdentity, tidyShelfAfterSave } from "../autosave.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "../workspace.ts";
 import { CHORD, ModelRunaway, type PlateObject, STEP, type ToolHandler, modelSteps, shownName, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -633,6 +633,8 @@ async function projectSave(this: Session, name: string, refuseExisting = false):
   this.sourceProject = structuredClone(doc);
   this.sourceHash = createHash("sha256").update(text).digest("hex");
   this.sourcePath = path;
+  // The project now lives in its own file: its shelved autosaves (kept when it was set aside) are not needed.
+  tidyShelfAfterSave(this.autosaveProject, path);
   const warnings = refused.map((row) => {
     const obj = this.find(row.object);
     const kept = obj && obj.bytes.byteLength > 0 ? "the plate keeps its last committed mesh" : "the plate holds its open kernel mesh";

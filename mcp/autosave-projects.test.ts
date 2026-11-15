@@ -13,6 +13,8 @@ import { Session } from "./session.ts";
 const ws = mkdtempSync(join(tmpdir(), "lime-autosave-projects-"));
 process.env.LIME_MCP_WORKSPACE = ws;
 const previous = join(ws, "autosave-previous.lime");
+const shelf = join(ws, "autosaves");
+const shelvedNames = () => (existsSync(shelf) ? readdirSync(shelf) : []).filter((name) => /^autosave-previous-.+\.lime$/.test(name));
 const objectsIn = (path: string) => (JSON.parse(readFileSync(path, "utf8")) as { objects?: unknown[] }).objects?.length ?? 1;
 
 /** The server ends: its autosave stays, under a pid nobody has. */
@@ -43,9 +45,9 @@ await endServer(b, 2147483641);
 const c = new Session(fakeEngine());
 await c.call("session_info", {});
 assert.equal(objectsIn(previous), 1, "the previous plate is B, the newest");
-const shelved = readdirSync(ws).filter((name) => /^autosave-previous-.+\.lime$/.test(name));
+const shelved = shelvedNames();
 assert.equal(shelved.length, 1, `A is kept beside it: ${readdirSync(ws)}`);
-assert.equal(objectsIn(join(ws, shelved[0]!)), 3, "and it is still A, with its 3 objects");
+assert.equal(objectsIn(join(shelf, shelved[0]!)), 3, "and it is still A, with its 3 objects");
 
 // Opening the previous plate carries that project on: its next autosave replaces its own older copy, nothing is shelved.
 assert.equal((await c.call("project_open", { path: previous })).ok, true);
@@ -54,7 +56,7 @@ await endServer(c, 2147483642);
 const d = new Session(fakeEngine());
 await d.call("session_info", {});
 assert.equal(objectsIn(previous), 2, "B carried on, with its new object");
-assert.equal(readdirSync(ws).filter((name) => /^autosave-previous-.+\.lime$/.test(name)).length, 1, `B's older copy is replaced, not shelved: ${readdirSync(ws)}`);
+assert.equal(shelvedNames().length, 1, `B's older copy is replaced, not shelved: ${readdirSync(ws)}`);
 
 // A new plate in a running server does not replace the autosave of the plate before it.
 const e = new Session(fakeEngine());
@@ -65,7 +67,7 @@ assert.equal((await e.call("project_create", { discard: true })).ok, true);
 await boxes(e, 1);
 e.flushAutosave();
 await e.autosaveSettled();
-const kept = readdirSync(ws).filter((name) => /^autosave-previous-.+\.lime$/.test(name)).map((name) => objectsIn(join(ws, name))).sort();
+const kept = shelvedNames().map((name) => objectsIn(join(shelf, name))).sort();
 assert.deepEqual(kept, [3, 4], `the 4-object plate is shelved: ${readdirSync(ws)}`);
 assert.equal(objectsIn(join(ws, `autosave-${process.pid}.lime`)), 1);
 console.log("autosave-projects ok");

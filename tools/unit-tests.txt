@@ -49,6 +49,7 @@ mcp/pose.test.ts
 mcp/render-unnamed.test.ts
 mcp/slice-collisions.test.ts
 mcp/autosave-projects.test.ts
+mcp/autosave-cleanup.test.ts
 mcp/gear-train.test.ts
 mcp/couplings.test.ts
 src/mass.test.ts
