@@ -454,7 +454,46 @@ pub struct Part {
 /// 1.14: `horology`, clock ingredients (going trains, the Graham escapement, ratchet and click, BS 978-2 cycloidal teeth, bores).
 /// 1.15: reads of an animation's rig at a pose (`Rig::first_contact`, `first_contact_with`, `clearance`, `crossing`,
 /// `angle`) and `anim::frame_times` (docs/plan-contact-poses.md).
-pub const API: (u32, u32) = (1, 15);
+/// 1.16: recipes that use plugins (docs/plan-plugin-recipes.md): `run_plugin` runs a kept plugin as a nested run and
+/// hands back the parts it made (`PluginRun`); `attach`, `hinge`, `slide`, `hold`, `joint`, `turn_joint` and
+/// `couple_gears` build an assembly of the parts the run made, where the host can assemble (`context.limits.canAssemble`).
+pub const API: (u32, u32) = (1, 16);
+
+/// What a nested plugin run made (API 1.16): the plugin and the version that ran, the part it ended on (`done`), every
+/// part it made and left on the plate, in the order made, and the numbers it ended with. The parts are this run's from
+/// now on: place them, change them, or end on one of them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginRun {
+    pub plugin: String,
+    pub version: u32,
+    pub part: Part,
+    pub parts: Vec<Part>,
+    pub metrics: Json,
+}
+
+impl PluginRun {
+    fn from_json(r: &Json) -> Option<PluginRun> {
+        let part = Part { object: r.get("object").and_then(Json::as_str)?.to_string() };
+        let mut parts = Vec::new();
+        if let Some(rows) = r.get("objects").and_then(Json::as_array) {
+            for row in rows.iter() {
+                if let Some(o) = row.as_str() {
+                    parts.push(Part { object: o.to_string() });
+                }
+            }
+        }
+        if parts.is_empty() {
+            parts.push(part.clone());
+        }
+        Some(PluginRun {
+            plugin: r.at("plugin.id").and_then(Json::as_str).unwrap_or("").to_string(),
+            version: r.at("plugin.version").and_then(Json::as_f64).unwrap_or(0.0) as u32,
+            part,
+            parts,
+            metrics: r.get("metrics").cloned().unwrap_or(Json::obj()),
+        })
+    }
+}
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -1439,6 +1478,83 @@ impl Session {
     #[track_caller]
     pub fn mesh_at_end(&mut self) {
         let _ = self.call("mesh_at_end", Json::obj());
+    }
+
+    /// Runs the kept plugin `id` with `params` as a nested run (API 1.16): its own build and parameters, inside this
+    /// run's transaction and limits. The parts it made come back as this run's own (`PluginRun`). A refusal comes back
+    /// as `Err` with the nested plugin's sentence and nothing of that nested run is left; an `Err` this recipe does not
+    /// handle ends the whole run, which then takes everything back. The host runs the version this recipe ran before
+    /// (pinned with its parts), else the library's current one, and never a plugin nobody approved.
+    #[track_caller]
+    pub fn run_plugin(&mut self, id: &str, params: Json) -> Result<PluginRun, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let r = self.call("plugin_run", Json::obj().set("plugin", id).set("params", params))?;
+        PluginRun::from_json(&r).ok_or(Refusal { reason: format!("plugin_run of {id} gave no part"), line })
+    }
+
+    /// `run_plugin` with one version of the plugin (API 1.16): the library's file of that version, or the project's copy.
+    #[track_caller]
+    pub fn run_plugin_version(&mut self, id: &str, version: u32, params: Json) -> Result<PluginRun, Refusal> {
+        let line = std::panic::Location::caller().line();
+        let r = self.call("plugin_run", Json::obj().set("plugin", id).set("version", version).set("params", params))?;
+        PluginRun::from_json(&r).ok_or(Refusal { reason: format!("plugin_run of {id} gave no part"), line })
+    }
+
+    /// Puts `part` in an assembly on `parent` (API 1.16): `at` is its offset in mm and `turn` its turns about X, Y and Z
+    /// in degrees, in the parent's frame. `model_place {object, to, x, y, z, turnX, turnY, turnZ}`; both parts must be
+    /// this run's, and the host must allow assembling (`context.limits.canAssemble`).
+    #[track_caller]
+    pub fn attach(&mut self, part: &Part, parent: &Part, at: [f64; 3], turn: [f64; 3]) -> Result<Json, Refusal> {
+        let args = Json::obj()
+            .set("object", part.object.as_str())
+            .set("to", parent.object.as_str())
+            .set("x", at[0])
+            .set("y", at[1])
+            .set("z", at[2])
+            .set("turnX", turn[0])
+            .set("turnY", turn[1])
+            .set("turnZ", turn[2]);
+        self.call("model_place", args)
+    }
+
+    /// Sets `part`'s joint to its parent (API 1.16): `joint` as `model_place {joint}` takes it (`kind` hinge, slide,
+    /// ball or held, with `pivot`, `axis`, `min`, `max`, `cone`, `zero`), or `Json::Null` to fix it again.
+    #[track_caller]
+    pub fn joint(&mut self, part: &Part, joint: Json) -> Result<Json, Refusal> {
+        self.call("model_place", Json::obj().set("object", part.object.as_str()).set("joint", joint))
+    }
+
+    /// A hinge (API 1.16): `part` turns about `axis` through `pivot`, both in its own frame.
+    #[track_caller]
+    pub fn hinge(&mut self, part: &Part, pivot: [f64; 3], axis: [f64; 3]) -> Result<Json, Refusal> {
+        self.joint(part, Json::obj().set("kind", "hinge").set("pivot", pivot).set("axis", axis))
+    }
+
+    /// A slide (API 1.16): `part` moves along `axis` from `pivot`, both in its own frame.
+    #[track_caller]
+    pub fn slide(&mut self, part: &Part, pivot: [f64; 3], axis: [f64; 3]) -> Result<Json, Refusal> {
+        self.joint(part, Json::obj().set("kind", "slide").set("pivot", pivot).set("axis", axis))
+    }
+
+    /// Held (API 1.16): `part` stays where it is, and Couple gears never gives it a hinge.
+    #[track_caller]
+    pub fn hold(&mut self, part: &Part) -> Result<Json, Refusal> {
+        self.joint(part, Json::obj().set("kind", "held"))
+    }
+
+    /// Turns `part`'s hinge to `angle` degrees from its zero (a slide: moves it `angle` mm), and a coupled train with it
+    /// (API 1.16): `model_place {object, angle}`.
+    #[track_caller]
+    pub fn turn_joint(&mut self, part: &Part, angle: f64) -> Result<Json, Refusal> {
+        self.call("model_place", Json::obj().set("object", part.object.as_str()).set("angle", angle))
+    }
+
+    /// Couples the gears of `part`'s assembly that mesh (API 1.16): `model_place {object, gears: "couple"}`, with the
+    /// same checks and refusals as the tool. Gears in no assembly get a hinge and an assembly of their own. The reply
+    /// lists the `couplings`, and any pair `notCoupled` or `locked` with the reason.
+    #[track_caller]
+    pub fn couple_gears(&mut self, part: &Part) -> Result<Json, Refusal> {
+        self.call("model_place", Json::obj().set("object", part.object.as_str()).set("gears", "couple"))
     }
 
     /// Commit work so far and let the host resume this run after an interruption.
@@ -6239,7 +6355,22 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 15));
+        assert_eq!(API, (1, 16));
+    }
+
+    #[test]
+    fn a_nested_plugin_run_reads_its_parts() {
+        let r = Json::parse(r#"{"ok":true,"object":"obj_3","objects":["obj_2","obj_3"],"metrics":{"teeth":40},"plugin":{"id":"gear-on-arbor","version":2}}"#).unwrap();
+        let run = PluginRun::from_json(&r).unwrap();
+        assert_eq!(run.plugin, "gear-on-arbor");
+        assert_eq!(run.version, 2);
+        assert_eq!(run.part, Part { object: "obj_3".to_string() });
+        assert_eq!(run.parts.len(), 2);
+        assert_eq!(run.metrics.get("teeth").and_then(Json::as_f64), Some(40.0));
+        // A host that names only the part it ended on: that part is the one made.
+        let one = PluginRun::from_json(&Json::parse(r#"{"object":"obj_9"}"#).unwrap()).unwrap();
+        assert_eq!(one.parts, vec![Part { object: "obj_9".to_string() }]);
+        assert!(PluginRun::from_json(&Json::parse("{}").unwrap()).is_none());
     }
 
     #[test]

@@ -464,7 +464,21 @@ export interface PluginStamp {
   context: { bedMm: [number, number, number]; nozzleMm: number };
   /** The run's last node's, so a rebuild with the same values can say when it drifted. */
   fingerprint: Fingerprint | null;
+  /**
+   * --- Recipe API 1.16 (docs/plan-plugin-recipes.md). The plugins the run ran from inside it (`run_plugin`), each pinned
+   * to the version and the code that ran, by id: a rebuild runs the same code, which the project keeps a copy of.
+   */
+  uses?: PluginPins;
 }
+
+/** A plugin a recipe ran from inside it, pinned: its version and the hash of the code that ran. */
+export interface PluginPin {
+  version: number;
+  sha256: string;
+}
+
+/** The plugins one run ran from inside it, by plugin id (API 1.16). */
+export type PluginPins = Record<string, PluginPin>;
 
 export interface RunMark {
   id: string;

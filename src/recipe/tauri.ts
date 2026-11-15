@@ -34,6 +34,9 @@ export class AppRecipes {
   private slotOrder: string[] = [];
   private readonly slotOf = new Map<string, number>();
   private runs = 0;
+  /** --- API 1.16. The slot each program was built in, and how many runs of each program are going on now. */
+  private readonly slotOfExe = new Map<string, number>();
+  private readonly running = new Map<string, number>();
   private ready: { ok: true; lust: string } | { ok: false; reason: string } | null = null;
 
   constructor(invoke: Invoke, listen: Listen) {
@@ -54,7 +57,11 @@ export class AppRecipes {
       const taken = new Set(this.slotOf.values());
       index = [...Array(SLOTS).keys()].find((i) => !taken.has(i));
       if (index === undefined) {
-        const oldest = this.slotOrder.shift()!;
+        // --- API 1.16. A slot whose program runs now (a plugin waiting on the plugin it runs) is never taken.
+        const busy = new Set([...this.running.keys()].map((exe) => this.slotOfExe.get(exe)));
+        const oldest = this.slotOrder.find((n) => !busy.has(this.slotOf.get(n)));
+        if (oldest === undefined) throw new Error(`Every recipe slot is running a recipe (${SLOTS}), so no other can be built now.`);
+        this.slotOrder = this.slotOrder.filter((n) => n !== oldest);
         index = this.slotOf.get(oldest)!;
         this.slotOf.delete(oldest);
       }
@@ -73,6 +80,7 @@ export class AppRecipes {
     return buildRecipe(async (text) => {
       try {
         const r = await this.invoke<{ code: number | null; stdout: string; stderr: string; exe: string | null; main: string; compiler?: "opt" | "tcc"; marked?: boolean }>("recipe_build", { slot, source: text });
+        if (r.exe) this.slotOfExe.set(r.exe, slot);
         return { code: r.code, stdout: r.stdout, stderr: r.stderr, ...(r.exe ? { exe: r.exe } : {}), main: r.main, ...(r.compiler ? { compiler: r.compiler } : {}), ...(r.marked ? { marked: true } : {}) } satisfies CompileResult;
       } catch (err) {
         return { code: -1, stdout: "", stderr: err instanceof Error ? err.message : String(err), main: "" };
@@ -83,7 +91,12 @@ export class AppRecipes {
   /** Runs a recipe this app built, answering its calls through `call`. */
   run(exe: string, start: Record<string, unknown>, call: RecipeCall, limits: RecipeLimits = DEFAULT_LIMITS, signal?: AbortSignal, onProgress?: (fraction: number, message: string) => void): Promise<RunOutcome> {
     this.runs += 1;
-    return runRecipe(this.spawn(exe, `run-${Date.now().toString(36)}-${this.runs}`, limits), start, call, limits, signal, onProgress);
+    this.running.set(exe, (this.running.get(exe) ?? 0) + 1);
+    return runRecipe(this.spawn(exe, `run-${Date.now().toString(36)}-${this.runs}`, limits), start, call, limits, signal, onProgress).finally(() => {
+      const left = (this.running.get(exe) ?? 1) - 1;
+      if (left > 0) this.running.set(exe, left);
+      else this.running.delete(exe);
+    });
   }
 
   /**

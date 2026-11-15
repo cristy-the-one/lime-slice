@@ -6,7 +6,9 @@ import { decodeSolid, type ParsedSolid } from "../../model-reply";
 import { pathTo, withNode, type ModelTree, type NodeId } from "../../model-tree";
 import type { PluginValue } from "../../model-tree";
 import { syncPluginSteps } from "../../ui/model-history";
-import { bodySha256, checkedCopies, type PluginFileInfo } from "../../plugin-file";
+import { bodySha256, checkedCopies, readPluginFile, type PluginFileInfo } from "../../plugin-file";
+import type { AppPluginSources } from "../../recipe/app-nested";
+import type { PluginCode } from "../../recipe/nested";
 import { runsOnPath } from "../../plugin-step";
 import { partNames, runSiblings } from "../../plugin-parts";
 import { freshRunId, rebuildPluginStep } from "../../recipe/rebuild";
@@ -173,6 +175,7 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
       engine: { tree: (key, node, request) => treeCall(key, node, request), open: (request) => post(request) },
       env: recipeEnv(at.objectId, madeIt, stamp.sha256),
       runId: freshRunId(),
+      plugins: appPluginSources(),
     });
   } finally {
     if (mine === S.ticket) S.busy = false;
@@ -213,6 +216,7 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
     // The code came from the library: the project keeps a copy, so it rebuilds where the library lacks it.
     session.plugins = { ...(session.plugins ?? {}), [stamp.sha256]: libraryCopy.text };
   }
+  keepUsedPlugins(result.used);
   // Trees the new run's steps name (a split's half, a split to print's pieces, a joined tool) stay, as an Apply's do.
   keepRunTrees(at, result.others);
   if (result.made) swapMadeTree(at, result.made, next, parsed);
@@ -235,6 +239,41 @@ export async function rebuildPluginRow(row: RowKey, changes: Record<string, Plug
   // The run's own row: folded under its first step's key, or that step's row when it is one step.
   const head = rowKey([], result.ids[0]!);
   return result.ids.length > 1 ? `fold:${head}` : head;
+}
+
+/**
+ * --- Recipe API 1.16 (docs/plan-plugin-recipes.md). Where a plugin run in the window finds the plugins it runs from
+ * inside it: the project's copies, then the library the window read (its current and older versions). A plugin a
+ * person must see before its first run here (`needsFirstRun`) never runs hidden inside another.
+ */
+export function appPluginSources(): AppPluginSources {
+  const library = pluginLibrary();
+  return {
+    sources: (id) => {
+      const codeOf = (file: PluginFileInfo | null | undefined, sha256: string): PluginCode | null => (file && file.plugin === id ? { version: file.version, sha256, text: file.text } : null);
+      const current = library.plugins.get(id);
+      return {
+        project: (sha256) => {
+          const text = session.plugins?.[sha256];
+          return text ? codeOf(readPluginFile(text), sha256) : null;
+        },
+        library: (version) => {
+          if (current && (version === undefined || current.file.version === version)) return codeOf(current.file, current.sha256);
+          if (version === undefined) return null;
+          for (const [sha256, file] of library.bySha) if (file.plugin === id && file.version === version) return codeOf(file, sha256);
+          return null;
+        },
+        olderVersions: () => [...library.bySha.values()].filter((file) => file.plugin === id && file.version !== current?.file.version).map((file) => file.version),
+      };
+    },
+    untrusted: (file, sha256) => (needsFirstRun(file, sha256, library) ? `${file.title} has not been run here yet, so it does not run from inside another plugin. Run it once from the Plugins panel, where its code is shown, then run this one again.` : null),
+  };
+}
+
+/** --- API 1.16. The project keeps the code of every plugin a kept run ran from inside it, so it rebuilds without the library. */
+export function keepUsedPlugins(used: readonly PluginCode[]): void {
+  const missing = used.filter((code) => !session.plugins?.[code.sha256]);
+  if (missing.length) session.plugins = { ...(session.plugins ?? {}), ...Object.fromEntries(missing.map((code) => [code.sha256, code.text])) };
 }
 
 /** What a plugin run in the window reads besides its part: the printer, the settings, and ids for what it makes. */

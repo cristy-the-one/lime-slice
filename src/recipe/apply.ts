@@ -7,7 +7,9 @@
  * object per made part, all one undo step.
  */
 import { gotoRequest } from "../model-request.ts";
-import type { ModelTree, NodeId, PluginStamp, PluginValue } from "../model-tree.ts";
+import type { ModelTree, NodeId, PluginPins, PluginStamp, PluginValue } from "../model-tree.ts";
+import { runNestedInApp, topNested, type AppPluginSources } from "./app-nested.ts";
+import { pinsOf, type PluginCode } from "./nested.ts";
 import { plainModelError } from "../app/model-error.ts";
 import { solidView, type SolidView } from "../modeling/model-calls.ts";
 import { markedRun, stampValue } from "../plugin-step.ts";
@@ -34,6 +36,10 @@ export interface PluginRunInput {
   signal?: AbortSignal;
   onProgress?: (fraction: number, message: string) => void;
   runId: string;
+  /** --- API 1.16. Where a `plugin_run` finds the plugins it runs; without it the run cannot run other plugins. */
+  plugins?: AppPluginSources;
+  /** --- API 1.16. The pins of the run this one repeats: the versions it ran from inside it before. */
+  pins?: PluginPins;
 }
 
 /** What a run left in the engine, for the caller to take out: steps on the given part, and trees it opened. */
@@ -74,6 +80,8 @@ export type PluginRunOutcome =
       /** Other trees the kept steps name: a split's half, a split to print's pieces, a joined tool. */
       others: RunPart[];
       notes: string[];
+      /** --- API 1.16. The plugins the run ran from inside it, with their code: the project keeps a copy of each. */
+      used: PluginCode[];
     } & RunTrace)
   | ({ ok: false; reason: string; line?: number; notes: string[] } & RunTrace);
 
@@ -120,7 +128,14 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
   calls.params = input.params;
   const queue = calls.useQueue(unreadKeys(built.unread), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
   const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
-  const out = await input.recipes.run(built.exe, start, calls.call, input.limits ?? DEFAULT_LIMITS, input.signal, input.onProgress);
+  // --- API 1.16. Plugins run from inside this one: one deadline and one budget of calls for them all.
+  const top = topNested(input.limits);
+  const used = new Map<string, PluginCode>();
+  if (input.plugins) {
+    const plugins = input.plugins;
+    calls.onPluginRun = (args) => runNestedInApp(args, calls, { recipes: input.recipes, engine, env, plugins, context: input.context, stack: [input.plugin.id], pins: input.pins ?? {}, limits: top.limits, deadline: top.deadline, ...(input.signal ? { signal: input.signal } : {}), used });
+  }
+  const out = await input.recipes.run(built.exe, start, calls.call, top.limits, input.signal, input.onProgress);
   // `done` builds what is still queued.
   if (out.ok && out.done && queue.holding) {
     const flushed = await queue.flushAll();
@@ -158,7 +173,8 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
   const unread = parts.find((row) => !row.solid);
   if (unread) return refuse(`The solid the plugin built for ${unread.name} could not be read. Run it again.`);
   const params = Object.fromEntries(Object.entries({ ...input.params, ...calls.picked }).filter(([, v]) => stampValue(v))) as PluginStamp["params"];
-  const fields: Omit<PluginStamp, "fingerprint"> = { plugin: input.plugin.id, version: input.plugin.version, sha256: input.plugin.sha256, api: input.plugin.api, params, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm } };
+  const uses = pinsOf(used);
+  const fields: Omit<PluginStamp, "fingerprint"> = { plugin: input.plugin.id, version: input.plugin.version, sha256: input.plugin.sha256, api: input.plugin.api, params, context: { bedMm: [...input.context.bedMm], nozzleMm: input.context.nozzleMm }, ...(uses ? { uses } : {}) };
   const kept: KeptPart[] = parts.map((row) => {
     const ids = runSteps(row);
     const stamp: PluginStamp = { ...fields, fingerprint: row.solid!.fingerprint ?? null };
@@ -166,5 +182,5 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
   });
   const shown = kept[parts.indexOf(target)]!;
   const others = calls.all.filter((row) => !parts.includes(row) && row.origin !== "given" && (row.origin !== "made" || row.consumed));
-  return { ok: true, tree: shown.tree, body: shown.body, solid: shown.solid, stamp: shown.stamp, ids: shown.ids, made: target.origin === "made" ? target : null, kept, others, notes, ...trace };
+  return { ok: true, tree: shown.tree, body: shown.body, solid: shown.solid, stamp: shown.stamp, ids: shown.ids, made: target.origin === "made" ? target : null, kept, others, notes, used: [...used.values()], ...trace };
 }

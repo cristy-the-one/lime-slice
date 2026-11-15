@@ -17,6 +17,8 @@ export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "model_check", "model_history", "measure", "model_place", "object_place", "section", "log", "data", "pick", "text_outline", "checkpoint", "mesh_at_end", "native_geometry",
   // --- API 1.11 (docs/plan-native-recipes.md 7.1): build what is queued on a part now.
   "flush",
+  // --- API 1.16 (docs/plan-plugin-recipes.md): run a kept plugin inside this run, its parts handed back.
+  "plugin_run",
 ]);
 
 /**
@@ -38,6 +40,11 @@ export interface RecipeLimits {
   callsFree?: boolean;
   /** Wall time for the process as a whole, when it differs from `timeoutS`. What the app's runner enforces. */
   wallS?: number;
+  /**
+   * --- API 1.16. The calls a tree of runs has made, shared by a recipe and the plugins it runs (`src/recipe/nested.ts`):
+   * `maxCalls` then bounds them all together.
+   */
+  spent?: { calls: number };
 }
 
 export const DEFAULT_LIMITS: RecipeLimits = { timeoutS: 30, maxCalls: 2000, maxLineBytes: 1 << 20 };
@@ -431,7 +438,8 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       const at = (msg.at && typeof msg.at === "object" ? msg.at : {}) as { line?: unknown; col?: unknown };
       const site: RecipeCallSite = { id, tool, args: (msg.args && typeof msg.args === "object" ? msg.args : {}) as Record<string, unknown>, line: typeof at.line === "number" ? at.line : 0, ...(typeof at.col === "number" ? { col: at.col } : {}) };
       calls += 1;
-      if (calls > limits.maxCalls) return stop(`The recipe made more than ${limits.maxCalls} calls and was stopped.`, site.line);
+      if (limits.spent) limits.spent.calls += 1;
+      if ((limits.spent?.calls ?? calls) > limits.maxCalls) return stop(limits.spent && limits.spent.calls > calls ? `The recipe and the plugins it ran made more than ${limits.maxCalls} calls and were stopped.` : `The recipe made more than ${limits.maxCalls} calls and was stopped.`, site.line);
       let answer: RecipeReply;
       if (start.kind === "animation" && !ANIMATION_TOOLS.has(tool)) {
         answer = { ok: false, error: "An animation can only pose the assembly it was given." };

@@ -186,6 +186,21 @@ export class AppRecipeCalls {
 
   /** The values the run was given: what a `pick` resolves (API 1.2). */
   params: Record<string, unknown> = {};
+
+  /**
+   * --- API 1.16. Runs a kept plugin inside this run (`./app-nested.ts`), set by the window's run; without it a recipe's
+   * `plugin_run` is refused with a sentence.
+   */
+  onPluginRun: ((args: Body) => Promise<RecipeReply>) | null = null;
+
+  /**
+   * --- API 1.16. The parts a nested plugin run made (`child`), taken in as this run's own: placed, changed, kept or taken
+   * back with the rest. Its notes come along, under the plugin's id.
+   */
+  adopt(child: AppRecipeCalls, id: string): void {
+    for (const row of child.all) if (row.origin !== "given") this.add(row);
+    for (const note of child.notes) if (this.notes.length < 200) this.notes.push(`${id}: ${note}`);
+  }
   /** What each given face or outline resolved to, for the step's stamp in its place. */
   readonly picked: Record<string, unknown> = {};
 
@@ -346,6 +361,7 @@ export class AppRecipeCalls {
       return Array.isArray(result) ? { ok: true, result } : { ok: false, error: "Native geometry is unavailable." };
     }
     if (site.tool === "checkpoint") return { ok: false, error: "Resumable checkpoints are available over MCP. Run this recipe over MCP to keep completed work." };
+    if (site.tool === "plugin_run") return this.onPluginRun ? this.onPluginRun(args) : { ok: false, error: "This run cannot run other plugins. Run it from the Plugins panel, or over MCP." };
     // Meshing once at the end is a speed choice over MCP; the window meshes each step as it always did, and the part is the same.
     if (site.tool === "mesh_at_end") return { ok: true, result: { ok: true } };
     if (site.tool === "log") {
