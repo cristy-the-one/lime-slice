@@ -7,8 +7,10 @@ import type { AppRecipes } from "./tauri.ts";
 import { ANIMATION_LIMITS, type RecipeReply } from "./host.ts";
 import { inlineIngredients } from "./ingredients.ts";
 import { splitPluginData } from "./plugin-data.ts";
+import { namesInCall } from "../anim-members.ts";
 
-export type AppAnimation = { ok: true; result: AnimationResult; spec: PoseAnimation; camera?: unknown; notes: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[] };
+/** `used`: the member names and patterns the script sent (docs/plan-animation-plugins.md A2), for Keep in library. */
+export type AppAnimation = { ok: true; result: AnimationResult; spec: PoseAnimation; camera?: unknown; notes: string[]; used: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[] };
 
 /**
  * Where a build stands, for the Pose panel: the script is compiled, then run; when it calls `animate` the frames are
@@ -39,7 +41,9 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
   let sampled: AnimationResult | undefined, camera: unknown, spec: PoseAnimation | undefined;
   let issues: { line?: number; reason: string }[] | undefined;
   onStage?.({ stage: "run" });
+  const used = new Set<string>();
   const run = await recipes.run(built.exe, { kind: "animation", params }, async (site): Promise<RecipeReply> => {
+    for (const name of namesInCall(site.tool, site.args)) used.add(name);
     if (site.tool === "rig") return { ok: true, result: { members: rig } };
     // Recipe API 1.13: reads of the rig at a pose the script states (docs/plan-contact-poses.md section 3).
     if (RIG_READ_TOOLS.has(site.tool)) return rigRead(site.tool, site.args, assembly, poseOf, parts);
@@ -67,5 +71,5 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
   if (signal?.aborted) return { ok: false, reason: CANCELLED };
   if (!run.ok || issues) return { ok: false, reason: run.reason ?? issues?.[0]?.reason ?? "The animation failed.", ...(issues ? { issues } : {}) };
   if (!sampled || !spec) return { ok: false, reason: "The script ended without an animation." };
-  return { ok: true, result: sampled, spec, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])] };
+  return { ok: true, result: sampled, spec, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])], used: [...used] };
 }

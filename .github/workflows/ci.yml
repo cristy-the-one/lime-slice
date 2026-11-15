@@ -322,6 +322,8 @@ jobs:
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
           node --experimental-strip-types mcp/large-profile.test.ts
+          # A window cut as one closed spline and as a polyline: no thin wall in either (docs/plan-mcp-reliability.md, item 3).
+          node --experimental-strip-types mcp/thin-spline-occt.test.ts
           node --experimental-strip-types mcp/interference-exact.test.ts
           # A kernel gear step: solid_new {gear}, the gear op, two gears that mesh within their backlash (docs/plan-native-recipes.md milestone 8).
           node --experimental-strip-types mcp/gear.test.ts
@@ -806,6 +808,7 @@ jobs:
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-run.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/pose-animate.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-plugin.test.ts
+          LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/animation-keep.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-cancel.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-checkpoint.test.ts
           LIME_RECIPE_REQUIRED=1 node --experimental-strip-types mcp/recipe-geom2d.test.ts

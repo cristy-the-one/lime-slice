@@ -100,11 +100,47 @@ const clashRig: Assembly = { ...rig, members: [rig.members[0]!, { ...rig.members
 const clashParts = parts.filter((part) => part.object !== "tip").map((part) => ({ ...part, positions: cube }));
 const clash = sampleAnimation({ fps: 4, keys: [{ t: 0 }] }, clashRig, poseOf, clashParts);
 if ("issues" in clash) throw Error(JSON.stringify(clash.issues));
-assert.ok(clash.warnings.some((warning) => warning.reason.includes("Frame 1") && warning.reason.includes("intersects")));
-// Two parts that stand still are tested once, and every frame still says they cross.
+// Two parts that overlap at rest are one warning that says so, not one a frame (docs/plan-mcp-reliability.md, item 2).
+assert.equal(clash.warnings.length, 1, JSON.stringify(clash.warnings));
+assert.equal(clash.warnings[0]!.atRest, true);
+assert.deepEqual(clash.warnings[0]!.pair, ["Body", "Finger"]);
+assert.ok(clash.warnings[0]!.reason.includes("overlaps Finger at rest") && clash.warnings[0]!.reason.includes("deeper than 0.05 mm"), clash.warnings[0]!.reason);
+// Two parts that stand still are tested once: the one warning counts every frame.
 const still = sampleAnimation({ fps: 4, keys: [{ t: 0 }, { t: 1 }] }, clashRig, poseOf, clashParts);
 if ("issues" in still) throw Error(JSON.stringify(still.issues));
-assert.deepEqual(still.warnings.map((warning) => warning.reason.slice(0, 8)), still.frames.map((_, frame) => `Frame ${frame + 1}:`));
+assert.equal(still.warnings.length, 1, JSON.stringify(still.warnings));
+assert.equal(still.warnings[0]!.atRest, true);
+assert.equal(still.warnings[0]!.frames, still.frames.length);
+assert.ok(still.warnings[0]!.reason.includes("every frame keeps them so"), still.warnings[0]!.reason);
+// Turned away from its rest pose and still crossing, the same pair is a crossing on the frames it moved.
+const turned = sampleAnimation({ fps: 4, keys: [{ t: 0, rest: true }, { t: 1, set: { Finger: 60 } }] }, clashRig, poseOf, clashParts);
+if ("issues" in turned) throw Error(JSON.stringify(turned.issues));
+const turnedRest = turned.warnings.find((warning) => warning.atRest), turnedMoving = turned.warnings.find((warning) => !warning.atRest);
+assert.equal(turnedRest?.frames, 1, JSON.stringify(turned.warnings));
+assert.equal(turnedMoving?.frames, 3, JSON.stringify(turned.warnings));
+assert.equal(turnedMoving?.firstFrame, 2);
+assert.ok(turnedMoving!.reason.startsWith("Body intersects Finger on 3 of 4 frames, first frame 2 at 0.333 s"), turnedMoving!.reason);
+// A part driven into another is reported on the frames it crosses, with the first frame and its time: the tolerance
+// does not hide a real crossing. An arm turns on a hinge into a post that stands on the base.
+const block = (x0: number, y0: number, z0: number, dx: number, dy: number, dz: number) => cube.map((v, i) => [x0, y0, z0][i % 3]! + v / 2 * [dx, dy, dz][i % 3]!);
+const swing: Assembly = { id: "swing", name: "Swing", members: [
+  { object: "base", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "post", parent: "base", offset: [0, 0, 0], turn: [0, 0, 0] },
+  { object: "arm", parent: "base", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1], angle: 0 } },
+] };
+const swingParts: AnimationPart[] = [
+  { object: "base", name: "Base", positions: Float32Array.from(block(-12, -12, -1, 24, 24, 1)) },
+  { object: "post", name: "Post", positions: Float32Array.from(block(5, 3, 0, 2, 2, 3)) },
+  { object: "arm", name: "Arm", positions: Float32Array.from(block(0, -0.5, 1, 10, 1, 1)) },
+];
+const driven = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Arm: 0 } }, { t: 1, set: { Arm: 45 } }] }, swing, poseOf, swingParts);
+if ("issues" in driven) throw Error(JSON.stringify(driven.issues));
+const intoPost = driven.warnings.filter((warning) => warning.pair?.includes("Post") && warning.pair.includes("Arm"));
+assert.equal(intoPost.length, 1, JSON.stringify(driven.warnings));
+assert.equal(intoPost[0]!.atRest, undefined, "clear at rest, so it is a crossing");
+assert.equal(intoPost[0]!.firstFrame, 3, JSON.stringify(intoPost));
+assert.ok(intoPost[0]!.frames! >= 1);
+assert.ok(!driven.warnings.some((warning) => warning.pair?.includes("Base")), "the arm and the post rest on the base: a touch, not a crossing");
 // An export at another frame rate asks for the poses only.
 const posesOnly = sampleAnimation({ fps: 4, keys: [{ t: 0 }, { t: 1 }] }, clashRig, poseOf, clashParts, { interference: false });
 if ("issues" in posesOnly) throw Error(JSON.stringify(posesOnly.issues));

@@ -40,6 +40,7 @@ src/project.test.ts
 src/assembly.test.ts
 src/pose.test.ts
 src/pose-anim.test.ts
+src/anim-members.test.ts
 src/animation-gif.test.ts
 src/pose-playback.test.ts
 src/recipe/animation-run.test.ts
@@ -231,6 +232,7 @@ src/sketch/loft-above.test.ts
 src/sketch/demos.test.ts
 src/sketch/infer.test.ts
 src/modeling/index.test.ts
+src/modeling/thin.test.ts
 src/model-face.test.ts
 src/model-loops.test.ts
 src/model-check.test.ts

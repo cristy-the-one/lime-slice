@@ -26,6 +26,18 @@ export interface PairResult {
 export const CONTACT_MM = 1e-3;
 
 /**
+ * The kernel meshes every face to within 0.05 mm of its surface (`CHORD` in mcp/session/shared.ts). Two faces that
+ * touch in the solids, an axle in a hole of its own radius, can overlap by that much in their meshes when the meshes
+ * do not line up (an arbor turned part of a segment). Passed as `toleranceMm`, overlap up to this depth is contact.
+ */
+export const MESH_TOLERANCE_MM = 0.05;
+
+/** How the mesh pass reads contact: overlap up to `toleranceMm` deep is a touch. Default `CONTACT_MM`. */
+export interface InterferenceOptions {
+  toleranceMm?: number;
+}
+
+/**
  * D11. A common volume under 0.01 mm³, or under a millionth of the smaller part's volume, is a touch: the kernel can
  * report a sliver where two faces coincide.
  */
@@ -133,7 +145,7 @@ function distances(a: V, b: V, c: V, p: V, q: V, r: V): [number, number, number]
   return [(dot(n, p) - k) / length, (dot(n, q) - k) / length, (dot(n, r) - k) / length];
 }
 
-const straddles = (d: [number, number, number]) => Math.min(d[0], d[1], d[2]) < -CONTACT_MM && Math.max(d[0], d[1], d[2]) > CONTACT_MM;
+const straddles = (d: [number, number, number], tolerance: number) => Math.min(d[0], d[1], d[2]) < -tolerance && Math.max(d[0], d[1], d[2]) > tolerance;
 
 /** Where triangle `t`, with distances `d` to the other plane, crosses that plane, as an interval along `dir`. */
 function span(t: [V, V, V], d: [number, number, number], dir: V): [number, number] {
@@ -150,13 +162,19 @@ function span(t: [V, V, V], d: [number, number, number], dir: V): [number, numbe
   return [Math.min(...values), Math.max(...values)];
 }
 
-/** Whether two triangles cross each other properly: each straddles the other's plane and the cut lines overlap. */
-export function trianglesCross(t: [V, V, V], u: [V, V, V]): V | null {
+/**
+ * Whether two triangles cross each other properly: each passes more than `tolerance` mm through the other's plane
+ * (both ways), and the cut lines overlap. The point returned is on the line where the two planes cut, at the middle of
+ * the overlap.
+ */
+export function trianglesCross(t: [V, V, V], u: [V, V, V], tolerance = CONTACT_MM): V | null {
   const du = distances(u[0], u[1], u[2], t[0], t[1], t[2]);
-  if (!du || !straddles(du)) return null;
+  if (!du || !straddles(du, tolerance)) return null;
   const dt = distances(t[0], t[1], t[2], u[0], u[1], u[2]);
-  if (!dt || !straddles(dt)) return null;
-  const dir = cross(cross(sub(t[1], t[0]), sub(t[2], t[0])), cross(sub(u[1], u[0]), sub(u[2], u[0])));
+  if (!dt || !straddles(dt, tolerance)) return null;
+  const nt = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+  const nu = cross(sub(u[1], u[0]), sub(u[2], u[0]));
+  const dir = cross(nt, nu);
   const length = Math.hypot(dir[0], dir[1], dir[2]);
   if (length < 1e-12) return null;
   const unit: V = [dir[0] / length, dir[1] / length, dir[2] / length];
@@ -166,9 +184,12 @@ export function trianglesCross(t: [V, V, V], u: [V, V, V]): V | null {
   const hi = Math.min(a[1], b[1]);
   if (hi - lo <= CONTACT_MM) return null;
   const mid = (lo + hi) / 2;
-  // A point on the cut line, near the middle of the overlap: the first triangle's crossing, slid along the line.
-  const base = t[0]!;
-  return [base[0] + unit[0] * (mid - dot(base, unit)), base[1] + unit[1] * (mid - dot(base, unit)), base[2] + unit[2] * (mid - dot(base, unit))];
+  // A point on both planes: (kt (nu × dir) + ku (dir × nt)) / |dir|², then slid along the line to the middle.
+  const kt = dot(nt, t[0]), ku = dot(nu, u[0]), a2 = length * length;
+  const left = cross(nu, dir), right = cross(dir, nt);
+  const on: V = [(kt * left[0] + ku * right[0]) / a2, (kt * left[1] + ku * right[1]) / a2, (kt * left[2] + ku * right[2]) / a2];
+  const slide = mid - dot(on, unit);
+  return [on[0] + unit[0] * slide, on[1] + unit[1] * slide, on[2] + unit[2] * slide];
 }
 
 function triangle(positions: Float32Array, t: number, pose?: Affine): [V, V, V] {
@@ -234,7 +255,7 @@ const SAMPLES = 96;
  * Up to 96 points of `part`, each just inside one of its faces, and how many of them lie inside `host`, with the first
  * such point in model space. A face whose two sides both test outside its own part (an open mesh) gives no point.
  */
-function sharedPoints(part: { positions: Float32Array; pose: Affine }, host: { positions: Float32Array; pose: Affine }): { tested: number; hits: number; at?: V } {
+function sharedPoints(part: { positions: Float32Array; pose: Affine }, host: { positions: Float32Array; pose: Affine }, depthMm = SAMPLE_DEPTH_MM): { tested: number; hits: number; at?: V } {
   const own = treeOf(part.positions);
   const other = treeOf(host.positions);
   const toHost = thenPose(part.pose, inversePose(host.pose));
@@ -249,7 +270,7 @@ function sharedPoints(part: { positions: Float32Array; pose: Affine }, host: { p
     const length = Math.hypot(n[0], n[1], n[2]);
     if (length < 1e-12) continue;
     const c: V = [(p[0] + q[0] + r[0]) / 3, (p[1] + q[1] + r[1]) / 3, (p[2] + q[2] + r[2]) / 3];
-    const k = SAMPLE_DEPTH_MM / length;
+    const k = depthMm / length;
     const back: V = [c[0] - n[0] * k, c[1] - n[1] * k, c[2] - n[2] * k];
     const front: V = [c[0] + n[0] * k, c[1] + n[1] * k, c[2] + n[2] * k];
     const within = inside(own, back) ? back : inside(own, front) ? front : null;
@@ -265,9 +286,13 @@ function sharedPoints(part: { positions: Float32Array; pose: Affine }, host: { p
 
 /**
  * Two parts, each a triangle soup in its own frame and a pose into model space. Clear, touch (nested or not), or
- * crossing, with a point on the first crossing.
+ * crossing, with a point on the first crossing. `options.toleranceMm` (default `CONTACT_MM`) is how deep the meshes may
+ * overlap and still touch: two triangles must each pass more than it through the other, and the points that test for
+ * one part inside the other sit that much deeper than `SAMPLE_DEPTH_MM` inside their own faces.
  */
-export function interference(a: { positions: Float32Array; pose: Affine }, b: { positions: Float32Array; pose: Affine }): PairResult {
+export function interference(a: { positions: Float32Array; pose: Affine }, b: { positions: Float32Array; pose: Affine }, options: InterferenceOptions = {}): PairResult {
+  const tolerance = options.toleranceMm !== undefined && Number.isFinite(options.toleranceMm) && options.toleranceMm > CONTACT_MM ? options.toleranceMm : CONTACT_MM;
+  const depth = tolerance > CONTACT_MM ? tolerance + SAMPLE_DEPTH_MM : SAMPLE_DEPTH_MM;
   const boxA = posedBounds(a.positions, a.pose);
   const boxB = posedBounds(b.positions, b.pose);
   if (!boxA || !boxB) return { verdict: "clear" };
@@ -301,16 +326,16 @@ export function interference(a: { positions: Float32Array; pose: Affine }, b: { 
         continue;
       }
       for (let i = tree.start[n]!; i < tree.end[n]!; i += 1) {
-        const hit = trianglesCross(t, triangle(tree.positions, tree.order[i]!));
+        const hit = trianglesCross(t, triangle(tree.positions, tree.order[i]!), tolerance);
         if (hit) return { verdict: "crossing", at: applyPose(large.pose, hit) };
       }
     }
   }
   // No surface crosses another, yet the parts may still share volume: one wholly inside the other, or a pin wider than
   // its hole whose ends sit flush with the faces around it. Points just inside each part, beside its own faces, say so.
-  const smallIn = sharedPoints(small, large);
+  const smallIn = sharedPoints(small, large, depth);
   if (smallIn.tested > 0 && smallIn.hits === smallIn.tested) return { verdict: "touch", nested: true };
-  const largeIn = sharedPoints(large, small);
+  const largeIn = sharedPoints(large, small, depth);
   if (largeIn.tested > 0 && largeIn.hits === largeIn.tested) return { verdict: "touch", nested: true };
   const at = smallIn.at ?? largeIn.at;
   return at ? { verdict: "crossing", at } : { verdict: "touch" };
