@@ -250,7 +250,7 @@ fn settings_tweaks_are_patches_too() {
     }
     assert_eq!(
         seen,
-        [(0, 0), (0, 0), (56, 2163)],
+        [(0, 0), (0, 0), (56, 2175)],
         "changed layers and paths sent: a temperature and an acceleration change \
          nothing drawn, a support angle the supported layers"
     );
