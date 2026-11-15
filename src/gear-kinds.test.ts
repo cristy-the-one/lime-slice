@@ -175,7 +175,7 @@ const seated = (object: string, parent: string, offset: Vec3): Member => ({ obje
   eq("the small gear still sits on the wheel without a joint", prepared.assembly!.members.find((row) => row.object === "small"), seated("small", "wheel", [0, 0, 10]));
   const poses = solveAssembly(prepared.assembly!, p.poseOf).poses;
   const found = findCouplings(prepared.assembly!, p.gearsAt(poses), poses);
-  eq("the shaft carries the train on", found.couplings.map((row) => [row.driver, row.driven, row.ratio, row.gears[0].name, row.gears[1].name]), [["pin", "wheel", -0.5, "Pinion", "Wheel"], ["wheel", "third", -24 / 18, "Wheel", "Third"], ["wheel", "out", -0.5, "Small", "Out"]]);
+  eq("the shaft carries the train on", found.couplings.map((row) => [row.driver, row.driven, row.ratio, row.gears![0].name, row.gears![1].name]), [["pin", "wheel", -0.5, "Pinion", "Wheel"], ["wheel", "third", -24 / 18, "Wheel", "Third"], ["wheel", "out", -0.5, "Small", "Out"]]);
   const coupled = { ...prepared.assembly!, couplings: found.couplings };
   const turned = trainTurn(coupled, "pin", 40);
   check("pinion 40, wheel and small -20, out +10", !("reason" in turned) && near(angleOf(turned.assembly, "wheel"), -20) && near(angleOf(turned.assembly, "out"), 10));

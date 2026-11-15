@@ -1,8 +1,8 @@
 import * as THREE from "three";
 /** Pose stage: select, link and edit joints without changing the print layout. */
-import { assemblyOf, bodyOf, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withMember, type Assembly, type Joint, type Member } from "../assembly.ts";
+import { assemblyOf, bodyOf, couplingNames, drives, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withCouplings, withFound, withMember, type Assembly, type DeclaredKind, type Joint, type Member } from "../assembly.ts";
 import { gearsInTree, type WorldGear } from "../gear-pair.ts";
-import { couplingLine, crossedNotes, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart } from "../gear-train.ts";
+import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Turned } from "../gear-train.ts";
 import { modelTrees } from "./model-trees.ts";
 import { boundsOf } from "../mesh-place.ts";
 import { applyPose, inversePose, isIdentity, poseScale, seatLift, thenPose, turnDir, type Affine } from "../model-space.ts";
@@ -43,6 +43,19 @@ let dragging = false;
 let dragStart: Member | null = null;
 /** The assembly at the start of a hinge drag: a gear train turns from it, so a drag never drifts. */
 let dragAssembly: Assembly | null = null;
+/** The Couplings form (docs/plan-coupling-kinds.md): what is typed, kept while the panel is drawn again. */
+type CoupleKind = DeclaredKind;
+interface CoupleDraft { driven: string; kind: CoupleKind; ratio: string; radius: string; wind: string; free: string; click: string; teeth: string; tip: string; root: string }
+const EMPTY_DRAFT: CoupleDraft = { driven: "", kind: "ratio", ratio: "", radius: "", wind: "in", free: "1", click: "", teeth: "", tip: "", root: "" };
+let coupleDraft: CoupleDraft = { ...EMPTY_DRAFT };
+/** The part the form was filled for: another selection starts it again. */
+let coupleDraftFor: string | null = null;
+/** What the last Couple or Remove said, for the assembly it ran on. */
+let coupleNote: { assembly: string; text: string } | null = null;
+/** A clutch that slipped or a ratchet that held, said after a turn. */
+function turnWords(turned: Turned): string {
+  return [...(turned.slipped ?? []), ...(turned.stopped ? [`Stopped: ${turned.stopped}`] : [])].join(" ");
+}
 /** What the last Couple gears said: pairs not coupled and why, for the assembly it ran on. */
 let gearNotes: { assembly: string; lines: string[]; made?: string[] } | null = null;
 let reachStart: { assembly: Assembly; object: string; at: Vec3; poses: Map<string, Affine>; centres: Map<string, Vec3>; shift: Affine } | null = null;
@@ -417,6 +430,7 @@ function turn(event: TurnEvent): void {
     // A coupled hinge turns its gear train with it (docs/plan-gear-coupling.md); a locked one says why and stays.
     const train = trainTurn(dragAssembly, dragStart.object, event.delta);
     if ("reason" in train) { message = train.reason; renderPanel(); return; }
+    message = turnWords(train);
     writeAssembly(train.assembly); return;
   }
   const turned = joint.kind === "hinge" ? turnHinge(dragStart, event.delta) : turnBall(dragStart, axis, event.delta, centre(row.member.object));
@@ -714,6 +728,8 @@ function renderPanel(): void {
   const parentName = state.plate.objects.find((item) => item.id === row.member.parent)?.name;
   addText(panel, "p", parentName ? `Parent: ${parentName}` : turnsOnPlate(row.member) ? "Assembly root (turns on the plate)" : "Assembly root (fixed)");
   gearSection(panel, row.assembly);
+  if (coupleDraftFor !== row.member.object) { coupleDraft = { ...EMPTY_DRAFT }; coupleNote = null; coupleDraftFor = row.member.object; }
+  couplingSection(panel, row.assembly, row.member);
   const isRoot = !row.member.parent;
   const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", "Joint");
   const select = document.createElement("select"); select.dataset.poseField = "kind"; select.setAttribute("aria-label", "Joint kind");
@@ -902,7 +918,8 @@ function freeGearSection(panel: HTMLElement): boolean {
 }
 /** Gears: the couplings, any locked train, what the last Couple gears said, and its buttons. */
 function gearSection(panel: HTMLElement, assembly: Assembly): void {
-  const couplings = assembly.couplings ?? [];
+  // Found gear meshes only: declared couplings are listed under Couplings.
+  const couplings = (assembly.couplings ?? []).filter((row) => row.gears);
   const notes = gearNotes?.assembly === assembly.id ? gearNotes.lines : [];
   const made = gearNotes?.assembly === assembly.id ? gearNotes.made ?? [] : [];
   const gears = couplings.length || notes.length || made.length ? null : assemblyGears(assembly, solveAssembly(assembly, poseOf).poses);
@@ -926,6 +943,107 @@ function gearSection(panel: HTMLElement, assembly: Assembly): void {
   if (couplings.length) button(actions, "Uncouple", "uncouple-gears");
 }
 /**
+ * Couplings (docs/plan-coupling-kinds.md): the declared couplings of the assembly, each with Remove, and a form to couple
+ * the selected part's joint to another part's: a ratio, a winch, a ratchet (with its click) or a clutch. One Undo each.
+ */
+function couplingSection(panel: HTMLElement, assembly: Assembly, member: Member): void {
+  const declared = (assembly.couplings ?? []).map((row, index) => ({ row, index })).filter(({ row }) => row.kind !== undefined);
+  const body = bodyOf(assembly, member.object);
+  const moves = !!body && !("reason" in body) && !body.fixed;
+  if (!declared.length && !moves) return;
+  const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
+  const box = document.createElement("div"); box.dataset.poseCouplings = ""; panel.append(box);
+  addText(box, "h3", "Couplings");
+  for (const { row, index } of declared) {
+    const line = document.createElement("div"); line.className = "pose-coupling"; box.append(line);
+    addText(line, "p", `${couplingLine(row)}.`);
+    const remove = button(line, "Remove", "remove-coupling");
+    remove.dataset.index = String(index);
+    remove.setAttribute("aria-label", `Remove: ${couplingNames(row).join(" and ")}`);
+  }
+  if (moves) {
+    const own = (body as { body: string }).body;
+    const draft = coupleDraft;
+    const kinds: [CoupleKind, string][] = [["ratio", "Ratio"], ["winch", "Winch: drum and cord"], ["ratchet", "Ratchet: one way only"], ["clutch", "Clutch: can slip"]];
+    addText(box, "p", `${nameOf(own)} drives:`, "pose-couple-lead");
+    const others = assembly.members.filter((row) => {
+      const other = bodyOf(assembly, row.object);
+      return row.object !== own && !!other && !("reason" in other) && other.body !== own;
+    });
+    coupleSelect(box, "Other part", "driven", [["", "Choose a part"], ...others.map((row) => [row.object, nameOf(row.object)] as [string, string])], draft.driven);
+    coupleSelect(box, "Kind", "kind", kinds, draft.kind);
+    if (draft.kind === "ratio") coupleField(box, "Ratio", "ratio", draft.ratio, "1");
+    if (draft.kind === "winch") {
+      coupleField(box, "Drum radius mm", "radius", draft.radius, "");
+      coupleSelect(box, "Turning the drum forward", "wind", [["in", "winds the cord in"], ["out", "pays the cord out"]], draft.wind);
+    }
+    if (draft.kind === "ratchet") {
+      coupleSelect(box, "Runs free turning", "free", [["1", "forward"], ["-1", "back"]], draft.free);
+      const clicks = assembly.members.filter((row) => row.joint?.kind === "hinge" && row.parent !== null && row.object !== own);
+      coupleSelect(box, "Click", "click", [["", "None"], ...clicks.map((row) => [row.object, nameOf(row.object)] as [string, string])], draft.click);
+      if (draft.click) {
+        coupleField(box, "Teeth", "teeth", draft.teeth, "");
+        coupleField(box, "Tip radius mm", "tip", draft.tip, "");
+        coupleField(box, "Root radius mm", "root", draft.root, "");
+      }
+    }
+    if (draft.kind === "clutch") coupleField(box, "Ratio", "ratio", draft.ratio, "1");
+    const help: Record<CoupleKind, string> = {
+      ratio: "The other part moves this many degrees (or mm on a slide) for each degree (or mm) of this one. Either part can be turned.",
+      winch: "This part is the drum. The other part is the load on a slide: it moves the length of cord the drum winds, 2πr for each turn.",
+      ratchet: "This part is the ratchet wheel. The other part is what its click is mounted on, or the frame. Turned one way, the wheel carries that part; the other way it runs free. Add the click, seated in a tooth now, and the wheel's teeth and radii: the click rides each tooth and drops.",
+      clutch: "No torque is computed: the clutch slips only when the other part is held, stuck or turned by itself.",
+    };
+    addText(box, "p", help[draft.kind], "pose-couple-help");
+    const actions = document.createElement("div"); actions.className = "pose-buttons"; box.append(actions);
+    const go = button(actions, "Couple", "couple-declared");
+    go.dataset.tip = "Couple this part's joint to the other part's, as set above. Turning either then moves the other. One Undo.";
+  }
+  if (coupleNote?.assembly === assembly.id) { const note = addText(box, "p", coupleNote.text); note.dataset.poseCoupleNote = ""; note.setAttribute("role", "status"); }
+}
+function coupleSelect(parent: HTMLElement, label: string, name: keyof CoupleDraft, options: [string, string][], value: string): void {
+  const wrap = document.createElement("label"); wrap.className = "pose-field";
+  addText(wrap, "span", label);
+  const select = document.createElement("select"); select.dataset.poseCouple = name; select.setAttribute("aria-label", label);
+  for (const [key, text] of options) { const option = document.createElement("option"); option.value = key; option.textContent = text; select.append(option); }
+  select.value = value; wrap.append(select); parent.append(wrap);
+}
+function coupleField(parent: HTMLElement, label: string, name: keyof CoupleDraft, value: string, placeholder: string): void {
+  const wrap = document.createElement("label"); wrap.className = "pose-field";
+  addText(wrap, "span", label);
+  const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.poseCouple = name; input.value = value; input.placeholder = placeholder; input.setAttribute("aria-label", label);
+  wrap.append(input); parent.append(wrap);
+}
+/** Couple the selected part's joint to the chosen part's, as the form says: one edit, one Undo. */
+function coupleDeclared(): void {
+  const row = selected();
+  if (!row) return;
+  const draft = coupleDraft;
+  const say = (text: string) => { coupleNote = { assembly: row.assembly.id, text }; renderPanel(); };
+  if (!draft.driven) { say("Choose the other part."); return; }
+  const number = (text: string) => (text.trim() === "" ? undefined : Number(text));
+  const spec: DeclareSpec = { driver: row.member.object, driven: draft.driven, kind: draft.kind };
+  if (draft.kind === "ratio" || draft.kind === "clutch") { const ratio = number(draft.ratio); if (ratio !== undefined) spec.ratio = ratio; else if (draft.kind === "ratio") spec.ratio = 1; }
+  if (draft.kind === "winch") { const radius = number(draft.radius); if (radius !== undefined) spec.radius = radius; spec.wind = draft.wind === "out" ? "out" : "in"; }
+  if (draft.kind === "ratchet") {
+    spec.free = draft.free === "-1" ? -1 : 1;
+    if (draft.click) {
+      spec.click = draft.click;
+      for (const key of ["teeth", "tip", "root"] as const) { const value = number(draft[key]); if (value !== undefined) spec[key] = value; }
+      const pose = poseOf(draft.click);
+      if (pose) spec.clickCentre = applyPose(pose, centre(draft.click));
+    }
+  }
+  for (const value of [spec.ratio, spec.radius, spec.teeth, spec.tip, spec.root]) if (value !== undefined && !Number.isFinite(value)) { say("Enter finite numbers."); return; }
+  const nameOf = (id: string) => state.plate.objects.find((part) => part.id === id)?.name ?? id;
+  const next = declareCoupling(row.assembly, solveAssembly(row.assembly, poseOf).poses, spec, nameOf);
+  if ("reason" in next) { say(next.reason); return; }
+  const made = next.couplings![next.couplings!.length - 1]!;
+  coupleNote = { assembly: row.assembly.id, text: `Coupled: ${couplingLine(made)}.` };
+  coupleDraft = { ...EMPTY_DRAFT };
+  editAssembly(next);
+}
+/**
  * Couple gears (docs/plan-gear-kinds.md, stage 1): the gears that mesh with `start`'s get a hinge about their own axes
  * where they need one, gears in no assembly get one of their own, and the meshes are coupled. One edit, one Undo.
  */
@@ -947,7 +1065,7 @@ function coupleGears(start: string): void {
   const made = preparedLines(prepared, nameOf);
   // The validator, as the MCP runs it: each train turned through one turn of its first body in 24 steps and every
   // coupled pair asked again by the mesh check. A frame that does not mesh is said; the driver never reads this.
-  const coupled = withCouplings(assembly, found.couplings);
+  const coupled = withFound(assembly, found.couplings);
   const checked: string[] = [];
   const seen = new Set<string>();
   for (const row of found.couplings) {
@@ -965,7 +1083,7 @@ function coupleGears(start: string): void {
   const root = assembly.members.find((member) => member.parent === null)?.object;
   const joined = new Set(prepared.joined.filter((id) => id !== root));
   if (joined.size) state.plate = { ...state.plate, objects: state.plate.objects.map((obj) => (joined.has(obj.id) ? { ...obj, frame: "part" as const } : obj)) };
-  writeAssembly(withCouplings(assembly, found.couplings));
+  writeAssembly(withFound(assembly, found.couplings));
   flushEdit();
 }
 function panelClick(event: Event): void {
@@ -1018,6 +1136,15 @@ function panelClick(event: Event): void {
   }
   if (action === "select" && target.dataset.object) { pick(target.dataset.object); return; }
   if (action === "contact-back" || action === "contact-on") { void untilContact(action === "contact-on" ? 1 : -1); return; }
+  if (action === "couple-declared") { coupleDeclared(); return; }
+  if (action === "remove-coupling") {
+    const row = selected(), index = Number(target.dataset.index);
+    const gone = row?.assembly.couplings?.[index];
+    if (!row || !gone || gone.kind === undefined) return;
+    coupleNote = { assembly: row.assembly.id, text: `Removed: ${couplingLine(gone)}.` };
+    editAssembly(withCouplings(row.assembly, row.assembly.couplings!.filter((_, at) => at !== index)));
+    return;
+  }
   if (action === "undo") { undoUserEdit(); syncPose(); return; }
   if (action === "redo") { redoUserEdit(); syncPose(); return; }
   if (action === "step" && target.dataset.assembly) {
@@ -1028,7 +1155,7 @@ function panelClick(event: Event): void {
   if (action === "couple-gears" || action === "uncouple-gears") {
     const row = selected();
     if (action === "couple-gears") { if (state.plate.selectedId) coupleGears(state.plate.selectedId); }
-    else if (row) { gearNotes = null; editAssembly(withCouplings(row.assembly, undefined)); }
+    else if (row) { gearNotes = null; editAssembly(withFound(row.assembly, undefined)); }
     return;
   }
   const row = selected(); if (!row || (action !== "rest" && action !== "make-rest")) return;
@@ -1080,6 +1207,15 @@ function panelChange(event: Event): void {
     animationParameters.set(animationChoice, { ...previous, [name]: value }); stopAnimation(); cancelPreparation(""); syncPose(); return;
   }
   if (input.hasAttribute("data-pose-animation-frame") && animation) { animation.clock.seek(Number(input.value)); syncPose(); renderPanel(); return; }
+  const couple = input.dataset.poseCouple as keyof CoupleDraft | undefined;
+  if (couple) {
+    // A new kind starts its numbers afresh: a ratio typed for one kind means something else in another.
+    if (couple === "kind" && input.value === coupleDraft.kind) return;
+    coupleDraft = couple === "kind" ? { ...EMPTY_DRAFT, driven: coupleDraft.driven, kind: input.value as CoupleKind } : { ...coupleDraft, [couple]: input.value } as CoupleDraft;
+    // A choice that changes which fields the form shows draws it again; a typed number waits for Couple.
+    if (couple === "kind" || couple === "click" || couple === "driven") { coupleNote = null; renderPanel(); }
+    return;
+  }
   const name = input.dataset.poseField;
   if (name && animation) stopAnimation();
   const row = selected(); if (!name || !row || (!row.member.parent && name !== "kind" && !turnsOnPlate(row.member))) return;
@@ -1106,11 +1242,13 @@ function panelChange(event: Event): void {
   if (name === "travel" && old.kind === "slide") {
     const next = trainTurn(row.assembly, row.member.object, value! - (old.travel ?? 0));
     if ("reason" in next) { message = next.reason; renderPanel(); return; }
+    message = turnWords(next);
     editAssembly(next.assembly); return;
   }
   if (name === "angle" && old.kind === "hinge") {
     const next = trainTurn(row.assembly, row.member.object, value! - (old.angle ?? 0));
     if ("reason" in next) { message = next.reason; renderPanel(); return; }
+    message = turnWords(next);
     editAssembly(next.assembly); return;
   }
   const raw = structuredClone(old) as Joint;

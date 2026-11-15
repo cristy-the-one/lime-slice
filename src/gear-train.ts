@@ -6,11 +6,12 @@
  * The code that moves gears never reads the mesh check: `findCouplings` uses it to wire the train, and `trainCheck`
  * uses it to judge sampled frames. A turn is `turnHinge` on each body by its share of one delta.
  */
-import { assemblyOf, bodyOf, couplingSeat, drives, frameOf, jointAt, memberFields, rootOf, solveAssembly, withCouplings, withRootAt, type Assembly, type Body, type Coupling, type GearRef, type Member, type PoseOf } from "./assembly.ts";
+import { assemblyOf, bodyOf, couplingNames, couplingSeat, declaredOf, drives, frameOf, jointAt, jointUse, memberFields, rootOf, solveAssembly, withCouplings, withRootAt, type Assembly, type Body, type Coupling, type DeclaredKind, type GearRef, type Member, type PoseOf } from "./assembly.ts";
 import { gearReach, worldPair, type GearVerdict, type WorldGear } from "./gear-pair.ts";
 import { applyPose, inversePose, poseScale, relativePose, turnDir, type Affine } from "./model-space.ts";
 import type { Vec3 } from "./model-tree.ts";
 import { turnInAssembly } from "./pose.ts";
+import { clickGeometry, clickLift, clickRefusal, faceMiddle } from "./ratchet-click.ts";
 
 /** A gear's centre may sit this far from its hinge's line, mm. */
 const ON_AXIS_MM = 0.05;
@@ -268,7 +269,7 @@ export function findCouplings(assembly: Assembly, gears: readonly WorldGear[], p
     }
   }
   const oriented = orientOutward(assembly, couplings);
-  return { couplings: oriented, notCoupled, locked: trainLocks(assembly, oriented) };
+  return { couplings: oriented, notCoupled, locked: trainLocks(assembly, [...declaredOf(assembly), ...oriented]) };
 }
 
 /**
@@ -294,7 +295,7 @@ function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
   }
   return couplings.map((row) => {
     if (depth.get(row.driver)! <= depth.get(row.driven)!) return row;
-    const gears: [GearRef, GearRef] = [row.gears[1], row.gears[0]];
+    const gears: [GearRef, GearRef] = [row.gears![1], row.gears![0]];
     const seat = couplingSeat(assembly, gears, row.carrier?.body);
     // driven = r driver + c carrier, so driver = driven / r - (c / r) carrier.
     const carrier = row.carrier ? { ...row.carrier, ratio: -row.carrier.ratio / row.ratio } : undefined;
@@ -303,29 +304,148 @@ function orientOutward(assembly: Assembly, couplings: Coupling[]): Coupling[] {
   });
 }
 
+export interface TrainOptions {
+  /**
+   * Bodies driven on their own in this turn, besides the one turned: an animation's keyed bodies. A clutch whose driven
+   * side holds one of them slips (docs/plan-coupling-kinds.md, stage 4).
+   */
+  separate?: ReadonlySet<string>;
+}
+
 export interface Scales {
-  /** Degrees each body of the train turns for one degree of the start. */
+  /** Degrees (or mm) each body of the train moves for one degree (or mm) of the start. */
   scales: Map<string, number>;
   /** The couplings of this train. */
   couplings: Coupling[];
   locked?: TrainLock;
+  /** Each clutch that slips in this turn, with its sentence. */
+  slipped?: { coupling: Coupling; reason: string }[];
+  /**
+   * Each body's group: 0 is the start's, and every side a clutch carries is a group of its own, `parents[g]` the group
+   * it is carried by. A group stops at its own joint limits, and its clutch slips past them.
+   */
+  groups?: Map<string, number>;
+  parents?: number[];
+  /**
+   * Ratchets turned against their free way while their click stands off its seat: the click first rides back down the
+   * tooth, free for `allow` of the start's units, and only then does the ratchet carry its part.
+   */
+  backlash?: { coupling: Coupling; allow: number }[];
 }
 
 const sameScale = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
 
 function gearNames(couplings: readonly Coupling[]): string[] {
-  return [...new Set(couplings.flatMap((row) => [row.gears[0].name, row.gears[1].name]))];
+  return [...new Set(couplings.flatMap((row) => couplingNames(row)))];
 }
 
 function listed(names: readonly string[]): string {
   return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/** Whether a coupling ties its two bodies rigidly in this turn: a gear mesh, a ratio, a winch, or an engaged ratchet. */
+function rigid(row: Coupling, engaged: ReadonlySet<Coupling>): boolean {
+  return row.kind === "clutch" ? false : row.kind === "ratchet" ? engaged.has(row) : true;
+}
+
+/** A ratchet's click phase now: degrees the wheel has run free past the notch the click last dropped into. */
+export function clickPhase(row: Coupling): number {
+  return row.click?.phase ?? 0;
+}
+
 /**
- * Every body the train of `start` reaches, with its scale. A body reached at two scales closes a loop whose ratios
- * disagree; a fixed body in the train cannot turn. Either locks the train.
+ * One rigid component: every body the start reaches through rigid couplings (`rigid`), each at its scale. A body reached
+ * at two scales closes a loop whose ratios disagree; a body that cannot move (the fixed root, a held part) in it means
+ * the component cannot move. Either is a lock, with its sentence.
  */
-export function trainScales(assembly: Assembly, start: string): Scales {
+function component(assembly: Assembly, all: readonly Coupling[], start: string, engaged: ReadonlySet<Coupling>): { scales: Map<string, number>; used: Coupling[]; lock?: TrainLock } {
+  const scales = new Map<string, number>([[start, 1]]);
+  const used = new Set<Coupling>();
+  const queue = [start];
+  let loop: Coupling | undefined;
+  while (queue.length) {
+    const at = queue.shift()!;
+    const scale = scales.get(at)!;
+    for (const row of all) {
+      if ((row.driver !== at && row.driven !== at) || !rigid(row, engaged)) continue;
+      used.add(row);
+      const [other, next] = row.driver === at ? [row.driven, scale * row.ratio] : [row.driver, scale / row.ratio];
+      const seen = scales.get(other);
+      if (seen === undefined) {
+        scales.set(other, next);
+        queue.push(other);
+      } else if (!sameScale(seen, next)) loop ??= row;
+    }
+  }
+  const couplings = all.filter((row) => used.has(row));
+  // A body without a hinge or slide cannot move: the fixed root, or a held part. A root with a hinge turns on the plate.
+  const fixed = [...scales.keys()].filter((body) => memberOf(assembly, body) !== undefined && !drives(memberOf(assembly, body)!.joint));
+  const names = gearNames(couplings);
+  const gearsOnly = couplings.every((row) => row.kind === undefined);
+  if (loop) return { scales, used: couplings, lock: { gears: names, reason: `${listed(names)} are locked: they close a loop whose ${gearsOnly ? "tooth ratios" : "ratios"} do not agree, so none of them can turn.` } };
+  if (fixed.length && couplings.length) {
+    // A ratchet that holds against a part that stays says so in its own words.
+    const holding = couplings.find((row) => row.kind === "ratchet" && fixed.includes(row.driven));
+    if (holding) {
+      const [wheel, part] = couplingNames(holding);
+      return { scales, used: couplings, lock: { gears: names, reason: `${wheel} turns only ${holding.free === 1 ? "forward" : "back"}: its click on ${part} holds it the other way.` } };
+    }
+    const held = couplings.filter((row) => fixed.includes(row.driver) || fixed.includes(row.driven)).map((row) => (fixed.includes(row.driver) ? couplingNames(row)[0] : couplingNames(row)[1]));
+    const tail = gearsOnly ? "the train meshes with it" : "the train is coupled to it";
+    return { scales, used: couplings, lock: { gears: names, reason: `${listed(names)} are locked: ${listed([...new Set(held)])} cannot turn, and ${tail}.` } };
+  }
+  return { scales, used: couplings };
+}
+
+/**
+ * The start's rigid component, then each side a clutch carries (docs/plan-coupling-kinds.md, stage 4): a clutch carries
+ * its driven side from its driver at its ratio, unless that side cannot move (it holds a fixed or held part, or locks)
+ * or holds a body driven on its own (`separate`); a turn that starts on the driven side never passes back. Then it slips.
+ */
+function solveTrain(assembly: Assembly, all: readonly Coupling[], start: string, engaged: ReadonlySet<Coupling>, options: TrainOptions): Scales {
+  const first = component(assembly, all, start, engaged);
+  if (first.lock) return { scales: first.scales, couplings: first.used, locked: first.lock };
+  const scales = new Map(first.scales);
+  const groups = new Map([...scales.keys()].map((id) => [id, 0]));
+  const parents = [-1];
+  const used = [...first.used];
+  const slipped: { coupling: Coupling; reason: string }[] = [];
+  const handled = new Set<Coupling>();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const row of all) {
+      if (row.kind !== "clutch" || handled.has(row)) continue;
+      const driverIn = scales.has(row.driver), drivenIn = scales.has(row.driven);
+      if (!driverIn && !drivenIn) continue;
+      handled.add(row);
+      const [driverName, drivenName] = couplingNames(row);
+      if (drivenIn) {
+        // Both ends already move with the turn, or the turn started on the driven side: nothing passes, it slips.
+        if (!driverIn || !sameScale(scales.get(row.driven)!, scales.get(row.driver)! * row.ratio)) slipped.push({ coupling: row, reason: driverIn ? `The clutch between ${driverName} and ${drivenName} slips: both are turned.` : `${driverName} stays: the clutch slips when ${drivenName} is turned on its own.` });
+        continue;
+      }
+      const side = component(assembly, all, row.driven, engaged);
+      const bodies = [...side.scales.keys()];
+      if (side.lock || bodies.some((id) => scales.has(id))) { slipped.push({ coupling: row, reason: `${drivenName} stays: the clutch from ${driverName} slips, as ${drivenName} cannot move.` }); continue; }
+      if (options.separate && bodies.some((id) => options.separate!.has(id))) { slipped.push({ coupling: row, reason: `${drivenName} is driven on its own: the clutch from ${driverName} slips.` }); continue; }
+      const group = parents.length;
+      parents.push(groups.get(row.driver)!);
+      const at = scales.get(row.driver)! * row.ratio;
+      for (const [id, scale] of side.scales) { scales.set(id, at * scale); groups.set(id, group); }
+      used.push(row, ...side.used);
+      grew = true;
+    }
+  }
+  return { scales, couplings: used, ...(slipped.length ? { slipped } : {}), groups, parents };
+}
+
+/**
+ * Every body the train of `start` reaches, with its scale, for a turn of sign `sign` (+1, -1, or 0 when the way is not
+ * known: a listing). A body reached at two scales closes a loop whose ratios disagree; a fixed body in the train cannot
+ * turn. Either locks the train. A ratchet ties its two bodies only when the turn goes against its free way (with 0 it
+ * runs free); a clutch carries its driven side unless that side is held or driven on its own.
+ */
+export function trainScales(assembly: Assembly, start: string, sign = 0, options: TrainOptions = {}): Scales {
   const all = assembly.couplings ?? [];
   // A train with a carrier in it is a set of linear equations (docs/plan-gear-kinds.md, stage 2).
   const reached = new Set([start]);
@@ -337,35 +457,31 @@ export function trainScales(assembly: Assembly, start: string): Scales {
     }
   }
   const train = all.filter((row) => reached.has(row.driver));
-  if (train.some((row) => row.carrier)) return planetaryScales(assembly, start, [...reached], train);
-  const scales = new Map<string, number>([[start, 1]]);
-  const used = new Set<Coupling>();
-  const queue = [start];
-  let loop: Coupling | undefined;
-  while (queue.length) {
-    const at = queue.shift()!;
-    const scale = scales.get(at)!;
-    for (const row of all) {
-      if (row.driver !== at && row.driven !== at) continue;
-      used.add(row);
-      const [other, next] = row.driver === at ? [row.driven, scale * row.ratio] : [row.driver, scale / row.ratio];
-      const seen = scales.get(other);
-      if (seen === undefined) {
-        scales.set(other, next);
-        queue.push(other);
-      } else if (!sameScale(seen, next)) loop ??= row;
+  if (train.some((row) => row.carrier)) {
+    const odd = train.find((row) => row.kind === "ratchet" || row.kind === "clutch");
+    if (odd) return { scales: new Map([[start, 1]]), couplings: train, locked: { gears: gearNames(train), reason: `${listed(couplingNames(odd))} are not covered: a ratchet or a clutch in a train with a planet carrier.` } };
+    return planetaryScales(assembly, start, [...reached], train);
+  }
+  const ratchets = all.filter((row) => row.kind === "ratchet");
+  const engaged = new Set<Coupling>();
+  for (;;) {
+    const solved = solveTrain(assembly, all, start, engaged, options);
+    if (solved.locked || !sign) return solved;
+    // A ratchet turned against its free way carries its part: tie it and solve again. Ties only grow, so this ends.
+    const backlash: { coupling: Coupling; allow: number }[] = [];
+    let grew = false;
+    for (const row of ratchets) {
+      if (engaged.has(row)) continue;
+      const a = solved.scales.get(row.driver) ?? 0, b = solved.scales.get(row.driven) ?? 0;
+      const rel = sign * (a - b / row.ratio);
+      if (Math.abs(rel) < 1e-12 || rel * (row.free ?? 1) > 0) continue;
+      const phase = clickPhase(row);
+      if (phase > 1e-9) { backlash.push({ coupling: row, allow: phase / Math.abs(rel) }); continue; }
+      engaged.add(row);
+      grew = true;
     }
+    if (!grew) return backlash.length ? { ...solved, backlash } : solved;
   }
-  const couplings = all.filter((row) => used.has(row));
-  // A body without a hinge cannot turn: the fixed root, or a held part. A root with a hinge turns on the plate.
-  const fixed = [...scales.keys()].filter((body) => memberOf(assembly, body) !== undefined && !drives(memberOf(assembly, body)!.joint));
-  const names = gearNames(couplings);
-  if (loop) return { scales, couplings, locked: { gears: names, reason: `${listed(names)} are locked: they close a loop whose tooth ratios do not agree, so none of them can turn.` } };
-  if (fixed.length && couplings.length) {
-    const held = couplings.filter((row) => fixed.includes(row.driver) || fixed.includes(row.driven)).map((row) => (fixed.includes(row.driver) ? row.gears[0].name : row.gears[1].name));
-    return { scales, couplings, locked: { gears: names, reason: `${listed(names)} are locked: ${listed([...new Set(held)])} cannot turn, and the train meshes with it.` } };
-  }
-  return { scales, couplings };
 }
 
 /**
@@ -412,7 +528,7 @@ function planetaryScales(assembly: Assembly, start: string, bodies: string[], co
   const scales = new Map<string, number>();
   if (inconsistent || rank < n) all();
   if (inconsistent) {
-    const held = fixed.flatMap((id) => couplings.flatMap((row) => (row.driver === id ? [row.gears[0].name] : row.driven === id ? [row.gears[1].name] : row.carrier?.body === id ? [row.carrier.name] : [])));
+    const held = fixed.flatMap((id) => couplings.flatMap((row) => (row.driver === id ? [couplingNames(row)[0]] : row.driven === id ? [couplingNames(row)[1]] : row.carrier?.body === id ? [row.carrier.name] : [])));
     return { scales, couplings, locked: { gears: names, reason: held.length ? `${listed(names)} are locked: ${listed([...new Set(held)])} cannot turn, and the train meshes with it.` : `${listed(names)} are locked: they close a loop whose tooth ratios do not agree, so none of them can turn.` } };
   }
   if (rank < n) {
@@ -445,22 +561,19 @@ export interface Turned {
   assembly: Assembly;
   /** Every hinge the turn moved, with its new angle, and every slide with its new travel; the turned one first. */
   angles: ({ object: string; angle: number } | { object: string; travel: number })[];
-  /** True when a hinge limit held the train short of the asked turn. */
+  /** True when a joint limit, or a ratchet after its click's free play, held the train short of the asked turn. */
   clamped: boolean;
+  /** Each clutch that slipped, in a sentence. */
+  slipped?: string[];
+  /** Why the train stopped short after it had moved: a ratchet that holds once its click is back on its seat. */
+  stopped?: string;
 }
 
-/**
- * Turn `object`'s hinge by `delta` degrees and every body coupled to it by its share. The train stops together at the
- * first hinge limit. A locked train is refused, with its sentence, and nothing moves.
- */
-export function trainTurn(assembly: Assembly, object: string, delta: number): Turned | { reason: string; locked?: string[] } {
-  const member = memberOf(assembly, object);
-  if (!member) return { reason: "This part is not in the assembly." };
-  const train = trainScales(assembly, object);
-  if (train.locked) return { reason: train.locked.reason, locked: train.locked.gears };
-  if (!Number.isFinite(delta)) return { reason: "A hinge needs a finite turn and a nonzero axis." };
+/** A body's group step: `step` clamped to the group's own joint limits, in the start's units. */
+function groupRange(assembly: Assembly, scales: ReadonlyMap<string, number>, groups: ReadonlyMap<string, number> | undefined, group: number): [number, number] {
   let low = -Infinity, high = Infinity;
-  for (const [body, scale] of train.scales) {
+  for (const [body, scale] of scales) {
+    if ((groups?.get(body) ?? 0) !== group) continue;
     const joint = memberOf(assembly, body)?.joint;
     // A hinge's limits are degrees, a slide's millimetres: each is its own body's share of the step.
     if (!drives(joint)) continue;
@@ -470,27 +583,129 @@ export function trainTurn(assembly: Assembly, object: string, delta: number): Tu
     low = Math.max(low, Math.min(lo, hi));
     high = Math.min(high, Math.max(lo, hi));
   }
-  const step = low > high ? 0 : Math.max(low, Math.min(high, delta));
-  let next = assembly;
-  const angles: Turned["angles"] = [];
-  for (const [body, scale] of train.scales) {
-    const row = memberOf(next, body)!;
-    // A hinged root keeps the parts hinged on it on their pins (turnInAssembly).
-    const placed = turnInAssembly(next, body, scale * step);
-    if ("reason" in placed) return { reason: placed.reason };
-    next = placed;
-    const turned = memberOf(next, body)!;
-    const angle = jointAt(turned.joint);
-    if (body === object || angle !== jointAt(row.joint)) angles.push(turned.joint?.kind === "slide" ? { object: body, travel: angle } : { object: body, angle });
-  }
-  return { assembly: next, angles, clamped: Math.abs(step - delta) > 1e-9 };
+  return [low, high];
 }
 
-/** The bodies in `object`'s train, `object`'s own body included. Empty when it is in none. */
+const clampTo = (value: number, [low, high]: [number, number]) => (low > high ? 0 : Math.max(low, Math.min(high, value)));
+
+/** The click's hinge angle for a phase: its seat plus the least lift that clears the teeth (`src/ratchet-click.ts`). */
+export function clickAngle(click: NonNullable<Coupling["click"]>, phase: number): number {
+  return click.zero + click.sense * clickLift({ teeth: click.teeth, tip: click.tip, root: click.root, arm: click.arm }, phase);
+}
+
+/**
+ * Each ratchet's click put where the wheel's turn from `before` to `after` leaves it: the wheel's phase past its notch
+ * grows as it runs free (the nose rides up the tooth's back and drops into the next notch each pitch) and shrinks as it
+ * turns the other way (the nose rides back down to its seat). Engaged, the wheel and the click's part turn together and
+ * the click stays where it is on its part. The phase is kept on the coupling.
+ */
+function moveClicks(before: Assembly, after: Assembly): Assembly | { reason: string } {
+  let next = after;
+  const rows = after.couplings ?? [];
+  for (const [index, row] of rows.entries()) {
+    if (row.kind !== "ratchet" || !row.click) continue;
+    const at = (assembly: Assembly, id: string) => jointAt(memberOf(assembly, id)?.joint);
+    const rel = (at(after, row.driver) - at(before, row.driver)) - (at(after, row.driven) - at(before, row.driven)) / row.ratio;
+    if (Math.abs(rel) < 1e-12) continue;
+    const pitch = 360 / row.click.teeth;
+    const was = clickPhase(row);
+    let phase = rel * (row.free ?? 1) > 0 ? was + Math.abs(rel) : Math.max(0, was - Math.abs(rel));
+    phase %= pitch;
+    if (pitch - phase < 1e-9 || phase < 1e-9) phase = 0;
+    const click = memberOf(next, row.click.object);
+    if (click?.joint?.kind !== "hinge") continue;
+    const turned = turnInAssembly(next, row.click.object, clickAngle(row.click, phase) - (click.joint.angle ?? 0));
+    if ("reason" in turned) return turned;
+    const couplings = [...(turned.couplings ?? [])];
+    couplings[index] = { ...row, click: { ...row.click, phase } };
+    next = { ...turned, couplings };
+  }
+  return next;
+}
+
+/**
+ * Turn `object`'s joint by `delta` (degrees, or mm for a slide) and every body coupled to it by its share. The train stops
+ * together at the first joint limit; a side a clutch carries stops at its own and slips. A ratchet turned against its
+ * free way first lets its click ride back down the tooth, then carries its part (or, on a part that stays, stops the
+ * turn there). A locked train is refused, with its sentence, and nothing moves.
+ */
+export function trainTurn(assembly: Assembly, object: string, delta: number, options: TrainOptions = {}): Turned | { reason: string; locked?: string[] } {
+  const member = memberOf(assembly, object);
+  if (!member) return { reason: "This part is not in the assembly." };
+  const clicked = (assembly.couplings ?? []).find((row) => row.click?.object === object);
+  if (clicked) return { reason: `${clicked.click!.name} moves with its ratchet: turn ${couplingNames(clicked)[0]}.` };
+  if (!Number.isFinite(delta)) return { reason: "A hinge needs a finite turn and a nonzero axis." };
+  let next = assembly;
+  let remaining = delta;
+  let clamped = false;
+  let stopped: string | undefined;
+  const slipped = new Set<string>();
+  for (let piece = 0; piece < 64 && Math.abs(remaining) > 1e-12; piece += 1) {
+    const sign = Math.sign(remaining);
+    const train = trainScales(next, object, sign, options);
+    if (train.locked) {
+      if (piece === 0) return { reason: train.locked.reason, locked: train.locked.gears };
+      stopped = train.locked.reason;
+      clamped = true;
+      break;
+    }
+    for (const row of train.slipped ?? []) slipped.add(row.reason);
+    const limited = clampTo(remaining, groupRange(next, train.scales, train.groups, 0));
+    const short = Math.abs(limited - remaining) > 1e-9;
+    let step = limited;
+    let seating = false;
+    // A click off its seat rides back down first: this piece ends where it is seated again.
+    for (const row of train.backlash ?? []) if (row.allow < Math.abs(step)) { step = sign * row.allow; seating = true; }
+    const steps = [step];
+    for (let g = 1; g < (train.parents?.length ?? 1); g += 1) steps.push(clampTo(steps[train.parents![g]!]!, groupRange(next, train.scales, train.groups, g)));
+    const before = next;
+    for (const [body, scale] of train.scales) {
+      const share = scale * steps[train.groups?.get(body) ?? 0]!;
+      if (share === 0) continue;
+      // A hinged root keeps the parts hinged on it on their pins (turnInAssembly).
+      const placed = turnInAssembly(next, body, share);
+      if ("reason" in placed) return { reason: placed.reason };
+      next = placed;
+    }
+    const clicks = moveClicks(before, next);
+    if ("reason" in clicks) return { reason: clicks.reason };
+    next = clicks;
+    remaining -= step;
+    if (step === 0 || (short && !seating)) { clamped = true; break; }
+  }
+  // Every joint that moved, the turned one first.
+  const angles: Turned["angles"] = [];
+  const order = [object, ...next.members.map((row) => row.object).filter((id) => id !== object)];
+  for (const id of order) {
+    const was = memberOf(assembly, id), now = memberOf(next, id);
+    if (!now || !drives(now.joint)) continue;
+    if (id !== object && jointAt(now.joint) === jointAt(was?.joint)) continue;
+    angles.push(now.joint.kind === "slide" ? { object: id, travel: jointAt(now.joint) } : { object: id, angle: jointAt(now.joint) });
+  }
+  return { assembly: next, angles, clamped: clamped || Math.abs(remaining) > 1e-9, ...(slipped.size ? { slipped: [...slipped] } : {}), ...(stopped ? { stopped } : {}) };
+}
+
+/**
+ * The bodies in `object`'s train, `object`'s own body included, and the clicks its ratchets set: what one key drives.
+ * A clutch parts two trains: its driven side may be keyed on its own (it slips). Empty when it is in no coupling.
+ */
 export function trainOf(assembly: Assembly, object: string): Set<string> {
   const body = bodyOf(assembly, object);
-  if (!body || "reason" in body || !(assembly.couplings ?? []).some((row) => row.driver === body.body || row.driven === body.body)) return new Set();
-  return new Set(trainScales(assembly, body.body).scales.keys());
+  const all = assembly.couplings ?? [];
+  if (!body || "reason" in body || !all.some((row) => row.driver === body.body || row.driven === body.body)) return new Set();
+  const reached = new Set([body.body]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const row of all) {
+      if (row.kind === "clutch") continue;
+      const ends = [row.driver, row.driven, ...(row.carrier ? [row.carrier.body] : [])];
+      if (ends.some((id) => reached.has(id)) && ends.some((id) => !reached.has(id))) { for (const id of ends) reached.add(id); grew = true; }
+    }
+  }
+  // A part that stays (the root, a held part) does not move with a key.
+  for (const id of [...reached]) if (id !== body.body && !drives(memberOf(assembly, id)?.joint)) reached.delete(id);
+  for (const row of all) if (row.click && (reached.has(row.driver) || reached.has(row.driven))) reached.add(row.click.object);
+  return reached;
 }
 
 export interface TrainCheck {
@@ -502,33 +717,198 @@ export interface TrainCheck {
 
 /**
  * The validator: turn the train of `object` to each of `angles` (degrees from its present pose), solve, place the gears
- * again with `gearsAt`, and ask the mesh check about every coupled pair.
+ * again with `gearsAt`, and ask the mesh check about every coupled pair. A declared coupling has no gears to ask.
  */
 export function trainCheck(assembly: Assembly, poseOf: PoseOf, gearsAt: (poses: ReadonlyMap<string, Affine>) => WorldGear[], object: string, angles: readonly number[]): TrainCheck | { reason: string } {
   const train = trainScales(assembly, object);
   if (train.locked) return { reason: train.locked.reason };
+  const meshes = train.couplings.filter((row): row is Coupling & { gears: [GearRef, GearRef] } => !!row.gears);
   const bad: TrainCheck["bad"] = [];
   for (const angle of angles) {
     const turned = trainTurn(assembly, object, angle);
     if ("reason" in turned) return { reason: turned.reason };
     const gears = gearsAt(solveAssembly(turned.assembly, poseOf).poses);
     const find = (ref: GearRef) => gears.find((gear) => gear.objectId === ref.object && gear.step === ref.step);
-    for (const row of train.couplings) {
+    for (const row of meshes) {
       const a = find(row.gears[0]), b = find(row.gears[1]);
       const report = a && b ? worldPair(a, b) : null;
       const verdict = report ? report.verdict : "missing";
       if (verdict !== "meshing") bad.push({ angle, names: [row.gears[0].name, row.gears[1].name], verdict });
     }
   }
-  return { frames: angles.length, pairs: train.couplings.length, bad };
+  return { frames: angles.length, pairs: meshes.length, bad };
 }
+
+const shown = (value: number, places = 3) => {
+  const r = Math.round(value * 10 ** places) / 10 ** places;
+  return `${r < 0 ? "−" : ""}${Math.abs(r)}`;
+};
 
 /** One line a reply or the panel shows for a coupling. */
 export function couplingLine(row: Coupling): string {
-  const ratio = Math.round(row.ratio * 1000) / 1000;
+  const [a, b] = couplingNames(row);
+  if (row.kind === "winch") return `${a} ${row.wind === "out" ? "lets out" : "winds in"} ${b} as it turns forward: ${shown(row.radius ?? 0, 2)} mm drum, ${shown(Math.abs(row.ratio))} mm a degree`;
+  if (row.kind === "ratchet") {
+    const forward = row.free === 1;
+    const click = row.click ? ` under ${row.click.name} (${row.click.teeth} teeth, lift ${shown(Math.abs(row.click.lift), 2)}°)` : "";
+    if (row.on?.[1] === "fixed") return `${a} turns ${forward ? "forward" : "back"} only${click}: its click on ${b} holds it the other way`;
+    return `${a} drives ${b} turning ${forward ? "back" : "forward"}; turning ${forward ? "forward" : "back"} it runs free${click}`;
+  }
+  const unit = row.kind !== undefined ? declaredUnit(row) : row.rack === "driven" ? " mm a degree" : row.rack === "driver" ? " degrees a mm" : "";
+  if (row.kind === "clutch") return `${a} drives ${b} through a clutch, ×${shown(row.ratio)}${unit}. No torque is computed: it slips only when ${b} is held, stuck or turned by itself`;
   const on = row.carrier ? ` on ${row.carrier.name}` : "";
-  const unit = row.rack === "driven" ? " mm a degree" : row.rack === "driver" ? " degrees a mm" : "";
-  return `${row.gears[0].name} drives ${row.gears[1].name}${on}, ×${ratio < 0 ? "−" : ""}${Math.abs(ratio)}${unit}`;
+  return `${a} drives ${b}${on}, ×${shown(row.ratio)}${unit}`;
+}
+
+/** The unit of a declared ratio: what the driven joint moves for one of the driver's. */
+function declaredUnit(row: Coupling): string {
+  const [from, to] = row.on ?? ["hinge", "hinge"];
+  if (from === "hinge" && to === "slide") return " mm a degree";
+  if (from === "slide" && to === "hinge") return " degrees a mm";
+  if (from === "slide" && to === "slide") return " mm a mm";
+  return "";
+}
+
+/** What a person or a call asks for when declaring a coupling (docs/plan-coupling-kinds.md). Objects are parts. */
+export interface DeclareSpec {
+  driver: string;
+  driven: string;
+  kind: DeclaredKind;
+  /** ratio: required. clutch: default one to one, the hinges' axes' sense taken in. */
+  ratio?: number;
+  /** winch: the drum's radius, mm, and which way turning the drum forward moves the cord. Default in. */
+  radius?: number;
+  wind?: "in" | "out";
+  /** ratchet: the wheel's free way against its click's part. Default 1 (forward). */
+  free?: 1 | -1;
+  /** ratchet: the click part, and the wheel's teeth, tip radius and root radius (horology's `Ratchet`). */
+  click?: string;
+  teeth?: number;
+  tip?: number;
+  root?: number;
+  /** ratchet: the click part's centre in model space, to tell that the click reaches toward its notch the free way. */
+  clickCentre?: Vec3;
+}
+
+/**
+ * `assembly` with a declared coupling between `spec.driver`'s and `spec.driven`'s bodies, replacing any declared one
+ * between the same two, or a sentence why not. `poses` are every member's model pose (a solve of the assembly).
+ */
+export function declareCoupling(assembly: Assembly, poses: ReadonlyMap<string, Affine>, spec: DeclareSpec, nameOf: (id: string) => string): Assembly | { reason: string } {
+  const bodyFor = (id: string): { body: string; fixed: boolean } | { reason: string } => {
+    const found = bodyOf(assembly, id);
+    if (!found) return { reason: `${nameOf(id)} is not in this assembly.` };
+    if ("reason" in found) return { reason: `${nameOf(id)} ${found.reason}.` };
+    return found;
+  };
+  const a = bodyFor(spec.driver), b = bodyFor(spec.driven);
+  if ("reason" in a) return a;
+  if ("reason" in b) return b;
+  const [nameA, nameB] = [nameOf(a.body), nameOf(b.body)];
+  if (a.body === b.body) return { reason: `${nameA} and ${nameB} are one part: they already move together.` };
+  const useA = jointUse(assembly, a.body), useB = jointUse(assembly, b.body);
+  if (!useA || !useB) return { reason: "A ball joint drives nothing: couple hinges and slides." };
+  const all = assembly.couplings ?? [];
+  const between = (row: Coupling) => (row.driver === a.body && row.driven === b.body) || (row.driver === b.body && row.driven === a.body);
+  if (all.some((row) => row.kind === undefined && between(row))) return { reason: `${nameA} and ${nameB} are already coupled by their gears.` };
+  const line = (body: string) => hingeLine(assembly, poses, body);
+  let row: Coupling;
+  const finiteNonzero = (value: number | undefined): value is number => typeof value === "number" && Number.isFinite(value) && value !== 0;
+  if (spec.kind === "ratio") {
+    if (useA === "fixed" || useB === "fixed") return { reason: `${useA === "fixed" ? nameA : nameB} has no hinge or slide: couple two parts that turn or slide.` };
+    if (!finiteNonzero(spec.ratio)) return { reason: "The ratio must be a number other than 0." };
+    row = { driver: a.body, driven: b.body, ratio: spec.ratio, kind: "ratio", names: [nameA, nameB], on: [useA, useB] };
+  } else if (spec.kind === "winch") {
+    if (useA !== "hinge" || useB !== "slide") return { reason: `A winch turns a drum on a hinge (${nameA}) and pulls a load on a slide (${nameB}).` };
+    if (typeof spec.radius !== "number" || !Number.isFinite(spec.radius) || spec.radius <= 0 || spec.radius > 10000) return { reason: "A winch needs the drum's radius, a positive number of mm." };
+    const wind = spec.wind ?? "in";
+    const drum = line(a.body), load = memberOf(assembly, b.body), pose = poses.get(b.body);
+    if (!drum || !pose || load?.joint?.kind !== "slide") return { reason: `${nameA} or ${nameB} has no pose.` };
+    const along = unit(turnDir(pose, load.joint.axis));
+    const gap = minus(drum.point, applyPose(pose, load.joint.pivot));
+    const off = gap.map((v, i) => v - dot(gap, drum.axis) * drum.axis[i]!) as Vec3;
+    const toward = dot(off, along);
+    if (Math.abs(toward) < 1e-6 * Math.max(1, Math.hypot(...off))) return { reason: `${nameB}'s slide does not run toward ${nameA} or away from it, so a cord from the drum cannot pull it.` };
+    const mmPerDeg = (2 * Math.PI * spec.radius) / 360;
+    row = { driver: a.body, driven: b.body, ratio: (wind === "in" ? 1 : -1) * Math.sign(toward) * mmPerDeg, kind: "winch", names: [nameA, nameB], on: ["hinge", "slide"], radius: spec.radius, wind };
+  } else if (spec.kind === "ratchet") {
+    if (useA !== "hinge") return { reason: `A ratchet wheel turns on a hinge: give ${nameA} one.` };
+    if (useB === "slide") return { reason: `A ratchet's click sits on a part that turns on the wheel's own axis, or on the frame: ${nameB} slides.` };
+    const free = spec.free ?? 1;
+    if (free !== 1 && free !== -1) return { reason: "free is 1 (the wheel runs free turning forward) or -1 (turning back)." };
+    const wheel = line(a.body);
+    if (!wheel) return { reason: `${nameA} has no pose.` };
+    let ratio = 1;
+    if (useB === "hinge") {
+      const carrier = line(b.body);
+      if (!carrier || Math.abs(dot(wheel.axis, carrier.axis)) < PARALLEL) return { reason: `${nameB} does not turn on ${nameA}'s axis: a ratchet's click sits on a part that turns on the wheel's own axis, or on the frame.` };
+      const along = minus(wheel.point, carrier.point);
+      const t = dot(along, carrier.axis);
+      if (Math.hypot(along[0] - t * carrier.axis[0], along[1] - t * carrier.axis[1], along[2] - t * carrier.axis[2]) > ON_AXIS_MM) return { reason: `${nameB} does not turn on ${nameA}'s axis: a ratchet's click sits on a part that turns on the wheel's own axis, or on the frame.` };
+      ratio = Math.sign(dot(wheel.axis, carrier.axis)) || 1;
+    }
+    row = { driver: a.body, driven: b.body, ratio, kind: "ratchet", names: [nameA, nameB], on: ["hinge", useB], free };
+    if (spec.click !== undefined) {
+      const click = memberOf(assembly, spec.click);
+      const clickName = nameOf(spec.click);
+      if (!click) return { reason: `${clickName} is not in this assembly.` };
+      if (click.joint?.kind !== "hinge" || click.parent === null) return { reason: `${clickName} needs a hinge of its own to lift on.` };
+      const carried = bodyOf(assembly, click.parent);
+      if (!carried || "reason" in carried || carried.body !== b.body) return { reason: `${clickName} must sit on ${nameB}, the part its click is mounted on.` };
+      if (spec.click === a.body || all.some((other) => other.click?.object === spec.click && !between(other)) || all.some((other) => other.driver === spec.click || other.driven === spec.click)) return { reason: `${clickName} is coupled already: a click moves only with its ratchet.` };
+      if (typeof spec.teeth !== "number" || typeof spec.tip !== "number" || typeof spec.root !== "number") return { reason: "A click needs the ratchet wheel's teeth, tip radius and root radius: the numbers the wheel was made with." };
+      const hinge = line(spec.click);
+      if (!hinge || Math.abs(dot(hinge.axis, wheel.axis)) < PARALLEL) return { reason: `${clickName}'s hinge is not parallel to ${nameA}'s axis: a click must swing flat against the wheel.` };
+      // The click's arm from where its hinge stands: horology puts the pivot on the tangent through the face's middle.
+      const out = minus(hinge.point, wheel.point);
+      const axial = dot(out, wheel.axis);
+      const radial = out.map((v, i) => v - axial * wheel.axis[i]!) as Vec3;
+      const reach = Math.hypot(...radial), middle = faceMiddle(spec.tip, spec.root);
+      if (reach <= middle) return { reason: `${clickName}'s hinge stands inside ${nameA}'s teeth: a click pivots outside the tips.` };
+      const shape = { teeth: spec.teeth, tip: spec.tip, root: spec.root, arm: Math.sqrt(reach * reach - middle * middle) };
+      const refusal = clickRefusal(shape);
+      if (refusal) return { reason: refusal };
+      // The wheel's plane, seen so the wheel runs free clockwise (horology's): its normal is against the free turn.
+      const normal = wheel.axis.map((v) => -free * v) as Vec3;
+      const geometry = clickGeometry(shape);
+      if (spec.clickCentre) {
+        // Horology's nose sits at the root, turned back from the pivot's direction by the pivot's angle off the face.
+        const along = Math.atan2(shape.arm, middle);
+        const toward = radial.map((v) => v / reach) as Vec3;
+        const side = cross(normal, toward);
+        const noseDir = toward.map((v, i) => v * Math.cos(along) - side[i]! * Math.sin(along)) as Vec3;
+        const nose = wheel.point.map((v, i) => v + axial * wheel.axis[i]! + geometry.nose[0] * noseDir[i]!) as Vec3;
+        // The click lies on the nose's side of the line from the wheel's axis through its pivot, or it is the other hand.
+        if (dot(minus(spec.clickCentre, hinge.point), side) * dot(minus(nose, hinge.point), side) <= 0) return { reason: `${clickName} points the wrong way for ${nameA} to run free turning ${free === 1 ? "forward" : "back"}: choose the other way, or mirror the click.` };
+      }
+      const sense: 1 | -1 = dot(hinge.axis, normal) > 0 ? 1 : -1;
+      const angle = click.joint.angle ?? 0;
+      row = { ...row, click: { object: spec.click, name: clickName, teeth: spec.teeth, tip: spec.tip, root: spec.root, arm: shape.arm, sense, zero: angle, phase: 0, lift: sense * geometry.liftDeg } };
+    }
+  } else {
+    if (useA === "fixed" || useB === "fixed" || useA !== useB) return { reason: "A clutch couples two hinges or two slides." };
+    let ratio = spec.ratio;
+    if (ratio === undefined) {
+      const lineA = line(a.body), lineB = line(b.body);
+      ratio = lineA && lineB ? Math.sign(dot(lineA.axis, lineB.axis)) || 1 : 1;
+    }
+    if (!finiteNonzero(ratio)) return { reason: "The ratio must be a number other than 0." };
+    row = { driver: a.body, driven: b.body, ratio, kind: "clutch", names: [nameA, nameB], on: [useA, useB] };
+  }
+  const kept = all.filter((other) => !(other.kind !== undefined && between(other)));
+  const next = withCouplings(assembly, [...kept, row]);
+  if (row.kind === "ratio" || row.kind === "winch") {
+    const train = trainScales(next, a.body);
+    if (train.locked) return { reason: `That would lock the train: ${train.locked.reason}` };
+  }
+  return next;
+}
+
+/** `assembly` without the declared coupling between `a`'s and `b`'s bodies; unchanged when there is none. */
+export function removeDeclared(assembly: Assembly, a: string, b: string): Assembly {
+  const one = bodyOf(assembly, a), two = bodyOf(assembly, b);
+  const ids = [one && "body" in one ? one.body : a, two && "body" in two ? two.body : b];
+  return withCouplings(assembly, (assembly.couplings ?? []).filter((row) => !(row.kind !== undefined && ids.includes(row.driver) && ids.includes(row.driven))));
 }
 
 /** A plate object that holds gears, at its pose in model space now. */

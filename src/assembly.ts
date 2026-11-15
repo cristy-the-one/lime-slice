@@ -109,7 +109,37 @@ export interface Coupling {
   driver: string;
   driven: string;
   ratio: number;
-  gears: [GearRef, GearRef];
+  /** The two gears of a found mesh. A declared coupling (`kind`) has none. */
+  gears?: [GearRef, GearRef];
+  /**
+   * A declared coupling (docs/plan-coupling-kinds.md): set by a person or a call, not found from meshing gears. Absent
+   * for a gear mesh. `ratio` is the driven joint's move (degrees or mm) for one of the driver's (degrees or mm):
+   * - `ratio`: a plain ratio, any two hinges or slides;
+   * - `winch`: a drum's hinge to a load's slide, `ratio` = ±2πr/360 mm a degree from `radius`, the sign from `wind`;
+   * - `ratchet`: the driver (the wheel) carries the driven (the part its click is on, or a part that stays) one to one
+   *   in one direction only; turning the other way, `free`, it runs free under its click;
+   * - `clutch`: the driver carries the driven at `ratio` unless the driven side is held or driven on its own: it slips.
+   * An older app reads no such row (it has no gears) and drops it.
+   */
+  kind?: DeclaredKind;
+  /** A declared coupling's two bodies, by label, as a gear mesh names its gears. */
+  names?: [string, string];
+  /** The joint kinds the two bodies had when it was declared ("fixed" for a ratchet's part that stays). */
+  on?: [JointUse, JointUse];
+  /** A winch's drum radius, mm, and whether turning the drum forward winds the cord in or pays it out. */
+  radius?: number;
+  wind?: "in" | "out";
+  /** A ratchet's free way: the sign of the wheel's turn, against its click's part, that the click lets pass. */
+  free?: 1 | -1;
+  /**
+   * A ratchet's click: a part on its own hinge, seated on the driven body, whose angle the wheel sets
+   * (`src/ratchet-click.ts`). The wheel's `teeth`, `tip` and `root` radii are horology's `Ratchet`; `arm` is the click's
+   * length (horology's `Click.length`), read from where its hinge stands; `sense` turns the click's lift (counter-clockwise
+   * in the wheel's plane, seen with the wheel running free clockwise) into its hinge's angle; `zero` is its angle seated in
+   * a notch; `phase` how far the wheel has run free past that notch, degrees; `lift` horology's `lift_deg` in the hinge's
+   * sense, for the reply and the panel.
+   */
+  click?: { object: string; name: string; teeth: number; tip: number; root: number; arm: number; sense: 1 | -1; zero: number; phase: number; lift: number };
   /**
    * A planetary mesh (docs/plan-gear-kinds.md, stage 2): one gear hinges on a turning part, the carrier, and the other on
    * the part the carrier turns on, coaxial with it. Then the driven body turns `ratio` per degree of the driver plus
@@ -126,12 +156,34 @@ export interface Coupling {
   seat?: number[];
 }
 
+export type DeclaredKind = "ratio" | "winch" | "ratchet" | "clutch";
+export type JointUse = "hinge" | "slide" | "fixed";
+export const DECLARED_KINDS: readonly DeclaredKind[] = ["ratio", "winch", "ratchet", "clutch"];
+
 export interface Assembly {
   id: string;
   name: string;
   members: Member[];
-  /** Gear couplings, found by the mesh check (`src/gear-train.ts`). An older app does not read them. */
+  /**
+   * Gear couplings found by the mesh check (`src/gear-train.ts`), and couplings declared by a person or a call
+   * (docs/plan-coupling-kinds.md). An older app reads the gear ones only.
+   */
   couplings?: Coupling[];
+}
+
+/** A coupling's two ends by label: its gears' for a mesh, its bodies' for a declared one. */
+export function couplingNames(row: Coupling): [string, string] {
+  return row.gears ? [row.gears[0].name, row.gears[1].name] : row.names ?? [row.driver, row.driven];
+}
+
+/** The couplings a person or a call declared (no gears): Couple gears keeps them when it replaces the found ones. */
+export function declaredOf(assembly: Assembly): Coupling[] {
+  return (assembly.couplings ?? []).filter((row) => row.kind !== undefined);
+}
+
+/** `assembly` with `found` gear couplings in place of the ones it had, its declared couplings kept. */
+export function withFound(assembly: Assembly, found: Coupling[] | undefined): Assembly {
+  return withCouplings(assembly, [...declaredOf(assembly), ...(found ?? [])]);
 }
 
 /** A pose for an object id, or `undefined` for one the plate does not hold. */
@@ -513,7 +565,7 @@ function pinSeat(assembly: Assembly, body: string): number[] | null {
 
 /** Whether a coupling names one of `objects`, as a body or as a gear's object. */
 function touches(coupling: Coupling, objects: readonly string[]): boolean {
-  return [coupling.driver, coupling.driven, coupling.gears[0].object, coupling.gears[1].object, ...(coupling.carrier ? [coupling.carrier.body] : [])].some((id) => objects.includes(id));
+  return [coupling.driver, coupling.driven, ...(coupling.gears ? [coupling.gears[0].object, coupling.gears[1].object] : []), ...(coupling.carrier ? [coupling.carrier.body] : []), ...(coupling.click ? [coupling.click.object] : [])].some((id) => objects.includes(id));
 }
 
 /** `assembly` with `couplings`, the field left out when there are none. */
@@ -657,8 +709,13 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const row = item as Record<string, unknown>;
-    const gears = Array.isArray(row.gears) && row.gears.length === 2 ? row.gears.map(readGearRef) : null;
     if (typeof row.driver !== "string" || typeof row.driven !== "string" || !row.driver || row.driver === row.driven) continue;
+    if (row.kind !== undefined) {
+      const declared = readDeclared(row);
+      if (declared) out.push(declared);
+      continue;
+    }
+    const gears = Array.isArray(row.gears) && row.gears.length === 2 ? row.gears.map(readGearRef) : null;
     if (!finite(row.ratio) || row.ratio === 0 || !gears || gears.some((gear) => gear === null)) continue;
     const seat = Array.isArray(row.seat) && row.seat.every(finite) ? (row.seat as number[]) : undefined;
     let carrier: Coupling["carrier"];
@@ -673,20 +730,80 @@ export function readCouplings(value: unknown): Coupling[] | undefined {
   return out.length ? out : undefined;
 }
 
+const USES: readonly JointUse[] = ["hinge", "slide", "fixed"];
+
+/** A declared coupling row as a file keeps it, or null when damaged. */
+function readDeclared(row: Record<string, unknown>): Coupling | null {
+  const kind = DECLARED_KINDS.find((one) => one === row.kind);
+  if (!kind || !finite(row.ratio) || row.ratio === 0) return null;
+  const names = Array.isArray(row.names) && row.names.length === 2 && row.names.every((name) => typeof name === "string") ? [row.names[0], row.names[1]] as [string, string] : null;
+  const on = Array.isArray(row.on) && row.on.length === 2 && row.on.every((use) => USES.includes(use as JointUse)) ? [row.on[0], row.on[1]] as [JointUse, JointUse] : null;
+  if (!names || !on) return null;
+  const out: Coupling = { driver: row.driver as string, driven: row.driven as string, ratio: row.ratio, kind, names, on };
+  if (kind === "winch") {
+    if (!finite(row.radius) || row.radius <= 0 || (row.wind !== "in" && row.wind !== "out")) return null;
+    out.radius = row.radius; out.wind = row.wind;
+  }
+  if (kind === "ratchet") {
+    if (row.free !== 1 && row.free !== -1) return null;
+    out.free = row.free;
+    if (row.click !== undefined) {
+      const raw = row.click as Record<string, unknown> | null;
+      if (!raw || typeof raw !== "object" || typeof raw.object !== "string" || !raw.object || typeof raw.name !== "string") return null;
+      if (!Number.isInteger(raw.teeth) || (raw.teeth as number) < 6 || (raw.teeth as number) > 200 || ![raw.tip, raw.root, raw.arm, raw.zero, raw.phase, raw.lift].every(finite) || (raw.sense !== 1 && raw.sense !== -1)) return null;
+      const [tip, root, arm, phase] = [raw.tip, raw.root, raw.arm, raw.phase] as number[];
+      if (!(tip! > root! && root! > 0 && arm! > 0 && phase! >= 0 && phase! < 360 / (raw.teeth as number))) return null;
+      out.click = { object: raw.object, name: raw.name, teeth: raw.teeth as number, tip: tip!, root: root!, arm: arm!, sense: raw.sense, zero: raw.zero as number, phase: phase!, lift: raw.lift as number };
+    }
+  }
+  return out;
+}
+
+/** What a body's joint is now, for a declared coupling: a hinge, a slide, or a part that stays (no joint, or held). */
+export function jointUse(assembly: Assembly, body: string): JointUse | null {
+  const member = assembly.members.find((row) => row.object === body);
+  if (!member) return null;
+  if (member.joint?.kind === "hinge") return "hinge";
+  if (member.joint?.kind === "slide") return "slide";
+  if (member.joint?.kind === "ball") return null;
+  return "fixed";
+}
+
+/**
+ * A declared coupling still names two bodies whose joints are the kinds they were when it was declared: a body that
+ * lost its joint (or changed it) drops it, so a ratio in degrees never drives a slide in mm. No seat: a declared
+ * coupling says how two joints move together, wherever the parts stand. A click must still ride on the driven body.
+ */
+function declaredFits(assembly: Assembly, coupling: Coupling): boolean {
+  for (const [id, use] of [[coupling.driver, coupling.on?.[0]], [coupling.driven, coupling.on?.[1]]] as const) {
+    const body = bodyOf(assembly, id);
+    if (!body || "reason" in body || body.body !== id || jointUse(assembly, id) !== use) return false;
+  }
+  if (coupling.click) {
+    const click = assembly.members.find((row) => row.object === coupling.click!.object);
+    if (click?.joint?.kind !== "hinge" || click.parent === null) return false;
+    const carrier = bodyOf(assembly, click.parent);
+    if (!carrier || "reason" in carrier || carrier.body !== coupling.driven) return false;
+  }
+  return true;
+}
+
 /** A coupling still names two bodies of `assembly`: members that turn on a hinge, or the fixed root, and its gears' objects are members. */
 function couplingFits(assembly: Assembly, coupling: Coupling): boolean {
+  if (coupling.kind !== undefined || !coupling.gears) return coupling.kind !== undefined && declaredFits(assembly, coupling);
+  const gearsOf = coupling.gears;
   const body = (id: string) => {
     const member = assembly.members.find((row) => row.object === id);
     return !!member && (member.parent === null || drives(member.joint));
   };
   const member = (id: string) => assembly.members.some((row) => row.object === id);
-  if (!body(coupling.driver) || !body(coupling.driven) || !member(coupling.gears[0].object) || !member(coupling.gears[1].object)) return false;
+  if (!body(coupling.driver) || !body(coupling.driven) || !member(gearsOf[0].object) || !member(gearsOf[1].object)) return false;
   if (coupling.carrier && assembly.members.find((row) => row.object === coupling.carrier!.body)?.joint?.kind !== "hinge") return false;
   // The bodies are still the ones the gears turn on, and nothing has moved a gear or a hinge since the pair was coupled.
-  const bodies = coupling.gears.map((gear) => bodyOf(assembly, gear.object));
+  const bodies = gearsOf.map((gear) => bodyOf(assembly, gear.object));
   if (bodies.some((row) => !row || "reason" in row) || (bodies[0] as { body: string }).body !== coupling.driver || (bodies[1] as { body: string }).body !== coupling.driven) return false;
   if (!coupling.seat) return true;
-  const now = couplingSeat(assembly, coupling.gears, coupling.carrier?.body);
+  const now = couplingSeat(assembly, gearsOf, coupling.carrier?.body);
   return !!now && now.length === coupling.seat.length && now.every((value, i) => Math.abs(value - coupling.seat![i]!) <= 1e-6 * Math.max(1, Math.abs(value)));
 }
 

@@ -6,7 +6,7 @@
  * after the run (a frame the train was mounted on), stays where it was, and so does the link that mounts a part of the
  * run on it.
  */
-import { withCouplings, type Assembly, type Coupling, type Member } from "../assembly.ts";
+import { withCouplings, type Assembly, type Coupling, type GearRef, type Member } from "../assembly.ts";
 
 /** `coupling` with every object it names passed through `to`. */
 function renamedCoupling(coupling: Coupling, to: (id: string) => string): Coupling {
@@ -14,14 +14,17 @@ function renamedCoupling(coupling: Coupling, to: (id: string) => string): Coupli
     ...coupling,
     driver: to(coupling.driver),
     driven: to(coupling.driven),
-    gears: [{ ...coupling.gears[0], object: to(coupling.gears[0].object) }, { ...coupling.gears[1], object: to(coupling.gears[1].object) }],
+    // A found mesh names its two gears; a declared coupling (ratio, winch, ratchet, clutch) has none, and a ratchet
+    // may name the part its click is.
+    ...(coupling.gears ? { gears: [{ ...coupling.gears[0], object: to(coupling.gears[0].object) }, { ...coupling.gears[1], object: to(coupling.gears[1].object) }] as [GearRef, GearRef] } : {}),
+    ...(coupling.click ? { click: { ...coupling.click, object: to(coupling.click.object) } } : {}),
     ...(coupling.carrier ? { carrier: { ...coupling.carrier, body: to(coupling.carrier.body) } } : {}),
   };
 }
 
 /** Whether `coupling` names one of `ids`. */
 function names(coupling: Coupling, ids: ReadonlySet<string>): boolean {
-  return [coupling.driver, coupling.driven, coupling.gears[0].object, coupling.gears[1].object, ...(coupling.carrier ? [coupling.carrier.body] : [])].some((id) => ids.has(id));
+  return [coupling.driver, coupling.driven, ...(coupling.gears ?? []).map((gear) => gear.object), ...(coupling.click ? [coupling.click.object] : []), ...(coupling.carrier ? [coupling.carrier.body] : [])].some((id) => ids.has(id));
 }
 
 /**

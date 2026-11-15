@@ -52,7 +52,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   edges_find: [{ object: "obj_1", direction: [0, 0, 1], convex: true }, { object: "obj_1", onFace: { normal: [0, 0, 1] } }],
   workplane_set: [{ object: "obj_1", faceIndex: 5 }, { object: "obj_1", source: "bed" }],
   workplane_print_up: [{ object: "obj_1" }],
-  model_place: [{ object: "obj_2", to: "obj_1", x: 4, y: 0, z: 12, assembly: "lamp" }, { object: "obj_3", joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] }, angle: 30 }, { object: "obj_2", gears: "couple" }, { object: "obj_2", angle: 30, reply: "angles" }, { object: "obj_4", until: { contact: "obj_5", dir: 1, tolerance: 0.01 } }],
+  model_place: [{ object: "obj_2", to: "obj_1", x: 4, y: 0, z: 12, assembly: "lamp" }, { object: "obj_3", joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] }, angle: 30 }, { object: "obj_2", gears: "couple" }, { object: "obj_2", angle: 30, reply: "angles" }, { object: "obj_4", until: { contact: "obj_5", dir: 1, tolerance: 0.01 } }, { object: "obj_6", couple: { driven: "obj_7", kind: "winch", radius: 12 } }, { object: "obj_8", couple: { driven: "obj_1", kind: "ratchet", free: -1, click: "obj_9", teeth: 20, tip: 12, root: 10.2 } }],
   assembly_merge: [{ from: "lamp", into: "desk" }],
   model_probe: [{ object: "obj_1", op: { kind: "hole", diameterMm: 4, through: true, at: { u: 10, v: 10 } } }, { object: "obj_1", op: { kind: "fillet", edges: { select: { direction: [0, 0, 1], convex: true } }, size: 2 } }],
   section: [{ object: "obj_1", face: { normal: [0, 0, 1] }, insetMm: 5 }, { object: "obj_1", planes: [{ origin: [0, 0, 10], normal: [0, 0, 1] }] }],

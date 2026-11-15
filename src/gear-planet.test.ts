@@ -106,7 +106,7 @@ function coupleStage(assembly: Assembly) {
 }
 {
   const { found, coupled } = coupleStage(stage({ held: true }, { joint: hinge() }));
-  eq("six meshes, each through the carrier", found.couplings.map((row) => [row.gears[0].name, row.gears[1].name, row.carrier?.body]), [["Sun", "Planet 1", "carrier"], ["Sun", "Planet 2", "carrier"], ["Sun", "Planet 3", "carrier"], ["Planet 1", "Ring", "carrier"], ["Planet 2", "Ring", "carrier"], ["Planet 3", "Ring", "carrier"]]);
+  eq("six meshes, each through the carrier", found.couplings.map((row) => [row.gears![0].name, row.gears![1].name, row.carrier?.body]), [["Sun", "Planet 1", "carrier"], ["Sun", "Planet 2", "carrier"], ["Sun", "Planet 3", "carrier"], ["Planet 1", "Ring", "carrier"], ["Planet 2", "Ring", "carrier"], ["Planet 3", "Ring", "carrier"]]);
   eq("nothing refused or locked", [found.notCoupled, found.locked], [[], []]);
   eq("a line reads through the carrier", couplingLine(found.couplings[0]!), "Sun drives Planet 1 on Carrier, ×−1");
   const scales = trainScales(coupled, "sun");
