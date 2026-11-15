@@ -1963,6 +1963,11 @@ input.is-aspect[data-aspect-color="accent"] { outline-color: var(--accent); box-
 .pose-panel input, .pose-panel select { width: 100%; min-width: 0; }
 .pose-panel .pose-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .pose-panel .pose-error { color: var(--danger); }
+/* Couplings (docs/plan-coupling-kinds.md): each declared coupling with its Remove, the form's lead and help. */
+.pose-panel .pose-coupling { display: flex; align-items: center; gap: 8px; }
+.pose-panel .pose-coupling p { flex: 1; margin: 4px 0; font-size: 12px; }
+.pose-panel .pose-couple-lead { margin: 10px 0 2px; font-size: 12px; }
+.pose-panel .pose-couple-help { margin: 6px 0 0; font-size: 11px; color: var(--text-dim); }
 /*
  * Preparing an animation: the three steps (a check once done, a filled dot on the one running), what is happening in
  * words with its share, and the app's own bar (the slicing bar's track and accent, rounded to sit in the panel).

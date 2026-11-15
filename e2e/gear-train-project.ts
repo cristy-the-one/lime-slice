@@ -41,6 +41,42 @@ if (process.argv.includes("--contact")) {
   console.log(JSON.stringify({ frame, arm, stop }));
   process.exit(0);
 }
+if (process.argv.includes("--couplings")) {
+  // docs/plan-coupling-kinds.md: parts on joints and nothing coupled, for a person to couple in Pose. A frame (the root);
+  // a centre arbor and a wheel on hinges (a ratio); a hand on a hinge over the arbor (a clutch); a drum on a hinge with a
+  // weight on a slide below it and a cord seated on the weight (a winch); a ratchet wheel of 20 teeth (tip 12, root 10.2)
+  // on a hinge and its click on a hinge on the frame, 15 mm out, its body toward the notch the way the wheel runs free.
+  const box = async (name: string, dx: number, dy: number, dz: number) => String((await call("solid_new", { primitive: "box", dx, dy, dz, name })).object);
+  const frame = await box("Frame", 200, 200, 4);
+  const centre = await box("Centre", 6, 6, 30);
+  const wheel = await box("Wheel", 30, 30, 3);
+  const hand = await box("Hand", 40, 2, 1);
+  const drum = await box("Drum", 24, 24, 20);
+  const weight = await box("Weight", 20, 20, 30);
+  const cord = await box("Cord", 1, 1, 40);
+  const ratchet = await box("Ratchet", 24, 24, 3);
+  const click = await box("Click", 7, 3, 3);
+  const hinge = { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] };
+  await call("model_place", { object: centre, to: frame, x: 0, y: 0, z: 20 });
+  await call("model_place", { object: centre, joint: hinge });
+  await call("model_place", { object: wheel, to: frame, x: 50, y: 0, z: 10 });
+  await call("model_place", { object: wheel, joint: hinge });
+  await call("model_place", { object: hand, to: frame, x: 20, y: 0, z: 40 });
+  await call("model_place", { object: hand, joint: { kind: "hinge", pivot: [-20, 0, 0], axis: [0, 0, 1] } });
+  await call("model_place", { object: drum, to: frame, x: -60, y: 50, z: 30 });
+  await call("model_place", { object: drum, joint: hinge });
+  await call("model_place", { object: weight, to: frame, x: -48, y: 0, z: 30 });
+  await call("model_place", { object: weight, joint: { kind: "slide", pivot: [0, 0, 0], axis: [0, 1, 0], min: -40, max: 40 } });
+  await call("model_place", { object: cord, to: weight, x: 0, y: 25, z: 0 });
+  await call("model_place", { object: ratchet, to: frame, x: 0, y: -60, z: 40 });
+  await call("model_place", { object: ratchet, joint: hinge });
+  await call("model_place", { object: click, to: frame, x: -3.5, y: -48.6, z: 40 });
+  await call("model_place", { object: click, joint: { kind: "hinge", pivot: [3.5, 3.6, 0], axis: [0, 0, 1] } });
+  const saved = await call("project_save", { name: "pose-couplings.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ frame, centre, wheel, hand, drum, weight, cord, ratchet, click }));
+  process.exit(0);
+}
 if (process.argv.includes("--compound")) {
   // A free compound train, ten to one: a driver of 16 on a wheel of 40, and a pinion of 12 attached to that wheel (one
   // shaft, no joint) on an output of 48. Module 1, each at its mating phase. Only the pinion is in an assembly.
