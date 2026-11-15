@@ -7,10 +7,10 @@ import { poseScale, posedBounds, relativePose, seatLift, thenPose, type ObjectFr
 import { boundsOf, orientEuler } from "../../src/mesh-place.ts";
 import { poseChain, solvePose, turnHinge } from "../../src/pose.ts";
 import type { Vec3 } from "../../src/model-tree.ts";
-import { couplingLine, crossedNotes, findCouplings, prepareTrain, preparedLines, trainCheck, trainScales, trainTurn, type GearPart, type Prepared } from "../../src/gear-train.ts";
+import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, removeDeclared, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Prepared } from "../../src/gear-train.ts";
 import { gearsInTree, type WorldGear } from "../../src/gear-pair.ts";
 import type { Affine } from "../../src/model-space.ts";
-import { assemblyOf, jointAt, turnsOnPlate, withRootAt, withCouplings, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Member, type MemberExprs } from "../../src/assembly.ts";
+import { assemblyOf, DECLARED_KINDS, jointAt, turnsOnPlate, withFound, withRootAt, withCouplings, memberFields, memberPose, readAssemblies, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, withMember, type Assembly, type Coupling, type Member, type MemberExprs } from "../../src/assembly.ts";
 import { PLACE_KEYS, type PlateObject, UNKNOWN_OBJECT, shownName } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -79,6 +79,7 @@ function modelPlace(this: Session, obj: PlateObject, input: Record<string, unkno
   if (input.reply !== undefined && input.joint === undefined && input.angle === undefined && input.travel === undefined && input.reach === undefined) return refuse("conflicting-arguments", "reply: angles is for a joint, angle or reach call.");
   if (input.root !== undefined) return rerootMember.call(this, obj, input);
   if (input.gears !== undefined) return gearsMember.call(this, obj, input);
+  if (input.couple !== undefined) return coupleMember.call(this, obj, input);
   if (input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined) return poseMember.call(this, obj, input);
   if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return refuse("bad-frame", 'frame is "part" or "model".');
   const assemblies = this.liveAssemblies();
@@ -218,13 +219,14 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
   });
   let assembly = mine;
   let found: ReturnType<typeof findCouplings> | undefined;
-  if (input.gears === "uncouple") assembly = withCouplings(mine, undefined);
+  // Couple gears and Uncouple touch the found gear couplings only: declared ones (couple) stay.
+  if (input.gears === "uncouple") assembly = withFound(mine, undefined);
   else if (input.gears === "couple") {
     const poses = solveAssembly(mine, poseOf).poses;
     const gears = gearsAt(poses);
     if (gears.length < 2) return refuse("bad-assembly", "This assembly has fewer than two gears: a gear is a solid_new {gear} or a gear step.");
     found = findCouplings(mine, gears, poses, (id) => shownName(this.find(id)?.name ?? id));
-    assembly = withCouplings(mine, found.couplings);
+    assembly = withFound(mine, found.couplings);
   }
   const before = assemblyOf(this.assemblies, obj.id);
   if (assembly !== before) {
@@ -238,7 +240,7 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
     this.writeSolved(assembly, "", false);
     this.autosaveDirty = true;
   }
-  const couplings = (assembly.couplings ?? []).map((row) => ({ driver: row.driver, driven: row.driven, gears: [row.gears[0].name, row.gears[1].name], ratio: Math.round(row.ratio * 1e6) / 1e6, ...(row.carrier ? { carrier: row.carrier.body, carrierRatio: Math.round(row.carrier.ratio * 1e6) / 1e6 } : {}) }));
+  const couplings = (assembly.couplings ?? []).map(couplingRow);
   // Each train once: its lock, or the validator's sampled turn of its first body.
   const seen = new Set<string>();
   const locked: { gears: string[]; reason: string }[] = [];
@@ -250,6 +252,8 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
     if (train.locked) { locked.push(train.locked); continue; }
     const sweep = trainCheck(assembly, poseOf, gearsAt, row.driver, CHECK_ANGLES);
     if ("reason" in sweep) { locked.push({ gears: [], reason: sweep.reason }); continue; }
+    // A train of declared couplings only has no gears for the mesh check to ask.
+    if (!sweep.pairs) continue;
     checked = { frames: (checked?.frames ?? 0) + sweep.frames, pairs: (checked?.pairs ?? 0) + sweep.pairs, bad: [...(checked?.bad ?? []), ...sweep.bad.map((bad) => ({ ...bad, angle: Math.round(bad.angle * 100) / 100 }))] };
   }
   const notCoupled = found?.notCoupled.map((row) => ({ gears: row.names, reason: row.reason })) ?? [];
@@ -263,6 +267,93 @@ function gearsMember(this: Session, obj: PlateObject, input: Record<string, unkn
   } : {};
   const madeNote = prepared ? preparedLines(prepared, name).join(" ") : "";
   return { ok: true, assembly: assembly.name, ...made, couplings, ...(notCoupled.length ? { notCoupled } : {}), ...(locked.length ? { locked } : {}), ...(checked ? { checked } : {}), ...(input.compact === true ? {} : { note: madeNote ? `${madeNote} ${note}` : note }) };
+}
+
+/** A coupling as a reply shows it: a gear mesh by its gears, a declared one by its kind and its parts. */
+function couplingRow(row: Coupling): Record<string, unknown> {
+  const round = (value: number) => Math.round(value * 1e6) / 1e6;
+  if (row.kind === undefined) return { driver: row.driver, driven: row.driven, gears: [row.gears![0].name, row.gears![1].name], ratio: round(row.ratio), ...(row.carrier ? { carrier: row.carrier.body, carrierRatio: round(row.carrier.ratio) } : {}) };
+  return {
+    driver: row.driver, driven: row.driven, kind: row.kind, names: row.names, ratio: round(row.ratio),
+    ...(row.radius !== undefined ? { radius: row.radius, wind: row.wind } : {}),
+    ...(row.free !== undefined ? { free: row.free } : {}),
+    ...(row.click ? { click: { object: row.click.object, name: row.click.name, teeth: row.click.teeth, tip: row.click.tip, root: row.click.root, armMm: Math.round(row.click.arm * 1e4) / 1e4, liftDeg: Math.round(row.click.lift * 1e4) / 1e4, phase: Math.round(row.click.phase * 1e6) / 1e6 } } : {}),
+  };
+}
+
+/**
+ * --- docs/plan-coupling-kinds.md. couple: {driven, kind, ...} declares a coupling between this part's body (the driver)
+ * and driven's: a ratio, a winch, a ratchet or a clutch. It replaces a declared one between the same two; {driven,
+ * remove: true} drops it. One plate_undo step. Nothing moves: the next turn of either part follows it.
+ */
+function coupleMember(this: Session, obj: PlateObject, input: Record<string, unknown>): Record<string, unknown> {
+  if (Object.keys(input).some((key) => !["object", "couple", "compact"].includes(key))) return refuse("conflicting-arguments", "Give couple on its own.");
+  const given = input.couple as Record<string, unknown> | null;
+  if (!given || typeof given !== "object" || Array.isArray(given)) return refuse("bad-argument", "couple is {driven, kind, ...}: see guide {kind:\"pose\"}.");
+  const allowed = ["driven", "kind", "ratio", "radius", "wind", "free", "click", "teeth", "tip", "root", "remove"];
+  const extra = Object.keys(given).find((key) => !allowed.includes(key));
+  if (extra) return refuse("bad-argument", `couple takes no ${extra}: it takes ${allowed.join(", ")}.`);
+  if (typeof given.driven !== "string") return refuse("bad-argument", "couple needs driven: the part that follows this one.");
+  const driven = this.find(given.driven);
+  if (!driven) return refuse("no-object", `driven: ${UNKNOWN_OBJECT}`, undefined, NEXT.plate);
+  const assemblies = this.liveAssemblies();
+  const mine = assemblyOf(assemblies, obj.id);
+  if (!mine) return refuse("no-assembly", "This part is in no assembly. model_place {to} puts it in one.", undefined, NEXT.assembly);
+  if (!mine.members.some((row) => row.object === driven.id)) return refuse("bad-assembly", `${shownName(driven.name)} is not in ${mine.name}: couple two parts of one assembly.`);
+  const nameOf = (id: string) => shownName(this.find(id)?.name ?? id);
+  let assembly: Assembly;
+  if (given.remove !== undefined) {
+    if (given.remove !== true || Object.keys(given).some((key) => key !== "driven" && key !== "remove")) return refuse("bad-argument", "remove takes true, with driven alone.");
+    assembly = removeDeclared(mine, obj.id, driven.id);
+    if ((assembly.couplings?.length ?? 0) === (mine.couplings?.length ?? 0)) return refuse("bad-assembly", `${shownName(obj.name)} and ${shownName(driven.name)} have no declared coupling to remove.`);
+  } else {
+    const kind = given.kind ?? "ratio";
+    if (!DECLARED_KINDS.includes(kind as never)) return refuse("bad-argument", `kind is ${DECLARED_KINDS.join(", ")}.`);
+    // Each kind reads its own numbers; one it does not read is refused rather than left unused.
+    const takes: Record<string, string[]> = { ratio: ["ratio"], winch: ["radius", "wind"], ratchet: ["free", "click", "teeth", "tip", "root"], clutch: ["ratio"] };
+    const stray = Object.keys(given).find((key) => key !== "driven" && key !== "kind" && !takes[kind as string]!.includes(key));
+    if (stray) return refuse("bad-argument", `A ${String(kind)} coupling takes no ${stray}: it takes ${takes[kind as string]!.join(", ")}.`);
+    if (given.wind !== undefined && given.wind !== "in" && given.wind !== "out") return refuse("bad-argument", "wind is \"in\" or \"out\": which way turning the drum forward moves the cord.");
+    if (given.free !== undefined && given.free !== 1 && given.free !== -1) return refuse("bad-argument", "free is 1 or -1: the way the ratchet's wheel runs free.");
+    for (const key of ["ratio", "radius", "teeth", "tip", "root"]) if (given[key] !== undefined && typeof given[key] !== "number") return refuse("bad-argument", `${key} is a number.`);
+    let clickCentre: Vec3 | undefined;
+    let clickId: string | undefined;
+    if (given.click !== undefined) {
+      const click = typeof given.click === "string" ? this.find(given.click) : null;
+      if (!click) return refuse("no-object", `click: ${UNKNOWN_OBJECT}`, undefined, NEXT.plate);
+      clickId = click.id;
+      const box = this.assembledBox(click);
+      if (box) clickCentre = [0, 1, 2].map((i) => (box.min[i]! + box.max[i]!) / 2) as Vec3;
+    }
+    const spec: DeclareSpec = {
+      driver: obj.id, driven: driven.id, kind: kind as DeclareSpec["kind"],
+      ...(given.ratio !== undefined ? { ratio: given.ratio as number } : {}),
+      ...(given.radius !== undefined ? { radius: given.radius as number } : {}),
+      ...(given.wind !== undefined ? { wind: given.wind as "in" | "out" } : {}),
+      ...(given.free !== undefined ? { free: given.free as 1 | -1 } : {}),
+      ...(clickId !== undefined ? { click: clickId } : {}),
+      ...(given.teeth !== undefined ? { teeth: given.teeth as number } : {}),
+      ...(given.tip !== undefined ? { tip: given.tip as number } : {}),
+      ...(given.root !== undefined ? { root: given.root as number } : {}),
+      ...(clickCentre ? { clickCentre } : {}),
+    };
+    const poses = solveAssembly(mine, (id) => this.find(id)?.modelPose, this.params).poses;
+    const declared = declareCoupling(mine, poses, spec, nameOf);
+    if ("reason" in declared) return refuse("bad-assembly", declared.reason);
+    assembly = declared;
+  }
+  this.remember("Couple");
+  this.assemblies = assemblies.map((row) => (row.id === mine.id ? assembly : row));
+  this.autosaveDirty = true;
+  const rows = assembly.couplings ?? [];
+  const made = given.remove === true ? undefined : rows[rows.length - 1];
+  return {
+    ok: true,
+    assembly: assembly.name,
+    ...(made ? { coupling: couplingRow(made) } : { removed: [obj.id, driven.id] }),
+    couplings: rows.map(couplingRow),
+    ...(input.compact === true ? {} : { note: made ? `${couplingLine(made)}. Turning either part now moves the other: model_place {angle} or {travel}, or pose_animate. Nothing moved yet.` : "The declared coupling is gone; each part moves on its own joint again." }),
+  };
 }
 
 /** Change a joint and optionally move its chain, validating everything before writing a pose. */
@@ -338,6 +429,7 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
     assembly = next;
   }
   let train: ({ object: string; angle: number } | { object: string; travel: number })[] = [];
+  let trainNotes: { slipped?: string[]; stopped?: string } = {};
   if (input.angle !== undefined || input.travel !== undefined) {
     // A slide (docs/plan-gear-kinds.md, stage 3) takes travel in mm; a hinge takes angle in degrees.
     const slide = member.joint?.kind === "slide";
@@ -350,6 +442,8 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
     if ("reason" in turned) return refuse("bad-placement", turned.reason);
     assembly = turned.assembly; member = assembly.members.find((row) => row.object === obj.id)!;
     train = turned.angles.filter((row) => row.object !== obj.id);
+    // A clutch that slipped, or a ratchet that stopped the turn once its click was seated (docs/plan-coupling-kinds.md).
+    trainNotes = { ...(turned.slipped ? { slipped: turned.slipped } : {}), ...(turned.stopped ? { stopped: turned.stopped } : {}) };
   }
   let reach: ReturnType<typeof solvePose> | undefined;
   if (input.reach !== undefined) {
@@ -378,10 +472,10 @@ function poseMember(this: Session, obj: PlateObject, input: Record<string, unkno
     return joint?.kind === "hinge" && (before?.kind !== "hinge" || (joint.angle ?? 0) !== (before.angle ?? 0)) ? [{ object: id, angle: joint.angle ?? 0 } as Row] : [];
   });
   for (const row of train) if (!angles.some((one) => one.object === row.object)) angles.push(row);
-  if (input.reply === "angles") return { ok: true, angles, ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}) };
+  if (input.reply === "angles") return { ok: true, angles, ...trainNotes, ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}) };
   const current = assembly.members.find((row) => row.object === obj.id)!;
   return { ok: true, assembly: assembly.name, object: obj.id, ...(current.joint ? { joint: current.joint } : { joint: null }), ...moved,
-    ...(angles.length ? { angles } : {}), ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}),
+    ...(angles.length ? { angles } : {}), ...trainNotes, ...(reach && !("reason" in reach) ? { reached: reach.reached, distanceMm: reach.distance, point: reach.point, anchor: reach.anchor, sweeps: reach.sweeps } : {}),
     ...(input.compact === true ? {} : { note: "The print layout is unchanged." }) };
 }
 

@@ -49,6 +49,7 @@ mcp/render-unnamed.test.ts
 mcp/slice-collisions.test.ts
 mcp/autosave-projects.test.ts
 mcp/gear-train.test.ts
+mcp/couplings.test.ts
 src/mass.test.ts
 mcp/mass.test.ts
 mcp/contact.test.ts
