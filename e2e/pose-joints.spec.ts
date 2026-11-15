@@ -318,3 +318,35 @@ test("each Pose tool has its own icon and key, and the panel saves the pose as o
   await page.waitForTimeout(300);
   await page.screenshot({ path: path.join(shots, "pose-tools-step.png") });
 });
+
+test("Mass: the selected member's body, centre of gravity and hinge period, read-only", async ({ page }) => {
+  const { knee } = await setup(page);
+  const panel = page.locator("#posePanel");
+  const mass = panel.locator("[data-pose-mass]");
+  await panel.locator("[data-object='part']").click();
+  // The root and both parts seated on it without a joint are one body: one mass, no hinge.
+  await expect(mass).toContainText(/Body: calibration_cube_20mm\.stl, overhang_ledge[^,]*, tip\.stl/);
+  await expect(mass).toContainText("solid at 1.24 g/cm³. A print with infill weighs less.");
+  await expect(mass).toContainText("Centre of gravity (model):");
+  await expect(mass).not.toContainText("Period");
+  await page.locator("[data-pose-tool='joint']").click();
+  await panel.locator(`[data-object='${knee}']`).click();
+  await panel.getByLabel("Joint kind").selectOption("hinge");
+  for (const [label, value] of [["Pivot Z mm", "60"], ["Axis X", "1"], ["Axis Z", "0"]] as const) {
+    await panel.getByLabel(label).fill(value);
+    await panel.getByLabel(label).press("Tab");
+  }
+  // On its own hinge the part is its own body, with its inertia, lever arm and period about the hinge.
+  await expect(mass).not.toContainText("Body:");
+  await expect(mass).toContainText(/About the hinge: [\d,]+ g·mm², lever [\d.]+ mm/);
+  await expect(mass).toContainText(/Period [\d.]+ s for small swings \(simple pendulum [\d.]+ mm\), gravity along −Z/);
+  // A vertical hinge has no period, and says why.
+  await panel.getByLabel("Axis Z").fill("1");
+  await panel.getByLabel("Axis Z").press("Tab");
+  await panel.getByLabel("Axis X").fill("0");
+  await panel.getByLabel("Axis X").press("Tab");
+  await expect(mass).toContainText("The axis is vertical, so gravity does not swing the part about it: there is no period.");
+  await panel.locator("[data-object='part']").click();
+  await expect(mass).toContainText("Body: calibration_cube_20mm.stl, tip.stl");
+  await panel.screenshot({ path: path.join(shots, "pose-mass.png") });
+});
