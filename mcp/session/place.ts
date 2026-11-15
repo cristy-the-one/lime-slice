@@ -26,6 +26,7 @@ function assemblyWorld(this: Session, self?: PlateObject): AssemblyWorld {
     assemblies: this.liveAssemblies(),
     parts: this.objects.map(partOf),
     params: this.params,
+    pluginCode: (sha) => this.projectPlugins.get(sha),
     box: (id, pose) => {
       const part = self && id === self.id ? self : this.find(id);
       return part ? this.assembledBox(part, pose) : null;

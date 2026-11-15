@@ -14,6 +14,7 @@ import { poseScale, relativePose, type Affine, type ObjectFrame } from "./model-
 import { orientEuler } from "./mesh-place.ts";
 import { poseChain, solvePose, turnHinge } from "./pose.ts";
 import type { ModelTree, Vec3 } from "./model-tree.ts";
+import { ratchetFromStamps } from "./plugins/clock-parts.ts";
 import { couplingLine, crossedNotes, declareCoupling, findCouplings, prepareTrain, preparedLines, removeDeclared, trainCheck, trainScales, trainTurn, type DeclareSpec, type GearPart, type Prepared } from "./gear-train.ts";
 import { gearsInTree, type WorldGear } from "./gear-pair.ts";
 import { assemblyOf, DECLARED_KINDS, freshAssemblyId, jointAt, memberFields, memberPose, readJoint, reparentJoint, rerooted, rootOf, rotationQuaternion, samePose, solveAssembly, turnsOnPlate, withFound, withMember, withRootAt, type Assembly, type Coupling, type Member, type MemberExprs } from "./assembly.ts";
@@ -47,6 +48,8 @@ export interface AssemblyWorld {
   box(id: string, pose: Affine): { min: number[]; max: number[] } | null;
   /** The centre of the part's own box, in its own frame: where reach measures from. */
   centre(id: string): Vec3 | undefined;
+  /** The code of a plugin this project keeps, by its SHA-256: where a part's plugin stamp is read against. */
+  pluginCode?(sha256: string): string | null | undefined;
 }
 
 export type AssemblyRefusalCode = "bad-placement" | "no-object" | "bad-frame" | "conflicting-arguments" | "no-assembly" | "bad-argument" | "bad-assembly";
@@ -431,8 +434,9 @@ export function couplingRow(row: Coupling): Record<string, unknown> {
  */
 function coupleMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>): Reply {
   if (Object.keys(input).some((key) => !["object", "couple", "compact"].includes(key))) return refuse("conflicting-arguments", "Give couple on its own.");
-  const given = input.couple as Record<string, unknown> | null;
+  let given = input.couple as Record<string, unknown> | null;
   if (!given || typeof given !== "object" || Array.isArray(given)) return refuse("bad-argument", "couple is {driven, kind, ...}: see guide {kind:\"pose\"}.");
+  let read: string[] = [];
   const allowed = ["driven", "kind", "ratio", "radius", "wind", "free", "click", "teeth", "tip", "root", "remove"];
   const extra = Object.keys(given).find((key) => !allowed.includes(key));
   if (extra) return refuse("bad-argument", `couple takes no ${extra}: it takes ${allowed.join(", ")}.`);
@@ -468,6 +472,16 @@ function coupleMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>
       const box = w.box(click);
       if (box) clickCentre = [0, 1, 2].map((i) => (box.min[i]! + box.max[i]!) / 2) as Vec3;
     }
+    // --- docs/plan-clock-parts.md. A ratchet's numbers left out are read from its parts' stamps (Ratchet wheel, Ratchet click).
+    if (kind === "ratchet" && clickId !== undefined) {
+      const clickPart = w.current(w.find(clickId)!);
+      const wheelJoint = mine.members.find((row) => row.object === obj.id)?.joint;
+      const stamped = ratchetFromStamps({ name: obj.name, tree: obj.tree, hingeAxis: wheelJoint?.kind === "hinge" ? wheelJoint.axis : undefined }, { name: clickPart.name, tree: clickPart.tree, pose: clickPart.modelPose }, { teeth: given.teeth as number | undefined, tip: given.tip as number | undefined, root: given.root as number | undefined, free: given.free as 1 | -1 | undefined }, (sha) => w.world.pluginCode?.(sha));
+      if ("reason" in stamped) return refuse("bad-assembly", stamped.reason);
+      given = { ...given, ...stamped.fill };
+      if (stamped.clickCentre) clickCentre = stamped.clickCentre;
+      read = stamped.said;
+    }
     const spec: DeclareSpec = {
       driver: obj.id, driven: driven.id, kind: kind as DeclareSpec["kind"],
       ...(given.ratio !== undefined ? { ratio: given.ratio as number } : {}),
@@ -494,8 +508,9 @@ function coupleMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>
     ok: true,
     assembly: assembly.name,
     ...(made ? { coupling: couplingRow(made) } : { removed: [obj.id, driven.id] }),
+    ...(read.length ? { read } : {}),
     couplings: rows.map(couplingRow),
-    ...(input.compact === true ? {} : { note: made ? `${couplingLine(made)}. Turning either part now moves the other: model_place {angle} or {travel}, or pose_animate. Nothing moved yet.` : "The declared coupling is gone; each part moves on its own joint again." }),
+    ...(input.compact === true ? {} : { note: made ? `${couplingLine(made)}.${read.length ? ` ${read.join(" ")}` : ""} Turning either part now moves the other: model_place {angle} or {travel}, or pose_animate. Nothing moved yet.` : "The declared coupling is gone; each part moves on its own joint again." }),
   };
 }
 

@@ -1,0 +1,481 @@
+{
+  "clock-ratchet-wheel": {
+    "sha256": "0681796586105eb2a5b2b41cf99c7cdbe65b29fc6442efedfb5ba1efb1fe3da4",
+    "params": [
+      {
+        "name": "teeth",
+        "kind": "count",
+        "default": 20,
+        "min": 6,
+        "max": 200,
+        "label": "Teeth",
+        "help": "Saw teeth round the wheel: 6 to 200."
+      },
+      {
+        "name": "tip",
+        "kind": "number",
+        "default": 12,
+        "min": 1,
+        "max": 500,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Tip radius",
+        "help": "From the axis to the tips of the teeth."
+      },
+      {
+        "name": "root",
+        "kind": "number",
+        "default": 10.2,
+        "min": 0.3,
+        "max": 485,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Root radius",
+        "help": "From the axis to the bottom of a notch: 0.3 to 0.97 of the tip radius."
+      },
+      {
+        "name": "thickness",
+        "kind": "number",
+        "default": 3,
+        "min": 0.5,
+        "max": 50,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Thickness"
+      },
+      {
+        "name": "pin",
+        "kind": "choice",
+        "default": "2",
+        "label": "Arbor pin, mm",
+        "help": "The steel pin through its axis: 1, 1.5, 2 or 3 mm, or none for no bore.",
+        "options": [
+          "none",
+          "1",
+          "1.5",
+          "2",
+          "3"
+        ]
+      },
+      {
+        "name": "fit",
+        "kind": "choice",
+        "default": "press",
+        "label": "Fit on the pin",
+        "help": "Running turns freely on the pin (H9/d9), sliding slides on by hand (H7/h6), press holds it (H7/p6).",
+        "options": [
+          "running",
+          "sliding",
+          "press"
+        ]
+      },
+      {
+        "name": "allowance",
+        "kind": "number",
+        "default": 0.2,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "mm",
+        "label": "Hole allowance",
+        "help": "How much this printer makes a small hole undersize. A fit coupon measures it."
+      }
+    ]
+  },
+  "clock-ratchet-click": {
+    "sha256": "411ce352509e0f40fe5ba5ae099ea83ec8ffa906b068b33693f5bf518ad105aa",
+    "params": [
+      {
+        "name": "teeth",
+        "kind": "count",
+        "default": 20,
+        "min": 6,
+        "max": 200,
+        "label": "Teeth",
+        "help": "The ratchet's, as its wheel was made (the defaults are the Ratchet wheel's). Saw teeth round the wheel: 6 to 200."
+      },
+      {
+        "name": "tip",
+        "kind": "number",
+        "default": 12,
+        "min": 1,
+        "max": 500,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Tip radius",
+        "help": "The ratchet's, as its wheel was made (the defaults are the Ratchet wheel's). From the axis to the tips of the teeth."
+      },
+      {
+        "name": "root",
+        "kind": "number",
+        "default": 10.2,
+        "min": 0.3,
+        "max": 485,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Root radius",
+        "help": "The ratchet's, as its wheel was made (the defaults are the Ratchet wheel's). From the axis to the bottom of a notch: 0.3 to 0.97 of the tip radius."
+      },
+      {
+        "name": "length",
+        "kind": "number",
+        "default": 10,
+        "min": 0.5,
+        "max": 1000,
+        "step": 0.5,
+        "unit": "mm",
+        "label": "Click length",
+        "help": "From the middle of the tooth face it bears on to its pivot."
+      },
+      {
+        "name": "thickness",
+        "kind": "number",
+        "default": 3,
+        "min": 0.5,
+        "max": 50,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Thickness"
+      },
+      {
+        "name": "pin",
+        "kind": "choice",
+        "default": "1.5",
+        "label": "Arbor pin, mm",
+        "help": "The steel pin through its axis: 1, 1.5, 2 or 3 mm, or none for no bore.",
+        "options": [
+          "none",
+          "1",
+          "1.5",
+          "2",
+          "3"
+        ]
+      },
+      {
+        "name": "fit",
+        "kind": "choice",
+        "default": "running",
+        "label": "Fit on the pin",
+        "help": "Running turns freely on the pin (H9/d9), sliding slides on by hand (H7/h6), press holds it (H7/p6).",
+        "options": [
+          "running",
+          "sliding",
+          "press"
+        ]
+      },
+      {
+        "name": "allowance",
+        "kind": "number",
+        "default": 0.2,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "mm",
+        "label": "Hole allowance",
+        "help": "How much this printer makes a small hole undersize. A fit coupon measures it."
+      }
+    ]
+  },
+  "clock-escape-wheel": {
+    "sha256": "3f677fd1051109b14cf421b19783e5e6d72512b46b90e9e878d84edca8562f53",
+    "params": [
+      {
+        "name": "teeth",
+        "kind": "count",
+        "default": 30,
+        "min": 12,
+        "max": 200,
+        "label": "Teeth",
+        "help": "The escape wheel's teeth: 12 to 200."
+      },
+      {
+        "name": "tip",
+        "kind": "number",
+        "default": 22.5,
+        "min": 1,
+        "max": 500,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Tip radius",
+        "help": "From the axis to the tips of the teeth."
+      },
+      {
+        "name": "root",
+        "kind": "number",
+        "default": 17.5,
+        "min": 0.1,
+        "max": 490,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Root radius",
+        "help": "From the axis to the roots, under the tip radius."
+      },
+      {
+        "name": "lean",
+        "kind": "number",
+        "default": 12,
+        "min": 0,
+        "max": 30,
+        "step": 0.5,
+        "unit": "°",
+        "label": "Tooth lean",
+        "help": "How far the teeth lean forward: 0 to 30 degrees."
+      },
+      {
+        "name": "span",
+        "kind": "number",
+        "default": 7.5,
+        "min": 1.5,
+        "max": 50.5,
+        "step": 1,
+        "label": "Anchor span, teeth",
+        "help": "How many teeth the anchor's pallets embrace: a whole number and a half, 7.5 on 30 teeth say."
+      },
+      {
+        "name": "thickness",
+        "kind": "number",
+        "default": 3,
+        "min": 0.5,
+        "max": 50,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Thickness"
+      },
+      {
+        "name": "pin",
+        "kind": "choice",
+        "default": "2",
+        "label": "Arbor pin, mm",
+        "help": "The steel pin through its axis: 1, 1.5, 2 or 3 mm, or none for no bore.",
+        "options": [
+          "none",
+          "1",
+          "1.5",
+          "2",
+          "3"
+        ]
+      },
+      {
+        "name": "fit",
+        "kind": "choice",
+        "default": "press",
+        "label": "Fit on the pin",
+        "help": "Running turns freely on the pin (H9/d9), sliding slides on by hand (H7/h6), press holds it (H7/p6).",
+        "options": [
+          "running",
+          "sliding",
+          "press"
+        ]
+      },
+      {
+        "name": "allowance",
+        "kind": "number",
+        "default": 0.2,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "mm",
+        "label": "Hole allowance",
+        "help": "How much this printer makes a small hole undersize. A fit coupon measures it."
+      }
+    ]
+  },
+  "clock-graham-anchor": {
+    "sha256": "39674da4d1ffb960593f299c4c13cbd10aa8f57ae996eb6b61a09cc63a8693ac",
+    "params": [
+      {
+        "name": "teeth",
+        "kind": "count",
+        "default": 30,
+        "min": 12,
+        "max": 200,
+        "label": "Teeth",
+        "help": "The escape wheel's, as it was made (the defaults are the Graham escape wheel's). The escape wheel's teeth: 12 to 200."
+      },
+      {
+        "name": "tip",
+        "kind": "number",
+        "default": 22.5,
+        "min": 1,
+        "max": 500,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Tip radius",
+        "help": "The escape wheel's, as it was made (the defaults are the Graham escape wheel's). From the axis to the tips of the teeth."
+      },
+      {
+        "name": "root",
+        "kind": "number",
+        "default": 17.5,
+        "min": 0.1,
+        "max": 490,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Root radius",
+        "help": "The escape wheel's, as it was made (the defaults are the Graham escape wheel's). From the axis to the roots, under the tip radius."
+      },
+      {
+        "name": "lean",
+        "kind": "number",
+        "default": 12,
+        "min": 0,
+        "max": 30,
+        "step": 0.5,
+        "unit": "°",
+        "label": "Tooth lean",
+        "help": "The escape wheel's, as it was made (the defaults are the Graham escape wheel's). How far the teeth lean forward: 0 to 30 degrees."
+      },
+      {
+        "name": "span",
+        "kind": "number",
+        "default": 7.5,
+        "min": 1.5,
+        "max": 50.5,
+        "step": 1,
+        "label": "Anchor span, teeth",
+        "help": "How many teeth the anchor's pallets embrace: a whole number and a half, 7.5 on 30 teeth say."
+      },
+      {
+        "name": "thickness",
+        "kind": "number",
+        "default": 3,
+        "min": 0.5,
+        "max": 50,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Thickness"
+      },
+      {
+        "name": "pin",
+        "kind": "choice",
+        "default": "2",
+        "label": "Arbor pin, mm",
+        "help": "The steel pin through its axis: 1, 1.5, 2 or 3 mm, or none for no bore.",
+        "options": [
+          "none",
+          "1",
+          "1.5",
+          "2",
+          "3"
+        ]
+      },
+      {
+        "name": "fit",
+        "kind": "choice",
+        "default": "press",
+        "label": "Fit on the pin",
+        "help": "Running turns freely on the pin (H9/d9), sliding slides on by hand (H7/h6), press holds it (H7/p6).",
+        "options": [
+          "running",
+          "sliding",
+          "press"
+        ]
+      },
+      {
+        "name": "allowance",
+        "kind": "number",
+        "default": 0.2,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "mm",
+        "label": "Hole allowance",
+        "help": "How much this printer makes a small hole undersize. A fit coupon measures it."
+      }
+    ]
+  },
+  "clock-wheel-pinion": {
+    "sha256": "fa57e02e9b6bb8f3da6c1bb623b3ef8ce30af56baa23af220edf849381183a3b",
+    "params": [
+      {
+        "name": "teeth",
+        "kind": "count",
+        "default": 60,
+        "min": 12,
+        "max": 400,
+        "label": "Wheel teeth",
+        "help": "The wheel's teeth: 12 to 400."
+      },
+      {
+        "name": "leaves",
+        "kind": "count",
+        "default": 8,
+        "min": 6,
+        "max": 20,
+        "label": "Pinion leaves",
+        "help": "The leaves of the pinion it drives: 6 to 20."
+      },
+      {
+        "name": "module",
+        "kind": "number",
+        "default": 1,
+        "min": 0.1,
+        "max": 10,
+        "step": 0.05,
+        "unit": "mm",
+        "label": "Module",
+        "help": "Pitch diameter over teeth, the same for the wheel and its pinion."
+      },
+      {
+        "name": "top",
+        "kind": "choice",
+        "default": "standard",
+        "label": "Leaf top",
+        "help": "How the leaves are rounded: standard is BS 978-2's choice, high for 6 or 7 leaves, medium for 8 or 9, round for 10 or more.",
+        "options": [
+          "standard",
+          "round",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "name": "thickness",
+        "kind": "number",
+        "default": 3,
+        "min": 0.5,
+        "max": 50,
+        "step": 0.1,
+        "unit": "mm",
+        "label": "Thickness"
+      },
+      {
+        "name": "pin",
+        "kind": "choice",
+        "default": "2",
+        "label": "Arbor pin, mm",
+        "help": "The steel pin through its axis: 1, 1.5, 2 or 3 mm, or none for no bore.",
+        "options": [
+          "none",
+          "1",
+          "1.5",
+          "2",
+          "3"
+        ]
+      },
+      {
+        "name": "fit",
+        "kind": "choice",
+        "default": "press",
+        "label": "Fit on the pin",
+        "help": "Running turns freely on the pin (H9/d9), sliding slides on by hand (H7/h6), press holds it (H7/p6).",
+        "options": [
+          "running",
+          "sliding",
+          "press"
+        ]
+      },
+      {
+        "name": "allowance",
+        "kind": "number",
+        "default": 0.2,
+        "min": 0,
+        "max": 1,
+        "step": 0.05,
+        "unit": "mm",
+        "label": "Hole allowance",
+        "help": "How much this printer makes a small hole undersize. A fit coupon measures it."
+      }
+    ]
+  }
+}

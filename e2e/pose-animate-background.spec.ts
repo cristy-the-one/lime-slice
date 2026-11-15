@@ -5,7 +5,7 @@ import { unzipSync } from "fflate";
 import { readGif } from "../tools/gif-read";
 import { autoSliceOff } from "./auto-slice";
 
-type TestWindow = { __limePluginLibrary: unknown; __limeRecipeRunner: unknown; __background?: string };
+type TestWindow = { __limePluginLibrary: unknown; __limeRecipeRunner: unknown; __background?: string; __swing?: boolean };
 
 /** The scripted recipe runner: one animation whose background is whatever the test last set. */
 async function scriptedAnimation(page: Page) {
@@ -26,7 +26,7 @@ async function scriptedAnimation(page: Page) {
           if (msg.v === 1) { say({ id: 1, call: "rig", args: {}, at: { line: 2 } }); return null; }
           if (step++ === 0) {
             const name = msg.result?.members?.find((m) => m.joint?.kind === "hinge")?.name ?? "missing";
-            say({ id: 2, call: "animate", args: { fps: 4, camera: { direction: [1, -1, 0.5] }, ...(win.__background ? { background: win.__background } : {}), keys: [{ t: 0, rest: true }, { t: 1, set: { [name]: 60 } }] }, at: { line: 3 } });
+            say({ id: 2, call: "animate", args: { fps: 4, camera: { direction: [1, -1, 0.5] }, ...(win.__background ? { background: win.__background } : {}), keys: win.__swing ? [{ t: 0, rest: true }, { t: 0.5, set: { [name]: 60 } }, { t: 1, rest: true }] : [{ t: 0, rest: true }, { t: 1, set: { [name]: 60 } }] }, at: { line: 3 } });
             return null;
           }
           say({ done: { object: "", metrics: {} } }); return null;
@@ -101,7 +101,8 @@ test("Save animation's background defaults to the script's, follows the swatch i
   const [gifFile] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Save", exact: true }).click()]);
   const gif = readGif(readFileSync((await gifFile.path())!));
   await expect(dialog).toHaveCount(0);
-  expect(gif.frames.length).toBe(4);
+  // Frames at 0, 1/4, 2/4, 3/4 and 1 s: the hinge ends turned, so the GIF holds all five.
+  expect(gif.frames.length).toBe(5);
   expect(gif.localPalettes).toBe(0);
   for (const frame of gif.frames) for (const corner of corners(frame, gif.width)) expect(corner).toEqual(rgb("#12ab56"));
   await expect(pose).toHaveAttribute("data-animation-background", "#12ab56");
@@ -129,6 +130,18 @@ test("Save animation's background defaults to the script's, follows the swatch i
   await expect(dialog.getByLabel("Animation background")).toHaveValue(stage.toLowerCase());
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(pose).not.toHaveAttribute("data-animation-background");
+
+  // A GIF loops: a swing out and back ends on its first pose, so the GIF leaves that last frame out; the slider keeps it.
+  await page.locator("[data-pose-action='animation-stop']").click();
+  await page.evaluate(() => { (window as unknown as TestWindow).__swing = true; });
+  await page.locator("[data-pose-action='animation-play']").click();
+  await expect(page.locator("[data-pose-animation-frame]")).toHaveAttribute("max", "4");
+  await page.locator("[data-pose-action='animation-save']").click();
+  await dialog.getByLabel("Animation size").fill("320");
+  const [loopFile] = await Promise.all([page.waitForEvent("download"), dialog.getByRole("button", { name: "Save", exact: true }).click()]);
+  expect(readGif(readFileSync((await loopFile.path())!)).frames.length).toBe(4);
+  await expect(dialog).toHaveCount(0);
+  await page.evaluate(() => { delete (window as unknown as TestWindow).__swing; });
 
   // A script's colour in another form is refused with a sentence, and nothing plays.
   await page.locator("[data-pose-action='animation-stop']").click();

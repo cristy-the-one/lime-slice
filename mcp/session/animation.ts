@@ -3,7 +3,7 @@ import { closeSync, openSync, renameSync, rmSync, writeFileSync, writeSync } fro
 import { join } from "node:path";
 import { assemblyOf } from "../../src/assembly.ts";
 import { seatLift } from "../../src/model-space.ts";
-import { animationRig, type AnimationPart } from "../../src/pose-anim.ts";
+import { animationRig, endsWhereItStarts, frameTiming, type AnimationPart } from "../../src/pose-anim.ts";
 import { apiVerdict } from "../../src/recipe/api-level.ts";
 import { eventLoopTurn, runAnimation } from "../animation-run.ts";
 import { GIF_END, gifFrame, gifHead } from "../animation-gif.ts";
@@ -14,7 +14,7 @@ import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
 import { resolveWrite } from "../workspace.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { SESSION_URL } from "../session-url.ts";
-import { joinedPositions, posedPositions, type CallMeta, type ToolHandler } from "./shared.ts";
+import { CHORD, joinedPositions, posedPositions, type CallMeta, type ToolHandler } from "./shared.ts";
 import type { Session } from "../session.ts";
 
 async function poseAnimate(this: Session, input: Record<string, unknown>, meta?: CallMeta): Promise<Record<string, unknown>> {
@@ -64,7 +64,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const row = this.find(member.object);
     if (!row) return refuse("bad-assembly", `Assembly member ${member.object} is missing.`);
     const solid = row.solid && row.solid.positions.length >= 9;
-    parts.push({ object: row.id, name: row.name, positions: solid ? row.solid!.positions : posedPositions(row.source, seatLift(row.seatMm)) });
+    parts.push({ object: row.id, name: row.name, positions: solid ? row.solid!.positions : posedPositions(row.source, seatLift(row.seatMm)), ...(solid ? { chordMm: Math.max(CHORD, row.stepTolerance || CHORD) } : {}) });
   }
   // Member names kept with the project's animation are for the assembly it played on; another assembly starts from the defaults.
   const keptOn = typeof input.plugin === "string" ? this.animations.get(input.plugin)?.assembly : undefined;
@@ -111,6 +111,10 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   // frame is held at a time: the GIF's palette is fixed (3/3/2 with the background exact), so each frame is encoded and
   // written as it is drawn, and memory does not grow with the frame count.
   const partial = (path: string) => `${path}.partial`;
+  // A GIF loops: a last frame that shows the first one's poses and colours is left out of it, so the loop does not
+  // hold that pose twice (endsWhereItStarts). The PNG frames keep every frame.
+  const gifCount = gifPath && endsWhereItStarts(sampled.frames) ? sampled.frames.length - 1 : sampled.frames.length;
+  const drawCount = files.length ? sampled.frames.length : gifCount;
   const written: string[] = [];
   let gif: number | undefined;
   const clean = () => {
@@ -119,10 +123,10 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   };
   try {
     if (gifPath) { gif = openSync(partial(gifPath), "w"); written.push(partial(gifPath)); writeSync(gif, gifHead(edge, edge, background)); }
-    for (let i = 0; i < sampled.frames.length; i++) {
+    for (let i = 0; i < drawCount; i++) {
       // A turn of the event loop before each frame: the server answers other calls and hears slice_cancel meanwhile.
       await eventLoopTurn();
-      if (meta?.signal?.aborted) { clean(); return refuse("cancelled", `The animation was cancelled at frame ${i + 1} of ${sampled.frames.length}; no file was written.`); }
+      if (meta?.signal?.aborted) { clean(); return refuse("cancelled", `The animation was cancelled at frame ${i + 1} of ${drawCount}; no file was written.`); }
       const frame = sampled.frames[i]!;
       let start = 0;
       const tints: { start: number; end: number; rgb: [number, number, number] }[] = [];
@@ -135,10 +139,12 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
         start = end;
         return mesh;
       });
-      const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: gif !== undefined, background });
+      const inGif = gif !== undefined && i < gifCount;
+      const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: inGif, background });
       if (files[i]) { writeFileSync(partial(files[i]!), drawn.png); written.push(partial(files[i]!)); }
-      if (gif !== undefined) writeSync(gif, gifFrame(edge, edge, { rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) }));
-      this.noteStage(`Rendering frame ${i + 1}/${sampled.frames.length}`, (i + 1) / sampled.frames.length);
+      // Frame i shows from i/fps to (i+1)/fps, in the GIF's whole hundredths: the delays add up to the frames' times.
+      if (inGif) writeSync(gif!, gifFrame(edge, edge, { rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) }));
+      this.noteStage(`Rendering frame ${i + 1}/${drawCount}`, (i + 1) / drawCount);
     }
     if (gif !== undefined) { writeSync(gif, GIF_END); closeSync(gif); gif = undefined; }
     for (const path of written) renameSync(path, path.slice(0, -".partial".length));
@@ -155,7 +161,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     if (file && !("reason" in file)) this.projectPlugins.set(file.sha256, file.text);
   }
   this.autosaveDirty = true;
-  return { ...summary, ...kept, files: { ...(gifPath ? { gif: gifPath } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
+  return { ...summary, ...kept, files: { ...(gifPath ? { gif: gifPath } : {}), ...(gifPath && gifCount !== sampled.frames.length ? { gifFrames: gifCount } : {}),...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
 }
 /**
  * --- docs/plan-animation-plugins.md A1. pose_animate {keep} and nugget save: the script kept as a `kind: animation`
@@ -204,19 +210,6 @@ function animationHeader(this: Session, id: string, source?: string): PluginHead
     if (!("reason" in file) && file.header.plugin === id && file.header.kind === "animation") return file.header;
   }
   return listExtra().find((file) => file.header.plugin === id && file.header.kind === "animation")?.header;
-}
-
-/**
- * A sentence when keys fall between frames, else null. `round(duration × fps)` frames are spread from 0 to the end, so
- * they are `duration / (frames - 1)` s apart, not 1/fps: a script that keys every 1/fps s has frames that fall between
- * its keys, interpolated between them. A pose checked at a key is then not the pose a frame shows.
- */
-function frameTiming(sampled: { frames: { time: number }[]; keys: { t: number }[]; durationS: number; fps: number }): string | null {
-  const times = sampled.frames.map((frame) => frame.time);
-  const between = sampled.keys.filter((key) => !times.some((time) => Math.abs(time - key.t) <= 1e-9)).length;
-  if (between === 0 || times.length < 2) return null;
-  const spacing = Math.round(sampled.durationS / (times.length - 1) * 10000) / 10000;
-  return `${between} of ${sampled.keys.length} keys fall between frames: the ${times.length} frames are spread from 0 to ${sampled.durationS} s, ${spacing} s apart (not 1/${sampled.fps} s), and a frame between two keys is interpolated between them. A warning gives its frame and time.`;
 }
 
 export const animationMethods = { poseAnimate, keepAnimation, animationSaveFrom, animationHeader };

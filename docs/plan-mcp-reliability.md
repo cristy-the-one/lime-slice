@@ -81,12 +81,25 @@ TypeScript rasterizer, and the reproduction ran on the fake engine.
   still crosses are counted as crossings.
 - One warning per pair: the frames it crosses on, the first frame and its time, and which check made it with its
   tolerance (`pair`, `frames`, `firstFrame`, `timeS` beside the sentence).
-- When keys fall between frames, the reply says so: frames are `durationS / (frames - 1)` apart, and frames between keys
-  are interpolated.
+- When keys fall between frames, the reply says so (`frameTiming`), and frames between keys are interpolated. Since
+  6.8.0 that is only for keys off the 1/fps grid (below).
 - `at` is a point on the cut line.
-- **Not changed, for the owner:** where frames fall. `round(duration × fps)` frames spread over [0, duration] puts frames
-  between keys keyed at 1/fps. Frames at 1/fps (one more frame, or the last one before the end) would change every
-  animation's frame count and its loop.
+- **Where frames fall: decided by the owner for 6.8.0.** It was left open here: `round(duration × fps)` frames spread
+  over [0, duration] put frames between keys keyed at 1/fps, and frames at 1/fps change every animation's frame count
+  and its loop. The owner chose frames at exact multiples of 1/fps, from 0 to the end, for every animation:
+  - Frame `k` is at `k / fps`, for `k = 0 … ceil(end × fps)` (`frameTimes` in `src/pose-anim.ts`; an end within a
+    millionth of a frame past a grid time ends on it, so float rounding adds no frame). An end on the grid is the last
+    frame, so a whole-number duration gains one frame (3 s at 12 fps: 37 frames, at 0, 1/12, … 3 s). An end off the
+    grid is rounded up to the next frame, never down and never shown as an extra, shorter frame: nothing moves after the
+    last key, so that frame holds the final pose, every frame stays 1/fps apart for a player that shows one every 1/fps,
+    and a GIF's delays stay even. `durationS` is the last frame's time. `end = 0` stays one frame; the 18000 cap counts
+    these frames.
+  - Keys at every 1/fps fall on frames, so the clock's frames are its key poses and `frameTiming` says nothing;
+    `anim::frame_times` gives the new times (recipe API 1.17). A key between frames still reports its own target.
+  - A GIF loops, so a last frame that shows the first one's poses (each within 1e-9 in rotation and 1e-6 mm) and
+    colours is left out of the GIF (`files.gifFrames`): a gear train keyed through whole turns would otherwise hold its
+    start pose for two frames at every pass, a visible stutter. PNG frames keep every frame; a script writes its keys
+    as it means them, and need not end one frame early.
 
 ## 3. `model_check {minWallMm}` reported knife edges at the seams of spline windows
 

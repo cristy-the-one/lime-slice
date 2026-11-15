@@ -41,6 +41,37 @@ if (process.argv.includes("--contact")) {
   console.log(JSON.stringify({ frame, arm, stop }));
   process.exit(0);
 }
+if (process.argv.includes("--ratchet") && process.argv.includes("--plugins")) {
+  // docs/plan-clock-parts.md: the ratchet wheel and its click made by the shipped plugins (clock-ratchet-wheel and
+  // clock-ratchet-click, built by lust from LIME_LUST, with an empty plugin library), as a person applies them from the
+  // Plugins panel: the wheel on the model origin, the click at horology's pivot seated in a notch. A frame under them,
+  // both attached with a hinge about +Z at their own origin (the axis, the pivot). `--real` builds them with the real
+  // kernel, so the teeth, the click and the bores are solids; `--coupled` couples the ratchet with no numbers given:
+  // teeth, tip, root and the free way are read from the parts' stamps, and the reply's read is printed.
+  const { findLust, RecipeHost, recipeCrateDir } = await import("../mcp/recipe.ts");
+  const lust = findLust();
+  if (!lust) throw new Error("--ratchet --plugins runs the shipped plugins: set LIME_LUST to a lust build.");
+  process.env.LIME_PLUGINS_DIR = mkdtempSync(join(tmpdir(), "lime-clock-plugins-"));
+  const real = process.argv.includes("--real");
+  const sessionNow = real ? new Session((await import("../mcp/engine.ts")).loadEngineWorker(new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"))) : session;
+  sessionNow.recipeHost = new RecipeHost({ crateDir: recipeCrateDir(import.meta.url), root: mkdtempSync(join(tmpdir(), "lime-clock-host-")), lust });
+  const ask = async (name: string, input: Record<string, unknown> = {}) => {
+    const reply = (await sessionNow.call(name, input)) as Record<string, unknown>;
+    if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
+    return reply;
+  };
+  const ratchet = String((await ask("recipe_run", { plugin: "clock-ratchet-wheel" })).object);
+  const click = String((await ask("recipe_run", { plugin: "clock-ratchet-click" })).object);
+  const frame = String((await ask("solid_new", { primitive: "box", dx: 60, dy: 60, dz: 4, name: "Frame" })).object);
+  await ask("model_place", { object: frame, x: 0, y: 0, z: -6 });
+  await ask("model_place", { objects: [ratchet, click], to: frame });
+  for (const object of [ratchet, click]) await ask("model_place", { object, joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 0, 1] } });
+  const coupled = process.argv.includes("--coupled") ? await ask("model_place", { object: ratchet, couple: { driven: frame, kind: "ratchet", click } }) : null;
+  const saved = await ask("project_save", { name: "pose-ratchet-plugins.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ frame, ratchet, click, free: -1, ...(coupled ? { read: coupled.read, coupling: coupled.coupling } : {}) }));
+  process.exit(0);
+}
 if (process.argv.includes("--ratchet")) {
   // docs/plan-coupling-kinds.md, stage 3: a real ratchet wheel and its click, from lime_recipe::horology's outlines
   // (ported in src/ratchet-click.ts): Ratchet::new(20, 12, 10.2) and its click of length 10 (click_size), seated in tooth

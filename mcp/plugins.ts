@@ -15,6 +15,7 @@ import { pickText } from "../src/recipe/picks.ts";
 import { apiVerdict, parseApiLevel, type ApiLevel, type ApiRefusalCode } from "../src/recipe/api-level.ts";
 import { REFUSAL_CODES } from "./refusals.ts";
 import { memberListText, readMemberList } from "../src/anim-members.ts";
+import { shippedPlugin, SHIPPED_PLUGINS } from "../src/plugins/clock-parts.ts";
 
 /** The app's identifier (src-tauri/tauri.conf.json): the library sits in its data folder. */
 export function pluginAppId(moduleDir: string): string {
@@ -268,12 +269,32 @@ export function listLibrary(dir = pluginsDir(), kind: NuggetFileKind = "plugin")
 export function readPlugin(id: string, dir = pluginsDir(), version?: number, kind: NuggetFileKind = "plugin"): PluginFile | { reason: string } | null {
   if (!isSlug(id)) return null;
   const path = join(dir, version === undefined ? `${id}.rs` : `${id}.v${version}.rs`);
-  if (!existsSync(path)) return null;
+  if (!existsSync(path)) return kind === "plugin" ? readShipped(id, version) : null;
   const parsed = parsePlugin(readFileSync(path, "utf8"));
   if ("reason" in parsed) return parsed;
   if (parsed.header.plugin !== id) return { reason: `${id}.rs names itself ${parsed.header.plugin}.` };
   if ((parsed.header.kind === "ingredient" ? "ingredient" : "plugin") !== kind) return { reason: `${id}.rs is ${kind === "plugin" ? "an ingredient, not a plugin" : "a plugin, not an ingredient"}.` };
   return parsed;
+}
+
+/**
+ * --- docs/plan-clock-parts.md. A plugin that ships with the app (`src/plugins/clock-parts.ts`), found where the library
+ * has no file of its id: it runs, rebuilds and is listed as the library's own, and is never imported (its code is the
+ * app's). A file of the same id in the library wins. Only its current version ships; a project keeps older code.
+ */
+export function readShipped(id: string, version?: number): PluginFile | null {
+  const text = shippedPlugin(id);
+  const file = text ? parsePlugin(text) : null;
+  if (!file || "reason" in file || (version !== undefined && file.header.version !== version)) return null;
+  return file;
+}
+
+/** Every shipped plugin the library does not override with a file of its own id. */
+export function listShipped(dir = pluginsDir()): PluginFile[] {
+  return SHIPPED_PLUGINS.flatMap((text) => {
+    const file = parsePlugin(text);
+    return "reason" in file || existsSync(join(dir, `${file.header.plugin}.rs`)) ? [] : [file];
+  });
 }
 
 /** Writes a whole file through a temporary name and a rename, so a reader never sees half of it. */
@@ -291,7 +312,8 @@ export function writePlugin(header: PluginHeader, body: string, dir = pluginsDir
   if (!isSlug(header.plugin)) throw new Error(`Not a plugin id: ${header.plugin}`);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${header.plugin}.rs`);
-  const old = readPlugin(header.plugin, dir, undefined, header.kind === "ingredient" ? "ingredient" : "plugin");
+  // A shipped plugin of this id is not the library's file: it is not kept as an older version here.
+  const old = existsSync(path) ? readPlugin(header.plugin, dir, undefined, header.kind === "ingredient" ? "ingredient" : "plugin") : null;
   if (old && !("reason" in old) && old.header.version !== header.version) writeWhole(join(dir, `${header.plugin}.v${old.header.version}.rs`), old.text);
   writeWhole(path, pluginText(header, body));
   const older = olderVersions(header.plugin, dir).filter((v) => v < header.version);

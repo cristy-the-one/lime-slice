@@ -74,14 +74,14 @@ test("Pose plays, scrubs and keeps an animation without changing the pose until 
   await page.locator("#pluginTrust [data-choice='run']").click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { __animationParams?: { fps?: number } }).__animationParams?.fps)).toBe(6);
   await expect(page.locator("[data-pose-animation-frame]")).toBeVisible();
-  await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "3"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "4"; el.dispatchEvent(new Event("input", { bubbles: true })); });
   await expect(pose).not.toHaveAttribute("data-posed", before!);
   await expect(pose).toHaveAttribute("data-animation-colors", new RegExp(`${child}:#0000ff`));
   await page.locator("[data-pose-action='animation-stop']").click();
   await expect(pose).toHaveAttribute("data-posed", before!);
   await page.locator("[data-pose-action='animation-play']").click();
   await expect(page.locator("[data-pose-animation-frame]")).toBeVisible();
-  await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "3"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await page.locator("[data-pose-animation-frame]").evaluate((el: HTMLInputElement) => { el.value = "4"; el.dispatchEvent(new Event("input", { bubbles: true })); });
   const kept = await pose.getAttribute("data-posed");
   await page.locator("[data-pose-action='animation-keep']").click();
   await expect(pose).toHaveAttribute("data-posed", kept!);
@@ -106,7 +106,7 @@ test("Pose plays, scrubs and keeps an animation without changing the pose until 
   await pngDialog.getByLabel("Animation size").fill("320");
   const [zip] = await Promise.all([page.waitForEvent("download"), pngDialog.getByRole("button", { name: "Save", exact: true }).click()]);
   const files = unzipSync(readFileSync((await zip.path())!));
-  expect(Object.keys(files)).toEqual(["frame-001.png", "frame-002.png", "frame-003.png", "frame-004.png"]);
+  expect(Object.keys(files)).toEqual(["frame-001.png", "frame-002.png", "frame-003.png", "frame-004.png", "frame-005.png"]);
   expect([...files["frame-001.png"]!.subarray(0, 4)]).toEqual([137, 80, 78, 71]);
   await page.locator("[data-pose-action='animation-stop']").click();
   await expect(pose).toHaveAttribute("data-posed", before!);

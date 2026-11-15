@@ -16,7 +16,8 @@ export interface PoseAnimation { fps: number; keys: PoseKey[]; colors?: Record<s
 export const BACKGROUND_REFUSAL = "A background is a colour written #rrggbb, such as #e07040.";
 export const isBackground = (value: unknown): value is string => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value);
 /** `positions` and `centre` are in the part frame, before its model pose. */
-export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3 }
+/** `chordMm`: a solid's kernel mesh carries the chord it was made at, for contact reads (src/contact.ts `ContactPart`). */
+export interface AnimationPart { object: string; name: string; positions?: Float32Array; centre?: Vec3; chordMm?: number }
 export interface RigMember { object: string; name: string; parent: string | null; joint: Member["joint"]; aligned?: number }
 export interface AnimationIssue { line?: number; reason: string }
 /**
@@ -120,6 +121,57 @@ function rotateBall(member: Member, target: Quaternion, centre: Vec3): Member | 
   const sin = Math.hypot(delta[0], delta[1], delta[2]);
   if (sin < 1e-10) return member;
   return turnBall(member, [delta[0] / sin, delta[1] / sin, delta[2] / sin], 2 * Math.atan2(sin, delta[3]) * 180 / Math.PI, centre);
+}
+
+/** The most frames one animation may have. */
+export const MAX_FRAMES = 18000;
+/** How far past a grid time an end may fall, in frames, and still end on that frame: rounding, not a later pose. */
+const GRID_SLACK = 1e-6;
+/**
+ * Where an animation's frames fall (6.8.0, docs/plan-pose-animation.md): frame `k` at exactly `k / fps`, for
+ * `k = 0 … n`, where `n` is the first whole frame at or after `end` (`ceil(end × fps)`, an end within a millionth of a
+ * frame past a grid time ending on it). An end on the grid is the last frame; an end between two grid times is shown by
+ * the next one, which holds the final pose, since nothing moves after the last key. So every frame is `1/fps` apart, a
+ * player that shows one every `1/fps` shows each at its own time, and the duration is `n / fps`. `end = 0` is one frame.
+ * The recipe crate's `anim::frame_times` is the same rule, number for number.
+ */
+export function frameTimes(fps: number, end: number): number[] {
+  return Array.from({ length: frameCount(fps, end) }, (_, k) => k / fps);
+}
+/** How many frames `frameTimes(fps, end)` gives: `ceil(end × fps) + 1`. */
+export function frameCount(fps: number, end: number): number {
+  return Math.max(0, Math.ceil(end * fps - GRID_SLACK)) + 1;
+}
+
+/**
+ * A sentence when keys fall between frames, else null. Frames are at whole multiples of `1/fps`, so a key there is on a
+ * frame; a key elsewhere has frames on either side interpolated toward it, and a pose checked at that key is not one a
+ * frame shows. The keys at the last key time are never between: the frame at or after them shows the final pose.
+ */
+export function frameTiming(sampled: { frames: { time: number }[]; keys: { t: number }[]; fps: number }): string | null {
+  const times = sampled.frames.map((frame) => frame.time);
+  const last = Math.max(...sampled.keys.map((key) => key.t));
+  const between = sampled.keys.filter((key) => key.t < last && !times.some((time) => Math.abs(time - key.t) <= 1e-9)).length;
+  if (between === 0) return null;
+  return `${between} of ${sampled.keys.length} keys fall between frames: frames are at whole multiples of 1/${sampled.fps} s, and a frame between two keys is interpolated between them, so a pose checked at such a key is not one a frame shows. Key at k/${sampled.fps} s (anim::frame_times) to put each key on a frame. A warning gives its frame and time.`;
+}
+
+/**
+ * Whether the last frame shows what the first does: the same parts, every pose within 1e-9 (rotation) and 1e-6 mm, and
+ * the same colours. A GIF loops, so such a last frame is left out of it: a gear train keyed through whole turns would
+ * otherwise hold its start pose for two frames at every pass, a visible stutter. A one-frame animation never ends where
+ * it starts in this sense.
+ */
+export function endsWhereItStarts(frames: readonly Pick<AnimationFrame, "poses" | "colors">[]): boolean {
+  if (frames.length < 2) return false;
+  const first = frames[0]!, last = frames[frames.length - 1]!;
+  if (first.poses.size !== last.poses.size || first.colors.size !== last.colors.size) return false;
+  for (const [id, a] of first.poses) {
+    const b = last.poses.get(id);
+    if (!b || !a.m.every((v, k) => Math.abs(v - b.m[k]!) <= 1e-9) || !a.t.every((v, k) => Math.abs(v - b.t[k]!) <= 1e-6)) return false;
+  }
+  for (const [id, color] of first.colors) if (last.colors.get(id) !== color) return false;
+  return true;
 }
 
 /** How far sampling has come: `frame` frames of `count` are ready. */
@@ -244,7 +296,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       }
     }
   });
-  if (end * animation.fps > 18000) issues.push({ reason: "An animation may have at most 18000 frames." });
+  if (frameCount(animation.fps, end) > MAX_FRAMES) issues.push({ reason: `An animation may have at most ${MAX_FRAMES} frames.` });
   holds.sort((a, b) => a.start - b.start);
   for (const hold of holds) {
     if (animation.keys.some((key) => record(key) && typeof key.t === "number" && key.t > hold.start && key.t < hold.end)) issues.push({ ...(hold.line !== undefined ? { line: hold.line } : {}), reason: "A key falls inside a hold." });
@@ -277,7 +329,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     }
   }
   if (issues.length) return { issues };
-  const count = Math.max(1, Math.round(end * animation.fps));
+  // Frame k at k / fps, through the first grid time at or after the end (`frameTimes`).
+  const frameTimesNow = frameTimes(animation.fps, end), count = frameTimesNow.length;
   // Every keyed body is driven on its own: a clutch whose driven side holds one slips (docs/plan-coupling-kinds.md).
   const separate = new Set(tracked);
   let assembly = structuredClone(original), bounds: Bounds | null = null;
@@ -291,9 +344,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
   const checkPairs = options.interference !== false;
   const crossings = checkPairs ? crossingCheck(original, poseOf, parts, options.toleranceMm ?? MESH_TOLERANCE_MM) : null;
   // Solve at key times too: a key between exported frames must report its own target, not a later sample.
-  const frameTimes = Array.from({ length: count }, (_, frame) => count === 1 ? 0 : end * frame / (count - 1));
-  const frameNumbers = new Map(frameTimes.map((time, frame) => [time, frame]));
-  const times = [...new Set([...frameTimes, ...keys.map((key) => key.t)])].sort((a, b) => a - b);
+  const frameNumbers = new Map(frameTimesNow.map((time, frame) => [time, frame]));
+  const times = [...new Set([...frameTimesNow, ...keys.map((key) => key.t)])].sort((a, b) => a - b);
   yield { frame: 0, count };
   for (const time of times) {
     while (colorIndex < colorEvents.length && colorEvents[colorIndex]!.time <= time) {
@@ -366,7 +418,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     yield { frame: frames.length, count };
   }
   if (crossings) warnings.push(...crossings.warnings(frames.length));
-  return { frames, fps: animation.fps, durationS: end, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
+  // The time of the last frame: what a player that shows a frame every 1/fps reaches, the end rounded up to the grid.
+  return { frames, fps: animation.fps, durationS: frameTimesNow[count - 1]!, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
 }
 
 /**

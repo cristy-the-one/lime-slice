@@ -43,8 +43,8 @@ test("the Plugins panel lists and searches the library, checks the form, preview
   // The library: one section, each row its title, version, description, author and badges.
   // All: the plugins, then the library's other nuggets (here stud-row's preset).
   const list = card(page).locator(".pp-section");
-  await expect(list.locator(".pp-section-title")).toHaveText(["Your plugins", "Presets"]);
-  await expect(card(page).locator(".pp-pick")).toHaveCount(3);
+  await expect(list.locator(".pp-section-title")).toHaveText(["Your plugins", "Built in", "Presets"]);
+  await expect(card(page).locator(".pp-pick:not([data-section=builtin])")).toHaveCount(3);
   const studRow = card(page).locator('.pp-pick[data-key="library:stud-row"]');
   await expect(studRow.locator(".pp-version")).toHaveText("v4");
   await expect(studRow.locator(".pp-badge")).toHaveText("needs a part");
@@ -165,7 +165,7 @@ test("History offers Use v4 for a step built with v3, never by itself, and the m
   await card(page).locator('#modelPluginsMenu [data-act="remove"]').click();
   await answerSheet(page, "Remove “Corner notch”?");
   await expect(readout(page)).toContainText("Removed “Corner notch” from your library (1 file).");
-  await expect(card(page).locator(".pp-pick")).toHaveCount(2);
+  await expect(card(page).locator(".pp-pick:not([data-section=builtin])")).toHaveCount(2);
   const log = await page.evaluate(() => (window as unknown as { __libraryLog: { command: string; args: Record<string, unknown> }[] }).__libraryLog.map((row) => [row.command, row.args.id ?? null]));
   expect(log).toContainEqual(["plugin_library_reveal", "corner-notch"]);
   expect(log).toContainEqual(["plugin_library_remove", "corner-notch"]);
@@ -232,7 +232,7 @@ test("the How's Show me opens a demo plugin ready for its next change, and its A
   await expect(readout(page)).toContainText("Volume 4800 mm³");
   await page.screenshot({ path: `${shots}/panel-show-me.png` });
   await card(page).locator("#modelPluginsBack").click();
-  await expect(card(page).locator(".pp-pick")).toHaveCount(3);
+  await expect(card(page).locator(".pp-pick:not([data-section=builtin])")).toHaveCount(3);
   await expect(page.locator("#objectList .obj")).toHaveCount(objects);
 });
 

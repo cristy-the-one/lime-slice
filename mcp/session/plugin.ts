@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, isSlug, listLibrary, extraLibraries, listExtra, olderVersions, oneLine, paramSummary, parsePlugin, pluginText, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "../plugins.ts";
+import { AUTHOR_MAX, DESCRIPTION_MAX, TITLE_MAX, bodyHash, isSlug, listLibrary, listShipped, readShipped, extraLibraries, listExtra, olderVersions, oneLine, paramSummary, parsePlugin, pluginText, pluginAuthor, pluginsDir, queryScore, readExtra, readPlugin, removePlugin, slugOf, writePlugin, type PluginFile, type PluginHeader, type PluginParam, type PluginTarget } from "../plugins.ts";
 import { carriedData, carriedDataProblem, splitPluginData, withPluginData } from "../../src/recipe/plugin-data.ts";
 import { checkImport, clashOf, exportName, exportText, keptBesideTitle, lessonsFor, marksText, rawHeader, readMarks, withMark, type ImportMark, type SharedPreset } from "../../src/plugins/share.ts";
 import { builtText, carriedIngredients, resolveIngredients, type KeptIngredient } from "../ingredients.ts";
@@ -313,6 +313,13 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       if (score === 0) continue;
       rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, ...animationListFields(h), target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
+    // --- docs/plan-clock-parts.md. The plugins that ship with the app, where the library has no file of their id.
+    for (const file of listShipped(dir)) {
+      const h = file.header;
+      const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
+      if (score === 0) continue;
+      rows.push({ score: score + 0.25, row: { id: h.plugin, v: h.version, target: h.target, params: paramSummary(h.params), shipped: true, data: { title: h.title, description: h.description } } });
+    }
     // A read-only library beside the own one (the beta reads the release library; LIME_PLUGINS_EXTRA names more). The own wins a clash.
     const own = new Set(rows.map(({ row }) => row.id));
     for (const file of listExtra()) {
@@ -434,6 +441,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
   }
   if (action === "remove") {
     if (!isSlug(id)) return refuse("missing-argument", "Give the id of a library plugin.");
+    if (!existsSync(join(dir, `${id}.rs`)) && readShipped(id)) return refuse("bad-action", `${id} ships with Lime Slice and stays.`);
     const files = removePlugin(id, dir);
     if (files === 0) return refuse("plugin-not-found", `No plugin is named ${id}.`, undefined, NEXT.plugins);
     return { ok: true, id, files, note: "Parts built with it keep their recipe in the project." };
