@@ -57,6 +57,8 @@ struct Finished {
     emit_held: Arc<Vec<PlateLayer>>,
     stamped: Option<Vec<PlateLayer>>,
     part_hold: Option<crate::audit::PartHold>,
+    /// Before its layer times, which come with the G-code.
+    support_stability: Option<crate::audit::SupportStability>,
     beads: Option<Arc<SlicedBeads>>,
 }
 
@@ -555,7 +557,7 @@ fn finish_layers(st: &mut Staged<'_>, joined: &Joined, offsets: &[[f64; 2]]) -> 
         ))
     };
     let emit_layers: &[PlateLayer] = stamped.as_deref().unwrap_or(emit_held.as_slice());
-    let part_hold = settings.part_hold.then(|| {
+    let hold_rule = || {
         let z_gap = settings
             .support_z_gap_mm
             .unwrap_or_else(|| st.layer_height.max(0.12));
@@ -566,12 +568,14 @@ fn finish_layers(st: &mut Staged<'_>, joined: &Joined, offsets: &[[f64; 2]]) -> 
             let baked = job.baked.first().copied().unwrap_or([0.0, 0.0]);
             (job.belt.frame, job.belt.start, to_bed[1] - baked[1])
         });
-        crate::audit::plate_hold(
-            emit_layers,
-            offsets,
-            &crate::audit::HoldRule::new(st.line_width, st.layer_height, z_gap, frame),
-        )
-    });
+        crate::audit::HoldRule::new(st.line_width, st.layer_height, z_gap, frame)
+    };
+    let part_hold = settings
+        .part_hold
+        .then(|| crate::audit::plate_hold(emit_layers, offsets, &hold_rule()));
+    let support_stability = settings
+        .support_stability
+        .then(|| crate::audit::plate_stability(emit_layers, offsets, &hold_rule()));
     let beads = settings.capture_beads.then(|| {
         let offset = offsets.first().copied().unwrap_or([0.0, 0.0]);
         Arc::new(sliced_beads(
@@ -585,6 +589,7 @@ fn finish_layers(st: &mut Staged<'_>, joined: &Joined, offsets: &[[f64; 2]]) -> 
         emit_held,
         stamped,
         part_hold,
+        support_stability,
         beads,
     }
 }
@@ -976,6 +981,18 @@ fn build_reply(st: Staged<'_>, requested: &BlendMode, outcome: Outcome) -> Slice
         ..
     } = &st;
     let emit_layers = finished.emit_layers();
+    // Seconds per printed layer, by its index, for the short support-only
+    // layers: the estimator times every non-empty layer in order.
+    let support_stability = finished.support_stability.clone().map(|report| {
+        let times: std::collections::HashMap<usize, f64> = emit_layers
+            .iter()
+            .filter(|l| !l.is_empty())
+            .zip(&gcode.layer_seconds)
+            .filter(|(l, _)| l.belt_shift == 0.0)
+            .map(|(l, &s)| (l.index, s))
+            .collect();
+        report.finish((!times.is_empty()).then_some(&times))
+    });
     let on_bed = on_bed_boxes(&st);
     let min_bed = on_bed
         .iter()
@@ -1124,6 +1141,7 @@ fn build_reply(st: Staged<'_>, requested: &BlendMode, outcome: Outcome) -> Slice
         collisions,
         warnings: mesh_warnings(repaired_layers, bridged_mm, dropped_chains),
         part_hold: finished.part_hold,
+        support_stability,
         beads: finished.beads,
     }
 }

@@ -377,6 +377,13 @@ pub struct SliceRequest {
     /// when off, so a request that does not ask keeps its cache key.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub part_hold: bool,
+    /// Also report how the supports stand, as `supportStability`: height
+    /// against base width, thinnest section, support beads that rest on
+    /// nothing, and short support-only layers. It reads the finished layers
+    /// and never changes the G-code. Omitted when off, so a request that does
+    /// not ask keeps its cache key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub support_stability: bool,
     /// The `previewToken` of the preview the client shows. When the engine
     /// still holds that preview, the reply carries `previewPatch` instead
     /// of `layers`.
@@ -556,6 +563,8 @@ pub struct SliceSettings {
     pub include_skeleton: bool,
     /// Report the part beads that stand on nothing on the response.
     pub part_hold: bool,
+    /// Report how the supports stand on the response.
+    pub support_stability: bool,
     /// The preview the client holds, from `SliceRequest::preview_base`.
     pub preview_base: Option<String>,
     /// The shell job this slice belongs to. A stale job stops with "cancelled".
@@ -650,6 +659,7 @@ impl Default for SliceSettings {
             object_tweak: Tweak::default(),
             include_skeleton: false,
             part_hold: false,
+            support_stability: false,
             preview_base: None,
             job: Job::default(),
             capture_beads: false,
@@ -859,6 +869,7 @@ impl SliceSettings {
             },
             include_skeleton: req.include_skeleton,
             part_hold: req.part_hold,
+            support_stability: req.support_stability,
             preview_base: req.preview_base.clone(),
             job: Job::default(),
             capture_beads: false,

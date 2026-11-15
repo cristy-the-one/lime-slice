@@ -222,8 +222,18 @@ enum Cmd {
         #[arg(long, default_value_t = lime_slice_core::STEP_TOLERANCE_DEFAULT_MM)]
         step_tolerance: f64,
         /// Also check contour coverage and support placement, and print the report.
+        /// On a belt (`--belt-angle`) the contour checks do not run: it prints the
+        /// part-bead and support stability reports the slice itself measured.
         #[arg(long, default_value_t = false)]
         audit: bool,
+        /// Slice for a belt printer tilted this many degrees: belt along Z,
+        /// direction +1, 250 mm wide, one copy, supports grown down to the belt.
+        /// Left out, the bed is flat.
+        #[arg(long)]
+        belt_angle: Option<f64>,
+        /// Also measure the part beads that stand on nothing, and print the line.
+        #[arg(long, default_value_t = false)]
+        part_hold: bool,
         /// Also plan a single-strategy speed slice and report its time. Off by
         /// default: it doubles the wall time and changes no output.
         #[arg(long, action = clap::ArgAction::Set, default_value_t = false)]
@@ -451,6 +461,8 @@ fn run() -> Result<(), String> {
             simplify_error,
             step_tolerance,
             audit,
+            belt_angle,
+            part_hold,
             baseline,
             support_edits,
             output,
@@ -567,6 +579,13 @@ fn run() -> Result<(), String> {
                 request.support_edits =
                     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
             }
+            if let Some(angle) = belt_angle {
+                request.belt =
+                    Some(serde_json::from_value(belt_json(angle)?).map_err(|e| e.to_string())?);
+            }
+            // Both read the finished layers and leave the G-code as it is.
+            request.part_hold = part_hold || (audit && belt_angle.is_some());
+            request.support_stability = audit;
             let response = slice_request(&request, lime_slice_core::Job::default())
                 .map_err(|e| e.to_string())?;
             if let Some(parent) = output.parent() {
@@ -587,7 +606,18 @@ fn run() -> Result<(), String> {
                 eprintln!("lime-slice: warning: {warning}");
             }
             println!("wrote {}", output.display());
-            if audit {
+            if let Some(hold) = response.part_hold.as_ref().filter(|_| request.part_hold) {
+                println!("{}", part_hold_line(hold));
+            }
+            if audit && belt_angle.is_some() {
+                println!(
+                    "audit  belt slice: contour, support volume and tree checks are flat-bed only; \
+                     part beads and support stability are measured on the emitted layers"
+                );
+                if let Some(report) = &response.support_stability {
+                    print_stability(report);
+                }
+            } else if audit {
                 let mesh = lime_slice_core::load_slice_mesh_tol(
                     &source.name,
                     &source.bytes,
@@ -598,6 +628,10 @@ fn run() -> Result<(), String> {
                 let report =
                     lime_slice_core::audit_slice(&mesh, &request.blend, &audit_settings, nozzle)?;
                 print_audit(&report);
+                // The audit plans without writing G-code; the slice has the layer times.
+                if let Some(timed) = &response.support_stability {
+                    println!("{}", short_layers_line(timed));
+                }
             }
             if !response.sanity.ok {
                 return Err(response.sanity.notes.join("; "));
@@ -1815,23 +1849,7 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
         "audit  coverage {}",
         coverage_line(&a.coverage).unwrap_or_else(|| "every demanded interface prints".into())
     );
-    let h = &a.part_hold;
-    println!(
-        "audit  part beads {:.0} mm  no bead under {:.0} mm  stand on nothing {:.1} mm  dangling {:.1} mm  longest span {:.1} mm  patches {}{}",
-        h.part_mm,
-        h.no_bead_under_mm,
-        h.unheld_mm,
-        h.dangling_mm,
-        h.longest_span_mm,
-        h.patches,
-        h.largest
-            .first()
-            .map(|p| format!(
-                "  largest {:.1} mm on layers {}-{} at {:.1}, {:.1}, {:.1}",
-                p.mm, p.layers[0], p.layers[1], p.at[0], p.at[1], p.at[2]
-            ))
-            .unwrap_or_default()
-    );
+    println!("{}", part_hold_line(&a.part_hold));
     let t = &a.trees;
     if t.tips > 0 {
         println!(
@@ -1853,6 +1871,129 @@ fn print_audit(a: &lime_slice_core::SliceAudit) {
             d.volume_mm3
         );
     }
+    print_stability(&a.support_stability);
+}
+
+fn part_hold_line(h: &lime_slice_core::PartHold) -> String {
+    format!(
+        "audit  part beads {:.0} mm  no bead under {:.0} mm  stand on nothing {:.1} mm  dangling {:.1} mm  longest span {:.1} mm  patches {}{}",
+        h.part_mm,
+        h.no_bead_under_mm,
+        h.unheld_mm,
+        h.dangling_mm,
+        h.longest_span_mm,
+        h.patches,
+        h.largest
+            .first()
+            .map(|p| format!(
+                "  largest {:.1} mm on layers {}-{} at {:.1}, {:.1}, {:.1}",
+                p.mm, p.layers[0], p.layers[1], p.at[0], p.at[1], p.at[2]
+            ))
+            .unwrap_or_default()
+    )
+}
+
+/// Supports listed under each heading of the stability report.
+const STABILITY_LINES: usize = 5;
+
+fn print_stability(s: &lime_slice_core::SupportStability) {
+    if s.supports == 0 {
+        println!("audit  supports none");
+        return;
+    }
+    println!(
+        "audit  supports {}  support bead {:.0} mm  unrested {:.1} mm on {} layers  worst slenderness {:.1}  over {:.0}x {}  thinnest {}",
+        s.supports,
+        s.support_mm,
+        s.unrested_mm,
+        s.unrested_layers,
+        s.worst_slenderness,
+        lime_slice_core::SLENDER_LIMIT,
+        s.over_limit,
+        s.thinnest_mm
+            .map(|t| format!("{t:.2} mm"))
+            .unwrap_or_else(|| "none".into())
+    );
+    println!("{}", short_layers_line(s));
+    for c in s.most_slender.iter().take(STABILITY_LINES) {
+        println!("audit  slender {}", column_line(c));
+    }
+    for c in s.most_unrested.iter().take(STABILITY_LINES) {
+        println!("audit  unrested {}", column_line(c));
+    }
+}
+
+fn short_layers_line(s: &lime_slice_core::SupportStability) -> String {
+    let quickest = s
+        .quickest_layers
+        .iter()
+        .take(3)
+        .map(|l| match l.seconds {
+            Some(t) => format!("{} ({t:.1} s, {:.0} mm)", l.layer, l.support_mm),
+            None => format!("{} ({:.0} mm)", l.layer, l.support_mm),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "audit  support-only layers {}  under {:.0} s {}{}",
+        s.support_only_layers,
+        lime_slice_core::SHORT_LAYER_S,
+        s.short_layers
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown (no layer times; quickest by bead length)".into()),
+        if quickest.is_empty() {
+            String::new()
+        } else {
+            format!("  quickest {quickest}")
+        }
+    )
+}
+
+fn column_line(c: &lime_slice_core::SupportColumn) -> String {
+    format!(
+        "{:.1}x  height {:.1} mm  base {:.2}..{:.2} mm (across {:.2}, along {:.2})  foot {:.2} mm  thinnest {}  on {:?}  at {:.1}, {:.1}, {:.1}  layers {}-{}  bead {:.0} mm  unrested {:.1} mm{}",
+        c.slenderness,
+        c.height_mm,
+        c.base_min_mm,
+        c.base_max_mm,
+        c.base_across_mm,
+        c.base_along_mm,
+        c.foot_min_mm,
+        match (c.thinnest_mm, c.thinnest_at_mm) {
+            (Some(t), Some(at)) => format!("{t:.2} mm at {at:.1} mm"),
+            _ => "none".into(),
+        },
+        c.stands_on,
+        c.at[0],
+        c.at[1],
+        c.at[2],
+        c.layers[0],
+        c.layers[1],
+        c.support_mm,
+        c.unrested_mm,
+        c.unrested_at
+            .map(|p| format!(" from {:.1}, {:.1}, {:.1}", p[0], p[1], p[2]))
+            .unwrap_or_default()
+    )
+}
+
+/// The belt `--belt-angle` asks for: along Z, forward, 250 mm wide, one
+/// copy, supports grown to the belt.
+fn belt_json(angle: f64) -> Result<serde_json::Value, String> {
+    if !angle.is_finite() || angle <= 0.0 || angle >= 90.0 {
+        return Err(format!(
+            "--belt-angle {angle}: expected degrees between 0 and 90"
+        ));
+    }
+    Ok(serde_json::json!({
+        "angleDeg": angle,
+        "axis": "z",
+        "direction": 1,
+        "widthMm": 250.0,
+        "copies": 1,
+        "gapMm": 5.0,
+        "floorSupports": true,
+    }))
 }
 
 /// One support edit's outcome in one line.
@@ -2099,6 +2240,7 @@ fn request_for(
         modifier_volumes: Vec::new(),
         include_skeleton: false,
         part_hold: false,
+        support_stability: false,
         preview_base: None,
         belt: None,
     }

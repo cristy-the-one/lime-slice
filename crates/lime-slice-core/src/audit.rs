@@ -16,6 +16,12 @@ use crate::strategy::BlendMode;
 use crate::support::{CoverageGap, Disk, End, Forest, SupportLayer};
 use crate::toolpath::{bead_cover, Extrusion, PathKind};
 
+mod stability;
+use stability::support_stability;
+pub use stability::{
+    Stand, SupportColumn, SupportOnlyLayer, SupportStability, SHORT_LAYER_S, SLENDER_LIMIT,
+};
+
 /// Reach a support region may have past what is under it: a bead half-width plus
 /// one tree lean step. Anything farther out is printed in air.
 const FLOAT_TOLERANCE_MM: f64 = 0.5;
@@ -79,6 +85,10 @@ pub struct SliceAudit {
     pub coverage: Vec<CoverageGap>,
     /// Part beads that stand on nothing.
     pub part_hold: PartHold,
+    /// How each free-standing support stands: height against base width,
+    /// thinnest section, and support beads that rest on nothing. The audit
+    /// has no layer times, so short layers are listed by bead length only.
+    pub support_stability: SupportStability,
 }
 
 /// Part beads that stand on nothing: wall, skin, infill, bridge and gap-fill
@@ -152,6 +162,9 @@ pub(crate) struct HoldRule {
     pub half_bead: f64,
     /// Support this many layers under the gap still holds a bead.
     pub gap_layers: usize,
+    /// The nominal layer height: a first layer's thickness, since its Z on
+    /// a belt does not start from 0.
+    pub layer_height: f64,
     /// The frame that laid the plate flat on a belt. Absent on a flat bed.
     pub belt: Option<crate::belt::Frame>,
     /// Slice Y plus this is the distance down the nozzle plane from where
@@ -174,6 +187,7 @@ impl HoldRule {
         Self {
             half_bead: line_width * 0.5,
             gap_layers: (z_gap / layer_height.max(1e-6)).round().max(1.0) as usize,
+            layer_height,
             belt: belt.map(|(frame, ..)| frame),
             origin: belt.map_or(0.0, |(f, start, _)| f.y_shift - f.z_drop - start),
             along: belt.map_or(0.0, |(.., along)| along),
@@ -292,11 +306,20 @@ struct Sample {
 }
 
 fn samples(layer: &HoldLayer, part: bool) -> Vec<Sample> {
+    if part {
+        picked_samples(layer, holds_up_part)
+    } else {
+        picked_samples(layer, |kind| {
+            matches!(kind, PathKind::Support | PathKind::SupportInterface)
+        })
+    }
+}
+
+/// Samples of the beads whose kind `pick` keeps.
+fn picked_samples(layer: &HoldLayer, pick: impl Fn(PathKind) -> bool) -> Vec<Sample> {
     let mut out = Vec::new();
     for &(kind, points, [dx, dy]) in &layer.beads {
-        let is_part = holds_up_part(kind);
-        let is_support = matches!(kind, PathKind::Support | PathKind::SupportInterface);
-        if (part && !is_part) || (!part && !is_support) {
+        if !pick(kind) {
             continue;
         }
         let straight = HOLD_SPAN_TURN_DEG.to_radians().cos();
@@ -332,7 +355,27 @@ pub(crate) fn plate_hold(
     offsets: &[[f64; 2]],
     rule: &HoldRule,
 ) -> PartHold {
-    let held: Vec<HoldLayer> = layers
+    part_hold(&plate_hold_layers(layers, offsets), rule)
+}
+
+/// The support stability report on a plate's emitted layers, read as
+/// [`plate_hold`] reads them. Layer times come later, through
+/// [`SupportStability::finish`].
+pub(crate) fn plate_stability(
+    layers: &[crate::gcode::PlateLayer],
+    offsets: &[[f64; 2]],
+    rule: &HoldRule,
+) -> SupportStability {
+    support_stability(&plate_hold_layers(layers, offsets), rule)
+}
+
+/// A plate's emitted layers as the checks read them: the first belt copy
+/// only, every path with its object's offset.
+fn plate_hold_layers<'a>(
+    layers: &'a [crate::gcode::PlateLayer],
+    offsets: &[[f64; 2]],
+) -> Vec<HoldLayer<'a>> {
+    layers
         .iter()
         .filter(|l| l.belt_shift == 0.0 && !l.is_empty())
         .map(|l| HoldLayer {
@@ -346,8 +389,7 @@ pub(crate) fn plate_hold(
                 })
                 .collect(),
         })
-        .collect();
-    part_hold(&held, rule)
+        .collect()
 }
 
 /// The part-bead check on printed layers in print order. A part bead is held
@@ -727,10 +769,9 @@ pub fn audit_slice(
     let z_gap = settings
         .support_z_gap_mm
         .unwrap_or_else(|| settings.layer_height.max(0.12));
-    out.part_hold = part_hold(
-        &hold_layers,
-        &HoldRule::new(settings.line_width, settings.layer_height, z_gap, None),
-    );
+    let rule = HoldRule::new(settings.line_width, settings.layer_height, z_gap, None);
+    out.part_hold = part_hold(&hold_layers, &rule);
+    out.support_stability = support_stability(&hold_layers, &rule).finish(None);
     Ok(out)
 }
 

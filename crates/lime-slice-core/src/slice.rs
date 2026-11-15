@@ -217,6 +217,7 @@ pub(crate) fn warm_kept(req: SliceRequest, job: Job) {
         include_gcode: false,
         include_skeleton: false,
         part_hold: false,
+        support_stability: false,
         preview_base: None,
         ..req
     };
