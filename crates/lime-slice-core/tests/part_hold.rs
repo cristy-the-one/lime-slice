@@ -119,6 +119,69 @@ fn wall_and_arm(underside_deg: f64) -> String {
     )
 }
 
+/// A wall across the belt with a 25 mm ledge off its side, 25 mm up and flat
+/// underneath. The nozzle planes are 0.2·√2 apart along the belt, so where the
+/// ledge sits along it decides how much of the ledge the first plane cuts.
+fn wall_and_side_ledge(from_front: f64) -> String {
+    let edge = 60.0 - from_front;
+    let boxes = [
+        ([0.0, 0.0, 0.0], [8.0, 60.0, 30.0]),
+        ([8.0, edge - 10.0, 25.0], [33.0, edge, 27.0]),
+    ];
+    let mut faces = Vec::new();
+    for (lo, hi) in boxes {
+        let v = |i: usize| {
+            [
+                if i & 1 == 0 { lo[0] } else { hi[0] },
+                if i & 2 == 0 { lo[1] } else { hi[1] },
+                if i & 4 == 0 { lo[2] } else { hi[2] },
+            ]
+        };
+        for q in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [1, 3, 7, 5], [0, 4, 6, 2]] {
+            faces.push([v(q[0]), v(q[1]), v(q[2])]);
+            faces.push([v(q[0]), v(q[2]), v(q[3])]);
+        }
+    }
+    let mut out = String::from("solid part
+");
+    for face in faces {
+        out.push_str("facet normal 0 0 0
+outer loop
+");
+        for v in face {
+            out.push_str(&format!("vertex {} {} {}
+", v[0], v[1], v[2]));
+        }
+        out.push_str("endloop
+endfacet
+");
+    }
+    out.push_str("endsolid part
+");
+    out
+}
+
+/// The first plane to cut a ledge may cut a hair of it. That hair printed as
+/// a thin wall 24 mm long over nothing, and the supports never asked: 3 mm
+/// and 30 mm from the front were such places, 24 mm was not.
+#[test]
+fn a_ledge_born_on_the_belt_is_held_wherever_it_sits() {
+    for style in ["tree", "grid"] {
+        for from_front in [3.0, 24.0, 30.0] {
+            let mut belt = ir3();
+            belt["floorSupports"] = json!(true);
+            let part = hold(
+                &wall_and_side_ledge(from_front),
+                json!({ "belt": belt, "supports": true, "supportStyle": style }),
+            );
+            assert!(
+                part.longest_span_mm < 6.0,
+                "{style} {from_front} mm from the front: {part:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_box_on_the_belt_stands_on_itself() {
     let part = hold(
