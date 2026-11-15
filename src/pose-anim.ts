@@ -220,6 +220,9 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       if (!matched.length) { issue(`No member matches ${pattern}.`); continue; }
       for (const row of matched) {
         const member = members.get(row.object)!;
+        // A ratchet's click is set by its wheel (docs/plan-coupling-kinds.md, stage 3): key the wheel.
+        const clicked = (original.couplings ?? []).find((one) => one.click?.object === row.object);
+        if (clicked) { issue(`${row.name}: a click moves with its ratchet: key the ratchet.`); continue; }
         const value = resolveAim(member, aim);
         if (typeof value === "string") { issue(`${row.name}: ${value}`); continue; }
         if (value.kind === "reach" && !poseChain([original], row.object).size) { issue(`${row.name}: no jointed chain can reach.`); continue; }
@@ -276,6 +279,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
   }
   if (issues.length) return { issues };
   const count = Math.max(1, Math.round(end * animation.fps));
+  // Every keyed body is driven on its own: a clutch whose driven side holds one slips (docs/plan-coupling-kinds.md).
+  const separate = new Set(tracked);
   let assembly = structuredClone(original), bounds: Bounds | null = null;
   const reachStarts = new Map<string, Vec3>();
   const frames: AnimationFrame[] = [];
@@ -303,8 +308,11 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
       if (value.kind === "angle" && (trainOf(assembly, id).has(id) || member.parent === null)) {
         // A coupled hinge turns its whole gear train, and a hinged root keeps the parts hinged on it on their pins; a
         // locked train refuses the animation.
-        const turned = trainTurn(assembly, id, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0));
+        const turned = trainTurn(assembly, id, value.value - (member.joint?.kind === "hinge" ? member.joint.angle ?? 0 : 0), { separate });
         if ("reason" in turned) return { issues: [{ reason: `${rig.find((row) => row.object === id)!.name}: ${turned.reason}` }] };
+        // A ratchet that held the turn short once its click was seated: the frames show it held, and the warning says so.
+        const held = turned.stopped ? `${rig.find((row) => row.object === id)!.name}: ${turned.stopped}` : null;
+        if (held && !warnings.some((row) => row.reason === held)) warnings.push({ reason: held });
         assembly = turned.assembly;
         continue;
       }

@@ -135,7 +135,7 @@ const row3Gears = gearsWith({ pin: { spec: gearSpec(12), name: "Pinion" }, wheel
   const gears = gearsWith({ pin: { spec: gearSpec(12), name: "Pinion" }, wheel: { spec: gearSpec(24, WHEEL_PHASE), name: "Wheel" }, small: { spec: gearSpec(12), name: "Small" }, out: { spec: gearSpec(24, WHEEL_PHASE), name: "Out" } });
   eq("the small gear's body is the wheel", bodyOf(shaft, "small"), { body: "wheel", fixed: false });
   const { found, coupled } = couple(shaft, gears);
-  eq("the shaft carries the train on", found.couplings.map((row) => [row.driver, row.driven, row.ratio, row.gears[0].name, row.gears[1].name]), [["pin", "wheel", -0.5, "Pinion", "Wheel"], ["wheel", "out", -0.5, "Small", "Out"]]);
+  eq("the shaft carries the train on", found.couplings.map((row) => [row.driver, row.driven, row.ratio, row.gears![0].name, row.gears![1].name]), [["pin", "wheel", -0.5, "Pinion", "Wheel"], ["wheel", "out", -0.5, "Small", "Out"]]);
   const turned = trainTurn(coupled, "pin", 40);
   check("pinion 40, wheel and small -20, out +10", !("reason" in turned) && near(angleOf(turned.assembly, "wheel"), -20) && near(angleOf(turned.assembly, "out"), 10));
   const sweep = trainCheck(coupled, poseOf, gears, "pin", SWEEP);
