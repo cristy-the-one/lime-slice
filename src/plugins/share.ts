@@ -22,6 +22,7 @@
 import { codeOnly, carriedIngredients, moduleOf } from "../recipe/ingredients.ts";
 import { carriedData } from "../recipe/plugin-data.ts";
 import { isPickValue } from "../recipe/picks.ts";
+import { MEMBER_LIST_MAX, memberParamsProblem, readMemberList } from "../anim-members.ts";
 import type { PluginValue } from "../model-tree.ts";
 
 export const SHARE_SUFFIX = ".lime-plugin.rs";
@@ -225,6 +226,16 @@ export function checkImport(raw: string, have: readonly [number, number], sha256
       if (typeof value === "string" && [...value].length > max) return { reason: `The ${what} of its value ${name.slice(0, 40)} is ${[...value].length} characters; at most ${max}. It was not imported.` };
     }
     if (Array.isArray(row.options) && row.options.some((o) => typeof o !== "string" || [...o].length > LABEL_MAX)) return { reason: `An option of its value ${name.slice(0, 40)} is longer than ${LABEL_MAX} characters. It was not imported.` };
+  }
+  // --- Animation plugins (docs/plan-animation-plugins.md A6): the members it names, as text parameters or as written.
+  for (const key of ["member-params", "member-names"] as const) {
+    if (!fields.has(key)) continue;
+    const list = readMemberList(fields.get(key));
+    if (!list) return { reason: `Its ${key} line is not a list of at most ${MEMBER_LIST_MAX} member names, so it was not imported. Ask its author for the file as exported.` };
+    if (key === "member-params") {
+      const problem = memberParamsProblem(list, params.map((p) => (p ?? {}) as { name: string; kind: string }));
+      if (problem) return { reason: `Its member-params line names a member parameter it lacks: ${problem}. It was not imported.` };
+    }
   }
   const api = fields.get("api") ?? "1.0";
   const apiWhy = apiProblem(api, have);

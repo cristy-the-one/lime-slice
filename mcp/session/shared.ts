@@ -161,7 +161,7 @@ export const IMPORT_BUILD_LIMIT_MS = 30_000;
 export const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
-  "sim_run", "sim_sweep", "model_params", "recipe_run",
+  "sim_run", "sim_sweep", "model_params", "recipe_run", "pose_animate",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */

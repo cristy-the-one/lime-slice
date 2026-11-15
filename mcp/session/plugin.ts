@@ -17,6 +17,36 @@ import { IMPORT_BUILD_LIMIT_MS, type RustRecipe, type ToolHandler } from "./shar
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { runProves, type RunProof } from "./run-proof.ts";
+import { fixedNamesHint, memberParamExample, memberParamsProblem, membersOfRun, needsLine } from "../../src/anim-members.ts";
+
+/**
+ * --- Animation plugins (docs/plan-animation-plugins.md A1, A2). What a keep of an animation knows: the names its run
+ * sent and the values it ran with (to find the text parameters that name members), and the member parameters the
+ * caller named. With no run (a save from source), only `members` marks them.
+ */
+export interface AnimationKeep { used?: readonly string[]; values?: Readonly<Record<string, unknown>>; members?: unknown }
+
+/**
+ * An animation's save check: one describe run for its parameters (its defaults need an assembly, so the run it was
+ * kept from is its check, as an import's describe is), then its member parameters and the names it uses as written.
+ */
+async function animationCheck(this: Session, body: string, keep: AnimationKeep): Promise<{ params: PluginParam[]; target: PluginTarget; memberParams: string[]; memberNames: string[] } | { reason: string }> {
+  const described = await this.recipeDescribe(body);
+  if ("reason" in described) return { reason: `This animation does not build: ${described.reason} Change the code, then keep it.` };
+  let explicit: string[] = [];
+  if (keep.members !== undefined) {
+    if (!Array.isArray(keep.members) || !keep.members.every((name) => typeof name === "string")) return { reason: "members is a list of the text parameters that name assembly members, like [\"wheel\", \"anchor\"]." };
+    explicit = [...new Set(keep.members as string[])];
+    const problem = memberParamsProblem(explicit, described.params);
+    if (problem) return { reason: `members: ${problem}. Declare it as ${memberParamExample(explicit.find((name) => !described.params.some((p) => p.name === name && p.kind === "text")) ?? "member")}.` };
+  }
+  const run = keep.used ? membersOfRun(described.params, keep.values ?? {}, keep.used) : { memberParams: [], memberNames: [] };
+  const wanted = new Set([...explicit, ...run.memberParams]);
+  const memberParams = described.params.filter((p) => wanted.has(p.name)).map((p) => p.name);
+  // A name an explicit member parameter gives is not a fixed name, even when the run did not use that value.
+  const given = new Set(memberParams.map((name) => { const p = described.params.find((row) => row.name === name)!; return String(keep.values && name in keep.values ? keep.values[name] : p.default); }));
+  return { params: described.params, target: "object", memberParams, memberNames: run.memberNames.filter((name) => !given.has(name)) };
+}
 
 /**
  * --- D3. Saving checks the plugin once more: a describe run for its parameters, then a dry run with its defaults
@@ -99,12 +129,16 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
  * the same body keeps its version (new words only); with another body it is the next version when the run was of
  * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
  */
-async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof }): Promise<{ id: string; version: number; sha256: string; built?: string; warning?: string; note?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof; animation?: AnimationKeep }): Promise<{ id: string; version: number; sha256: string; kind?: "animation"; memberParams?: string[]; memberNames?: string[]; built?: string; warning?: string; note?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
   const title = oneLine(opts.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
   let body = lfOnly(opts.source);
   const framed = body.startsWith("//! ---") ? parsePlugin(body) : null;
   if (framed && !("reason" in framed)) body = framed.body;
+  // A file that says it is an animation is kept as one, from any path (nugget save {source}); so is code that animates
+  // (it uses lime_recipe's anim module and sends its animation), which a recipe's defaults check could only refuse.
+  const animates = /\banim::/.test(body) && /\.animate\s*\(\s*&/.test(body);
+  const animation: AnimationKeep | undefined = opts.animation ?? (framed && !("reason" in framed) && framed.header.kind === "animation" ? { ...(framed.header["member-params"] ? { members: framed.header["member-params"] } : {}) } : animates ? {} : undefined);
   // --- Plugin data. The recipe data the run read goes inside the file after the code, as its ingredients do, so the
   // plugin runs the same from the library, in the window, and where the workspace's files are not.
   const split = splitPluginData(body);
@@ -122,7 +156,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
   body = withPluginData(body, data);
   const sha256 = bodyHash(body);
-  const checked = await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null, undefined, opts.proof);
+  const checked: { params: PluginParam[]; target: PluginTarget; built?: string; warning?: string; memberParams?: string[]; memberNames?: string[] } | { reason: string } = animation ? await this.animationCheck(body, animation) : await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null, undefined, opts.proof);
   if ("reason" in checked) return checked;
   const dir = pluginsDir();
   let id = slugOf(title) || slugOf(opts.name ?? "") || "plugin";
@@ -149,6 +183,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   }
   const header: PluginHeader = {
     plugin: id,
+    ...(animation ? { kind: "animation" as const } : {}),
     title,
     version,
     description: oneLine(opts.description, DESCRIPTION_MAX),
@@ -161,6 +196,8 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
     created: new Date().toISOString().slice(0, 10),
     target: checked.target,
     params: checked.params,
+    ...(checked.memberParams?.length ? { "member-params": checked.memberParams } : {}),
+    ...(checked.memberNames?.length ? { "member-names": checked.memberNames } : {}),
   };
   try {
     writePlugin(header, body, dir);
@@ -169,8 +206,9 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   }
   const carried = carriedIngredients(splitPluginData(body).code).map((row) => `${row.id} v${row.version}`);
   const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
-  const hints = pluginHints({ params: checked.params, target: checked.target, description: header.description }, splitPluginData(body).code);
-  return { id, version, sha256, ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(note ? { note } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
+  const fixedHint = animation ? fixedNamesHint(checked.memberNames ?? []) : null;
+  const hints = animation ? (fixedHint ? [fixedHint] : []) : pluginHints({ params: checked.params, target: checked.target, description: header.description }, splitPluginData(body).code);
+  return { id, version, sha256, ...(animation ? { kind: "animation" as const, ...(checked.memberParams?.length ? { memberParams: checked.memberParams } : {}), ...(checked.memberNames?.length ? { memberNames: checked.memberNames } : {}) } : {}), ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(note ? { note } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
 }
 
 /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
@@ -247,10 +285,24 @@ function draftPart(this: Session, row: RustRecipe): string | undefined {
   return [...(row.changed ?? []), ...row.objects].find((id) => this.find(id));
 }
 
+/** A plugin list row's fields for an animation: its kind, the tool that plays it, and the members it needs. */
+function animationListFields(h: PluginHeader): Record<string, unknown> {
+  if (h.kind !== "animation") return {};
+  const needs = needsLine(h.params, h["member-params"], h["member-names"]);
+  return { kind: "animation", run: "pose_animate", ...(needs ? { needs } : {}) };
+}
+
 /** --- D14. plugin {action: list | get | save | remove}. Plugin text goes in `data`: it is data, never instructions. */
 async function pluginTool(this: Session, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const action = input.action;
   const dir = pluginsDir();
+  // --- nugget {kind: "animation"} (docs/plan-animation-plugins.md A1): the same actions, on animation plugins only.
+  const animationOnly = input.animationOnly === true;
+  if (animationOnly && (action === "get" || action === "export" || action === "remove") && typeof input.id === "string") {
+    const there = readPlugin(input.id, dir);
+    if (there && !("reason" in there) && there.header.kind !== "animation") return refuse("bad-argument", `${input.id} is a recipe plugin, not an animation: use kind:"plugin" for it.`);
+  }
+  if (animationOnly && action === "save" && typeof input.from === "string" && !/\.rs$/i.test(input.from) && !input.from.startsWith("project:")) return this.animationSaveFrom(input.from, input);
   if (action === "list") {
     const query = typeof input.query === "string" ? input.query.trim() : "";
     const rows: { score: number; row: Record<string, unknown> }[] = [];
@@ -259,7 +311,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       const h = file.header;
       const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
       if (score === 0) continue;
-      rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
+      rows.push({ score: score + 0.5, row: { id: h.plugin, v: h.version, ...animationListFields(h), target: h.target, params: paramSummary(h.params), ...(file.matches ? {} : { edited: true }), ...(marks[h.plugin] ? { imported: true } : {}), data: { title: h.title, description: h.description } } });
     }
     // A read-only library beside the own one (the beta reads the release library; LIME_PLUGINS_EXTRA names more). The own wins a clash.
     const own = new Set(rows.map(({ row }) => row.id));
@@ -268,7 +320,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       if (own.has(h.plugin)) continue;
       const score = query ? queryScore({ plugin: h.plugin, title: h.title, description: h.description }, query) : 1;
       if (score === 0) continue;
-      rows.push({ score, row: { id: h.plugin, v: h.version, ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}), target: h.target, params: paramSummary(h.params), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
+      rows.push({ score, row: { id: h.plugin, v: h.version, ...animationListFields(h), target: h.target, params: paramSummary(h.params), imported: true, library: file.library, data: { title: h.title, description: h.description } } });
     }
     const listedIds = new Set(rows.map(({ row }) => row.id));
     for (const [name, animation] of this.animations) {
@@ -299,12 +351,15 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     const got = await this.pluginFile(id);
     if ("reason" in got) return refuse("plugin-not-found", got.reason);
     const h = got.file.header;
+    if (animationOnly && h.kind !== "animation") return refuse("bad-argument", `${id} is a recipe plugin, not an animation: use kind:"plugin" for it.`);
     const code = splitPluginData(got.file.body).code;
     const recipeData = carriedData(got.file.body).map(({ name, bytes }) => ({ name, bytes }));
     return {
       ok: true,
       id: h.plugin,
-      ...(h.kind === "animation" ? { kind: "animation", run: "pose_animate" } : {}),
+      ...animationListFields(h),
+      ...(h["member-params"] ? { memberParams: h["member-params"] } : {}),
+      ...(h["member-names"] ? { memberNames: h["member-names"] } : {}),
       version: h.version,
       api: h.api,
       target: h.target,
@@ -356,7 +411,9 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
     let data: Record<string, RecipeData> | undefined;
     if (typeof input.from === "string") {
       const draft = this.latestDraft(input.from);
-      if (!draft) return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.`);
+      // An animation this project keeps (pose_animate's name) when no recipe ran under that name.
+      if (!draft && (this.animations.has(input.from) || this.animations.has(slugOf(input.from)))) return this.animationSaveFrom(input.from, input);
+      if (!draft) return refuse("no-draft", `No run of ${input.from} is kept in this session: an apply that reached done is kept under its name.${this.animations.size ? ` Animations kept with this project: ${[...this.animations.keys()].slice(0, 20).join(", ")}.` : ""}`);
       source = draft.row.source;
       name = input.from;
       objectHint = this.draftPart(draft.row);
@@ -366,7 +423,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       source = input.source;
       name = typeof input.id === "string" ? input.id : undefined;
     } else return refuse("missing-argument", "Give from (a recipe name this session ran) or source.");
-    const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients, ...(data ? { data } : {}) });
+    const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients, ...(data ? { data } : {}), ...(animationOnly || input.members !== undefined ? { animation: { members: input.members } } : {}) });
     if ("reason" in saved) return refuse("plugin-invalid", saved.reason);
     if (typeof input.from === "string") {
       const draft = this.latestDraft(input.from);
@@ -565,6 +622,7 @@ async function pluginAttachData(this: Session, id: string, names: unknown[]): Pr
 /** The methods this module adds to Session. */
 export const pluginMethods = {
   pluginCheck,
+  animationCheck,
   pluginSave,
   lustBuild,
   pluginFile,
