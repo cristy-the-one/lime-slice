@@ -674,7 +674,9 @@ function renderPanel(): void {
       const label = document.createElement("label"); label.className = "pose-field"; addText(label, "span", param.label || param.name);
       const value = values[param.name] ?? param.default;
       if (param.kind === "text" && file!.memberParams?.includes(param.name)) {
-        // A member parameter: the selected assembly's members, so the same animation plays on parts named otherwise.
+        // A member parameter: the selected assembly's members, so the same animation plays on parts named otherwise. A
+        // stacked row, so a long member name shows whole.
+        label.classList.add("pose-field-stacked");
         label.append(memberSelect(param.name, param.label || param.name, String(value ?? ""), on ? rigNamesOf(on) : []));
       } else if (param.kind === "choice") {
         const input = document.createElement("select"); input.dataset.poseAnimationParam = param.name; input.setAttribute("aria-label", param.label || param.name);
