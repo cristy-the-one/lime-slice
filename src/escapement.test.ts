@@ -144,6 +144,54 @@ function run(p: Prepared, o: { dt?: number; seconds: number; friction: number; p
   }
 }
 
+// --- A weight on a winch drives the escape wheel through a 60:1 ratio, and a hand on the wheel's train at 1/120 of it:
+// the rate against the train's designed period, and how long the weight's fall lasts.
+{
+  const base = clock(-0.3);
+  const hinge = (pivot: [number, number, number]) => ({ kind: "hinge" as const, pivot, axis: [0, 1, 0] as [number, number, number] });
+  const members: Member[] = [
+    ...base.assembly.members,
+    { object: "drum", parent: "frame", offset: [60, 0, 0], turn: [0, 0, 0], joint: hinge([0, 0, 0]) },
+    { object: "weight", parent: "frame", offset: [70, 0, -60], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, 0], axis: [0, 0, 1], min: -300, max: 0 } },
+    { object: "hand", parent: "frame", offset: [0, 20, 0], turn: [0, 0, 0], joint: hinge([0, 0, 0]) },
+  ];
+  const r = 10;
+  const made = (sign: 1 | -1): Assembly => ({ id: "clock", name: "Clock", members, couplings: [
+    { driver: "drum", driven: "weight", ratio: (2 * Math.PI * r) / 360, kind: "winch", names: ["drum", "weight"], on: ["hinge", "slide"], radius: r, wind: "in" },
+    { driver: "drum", driven: "wheel", ratio: sign * 60, kind: "ratio", names: ["drum", "wheel"], on: ["hinge", "hinge"] },
+    { driver: "wheel", driven: "hand", ratio: 1 / 120, kind: "ratio", names: ["wheel", "hand"], on: ["hinge", "hinge"] },
+  ] });
+  const extra: Record<string, Float32Array> = { drum: box(20, 10, 20), weight: box(20, 20, 30), hand: box(4, 2, 4) };
+  const partsFor = (assembly: Assembly): DynPart[] => {
+    const poses = solveAssembly(assembly, () => IDENTITY_POSE).poses;
+    return [...base.parts, ...["drum", "weight", "hand"].map((id) => ({ object: id, name: id, positions: extra[id]!, pose: poses.get(id)! }))];
+  };
+  const spec: MotionSpec = { densityGCm3: PLA, escapement, drive: { member: "weight", weightG: 200 }, hand: { member: "hand", turnsPerHour: 1 } };
+  let p = prepareMotion(made(1), partsFor(made(1)), spec, nameOf);
+  // The ratio's sign decides which way the falling weight turns the wheel: one of the two is refused, with its reason.
+  const other = prepareMotion(made(-1), partsFor(made(-1)), spec, nameOf);
+  check(`one winding turns the wheel against its teeth, and is refused: "${"reason" in p ? p.reason : "reason" in other ? other.reason : "neither"}"`, ("reason" in p) !== ("reason" in other));
+  if ("reason" in p) p = other;
+  if ("reason" in p) check("the weight-driven clock prepares", false, p);
+  else {
+    check(`the designed period from the hand: 3600 × (1/120) / 30 teeth = 1 s (${p.designPeriodS})`, Math.abs(p.designPeriodS! - 1) < 1e-12, p.designFrom);
+    const job = motionJob({ ...p, spec: { ...p.spec, seconds: 20, sweep: false, push: 3.5 } }, (id) => id);
+    let report: MotionReport | { reason: string };
+    for (;;) { const s = job.next(); if (s.done) { report = s.value; break; } }
+    if ("reason" in report) check("the weight-driven clock runs", false, report);
+    else {
+      const push = report.fromPush as { periodS: number; rateSPerDay: number; runs: boolean };
+      const want = 86400 * (1 / push.periodS - 1);
+      check(`rate against the designed 1 s: ${push.rateSPerDay} s a day = 86400 (1/T − 1) with T ${push.periodS} s (${want.toFixed(2)})`, push.runs && Math.abs(push.rateSPerDay - want) < 0.01, report.fromPush);
+      // The weight falls 2πr/360 mm per drum degree; the drum turns 12°/60 a period (one tooth of the wheel).
+      const mmPerHour = (((12 / 60) * Math.PI) / 180) * r * (3600 / push.periodS);
+      const line = report.sentences.find((text) => text.startsWith("The weight falls")) ?? "";
+      const said = Number(/falls ([\d.]+) mm an hour/.exec(line)?.[1]), hours = Number(/lasts ([\d.]+) hours/.exec(line)?.[1]);
+      check(`"${line}" against ${mmPerHour.toFixed(1)} mm an hour, ${(300 / mmPerHour).toFixed(2)} hours`, Math.abs(said - mmPerHour) < 0.1 && Math.abs(hours - 300 / mmPerHour) < 0.01);
+    }
+  }
+}
+
 // --- A ratchet on the frame holds a wheel with a weight on a cord, and lets the other way run free, a click a pitch.
 {
   const frame: Member = { object: "frame", parent: null, offset: [0, 0, 0], turn: [0, 0, 0] };

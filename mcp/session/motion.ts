@@ -81,7 +81,7 @@ async function motionRun(this: Session, input: Input, meta?: CallMeta): Promise<
     const part = this.find(row.object);
     if (!part) return refuse("bad-assembly", `Assembly member ${row.object} is missing.`);
     const solid = !!part.solid && part.solid.positions.length >= 9;
-    parts.push(solid ? { object: part.id, name: shownName(part.name), positions: part.solid!.positions, pose: part.modelPose } : { object: part.id, name: shownName(part.name), positions: part.source, pose: thenPose(seatLift(part.seatMm), part.modelPose) });
+    parts.push(solid ? { object: part.id, name: shownName(part.name), positions: part.solid!.positions, pose: part.modelPose } : { object: part.id, name: shownName(part.name), positions: part.source, pose: thenPose(seatLift(part.seatMm), part.modelPose), frame: part.modelPose });
     drawn.push({ object: part.id, name: part.name, positions: solid ? part.solid!.positions : posedPositions(part.source, seatLift(part.seatMm)) });
   }
   const nameOf = (id: string) => shownName(this.find(id)?.name ?? id);

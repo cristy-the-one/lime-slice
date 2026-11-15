@@ -23,8 +23,12 @@ export const N_MM = 1e6;
 export const MICROJOULE = 1e3;
 const DEG = Math.PI / 180;
 
-/** A member's triangles in its own frame and its pose into model space, as `model_mass` weighs it. */
-export interface DynPart { object: string; name: string; positions: ArrayLike<number>; pose: Affine }
+/**
+ * A member's triangles and the pose that puts them in model space, as `model_mass` weighs it; and `frame`, the member's
+ * own part frame in model space, where its joint's pivot and axis are read. They differ by a mesh's seat lift (a mesh is
+ * kept dropped onto the bed); without `frame` it is `pose`.
+ */
+export interface DynPart { object: string; name: string; positions: ArrayLike<number>; pose: Affine; frame?: Affine }
 
 export interface Drive {
   /** The part the drive acts on: its body's joint takes the torque, or carries the weight. */
@@ -237,7 +241,7 @@ export function buildSystem(assembly: Assembly, parts: readonly DynPart[], input
       rows.push({ integrals, pose: mesh.pose, densityGCm3: inputs.densityGCm3 });
     }
     const mass = massBodyOf(rows);
-    const pose = partOf.get(id)!.pose;
+    const pose = partOf.get(id)!.frame ?? partOf.get(id)!.pose;
     const axis = turnDir(pose, joint.axis);
     const point = applyPose(pose, joint.pivot);
     if (!(Math.hypot(...axis) > 0.5)) return { reason: `${name(nameOf, id)}'s joint has no direction.` };

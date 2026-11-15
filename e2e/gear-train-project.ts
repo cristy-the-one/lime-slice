@@ -26,6 +26,41 @@ const call = async (name: string, input: Record<string, unknown> = {}) => {
   if (reply.ok !== true) throw new Error(`${name}: ${JSON.stringify(reply)}`);
   return reply;
 };
+if (process.argv.includes("--escapement")) {
+  // docs/plan-hinge-dynamics.md: a Graham escapement from horology's outlines (src/graham.ts; 30 teeth, tip 22.5, root
+  // 17.5, lean 12, span 7.5), each part an STL in model space (its own frame), imported and seated on a frame where it
+  // stands: the wheel on a hinge about +Y at the origin, the anchor about +Y at the pivot distance above it, a rod and a
+  // bob seated on the anchor. The wheel is turned 0.3 degrees on from the rest pose, so no tooth touches.
+  const { writeFileSync } = await import("node:fs");
+  const { clockMeshes } = await import("../src/escapement-parts.ts");
+  const { escapeWheel, graham, restPose } = await import("../src/graham.ts");
+  const { box } = await import("../src/box-mesh.ts");
+  const g = graham(escapeWheel(30, 22.5, 17.5, 12), 7.5);
+  const meshes = clockMeshes(g, (restPose(g) as [number, number])[0] - 0.3);
+  if ("reason" in meshes) throw new Error(meshes.reason);
+  const d = meshes.pivotDistance;
+  const part = async (name: string, positions: Float32Array) => {
+    const n = positions.length / 9, bytes = Buffer.alloc(84 + 50 * n);
+    bytes.writeUInt32LE(n, 80);
+    for (let i = 0; i < n; i += 1) for (let k = 0; k < 9; k += 1) bytes.writeFloatLE(positions[i * 9 + k]!, 84 + 50 * i + 12 + 4 * k);
+    const path = join(process.env.LIME_MCP_WORKSPACE!, `${name}.stl`);
+    writeFileSync(path, bytes);
+    return String((await call("mesh_import", { path })).object);
+  };
+  const frame = await part("Frame", box(120, 4, 200, [0, -10, 40]));
+  const wheel = await part("Escape wheel", meshes.wheel);
+  const anchor = await part("Anchor", meshes.anchor);
+  const rod = await part("Rod", box(3, 3, 140, [0, 12, d - 70]));
+  const bob = await part("Bob", box(30, 6, 30, [0, 12, d - 140]));
+  for (const id of [wheel, anchor]) await call("model_place", { object: id, to: frame });
+  for (const id of [rod, bob]) await call("model_place", { object: id, to: anchor });
+  await call("model_place", { object: wheel, joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 1, 0] } });
+  await call("model_place", { object: anchor, joint: { kind: "hinge", pivot: [0, 0, d], axis: [0, 1, 0] } });
+  const saved = await call("project_save", { name: "pose-escapement.lime" });
+  copyFileSync(String(saved.path), out);
+  console.log(JSON.stringify({ frame, wheel, anchor, rod, bob }));
+  process.exit(0);
+}
 if (process.argv.includes("--contact")) {
   // docs/plan-contact-poses.md: a frame (z 0 to 4), an arm 20 x 2 x 5 hinged about +z at its near end (the origin), and a
   // stop 2 x 2 x 5 at x 12 to 14, y 5 to 7, both standing at z 6. Turning +z, the arm's face y = 1 first meets the stop's

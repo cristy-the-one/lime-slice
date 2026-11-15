@@ -27,6 +27,8 @@ import { bodySha256, pluginFileText, readPluginFile, type PluginFileInfo, type P
 import { apiVerdict } from "../recipe/api-level.ts";
 import { RECIPE_API } from "../plugin-step.ts";
 import type { ContactJob, ContactJobReply } from "../contact-worker.ts";
+import type { MotionJobMessage, MotionJobReply } from "../motion-worker.ts";
+import type { MotionReport, MotionSpec } from "../motion.ts";
 import { memberNamesOf, membersMatching, missingMember } from "../anim-members.ts";
 
 /** One turn of a train's first gear, in steps that are no whole number of teeth for any likely gear (as the MCP checks). */
@@ -75,7 +77,7 @@ let animationRun = 0;
 const animationMembers = new Map<string, Record<string, string>>();
 /** The code the plugin library holds, by hash: an animation played from other code can be kept there. */
 let libraryShas = new Set<string>();
-export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[] }
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[]; motion?: true }
 let animation: PoseAnimationState | null = null;
 /** "Until contact" (docs/plan-contact-poses.md): the solve running, and what the last one said, for the part it ran on. */
 let contactBusy = false;
@@ -88,6 +90,15 @@ let animationRequest = 0;
  * does nothing while one is prepared, and Cancel (or Esc) stops it and leaves the panel as it was.
  */
 let preparing: { ticket: number; controller: AbortController; stage: AnimationStage | { stage: "start" } } | null = null;
+/**
+ * Run (docs/plan-hinge-dynamics.md): what is typed, per assembly; the run going on (its worker, its progress); and what
+ * the last run said, for the assembly it ran on.
+ */
+interface MotionDraft { assembly: string; drive: string; kind: "torque" | "weight"; amount: string; wheel: string; anchor: string; teeth: string; tip: string; root: string; lean: string; span: string; pendulum: string; friction: string; seconds: string }
+let motionDraft: MotionDraft | null = null;
+let motionRunning: { ticket: number; assembly: string; worker: Worker | null; stop: () => void; fraction: number; stage: string } | null = null;
+let motionNote: { assembly: string; verdict?: string; lines: string[]; error?: boolean } | null = null;
+let motionTicket = 0;
 let progressRequest = 0;
 
 function stopAnimation(): void {
@@ -517,6 +528,7 @@ function mount(): PoseView | null {
   window.addEventListener("keydown", (event) => {
     if (state.stage !== "pose") return;
     if (event.key === "Escape" && preparing) cancelPreparation("Animation cancelled.");
+    if (event.key === "Escape" && motionRunning) cancelMotion("Run cancelled: nothing changed.");
     else if (event.key === "Escape" && animation) { stopAnimation(); message = ""; syncPose(); }
     else if (event.key === "Escape") setTool("select");
     else if (event.code === "Space" && animation && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLSelectElement)) { event.preventDefault(); void playAnimation(); }
@@ -707,8 +719,8 @@ function renderPanel(): void {
     }
     if (preparing) progressBlock(panel);
     const actions = document.createElement("div"); actions.className = "pose-buttons"; if (!preparing) panel.append(actions);
-    if (!preparing) button(actions, animation?.clock.playing ? "Pause" : "Play", "animation-play");
-    if (animation && !preparing) {
+    if (!preparing) button(actions, animation?.clock.playing && !animation.motion ? "Pause" : "Play", "animation-play");
+    if (animation && !preparing && !animation.motion) {
       button(actions, "Stop", "animation-stop"); button(actions, "Keep this frame", "animation-keep"); button(actions, "Save animation…", "animation-save");
       // Code the library does not hold yet (a project's animation, an edited one): keep it there, for any assembly.
       if (!libraryShas.has(animation.plugin.sha)) button(actions, "Keep in library…", "animation-library").dataset.tip = "Keep this animation in your plugin library, so it plays on any assembly, its member names chosen there.";
@@ -756,6 +768,7 @@ function renderPanel(): void {
   const actions = document.createElement("div"); actions.className = "pose-buttons"; panel.append(actions);
   button(actions, "Rest", "rest"); button(actions, "Make rest", "make-rest"); button(actions, "Undo", "undo"); button(actions, "Redo", "redo");
   massSection(panel, row.assembly, row.member.object);
+  motionSection(panel, row.assembly);
 }
 /**
  * The selected member's body weighed, as model_mass weighs it (docs/plan-mass-properties.md): the part and what rides
@@ -796,6 +809,210 @@ function massSection(panel: HTMLElement, assembly: Assembly, object: string): vo
   const swung = swing(body, point, axis);
   if ("reason" in swung) { addText(box, "p", swung.reason); return; }
   addText(box, "p", `Period ${fixed(swung.periodS, 3)} s for small swings (simple pendulum ${fixed(swung.lengthMm, 1)} mm), gravity along −Z${swung.offRestDeg > 0.5 ? `; turned ${fixed(swung.offRestDeg, 1)}° from rest` : ""}`);
+}
+/** The assembly's members on a hinge or a slide, by name: what a drive, an escapement or a pendulum can name. */
+function jointedOf(assembly: Assembly): [string, string][] {
+  return assembly.members.filter((row) => drives(row.joint) && row.parent !== null).map((row) => [row.object, state.plate.objects.find((item) => item.id === row.object)?.name ?? row.object]);
+}
+function motionSelect(parent: HTMLElement, label: string, key: keyof MotionDraft, options: [string, string][], value: string): void {
+  // Stacked, as a member parameter is, so a part's whole name shows.
+  const wrap = document.createElement("label"); wrap.className = "pose-field pose-field-stacked"; addText(wrap, "span", label);
+  const select = document.createElement("select"); select.dataset.poseMotion = key; select.setAttribute("aria-label", label);
+  for (const [v, text] of options) { const option = document.createElement("option"); option.value = v; option.textContent = text; select.append(option); }
+  select.value = value; wrap.append(select); parent.append(wrap);
+}
+function motionField(parent: HTMLElement, label: string, key: keyof MotionDraft, value: string, placeholder = ""): void {
+  const wrap = document.createElement("label"); wrap.className = "pose-field"; addText(wrap, "span", label);
+  const input = document.createElement("input"); input.type = "number"; input.step = "any"; input.dataset.poseMotion = key; input.value = value; input.placeholder = placeholder; input.setAttribute("aria-label", label);
+  wrap.append(input); parent.append(wrap);
+}
+/**
+ * Run (docs/plan-hinge-dynamics.md, stage D): the assembly run in time under gravity, a drive and friction, in a worker,
+ * with its progress and Cancel in the panel's own block; at the end the motion plays and the answers are said in
+ * sentences. A Graham escapement is described by horology's numbers and fitted to the parts.
+ */
+function motionSection(panel: HTMLElement, assembly: Assembly): void {
+  const jointed = jointedOf(assembly);
+  if (!jointed.length) return;
+  if (motionDraft?.assembly !== assembly.id) {
+    motionDraft = { assembly: assembly.id, drive: jointed[0]![0], kind: "torque", amount: "0.25", wheel: "", anchor: "", teeth: "30", tip: "", root: "", lean: "", span: "", pendulum: "", friction: "0.3", seconds: "20" };
+  }
+  const draft = motionDraft;
+  const box = document.createElement("div"); box.dataset.poseMotion = "section"; panel.append(box);
+  addText(box, "h3", "Run");
+  addText(box, "p", "Runs the assembly in time: gravity, each part's mass from its mesh, the drive, and friction at the pins. Printed pivots' friction is not known, so each run also sweeps it.", "pose-help");
+  motionSelect(box, "Drive part", "drive", jointed, draft.drive);
+  motionSelect(box, "Drive", "kind", [["torque", "Torque (N·mm)"], ["weight", "Weight on its winch (g)"]], draft.kind);
+  motionField(box, draft.kind === "torque" ? "Torque N·mm" : "Weight g", "amount", draft.amount);
+  motionSelect(box, "Escape wheel", "wheel", [["", "None"], ...jointed], draft.wheel);
+  if (draft.wheel) {
+    motionSelect(box, "Anchor", "anchor", [["", "Choose"], ...jointed.filter(([id]) => id !== draft.wheel)], draft.anchor);
+    motionField(box, "Teeth", "teeth", draft.teeth);
+    motionField(box, "Tip radius mm", "tip", draft.tip);
+    motionField(box, "Root radius mm", "root", draft.root);
+    motionField(box, "Lean °", "lean", draft.lean);
+    motionField(box, "Span teeth", "span", draft.span, "7.5");
+  } else motionSelect(box, "Pendulum", "pendulum", [["", "None"], ...jointed], draft.pendulum);
+  motionField(box, "Friction", "friction", draft.friction);
+  motionField(box, "Seconds", "seconds", draft.seconds);
+  if (motionRunning?.assembly === assembly.id) motionProgressBlock(box);
+  else {
+    const actions = document.createElement("div"); actions.className = "pose-buttons"; box.append(actions);
+    const run = button(actions, "Run", "motion-run");
+    run.dataset.tip = "Run it from rest and from a push, each again at half the step to check the answer, then at friction 0.1 to 0.5.";
+    run.disabled = !!motionRunning;
+  }
+  if (motionNote?.assembly === assembly.id) {
+    const note = document.createElement("div"); note.dataset.poseMotionReport = ""; note.setAttribute("role", "status"); box.append(note);
+    if (motionNote.verdict) addText(note, "p", motionNote.verdict === "not converged" ? "Not converged" : motionNote.verdict === "runs" ? "It runs" : motionNote.verdict === "stalls" ? "It does not run" : "It moves", "pose-motion-verdict").dataset.verdict = motionNote.verdict;
+    for (const line of motionNote.lines) addText(note, "p", line, motionNote.error ? "pose-error" : undefined);
+  }
+  if (animation?.motion && animation.assembly === assembly.id) {
+    const actions = document.createElement("div"); actions.className = "pose-buttons"; box.append(actions);
+    button(actions, animation.clock.playing ? "Pause" : "Play", "motion-play");
+    button(actions, "Stop", "animation-stop");
+    const slider = document.createElement("input"); slider.type = "range"; slider.min = "0"; slider.max = String(animation.result.frames.length - 1); slider.value = String(animation.clock.frame(performance.now())); slider.dataset.poseAnimationFrame = ""; slider.setAttribute("aria-label", "Run frame"); box.append(slider);
+    addText(box, "p", `Frame ${Number(slider.value) + 1} / ${animation.result.frames.length}`).dataset.poseAnimationCount = "";
+  }
+}
+/** The run's progress, as the animation's preparation shows its own: what runs, a bar, Cancel. */
+function motionProgressBlock(parent: HTMLElement): void {
+  const block = document.createElement("div"); block.className = "pose-progress"; block.dataset.poseMotionProgress = "";
+  const head = document.createElement("div"); head.className = "pose-progress-head";
+  addText(head, "span", "", "pose-progress-title").dataset.poseMotionStage = "";
+  addText(head, "span", "", "pose-progress-share").dataset.poseMotionShare = "";
+  const bar = document.createElement("div"); bar.className = "pose-progress-bar"; bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", "Running the assembly"); bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.dataset.poseMotionBar = "";
+  bar.append(document.createElement("span"));
+  const foot = document.createElement("div"); foot.className = "pose-progress-foot";
+  const detail = document.createElement("p"); detail.className = "pose-progress-detail"; detail.textContent = "From rest and from a push, each again at half the step, then the friction sweep.";
+  foot.append(detail);
+  button(foot, "Cancel", "motion-cancel").dataset.tip = "Stop the run (Esc). Nothing changes.";
+  block.append(head, bar, foot);
+  parent.append(block);
+  drawMotionProgress();
+}
+function drawMotionProgress(): void {
+  const block = document.querySelector<HTMLElement>("[data-pose-motion-progress]");
+  if (!block || !motionRunning) return;
+  block.querySelector<HTMLElement>("[data-pose-motion-stage]")!.textContent = motionRunning.stage || "Getting the run ready…";
+  const share = Math.floor(motionRunning.fraction * 100);
+  block.querySelector<HTMLElement>("[data-pose-motion-share]")!.textContent = `${share}%`;
+  const bar = block.querySelector<HTMLElement>("[data-pose-motion-bar]")!;
+  bar.setAttribute("aria-valuenow", String(share));
+  (bar.firstElementChild as HTMLElement).style.width = `${share}%`;
+}
+function cancelMotion(said: string): void {
+  if (!motionRunning) return;
+  const assembly = motionRunning.assembly;
+  motionRunning.stop();
+  motionRunning = null;
+  motionTicket += 1;
+  motionNote = { assembly, lines: [said] };
+  renderPanel();
+}
+/** The draft as a run's spec, or what is wrong with it in a sentence. */
+function motionSpecOf(draft: MotionDraft): MotionSpec | string {
+  const n = (text: string, what: string): number | string => { const v = Number(text); return text.trim() !== "" && Number.isFinite(v) ? v : what; };
+  const amount = n(draft.amount, `Enter the drive's ${draft.kind === "torque" ? "torque in N·mm" : "weight in grams"}.`);
+  const friction = n(draft.friction, "Enter a friction coefficient, 0 to 1.");
+  const seconds = n(draft.seconds, "Enter the seconds to run, up to 600.");
+  for (const v of [amount, friction, seconds]) if (typeof v === "string") return v;
+  if ((friction as number) < 0 || (friction as number) > 1) return "Friction is 0 to 1.";
+  if (!((seconds as number) > 0 && (seconds as number) <= 600)) return "Run 0 to 600 seconds.";
+  const spec: MotionSpec = { densityGCm3: state.profile.filamentDensityGCm3, friction: friction as number, seconds: seconds as number, fps: 10, drive: { member: draft.drive, ...(draft.kind === "torque" ? { torqueNmm: amount as number } : { weightG: amount as number }) } };
+  if (draft.wheel) {
+    if (!draft.anchor) return "Choose the anchor.";
+    const words = { teeth: "teeth", tip: "tip radius in mm", root: "root radius in mm", lean: "teeth lean in degrees", span: "span in teeth" } as const;
+    const nums = (["teeth", "tip", "root", "lean", "span"] as const).map((key) => n(draft[key], `Enter the escape wheel's ${words[key]}, as horology built it.`));
+    const bad = nums.find((v) => typeof v === "string");
+    if (typeof bad === "string") return bad;
+    const [teeth, tip, root, lean, span] = nums as number[];
+    spec.escapement = { wheel: draft.wheel, anchor: draft.anchor, teeth: teeth!, tip: tip!, root: root!, lean: lean!, span: span! };
+  } else if (draft.pendulum) spec.pendulum = draft.pendulum;
+  return spec;
+}
+/** Run: the assembly's copy and its meshes to the worker (or in slices on this thread), then play what it did. */
+async function startMotion(): Promise<void> {
+  const row = selected();
+  if (!row || !motionDraft || motionRunning) return;
+  const spec = motionSpecOf(motionDraft);
+  if (typeof spec === "string") { motionNote = { assembly: row.assembly.id, lines: [spec], error: true }; renderPanel(); return; }
+  stopAnimation();
+  const snapshot = structuredClone(row.assembly);
+  const names = new Map(snapshot.members.map((m) => [m.object, state.plate.objects.find((item) => item.id === m.object)?.name ?? m.object]));
+  const rig = memberNamesOf(snapshot.members, (id) => names.get(id));
+  const parts = snapshot.members.flatMap((m) => {
+    const part = state.plate.objects.find((item) => item.id === m.object);
+    return part ? [{ object: part.id, name: part.name, positions: part.sourcePos.slice(), pose: meshToModel(part), frame: modelPoseOf(part) }] : [];
+  });
+  const ticket = ++motionTicket;
+  const job: MotionJobMessage = { id: ticket, assembly: snapshot, parts, spec, names: [...names], rig: [...rig] };
+  const current = () => ticket === motionTicket && state.stage === "pose";
+  const progress = (value: { fraction: number; stage: string }) => {
+    if (!current() || !motionRunning) return;
+    motionRunning.fraction = value.fraction; motionRunning.stage = value.stage;
+    drawMotionProgress();
+  };
+  const done = (report: MotionReport | { reason: string }) => { if (current()) void finishMotion(ticket, snapshot, report); };
+  let worker: Worker | null = null;
+  try { worker = new Worker(new URL("../motion-worker.ts", import.meta.url), { type: "module" }); } catch { worker = null; }
+  if (worker) {
+    const w = worker;
+    motionRunning = { ticket, assembly: row.assembly.id, worker: w, stop: () => w.terminate(), fraction: 0, stage: "" };
+    w.addEventListener("message", (ev: MessageEvent<MotionJobReply>) => {
+      if (ev.data.id !== ticket) return;
+      if ("progress" in ev.data) progress(ev.data.progress);
+      else { w.terminate(); done(ev.data.done); }
+    });
+    w.addEventListener("error", () => { w.terminate(); if (current()) { motionRunning = null; motionNote = { assembly: snapshot.id, lines: ["The run stopped: press Run again."], error: true }; renderPanel(); } }, { once: true });
+    motionNote = null; renderPanel();
+    w.postMessage(job, parts.map((part) => part.positions.buffer as ArrayBuffer));
+    return;
+  }
+  // No worker: the same steps in slices, so the window keeps answering and Cancel is heard.
+  const { motionJobSteps } = await import("../motion-worker.ts");
+  const steps = motionJobSteps(job);
+  let stopped = false;
+  motionRunning = { ticket, assembly: row.assembly.id, worker: null, stop: () => { stopped = true; }, fraction: 0, stage: "" };
+  motionNote = null; renderPanel();
+  const slice = () => {
+    if (stopped || !current()) return;
+    const until = performance.now() + 30;
+    for (;;) {
+      const step = steps.next();
+      if (step.done) { done(step.value); return; }
+      if (performance.now() > until) { progress(step.value); break; }
+    }
+    window.setTimeout(slice, 0);
+  };
+  slice();
+}
+/** The run's report into the panel, and its keys sampled into frames that play as an animation. */
+async function finishMotion(ticket: number, snapshot: Assembly, report: MotionReport | { reason: string }): Promise<void> {
+  motionRunning = null;
+  if ("reason" in report) { motionNote = { assembly: snapshot.id, lines: [report.reason], error: true }; renderPanel(); return; }
+  const lines = [...report.sentences, ...report.notes, `Left out: ${report.leftOut.join("; ")}.`];
+  motionNote = { assembly: snapshot.id, verdict: report.verdict, lines };
+  if (report.animation) {
+    const { sampleAnimation } = await import("../pose-anim.ts");
+    if (ticket !== motionTicket || state.stage !== "pose") return;
+    const poses = new Map(snapshot.members.map((member) => [member.object, poseOf(member.object)]));
+    const parts: AnimationPart[] = snapshot.members.flatMap((member) => {
+      const part = state.plate.objects.find((item) => item.id === member.object);
+      if (!part) return [];
+      const seat = meshSeat(part.bytes) ?? 0, positions = part.sourcePos.slice();
+      if (seat) for (let i = 2; i < positions.length; i += 3) positions[i] += seat;
+      return [{ object: part.id, name: part.name, positions }];
+    });
+    const result = sampleAnimation(report.animation, snapshot, (id) => poses.get(id), parts, { interference: false });
+    if ("issues" in result) lines.push(`The motion cannot be shown: ${result.issues.map((issue) => issue.reason).join("; ")}`);
+    else {
+      const played: PoseAnimationState = { result, spec: report.animation, original: snapshot, poses, parts, clock: new PosePlayback(result.frames.length, result.fps), assembly: snapshot.id, plugin: { sha: "", text: "", name: "motion-run", source: "", api: RECIPE_API.join("."), params: {} }, motion: true };
+      animation = played;
+      played.clock.play(performance.now()); animationDrawn = -1; animationTick();
+    }
+  }
+  renderPanel();
 }
 /** The driven joint of a selected member: its own hinge or slide, or that of the part it is seated on without a joint. */
 function contactBody(assembly: Assembly, member: Member): Member | null {
@@ -1092,6 +1309,13 @@ function panelClick(event: Event): void {
   const action = target.dataset.poseAction;
   if (animation && action && !action.startsWith("animation-")) stopAnimation();
   if (action === "animation-play") { void playAnimation(); return; }
+  if (action === "motion-run") { void startMotion(); return; }
+  if (action === "motion-cancel") { cancelMotion("Run cancelled: nothing changed."); return; }
+  if (action === "motion-play" && animation?.motion) {
+    if (animation.clock.playing) animation.clock.pause(performance.now());
+    else { animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); }
+    renderPanel(); return;
+  }
   if (action === "animation-cancel") { cancelPreparation("Animation cancelled."); return; }
   if (action === "animation-save") {
     if (animation && view && sceneShift) {
@@ -1205,6 +1429,13 @@ function panelChange(event: Event): void {
     const value = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input instanceof HTMLInputElement && input.type === "number" ? Number(input.value) : input.value;
     if (typeof value === "number" && (!Number.isFinite(value) || input.value.trim() === "")) { message = "Enter a finite animation parameter."; renderPanel(); return; }
     animationParameters.set(animationChoice, { ...previous, [name]: value }); stopAnimation(); cancelPreparation(""); syncPose(); return;
+  }
+  const motionKey = input.dataset.poseMotion as keyof MotionDraft | undefined;
+  if (motionKey && motionDraft) {
+    motionDraft = { ...motionDraft, [motionKey]: input.value } as MotionDraft;
+    // A choice that changes which fields show draws the panel again; a typed number waits for Run.
+    if (motionKey === "wheel" || motionKey === "kind") renderPanel();
+    return;
   }
   if (input.hasAttribute("data-pose-animation-frame") && animation) { animation.clock.seek(Number(input.value)); syncPose(); renderPanel(); return; }
   const couple = input.dataset.poseCouple as keyof CoupleDraft | undefined;

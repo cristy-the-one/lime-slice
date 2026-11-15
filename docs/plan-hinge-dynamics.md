@@ -198,6 +198,10 @@ the drive, so a ratchet stays engaged as in the run, and the pendulum's body), s
 `pose_animate`'s incremental GIF and PNG writer (one frame held at a time, `.partial` names, cancel between frames). Pose
 plays the same keys.
 
+**A part's frame and its mesh.** Joints are read in each member's own part frame (`modelPose`); a mesh part's triangles
+are kept dropped onto the bed and placed by its seat lift then `modelPose`. A run carries both (`DynPart.frame` and
+`pose`), so a hinge's pivot is where Pose draws it whatever the mesh's seat.
+
 ## 7. Stages
 
 A. Free and driven bodies: the model from the assembly, the integrator, pivot friction, limits, energy. Tests against
@@ -228,3 +232,26 @@ free period 0.7386 s); 0.25 N·mm on the escape wheel; friction 0.3 on 1.5 mm pi
 | 27 g bob, 0.18 N·mm, friction 0.15: period against free | within 1 % (0.86 %) |
 | Period at dt 1e-4 / 5e-5 / 2.5e-5 s (test clock) | 0.7828060 / 0.7827808 / 0.7827754 s |
 | Cost a step, the test clock | about 3.5 µs |
+| One 60 s run of the test clock at dt 5e-5 s (1.2 million steps) | 4.2 s (Node) |
+| A whole 60 s `motion_run` / Pose Run: from rest and from a push, each at dt and dt/2, and five sweep runs | 143 s (Node) |
+| The test clock driven by a 200 g weight on a 10 mm drum through 60:1, a hand at 1/120: rate against the designed 1 s, run time | 86400 (1/T − 1) to 0.01 s a day; 159.4 mm an hour, 1.88 hours to the slide's limit |
+
+**Budget.** The cost is the steps: about 20,000 a simulated second at the default step plus a few refined events a
+beat, so about 0.07 s of computing a simulated second for one run, and eleven runs make a clock's answer. A 60 s clock
+is therefore a job of about two and a half minutes; a 20 s one, under a minute. Geometric contact was never in the
+loop (section 2).
+
+**What a reply says** (the test clock, `motion_run` on the fake engine, 12 s):
+
+> From rest as posed it does not run: it never starts; a tooth rests on the entry pallet's impulse face; the anchor
+> stands -1.985° from its middle position and the pendulum swings 0° each side (it must pass 2° to unlock).
+> From a 3.5° push it runs: the swing settles at 3.124° each side after 2.5 periods, period 0.782755 s.
+> The pendulum's free small-swing period is 0.738562 s (mass properties, no escapement); at the run's 3.124° the free
+> period is 0.738699 s.
+> Each beat the drive gives 26.18 µJ; it goes to pivot of Escape wheel 2.41, pivot of Anchor 4.461, impacts (drops and
+> locks) 6.257, pallet friction 13.058 µJ; the integration residual is 0 % of the drive's work.
+> It runs only at friction 0.3 of 0.3, 0.6 (at 0.6 it stops): the answer depends on friction the app does not know.
+
+and for a drive too weak for its pivots (0.04 N·mm): "it stops at 1.05 s; a tooth rests on the entry pallet's impulse
+face; the anchor stands -1.705° from its middle position and the pendulum swings 0° each side (it must pass 2° to
+unlock)".

@@ -77,6 +77,8 @@ export interface Prepared {
   designPeriodS?: number;
   designFrom?: string;
   nameOf: (id: string) => string;
+  /** The members' meshes, for each run's fresh system. */
+  parts: readonly DynPart[];
 }
 
 /** The run's inputs, with their defaults, for the system. */
@@ -98,7 +100,7 @@ export function grahamOf(e: EscapementSpec): Graham {
 
 /** The system with fresh elements, at a friction coefficient (pins and, unless given apart, pallets). */
 function systemAt(p: Prepared, friction: number): System | { reason: string } {
-  const sys = buildSystem(p.assembly, partsCache.get(p)!, inputsOf(p.spec, friction), p.nameOf);
+  const sys = buildSystem(p.assembly, p.parts, inputsOf(p.spec, friction), p.nameOf);
   if ("reason" in sys) return sys;
   if (p.graham && p.link) {
     const element = escapementElement(p.graham, { ...p.link, mu: p.spec.palletFriction ?? friction });
@@ -107,18 +109,18 @@ function systemAt(p: Prepared, friction: number): System | { reason: string } {
   }
   return sys;
 }
-const partsCache = new WeakMap<Prepared, readonly DynPart[]>();
 
 /**
  * Everything a run needs, or why it cannot be run: the system, the escapement fitted to the parts, the pendulum and its
  * rest, the train's designed period.
  */
-export function prepareMotion(assembly: Assembly, parts: readonly DynPart[], spec: MotionSpec, nameOf: (id: string) => string): Prepared | { reason: string } {
+/** `note` hears each stage of the set-up as it starts, for a caller that shows it. */
+export function prepareMotion(assembly: Assembly, parts: readonly DynPart[], spec: MotionSpec, nameOf: (id: string) => string, note?: (stage: string) => void): Prepared | { reason: string } {
+  note?.("Weighing the parts…");
   const inputs = inputsOf(spec);
   const system = buildSystem(assembly, parts, inputs, nameOf);
   if ("reason" in system) return system;
-  const prepared: Prepared = { assembly, spec, inputs, system, nameOf };
-  partsCache.set(prepared, parts);
+  const prepared: Prepared = { assembly, spec, inputs, system, nameOf, parts };
   const bodyOf = (id: string) => system.bodies.find((b) => b.parts.includes(id));
   const stepper = new Stepper(system, spec.dt ?? DEFAULTS.dt);
   if (spec.escapement) {
@@ -130,6 +132,7 @@ export function prepareMotion(assembly: Assembly, parts: readonly DynPart[], spe
     if (!wb || wb.kind !== "hinge") return { reason: `${nameOf(e.wheel)} does not turn on a hinge on the frame: an escape wheel does.` };
     if (!ab || ab.kind !== "hinge") return { reason: `${nameOf(e.anchor)} does not turn on a hinge on the frame: an anchor does.` };
     const wp = parts.find((x) => x.object === e.wheel)!, ap = parts.find((x) => x.object === e.anchor)!;
+    note?.("Fitting the escapement to the parts…");
     const fitted = fitEscapement(system, g, {
       wheel: { object: e.wheel, name: nameOf(e.wheel), positions: wp.positions, pose: wp.pose, coord: wb.coord, scale: wb.scale, point: wb.point, axis: wb.axis },
       anchor: { object: e.anchor, name: nameOf(e.anchor), positions: ap.positions, pose: ap.pose, coord: ab.coord, scale: ab.scale, point: ab.point, axis: ab.axis },
@@ -141,6 +144,7 @@ export function prepareMotion(assembly: Assembly, parts: readonly DynPart[], spe
     system.elements.push(fitted.element);
     prepared.wheel = { coord: wb.coord, rateDeg: fitted.element.link.wheel.rate / DEG, name: nameOf(e.wheel) };
   }
+  note?.("Finding the pendulum's rest…");
   const swingPart = spec.escapement?.anchor ?? spec.pendulum;
   if (swingPart) {
     const body = bodyOf(swingPart);
@@ -448,7 +452,7 @@ function report(p: Prepared, results: RunResult[], labels: string[], o: { second
       : r.runs && !r.steady
       ? `${how} it runs: the wheel still turns after ${r.seconds} s, but the swing has not settled (last ${fmt(r.amplitudes.at(-1)?.deg ?? 0, 3)}° each side): run longer for its amplitude and rate.`
       : r.runs
-      ? `${how} it runs: the swing settles at ${fmt(r.steady!.deg, 3)}° each side after ${r.steady!.periods} periods, period ${fmt(r.periodS, 6)} s${Number.isFinite(rate(r.periodS)) ? `, ${fmt(Math.abs(rate(r.periodS)), 1)} s a day ${rate(r.periodS) >= 0 ? "fast" : "slow"} against the designed ${fmt(p.designPeriodS!, 6)} s` : ""}.`
+      ? `${how} it runs: the swing settles at ${fmt(r.steady!.deg, 3)}° each side after ${r.steady!.periods} period${r.steady!.periods === 1 ? "" : "s"}, period ${fmt(r.periodS, 6)} s${Number.isFinite(rate(r.periodS)) ? `, ${fmt(Math.abs(rate(r.periodS)), 1)} s a day ${rate(r.periodS) >= 0 ? "fast" : "slow"} against the designed ${fmt(p.designPeriodS!, 6)} s` : ""}.`
       : `${how} it does not run${r.stall ? (r.stall.atS === 0 ? `: it never starts; ${r.stall.where}` : `: it stops at ${r.stall.atS} s; ${r.stall.where}`) : ""}.`;
     if (!converged.ok) sentences.push(`Not converged: the run at dt ${o.dt} s and at ${o.dt / 2} s disagree, so no single number is given: ${differs.join("; ")}. Run again with a smaller dt.`);
     sentences.push(words(rest, "From rest as posed"));
