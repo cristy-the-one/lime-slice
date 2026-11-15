@@ -88,3 +88,4 @@ if (failed) {
   process.exit(1);
 }
 console.log("contact-occt: ok");
+process.exit(0);
