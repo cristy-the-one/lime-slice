@@ -4,7 +4,7 @@ export function mountMarkup(root: HTMLElement) {
   root.innerHTML = `
   <div class="app">
     <header class="top">
-      <div class="brand">Lime <span>Slice</span><small id="betaIdentity" hidden> Beta</small></div>
+      <div class="brand" id="brand" role="img" aria-label="Lime Slice" data-tip="Lime Slice"><svg class="brand-mark" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false"><path class="brand-rind" d="M12 12 L6.25 21.96 A11.5 11.5 0 1 1 17.75 21.96 Z"/><path class="brand-flesh" d="M12 12 L7.8 19.27 A8.4 8.4 0 1 1 16.2 19.27 Z"/><path class="brand-spokes" d="M12 12 L3.4 12 M12 12 L7.7 4.55 M12 12 L16.3 4.55 M12 12 L20.6 12"/><circle class="brand-core" cx="12" cy="12" r="1.3"/></svg><small id="betaIdentity" hidden>Beta</small></div>
       <div class="project-title" id="projectTitle">Untitled</div>
       <span class="tandem-activity" id="tandemActivity" role="status" hidden></span>
       <details class="menu tandem-bridge" id="tandemBridge" data-state="off" hidden>
@@ -230,9 +230,15 @@ export function mountMarkup(root: HTMLElement) {
     </div>
   </div>
 `;
+  // The version goes into the brand's tip here, so the shell above stays a plain literal (src/ui/html-sinks.test.ts).
+  root.querySelector<HTMLElement>("#brand")!.dataset.tip = `Lime Slice ${__APP_VERSION__}`;
   if (isTauri()) {
     void import("@tauri-apps/api/app").then(({ getIdentifier }) => getIdentifier()).then((id) => {
-      if (id === "com.limeslice.slicer.tandem-beta") root.querySelector<HTMLElement>("#betaIdentity")!.hidden = false;
+      if (id !== "com.limeslice.slicer.tandem-beta") return;
+      root.querySelector<HTMLElement>("#betaIdentity")!.hidden = false;
+      const brand = root.querySelector<HTMLElement>("#brand")!;
+      brand.setAttribute("aria-label", "Lime Slice Beta");
+      brand.dataset.tip = `Lime Slice Beta ${__APP_VERSION__}`;
     }).catch(() => {});
   }
 }

@@ -33,6 +33,8 @@ import { renderMesh } from "../render.ts";
 import { isSlug, olderVersions, parsePlugin, pluginsDir, readPlugin } from "../plugins.ts";
 import { stlBytes } from "../request.ts";
 import { readAssemblies } from "../../src/assembly.ts";
+import { basename } from "node:path";
+import { readIdentity } from "../autosave.ts";
 import { resolveRead, resolveWorkspaceFile, resolveWrite } from "../workspace.ts";
 import { CHORD, ModelRunaway, type PlateObject, STEP, type ToolHandler, modelSteps, shownName, stlFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -64,6 +66,7 @@ async function projectCreate(this: Session, input: Record<string, unknown>): Pro
   this.sourceProject = null;
   this.sourceHash = "";
   this.sourcePath = "";
+  this.newAutosaveProject(undefined);
   this.profileTouched = false;
   // --- D23. A new project starts with no parameters and no defined parts, as project_open adopts only the file's.
   this.adoptParameters({});
@@ -98,6 +101,8 @@ async function projectOpen(this: Session, path: string): Promise<Record<string, 
   this.sourceProject = structuredClone(parsed.project);
   this.sourceHash = createHash("sha256").update(readFileSync(full)).digest("hex");
   this.sourcePath = realpathSync(full);
+  // Opening the previous plate (or a shelved one) carries on that project; any other file starts one that its path names.
+  this.newAutosaveProject(/^autosave-previous.*\.lime$/.test(basename(full)) ? readIdentity(full).project : undefined);
   this.profileTouched = false;
   this.adoptProjectMachine(parsed.project.profile);
   const fileObjects = parsed.project.objects?.length ? parsed.project.objects : null;
@@ -545,6 +550,12 @@ function pluginCopies(this: Session): Record<string, string> | null {
 }
 
 /** The project as project_save writes it, from the plate as it stands. */
+/** A new plate, or an opened file: the autosave id this plate carries from now on (minted at the next write when none). */
+function newAutosaveProject(this: Session, id: string | undefined): void {
+  this.autosaveProject = id ?? "";
+  if (this.autosaveSnapshot) this.autosaveShelf = true;
+}
+
 function saveDocument(this: Session): LimeProject {
   const doc = this.projectDocument();
   const mcpModel = this.mcpModelRecord();
@@ -659,6 +670,7 @@ export const projectMethods = {
   stamps,
   pluginCopies,
   saveDocument,
+  newAutosaveProject,
   projectSave,
   appOpen,
 };

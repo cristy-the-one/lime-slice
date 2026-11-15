@@ -45,10 +45,17 @@ src/pose-playback.test.ts
 src/recipe/animation-run.test.ts
 mcp/assembly-bulk.test.ts
 mcp/pose.test.ts
+mcp/render-unnamed.test.ts
+mcp/slice-collisions.test.ts
+mcp/autosave-projects.test.ts
 mcp/gear-train.test.ts
+src/mass.test.ts
+mcp/mass.test.ts
+mcp/contact.test.ts
 mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
 src/interference.test.ts
+src/contact.test.ts
 src/project-blank.test.ts
 src/project-codec.test.ts
 src/project-held.test.ts
@@ -159,6 +166,7 @@ mcp/nuggets-file.test.ts
 mcp/plugin-hints.test.ts
 mcp/recipe-root.test.ts
 mcp/recipe-query.test.ts
+mcp/recipe-horology.test.ts
 mcp/mesh-section.test.ts
 mcp/sections.test.ts
 src/sim/recipe.test.ts

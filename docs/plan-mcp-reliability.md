@@ -26,8 +26,12 @@ TypeScript rasterizer, and the reproduction ran on the fake engine.
 **Decided.**
 - `pose_animate` is detachable: past `replySeconds()` (45 s) it answers with a job, `slice_wait {job}` returns its result,
   and `slice_cancel` stops it (it is stoppable; it changes no part).
-- The work takes a turn of the event loop between frames, in the crossing check (`frameInterference`, a generator) and
-  in drawing, so the server answers other calls and hears a cancel.
+- The work takes a turn of the event loop between frames, in sampling and in drawing, so the server answers other calls
+  and hears a cancel. Sampling is one stepwise sampler for every caller: `sampleAnimationSteps` (src/pose-anim.ts, from
+  #687) poses a frame, runs that frame's crossing check (`crossingCheck`, fed one frame at a time, read once at the
+  end), and yields. The window's worker and its sliced fallback (src/pose-anim-sample.ts) drive those steps for the
+  window; `mcp/animation-run.ts` drives the same steps with a turn of the event loop between them; `sampleAnimation`
+  runs them to the end. So the window and the server give the same frames and the same warnings.
 - The GIF is written a frame at a time. Its palette is fixed (3/3/2, with the background's entry made exact), so it needs
   no frame before the first is written: `gifHead`, `gifFrame`, `GIF_END`, the same bytes `animatedGif` gave. One frame
   is held at a time, and the 256 MB refusal is gone.
@@ -61,8 +65,18 @@ TypeScript rasterizer, and the reproduction ran on the fake engine.
 - `interference(a, b)` keeps its signature and its answers. A third argument, `{ toleranceMm }`, makes overlap up to that
   depth contact: two triangles cross only when each passes more than it through the other's plane, and the points that
   test for a part inside the other sit deeper than it. `MESH_TOLERANCE_MM` = 0.05, the kernel's chord.
-- The animation check and `model_check {interference}`'s mesh pass use 0.05 mm and say so. The joint sweep keeps 0.001 mm:
-  its candidates are measured by the exact pass anyway.
+- Which caller reads contact at which tolerance, and why:
+
+  | Caller | Tolerance | Why |
+  |---|---|---|
+  | `sampleAnimationSteps` crossing check (pose_animate, the window's Pose animation) | 0.05 mm | It judges whether frames cross; overlap within the meshes' chord may be faces that only touch. |
+  | `model_check {interference}` mesh pass | 0.05 mm | The same pair must read the same as in an animation; the exact pass still measures every non-clear pair, touches included. |
+  | The window's assembly check (`src/app/assemblies.ts`) | 0.05 mm | The window and `model_check` must not disagree about the same pair. |
+  | `model_check {sweep}` (jointSweep) | 0.001 mm | It looks for the first crossing; its candidates go to the exact pass, so a finer mesh pass only means more of them. |
+  | Contact (`src/contact.ts`: `firstContact`, `pairState`; `model_place {until}`; rig reads) | 0.001 mm (default) | It bisects to a contact within 0.01 mm; at 0.05 mm it would stop 0.05 mm late. |
+
+  The default of `interference` is unchanged, so every caller not listed keeps 0.001 mm. Contact's tests give the same
+  answers before and after (`src/contact.test.ts`: 15.78526°, 0.00298 mm; `mcp/contact.test.ts`: the same log).
 - A pair that overlaps at rest and keeps that relative pose is said once, as an overlap at rest; frames where it moves and
   still crosses are counted as crossings.
 - One warning per pair: the frames it crosses on, the first frame and its time, and which check made it with its

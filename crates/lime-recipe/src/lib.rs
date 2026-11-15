@@ -450,7 +450,11 @@ pub struct Part {
 /// 1.6: batched Region unions and differences. 1.7: resumable checkpoints. 1.8: pose animations.
 /// 1.9: `Animation::background`. 1.10: `Session::mesh_at_end`. 1.11: the explicit queue (`apply_later`, `flush`, `apply_now`, `queue`).
 /// 1.12: `gears` (the library's involute gears, and true involute `Gear` outlines) and `ops::gear`, the kernel's gear step.
-pub const API: (u32, u32) = (1, 12);
+/// 1.13: `mech` (pendulum periods and lengths, docs/plan-mass-properties.md).
+/// 1.14: `horology`, clock ingredients (going trains, the Graham escapement, ratchet and click, BS 978-2 cycloidal teeth, bores).
+/// 1.15: reads of an animation's rig at a pose (`Rig::first_contact`, `first_contact_with`, `clearance`, `crossing`,
+/// `angle`) and `anim::frame_times` (docs/plan-contact-poses.md).
+pub const API: (u32, u32) = (1, 15);
 
 /// One recipe run: the start line's parameters and context, and the call counter.
 pub struct Session {
@@ -4182,6 +4186,63 @@ pub mod gears {
     }
 }
 
+/// Pendulums (API 1.13, docs/plan-mass-properties.md): a simple pendulum's period from its length and its length from a
+/// period, and a compound pendulum's period from what `model_mass {about:"hinge"}` reports (its moment of inertia about
+/// the hinge, its mass, and the distance from the hinge to its centre of gravity). Small swings, standard gravity, no
+/// friction. Only `*`, `/` and `sqrt`, so lust and rustc give the same bits; the window's `src/mass.ts` computes the same.
+///
+/// A pendulum recipe can take its period as the parameter and solve its own length:
+/// `let rod = mech::pendulum_length(s.number("period", 0.75).get());`
+pub mod mech {
+    /// Standard gravity, mm/s².
+    pub const G_MM_S2: f64 = 9806.65;
+
+    /// A simple pendulum's period in seconds for a length in mm: `2π √(L / g)`.
+    pub fn pendulum_period(length_mm: f64) -> f64 {
+        2.0 * std::f64::consts::PI * (length_mm / G_MM_S2).sqrt()
+    }
+
+    /// The simple pendulum's length in mm that swings with a period in seconds: `g (T / 2π)²`.
+    pub fn pendulum_length(period_s: f64) -> f64 {
+        let k = period_s / (2.0 * std::f64::consts::PI);
+        G_MM_S2 * k * k
+    }
+
+    /// A compound pendulum's small-swing period in seconds: `2π √(I / (m g d))`, with `inertia_g_mm2` its moment of
+    /// inertia about the hinge in g·mm², `mass_g` its mass in g and `d_mm` the hinge's distance to its centre of gravity.
+    pub fn compound_period(inertia_g_mm2: f64, mass_g: f64, d_mm: f64) -> f64 {
+        2.0 * std::f64::consts::PI * (inertia_g_mm2 / (mass_g * G_MM_S2 * d_mm)).sqrt()
+    }
+
+    /// The simple pendulum with the same period as that compound one, mm: `I / (m d)`.
+    pub fn equivalent_length(inertia_g_mm2: f64, mass_g: f64, d_mm: f64) -> f64 {
+        inertia_g_mm2 / (mass_g * d_mm)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_clock_note_pendulum() {
+            // 139.73 mm swings in 0.75 s, the note's seconds-beating half.
+            assert!((pendulum_period(139.73) - 0.75).abs() < 1e-4);
+            assert!((pendulum_length(0.75) - 139.73).abs() < 0.01);
+            assert!((pendulum_length(pendulum_period(321.5)) - 321.5).abs() < 1e-9);
+        }
+
+        #[test]
+        fn a_rod_about_its_end() {
+            // A thin uniform rod of length L hung by its end: I = m L² / 3, d = L / 2, so T = 2π √(2L / 3g).
+            let (l, m) = (200.0, 3.0);
+            let t = compound_period(m * l * l / 3.0, m, l / 2.0);
+            assert!((t - 2.0 * std::f64::consts::PI * (2.0 * l / (3.0 * G_MM_S2)).sqrt()).abs() < 1e-12);
+            assert!((equivalent_length(m * l * l / 3.0, m, l / 2.0) - 2.0 * l / 3.0).abs() < 1e-9);
+            assert!((pendulum_period(equivalent_length(m * l * l / 3.0, m, l / 2.0)) - t).abs() < 1e-12);
+        }
+    }
+}
+
 /// External spur gears on parallel axes: whether two of them mesh, from their outlines, without a kernel.
 ///
 /// A recipe calls `classify` or `driven_turn`. The window's gear card and `model_check` report the same verdicts
@@ -4598,6 +4659,1497 @@ pub mod gear_pair {
     }
 }
 
+/// Clock ingredients (API 1.14): what a mechanical clock needs that `gears` does not have. Pure functions, no calls,
+/// the crate's own trig, so lust and rustc give the same numbers (`tests/horology.rs`, `mcp/recipe-horology.test.ts`).
+/// Sizes in mm, angles in degrees unless a name says otherwise. Outlines are `gears::Outline`, closed and
+/// counter-clockwise: `to_loop()` is one loop for `extrude`, `outline_points` a polyline for a preview or a check.
+///
+/// - Going train: `train_ratio`, `escape_period_s`, and `count_train` / `train_options`, which find tooth counts that
+///   give a pendulum's period exactly.
+/// - Graham (deadbeat) escapement: `EscapeWheel` (pointed teeth leaning forward) and `Graham` (the anchor, its pallets,
+///   where it stands and how far it swings, and `refusal`).
+/// - Winding: `Ratchet` (saw teeth) and its `click` (the pawl, with its pivot, seat angle and lift).
+/// - Cycloidal clock teeth after BS 978-2: `ClockWheel` (epicycloidal addenda) and `ClockPinion` (radial flanks).
+/// - Bores: `fit_clearance`, `hole`, `shaft`, `pin_bore` (ISO 286 fits) and the small bearings in `bearing`.
+pub mod horology {
+    use super::gears::{Outline, Piece, P2};
+    use super::geom2d::{atan2, clamp, sin_cos, sin_cos_deg};
+
+    const PI: f64 = std::f64::consts::PI;
+    const DEG: f64 = PI / 180.0;
+
+    fn polar(rho: f64, a: f64) -> P2 {
+        let (s, c) = sin_cos(a);
+        [rho * c, rho * s]
+    }
+    fn rot(p: P2, a: f64) -> P2 {
+        let (s, c) = sin_cos(a);
+        [p[0] * c - p[1] * s, p[0] * s + p[1] * c]
+    }
+    fn sub(a: P2, b: P2) -> P2 {
+        [a[0] - b[0], a[1] - b[1]]
+    }
+    fn add(a: P2, b: P2) -> P2 {
+        [a[0] + b[0], a[1] + b[1]]
+    }
+    fn mul(a: P2, k: f64) -> P2 {
+        [a[0] * k, a[1] * k]
+    }
+    fn dot(a: P2, b: P2) -> f64 {
+        a[0] * b[0] + a[1] * b[1]
+    }
+    fn cross(a: P2, b: P2) -> f64 {
+        a[0] * b[1] - a[1] * b[0]
+    }
+    fn len(a: P2) -> f64 {
+        (a[0] * a[0] + a[1] * a[1]).sqrt()
+    }
+    fn angle(p: P2) -> f64 {
+        atan2(p[1], p[0])
+    }
+    fn mirror(p: P2) -> P2 {
+        [p[0], -p[1]]
+    }
+    /// arccos and arcsin from `atan2` and `sqrt`, so lust and rustc agree to the bit.
+    fn acos(x: f64) -> f64 {
+        atan2((1.0 - x * x).max(0.0).sqrt(), x)
+    }
+    fn asin(x: f64) -> f64 {
+        atan2(x, (1.0 - x * x).max(0.0).sqrt())
+    }
+    fn ok(v: f64, lo: f64, hi: f64) -> bool {
+        v.is_finite() && v >= lo && v <= hi
+    }
+    /// The distance from `p` to the segment a..b.
+    fn seg_dist(p: P2, a: P2, b: P2) -> f64 {
+        let d = sub(b, a);
+        let l2 = dot(d, d);
+        let t = if l2 > 0.0 { clamp(dot(sub(p, a), d) / l2, 0.0, 1.0) } else { 0.0 };
+        len(sub(p, add(a, mul(d, t))))
+    }
+    /// Whether the segments a..b and c..d cross (touching does not count).
+    fn crosses(a: P2, b: P2, c: P2, d: P2) -> bool {
+        let d1 = cross(sub(b, a), sub(c, a));
+        let d2 = cross(sub(b, a), sub(d, a));
+        let d3 = cross(sub(d, c), sub(a, c));
+        let d4 = cross(sub(d, c), sub(b, c));
+        d1 * d2 < 0.0 && d3 * d4 < 0.0
+    }
+
+    /// The points of a closed outline: lines and spline points as they are, arcs in steps of at most `arc_step_deg`. The
+    /// start is not repeated at the end. For a preview, an area or a check; extrude `outline.to_loop()` for the part.
+    pub fn outline_points(outline: &Outline, arc_step_deg: f64) -> Vec<P2> {
+        let step = arc_step_deg.max(0.01) * DEG;
+        let mut pts: Vec<P2> = vec![outline.start];
+        let mut from = outline.start;
+        for piece in outline.pieces.iter() {
+            match piece {
+                Piece::Line(to) => {
+                    pts.push(*to);
+                    from = *to;
+                }
+                Piece::Spline(through, to) => {
+                    for p in through.iter() {
+                        pts.push(*p);
+                    }
+                    pts.push(*to);
+                    from = *to;
+                }
+                Piece::Arc(through, to) => {
+                    arc_points(&mut pts, from, *through, *to, step);
+                    from = *to;
+                }
+            }
+        }
+        if pts.len() > 1 {
+            pts.pop();
+        }
+        pts
+    }
+
+    /// The arc from `a` through `b` to `c`, after `a`, in steps of at most `step` radians.
+    fn arc_points(pts: &mut Vec<P2>, a: P2, b: P2, c: P2, step: f64) {
+        let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+        if d.abs() < 1e-18 {
+            pts.push(c);
+            return;
+        }
+        let (a2, b2, c2) = (dot(a, a), dot(b, b), dot(c, c));
+        let o = [
+            (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d,
+            (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d,
+        ];
+        let rho = len(sub(a, o));
+        let ccw = cross(sub(b, a), sub(c, b)) > 0.0;
+        let a0 = angle(sub(a, o));
+        let mut a1 = angle(sub(c, o));
+        if ccw {
+            while a1 <= a0 {
+                a1 += 2.0 * PI;
+            }
+        } else {
+            while a1 >= a0 {
+                a1 -= 2.0 * PI;
+            }
+        }
+        let n = (((a1 - a0).abs() / step).ceil() as usize).max(1);
+        for i in 1..n {
+            pts.push(add(o, polar(rho, a0 + (a1 - a0) * i as f64 / n as f64)));
+        }
+        pts.push(c);
+    }
+
+    // ---- The going train. ----
+
+    /// The ratio of a train of `(wheel teeth, pinion leaves)` stages: the product of the wheels over the product of the
+    /// pinions. The note's train `[(64, 8), (50, 10), (40, 10)]` is 160.
+    pub fn train_ratio(stages: &[(u32, u32)]) -> f64 {
+        let mut wheels = 1.0;
+        let mut pinions = 1.0;
+        for s in stages.iter() {
+            wheels *= s.0 as f64;
+            pinions *= s.1 as f64;
+        }
+        wheels / pinions
+    }
+
+    /// The pendulum's period, seconds, for a train from the centre arbor (one turn an hour) to an escape wheel of
+    /// `escape_teeth`: the wheel lets one tooth pass per period (two beats), so `3600 / (ratio × teeth)`. 160:1 with
+    /// 30 teeth is 0.75 s; 60:1 with 30 teeth is the seconds pendulum's 2 s.
+    pub fn escape_period_s(centre_to_escape_ratio: f64, escape_teeth: u32) -> f64 {
+        3600.0 / (centre_to_escape_ratio * escape_teeth as f64)
+    }
+
+    /// The tooth counts `count_train` may use: wheels of `wheel_min..=wheel_max` teeth, pinions of
+    /// `pinion_min..=pinion_max` leaves.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct TrainLimits {
+        pub wheel_min: u32,
+        pub wheel_max: u32,
+        pub pinion_min: u32,
+        pub pinion_max: u32,
+    }
+
+    impl TrainLimits {
+        pub fn new(wheel_min: u32, wheel_max: u32, pinion_min: u32, pinion_max: u32) -> TrainLimits {
+            TrainLimits { wheel_min, wheel_max, pinion_min, pinion_max }
+        }
+
+        fn refusal(&self) -> Option<String> {
+            if self.pinion_min < 4 || self.pinion_max > 40 || self.pinion_min > self.pinion_max {
+                return Some("Pinions take 4 to 40 leaves, the least first.".to_string());
+            }
+            if self.wheel_max > 400 || self.wheel_min > self.wheel_max || self.wheel_max <= self.pinion_min {
+                return Some("Wheels take up to 400 teeth, the least first, and more than the smallest pinion.".to_string());
+            }
+            None
+        }
+    }
+
+    /// A going train: `stages` from the centre arbor to the escape arbor as `(wheel teeth, pinion leaves)`, the largest
+    /// ratio first, and the escape wheel's teeth.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Train {
+        pub stages: Vec<(u32, u32)>,
+        pub escape_teeth: u32,
+    }
+
+    impl Train {
+        pub fn ratio(&self) -> f64 {
+            train_ratio(&self.stages)
+        }
+
+        pub fn period_s(&self) -> f64 {
+            escape_period_s(self.ratio(), self.escape_teeth)
+        }
+    }
+
+    fn gcd(a: u64, b: u64) -> u64 {
+        let (mut a, mut b) = (a, b);
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        a
+    }
+
+    fn pow(x: u64, n: u32) -> u64 {
+        let mut r = 1;
+        for _ in 0..n {
+            r *= x;
+        }
+        r
+    }
+
+    /// Whether stage `a` comes before stage `b` in a train: a larger ratio, or the same ratio on more teeth.
+    fn before(a: (u32, u32), b: (u32, u32)) -> bool {
+        let (x, y) = (a.0 as u64 * b.1 as u64, b.0 as u64 * a.1 as u64);
+        x > y || (x == y && a.0 > b.0)
+    }
+
+    /// The ratio a period asks, as a fraction in lowest terms with a denominator up to 10000.
+    fn wanted_ratio(period_s: f64, escape_teeth: u32) -> Result<(u64, u64), String> {
+        let r = 3600.0 / (period_s * escape_teeth as f64);
+        if !(r.is_finite() && r > 1.0 && r <= 1e6) {
+            return Err("The period and the escape wheel ask a ratio from 1 to a million to one; this one is outside.".to_string());
+        }
+        for q in 1..=10000u64 {
+            let p = (r * q as f64).round();
+            if p >= 1.0 && (p / q as f64 - r).abs() <= 1e-9 * r {
+                let p = p as u64;
+                let g = gcd(p, q);
+                return Ok((p / g, q / g));
+            }
+        }
+        Err("The period and the escape wheel ask a ratio that no whole tooth counts give exactly.".to_string())
+    }
+
+    /// Every train of `left` more stages from `list[start..]` (sorted, `before` order) whose ratio is `num / den`.
+    #[allow(clippy::too_many_arguments)]
+    fn search(list: &[(u32, u32)], limits: &TrainLimits, start: usize, left: u32, num: u64, den: u64, chosen: &mut Vec<(u32, u32)>, found: &mut Vec<Vec<(u32, u32)>>) {
+        if left == 1 {
+            for p in limits.pinion_min..=limits.pinion_max {
+                let top = num * p as u64;
+                if top % den != 0 {
+                    continue;
+                }
+                let w = top / den;
+                if w < limits.wheel_min as u64 || w > limits.wheel_max as u64 || w <= p as u64 {
+                    continue;
+                }
+                let stage = (w as u32, p);
+                if let Some(last) = chosen.last() {
+                    if before(stage, *last) {
+                        continue;
+                    }
+                }
+                let mut train = chosen.clone();
+                train.push(stage);
+                found.push(train);
+            }
+            return;
+        }
+        for i in start..list.len() {
+            let (w, p) = list[i];
+            let (w64, p64) = (w as u64, p as u64);
+            // The later stages are no larger than this one, so this one to the power `left` must reach the ratio; the
+            // list only gets smaller from here.
+            if num * pow(p64, left) > den * pow(w64, left) {
+                break;
+            }
+            // The later stages each gear up, so what is left after this one must be more than one.
+            if num * p64 <= den * w64 {
+                continue;
+            }
+            let (n2, d2) = (num * p64, den * w64);
+            let g = gcd(n2, d2);
+            chosen.push((w, p));
+            search(list, limits, i, left - 1, n2 / g, d2 / g, chosen, found);
+            chosen.pop();
+        }
+    }
+
+    /// The order `train_options` gives: the smaller largest stage (a balanced train), then the larger smallest pinion
+    /// (more leaves run smoother), then fewer teeth in all, then stage by stage the larger wheel.
+    fn rank(a: &[(u32, u32)], b: &[(u32, u32)]) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let (x, y) = (a[0].0 as u64 * b[0].1 as u64, b[0].0 as u64 * a[0].1 as u64);
+        if x != y {
+            return if x < y { Ordering::Less } else { Ordering::Greater };
+        }
+        let mut pa = u32::MAX;
+        let mut pb = u32::MAX;
+        let mut ta = 0u32;
+        let mut tb = 0u32;
+        for s in a.iter() {
+            pa = pa.min(s.1);
+            ta += s.0 + s.1;
+        }
+        for s in b.iter() {
+            pb = pb.min(s.1);
+            tb += s.0 + s.1;
+        }
+        if pa != pb {
+            return pb.cmp(&pa);
+        }
+        if ta != tb {
+            return ta.cmp(&tb);
+        }
+        for k in 0..a.len().min(b.len()) {
+            if a[k] != b[k] {
+                return b[k].0.cmp(&a[k].0).then(b[k].1.cmp(&a[k].1));
+            }
+        }
+        Ordering::Equal
+    }
+
+    /// Every train of `stages` stages (1 to 4) within `limits` whose ratio gives `period_s` with an escape wheel of
+    /// `escape_teeth` exactly (the ratio `3600 / (period × teeth)`, which must be a fraction with a denominator up to
+    /// 10000), best first in `count_train`'s order. Each train lists its stages largest ratio first, as they run from
+    /// the centre arbor. The same input gives the same list, in the same order.
+    pub fn train_options(period_s: f64, escape_teeth: u32, stages: u32, limits: &TrainLimits) -> Result<Vec<Train>, String> {
+        if !(1..=4).contains(&stages) {
+            return Err("A going train has 1 to 4 stages.".to_string());
+        }
+        if !(6..=400).contains(&escape_teeth) {
+            return Err("An escape wheel takes 6 to 400 teeth.".to_string());
+        }
+        if let Some(why) = limits.refusal() {
+            return Err(why);
+        }
+        let (num, den) = wanted_ratio(period_s, escape_teeth)?;
+        let mut list: Vec<(u32, u32)> = Vec::new();
+        for w in limits.wheel_min..=limits.wheel_max {
+            for p in limits.pinion_min..=limits.pinion_max {
+                if w > p {
+                    list.push((w, p));
+                }
+            }
+        }
+        list.sort_by(|a, b| {
+            if before(*a, *b) {
+                std::cmp::Ordering::Less
+            } else if before(*b, *a) {
+                std::cmp::Ordering::Greater
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        });
+        let mut found: Vec<Vec<(u32, u32)>> = Vec::new();
+        let mut chosen: Vec<(u32, u32)> = Vec::new();
+        search(&list, limits, 0, stages, num, den, &mut chosen, &mut found);
+        if found.is_empty() {
+            return Err(format!(
+                "No train of {stages} stages with wheels of {} to {} teeth and pinions of {} to {} leaves gives {num}:{den} exactly.",
+                limits.wheel_min, limits.wheel_max, limits.pinion_min, limits.pinion_max
+            ));
+        }
+        found.sort_by(|a, b| rank(a, b));
+        let mut trains: Vec<Train> = Vec::new();
+        for stages in found.into_iter() {
+            trains.push(Train { stages, escape_teeth });
+        }
+        Ok(trains)
+    }
+
+    /// The best train `train_options` finds: the one whose largest stage is smallest, then with the most leaves in its
+    /// smallest pinion, then with the fewest teeth. 0.75 s on 30 teeth in 3 stages of wheels 40 to 64 and pinions 8 to
+    /// 10 is 160:1; the note's 64/8 × 50/10 × 40/10 is one of the options.
+    pub fn count_train(period_s: f64, escape_teeth: u32, stages: u32, limits: &TrainLimits) -> Result<Train, String> {
+        let mut trains = train_options(period_s, escape_teeth, stages, limits)?;
+        Ok(trains.remove(0))
+    }
+
+    // ---- The Graham escapement. ----
+
+    /// A Graham escape wheel: `teeth` pointed teeth, tips on `tip_radius`, roots on `root_radius`, turning clockwise
+    /// (seen from +Z). Each tooth's front face leans forward by `lean_deg` from the radius through its tip, so the tip
+    /// overhangs and a pallet touches the tip only; its back runs from the tip to the root circle so the tooth's root
+    /// takes `root_share` of the pitch (1/3 by default). The gaps are arcs on the root circle. Mirror the x of every
+    /// point (and reverse the order) for a wheel that turns counter-clockwise.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct EscapeWheel {
+        pub teeth: u32,
+        pub tip_radius: f64,
+        pub root_radius: f64,
+        pub lean_deg: f64,
+        pub root_share: f64,
+    }
+
+    impl EscapeWheel {
+        pub fn new(teeth: u32, tip_radius: f64, root_radius: f64, lean_deg: f64) -> EscapeWheel {
+            EscapeWheel { teeth, tip_radius, root_radius, lean_deg, root_share: 1.0 / 3.0 }
+        }
+
+        pub fn root_share(self, share: f64) -> EscapeWheel {
+            EscapeWheel { root_share: share, ..self }
+        }
+
+        /// The angle between two teeth, degrees.
+        pub fn pitch_deg(&self) -> f64 {
+            360.0 / self.teeth as f64
+        }
+
+        /// None when the numbers make a wheel, else the sentence why not.
+        pub fn refusal(&self) -> Option<String> {
+            if self.teeth < 12 || self.teeth > 200 {
+                return Some("An escape wheel takes 12 to 200 teeth.".to_string());
+            }
+            if !ok(self.tip_radius, 1.0, 500.0) {
+                return Some("An escape wheel's tip radius is 1 to 500 mm.".to_string());
+            }
+            if !ok(self.root_radius, 0.1 * self.tip_radius, 0.98 * self.tip_radius) {
+                return Some("An escape wheel's root radius is under its tip radius, and more than a tenth of it.".to_string());
+            }
+            if !ok(self.lean_deg, 0.0, 30.0) {
+                return Some("An escape wheel's teeth lean 0 to 30 degrees forward.".to_string());
+            }
+            if !ok(self.root_share, 0.1, 0.7) {
+                return Some("A tooth's root takes 0.1 to 0.7 of the pitch.".to_string());
+            }
+            if self.root_radius <= self.tip_radius * sin_cos_deg(self.lean_deg).0 {
+                return Some("The front faces lean so far they miss the root circle: lean the teeth less or cut the roots deeper.".to_string());
+            }
+            None
+        }
+
+        /// The polar offsets, radians counter-clockwise from a tooth's tip, of its front face's and its back's roots.
+        fn roots(&self) -> (f64, f64) {
+            let (r_tip, r_root) = (self.tip_radius, self.root_radius);
+            let (sl, cl) = sin_cos_deg(self.lean_deg);
+            // Down the front face from the tip (r_tip, 0) along (-cos lean, sin lean) to the root circle.
+            let t = r_tip * cl - (r_root * r_root - r_tip * r_tip * sl * sl).max(0.0).sqrt();
+            let front = angle([r_tip - t * cl, t * sl]);
+            (front, front + self.root_share * 2.0 * PI / self.teeth as f64)
+        }
+
+        /// The outline with tooth 0's tip at `phase_deg` from +X: per tooth the front face, the back, and the root arc to
+        /// the next tooth's front face.
+        pub fn outline(&self, phase_deg: f64) -> Result<Outline, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let (front, back) = self.roots();
+            let pitch = 2.0 * PI / self.teeth as f64;
+            let c0 = phase_deg * DEG;
+            let start = polar(self.root_radius, c0 + front);
+            let mut pieces: Vec<Piece> = Vec::new();
+            for k in 0..self.teeth {
+                let c = c0 + pitch * k as f64;
+                pieces.push(Piece::Line(polar(self.tip_radius, c)));
+                pieces.push(Piece::Line(polar(self.root_radius, c + back)));
+                let to = if k + 1 == self.teeth { start } else { polar(self.root_radius, c + pitch + front) };
+                pieces.push(Piece::Arc(polar(self.root_radius, c + 0.5 * (back + pitch + front)), to));
+            }
+            Ok(Outline { start, pieces })
+        }
+
+        /// The outline as points, the root arcs in steps of at most 3 degrees.
+        pub fn points(&self, phase_deg: f64) -> Result<Vec<P2>, String> {
+            Ok(outline_points(&self.outline(phase_deg)?, 3.0))
+        }
+    }
+
+    /// A Graham (deadbeat) anchor for `wheel`, after the classical construction (Rawlings, "The Science of Clocks and
+    /// Watches"; Gazeley, "Clock and Watch Escapement Mechanics"):
+    ///
+    /// - The pallets embrace `span_teeth` teeth (a whole number and a half, 7.5 on 30 teeth say), so half the span is
+    ///   `beta = 180° × span / teeth` at the wheel's centre. The pallets act where the tangents from the pivot touch the
+    ///   tip circle, so the pivot stands `pivot_distance = tip_radius / cos(beta)` above the wheel's centre, and a tooth
+    ///   there moves straight toward (entry) or away from (exit) the pivot.
+    /// - Each locking face is an arc about the pivot, so a tooth resting on it pushes through the pivot and the wheel does
+    ///   not recoil: the entry pallet locks on its outer face, the exit pallet on its inner one ("circular pallets": both
+    ///   between the same two radii). Each impulse face is the straight end of a pallet, from its locking corner to its
+    ///   let-off corner.
+    /// - `lock_deg` and `impulse_deg` are turns of the anchor; `drop_deg` is a turn of the wheel, the free run from one
+    ///   pallet's let-off to the other pallet's lock. A pallet is therefore half a pitch less the drop thick, in wheel
+    ///   degrees (`pallet_thickness` in mm), and the anchor turns `lock + impulse` between its two let-offs
+    ///   (`swing_deg`), plus `supplementary_deg` beyond each, which the locking faces are long enough for.
+    ///
+    /// The anchor's outline stands about its pivot at the origin in its middle position (in beat), with the wheel's
+    /// centre at `(0, -pivot_distance)`: a hub of `hub_radius` round the pivot, an arm of `arm_width` down to each pallet,
+    /// set as close to the wheel as `clearance` allows over the whole swing. Add the arbor's bore as a second loop.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Graham {
+        pub wheel: EscapeWheel,
+        pub span_teeth: f64,
+        pub lock_deg: f64,
+        pub impulse_deg: f64,
+        pub drop_deg: f64,
+        pub supplementary_deg: f64,
+        pub arm_width: f64,
+        pub hub_radius: f64,
+        pub clearance: f64,
+        pub friction: f64,
+    }
+
+    /// One pallet in the anchor's frame at its middle position: the corner where the locking face meets the impulse
+    /// face, the impulse face's other end (where the tooth lets off), the locking face's radius about the pivot, and
+    /// where the locking face ends at the arm.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Pallet {
+        pub locking_corner: P2,
+        pub letoff_corner: P2,
+        pub locking_radius: f64,
+        pub face_end: P2,
+    }
+
+    /// What the anchor is worked out from (radians; gamma is the angle about the pivot from straight down, positive
+    /// toward the entry side).
+    struct Layout {
+        d: f64,
+        theta_lo: f64,
+        theta_hi: f64,
+        rho_in: f64,
+        rho_out: f64,
+        alpha_e: f64,
+        alpha_x: f64,
+        entry: Pallet,
+        exit: Pallet,
+        spoke_entry: f64,
+        spoke_exit: f64,
+    }
+
+    /// The point at `rho` from the pivot, `g` radians from straight down toward the entry (-X) side.
+    fn at_gamma(rho: f64, g: f64) -> P2 {
+        polar(rho, -g - PI / 2.0)
+    }
+    fn gamma(p: P2) -> f64 {
+        -angle(p) - PI / 2.0
+    }
+
+    impl Graham {
+        /// An anchor for `wheel` spanning `span_teeth`, with lock 1.5, impulse 2.5 and supplementary arc 2 degrees of the
+        /// anchor, a drop of 1.5 degrees of the wheel, 0.2 mm clearance and friction 0.3 (plastic on plastic): more than
+        /// a brass clock's, for printed parts. The hub is half the gap between the pivot and the tip circle, the arms
+        /// 0.15 of the tip radius wide (at most one and a half hub radii).
+        pub fn new(wheel: EscapeWheel, span_teeth: f64) -> Graham {
+            let beta = PI * span_teeth / wheel.teeth as f64;
+            let d = wheel.tip_radius / sin_cos(beta).1;
+            let hub = 0.5 * (d - wheel.tip_radius);
+            Graham {
+                wheel,
+                span_teeth,
+                lock_deg: 1.5,
+                impulse_deg: 2.5,
+                drop_deg: 1.5,
+                supplementary_deg: 2.0,
+                arm_width: (0.15 * wheel.tip_radius).min(1.5 * hub),
+                hub_radius: hub,
+                clearance: 0.2,
+                friction: 0.3,
+            }
+        }
+
+        pub fn lock(self, deg: f64) -> Graham {
+            Graham { lock_deg: deg, ..self }
+        }
+        pub fn impulse(self, deg: f64) -> Graham {
+            Graham { impulse_deg: deg, ..self }
+        }
+        pub fn drop(self, wheel_deg: f64) -> Graham {
+            Graham { drop_deg: wheel_deg, ..self }
+        }
+        pub fn supplementary(self, deg: f64) -> Graham {
+            Graham { supplementary_deg: deg, ..self }
+        }
+        pub fn arm_width(self, mm: f64) -> Graham {
+            Graham { arm_width: mm, ..self }
+        }
+        pub fn hub_radius(self, mm: f64) -> Graham {
+            Graham { hub_radius: mm, ..self }
+        }
+        pub fn clearance(self, mm: f64) -> Graham {
+            Graham { clearance: mm, ..self }
+        }
+        /// The friction coefficient between tooth and pallet: an impulse face must lean off its locking face by more than
+        /// the friction angle `atan(friction)`, or a tooth sticks at the corner.
+        pub fn friction(self, mu: f64) -> Graham {
+            Graham { friction: mu, ..self }
+        }
+
+        /// The pivot's distance above the wheel's centre: `tip_radius / cos(180° × span / teeth)`, where the tangents
+        /// from the pivot touch the tip circle at the pallets.
+        pub fn pivot_distance(&self) -> f64 {
+            self.wheel.tip_radius / sin_cos(PI * self.span_teeth / self.wheel.teeth as f64).1
+        }
+
+        /// How far the anchor turns from one let-off to the other: lock plus impulse, degrees. The pendulum must swing
+        /// at least this, and the supplementary arc beyond each end.
+        pub fn swing_deg(&self) -> f64 {
+            self.lock_deg + self.impulse_deg
+        }
+
+        /// The anchor's angle (degrees, counter-clockwise, from its middle position) at the entry let-off and at the exit
+        /// let-off: minus and plus half the swing.
+        pub fn letoff_deg(&self) -> (f64, f64) {
+            (-self.swing_deg() / 2.0, self.swing_deg() / 2.0)
+        }
+
+        fn numbers_refusal(&self) -> Option<String> {
+            if let Some(why) = self.wheel.refusal() {
+                return Some(why);
+            }
+            let twice = self.span_teeth * 2.0;
+            if !twice.is_finite() || twice.round() != twice || (twice as i64) % 2 != 1 || self.span_teeth < 1.5 {
+                return Some("The pallets span a whole number of teeth and a half (7.5, say), at least 1.5.".to_string());
+            }
+            if PI * self.span_teeth / self.wheel.teeth as f64 > 70.0 * DEG {
+                return Some("The span reaches more than 70 degrees round the wheel each side of the pivot: span fewer teeth.".to_string());
+            }
+            if !ok(self.lock_deg, 0.1, 10.0) {
+                return Some("The lock is 0.1 to 10 degrees of the anchor.".to_string());
+            }
+            if !ok(self.impulse_deg, 0.1, 15.0) {
+                return Some("The impulse is 0.1 to 15 degrees of the anchor.".to_string());
+            }
+            if !(self.drop_deg.is_finite() && self.drop_deg > 0.0) {
+                return Some("A drop of nothing leaves no room: a tooth leaving one pallet would strike the other.".to_string());
+            }
+            if self.drop_deg >= self.wheel.pitch_deg() / 2.0 {
+                return Some("A drop of half a tooth pitch or more leaves the pallets no thickness.".to_string());
+            }
+            if !ok(self.supplementary_deg, 0.0, 20.0) {
+                return Some("The supplementary arc is 0 to 20 degrees of the anchor.".to_string());
+            }
+            if !ok(self.clearance, 0.0, self.wheel.tip_radius) || !ok(self.friction, 0.0, 1.0) {
+                return Some("The clearance is 0 mm or more, and the friction 0 to 1.".to_string());
+            }
+            if self.wheel.tip_radius * self.drop_deg * DEG < self.clearance {
+                return Some("The drop is smaller than the clearance at the wheel's tips: use more drop or less clearance.".to_string());
+            }
+            if !(self.arm_width.is_finite() && self.arm_width > 0.0 && self.hub_radius.is_finite() && self.hub_radius > self.arm_width / 2.0) {
+                return Some("The anchor's arms need a width, and its hub must be wider than they are.".to_string());
+            }
+            if self.hub_radius + self.clearance >= self.pivot_distance() - self.wheel.tip_radius {
+                return Some("The anchor's hub reaches the wheel's tips: use a smaller hub or span more teeth.".to_string());
+            }
+            None
+        }
+
+        fn layout(&self) -> Result<Layout, String> {
+            if let Some(why) = self.numbers_refusal() {
+                return Err(why);
+            }
+            let r = self.wheel.tip_radius;
+            let pitch = 2.0 * PI / self.wheel.teeth as f64;
+            let d = self.pivot_distance();
+            let a = pitch / 2.0 - self.drop_deg * DEG;
+            let beta = PI * self.span_teeth / self.wheel.teeth as f64;
+            let (theta_lo, theta_hi) = (beta - a / 2.0, beta + a / 2.0);
+            // A tooth tip `theta` from the line of centres on the entry (side 1, -X) or the exit (side -1) side, seen from
+            // the pivot.
+            let tip = |side: f64, theta: f64| -> P2 {
+                let (s, c) = sin_cos(theta);
+                [-side * r * s, r * c - d]
+            };
+            let rho_in = len(tip(1.0, theta_lo));
+            let rho_out = len(tip(1.0, theta_hi));
+            let (lock, imp, supp) = (self.lock_deg * DEG, self.impulse_deg * DEG, self.supplementary_deg * DEG);
+            let alpha_e = -(lock + imp) / 2.0;
+            let alpha_x = (lock + imp) / 2.0;
+            // Each corner meets its tooth tip with the anchor where that happens, so stands turned back by that angle in
+            // the middle position.
+            let e_lo = rot(tip(1.0, theta_lo), -alpha_e);
+            let e_lk = rot(tip(1.0, theta_hi), -(alpha_e + imp));
+            let x_lo = rot(tip(-1.0, theta_hi), -alpha_x);
+            let x_lk = rot(tip(-1.0, theta_lo), -(alpha_x - imp));
+            // The impulse faces must lean off the locking faces by more than the friction angle.
+            for (corner, end) in [(e_lk, e_lo), (x_lk, x_lo)] {
+                let u = sub(end, corner);
+                let t = [-corner[1], corner[0]];
+                if cross(u, t).abs() <= self.friction * dot(u, t).abs() {
+                    return Err("The impulse faces lie within the friction angle of the locking faces, so a tooth would stick at the corner: use less impulse or less drop.".to_string());
+                }
+            }
+            // Each arm as close to the wheel as the clearance allows with the anchor at its furthest swing to that side.
+            let w = self.arm_width;
+            let h = self.hub_radius;
+            let off = |rho: f64| asin(w / (2.0 * rho));
+            let need = r + self.clearance;
+            let arms = "The anchor's arms cannot clear the wheel: use narrower arms, a smaller hub or less supplementary arc.";
+            let far_e = rot([0.0, -d], -(alpha_x + supp));
+            let clear_e = |g: f64| seg_dist(far_e, at_gamma(h, g - off(h)), at_gamma(rho_in, g - off(rho_in))) >= need;
+            let (mut lo, mut hi) = (gamma(e_lk), 0.95 * PI);
+            if !clear_e(hi) {
+                return Err(arms.to_string());
+            }
+            for _ in 0..60 {
+                let mid = 0.5 * (lo + hi);
+                if clear_e(mid) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            let spoke_entry = hi;
+            let far_x = rot([0.0, -d], -(alpha_e - supp));
+            let clear_x = |g: f64| seg_dist(far_x, at_gamma(h, g + off(h)), at_gamma(rho_in, g + off(rho_in))) >= need;
+            let (mut lo, mut hi) = (-0.95 * PI, gamma(x_lk));
+            if !clear_x(lo) {
+                return Err(arms.to_string());
+            }
+            for _ in 0..60 {
+                let mid = 0.5 * (lo + hi);
+                if clear_x(mid) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let spoke_exit = lo;
+            if spoke_entry + off(h) >= PI || spoke_exit - off(h) <= -PI || spoke_entry - off(h) <= spoke_exit + off(h) {
+                return Err(arms.to_string());
+            }
+            let entry = Pallet { locking_corner: e_lk, letoff_corner: e_lo, locking_radius: rho_out, face_end: at_gamma(rho_out, spoke_entry + off(rho_out)) };
+            let exit = Pallet { locking_corner: x_lk, letoff_corner: x_lo, locking_radius: rho_in, face_end: at_gamma(rho_in, spoke_exit + off(rho_in)) };
+            // The locking faces carry a tooth through the lock and the supplementary arc; the pallets reach past the arms.
+            if gamma(entry.face_end) - gamma(e_lk) < lock + supp
+                || gamma(x_lk) - gamma(exit.face_end) < lock + supp
+                || spoke_entry - off(rho_in) <= gamma(e_lo)
+                || spoke_exit - off(rho_out) >= gamma(x_lo)
+            {
+                return Err("The locking faces are shorter than the lock and the supplementary arc: use narrower arms.".to_string());
+            }
+            Ok(Layout { d, theta_lo, theta_hi, rho_in, rho_out, alpha_e, alpha_x, entry, exit, spoke_entry, spoke_exit })
+        }
+
+        fn anchor_from(&self, l: &Layout) -> Outline {
+            let (h, w) = (self.hub_radius, self.arm_width);
+            let off = |rho: f64| asin(w / (2.0 * rho));
+            let arc = |rho: f64, g0: f64, g1: f64, to: P2| Piece::Arc(at_gamma(rho, 0.5 * (g0 + g1)), to);
+            let (ge, gx) = (l.spoke_entry, l.spoke_exit);
+            let (e, x) = (l.entry, l.exit);
+            let start = at_gamma(h, PI);
+            let pieces: Vec<Piece> = vec![
+                // Down the hub to the entry arm, out along its far edge, round the entry locking face, the impulse face,
+                // back along the pallet's inner face and the arm's near edge to the hub.
+                arc(h, PI, ge + off(h), at_gamma(h, ge + off(h))),
+                Piece::Line(at_gamma(l.rho_out, ge + off(l.rho_out))),
+                arc(l.rho_out, ge + off(l.rho_out), gamma(e.locking_corner), e.locking_corner),
+                Piece::Line(e.letoff_corner),
+                arc(l.rho_in, gamma(e.letoff_corner), ge - off(l.rho_in), at_gamma(l.rho_in, ge - off(l.rho_in))),
+                Piece::Line(at_gamma(h, ge - off(h))),
+                // Under the hub to the exit arm, out along its near edge, round the exit locking face, the impulse face,
+                // back along the pallet's outer face and the arm's far edge, and over the hub to the start.
+                arc(h, ge - off(h), gx + off(h), at_gamma(h, gx + off(h))),
+                Piece::Line(at_gamma(l.rho_in, gx + off(l.rho_in))),
+                arc(l.rho_in, gx + off(l.rho_in), gamma(x.locking_corner), x.locking_corner),
+                Piece::Line(x.letoff_corner),
+                arc(l.rho_out, gamma(x.letoff_corner), gx - off(l.rho_out), at_gamma(l.rho_out, gx - off(l.rho_out))),
+                Piece::Line(at_gamma(h, gx - off(h))),
+                arc(h, gx - off(h), -PI, start),
+            ];
+            Outline { start, pieces }
+        }
+
+        /// Whether the anchor meets the wheel anywhere but at a tooth's tip, stepping through a whole beat each way: the
+        /// entry pallet locked over its lock and supplementary arc, its impulse (the wheel turned so a tip lies on the
+        /// face), the drop, the exit pallet locked, its impulse and its drop. The wheel is set back 0.02 degrees in
+        /// each pose so the touching tip does not count.
+        fn clash(&self, l: &Layout, anchor: &Outline) -> bool {
+            let r = self.wheel.tip_radius;
+            let a_pts = outline_points(anchor, 0.5);
+            let (imp, supp, drop) = (self.impulse_deg * DEG, self.supplementary_deg * DEG, self.drop_deg * DEG);
+            let pull = 0.02 * DEG;
+            let up = PI / 2.0;
+            // The wheel angle (radians) at which a tooth tip lies on the impulse face corner..end with the anchor at `alpha`.
+            let face_tip = |corner: P2, end: P2, alpha: f64| -> Option<f64> {
+                let a = add(rot(corner, alpha), [0.0, l.d]);
+                let b = add(rot(end, alpha), [0.0, l.d]);
+                let v = sub(b, a);
+                let (qa, qb, qc) = (dot(v, v), 2.0 * dot(a, v), dot(a, a) - r * r);
+                let disc = qb * qb - 4.0 * qa * qc;
+                if qa <= 0.0 || disc < 0.0 {
+                    return None;
+                }
+                for s in [(-qb - disc.sqrt()) / (2.0 * qa), (-qb + disc.sqrt()) / (2.0 * qa)] {
+                    // On the face, ends included (lust has no float ranges).
+                    if (s - 0.5).abs() <= 0.5 + 1e-9 {
+                        return Some(angle(add(a, mul(v, s))));
+                    }
+                }
+                None
+            };
+            let mut poses: Vec<(f64, f64)> = Vec::new();
+            let span_e = l.alpha_x + supp - (l.alpha_e + imp);
+            for k in 0..=4 {
+                poses.push((up + l.theta_hi, l.alpha_e + imp + span_e * k as f64 / 4.0));
+            }
+            for k in 0..=6 {
+                let alpha = l.alpha_e + imp - imp * k as f64 / 6.0;
+                if let Some(phi) = face_tip(l.entry.locking_corner, l.entry.letoff_corner, alpha) {
+                    poses.push((phi, alpha));
+                }
+            }
+            for k in 0..=2 {
+                poses.push((up + l.theta_lo - drop * k as f64 / 2.0, l.alpha_e));
+            }
+            let span_x = l.alpha_x - imp - (l.alpha_e - supp);
+            for k in 0..=4 {
+                poses.push((up + l.theta_lo - drop, l.alpha_e - supp + span_x * k as f64 / 4.0));
+            }
+            for k in 0..=6 {
+                let alpha = l.alpha_x - imp + imp * k as f64 / 6.0;
+                if let Some(phi) = face_tip(l.exit.locking_corner, l.exit.letoff_corner, alpha) {
+                    poses.push((phi, alpha));
+                }
+            }
+            for k in 0..=2 {
+                poses.push((up - l.theta_hi - drop * k as f64 / 2.0, l.alpha_x));
+            }
+            for (phi, alpha) in poses.iter() {
+                let wheel = match self.wheel.outline((phi + pull) / DEG) {
+                    Ok(o) => outline_points(&o, 2.0),
+                    Err(_) => return true,
+                };
+                let placed: Vec<P2> = a_pts.iter().map(|q| add(rot(*q, *alpha), [0.0, l.d])).collect();
+                let (mut lo, mut hi) = (placed[0], placed[0]);
+                for q in placed.iter() {
+                    lo = [lo[0].min(q[0]), lo[1].min(q[1])];
+                    hi = [hi[0].max(q[0]), hi[1].max(q[1])];
+                }
+                let (n, m) = (wheel.len(), placed.len());
+                for i in 0..n {
+                    let (a, b) = (wheel[i], wheel[(i + 1) % n]);
+                    if a[0].max(b[0]) < lo[0] || a[0].min(b[0]) > hi[0] || a[1].max(b[1]) < lo[1] || a[1].min(b[1]) > hi[1] {
+                        continue;
+                    }
+                    for j in 0..m {
+                        if crosses(a, b, placed[j], placed[(j + 1) % m]) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }
+
+        /// None when the escapement works, else the sentence why not: a span that does not fit, a drop too small for the
+        /// clearance, impulse faces a tooth would stick on, arms that cannot clear the wheel, or a pallet that meets a
+        /// tooth anywhere but at its tip somewhere in the beat.
+        pub fn refusal(&self) -> Option<String> {
+            self.anchor().err()
+        }
+
+        /// The anchor's outline about its pivot at the origin, in its middle position, the wheel's centre at
+        /// `(0, -pivot_distance)`: hub arcs, straight arms, the pallets' arcs about the pivot (the locking faces) and
+        /// their straight impulse faces. Refused as `refusal` says.
+        pub fn anchor(&self) -> Result<Outline, String> {
+            let l = self.layout()?;
+            let outline = self.anchor_from(&l);
+            if self.clash(&l, &outline) {
+                return Err("A pallet meets the wheel away from the tooth tips: lean the teeth further forward, cut the roots deeper, or use less lock, impulse or supplementary arc.".to_string());
+            }
+            Ok(outline)
+        }
+
+        /// The anchor's outline as points, its arcs in steps of at most `arc_step_deg`.
+        pub fn anchor_points(&self, arc_step_deg: f64) -> Result<Vec<P2>, String> {
+            Ok(outline_points(&self.anchor()?, arc_step_deg))
+        }
+
+        /// The entry pallet and the exit pallet, in the anchor's frame at its middle position.
+        pub fn pallets(&self) -> Result<(Pallet, Pallet), String> {
+            let l = self.layout()?;
+            Ok((l.entry, l.exit))
+        }
+
+        /// A pallet's thickness, mm: the radial width of both pallets about the pivot (half a pitch less the drop, in
+        /// wheel degrees, at the tip circle).
+        pub fn pallet_thickness(&self) -> Result<f64, String> {
+            let l = self.layout()?;
+            Ok(l.rho_out - l.rho_in)
+        }
+
+        /// A pose to place the parts in: the wheel's phase (tooth 0's tip, degrees from +X, for `EscapeWheel::outline`)
+        /// and the anchor's angle (degrees, counter-clockwise about its pivot) just after the exit let-off, a tooth
+        /// resting on the entry pallet's locking face by the full lock.
+        pub fn rest_pose(&self) -> Result<(f64, f64), String> {
+            let l = self.layout()?;
+            Ok((90.0 + l.theta_hi / DEG, l.alpha_x / DEG))
+        }
+    }
+
+    // ---- Ratchet and click. ----
+
+    /// A ratchet wheel: `teeth` saw teeth between `tip_radius` and `root_radius`. Each tooth has a radial face and a
+    /// straight back from the root of the face before it to its tip. Tooth 0's radial face stands at `phase_deg`; the
+    /// wheel turns freely clockwise under its click and is held counter-clockwise. Mirror for the other hand.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Ratchet {
+        pub teeth: u32,
+        pub tip_radius: f64,
+        pub root_radius: f64,
+    }
+
+    /// A click's size: `length` from the middle of the tooth face it bears on to its pivot, along the tangent there;
+    /// `hub_radius` round the pivot; `rise` how far its face stands above the tips; `seat_gap` how far its nose stays
+    /// off the root.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Click {
+        pub length: f64,
+        pub hub_radius: f64,
+        pub rise: f64,
+        pub seat_gap: f64,
+    }
+
+    /// A click worked out for a ratchet: its `outline` about its pivot at the origin with its nose along +X, the `pivot`
+    /// in the ratchet's frame, `seat_deg` (turn the outline by this about its pivot, then move it to `pivot`, and its
+    /// nose sits in tooth 0's notch), `lift_deg` (the further turn about the pivot, counter-clockwise positive, that
+    /// lifts the nose to the tip circle as the ratchet is wound), and `nose`, the nose's lowest point in the click's frame.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ClickPlacement {
+        pub outline: Outline,
+        pub pivot: P2,
+        pub seat_deg: f64,
+        pub lift_deg: f64,
+        pub nose: P2,
+    }
+
+    impl Ratchet {
+        pub fn new(teeth: u32, tip_radius: f64, root_radius: f64) -> Ratchet {
+            Ratchet { teeth, tip_radius, root_radius }
+        }
+
+        pub fn pitch_deg(&self) -> f64 {
+            360.0 / self.teeth as f64
+        }
+
+        pub fn refusal(&self) -> Option<String> {
+            if self.teeth < 6 || self.teeth > 200 {
+                return Some("A ratchet takes 6 to 200 teeth.".to_string());
+            }
+            if !ok(self.tip_radius, 1.0, 500.0) || !ok(self.root_radius, 0.3 * self.tip_radius, 0.97 * self.tip_radius) {
+                return Some("A ratchet's tip radius is 1 to 500 mm, its root radius 0.3 to 0.97 of it.".to_string());
+            }
+            None
+        }
+
+        /// The outline, counter-clockwise: from each radial face's root, the back up to the next tip, then that radial
+        /// face down to its root.
+        pub fn outline(&self, phase_deg: f64) -> Result<Outline, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let pitch = 2.0 * PI / self.teeth as f64;
+            let c0 = phase_deg * DEG;
+            let start = polar(self.root_radius, c0);
+            let mut pieces: Vec<Piece> = Vec::new();
+            for k in 1..=self.teeth {
+                let c = c0 + pitch * k as f64;
+                pieces.push(Piece::Line(polar(self.tip_radius, c)));
+                pieces.push(Piece::Line(if k == self.teeth { start } else { polar(self.root_radius, c) }));
+            }
+            Ok(Outline { start, pieces })
+        }
+
+        pub fn points(&self, phase_deg: f64) -> Result<Vec<P2>, String> {
+            Ok(outline_points(&self.outline(phase_deg)?, 3.0))
+        }
+
+        /// A click of `length` with the proportions of the tooth depth h: hub radius h, rise 0.6 h, seat gap 0.1 h.
+        pub fn click_size(&self, length: f64) -> Click {
+            let h = self.tip_radius - self.root_radius;
+            Click { length, hub_radius: h, rise: 0.6 * h, seat_gap: 0.1 * h }
+        }
+
+        /// The click for this ratchet with tooth 0's face at `phase_deg`. Its face lies on that radial face from
+        /// `seat_gap` above the root to `rise` above the tips; its underside runs parallel to the next tooth's back; its
+        /// edges run tangent to its hub. The pivot lies on the tangent through the middle of the face it bears on, so
+        /// the face's push passes through the pivot and does not throw the click out (the usual rule for a click).
+        pub fn click(&self, phase_deg: f64, click: &Click) -> Result<ClickPlacement, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let (big, small) = (self.tip_radius, self.root_radius);
+            let h = big - small;
+            if !ok(click.length, 0.5 * h, 20.0 * big) || !ok(click.hub_radius, 0.05 * h, 10.0 * h) || !ok(click.rise, 0.05 * h, 5.0 * h) || !ok(click.seat_gap, 0.0, 0.5 * h) {
+                return Err("A click is 0.5 tooth depths to 20 tip radii long, with a hub of 0.05 to 10 depths, a rise of 0.05 to 5 depths and a seat gap under half a depth.".to_string());
+            }
+            let pitch = 2.0 * PI / self.teeth as f64;
+            let c = phase_deg * DEG;
+            let (sc, cc) = sin_cos(c);
+            let nose = polar(small + click.seat_gap, c);
+            let top = polar(big + click.rise, c);
+            let mid = polar(0.5 * (small + click.seat_gap + big), c);
+            let pivot = add(mid, mul([-sc, cc], click.length));
+            if len(pivot) - click.hub_radius <= big + click.seat_gap {
+                return Err("The click's hub reaches the ratchet's teeth: make the click longer or its hub smaller.".to_string());
+            }
+            // The underside: from the nose, parallel to the next tooth's back, out to halfway up the rise.
+            let back = sub(polar(big, c + pitch), polar(small, c));
+            let v = mul(back, 1.0 / len(back));
+            let rho_u = big + 0.5 * click.rise;
+            let kv = dot(nose, v);
+            let under = add(nose, mul(v, -kv + (kv * kv - dot(nose, nose) + rho_u * rho_u).sqrt()));
+            // Tangent points on the hub from a point outside it: the one with the hub on the left going to it (`to_hub`),
+            // or coming from it.
+            let tangent = |from: P2, to_hub: bool| -> Option<P2> {
+                let dd = len(sub(from, pivot));
+                if dd <= click.hub_radius {
+                    return None;
+                }
+                let base = angle(sub(from, pivot));
+                let o = acos(click.hub_radius / dd);
+                for a in [base + o, base - o] {
+                    let t = add(pivot, polar(click.hub_radius, a));
+                    let left = if to_hub { cross(sub(t, from), sub(pivot, from)) } else { cross(sub(from, t), sub(pivot, t)) };
+                    if left > 0.0 {
+                        return Some(t);
+                    }
+                }
+                None
+            };
+            let thick = "The click's nose is wider than its hub's reach: make the click longer or its hub smaller.";
+            let t_up = tangent(top, true).ok_or(thick.to_string())?;
+            let t_low = tangent(under, false).ok_or(thick.to_string())?;
+            if seg_dist([0.0, 0.0], t_low, under) < big {
+                return Err("The click's arm dips into the ratchet's teeth: make the click longer.".to_string());
+            }
+            let a0 = angle(sub(t_up, pivot));
+            let mut a1 = angle(sub(t_low, pivot));
+            while a1 <= a0 {
+                a1 += 2.0 * PI;
+            }
+            let seat = angle(sub(mid, pivot));
+            let local = |p: P2| rot(sub(p, pivot), -seat);
+            let start = local(nose);
+            let pieces = vec![
+                Piece::Line(local(top)),
+                Piece::Line(local(t_up)),
+                Piece::Arc(local(add(pivot, polar(click.hub_radius, 0.5 * (a0 + a1)))), local(t_low)),
+                Piece::Line(local(under)),
+                Piece::Line(start),
+            ];
+            // The lift: the turn about the pivot, the way that moves the nose outward, that brings it to the tip circle.
+            let k = sub(nose, pivot);
+            let (kl, cl) = (len(k), len(pivot));
+            let cos_d = (cl * cl + kl * kl - big * big) / (2.0 * cl * kl);
+            if cos_d.is_nan() || cos_d.abs() > 1.0 {
+                return Err("The click cannot lift its nose clear of the tips: make it longer.".to_string());
+            }
+            let toward = angle(mul(pivot, -1.0));
+            let ak = angle(k);
+            let outward = dot(nose, [-k[1], k[0]]) > 0.0;
+            let mut lift = 4.0 * PI;
+            for a in [toward + acos(cos_d), toward - acos(cos_d)] {
+                let mut turn = if outward { a - ak } else { ak - a };
+                while turn <= 0.0 {
+                    turn += 2.0 * PI;
+                }
+                while turn > 2.0 * PI {
+                    turn -= 2.0 * PI;
+                }
+                if turn < lift {
+                    lift = turn;
+                }
+            }
+            let lift_deg = if outward { lift / DEG } else { -lift / DEG };
+            Ok(ClickPlacement { outline: Outline { start, pieces }, pivot, seat_deg: seat / DEG, lift_deg, nose: start })
+        }
+    }
+
+    // ---- Cycloidal clock teeth (BS 978-2). ----
+
+    /// How a pinion leaf's top is rounded (BS 978-2): a half circle (round top), or two arcs meeting in a point (medium
+    /// and high ogival). The standard recommends high for 6 or 7 leaves, medium for 8 or 9, round for 10 or more.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum LeafTop {
+        Round,
+        Medium,
+        High,
+    }
+
+    /// A clock wheel of `teeth` and `module` that drives a pinion of `pinion_leaves`, with BS 978-2 proportions (as
+    /// derived in S. Parks, "Designing Cycloidal Gears", from the standard): tooth and space each half the circular
+    /// pitch (pi/2 m) on the pitch circle; addenda the true epicycloid rolled by a circle of half the pinion's pitch
+    /// radius, which meshes with the pinion's radial flanks, cut at 0.95 of the height where the two flanks meet (the
+    /// standard's "practical addendum") with an arc on the tip circle; radial flanks below the pitch circle down to a
+    /// dedendum of pi/2 m, and arcs on the root circle. The points on the flanks lie on the epicycloid exactly; the
+    /// standard's drawing aid, an arc of radius 1.4 addenda, is not used. Root corners are sharp.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ClockWheel {
+        pub teeth: u32,
+        pub module: f64,
+        pub pinion_leaves: u32,
+    }
+
+    /// Steps along each epicycloidal flank: the spline goes through one point more than this.
+    const CYCLOID_STEPS: usize = 8;
+
+    impl ClockWheel {
+        pub fn new(teeth: u32, module: f64, pinion_leaves: u32) -> ClockWheel {
+            ClockWheel { teeth, module, pinion_leaves }
+        }
+
+        pub fn pitch_radius(&self) -> f64 {
+            self.module * self.teeth as f64 / 2.0
+        }
+
+        pub fn refusal(&self) -> Option<String> {
+            if self.teeth < 12 || self.teeth > 400 {
+                return Some("A clock wheel takes 12 to 400 teeth.".to_string());
+            }
+            if self.pinion_leaves < 6 || self.pinion_leaves > 20 || self.pinion_leaves > self.teeth {
+                return Some("A clock wheel drives a pinion of 6 to 20 leaves, no more than its own teeth.".to_string());
+            }
+            if !ok(self.module, 0.1, 10.0) {
+                return Some("A clock wheel's module is 0.1 to 10 mm.".to_string());
+            }
+            None
+        }
+
+        /// The epicycloid traced by a circle of radius m z_p / 4 rolling outside the pitch circle, from the pitch point
+        /// (r, 0), after a roll of `t` radians about the wheel's centre.
+        fn cycloid(&self, t: f64) -> P2 {
+            let big = self.pitch_radius();
+            let g = self.module * self.pinion_leaves as f64 / 4.0;
+            let (s1, c1) = sin_cos(t);
+            let (s2, c2) = sin_cos((big + g) / g * t);
+            [(big + g) * c1 - g * c2, (big + g) * s1 - g * s2]
+        }
+
+        /// The roll at which a flank, starting half a tooth (pi / 2z) from the tooth's centre line, reaches it.
+        fn meeting(&self) -> f64 {
+            let half = PI / (2.0 * self.teeth as f64);
+            let g = self.module * self.pinion_leaves as f64 / 4.0;
+            let (mut lo, mut hi) = (0.0, PI * g / self.pitch_radius());
+            for _ in 0..100 {
+                let mid = 0.5 * (lo + hi);
+                if angle(self.cycloid(mid)) < half {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            hi
+        }
+
+        /// The full addendum, in modules: where the two epicycloids of a tooth meet (BS 978-2's f_a).
+        pub fn addendum_factor(&self) -> f64 {
+            (len(self.cycloid(self.meeting())) - self.pitch_radius()) / self.module
+        }
+
+        /// The practical addendum, mm: 0.95 of the full one.
+        pub fn addendum(&self) -> f64 {
+            0.95 * self.addendum_factor() * self.module
+        }
+
+        pub fn dedendum(&self) -> f64 {
+            PI / 2.0 * self.module
+        }
+
+        pub fn tip_radius(&self) -> f64 {
+            self.pitch_radius() + self.addendum()
+        }
+
+        pub fn root_radius(&self) -> f64 {
+            self.pitch_radius() - self.dedendum()
+        }
+
+        /// The centre distance to its pinion: the pitch circles touch, m (z + z_p) / 2.
+        pub fn centre_distance(&self) -> f64 {
+            self.module * (self.teeth + self.pinion_leaves) as f64 / 2.0
+        }
+
+        /// The pinion this wheel drives, with the leaf top given and the standard's dedendum: the wheel's practical
+        /// addendum and 0.4 m of clearance.
+        pub fn pinion(&self, top: LeafTop) -> ClockPinion {
+            ClockPinion { leaves: self.pinion_leaves, module: self.module, top, dedendum: 0.95 * self.addendum_factor() + 0.4 }
+        }
+
+        /// One flank, tooth centred on +X, clockwise side: from the pitch circle up to the tip circle, evenly in roll.
+        fn flank(&self, steps: usize) -> Vec<P2> {
+            let half = PI / (2.0 * self.teeth as f64);
+            let tip = self.tip_radius();
+            let (mut lo, mut hi) = (0.0, self.meeting());
+            for _ in 0..100 {
+                let mid = 0.5 * (lo + hi);
+                if len(self.cycloid(mid)) < tip {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let end = hi;
+            let mut pts: Vec<P2> = vec![polar(self.pitch_radius(), -half)];
+            for i in 1..=steps {
+                pts.push(rot(self.cycloid(end * i as f64 / steps as f64), -half));
+            }
+            pts
+        }
+
+        fn outline_with(&self, phase_deg: f64, steps: usize) -> Result<Outline, String> {
+            if let Some(why) = self.refusal() {
+                return Err(why);
+            }
+            let up = self.flank(steps.max(2));
+            let n = up.len();
+            let half = PI / (2.0 * self.teeth as f64);
+            let pitch = 2.0 * PI / self.teeth as f64;
+            let (rf, tip) = (self.root_radius(), self.tip_radius());
+            let c0 = phase_deg * DEG;
+            let start = polar(rf, c0 - half);
+            let mut pieces: Vec<Piece> = Vec::new();
+            for k in 0..self.teeth {
+                let c = c0 + pitch * k as f64;
+                pieces.push(Piece::Line(rot(up[0], c)));
+                pieces.push(Piece::Spline(up[1..n - 1].iter().map(|p| rot(*p, c)).collect(), rot(up[n - 1], c)));
+                pieces.push(Piece::Arc(polar(tip, c), rot(mirror(up[n - 1]), c)));
+                pieces.push(Piece::Spline(up[1..n - 1].iter().rev().map(|p| rot(mirror(*p), c)).collect(), rot(mirror(up[0]), c)));
+                pieces.push(Piece::Line(polar(rf, c + half)));
+                let to = if k + 1 == self.teeth { start } else { polar(rf, c + pitch - half) };
+                pieces.push(Piece::Arc(polar(rf, c + pitch / 2.0), to));
+            }
+            Ok(Outline { start, pieces })
+        }
+
+        /// The outline with tooth 0 centred on `phase_deg`: per tooth a radial flank, the epicycloid as a spline, the tip
+        /// arc, the other epicycloid and radial flank, and the root arc. Mesh a pinion with `gears::mate_phase`.
+        pub fn outline(&self, phase_deg: f64) -> Result<Outline, String> {
+            self.outline_with(phase_deg, CYCLOID_STEPS)
+        }
+
+        /// The outline as points, `per_flank` steps along each epicycloid and the arcs in steps of at most 3 degrees.
+        pub fn points(&self, phase_deg: f64, per_flank: usize) -> Result<Vec<P2>, String> {
+            Ok(outline_points(&self.outline_with(phase_deg, per_flank)?, 3.0))
+        }
+    }
+
+    /// A clock pinion of `leaves` and `module` with BS 978-2 proportions: leaves 1.05 m thick on the pitch circle for 6
+    /// to 10 leaves, 1.25 m for 11 or more; radial flanks (along radii from the centre, which the wheel's epicycloid
+    /// meshes with) from the root circle, `dedendum` modules below the pitch circle, up to the pitch circle; the top
+    /// by `top`, as the standard's table gives its height f_a and arc radius f_r (round 0.525 and 0.525, or 0.625 and
+    /// 0.625 from 11 leaves; medium 0.670 and 0.700, or 0.805 and 0.840; high 0.855 and 1.050, or 1.050 and 1.250).
+    /// Each side of the top is an arc of radius f_r from the flank's top to the leaf's point, so a round top is a half
+    /// circle to within the difference between a chord and an arc. `ClockWheel::pinion` gives the dedendum to mesh.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ClockPinion {
+        pub leaves: u32,
+        pub module: f64,
+        pub top: LeafTop,
+        pub dedendum: f64,
+    }
+
+    impl ClockPinion {
+        pub fn new(leaves: u32, module: f64, top: LeafTop, dedendum: f64) -> ClockPinion {
+            ClockPinion { leaves, module, top, dedendum }
+        }
+
+        pub fn pitch_radius(&self) -> f64 {
+            self.module * self.leaves as f64 / 2.0
+        }
+
+        /// A leaf's thickness on the pitch circle, mm.
+        pub fn leaf_thickness(&self) -> f64 {
+            (if self.leaves <= 10 { 1.05 } else { 1.25 }) * self.module
+        }
+
+        /// The top's height and arc radius in modules (f_a, f_r).
+        fn factors(&self) -> (f64, f64) {
+            let small = self.leaves <= 10;
+            match self.top {
+                LeafTop::Round => {
+                    if small {
+                        (0.525, 0.525)
+                    } else {
+                        (0.625, 0.625)
+                    }
+                }
+                LeafTop::Medium => {
+                    if small {
+                        (0.670, 0.700)
+                    } else {
+                        (0.805, 0.840)
+                    }
+                }
+                LeafTop::High => {
+                    if small {
+                        (0.855, 1.050)
+                    } else {
+                        (1.050, 1.250)
+                    }
+                }
+            }
+        }
+
+        pub fn addendum(&self) -> f64 {
+            self.factors().0 * self.module
+        }
+
+        pub fn tip_radius(&self) -> f64 {
+            self.pitch_radius() + self.addendum()
+        }
+
+        pub fn root_radius(&self) -> f64 {
+            self.pitch_radius() - self.dedendum * self.module
+        }
+
+        pub fn refusal(&self) -> Option<String> {
+            self.top_arc().err()
+        }
+
+        /// The clockwise side's top arc for a leaf centred on +X: (the flank's top on the pitch circle, the arc's middle,
+        /// the leaf's point).
+        fn top_arc(&self) -> Result<(P2, P2, P2), String> {
+            if self.leaves < 6 || self.leaves > 20 {
+                return Err("A clock pinion takes 6 to 20 leaves.".to_string());
+            }
+            if !ok(self.module, 0.1, 10.0) {
+                return Err("A clock pinion's module is 0.1 to 10 mm.".to_string());
+            }
+            if !ok(self.dedendum, 0.5, 3.0) || self.root_radius() <= 0.2 * self.pitch_radius() {
+                return Err("A clock pinion's dedendum is 0.5 to 3 modules, leaving a root.".to_string());
+            }
+            let rp = self.pitch_radius();
+            let (fa, fr) = self.factors();
+            let eta = self.leaf_thickness() / (2.0 * rp);
+            let a = polar(rp, -eta);
+            let b = [rp + fa * self.module, 0.0];
+            let rho = fr * self.module;
+            let chord = sub(b, a);
+            let half = len(chord) / 2.0;
+            if rho < half {
+                return Err("This leaf top cannot reach from the flank to the point.".to_string());
+            }
+            let midc = mul(add(a, b), 0.5);
+            let n = mul([-chord[1], chord[0]], 1.0 / len(chord));
+            let o = (rho * rho - half * half).sqrt();
+            let inside = [rp - 0.5 * self.module, 0.0];
+            let side = cross(chord, sub(inside, a));
+            let centre = if cross(chord, mul(n, o)) * side > 0.0 { add(midc, mul(n, o)) } else { sub(midc, mul(n, o)) };
+            let through = add(centre, mul(sub(midc, centre), rho / len(sub(midc, centre))));
+            Ok((a, through, b))
+        }
+
+        /// The outline with leaf 0 centred on `phase_deg`: per leaf a radial flank, the two top arcs, the other radial
+        /// flank, and the root arc.
+        pub fn outline(&self, phase_deg: f64) -> Result<Outline, String> {
+            let (a, through, b) = self.top_arc()?;
+            let eta = self.leaf_thickness() / (2.0 * self.pitch_radius());
+            let pitch = 2.0 * PI / self.leaves as f64;
+            let rf = self.root_radius();
+            let c0 = phase_deg * DEG;
+            let start = polar(rf, c0 - eta);
+            let mut pieces: Vec<Piece> = Vec::new();
+            for k in 0..self.leaves {
+                let c = c0 + pitch * k as f64;
+                pieces.push(Piece::Line(rot(a, c)));
+                pieces.push(Piece::Arc(rot(through, c), rot(b, c)));
+                pieces.push(Piece::Arc(rot(mirror(through), c), rot(mirror(a), c)));
+                pieces.push(Piece::Line(polar(rf, c + eta)));
+                let to = if k + 1 == self.leaves { start } else { polar(rf, c + pitch - eta) };
+                pieces.push(Piece::Arc(polar(rf, c + pitch / 2.0), to));
+            }
+            Ok(Outline { start, pieces })
+        }
+
+        pub fn points(&self, phase_deg: f64) -> Result<Vec<P2>, String> {
+            Ok(outline_points(&self.outline(phase_deg)?, 3.0))
+        }
+    }
+
+    // ---- Bores. ----
+
+    /// A fit between a printed bore and a steel part, as the ISO 286 hole-basis fit it is named after: `Running` H9/d9
+    /// (free running), `Sliding` H7/h6 (located, slides by hand), `Press` H7/p6 (pressed in).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Fit {
+        Running,
+        Sliding,
+        Press,
+    }
+
+    /// Steel pin (arbor) diameters a clock commonly uses, mm.
+    pub const STEEL_PINS: [f64; 4] = [1.0, 1.5, 2.0, 3.0];
+
+    /// The small ball bearings `bearing` knows.
+    pub const BEARINGS: [&str; 20] = [
+        "608", "623", "624", "625", "626", "683", "684", "685", "693", "694", "695", "MR63", "MR74", "MR83", "MR84", "MR85", "MR95", "MR104", "MR105", "MR115",
+    ];
+
+    /// The mean diametral clearance of `fit` at `nominal_mm` (over 30 mm, the 18 to 30 mm row).
+    fn clearance_row(nominal_mm: f64, fit: Fit) -> f64 {
+        let row = if nominal_mm <= 3.0 {
+            0
+        } else if nominal_mm <= 6.0 {
+            1
+        } else if nominal_mm <= 10.0 {
+            2
+        } else if nominal_mm <= 18.0 {
+            3
+        } else {
+            4
+        };
+        let table: [f64; 5] = match fit {
+            Fit::Running => [0.045, 0.060, 0.076, 0.093, 0.117],
+            Fit::Sliding => [0.008, 0.010, 0.012, 0.0145, 0.017],
+            Fit::Press => [-0.004, -0.010, -0.012, -0.0145, -0.018],
+        };
+        table[row]
+    }
+
+    /// The mean diametral clearance of `fit` at a nominal size over 0 to 30 mm, mm, from the ISO 286 tolerance grades
+    /// (negative is interference): Running H9/d9 0.045 to 0.117, Sliding H7/h6 0.008 to 0.017, Press H7/p6 -0.004 to
+    /// -0.018, by the ISO size rows (to 3, 6, 10, 18 and 30 mm). None outside 0 to 30 mm.
+    pub fn fit_clearance(nominal_mm: f64, fit: Fit) -> Option<f64> {
+        if !(nominal_mm > 0.0 && nominal_mm <= 30.0) {
+            return None;
+        }
+        Some(clearance_row(nominal_mm, fit))
+    }
+
+    /// A printed hole for a steel part of `nominal_mm`: the nominal size, the fit's clearance, and `allowance_mm`, how
+    /// much this printer and material make a hole of that size undersize (measure it, with a fit coupon say; the
+    /// fit's clearance is microns, the allowance is usually tenths). None outside 0 to 30 mm.
+    pub fn hole(nominal_mm: f64, fit: Fit, allowance_mm: f64) -> Option<f64> {
+        fit_clearance(nominal_mm, fit).map(|c| nominal_mm + c + allowance_mm)
+    }
+
+    /// A printed shaft for a steel bore of `nominal_mm` (a bearing's inner ring, say): the nominal size less the fit's
+    /// clearance and less `allowance_mm`, how much this printer makes a shaft oversize. None outside 0 to 30 mm.
+    pub fn shaft(nominal_mm: f64, fit: Fit, allowance_mm: f64) -> Option<f64> {
+        fit_clearance(nominal_mm, fit).map(|c| nominal_mm - c - allowance_mm)
+    }
+
+    /// The bore for a steel pin of `pin_mm` (1, 1.5, 2 or 3 mm in `STEEL_PINS`, or any size to 30 mm): `hole`.
+    pub fn pin_bore(pin_mm: f64, fit: Fit, allowance_mm: f64) -> Option<f64> {
+        hole(pin_mm, fit, allowance_mm)
+    }
+
+    /// A deep-groove ball bearing: its name, bore, outer diameter and width, mm (ISO 15 dimension series).
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Bearing {
+        pub name: String,
+        pub bore: f64,
+        pub outer: f64,
+        pub width: f64,
+    }
+
+    /// The bearing of that name (one of `BEARINGS`: 608, 623 to 626, 683 to 685, 693 to 695, MR63, MR74, MR83, MR84,
+    /// MR85, MR95, MR104, MR105, MR115), or None.
+    pub fn bearing(name: &str) -> Option<Bearing> {
+        let (bore, outer, width) = match name {
+            "608" => (8.0, 22.0, 7.0),
+            "623" => (3.0, 10.0, 4.0),
+            "624" => (4.0, 13.0, 5.0),
+            "625" => (5.0, 16.0, 5.0),
+            "626" => (6.0, 19.0, 6.0),
+            "683" => (3.0, 7.0, 3.0),
+            "684" => (4.0, 9.0, 4.0),
+            "685" => (5.0, 11.0, 5.0),
+            "693" => (3.0, 8.0, 4.0),
+            "694" => (4.0, 11.0, 4.0),
+            "695" => (5.0, 13.0, 4.0),
+            "MR63" => (3.0, 6.0, 2.5),
+            "MR74" => (4.0, 7.0, 2.5),
+            "MR83" => (3.0, 8.0, 3.0),
+            "MR84" => (4.0, 8.0, 3.0),
+            "MR85" => (5.0, 8.0, 2.5),
+            "MR95" => (5.0, 9.0, 3.0),
+            "MR104" => (4.0, 10.0, 4.0),
+            "MR105" => (5.0, 10.0, 4.0),
+            "MR115" => (5.0, 11.0, 4.0),
+            _ => return None,
+        };
+        Some(Bearing { name: name.to_string(), bore, outer, width })
+    }
+
+    impl Bearing {
+        /// The printed seat for the outer ring: `hole` of the outer diameter (`Press` to hold it, `Sliding` to glue it).
+        pub fn seat(&self, fit: Fit, allowance_mm: f64) -> f64 {
+            self.outer + clearance_row(self.outer, fit) + allowance_mm
+        }
+
+        /// A printed shaft for the inner ring: `shaft` of the bore.
+        pub fn shaft(&self, fit: Fit, allowance_mm: f64) -> f64 {
+            self.bore - clearance_row(self.bore, fit) - allowance_mm
+        }
+    }
+}
+
 /// Executes the recipe's geometry algorithms in the native host, without using the recipe protocol itself.
 pub fn native_geometry_request(text: &str) -> Option<String> {
     let args = Json::parse(text).ok()?;
@@ -4687,7 +6239,7 @@ mod tests {
             r#"{"name":"edge","kind":"choice","default":"fillet","options":["fillet","chamfer"]}"#
         );
         assert_eq!(s.text("label", "LIME").max_len(20).spec.to_json().to_string(), r#"{"name":"label","kind":"text","default":"LIME","maxLen":20}"#);
-        assert_eq!(API, (1, 12));
+        assert_eq!(API, (1, 15));
     }
 
     #[test]
@@ -5279,7 +6831,7 @@ D {:?}", sampled_area(&d, [0.0, 0.0], [12.0, 12.0], 240), d.area(), a, b, d);
 
 /// A declarative pose animation. The host owns sampling, limits and rendering (recipe API 1.8).
 pub mod anim {
-    use super::Json;
+    use super::{Json, Refusal, Session};
 
     /// One joint target in the member's part frame, or a model-space Reach target.
     #[derive(Clone, Debug, PartialEq)]
@@ -5345,6 +6897,100 @@ pub mod anim {
             }
             Group { pattern: pattern.to_string(), names }
         }
+
+        /// Recipe API 1.15: drive `member`'s joint from where it stands at `at`, in `dir` (1 or -1, the joint's own
+        /// sense), until a part it moves first touches any part that stays, within 360 degrees (a slide: its limit) and
+        /// 0.01 mm. `None` when nothing is met. Nothing moves: the script keys what it reads.
+        #[track_caller]
+        pub fn first_contact(&self, s: &mut Session, at: &Pose, member: &str, dir: i32) -> Result<Option<Touch>, Refusal> {
+            let line = std::panic::Location::caller().line();
+            read_contact(s, at, &ContactAsk::new(member, dir), line)
+        }
+
+        /// `first_contact` with a named part to touch, a range and a tolerance.
+        #[track_caller]
+        pub fn first_contact_with(&self, s: &mut Session, at: &Pose, ask: &ContactAsk) -> Result<Option<Touch>, Refusal> {
+            let line = std::panic::Location::caller().line();
+            read_contact(s, at, ask, line)
+        }
+
+        /// The least distance between two members' meshes at `at`, mm: 0.0 when they touch or cross.
+        #[track_caller]
+        pub fn clearance(&self, s: &mut Session, at: &Pose, a: &str, b: &str) -> Result<f64, Refusal> {
+            let line = std::panic::Location::caller().line();
+            let reply = s.call("rig_clearance", Json::obj().set("pose", at.read_json()).set("a", a).set("b", b))?;
+            reply.get("mm").and_then(Json::as_f64).ok_or(Refusal { reason: "The host gave no clearance.".to_string(), line })
+        }
+
+        /// Whether two members cross at `at`, by the mesh pass the frames are checked with.
+        #[track_caller]
+        pub fn crossing(&self, s: &mut Session, at: &Pose, a: &str, b: &str) -> Result<bool, Refusal> {
+            let line = std::panic::Location::caller().line();
+            let reply = s.call("rig_clearance", Json::obj().set("pose", at.read_json()).set("a", a).set("b", b))?;
+            reply.get("crossing").and_then(Json::as_bool).ok_or(Refusal { reason: "The host gave no crossing.".to_string(), line })
+        }
+
+        /// A member's hinge angle (degrees) or slide travel (mm) at `at`: a gear train's follower as its lead turns it.
+        #[track_caller]
+        pub fn angle(&self, s: &mut Session, at: &Pose, member: &str) -> Result<f64, Refusal> {
+            let line = std::panic::Location::caller().line();
+            let reply = s.call("rig_angle", Json::obj().set("pose", at.read_json()).set("member", member))?;
+            reply.get("angle").and_then(Json::as_f64).ok_or(Refusal { reason: "The host gave no angle.".to_string(), line })
+        }
+    }
+
+    /// What a contact read found (API 1.15): the driven joint's value at first contact (degrees, or mm for a slide), the
+    /// moving part and the part it touches, the clearance left (mm, at most the tolerance), and the first value found
+    /// crossing.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Touch { pub angle: f64, pub moving: String, pub other: String, pub clearance_mm: f64, pub past: f64 }
+
+    /// A contact read's question (API 1.15): the member to drive and its direction, and optionally the part to touch
+    /// (default any part that stays), the range (degrees or mm) and the tolerance (mm).
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct ContactAsk { member: String, dir: i32, against: Option<String>, max: Option<f64>, tolerance: Option<f64> }
+    impl ContactAsk {
+        pub fn new(member: &str, dir: i32) -> Self { ContactAsk { member: member.to_string(), dir, against: None, max: None, tolerance: None } }
+        pub fn against(mut self, name: &str) -> Self { self.against = Some(name.to_string()); self }
+        pub fn max(mut self, value: f64) -> Self { self.max = Some(value); self }
+        pub fn tolerance(mut self, mm: f64) -> Self { self.tolerance = Some(mm); self }
+        pub(crate) fn json(&self, at: &Pose) -> Json {
+            let mut out = Json::obj().set("pose", at.read_json()).set("member", self.member.as_str()).set("dir", self.dir);
+            if let Some(name) = &self.against { out = out.set("against", name.as_str()); }
+            if let Some(value) = self.max { out = out.set("max", value); }
+            if let Some(mm) = self.tolerance { out = out.set("tolerance", mm); }
+            out
+        }
+    }
+
+    fn no_answer(line: u32) -> Refusal { Refusal { reason: "The host gave no contact answer.".to_string(), line } }
+
+    #[track_caller]
+    fn read_contact(s: &mut Session, at: &Pose, ask: &ContactAsk, line: u32) -> Result<Option<Touch>, Refusal> {
+        let reply = s.call("rig_contact", ask.json(at))?;
+        let contact = reply.get("contact").and_then(Json::as_bool).ok_or(no_answer(line))?;
+        if !contact { return Ok(None); }
+        let angle = reply.get("angle").and_then(Json::as_f64).ok_or(no_answer(line))?;
+        let moving = reply.get("moving").and_then(Json::as_str).ok_or(no_answer(line))?.to_string();
+        let other = reply.get("other").and_then(Json::as_str).ok_or(no_answer(line))?.to_string();
+        let clearance_mm = reply.get("clearanceMm").and_then(Json::as_f64).ok_or(no_answer(line))?;
+        let past = reply.get("past").and_then(Json::as_f64).ok_or(no_answer(line))?;
+        Ok(Some(Touch { angle, moving, other, clearance_mm, past }))
+    }
+
+    /// The times the host samples an animation's frames at (API 1.15): `end * i / (n - 1)` for `n = round(end * fps)`
+    /// frames, or one frame at 0. A key on each of these times is shown as keyed, with nothing interpolated between.
+    pub fn frame_times(fps: u32, end: f64) -> Vec<f64> {
+        let n = (end * fps as f64).round();
+        let mut times = Vec::new();
+        if n <= 1.0 { times.push(0.0); return times; }
+        let count = n as u64;
+        let mut i = 0u64;
+        while i < count {
+            times.push(end * i as f64 / (count - 1) as f64);
+            i += 1;
+        }
+        times
     }
     fn matches(pattern: &str, name: &str) -> bool {
         let pieces: Vec<&str> = pattern.split('*').collect();
@@ -5368,6 +7014,11 @@ pub mod anim {
         pub fn set_all(mut self, group: &Group, aim: Aim) -> Self { self.set.push((group.pattern.clone(), aim)); self }
         /// A colour change at this key is a cut, not an interpolation.
         pub fn colour(mut self, name: &str, hex: &str) -> Self { self.colors.push((name.to_string(), hex.to_string())); self }
+        /// The pose a read of the rig is taken at (API 1.15): rest and the named aims, as a key at time 0 would pose them.
+        pub(crate) fn read_json(&self) -> Json {
+            let (set, _) = self.json();
+            Json::obj().set("rest", self.rest).set("set", set)
+        }
         fn json(&self) -> (Json, Json) {
             let mut set = Json::obj(); let mut colors = Json::obj();
             for (name, aim) in &self.set { set = set.set(name, aim.json()); }
@@ -5421,7 +7072,7 @@ pub mod anim {
 
 #[cfg(test)]
 mod animation_tests {
-    use super::{anim::{Aim, Animation, Ease, Pose, Rig}, Json};
+    use super::{anim::{frame_times, Aim, Animation, ContactAsk, Ease, Pose, Rig}, Json};
 
     #[test]
     fn animation_encodes_keys_and_rig_groups() {
@@ -5448,5 +7099,33 @@ mod animation_tests {
         assert!(anim.to_json().at("background").is_none(), "a 1.8 animation must send the same call as before");
         anim.background("#204060");
         assert_eq!(anim.to_json().at("background").and_then(Json::as_str), Some("#204060"));
+    }
+
+    #[test]
+    fn frame_times_are_the_hosts() {
+        // The host: n = max(1, round(end * fps)) frames at end * i / (n - 1) (src/pose-anim.ts).
+        assert_eq!(frame_times(12, 0.0), vec![0.0]);
+        assert_eq!(frame_times(4, 0.1), vec![0.0]);
+        let times = frame_times(12, 2.0);
+        assert_eq!(times.len(), 24);
+        assert_eq!(times[0], 0.0);
+        assert_eq!(times[23], 2.0);
+        assert_eq!(times[5].to_bits(), (2.0 * 5.0 / 23.0f64).to_bits());
+    }
+
+    #[test]
+    fn contact_reads_send_the_pose_as_a_key_would() {
+        let at = Pose::new().set("Anchor", 8.0).colour("Anchor", "#ff0000");
+        let read = at.read_json();
+        assert_eq!(read.at("set.Anchor").and_then(Json::as_f64), Some(8.0));
+        assert_eq!(read.get("rest").and_then(Json::as_bool), Some(false));
+        assert!(read.get("colors").is_none(), "a read takes no colours");
+        let ask = ContactAsk::new("Wheel", -1).against("Pallet").max(30.0).tolerance(0.005).json(&at);
+        assert_eq!(ask.get("member").and_then(Json::as_str), Some("Wheel"));
+        assert_eq!(ask.get("dir").and_then(Json::as_f64), Some(-1.0));
+        assert_eq!(ask.get("against").and_then(Json::as_str), Some("Pallet"));
+        assert_eq!(ask.get("max").and_then(Json::as_f64), Some(30.0));
+        assert_eq!(ask.get("tolerance").and_then(Json::as_f64), Some(0.005));
+        assert!(ContactAsk::new("Wheel", 1).json(&at).get("against").is_none(), "any part, unless one is named");
     }
 }

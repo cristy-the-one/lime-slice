@@ -73,7 +73,8 @@ check("a sweep that starts in a crossing says to start clear", inside.ok === tru
 const upward = await call("model_check", { object: arm, sweep: { from: 0, to: -60, step: 20 } });
 check("turning the other way is clear", upward.ok === true && upward.collision === null, JSON.stringify(upward));
 check("a sweep of a part with no hinge is refused", (await call("model_check", { object: block, sweep: { from: 0, to: 10 } })).ok === false);
-check("more steps than the cap is refused", (await call("model_check", { object: arm, sweep: { from: 0, to: 90, step: 0.1 } })).ok === false);
+// The cap is 1000 angles (docs/plan-contact-poses.md): 90 degrees at 0.05 is 1800.
+check("more steps than the cap is refused", (await call("model_check", { object: arm, sweep: { from: 0, to: 90, step: 0.05 } })).ok === false);
 
 // Item 5: the duplicate keeps the recipe, the seat and the joint, and rebuilds.
 await call("model_place", { object: arm, angle: 12 });

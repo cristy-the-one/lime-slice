@@ -89,3 +89,39 @@ trig. `ops::gear` is the kernel's gear step, which builds the same outline (`gui
 `unbuildable`, `moduleMismatch`, `pressureMismatch`) from their centres and phases. `gear_pair::driven_turn` turns the driver by an
 angle and the driven gear by `mate_turn` before that check. Gears whose tip circles do not meet are `apart`, different modules included; the outlines are compared only
 when they do (`docs/collision-prototype.md`).
+
+## Clock ingredients (API 1.14)
+
+`horology` holds what a mechanical clock needs beyond `gears`, as pure functions in the crate's own trig, so lust and rustc
+give the same numbers (`tests/horology.rs`, `mcp/recipe-horology.test.ts`). Outlines are `gears::Outline`, closed and
+counter-clockwise; `outline_points` turns one into a polyline.
+
+- **Going train.** `train_ratio` multiplies `(wheel, pinion)` stages; `escape_period_s` is `3600 / (ratio × escape teeth)`,
+  one tooth a period (160:1 on 30 teeth is 0.75 s). `count_train` finds tooth counts within `TrainLimits` whose ratio gives
+  a wanted period exactly, or says why none does; `train_options` lists every one, the most balanced first.
+- **Graham escapement.** `EscapeWheel` has pointed teeth leaning forward so a pallet touches the tip only. `Graham` is the
+  anchor: the pallets embrace `span_teeth` (a whole number and a half), the pivot stands `tip_radius / cos(180° × span /
+  teeth)` above the wheel (the tangent rule), the locking faces are arcs about the pivot (entry outer, exit inner, both
+  between the same radii), the impulse faces straight. Lock and impulse are anchor degrees, drop wheel degrees; a pallet is
+  half a pitch less the drop thick. `anchor()` is the outline about the pivot, `rest_pose()` where to put both parts, and
+  `refusal()` says why a set of numbers cannot work, down to a pallet meeting a tooth anywhere but its tip over a stepped beat.
+- **Ratchet and click.** `Ratchet` has radial faces; `click` gives the click's outline, its pivot on the tangent through the
+  face it bears on (so the push passes through the pivot), the angle at which it seats, and the lift that clears the tips.
+- **Cycloidal clock teeth.** `ClockWheel` and `ClockPinion` follow BS 978-2 as S. Parks derives it ("Designing Cycloidal
+  Gears"): wheel addenda the true epicycloid of a circle half the pinion's pitch radius, cut at 0.95 of where the flanks meet,
+  pinions with radial flanks and round, medium or high ogival tops from the standard's table. The epicycloid points are
+  exact; the standard's 1.4 f_a drawing arc is not used. Root corners are sharp.
+- **Bores.** `hole`, `shaft` and `pin_bore` add the mean clearance of an ISO 286 fit (running H9/d9, sliding H7/h6, press
+  H7/p6) and a printing allowance you measure; `bearing` knows 20 small ball bearings (608, 623 to 626, 683 to 685, 693 to
+  695, MR63 to MR115) with their seats and shafts.
+## Reads of an animation's rig (API 1.15)
+
+An animation script names keys; the host poses the frames. To key from the geometry, a script reads the rig at a pose it
+states (`docs/plan-contact-poses.md`): `rig.first_contact(&mut s, &at, "Wheel", 1)` drives the wheel's joint from where
+it stands at `at` until a part it moves first touches a part that stays (`Option<Touch>`: the angle, the two parts, the
+clearance left, at most 0.01 mm); `first_contact_with` takes a `ContactAsk` (a part to touch, a range, a tolerance);
+`rig.clearance` is the least distance between two members (mm, 0 when touching or crossing), `rig.crossing` the mesh
+pass's verdict, and `rig.angle` a member's angle there (a gear train's follower as its lead turns it). `at` is a `Pose`,
+resolved as a key at time 0 would be; nothing moves and nothing is kept between reads. `anim::frame_times(fps, end)` are
+the times the host samples frames at, so keys put there are shown as read. The numbers are the host's: the crate sends
+JSON and reads JSON, so lust and rustc builds send the same calls and get the same answers.

@@ -19,8 +19,11 @@ export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
   "flush",
 ]);
 
-/** Animation scripts may only describe a rig and request its animation, never edit the plate. */
-export const ANIMATION_TOOLS: ReadonlySet<string> = new Set(["rig", "animate", "log", "progress", "data"]);
+/**
+ * Animation scripts may only describe a rig, read it, and request its animation, never edit the plate. Recipe API 1.15
+ * adds the reads of the rig at a pose (`rig_contact`, `rig_clearance`, `rig_angle`): they change nothing.
+ */
+export const ANIMATION_TOOLS: ReadonlySet<string> = new Set(["rig", "animate", "log", "progress", "data", "rig_contact", "rig_clearance", "rig_angle"]);
 
 export interface RecipeLimits {
   /** Wall time for the run, kernel time included (unless `callsFree`). */

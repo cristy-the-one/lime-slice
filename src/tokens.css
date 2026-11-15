@@ -10,6 +10,10 @@
 /* Dark is the default. Light is one block, applied when theme.ts sets data-scheme. */
 :root,
 :root[data-scheme="dark"] {
+  /* The top bar's lime slice (src/app/markup.ts): a rind that reads on the bar, the flesh, the pith between segments. */
+  --brand-rind: #65a30d;
+  --brand-flesh: #a3e635;
+  --brand-pith: #f7fee7;
   color-scheme: dark;
   --surface-0: #0f1115;
   --surface-1: #15181e;
@@ -126,6 +130,9 @@
 }
 
 :root[data-scheme="light"] {
+  --brand-rind: #4d7c0f;
+  --brand-flesh: #a3e635;
+  --brand-pith: #f7fee7;
   color-scheme: light;
   --surface-0: #f3f5f8;
   --surface-1: #ffffff;
