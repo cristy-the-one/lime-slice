@@ -19,7 +19,7 @@ import { NEXT, refuse } from "../refusals.ts";
 function modelPlaceMany(this: Session, input: Record<string, unknown>): Record<string, unknown> {
   const ids = input.objects as string[];
   if (typeof input.to !== "string") return refuse("bad-placement", "Give to: the part these objects join.");
-  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined || input.root !== undefined || input.reply !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
+  if (input.object !== undefined || PLACE_KEYS.some((key) => input[key] !== undefined) || input.frame !== undefined || input.joint !== undefined || input.angle !== undefined || input.travel !== undefined || input.reach !== undefined || input.until !== undefined || input.root !== undefined || input.reply !== undefined) return refuse("conflicting-arguments", "With objects, give to and optionally assembly or compact; their current poses are kept.");
   if (new Set(ids).size !== ids.length) return refuse("bad-placement", "Each object can appear only once.");
   const parent = this.find(input.to);
   if (!parent) return refuse("no-object", `to: ${UNKNOWN_OBJECT}`, undefined, NEXT.plate);

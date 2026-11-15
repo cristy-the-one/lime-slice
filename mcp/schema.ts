@@ -1480,7 +1480,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_place",
-    description: "Set an assembled pose or joint, in mm and degrees. The print layout does not move. With to, join an assembly. With gears, couple the gears that mesh so turning one turns its train. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
+    description: "Set an assembled pose or joint, in mm and degrees. The print layout does not move. With to, join an assembly. With gears, couple the gears that mesh so turning one turns its train. With until, turn or slide the part's joint until it first touches a part. guide {kind:\"assembly\"} or {kind:\"pose\"}.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1499,6 +1499,19 @@ export const TOOLS: ToolSpec[] = [
         angle: { type: "number", description: "Hinge angle in degrees." },
         travel: { type: "number", description: "A slide's travel in mm (a rack's joint, docs/plan-gear-kinds.md): a rack and pinion move together." },
         reach: { type: "object", additionalProperties: false, required: ["at", "to"], properties: { at: { ...vec3, description: "Part-frame point." }, to: { ...vec3, description: "Model-space target." } }, description: "Reach a point." },
+        until: {
+          type: "object",
+          additionalProperties: false,
+          required: ["contact", "dir"],
+          description: "Drive the part's joint (its hinge or slide, or that of the part it is seated on without a joint), with its gear train and everything seated on it, from where it stands until a part it moves first touches contact, and leave it there: one Undo step. Contact is the mesh pass's (model_check {interference}) on the parts' triangles: the pose is the last clear one, within tolerance mm of travel of the first that crosses, so the clearance left (contact.clearanceMm, measured) is at most the tolerance. The search steps by the measured clearance, so it cannot step over a part, and gives the same answer every time. Replies angle (or travel), contact {moving, other, clearanceMm, past}, searched, the train's angles, moved, and exact: the kernel's common volume of the pair at the answer and just past it, with agrees false when the kernel finds shared volume the mesh does not. A part already crossing at the start is left out of any (ignored) and refused when named. Nothing within the range is refused as no-contact, and nothing moves. docs/plan-contact-poses.md.",
+          properties: {
+            contact: { type: "string", minLength: 1, maxLength: 64, description: "The part to touch (one that does not move with the joint), or \"any\": every member of the assembly that stays." },
+            dir: { enum: [1, -1], description: "1: the joint's own sense (a hinge's right-hand turn about its axis, a slide's axis); -1 against it." },
+            max: { type: "number", minimum: 0, description: "How far to search: degrees for a hinge (default 360), mm for a slide (default its limit). A joint limit in the train stops it sooner." },
+            tolerance: { type: "number", minimum: 0.002, maximum: 1, description: "mm. Default 0.01: the most clearance left at the answer." },
+            exact: { type: "boolean", description: "Default true: also measure the pair's common volume by the kernel at the answer and just past it (solids only)." },
+          },
+        },
         root: { const: true, description: "Make this member the fixed root; poses and joints are kept." },
         gears: { enum: ["couple", "list", "uncouple"], description: "Gear train of this member's assembly. couple: find every pair of spur gears the mesh check calls meshing and couple them, so turning one gear (angle) turns the wheel, pinion and every gear of its train at the tooth ratio; replies couplings, notCoupled (each with its reason), locked trains and checked (a turn sampled for crossing teeth). list: the same rows, nothing changed. uncouple: drop them. A meshing gear with no joint is given a hinge about its own axis (hinged in the reply), and gears in no assembly become one, Gear train, whose first gear turns on the plate (madeAssembly); joint {kind:\"held\"} keeps a gear fixed on purpose. A pinion inside a ring gear (internal) turns the same way; a planet on a carrier couples through the carrier (carrier and carrierRatio in the row), and the carrier of gears meshing a ring is given its hinge; hold one of sun, ring or carrier." },
         reply: { enum: ["angles"], description: "Pose: changed hinge angles only." },
@@ -1566,7 +1579,7 @@ export const TOOLS: ToolSpec[] = [
         interference: { type: "boolean", description: "Instead: assembly pairs that cross." },
         exact: { type: "boolean", description: "With interference: kernel common volume." },
         crossingsOnly: { type: "boolean", description: "With interference: omit touches; unmeasured pairs stay." },
-        sweep: { type: "object", additionalProperties: false, description: "Instead: first hinge angle that crosses a fixed part.", properties: { from: { type: "number", description: "Degrees." }, to: { type: "number", description: "Degrees." }, step: { type: "number", description: "Default 5." } } },
+        sweep: { type: "object", additionalProperties: false, description: "Instead: first hinge angle that crosses a fixed part. A coupled hinge turns its gear train with it (train in the reply); limits are left out. At most 1000 angles, then bisection to tolerance.", properties: { from: { type: "number", description: "Degrees." }, to: { type: "number", description: "Degrees." }, step: { type: "number", minimum: 0.01, description: "Degrees, default 5, from 0.01." }, tolerance: { type: "number", minimum: 0.001, maximum: 45, description: "Degrees the crossing is pinned to. Default 0.5." } } },
       },
     },
   },

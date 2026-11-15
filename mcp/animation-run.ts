@@ -1,5 +1,6 @@
 /** Run an animation script against a fixed rig and sample it without changing the plate. */
 import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../src/pose-anim.ts";
+import { RIG_READ_TOOLS, rigRead } from "../src/rig-reads.ts";
 import type { Assembly, PoseOf } from "../src/assembly.ts";
 import { resolveIngredients } from "./ingredients.ts";
 import { splitPluginData } from "../src/recipe/plugin-data.ts";
@@ -25,6 +26,8 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
   let background: string | undefined;
   const run = await host.run(built.exe, { kind: "animation", params }, async (site) => {
     if (site.tool === "rig") return { ok: true, result: { members: rig } };
+    // Recipe API 1.13: reads of the rig at a pose the script states (docs/plan-contact-poses.md section 3).
+    if (RIG_READ_TOOLS.has(site.tool)) return rigRead(site.tool, site.args, assembly, poseOf, parts);
     if (site.tool === "log") { notes.push(String(site.args.message ?? site.args.text ?? "").slice(0, 400)); return { ok: true, result: {} }; }
     if (site.tool === "data") {
       const name = typeof site.args.name === "string" ? site.args.name : "";

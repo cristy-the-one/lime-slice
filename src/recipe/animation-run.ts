@@ -1,6 +1,7 @@
 /** App-side animation script execution. Sampling uses the same rig and interpolation as MCP. */
 import type { Assembly, PoseOf } from "../assembly.ts";
 import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../pose-anim.ts";
+import { RIG_READ_TOOLS, rigRead } from "../rig-reads.ts";
 import type { AppRecipes } from "./tauri.ts";
 import { ANIMATION_LIMITS, type RecipeReply } from "./host.ts";
 import { inlineIngredients } from "./ingredients.ts";
@@ -20,6 +21,8 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
   let issues: { line?: number; reason: string }[] | undefined;
   const run = await recipes.run(built.exe, { kind: "animation", params }, async (site): Promise<RecipeReply> => {
     if (site.tool === "rig") return { ok: true, result: { members: rig } };
+    // Recipe API 1.13: reads of the rig at a pose the script states (docs/plan-contact-poses.md section 3).
+    if (RIG_READ_TOOLS.has(site.tool)) return rigRead(site.tool, site.args, assembly, poseOf, parts);
     if (site.tool === "log") { if (notes.length < 200) notes.push(String(site.args.message ?? site.args.text ?? "").slice(0, 400)); return { ok: true, result: {} }; }
     if (site.tool === "data") {
       const key = typeof site.args.name === "string" ? site.args.name : "";
