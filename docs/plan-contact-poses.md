@@ -181,10 +181,25 @@ a sphere), the bisection's bound on clearance, the refusals.
 `mcp/contact-occt.test.ts` (CI, real Open CASCADE): the same stop on kernel solids, with `exact`, reports what the
 kernel says at the answer and past it.
 
+## 5. Pose: Until contact (the window)
+
+A person needs no agent and no script. In Pose, a selected member whose own joint or body's joint is a hinge or a slide
+shows two buttons under the joint fields, "◀ Until contact" and "Until contact ▶" (read as "Turn back until contact"
+and "Turn on until contact", or Slide for a slide). A press runs the same solve against any part that stays, on the
+plate meshes (each with its seat lift, as the clash check and animations take them), and moves the joint and its train
+to the answer as one Undo step. One line under the buttons (a status, read by a screen reader) says what happened:
+"Arm meets Stop at 15.79°, 0.003 mm left.", or "Nothing met turning Arm from 0° to -30°, where a joint limit stops it.
+Nothing moved.", with any pair left out as already crossing named. The kernel is not asked in the window.
+
+The solve runs in a worker (`src/contact-worker.ts`; on the UI thread only if no worker can be made), with the buttons
+disabled and "Finding contact…" shown meanwhile, because it is not always short: measured in Node on two copies of
+`samples/lime_hull.stl` (4,800 triangles each), about 220 ms for 11 poses, and on two copies of `samples/dragon_2_5.stl`
+(38,000 triangles each) about 1.3 s for 14 poses; a grazing approach takes more poses. If the assembly changed while it
+ran, the answer is dropped and the line says to press again. `e2e/pose-contact.spec.ts` covers it.
+
 ## What it does not do
 
 - Forces, inertia, recoil and drop (F2). A wheel driven into a pallet that moves toward it is not pushed back: the
   solve answers only for the joint it drives, and a pair that already crosses is left out.
 - Contact of two parts that both move with the joint (meshing teeth): see the coupling.
 - Parts outside the assembly.
-- A Pose panel button. The window reaches the solve through animations; a "Turn until contact" control is a later step.
