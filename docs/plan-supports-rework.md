@@ -146,6 +146,8 @@ Out of scope here, noted so it is not lost: supports past the bed's edge at X < 
 
 ## 6. Decisions for the owner
 
+**Answered 2026-11-15:** the owner accepts at most a 10 % increase in estimated print time if it gives more stable supports. So the stability steps (1, 4, 5, and 6–7 if they fit) ship on by default while their summed cost stays within 10 % on the test parts and the owner's parts; each PR states its own measured percentage and the running total. Whatever would push past 10 % stays off by default. This settles A and C as "on by default", and D as "build it if the budget allows". B and E are still open.
+
 **A. Flat-bed tree foot fix: on by default?**
 - *On by default* (recommended): a bug fix, about +0.1 % time, every flat-bed tree slice changes.
 - *A setting, off*: old slices keep their bytes; the floating second layer stays unless switched on.
