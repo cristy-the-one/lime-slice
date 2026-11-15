@@ -26,8 +26,14 @@ async function quiet(page: Page) {
 
 async function sliceMatching(page: Page, bodies: SliceBody[], match: (body: SliceBody) => boolean) {
   const start = bodies.length;
+  const answered = page.waitForResponse((response) => response.url().includes("/api/slice") && response.request().method() === "POST");
   await page.locator("#slice").click();
   await expect.poll(() => bodies.slice(start).some(match)).toBe(true);
+  // The request is only half of it. When the answer lands the app paints the settings again, and a box filled before
+  // that and left after it is a new box: its change is never seen, so the value goes back with no note. Wait for the
+  // answer and for the paint that follows it before the next step types anything.
+  await (await answered).finished();
+  await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 }
 
 function omitted(body: SliceBody) {
