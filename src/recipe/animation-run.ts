@@ -2,7 +2,7 @@
 import type { Assembly, PoseOf } from "../assembly.ts";
 import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult, type PoseAnimation } from "../pose-anim.ts";
 import type { AppRecipes } from "./tauri.ts";
-import { DEFAULT_LIMITS, type RecipeReply } from "./host.ts";
+import { ANIMATION_LIMITS, type RecipeReply } from "./host.ts";
 import { inlineIngredients } from "./ingredients.ts";
 import { splitPluginData } from "./plugin-data.ts";
 
@@ -36,7 +36,7 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
       return { ok: true, result: { frames: result.frames.length, durationS: result.durationS, fps: result.fps, keys: result.keys } };
     }
     return { ok: false, error: "That animation call is not available." };
-  }, DEFAULT_LIMITS, signal);
+  }, ANIMATION_LIMITS, signal);
   if (!run.ok || issues) return { ok: false, reason: run.reason ?? issues?.[0]?.reason ?? "The animation failed.", ...(issues ? { issues } : {}) };
   if (!sampled || !spec) return { ok: false, reason: "The script ended without an animation." };
   return { ok: true, result: sampled, spec, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])] };

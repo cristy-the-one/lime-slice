@@ -3,7 +3,7 @@ import { animationRig, sampleAnimation, type AnimationPart, type AnimationResult
 import type { Assembly, PoseOf } from "../src/assembly.ts";
 import { resolveIngredients } from "./ingredients.ts";
 import { splitPluginData } from "../src/recipe/plugin-data.ts";
-import { DEFAULT_LIMITS, recipeDataFile, recipeDataMissing, type RecipeHost } from "./recipe.ts";
+import { ANIMATION_LIMITS, recipeDataFile, recipeDataMissing, type RecipeHost } from "./recipe.ts";
 
 export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; background?: string; notes: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
 
@@ -45,7 +45,7 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
       return { ok: true, result: { frames: result.frames.length, durationS: result.durationS, fps: result.fps, keys: result.keys } };
     }
     return { ok: false, error: "That animation call is not available." };
-  }, DEFAULT_LIMITS, options.signal, options.progress);
+  }, ANIMATION_LIMITS, options.signal, options.progress);
   if (!run.ok || issues) return { ok: false, reason: run.reason ?? issues?.[0]?.reason ?? "The animation failed.", ...(issues ? { issues } : {}) };
   if (!sampled) return { ok: false, reason: "The script ended without an animation." };
   return { ok: true, result: sampled, ...(camera ? { camera } : {}), ...(background ? { background } : {}), notes: [...notes, ...(run.notes ?? [])] };

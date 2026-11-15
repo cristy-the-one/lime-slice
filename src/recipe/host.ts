@@ -23,14 +23,30 @@ export const RECIPE_TOOLS: ReadonlySet<string> = new Set([
 export const ANIMATION_TOOLS: ReadonlySet<string> = new Set(["rig", "animate", "log", "progress", "data"]);
 
 export interface RecipeLimits {
-  /** Wall time for the run, kernel time included. */
+  /** Wall time for the run, kernel time included (unless `callsFree`). */
   timeoutS: number;
   maxCalls: number;
   /** Longest line the recipe may write, in bytes. */
   maxLineBytes: number;
+  /**
+   * The time the host spends answering a call is not counted against `timeoutS`: the limit is then the script's own
+   * time. For runs where the host's answer is the work, as sampling an animation's frames is.
+   */
+  callsFree?: boolean;
+  /** Wall time for the process as a whole, when it differs from `timeoutS`. What the app's runner enforces. */
+  wallS?: number;
 }
 
 export const DEFAULT_LIMITS: RecipeLimits = { timeoutS: 30, maxCalls: 2000, maxLineBytes: 1 << 20 };
+
+/**
+ * An animation script: 30 s of its own time, as any recipe, and the host's sampling on top of it. The script only
+ * names keys; the host then poses every frame and checks it for parts that cross, which for a long animation of a
+ * large assembly is most of the time. With one limit over both, such an animation was stopped at 30 s with "The
+ * recipe ran past its 30 s limit" although the script itself had run for a moment. Half an hour of wall time stays
+ * as the stop for a run that never ends.
+ */
+export const ANIMATION_LIMITS: RecipeLimits = { ...DEFAULT_LIMITS, callsFree: true, wallS: 1800 };
 
 /**
  * The memory a recipe may hold (D11.2), in bytes: 1 GiB, the app's runner's cap (`Limits::memory_bytes`,
@@ -332,7 +348,19 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       if (!failure) failure = { reason, ...(line !== undefined ? { line } : {}) };
       kill();
     };
-    const timer = setTimeout(() => stop(`The recipe ran past its ${limits.timeoutS} s limit and was stopped.`), limits.timeoutS * 1000);
+    // The limit as a budget, so it can stand still while the host answers a call (`callsFree`).
+    let leftMs = limits.timeoutS * 1000, armedAt = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = () => {
+      if (settled) return;
+      armedAt = Date.now();
+      timer = setTimeout(() => stop(`The recipe ran past its ${limits.timeoutS} s limit and was stopped.`), Math.max(0, leftMs));
+    };
+    const hold = () => {
+      clearTimeout(timer);
+      leftMs -= Date.now() - armedAt;
+    };
+    arm();
     const onAbort = () => stop("The recipe was cancelled.");
     signal?.addEventListener("abort", onAbort, { once: true });
     const reply = (text: string) => child?.write(text);
@@ -407,11 +435,13 @@ export function runRecipe(spawn: RecipeSpawn, start: Record<string, unknown>, ca
       } else if (start.kind !== "animation" && !RECIPE_TOOLS.has(tool)) {
         answer = { ok: false, error: `${tool || "(no call)"} is not a recipe call. A recipe may call: ${[...RECIPE_TOOLS].join(", ")}.` };
       } else {
+        if (limits.callsFree) hold();
         try {
           answer = await call(site);
         } catch (err) {
           answer = { ok: false, error: err instanceof Error ? err.message : String(err) };
         }
+        if (limits.callsFree) arm();
       }
       if (failure) return;
       if (!answer.ok && answer.fatal) return stop(answer.error, site.line);

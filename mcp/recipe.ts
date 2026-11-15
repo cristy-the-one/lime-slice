@@ -26,7 +26,7 @@ import { refuse } from "./refusals.ts";
 import { builtWith, daemonEnvTag, distrustRunning, dropUntrusted, optBuild, withEnv } from "./recipe-opt.ts";
 import { rootState, sharedRoot, slotDir, sweepStaleRootsOnce, writeWhole, type RootState } from "./recipe-root.ts";
 
-export { applyAutoEdits, buildRecipe, DEFAULT_LIMITS, lfOnly, parseDiagnostics, RECIPE_TOOLS, runRecipe } from "../src/recipe/host.ts";
+export { applyAutoEdits, buildRecipe, ANIMATION_LIMITS, DEFAULT_LIMITS, lfOnly, parseDiagnostics, RECIPE_TOOLS, runRecipe } from "../src/recipe/host.ts";
 export type { BuildResult, RecipeCall, RecipeCallSite, RecipeDiagnostic, RecipeLimits, RecipeReply, RunOutcome } from "../src/recipe/host.ts";
 
 const SLOTS = 4;
