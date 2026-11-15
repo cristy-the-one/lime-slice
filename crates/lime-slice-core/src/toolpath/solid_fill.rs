@@ -657,6 +657,7 @@ mod solid_row_tests {
                 skin: std::sync::Arc::new(Skin {
                     bottom: vec![vec![[-5.0, -5.0], [35.0, -5.0], [35.0, 15.0], [-5.0, 15.0]]],
                     top: Vec::new(),
+                    bridges: Vec::new(),
                 }),
                 ..PathFeatures::default()
             };

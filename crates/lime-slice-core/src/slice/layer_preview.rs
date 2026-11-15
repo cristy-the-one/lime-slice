@@ -227,6 +227,7 @@ pub(super) fn compare_estimates(
             one.support_strict_stacking = false;
             one.support_paint_join = false;
             one.support_slow_fragile = false;
+            one.support_bridge_mm = 0.0;
         }
         let response = slice_sharing(mesh, &blend, profile, &one, cut, watch)?;
         out.push(CompareEstimate {

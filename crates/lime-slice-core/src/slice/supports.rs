@@ -45,6 +45,7 @@ pub(super) fn plan_supports(
         max_tip_spacing: support_tip_spacing(blend),
         job: settings.job,
         line_width: settings.line_width,
+        bridge_mm: settings.support_bridge_mm,
         ..SupportOpts::default()
     };
     opts.floor = floor;
@@ -66,7 +67,7 @@ pub(super) fn plan_supports(
         return Err("cancelled".into());
     }
     if !settings.supports {
-        let in_air = cut.in_air(opts.angle_deg, &[], 0.0);
+        let in_air = cut.in_air(opts.angle_deg, &[], 0.0, settings.support_bridge_mm);
         if watch.stopped(settings.job) {
             return Err("cancelled".into());
         }
@@ -107,8 +108,14 @@ pub(super) fn plan_supports(
     .collect();
     let toolpath_ms = elapsed_ms(toolpath_started);
     // Painted only leaves the rest of the part to print over air, so say so.
-    let in_air = (opts.source == SupportSource::Paint)
-        .then(|| cut.in_air(opts.angle_deg, &settings.support_paint, opts.paint_join_mm));
+    let in_air = (opts.source == SupportSource::Paint).then(|| {
+        cut.in_air(
+            opts.angle_deg,
+            &settings.support_paint,
+            opts.paint_join_mm,
+            settings.support_bridge_mm,
+        )
+    });
     if watch.stopped(settings.job) {
         return Err("cancelled".into());
     }

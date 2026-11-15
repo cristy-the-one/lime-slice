@@ -201,7 +201,9 @@ pub(crate) fn plan_region_split(
             island_loops(area)
                 .iter()
                 .flat_map(|island| {
-                    let angle = solid_row_angle(island, line_width, features.layer_index);
+                    let angle = bridge_angle(island, &features.skin.bridges).unwrap_or_else(|| {
+                        solid_row_angle(island, line_width, features.layer_index)
+                    });
                     let (pitch, through) = fit_bounds(island, angle, line_width);
                     clip_infill(solid_fill(island, pitch, angle, through), island)
                 })
@@ -423,6 +425,23 @@ pub(super) fn combine_bead(strategy: &ResolvedStrategy, features: &PathFeatures)
 
 /// Density from which the infill is solid. Lines are already at their
 /// closest spacing from 95%, so this only drops the gaps and any crossing.
+/// The direction of the short bridge that `island` covers most of, so its
+/// first rows cross it from one anchor to the other. `None` when the island
+/// is over no bridge, and it runs as solid rows do.
+fn bridge_angle(island: &[Loop], bridges: &[(Vec<Loop>, f64)]) -> Option<f64> {
+    let mut best: Option<(f64, f64)> = None;
+    for (region, angle) in bridges {
+        let area: f64 = boolean_intersect(island, region)
+            .iter()
+            .map(|l| signed_area(l))
+            .sum();
+        if area > 0.05 && best.is_none_or(|(a, _)| area > a) {
+            best = Some((area, *angle));
+        }
+    }
+    best.map(|(_, angle)| angle)
+}
+
 /// The Infill % fields step by whole percents, so 99 and 100 both land here.
 pub(super) const SOLID_DENSITY: f64 = 0.99;
 
