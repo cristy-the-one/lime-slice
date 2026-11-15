@@ -4,7 +4,10 @@ use super::open_order::serpentine;
 use super::scarf::polyline_len;
 use super::seams::dist2;
 use super::{extrusion, Extrusion, PathKind};
-use crate::poly::{loop_bounds, offset_loops, point_in_loop, resolve_nonzero, signed_area, Loop};
+use crate::poly::{
+    in_solid, loop_bounds, offset_loops, point_in_loop, principal_axis, resolve_nonzero,
+    signed_area, Loop,
+};
 use crate::strategy::ResolvedStrategy;
 use crate::support::Disk;
 
@@ -61,6 +64,86 @@ pub fn plan_support(
             path
         })
         .collect()
+}
+
+/// `plan_support` on a belt. A patch narrower than the line spacing
+/// everywhere prints one line along its length where scan lines cannot.
+/// A belt cuts a flat underside in one nozzle plane, a strip a few tenths
+/// of a millimetre wide and as long as the ledge: scan lines along it miss
+/// it or hit it by the grid's phase, and lines across it are stubs too short
+/// to print, so the ledge's first bead was laid over nothing, or not, by
+/// where the part sat on the belt. The grid column under such a strip is as
+/// thin, and printed a few loose dashes or nothing.
+pub fn plan_belt_support(
+    region: &[Loop],
+    strategy: &ResolvedStrategy,
+    line_width: f64,
+    density: f64,
+    interface: bool,
+    through: Option<[f64; 2]>,
+) -> Vec<Extrusion> {
+    if region.is_empty() || density <= 0.01 {
+        return Vec::new();
+    }
+    let spacing = (line_width / density).clamp(line_width * 1.05, 8.0);
+    let (strips, wide): (Vec<Vec<Loop>>, Vec<Vec<Loop>>) = crate::support::components(region)
+        .into_iter()
+        .partition(|comp| offset_loops(comp, -spacing * 0.5).is_empty());
+    if strips.is_empty() {
+        return plan_support(region, strategy, line_width, density, interface, through);
+    }
+    // Interface strips print their line alone: a stub across one is no row.
+    // A column keeps the lines pinned in the lab that cross it, so a column
+    // narrowing toward the belt stays on them, and a line along it is
+    // printed only where none does.
+    let (mut paths, strips) = if interface {
+        let wide: Vec<Loop> = wide.into_iter().flatten().collect();
+        let paths = plan_support(&wide, strategy, line_width, density, interface, through);
+        (paths, strips)
+    } else {
+        let paths = plan_support(region, strategy, line_width, density, interface, through);
+        let bare = strips
+            .into_iter()
+            .filter(|comp| {
+                !paths.iter().any(|p| {
+                    p.points.windows(2).any(|w| {
+                        let m = [(w[0][0] + w[1][0]) * 0.5, (w[0][1] + w[1][1]) * 0.5];
+                        in_solid(comp, m[0], m[1])
+                    })
+                })
+            })
+            .collect();
+        (paths, bare)
+    };
+    let kind = if interface {
+        PathKind::SupportInterface
+    } else {
+        PathKind::Support
+    };
+    let speed = crate::strategy::support_speed(strategy, interface);
+    for comp in &strips {
+        for pts in strip_spine(comp) {
+            if pts.len() >= 2 && polyline_len(&pts) > 0.4 {
+                let mut path = extrusion(kind, strategy, pts, line_width);
+                path.speed = speed;
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+/// The line through a strip's centroid along its major axis, inside it.
+fn strip_spine(comp: &[Loop]) -> Vec<Vec<[f64; 2]>> {
+    let (Some((c, angle)), Some((min, max))) = (principal_axis(&comp[0]), loop_bounds(comp)) else {
+        return Vec::new();
+    };
+    let reach = (max[0] - min[0]).hypot(max[1] - min[1]) + 1.0;
+    let d = [angle.cos() * reach, angle.sin() * reach];
+    clip_infill(
+        vec![vec![[c[0] - d[0], c[1] - d[1]], [c[0] + d[0], c[1] + d[1]]]],
+        comp,
+    )
 }
 
 /// Organic branches: thin tips are one loop, thicker trunks are perimeters of the

@@ -95,6 +95,9 @@ pub struct SupportOpts {
     /// Enforce paint fills the gaps up to this wide between its dabs on a
     /// layer, on what faces down there. `0` keeps each dab to itself.
     pub paint_join_mm: f64,
+    /// The part's bead width, mm. On a belt a strip of part narrower than
+    /// this still prints a whole bead, which needs holding.
+    pub line_width: f64,
 }
 
 /// How wide a gap between enforce dabs on one layer is filled when the
@@ -228,6 +231,7 @@ impl Default for SupportOpts {
             source: SupportSource::Auto,
             strict_stacking: false,
             paint_join_mm: 0.0,
+            line_width: 0.45,
         }
     }
 }
@@ -809,7 +813,7 @@ impl Demand {
             .map(|i| {
                 let asked = match opts.source {
                     SupportSource::Auto if opts.floor.is_some() => {
-                        past_hairline(overhang_at(bands, own, i, angle), bands[i].height / angle)
+                        belt_overhang_at(bands, own, i, angle, opts.line_width)
                     }
                     SupportSource::Auto => overhang_at(bands, own, i, angle),
                     SupportSource::Paint => Vec::new(),
@@ -1372,8 +1376,14 @@ fn layer_pair<'a>(
     Some((upper, lower, bands[i].height / slope))
 }
 
+/// Overhang past the angle smaller than this is a sliver, mm².
+const PAST_ANGLE_SLIVER_MM2: f64 = 0.35;
+
 fn past_angle(upper: &[Loop], lower: &[Loop], dx: f64) -> Vec<Loop> {
-    drop_slivers(boolean_diff(upper, &offset_loops(lower, dx)), 0.35)
+    drop_slivers(
+        boolean_diff(upper, &offset_loops(lower, dx)),
+        PAST_ANGLE_SLIVER_MM2,
+    )
 }
 
 /// Area of layer `i` that needs a column under it: past the overhang angle,
@@ -1404,6 +1414,81 @@ fn past_hairline(overhang: Vec<Loop>, reach: f64) -> Vec<Loop> {
     }
     let r = reach / 16.0;
     drop_slivers(offset_loops(&offset_loops(&overhang, -r), r), 0.35)
+}
+
+/// `overhang_at` on a belt: past the hairline, plus each hairline the part
+/// prints as a bead over air. A flat underside lies in one nozzle plane, so
+/// the plane that meets it first may cut a strip of it a hundredth of a
+/// millimetre wide. The slicer prints that strip as a thin wall a whole
+/// bead wide, as long as the underside, and the next layers stack on it;
+/// by area it was a sliver, so nothing held it. Such a strip is told from
+/// the hairlines a face along the belt leaves by how far it lies past the
+/// layer under it: more than a bead past the angle's reach.
+fn belt_overhang_at(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    i: usize,
+    slope: f64,
+    bead: f64,
+) -> Vec<Loop> {
+    let Some((upper, lower, dx)) = layer_pair(bands, contours, i, slope) else {
+        return Vec::new();
+    };
+    let raw = boolean_diff(upper, &offset_loops(lower, dx));
+    // Strips the sliver filter or `past_hairline` drop: small by area, or
+    // thinner on average than the hairline opening.
+    let hair: Vec<Loop> = raw
+        .iter()
+        .filter(|l| {
+            let area = signed_area(l);
+            area > 0.0
+                && loop_bounds(std::slice::from_ref(*l)).is_some_and(|(a, b)| {
+                    let long = (b[0] - a[0]).max(b[1] - a[1]);
+                    long >= 2.0 * bead && (area < PAST_ANGLE_SLIVER_MM2 || area / long < dx / 8.0)
+                })
+        })
+        .cloned()
+        .collect();
+    let angle_overhang = drop_slivers(raw, PAST_ANGLE_SLIVER_MM2);
+    let islands = unsupported_islands(upper, lower, dx);
+    let overhang = if islands.is_empty() {
+        angle_overhang
+    } else {
+        drop_slivers(boolean_union(&angle_overhang, &islands), 0.05)
+    };
+    let kept = past_hairline(overhang, dx);
+    let air = hair_over_air(hair, lower, dx, bead);
+    if air.is_empty() {
+        kept
+    } else {
+        boolean_union(&kept, &air)
+    }
+}
+
+/// The parts of `hair`, strips past the angle's reach `dx` from `lower`,
+/// that lie more than a bead further out and are at least a bead long,
+/// each grown to the bead the part prints there.
+fn hair_over_air(hair: Vec<Loop>, lower: &[Loop], dx: f64, bead: f64) -> Vec<Loop> {
+    if hair.is_empty() {
+        return hair;
+    }
+    let far = if lower.is_empty() {
+        hair
+    } else {
+        boolean_diff(&hair, &offset_loops(lower, dx + bead))
+    };
+    let long: Vec<Loop> = far
+        .into_iter()
+        .filter(|l| {
+            signed_area(l) > 0.0
+                && loop_bounds(std::slice::from_ref(l))
+                    .is_some_and(|(a, b)| (b[0] - a[0]).max(b[1] - a[1]) >= bead)
+        })
+        .collect();
+    if long.is_empty() {
+        return long;
+    }
+    offset_loops(&long, bead * 0.5)
 }
 
 /// What a part sliced without supports prints over air, each region counted
@@ -3165,7 +3250,7 @@ fn unsupported_islands(upper: &[Loop], lower: &[Loop], margin: f64) -> Vec<Loop>
     drop_slivers(islands, 0.05)
 }
 
-fn components(loops: &[Loop]) -> Vec<Vec<Loop>> {
+pub(crate) fn components(loops: &[Loop]) -> Vec<Vec<Loop>> {
     let mut comps: Vec<Vec<Loop>> = Vec::new();
     let mut outer_area = Vec::new();
     for loop_ in loops {
@@ -3512,6 +3597,44 @@ mod tests {
             z,
             height: 0.2,
         }
+    }
+
+    /// The first plane to cut a flat underside on a belt may cut a strip of
+    /// it 0.018 mm wide, too small by area for an overhang, which the part
+    /// prints as a bead over air. A hairline a face along the belt leaves
+    /// lies just past the layer under it and stays dropped.
+    #[test]
+    fn a_hairline_ledge_over_air_on_a_belt_asks_for_a_bead_of_support() {
+        let bands = [band(0, 0.2), band(1, 0.4)];
+        let wall = rect(0.0, 0.0, 8.0, 40.0);
+        let ledge = vec![
+            [0.0, 0.0],
+            [8.0, 0.0],
+            [8.0, 24.74],
+            [33.0, 24.74],
+            [33.0, 24.758],
+            [8.0, 24.758],
+            [8.0, 40.0],
+            [0.0, 40.0],
+        ];
+        let contours = vec![vec![wall.clone()], vec![ledge]];
+        let slope = slope_of(45.0);
+        let asked = belt_overhang_at(&bands, &contours, 1, slope, 0.45);
+        let (min, max) = loop_bounds(&asked).expect("the ledge asks for support");
+        assert!(min[0] < 9.0 && max[0] > 32.0, "{min:?} {max:?}");
+        assert!(max[1] - min[1] >= 0.45, "{min:?} {max:?}");
+        // The rule before: the strip is too thin for `past_hairline`.
+        assert!(past_hairline(overhang_at(&bands, &contours, 1, slope), 0.2).is_empty());
+        // The same hairline along the wall's own edge, a layer's step past it.
+        let lip = vec![
+            [0.0, 0.0],
+            [8.0, 0.0],
+            [8.0, 40.0],
+            [8.0, 40.21],
+            [0.0, 40.21],
+        ];
+        let lips = vec![vec![wall], vec![lip]];
+        assert!(belt_overhang_at(&bands, &lips, 1, slope, 0.45).is_empty());
     }
 
     #[test]

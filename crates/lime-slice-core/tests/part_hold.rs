@@ -137,27 +137,45 @@ fn wall_and_side_ledge(from_front: f64) -> String {
                 if i & 4 == 0 { lo[2] } else { hi[2] },
             ]
         };
-        for q in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [1, 3, 7, 5], [0, 4, 6, 2]] {
+        for q in [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [1, 3, 7, 5],
+            [0, 4, 6, 2],
+        ] {
             faces.push([v(q[0]), v(q[1]), v(q[2])]);
             faces.push([v(q[0]), v(q[2]), v(q[3])]);
         }
     }
-    let mut out = String::from("solid part
-");
+    let mut out = String::from(
+        "solid part
+",
+    );
     for face in faces {
-        out.push_str("facet normal 0 0 0
+        out.push_str(
+            "facet normal 0 0 0
 outer loop
-");
+",
+        );
         for v in face {
-            out.push_str(&format!("vertex {} {} {}
-", v[0], v[1], v[2]));
+            out.push_str(&format!(
+                "vertex {} {} {}
+",
+                v[0], v[1], v[2]
+            ));
         }
-        out.push_str("endloop
+        out.push_str(
+            "endloop
 endfacet
-");
+",
+        );
     }
-    out.push_str("endsolid part
-");
+    out.push_str(
+        "endsolid part
+",
+    );
     out
 }
 
@@ -277,9 +295,19 @@ fn tray_stl(size: [f64; 2], floor: f64, height: f64, rim: f64) -> String {
         faces.push([a, c, d]);
     };
     let outer = [[0.0, 0.0], [l, 0.0], [l, w], [0.0, w]];
-    let inner = [[rim, rim], [l - rim, rim], [l - rim, w - rim], [rim, w - rim]];
+    let inner = [
+        [rim, rim],
+        [l - rim, rim],
+        [l - rim, w - rim],
+        [rim, w - rim],
+    ];
     let at = |p: [f64; 2], z: f64| [p[0], p[1], z];
-    quad(at(outer[0], 0.0), at(outer[3], 0.0), at(outer[2], 0.0), at(outer[1], 0.0));
+    quad(
+        at(outer[0], 0.0),
+        at(outer[3], 0.0),
+        at(outer[2], 0.0),
+        at(outer[1], 0.0),
+    );
     for k in 0..4 {
         let (a, b) = (outer[k], outer[(k + 1) % 4]);
         quad(at(a, 0.0), at(b, 0.0), at(b, height), at(a, height));
@@ -287,7 +315,12 @@ fn tray_stl(size: [f64; 2], floor: f64, height: f64, rim: f64) -> String {
         quad(at(a, height), at(b, height), at(c, height), at(d, height));
         quad(at(c, floor), at(d, floor), at(d, height), at(c, height));
     }
-    quad(at(inner[0], floor), at(inner[1], floor), at(inner[2], floor), at(inner[3], floor));
+    quad(
+        at(inner[0], floor),
+        at(inner[1], floor),
+        at(inner[2], floor),
+        at(inner[3], floor),
+    );
     let mut out = String::from("solid tray\n");
     for face in faces {
         out.push_str("facet normal 0 0 0\nouter loop\n");
