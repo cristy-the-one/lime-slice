@@ -76,8 +76,13 @@
 .estimate-slot { flex: 0 1 252px; min-width: 104px; container: estimate / inline-size; display: flex; justify-content: flex-end; }
 /* Before a slice the estimate is only its dock icon, so results stay one click away. */
 .estimate-slot:has(.estimate:empty) { flex: 0 0 var(--control-h); min-width: var(--control-h); }
-@container estimate (max-width: 239px) { .est-cost { display: none; } }
-@container estimate (max-width: 179px) { .est-mass { display: none; } }
+/*
+ * The steps are what each value needs in the estimate's mono font, with its padding and dock icon: a long print reads
+ * "16 h 46 min · 162.6 g" in 190 px and adds the price at 248 px. The brand used to be wide enough that the slot never
+ * stood between the old steps; with the small mark it does, and clipped the mass by a few pixels.
+ */
+@container estimate (max-width: 251px) { .est-cost { display: none; } }
+@container estimate (max-width: 199px) { .est-mass { display: none; } }
 .estimate {
   min-width: 0;
   max-width: 100%;
