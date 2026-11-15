@@ -9,8 +9,10 @@
  * Nothing reaches the plate while the run goes: the parts' trees are copies, and the engine holds the new steps and
  * trees. The caller keeps what the run left at `done` (`parts`), or drops it.
  *
- * Refused in the app with a sentence, as the window has no place for them yet: a fit coupon (solid_new {coupon}), an
- * assembly (model_place {to} or {assembly}), model_check {interference}, and the planners (model_probe {plan}).
+ * A run assembles its own parts (model_place {to}, joints, turns, Couple gears, couplings) through the host-neutral
+ * `../assembly-edit.ts`, as the MCP session does, and keeps the assemblies for the caller (docs/plan-plugin-recipes.md,
+ * section 6). Refused in the app with a sentence, as the window has no place for them yet: a fit coupon (solid_new
+ * {coupon}), model_place {until}, model_check {interference}, and the planners (model_probe {plan}).
  */
 import { AnchorError, hasAnchor, resolveAnchors, type Box } from "../modeling/anchors.ts";
 import { bakeOp, bakeTransition, onFaceIndex, profilePlane as profilePlaneOf, type BakeContext, type Baked } from "../modeling/bake.ts";
@@ -20,7 +22,9 @@ import { surfaceAt } from "../modeling/inspect.ts";
 import { appliedReply, boundsOf, describeReply, disjointRefusal, edgesReply, facesReply, nodeHandle, parseNode, partExpandContext, probeEcho, probeVerdict, solidSections, solidView, stepGuard, storedOp, typedPlaneOf, typedPointIn, type SolidView } from "../modeling/model-calls.ts";
 import { clampPieces } from "../modeling/partition.ts";
 import { checkReply, historyReply, keptSide, labelBox, measureReply, splitCheck, splitKeep, type StepGroup } from "../modeling/part-reads.ts";
-import { assembledBox, frameNote, frameWhere, placeFree, placeOnPlate, placedBounds, type PlatePlace } from "../modeling/placing.ts";
+import { assembledBox, frameWhere, placeOnPlate, placedBounds, type PlatePlace } from "../modeling/placing.ts";
+import { placeEdit, placeManyEdit, type AssemblyEdit, type AssemblyRefusal, type AssemblyWorld } from "../assembly-edit.ts";
+import { freshAssemblyId, type Assembly } from "../assembly.ts";
 import { typedView } from "../modeling/typed-view.ts";
 import { cutPlanes, MAX_SECTION_POINTS, pointsIn } from "../modeling/sections.ts";
 import { plainModelError } from "../app/model-error.ts";
@@ -29,7 +33,8 @@ import { probeKey } from "../model-feasibility.ts";
 import type { BeltSettings } from "../belt.ts";
 import { isFeatureTool } from "../model-features.ts";
 import { ID_MATRIX, type Mat3 } from "../mesh-place.ts";
-import { rootSpec } from "../model-primitive.ts";
+import { gearOf, rootSpec } from "../model-primitive.ts";
+import { gearRefusal } from "../model-gear.ts";
 import { applyRequest, gotoRequest, joinOp, newSolidRequest, probeRequest } from "../model-request.ts";
 import { applyPose, IDENTITY_POSE, typedPoseOf, type Affine, type ObjectFrame } from "../model-space.ts";
 import { dropped, jumped, newTree, opLabel, pathTo, rechained, reserveId, withChild, withNode, type GroupOp, type ModelOp, type ModelTree, type NodeId, type PartitionModelOp } from "../model-tree.ts";
@@ -200,7 +205,15 @@ export class AppRecipeCalls {
   adopt(child: AppRecipeCalls, id: string): void {
     for (const row of child.all) if (row.origin !== "given") this.add(row);
     for (const note of child.notes) if (this.notes.length < 200) this.notes.push(`${id}: ${note}`);
+    // The assemblies it built come with its parts; an id this run already has is renewed.
+    for (const row of child.assemblies) this.assemblies.push(this.assemblies.some((own) => own.id === row.id) ? { ...row, id: freshAssemblyId([...this.assemblies, ...child.assemblies]) } : row);
   }
+
+  /**
+   * --- docs/plan-plugin-recipes.md, section 6. The assemblies this run built of its own parts (`model_place {to}`,
+   * joints, Couple gears, couplings): the caller keeps them with the parts, in the same undo step.
+   */
+  assemblies: Assembly[] = [];
   /** What each given face or outline resolved to, for the step's stamp in its place. */
   readonly picked: Record<string, unknown> = {};
 
@@ -386,18 +399,25 @@ export class AppRecipeCalls {
     if (site.tool === "solid_new") value = await this.solidNew(args);
     else {
       const target = typeof args.object === "string" ? args.object : this.selected ?? "";
-      // Placing changes no history step, so a run places only the parts it made, relative to each other or the bed.
+      // Placing changes no history step, so a run places only the parts it made, relative to each other or the bed; and
+      // assembles, joints and couples only those (docs/plan-plugin-recipes.md, section 6), as over MCP.
+      const many = site.tool === "model_place" && Array.isArray(args.objects);
       if (site.tool === "model_place" || site.tool === "object_place") {
         const align = args.align as { to?: unknown } | undefined;
-        const others = [args.to, align?.to].filter((v): v is string => typeof v === "string" && v !== "bed");
-        if (this.parts.get(target)?.origin !== "made" || others.some((id) => this.parts.get(id)?.origin !== "made")) {
+        const couple = args.couple && typeof args.couple === "object" ? (args.couple as { driven?: unknown; click?: unknown }) : undefined;
+        const others = [args.to, align?.to, couple?.driven, couple?.click].filter((v): v is string => typeof v === "string" && v !== "bed");
+        const targets: unknown[] = many ? (args.objects as unknown[]) : [target];
+        if (targets.some((id) => typeof id !== "string" || this.parts.get(id)?.origin !== "made") || others.some((id) => this.parts.get(id)?.origin !== "made")) {
           return { ok: false, error: `${site.tool} in a recipe places only the objects this run made (solid_new), relative to each other or the bed.` };
         }
       }
-      // --- O8 (D11.1). A recipe touches only the part it was given and the parts it made.
-      const part = this.addressable(target);
-      if (!part) return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${target || "(no part)"} is neither. Pass it as object to run on it.` };
-      value = await this.partCall(part, site.tool, args);
+      if (many) value = this.written(placeManyEdit(this.assemblyWorld(), args));
+      else {
+        // --- O8 (D11.1). A recipe touches only the part it was given and the parts it made.
+        const part = this.addressable(target);
+        if (!part) return { ok: false, error: `A recipe can change only the part it was given and the parts it made; ${target || "(no part)"} is neither. Pass it as object to run on it.` };
+        value = await this.partCall(part, site.tool, args);
+      }
     }
     if (value.ok === false) {
       const { ok: _ok, reason, ...extra } = value;
@@ -489,8 +509,14 @@ export class AppRecipeCalls {
 
   private async solidNew(args: Body): Promise<Body> {
     if (args.coupon !== undefined) return { ok: false, reason: "A fit coupon makes its plate and pins as parts of their own, which a plugin run in the app cannot place yet. Run it over MCP." };
-    const typed = primitiveFrom(args);
+    // A gear: the gear op's fields, its base on Z = 0, centred on its axis, as the MCP session makes one. Before 6.8.0
+    // the window read the gear's fields as a box's.
+    const gear = args.gear && typeof args.gear === "object" ? (args.gear as Body) : null;
+    if (gear && args.primitive !== undefined) return { ok: false, reason: "Give a primitive or a gear, not both." };
+    const typed = gear ? primitiveFrom({ ...gear, primitive: "gear", origin: [0, 0, 0], turn: [0, 0, 0] }, "gear") : primitiveFrom(args);
     if ("reason" in typed) return { ok: false, reason: typed.reason };
+    const gearWhy = gear ? gearRefusal(gearOf(typed)!, typed.height) : null;
+    if (gearWhy) return { ok: false, reason: gearWhy };
     const kind = typed.primitive;
     this.seq += 1;
     const named = this.env.newPart?.() ?? { id: `run_${this.seq}`, key: `run-${Date.now().toString(36)}-${this.seq}` };
@@ -520,19 +546,50 @@ export class AppRecipeCalls {
     return { ok: true, object: named.id, fingerprint: solid?.fingerprint ?? null, bounds: solid?.bounds ?? null, frame: "part" };
   }
 
+  /**
+   * model_place, answered by the host-neutral assembly edit (`../assembly-edit.ts`) over this run's own parts: a pose
+   * in model space, or a place in an assembly, a joint, a turn with its train, Couple gears, a declared coupling. The
+   * run keeps the assemblies; the window adds them with the parts, in the same undo step.
+   */
   private modelPlace(p: RunPart, input: Body): Body {
-    if (input.frame !== undefined && input.frame !== "part" && input.frame !== "model") return { ok: false, reason: 'frame is "part" or "model".' };
-    if (input.to !== undefined || input.assembly !== undefined) return { ok: false, reason: "An assembly is kept by the plate, which a plugin run in the app does not change. Place the part by x, y, z and turns, or run the plugin over MCP." };
-    const free = placeFree(p, input, this.env.params ?? {});
-    if ("reason" in free) return { ok: false, reason: free.reason };
-    p.modelPose = free.pose.modelPose;
-    if (free.pose.frame === "part") p.frame = "part";
-    else delete p.frame;
-    p.posed = true;
-    const box = assembledBox(p.solid?.positions, p.modelPose);
-    const once = free.texts ? " An expression here is read once; an offset from another part (to) follows the parameters." : "";
-    const { ok: _ok, pose: _pose, frame, ...where } = free.reply;
-    return { ok: true, pose: "assembled", ...where, frame, ...(box ? { assembledMm: box } : {}), note: `Assembled pose set. The print layout is unchanged.${once} ${frameNote(frame as ObjectFrame)}` };
+    if (input.until !== undefined) return { ok: false, reason: "until asks the kernel where parts touch, which a plugin run in the app does not do yet. Give the angle or travel, or run the plugin over MCP." };
+    return this.written(placeEdit(this.assemblyWorld(), { id: p.id, name: p.name, modelPose: p.modelPose, ...(p.frame ? { frame: p.frame } : {}), tree: p.tree }, input));
+  }
+
+  /** What an assembly edit reads of this run: its made parts, as they stand now, and the run's assemblies. */
+  private assemblyWorld(): AssemblyWorld {
+    const parts = this.all.filter((row) => row.origin === "made" && !row.consumed);
+    return {
+      assemblies: this.assemblies,
+      parts: parts.map((row) => ({ id: row.id, name: row.name, modelPose: row.modelPose, ...(row.frame ? { frame: row.frame } : {}), tree: row.tree })),
+      params: this.env.params ?? {},
+      box: (id, pose) => assembledBox(this.parts.get(id)?.solid?.positions, pose),
+      centre: (id) => {
+        const positions = this.parts.get(id)?.solid?.positions;
+        if (!positions || positions.length < 3) return undefined;
+        const box = boundsOf(positions);
+        return [(box.min[0]! + box.max[0]!) / 2, (box.min[1]! + box.max[1]!) / 2, (box.min[2]! + box.max[2]!) / 2];
+      },
+    };
+  }
+
+  /** An assembly edit written to the run: its assemblies, and each part's pose and frame. Its reply, or its refusal. */
+  private written(edit: AssemblyEdit | AssemblyRefusal): Body {
+    if (!edit.ok) return { ok: false, reason: edit.reason };
+    if (edit.assemblies) this.assemblies = edit.assemblies;
+    for (const [id, frame] of edit.frames) {
+      const part = this.parts.get(id);
+      if (!part) continue;
+      if (frame === "part") part.frame = "part";
+      else delete part.frame;
+    }
+    for (const [id, pose] of edit.poses) {
+      const part = this.parts.get(id);
+      if (!part) continue;
+      part.modelPose = pose;
+      part.posed = true;
+    }
+    return edit.reply;
   }
 
   private objectPlace(p: RunPart, input: Body): Body {

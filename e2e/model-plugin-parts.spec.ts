@@ -11,7 +11,8 @@ import { scriptedLibrary } from "./plugins-scripted";
  * as built). An empty plate in Model offers Run a plugin…; plugins that change a part are greyed and say what they
  * need. Preview draws every part the run makes, where Apply puts it, and Cancel takes them back; Apply puts each on the
  * plate as its own object, named as the plugin named them, stamped with one run id, and one Undo takes them all back.
- * Changing the values of one part of the set says plainly that the window does not rebuild a set yet.
+ * Changing the values of one part of the set rebuilds the set part for part (docs/plan-plugin-recipes.md 6.4); a value
+ * that makes a different number of parts says so and changes nothing.
  */
 
 const readout = (page: Page) => page.locator("#modelReadout");
@@ -181,7 +182,7 @@ test("a plugin that makes several parts runs with nothing open: Preview shows th
   await page.keyboard.press("Control+Shift+Z");
   await expect(objects(page)).toHaveCount(3);
 
-  // A value change on one part of the set says what it does today, and changes nothing.
+  // A value change that makes a fourth part: the set rebuilds only part for part, so it says so and changes nothing.
   const row = page.getByRole("treeitem", { name: /^Parts box · plugin v1/ });
   await expect(row).toBeVisible();
   await row.hover();
@@ -190,7 +191,7 @@ test("a plugin that makes several parts runs with nothing open: Preview shows th
   await expect(values).toBeVisible();
   await values.locator('.mh-plugin-control[data-name="parts"]').fill("4");
   await values.locator("#modelPluginRebuild").click();
-  await expect(readout(page)).toContainText("Parts box made this part in one run with lid and peg, and the window cannot yet change the values of a run of several parts, so nothing changed. Run Parts box again from Plugins with the new values, then remove the old parts.");
+  await expect(readout(page)).toContainText("With these values Parts box makes 4 parts where its run made 3, and the window rebuilds a run of several parts only part for part, so nothing changed. Run Parts box from Plugins with these values to get a new set.");
   await expect(objects(page)).toHaveCount(3);
   await page.screenshot({ path: `${shots}/value-change-on-a-set.png` });
 });

@@ -37,7 +37,10 @@ import {
 } from "../../plugins/library";
 import { setModelCardPreview } from "../../ui/model-chrome";
 import { readRow, type RowKey } from "../../model-history";
-import { addedSolid, meshTokenOf, modelPoseOf, setMeshSeat } from "../../plate";
+import { addedSolid, meshTokenOf, modelPoseOf, setMeshSeat, withFrame } from "../../plate";
+import type { Assembly } from "../../assembly";
+import { addBuiltAssemblies, syncAssemblyView } from "../assemblies";
+import { refreshObjectList } from "../settings";
 import { place } from "../files";
 import { flushEdit, markModelEdit, noteEdit } from "../history";
 import { modelTrees } from "../model-trees";
@@ -208,10 +211,15 @@ export async function runPanelPlugin(plugin: PanelPlugin, params: Record<string,
   if (made.length > 0) {
     // New parts: a plate object each, stamped on its root with the run's one id, one Prepare step that Undo takes back.
     const show = made.find((row) => row.part === result.made) ?? made[0]!;
-    const opened = addMadeObjects(made, show, title);
+    const opened = addMadeObjects(made, show, title, result.assemblies);
     keepRunTrees(opened, result.others);
     markProjectDirty();
-    const parts = made.length === 1 ? `${names}, a new part, which Undo takes back.` : `${made.length} new parts (${names}), each an object on the plate, which one Undo takes back.`;
+    if (result.assemblies.length) {
+      syncAssemblyView();
+      refreshObjectList();
+    }
+    const joined = result.assemblies.length ? ` They stand assembled in ${partNames(result.assemblies.map((row) => row.name))}${result.assemblies.some((row) => row.couplings?.length) ? ", coupled; Pose turns them" : ""}.` : "";
+    const parts = made.length === 1 ? `${names}, a new part, which Undo takes back.` : `${made.length} new parts (${names}), each an object on the plate, which one Undo takes back.${joined}`;
     const given = changed ? ` The step on ${changed.part.name} is in its History, with its own Undo.` : "";
     const text = `${applied}: ${parts}${given} ${about(show.solid)}${notes}`;
     present(show.solid, text);
@@ -248,7 +256,7 @@ interface MadeRow {
  * The parts a plugin made, each a new plate object of its own, in the order made, named as the plugin named them, where
  * the run placed them or beside the others: one Prepare step that one Undo takes back. `show` is the one Model opens.
  */
-function addMadeObjects(rows: readonly MadeRow[], show: MadeRow, title: string): Opened {
+function addMadeObjects(rows: readonly MadeRow[], show: MadeRow, title: string, assemblies: readonly Assembly[] = []): Opened {
   commitModel();
   forgetPlaceSteps();
   forgetWorkplaneSteps();
@@ -268,7 +276,11 @@ function addMadeObjects(rows: readonly MadeRow[], show: MadeRow, title: string):
     state.plate = addedSolid(state.plate, { name: unique, fileName, bytes, sourcePos: positions, stepTolerance: state.stepTolerance }, row.part.id, row.tree.key, row.pose, bedX, bedY);
     modelTrees.set(row.tree.key, { ...withNode(row.tree, row.tree.current, { mesh }), committed: row.tree.current });
     keepSolid(row.tree.key, row.tree.current, state.stepTolerance, row.solid);
+    // A member of an assembly the run built reads its Model numbers in its own frame, as the run set it.
+    if (row.part.frame === "part") state.plate = withFrame(state.plate, row.part.id, "part");
   }
+  // --- docs/plan-plugin-recipes.md, section 6. The run's assemblies join the project in this same step, solved.
+  if (assemblies.length) addBuiltAssemblies(assemblies);
   // The part Model opens on is the selected one; the others wait on the plate, each with its own History.
   state.plate = { ...state.plate, selectedId: show.part.id };
   applySelectedToState(state.plate);

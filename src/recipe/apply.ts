@@ -7,6 +7,7 @@
  * object per made part, all one undo step.
  */
 import { gotoRequest } from "../model-request.ts";
+import { readAssemblies, type Assembly } from "../assembly.ts";
 import type { ModelTree, NodeId, PluginPins, PluginStamp, PluginValue } from "../model-tree.ts";
 import { runNestedInApp, topNested, type AppPluginSources } from "./app-nested.ts";
 import { pinsOf, type PluginCode } from "./nested.ts";
@@ -82,6 +83,11 @@ export type PluginRunOutcome =
       notes: string[];
       /** --- API 1.16. The plugins the run ran from inside it, with their code: the project keeps a copy of each. */
       used: PluginCode[];
+      /**
+       * --- Section 6 of docs/plan-plugin-recipes.md. The assemblies the run built of the parts it made, naming their ids:
+       * the caller adds them with the parts, in the same undo step.
+       */
+      assemblies: Assembly[];
     } & RunTrace)
   | ({ ok: false; reason: string; line?: number; notes: string[] } & RunTrace);
 
@@ -127,7 +133,7 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
   } else calls = new AppRecipeCalls(null, engine, env);
   calls.params = input.params;
   const queue = calls.useQueue(unreadKeys(built.unread), silent, (input.limits ?? DEFAULT_LIMITS).timeoutS, input.signal);
-  const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: false, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
+  const start = { params: input.params, context: { units: "mm", host: "app", nativeGeometry: true, limits: { maxParts: MAX_APP_RECIPE_PARTS, canAssemble: true, canCheckpoint: false, timeLimitS: (input.limits ?? DEFAULT_LIMITS).timeoutS }, ...(part ? { object: part.id } : {}), bedMm: input.context.bedMm, nozzleMm: input.context.nozzleMm } };
   // --- API 1.16. Plugins run from inside this one: one deadline and one budget of calls for them all.
   const top = topNested(input.limits);
   const used = new Map<string, PluginCode>();
@@ -182,5 +188,9 @@ async function runFreshOnce(input: PluginRunInput, silent: boolean): Promise<Plu
   });
   const shown = kept[parts.indexOf(target)]!;
   const others = calls.all.filter((row) => !parts.includes(row) && row.origin !== "given" && (row.origin !== "made" || row.consumed));
-  return { ok: true, tree: shown.tree, body: shown.body, solid: shown.solid, stamp: shown.stamp, ids: shown.ids, made: target.origin === "made" ? target : null, kept, others, notes, used: [...used.values()], ...trace };
+  // --- Section 6. The assemblies the run built, against the parts it keeps (a part a join took leaves them), and every
+  // member keeps the model pose the run gave it: the train stands as built.
+  const assemblies = readAssemblies(calls.assemblies, made.map((row) => ({ id: row.id, modelPose: row.modelPose })));
+  for (const row of made) if (assemblies.some((assembly) => assembly.members.some((member) => member.object === row.id))) row.posed = true;
+  return { ok: true, tree: shown.tree, body: shown.body, solid: shown.solid, stamp: shown.stamp, ids: shown.ids, made: target.origin === "made" ? target : null, kept, others, notes, used: [...used.values()], assemblies, ...trace };
 }
