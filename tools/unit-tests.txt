@@ -56,6 +56,7 @@ src/dynamics.test.ts
 src/escapement.test.ts
 mcp/mass.test.ts
 mcp/contact.test.ts
+mcp/motion.test.ts
 mcp/assembly-friction.test.ts
 mcp/assembly-reroot.test.ts
 src/interference.test.ts
