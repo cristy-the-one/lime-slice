@@ -1577,8 +1577,8 @@ export const TOOLS: ToolSpec[] = [
         object: handle,
         overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
-        interference: { type: "boolean", description: "Instead: assembly pairs that cross." },
-        exact: { type: "boolean", description: "With interference: kernel common volume." },
+        interference: { type: "boolean", description: "Instead: every pair of the assembly's parts at their assembled poses, clear, touch or crossing, by the mesh pass. Meshes that overlap no deeper than toleranceMm (0.05 mm, the kernel's mesh chord) touch: faces that touch in the solids, an axle in a hole of its size, overlap that much in their meshes." },
+        exact: { type: "boolean", description: "With interference: each pair the mesh pass did not clear, touches included, measured by the kernel's common volume; under 0.01 mm³ is a touch." },
         crossingsOnly: { type: "boolean", description: "With interference: omit touches; unmeasured pairs stay." },
         sweep: { type: "object", additionalProperties: false, description: "Instead: first hinge angle that crosses a fixed part. A coupled hinge turns its gear train with it (train in the reply); limits are left out. At most 1000 angles, then bisection to tolerance.", properties: { from: { type: "number", description: "Degrees." }, to: { type: "number", description: "Degrees." }, step: { type: "number", minimum: 0.01, description: "Degrees, default 5, from 0.01." }, tolerance: { type: "number", minimum: 0.001, maximum: 45, description: "Degrees the crossing is pinned to. Default 0.5." } } },
       },
@@ -1849,7 +1849,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "pose_animate",
-    description: "Sample an assembly animation and optionally export a GIF or PNG frames; leaves the pose unchanged.",
+    description: "Run an animation script (source, path or plugin) against an assembly and sample its frames; the assembly's pose is left as it was. Without out it answers the frame count, keys, the rig and any warnings. With out it also draws every frame and writes a GIF (out.gif) and/or numbered PNG frames (out.frames, a folder) in the workspace. An export can run for minutes: past about 45 s the call answers with a job, slice_wait {job} returns the result when the last frame is written, and slice_cancel stops it between frames. Files are written under a .partial name and take their own names only when the last frame is done, so a cancel or a failure leaves no half-written GIF or short run of frames. The GIF is encoded a frame at a time, so its length is not limited by memory. Warnings name each pair of parts that cross: on how many frames, the first frame and its time (pair, frames, firstFrame, timeS). The check is the mesh pass, as model_check {interference} makes it: meshes that overlap no deeper than 0.05 mm (the kernel's mesh chord) touch. A pair that already overlaps at rest, as the plate holds it, and keeps that pose to each other is one warning with atRest, not one a frame. Frames are round(duration x fps), spread from 0 to the end; frameTiming says when keys fall between frames, where a frame is interpolated between two keys, so a pose checked at a key is not the pose such a frame shows.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       object: handle,
       name: { type: "string", minLength: 1, maxLength: 80, description: "Name kept with the project." },

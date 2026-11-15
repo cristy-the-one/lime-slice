@@ -1,6 +1,7 @@
 // Wall thickness: from points spread over the surface, a ray straight in, and how far it runs before it leaves the
-// part. A uniform grid of triangles keeps each ray to the cells it crosses. Places thinner than a printable wall are
-// grouped into regions, each with where it is and how thin it gets.
+// part through a face turned back toward the one it started from. A uniform grid of triangles keeps each ray to the
+// cells it crosses. Places thinner than a printable wall are grouped into regions, each with where it is and how thin
+// it gets.
 
 type V3 = [number, number, number];
 
@@ -144,10 +145,23 @@ export function meshRays(pos: ArrayLike<number>): { first(from: V3, dir: V3, far
 }
 
 /**
- * Regions where the part is thinner than `minMm`, measured straight in from up to `samples` points spread over the
- * surface by area. Each region is a 5 mm cell's worth of thin surface, the largest first.
+ * The most, in degrees, that the face a ray leaves through may turn from facing straight back at the face it started
+ * from, for the two to be a wall's sides. A wall's sides face each other, and so do a knife edge's (a wedge under 45°).
+ * Two faces at a corner of 45° or more are not a wall: a ray from beside the corner meets the other face after a
+ * distance that goes to nothing at the corner, however thick the part is. A mesh makes such corners where the solid has
+ * none: the kernel meshes a curved wall with facets that lean up to 25° off it near a rim (docs/plan-mcp-reliability.md,
+ * item 3), and every ray from beside the rim read as a knife edge.
  */
-export function thinWalls(pos: Float32Array, minMm: number, samples = 6000): { regions: ThinRegion[]; areaMm2: number; sampled: number } {
+export const WALL_FACING_DEG = 45;
+
+/**
+ * Regions where the part is thinner than `minMm`, measured straight in from up to `samples` points spread over the
+ * surface by area. Each region is a 5 mm cell's worth of thin surface, the largest first. A ray counts only when it
+ * leaves through a face turned no more than `facingDeg` (default `WALL_FACING_DEG`) from facing back; 180 counts every
+ * face, as the scan did before.
+ */
+export function thinWalls(pos: Float32Array, minMm: number, samples = 6000, options: { facingDeg?: number } = {}): { regions: ThinRegion[]; areaMm2: number; sampled: number } {
+  const facing = -Math.cos(((options.facingDeg ?? WALL_FACING_DEG) * Math.PI) / 180);
   const count = Math.floor(pos.length / 9);
   if (count === 0) return { regions: [], areaMm2: 0, sampled: 0 };
   const grid = new Grid(pos);
@@ -189,8 +203,13 @@ export function thinWalls(pos: Float32Array, minMm: number, samples = 6000): { r
       }
       const c: V3 = [0, 1, 2].map((m) => pos[i + m]! + e1[m]! * a + e2[m]! * b) as V3;
       sampled += 1;
-      const depth = grid.hit([c[0] + inward[0] * 1e-4, c[1] + inward[1] * 1e-4, c[2] + inward[2] * 1e-4], inward, t, minMm);
-      if (depth === null || depth >= minMm) continue;
+      const hit = grid.nearest([c[0] + inward[0] * 1e-4, c[1] + inward[1] * 1e-4, c[2] + inward[2] * 1e-4], inward, t, minMm);
+      if (hit === null || hit.distance >= minMm) continue;
+      // The far face must turn back toward this one: its outward normal against this face's (minus the inward ray).
+      const far = grid.normal(hit.tri);
+      const farLength = Math.hypot(far[0], far[1], far[2]);
+      if (!(farLength > 0) || -(far[0] * inward[0] + far[1] * inward[1] + far[2] * inward[2]) / farLength > facing) continue;
+      const depth = hit.distance;
       thinArea += share;
       const key = c.map((v) => Math.floor(v / 5)).join(",");
       const row = cells.get(key) ?? { area: 0, sum: [0, 0, 0] as V3, min: [Infinity, Infinity, Infinity] as V3, max: [-Infinity, -Infinity, -Infinity] as V3, thinnest: Infinity };
