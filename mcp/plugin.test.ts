@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { bodyHash, parsePlugin, writePlugin, type PluginHeader } from "./plugins.ts";
+import { bodyHash, listShipped, parsePlugin, writePlugin, type PluginHeader } from "./plugins.ts";
 import { findLust } from "./recipe.ts";
 import { splitPluginData } from "../src/recipe/plugin-data.ts";
 
@@ -384,6 +384,24 @@ check("the part built with it stays", (await volume(String(byId.object))) > 0);
   const j = await call("recipe_run", { source: late.replace("10.0, 10.0, 10.0", "10.0, 10.0, 11.0"), name: "late_j", keep: { title: "Late j", description: "x" } });
   check("a late parameter is still refused at keep, by the check's own run", j.ok === true && String(j.keepRefused).includes("Declare width before the first call (line 5)") && dryRuns === before + 1, { j, dry: dryRuns - before });
   Session.prototype.recipeRun = inner;
+}
+
+// --- nugget save {source, id}: the id is the one named, and an existing id gets the next version, with the plate as it was.
+{
+  const plate = async () => JSON.stringify(((await call("plate_list", {})).objects as { object: string }[]).map((row) => row.object));
+  const before = await plate();
+  const first = await call("nugget", { action: "save", kind: "plugin", source: flange(" + 3.0"), id: "base-flange", title: "Base flange", description: "First." });
+  check("nugget save {source, id} keeps the plugin under the id named", first.ok === true && first.id === "base-flange" && first.version === 1, first);
+  const versioned = await call("nugget", { action: "save", kind: "plugin", source: flange(" + 3.5"), id: "base-flange", title: "Heavier flange", description: "Taller." });
+  check("and the same id with other code is the next version, whatever the title", versioned.ok === true && versioned.id === "base-flange" && versioned.version === 2, versioned);
+  check("and nothing was left on the plate", (await plate()) === before, await plate());
+  check("the title of the new version is the title given", ((await call("plugin", { action: "get", id: "base-flange" })).data as { title?: string }).title === "Heavier flange");
+  const named = await call("nugget", { action: "save", kind: "plugin", source: flange(" + 4.0"), id: "my-own-flange", title: "Bolt-circle flange", description: "Named." });
+  check("an id that is new becomes the plugin's id, not the title's slug", named.ok === true && named.id === "my-own-flange" && named.version === 1, named);
+  const shipped = listShipped()[0]!.header.plugin;
+  const taken = await call("nugget", { action: "save", kind: "plugin", source: flange(" + 5.0"), id: shipped, title: "Anything", description: "x" });
+  check("a shipped plugin's id cannot be taken, with a sentence", taken.ok === false && String(taken.reason).includes("ships with Lime Slice"), taken);
+  check("and the plate is still as it was", (await plate()) === before);
 }
 
 if (failed > 0) {

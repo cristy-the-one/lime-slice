@@ -85,6 +85,28 @@ function refuse(code: AssemblyRefusalCode, reason: string, next?: "plate" | "ass
 type Reply = Record<string, unknown> | AssemblyRefusal;
 const refused = (reply: Reply): reply is AssemblyRefusal => reply.ok === false;
 
+/** The kinds a joint can be given, the fields each takes, and a plain line of them for a refusal. */
+const JOINT_KINDS = "hinge, slide, ball (or held, with no other field)";
+const JOINT_FIELDS = { hinge: ["kind", "pivot", "axis", "min", "max", "zero"], slide: ["kind", "pivot", "axis", "min", "max", "zero"], ball: ["kind", "pivot", "cone", "zero"] } as const;
+const JOINT_TAKES = {
+  hinge: "kind, pivot [x, y, z] in mm, axis [x, y, z] (not all zero), and optionally min and max (degrees; min at most 0, max at least 0) and zero",
+  slide: "kind, pivot [x, y, z] in mm, axis [x, y, z] (not all zero), and optionally min and max (mm; min at most 0, max at least 0) and zero",
+  ball: "kind, pivot [x, y, z] in mm, and optionally cone (degrees, 0 to 180) and zero",
+};
+/** The first thing wrong with a joint that `readJoint` refused, as a clause. */
+function jointProblem(joint: Record<string, unknown>): string {
+  const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+  const vec3 = (value: unknown): boolean => Array.isArray(value) && value.length === 3 && value.every(finite);
+  if (!vec3(joint.pivot)) return "pivot is missing or is not three finite numbers";
+  if (joint.kind === "ball") return "cone is not a number from 0 to 180 degrees";
+  const axis = joint.axis;
+  if (!vec3(axis) || Math.hypot(...(axis as number[])) < 1e-12) return "axis is missing, is not three finite numbers, or is all zero";
+  for (const key of ["min", "max"]) if (joint[key] !== undefined && !finite(joint[key])) return `${key} is not a number`;
+  const { min, max } = joint as { min?: number; max?: number };
+  if (min !== undefined && max !== undefined && min > max) return "min is above max";
+  return "the limits must contain 0 (min at most 0, max at least 0), because the joint starts at 0";
+}
+
 /** One edit's working state over the world: the poses, frames and assemblies it wrote so far. */
 class Work {
   assemblies: Assembly[];
@@ -544,8 +566,10 @@ function poseMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>):
       const row = old && (given.kind === undefined || given.kind === old.kind)
         ? { ...(old.kind === "hinge" ? { pivot: old.pivot, axis: old.axis } : { pivot: old.pivot }), kind: old.kind, ...given } as Record<string, unknown>
         : given;
-      const allowed = row.kind === "hinge" || row.kind === "slide" ? ["kind", "pivot", "axis", "min", "max", "zero"] : ["kind", "pivot", "cone", "zero"];
-      if (Object.keys(row).some((key) => !allowed.includes(key))) return refuse("bad-placement", "The joint contains a field its kind does not take; see guide {kind: pose}.");
+      if (row.kind !== "hinge" && row.kind !== "slide" && row.kind !== "ball") return refuse("bad-placement", row.kind === undefined ? `A joint needs a kind: ${JOINT_KINDS}.` : `The joint kind ${JSON.stringify(row.kind)} is not one this takes: ${JOINT_KINDS}.`);
+      const allowed: readonly string[] = JOINT_FIELDS[row.kind];
+      const unknown = Object.keys(row).filter((key) => !allowed.includes(key));
+      if (unknown.length) return refuse("bad-placement", `The joint ${unknown.length === 1 ? "field" : "fields"} ${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not taken by a ${row.kind} joint. A ${row.kind} takes ${JOINT_TAKES[row.kind]}.`);
       if (row.zero !== undefined && row.zero !== "keep" && row.zero !== "here") return refuse("bad-placement", "zero is \"keep\" or \"here\".");
       const { zero: wanted, ...fields } = row;
       const same = (a: readonly number[] | undefined, b: unknown): boolean => !!a && Array.isArray(b) && a.length === b.length && a.every((v, i) => Math.abs(v - (b[i] as number)) < 1e-9);
@@ -559,7 +583,7 @@ function poseMember(w: Work, obj: AssemblyPart, input: Record<string, unknown>):
       else if (fields.kind === "slide") raw = { ...fields, travel: 0 };
       else raw = { ...fields, rest: keep && old?.kind === "ball" && old.rest ? old.rest : rotationQuaternion(memberPose(member).m) };
       const joint = readJoint(raw);
-      if (!joint) return refuse("bad-placement", "A joint needs a finite pivot, a nonzero hinge axis and valid limits containing its zero angle, or a ball cone from 0 to 180 degrees.");
+      if (!joint) return refuse("bad-placement", `The ${row.kind} joint is not valid: ${jointProblem(fields)}. A ${row.kind} takes ${JOINT_TAKES[row.kind]}.`);
       member = { ...plain, joint };
       if (keep && old?.kind === "hinge" && joint.kind === "hinge" && (old.angle ?? 0) !== 0) {
         // The pose stays: its angle from the kept zero is the old one, and a call's angle is measured from that zero. The

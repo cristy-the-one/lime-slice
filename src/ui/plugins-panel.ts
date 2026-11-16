@@ -623,7 +623,7 @@ function trustBox(plugin: PanelPlugin): HTMLElement | null {
 function targetLine(plugin: PanelPlugin): string {
   if (plugin.file.kind === "animation") {
     // docs/plan-animation-plugins.md A4: the members it needs, so a person knows which assemblies it fits.
-    const needs = needsLine(plugin.file.params, plugin.file.memberParams, plugin.file.memberNames);
+    const needs = needsLine(plugin.file.params, plugin.file.memberParams, plugin.file.memberNames, plugin.file.memberOptional);
     return needs ? `Poses ${needs}. Open Pose to play it.` : "Poses an assembly. Open Pose to play it.";
   }
   const part = host?.partName() ?? null;

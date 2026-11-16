@@ -28,6 +28,9 @@ function machineGet(this: Session): Record<string, unknown> {
       bedTemp: filament.bedTemp,
       flow: filament.flow,
       pressureAdvance: filament.pressureAdvance,
+      // What model_mass and the slice estimate weigh with.
+      densityGCm3: filament.densityGCm3,
+      diameterMm: filament.diameterMm,
     },
     ...(this.library.measuredFits ? { measuredFits: this.library.measuredFits } : {}),
   };
