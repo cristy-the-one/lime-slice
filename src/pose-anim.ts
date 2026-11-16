@@ -26,7 +26,11 @@ export interface AnimationIssue { line?: number; reason: string }
  */
 export interface AnimationWarning extends AnimationIssue { pair?: [string, string]; frames?: number; firstFrame?: number; timeS?: number; atRest?: boolean }
 export interface AnimationFrame { time: number; assembly: Assembly; poses: Map<string, Affine>; colors: Map<string, string> }
-export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationWarning[]; interferenceChecked: boolean }
+/**
+ * `ignored`: the pairs the caller left out of the crossing check (`SampleOptions.ignore`), by member name, and a sentence
+ * that says so. Present only when the check ran and a pair was named.
+ */
+export interface AnimationResult { frames: AnimationFrame[]; fps: number; durationS: number; bounds: Bounds | null; keys: { t: number; line?: number; reached?: boolean; distanceMm?: number; clamped?: string[] }[]; warnings: AnimationWarning[]; interferenceChecked: boolean; ignored?: { pairs: [string, string][]; reason: string } }
 type Value = { kind: "angle"; value: number } | { kind: "rotation"; value: Quaternion } | { kind: "reach"; at: Vec3; to: Vec3; blend?: number; segment?: number };
 type Point = { time: number; until: number; ease: "linear" | "inOut"; value: Value; key: number };
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -181,8 +185,46 @@ export type SampleOutcome = AnimationResult | { issues: AnimationIssue[] };
  * `interference: false` leaves the parts' crossing check out: a second sampling of a script that was already checked
  * (an export at another frame rate) only needs the poses. `onProgress` hears each frame as it is ready (frame of count),
  * the parts' crossing check of that frame included. `toleranceMm` is the crossing check's (default `MESH_TOLERANCE_MM`).
+ * `ignore` names pairs of members (by name, as the rig gives it, or by handle) the crossing check leaves out: a friction
+ * fit whose parts move against each other (a collet slipping on its pin) overlaps on every frame by design. A name that
+ * is not a member refuses the animation (`readIgnore`).
  */
-export interface SampleOptions { interference?: boolean; toleranceMm?: number; onProgress?: (frame: number, count: number) => void }
+export interface SampleOptions { interference?: boolean; toleranceMm?: number; ignore?: [string, string][]; onProgress?: (frame: number, count: number) => void }
+
+/**
+ * A caller's `ignore` read against the rig: each pair as two member handles, and as the two names the rig gives them; or
+ * why it is refused (the field named). Both hosts read it the same way: the MCP server before it builds a script, and
+ * `sampleAnimationSteps` itself, so the window's worker refuses what the server refuses.
+ */
+export function readIgnore(rig: readonly RigMember[], raw: unknown): { pairs: [string, string][]; names: [string, string][] } | { reason: string } {
+  if (raw === undefined) return { pairs: [], names: [] };
+  const shape = 'ignore is a list of pairs of member names, such as [["Collet", "Pin"]].';
+  if (!Array.isArray(raw)) return { reason: shape };
+  const pairs: [string, string][] = [], names: [string, string][] = [], seen = new Set<string>();
+  for (const entry of raw) {
+    if (!Array.isArray(entry) || entry.length !== 2 || !entry.every((name) => typeof name === "string")) return { reason: shape };
+    const rows = (entry as string[]).map((name) => rig.find((row) => row.name === name) ?? rig.find((row) => row.object === name));
+    const missing = (entry as string[]).find((_, at) => !rows[at]);
+    if (missing !== undefined) return { reason: `ignore: "${missing}" is not a member of this assembly. Its members: ${rig.slice(0, 20).map((row) => row.name).join(", ")}${rig.length > 20 ? ", …" : ""}.` };
+    const [a, b] = rows as [RigMember, RigMember];
+    if (a.object === b.object) return { reason: `ignore: ["${entry[0]}", "${entry[1]}"] names ${a.name} twice; a pair is two members.` };
+    const key = [a.object, b.object].sort().join("\u0000");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push([a.object, b.object]);
+    names.push([a.name, b.name]);
+  }
+  return { pairs, names };
+}
+
+/** The sentence a reply gives for the pairs a caller left out of the crossing check. */
+export function ignoredSentence(names: readonly [string, string][]): string {
+  const list = names.map(([a, b]) => `${a} and ${b}`).join("; ");
+  return `Left out of the crossing check because the call named ${names.length === 1 ? "this pair" : "these pairs"} in ignore: ${list}. Their overlap on any frame is not reported.`;
+}
+
+/** The sampler's options as the window passes them (src/pose-anim-sample.ts) and its worker reads them: the crossing check off, or the pairs it leaves out. */
+export const sampleOptions = (options: { interference?: boolean; ignore?: [string, string][] }): SampleOptions => ({ ...(options.interference === false ? { interference: false } : {}), ...(options.ignore ? { ignore: options.ignore } : {}) });
 
 /** Validate all keys before returning any frame; never mutate the given assembly or poses. */
 export function sampleAnimation(animation: PoseAnimation, original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: SampleOptions = {}): SampleOutcome {
@@ -225,6 +267,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
     else issues.push({ reason: "The palette must map member names to colours." });
   }
   if (animation.background !== undefined && !isBackground(animation.background)) issues.push({ reason: BACKGROUND_REFUSAL });
+  const ignore = readIgnore(rig, options.ignore);
+  if ("reason" in ignore) issues.push({ reason: ignore.reason });
   if (!Number.isInteger(animation.fps) || animation.fps < 4 || animation.fps > 30) issues.push({ reason: "Frames per second must be a whole number from 4 to 30." });
   if (!Array.isArray(animation.keys) || animation.keys.length === 0) return { issues: [...issues, { reason: "Add at least one key." }] };
   const root = original.members.filter((member) => member.parent === null);
@@ -342,7 +386,8 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
   const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
   const centre = partCentre;
   const checkPairs = options.interference !== false;
-  const crossings = checkPairs ? crossingCheck(original, poseOf, parts, options.toleranceMm ?? MESH_TOLERANCE_MM) : null;
+  const skipped = "pairs" in ignore ? ignore : { pairs: [], names: [] };
+  const crossings = checkPairs ? crossingCheck(original, poseOf, parts, options.toleranceMm ?? MESH_TOLERANCE_MM, skipped.pairs) : null;
   // Solve at key times too: a key between exported frames must report its own target, not a later sample.
   const frameNumbers = new Map(frameTimesNow.map((time, frame) => [time, frame]));
   const times = [...new Set([...frameTimesNow, ...keys.map((key) => key.t)])].sort((a, b) => a - b);
@@ -419,7 +464,7 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
   }
   if (crossings) warnings.push(...crossings.warnings(frames.length));
   // The time of the last frame: what a player that shows a frame every 1/fps reaches, the end rounded up to the grid.
-  return { frames, fps: animation.fps, durationS: frameTimesNow[count - 1]!, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length };
+  return { frames, fps: animation.fps, durationS: frameTimesNow[count - 1]!, bounds, keys, warnings, interferenceChecked: checkPairs && usable.length === original.members.length, ...(checkPairs && skipped.names.length ? { ignored: { pairs: skipped.names, reason: ignoredSentence(skipped.names) } } : {}) };
 }
 
 /**
@@ -432,9 +477,11 @@ export function* sampleAnimationSteps(animation: PoseAnimation, original: Assemb
  * turning in a hole of its own size). Overlap deeper than that is a crossing; `model_check {interference, exact}`
  * measures a pose's common volume. Two parts that already overlap at rest (as the plate holds them, before any key),
  * and stand on a frame as they stood at rest to each other, are one warning with `atRest`: the same overlap, not one a
- * frame. Frames where they have moved and still cross are counted as crossings.
+ * frame. Frames where they have moved and still cross are counted as crossings. The pairs in `ignore` (member handles)
+ * are never tested: the caller named them as fits that overlap by design.
  */
-function crossingCheck(original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], tolerance: number) {
+function crossingCheck(original: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], tolerance: number, ignore: readonly [string, string][] = []) {
+  const skip = new Set(ignore.map((pair) => [...pair].sort().join("\u0000")));
   const rig = animationRig(original, parts), partById = new Map(parts.map((part) => [part.object, part]));
   const usable = original.members.flatMap((member) => { const part = partById.get(member.object); return part?.positions && part.positions.length >= 9 ? [{ id: member.object, positions: part.positions, box: boundsOf(part.positions) }] : []; });
   const nameOf = (id: string) => rig.find((row) => row.object === id)!.name;
@@ -457,6 +504,7 @@ function crossingCheck(original: Assembly, poseOf: PoseOf, parts: readonly Anima
       for (let i = 0; i < usable.length; i++) for (let j = i + 1; j < usable.length; j++) {
         const a = usable[i]!, b = usable[j]!, pa = poses.get(a.id), pb = poses.get(b.id), ba = frameBoxes[i], bb = frameBoxes[j];
         if (!pa || !pb || !ba || !bb || ba.min.some((v, axis) => v > bb.max[axis]! || bb.min[axis]! > ba.max[axis]!)) continue;
+        if (skip.size && skip.has([a.id, b.id].sort().join("\u0000"))) continue;
         // Two parts that stand as they stood the last time they were tested cross as they did: most pairs of a
         // mechanism do not move in most frames. The poses must be the same numbers, so the answer is the test's own.
         const slot = i * usable.length + j, last = pairSeen.get(slot);

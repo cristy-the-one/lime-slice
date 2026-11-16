@@ -90,6 +90,24 @@ export function resolveWorkspaceFile(path: string): string {
   return real;
 }
 
+/** A data file inside the workspace (a plan's steps, say), read as text by the caller. Any extension; at most maxBytes. */
+export function resolveWorkspaceData(path: string, maxBytes: number): string {
+  const root = requireWorkspace();
+  if (!path || path.includes("\0")) throw new ProtocolError("That path is not a file this server can read.");
+  const full = isAbsolute(path) ? resolve(path) : resolve(root, path);
+  let real = "";
+  try {
+    real = realpathSync(full);
+  } catch {
+    throw new ProtocolError(`That file was not found: ${full}`);
+  }
+  if (!inside(root, real)) throw new ProtocolError("A plan file must be inside LIME_MCP_WORKSPACE.");
+  const stat = statSync(real);
+  if (!stat.isFile()) throw new ProtocolError("That path is not a regular file.");
+  if (stat.size > maxBytes) throw new ProtocolError(`That file is larger than ${Math.round(maxBytes / (1024 * 1024))} MB.`);
+  return real;
+}
+
 function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));

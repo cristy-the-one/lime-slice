@@ -153,6 +153,105 @@ for (let round = 0; late.status === "running" && round < 5; round += 1) late = a
 check("its wait returns the applied batch", late.status === "done" && late.applied === 8, JSON.stringify(late));
 await third.client.close();
 
+// --- A long model_check {sweep} and model_place {until} (feedback: both ran synchronously, so no heartbeat went out,
+// the client timed out at 60 s and restarted the server). Now they give the event loop a turn every ~20 ms: progress
+// flows, a call past the reply time answers with a job whose result is the direct one, and a cancel puts poses back.
+// The rig: an arm hinged at the origin, a block it meets near 80 degrees, and 200 posts out of its reach that make
+// every angle cost (about 0.8 s for 800 angles); in a second assembly a carriage slides 99 mm 0.06 mm from a wall, so
+// the until search steps by 0.06 mm (about 1800 poses).
+type Conn = Awaited<ReturnType<typeof connect>>;
+const POSTS = 200;
+async function settle(conn: Conn, reply: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let out = reply;
+  for (let round = 0; out.status === "running" && round < 20; round += 1) out = await conn.call("slice_wait", { job: out.job, timeoutS: 20 });
+  return out;
+}
+async function mechanism(conn: Conn) {
+  const made = async (dx: number, dy: number, name: string) => String((await settle(conn, await conn.call("solid_new", { primitive: "box", dx, dy, dz: 5, name }))).object);
+  const placeOk = async (input: Record<string, unknown>) => {
+    const placed = await settle(conn, await conn.call("model_place", input));
+    if (placed.ok !== true) throw new Error(JSON.stringify(placed));
+  };
+  const base = await made(400, 120, "Base");
+  const arm = await made(30, 4, "Arm");
+  const block = await made(4, 4, "Block");
+  await placeOk({ object: arm, to: base, x: 15, y: 0, z: 6 });
+  await placeOk({ object: arm, joint: { kind: "hinge", pivot: [-15, 0, 0], axis: [0, 0, 1] } });
+  await placeOk({ object: block, to: base, x: 0, y: 20, z: 6 });
+  const posts: string[] = [];
+  for (let i = 0; i < POSTS; i += 1) posts.push(await made(2, 2, `Post ${i + 1}`));
+  await placeOk({ objects: posts, to: base });
+  for (const [i, post] of posts.entries()) await placeOk({ object: post, x: -190 + (i % 100) * 3, y: -40 - Math.floor(i / 100) * 3, z: 6 });
+  const rail = await made(300, 40, "Rail");
+  const carriage = await made(4, 4, "Carriage");
+  const wall = await made(200, 2, "Wall");
+  const stop = await made(2, 10, "Stop");
+  await placeOk({ object: carriage, to: rail, x: -100, y: 0, z: 6 });
+  await placeOk({ object: carriage, joint: { kind: "slide", pivot: [0, 0, 0], axis: [1, 0, 0] } });
+  await placeOk({ object: wall, to: rail, x: 0, y: 3.06, z: 6 });
+  await placeOk({ object: stop, to: rail, x: 2, y: 0, z: 6 });
+  return { arm, carriage };
+}
+const sweepArgs = (arm: string) => ({ object: arm, sweep: { from: 0, to: 99.9, step: 0.1 } });
+const untilArgs = (carriage: string) => ({ object: carriage, until: { contact: "any", dir: 1, max: 140, exact: false } });
+const strip = (reply: Record<string, unknown>) => {
+  const { job: _job, status: _status, tool: _tool, ...rest } = reply;
+  return JSON.stringify(rest);
+};
+const posesOf = async (conn: Conn) => JSON.stringify(((await conn.call("plate_list", {})).objects as { object: string; assembledMm?: unknown }[]).map((row) => [row.object, row.assembledMm]));
+
+// The direct answers, from a server with the usual reply time; the client resets its timeout on progress, so a sweep
+// longer than that timeout finishes only if progress goes out while it runs.
+const direct = await connect({ LIME_MCP_FAKE_MODEL_MS: "0" });
+const plain = await mechanism(direct);
+const beats: number[] = [];
+let sweptStart = Date.now();
+const sweptRaw = await direct.client.callTool({ name: "model_check", arguments: sweepArgs(plain.arm) }, undefined, { timeout: 300, resetTimeoutOnProgress: true, onprogress: (row) => beats.push(row.progress) });
+const sweptMs = Date.now() - sweptStart;
+const sweptDirect = JSON.parse((sweptRaw.content as { text: string }[])[0]!.text) as Record<string, unknown>;
+check("a sweep longer than the client's timeout finishes, kept alive by progress", sweptDirect.ok === true && sweptMs > 300 && Number(sweptDirect.firstCollisionDeg) > 70 && beats.length >= 3, JSON.stringify({ sweptMs, beats: beats.length, sweptDirect }).slice(0, 600));
+check("its progress grows", beats.every((value, i) => i === 0 || value > beats[i - 1]!), JSON.stringify(beats));
+sweptStart = Date.now();
+const untilDirect = await direct.call("model_place", untilArgs(plain.carriage));
+check("a long until answers directly on the usual reply time", untilDirect.ok === true && Math.abs(Number(untilDirect.travel) - 99) < 0.02 && Number(untilDirect.evaluations) > 1000, JSON.stringify(untilDirect).slice(0, 600));
+console.log(`     sweep ${sweptMs} ms, ${String(sweptDirect.evaluations)} poses; until ${Date.now() - sweptStart} ms, ${String(untilDirect.evaluations)} poses`);
+await direct.client.close();
+
+// The same calls on a server whose reply time is 1 ms: each answers with a job, and slice_wait returns the direct result.
+const quick = await connect({ LIME_MCP_FAKE_MODEL_MS: "0", LIME_MCP_REPLY_S: "0.001" });
+const rig = await mechanism(quick);
+const before = await posesOf(quick);
+const sweepJob = await quick.call("model_check", sweepArgs(rig.arm));
+check("a long sweep answers with a running job", sweepJob.ok === true && sweepJob.status === "running" && sweepJob.tool === "model_check", JSON.stringify(sweepJob));
+const sweepDone = await settle(quick, sweepJob);
+check("its wait returns the same result as the direct call", sweepDone.status === "done" && strip(sweepDone) === strip(sweptDirect), JSON.stringify({ job: sweepDone, direct: sweptDirect }).slice(0, 1500));
+check("and the poses are as they were", (await posesOf(quick)) === before);
+
+// slice_cancel stops a sweep between angles; the poses are put back.
+const cancelJob = await quick.call("model_check", sweepArgs(rig.arm));
+const cancelReply = await quick.call("slice_cancel", { job: cancelJob.job });
+const cancelOutcome = await settle(quick, cancelReply.status === "cancelling" ? { ...cancelReply, status: "running" } : cancelReply);
+check("a cancelled sweep stops with a sentence", cancelJob.status === "running" && cancelOutcome.ok === false && cancelOutcome.code === "cancelled" && /sweep was cancelled at angle \d+ of \d+/.test(String(cancelOutcome.reason)), JSON.stringify({ cancelJob, cancelReply, cancelOutcome }));
+check("a cancelled sweep leaves the poses as they were", (await posesOf(quick)) === before);
+
+// A long step inside plan_run hands the plan over too.
+const planJob = await quick.call("plan_run", { steps: [{ tool: "model_check", args: sweepArgs(rig.arm) }] });
+check("a plan whose step sweeps long answers with a job", planJob.status === "running" && planJob.tool === "plan_run", JSON.stringify(planJob));
+const planDone = await settle(quick, planJob);
+const planStep = ((planDone.steps ?? []) as { result?: Record<string, unknown> }[])[0]?.result;
+check("the plan's result holds the sweep's", planDone.ok === true && planStep?.firstCollisionDeg === sweptDirect.firstCollisionDeg && planStep?.evaluations === sweptDirect.evaluations, JSON.stringify(planDone).slice(0, 800));
+
+// A long until, the same way; a cancelled one moves nothing.
+const stopJob = await quick.call("model_place", untilArgs(rig.carriage));
+const stopReply = await quick.call("slice_cancel", { job: stopJob.job });
+const stopOutcome = await settle(quick, stopReply.status === "cancelling" ? { ...stopReply, status: "running" } : stopReply);
+check("a cancelled until moves nothing", stopJob.status === "running" && stopOutcome.code === "cancelled" && String(stopOutcome.reason).includes("nothing moved") && (await posesOf(quick)) === before, JSON.stringify({ stopJob, stopOutcome }));
+const untilJob = await quick.call("model_place", untilArgs(rig.carriage));
+check("a long until answers with a running job", untilJob.ok === true && untilJob.status === "running" && untilJob.tool === "model_place", JSON.stringify(untilJob));
+const untilDone = await settle(quick, untilJob);
+check("its wait returns the same result as the direct call", untilDone.status === "done" && strip(untilDone) === strip(untilDirect), JSON.stringify({ job: untilDone, direct: untilDirect }).slice(0, 1500));
+await quick.client.close();
+
 if (failed) {
   console.error(`${failed} failed`);
   process.exit(1);

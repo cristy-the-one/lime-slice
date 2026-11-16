@@ -159,6 +159,58 @@ check("the anchor swings 40 degrees clear of the wheel", limited.ok === false &&
   check("the train stands at its ratio", !!drivenAngle && Math.abs(drivenAngle.angle - (viaTrain.angle as number) * -0.5) < 1e-5, { drivenAngle, angle: viaTrain.angle });
 }
 
+// --- A sweep and fits meant to cross (feedback 3.5). An arm 30 mm long turns about the origin through a boss it is
+// pressed on (they cross at every angle); a latch stands at 45 degrees and a block on the +y axis.
+{
+  const t = new Session(fakeEngine());
+  const tcall = async (name: string, input: Reply = {}) => (await t.call(name, input)) as Reply;
+  const make = async (dx: number, dy: number, name: string) => String((await tcall("solid_new", { primitive: "box", dx, dy, dz: 5, name })).object);
+  const base = await make(120, 120, "Base");
+  const arm = await make(30, 4, "Arm");
+  const boss = await make(4, 4, "Boss");
+  const latch = await make(3, 3, "Latch");
+  const block = await make(4, 4, "Block");
+  await tcall("model_place", { object: arm, to: base, x: 15, y: 0, z: 6 });
+  await tcall("model_place", { object: arm, joint: { kind: "hinge", pivot: [-15, 0, 0], axis: [0, 0, 1] } });
+  await tcall("model_place", { object: boss, to: base, x: 0, y: 0, z: 6 });
+  await tcall("model_place", { object: latch, to: base, x: 14, y: 14, z: 6 });
+  await tcall("model_place", { object: block, to: base, x: 0, y: 20, z: 6 });
+  const poses = () => JSON.stringify(t.objects.map((row) => row.modelPose));
+  const before = poses();
+  const ids = (rows: unknown) => ((rows ?? []) as { a: string; b: string }[]).map((row) => [row.a, row.b].sort().join("+"));
+  const pair = (a: string, b: string) => [a, b].sort().join("+");
+
+  const fit = await tcall("model_check", { object: arm, sweep: { from: 0, to: 120, step: 5 } });
+  const hitBy = (reply: Reply) => ((reply.collidesWith ?? []) as { other: string }[]).map((row) => row.other);
+  check("a pair crossing where the hinge stands is left out, so the sweep does not stop at 0", fit.ok === true && (fit.clearRange as { toDeg: number } | null)?.toDeg !== undefined && Number(fit.firstCollisionDeg) > 30 && Number(fit.firstCollisionDeg) < 45 && JSON.stringify(hitBy(fit)) === JSON.stringify([latch]), fit);
+  check("it is listed in ignored with why", JSON.stringify(ids(fit.ignored)) === JSON.stringify([pair(arm, boss)]) && (fit.ignored as { why: string }[])[0]!.why === "crosses where the hinge stands", fit.ignored);
+  check("and the note says so in a sentence", String(fit.note).includes("Left out: Arm with Boss (crosses where the hinge stands)") && String(fit.note).includes("taken as a fit meant to cross"), fit.note);
+  check("the sweep puts the poses back", poses() === before);
+
+  const named = await tcall("model_check", { object: arm, sweep: { from: 0, to: 120, step: 5, ignore: [[latch, arm]] } });
+  check("ignore names a further pair: the sweep passes the latch and meets the block", named.ok === true && Number(named.firstCollisionDeg) > 70 && Number(named.firstCollisionDeg) < 90 && JSON.stringify(hitBy(named)) === JSON.stringify([block]), named);
+  check("both left-out pairs are listed", JSON.stringify(ids(named.ignored)) === JSON.stringify([pair(arm, boss), pair(arm, latch)]) && (named.ignored as { why: string }[])[1]!.why === "named in sweep.ignore" && String(named.note).includes("Latch with Arm (named in sweep.ignore)"), named.ignored);
+
+  const stranger = await tcall("model_check", { object: arm, sweep: { from: 0, to: 120, step: 5, ignore: [[arm, "obj_999"]] } });
+  check("an ignore pair outside the assembly is refused, naming the field", stranger.ok === false && String(stranger.reason).includes("sweep.ignore") && String(stranger.reason).includes("obj_999") && poses() === before, stranger);
+  const self = await tcall("model_check", { object: arm, sweep: { from: 0, to: 120, step: 5, ignore: [[arm, arm]] } });
+  check("an ignore pair of one part is refused", self.ok === false && String(self.reason).includes("sweep.ignore"), self);
+  check("ignore must be pairs", validateTool("model_check", { object: arm, sweep: { from: 0, to: 5, ignore: [[arm]] } }) !== null);
+
+  // A sweep that starts away from where the hinge stands: the fit is still left out. The pose where it stands is tried
+  // first (one pose), then 10, 15, ...: one fewer than from 0, whose first angle is that pose.
+  const away = await tcall("model_check", { object: arm, sweep: { from: 10, to: 120, step: 5 } });
+  check("a sweep from another angle leaves the fit out too", away.ok === true && Number(away.firstCollisionDeg) === Number(fit.firstCollisionDeg) && Number(away.evaluations) === Number(fit.evaluations) - 1, { away: away.evaluations, fit: fit.evaluations });
+
+  // The precision reached: the step itself when it is finer than tolerance, and no bisection runs.
+  const fine = await tcall("model_check", { object: arm, sweep: { from: 0, to: 60, step: 0.25, tolerance: 0.5 } });
+  check("a step finer than tolerance is the precision said", fine.ok === true && (fine.sweep as { tolerance: number }).tolerance === 0.25 && String(fine.note).includes("pinned to 0.25 degrees"), fine);
+  const bisected = await tcall("model_check", { object: arm, sweep: { from: 0, to: 60, step: 5 } });
+  const reached = (bisected.sweep as { tolerance: number }).tolerance;
+  check("a bisected crossing says the bracket it reached, within tolerance", bisected.ok === true && reached <= 0.5 && reached > 0 && String(bisected.note).includes(`pinned to ${reached} degrees`), bisected);
+  check("a sweep reply carries no gear list", fit.gears === undefined && named.gears === undefined);
+}
+
 // --- An animation keyed from contact reads (recipe API 1.13).
 const lust = findLust();
 const escapement = `use lime_recipe::{anim::*, Session};
