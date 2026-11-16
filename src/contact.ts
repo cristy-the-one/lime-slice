@@ -384,6 +384,19 @@ const sameAffine = (p: Affine | undefined, q: Affine | undefined) => !!p && !!q 
  * that applies it. A question that has no answer is refused with one sentence.
  */
 export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly ContactPart[], ask: ContactAsk): ContactAnswer | { reason: string } {
+  const steps = firstContactSteps(assembly, poseOf, parts, ask);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * `firstContact` a pose at a time: it yields the number of poses tried so far after each one, so a caller on an event
+ * loop (the MCP server) can answer other requests, report progress and stop between poses. Driven to the end, it
+ * returns exactly what `firstContact` does.
+ */
+export function* firstContactSteps(assembly: Assembly, poseOf: PoseOf, parts: readonly ContactPart[], ask: ContactAsk): Generator<number, ContactAnswer | { reason: string }, void> {
   const name = ask.nameOf ?? ((id: string) => id);
   if (ask.dir !== 1 && ask.dir !== -1) return { reason: "dir is 1 or -1: the joint's own sense, or against it." };
   const tolerance = ask.toleranceMm ?? CONTACT_TOLERANCE_MM;
@@ -504,6 +517,7 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
   const tooLong = { reason: `The search stopped after ${MAX_EVALUATIONS} poses short of contact: give a larger tolerance or a smaller max.` };
 
   let clear = evaluate(from);
+  yield evaluations;
   if ("reason" in clear) return clear;
   if (clear.crossing) return { reason: "The parts cross where the joint stands." };
   let clearAt = from;
@@ -517,6 +531,7 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
     if (!(v > 1e-12)) return { reason: `The parts ${name(body.body)}'s joint moves do not move: nothing can touch.` };
     const next = inRange(clearAt + (ask.dir * Math.max(clear.d, FLOOR_MM)) / v);
     const state = evaluate(next);
+    yield evaluations;
     if ("reason" in state) return state;
     if (state.crossing) { hit = state; hitAt = next; break; }
     clear = state;
@@ -528,6 +543,7 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
   while (Math.abs(hitAt - clearAt) * v > tolerance && Math.abs(hitAt - clearAt) > 1e-12 * Math.max(1, Math.abs(clearAt))) {
     const mid = (clearAt + hitAt) / 2;
     const state = evaluate(mid);
+    yield evaluations;
     if ("reason" in state) return state;
     if (state.crossing) { hit = state; hitAt = mid; } else { clear = state; clearAt = mid; }
     if (evaluations > MAX_EVALUATIONS) return tooLong;
@@ -563,6 +579,7 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
   const stopAt = clearAt;
   const toward = (value: number) => (ask.dir > 0 ? Math.min(value, stopAt) : Math.max(value, stopAt));
   let safe = keep(from);
+  yield evaluations;
   if ("reason" in safe) return safe;
   if (safe.blocked) return fallback(false);
   let safeAt = from;
@@ -575,6 +592,7 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
     w = measured;
     const next = toward(safeAt + (ask.dir * Math.max(safe.margin, FLOOR_MM)) / w);
     const state = keep(next);
+    yield evaluations;
     if ("reason" in state) return state;
     if (state.blocked) { over = state; overAt = next; break; }
     safe = state;
@@ -586,6 +604,7 @@ export function firstContact(assembly: Assembly, poseOf: PoseOf, parts: readonly
   while (Math.abs(overAt - safeAt) * w > tolerance && Math.abs(overAt - safeAt) > 1e-12 * Math.max(1, Math.abs(safeAt))) {
     const mid = (safeAt + overAt) / 2;
     const state = keep(mid);
+    yield evaluations;
     if ("reason" in state) return state;
     if (state.blocked) { over = state; overAt = mid; } else { safe = state; safeAt = mid; }
     if (evaluations > MAX_EVALUATIONS) return tooLong;

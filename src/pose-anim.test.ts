@@ -153,6 +153,37 @@ if ("issues" in posesOnly) throw Error(JSON.stringify(posesOnly.issues));
 assert.equal(posesOnly.warnings.length, 0);
 assert.equal(posesOnly.interferenceChecked, false);
 assert.deepEqual(posesOnly.frames.map((frame) => [...frame.poses]), still.frames.map((frame) => [...frame.poses]));
+// A fit whose parts move against each other (a collet slipping on its pin) overlaps on every frame by design: a pair the
+// caller names in ignore is left out of the crossing check, and the answer says so. Feedback 2.13.
+{
+  const fitted = sampleAnimation({ fps: 4, keys: [{ t: 0, rest: true }, { t: 1, set: { Finger: 60 } }] }, clashRig, poseOf, clashParts, { ignore: [["Finger", "Body"]] });
+  if ("issues" in fitted) throw Error(JSON.stringify(fitted.issues));
+  assert.equal(fitted.warnings.length, 0, JSON.stringify(fitted.warnings));
+  assert.equal(fitted.interferenceChecked, true, "the check ran for every other pair");
+  assert.deepEqual(fitted.ignored?.pairs, [["Finger", "Body"]]);
+  assert.equal(fitted.ignored?.reason, "Left out of the crossing check because the call named this pair in ignore: Finger and Body. Their overlap on any frame is not reported.");
+  assert.deepEqual(fitted.frames.map((frame) => [...frame.poses]), turned.frames.map((frame) => [...frame.poses]), "ignore changes no pose");
+  // By handle, in either order, said twice: one pair, named as the rig names it.
+  const byHandle = sampleAnimation({ fps: 4, keys: [{ t: 0, rest: true }, { t: 1, set: { Finger: 60 } }] }, clashRig, poseOf, clashParts, { ignore: [["root", "upper"], ["Finger", "Body"]] });
+  if ("issues" in byHandle) throw Error(JSON.stringify(byHandle.issues));
+  assert.equal(byHandle.warnings.length, 0);
+  assert.deepEqual(byHandle.ignored?.pairs, [["Body", "Finger"]]);
+  // Only the named pair is left out: the arm still crosses the post.
+  const others = sampleAnimation({ fps: 4, keys: [{ t: 0, set: { Arm: 0 } }, { t: 1, set: { Arm: 45 } }] }, swing, poseOf, swingParts, { ignore: [["Arm", "Base"]] });
+  if ("issues" in others) throw Error(JSON.stringify(others.issues));
+  assert.deepEqual(others.warnings, driven.warnings);
+  assert.deepEqual(others.ignored?.pairs, [["Arm", "Base"]]);
+  // A name that is not a member refuses the animation and names the field; so does a pair of one member, or a bad shape.
+  const unknown = sampleAnimation({ fps: 4, keys: [{ t: 0 }] }, clashRig, poseOf, clashParts, { ignore: [["Finger", "Collet"]] });
+  assert.ok("issues" in unknown && unknown.issues[0]!.reason === 'ignore: "Collet" is not a member of this assembly. Its members: Body, Finger.', JSON.stringify(unknown));
+  const twice = sampleAnimation({ fps: 4, keys: [{ t: 0 }] }, clashRig, poseOf, clashParts, { ignore: [["Finger", "upper"]] });
+  assert.ok("issues" in twice && twice.issues[0]!.reason.startsWith('ignore: ["Finger", "upper"] names Finger twice'), JSON.stringify(twice));
+  const shape = sampleAnimation({ fps: 4, keys: [{ t: 0 }] }, clashRig, poseOf, clashParts, { ignore: [["Finger"]] as unknown as [string, string][] });
+  assert.ok("issues" in shape && shape.issues[0]!.reason.startsWith("ignore is a list of pairs"), JSON.stringify(shape));
+  // Without the crossing check there is nothing to leave out, and the reply says nothing of it.
+  const unchecked = sampleAnimation({ fps: 4, keys: [{ t: 0 }] }, clashRig, poseOf, clashParts, { interference: false, ignore: [["Finger", "Body"]] });
+  assert.ok(!("issues" in unchecked) && unchecked.ignored === undefined);
+}
 const constrained = sampleAnimation({ fps: 4, keys: [{ t: 0, line: 30, set: { Finger: { reach: { at: [10,0,0], to: [-10,0,0] } } } }] }, rig, poseOf, parts);
 if ("issues" in constrained) throw Error(JSON.stringify(constrained.issues));
 assert.equal(constrained.keys[0]!.reached, false);
@@ -286,6 +317,12 @@ console.log("pose animation: interpolation, holds, names, validation, slerp and 
   assert.deepEqual(sliced, plain);
   assert.deepEqual(slicedHeard, Array.from({ length: 22 }, (_, frame) => frame));
   assert.deepEqual(await sampleAnimationInBackground(spec, clashRig, poseOf, clashParts), plain);
+  // The window's ways pass ignore on as the server does: the same pairs left out, the same refusal.
+  const fit = sampleAnimation(spec, clashRig, poseOf, clashParts, { ignore: [["Body", "Finger"]] });
+  assert.ok(!("issues" in fit) && fit.ignored && fit.warnings.length < plain.warnings.length);
+  assert.deepEqual(await sampleAnimationSliced(spec, clashRig, poseOf, clashParts, { ignore: [["Body", "Finger"]] }), fit);
+  assert.deepEqual(await sampleAnimationInBackground(spec, clashRig, poseOf, clashParts, { ignore: [["Body", "Finger"]] }), fit);
+  assert.ok("issues" in await sampleAnimationSliced(spec, clashRig, poseOf, clashParts, { ignore: [["Body", "Pin"]] }));
   // What a worker sends back crosses by structured clone: the Maps, the frames' assemblies and the warnings intact.
   const crossed = structuredClone(plain);
   assert.deepEqual(crossed, plain);

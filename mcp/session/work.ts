@@ -49,8 +49,10 @@ function startWorkJob(this: Session, name: string, input: Record<string, unknown
   if (!ctx.planJob) this.jobSeq += 1;
   const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
   // pose_animate stops between frames and removes the files it had begun; motion_run between slices of its run. Neither
-  // changes a part.
-  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || name === "motion_run" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+  // changes a part. model_check {sweep} stops between angles and puts the poses back; model_place {until} stops between
+  // poses before it moves anything.
+  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || name === "motion_run" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind))
+    || (name === "model_check" && input.sweep !== undefined) || (name === "model_place" && input.until !== undefined);
   const job: WorkJob = { handle: ctx.planJob ?? `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
   job.settled = work.then((value) => {
     job.result = value;

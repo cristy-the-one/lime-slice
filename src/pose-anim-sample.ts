@@ -9,10 +9,10 @@
  */
 import type { Assembly, PoseOf } from "./assembly.ts";
 import type { Affine } from "./model-space.ts";
-import { sampleAnimationSteps, type AnimationPart, type PoseAnimation, type SampleOutcome } from "./pose-anim.ts";
+import { sampleAnimationSteps, sampleOptions, type AnimationPart, type PoseAnimation, type SampleOutcome } from "./pose-anim.ts";
 
 /** What the window sends: the poses as data, since a function cannot cross to a worker. */
-export interface SampleJob { animation: PoseAnimation; assembly: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; interference?: boolean }
+export interface SampleJob { animation: PoseAnimation; assembly: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; interference?: boolean; ignore?: [string, string][] }
 export type SampleReply =
   | { kind: "ready" }
   | { kind: "progress"; frame: number; count: number }
@@ -21,6 +21,8 @@ export type SampleReply =
 
 export interface SampleInBackground {
   interference?: boolean;
+  /** Pairs of members the crossing check leaves out (`SampleOptions.ignore`). */
+  ignore?: [string, string][];
   /** Each frame as it is ready: `frame` of `count` (0 of `count` once the keys are read). */
   onProgress?: (frame: number, count: number) => void;
   /** Stops the work: the worker is ended, and the promise rejects with "The animation was cancelled.". */
@@ -42,7 +44,7 @@ const yieldToLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 /** `sampleAnimation` on the window's thread, a few frames at a time. */
 export async function sampleAnimationSliced(animation: PoseAnimation, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: SampleInBackground = {}): Promise<SampleOutcome> {
-  const steps = sampleAnimationSteps(animation, assembly, poseOf, parts, options.interference === false ? { interference: false } : {});
+  const steps = sampleAnimationSteps(animation, assembly, poseOf, parts, sampleOptions(options));
   let sliceStart = performance.now();
   for (;;) {
     if (options.signal?.aborted) throw new Error(CANCELLED);
@@ -104,6 +106,6 @@ export async function sampleAnimationInBackground(animation: PoseAnimation, asse
     };
     worker.onerror = (ev) => { ev.preventDefault?.(); end(); reject(new Error(ev.message || "The animation's worker stopped.")); };
     worker.onmessageerror = () => { end(); reject(new Error("The animation's frames could not be read back.")); };
-    worker.postMessage({ animation, assembly, poses, parts: sent, ...(options.interference === false ? { interference: false } : {}) } satisfies SampleJob, [...lent]);
+    worker.postMessage({ animation, assembly, poses, parts: sent, ...sampleOptions(options) } satisfies SampleJob, [...lent]);
   });
 }

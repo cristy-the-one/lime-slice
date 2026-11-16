@@ -171,13 +171,32 @@ export function probeMetrics(before: SolidMetrics, after: SolidMetrics | null): 
   return { metrics: { before: shown(before), after: shown(after), delta }, ...(warning ? { warning } : {}) };
 }
 
+/**
+ * A belt printer, as the check reads it. The engine slices a belt along `s = −y·sin α + z·cos α` in the plate frame
+ * (`mirror_rotate_x` in crates/lime-slice-core/src/belt.rs, `buildDirection` in src/belt.ts): the belt carries the part
+ * toward +Y, its +Y end prints first, and each new layer is laid toward −Y and up. The belt itself is the plate's Z = 0.
+ */
+export interface CheckBelt {
+  angleDeg: number;
+  widthMm: number;
+  maxLengthMm?: number | null;
+}
+
 export interface CheckInput {
   positions: Float32Array;
   overhangDeg: number;
   buildMm: Vec;
+  /** A belt printer: overhangs and ceilings are read against its build direction, the fit against its width. */
+  belt?: CheckBelt | null;
+  /** The B-rep face of each triangle (`solid.triangles`), when the mesh is a solid's: each overhang names its faces. */
+  faceOf?: ArrayLike<number> | null;
 }
 
 const BED_EPS = 0.02;
+/** On a belt a face square to the belt sits at exactly the belt's angle; it is not past a threshold of that angle. */
+const BELT_EPS = 1e-6;
+/** The most faces an overhang or a ceiling names, the largest first. */
+const MAX_FACES = 12;
 
 /** Overhang triangles gathered in one 10 mm grid cell. `at` is the cell's place in the grid. */
 interface OverhangCell {
@@ -186,6 +205,23 @@ interface OverhangCell {
   sum: Vec;
   min: Vec;
   max: Vec;
+  /** Area by B-rep face, when the mesh names its faces. */
+  faces?: Map<number, number>;
+}
+
+function addFace(into: Map<number, number>, face: number, area: number) {
+  into.set(face, (into.get(face) ?? 0) + area);
+}
+
+/** The faces of a region, the largest first, as the Model tools take them (face indexes). */
+function faceList(faces: ReadonlyMap<number, number>): number[] {
+  return [...faces.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, MAX_FACES).map(([face]) => face);
+}
+
+/** A belt's build direction as a sentence, in the plate's frame. */
+export function beltBuildSentence(angleDeg: number): string {
+  const angle = round(angleDeg, 1);
+  return `Layers stack at ${angle}° to the belt: the belt carries the part toward the plate's +Y, so the +Y end prints first and each new layer is laid toward −Y and up. Overhangs and down faces are read against that direction, not straight up; contact and floating pieces are read against the belt.`;
 }
 
 function touch(a: OverhangCell, b: OverhangCell): boolean {
@@ -221,8 +257,9 @@ function mergedCells(cells: ReadonlyMap<string, OverhangCell>): OverhangCell[] {
   const merged = new Map<OverhangCell, OverhangCell>();
   for (const cell of cells.values()) {
     const root = find(cell);
-    const into = merged.get(root) ?? { at: root.at, area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    const into = merged.get(root) ?? { at: root.at, area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], ...(cell.faces ? { faces: new Map<number, number>() } : {}) };
     into.area += cell.area;
+    if (cell.faces && into.faces) for (const [face, area] of cell.faces) addFace(into.faces, face, area);
     for (let axis = 0; axis < 3; axis += 1) {
       into.sum[axis]! += cell.sum[axis]!;
       into.min[axis] = Math.min(into.min[axis]!, cell.min[axis]!);
@@ -246,23 +283,45 @@ export function checkInSource(checked: Record<string, unknown>, toSource: Affine
   const overhang = checked.overhang as { regions: { centre: Vec; min: Vec; max: Vec }[] };
   const ceilings = checked.ceilings as { centre: Vec }[];
   const islands = checked.islands as { bbox: { min: Vec; max: Vec } }[];
+  // A belt's build direction, a direction and not a place: the turn of `toSource` without its move, at unit length.
+  const build = checked.build as { direction: Vec } | undefined;
+  const turned = build ? (() => {
+    const zero = applyPose(toSource, [0, 0, 0]);
+    const tip = applyPose(toSource, build.direction);
+    const along = [tip[0]! - zero[0]!, tip[1]! - zero[1]!, tip[2]! - zero[2]!];
+    const length = Math.hypot(along[0]!, along[1]!, along[2]!) || 1;
+    return { ...build, direction: roundVec(along.map((value) => value / length + 0)) };
+  })() : undefined;
   return {
     ...checked,
     overhang: { ...overhang, regions: overhang.regions.map((region) => ({ ...region, centre: back(region.centre), ...backBox(region) })) },
     ceilings: ceilings.map((row) => ({ ...row, centre: back(row.centre) })),
     islands: islands.map((island) => ({ ...island, bbox: backBox(island.bbox) })),
+    ...(turned ? { build: turned } : {}),
   };
 }
 
-/** model_check: the printability of the solid as it stands, lowest point on the bed. */
+/**
+ * model_check: the printability of the solid as it stands, lowest point on the bed. On a belt (`input.belt`) the
+ * lowest point is on the belt; overhangs and down faces are read against the belt's build direction, and the fit
+ * against the belt's width and the printer's height, since a belt does not limit the length along it.
+ */
 export function printCheck(input: CheckInput): Record<string, unknown> {
   const { positions: pos, overhangDeg, buildMm } = input;
+  const belt = input.belt ?? null;
+  const faceOf = input.faceOf && input.faceOf.length * 9 === pos.length ? input.faceOf : null;
   const box = boxOf(pos);
   const floor = box.min[2];
   const sine = Math.sin((overhangDeg * Math.PI) / 180);
+  // The direction each new layer is laid in: straight up on a bed, (0, −sin α, cos α) on a belt.
+  const angle = belt ? (Math.min(80, Math.max(10, belt.angleDeg)) * Math.PI) / 180 : 0;
+  const build: Vec = belt ? [0, -Math.sin(angle), Math.cos(angle)] : [0, 0, 1];
+  // On a belt, how far along the build direction the first layer is: a down face is named by its distance from it.
+  let first = Infinity;
+  if (belt) for (let i = 0; i + 2 < pos.length; i += 3) first = Math.min(first, pos[i + 1]! * build[1] + pos[i + 2]! * build[2]);
   const cell = 10;
   const cells = new Map<string, OverhangCell>();
-  const levels = new Map<number, { area: number; sum: Vec }>();
+  const levels = new Map<number, { area: number; sum: Vec; faces?: Map<number, number> }>();
   let total = 0;
   let overhang = 0;
   let bed = 0;
@@ -275,6 +334,8 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
     if (!(twice > 0)) continue;
     const area = twice / 2;
     const nz = n[2] / twice;
+    // The normal along the build direction: nz on a bed, exactly as before.
+    const along = belt ? (n[1] * build[1] + n[2] * build[2]) / twice : nz;
     total += area;
     const z0 = pos[b + 2]!;
     const z1 = pos[b + 5]!;
@@ -289,22 +350,27 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
       bed += area;
       continue;
     }
-    if (-nz <= sine) continue;
+    if (belt ? -along <= sine + BELT_EPS : -along <= sine) continue;
     overhang += area;
-    // A face flat and pointing down is a ceiling, listed by its height below; it is not a slanted overhang too.
-    if (nz < -0.99) {
-      const level = round(centre[2], 1);
-      const row = levels.get(level) ?? { area: 0, sum: [0, 0, 0] };
+    const face = faceOf ? faceOf[tri] : undefined;
+    // A face flat to the layers and pointing back against them is a ceiling, listed by where it is below; it is not a
+    // slanted overhang too. On a bed that is its height; on a belt its distance from the first layer.
+    if (along < -0.99) {
+      const level = belt ? round(centre[1] * build[1] + centre[2] * build[2] - first, 1) : round(centre[2], 1);
+      const row = levels.get(level) ?? { area: 0, sum: [0, 0, 0], ...(faceOf ? { faces: new Map<number, number>() } : {}) };
       row.area += area;
       row.sum[0]! += centre[0] * area;
       row.sum[1]! += centre[1] * area;
+      row.sum[2]! += centre[2] * area;
+      if (row.faces && face !== undefined) addFace(row.faces, face, area);
       levels.set(level, row);
       continue;
     }
     const at: Vec = [Math.floor(centre[0] / cell), Math.floor(centre[1] / cell), Math.floor(centre[2] / cell)];
     const key = at.join(",");
-    const slot = cells.get(key) ?? { at, area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity] };
+    const slot = cells.get(key) ?? { at, area: 0, sum: [0, 0, 0], min: [Infinity, Infinity, Infinity], max: [-Infinity, -Infinity, -Infinity], ...(faceOf ? { faces: new Map<number, number>() } : {}) };
     slot.area += area;
+    if (slot.faces && face !== undefined) addFace(slot.faces, face, area);
     for (let axis = 0; axis < 3; axis += 1) {
       slot.sum[axis]! += centre[axis]! * area;
       slot.min[axis] = Math.min(slot.min[axis]!, pos[b + axis]!, pos[b + 3 + axis]!, pos[b + 6 + axis]!);
@@ -320,12 +386,18 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
       centre: roundVec([slot.sum[0]! / slot.area, slot.sum[1]! / slot.area, slot.sum[2]! / slot.area]),
       min: roundVec(slot.min),
       max: roundVec(slot.max),
+      ...(slot.faces ? { faces: faceList(slot.faces) } : {}),
     }));
   const ceilings = [...levels.entries()]
     .filter(([, row]) => row.area >= 1)
     .sort((a, b) => b[1].area - a[1].area)
     .slice(0, 6)
-    .map(([z, row]) => ({ zMm: z, areaMm2: round(row.area, 1), centre: roundVec([row.sum[0]! / row.area, row.sum[1]! / row.area, z]) }));
+    .map(([level, row]) => {
+      const faces = row.faces ? { faces: faceList(row.faces) } : {};
+      if (!belt) return { zMm: level, areaMm2: round(row.area, 1), centre: roundVec([row.sum[0]! / row.area, row.sum[1]! / row.area, level]), ...faces };
+      const centre = roundVec([row.sum[0]! / row.area, row.sum[1]! / row.area, row.sum[2]! / row.area]);
+      return { zMm: round(centre[2], 1), layerMm: level, areaMm2: round(row.area, 1), centre, ...faces };
+    });
   const groups = shellGroups(pos);
   const islands: { bbox: { min: Vec; max: Vec }; floatsMm: number }[] = [];
   if (groups) {
@@ -335,8 +407,32 @@ export function printCheck(input: CheckInput): Record<string, unknown> {
     }
   }
   const size: Vec = [box.max[0] - box.min[0], box.max[1] - box.min[1], box.max[2] - box.min[2]];
-  const over = (["x", "y", "z"] as const).filter((_, axis) => size[axis]! > buildMm[axis]! + 1e-6);
   const warnings: string[] = [];
+  if (belt) {
+    // Across the belt and its height; along the belt nothing is limited here.
+    const limits: [number, null, number] = [belt.widthMm, null, buildMm[2]];
+    const over = (["x", "z"] as const).filter((axis) => size[axis === "x" ? 0 : 2]! > limits[axis === "x" ? 0 : 2]! + 1e-6);
+    if (over.includes("x")) warnings.push(`The part is wider than the belt: ${round(size[0], 2)} mm across it (X) against ${round(belt.widthMm, 2)} mm.`);
+    if (over.includes("z")) warnings.push(`The part is taller than the printer's build height: ${round(size[2], 2)} mm above the belt (Z) against ${round(buildMm[2], 2)} mm.`);
+    if (islands.length > 0) warnings.push(`${islands.length === 1 ? "One piece does" : `${islands.length} pieces do`} not touch the belt and would print in the air.`);
+    if (ceilings.length > 0) warnings.push(`Faces flat to the layers point back against the build direction at ${ceilings.map((row) => (row as { layerMm?: number }).layerMm).join(", ")} mm from the first layer; they need support or a bridge.`);
+    if (overhang > 0 && total > 0) warnings.push(`${round(overhang, 1)} mm² overhangs more than ${overhangDeg}° from the belt's build direction.`);
+    if (!(bed > 0)) warnings.push("Nothing flat rests on the belt.");
+    const cap = belt.maxLengthMm ?? null;
+    const lengthNote = `On a belt the length along it (Y) has no limit in this check; it checks the width across the belt (X, ${round(belt.widthMm, 2)} mm) and the height above it (Z, the printer's ${round(buildMm[2], 2)} mm).${cap != null ? ` The belt's max length of ${round(cap, 2)} mm is checked when it slices.` : ""}`;
+    return {
+      ok: true,
+      overhang: { thresholdDeg: overhangDeg, areaMm2: round(overhang, 1), share: total > 0 ? round(overhang / total, 3) : 0, regions },
+      ceilings,
+      bedContact: { areaMm2: round(bed, 1) },
+      islands,
+      fit: { sizeMm: roundVec(size), buildVolumeMm: limits, fits: over.length === 0, over, note: lengthNote },
+      warnings,
+      notChecked: ["thin walls"],
+      build: { belt: true, angleDeg: round(belt.angleDeg, 1), direction: roundVec(build.map((value) => value + 0)), text: beltBuildSentence(belt.angleDeg) },
+    };
+  }
+  const over = (["x", "y", "z"] as const).filter((_, axis) => size[axis]! > buildMm[axis]! + 1e-6);
   if (over.length > 0) warnings.push(`The part is larger than the build volume along ${over.join(" and ").toUpperCase()}.`);
   if (islands.length > 0) warnings.push(`${islands.length === 1 ? "One piece does" : `${islands.length} pieces do`} not touch the bed and would print in the air.`);
   if (ceilings.length > 0) warnings.push(`Flat faces point down above the bed at Z ${ceilings.map((row) => row.zMm).join(", ")}; they need support or a bridge.`);
