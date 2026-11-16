@@ -2,12 +2,13 @@
 import { closeSync, openSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { assemblyOf } from "../../src/assembly.ts";
-import { seatLift } from "../../src/model-space.ts";
-import { animationRig, endsWhereItStarts, frameTiming, type AnimationPart, type AnimationResult } from "../../src/pose-anim.ts";
+import { boxUnder, seatLift } from "../../src/model-space.ts";
+import { boundsOf, type Bounds } from "../../src/mesh-place.ts";
+import { animationRig, endsWhereItStarts, frameTiming, readIgnore, type AnimationPart, type AnimationResult, type RigMember } from "../../src/pose-anim.ts";
 import { apiVerdict } from "../../src/recipe/api-level.ts";
 import { eventLoopTurn, runAnimation } from "../animation-run.ts";
 import { GIF_END, gifFrame, gifHead } from "../animation-gif.ts";
-import { BACKGROUND, readBackground, readCamera, renderMesh } from "../render.ts";
+import { BACKGROUND, partPaletteColour, readBackground, readCamera, renderMesh } from "../render.ts";
 import { listExtra, parsePlugin, pluginsDir, readPlugin, slugOf, type PluginHeader } from "../plugins.ts";
 import { explainNoMember, missingMember } from "../../src/anim-members.ts";
 import { RecipeHost, recipeCrateDir, recipeSourceFile } from "../recipe.ts";
@@ -76,11 +77,16 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const missing = missingMember(rig, header["member-params"], header["member-names"], header.params, params);
     if (missing) return refuse("animation-refused", missing);
   }
-  const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
+  // Read before the script builds, so a wrong name costs nothing: the sampler reads the same pairs the same way.
+  const ignore = readIgnore(rig, input.ignore);
+  if ("reason" in ignore) return refuse("bad-argument", ignore.reason);
+  const looks = readFrameLooks(parts, rig, input, input.out !== undefined);
+  if ("reason" in looks) return refuse("bad-view", looks.reason);
+  const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, ...(ignore.pairs.length ? { ignore: ignore.pairs } : {}), signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
   if (!result.ok) return { ok: false, code: "animation-refused", reason: explainNoMember(result.reason, params, rig), ...(result.issues ? { issues: result.issues.map((issue) => ({ ...issue, reason: explainNoMember(issue.reason, params, rig) })) } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
-  // Crossings come one warning a pair already (frameInterference), with the frames they hold and the check that made
-  // them. A warning a key repeats (a colour set twice) is said once.
+  // Crossings come one warning a pair already (the sampler's crossing check, src/pose-anim.ts), with the frames they
+  // hold and the check that made them. A warning a key repeats (a colour set twice) is said once.
   const seen = new Set<string>();
   const warnings = sampled.warnings.filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
   const timing = frameTiming(sampled);
@@ -88,7 +94,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   // Checked already: the tool's by readBackground above, the script's by sampleAnimation.
   const scripted = result.background ? readBackground(result.background) : undefined;
   const background = asked && "rgb" in asked ? asked.rgb : scripted && "rgb" in scripted ? scripted.rgb : BACKGROUND;
-  const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(timing ? { frameTiming: timing } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
+  const summary = { ok: true, frames: sampled.frames.length, durationS: sampled.durationS, fps: sampled.fps, keys: sampled.keys, ...(warnings.length ? { warnings } : {}), ...(timing ? { frameTiming: timing } : {}), ...(sampled.ignored ? { ignored: sampled.ignored } : {}), ...(result.notes.length ? { notes: result.notes } : {}) };
   // --- docs/plan-animation-plugins.md A1. keep: this run is the check; the plugin records the members it used. It is
   // kept only once the run has done all it was asked: after sampling for a dry run, after the last frame is written for
   // an export (which may have become a job; its slice_wait result then carries kept). A cancel or a failure keeps nothing.
@@ -98,7 +104,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params);
   };
   if (!out) return { ...summary, ...(await keepNow()), rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
-  const written = await this.writeAnimationFrames(sampled, parts, { out, camera: input.camera ?? result.camera, longEdge: input.longEdge, background }, meta);
+  const written = await this.writeAnimationFrames(sampled, parts, { out, camera: input.camera ?? result.camera, longEdge: input.longEdge, background, ...looks }, meta);
   if ("ok" in written) return written;
   const kept = await keepNow();
   const keptAs = "kept" in kept ? kept.kept as { id: string } : undefined;
@@ -118,7 +124,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
  * turn of the event loop before each frame so slice_cancel is heard, and every file removed on a cancel or a failure.
  * Shared by pose_animate and motion_run.
  */
-async function writeAnimationFrames(this: Session, sampled: AnimationResult, parts: readonly AnimationPart[], options: { out: { gif?: string; frames?: string }; camera?: unknown; longEdge?: unknown; background: [number, number, number] }, meta?: CallMeta): Promise<{ files: Record<string, unknown> } | Record<string, unknown>> {
+async function writeAnimationFrames(this: Session, sampled: AnimationResult, parts: readonly AnimationPart[], options: { out: { gif?: string; frames?: string }; camera?: unknown; longEdge?: unknown; background: [number, number, number] } & FrameLooks, meta?: CallMeta): Promise<{ files: Record<string, unknown> } | Record<string, unknown>> {
   const out = options.out;
   const background = options.background;
   if (!out.gif && !out.frames) return refuse("missing-argument", "out needs gif or frames.");
@@ -126,6 +132,8 @@ async function writeAnimationFrames(this: Session, sampled: AnimationResult, par
   const read = readCamera(options.camera ?? "iso");
   if ("reason" in read) return refuse("bad-view", read.reason);
   const edge = typeof options.longEdge === "number" ? options.longEdge : 640;
+  const fit = Array.isArray(options.fit) ? partsBox(sampled, parts, options.fit) : options.fit ?? sampled.bounds;
+  if (!fit) return refuse("no-mesh", "The parts fit names have no renderable geometry.");
   const gifPath = out.gif ? resolveWrite(out.gif, ".gif") : undefined;
   const files: string[] = [];
   if (out.frames) for (let i = 0; i < sampled.frames.length; i++) files.push(resolveWrite(join(out.frames, `frame-${String(i + 1).padStart(3, "0")}.png`), ".png"));
@@ -153,17 +161,18 @@ async function writeAnimationFrames(this: Session, sampled: AnimationResult, par
       const frame = sampled.frames[i]!;
       let start = 0;
       const tints: { start: number; end: number; rgb: [number, number, number] }[] = [];
-      const meshes = parts.map((part) => {
+      const meshes = parts.map((part, at) => {
         const positions = part.positions!, pose = frame.poses.get(part.object);
         const mesh = pose ? posedPositions(positions, pose) : positions;
         const end = start + mesh.length / 9;
+        // The caller's partColours, else the script's colour for this frame, else the part's palette colour.
         const color = frame.colors.get(part.object);
-        if (color) { const n = parseInt(color.replace(/^#/, ""), 16); tints.push({ start, end, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] }); }
+        tints.push({ start, end, rgb: options.partColours?.get(part.object) ?? (color ? hexRgb(color) : partPaletteColour(at)) });
         start = end;
         return mesh;
       });
       const inGif = gif !== undefined && i < gifCount;
-      const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit: sampled.bounds, partTints: tints, pixels: inGif, background });
+      const drawn = renderMesh(joinedPositions(meshes), read.camera, edge, undefined, { fit, partTints: tints, pixels: inGif, background });
       if (files[i]) { writeFileSync(partial(files[i]!), drawn.png); written.push(partial(files[i]!)); }
       // Frame i shows from i/fps to (i+1)/fps, in the GIF's whole hundredths: the delays add up to the frames' times.
       if (inGif) writeSync(gif!, gifFrame(edge, edge, { rgb: drawn.rgb!, delayCs: Math.round((i + 1) * 100 / sampled.fps) - Math.round(i * 100 / sampled.fps) }));
@@ -177,6 +186,79 @@ async function writeAnimationFrames(this: Session, sampled: AnimationResult, par
   }
   return { files: { ...(gifPath ? { gif: gifPath } : {}), ...(gifPath && gifCount !== sampled.frames.length ? { gifFrames: gifCount } : {}), ...(out.frames ? { frames: out.frames, count: files.length } : {}) } };
 }
+const hexRgb = (hex: string): [number, number, number] => { const n = parseInt(hex.replace(/^#/, ""), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+
+/**
+ * How frames are drawn, beyond the camera: `partColours` by member handle, over the script's colours and the palette;
+ * `fit` a model-space box, or the handles of the parts whose box over every frame the picture frames.
+ */
+export interface FrameLooks { partColours?: Map<string, [number, number, number]>; fit?: Bounds | string[] }
+
+/**
+ * pose_animate's and motion_run's partColours and fit, as render_view reads them (a part by handle or unique name, a
+ * colour #rrggbb, a box {min, max}), plus fit as a list of parts; or why they are refused, the field named. They say how
+ * frames are drawn, so without out they are refused rather than left unused.
+ */
+export function readFrameLooks(parts: readonly AnimationPart[], rig: readonly RigMember[], input: Record<string, unknown>, drawing: boolean): FrameLooks | { reason: string } {
+  const looks: FrameLooks = {};
+  if (input.partColours === undefined && input.fit === undefined) return looks;
+  if (!drawing) return { reason: "partColours and fit say how frames are drawn: give out {gif} or {frames} with them." };
+  const part = (name: string, field: string): string | { reason: string } => {
+    const byHandle = parts.find((row) => row.object === name);
+    if (byHandle) return byHandle.object;
+    const byRig = rig.find((row) => row.name === name);
+    if (byRig) return byRig.object;
+    const byName = parts.filter((row) => row.name === name);
+    if (byName.length === 1) return byName[0]!.object;
+    return { reason: byName.length ? `${field}: part name "${name}" is ambiguous; use its handle.` : `${field}: no part named "${name}" is in this assembly.` };
+  };
+  if (input.partColours !== undefined) {
+    if (!input.partColours || typeof input.partColours !== "object" || Array.isArray(input.partColours)) return { reason: "partColours maps part names or handles to colours." };
+    looks.partColours = new Map();
+    for (const [name, raw] of Object.entries(input.partColours as Record<string, unknown>)) {
+      const id = part(name, "partColours");
+      if (typeof id !== "string") return id;
+      const colour = typeof raw === "string" ? /^#?([0-9a-f]{6})$/i.exec(raw) : null;
+      if (!colour) return { reason: `partColours.${name} is a colour like "#c86450".` };
+      looks.partColours.set(id, hexRgb(colour[1]!));
+    }
+  }
+  if (input.fit !== undefined) {
+    const shape = "fit is a finite nonempty box {min, max} with min no greater than max, or a list of part names or handles.";
+    if (Array.isArray(input.fit)) {
+      if (!input.fit.length || !input.fit.every((name) => typeof name === "string")) return { reason: shape };
+      const ids: string[] = [];
+      for (const name of input.fit as string[]) {
+        const id = part(name, "fit");
+        if (typeof id !== "string") return id;
+        if (!ids.includes(id)) ids.push(id);
+      }
+      looks.fit = ids;
+    } else {
+      const box = input.fit as { min: [number, number, number]; max: [number, number, number] } | null;
+      if (!box || typeof box !== "object" || Object.keys(box).some((key) => key !== "min" && key !== "max") || ![box.min, box.max].every((v) => Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n))) || box.min.some((v, i) => v > box.max[i]!) || box.min.every((v, i) => v === box.max[i])) return { reason: shape };
+      looks.fit = { min: [...box.min], max: [...box.max] };
+    }
+  }
+  return looks;
+}
+
+/** The model-space box the parts `ids` take over every frame, or null when none of them has geometry. */
+function partsBox(sampled: AnimationResult, parts: readonly AnimationPart[], ids: readonly string[]): Bounds | null {
+  let box: Bounds | null = null;
+  for (const id of ids) {
+    const positions = parts.find((row) => row.object === id)?.positions;
+    if (!positions || positions.length < 9) continue;
+    const own = boundsOf(positions);
+    for (const frame of sampled.frames) {
+      const pose = frame.poses.get(id);
+      const one = pose ? boxUnder(own, pose) : own;
+      box = box ? { min: box.min.map((v, i) => Math.min(v, one.min[i]!)) as Bounds["min"], max: box.max.map((v, i) => Math.max(v, one.max[i]!)) as Bounds["max"] } : one;
+    }
+  }
+  return box;
+}
+
 /**
  * --- docs/plan-animation-plugins.md A1. pose_animate {keep} and nugget save: the script kept as a `kind: animation`
  * plugin by `pluginSave` (its versions, its title clash note), with the member names the run used. A refused keep is a
