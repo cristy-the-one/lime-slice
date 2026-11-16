@@ -85,6 +85,22 @@ for (const asked of [rod, bob]) {
 }
 console.log(`pendulum: ${show({ grams: M, inertia: I, lever: d, periodS: T })} from the rod and from the bob`);
 
+// part:true (feedback 3.8): the bob alone, not the body it moves with, and the reply says what was left out.
+const bobAlone = await call("model_mass", { object: bob, part: true });
+assert.equal(bobAlone.ok, true, show(bobAlone));
+assert.equal(bobAlone.part, true);
+assert.equal(bobAlone.body, bob);
+assert.deepEqual((bobAlone.parts as { object: string }[]).map((row) => row.object), [bob], show(bobAlone.parts));
+assert.ok(near((bobAlone.mass as { grams: number }).grams, mb), show(bobAlone.mass));
+assert.match(String(bobAlone.note), /part:true: bob alone; the other part that moves with it \(rod\) is left out/);
+assert.match(String(bobAlone.basis), /mass\.grams is the solid at .* g\/cm³ \(the filament .*\); no slice was used\./);
+const rodBody = await call("model_mass", { object: rod });
+assert.match(String(rodBody.note), /part:true weighs rod alone/);
+assert.equal(rodBody.part, undefined);
+assert.notEqual(validateTool("model_mass", { object: bob, part: "yes" }), null);
+assert.equal(validateTool("model_mass", { object: bob, part: true }), null);
+console.log(`part:true: the bob alone ${show((bobAlone.mass as { grams: number }).grams)} g of the body's ${show(M)} g`);
+
 // Turned 20° on its hinge, the same period, 20° off rest.
 assert.equal((await call("model_place", { object: rod, angle: 20 })).ok, true);
 const turned = await call("model_mass", { object: rod, about: "hinge" });
@@ -168,6 +184,32 @@ console.log("refusals: no hinge on a root or a free part, a zero axis, the schem
   assert.equal(stale.sliced, undefined, show(stale));
   assert.match(String(stale.slicedNot), /slice again/);
   console.log(`sliced: ${show({ grams: sliced.grams, ratio: sliced.massRatio })}, and stale after a change, with the sentence`);
+}
+
+// --- An earlier slice of the part alone is used when the latest slice is the plate's (feedback 3.8).
+{
+  const two = new Session(fakeEngine());
+  const ask = async (name: string, input: Record<string, unknown> = {}) => (await two.call(name, input)) as Reply;
+  const first = String((await ask("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 40, name: "arm" })).object);
+  const second = String((await ask("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10, name: "foot" })).object);
+  assert.equal((await ask("object_place", { object: second, centreX: 60, centreY: 60 })).ok, true);
+  const none = await ask("model_mass", { object: first });
+  assert.equal(none.sliced, undefined);
+  assert.equal((await ask("object_select", { object: first })).ok, true);
+  const one = await ask("slice_start", { scope: "object" });
+  assert.equal((await ask("slice_wait", { job: one.job })).ok, true);
+  const plate = await ask("slice_start", { scope: "plate" });
+  assert.equal((await ask("slice_wait", { job: plate.job })).ok, true);
+  assert.notEqual(two.latest?.handle, one.job, "the latest slice is the plate's");
+  const found = await ask("model_mass", { object: first });
+  const usedJob = (found.sliced as { job?: string } | undefined)?.job;
+  assert.equal(usedJob, one.job, show(found));
+  assert.match(String(found.note), /an earlier slice of this part alone/);
+  assert.match(String(found.basis), new RegExp(`sliced\.grams is from the slice ${String(one.job)} of arm alone`));
+  const other = await ask("model_mass", { object: second });
+  assert.equal(other.sliced, undefined, show(other));
+  assert.match(String(other.slicedNot), /No slice in this session is of foot alone/);
+  console.log(`earlier slice: ${String(usedJob)} used for arm while the latest is the plate's; foot says why there is none`);
 }
 
 console.log("model_mass: ok");

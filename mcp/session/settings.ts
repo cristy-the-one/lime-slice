@@ -6,15 +6,15 @@ import { readFileSync } from "node:fs";
 import { page } from "../../src/modeling/model-calls.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../../src/presets.ts";
 import { addRange, addVolume, freshOverrideId, removeRange, removeVolume, type SettingOverride } from "../../src/overrides.ts";
-import type { PlateObjectSettings } from "../../src/plate.ts";
+import { settingsEmpty, type PlateObjectSettings } from "../../src/plate.ts";
 import { parseSettingsProfile } from "../../src/ui/settings-profiles.ts";
 import { applyPreset } from "../request.ts";
 import { reviewGcode } from "../review.ts";
-import { applyObjectSetting, applySetting, beltOnlyWarning, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "../settings-rows.ts";
+import { applyObjectSetting, applySetting, beltOnlyWarning, inactiveWarning, isObjectKey, objectSettingRows, settingRows, type ObjectSettingKey } from "../settings-rows.ts";
 import { settingsRangeError } from "../settings-check.ts";
 import { readVec3 } from "../../src/modeling/compose.ts";
 import { resolveRead } from "../workspace.ts";
-import { type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
+import { shownName, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
 
@@ -56,10 +56,19 @@ function rangeAdd(this: Session, input: Record<string, unknown>): Record<string,
   const override = this.overrideOf(input);
   if ("reason" in override) return refuse("bad-setting", override.reason);
   const id = freshOverrideId("range");
-  if (input.dryRun === true) return { ok: true, dryRun: true, id, zFrom, zTo, override };
+  // A range is plate-wide: it reaches every object its Z span crosses, not only the selected one.
+  const reached = this.objects.filter((obj) => {
+    const bounds = this.placed(obj).bounds;
+    return zTo >= bounds.min[2] - 1e-6 && zFrom <= bounds.max[2] + 1e-6;
+  });
+  const warnings = this.objects.length >= 2
+    ? [`A height range applies to the whole plate: this one reaches ${reached.length} of the ${this.objects.length} objects, every one its Z span crosses. For one object only, use settings_set {object, values:{infill}} (infill there is a fraction from 0 to 1).`]
+    : [];
+  const reach = { objectsReached: reached.length, ...(warnings.length ? { warnings } : {}) };
+  if (input.dryRun === true) return { ok: true, dryRun: true, id, zFrom, zTo, override, ...reach };
   this.remember("Height range");
   this.overrides = addRange(this.overrides, { id, zFrom, zTo, override });
-  return { ok: true, id, stale: true, label: "Height range" };
+  return { ok: true, id, stale: true, ...reach, label: "Height range" };
 }
 
 function modifierAdd(this: Session, input: Record<string, unknown>): Record<string, unknown> {
@@ -86,7 +95,11 @@ function modifierAdd(this: Session, input: Record<string, unknown>): Record<stri
 }
 
 function overridesList(this: Session): Record<string, unknown> {
-  return { ok: true, ranges: this.overrides.ranges, volumes: this.overrides.volumes };
+  // Per-object settings are overrides too (settings_set {object | allObjects}); infill there is a fraction from 0 to 1.
+  const objectSettings = this.objects
+    .filter((obj) => !settingsEmpty(obj.objectSettings))
+    .map((obj) => ({ object: obj.id, name: shownName(obj.name), settings: { ...obj.objectSettings } }));
+  return { ok: true, ranges: this.overrides.ranges, volumes: this.overrides.volumes, objectSettings };
 }
 
 function overrideRemove(this: Session, id: string): Record<string, unknown> {
@@ -153,6 +166,20 @@ function schemaContext(this: Session) {
 }
 
 function settingsSchema(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+  if (typeof input.object === "string") {
+    const obj = this.find(input.object);
+    if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+    const query = typeof input.query === "string" ? input.query.toLowerCase() : "";
+    const rows = objectSettingRows(obj.objectSettings, this.settings, this.schemaContext())
+      .filter((row) => !query || row.key.toLowerCase().includes(query) || row.label.toLowerCase().includes(query));
+    return {
+      ok: true,
+      object: obj.id,
+      name: shownName(obj.name),
+      rows,
+      note: "The keys settings_set {object} takes for this object. own true: the object sets it; own false: it follows the plate (plate). infill is a fraction from 0 to 1. Every other key is plate-wide.",
+    };
+  }
   const level = input.level === "simple" || input.level === "advanced" || input.level === "expert" ? input.level : undefined;
   const rows = settingRows({
     settings: this.settings,
@@ -192,6 +219,12 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
       }
       (objectNext as Record<ObjectSettingKey, unknown>)[key] = applied.value;
       changed.push({ key, from: obj ? obj.objectSettings[key] : undefined, to: applied.value });
+      // The Supports choice is two keys: an object set to Automatic stays Automatic on a Painted-only plate.
+      // A supportSource given in the same call wins.
+      if (applied.also && !("supportSource" in (values as Record<string, unknown>))) {
+        objectNext.supportSource = applied.also.supportSource;
+        changed.push({ key: "supportSource", from: obj ? obj.objectSettings.supportSource : undefined, to: applied.also.supportSource });
+      }
       continue;
     }
     const applied = applySetting(next, key, value, this.schemaContext());
