@@ -63,7 +63,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   model_build: [{ name: "block", base: { primitive: "box", dx: 40, dy: 20, dz: 10 }, ops: [{ kind: "boolean", op: "cut", primitive: "cylinder", radius: 3, height: 12, centre: [0, 0, 5], label: "bore" }], commit: true }],
   model_define: [{ name: "peg", params: { r: 1, x: 0 }, ops: [{ kind: "boolean", op: "fuse", primitive: "cylinder", radius: "r", height: 3, centre: ["x", 0, 21], label: "peg" }] }],
   recipe_run: [{ path: "gear_blank.rs", mode: "check" }, { plugin: "wave", params: { teeth: 12 } }],
-  nugget: [{ action: "find", query: "hinge" }, { action: "get", kind: "plugin", id: "wave", withSource: true }, { action: "save", kind: "animation", from: "escapement-motion", title: "Escapement motion", members: ["wheel", "anchor"] }],
+  nugget: [{ action: "find", query: "hinge" }, { action: "get", kind: "plugin", id: "wave", withSource: true }, { action: "save", kind: "animation", from: "escapement-motion", title: "Escapement motion", members: ["wheel", "anchor"] }, { action: "save", kind: "plugin", source: "<the edited recipe code>", id: "bolt-circle-flange", title: "Bolt-circle flange", description: "A round flange with a bolt circle, thicker." }],
   plugin: [{ action: "list", query: "gear" }, { action: "get", id: "wave", withSource: true }],
   model_anchors: [{ object: "obj_1" }],
   model_params: [{ set: { wallW: 40, wallH: 12 } }],
