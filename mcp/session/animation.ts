@@ -95,7 +95,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const keepNow = async (): Promise<Record<string, unknown>> => {
     if (!keep) return {};
     if (meta?.signal?.aborted) return { keepRefused: "The run was cancelled, so the animation was not kept." };
-    return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params);
+    return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params, typeof input.name === "string" && input.fromProject !== true ? input.name : undefined);
   };
   if (!out) return { ...summary, ...(await keepNow()), rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
   const written = await this.writeAnimationFrames(sampled, parts, { out, camera: input.camera ?? result.camera, longEdge: input.longEdge, background }, meta);
@@ -182,8 +182,8 @@ async function writeAnimationFrames(this: Session, sampled: AnimationResult, par
  * plugin by `pluginSave` (its versions, its title clash note), with the member names the run used. A refused keep is a
  * sentence in the reply; the run stands.
  */
-async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...(name ? { name } : {}), animation: { ...(used ? { used } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
+async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>, idAsked?: string): Promise<Record<string, unknown>> {
+  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...(name ? { name } : {}), ...(idAsked ? { idAsked } : {}), animation: { ...(used ? { used } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
   return "reason" in saved ? { keepRefused: saved.reason } : { kept: saved };
 }
 
@@ -199,7 +199,7 @@ async function animationSaveFrom(this: Session, from: string, input: Record<stri
   const keep = { title: input.title, description: input.description, ...(input.members !== undefined ? { members: input.members } : {}) };
   const member = this.liveAssemblies().find((assembly) => assembly.id === row.assembly)?.members.find((m) => this.find(m.object));
   if (member) {
-    const ran = await this.poseAnimate({ object: member.object, source: row.source, params: row.params, name: row.plugin ?? key, keep });
+    const ran = await this.poseAnimate({ object: member.object, source: row.source, params: row.params, name: row.plugin ?? key, fromProject: true, keep });
     if (ran.ok !== true) return refuse("plugin-invalid", `The animation did not run on its assembly, so it was not kept: ${String(ran.reason ?? "it failed.")}`);
     if (typeof ran.keepRefused === "string") return refuse("plugin-invalid", ran.keepRefused);
     const kept = ran.kept as { id: string };

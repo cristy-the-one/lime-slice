@@ -121,6 +121,17 @@ const beside = await call("pose_animate", { object: first, source: edited.replac
 const kb = beside.kept as { id: string; note?: string };
 assert.equal(kb.id, "escapement-motion-2", JSON.stringify(beside));
 assert.match(String(kb.note), /already exists as "escapement-motion"/);
+// A name the caller gave is the id (a valid slug); the title stays the title. Naming an existing id adds a version.
+const named = await call("pose_animate", { object: first, source: edited, name: "escape-rocker", keep: { title: "Rocking escapement" } });
+const kn = named.kept as { id: string; version: number };
+assert.equal(kn.id, "escape-rocker", JSON.stringify(named)); assert.equal(kn.version, 1);
+assert.equal((readPlugin("escape-rocker", library) as { header: { title: string } }).header.title, "Rocking escapement");
+const namedAgain = await call("pose_animate", { object: first, source: edited.replace("a.key(2.0,", "a.key(3.0,"), name: "escape-rocker", keep: { title: "Rocking escapement, slower" } });
+assert.deepEqual([(namedAgain.kept as { id: string }).id, (namedAgain.kept as { version: number }).version], ["escape-rocker", 2], JSON.stringify(namedAgain));
+assert.equal(readPlugin("rocking-escapement", library), null, "no plugin was kept under the title's slug");
+// A name that is not a slug does not become an id: the title's slug is used.
+const badName = await call("pose_animate", { object: first, source: edited.replace("a.key(2.0,", "a.key(4.0,"), name: "Not A Slug", keep: { title: "Fourth motion" } });
+assert.equal((badName.kept as { id: string }).id, "fourth-motion", JSON.stringify(badName));
 
 // 4b. An export long enough to become a job keeps when its last frame is written: slice_wait's result carries kept. A
 // cancelled one keeps nothing.

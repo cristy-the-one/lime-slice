@@ -125,11 +125,12 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
 }
 
 /**
- * --- D1–D3, D6–D7. Keeps `source` as a plugin in the library. The id is the title's slug. A plugin of that id with
+ * --- D1–D3, D6–D7. Keeps `source` as a plugin in the library. The id is the id the caller named (`idAsked`: nugget
+ * save's `id`, pose_animate's `name`, when it is a valid slug), else the title's slug. A plugin of that id with
  * the same body keeps its version (new words only); with another body it is the next version when the run was of
  * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
  */
-async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof; animation?: AnimationKeep }): Promise<{ id: string; version: number; sha256: string; kind?: "animation"; memberParams?: string[]; memberNames?: string[]; built?: string; warning?: string; note?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; idAsked?: string; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof; animation?: AnimationKeep }): Promise<{ id: string; version: number; sha256: string; kind?: "animation"; memberParams?: string[]; memberNames?: string[]; built?: string; warning?: string; note?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
   const title = oneLine(opts.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
   let body = lfOnly(opts.source);
@@ -159,7 +160,11 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   const checked: { params: PluginParam[]; target: PluginTarget; built?: string; warning?: string; memberParams?: string[]; memberNames?: string[] } | { reason: string } = animation ? await this.animationCheck(body, animation) : await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null, undefined, opts.proof);
   if ("reason" in checked) return checked;
   const dir = pluginsDir();
-  let id = slugOf(title) || slugOf(opts.name ?? "") || "plugin";
+  // A caller who named the id (`name` or `id` in the call, itself a valid slug) gets that id; the title stays the title.
+  // Otherwise the id is the title's slug (a run's own name is only the version link, below).
+  const asked = typeof opts.idAsked === "string" && isSlug(opts.idAsked) ? opts.idAsked : "";
+  let id = asked || slugOf(title) || slugOf(opts.name ?? "") || "plugin";
+  if (asked && opts.name === undefined) opts = { ...opts, name: asked };
   let version = 1;
   let note: string | undefined;
   const same = (found: ReturnType<typeof readPlugin>) => !!found && !("reason" in found) && found.sha256 === sha256;
@@ -430,7 +435,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       source = input.source;
       name = typeof input.id === "string" ? input.id : undefined;
     } else return refuse("missing-argument", "Give from (a recipe name this session ran) or source.");
-    const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, objectHint, ingredients, ...(data ? { data } : {}), ...(animationOnly || input.members !== undefined ? { animation: { members: input.members } } : {}) });
+    const saved = await this.pluginSave({ source, title: input.title, description: input.description, name, ...(typeof input.from !== "string" && typeof input.id === "string" ? { idAsked: input.id } : {}), objectHint, ingredients, ...(data ? { data } : {}), ...(animationOnly || input.members !== undefined ? { animation: { members: input.members } } : {}) });
     if ("reason" in saved) return refuse("plugin-invalid", saved.reason);
     if (typeof input.from === "string") {
       const draft = this.latestDraft(input.from);
