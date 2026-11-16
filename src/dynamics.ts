@@ -141,7 +141,12 @@ export interface System {
   restitution: number;
   /** What the model left out or assumed, in sentences, said with every answer made from it. */
   notes: string[];
+  /** The ratchets between coordinates (they are not reduced into a train): which way each holds, for the drive's sense. */
+  ratchets?: RatchetLink[];
 }
+
+/** A ratchet's two sides, as bodies (`part` −1: the frame), its free way and its ratio, and its name for a sentence. */
+export interface RatchetLink { wheel: number; part: number; free: number; ratio: number; name: string }
 
 export type Refusal = { reason: string };
 
@@ -306,9 +311,21 @@ export function buildSystem(assembly: Assembly, parts: readonly DynPart[], input
       coords[driveBody.coord]!.torque += driveBody.scale * drive.torqueNmm * N_MM;
     } else if (drive.radiusMm !== undefined) {
       if (driveBody.kind !== "hinge") return { reason: `${driveBody.name} slides: a cord round a radius needs a hinge.` };
-      driveBody.cord = { massG: drive.weightG!, radiusMm: drive.radiusMm, dir: drive.dir ?? 1 };
-      driveBody.drives = true;
-      notes.push(`The weight, ${drive.weightG} g, hangs on a cord round a ${drive.radiusMm} mm drum on ${driveBody.name}: a point mass on an inextensible cord, with no part of its own.`);
+      // A drum with a declared winch: the radius is a what-if on that winch, not a second weight. The weight's slide
+      // moves radius/declared radius as far for each drum turn and weighs the drive's grams; nothing else changes.
+      const winch = (assembly.couplings ?? []).find((row) => row.kind === "winch" && row.driver === driveBody!.object);
+      const slide = winch ? bodies[bodyIndex.get(winch.driven) ?? -1] : undefined;
+      if (winch && slide && slide.kind === "slide" && slide.coord === driveBody.coord) {
+        const declared = winch.radius ?? (Math.abs(winch.ratio) * 360) / (2 * Math.PI);
+        slide.scale *= drive.radiusMm / declared;
+        notes.push(`The weight is ${slide.name}, taken as ${drive.weightG} g in place of its solid's ${round(slide.massG, 1)} g, on its winch with the drum's radius taken as ${drive.radiusMm} mm in place of the declared ${round(declared, 3)} mm for this run (the cord winds the winch's way${drive.dir !== undefined ? "; dir is not used" : ""}). The animation keys still follow the declared winch, so there the weight moves as on a ${round(declared, 3)} mm drum.`);
+        slide.massG = drive.weightG!;
+        slide.drives = true;
+      } else {
+        driveBody.cord = { massG: drive.weightG!, radiusMm: drive.radiusMm, dir: drive.dir ?? 1 };
+        driveBody.drives = true;
+        notes.push(`The weight, ${drive.weightG} g, hangs on a cord round a ${drive.radiusMm} mm drum on ${driveBody.name}: a point mass on an inextensible cord, with no part of its own.`);
+      }
     } else {
       // A winch the body is coupled by: the weight is its slide body.
       const winch = (assembly.couplings ?? []).find((row) => row.kind === "winch" && (row.driver === driveBody!.object || row.driven === driveBody!.object));
@@ -354,12 +371,14 @@ export function buildSystem(assembly: Assembly, parts: readonly DynPart[], input
   }
 
   const elements: Element[] = [];
+  const ratchets: RatchetLink[] = [];
   for (const [c, coord] of coords.entries()) if (Number.isFinite(coord.lo) || Number.isFinite(coord.hi)) elements.push(limitElement(c, coord, coords.length));
   for (const row of assembly.couplings ?? []) {
     if (row.kind === "ratchet") {
       const element = ratchetElement(row, bodies, bodyIndex, coords.length, nameOf);
       if ("reason" in element) return element;
       elements.push(element);
+      ratchets.push({ wheel: bodyIndex.get(row.driver)!, part: bodyIndex.get(row.driven) ?? -1, free: row.free ?? 1, ratio: row.ratio || 1, name: couplingNames(row).join(" and ") });
     }
     if (row.kind === "clutch") {
       const capacity = (inputs.clutchNmm ?? 5) * N_MM;
@@ -368,7 +387,67 @@ export function buildSystem(assembly: Assembly, parts: readonly DynPart[], input
     }
   }
   if (assembly.couplings?.some((row) => row.click)) notes.push("A click counts with the part it sits on; its own swing, its spring and its drop into each notch are left out.");
-  return { coords, bodies, elements, restitution: inputs.restitution, notes };
+  return { coords, bodies, elements, restitution: inputs.restitution, notes, ...(ratchets.length ? { ratchets } : {}) };
+}
+
+/**
+ * Each arbor's share of its train's pin friction: the train's pins slip together, so pin k takes |s_k| · its bound over
+ * the train's bound (`Coord.friction`) of the loss booked on the train (`pivot:<c>`). Exact, not an estimate.
+ */
+export function pivotShares(system: System, c: number): { body: Body; share: number }[] {
+  const coord = system.coords[c];
+  if (!coord || !(coord.friction > 0)) return [];
+  return coord.bodies.map((k) => system.bodies[k]!).filter((body) => body.pinFriction > 0).map((body) => ({ body, share: (Math.abs(body.scale) * body.pinFriction) / coord.friction }));
+}
+
+/** The drive's own generalized forces at `q` (its torque, its weight or its cord), without the parts' weights. */
+export function driveForces(system: System, q: ArrayLike<number>, g = G_MM_S2): Float64Array {
+  const out = Float64Array.from(system.coords, (coord) => coord.torque);
+  for (const body of system.bodies) {
+    if (!body.drives) continue;
+    const delta = body.scale * q[body.coord]!;
+    const force = body.cord ? body.cord.massG * g * body.cord.radiusMm * body.cord.dir : gravityOn(body, delta, g);
+    out[body.coord] = out[body.coord]! + body.scale * force;
+  }
+  return out;
+}
+
+/**
+ * Which way the drive pushes coordinate `c`: +1 or −1, or 0 with no drive on it. A drive on another coordinate reaches
+ * it only through ratchets that hold (the drive turns each against its free way); one turned its free way is refused,
+ * with a sentence, since its click lets the drive run and nothing reaches `c`.
+ */
+export function driveSense(system: System, q: ArrayLike<number>, c: number, nameOf: (k: number) => string = (k) => system.coords[k]?.name ?? String(k)): { sense: number; via?: string } | Refusal {
+  const forces = driveForces(system, q);
+  if (forces[c] !== 0) return { sense: Math.sign(forces[c]!) };
+  const start = forces.findIndex((f) => f !== 0);
+  if (start < 0) return { sense: 0 };
+  // Walk the ratchets from the driven coordinate, carrying the way each coordinate is pushed.
+  const sense = new Map<number, number>([[start, Math.sign(forces[start]!)]]);
+  const via = new Map<number, string>();
+  const queue = [start];
+  let free: string | null = null;
+  while (queue.length) {
+    const at = queue.shift()!;
+    const s = sense.get(at)!;
+    for (const link of system.ratchets ?? []) {
+      const wheel = system.bodies[link.wheel]!, part = link.part >= 0 ? system.bodies[link.part]! : null;
+      if (!part) continue;
+      const [from, to] = wheel.coord === at ? [wheel, part] : part.coord === at ? [part, wheel] : [null, null];
+      if (!from || !to || sense.has(to.coord)) continue;
+      // The relative turn the ratchet watches: wheel − part / ratio. It holds when the push drives it against its free way.
+      const relRate = from === wheel ? jointRate(wheel) * s : (-jointRate(part) * s) / link.ratio;
+      if (link.free * relRate >= 0) { free ??= link.name; continue; }
+      // Held, both sides move together: jointRate(wheel) dq_w = jointRate(part) dq_p / ratio.
+      const other = from === wheel ? (jointRate(wheel) * link.ratio) / jointRate(part) : jointRate(part) / (link.ratio * jointRate(wheel));
+      sense.set(to.coord, Math.sign(other * s));
+      via.set(to.coord, link.name);
+      queue.push(to.coord);
+    }
+  }
+  if (sense.has(c)) return { sense: sense.get(c)!, via: via.get(c)! };
+  if (free) return { reason: `The drive turns the ratchet between ${free} its free way: its click lets the drive run, so nothing reaches ${nameOf(c)}. Reverse the drive (or the cord's winding), or the ratchet's free way.` };
+  return { sense: 0 };
 }
 
 const round = (value: number, digits: number) => Math.round(value * 10 ** digits) / 10 ** digits;
@@ -580,7 +659,10 @@ export class Stepper {
     const order = rows.map((_, i) => i).sort((a, b) => rank(rows[a]!) - rank(rows[b]!));
     const p = new Float64Array(rows.length);
     if (rows.length) solveRows(rows, order, p, v, v0, this.inv, system.restitution, h);
-    // The work each impulse did, over the step's mean velocity.
+    // The work each impulse did, over the step's mean velocity: together they close the energy balance exactly. (Booking
+    // each Gauss-Seidel update's kinetic-energy change instead was tried for 2.8: from the free velocity it charges a
+    // held ratchet h²F²/2M a step, 5x the drive's work; measured from half the force's increment it closes the balance but
+    // splits coupled rows arbitrarily, a drum's pin going negative. Neither is used.)
     this.lastRows = [];
     for (let k = 0; k < rows.length; k += 1) {
       if (p[k] === 0) continue;
@@ -662,8 +744,11 @@ function solveRows(rows: Row[], order: number[], p: Float64Array, v: Float64Arra
  */
 export class SwingMeter {
   crossings: number[] = [];
-  /** Each turning point: its time and its distance from rest, radians. */
-  extremes: { t: number; a: number }[] = [];
+  /**
+   * Each turning point: its time, its distance from rest (radians) and its side of rest (+1 or −1, in the coordinate's
+   * sense). A release from standing still (the first sample, at no speed, off rest) is the first turning point.
+   */
+  extremes: { t: number; a: number; side: 1 | -1 }[] = [];
   private last: { t: number; x: number; v: number } | null = null;
   readonly rest: number;
   constructor(rest: number) { this.rest = rest; }
@@ -675,9 +760,10 @@ export class SwingMeter {
       if ((last.v > 0 && v <= 0) || (last.v < 0 && v >= 0)) {
         // The turning point between the two steps, where the velocity is 0 (linear in it): its distance from rest.
         const s = last.v === v ? 0 : last.v / (last.v - v);
-        this.extremes.push({ t: last.t + (t - last.t) * s, a: Math.abs(last.x + (x - last.x) * s) });
+        const at = last.x + (x - last.x) * s;
+        this.extremes.push({ t: last.t + (t - last.t) * s, a: Math.abs(at), side: at < 0 ? -1 : 1 });
       }
-    }
+    } else if (v === 0 && x !== 0) this.extremes.push({ t, a: Math.abs(x), side: x < 0 ? -1 : 1 });
     this.last = { t, x, v };
   }
   /** Mean period over the crossings from `from` s on, or NaN. */
