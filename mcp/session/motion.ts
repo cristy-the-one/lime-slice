@@ -42,6 +42,7 @@ async function motionRun(this: Session, input: Input, meta?: CallMeta): Promise<
     else if (key === "drop") spec.dropMm = value;
     else spec[key] = value;
   }
+  if (input.findStart === true) spec.findStart = true;
   if (num(input.pinRadius) !== undefined) spec.pinRadiusMm = num(input.pinRadius);
   if (num(input.clutch) !== undefined) spec.clutchNmm = num(input.clutch);
   if ((spec.seconds ?? DEFAULTS.seconds) > LIMITS.seconds) return refuse("out-of-range", `seconds is at most ${LIMITS.seconds}.`);

@@ -71,6 +71,7 @@ const before = JSON.stringify(s.assemblies);
 
 check("motion_run takes its fields", validateTool("motion_run", { object: wheel, escapement, drive: { member: wheel, torque: 0.25 }, seconds: 12 }) === null);
 check("a drive needs its member", validateTool("motion_run", { object: wheel, drive: { torque: 1 } }) !== null);
+check("findStart is a field", validateTool("motion_run", { object: wheel, escapement, drive: { member: wheel, torque: 0.25 }, findStart: true }) === null);
 
 // --- A run, as a job.
 {
@@ -82,12 +83,17 @@ check("a drive needs its member", validateTool("motion_run", { object: wheel, dr
   check(`from a 3.5° push: steady ${push.steadyAmplitudeDeg}°, period ${push.periodS} s, one tooth a period (${push.wheelTeethPerPeriod})`, push.runs === true && typeof push.steadyAmplitudeDeg === "number" && Math.abs((push.wheelTeethPerPeriod as number) - 1) < 1e-3, push);
   const rest = r.fromRest as Reply;
   check(`from rest it never starts, and says where: ${JSON.stringify(rest.stall)}`, rest.selfStarts === false && String((rest.stall as Reply)?.where).includes("impulse face"), rest);
+  const stall = rest.stall as Reply;
+  check(`let go as posed: releaseDeg ${rest.releaseDeg}° from where it hangs, state ${rest.state}, the stall from the run's history (teeth ${stall.teethEscaped}, anchor ${stall.anchorReachDeg}° of the ${stall.letoffDeg}° let-off, unlocks ${stall.unlocks}), the run ended at ${rest.endedAtS} s`, typeof rest.releaseDeg === "number" && rest.state === "stalls" && stall.teethEscaped === 0 && stall.unlocks === false && typeof rest.endedAtS === "number" && (rest.endedAtS as number) < 12, rest);
+  check(`the push run's swing: each side's mean and trend, settled (${push.plusSideDeg}°, ${push.minusSideDeg}°, ${push.trendDegPerPeriod}° a period)`, push.settled === true && typeof push.plusSideDeg === "number" && typeof push.minusSideDeg === "number" && Math.abs(push.trendDegPerPeriod as number) <= 0.002, push);
+  check(`agree is in the reply (${JSON.stringify(r.agree)}) and the amplitudes carry their side`, typeof (r.agree as Reply)?.ok === "boolean" && (r.amplitudeOverTime as { side: number }[]).every((row) => row.side === 1 || row.side === -1), r.agree);
   const inputs = r.inputs as Reply;
   check("inputs name every default used", inputs.friction === 0.3 && inputs.pinRadiusMm === 1.5 && inputs.restitution === 0 && (inputs.defaults as string[]).length === 3, inputs);
   check("leftOut and the fit are in the reply", (r.leftOut as string[]).some((line) => line.includes("infill")) && (r.fit as { wheelResidualMm: number }).wheelResidualMm < 0.02, r.fit);
   const sweep = r.sweep as Reply[];
-  check(`the sweep: runs at 0.3, stops at 0.6 (${JSON.stringify(sweep)})`, sweep[0]?.runs === true && sweep[1]?.runs === false);
-  check("sentences say it in words", (r.sentences as string[]).some((line) => line.startsWith("From a 3.5° push it runs")) && (r.sentences as string[]).some((line) => line.includes("depends on friction")), r.sentences);
+  check(`the sweep: runs at 0.3, stops at 0.6 (${JSON.stringify(sweep)})`, sweep[0]?.runs === true && sweep[1]?.runs === false && sweep[1]?.state === "stalls");
+  check("every sweep row carries its last swing, and why where a value is missing", sweep.every((row) => typeof row.lastAmplitudeDeg === "number" && (row.settled === true || typeof row.why === "string")), sweep);
+  check("sentences say it in words", (r.sentences as string[]).some((line) => line.startsWith("From a 3.5° push (the anchor 3.5° from its middle; it unlocks at 2°), it runs: the escape wheel turns a tooth a period")) && !(r.sentences as string[]).some((line) => line.includes("swings 0° each side")) && (r.sentences as string[]).some((line) => line.includes("depends on friction")), r.sentences);
   check("nothing on the plate moved", JSON.stringify(s.assemblies) === before);
   console.log((r.sentences as string[]).map((line) => `     ${line}`).join("\n"));
 }
