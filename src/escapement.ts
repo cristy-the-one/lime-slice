@@ -10,7 +10,7 @@
  */
 import { meshDistance } from "./contact.ts";
 import { layout, pivotDistance, wheelRoots, type Graham, type Layout, type P2 } from "./graham.ts";
-import { BAND, type Element, type Row, type Stepper, type System, type Vec3 } from "./dynamics.ts";
+import { BAND, driveSense, type Element, type Row, type Stepper, type System, type Vec3 } from "./dynamics.ts";
 import type { Affine } from "./model-space.ts";
 
 const DEG = Math.PI / 180;
@@ -110,8 +110,9 @@ export function palletGap(f: Face, p: P2): Touch {
 export interface EscapementState {
   /** Each tooth tip in contact: which pallet, which face, the tooth. */
   touching: { pallet: "entry" | "exit"; face: Touch["face"]; tooth: number }[];
-  /** The least gap over every tip and both pallets, mm. */
+  /** The least gap over every tip and both pallets, mm, and where: the tooth, the pallet and its face. */
   leastGap: number;
+  least: { tooth: number; pallet: "entry" | "exit"; face: Touch["face"] } | null;
   wheelDeg: number;
   anchorDeg: number;
 }
@@ -187,12 +188,13 @@ export function escapementElement(g: Graham, link: EscapementLink): EscapementEl
     state(q) {
       const touching: EscapementState["touching"] = [];
       let leastGap = Infinity;
+      let least: EscapementState["least"] = null;
       near(q, 1e9, (k, f, touch) => {
-        leastGap = Math.min(leastGap, touch.gap);
+        if (touch.gap < leastGap) { leastGap = touch.gap; least = { tooth: k, pallet: f.pallet, face: touch.face }; }
         if (touch.gap <= 1e-3) touching.push({ pallet: f.pallet, face: touch.face, tooth: k });
       });
       const { psi, alpha } = angles(q);
-      return { touching, leastGap, wheelDeg: psi / DEG, anchorDeg: alpha / DEG };
+      return { touching, leastGap, least, wheelDeg: psi / DEG, anchorDeg: alpha / DEG };
     },
   };
   return element;
@@ -212,6 +214,8 @@ export interface Fitted {
 }
 
 const FIT_MM = 0.02, PIVOT_MM = 0.05, CHECK_MM = 0.1;
+/** A pallet this far inside a tooth, mm, is an overlap the parts cannot stand in: refused (a mesh's chord is less). */
+export const OVERLAP_MM = 0.02;
 
 function posed(positions: ArrayLike<number>, pose: Affine): Vec3[] {
   const seen = new Set<string>();
@@ -293,19 +297,39 @@ export function fitEscapement(system: System, g: Graham, parts: EscapementParts,
     if (!(bestWheel <= FIT_MM)) return { reason: `${wheel.name}'s mesh does not have the teeth of these numbers (${g.wheel.teeth} teeth, tip ${g.wheel.tipRadius} mm, root ${g.wheel.rootRadius} mm, lean ${g.wheel.leanDeg}°): its nearest corner is ${Number.isFinite(bestWheel) ? bestWheel.toFixed(3) : "nowhere"} mm off (0.02 allowed).` };
     return { reason: `${anchor.name}'s pallets are not where these numbers put them: at its best angle a pallet corner is ${Number.isFinite(bestAnchor) ? bestAnchor.toFixed(3) : "nowhere"} mm off (0.02 allowed). Check lock, impulse, drop and span, and that the anchor is not mirrored.` };
   }
-  // With teeth that do not lean, both senses fit: take the one in which the drive turns the wheel clockwise.
+  // With teeth that do not lean, both senses fit: take the one in which the drive turns the wheel clockwise. The drive's
+  // own sense, carried through any ratchet between it and the wheel (one turned its free way is refused); with no drive,
+  // the wheel train's static force (its parts' weight).
+  const driven = driveSense(system, stepper.q, wheel.coord);
+  if ("reason" in driven) return driven;
   const f = new Float64Array(stepper.n);
   stepper.forces(stepper.q, f);
-  const pushes = f[wheel.coord]!;
+  const pushes = driven.sense !== 0 ? driven.sense : f[wheel.coord]!;
   const choice = fits.find((row) => Math.sign(pushes * row.sense * wheel.scale) < 0) ?? fits[0]!;
   const wheelRate = choice.sense * wheel.scale, anchorRate = choice.sense * (anchor.axis[0] * nw[0] + anchor.axis[1] * nw[1] + anchor.axis[2] * nw[2] > 0 ? 1 : -1) * anchor.scale;
-  if (pushes * wheelRate > 0) return { reason: `The drive turns ${wheel.name} against its teeth: they lean for the other way. Reverse the drive (or the cord's winding), or mirror the wheel and the anchor.` };
+  if (pushes * wheelRate > 0) return { reason: `The drive turns ${wheel.name}${driven.via ? ` (through the ratchet between ${driven.via})` : ""} against its teeth: they lean for the other way. Reverse the drive (or the cord's winding), or mirror the wheel and the anchor.` };
   const link: EscapementLink = { n: stepper.n, wheel: { coord: wheel.coord, rate: wheelRate }, anchor: { coord: anchor.coord, rate: anchorRate }, psi0: choice.psi0, alpha0: choice.alpha0, mu };
   const element = escapementElement(g, link);
   if ("reason" in element) return element;
-  const analyticGap = element.state(stepper.q).leastGap;
+  const start = element.state(stepper.q);
+  const analyticGap = start.leastGap;
+  if (analyticGap < -OVERLAP_MM && start.least) {
+    // A pallet inside a tooth: the wheel was not phased for this anchor. The smallest wheel turn, either way, that clears it.
+    const clear = (dir: number) => {
+      const q = Float64Array.from(stepper.q);
+      const at = (deg: number) => { q[wheel.coord] = stepper.q[wheel.coord]! + (dir * deg * DEG) / wheelRate; return element.state(q).leastGap; };
+      let lo = 0, hi = NaN;
+      for (let deg = 0.01; deg <= 360 / g.wheel.teeth; deg += 0.01) { if (at(deg) >= 0) { hi = deg; break; } lo = deg; }
+      if (!Number.isFinite(hi)) return NaN;
+      for (let i = 0; i < 40; i += 1) { const mid = 0.5 * (lo + hi); if (at(mid) >= 0) hi = mid; else lo = mid; }
+      return hi;
+    };
+    // The drive turns the wheel's plane angle down (clockwise, as horology draws it).
+    const fwd = clear(-1), back = clear(1);
+    const turns = [Number.isFinite(fwd) ? `${fwd.toFixed(2)}° the way the drive turns it` : "", Number.isFinite(back) ? `${back.toFixed(2)}° back` : ""].filter(Boolean).join(" or ");
+    return { reason: `${anchor.name}'s ${start.least.pallet} pallet stands ${(-analyticGap).toFixed(3)} mm inside tooth ${start.least.tooth} of ${wheel.name} (its ${start.least.face === "corner" ? "corner" : `${start.least.face} face`}; ${OVERLAP_MM} mm allowed): the wheel is not phased for this anchor. ${turns ? `Turning the wheel ${turns} clears it` : "No wheel turn within a tooth clears it"}; or pose the anchor where its pallets clear the teeth.` };
+  }
   const meshGap = meshDistance({ positions: Float32Array.from(wheel.positions), pose: wheel.pose }, { positions: Float32Array.from(anchor.positions), pose: anchor.pose });
   if (Math.abs(Math.max(0, analyticGap) - meshGap) > CHECK_MM) return { reason: `The escapement's numbers do not describe the parts as they stand: the element's least gap is ${analyticGap.toFixed(3)} mm, the meshes' ${meshGap.toFixed(3)} mm (0.1 allowed).` };
-  void system;
   return { element, fit: { pivotDistanceMm: dMeas, wheelResidualMm: choice.wheelRes, anchorResidualMm: choice.anchorRes, analyticGapMm: analyticGap, meshGapMm: meshGap, sense: choice.sense } };
 }
