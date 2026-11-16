@@ -19,7 +19,7 @@ fact that [it] is working. not constant tweaking by an LLM". For a simulation th
 
 In Pose, an assembly with a drive gets **Run**: the driven part, its drive (a torque, or a weight on a winch coupling),
 the friction coefficient and the seconds. Progress and Cancel in the panel's own block; at the end the motion plays as
-an animation and the panel says, in sentences: whether it starts from rest and from a push, the steady amplitude and how
+an animation and the panel says, in sentences: whether it runs let go as posed and from a push, the steady amplitude and how
 many swings it took, the period and the rate in seconds a day against the train's designed period, the energy per beat
 from the drive against the losses, how long the weight's drop lasts, and whether and where it stalls. Over MCP the same
 is `motion_run`, a job (`slice_wait`, `slice_cancel`), with frames written through `pose_animate`'s writer.
@@ -49,12 +49,17 @@ teeth and is the same tie Pose already turns. Left out and said: tooth friction 
   the slide body, reflected through the winch ratio, turns the train. The cord is rigid and massless; the weight does not
   swing. `drive.weight` (grams) replaces the weight body's solid mass (a can filled with coins weighs what it holds).
   A weight on a cord round a drum with no slide part is `drive: {member, weight, radius}`: the same equations with the
-  weight as a point mass `m r²` on the drum.
+  weight as a point mass `m r²` on the drum. On a drum that has a declared winch, `radius` is a what-if on that winch:
+  the weight's slide moves `radius / declared radius` as far a drum turn and weighs the drive's grams, counted once (no
+  cord weight besides); the reply's note says so, and that the animation keys still follow the declared ratio.
+  `drive.dir` is not used there: the cord winds the winch's way.
 - **Ratchet**: one-way, as a unilateral constraint between the two coordinates (or one coordinate and the frame): the
   wheel's turn against its free way, relative to the click's part, cannot pass the click's seat; running free, the seat
   moves on a pitch each time the wheel passes one (the click drops into the next notch). A ratchet is not reduced into
   its train: in a running clock it holds and the two sides move together, but winding or overrunning parts it. The
-  click's mass is counted with the part it sits on; its own swing, its spring and its drop are left out (said).
+  click's mass is counted with the part it sits on; its own swing, its spring and its drop are left out (said). The
+  drive's sense at the escape wheel is carried through the ratchets that hold (the drive turns them against their free
+  way); a drive that turns a ratchet its free way never reaches the wheel and is refused with a sentence.
 - **Clutch**: here a torque finally exists. A clutch is Coulomb friction between its two coordinates with a capacity
   `clutch` (N·mm, default 5: a guess for a printed friction fit, named in every reply that has a clutch). It carries the
   driven side while the torque needed stays under the capacity and slips above it. The kinematic rule of
@@ -93,7 +98,10 @@ when a run is set up.**
   wheel's teeth (which way they lean), the wheel's phase from its tip vertices, the anchor's angle from its four pallet
   corners, each to 0.02 mm, and the anchor's pivot at horology's pivot distance from the wheel's axis to 0.05 mm. Then
   the element's least gap at the start pose is compared with `meshDistance` between the two meshes: they must agree to
-  0.1 mm (the meshes' chords). Any miss is a refusal that says which number did not fit. An escapement that is not
+  0.1 mm (the meshes' chords). Before that, a pallet more than 0.02 mm inside a tooth is refused (the meshes' distance
+  reads 0 for parts that overlap, so the comparison alone let a wheel not phased for its anchor pass): the refusal names
+  the tooth, the pallet and its face, and the wheel turn either way that clears it. Any miss is a refusal that says which
+  number did not fit. An escapement that is not
   horology's (a recoil anchor, hand-drawn pallets) is refused: "only a Graham escapement built from horology's numbers
   is covered".
 
@@ -133,10 +141,29 @@ Decided: **Moreau's midpoint time stepping** (Moreau–Jean), fixed step.
 - Default `dt` 0.00005 s (15,000 steps a period of a 0.75 s pendulum); 1e-6 to 0.002 s may be given. Measured on the
   test clock (section 8): the period at 1e-4, 5e-5 and 2.5e-5 s differs by 2.8 and then 0.6 s a day.
 
-**Convergence, in every run.** The run is repeated at `dt / 2`. The period, the steady amplitude, the rate, whether it
-self-starts and whether it stalls must agree: the period to 1 s a day, the amplitude to 1 % (or 0.02 degrees), the
-verdicts exactly. If they do not, the reply says **not converged** and gives both values and both steps, never one
-number. The sweep's runs (section 4) are made at `dt` only and say so.
+**Convergence, in every run.** The run is repeated at `dt / 2`. The period, the settled amplitude, the rate and the
+class of answer (running, stopped, past the locking faces) must agree: the period to 1 s a day, the amplitude to 1 %
+(or 0.02 degrees), the class exactly. If they do not, the reply says **not converged** and gives both values and both
+steps, never one number. A swing settled at one step and still settling at the other is not a time-step matter and is
+not counted against convergence. The sweep's runs (section 4) are made at `dt` only and say so.
+
+**Settled.** A swing is settled when each side's turning points over the run's last 10 periods, fitted by least
+squares against time, change less than 0.002 degrees a period (at least 6 turning points a side). Each side's mean and
+slope are in every run and sweep row (`plusSideDeg`, `minusSideDeg`, `trendDegPerPeriod`, `beatDifferenceDeg`), so a
+swing that still swells and alternating beats are both visible. The settled amplitude is the mean of the two sides'
+means; "after N periods" counts from the start to the first turning point from which every later one stays within 1 %
+(or 0.02 degrees) of its side's mean. Found by the cute-clock note: the old rule (the last ten turning points within
+1 % of their mean, both sides mixed) called a swing settled while it grew 0.005 degrees a period, and missed a run
+steady to 0.006 degrees. The period is the mean over the crossings since the swing settled, or over the window's when it
+has not (then marked `periodSettled: false`).
+
+**Agreement of the starts.** When the run let go as posed and the run from the push both settle, their amplitudes and
+periods are compared (`agree`, the same tolerances); a difference is said, not folded into convergence: a steady swing
+that depends on how the clock starts is a property of the model, not of the step.
+
+**A confirmed stall ends the run.** Once the escape wheel has moved less than half a tooth over three free periods and
+the largest swing in them is below the let-off and not growing, the run stops there (`endedAtS`): nothing after it can
+change. A stalled run used to integrate to the end, 5 to 10 minutes of the owner's agents' time.
 
 **Overswing.** The locking faces end at half the swing plus the supplementary arc. An anchor that swings further has
 left the geometry horology drew (in the print, the tooth would run off the pallet onto the arm), so the run reports the
@@ -147,20 +174,45 @@ grew past 4 degrees.
 
 From a run of `seconds` of an assembly with an escapement (or a pendulum alone), each with its inputs named:
 
-- **Self-start**: from rest as posed, and from a push of `push` degrees (default the let-off plus one degree): whether
-  the pendulum's amplitude grows to a steady swing.
+- **Let go as posed** (`fromRest`), and from a push of `push` degrees from where the pendulum hangs. "As posed" is the
+  pose as it stands, which may be off the pendulum's gravity rest: `releaseDeg` says how far, and the sentence says "let
+  go as posed, the pendulum X° from where it hangs" (or "hanging still"). `selfStarts` means it runs when let go from
+  that pose, not from hanging still. A Graham escapement hanging still never starts in a deterministic model, so there is
+  no "start from rest" mode; with `findStart: true` the reply gives instead the smallest push from where the pendulum
+  hangs (the wheel as posed) after which it is still running at the probe's end (6 s or 8 free periods): short runs at
+  `dt`, bisected to 0.05 degrees, assuming a larger push starts it whenever a smaller one does. Off by default: on the test
+  clock it adds about 6 s, a third of a 20 s job. The default push, with an escapement, puts the anchor
+  `min(1, supplementary / 2)` degrees past the let-off, measured from the anchor's middle, so the release unlocks and
+  stays on the locking faces (`let-off + 1`, the old default, was the faces' very end with a 1 degree supplementary arc,
+  and the push run "overswung at 0 s"); without one, 5 degrees.
+- **What it does** (`state`, and the verdict from the push run): **runs** needs about one tooth a period over the last
+  window (within 10 %) and a swing that is not falling; **not settled**, the wheel turns but the swing falls more than
+  the settled slope or the run is too short to judge; **stalls**; **overswings**. With a pendulum and no escapement
+  nothing gives it energy, so it never "runs": **swings** (holds its swing), **swings, decaying** (in degrees a period,
+  and when it stands still) or **still**.
 - **Steady amplitude** (degrees each side of rest) and how many swings it took to reach it (the first swing from which
   every swing stays within 1 % of the last ten's mean), and the amplitude over time.
 - **Period** and **rate** in seconds a day against the train's designed period: `designPeriod`, or worked out from the
   train with `hand: {member, turnsPerHour}` (the escape wheel passes one tooth a period). Also the pendulum's free
   small-swing period from `swing()`, so the escapement's and the amplitude's share of the rate is visible.
-- **Energy per beat**: the drive's work against the losses: the pendulum's pivot, the train's pivots, the pallets'
-  friction, the impacts (drops and locks), and the integration residual.
-- **Run time** of the weight's drop: the slide's travel to its limit (or `drop` mm) over the weight's mean speed.
-- **Stall**: whether it stops, when, and where: which pallet face holds which tooth, the anchor's and the wheel's
-  angles; or that the train never turns because its pivot friction exceeds the drive.
-- **Friction sweep**: the same run at friction 0.1 to 0.5 (or `sweep`), each saying runs or stalls, amplitude and rate,
-  so a person sees whether the clock runs only on optimistic friction.
+- **Energy per beat**: the drive's work against the losses: each arbor's pin on its own line (a train's pins slip
+  together, so its loss splits exactly by `|s_k| · pin bound_k / the train's bound`), the pallets' friction, the
+  impacts (drops and locks), and the integration residual. A loss below 0 is the integration's error in booking a row's
+  work over the step's mean velocity; the sentence says so. (Booking each solver update's kinetic-energy change instead
+  was tried: from the free velocity it charges a held ratchet h²F²/2M a step, five times the drive's work on a ratchet
+  clock; measured from half the force's increment it closes the balance but splits coupled rows arbitrarily, a drum's
+  pin going negative. The per-row work is kept.)
+- **Run time** of the weight's drop: the weight's speed over the window, against `drop` mm when given and the distance
+  from where the weight starts to its own slide's limit on the side it falls toward (the falling sense from its travel
+  over the window), both said when known.
+- **Stall**: from the run's own history: when the wheel stopped (0 if it never turned a tooth) and how many teeth it
+  passed, the largest swing and when (a release from standing still is the first turning point), since when the
+  pendulum has stood still, the anchor's largest reach from its middle against the let-off ("it never unlocks" when it
+  fell short), and where it rests: which pallet face holds which tooth and the anchor's angle; or that the train never
+  turns because its pivot friction exceeds the drive. Every turning point carries its side.
+- **Friction sweep**: the same run at friction 0.1 to 0.5 (or `sweep`), each row with its state, the last swing, each
+  side's mean and trend, a period (marked unsettled when it is), the rate, and `why` where a value is missing, so a
+  person sees whether the clock runs only on optimistic friction.
 
 Every reply has `inputs` (density, friction, pin radius, restitution, drive, dt) and `leftOut`: tooth friction and mesh
 losses, backlash, the click's own swing and spring, the cord's stretch and the weight's swing, infill (solid mass), air
@@ -180,8 +232,9 @@ Planar mechanisms on parallel axes, every joint on the fixed root. Refused, each
 - an open mesh (`model_mass`'s sentence);
 - a drive with nothing to turn: "X does not move: it has no joint, or it is held.", a weight with no winch and no radius:
   "A weight hangs on a cord: couple a drum to the weight's slide (Winch), or give the drum's radius.";
-- an escapement whose numbers horology refuses (horology's sentence), or that does not fit the parts (which number);
-  the wheel and the anchor on one train; the drive turning the wheel against its teeth.
+- an escapement whose numbers horology refuses (horology's sentence), or that does not fit the parts (which number); a
+  pallet inside a tooth (the tooth, the pallet, the wheel turn that clears it); the wheel and the anchor on one train;
+  the drive turning the wheel against its teeth; a drive that turns a ratchet its free way.
 
 ## 6. Where it runs
 
@@ -233,7 +286,7 @@ free period 0.7386 s); 0.25 N·mm on the escape wheel; friction 0.3 on 1.5 mm pi
 | Period at dt 1e-4 / 5e-5 / 2.5e-5 s (test clock) | 0.7828060 / 0.7827808 / 0.7827754 s |
 | Cost a step, the test clock | about 3.5 µs |
 | One 60 s run of the test clock at dt 5e-5 s (1.2 million steps) | 4.2 s (Node) |
-| A whole 60 s `motion_run` / Pose Run: from rest and from a push, each at dt and dt/2, and five sweep runs | 143 s (Node) |
+| A whole 60 s `motion_run` / Pose Run: from rest and from a push, each at dt and dt/2, and five sweep runs | 143 s (Node). Re-measured 2026-11-16 on one machine: 176 s before, 35 s once a confirmed stall ends its run (the runs let go as posed, and the sweep's stalled ones, stop at 2.25 s): the stalled runs were most of the cost |
 | The test clock driven by a 200 g weight on a 10 mm drum through 60:1, a hand at 1/120: rate against the designed 1 s, run time | 86400 (1/T − 1) to 0.01 s a day; 159.4 mm an hour, 1.88 hours to the slide's limit |
 
 **Budget.** The cost is the steps: about 20,000 a simulated second at the default step plus a few refined events a
@@ -243,15 +296,23 @@ loop (section 2).
 
 **What a reply says** (the test clock, `motion_run` on the fake engine, 12 s):
 
-> From rest as posed it does not run: it never starts; a tooth rests on the entry pallet's impulse face; the anchor
-> stands -1.985° from its middle position and the pendulum swings 0° each side (it must pass 2° to unlock).
-> From a 3.5° push it runs: the swing settles at 3.124° each side after 2.5 periods, period 0.782755 s.
-> The pendulum's free small-swing period is 0.738562 s (mass properties, no escapement); at the run's 3.124° the free
+> Let go as posed, the pendulum hanging still, it does not run: the escape wheel never turns a tooth; the pendulum does
+> not swing; it never unlocks: the anchor reaches at most 1.985° from its middle (at 0.36 s), short of the 2° let-off;
+> the pendulum has stood still since 0.36 s; a tooth rests on the entry pallet's impulse face; the anchor stands
+> -1.985° from its middle position; the run ended at 2.25 s, the stall confirmed (three periods with less than half a
+> tooth and the swing below the let-off, not growing).
+> From a 3.5° push (the anchor 3.5° from its middle; it unlocks at 2°), it runs: the escape wheel turns a tooth a period
+> and the swing settles at 3.125° each side after 3 periods (each side changing less than 0.002° a period over the last
+> 10 periods), period 0.782755 s.
+> The pendulum's free small-swing period is 0.738562 s (mass properties, no escapement); at the run's 3.125° the free
 > period is 0.738699 s.
-> Each beat the drive gives 26.18 µJ; it goes to pivot of Escape wheel 2.41, pivot of Anchor 4.461, impacts (drops and
-> locks) 6.257, pallet friction 13.058 µJ; the integration residual is 0 % of the drive's work.
+> Each beat over the last 8 periods the drive gives 26.18 µJ; it goes to pivot of Escape wheel 2.41, pivot of Anchor
+> 4.459, impacts (drops and locks) 6.257, pallet friction 13.055 µJ; the integration residual is 0 % of the drive's work.
 > It runs only at friction 0.3 of 0.3, 0.6 (at 0.6 it stops): the answer depends on friction the app does not know.
 
-and for a drive too weak for its pivots (0.04 N·mm): "it stops at 1.05 s; a tooth rests on the entry pallet's impulse
-face; the anchor stands -1.705° from its middle position and the pendulum swings 0° each side (it must pass 2° to
-unlock)".
+For a drive too weak for its pivots (0.04 N·mm) the stall reads "the escape wheel stops at 1.05 s, after 2 teeth; ...; a
+tooth rests on the entry pallet's impulse face; the anchor stands -1.705° from its middle position". For 0.1 N·mm and a
+1.5° push the other way (the cute-clock note's job_38, rebuilt), the pendulum swings back to 1.557° at 0.42 s and stands
+still: the reply gives that swing and "it never unlocks", where it used to say "it never starts ... the pendulum swings
+0° each side". With `findStart`, the test clock's smallest push is 2.063° (2.016° is not enough), just past the 2°
+let-off.
