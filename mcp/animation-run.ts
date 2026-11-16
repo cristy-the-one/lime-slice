@@ -13,7 +13,7 @@ export const eventLoopTurn = (): Promise<void> => new Promise((resolve) => setIm
 /** `used`: the member names and patterns the script sent (docs/plan-animation-plugins.md A2), for a keep. */
 export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; background?: string; notes: string[]; used: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
 
-export async function runAnimation(host: RecipeHost, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { fps?: number; signal?: AbortSignal; progress?: (fraction: number, message: string) => void } = {}): Promise<AnimationRun> {
+export async function runAnimation(host: RecipeHost, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { fps?: number; ignore?: [string, string][]; signal?: AbortSignal; progress?: (fraction: number, message: string) => void } = {}): Promise<AnimationRun> {
   const ready = host.available();
   if (!ready.ok) return { ok: false, reason: ready.reason };
   const split = splitPluginData(source);
@@ -52,7 +52,7 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
       // The window's steps (sampleAnimationSteps: each frame posed and checked for crossings), with a turn of the event
       // loop between frames: a scene of many parts takes seconds a frame, and the server must go on answering (and hear
       // a cancel) meanwhile.
-      const steps = sampleAnimationSteps(input, assembly, poseOf, parts);
+      const steps = sampleAnimationSteps(input, assembly, poseOf, parts, options.ignore ? { ignore: options.ignore } : {});
       let step = steps.next();
       while (!step.done) {
         if (options.signal?.aborted) return { ok: false, error: "The animation was cancelled." };
