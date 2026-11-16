@@ -2188,8 +2188,8 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["steps"],
       properties: {
+        path: { type: "string", minLength: 1, description: "Instead of steps: a workspace file, a JSON list of steps or {steps, results}." },
         steps: {
           type: "array",
           minItems: 1,
@@ -2205,7 +2205,10 @@ export const TOOLS: ToolSpec[] = [
             },
           },
         },
-        results: { enum: ["last", "all"], description: "Full results: last step only, or all." },
+        results: {
+          oneOf: [{ enum: ["last", "all"] }, { type: "array", minItems: 1, maxItems: MAX_PLAN_STEPS, items: { type: "integer", minimum: 1 } }],
+          description: "Full results: last step only, all, or step numbers.",
+        },
       },
     },
   },

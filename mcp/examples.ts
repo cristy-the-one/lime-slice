@@ -97,7 +97,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   calibration_apply: [{ kind: "pa", value: 0.04 }],
   blend_compare: [{ object: "obj_1" }],
   blend_apply: [{ index: 2 }],
-  plan_run: [{ steps: [{ tool: "solid_new", args: { primitive: "box", dx: 40, dy: 20, dz: 10 } }, { tool: "model_apply", args: { op: { kind: "hole", diameterMm: 4, through: true, at: { u: 0, v: 0 } }, probe: true, commit: true } }, { tool: "plate_list", args: {} }], results: "last" }],
+  plan_run: [{ path: "plans/bracket.json", results: [1, 3] }, { steps: [{ tool: "solid_new", args: { primitive: "box", dx: 40, dy: 20, dz: 10 } }, { tool: "model_apply", args: { op: { kind: "hole", diameterMm: 4, through: true, at: { u: 0, v: 0 } }, probe: true, commit: true } }, { tool: "plate_list", args: {} }], results: "last" }],
   tools_enable: [{ groups: ["model", "supports"] }],
   sim_setup: [{ beam: { lengthMm: 40, widthMm: 8, heightMm: 6 }, hMm: 2, fixtures: [{ kind: "faces", faces: [4] }], loads: [{ kind: "force", faces: [5], magnitude: 20, direction: [0, 0, -1] }], card: "inhouse-petg" }],
   sim_run: [{}],
