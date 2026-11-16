@@ -165,19 +165,67 @@ fn request(stl: &[u8], bed: Bed, style: &str, extra: Value) -> SliceRequest {
 }
 
 fn slice(stl: &[u8], bed: Bed, style: &str) -> SliceResponse {
-    let response = slice_request(
-        &request(stl, bed, style, json!({ "supportStability": true })),
-        Job::default(),
-    )
-    .unwrap();
+    slice_with(stl, bed, style, json!({}))
+}
+
+fn slice_with(stl: &[u8], bed: Bed, style: &str, extra: Value) -> SliceResponse {
+    let mut extra = extra;
+    extra["supportStability"] = json!(true);
+    let response = slice_request(&request(stl, bed, style, extra), Job::default()).unwrap();
     assert!(response.sanity.ok, "{:?}", response.sanity.notes);
     response
 }
 
 fn stability(stl: &[u8], bed: Bed, style: &str) -> SupportStability {
-    slice(stl, bed, style)
+    stability_with(stl, bed, style, json!({}))
+}
+
+fn stability_with(stl: &[u8], bed: Bed, style: &str, extra: Value) -> SupportStability {
+    slice_with(stl, bed, style, extra)
         .support_stability
         .expect("asked for supportStability")
+}
+
+/// The belt setting that holds thin strips.
+fn hold_thin() -> Value {
+    json!({ "supportBeltHoldThin": true })
+}
+
+/// The thin-strip setting is off by default: `false` slices exactly as a
+/// request that leaves it out, and a request that leaves it out does not
+/// name it, so cached requests keep their bytes. On, the G-code says so.
+#[test]
+fn holding_thin_strips_is_off_unless_asked() {
+    let stl = tall_pad();
+    for style in ["tree", "grid"] {
+        let unset = request(&stl, Bed::Belt, style, json!({}));
+        let off = request(
+            &stl,
+            Bed::Belt,
+            style,
+            json!({ "supportBeltHoldThin": false }),
+        );
+        let wire = serde_json::to_value(&unset).unwrap();
+        assert!(wire.get("supportBeltHoldThin").is_none());
+        let unset = slice_request(&unset, Job::default()).unwrap();
+        let off = slice_request(&off, Job::default()).unwrap();
+        assert_eq!(unset.gcode, off.gcode, "{style}");
+        assert!(!unset.gcode.contains("thin belt strips held"), "{style}");
+        let on = slice_request(
+            &request(&stl, Bed::Belt, style, hold_thin()),
+            Job::default(),
+        )
+        .unwrap();
+        assert!(on.gcode.contains("thin belt strips held"), "{style}");
+    }
+    // A flat bed has no belt to hold strips on: asking changes nothing.
+    let flat = slice_request(&request(&stl, Bed::Flat, "grid", json!({})), Job::default()).unwrap();
+    let asked = slice_request(
+        &request(&stl, Bed::Flat, "grid", hold_thin()),
+        Job::default(),
+    )
+    .unwrap();
+    assert_eq!(flat.gcode, asked.gcode);
 }
 
 #[test]
@@ -256,12 +304,27 @@ fn belt_grid_under_the_table_is_a_one_bead_curtain_today() {
     assert_eq!(s.unrested_mm, 0.0, "{s:?}");
 }
 
-/// Belt grid under the small hanging pad was loose dashes that reached
-/// neither the belt nor the pad. Plan step 3 prints a line along each strip,
-/// so it is one column standing on the belt, all the way up to the pad.
+/// Belt grid under the small hanging pad, by default: loose dashes that
+/// reach neither the belt nor the pad.
+#[test]
+fn belt_grid_under_the_tall_pad_is_loose_dashes_by_default() {
+    let s = stability(&tall_pad(), Bed::Belt, "grid");
+    assert!(s.supports > 10, "{s:?}");
+    assert!(s.support_mm < 50.0, "{s:?}");
+    assert!(
+        s.most_slender
+            .iter()
+            .all(|c| c.stands_on == Stand::Air && c.height_mm < 3.0),
+        "{s:?}"
+    );
+}
+
+/// Holding thin strips prints a line along each strip the lab-fixed grid
+/// lines miss, so the grid under the small hanging pad is one column
+/// standing on the belt, all the way up to the pad.
 #[test]
 fn belt_grid_under_the_tall_pad_is_one_column_on_the_belt() {
-    let s = stability(&tall_pad(), Bed::Belt, "grid");
+    let s = stability_with(&tall_pad(), Bed::Belt, "grid", hold_thin());
     assert_eq!(s.supports, 1, "{s:?}");
     let column = &s.most_slender[0];
     assert_eq!(column.stands_on, Stand::Belt, "{column:?}");
