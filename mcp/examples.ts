@@ -77,7 +77,7 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   model_commit: [{ object: "obj_1" }],
   model_export_step: [{ object: "obj_1", name: "bracket.step" }, { object: "obj_2", name: "lamp.step", assembly: true }],
   measure: [{ object: "obj_1", a: [0, 0, 0], b: [10, 0, 0], frame: "model" }, { object: "obj_1", faceA: 2, faceB: 3 }],
-  model_mass: [{ object: "obj_1" }, { object: "obj_2", about: "hinge" }, { object: "obj_2", about: { point: [0, 0, 120], axis: [1, 0, 0] }, density: 1.04 }],
+  model_mass: [{ object: "obj_1" }, { object: "obj_3", part: true }, { object: "obj_2", about: "hinge" }, { object: "obj_2", about: { point: [0, 0, 120], axis: [1, 0, 0] }, density: 1.04 }],
   layer_summary: [{ job: "job_1" }],
   pose_animate: [{ object: "obj_2", plugin: "wave", fps: 10, longEdge: 320, out: { gif: "wave.gif" } }, { object: "obj_2", path: "escapement.rs", keep: { title: "Escapement motion", description: "Anchor rocks, escape wheel steps a tooth each beat." } }, { object: "obj_7", plugin: "escapement-motion", params: { wheel: "Escapement", anchor: "Pallets" } }],
   motion_run: [{ object: "obj_2", escapement: { wheel: "obj_2", anchor: "obj_3", teeth: 30, tip: 22.5, root: 17.5, lean: 12, span: 7.5 }, drive: { member: "obj_5", weight: 500 }, hand: { member: "obj_6", turnsPerHour: 1 }, seconds: 60 }, { object: "obj_2", pendulum: "obj_3", push: 5, seconds: 20, sweep: false }, { object: "obj_2", escapement: { wheel: "obj_2", anchor: "obj_3", teeth: 30, tip: 22.5, root: 17.5, lean: 12, span: 7.5 }, drive: { member: "obj_2", torque: 0.25 }, friction: 0.2, out: { gif: "clock-run.gif" }, fps: 10 }],
