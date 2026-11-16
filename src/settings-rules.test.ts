@@ -18,8 +18,8 @@ const flat: RuleInput = { kind: "cartesian", belt: { raftLayers: 0, maxLengthMm:
 const belt: RuleInput = { ...flat, kind: "belt" };
 const hidden = (input: RuleInput) => [...settingsRules(input).hidden].sort();
 
-eq("a flat printer with one object hides only the belt block, its length, its raft layers, and the belt's tip under every row", hidden(flat), ["beltFields", "beltMaxLength", "beltRaftLayers", "printOrder", "supportBeltAnchors", "supportStrictStacking"]);
-eq("a flat printer with two objects shows the print order", hidden({ ...flat, objects: 2 }), ["beltFields", "beltMaxLength", "beltRaftLayers", "supportBeltAnchors", "supportStrictStacking"]);
+eq("a flat printer with one object hides only the belt block, its length, its raft layers, and the belt's tip under every row", hidden(flat), ["beltFields", "beltMaxLength", "beltRaftLayers", "printOrder", "supportBeltAnchors", "supportBeltHoldThin", "supportStrictStacking"]);
+eq("a flat printer with two objects shows the print order", hidden({ ...flat, objects: 2 }), ["beltFields", "beltMaxLength", "beltRaftLayers", "supportBeltAnchors", "supportBeltHoldThin", "supportStrictStacking"]);
 
 // Ruling 1: a belt raft hides Adaptive and drops it from the request.
 check("a belt raft hides adaptive layers", settingsRules({ ...belt, belt: { raftLayers: 2, maxLengthMm: null } }).hidden.has("adaptive"));
@@ -63,6 +63,10 @@ check("a belt shows the belt anchor lines", !settingsRules(belt).hidden.has("sup
 check("a flat printer hides them", settingsRules(flat).hidden.has("supportBeltAnchors"));
 eq("a flat request carries no belt anchors", settingsRules(flat).coerce({ supportBeltAnchorMm: 10, supportBeltAnchors: true, mesh: "m" }), { mesh: "m" });
 eq("a belt request carries them", settingsRules(belt).coerce({ supportBeltAnchorMm: 10, mesh: "m" }), { supportBeltAnchorMm: 10, mesh: "m" });
+check("a belt shows the thin belt edges", !settingsRules(belt).hidden.has("supportBeltHoldThin"));
+check("a flat printer hides the thin belt edges", settingsRules(flat).hidden.has("supportBeltHoldThin"));
+eq("a flat request carries no thin belt edges, but keeps the bridge limit", settingsRules(flat).coerce({ supportBeltHoldThin: true, supportBridgeMm: 5, mesh: "m" }), { supportBridgeMm: 5, mesh: "m" });
+eq("a belt request carries both", settingsRules(belt).coerce({ supportBeltHoldThin: true, supportBridgeMm: 5, mesh: "m" }), { supportBeltHoldThin: true, supportBridgeMm: 5, mesh: "m" });
 const firstLayer = { elephantsFootCompensationMm: 0.2, xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 };
 eq("a belt request carries the support brim but no elephant's foot", settingsRules(belt).coerce(firstLayer), { xyHoleCompensationMm: 0.1, supportTreeBrimMm: 4, supportZGapMm: 0.3 });
 eq("a flat request carries both", settingsRules(flat).coerce(firstLayer), firstLayer);

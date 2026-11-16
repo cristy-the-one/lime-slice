@@ -228,6 +228,8 @@ export const state = {
   supportTreeBrimMm: 0,
   supportBeltAnchors: true,
   supportBeltAnchorMm: 10,
+  supportBeltHoldThin: false,
+  supportBridgeMm: 0,
   infillCombine: true,
   shallowSkins: false,
   solidUnderWalls: false,

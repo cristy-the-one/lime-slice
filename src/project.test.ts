@@ -774,6 +774,8 @@ const later: Partial<PresetSettings> = {
   supportTreeBrimMm: 4,
   supportBeltAnchors: false,
   supportBeltAnchorMm: 15,
+  supportBeltHoldThin: true,
+  supportBridgeMm: 6,
   bridgeFlowRatio: 0.9,
   bridgeSpeedMmS: 25,
   bridgeFanPercent: 80,
@@ -789,6 +791,13 @@ eq("every later setting survives a save and reopen", laterOpened.ok ? laterOpene
   doc.settings = beforeAnchors;
   const opened = parseProject(JSON.stringify(doc));
   eq("a project from before belt anchors opens with them on, every 10 mm", opened.ok ? [opened.project.settings.supportBeltAnchors, opened.project.settings.supportBeltAnchorMm] : "refused", [true, 10]);
+}
+{
+  const doc = JSON.parse(serializeProject(project)) as { settings: Record<string, unknown> };
+  const { supportBeltHoldThin: _thin, supportBridgeMm: _bridge, ...before } = doc.settings;
+  doc.settings = before;
+  const opened = parseProject(JSON.stringify(doc));
+  eq("a project from before thin belt edges and short bridges opens with both off", opened.ok ? [opened.project.settings.supportBeltHoldThin, opened.project.settings.supportBridgeMm] : "refused", [false, 0]);
 }
 
 // Support Z gap, XY gap and interface layers: a file from before Auto stores 0 for it, and a file since stores null.

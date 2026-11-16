@@ -17,7 +17,7 @@ import { readFuzzyPointDistance, readFuzzyThickness } from "../fuzzy-skin.ts";
 import { saveAutoSlice } from "../auto-slice-pref.ts";
 import { SUPPORT_MODES, supportModeOf, supportModeState, type SupportMode } from "../support-source.ts";
 import { interfaceLayersSent, SUPPORT_INTERFACE_LAYERS_MAX } from "../support-interface.ts";
-import { BELT_ANCHOR_LIMITS } from "../support-avoidance.ts";
+import { BELT_ANCHOR_LIMITS, SUPPORT_BRIDGE_LIMITS } from "../support-avoidance.ts";
 import { BRIDGE_LIMITS, type BridgeKey } from "../bridge-tune.ts";
 import { fanLayersValue, fanPercentValue, MAX_FAN_OFF_LAYERS } from "../fan.ts";
 
@@ -745,6 +745,29 @@ export const CONTROLS: ControlSpec[] = [
     auto: () => "2000",
   }),
   bound("supportAngle", { id: "sangle", label: "Overhang angle °", group: "supports", tier: "advanced", kind: num(20, 70, 5), parent: "supportMode", when: (s) => s.supports, rule: "supportAngle", keywords: "overhang" }),
+  bound("supportBridgeMm", {
+    id: "sbridge",
+    label: "Free bridges mm",
+    group: "supports",
+    tier: "advanced",
+    kind: num(SUPPORT_BRIDGE_LIMITS.min, SUPPORT_BRIDGE_LIMITS.max, 0.5),
+    parent: "supportMode",
+    when: (s) => s.supports,
+    tip: "Spans held at both ends and no longer than this get no support, which saves support and print time. 0 supports every span.",
+    keywords: "bridge without support up to span short unsupported gap both ends save time",
+  }),
+  bound("supportBeltHoldThin", {
+    id: "thinedges",
+    label: "Support thin belt edges",
+    group: "supports",
+    tier: "advanced",
+    kind: check,
+    parent: "supportMode",
+    when: (s) => s.supports,
+    rule: "supportBeltHoldThin",
+    tip: "Holds hairline edges a 45° belt prints as a full bead. Adds print time, up to about 30 % on some parts.",
+    keywords: "belt thin hairline edge ledge strip column grid hold first",
+  }),
   bound("supportHeightMult", { id: "shmult", label: "Shaft height ×", group: "supports", tier: "advanced", kind: num(1, 4, 1), parent: "supportMode", when: (s) => s.supports, keywords: "support column" }),
   bound("branchAngle", { id: "bangle", label: "Branch angle °", group: "supports", tier: "expert", kind: num(15, 60, 5), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),
   bound("tipDiameter", { id: "tipd", label: "Tip diameter mm", group: "supports", tier: "expert", kind: num(0.4, 2, 0.1), parent: "sstyle", when: (s) => s.supports && s.supportStyle === "tree", keywords: "tree" }),

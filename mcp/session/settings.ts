@@ -10,7 +10,7 @@ import type { PlateObjectSettings } from "../../src/plate.ts";
 import { parseSettingsProfile } from "../../src/ui/settings-profiles.ts";
 import { applyPreset } from "../request.ts";
 import { reviewGcode } from "../review.ts";
-import { applyObjectSetting, applySetting, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "../settings-rows.ts";
+import { applyObjectSetting, applySetting, beltOnlyWarning, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "../settings-rows.ts";
 import { settingsRangeError } from "../settings-check.ts";
 import { readVec3 } from "../../src/modeling/compose.ts";
 import { resolveRead } from "../workspace.ts";
@@ -205,7 +205,8 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
   }
   const warnings = changed.flatMap((row) => {
     const note = inactiveWarning(obj || allObjects ? this.settings : next, row.key);
-    return note ? [note] : [];
+    const flat = obj || allObjects ? null : beltOnlyWarning(row.key, row.to, this.schemaContext());
+    return [note, flat].filter((line): line is string => line !== null);
   });
   if (changed.length === 0) return { ok: false, code: "nothing-changed", reason: refused[0]?.reason ?? "Nothing to change.", refused, ...(warnings.length ? { warnings } : {}) };
   if (!dryRun) {
