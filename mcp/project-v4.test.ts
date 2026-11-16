@@ -95,6 +95,24 @@ check("the autosave opens", fromAutosave.ok === true, JSON.stringify(fromAutosav
   check("the autosave holds the plate as of its flush, not as of its write", kept !== null && JSON.stringify(kept) === JSON.stringify(wanted), JSON.stringify({ kept, wanted }));
 }
 
+// Removing an override on purpose is not a loss: the project saves over its own file again.
+{
+  const rm = new Session(fakeEngine());
+  const first = await rm.call("mesh_import", { path: cube });
+  const range = await rm.call("range_add", { zFromMm: 2, zToMm: 6, infillPercent: 30 });
+  check("range_add set up the override", range.ok === true, JSON.stringify(range));
+  const base = await rm.call("project_save", { name: "with-override.lime" });
+  const again = await rm.call("project_save", { name: "with-override.lime" });
+  check("a save with the override still on keeps it", base.ok === true && again.ok === true, JSON.stringify(again));
+  const removed = await rm.call("override_remove", { id: String(range.id) });
+  check("override_remove removed it", removed.ok === true, JSON.stringify(removed));
+  const after = await rm.call("project_save", { name: "with-override.lime" });
+  check("project_save over the opened file works after override_remove", after.ok === true, JSON.stringify(after));
+  const file = JSON.parse(readFileSync(String(after.path), "utf8")) as { overrides?: unknown };
+  check("the saved file holds no override", file.overrides === undefined);
+  void first;
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

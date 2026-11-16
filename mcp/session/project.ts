@@ -437,6 +437,7 @@ function projectDocument(this: Session): LimeProject {
     }
   }
   if (this.overrides.ranges.length || this.overrides.volumes.length) base.overrides = structuredClone(this.overrides);
+  else delete base.overrides;
   if (this.printOrder === "sequential") {
     base.printOrder = "sequential";
     if (this.clearanceMm > 0) base.sequentialClearanceMm = this.clearanceMm;
@@ -449,7 +450,7 @@ function lossy(this: Session, doc: LimeProject): string | null {
   const src = this.sourceProject;
   if (!src) return null;
   const missing: string[] = [];
-  if (src.overrides && !doc.overrides) missing.push("overrides");
+  // Overrides are not checked: project_open loads them whole, so an override missing now was removed on purpose (override_remove).
   if ((src.modelTools?.length ?? 0) > 0 && !(doc.modelTools?.length)) missing.push("model tools");
   const trees = (rows: LimeProject) => (rows.objects ?? []).some((obj) => obj.modelTree);
   if (trees(src) && !trees(doc)) missing.push("model history");
