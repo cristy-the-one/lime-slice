@@ -589,7 +589,14 @@ async function objectRemove(this: Session, which: string | string[]): Promise<Re
     this.objects.splice(index, 1);
     if (this.selected === id) this.selected = this.objects[0]?.id ?? "";
   }
-  return { ok: true, objects: this.objects.map((obj) => obj.id), label: "Remove" };
+  const left = this.objects.length;
+  return {
+    ok: true,
+    removed: ids,
+    objects: this.objects.map((obj) => obj.id),
+    note: `Removed ${ids.join(", ")}. ${left === 0 ? "The plate is empty." : `${left} object${left === 1 ? " stays" : "s stay"} on the plate (objects lists them).`}`,
+    label: "Remove",
+  };
 }
 
 /**

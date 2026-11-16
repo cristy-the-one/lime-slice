@@ -1796,6 +1796,6 @@ The slice body is the session: objects, machine, settings. It is not repeated in
 
 `object_select` input is `{object}`. Output is `{ok, object, name}`.
 
-`object_remove` input is `{object}`. Output is `{ok, reason?, objects}` where `objects` is the remaining handles. Removing the last object leaves an empty plate.
+`object_remove` input is `{object}` (or `objects`). Output is `{ok, reason?, removed, objects, note}` where `removed` is the handles taken off, `objects` is the handles that remain (it was always the remaining ones, not the removed ones), and `note` says how many stay. Removing the last object leaves an empty plate.
 
 These eighteen names are the MVP: `session_info`, `project_open`, `project_create`, `project_save`, `mesh_import`, `plate_list`, `object_select`, `object_place`, `object_remove`, `machine_list`, `machine_select`, `settings_apply`, `slice_start`, `slice_wait`, `slice_cancel`, `gcode_summary`, `gcode_export`, `export_3mf`. Phase 2 tools are specified in section 4 and do not get a second schema in this appendix until their probe and apply results have been checked against a live bridge.

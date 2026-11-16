@@ -1105,7 +1105,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_remove",
-    description: "Remove one object from the plate, or objects in one undo step.",
+    description: "Remove one object from the plate, or objects in one undo step. removed lists them; objects lists those that stay.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, objects: { type: "array", minItems: 1, maxItems: 200, items: { type: "string" }, description: "Several handles." } } },
   },
   {
