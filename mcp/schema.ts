@@ -1193,7 +1193,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "machine_get",
-    description: "Read the selected printer and filament records: bed, temperatures, flow and start G-code. No host and no key. Then machine_set.",
+    description: "Read the selected printer and filament records: bed, temperatures, flow, start G-code, and the filament's density (densityGCm3, which model_mass and the estimate use) and diameter (diameterMm). No host and no key. Then machine_set.",
     inputSchema: empty,
   },
   {

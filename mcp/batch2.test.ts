@@ -104,6 +104,9 @@ check("a long custom line is refused", long.ok === false && String(long.reason).
 
 const machine = await call("machine_get", {});
 check("a machine read has no host or key", machine.ok === true && !JSON.stringify(machine).includes("apiKey") && !JSON.stringify(machine).includes("\"host\""));
+// feedback 3.11: the filament's density and diameter, the numbers model_mass and the estimate weigh with.
+const readFilament = machine.filament as { densityGCm3?: unknown; diameterMm?: unknown };
+check("machine_get shows the filament's density and diameter", readFilament.densityGCm3 === session.filament().densityGCm3 && readFilament.diameterMm === session.filament().diameterMm && typeof readFilament.densityGCm3 === "number", JSON.stringify(machine.filament));
 const set = await call("machine_set", { printer: { bedX: 200, startGcode: "M502" }, filament: { nozzleTemp: 205 } });
 check("start G-code is reviewed", set.ok === true && JSON.stringify(set.review).includes("M502"), JSON.stringify(set.review));
 const saved = await call("machine_save", { name: "bench" });
