@@ -520,14 +520,8 @@ function mount(): PoseView | null {
   view.onPick(pick);
   view.onTurn(turn);
   view.onReach(reach);
-  document.querySelector("#toolRail")?.addEventListener("click", (event) => {
-    const value = (event.target as Element).closest<HTMLButtonElement>("[data-pose-tool]")?.dataset.poseTool;
-    if (value === "select" || value === "turn" || value === "joint" || value === "link" || value === "reach") setTool(value);
-  });
-  document.querySelector("#poseViewPresets")?.addEventListener("click", (event) => {
-    const preset = (event.target as Element).closest<HTMLElement>("[data-pose-view]")?.dataset.poseView;
-    if (preset === "top" || preset === "front" || preset === "iso") view?.setCamera(preset as PoseCamera);
-  });
+  // The tool rail and the view buttons are heard in wire.ts (pickPoseTool, pickPoseView): they are on screen before
+  // this module has loaded.
   document.querySelector("#posePanel")?.addEventListener("click", panelClick);
   document.querySelector("#posePanel")?.addEventListener("change", panelChange);
   document.querySelector("#posePanel")?.addEventListener("input", (event) => {
@@ -547,6 +541,21 @@ function mount(): PoseView | null {
   });
   fx.syncPose = syncPose;
   return view;
+}
+/**
+ * A press on a Pose tool of the rail, or its key. A press made while this module was still loading can be handed over
+ * before the stage's own first showPose (the loads finish in no fixed order), so the scene is shown first.
+ */
+export function pickPoseTool(value: string): void {
+  if (state.stage !== "pose") return;
+  if (!view) showPose();
+  if (value === "select" || value === "turn" || value === "joint" || value === "link" || value === "reach") setTool(value);
+}
+/** A press on one of Pose's view buttons (Top, Front, Iso), or its key. The same holds: the view needs its parts first. */
+export function pickPoseView(preset: string): void {
+  if (state.stage !== "pose") return;
+  if (!view) showPose();
+  if (preset === "top" || preset === "front" || preset === "iso") view?.setCamera(preset as PoseCamera);
 }
 export function showPose(): void {
   stopAnimation();

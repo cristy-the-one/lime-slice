@@ -611,6 +611,22 @@ export function wireApp() {
       setStage(tab === "prepare" || tab === "gcode" || tab === "model" || tab === "pose" ? tab : "preview");
     });
   });
+  // Pose's code is fetched when its tab first opens. Its tool rail and view buttons are on screen before that, so their
+  // presses are heard here and handed over once the code has arrived: a press (or its key) in that gap is not lost.
+  // Heard on the document, since the rail is built (mountChrome) after this runs. Once the code is here a press acts
+  // at once, in the click itself, as it did when Pose listened for it.
+  let pose: typeof import("./pose") | undefined;
+  const withPose = (run: (loaded: typeof import("./pose")) => void) => {
+    if (pose) run(pose);
+    else void import("./pose").then((loaded) => { pose = loaded; run(loaded); });
+  };
+  document.addEventListener("click", (ev) => {
+    const target = ev.target instanceof Element ? ev.target : null;
+    const tool = target?.closest<HTMLElement>("#toolRail [data-pose-tool]")?.dataset.poseTool;
+    const preset = target?.closest<HTMLElement>("#poseViewPresets [data-pose-view]")?.dataset.poseView;
+    if (tool) withPose(({ pickPoseTool }) => pickPoseTool(tool));
+    if (preset) withPose(({ pickPoseView }) => pickPoseView(preset));
+  });
   document.querySelector("#play")!.addEventListener("click", () => togglePlay());
   document.querySelector("#move")!.addEventListener("input", (ev) => {
     const next = Number((ev.target as HTMLInputElement).value);
