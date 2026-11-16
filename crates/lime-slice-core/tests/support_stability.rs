@@ -268,13 +268,18 @@ fn flat_tree_foot_on_the_bridge_span_rests_on_its_filled_foot() {
 /// over 15 mm tall stands at most ten times its base width, in its thinnest
 /// direction along real gravity. Before it, the tall pad's lone tree was 19
 /// times (26 on the belt), the table's trees 14 (21), and the belt grid under
-/// the table's leading edge a one-bead curtain 132 times.
+/// the table's leading edge a one-bead curtain 132 times. Trees and flat
+/// grid meet it by default; belt grid only with thin strips held.
 #[test]
 fn tall_supports_stand_within_ten_times_their_base_width() {
     for (name, stl) in [("tall pad", tall_pad()), ("table", table())] {
         for bed in [Bed::Flat, Bed::Belt] {
             for style in ["tree", "grid"] {
-                let s = stability(&stl, bed, style);
+                let extra = match (bed, style) {
+                    (Bed::Belt, "grid") => hold_thin(),
+                    _ => json!({}),
+                };
+                let s = stability_with(&stl, bed, style, extra);
                 assert!(s.supports > 0, "{name} {bed:?} {style}: {s:?}");
                 assert_eq!(s.over_limit, 0, "{name} {bed:?} {style}: {s:?}");
                 assert!(
@@ -327,12 +332,27 @@ fn belt_table_trees_are_wide_enough_along_the_belt() {
     assert!(s.short_layers.unwrap() > 0, "{s:?}");
 }
 
-/// Belt grid under the table's leading edge was a sheet one bead thick. It
-/// is widened along the belt toward its foot now, by ribs across the sheet
-/// that each stand on the rib under it: no bead of it rests on nothing.
+/// By default the belt grid under the table's leading edge is still a sheet
+/// one bead thick, over 100 times taller than wide: the slender rule widens
+/// a belt grid column only when thin strips are held. Flips if that ever
+/// becomes the default.
+#[test]
+fn belt_grid_under_the_table_is_a_one_bead_curtain_by_default() {
+    let s = stability(&table(), Bed::Belt, "grid");
+    let sheet = &s.most_slender[0];
+    assert!((sheet.base_min_mm - 0.45).abs() < 0.05, "{sheet:?}");
+    assert!(sheet.slenderness > 100.0, "{sheet:?}");
+    assert_eq!(s.over_limit, 1, "{s:?}");
+    assert_eq!(sheet.stands_on, Stand::Belt, "{sheet:?}");
+    assert_eq!(s.unrested_mm, 0.0, "{s:?}");
+}
+
+/// With thin strips held, the belt grid under the table's leading edge is
+/// widened along the belt toward its foot, by ribs across the sheet that
+/// each stand on the rib under it: no bead of it rests on nothing.
 #[test]
 fn belt_grid_under_the_table_is_widened_along_the_belt() {
-    let s = stability(&table(), Bed::Belt, "grid");
+    let s = stability_with(&table(), Bed::Belt, "grid", hold_thin());
     let sheet = &s.most_slender[0];
     assert!(
         sheet.base_along_mm * SLENDER_LIMIT >= sheet.height_mm,
@@ -342,7 +362,7 @@ fn belt_grid_under_the_table_is_widened_along_the_belt() {
     assert_eq!(s.unrested_mm, 0.0, "{s:?}");
 }
 
-/// The widened belt grid adds no beads in the air but at its feet: on the
+/// The widened belt grid (thin strips held) adds no beads in the air but at its feet: on the
 /// cantilevers, where a rib meets the belt beside the wall, under 10 mm of
 /// its 7.5 m, all within a millimetre and a half of the belt. The tall
 /// pad's column had 540 mm unrested before the rule (#710 left them), and
@@ -354,7 +374,7 @@ fn belt_grid_ribs_rest_on_the_ribs_under_them() {
         ("table", table(), 0.0),
         ("cantilevers", cantilevers(), 10.0),
     ] {
-        let s = stability(&stl, Bed::Belt, "grid");
+        let s = stability_with(&stl, Bed::Belt, "grid", hold_thin());
         assert!(s.unrested_mm <= most, "{name}: {s:?}");
         if name == "cantilevers" {
             for c in &s.most_unrested {

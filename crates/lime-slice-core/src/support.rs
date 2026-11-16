@@ -1113,7 +1113,12 @@ impl Demand {
             let underside = bands[i].z - bands[i].height;
             pending.push((underside - opts.z_gap, overhang.clone()));
         }
-        if let Some(sturdy) = Sturdy::of(opts).filter(|_| !tree) {
+        // A belt grid column is widened only when thin strips are held: a
+        // thin column's own line then ties the ribs across it. Without it the
+        // column prints dashes or nothing, and ribs would stand alone as new
+        // one-bead curtains.
+        let widen_grid = opts.floor.is_none() || opts.hold_thin;
+        if let Some(sturdy) = Sturdy::of(opts).filter(|_| !tree && widen_grid) {
             sturdy_columns(&mut demand, bands, &gaps, sturdy);
         }
         Some(demand)
@@ -5309,9 +5314,16 @@ mod tests {
         // on the layer under it, carried down along gravity, or on the belt.
         let floor = FloorPlane::new(1.0, 2.0, 0.0);
         let (bands, contours) = tall_pad();
-        let opts = SupportOpts {
+        let off = SupportOpts {
             floor: Some(floor),
             ..SupportOpts::default()
+        };
+        // Without holding thin strips a belt grid column is left as it grows.
+        let plain = Supports::build(&bands, &contours, &off).unwrap().layers;
+        assert!(plain.iter().all(|l| l.walls.is_empty()));
+        let opts = SupportOpts {
+            hold_thin: true,
+            ..off
         };
         let layers = Supports::build(&bands, &contours, &opts).unwrap().layers;
         assert!(layers.iter().any(|l| !l.walls.is_empty()));

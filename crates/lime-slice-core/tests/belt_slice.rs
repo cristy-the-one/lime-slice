@@ -693,13 +693,9 @@ fn floor_supports_grow_along_gravity() {
         let sliced = slice_request(&req, Job::default()).unwrap();
         assert!(sliced.sanity.ok, "{style}: {:?}", sliced.sanity.notes);
         // Under the wedge, below its lowest edge, where nothing else grows.
-        // The slender rule widens the grid column toward the belt on the
-        // side the wedge leaves free, which moves the middle of its beads
-        // off the plumb line by a couple of degrees more.
         let lean = support_lean(&sliced.gcode, 45.0, 13.0);
-        let most = if style == "grid" { 12.5 } else { 10.0 };
         assert!(
-            lean < most,
+            lean < 10.0,
             "{style} supports lean {lean:.1}° from the lab vertical"
         );
         let feet = trunk_feet(&sliced.gcode, 45.0);
