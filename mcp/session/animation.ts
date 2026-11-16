@@ -76,13 +76,13 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
     const missing = missingMember(rig, header["member-params"], header["member-names"], header.params, params);
     if (missing) return refuse("animation-refused", missing);
   }
-  const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
+  const result = await runAnimation(this.recipeHost, source, params, assembly, (id) => this.find(id)?.modelPose, parts, { fps: typeof input.fps === "number" ? input.fps : undefined, ...(header?.["member-optional"] ? { optional: header["member-optional"] } : {}), signal: meta?.signal, progress: (fraction, message) => this.noteStage(message || "animation", fraction) });
   if (!result.ok) return { ok: false, code: "animation-refused", reason: explainNoMember(result.reason, params, rig), ...(result.issues ? { issues: result.issues.map((issue) => ({ ...issue, reason: explainNoMember(issue.reason, params, rig) })) } : {}), ...(result.diagnostics ? { diagnostics: result.diagnostics } : {}) };
   const sampled = result.result;
   // Crossings come one warning a pair already (frameInterference), with the frames they hold and the check that made
   // them. A warning a key repeats (a colour set twice) is said once.
   const seen = new Set<string>();
-  const warnings = sampled.warnings.filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
+  const warnings = [...result.skipped.map((reason) => ({ reason })), ...sampled.warnings].filter((warning) => !seen.has(warning.reason) && !!seen.add(warning.reason));
   const timing = frameTiming(sampled);
   const out = input.out as { gif?: string; frames?: string } | undefined;
   // Checked already: the tool's by readBackground above, the script's by sampleAnimation.
@@ -95,7 +95,7 @@ async function poseAnimate(this: Session, input: Record<string, unknown>, meta?:
   const keepNow = async (): Promise<Record<string, unknown>> => {
     if (!keep) return {};
     if (meta?.signal?.aborted) return { keepRefused: "The run was cancelled, so the animation was not kept." };
-    return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params, typeof input.name === "string" && input.fromProject !== true ? input.name : undefined);
+    return this.keepAnimation(keep, source, typeof input.plugin === "string" ? input.plugin : typeof input.name === "string" ? slugOf(input.name) : undefined, result.used, params, typeof input.name === "string" && input.fromProject !== true ? input.name : undefined, result.colourOnly);
   };
   if (!out) return { ...summary, ...(await keepNow()), rig: rig.map(({ name, parent, joint, aligned }) => ({ name, parent, joint, ...(aligned === undefined ? {} : { aligned }) })) };
   const written = await this.writeAnimationFrames(sampled, parts, { out, camera: input.camera ?? result.camera, longEdge: input.longEdge, background }, meta);
@@ -182,8 +182,8 @@ async function writeAnimationFrames(this: Session, sampled: AnimationResult, par
  * plugin by `pluginSave` (its versions, its title clash note), with the member names the run used. A refused keep is a
  * sentence in the reply; the run stands.
  */
-async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>, idAsked?: string): Promise<Record<string, unknown>> {
-  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...(name ? { name } : {}), ...(idAsked ? { idAsked } : {}), animation: { ...(used ? { used } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
+async function keepAnimation(this: Session, keep: { title?: unknown; description?: unknown; members?: unknown }, source: string, name: string | undefined, used: readonly string[] | undefined, values: Record<string, unknown>, idAsked?: string, colourOnly?: readonly string[]): Promise<Record<string, unknown>> {
+  const saved = await this.pluginSave({ source, title: keep.title, description: keep.description, ...(name ? { name } : {}), ...(idAsked ? { idAsked } : {}), animation: { ...(used ? { used } : {}), ...(colourOnly ? { colourOnly } : {}), values, ...(keep.members !== undefined ? { members: keep.members } : {}) } });
   return "reason" in saved ? { keepRefused: saved.reason } : { kept: saved };
 }
 

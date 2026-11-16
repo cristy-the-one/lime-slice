@@ -78,6 +78,8 @@ export interface PluginHeader {
   "member-params"?: string[];
   /** The member names or patterns an animation uses as written, that no parameter sets. */
   "member-names"?: string[];
+  /** The names an animation only colours: an assembly without one still plays it (they are not in member-names). */
+  "member-optional"?: string[];
 }
 
 /** A plugin file read back: its header, its body (the recipe), and whether the body still matches the hash. */
@@ -159,6 +161,7 @@ export function pluginText(header: PluginHeader, body: string): string {
     ["params", ingredient ? undefined : JSON.stringify(header.params)],
     ["member-params", header.kind === "animation" ? memberListText(header["member-params"]) : undefined],
     ["member-names", header.kind === "animation" ? memberListText(header["member-names"]) : undefined],
+    ["member-optional", header.kind === "animation" ? memberListText(header["member-optional"]) : undefined],
   ];
   const lines = fields.filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => `//! ${key}: ${value}`);
   const rest = lfOnly(body).replace(/^\n+/, "");
@@ -211,9 +214,9 @@ export function parsePlugin(raw: string): PluginFile | { reason: string } {
 }
 
 /** An animation's member lists from its header; a list that does not read is left out (an import checks it first). */
-function memberLists(fields: Map<string, string>): Pick<PluginHeader, "member-params" | "member-names"> {
-  const params = readMemberList(fields.get("member-params")), names = readMemberList(fields.get("member-names"));
-  return { ...(params?.length ? { "member-params": params } : {}), ...(names?.length ? { "member-names": names } : {}) };
+function memberLists(fields: Map<string, string>): Pick<PluginHeader, "member-params" | "member-names" | "member-optional"> {
+  const params = readMemberList(fields.get("member-params")), names = readMemberList(fields.get("member-names")), optional = readMemberList(fields.get("member-optional"));
+  return { ...(params?.length ? { "member-params": params } : {}), ...(names?.length ? { "member-names": names } : {}), ...(optional?.length ? { "member-optional": optional } : {}) };
 }
 
 /** `major.minor` as numbers, or null. */

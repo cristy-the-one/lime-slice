@@ -50,7 +50,7 @@ async function keep(context: KeepContext, title: string, description: string): P
   if (!io) return { reason: LIBRARY_NEEDS_APP.replace("Here the panel lists the plugins this project carries.", "Keep animations there.") };
   const body = current.plugin.source.replace(/\r\n?/g, "\n").replace(/^\n+/, "");
   const params = (await describedParams("pose_animation_keep", body)) ?? file?.params ?? [];
-  const members = membersOfRun(params, current.plugin.params, current.used ?? []);
+  const members = membersOfRun(params, current.plugin.params, current.used ?? [], current.colourOnly ?? []);
   const { loadLibrary, pluginAuthor } = await import("../ui/plugins-panel.ts");
   const library = await loadLibrary();
   const plan = savePlan(library, title, current.plugin.sha, current.plugin.name);
@@ -68,6 +68,7 @@ async function keep(context: KeepContext, title: string, description: string): P
     params,
     ...(members.memberParams.length ? { memberParams: members.memberParams } : {}),
     ...(members.memberNames.length ? { memberNames: members.memberNames } : {}),
+    ...(members.optionalNames.length ? { memberOptional: members.optionalNames } : {}),
   }, body);
   try {
     await io.save(plan.id, text);

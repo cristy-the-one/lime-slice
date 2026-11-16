@@ -24,13 +24,13 @@ import { fixedNamesHint, memberParamExample, memberParamsProblem, membersOfRun, 
  * sent and the values it ran with (to find the text parameters that name members), and the member parameters the
  * caller named. With no run (a save from source), only `members` marks them.
  */
-export interface AnimationKeep { used?: readonly string[]; values?: Readonly<Record<string, unknown>>; members?: unknown }
+export interface AnimationKeep { used?: readonly string[]; colourOnly?: readonly string[]; values?: Readonly<Record<string, unknown>>; members?: unknown }
 
 /**
  * An animation's save check: one describe run for its parameters (its defaults need an assembly, so the run it was
  * kept from is its check, as an import's describe is), then its member parameters and the names it uses as written.
  */
-async function animationCheck(this: Session, body: string, keep: AnimationKeep): Promise<{ params: PluginParam[]; target: PluginTarget; memberParams: string[]; memberNames: string[] } | { reason: string }> {
+async function animationCheck(this: Session, body: string, keep: AnimationKeep): Promise<{ params: PluginParam[]; target: PluginTarget; memberParams: string[]; memberNames: string[]; memberOptional: string[] } | { reason: string }> {
   const described = await this.recipeDescribe(body);
   if ("reason" in described) return { reason: `This animation does not build: ${described.reason} Change the code, then keep it.` };
   let explicit: string[] = [];
@@ -40,12 +40,12 @@ async function animationCheck(this: Session, body: string, keep: AnimationKeep):
     const problem = memberParamsProblem(explicit, described.params);
     if (problem) return { reason: `members: ${problem}. Declare it as ${memberParamExample(explicit.find((name) => !described.params.some((p) => p.name === name && p.kind === "text")) ?? "member")}.` };
   }
-  const run = keep.used ? membersOfRun(described.params, keep.values ?? {}, keep.used) : { memberParams: [], memberNames: [] };
+  const run = keep.used ? membersOfRun(described.params, keep.values ?? {}, keep.used, keep.colourOnly ?? []) : { memberParams: [], memberNames: [], optionalNames: [] };
   const wanted = new Set([...explicit, ...run.memberParams]);
   const memberParams = described.params.filter((p) => wanted.has(p.name)).map((p) => p.name);
   // A name an explicit member parameter gives is not a fixed name, even when the run did not use that value.
   const given = new Set(memberParams.map((name) => { const p = described.params.find((row) => row.name === name)!; return String(keep.values && name in keep.values ? keep.values[name] : p.default); }));
-  return { params: described.params, target: "object", memberParams, memberNames: run.memberNames.filter((name) => !given.has(name)) };
+  return { params: described.params, target: "object", memberParams, memberNames: run.memberNames.filter((name) => !given.has(name)), memberOptional: run.optionalNames.filter((name) => !given.has(name)) };
 }
 
 /**
@@ -130,7 +130,7 @@ async function pluginCheck(this: Session, body: string, objectHint: string | und
  * the same body keeps its version (new words only); with another body it is the next version when the run was of
  * that plugin (`name` is its id, as recipe_run {plugin} runs it), else the clash is kept beside it as `<id>-2`.
  */
-async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; idAsked?: string; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof; animation?: AnimationKeep }): Promise<{ id: string; version: number; sha256: string; kind?: "animation"; memberParams?: string[]; memberNames?: string[]; built?: string; warning?: string; note?: string; ingredients?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
+async function pluginSave(this: Session, opts: { source: string; title: unknown; description: unknown; name?: string; objectHint?: string; objectFrom?: number | null; idAsked?: string; ingredients?: Record<string, KeptIngredient>; data?: Record<string, RecipeData>; proof?: RunProof; animation?: AnimationKeep }): Promise<{ id: string; version: number; sha256: string; kind?: "animation"; memberParams?: string[]; memberNames?: string[]; built?: string; warning?: string; note?: string; ingredients?: string[]; memberOptional?: string[]; recipeData?: { name: string; bytes: number }[]; hints?: string[] } | { reason: string }> {
   const title = oneLine(opts.title, TITLE_MAX);
   if (!title) return { reason: "A plugin needs a title: one line, at most 60 characters." };
   let body = lfOnly(opts.source);
@@ -157,7 +157,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   if (bad >= 0) return { reason: `A plugin is one file against lime_recipe: line ${bad + 1} brings in another file or crate.` };
   body = withPluginData(body, data);
   const sha256 = bodyHash(body);
-  const checked: { params: PluginParam[]; target: PluginTarget; built?: string; warning?: string; memberParams?: string[]; memberNames?: string[] } | { reason: string } = animation ? await this.animationCheck(body, animation) : await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null, undefined, opts.proof);
+  const checked: { params: PluginParam[]; target: PluginTarget; built?: string; warning?: string; memberParams?: string[]; memberNames?: string[]; memberOptional?: string[] } | { reason: string } = animation ? await this.animationCheck(body, animation) : await this.pluginCheck(body, opts.objectHint, opts.objectFrom ?? null, undefined, opts.proof);
   if ("reason" in checked) return checked;
   const dir = pluginsDir();
   // A caller who named the id (`name` or `id` in the call, itself a valid slug) gets that id; the title stays the title.
@@ -203,6 +203,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
     params: checked.params,
     ...(checked.memberParams?.length ? { "member-params": checked.memberParams } : {}),
     ...(checked.memberNames?.length ? { "member-names": checked.memberNames } : {}),
+    ...(checked.memberOptional?.length ? { "member-optional": checked.memberOptional } : {}),
   };
   try {
     writePlugin(header, body, dir);
@@ -213,7 +214,7 @@ async function pluginSave(this: Session, opts: { source: string; title: unknown;
   const recipeData = carriedData(body).map(({ name, bytes }) => ({ name, bytes }));
   const fixedHint = animation ? fixedNamesHint(checked.memberNames ?? []) : null;
   const hints = animation ? (fixedHint ? [fixedHint] : []) : pluginHints({ params: checked.params, target: checked.target, description: header.description }, splitPluginData(body).code);
-  return { id, version, sha256, ...(animation ? { kind: "animation" as const, ...(checked.memberParams?.length ? { memberParams: checked.memberParams } : {}), ...(checked.memberNames?.length ? { memberNames: checked.memberNames } : {}) } : {}), ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(note ? { note } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
+  return { id, version, sha256, ...(animation ? { kind: "animation" as const, ...(checked.memberParams?.length ? { memberParams: checked.memberParams } : {}), ...(checked.memberNames?.length ? { memberNames: checked.memberNames } : {}), ...(checked.memberOptional?.length ? { memberOptional: checked.memberOptional } : {}) } : {}), ...(checked.built ? { built: checked.built } : {}), ...(checked.warning ? { warning: checked.warning } : {}), ...(note ? { note } : {}), ...(carried.length ? { ingredients: carried } : {}), ...(recipeData.length ? { recipeData } : {}), ...(hints.length ? { hints } : {}) };
 }
 
 /** lust's build id, for a plugin's header (a bug report's detail, never checked). */
@@ -293,7 +294,7 @@ function draftPart(this: Session, row: RustRecipe): string | undefined {
 /** A plugin list row's fields for an animation: its kind, the tool that plays it, and the members it needs. */
 function animationListFields(h: PluginHeader): Record<string, unknown> {
   if (h.kind !== "animation") return {};
-  const needs = needsLine(h.params, h["member-params"], h["member-names"]);
+  const needs = needsLine(h.params, h["member-params"], h["member-names"], h["member-optional"]);
   return { kind: "animation", run: "pose_animate", ...(needs ? { needs } : {}) };
 }
 
@@ -372,6 +373,7 @@ async function pluginTool(this: Session, input: Record<string, unknown>): Promis
       ...animationListFields(h),
       ...(h["member-params"] ? { memberParams: h["member-params"] } : {}),
       ...(h["member-names"] ? { memberNames: h["member-names"] } : {}),
+      ...(h["member-optional"] ? { memberOptional: h["member-optional"] } : {}),
       version: h.version,
       api: h.api,
       target: h.target,

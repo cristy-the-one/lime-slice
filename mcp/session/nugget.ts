@@ -19,7 +19,7 @@ import { needsLine } from "../../src/anim-members.ts";
 /** What a find row says of an animation plugin: that it is one, the tool that plays it, and the members it needs. */
 export function animationFields(h: PluginHeader): Record<string, unknown> {
   if (h.kind !== "animation") return {};
-  const needs = needsLine(h.params, h["member-params"], h["member-names"]);
+  const needs = needsLine(h.params, h["member-params"], h["member-names"], h["member-optional"]);
   return { pluginKind: "animation", run: "pose_animate", ...(needs ? { needs } : {}) };
 }
 
