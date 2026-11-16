@@ -350,3 +350,30 @@ test("Mass: the selected member's body, centre of gravity and hinge period, read
   await expect(mass).toContainText("Body: calibration_cube_20mm.stl, tip.stl");
   await panel.screenshot({ path: path.join(shots, "pose-mass.png") });
 });
+
+// Pose's code is a chunk of its own, fetched when the tab first opens. On a slow machine a press landed before it and
+// was lost (CI, 2026-11-15: "g picks reach" twice, and a first Link click). The chunk is held back here to open that gap.
+for (const [how, press] of [
+  ["the G key", (page: Page) => page.keyboard.press("g")],
+  ["a click on Reach", (page: Page) => page.locator("#toolRail [data-pose-tool='reach']").click()],
+] as const) {
+  test(`${how} picks the tool even before the Pose code has arrived`, async ({ page }) => {
+    await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
+    await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
+    let release = () => {};
+    const held = new Promise<void>((done) => { release = done; });
+    await page.route(/assets\/pose-[^/]*\.js$/, async (route) => { await held; await route.continue(); });
+    await page.goto("/");
+    await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-sample="calibration_cube_20mm.stl"]')?.click());
+    await expect(page.locator("[data-plate-id='part']")).toBeVisible();
+    await page.locator("#tabPose").click();
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await press(page);
+    await page.keyboard.press("t");
+    await expect(page.locator("#pose"), "the Pose code is still on its way").not.toHaveAttribute("data-engine");
+    release();
+    await expect(page.locator("#toolRail [data-pose-tool='reach']")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#pose"), "T, pressed in the same gap, gives the top view").toHaveAttribute("data-camera-preset", "top");
+    await expect(page.locator("#posePanel")).toContainText("Drag a point on a jointed part.");
+  });
+}
