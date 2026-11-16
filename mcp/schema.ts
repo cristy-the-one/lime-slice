@@ -1018,7 +1018,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_save",
-    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse.",
+    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. name is a file name or a path inside the workspace (\"bracket\" or \"parts/bracket.lime\"; .lime is added when missing, and folders are made); the reply's path is the file written.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1358,7 +1358,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "gcode_export",
-    description: "Write the last slice's G-code to a file in the workspace. Overwrites the same name. Nothing is sent to a printer.",
+    description: "Write the last slice's G-code to a file in the workspace. Overwrites the same name. name is a file name or a path inside the workspace (\"bracket\" or \"out/bracket.gcode\"; .gcode is added when missing, and folders are made). Nothing is sent to a printer.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1368,7 +1368,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "export_3mf",
-    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name.",
+    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name. name is a file name or a path inside the workspace (\"plate\" or \"out/plate.3mf\"; .3mf is added when missing, and folders are made).",
     inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: handle, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {
