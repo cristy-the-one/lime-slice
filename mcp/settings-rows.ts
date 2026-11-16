@@ -176,13 +176,17 @@ export function beltOnlyWarning(key: string, value: unknown, ctx: SchemaContext)
   return `${key} applies only on a belt printer. This printer is flat, so the slice leaves it out.`;
 }
 
-/** Per-object keys the plate stores beside the preset. Infill stays a fraction from 0 to 1. */
+/**
+ * Per-object keys the plate stores beside the preset. Infill stays a fraction from 0 to 1.
+ * `supports` is the Supports choice, so it brings `supportSource` with it in `also`: an object set to
+ * Automatic stays Automatic on a plate set to Painted only.
+ */
 export function applyObjectSetting(
   plate: PresetSettings,
   key: ObjectSettingKey,
   value: unknown,
   ctx: SchemaContext,
-): { value: unknown } | { reason: string } {
+): { value: unknown; also?: { supportSource: "auto" | "paint" } } | { reason: string } {
   if (key === "infill") {
     if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) return { reason: "Infill must be from 0–1." };
     return { value };
@@ -195,7 +199,12 @@ export function applyObjectSetting(
     if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 1000) return { reason: "Speed must be from 0–1000 mm/s." };
     return { value };
   }
+  if (key === "supportSource") {
+    if (value !== "auto" && value !== "paint") return { reason: 'supportSource must be "auto" or "paint".' };
+    return { value };
+  }
   const applied = applySetting(plate, key, value, ctx);
   if ("reason" in applied) return applied;
+  if (key === "supports") return { value: applied.settings.supports, also: { supportSource: applied.settings.supportSource === "paint" ? "paint" : "auto" } };
   return { value: applied.settings[key] };
 }

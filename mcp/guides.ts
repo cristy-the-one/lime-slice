@@ -22,6 +22,7 @@ export const GUIDES: Guide[] = [
       "2. machine_list, then machine_select {printerId, filamentId}.",
       "3. settings_schema {query} to read a key, then settings_set {values}. Layer height is millimetres, 0.08 to 0.4.",
       "   Supports: settings_set {values:{supports:true, supportBridgeMm:5}} gives no support to a span the part holds at both ends and no longer than 5 mm, which saves time (0, the default, supports every span; 50 at most). On a belt printer supportBeltHoldThin:true also holds the hairline first edge of a ledge and thin grid columns, which a 45° belt prints as a full bead; it adds print time, about 4 % on belt test parts and up to about 30 % on a part with one small high overhang. Both are off by default; a flat printer leaves supportBeltHoldThin out of the slice.",
+      "   One part only: settings_set {object, values:{supports:\"auto\", infill:0.4, walls:4}} (allObjects:true for every part). Infill there is a fraction from 0 to 1. An object's own supports print with the plate's support values even while the plate's supports are off. settings_schema {object} lists the keys an object can set with its values; overrides_list shows every object's own settings beside the height ranges and modifiers.",
       "4. slice_start. It slices the selected object. scope plate slices every object on the plate, and the result says so.",
       "5. slice_wait {job} until status is done. Call it again while status is running.",
       "6. gcode_summary, then gcode_export {name} to write a file in the workspace.",

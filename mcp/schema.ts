@@ -1158,7 +1158,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "settings_set",
-    description: "Set many slicer settings at once, by the keys settings_schema names; then slice_start. dryRun writes nothing. With object or allObjects: infill 0–1, walls, speed, supports for those objects only.",
+    description: "Set many slicer settings at once, by the keys settings_schema names; then slice_start. dryRun writes nothing. With object or allObjects, these keys for those objects only: infill (a fraction from 0 to 1, not a percent), walls, speed (mm/s), supports, supportSource, supportAngle, supportStyle, infillCombine, variableWidth, scarfSeam, gyroid3d; settings_schema {object} lists them with that object's values, overrides_list shows every object's own. supports on an object is the Supports choice (off, auto, paint) and sets supportSource with it; that object gets supports, with the plate's support values (gaps, bridge limit, belt floor and anchors), even while the plate's supports are off. A height range (range_add) wins over an object's infill, walls and speed where it reaches.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

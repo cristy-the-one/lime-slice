@@ -192,6 +192,12 @@ function settingsSet(this: Session, input: Record<string, unknown>): Record<stri
       }
       (objectNext as Record<ObjectSettingKey, unknown>)[key] = applied.value;
       changed.push({ key, from: obj ? obj.objectSettings[key] : undefined, to: applied.value });
+      // The Supports choice is two keys: an object set to Automatic stays Automatic on a Painted-only plate.
+      // A supportSource given in the same call wins.
+      if (applied.also && !("supportSource" in (values as Record<string, unknown>))) {
+        objectNext.supportSource = applied.also.supportSource;
+        changed.push({ key: "supportSource", from: obj ? obj.objectSettings.supportSource : undefined, to: applied.also.supportSource });
+      }
       continue;
     }
     const applied = applySetting(next, key, value, this.schemaContext());
