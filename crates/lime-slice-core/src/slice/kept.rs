@@ -394,6 +394,7 @@ pub(super) fn keys(
         support_gentle_accel_mm_s2: blank.support_gentle_accel_mm_s2,
         support_tree_brim_mm: blank.support_tree_brim_mm,
         support_anchor_mm: blank.support_anchor_mm,
+        support_hold_thin: blank.support_hold_thin,
         support_source: blank.support_source,
         support_height_mult: blank.support_height_mult,
         support_paint: Vec::new(),
@@ -449,6 +450,7 @@ pub(super) fn keys(
         support_avoidance: settings.support_avoidance,
         support_strict_stacking: settings.support_strict_stacking,
         support_paint_join: settings.support_paint_join,
+        support_hold_thin: settings.support_hold_thin,
         support_source: settings.support_source,
         support_paint: settings.support_paint.clone(),
         ..contours.clone()
@@ -468,6 +470,7 @@ pub(super) fn keys(
         support_gentle_accel_mm_s2: settings.support_gentle_accel_mm_s2,
         support_tree_brim_mm: settings.support_tree_brim_mm,
         support_anchor_mm: settings.support_anchor_mm,
+        support_hold_thin: settings.support_hold_thin,
         support_source: settings.support_source,
         support_height_mult: settings.support_height_mult,
         support_paint: settings.support_paint.clone(),

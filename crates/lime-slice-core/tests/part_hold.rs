@@ -119,6 +119,113 @@ fn wall_and_arm(underside_deg: f64) -> String {
     )
 }
 
+/// A wall across the belt with a 25 mm ledge off its side, 25 mm up and flat
+/// underneath. The nozzle planes are 0.2·√2 apart along the belt, so where the
+/// ledge sits along it decides how much of the ledge the first plane cuts.
+fn wall_and_side_ledge(from_front: f64) -> String {
+    let edge = 60.0 - from_front;
+    let boxes = [
+        ([0.0, 0.0, 0.0], [8.0, 60.0, 30.0]),
+        ([8.0, edge - 10.0, 25.0], [33.0, edge, 27.0]),
+    ];
+    let mut faces = Vec::new();
+    for (lo, hi) in boxes {
+        let v = |i: usize| {
+            [
+                if i & 1 == 0 { lo[0] } else { hi[0] },
+                if i & 2 == 0 { lo[1] } else { hi[1] },
+                if i & 4 == 0 { lo[2] } else { hi[2] },
+            ]
+        };
+        for q in [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [1, 3, 7, 5],
+            [0, 4, 6, 2],
+        ] {
+            faces.push([v(q[0]), v(q[1]), v(q[2])]);
+            faces.push([v(q[0]), v(q[2]), v(q[3])]);
+        }
+    }
+    let mut out = String::from(
+        "solid part
+",
+    );
+    for face in faces {
+        out.push_str(
+            "facet normal 0 0 0
+outer loop
+",
+        );
+        for v in face {
+            out.push_str(&format!(
+                "vertex {} {} {}
+",
+                v[0], v[1], v[2]
+            ));
+        }
+        out.push_str(
+            "endloop
+endfacet
+",
+        );
+    }
+    out.push_str(
+        "endsolid part
+",
+    );
+    out
+}
+
+/// The side ledge on the belt with supports of `style`, holding thin strips
+/// when `hold_thin` is `Some`.
+fn side_ledge_hold(from_front: f64, style: &str, hold_thin: Option<bool>) -> PartHold {
+    let mut belt = ir3();
+    belt["floorSupports"] = json!(true);
+    let mut extra = json!({ "belt": belt, "supports": true, "supportStyle": style });
+    if let Some(on) = hold_thin {
+        extra["supportBeltHoldThin"] = json!(on);
+    }
+    hold(&wall_and_side_ledge(from_front), extra)
+}
+
+/// The first plane to cut a ledge may cut a hair of it. That hair printed as
+/// a thin wall 24 mm long over nothing, and the supports never asked: 3 mm
+/// and 30 mm from the front were such places, 24 mm was not. Holding thin
+/// strips gives that first bead support wherever the ledge sits.
+#[test]
+fn a_ledge_born_on_the_belt_is_held_wherever_it_sits() {
+    for style in ["tree", "grid"] {
+        for from_front in [3.0, 24.0, 30.0] {
+            let part = side_ledge_hold(from_front, style, Some(true));
+            assert!(
+                part.longest_span_mm < 6.0,
+                "{style} {from_front} mm from the front: {part:?}"
+            );
+        }
+    }
+}
+
+/// Without the setting (the default) the belt keeps its old supports: the
+/// ledge's first bead stays unheld 3 and 30 mm from the front, and is held
+/// 24 mm from it.
+#[test]
+fn a_ledge_born_on_the_belt_is_unheld_at_some_places_by_default() {
+    for style in ["tree", "grid"] {
+        for from_front in [3.0, 30.0] {
+            let part = side_ledge_hold(from_front, style, None);
+            assert!(
+                part.longest_span_mm > 20.0,
+                "{style} {from_front} mm from the front: {part:?}"
+            );
+        }
+        let part = side_ledge_hold(24.0, style, None);
+        assert!(part.longest_span_mm < 6.0, "{style} 24 mm: {part:?}");
+    }
+}
+
 #[test]
 fn a_box_on_the_belt_stands_on_itself() {
     let part = hold(
@@ -214,9 +321,19 @@ fn tray_stl(size: [f64; 2], floor: f64, height: f64, rim: f64) -> String {
         faces.push([a, c, d]);
     };
     let outer = [[0.0, 0.0], [l, 0.0], [l, w], [0.0, w]];
-    let inner = [[rim, rim], [l - rim, rim], [l - rim, w - rim], [rim, w - rim]];
+    let inner = [
+        [rim, rim],
+        [l - rim, rim],
+        [l - rim, w - rim],
+        [rim, w - rim],
+    ];
     let at = |p: [f64; 2], z: f64| [p[0], p[1], z];
-    quad(at(outer[0], 0.0), at(outer[3], 0.0), at(outer[2], 0.0), at(outer[1], 0.0));
+    quad(
+        at(outer[0], 0.0),
+        at(outer[3], 0.0),
+        at(outer[2], 0.0),
+        at(outer[1], 0.0),
+    );
     for k in 0..4 {
         let (a, b) = (outer[k], outer[(k + 1) % 4]);
         quad(at(a, 0.0), at(b, 0.0), at(b, height), at(a, height));
@@ -224,7 +341,12 @@ fn tray_stl(size: [f64; 2], floor: f64, height: f64, rim: f64) -> String {
         quad(at(a, height), at(b, height), at(c, height), at(d, height));
         quad(at(c, floor), at(d, floor), at(d, height), at(c, height));
     }
-    quad(at(inner[0], floor), at(inner[1], floor), at(inner[2], floor), at(inner[3], floor));
+    quad(
+        at(inner[0], floor),
+        at(inner[1], floor),
+        at(inner[2], floor),
+        at(inner[3], floor),
+    );
     let mut out = String::from("solid tray\n");
     for face in faces {
         out.push_str("facet normal 0 0 0\nouter loop\n");
