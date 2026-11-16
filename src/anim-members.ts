@@ -66,10 +66,70 @@ export function namesInCall(tool: string, args: Record<string, unknown>): string
 }
 
 /**
- * What a run says about its member names: the text parameters whose value it used as a member name (in declared
- * order), and the names it used as written, that no such parameter gave (sorted).
+ * The names one call sends only to colour a member (an `animate` call's palette and key colours), and those it sends
+ * to pose, key or read one. A name in both lists is posed: only a name that is never posed, keyed or read is optional.
  */
-export function membersOfRun(params: readonly MemberParamDecl[], values: Readonly<Record<string, unknown>>, used: Iterable<string>): { memberParams: string[]; memberNames: string[] } {
+export function colourNamesInCall(tool: string, args: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const keysOf = (value: unknown) => { if (record(value)) out.push(...Object.keys(value)); };
+  if (tool === "animate") {
+    keysOf(args.colors);
+    if (Array.isArray(args.keys)) for (const key of args.keys) if (record(key)) keysOf(key.colors);
+  }
+  return out.filter((name) => name.trim() !== "");
+}
+
+/** The names `namesInCall` finds that are not colour keys: poses, rig reads. */
+export function posedNamesInCall(tool: string, args: Record<string, unknown>): string[] {
+  const posed: string[] = [];
+  if (tool === "animate") {
+    if (Array.isArray(args.keys)) for (const key of args.keys) if (record(key) && record(key.set)) posed.push(...Object.keys(key.set));
+  } else posed.push(...namesInCall(tool, args));
+  return posed.filter((name) => name.trim() !== "");
+}
+
+/** What a run tracks of the names a script sends: all of them, and the ones sent only to colour a member. */
+export function nameTracker(): { add(tool: string, args: Record<string, unknown>): void; used(): string[]; colourOnly(): string[] } {
+  const all = new Set<string>(), colour = new Set<string>(), posed = new Set<string>();
+  return {
+    add(tool, args) {
+      for (const name of namesInCall(tool, args)) all.add(name);
+      for (const name of colourNamesInCall(tool, args)) colour.add(name);
+      for (const name of posedNamesInCall(tool, args)) posed.add(name);
+    },
+    used: () => [...all],
+    colourOnly: () => [...colour].filter((name) => !posed.has(name)),
+  };
+}
+
+/**
+ * An `animate` call with the colours of optional members this assembly lacks taken out, and a sentence for each one
+ * taken out. Only a name the plugin lists as optional (never posed, keyed or read) is skipped; any other missing name
+ * is the sampler's refusal as before.
+ */
+export function skipMissingOptional(args: Record<string, unknown>, optional: readonly string[] | undefined, rig: readonly Named[]): { args: Record<string, unknown>; skipped: string[] } {
+  if (!optional?.length) return { args, skipped: [] };
+  const absent = new Set(optional.filter((name) => !membersMatching(rig, name).length));
+  if (!absent.size) return { args, skipped: [] };
+  const skipped: string[] = [];
+  const strip = (colors: unknown): unknown => {
+    if (!record(colors)) return colors;
+    const kept: Record<string, unknown> = {};
+    for (const [name, colour] of Object.entries(colors)) { if (absent.has(name)) { if (!skipped.includes(name)) skipped.push(name); } else kept[name] = colour; }
+    return kept;
+  };
+  const out: Record<string, unknown> = { ...args };
+  if (out.colors !== undefined) out.colors = strip(out.colors);
+  if (Array.isArray(out.keys)) out.keys = out.keys.map((key) => (record(key) && key.colors !== undefined ? { ...key, colors: strip(key.colors) } : key));
+  return { args: out, skipped: skipped.map((name) => `This assembly has no member matching "${name}", which the animation only colours, so its colour was skipped.`) };
+}
+
+/**
+ * What a run says about its member names: the text parameters whose value it used as a member name (in declared
+ * order), the names it used as written, that no such parameter gave (sorted), and of those the ones it only coloured
+ * (`optionalNames`: an assembly without them still plays; they are not in `memberNames`).
+ */
+export function membersOfRun(params: readonly MemberParamDecl[], values: Readonly<Record<string, unknown>>, used: Iterable<string>, colourOnly: Iterable<string> = []): { memberParams: string[]; memberNames: string[]; optionalNames: string[] } {
   const usedSet = new Set(used);
   const memberParams: string[] = [];
   const fromParams = new Set<string>();
@@ -78,8 +138,9 @@ export function membersOfRun(params: readonly MemberParamDecl[], values: Readonl
     const value = valueOf(param, values);
     if (typeof value === "string" && usedSet.has(value)) { memberParams.push(param.name); fromParams.add(value); }
   }
-  const memberNames = [...usedSet].filter((name) => !fromParams.has(name)).sort();
-  return { memberParams, memberNames };
+  const colourSet = new Set(colourOnly);
+  const fixed = [...usedSet].filter((name) => !fromParams.has(name)).sort();
+  return { memberParams, memberNames: fixed.filter((name) => !colourSet.has(name)), optionalNames: fixed.filter((name) => colourSet.has(name)) };
 }
 
 /** The value a run takes for `param`: the one given, else its default. */
@@ -135,15 +196,16 @@ export function explainNoMember(reason: string, values: Readonly<Record<string, 
  * What an animation plugin needs, on one line: `an assembly with members: wheel (default "Escape wheel"); and Frame as
  * named`. Null for a plugin that names no member (or was kept before member parameters were recorded).
  */
-export function needsLine(params: readonly MemberParamDecl[], memberParams: readonly string[] | undefined, memberNames: readonly string[] | undefined): string | null {
+export function needsLine(params: readonly MemberParamDecl[], memberParams: readonly string[] | undefined, memberNames: readonly string[] | undefined, optionalNames?: readonly string[]): string | null {
   const set = (memberParams ?? []).map((name) => {
     const param = params.find((row) => row.name === name);
     return `${name}${typeof param?.default === "string" ? ` (default "${param.default}")` : ""}`;
   });
   const fixed = memberNames ?? [];
-  if (!set.length && !fixed.length) return null;
+  if (!set.length && !fixed.length && !optionalNames?.length) return null;
   const tail = fixed.length ? `${set.length ? "; and " : ""}${fixed.join(", ")} as named` : "";
-  return `an assembly with members: ${set.join(", ")}${tail}`;
+  const optional = optionalNames?.length ? `${set.length || fixed.length ? "; " : ""}optionally ${optionalNames.join(", ")} (only coloured; skipped when absent)` : "";
+  return `an assembly ${set.length || fixed.length ? "with members: " : ""}${set.join(", ")}${tail}${optional}`;
 }
 
 /** A header list line (`member-params`, `member-names`): a JSON list of short strings, or null when it does not read. */

@@ -1018,7 +1018,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_save",
-    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. The reply gives bytes per section, and names one that shrank against the file it replaced.",
+    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. The reply gives bytes per section, and names one that shrank against the file it replaced. name is a file name or a path inside the workspace (\"bracket\" or \"parts/bracket.lime\"; .lime is added when missing, and folders are made); the reply's path is the file written.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1143,11 +1143,12 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "settings_schema",
-    description: "Read the slicer settings: the keys that differ from the default, in panel units, after machine_select. all lists every key. Then settings_set.",
+    description: "Read the slicer settings: the keys that differ from the default, in panel units, after machine_select. all lists every key. Then settings_set. With object, the keys that object can set itself (settings_set {object}) with the values it slices with: own true where the object sets a key, false where it follows the plate (plate gives the plate's value); infill there is a fraction from 0 to 1.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
+        object: { ...handle, description: "An object: list its own settings instead of the plate's." },
         level: { enum: ["simple", "advanced", "expert"], description: "Panel level." },
         query: { type: "string", minLength: 1, description: "Search text." },
         all: { type: "boolean", description: "Every key, including defaults." },
@@ -1158,7 +1159,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "settings_set",
-    description: "Set many slicer settings at once, by the keys settings_schema names; then slice_start. dryRun writes nothing. With object or allObjects: infill 0–1, walls, speed, supports for those objects only.",
+    description: "Set many slicer settings at once, by the keys settings_schema names; then slice_start. dryRun writes nothing. With object or allObjects, these keys for those objects only: infill (a fraction from 0 to 1, not a percent), walls, speed (mm/s), supports, supportSource, supportAngle, supportStyle, infillCombine, variableWidth, scarfSeam, gyroid3d; settings_schema {object} lists them with that object's values, overrides_list shows every object's own. supports on an object is the Supports choice (off, auto, paint) and sets supportSource with it; that object gets supports, with the plate's support values (gaps, bridge limit, belt floor and anchors), even while the plate's supports are off. A height range (range_add) wins over an object's infill, walls and speed where it reaches.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1192,7 +1193,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "machine_get",
-    description: "Read the selected printer and filament records: bed, temperatures, flow and start G-code. No host and no key. Then machine_set.",
+    description: "Read the selected printer and filament records: bed, temperatures, flow, start G-code, and the filament's density (densityGCm3, which model_mass and the estimate use) and diameter (diameterMm). No host and no key. Then machine_set.",
     inputSchema: empty,
   },
   {
@@ -1255,7 +1256,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "range_add",
-    description: "Add a height range: different infill, walls or speed for a Z span of an object. Then slice_start.",
+    description: "Add a height range: different infill (a percent), walls or speed for a Z span of the plate. The range applies on the plate to every object the span crosses, not only the selected one, and there it wins over an object's own infill, walls and speed. The span must cross the selected object. The reply's objectsReached counts the objects it reaches; on a plate of two or more objects warnings says so. For one object only, use settings_set {object, values:{infill}}, where infill is a fraction from 0 to 1. Then slice_start.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1263,7 +1264,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         zFromMm: { type: "number", minimum: 0, description: "From Z, mm." },
         zToMm: { type: "number", minimum: 0, description: "To Z, mm." },
-        infillPercent: { type: "number", minimum: 0, maximum: 100, description: "Infill, percent." },
+        infillPercent: { type: "number", minimum: 0, maximum: 100, description: "Infill, percent from 0 to 100 (settings_set per object takes a fraction from 0 to 1)." },
         walls: { type: "integer", minimum: 1, maximum: 12, description: "Walls." },
         speedMmS: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Speed cap, mm/s." },
         dryRun: { type: "boolean", description: "Report the change only." },
@@ -1290,7 +1291,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "overrides_list",
-    description: "List the height ranges and modifier volumes that range_add and modifier_add made. Then override_remove.",
+    description: "List the height ranges and modifier volumes that range_add and modifier_add made, and each object's own settings. objectSettings holds those from settings_set {object | allObjects}, infill a fraction from 0 to 1. Then override_remove for a range or a modifier, or settings_set {object} for an object's settings.",
     inputSchema: empty,
   },
   {
@@ -1358,7 +1359,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "gcode_export",
-    description: "Write the last slice's G-code to a file in the workspace. Overwrites the same name. Nothing is sent to a printer.",
+    description: "Write the last slice's G-code to a file in the workspace. Overwrites the same name. name is a file name or a path inside the workspace (\"bracket\" or \"out/bracket.gcode\"; .gcode is added when missing, and folders are made). Nothing is sent to a printer.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1368,7 +1369,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "export_3mf",
-    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name.",
+    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name. name is a file name or a path inside the workspace (\"plate\" or \"out/plate.3mf\"; .3mf is added when missing, and folders are made).",
     inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: { ...handle, description: "Write only this object, as posed on the plate. With pieces: the object to split." }, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {
@@ -1504,7 +1505,7 @@ export const TOOLS: ToolSpec[] = [
           type: "object",
           additionalProperties: false,
           required: ["contact", "dir"],
-          description: "Drive the part's joint (its hinge or slide, or that of the part it is seated on without a joint), with its gear train and everything seated on it, from where it stands until a part it moves first touches contact, and leave it there: one Undo step. Contact is the mesh pass's (model_check {interference}) on the parts' triangles: the pose is the last clear one, within tolerance mm of travel of the first that crosses, so the clearance left (contact.clearanceMm, measured) is at most the tolerance. The search steps by the measured clearance, so it cannot step over a part, and gives the same answer every time. Curved faces of a solid are meshed as flat facets within the kernel's chord (0.05 mm) of the true face, inside a round pin: there the search also keeps the meshes that chord apart (contact.boundMm, the chords at the contact), so the true parts cannot overlap, and mesh gives the facets' own contact it stopped short of. With exact (default, two solids) the kernel then decides: it measures the pair's common volume at the facets' contact; clear or a touch (under 0.01 mm³) there, it stands there; crossing, the joint backs off and the kernel's checks are bisected to the tolerance, to the last pose it calls clear or a touch. At most 12 kernel checks, each a boolean of the two solids, timed in kernelMs; flat faces take two. exact replies atContact (the kernel at the pose placed), meshAnswer, past, agrees (false: the kernel found shared volume at the facets' contact), placed (kernel or mesh), backedOff (degrees or mm, and mm of travel), kernelCalls and kernelMs; when no clear pose is found within the budget, placed is mesh and the note says so. Replies angle (or travel), contact {moving, other, clearanceMm, boundMm, past, check}, mesh, searched, the train's angles, moved, exact and a note. A part already crossing at the start is left out of any (ignored) and refused when named. Nothing within the range is refused as no-contact, and nothing moves. A long search answers with a job: slice_wait returns its result, slice_cancel stops it before anything moves. docs/plan-contact-poses.md.",
+          description: "Drive the part's joint (its hinge or slide, or that of the part it is seated on without a joint), with its gear train and everything seated on it, from where it stands until a part it moves first touches contact, and leave it there: one Undo step. Contact is the mesh pass's (model_check {interference}) on the parts' triangles: the pose is the last clear one, within tolerance mm of travel of the first that crosses, so the clearance left (contact.clearanceMm, measured) is at most the tolerance. The search steps by the measured clearance, so it cannot step over a part, and gives the same answer every time. Curved faces of a solid are meshed as flat facets within the kernel's chord (0.05 mm) of the true face, inside a round pin: there the search also keeps the meshes that chord apart (contact.boundMm, the chords at the contact), so the true parts cannot overlap, and mesh gives the facets' own contact it stopped short of. With exact (default, two solids) the kernel then decides: it measures the pair's common volume at the facets' contact; clear or a touch (under 0.01 mm³) there, it stands there; crossing, the joint backs off and the kernel's checks are bisected to the tolerance, to the last pose it calls clear or a touch. At most 12 kernel checks, each a boolean of the two solids, timed in kernelMs; flat faces take two. exact replies atContact (the kernel at the pose placed), meshAnswer, past, agrees (false: the kernel found shared volume at the facets' contact), placed (kernel or mesh), backedOff (degrees or mm, and mm of travel), kernelCalls and kernelMs; when no clear pose is found within the budget, placed is mesh and the note says so. Replies angle (or travel), contact {moving, other, clearanceMm, boundMm, past, check}, mesh, searched, the train's angles, moved, exact and a note. A part already crossing at the start is left out of any (ignored) and refused when named. If nothing is touched within the range, the call is refused with no-contact and nothing moves. A long search answers with a job: slice_wait returns its result, slice_cancel stops it before anything moves. docs/plan-contact-poses.md.",
           properties: {
             contact: { type: "string", minLength: 1, maxLength: 64, description: "The part to touch (one that does not move with the joint), or \"any\": every member of the assembly that stays." },
             dir: { enum: [1, -1], description: "1: the joint's own sense (a hinge's right-hand turn about its axis, a slide's axis); -1 against it." },
@@ -1845,7 +1846,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_mass",
-    description: "Weigh a part from its closed mesh: volume (mm³), mass (g), centre of gravity (mm), and principal moments of inertia about the centre of gravity (g·mm²), by the exact integrals over the triangles. The body is the part plus what moves with it: an assembly member is weighed with every part seated on it without a joint, up to the member whose joint carries them, at their assembled poses (body, parts). Mass is of a solid body at the selected filament's density, or density in g/cm³; a printed part with infill weighs less, and the reply says so. When the last slice is of this part alone and current, sliced gives its grams (the part's own beads; supports, skirt and brim left out) and the inertia scaled to them, assuming the printed mass is spread as the solid's. about:\"hinge\" (the body's hinge) or about {point, axis} (a line, in the part's frame) adds the moment of inertia about that line, leverMm (its distance to the centre of gravity) and, for an axis that is not vertical, the small-swing period as a compound pendulum T = 2π √(I / (m g d)) with lengthMm, the simple pendulum of the same period; gravity is 9806.65 mm/s² along -Z of model space. Points and axes answer in frame (model space, or the part's own after model_place {frame:\"part\"}, with centreOfGravityModelMm too). A mesh with open edges is refused with where the first is.",
+    description: "Weigh a part from its closed mesh: volume (mm³), mass (g), centre of gravity (mm), and principal moments of inertia about the centre of gravity (g·mm²), by the exact integrals over the triangles. The body is the part plus what moves with it: an assembly member is weighed with every part seated on it without a joint, up to the member whose joint carries them, at their assembled poses (body, parts). Mass is of a solid body at the selected filament's density, or density in g/cm³; a printed part with infill weighs less, and the reply says so. part:true weighs the named part alone, leaving out the parts that move with it. When a slice of this part alone made in this session still matches the plate (the newest such retained slice, not only the last one), sliced gives its grams (the part's own beads; supports, skirt and brim left out) and the inertia scaled to them, assuming the printed mass is spread as the solid's; a plate slice gives one total and is not used. basis says whether each number is the solid at a density or from a slice, and which. A project does not store slices, so there is no mass from a saved slice: slice the part again after project_open. about:\"hinge\" (the body's hinge) or about {point, axis} (a line, in the part's frame) adds the moment of inertia about that line, leverMm (its distance to the centre of gravity) and, for an axis that is not vertical, the small-swing period as a compound pendulum T = 2π √(I / (m g d)) with lengthMm, the simple pendulum of the same period; gravity is 9806.65 mm/s² along -Z of model space. Points and axes answer in frame (model space, or the part's own after model_place {frame:\"part\"}, with centreOfGravityModelMm too). A mesh with open edges is refused with where the first is.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1859,6 +1860,7 @@ export const TOOLS: ToolSpec[] = [
           description: "\"hinge\" (the body's hinge) or {point, axis}: the line to take inertia, lever arm and period about.",
         },
         density: { type: "number", exclusiveMinimum: 0, maximum: 25, description: "Material density in g/cm³; default the selected filament's." },
+        part: { type: "boolean", description: "true: weigh this part alone, not the body it moves with." },
       },
     },
   },
@@ -1896,7 +1898,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "motion_run",
-    description: "Run an assembly in time under gravity, a drive and friction, and say whether its clock runs. The model (docs/plan-hinge-dynamics.md): gravity (9806.65 mm/s² along -Z of model space), each jointed part's mass and inertia from its closed mesh at density (solid parts: a print with infill weighs less), a drive, Coulomb friction at every pin (friction × pinRadius × the pin's static load) and, with escapement, a Graham escapement's contacts with friction and restitution. Every part's joint must sit on the fixed root; gears, ratios and winches move as one train (its reflected inertia), a ratchet holds one way, a clutch slips above clutch N·mm. drive is {member, torque} (N·mm on its hinge, in the hinge's sense) or {member, weight} (grams on the winch that member's drum or slide is coupled by; with radius, a cord round that hinge's drum, dir the way it unwinds). escapement takes horology's Graham numbers, as lime_recipe::horology builds the parts (teeth, tip, root, lean, span; lock, impulse, drop, supplementary, armWidth, hubRadius, clearance, rootShare when not its defaults): they are fitted to the wheel's and the anchor's meshes (each corner to 0.02 mm, the pivot distance to 0.05 mm, the gap against the meshes to 0.1 mm) or refused, saying which did not fit. With an escapement (or pendulum, a part that swings), the run is made from rest as posed and from a push (default the let-off plus 1°), each again at dt/2: converged says whether period (to 1 s a day), amplitude (1 %) and the verdicts agree; if not, verdict is \"not converged\" and both values are given, never one number. Then a sweep of friction (default 0.1 to 0.5, sweep:false for none, at dt only). The reply: verdict (runs, stalls, not converged, moves), sentences (plain answers), fromRest and fromPush (runs, steadyAmplitudeDeg, periodsToSteady, periodS, rateSPerDay against designPeriod or the train's period read from hand {member, turnsPerHour}, energyPerBeatMicroJ by where it goes with the residual, stall {atS, where: which pallet face holds which tooth and the anchor's angle}, overswing when the anchor swings past its locking faces), sweep, freePeriodS (from mass properties), inputs (with every default used), leftOut and notes (what the model does not count). Defaults: friction 0.3, pinRadius 1.5 mm, restitution 0, dt 0.00005 s, seconds 30 (at most 600). It runs as a job: past about 45 s the call answers with a job, slice_wait {job} returns the result, slice_cancel stops it between slices. keys:true adds animation {fps, keys}, a key per 1/fps s; out {gif, frames} draws those keys as pose_animate does (camera, longEdge, background, partColours, fit, fps default 10). Nothing on the plate moves. Refused: ball joints, hinges not parallel, a joint on a moving part (a click excepted), a hinged root, planet carriers, open meshes, a drive on a part that does not move, a weight with no winch and no radius, a drive that turns the escape wheel against its teeth.",
+    description: "Run an assembly in time under gravity, a drive and friction, and say whether its clock runs. The model (docs/plan-hinge-dynamics.md): gravity (9806.65 mm/s² along -Z of model space), each jointed part's mass and inertia from its closed mesh at density (solid parts: a print with infill weighs less), a drive, Coulomb friction at every pin (friction × pinRadius × the pin's static load) and, with escapement, a Graham escapement's contacts with friction and restitution. Every part's joint must sit on the fixed root; gears, ratios and winches move as one train (its reflected inertia), a ratchet holds one way, a clutch slips above clutch N·mm. drive is {member, torque} (N·mm on its hinge, in the hinge's sense) or {member, weight} (grams on the winch that member's drum or slide is coupled by; with radius, a cord round that hinge's drum, dir the way it unwinds; on a drum with a declared winch, radius stands in for the winch's radius for this run, the weight counted once, and the animation keys still follow the declared ratio). A drive reaches the escape wheel through a ratchet only when it turns the ratchet against its free way; the other way is refused. escapement takes horology's Graham numbers, as lime_recipe::horology builds the parts (teeth, tip, root, lean, span; lock, impulse, drop, supplementary, armWidth, hubRadius, clearance, rootShare when not its defaults): they are fitted to the wheel's and the anchor's meshes (each corner to 0.02 mm, the pivot distance to 0.05 mm, the gap against the meshes to 0.1 mm, no pallet more than 0.02 mm inside a tooth) or refused, saying which did not fit (an overlap names the tooth, the pallet and the wheel turn that clears it). With an escapement (or pendulum, a part that swings), the run is made let go from the pose as it stands (fromRest: releaseDeg is how far from where the pendulum hangs it starts; selfStarts means it runs when let go from that pose, not from hanging still) and from a push (default: the push that puts the anchor min(1, supplementary/2)° past the let-off from its middle; without an escapement 5°), each again at dt/2: converged says whether the period (to 1 s a day), the settled amplitude (1 %) and the class of answer agree between dt and dt/2; if not, verdict is \"not converged\" and both values are given, never one number. agree compares the run let go as posed with the push run when both settle (a steady swing that depends on the start). Settled: each side's turning points over the last 10 periods change less than 0.002° a period (a least-squares slope). A confirmed stall (the wheel under half a tooth in three free periods, the swing below the let-off and not growing) ends that run early (endedAtS). findStart:true also bisects the smallest push from where the pendulum hangs after which it is still running (smallestPush; a few extra short runs). Then a sweep of friction (default 0.1 to 0.5, sweep:false for none, at dt only). The reply: verdict (runs: about a tooth a period and the swing not falling; not settled: the wheel turns but the swing falls or is too short to judge; stalls; overswings; with no escapement swings, swings, decaying or still; moves without a pendulum; not converged), sentences (plain answers), fromRest and fromPush (state, runs, lastAmplitudeDeg, plusSideDeg and minusSideDeg, trendDegPerPeriod, beatDifferenceDeg, settled, steadyAmplitudeDeg and periodsToSteady when settled, periodS with periodSettled:false when not, rateSPerDay against designPeriod or the train's period read from hand {member, turnsPerHour}, largestSwingDeg, teethEscaped, energyPerBeatMicroJ by where it goes, each arbor's pin on its own line, with the residual, stall {atS: when the wheel stopped, teethEscaped, largestSwingDeg and when, stillSinceS, anchorReachDeg against letoffDeg, unlocks, where: which pallet face holds which tooth and the anchor's angle}, overswing when the anchor swings past its locking faces, why when a value is missing), sweep (the same fields a row), amplitudeOverTime (each turning point with its side), freePeriodS (from mass properties), inputs (with every default used and the settled rule), leftOut and notes (what the model does not count). Defaults: friction 0.3, pinRadius 1.5 mm, restitution 0, dt 0.00005 s, seconds 30 (at most 600). It runs as a job: past about 45 s the call answers with a job, slice_wait {job} returns the result, slice_cancel stops it between slices. keys:true adds animation {fps, keys}, a key per 1/fps s; out {gif, frames} draws those keys as pose_animate does (camera, longEdge, background, partColours, fit, fps default 10). Nothing on the plate moves. Refused: ball joints, hinges not parallel, a joint on a moving part (a click excepted), a hinged root, planet carriers, open meshes, a drive on a part that does not move, a weight with no winch and no radius, a drive that turns the escape wheel against its teeth.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       object: handle,
       seconds: { type: "number", exclusiveMinimum: 0, maximum: 600, description: "Simulated seconds of each run; default 30." },
@@ -1925,7 +1927,8 @@ export const TOOLS: ToolSpec[] = [
       viscous: { type: "number", minimum: 0, description: "Air drag at each hinge, N·mm·s per radian; default 0." },
       clutch: { type: "number", exclusiveMinimum: 0, description: "A clutch's slip torque, N·mm; default 5." },
       density: { type: "number", exclusiveMinimum: 0, maximum: 25, description: "g/cm³; default the filament's." },
-      push: { type: "number", description: "Degrees the pendulum is pushed from rest for the second run." },
+      push: { type: "number", description: "Degrees the pendulum is pushed from where it hangs for the second run; default with an escapement: the anchor min(1, supplementary/2)° past the let-off from its middle; else 5." },
+      findStart: { type: "boolean", description: "With an escapement: also find the smallest push that starts it (short runs at dt, bisected to 0.05°). Default false." },
       designPeriod: { type: "number", exclusiveMinimum: 0, description: "The period the train is counted for, s." },
       hand: { type: "object", additionalProperties: false, required: ["member"], description: "Read the designed period from the train.", properties: {
         member: { type: "string", description: "A part in the escape wheel's train, such as the minute arbor." },

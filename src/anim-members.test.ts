@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
-import { explainNoMember, fixedNamesHint, memberNamesOf, membersMatching, membersOfRun, memberParamsProblem, missingMember, namesInCall, needsLine, readMemberList } from "./anim-members.ts";
+import { colourNamesInCall, explainNoMember, fixedNamesHint, nameTracker, skipMissingOptional, memberNamesOf, membersMatching, membersOfRun, memberParamsProblem, missingMember, namesInCall, needsLine, readMemberList } from "./anim-members.ts";
 import { animationRig, rigGroup } from "./pose-anim.ts";
 import { pluginFileText, readPluginFile } from "./plugin-file.ts";
 import { checkImport } from "./plugins/share.ts";
@@ -26,10 +26,10 @@ assert.deepEqual(namesInCall("log", { message: "Anchor" }), []);
 
 // 2. Member parameters from a run: text parameters whose value it used; the other names are fixed.
 const used = ["Frame", "Pallets", "Escapement"];
-assert.deepEqual(membersOfRun(params, { wheel: "Escapement", anchor: "Pallets" }, used), { memberParams: ["wheel", "anchor"], memberNames: ["Frame"] });
-assert.deepEqual(membersOfRun(params, {}, ["Escape wheel", "Anchor"]), { memberParams: ["wheel", "anchor"], memberNames: [] });
-assert.deepEqual(membersOfRun(params, {}, ["Tick", "Frame"]), { memberParams: ["caption"], memberNames: ["Frame"] }, "a caption used as a name is one");
-assert.deepEqual(membersOfRun(params, {}, []), { memberParams: [], memberNames: [] });
+assert.deepEqual(membersOfRun(params, { wheel: "Escapement", anchor: "Pallets" }, used), { memberParams: ["wheel", "anchor"], memberNames: ["Frame"], optionalNames: [] });
+assert.deepEqual(membersOfRun(params, {}, ["Escape wheel", "Anchor"]), { memberParams: ["wheel", "anchor"], memberNames: [], optionalNames: [] });
+assert.deepEqual(membersOfRun(params, {}, ["Tick", "Frame"]), { memberParams: ["caption"], memberNames: ["Frame"], optionalNames: [] }, "a caption used as a name is one");
+assert.deepEqual(membersOfRun(params, {}, []), { memberParams: [], memberNames: [], optionalNames: [] });
 
 // 3. Names as the rig gives them (duplicates -2, -3; an empty name is Part), matched as rigGroup matches.
 const names = memberNamesOf([{ object: "a" }, { object: "b" }, { object: "c" }, { object: "d" }], (id) => ({ a: "Frame", b: "Wheel", c: "Wheel", d: " " } as Record<string, string>)[id]);
@@ -58,6 +58,26 @@ assert.equal(explainNoMember("Angle 200 is outside", {}, rig), "Angle 200 is out
 assert.equal(needsLine(params, ["wheel", "anchor"], ["Frame"]), 'an assembly with members: wheel (default "Escape wheel"), anchor (default "Anchor"); and Frame as named');
 assert.equal(needsLine(params, [], ["Frame", "Base"]), "an assembly with members: Frame, Base as named");
 assert.equal(needsLine(params, undefined, undefined), null);
+assert.equal(needsLine(params, ["wheel"], [], ["Frame"]), 'an assembly with members: wheel (default "Escape wheel"); optionally Frame (only coloured; skipped when absent)');
+assert.equal(needsLine(params, [], [], ["Frame"]), "an assembly optionally Frame (only coloured; skipped when absent)");
+
+// A name sent only as a colour key is optional; a name also posed, keyed or read is required.
+assert.deepEqual(colourNamesInCall("animate", { colors: { Frame: "#111111" }, keys: [{ t: 0, set: { Wheel: 1 }, colors: { Cover: "#222222" } }] }), ["Frame", "Cover"]);
+const tracker = nameTracker();
+tracker.add("animate", { colors: { Frame: "#111111", Wheel: "#333333" }, keys: [{ t: 0, set: { Wheel: 1 }, colors: { Cover: "#222222" } }] });
+tracker.add("rig_contact", { member: "Frame", against: "Plate" });
+assert.deepEqual(tracker.colourOnly(), ["Cover"], "Frame is read by a rig call, Wheel is posed");
+assert.deepEqual(membersOfRun(params, {}, ["Frame", "Cover", "Wheel"], ["Cover"]), { memberParams: [], memberNames: ["Frame", "Wheel"], optionalNames: ["Cover"] });
+assert.deepEqual(membersOfRun(params, { wheel: "Cover" }, ["Cover"], ["Cover"]), { memberParams: ["wheel"], memberNames: [], optionalNames: [] }, "a name a parameter gives stays a member parameter");
+
+// A missing optional name's colour is taken out of the call, with a sentence; other names are left to the sampler.
+const rigRows = [{ name: "Wheel" }, { name: "Pallets" }];
+const call = { colors: { Frame: "#111111", Wheel: "#333333" }, keys: [{ t: 1, set: { Wheel: 1 }, colors: { Frame: "#444444", Pallets: "#555555" } }] };
+const skipped = skipMissingOptional(call, ["Frame"], rigRows);
+assert.deepEqual(skipped.args, { colors: { Wheel: "#333333" }, keys: [{ t: 1, set: { Wheel: 1 }, colors: { Pallets: "#555555" } }] });
+assert.deepEqual(skipped.skipped, ['This assembly has no member matching "Frame", which the animation only colours, so its colour was skipped.']);
+assert.equal(skipMissingOptional(call, ["Frame"], [{ name: "Frame" }, ...rigRows]).args, call, "a member that is there is coloured as before");
+assert.equal(skipMissingOptional(call, undefined, rigRows).args, call);
 assert.match(String(fixedNamesHint(["Escape wheel"])), /let escape_wheel = s\.text\("escape_wheel", "Escape wheel"\)/);
 assert.equal(fixedNamesHint([]), null);
 assert.equal(memberParamsProblem(["wheel"], params), null);
@@ -77,6 +97,10 @@ assert.match(mcpText, /\/\/! member-params: \["wheel","anchor"\]\n\/\/! member-n
 const appRead = readPluginFile(mcpText)!;
 assert.deepEqual(appRead.memberParams, ["wheel", "anchor"]); assert.deepEqual(appRead.memberNames, ["Frame"]);
 assert.equal(readPluginFile(mcpText.replace('member-names: ["Frame"]', "member-names: Frame"))?.memberNames, undefined, "a list that does not read is left out");
+const optionalText = pluginFileText({ plugin: "opt", kind: "animation", title: "Opt", version: 1, description: "", author: "Test", api: "1.15", sha256: sha, created: "2026-11-15", target: "object", params: params as never, memberOptional: ["Frame"] }, body);
+assert.ok(optionalText.includes('member-optional: ["Frame"]'));
+assert.deepEqual(readPluginFile(optionalText)?.memberOptional, ["Frame"], "the window reads the optional names back");
+assert.equal(checkImport(optionalText, [1, 15]).hasOwnProperty("reason"), false, "an import accepts the member-optional line");
 const recipeText = pluginFileText({ plugin: "bar", title: "Bar", version: 1, description: "", author: "Test", api: "1.1", sha256: sha, created: "2026-11-15", target: "new", params: [], memberParams: ["wheel"] }, body);
 assert.doesNotMatch(recipeText, /member-params/, "only an animation writes member lines");
 const imported = checkImport(mcpText, [1, 15]);

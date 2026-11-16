@@ -55,23 +55,26 @@ async function clock(root: string, names: [string, string], x: number): Promise<
 const first = await clock("Frame", ["Anchor", "Escape wheel"], 0);
 const second = await clock("Frame", ["Pallets", "Escapement"], 60);
 const third = await clock("Base", ["Pallets", "Escapement"], 120);
+const fourth = await clock("Frame", ["Rocker", "Pallets"], 180);
 
 // 1. Keep from a dry run: the run is the check; the text parameters it used as names are member parameters.
 const kept = await call("pose_animate", { object: first, source, keep: { title: "Escapement motion", description: "Anchor rocks, wheel steps." } });
 assert.equal(kept.ok, true, JSON.stringify(kept));
-const k1 = kept.kept as { id: string; version: number; kind: string; memberParams: string[]; memberNames: string[]; hints?: string[] };
+const k1 = kept.kept as { id: string; version: number; kind: string; memberParams: string[]; memberNames?: string[]; memberOptional?: string[]; hints?: string[] };
 assert.ok(k1, JSON.stringify(kept));
 assert.equal(k1.id, "escapement-motion"); assert.equal(k1.version, 1); assert.equal(k1.kind, "animation");
 assert.deepEqual(k1.memberParams, ["wheel", "anchor"]);
-assert.deepEqual(k1.memberNames, ["Frame"]);
-assert.match(String(k1.hints?.[0]), /"Frame" as written/);
+// Frame is only coloured (never posed, keyed or read): optional, not required.
+assert.equal(k1.memberNames, undefined); assert.deepEqual(k1.memberOptional, ["Frame"]);
+assert.equal(k1.hints, undefined, "an optional name needs no hint about fixed names");
 const file = readFileSync(join(library, "escapement-motion.rs"), "utf8");
 assert.match(file, /\/\/! kind: animation/);
 assert.match(file, /\/\/! member-params: \["wheel","anchor"\]/);
-assert.match(file, /\/\/! member-names: \["Frame"\]/);
+assert.doesNotMatch(file, /\/\/! member-names:/);
+assert.match(file, /\/\/! member-optional: \["Frame"\]/);
 const parsed = parsePlugin(file);
 assert.ok(!("reason" in parsed) && parsed.matches);
-if (!("reason" in parsed)) { assert.deepEqual(parsed.header["member-params"], ["wheel", "anchor"]); assert.deepEqual(parsed.header["member-names"], ["Frame"]); }
+if (!("reason" in parsed)) { assert.deepEqual(parsed.header["member-params"], ["wheel", "anchor"]); assert.equal(parsed.header["member-names"], undefined); assert.deepEqual(parsed.header["member-optional"], ["Frame"]); }
 assert.equal(pluginText({ plugin: "bar", title: "Bar", version: 1, description: "", author: "Test", api: "1.1", "source-sha256": "", created: "", target: "new", params: [], "member-params": ["wheel"] }, "fn main() {}\n").includes("member-params"), false, "only an animation writes member lines");
 
 // 2. nugget find and get say it is an animation and what it needs.
@@ -79,12 +82,12 @@ const found = await call("nugget", { action: "find", kind: "animation", query: "
 const row = (found.nuggets as Record<string, unknown>[]).find((r) => r.id === "escapement-motion");
 assert.ok(row, JSON.stringify(found));
 assert.equal(row!.pluginKind, "animation"); assert.equal(row!.run, "pose_animate");
-assert.equal(row!.needs, 'an assembly with members: wheel (default "Escape wheel"), anchor (default "Anchor"); and Frame as named');
+assert.equal(row!.needs, 'an assembly with members: wheel (default "Escape wheel"), anchor (default "Anchor"); optionally Frame (only coloured; skipped when absent)');
 const any = await call("nugget", { action: "find", query: "escapement" });
 assert.ok((any.nuggets as { id: string }[]).some((r) => r.id === "escapement-motion"));
 const got = await call("nugget", { action: "get", kind: "animation", id: "escapement-motion" });
 assert.equal(got.ok, true, JSON.stringify(got));
-assert.equal(got.kind, "animation"); assert.deepEqual(got.memberParams, ["wheel", "anchor"]); assert.deepEqual(got.memberNames, ["Frame"]);
+assert.equal(got.kind, "animation"); assert.deepEqual(got.memberParams, ["wheel", "anchor"]); assert.equal(got.memberNames, undefined); assert.deepEqual(got.memberOptional, ["Frame"]);
 assert.match(String(got.needs), /wheel/);
 const listed = await call("plugin", { action: "list", query: "escapement" });
 assert.ok(JSON.stringify(listed).includes('"needs"'), JSON.stringify(listed));
@@ -99,10 +102,18 @@ const pattern = await call("pose_animate", { object: second, plugin: "escapement
 assert.equal(pattern.ok, true, JSON.stringify(pattern));
 const gif = await call("pose_animate", { object: second, plugin: "escapement-motion", params: { wheel: "Escapement", anchor: "Pallets" }, longEdge: 32, out: { gif: "second.gif" } });
 assert.equal(gif.ok, true, JSON.stringify(gif));
-// A name written in the script that this assembly lacks.
+// A name the script only colours that this assembly lacks: skipped, with a warning in the reply.
 const noFrame = await call("pose_animate", { object: third, plugin: "escapement-motion", params: { wheel: "Escapement", anchor: "Pallets" } });
-assert.equal(noFrame.ok, false);
-assert.match(String(noFrame.reason), /no member matching "Frame", a name the animation uses as written/);
+assert.equal(noFrame.ok, true, JSON.stringify(noFrame));
+assert.ok((noFrame.warnings as { reason: string }[]).some((w) => /no member matching "Frame", which the animation only colours, so its colour was skipped/.test(w.reason)), JSON.stringify(noFrame));
+// A name it poses, written into the script, stays required: kept as member-names, refused when absent.
+const posedSource = source.replace('.set(&wheel, 12.0)', '.set(&wheel, 12.0).set("Rocker", 1.0)');
+const keptPosed = await call("pose_animate", { object: fourth, source: posedSource, params: { wheel: "Pallets", anchor: "Pallets" }, keep: { title: "Rocker posed" } });
+assert.deepEqual((keptPosed.kept as { memberNames?: string[] }).memberNames, ["Rocker"], JSON.stringify(keptPosed));
+assert.deepEqual((keptPosed.kept as { memberOptional?: string[] }).memberOptional, ["Frame"]);
+const noPosed = await call("pose_animate", { object: third, plugin: "rocker-posed", params: { wheel: "Escapement", anchor: "Pallets" } });
+assert.equal(noPosed.ok, false);
+assert.match(String(noPosed.reason), /no member matching "Rocker", a name the animation uses as written/);
 // A source run (no header) still says which parameter to set when the sampler finds no member.
 const loose = await call("pose_animate", { object: second, source, params: { wheel: "Nope", anchor: "Pallets" } });
 assert.equal(loose.ok, false);
@@ -121,6 +132,17 @@ const beside = await call("pose_animate", { object: first, source: edited.replac
 const kb = beside.kept as { id: string; note?: string };
 assert.equal(kb.id, "escapement-motion-2", JSON.stringify(beside));
 assert.match(String(kb.note), /already exists as "escapement-motion"/);
+// A name the caller gave is the id (a valid slug); the title stays the title. Naming an existing id adds a version.
+const named = await call("pose_animate", { object: first, source: edited, name: "escape-rocker", keep: { title: "Rocking escapement" } });
+const kn = named.kept as { id: string; version: number };
+assert.equal(kn.id, "escape-rocker", JSON.stringify(named)); assert.equal(kn.version, 1);
+assert.equal((readPlugin("escape-rocker", library) as { header: { title: string } }).header.title, "Rocking escapement");
+const namedAgain = await call("pose_animate", { object: first, source: edited.replace("a.key(2.0,", "a.key(3.0,"), name: "escape-rocker", keep: { title: "Rocking escapement, slower" } });
+assert.deepEqual([(namedAgain.kept as { id: string }).id, (namedAgain.kept as { version: number }).version], ["escape-rocker", 2], JSON.stringify(namedAgain));
+assert.equal(readPlugin("rocking-escapement", library), null, "no plugin was kept under the title's slug");
+// A name that is not a slug does not become an id: the title's slug is used.
+const badName = await call("pose_animate", { object: first, source: edited.replace("a.key(2.0,", "a.key(4.0,"), name: "Not A Slug", keep: { title: "Fourth motion" } });
+assert.equal((badName.kept as { id: string }).id, "fourth-motion", JSON.stringify(badName));
 
 // 4b. An export long enough to become a job keeps when its last frame is written: slice_wait's result carries kept. A
 // cancelled one keeps nothing.
@@ -180,5 +202,5 @@ const imported = await other.call("nugget", { action: "save", kind: "plugin", fr
 assert.equal(imported.ok, true, JSON.stringify(imported));
 const there = readPlugin("escapement-motion", process.env.LIME_PLUGINS_DIR);
 assert.ok(there && !("reason" in there));
-if (there && !("reason" in there)) { assert.deepEqual(there.header["member-params"], ["wheel", "anchor"]); assert.deepEqual(there.header["member-names"], ["Frame"]); }
+if (there && !("reason" in there)) { assert.deepEqual(there.header["member-params"], ["wheel", "anchor"]); assert.deepEqual(there.header["member-optional"], ["Frame"]); }
 console.log("animation-keep: keep, find, members as parameters, refusals, versions, keep on a job and on a cancel, nugget save and sharing passed");

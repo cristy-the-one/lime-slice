@@ -83,7 +83,7 @@ let animationRun = 0;
 const animationMembers = new Map<string, Record<string, string>>();
 /** The code the plugin library holds, by hash: an animation played from other code can be kept there. */
 let libraryShas = new Set<string>();
-export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[]; motion?: true }
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[]; colourOnly?: string[]; motion?: true }
 let animation: PoseAnimationState | null = null;
 /** "Until contact" (docs/plan-contact-poses.md): the solve running, and what the last one said, for the part it ran on. */
 let contactBusy = false;
@@ -249,14 +249,14 @@ async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assem
   });
   const params = animationValues(file, live);
   try {
-    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts, { signal, transfer: true, onStage: (stage) => setPreparingStage(ticket, stage) });
+    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts, { signal, transfer: true, ...(file.memberOptional ? { optional: file.memberOptional } : {}), onStage: (stage) => setPreparingStage(ticket, stage) });
     if (!current()) return;
     const { animationStale } = await import("../pose-anim.ts");
     const stale = staleSince(animationStale, assemblySnapshot, poses, objects);
     if (stale) { message = `${stale} while the animation was building. Play it again.`; return; }
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; return; }
     preparing = null;
-    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, used: result.used, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, used: result.used, colourOnly: result.colourOnly, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
     animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); renderPanel();
   } catch (error) {
@@ -885,7 +885,7 @@ function motionSection(panel: HTMLElement, assembly: Assembly): void {
   }
   if (motionNote?.assembly === assembly.id) {
     const note = document.createElement("div"); note.dataset.poseMotionReport = ""; note.setAttribute("role", "status"); box.append(note);
-    if (motionNote.verdict) addText(note, "p", motionNote.verdict === "not converged" ? "Not converged" : motionNote.verdict === "runs" ? "It runs" : motionNote.verdict === "stalls" ? "It does not run" : "It moves", "pose-motion-verdict").dataset.verdict = motionNote.verdict;
+    if (motionNote.verdict) addText(note, "p", VERDICT_WORDS[motionNote.verdict] ?? motionNote.verdict, "pose-motion-verdict").dataset.verdict = motionNote.verdict;
     for (const line of motionNote.lines) addText(note, "p", line, motionNote.error ? "pose-error" : undefined);
   }
   if (animation?.motion && animation.assembly === assembly.id) {
@@ -897,6 +897,11 @@ function motionSection(panel: HTMLElement, assembly: Assembly): void {
   }
 }
 /** The run's progress, as the animation's preparation shows its own: what runs, a bar, Cancel. */
+/** A run's verdict as the panel's heading (src/motion.ts says what each means). */
+const VERDICT_WORDS: Record<string, string> = {
+  "not converged": "Not converged", runs: "It runs", "not settled": "Not settled", stalls: "It does not run", overswings: "It swings past its pallets",
+  swings: "It swings", "swings, decaying": "It swings, decaying", still: "It hangs still", moves: "It moves",
+};
 function motionProgressBlock(parent: HTMLElement): void {
   const block = document.createElement("div"); block.className = "pose-progress"; block.dataset.poseMotionProgress = "";
   const head = document.createElement("div"); head.className = "pose-progress-head";

@@ -14,10 +14,10 @@
 import { solveAssembly, type Assembly, type Member } from "./assembly.ts";
 import { buildSystem, Stepper, N_MM, type DynPart } from "./dynamics.ts";
 import { clockMeshes } from "./escapement-parts.ts";
-import { escapeWheel, graham, restPose } from "./graham.ts";
+import { escapeWheel, graham, restPose, swingDeg, type Graham } from "./graham.ts";
 import { G_MM_S2 } from "./mass.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
-import { motionJob, prepareMotion, runMotion, type MotionReport, type MotionSpec, type Prepared, type RunResult } from "./motion.ts";
+import { defaultPush, motionJob, prepareMotion, runMotion, swingWindow, type MotionReport, type MotionSpec, type Prepared, type RunResult, type TurningPoint } from "./motion.ts";
 import { box } from "./box-mesh.ts";
 
 let failed = 0;
@@ -28,12 +28,11 @@ function check(name: string, cond: boolean, detail: unknown = ""): void {
 }
 
 const g = graham(escapeWheel(30, 22.5, 17.5, 12), 7.5);
-const rest = restPose(g) as [number, number];
 const PLA = 1.24;
 
 /** A clock: frame, escape wheel (hinge +Y at the origin), anchor (hinge +Y at its pivot) with a rod and bob on it. */
-export function clock(phaseOffsetDeg: number, bobSide = 30): { assembly: Assembly; parts: DynPart[] } {
-  const meshes = clockMeshes(g, rest[0] + phaseOffsetDeg);
+export function clock(phaseOffsetDeg: number, bobSide = 30, at: Graham = g): { assembly: Assembly; parts: DynPart[] } {
+  const meshes = clockMeshes(at, (restPose(at) as [number, number])[0] + phaseOffsetDeg);
   if ("reason" in meshes) throw new Error(meshes.reason);
   const d = meshes.pivotDistance;
   const hinge = (pivot: [number, number, number]) => ({ kind: "hinge" as const, pivot, axis: [0, 1, 0] as [number, number, number] });
@@ -57,7 +56,10 @@ function prepared(spec: Partial<MotionSpec>, offset = -0.3, bobSide = 30): Prepa
   if ("reason" in p) throw new Error(p.reason);
   return p;
 }
-function run(p: Prepared, o: { dt?: number; seconds: number; friction: number; push: number }): RunResult {
+function finish(job: ReturnType<typeof motionJob>): MotionReport | { reason: string } {
+  for (;;) { const s = job.next(); if (s.done) return s.value; }
+}
+function run(p: Prepared, o: { dt?: number; seconds: number; friction: number; push: number; hang?: boolean }): RunResult {
   const it = runMotion(p, { dt: 5e-5, ...o });
   for (;;) { const s = it.next(); if (s.done) { if ("reason" in s.value) throw new Error(s.value.reason); return s.value; } }
 }
@@ -117,15 +119,57 @@ function run(p: Prepared, o: { dt?: number; seconds: number; friction: number; p
 // --- From rest as posed: 0.25 N·mm only leans the pendulum on the impulse face; 0.5 N·mm pushes it past the let-off.
 {
   const held = run(prepared({}), { seconds: 15, friction: 0.3, push: 0 });
-  check(`0.25 N·mm from rest does not start: "${held.stall?.where}"`, !held.runs && !!held.stall && held.stall.where.includes("impulse face"), held.stall);
+  check(`0.25 N·mm from rest does not start: "${held.stall?.where}"`, !held.runs && held.state === "stalls" && !!held.stall && held.stall.where.includes("impulse face"), held.stall);
+  check(`and the stall says so from the run's own history: no tooth escaped, the anchor reached ${held.stall?.anchorReachDeg}° of the ${held.stall?.letoffDeg}° let-off, the pendulum still since ${held.stall?.stillSinceS} s`, held.stall?.teethEscaped === 0 && held.stall.unlocks === false && held.stall.anchorReachDeg < held.stall.letoffDeg && held.stall.stillSinceS !== null, held.stall);
+  check(`a confirmed stall ends the run early: at ${held.endedAtS} s of 15 (three free periods, ${(3 * 0.7386).toFixed(2)} s, at the least)`, held.endedAtS < 15 && held.endedAtS >= 3 * 0.7385, held.endedAtS);
   const starts = run(prepared({ drive: { member: "wheel", torqueNmm: 0.5 } }), { seconds: 15, friction: 0.3, push: 0 });
-  check(`0.5 N·mm from rest starts by itself and settles at ${starts.steady?.deg.toFixed(3)}° after ${starts.steady?.periods} periods`, starts.runs && !!starts.steady, { steady: starts.steady, stall: starts.stall });
+  check(`0.5 N·mm from rest starts by itself and settles at ${starts.steady?.deg.toFixed(3)}° after ${starts.steady?.periods} periods`, starts.runs && !!starts.steady && starts.endedAtS === 15, { steady: starts.steady, stall: starts.stall });
+}
+
+// --- job_38 rebuilt: 0.1 N·mm and a 1.5° push the other way. The pendulum swings back to 1.557° at 0.42 s, the wheel
+// never turns a tooth, and the pendulum stands still. The old report: "it never starts ... the pendulum swings 0° each
+// side"; the run's own history says otherwise.
+{
+  const r = run(prepared({ drive: { member: "wheel", torqueNmm: 0.1 } }), { seconds: 15, friction: 0.3, push: -1.5 });
+  const s = r.stall;
+  check(`the stall gives the largest swing ${s?.largestSwingDeg}° at ${s?.largestSwingAtS} s, not 0°; ${s?.teethEscaped} teeth; never unlocks (anchor ${s?.anchorReachDeg}° of ${s?.letoffDeg}°); still since ${s?.stillSinceS} s`, !!s && s.largestSwingDeg > 1.5 && s.largestSwingAtS > 0.3 && s.teethEscaped === 0 && !s.unlocks && s.stillSinceS !== null && s.stillSinceS > 0.3, s);
+  check(`the release is the first turning point, with its side (${JSON.stringify(r.amplitudes.slice(0, 3))})`, r.amplitudes[0]!.t === 0 && r.amplitudes[0]!.side === -1 && Math.abs(r.amplitudes[0]!.deg - 1.5) < 1e-9 && r.amplitudes[1]!.side === 1);
 }
 
 // --- Too weak a drive for the pivots: it stalls, and says where.
 {
   const r = run(prepared({ drive: { member: "wheel", torqueNmm: 0.04 } }), { seconds: 15, friction: 0.3, push: 3.5 });
-  check(`0.04 N·mm cannot keep it going against friction 0.3: stops at ${r.stall?.atS} s, "${r.stall?.where}"`, !r.runs && !!r.stall && /rests on the (entry|exit) pallet's (locking|impulse) face/.test(r.stall.where), r.stall);
+  check(`0.04 N·mm cannot keep it going against friction 0.3: stops at ${r.stall?.atS} s after ${r.stall?.teethEscaped} teeth, "${r.stall?.where}"`, !r.runs && !!r.stall && /rests on the (entry|exit) pallet's (locking|impulse) face/.test(r.stall.where) && r.stall.teethEscaped > 0 && r.stall.unlocks, r.stall);
+}
+
+// --- Settling: each side's least-squares slope, in degrees a period. A swing swelling 0.005° a period stays inside the
+// old 1 % band over ten turning points ("settled") and is not settled now; one steady to 0.006° with uneven beats is.
+{
+  const T = 0.76;
+  const rows = (f: (k: number, side: 1 | -1) => number, n = 60): TurningPoint[] => Array.from({ length: n }, (_, k) => { const side = (k % 2 ? -1 : 1) as 1 | -1; return { t: 0.2 + (k * T) / 2, deg: f(k, side), side }; });
+  const swell = swingWindow(rows((k) => 2.9 + 0.005 * (k / 2)), 0.2 + 30 * T, T);
+  const last10 = rows((k) => 2.9 + 0.005 * (k / 2)).slice(-10).map((r) => r.deg), mean = last10.reduce((a, b) => a + b, 0) / 10;
+  check(`a swell of 0.005° a period: inside the old 1 % band (${last10.every((a) => Math.abs(a - mean) <= 0.01 * mean)}), not settled now (slope ${swell.slopeDegPerPeriod.toFixed(4)}° a period)`, last10.every((a) => Math.abs(a - mean) <= 0.01 * mean) && !swell.settled && Math.abs(swell.slopeDegPerPeriod - 0.005) < 1e-6, swell);
+  const beats = swingWindow(rows((k, side) => (side > 0 ? 2.2656 : 2.2943) + (Math.floor(k / 2) % 2 ? 0.003 : -0.003)), 0.2 + 30 * T, T);
+  check(`job_49's alternating beats (2.2656° and 2.2943°): settled, each side's mean given (${beats.plus?.meanDeg.toFixed(4)}, ${beats.minus?.meanDeg.toFixed(4)})`, beats.settled && Math.abs(beats.plus!.meanDeg - 2.2656) < 1e-3 && Math.abs(beats.minus!.meanDeg - 2.2943) < 1e-3, beats);
+  const short = swingWindow(rows(() => 3, 6), 0.2 + 3 * T, T);
+  check(`too few turning points: not settled, and why ("${short.why}")`, !short.settled && !!short.why?.includes("each side are needed"), short);
+}
+
+// --- The default push (2.15): min(1, supplementary/2) past the let-off, from the anchor's middle. With a supplementary
+// arc of 1° the old default, let-off + 1, was the locking faces' very end, so the push run overswung at 0 s.
+{
+  const g1 = graham(escapeWheel(30, 22.5, 17.5, 12), 7.5, { supplementaryDeg: 1 });
+  const { assembly, parts } = clock(-0.3, 30, g1);
+  const p = prepareMotion(assembly, parts, { densityGCm3: PLA, escapement: { ...escapement, supplementary: 1 }, drive: { member: "wheel", torqueNmm: 0.25 } }, nameOf);
+  if ("reason" in p) check("a 1° supplementary clock prepares", false, p);
+  else {
+    const push = defaultPush(p);
+    const r = run(p, { seconds: 3, friction: 0.3, push });
+    check(`supplementary 1°: the default push ${push}° puts the anchor ${Math.abs(r.releaseAnchorDeg!).toFixed(3)}° from its middle (let-off ${swingDeg(g1) / 2}° + 0.5), and the run does not overswing at 0 s (${JSON.stringify(r.overswing)})`, Math.abs(Math.abs(r.releaseAnchorDeg!) - (swingDeg(g1) / 2 + 0.5)) < 1e-3 && !(r.overswing && r.overswing.atS === 0));
+  }
+  const q = prepared({});
+  check(`supplementary 2° (the test clock, beat in): the default push is the let-off + 1, ${defaultPush(q)}°`, Math.abs(defaultPush(q) - 3) < 1e-3);
 }
 
 // --- The whole job: two steps, the sweep, the sentences.
@@ -139,9 +183,51 @@ function run(p: Prepared, o: { dt?: number; seconds: number; friction: number; p
   else {
     check(`the job: verdict ${report.verdict}, converged ${report.converged.ok}${report.converged.ok ? "" : ` (${report.converged.differs.join("; ")})`}, progress reached ${fraction.toFixed(3)}`, report.verdict === "runs" && report.converged.ok && fraction > 0.99, report.converged);
     const [lo, mid, hi] = report.sweep ?? [];
-    check(`the sweep: at friction 0.15 the anchor swings past its locking faces, at 0.3 it runs, at 0.6 it stops (${JSON.stringify(report.sweep)})`, lo?.runs === false && typeof lo?.overswingDeg === "number" && mid?.runs === true && hi?.runs === false && typeof hi?.stallsAtS === "number");
+    check(`the sweep: at friction 0.15 the anchor swings past its locking faces, at 0.3 it runs, at 0.6 it stops (${JSON.stringify(report.sweep)})`, lo?.runs === false && lo?.state === "overswings" && typeof lo?.overswingDeg === "number" && mid?.runs === true && hi?.runs === false && hi?.state === "stalls" && typeof hi?.stallsAtS === "number");
+    check("every sweep row has its last swing, and a why where a value is missing", (report.sweep ?? []).every((row) => typeof row.lastAmplitudeDeg === "number" && (row.settled === true || typeof row.why === "string")) && typeof mid?.plusSideDeg === "number" && typeof mid?.trendDegPerPeriod === "number" && typeof mid?.periodS === "number", report.sweep);
+    const rest = report.fromRest as Record<string, unknown>;
+    check(`from rest: released ${rest.releaseDeg}° from where it hangs, selfStarts ${rest.selfStarts}, said so ("${report.sentences[0]}")`, typeof rest.releaseDeg === "number" && rest.selfStarts === false && report.sentences[0]!.startsWith("Let go as posed, the pendulum hanging still, it does not run: the escape wheel never turns a tooth") && !report.sentences.some((s) => s.includes("swings 0° each side")));
+    const pb = (report.fromPush as { energyPerBeatMicroJ: Record<string, number> }).energyPerBeatMicroJ;
+    check(`no negative loss in the beat's budget (${JSON.stringify(pb)})`, Object.entries(pb).every(([k, v]) => k === "drive in" || v >= 0));
     console.log(report.sentences.map((s) => `     ${s}`).join("\n"));
   }
+}
+
+// --- A pendulum with no escapement (F2.3): nothing drives it, so it does not "run". With pin friction it decays, in
+// degrees a period; without, it holds its swing.
+{
+  for (const friction of [0.3, 0]) {
+    const p = prepared({ friction, drive: undefined, escapement: undefined, pendulum: "anchor", seconds: 8, sweep: false });
+    const report = finish(motionJob(p, (id) => id));
+    if ("reason" in report) { check("the pendulum job reports", false, report); continue; }
+    const said = report.sentences.join(" ");
+    check(`friction ${friction}: verdict "${report.verdict}", "${report.sentences[1]}"`,
+      friction ? report.verdict === "swings, decaying" && /decays with nothing to drive it, [\d.]+° a period/.test(said) && !said.includes("wheel") && !said.includes(" runs") : report.verdict === "swings" && /swings 5° each side/.test(said), report.sentences);
+  }
+}
+
+// --- From rest and from a push, compared (2.4): at 0.5 N·mm both settle, at the same swing and rate.
+{
+  const report = finish(motionJob(prepared({ drive: { member: "wheel", torqueNmm: 0.5 }, seconds: 15, sweep: false }), (id) => id));
+  if ("reason" in report) check("the 0.5 N·mm job reports", false, report);
+  else check(`0.5 N·mm: let go as posed it self-starts, and both runs settle alike (agree ${JSON.stringify(report.agree)})`, (report.fromRest as { selfStarts: boolean }).selfStarts && report.agree?.compared === true && report.agree.ok, { agree: report.agree, sentences: report.sentences });
+}
+
+// --- The smallest push (2.2), asked for: hanging still the test clock does not start; just past the let-off it does.
+{
+  const report = finish(motionJob(prepared({ seconds: 8, sweep: false, findStart: true }), (id) => id));
+  if ("reason" in report) check("the findStart job reports", false, report);
+  else {
+    const sp = report.smallestPush as { found: boolean; pushDeg: number; notEnoughDeg: number; probes: number };
+    check(`findStart: the smallest push is ${sp?.pushDeg}° (${sp?.notEnoughDeg}° is not), just past the 2° let-off, in ${sp?.probes} probes ("${report.sentences.find((s) => s.startsWith("Hanging still"))}")`, sp?.found && sp.pushDeg > 2 && sp.pushDeg < 2.2 && sp.pushDeg - sp.notEnoughDeg <= 0.05 + 1e-9, sp);
+  }
+}
+
+// --- An anchor overlapping a tooth (2.7, G7): a pallet 0.62 mm inside a tooth used to pass, the mesh gap reading 0.
+{
+  const { assembly, parts } = clock(2);
+  const r = prepareMotion(assembly, parts, { densityGCm3: PLA, escapement, drive: { member: "wheel", torqueNmm: 0.25 } }, nameOf);
+  check(`a wheel 2.3° off its phase: refused, naming the tooth, the pallet and the turn that clears it ("${"reason" in r ? r.reason : "accepted"}")`, "reason" in r && /pallet stands [\d.]+ mm inside tooth \d+ of Wheel/.test(r.reason) && /Turning the wheel [\d.]+°/.test(r.reason), "reason" in r ? r.reason : r.fit);
 }
 
 // --- A weight on a winch drives the escape wheel through a 60:1 ratio, and a hand on the wheel's train at 1/120 of it:
@@ -189,6 +275,72 @@ function run(p: Prepared, o: { dt?: number; seconds: number; friction: number; p
       const said = Number(/falls ([\d.]+) mm an hour/.exec(line)?.[1]), hours = Number(/lasts ([\d.]+) hours/.exec(line)?.[1]);
       check(`"${line}" against ${mmPerHour.toFixed(1)} mm an hour, ${(300 / mmPerHour).toFixed(2)} hours`, Math.abs(said - mmPerHour) < 0.1 && Math.abs(hours - 300 / mmPerHour) < 0.01);
     }
+  }
+}
+
+// --- The weight clock again, built either way round: the slide's axis up or down, a ratio or a ratchet to the wheel.
+const hingeY = (pivot: [number, number, number]) => ({ kind: "hinge" as const, pivot, axis: [0, 1, 0] as [number, number, number] });
+function weightClock(o: { slideAxis?: 1 | -1; link?: "ratio" | "ratchet"; sign?: 1 | -1; free?: 1 | -1; handX?: number }): { assembly: Assembly; parts: DynPart[] } {
+  const base = clock(-0.3);
+  const axis = o.slideAxis ?? 1;
+  const members: Member[] = [
+    ...base.assembly.members,
+    { object: "drum", parent: "frame", offset: [60, 0, 0], turn: [0, 0, 0], joint: hingeY([0, 0, 0]) },
+    // The weight hangs 300 mm above its floor, whichever way its slide's axis points.
+    { object: "weight", parent: "frame", offset: [70, 0, -60], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, 0], axis: [0, 0, axis], ...(axis > 0 ? { min: -300, max: 0 } : { min: 0, max: 300 }) } },
+    { object: "hand", parent: "frame", offset: [0, 20, 0], turn: [0, 0, 0], joint: hingeY([0, 0, 0]) },
+  ];
+  const r = 10, sign = o.sign ?? 1;
+  const link = o.link === "ratchet"
+    ? { driver: "drum", driven: "wheel", ratio: sign * 60, kind: "ratchet" as const, names: ["drum", "wheel"] as [string, string], on: ["hinge", "hinge"] as [string, string], free: o.free ?? 1 }
+    : { driver: "drum", driven: "wheel", ratio: sign * 60, kind: "ratio" as const, names: ["drum", "wheel"] as [string, string], on: ["hinge", "hinge"] as [string, string] };
+  const assembly = { id: "clock", name: "Clock", members, couplings: [
+    { driver: "drum", driven: "weight", ratio: axis * (2 * Math.PI * r) / 360, kind: "winch", names: ["drum", "weight"], on: ["hinge", "slide"], radius: r, wind: "in" },
+    link,
+    { driver: "wheel", driven: "hand", ratio: 1 / 120, kind: "ratio", names: ["wheel", "hand"], on: ["hinge", "hinge"] },
+  ] } as Assembly;
+  // An off-centre hand: its weight turns the wheel's train one way whatever the drive does.
+  const extra: Record<string, Float32Array> = { drum: box(20, 10, 20), weight: box(20, 20, 30), hand: o.handX ? box(40, 2, 4, [o.handX, 0, 0]) : box(4, 2, 4) };
+  const poses = solveAssembly(assembly, () => IDENTITY_POSE).poses;
+  return { assembly, parts: [...base.parts, ...["drum", "weight", "hand"].map((id) => ({ object: id, name: id, positions: extra[id]!, pose: poses.get(id)! }))] };
+}
+const weightSpec: MotionSpec = { densityGCm3: PLA, escapement, drive: { member: "weight", weightG: 200 }, hand: { member: "hand", turnsPerHour: 1 } };
+/** The winding that turns the wheel with its teeth (the other is refused against them). */
+function preparedWeightClock(o: Parameters<typeof weightClock>[0], spec: Partial<MotionSpec> = {}): Prepared | { reason: string } {
+  const tries = ([1, -1] as const).map((sign) => { const { assembly, parts } = weightClock({ ...o, sign }); return prepareMotion(assembly, parts, { ...weightSpec, ...spec }, nameOf); });
+  return tries.find((p) => !("reason" in p)) ?? tries[0]!;
+}
+
+// --- The run-time sentence (2.6): the weight's slide upside down falls toward its max limit, and a given drop is used
+// first, the slide's limit said beside it. The old sentence measured to the slide's lower limit (coord.lo) and dropped
+// `drop` whenever the slide had a limit.
+{
+  for (const slideAxis of [1, -1] as const) {
+    const p = preparedWeightClock({ slideAxis }, { seconds: 8, sweep: false, push: 3.5, dropMm: 120 });
+    if ("reason" in p) { check(`the weight clock, slide axis ${slideAxis}, prepares`, false, p); continue; }
+    const report = finish(motionJob(p, (id) => id));
+    if ("reason" in report) { check("the weight clock runs", false, report); continue; }
+    const line = report.sentences.find((text) => text.startsWith("The weight falls")) ?? "";
+    const end = slideAxis > 0 ? "min limit (-300 mm)" : "max limit (300 mm)";
+    check(`slide axis ${slideAxis > 0 ? "up" : "down"}: "${line}"`, line.includes("so the 120 mm drop given lasts") && line.includes(`300 mm from where it starts to its slide's ${end}`), report.sentences);
+  }
+}
+
+// --- A drive through a ratchet (2.14): the drive's sense is carried through the ratchet to the escape wheel, and a
+// drive that turns the ratchet its free way is refused. The wheel's static force (an off-centre hand on its train) used
+// to decide alone: on one side every drive was accepted, on the other every one refused.
+{
+  for (const handX of [20, -20]) {
+    const turned = ([1, -1] as const).map((free) => preparedWeightClock({ link: "ratchet", free, handX }));
+    const [holds, runsFree] = turned;
+    check(`an off-centre hand at x ${handX}: the drive through a ratchet that holds prepares (${"reason" in holds! ? holds.reason : "prepared"}); its free way is refused: "${"reason" in runsFree! ? runsFree.reason : "prepared"}"`, !("reason" in holds!) && "reason" in runsFree! && runsFree.reason.includes("its free way"));
+  }
+  const p = preparedWeightClock({ link: "ratchet", free: 1, handX: 20 }, { seconds: 20, sweep: false, push: 3.5 });
+  if ("reason" in p) check("the ratchet clock prepares", false, p);
+  else {
+    const report = finish(motionJob(p, (id) => id));
+    const push = "reason" in report ? null : (report.fromPush as { runs: boolean; energyPerBeatMicroJ?: Record<string, number> });
+    check(`driven through the ratchet it runs; each arbor's pin on its own line, no loss below 0 (${JSON.stringify(push?.energyPerBeatMicroJ)})`, !!push?.runs && !!push.energyPerBeatMicroJ && ["pivot of Drum", "pivot of Wheel", "pivot of Hand", "pivot of Anchor"].every((k) => k in push.energyPerBeatMicroJ!) && Object.entries(push.energyPerBeatMicroJ).every(([k, v]) => k === "drive in" || v >= 0), "reason" in report ? report : report.sentences);
   }
 }
 

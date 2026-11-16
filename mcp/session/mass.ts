@@ -34,17 +34,27 @@ interface Sliced {
   grams: number;
   job: string;
   leftOutGrams: number;
+  /** The session's latest slice, or an earlier one of this part alone. */
+  latest: boolean;
 }
 
-/** The latest slice's grams of this part's own beads, or why there are none to offer (null: no slice at all). */
+/**
+ * The grams of this part's own beads in the newest retained slice of it alone that still matches the plate, or why
+ * there are none to offer (null: no finished slice at all). A plate slice gives one total, so it is not used; a
+ * project does not store slices, so only slices made in this session count.
+ */
 function slicedGrams(s: Session, part: PlateObject, bodyParts: readonly string[]): Sliced | { reason: string } | null {
-  const job = s.latest;
-  if (!job || job.status !== "done" || !job.wire) return null;
-  if (s.staleReason(job)) return { reason: "The last slice no longer matches the plate or its settings, so its grams are not offered: slice again." };
-  if (bodyParts.length !== 1) return { reason: "The body is several parts and a slice gives one total, so sliced grams are not offered for it." };
-  if (job.slicedIds.length !== 1 || job.slicedIds[0] !== part.id) return { reason: `The last slice was not of ${shownName(part.name)} alone, so its grams are not this part's.` };
+  const done = s.jobs.filter((row) => row.status === "done" && !!row.wire);
+  if (done.length === 0) return null;
+  if (bodyParts.length !== 1) return { reason: "The body is several parts and a slice gives one total, so sliced grams are not offered for it. part:true weighs this part alone." };
+  const alone = done.filter((row) => row.slicedIds.length === 1 && row.slicedIds[0] === part.id);
+  const job = alone.filter((row) => !s.staleReason(row)).at(-1);
+  if (!job) {
+    if (alone.length > 0) return { reason: `The slices of ${shownName(part.name)} alone no longer match the plate or its settings, so their grams are not offered: slice again (select it and slice_start {scope:"object"}).` };
+    return { reason: `No slice in this session is of ${shownName(part.name)} alone, so no sliced grams are offered: select it and slice_start {scope:"object"}. A plate slice gives one total.` };
+  }
   if (Math.abs(part.scale - 1) > 1e-9) return { reason: `The plate prints ${shownName(part.name)} at ${sig(part.scale * 100)} %, so the sliced grams are not of the solid weighed here.` };
-  const rows = ((job.wire.estimate as { byFeature?: { kind: string; filamentMm: number }[] } | undefined)?.byFeature ?? []);
+  const rows = ((job.wire?.estimate as { byFeature?: { kind: string; filamentMm: number }[] } | undefined)?.byFeature ?? []);
   const filament = s.filament();
   const spec = { filamentDiameter: filament.diameterMm, filamentDensityGCm3: filament.densityGCm3, filamentCostPerKg: filament.costPerKg };
   let own = 0, other = 0;
@@ -53,7 +63,7 @@ function slicedGrams(s: Session, part: PlateObject, bodyParts: readonly string[]
     else if (row.kind !== "travel") other += row.filamentMm;
   }
   if (!(own > 0)) return { reason: "The last slice reports no beads of the part by feature, so its grams are not offered." };
-  return { grams: filamentGrams(own, spec), job: job.handle, leftOutGrams: filamentGrams(other, spec) };
+  return { grams: filamentGrams(own, spec), job: job.handle, leftOutGrams: filamentGrams(other, spec), latest: job === s.latest };
 }
 
 /** The hinge the body turns on, in model space, or why `about:"hinge"` cannot use one. */
@@ -84,10 +94,13 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
     line = { point, axis };
   }
 
+  if (input.part !== undefined && typeof input.part !== "boolean") return refuse("bad-argument", "part is true or false: true weighs this part alone, not the parts that move with it.");
+  const alone = input.part === true;
   const assembly = assemblyOf(s.liveAssemblies(), obj.id);
   const moving = assembly ? movingBody(assembly, obj.id) : null;
-  const bodyId = moving?.body ?? obj.id;
-  const ids = moving?.parts ?? [obj.id];
+  const bodyId = alone ? obj.id : moving?.body ?? obj.id;
+  const ids = alone ? [obj.id] : moving?.parts ?? [obj.id];
+  const leftOut = alone ? (moving?.parts ?? []).filter((id) => id !== obj.id) : [];
   const filament = s.filament();
   const densityGCm3 = typeof density === "number" ? density : filament.densityGCm3;
   const parts: BodyPart[] = [];
@@ -115,7 +128,8 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
   const notes: string[] = [];
   const source = typeof density === "number" ? `density ${density} g/cm³ as given` : `the filament ${filament.name} (${filament.densityGCm3} g/cm³)`;
   notes.push(`Mass of a solid body: its volume, from the closed mesh, at ${source}. A printed part with walls and infill weighs less.`);
-  if (ids.length > 1) notes.push(`The body is ${ids.length} parts that move together (${rows.map((row) => row.name).join(", ")}), at their assembled poses.`);
+  if (ids.length > 1) notes.push(`The body is ${ids.length} parts that move together (${rows.map((row) => row.name).join(", ")}), at their assembled poses. part:true weighs ${shownName(obj.name)} alone.`);
+  if (leftOut.length > 0) notes.push(`part:true: ${shownName(obj.name)} alone; ${leftOut.length === 1 ? "the other part that moves with it" : `the ${leftOut.length} other parts that move with it`} (${leftOut.map((id) => shownName(s.find(id)?.name ?? id)).join(", ")}) ${leftOut.length === 1 ? "is" : "are"} left out.`);
   const principalOf = (one: MassBody) => {
     const p = principal(one.inertiaGmm2);
     return { momentsGmm2: p.momentsGmm2.map(sig), axes: p.axes.map(direction) };
@@ -169,13 +183,18 @@ export function modelMass(s: Session, obj: PlateObject, input: Record<string, un
       ...(measured && !("reason" in measured) ? { inertiaGmm2: sig(measured.inertiaGmm2) } : {}),
       leftOutGrams: sig(sliced.leftOutGrams),
     };
-    notes.push(`Sliced: ${sig(sliced.grams)} g of the part's own beads in the last slice (${sliced.job}; supports, skirt and brim left out), at the filament's ${filament.densityGCm3} g/cm³. Its inertia is the solid's scaled by ${sig(ratio)}, which assumes the printed mass is spread as the solid's is; walls are denser than infill, so it is not exactly. The period and the equivalent length do not change with that scaling.`);
+    notes.push(`Sliced: ${sig(sliced.grams)} g of the part's own beads in ${sliced.latest ? "the last slice" : "an earlier slice of this part alone"} (${sliced.job}; supports, skirt and brim left out), at the filament's ${filament.densityGCm3} g/cm³. Its inertia is the solid's scaled by ${sig(ratio)}, which assumes the printed mass is spread as the solid's is; walls are denser than infill, so it is not exactly. The period and the equivalent length do not change with that scaling.`);
   }
 
+  const basis = slicedReply
+    ? `mass.grams is the solid at ${densityGCm3} g/cm³ (${typeof density === "number" ? "the density given" : `the filament ${filament.name}`}); sliced.grams is from the slice ${String(slicedReply.job)} of ${shownName(part.name)} alone.`
+    : `mass.grams is the solid at ${densityGCm3} g/cm³ (${typeof density === "number" ? "the density given" : `the filament ${filament.name}`}); no slice was used.`;
   return {
     ok: true,
     object: obj.id,
     body: bodyId,
+    ...(alone ? { part: true } : {}),
+    basis,
     ...(bodyId !== obj.id ? { bodyName: shownName(part.name) } : {}),
     parts: rows,
     volumeMm3: sig(body.volumeMm3),
