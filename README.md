@@ -4,7 +4,7 @@ Lime Slice 6.9.0 is a filament slicer and a solid modeler in one window. Open an
 
 You can draw a part, put parts together into a mechanism and check that it moves, slice for a flat bed or a 45° belt printer, and let an AI agent do any of it for you over MCP.
 
-![Preview of the overhang sample with organic tree supports under the shelf: 8 min 19 s, 3.67 g on the Lime 220 with PLA.](docs/screenshots/preview-3d.png)
+![Preview of the overhang sample with organic tree supports under the shelf: 8 min 25 s, 3.70 g on the Lime 220 with PLA.](docs/screenshots/preview-3d.png)
 
 **Contents:** [Model a part](#model-a-part) · [Assemble, animate and run](#assemble-animate-and-run) · [Plugins and recipes](#plugins-and-recipes) · [Slice](#slice) · [Supports](#supports) · [Belt printers](#belt-printers) · [Stress](#stress) · [Drive it from an AI agent](#drive-it-from-an-ai-agent-mcp) · [Phone layout](#phone-layout) · [Install](#install) · [Run from source](#run-from-source) · [Build](#build) · [Releases](#releases) · [Samples](#samples) · [Layout](#layout) · [Tests](#tests) · [More documents](#more-documents)
 
@@ -93,7 +93,7 @@ The filled feet, the height-against-width limit and the two settings above were 
 
 On a 45° belt printer the part rides along the belt, and the layer readout's Z is the position along the belt. The library has the Ideaformer IR3 V2 (Klipper) and a generic 45° belt. Belt supports stand on the belt and are tied to it with anchor lines across it. **Support thin belt edges** (Advanced, belt printers only, off by default) supports a flat-bottomed ledge under its first bead and prints belt grid supports under a thin strip as a continuous column. The IR3 V2's start G-code lays a line across the belt that the first layer prints into.
 
-<img alt="The overhang sample sliced on the Ideaformer IR3 V2 belt with supports: 6 min 18 s, 2.99 g, 127 layers along the belt." src="docs/screenshots/belt-preview.png" width="720">
+<img alt="The overhang sample sliced on the Ideaformer IR3 V2 belt with supports: 6 min 20 s, 2.99 g, 127 layers along the belt." src="docs/screenshots/belt-preview.png" width="720">
 
 ![Scrubbing the belt slice from the first layer to the last, along the belt.](docs/screenshots/clip-belt.gif)
 
