@@ -3,6 +3,7 @@
  * (docs/plan-recipe-plugins.md D16): model_history, model_check, measure, and the box an anchor names. Nothing here
  * changes a part.
  */
+import { buildDirection, type BeltSettings } from "../belt.ts";
 import { closeCracks, edgeReport } from "../mesh-check.ts";
 import { printFrame } from "../model-check.ts";
 import { applyPose, type Affine } from "../model-space.ts";
@@ -38,15 +39,22 @@ export interface CheckPrinter {
   name: string;
   bedMm: [number, number, number];
   nozzleMm: number;
+  /** A belt printer: overhangs are read against the direction its layers stack in, and the fit against its width. */
+  belt?: Pick<BeltSettings, "angleDeg" | "widthMm" | "maxLengthMm"> | null;
 }
 
 /**
  * model_check's reply for a solid as it prints (the plate's turn and scale, lowest point on the bed): overhangs, the
- * build volume, thin walls, and the edges a commit refuses. Places come back in the solid's frame.
+ * build volume, thin walls, and the edges a commit refuses. Places come back in the solid's frame. On a belt printer the
+ * part lies on the belt and overhangs are read against the belt's build direction (`build` says which). `faceOf`, the
+ * B-rep face of each triangle (`solid.triangles`), names the faces of each overhang.
  */
-export function checkReply(positions: Float32Array, orient: readonly number[], scale: number, printer: CheckPrinter, input: Record<string, unknown>): Record<string, unknown> {
+export function checkReply(positions: Float32Array, orient: readonly number[], scale: number, printer: CheckPrinter, input: Record<string, unknown>, faceOf?: ArrayLike<number> | null): Record<string, unknown> {
   const printed = printFrame(positions, orient, scale);
-  const checked = checkInSource(printCheck({ positions: printed.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: printer.bedMm }), printed.toSource);
+  const belt = printer.belt ?? null;
+  const checked = checkInSource(printCheck({ positions: printed.positions, overhangDeg: typeof input.overhangDeg === "number" ? input.overhangDeg : 45, buildMm: printer.bedMm, ...(belt ? { belt } : {}), ...(faceOf ? { faceOf } : {}) }), printed.toSource);
+  // The build direction in the solid's frame, as a print transition stores it (src/belt.ts).
+  if (belt && checked.build) checked.build = { ...(checked.build as Record<string, unknown>), direction: buildDirection(orient, belt).map((value) => Math.round(value * 1000) / 1000 + 0) };
   // Two lines of the nozzle's width is the thinnest wall a slicer fills; thinner prints as one line or not at all.
   const nozzle = printer.nozzleMm || 0.4;
   const minWallMm = typeof input.minWallMm === "number" ? input.minWallMm : Math.round(nozzle * 2 * 100) / 100;

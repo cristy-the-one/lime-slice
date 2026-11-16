@@ -4,10 +4,12 @@
  * --- A7 model check ---
  */
 import { fx } from "../app/fx.ts";
+import { loadMachineLibrary } from "../app/machine-library.ts";
 import { state } from "../app/state.ts";
 import { PROBE_WAIT_MS } from "../model-feasibility.ts";
 import { defaultThinMm, type CheckRow, type ModelCheckReport } from "../model-check.ts";
 import { boxUnder, type Affine } from "../model-space.ts";
+import { selection } from "./machine-library.ts";
 import { setInspectCheck } from "./model-inspect.ts";
 
 export interface CheckSource {
@@ -157,9 +159,12 @@ function runCheck() {
   pose = source.toModel;
   setNote("Checking this solid…");
   const positions = new Float32Array(source.positions);
+  // On a belt printer the check reads overhangs against the belt's build direction, as model_check does.
+  const printer = selection(loadMachineLibrary())?.printer;
+  const belt = printer?.kind === "belt" ? { angleDeg: printer.belt.angleDeg, widthMm: printer.belt.widthMm, maxLengthMm: printer.belt.maxLengthMm } : null;
   stopRunning();
   running = id;
-  checkWorker().postMessage({ id, positions, minWallMm: thin, nozzleMm: state.profile.nozzleDiameter || 0.4, buildMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ] }, [positions.buffer]);
+  checkWorker().postMessage({ id, positions, minWallMm: thin, nozzleMm: state.profile.nozzleDiameter || 0.4, buildMm: [state.profile.bedX, state.profile.bedY, state.profile.bedZ], belt }, [positions.buffer]);
 }
 
 function applyReport(report: ModelCheckReport) {

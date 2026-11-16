@@ -2,10 +2,13 @@
  * Background jobs and plans: a call that runs past the reply time becomes a job, and plan_run runs steps through the same pipeline.
  * The methods run with this: Session; session.ts installs them on the Session prototype.
  */
+import { readFileSync } from "node:fs";
+
 import { ProtocolError } from "../engine.ts";
 import { imagesOf, withImages, type InlineImage } from "../inline.ts";
 import { planProblem, referencedSteps, resolveReferences, type PlanStep } from "../plan.ts";
 import { validateTool } from "../schema.ts";
+import { resolveWorkspaceData } from "../workspace.ts";
 import { isComposite } from "../../src/modeling/compose.ts";
 import { CHANGES_NOTHING, type CallMeta, SLICE_WAIT_DEFAULT_S, SLICE_WAIT_MAX_S, WHILE_BUSY, type WorkJob, replySeconds } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -46,8 +49,10 @@ function startWorkJob(this: Session, name: string, input: Record<string, unknown
   if (!ctx.planJob) this.jobSeq += 1;
   const object = typeof input.object === "string" ? input.object : name.startsWith("model_") || name === "solid_new" ? this.selected : undefined;
   // pose_animate stops between frames and removes the files it had begun; motion_run between slices of its run. Neither
-  // changes a part.
-  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || name === "motion_run" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind));
+  // changes a part. model_check {sweep} stops between angles and puts the poses back; model_place {until} stops between
+  // poses before it moves anything.
+  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || name === "motion_run" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind))
+    || (name === "model_check" && input.sweep !== undefined) || (name === "model_place" && input.until !== undefined);
   const job: WorkJob = { handle: ctx.planJob ?? `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
   job.settled = work.then((value) => {
     job.result = value;
@@ -101,15 +106,73 @@ function busyRefusal(this: Session, name: string): Record<string, unknown> | nul
 function planRun(this: Session, args: unknown, meta?: CallMeta): Promise<Record<string, unknown>> {
   const problem = validateTool("plan_run", args ?? {});
   if (problem) throw new ProtocolError(problem);
-  const steps = (args as { steps: PlanStep[] }).steps;
-  const bad = planProblem(steps);
+  const given = (args ?? {}) as { steps?: PlanStep[]; path?: string; results?: unknown };
+  if (given.steps !== undefined && given.path !== undefined) throw new ProtocolError("plan_run takes steps or path, not both. Pass the calls as steps, or the workspace file that holds them as path.");
+  if (given.steps === undefined && given.path === undefined) throw new ProtocolError("plan_run needs steps (the calls, in order) or path (a workspace file holding them as a JSON list).");
+  let steps = given.steps;
+  let results = given.results;
+  if (steps === undefined) {
+    const loaded = readPlanFile(given.path!);
+    steps = loaded.steps;
+    if (results === undefined) results = loaded.results;
+  }
+  const bad = planProblem(steps) ?? resultsProblem(results, steps.length);
   if (bad) throw new ProtocolError(bad);
   if (this.inflight === 0) this.flushAutosave();
   const stop = new AbortController();
   const ctx: CallMeta = { progressToken: meta?.progressToken, signal: stop.signal, planJob: `job_${++this.jobSeq}` };
-  const results = (args as { results?: unknown }).results;
-  const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx, results === "all" || results === "last" ? results : undefined));
+  const work = this.callContext.run(ctx, () => this.runPlan(steps, ctx, results === "all" || results === "last" || Array.isArray(results) ? (results as "all" | "last" | number[]) : undefined));
   return this.detachable("plan_run", args as Record<string, unknown>, work, ctx, stop, meta?.signal);
+}
+
+/** The steps of a plan file: a JSON list of steps, or {steps, results}. Checked as plan_run checks the same fields. */
+function readPlanFile(path: string): { steps: PlanStep[]; results?: unknown } {
+  const full = resolveWorkspaceData(path, 8 * 1024 * 1024);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(full, "utf8").replace(/^\uFEFF/, ""));
+  } catch {
+    throw new ProtocolError(`${path} is not JSON. A plan file holds a JSON list of steps, or {"steps": [...], "results": ...}.`);
+  }
+  const body = Array.isArray(parsed) ? { steps: parsed } : parsed && typeof parsed === "object" ? (parsed as { steps?: unknown; results?: unknown }) : null;
+  if (!body || !Array.isArray(body.steps)) throw new ProtocolError(`${path} holds no list of steps. A plan file is a JSON list of {tool, args} steps, or {"steps": [...], "results": ...}.`);
+  const shape = validateTool("plan_run", body);
+  if (shape) throw new ProtocolError(`In ${path}: ${shape}`);
+  return { steps: body.steps as PlanStep[], results: (body as { results?: unknown }).results };
+}
+
+/** results as a list of step numbers: each is one of the plan's steps. */
+function resultsProblem(results: unknown, count: number): string | null {
+  if (!Array.isArray(results)) return null;
+  const outside = results.find((n) => !Number.isInteger(n) || n < 1 || n > count);
+  if (outside === undefined) return null;
+  return `results names step ${JSON.stringify(outside)}, but the plan has ${count} step${count === 1 ? "" : "s"}. Steps are numbered from 1 to ${count}.`;
+}
+
+/** The context one step runs under: its own progress is reported to the plan as that step's share of the whole. */
+function stepContext(ctx: CallMeta, index: number, total: number, label: string): CallMeta {
+  let own: number | undefined;
+  let ownStage: string | undefined;
+  return {
+    progressToken: ctx.progressToken,
+    signal: ctx.signal,
+    planJob: ctx.planJob,
+    plan: ctx,
+    get fraction() {
+      return own;
+    },
+    set fraction(value: number | undefined) {
+      own = value;
+      if (value !== undefined && Number.isFinite(value)) ctx.fraction = Math.min(0.999, (index + Math.min(1, Math.max(0, value))) / total);
+    },
+    get stage() {
+      return ownStage;
+    },
+    set stage(value: string | undefined) {
+      ownStage = value;
+      ctx.stage = value ? `${label}: ${value}` : label;
+    },
+  };
 }
 
 /**
@@ -117,19 +180,22 @@ function planRun(this: Session, args: unknown, meta?: CallMeta): Promise<Record<
  * to the next one: their whole results were read by nobody. So a step's result is given in full when it is the last
  * one run, when it was refused, or when a later step's reference names it (what the plan itself read); any other step
  * is {step, tool, ok} with the handles it made. results: "last" gives only the last and a refused one in full, and
- * results: "all" every step's, as before.
+ * results: "all" every step's, as before. results: [3, 5] gives steps 3 and 5 in full, and a refused one.
  */
-function planSteps(done: Record<string, unknown>[], mode: "all" | "last" | undefined, named: Set<number>): Record<string, unknown>[] {
+function planSteps(done: Record<string, unknown>[], mode: "all" | "last" | number[] | undefined, named: Set<number>): Record<string, unknown>[] {
   if (mode === "all") return done;
+  const picked = Array.isArray(mode) ? new Set(mode) : null;
   return done.map((row, i) => {
     const result = row.result as Record<string, unknown> | undefined;
-    if (!result || result.ok === false || i === done.length - 1 || (mode === undefined && named.has(Number(row.step)))) return row;
+    if (picked) {
+      if (!result || result.ok === false || picked.has(Number(row.step))) return row;
+    } else if (!result || result.ok === false || i === done.length - 1 || (mode === undefined && named.has(Number(row.step)))) return row;
     const handles = Object.fromEntries(["object", "node", "job"].filter((key) => typeof result[key] === "string").map((key) => [key, result[key]]));
     return { step: row.step, tool: row.tool, ok: true, ...handles };
   });
 }
 
-async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta, mode?: "all" | "last"): Promise<Record<string, unknown>> {
+async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta, mode?: "all" | "last" | number[]): Promise<Record<string, unknown>> {
   const results: Record<string, unknown>[] = [];
   const done: Record<string, unknown>[] = [];
   const images: InlineImage[] = [];
@@ -141,10 +207,12 @@ async function runPlan(this: Session, steps: PlanStep[], ctx: CallMeta, mode?: "
     if (ctx.signal?.aborted) return end(refuse("plan-cancelled", `The plan was cancelled before step ${n} (${tool}). The steps before it stay applied.`, { failedStep: n }));
     const resolved = resolveReferences(steps[i]!.args ?? {}, results, n);
     if ("reason" in resolved) return end(refuse("plan-reference", resolved.reason, { failedStep: n }));
-    this.noteStage(`plan step ${n} of ${steps.length}: ${tool}`, i / steps.length);
+    const label = `plan step ${n} of ${steps.length}: ${tool}`;
+    this.noteStage(label, i / steps.length);
     let value: Record<string, unknown>;
     try {
-      value = await this.runCall(tool, resolved.value, ctx, true);
+      // The step runs under its own context, so its progress adds to the plan's (i + the step's share) / steps and never replaces it.
+      value = await this.runCall(tool, resolved.value, stepContext(ctx, i, steps.length, label), true);
     } catch (err) {
       const reason = err instanceof Error ? err.message : "The step failed.";
       done.push({ step: n, tool, ok: false, code: "plan-step-failed", reason });
@@ -170,7 +238,8 @@ function noteStage(this: Session, stage: string, fraction?: number): void {
   if (!meta) return;
   meta.stage = stage;
   if (fraction !== undefined) meta.fraction = fraction;
-  this.onProgress?.("model", meta.fraction ?? 0, stage, meta.progressToken);
+  const top = meta.plan ?? meta;
+  this.onProgress?.("model", top.fraction ?? 0, top.stage ?? stage, meta.progressToken);
 }
 
 async function workWait(this: Session, job: WorkJob, meta: CallMeta | undefined, timeoutS?: number): Promise<Record<string, unknown>> {

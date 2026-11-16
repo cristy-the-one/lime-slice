@@ -1,18 +1,25 @@
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { filamentGrams } from "../src/estimate.ts";
 import { legacyStockEnd, legacyStockStart, spliceText } from "../src/machine-gcode.ts";
 import { printerGcode } from "../src/print-file.ts";
 import { builtinLibrary, heatFor } from "../src/ui/machine-library.ts";
 
+import { fakeEngine } from "./engine.ts";
+import { Session } from "./session.ts";
 import { appVersion, exportGcode } from "./export-gcode.ts";
 
 let failed = 0;
-function check(name: string, ok: boolean) {
+function check(name: string, ok: boolean, detail = "") {
   if (ok) {
     console.log(name);
     return;
   }
   failed += 1;
-  console.error(`FAIL ${name}`);
+  console.error(`FAIL ${name}${detail ? `: ${detail}` : ""}`);
 }
 
 const gcode = [
@@ -139,6 +146,33 @@ const beltFile = exportGcode({
 check("the IR3 V2 export zeroes the belt on the line against the part", beltFile.split("\n").includes("G92 E0 Z0.813") && !beltFile.includes("{purge_line_z}"));
 check("M73 lines come from the shared printer file", plaFile.includes("M73 ") && appFile(plaGrams, lime, pla).split("\n").filter((line) => line.startsWith("M73 ")).join("\n") === plaFile.split("\n").filter((line) => line.startsWith("M73 ")).join("\n"));
 check("the pinned clock is in the generated-by line", plaFile.includes("2020-01-02") && plaFile.includes(appVersion()));
+
+// export_3mf {object}: only that object, as posed on the plate, and the reply says which objects are in the file.
+{
+  const workspace = mkdtempSync(join(tmpdir(), "lime-export-"));
+  process.env.LIME_MCP_WORKSPACE = workspace;
+  const cube = fileURLToPath(new URL("../samples/calibration_cube_20mm.stl", import.meta.url));
+  const session = new Session(fakeEngine());
+  const first = await session.call("mesh_import", { path: cube });
+  await session.call("object_place", { object: first.object, centreX: 40, centreY: 40 });
+  const second = await session.call("mesh_import", { path: cube });
+  await session.call("object_place", { object: second.object, centreX: 150, centreY: 150 });
+  const read = (path: string) => {
+    const text = readFileSync(path).toString("latin1");
+    const xs = [...text.matchAll(/<vertex x="([-0-9.e]+)"/g)].map((row) => Number(row[1]));
+    return { objects: (text.match(/<object /g) ?? []).length, xs };
+  };
+  const whole = await session.call("export_3mf", { name: "both.3mf" });
+  const both = read(String(whole.path));
+  check("export_3mf without object writes every object and names them", whole.ok === true && both.objects === 2 && (whole.written as unknown[]).length === 2 && /^Wrote 2 objects: /.test(String(whole.note)), JSON.stringify(whole));
+  const one = await session.call("export_3mf", { name: "one.3mf", object: second.object });
+  const single = read(String(one.path));
+  check("export_3mf {object} writes one object", one.ok === true && single.objects === 1, JSON.stringify(one) + JSON.stringify(single.objects));
+  check("that object is posed where it stands on the plate", single.xs.length > 0 && single.xs.every((x) => x > 139 && x < 161), JSON.stringify(single.xs.slice(0, 4)));
+  check("the reply names the object written and the one left out", JSON.stringify((one.written as { object: string }[]).map((row) => row.object)) === JSON.stringify([second.object]) && String(one.note).includes(String(second.object)) && String(one.note).includes("1 other object is not in the file"), String(one.note));
+  const refused = await session.call("export_3mf", { name: "none.3mf", object: "obj_99" });
+  check("an object that is not on the plate is refused, and nothing is written", refused.ok === false && refused.code === "no-object" && !existsSync(join(workspace, "none.3mf")), JSON.stringify(refused));
+}
 
 if (failed) {
   console.error(`${failed} failed`);
