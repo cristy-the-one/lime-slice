@@ -1,10 +1,12 @@
 //! The support stability report on the supports-rework test parts, flat bed
-//! and belt, tree and grid. These pin what the report says today, as
+//! and belt, tree and grid. Tests named "today" pin what the report says, as
 //! characterization: a later fix that changes a support flips the test
-//! named after the behaviour it fixes.
+//! named after the behaviour it fixes. The rest assert the fixed rules.
 
 use base64::Engine;
-use lime_slice_core::{slice_request, Job, SliceRequest, SliceResponse, Stand, SupportStability};
+use lime_slice_core::{
+    slice_request, Job, SliceRequest, SliceResponse, Stand, SupportStability, SLENDER_LIMIT,
+};
 use serde_json::{json, Value};
 
 type Box3 = ([f64; 3], [f64; 3]);
@@ -262,46 +264,124 @@ fn flat_tree_foot_on_the_bridge_span_rests_on_its_filled_foot() {
     }
 }
 
-/// No limit on height against width: the lone tree under the tall pad is
-/// about 19 times taller than its base. Flips with plan step 4.
+/// Plan step 4, the slender rule: a free-standing tree or grid column
+/// over 15 mm tall stands at most ten times its base width, in its thinnest
+/// direction along real gravity. Before it, the tall pad's lone tree was 19
+/// times (26 on the belt), the table's trees 14 (21), and the belt grid under
+/// the table's leading edge a one-bead curtain 132 times. Trees and flat
+/// grid meet it by default; belt grid only with thin strips held.
 #[test]
-fn tall_pad_tree_is_over_ten_times_taller_than_wide_today() {
+fn tall_supports_stand_within_ten_times_their_base_width() {
+    for (name, stl) in [("tall pad", tall_pad()), ("table", table())] {
+        for bed in [Bed::Flat, Bed::Belt] {
+            for style in ["tree", "grid"] {
+                let extra = match (bed, style) {
+                    (Bed::Belt, "grid") => hold_thin(),
+                    _ => json!({}),
+                };
+                let s = stability_with(&stl, bed, style, extra);
+                assert!(s.supports > 0, "{name} {bed:?} {style}: {s:?}");
+                assert_eq!(s.over_limit, 0, "{name} {bed:?} {style}: {s:?}");
+                assert!(
+                    s.worst_slenderness <= SLENDER_LIMIT,
+                    "{name} {bed:?} {style}: {s:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The lone tree under the tall pad is widened only toward the bed: its
+/// thinnest section is still the branch under the pad.
+#[test]
+fn tall_pad_tree_is_widened_at_its_base() {
     let s = stability(&tall_pad(), Bed::Flat, "tree");
     assert_eq!(s.supports, 1, "{s:?}");
     let tree = &s.most_slender[0];
     assert!(tree.height_mm > 75.0, "{tree:?}");
-    assert!(tree.slenderness > 15.0, "{tree:?}");
-    assert_eq!(s.over_limit, 1);
+    assert!(
+        tree.base_min_mm * SLENDER_LIMIT >= tree.height_mm,
+        "{tree:?}"
+    );
+    assert!(tree.thinnest_mm.unwrap() < 2.0, "{tree:?}");
+    assert!(
+        tree.thinnest_at_mm.unwrap() > 0.5 * tree.height_mm,
+        "{tree:?}"
+    );
     assert_eq!(tree.stands_on, Stand::Bed);
 }
 
-/// Belt trees under the table are blades: thinner along the belt than
-/// across it, and every one over the limit. Flips with plan step 4.
+/// Belt trees under the table were blades, 2.9 mm along the belt for 59 mm
+/// of height. They are sized along the belt now, so they meet the rule in
+/// that direction too.
 #[test]
-fn belt_table_trees_are_thinner_along_the_belt_than_across_today() {
+fn belt_table_trees_are_wide_enough_along_the_belt() {
     let s = stability(&table(), Bed::Belt, "tree");
     assert_eq!(s.supports, 3, "{s:?}");
-    assert_eq!(s.over_limit, 3, "{s:?}");
+    assert_eq!(s.over_limit, 0, "{s:?}");
     for tree in &s.most_slender {
         assert_eq!(tree.stands_on, Stand::Belt, "{tree:?}");
-        assert!(tree.base_along_mm + 0.5 < tree.base_across_mm, "{tree:?}");
         assert!(tree.height_mm > 55.0, "{tree:?}");
+        assert!(
+            tree.base_along_mm * SLENDER_LIMIT >= tree.height_mm,
+            "{tree:?}"
+        );
     }
-    // They print first, ahead of the part: short layers of support only.
+    // They still print first, ahead of the part: short layers of support only.
     assert!(s.support_only_layers > 0, "{s:?}");
     assert!(s.short_layers.unwrap() > 0, "{s:?}");
 }
 
-/// Belt grid under the table's leading edge is a sheet one bead thick.
-/// Flips with plan step 5 (a wall and a base on small grid columns).
+/// By default the belt grid under the table's leading edge is still a sheet
+/// one bead thick, over 100 times taller than wide: the slender rule widens
+/// a belt grid column only when thin strips are held. Flips if that ever
+/// becomes the default.
 #[test]
-fn belt_grid_under_the_table_is_a_one_bead_curtain_today() {
+fn belt_grid_under_the_table_is_a_one_bead_curtain_by_default() {
     let s = stability(&table(), Bed::Belt, "grid");
     let sheet = &s.most_slender[0];
     assert!((sheet.base_min_mm - 0.45).abs() < 0.05, "{sheet:?}");
     assert!(sheet.slenderness > 100.0, "{sheet:?}");
+    assert_eq!(s.over_limit, 1, "{s:?}");
     assert_eq!(sheet.stands_on, Stand::Belt, "{sheet:?}");
     assert_eq!(s.unrested_mm, 0.0, "{s:?}");
+}
+
+/// With thin strips held, the belt grid under the table's leading edge is
+/// widened along the belt toward its foot, by ribs across the sheet that
+/// each stand on the rib under it: no bead of it rests on nothing.
+#[test]
+fn belt_grid_under_the_table_is_widened_along_the_belt() {
+    let s = stability_with(&table(), Bed::Belt, "grid", hold_thin());
+    let sheet = &s.most_slender[0];
+    assert!(
+        sheet.base_along_mm * SLENDER_LIMIT >= sheet.height_mm,
+        "{sheet:?}"
+    );
+    assert_eq!(sheet.stands_on, Stand::Belt, "{sheet:?}");
+    assert_eq!(s.unrested_mm, 0.0, "{s:?}");
+}
+
+/// The widened belt grid (thin strips held) adds no beads in the air but at its feet: on the
+/// cantilevers, where a rib meets the belt beside the wall, under 10 mm of
+/// its 7.5 m, all within a millimetre and a half of the belt. The tall
+/// pad's column had 540 mm unrested before the rule (#710 left them), and
+/// fewer after.
+#[test]
+fn belt_grid_ribs_rest_on_the_ribs_under_them() {
+    for (name, stl, most) in [
+        ("tall pad", tall_pad(), 600.0),
+        ("table", table(), 0.0),
+        ("cantilevers", cantilevers(), 10.0),
+    ] {
+        let s = stability_with(&stl, Bed::Belt, "grid", hold_thin());
+        assert!(s.unrested_mm <= most, "{name}: {s:?}");
+        if name == "cantilevers" {
+            for c in &s.most_unrested {
+                assert!(c.unrested_at.unwrap()[2] < 1.5, "{name}: {c:?}");
+            }
+        }
+    }
 }
 
 /// Belt grid under the small hanging pad, by default: loose dashes that
@@ -341,22 +421,50 @@ fn flat_grid_under_the_bridges_rests_on_itself() {
     assert_eq!(s.over_limit, 0, "{s:?}");
 }
 
-/// Grid under narrow lips is one-line cards: a bead thick, many times
-/// taller. Flips with plan step 5 or step 9.
+/// Grid under narrow lips was one-line cards, 43 times taller than a bead.
+/// The slender rule widens each card toward the bed, with a wall where its
+/// lines cannot cross it, and every bead of that rests on the one under it.
+/// Above a third of its height the card is still a bead thick.
 #[test]
-fn flat_grid_under_the_lips_is_one_bead_thick_today() {
+fn flat_grid_under_the_lips_is_widened_toward_the_bed() {
     let s = stability(&lips(), Bed::Flat, "grid");
     assert!((s.thinnest_mm.unwrap() - 0.45).abs() < 0.05, "{s:?}");
-    assert!(s.over_limit >= 2, "{s:?}");
+    assert_eq!(s.over_limit, 0, "{s:?}");
+    assert_eq!(s.unrested_mm, 0.0, "{s:?}");
 }
 
-/// Cantilevers on the belt: slender trees, some beads unrested.
+/// Cantilevers on the belt: the trees meet the rule but one, whose trunk
+/// stands a couple of millimetres off the wall: the xy gap leaves it no room
+/// to widen, and the report shows it.
 #[test]
-fn belt_cantilever_trees_today() {
+fn belt_cantilever_trees_widen_where_the_wall_leaves_room() {
     let s = stability(&cantilevers(), Bed::Belt, "tree");
     assert!(s.supports >= 3, "{s:?}");
-    assert!(s.over_limit >= 1, "{s:?}");
-    assert!(s.unrested_mm > 0.0, "{s:?}");
+    for tree in s
+        .most_slender
+        .iter()
+        .filter(|t| t.slenderness > SLENDER_LIMIT)
+    {
+        assert!(tree.at[0] < 8.0 + 3.0, "{tree:?}");
+    }
+    assert!(s.over_limit <= 1, "{s:?}");
+}
+
+/// Supports under 15 mm are left as they grow, so most G-code does not move:
+/// the belt bridges' trees and grid cards stay over the limit.
+#[test]
+fn short_supports_are_left_as_they_grow() {
+    for style in ["tree", "grid"] {
+        let s = stability(&bridges(), Bed::Belt, style);
+        assert!(s.over_limit > 0, "{style}: {s:?}");
+        for c in s
+            .most_slender
+            .iter()
+            .filter(|c| c.slenderness > SLENDER_LIMIT)
+        {
+            assert!(c.height_mm < 15.5, "{style}: {c:?}");
+        }
+    }
 }
 
 /// Every layer of the staircase passes the per-layer angle test, so it gets

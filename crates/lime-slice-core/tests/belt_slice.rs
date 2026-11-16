@@ -870,9 +870,10 @@ fn belt_supports_under_a_roof_stand_in_gravity() {
             }
             if style == "tree" && angle > 50.0 {
                 // Main grew about 13,500 mm of trunks here. Tips under every
-                // stretch of a row must not multiply them.
+                // stretch of a row must not multiply them. The slender rule
+                // widens the feet of the trunks over 15 mm tall a little.
                 let (total, _) = in_the_air(&beads, "SUPPORT", 0.5);
-                assert!(total < 16_000.0, "trees at {angle}° grew {total:.0} mm of support");
+                assert!(total < 17_000.0, "trees at {angle}° grew {total:.0} mm of support");
             }
         }
     }

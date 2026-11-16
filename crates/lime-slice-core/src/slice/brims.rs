@@ -1,9 +1,9 @@
 use super::parts::Contours;
 use super::resolve::resolve;
 use super::zones::layer_strategy;
-use crate::poly::{boolean_union, Loop};
+use crate::poly::{boolean_union, clip_to_rect, resolve_nonzero, Loop};
 use crate::strategy::pure;
-use crate::support::tree::{foot_loops, Foot};
+use crate::support::tree::{circle, foot_loops, Foot};
 use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
 use crate::toolpath::{plan_brim, plan_mouse_ears, plan_skirt, Extrusion};
 use crate::{BlendMode, SliceSettings, StrategyId};
@@ -251,8 +251,16 @@ pub(super) fn subtract_spans(spans: &[[f64; 2]], cut: &[[f64; 2]]) -> Vec<[f64; 
     out
 }
 
+/// Lab height of the solid slab a widened belt foot is filled to.
+const FOOT_SLAB_MM: f64 = 0.6;
+
 /// A belt layer's trunks: the disks the belt clip left, less the trunks whose
-/// foot meets the belt here, and those feet cut along the belt line.
+/// foot meets the belt here, those feet cut along the belt line, and where
+/// they are filled. A trunk's own foot is filled whole, as #482 made it. A
+/// trunk the slender rule widened past the trunk radius meets the belt over
+/// many layers: its foot is filled only within `FOOT_SLAB_MM` of the belt
+/// on each, which over all of them is a solid slab as wide as the trunk,
+/// and the rest of it is the trunk's own walls. `None` fills every foot whole.
 pub(super) fn belt_trunks<'a>(
     disks: &'a [Disk],
     feet: &[Foot],
@@ -260,9 +268,9 @@ pub(super) fn belt_trunks<'a>(
     z: f64,
     contours: &[Loop],
     settings: &SliceSettings,
-) -> (Cow<'a, [Disk]>, Vec<Loop>) {
+) -> (Cow<'a, [Disk]>, Vec<Loop>, Option<Vec<Loop>>) {
     let Some(floor) = floor.filter(|_| !feet.is_empty()) else {
-        return (Cow::Borrowed(disks), Vec::new());
+        return (Cow::Borrowed(disks), Vec::new(), None);
     };
     let kept: Vec<Disk> = disks
         .iter()
@@ -272,9 +280,28 @@ pub(super) fn belt_trunks<'a>(
     let gap = settings
         .support_xy_gap_mm
         .unwrap_or_else(|| SupportOpts::default().xy_gap);
+    let y_max = floor.y_max(z);
+    let trunk_r = 0.5 * settings.trunk_diameter.max(settings.tip_diameter + 0.6);
+    let fill = feet.iter().any(|f| f.r > trunk_r + 1e-6).then(|| {
+        let sin_a = floor.tan_a() / floor.tan_a().hypot(1.0);
+        let slab = y_max - FOOT_SLAB_MM / sin_a.max(0.1);
+        let zones: Vec<Loop> = feet
+            .iter()
+            .flat_map(|f| {
+                let whole = circle(f.xy, f.r.max(f.spread));
+                if f.r > trunk_r + 1e-6 {
+                    clip_to_rect(&[whole], [-1.0e5, slab], [1.0e5, 1.0e5])
+                } else {
+                    vec![whole]
+                }
+            })
+            .collect();
+        resolve_nonzero(zones)
+    });
     (
         Cow::Owned(kept),
-        foot_loops(feet, floor.y_max(z), contours, gap),
+        foot_loops(feet, y_max, contours, gap),
+        fill,
     )
 }
 
