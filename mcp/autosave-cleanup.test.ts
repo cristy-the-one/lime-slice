@@ -133,4 +133,21 @@ const shelf = (ws: string) => (existsSync(join(ws, "autosaves")) ? readdirSync(j
   assert.deepEqual(shelf(ws), ["autosave-previous-3a3a3a3a3a3a.lime"], "A's shelved autosave went, the other project's stayed");
   assert.ok(existsSync(join(ws, "a.lime")));
 }
+// The offer names the shelved file by its path (the newest three when there are many).
+{
+  const ws = workspace();
+  lime(ws, "autosaves", "autosave-previous-4a4a4a4a4a4a.lime", { project: "4a4a4a4a4a4a", writtenAt: now - 3 * DAY });
+  lime(ws, "", "autosave-previous.lime", { project: "4c4c4c4c4c4c", writtenAt: now - 99 * DAY }, now - 99 * DAY);
+  const note = (await start()).previousAutosave?.note ?? "";
+  const shelved = join(ws, "autosaves", "autosave-previous-4a4a4a4a4a4a.lime");
+  assert.ok(note.includes(`An autosave of 1 other project is in ${shelved}.`), note);
+}
+{
+  const ws = workspace();
+  for (const key of ["5a", "5b", "5c", "5d", "5e"]) lime(ws, "autosaves", `autosave-previous-${key.repeat(6)}.lime`, { project: key.repeat(6), writtenAt: now - 3 * DAY });
+  lime(ws, "", "autosave-previous.lime", { project: "5f5f5f5f5f5f", writtenAt: now - 99 * DAY }, now - 99 * DAY);
+  const note = (await start()).previousAutosave?.note ?? "";
+  assert.ok(note.includes("Autosaves of 5 other projects are in autosaves/: ") && note.includes(", and 2 more."), note);
+  assert.equal(note.split("autosave-previous-5").length - 1, 3, note);
+}
 console.log("autosave-cleanup ok");

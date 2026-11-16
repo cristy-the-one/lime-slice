@@ -301,13 +301,16 @@ export function tidyShelfAfterSave(project: string, source: string): void {
   }
 }
 
-/** One plain sentence when shelved autosaves exist, empty otherwise. */
+/** One plain sentence when shelved autosaves exist, empty otherwise. It names the files: the newest three, with how many more. */
 function shelfNote(root: string): string {
   try {
     const dir = join(root, SHELF_DIR);
-    const n = existsSync(dir) ? readdirSync(dir).filter((name) => SHELVED.test(name)).length : 0;
+    const files = (existsSync(dir) ? readdirSync(dir).filter((name) => SHELVED.test(name)) : []).map((name) => ({ path: join(dir, name), at: statSync(join(dir, name)).mtimeMs })).sort((a, b) => b.at - a.at);
+    const n = files.length;
     if (n === 0) return "";
-    return n === 1 ? ` An autosave of 1 other project is in ${SHELF_DIR}/.` : ` Autosaves of ${n} other projects are in ${SHELF_DIR}/.`;
+    if (n === 1) return ` An autosave of 1 other project is in ${files[0]!.path}.`;
+    const shown = files.slice(0, 3).map((row) => row.path).join(", ");
+    return ` Autosaves of ${n} other projects are in ${SHELF_DIR}/: ${shown}${n > 3 ? `, and ${n - 3} more` : ""}.`;
   } catch {
     return "";
   }
