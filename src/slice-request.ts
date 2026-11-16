@@ -89,12 +89,29 @@ function painted(record: Record<string, unknown>): boolean {
   return Array.isArray(objects) && objects.some((item) => !!item && typeof item === "object" && disks((item as Record<string, unknown>).supportPaint));
 }
 
+/** A plate object that turns its own supports on, while the plate's may be off. */
+export function objectSupportsOn(record: Record<string, unknown>): boolean {
+  const objects = record.objects;
+  return (
+    Array.isArray(objects) &&
+    objects.some((item) => {
+      if (!item || typeof item !== "object") return false;
+      const own = (item as Record<string, unknown>).settings;
+      return !!own && typeof own === "object" && (own as Record<string, unknown>).supports === true;
+    })
+  );
+}
+
 /** The object `rules.coerce` turns into the engine's request. Field order matches the app's previous body. */
 export function sliceRequest(input: SliceRequestInput): Record<string, unknown> {
   const settings = input.settings;
   const lineWidth = input.lineWidth;
   const one = withoutStudy(input.one);
   const plate = withoutStudy(input.plate);
+  // The plate's support values (belt floor, gaps, anchors, thin edges, bridge limit, tree options) reach an object
+  // that turns its own supports on even while the plate's are off. With no such object this is `settings.supports`,
+  // so the request keeps its bytes. `supports` itself and the plate's source stay the plate's own.
+  const supportsAnywhere = settings.supports || objectSupportsOn(plate);
   return {
     ...one,
     stepToleranceMm: input.stepToleranceMm,
@@ -121,13 +138,13 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     tipDiameter: settings.tipDiameter,
     trunkDiameter: settings.trunkDiameter,
     supportHeightMult: settings.supportHeightMult,
-    ...avoidanceSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportAvoidance),
-    ...strictStackingSliceField(settings.supports && settings.supportStyle === "tree" && settings.supportStrictStacking),
-    ...slowFragileSliceField(settings.supports && settings.supportSlowFragile),
-    ...gentleSliceFields(settings.supports && settings.supportSlowFragile, settings.supportGentleSpeedMmS, settings.supportGentleAccelMmS2),
-    ...paintJoinSliceField(settings.supports && settings.supportPaintJoin, painted(one) || painted(plate)),
+    ...avoidanceSliceField(supportsAnywhere && settings.supportStyle === "tree" && settings.supportAvoidance),
+    ...strictStackingSliceField(supportsAnywhere && settings.supportStyle === "tree" && settings.supportStrictStacking),
+    ...slowFragileSliceField(supportsAnywhere && settings.supportSlowFragile),
+    ...gentleSliceFields(supportsAnywhere && settings.supportSlowFragile, settings.supportGentleSpeedMmS, settings.supportGentleAccelMmS2),
+    ...paintJoinSliceField(supportsAnywhere && settings.supportPaintJoin, painted(one) || painted(plate)),
     ...supportSliceFields({
-      supports: settings.supports,
+      supports: supportsAnywhere,
       supportStyle: settings.supportStyle,
       supportZGapMm: settings.supportZGapMm,
       supportXyGapMm: settings.supportXyGapMm,
@@ -135,9 +152,9 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
       supportTreeBrimMm: settings.supportTreeBrimMm,
     }),
     ...supportSourceSliceField(settings.supports, settings.supportSource),
-    ...beltAnchorSliceField(settings.supportBeltAnchors, input.belt, settings.supports, settings.supportBeltAnchorMm),
-    ...holdThinSliceField(settings.supportBeltHoldThin, input.belt, settings.supports),
-    ...bridgeSupportSliceField(settings.supports, settings.supportBridgeMm),
+    ...beltAnchorSliceField(settings.supportBeltAnchors, input.belt, supportsAnywhere, settings.supportBeltAnchorMm),
+    ...holdThinSliceField(settings.supportBeltHoldThin, input.belt, supportsAnywhere),
+    ...bridgeSupportSliceField(supportsAnywhere, settings.supportBridgeMm),
     infillCombine: settings.infillCombine,
     ...shallowSkinsSliceField(settings.shallowSkins),
     ...solidUnderWallsSliceField(settings.solidUnderWalls),
@@ -148,7 +165,7 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     ...retractFields(settings.retractOn, settings.retractLength, settings.retractSpeed),
     minLayerTimeS: Math.min(600, Math.max(0, settings.minLayerTimeS)),
     minLayerSpeedMmS: Math.min(300, Math.max(1, settings.minLayerSpeedMmS)),
-    ...beltSliceField(input.belt, settings.supports),
+    ...beltSliceField(input.belt, supportsAnywhere),
     variableWidth: settings.variableWidth,
     arcFit: settings.arcFit,
     travelOpt: settings.travelOpt,

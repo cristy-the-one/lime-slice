@@ -51,6 +51,36 @@ const object = String(made.object);
   check("compact placement keeps refusal details", refused.ok === false && typeof refused.reason === "string");
 }
 
+// Per-object settings are visible (feedback 3.7): settings_schema {object} and overrides_list show them.
+{
+  const parts = new Session(fakeEngine());
+  const one = String((await parts.call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 })).object);
+  const two = String((await parts.call("solid_new", { primitive: "box", dx: 5, dy: 5, dz: 5 })).object);
+  await parts.call("settings_set", { values: { supportAngle: 50 } });
+  type ObjectRow = { key: string; value: unknown; own: boolean; plate: unknown; unit: string; options?: string[] };
+  const fresh = await parts.call("settings_schema", { object: one });
+  const freshRows = fresh.rows as ObjectRow[];
+  check("settings_schema {object} lists the keys an object can set", fresh.ok === true && fresh.object === one && ["supports", "supportSource", "supportAngle", "infill", "walls", "speed", "gyroid3d"].every((key) => freshRows.some((row) => row.key === key)), JSON.stringify(fresh));
+  check("an object with no settings follows the plate", freshRows.every((row) => row.own === false) && freshRows.find((row) => row.key === "supportAngle")?.value === 50 && freshRows.find((row) => row.key === "infill")?.value === null, JSON.stringify(freshRows));
+  check("the object's infill row is a fraction", freshRows.find((row) => row.key === "infill")?.unit === "fraction");
+  await parts.call("settings_set", { object: one, values: { infill: 0.35, walls: 4, supports: "auto", supportAngle: 60 } });
+  const setRows = (await parts.call("settings_schema", { object: one })).rows as ObjectRow[];
+  const row = (key: string) => setRows.find((item) => item.key === key);
+  check("settings_schema {object} shows the object's own values", row("infill")?.value === 0.35 && row("walls")?.value === 4 && row("supports")?.value === "auto" && row("supportAngle")?.value === 60, JSON.stringify(setRows));
+  check("own and plate say where each value comes from", row("infill")?.own === true && row("supportAngle")?.own === true && row("supportAngle")?.plate === 50 && row("supports")?.plate === "off" && row("gyroid3d")?.own === false, JSON.stringify(setRows));
+  const other = (await parts.call("settings_schema", { object: two })).rows as ObjectRow[];
+  check("another object keeps following the plate", other.every((item) => item.own === false), JSON.stringify(other));
+  const queried = (await parts.call("settings_schema", { object: one, query: "infill" })).rows as ObjectRow[];
+  check("a query narrows an object's rows", queried.length >= 1 && queried.every((item) => item.key.toLowerCase().includes("infill") || /infill/i.test(JSON.stringify(item))), JSON.stringify(queried));
+  const unknown = await parts.call("settings_schema", { object: "obj_99" });
+  check("settings_schema with an unknown object is refused", unknown.ok === false && unknown.code === "no-object", JSON.stringify(unknown));
+  const listed = await parts.call("overrides_list", {});
+  const objectSettings = listed.objectSettings as { object: string; settings: Record<string, unknown> }[];
+  check("overrides_list lists per-object settings", Array.isArray(listed.ranges) && Array.isArray(listed.volumes) && objectSettings.length === 1 && objectSettings[0]?.object === one && objectSettings[0]?.settings.walls === 4 && objectSettings[0]?.settings.supportSource === "auto", JSON.stringify(listed));
+  const slice = GUIDES.find((guide) => guide.uri === "lime://guide/slice");
+  check("the slice guide names per-object settings", !!slice?.text.includes("settings_schema {object}") && !!slice?.text.includes("overrides_list"));
+}
+
 const dry = await call("settings_set", { values: { layerHeight: 0.16 }, dryRun: true });
 check("a dry run names the change and writes nothing", dry.ok === true && dry.dryRun === true, JSON.stringify(dry));
 const still = await call("settings_schema", { query: "layer height" });
