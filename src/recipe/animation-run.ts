@@ -25,6 +25,8 @@ export interface AppAnimationOptions {
   transfer?: boolean;
   /** False prepares the frames on this thread, in slices (`sampleAnimationSliced`). */
   worker?: boolean;
+  /** Pairs of members the crossing check leaves out (`SampleOptions.ignore`), as pose_animate {ignore} gives them. */
+  ignore?: [string, string][];
 }
 
 export async function runAppAnimation(recipes: AppRecipes, name: string, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: AppAnimationOptions = {}): Promise<AppAnimation> {
@@ -59,7 +61,7 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
       spec = site.args as unknown as PoseAnimation;
       const result = await sampleAnimationInBackground(spec, assembly, poseOf, parts, {
         onProgress: (frame, count) => onStage?.({ stage: "frames", frame, count }),
-        ...(signal ? { signal } : {}), ...(options.transfer ? { transfer: true } : {}), ...(options.worker === false ? { worker: false } : {}),
+        ...(signal ? { signal } : {}), ...(options.transfer ? { transfer: true } : {}), ...(options.worker === false ? { worker: false } : {}), ...(options.ignore ? { ignore: options.ignore } : {}),
       });
       onStage?.({ stage: "finish" });
       if ("issues" in result) { issues = result.issues; return { ok: false, error: issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") }; }

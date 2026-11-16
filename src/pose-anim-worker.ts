@@ -5,7 +5,7 @@
  * It says "ready" once loaded, so the window keeps its parts' buffers until a worker can take them. The parts'
  * positions come transferred and go back transferred with the answer, whatever the answer is.
  */
-import { sampleAnimationSteps } from "./pose-anim.ts";
+import { sampleAnimationSteps, sampleOptions } from "./pose-anim.ts";
 import type { SampleJob, SampleReply } from "./pose-anim-sample.ts";
 
 const scope = self as unknown as {
@@ -17,11 +17,11 @@ const scope = self as unknown as {
 const PROGRESS_MS = 50;
 
 scope.onmessage = (ev: MessageEvent<SampleJob>) => {
-  const { animation, assembly, poses, parts, interference } = ev.data;
+  const { animation, assembly, poses, parts } = ev.data;
   const back = () => parts.flatMap((part) => (part.positions ? [part.positions] : []));
   const transfer = () => [...new Set(back().map((positions) => positions.buffer as ArrayBuffer))];
   try {
-    const steps = sampleAnimationSteps(animation, assembly, (id) => poses.get(id), parts, interference === false ? { interference: false } : {});
+    const steps = sampleAnimationSteps(animation, assembly, (id) => poses.get(id), parts, sampleOptions(ev.data));
     let said = 0;
     for (;;) {
       const step = steps.next();
