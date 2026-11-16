@@ -1588,13 +1588,13 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "model_check",
-    description: "Check a solid as it stands on the bed, before slicing. It reports overhang area and places, down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths, and open or touching mesh edges, each with where it is. Gear pairs that include this solid come back as gears, each with a verdict: meshing, apart, tooClose, loose (too far), toothOnTooth, unbuildable, moduleMismatch, or pressureMismatch, and for gears that reach each other distanceMm and workingMm (where the centres are, and where the pair meshes).",
+    description: "Check a solid as it stands on the bed, before slicing. It reports overhang area and places (each with the faces it covers, as face indexes a chamfer or fillet takes through edges.select.onFace), down faces above the bed, floating pieces, bed contact, size against the build volume, walls thinner than two nozzle widths (each with facingDeg, how far its two faces turn from facing each other: about 0 for a wall, more for a wedge, seam or slot edge), and open or touching mesh edges, each with where it is. On a belt printer the solid lies on the belt: overhangs and down faces are read against the direction its layers stack in (build says which, in the solid's frame), down faces are named by layerMm from the first layer, and the fit checks the width across the belt and the height, not the length along it. Gear pairs that include this solid come back as gears, each with a verdict: meshing, apart, tooClose, loose (too far), toothOnTooth, unbuildable, moduleMismatch, or pressureMismatch, and for gears that reach each other distanceMm and workingMm (where the centres are, and where the pair meshes).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         object: handle,
-        overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical. Default 45." },
+        overhangDeg: { type: "number", minimum: 1, maximum: 89, description: "From vertical; on a belt, from the build direction. Default 45." },
         minWallMm: { type: "number", minimum: 0.1, maximum: 20, description: "Thinnest wall to accept. Default twice the nozzle." },
         interference: { type: "boolean", description: "Instead: every pair of the assembly's parts at their assembled poses, clear, touch or crossing, by the mesh pass. Meshes that overlap no deeper than toleranceMm (0.05 mm, the kernel's mesh chord) touch: faces that touch in the solids, an axle in a hole of its size, overlap that much in their meshes." },
         exact: { type: "boolean", description: "With interference: each pair the mesh pass did not clear, touches included, measured by the kernel's common volume; under 0.01 mm³ is a touch." },
