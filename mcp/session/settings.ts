@@ -56,10 +56,19 @@ function rangeAdd(this: Session, input: Record<string, unknown>): Record<string,
   const override = this.overrideOf(input);
   if ("reason" in override) return refuse("bad-setting", override.reason);
   const id = freshOverrideId("range");
-  if (input.dryRun === true) return { ok: true, dryRun: true, id, zFrom, zTo, override };
+  // A range is plate-wide: it reaches every object its Z span crosses, not only the selected one.
+  const reached = this.objects.filter((obj) => {
+    const bounds = this.placed(obj).bounds;
+    return zTo >= bounds.min[2] - 1e-6 && zFrom <= bounds.max[2] + 1e-6;
+  });
+  const warnings = this.objects.length >= 2
+    ? [`A height range applies to the whole plate: this one reaches ${reached.length} of the ${this.objects.length} objects, every one its Z span crosses. For one object only, use settings_set {object, values:{infill}} (infill there is a fraction from 0 to 1).`]
+    : [];
+  const reach = { objectsReached: reached.length, ...(warnings.length ? { warnings } : {}) };
+  if (input.dryRun === true) return { ok: true, dryRun: true, id, zFrom, zTo, override, ...reach };
   this.remember("Height range");
   this.overrides = addRange(this.overrides, { id, zFrom, zTo, override });
-  return { ok: true, id, stale: true, label: "Height range" };
+  return { ok: true, id, stale: true, ...reach, label: "Height range" };
 }
 
 function modifierAdd(this: Session, input: Record<string, unknown>): Record<string, unknown> {

@@ -1255,7 +1255,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "range_add",
-    description: "Add a height range: different infill, walls or speed for a Z span of an object. Then slice_start.",
+    description: "Add a height range: different infill (a percent), walls or speed for a Z span of the plate. The range applies on the plate to every object the span crosses, not only the selected one, and there it wins over an object's own infill, walls and speed. The span must cross the selected object. The reply's objectsReached counts the objects it reaches; on a plate of two or more objects warnings says so. For one object only, use settings_set {object, values:{infill}}, where infill is a fraction from 0 to 1. Then slice_start.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1263,7 +1263,7 @@ export const TOOLS: ToolSpec[] = [
       properties: {
         zFromMm: { type: "number", minimum: 0, description: "From Z, mm." },
         zToMm: { type: "number", minimum: 0, description: "To Z, mm." },
-        infillPercent: { type: "number", minimum: 0, maximum: 100, description: "Infill, percent." },
+        infillPercent: { type: "number", minimum: 0, maximum: 100, description: "Infill, percent from 0 to 100 (settings_set per object takes a fraction from 0 to 1)." },
         walls: { type: "integer", minimum: 1, maximum: 12, description: "Walls." },
         speedMmS: { type: "number", exclusiveMinimum: 0, maximum: 1000, description: "Speed cap, mm/s." },
         dryRun: { type: "boolean", description: "Report the change only." },

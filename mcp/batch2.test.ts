@@ -68,6 +68,22 @@ const range = await call("range_add", { zFromMm: 0, zToMm: 4, walls: 6 });
 const outside = await call("range_add", { zFromMm: 30, zToMm: 40, walls: 3 });
 check("a range on the part is kept", range.ok === true, JSON.stringify(range));
 check("a range above the part is refused", outside.ok === false && String(outside.reason).includes("outside the part"), JSON.stringify(outside));
+// A range is plate-wide (feedback 2.9): on a plate of several cubes it says how many it reaches and how to set one object.
+const rangeWarning = JSON.stringify(range.warnings ?? []);
+const plateCount = session.objects.length;
+check("a range on a plate of several objects counts the objects it reaches", plateCount >= 2 && range.objectsReached === plateCount && rangeWarning.includes(`reaches ${plateCount} of the ${plateCount} objects`), JSON.stringify(range));
+check("the range warning points to settings_set for one object", rangeWarning.includes("settings_set {object, values:{infill}}") && rangeWarning.includes("fraction from 0 to 1"), rangeWarning);
+const dryRange = await call("range_add", { zFromMm: 0, zToMm: 4, infillPercent: 50, dryRun: true });
+check("a dry-run range says the same", dryRange.dryRun === true && dryRange.objectsReached === plateCount && JSON.stringify(dryRange.warnings ?? []).includes("whole plate"), JSON.stringify(dryRange));
+{
+  const lone = new Session(fakeEngine());
+  await lone.call("mesh_import", { path: fileURLToPath(cube) });
+  const one = await lone.call("range_add", { zFromMm: 0, zToMm: 4, walls: 6 });
+  check("a range on a one-object plate has no warning", one.ok === true && one.objectsReached === 1 && !("warnings" in one), JSON.stringify(one));
+}
+const { TOOLS } = await import("./schema.ts");
+const rangeTool = TOOLS.find((tool) => tool.name === "range_add");
+check("range_add says it is plate-wide and names the unit", !!rangeTool?.description.includes("every object") && JSON.stringify(rangeTool?.inputSchema).includes("percent"), rangeTool?.description);
 const missed = await call("modifier_add", { kind: "box", centre: [0, 0, 0], sizeMm: [4, 4, 4], infillPercent: 80 });
 const touched = await call("modifier_add", { kind: "box", centre: [110, 110, 2], sizeMm: [10, 10, 4], infillPercent: 80 });
 check("a modifier that misses is refused", missed.ok === false && missed.reason === "That volume does not touch the part.", JSON.stringify(missed));
