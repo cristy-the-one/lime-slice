@@ -208,6 +208,12 @@ pub struct SliceRequest {
         rename = "supportBeltAnchorMm"
     )]
     pub support_anchor_mm: Option<f64>,
+    /// A bridge, an overhang the layer below holds at both ends, no longer
+    /// than this many millimetres across gets no support, and the part's
+    /// first rows over it run across it. Omitted or `0` supports every
+    /// bridge, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub support_bridge_mm: Option<f64>,
     /// On a belt, hold the thin strips the slicer prints as a whole bead: the
     /// first hair of a flat underside a nozzle plane cuts asks for a bead of
     /// support, and an interface patch or a grid column thinner than its line
@@ -520,6 +526,8 @@ pub struct SliceSettings {
     pub support_tree_brim_mm: Option<f64>,
     /// Spacing along the belt of the support anchor lines. `None` prints none.
     pub support_anchor_mm: Option<f64>,
+    /// Longest bridge printed without support, mm. `0` supports every bridge.
+    pub support_bridge_mm: f64,
     /// On a belt, thin strips printed as a whole bead get a bead of support.
     pub support_hold_thin: bool,
     /// `None` keeps bridge flow at 1.
@@ -642,6 +650,7 @@ impl Default for SliceSettings {
             support_interface_layers: None,
             support_tree_brim_mm: None,
             support_anchor_mm: None,
+            support_bridge_mm: 0.0,
             support_hold_thin: false,
             bridge_flow_ratio: None,
             bridge_speed_mm_s: None,
@@ -818,6 +827,7 @@ impl SliceSettings {
                 // Only a belt has a belt to anchor to.
                 .filter(|mm| !req.classic && req.belt.is_some() && mm.is_finite() && *mm > 0.0)
                 .map(|mm| mm.clamp(BELT_ANCHOR_MIN_MM, BELT_ANCHOR_MAX_MM)),
+            support_bridge_mm: support_bridge(req.classic, req.support_bridge_mm),
             // Only a belt cuts a flat underside in one nozzle plane.
             support_hold_thin: req.support_hold_thin == Some(true)
                 && !req.classic
@@ -962,13 +972,21 @@ impl SliceSettings {
                 Some(mm) => format!(", belt anchors every {mm:.0} mm"),
                 None => String::new(),
             };
+            let bridges = if self.support_bridge_mm > 0.0 {
+                format!(
+                    ", bridges up to {:.1} mm unsupported",
+                    self.support_bridge_mm
+                )
+            } else {
+                String::new()
+            };
             let thin = if self.support_hold_thin {
                 ", thin belt strips held"
             } else {
                 ""
             };
             format!(
-                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim}{anchors}{thin})",
+                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim}{anchors}{bridges}{thin})",
                 self.support_height_mult.max(1.0)
             )
         } else {
@@ -1114,6 +1132,19 @@ pub(super) fn support_gap(classic: bool, value: Option<f64>, max: f64) -> Option
 }
 
 /// A bridge flow the request actually set. `1` is the bead bridges already use.
+/// The longest bridge a request prints without support, mm: `0` when it
+/// does not ask, and never for the classic planner.
+pub(super) fn support_bridge(classic: bool, value: Option<f64>) -> f64 {
+    match value {
+        Some(mm) if !classic && mm.is_finite() && mm > 0.0 => mm.min(SUPPORT_BRIDGE_MAX_MM),
+        _ => 0.0,
+    }
+}
+
+/// The longest bridge a request may leave unsupported, mm. Past it the
+/// strands sag too far for the setting to mean "bridges cleanly".
+pub(super) const SUPPORT_BRIDGE_MAX_MM: f64 = 50.0;
+
 pub(super) fn bridge_flow(classic: bool, value: Option<f64>) -> Option<f64> {
     if classic {
         return None;

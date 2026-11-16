@@ -125,6 +125,10 @@ enum Cmd {
         /// Omitted prints none.
         #[arg(long)]
         support_belt_anchors: Option<f64>,
+        /// Bridges up to this many mm, held at both ends by the part below,
+        /// print without support. `0` supports every bridge.
+        #[arg(long, default_value_t = 0.0)]
+        support_bridge_mm: f64,
         /// On a belt, hold the thin strips printed as a whole bead: the first
         /// hair of a flat underside gets a bead of support, and a support
         /// patch thinner than its line spacing prints a line along it.
@@ -436,6 +440,7 @@ fn run() -> Result<(), String> {
             support_gentle_accel,
             support_brim,
             support_belt_anchors,
+            support_bridge_mm,
             support_belt_hold_thin,
             support_height_mult,
             infill_combine,
@@ -532,6 +537,11 @@ fn run() -> Result<(), String> {
                     .map(|v| v.min(20.0)),
                 support_anchor_mm: support_belt_anchors
                     .filter(|v| !classic && v.is_finite() && *v > 0.0),
+                support_bridge_mm: if !classic && support_bridge_mm.is_finite() {
+                    support_bridge_mm.clamp(0.0, 50.0)
+                } else {
+                    0.0
+                },
                 support_hold_thin: support_belt_hold_thin && !classic,
                 support_height_mult,
                 infill_combine,
@@ -2200,6 +2210,7 @@ fn request_for(
         support_interface_layers: settings.support_interface_layers,
         support_tree_brim_mm: settings.support_tree_brim_mm,
         support_anchor_mm: settings.support_anchor_mm,
+        support_bridge_mm: (settings.support_bridge_mm > 0.0).then_some(settings.support_bridge_mm),
         support_hold_thin: settings.support_hold_thin.then_some(true),
         bridge_flow_ratio: settings.bridge_flow_ratio,
         bridge_speed_mm_s: settings.bridge_speed_mm_s,

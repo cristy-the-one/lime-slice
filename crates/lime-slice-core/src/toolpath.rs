@@ -129,6 +129,11 @@ pub enum ShellBand {
 pub struct Skin {
     pub bottom: Vec<Loop>,
     pub top: Vec<Loop>,
+    /// Short bridges on this layer that print without support, each with
+    /// the direction its rows cross it, radians. A bottom skin island over
+    /// one runs its rows that way, anchor to anchor. Empty unless the
+    /// request bridges without support.
+    pub bridges: Vec<(Vec<Loop>, f64)>,
 }
 
 impl Skin {

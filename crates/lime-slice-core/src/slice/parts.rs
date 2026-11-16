@@ -2,7 +2,7 @@ use super::elapsed_ms;
 use super::layer::speed_label;
 use super::regions::XyRect;
 use super::resolve::shaft_scales;
-use super::skin::{roof_distances, skin_regions};
+use super::skin::{mark_bridges, roof_distances, skin_regions};
 use super::supports::paint;
 use crate::adaptive::LayerBand;
 use crate::poly::{loop_bounds, Loop};
@@ -29,8 +29,8 @@ pub(crate) struct Contours {
     /// depths, `[1]` at toughness's. `skin_of` picks one for a strategy.
     pub(super) skins: [Vec<Arc<Skin>>; 2],
     /// What prints over air with supports off, for the first overhang angle
-    /// asked, keyed by its bits.
-    pub(super) in_air: std::sync::OnceLock<(u64, InAir)>,
+    /// and bridge length asked, keyed by their bits.
+    pub(super) in_air: std::sync::OnceLock<((u64, u64), InAir)>,
     /// Each layer's XY box, `None` on an empty layer, found when first asked.
     pub(super) boxes: std::sync::OnceLock<Vec<Option<XyRect>>>,
     pub(super) clocks: CutClocks,
@@ -64,13 +64,22 @@ impl Contours {
         let roof_started = Instant::now();
         let wall_stack = settings.line_width * fewest_walls as f64;
         let roofs = roof_distances(&bands, &contours, wall_stack);
-        let skins = skin_regions(
+        let mut skins = skin_regions(
             &bands,
             &contours,
             wall_stack,
             settings.shallow_skins,
             settings.solid_under_walls,
         );
+        if settings.support_bridge_mm > 0.0 {
+            mark_bridges(
+                &mut skins,
+                &bands,
+                &contours,
+                settings.support_angle,
+                settings.support_bridge_mm,
+            );
+        }
         Self {
             bands,
             contours,
@@ -104,15 +113,31 @@ impl Contours {
     }
 
     /// What prints over air without supports, less what `paint` holds up.
-    pub(super) fn in_air(&self, angle_deg: f64, paint: &[PaintDisk], join: f64) -> InAir {
+    /// `bridge_mm` is the longest bridge printed without support, `0` for
+    /// the warning's own rule: see [`crate::support::in_air`].
+    pub(super) fn in_air(
+        &self,
+        angle_deg: f64,
+        paint: &[PaintDisk],
+        join: f64,
+        bridge_mm: f64,
+    ) -> InAir {
         if !paint.is_empty() {
-            return crate::support::in_air(&self.bands, &self.contours, angle_deg, paint, join);
+            return crate::support::in_air(
+                &self.bands,
+                &self.contours,
+                angle_deg,
+                paint,
+                join,
+                bridge_mm,
+            );
         }
-        let bits = angle_deg.to_bits();
+        let bits = (angle_deg.to_bits(), bridge_mm.to_bits());
         if let Some(&(_, found)) = self.in_air.get().filter(|(at, _)| *at == bits) {
             return found;
         }
-        let found = crate::support::in_air(&self.bands, &self.contours, angle_deg, &[], 0.0);
+        let found =
+            crate::support::in_air(&self.bands, &self.contours, angle_deg, &[], 0.0, bridge_mm);
         let _ = self.in_air.set((bits, found));
         found
     }

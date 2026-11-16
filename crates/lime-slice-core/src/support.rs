@@ -106,6 +106,10 @@ pub struct SupportOpts {
     /// The part's bead width, mm. On a belt a strip of part narrower than
     /// this still prints a whole bead, which needs holding.
     pub line_width: f64,
+    /// An overhang the layer below holds at both ends, no longer than this
+    /// across, prints as a bridge and asks for no support, mm. `0` asks
+    /// for support under every bridge.
+    pub bridge_mm: f64,
     /// On a belt, a hairline of part over air asks for a bead of support.
     pub hold_thin: bool,
     /// The most a tall tree or grid column may stand against its base
@@ -389,6 +393,7 @@ impl Default for SupportOpts {
             paint_join_mm: 0.0,
             bead_width: 0.45,
             line_width: 0.45,
+            bridge_mm: 0.0,
             hold_thin: false,
             slender_limit: crate::audit::SLENDER_LIMIT,
         }
@@ -989,6 +994,11 @@ impl Demand {
                     }
                     SupportSource::Auto => overhang_at(bands, own, i, angle),
                     SupportSource::Paint => Vec::new(),
+                };
+                let asked = if opts.bridge_mm > 0.0 {
+                    without_short_bridges(bands, own, i, angle, asked, opts.bridge_mm)
+                } else {
+                    asked
                 };
                 paint::paint_layer(paint, bands, own, i, asked, opts.paint_join_mm)
             })
@@ -1882,12 +1892,16 @@ pub struct InAir {
 
 /// The islands and unbridged overhangs a part would print over air without
 /// supports, for a warning. What `paint` asks supports for is not counted.
+/// `bridge_mm` above 0 is the longest span the request bridges without
+/// support, read across each overhang as [`short_bridges`] reads it; `0`
+/// keeps the [`BRIDGE_SPAN_MM`] rule by the overhang's box.
 pub(crate) fn in_air(
     bands: &[LayerBand],
     contours: &[Vec<Loop>],
     angle_deg: f64,
     paint: &[PaintDisk],
     join: f64,
+    bridge_mm: f64,
 ) -> InAir {
     let slope = slope_of(angle_deg);
     let (islands, overhangs): (Vec<Vec<Unheld>>, Vec<Vec<Unheld>>) = (0..bands.len())
@@ -1915,7 +1929,12 @@ pub(crate) fn in_air(
             } else {
                 drop_slivers(boolean_diff(&wings, &islands), 0.05)
             };
-            let wings = exclude_short_bridges(&wings, lower, dx);
+            let wings = if bridge_mm > 0.0 {
+                let bridges = short_bridges(&wings, lower, dx, bridge_mm);
+                drop_bridges(wings, &bridges)
+            } else {
+                exclude_short_bridges(&wings, lower, dx)
+            };
             (pieces_on(i, &islands), pieces_on(i, &wings))
         })
         .unzip();
@@ -3674,6 +3693,174 @@ fn short_bridge(comp: &[Loop], bed: &[Loop]) -> bool {
     (left && right && span_x <= BRIDGE_SPAN_MM) || (bottom && top && span_y <= BRIDGE_SPAN_MM)
 }
 
+/// One overhang of a layer that prints as a bridge: rows laid at `angle`
+/// across it start and end on the layer below, none longer than `span_mm`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ShortBridge {
+    pub region: Vec<Loop>,
+    /// The direction the rows run, radians from +X, in `[0, π)`.
+    pub angle: f64,
+    /// The longest row across it, mm.
+    pub span_mm: f64,
+}
+
+/// Directions a bridge is tried in, evenly over a half turn: every 5°.
+const BRIDGE_DIRECTIONS: usize = 36;
+/// Rows read across an overhang at most this far apart, mm.
+const BRIDGE_ROW_MM: f64 = 0.4;
+/// A row's end is held when it lies this close to the overhang's held edge,
+/// which is the layer below grown by one step at the support angle, mm.
+const BRIDGE_END_MM: f64 = 0.45;
+
+/// The overhangs of `air` that are bridges no longer than `max_span`: in
+/// some direction every row across the overhang starts and ends on `lower`
+/// grown by `dx`, the step the support angle allows. A wing held on one
+/// side has a free end in every direction, and an island has no held end
+/// at all, so neither is a bridge. Each keeps the direction with the
+/// shortest longest row: the way the deck is narrowest between its anchors.
+pub(crate) fn short_bridges(
+    air: &[Loop],
+    lower: &[Loop],
+    dx: f64,
+    max_span: f64,
+) -> Vec<ShortBridge> {
+    if air.is_empty() || lower.is_empty() || max_span <= 0.0 {
+        return Vec::new();
+    }
+    let held = offset_loops(lower, dx.max(0.0) + BRIDGE_END_MM);
+    if held.is_empty() {
+        return Vec::new();
+    }
+    components(air)
+        .into_iter()
+        .filter_map(|comp| {
+            let (angle, span_mm) = bridge_across(&comp, &held, max_span)?;
+            Some(ShortBridge {
+                region: comp,
+                angle,
+                span_mm,
+            })
+        })
+        .collect()
+}
+
+/// The short bridges of layer `i` at overhang angle `angle_deg`, for the
+/// part's own rows over them.
+pub(crate) fn layer_bridges(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    i: usize,
+    angle_deg: f64,
+    max_span: f64,
+) -> Vec<ShortBridge> {
+    let Some((upper, lower, dx)) = layer_pair(bands, contours, i, slope_of(angle_deg)) else {
+        return Vec::new();
+    };
+    short_bridges(&past_angle(upper, lower, dx), lower, dx, max_span)
+}
+
+/// `air` less every bridge in `bridges`.
+fn drop_bridges(air: Vec<Loop>, bridges: &[ShortBridge]) -> Vec<Loop> {
+    if bridges.is_empty() {
+        return air;
+    }
+    let spans = union_all(bridges.iter().map(|b| b.region.as_slice()));
+    drop_slivers(boolean_diff(&air, &spans), 0.05)
+}
+
+/// `asked`, the support demand of layer `i`, less the short bridges in it.
+fn without_short_bridges(
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    i: usize,
+    slope: f64,
+    asked: Vec<Loop>,
+    max_span: f64,
+) -> Vec<Loop> {
+    if asked.is_empty() {
+        return asked;
+    }
+    let Some((_, lower, dx)) = layer_pair(bands, contours, i, slope) else {
+        return asked;
+    };
+    let bridges = short_bridges(&asked, lower, dx, max_span);
+    drop_bridges(asked, &bridges)
+}
+
+/// The direction and longest row of the shortest way across `comp` whose
+/// every row ends on `held` at both ends, or `None` when no direction has
+/// rows all held and all within `max_span`.
+fn bridge_across(comp: &[Loop], held: &[Loop], max_span: f64) -> Option<(f64, f64)> {
+    let mut best: Option<(f64, f64)> = None;
+    for k in 0..BRIDGE_DIRECTIONS {
+        let angle = std::f64::consts::PI * k as f64 / BRIDGE_DIRECTIONS as f64;
+        let Some(span) = span_along(comp, held, angle, max_span) else {
+            continue;
+        };
+        if best.is_none_or(|(_, s)| span < s - 1e-9) {
+            best = Some((angle, span));
+        }
+    }
+    best
+}
+
+/// The longest row across `comp` at `angle` when every row ends on `held`
+/// at both ends and none is longer than `max_span`; otherwise `None`.
+fn span_along(comp: &[Loop], held: &[Loop], angle: f64, max_span: f64) -> Option<f64> {
+    let (s, c) = angle.sin_cos();
+    // Turned by -angle, so the rows run along X.
+    let turned: Vec<Vec<[f64; 2]>> = comp
+        .iter()
+        .map(|l| {
+            l.iter()
+                .map(|p| [p[0] * c + p[1] * s, -p[0] * s + p[1] * c])
+                .collect()
+        })
+        .collect();
+    let (lo, hi) = turned
+        .iter()
+        .flatten()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+            (lo.min(p[1]), hi.max(p[1]))
+        });
+    if hi - lo < 1e-6 {
+        return None;
+    }
+    let rows = ((hi - lo) / BRIDGE_ROW_MM).ceil().max(1.0) as usize;
+    let back = |x: f64, y: f64| [x * c - y * s, x * s + y * c];
+    let mut longest: Option<f64> = None;
+    let mut xs: Vec<f64> = Vec::new();
+    for j in 0..rows {
+        let y = lo + (j as f64 + 0.5) * (hi - lo) / rows as f64;
+        xs.clear();
+        for l in &turned {
+            for k in 0..l.len() {
+                let (a, b) = (l[k], l[(k + 1) % l.len()]);
+                if (a[1] <= y) != (b[1] <= y) {
+                    xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+                }
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        for pair in xs.chunks_exact(2) {
+            let (x0, x1) = (pair[0], pair[1]);
+            let len = x1 - x0;
+            if len < 1e-6 {
+                continue;
+            }
+            if len > max_span {
+                return None;
+            }
+            let ([ax, ay], [bx, by]) = (back(x0, y), back(x1, y));
+            if !in_solid(held, ax, ay) || !in_solid(held, bx, by) {
+                return None;
+            }
+            longest = Some(longest.map_or(len, |l: f64| l.max(len)));
+        }
+    }
+    longest
+}
+
 fn intersection(a: &[Loop], b: &[Loop]) -> Vec<Loop> {
     if a.is_empty() || b.is_empty() {
         return Vec::new();
@@ -3999,6 +4186,40 @@ mod tests {
 
     pub(super) fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Loop {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    }
+
+    /// A deck turned 30° between two posts is read across, along its
+    /// turn; the box rule of the warning judged by box sides. A wing held
+    /// on one side, and a deck longer than the limit, are no bridges.
+    #[test]
+    fn a_bridge_is_read_across_between_its_anchors_in_any_direction() {
+        let turn = |l: Loop| -> Loop {
+            let (s, c) = 30f64.to_radians().sin_cos();
+            l.into_iter()
+                .map(|[x, y]| [x * c - y * s, x * s + y * c])
+                .collect()
+        };
+        let posts = vec![
+            turn(rect(0.0, 0.0, 5.0, 12.0)),
+            turn(rect(15.0, 0.0, 20.0, 12.0)),
+        ];
+        let gap = vec![turn(rect(5.2, 0.0, 14.8, 12.0))];
+        let found = short_bridges(&gap, &posts, 0.2, 10.0);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!((found[0].span_mm - 9.6).abs() < 0.05, "{found:?}");
+        assert!(
+            (found[0].angle.to_degrees() - 30.0).abs() < 1e-6,
+            "{found:?}"
+        );
+        assert!(short_bridges(&gap, &posts, 0.2, 9.0).is_empty());
+        let one_post = vec![turn(rect(0.0, 0.0, 5.0, 12.0))];
+        assert!(short_bridges(&gap, &one_post, 0.2, 18.0).is_empty());
+        // Held along one long side only: a ledge, free at both ends.
+        let wall = vec![rect(0.0, 0.0, 20.0, 3.0)];
+        let ledge = vec![rect(0.0, 3.2, 20.0, 8.0)];
+        assert!(short_bridges(&ledge, &wall, 0.2, 25.0).is_empty());
+        // An island has nothing under it.
+        assert!(short_bridges(&gap, &[], 0.2, 18.0).is_empty());
     }
 
     /// C opening toward +X. The bbox centre and the single coarse grid sample

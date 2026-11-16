@@ -131,6 +131,7 @@ pub(super) fn skin_regions(
                 Arc::new(Skin {
                     bottom: joined(clipped_union(&contours[i], under)),
                     top: joined(clipped_union(&contours[i], over)),
+                    bridges: Vec::new(),
                 })
             })
             .collect()
@@ -178,6 +179,34 @@ pub(super) const SPEED_SHELLS: (f64, f64) = (0.6, 0.6);
 pub(super) const TOUGH_SHELLS: (f64, f64) = (1.2, 1.0);
 
 /// The skin of a layer, of `skins` at both shell depths, for `strategy`.
+/// Mark on each layer's skins the short bridges, no longer than `max_span`,
+/// that print without support at overhang angle `angle_deg`: the same
+/// bridges the support demand leaves out.
+pub(super) fn mark_bridges(
+    skins: &mut [Vec<Arc<Skin>>; 2],
+    bands: &[LayerBand],
+    contours: &[Vec<Loop>],
+    angle_deg: f64,
+    max_span: f64,
+) {
+    let found: Vec<Vec<(Vec<Loop>, f64)>> = (0..bands.len())
+        .into_par_iter()
+        .map(|i| {
+            crate::support::layer_bridges(bands, contours, i, angle_deg, max_span)
+                .into_iter()
+                .map(|b| (b.region, b.angle))
+                .collect()
+        })
+        .collect();
+    for set in skins.iter_mut() {
+        for (skin, bridges) in set.iter_mut().zip(&found) {
+            if !bridges.is_empty() {
+                Arc::make_mut(skin).bridges = bridges.clone();
+            }
+        }
+    }
+}
+
 pub(super) fn skin_of(skins: [&Arc<Skin>; 2], strategy: &ResolvedStrategy) -> Arc<Skin> {
     Arc::clone(skins[usize::from(strategy.toughness > 0.6)])
 }
