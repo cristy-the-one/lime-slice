@@ -1018,7 +1018,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_save",
-    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse.",
+    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. The reply gives bytes per section, and names one that shrank against the file it replaced.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1105,7 +1105,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "object_remove",
-    description: "Remove one object from the plate, or objects in one undo step.",
+    description: "Remove one object from the plate, or objects in one undo step. removed lists them; objects lists those that stay.",
     inputSchema: { type: "object", additionalProperties: false, properties: { object: handle, objects: { type: "array", minItems: 1, maxItems: 200, items: { type: "string" }, description: "Several handles." } } },
   },
   {
@@ -1369,7 +1369,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "export_3mf",
     description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: handle, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: { ...handle, description: "Write only this object, as posed on the plate. With pieces: the object to split." }, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {
     name: "mesh_stats",
@@ -2188,8 +2188,8 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["steps"],
       properties: {
+        path: { type: "string", minLength: 1, description: "Instead of steps: a workspace file, a JSON list of steps or {steps, results}." },
         steps: {
           type: "array",
           minItems: 1,
@@ -2205,7 +2205,10 @@ export const TOOLS: ToolSpec[] = [
             },
           },
         },
-        results: { enum: ["last", "all"], description: "Full results: last step only, or all." },
+        results: {
+          oneOf: [{ enum: ["last", "all"] }, { type: "array", minItems: 1, maxItems: MAX_PLAN_STEPS, items: { type: "integer", minimum: 1 } }],
+          description: "Full results: last step only, all, or step numbers.",
+        },
       },
     },
   },

@@ -95,6 +95,50 @@ check("the autosave opens", fromAutosave.ok === true, JSON.stringify(fromAutosav
   check("the autosave holds the plate as of its flush, not as of its write", kept !== null && JSON.stringify(kept) === JSON.stringify(wanted), JSON.stringify({ kept, wanted }));
 }
 
+// Removing an override on purpose is not a loss: the project saves over its own file again.
+{
+  const rm = new Session(fakeEngine());
+  const first = await rm.call("mesh_import", { path: cube });
+  const range = await rm.call("range_add", { zFromMm: 2, zToMm: 6, infillPercent: 30 });
+  check("range_add set up the override", range.ok === true, JSON.stringify(range));
+  const base = await rm.call("project_save", { name: "with-override.lime" });
+  const again = await rm.call("project_save", { name: "with-override.lime" });
+  check("a save with the override still on keeps it", base.ok === true && again.ok === true, JSON.stringify(again));
+  const removed = await rm.call("override_remove", { id: String(range.id) });
+  check("override_remove removed it", removed.ok === true, JSON.stringify(removed));
+  const after = await rm.call("project_save", { name: "with-override.lime" });
+  check("project_save over the opened file works after override_remove", after.ok === true, JSON.stringify(after));
+  const file = JSON.parse(readFileSync(String(after.path), "utf8")) as { overrides?: unknown };
+  check("the saved file holds no override", file.overrides === undefined);
+  void first;
+}
+
+// The save reply says what the file holds, and names a section that shrank against the file it replaced.
+{
+  const hull = fileURLToPath(new URL("../samples/lime_hull.stl", import.meta.url));
+  const holds = new Session(fakeEngine());
+  const one = await holds.call("mesh_import", { path: hull });
+  await holds.call("object_place", { object: one.object, centreX: 40, centreY: 40 });
+  const two = await holds.call("mesh_import", { path: hull });
+  await holds.call("object_place", { object: two.object, centreX: 120, centreY: 120 });
+  const first = await holds.call("project_save", { name: "holds.lime" });
+  const sections = first.sections as Record<string, number> | undefined;
+  check("project_save names the sections and their bytes", first.ok === true && !!sections && sections.meshes! > 50_000 && sections.settings! > 0, JSON.stringify(first));
+  check("the sections add up to the file", !!sections && Object.values(sections).reduce((sum, value) => sum + value, 0) === first.bytes, JSON.stringify(first));
+  check("a first save has nothing to compare with", first.shrank === undefined && first.note === undefined);
+  const same = await holds.call("project_save", { name: "holds.lime" });
+  check("saving the same plate again names no shrunk section", same.ok === true && same.shrank === undefined && same.note === undefined, JSON.stringify(same));
+  await holds.call("object_remove", { object: two.object });
+  const smaller = await holds.call("project_save", { name: "holds.lime" });
+  const shrank = smaller.shrank as { section: string; from: number; to: number }[] | undefined;
+  check("removing an object makes the meshes section shrink, and the reply says so", smaller.ok === true && !!shrank && shrank.some((row) => row.section === "meshes" && row.to < row.from) && /meshes went from [0-9.]+ (MB|KB) to [0-9.]+ (MB|KB)/.test(String(smaller.note)), JSON.stringify(smaller));
+  // A file opened from disk is compared the same way.
+  const again = new Session(fakeEngine());
+  await again.call("project_open", { path: String(first.path) });
+  const reopened = await again.call("project_save", { name: "holds.lime" });
+  check("a project opened and saved unchanged names no shrunk section", reopened.ok === true && reopened.shrank === undefined, JSON.stringify(reopened));
+}
+
 if (failed) {
   console.error(`${failed} failed`);
   throw new Error(`${failed} failed`);

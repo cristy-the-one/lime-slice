@@ -189,6 +189,8 @@ export interface CallMeta {
   stage?: string;
   /** Reserved before a plan starts so each autosave can identify its eventual background job. */
   planJob?: string;
+  /** On a plan step's own context: the plan's. A step's progress is reported there as part of the whole plan. */
+  plan?: CallMeta;
 }
 
 /** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */

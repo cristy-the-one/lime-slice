@@ -2,7 +2,7 @@
  * plan_run against the stand-in engine: references between steps, a bad reference, a refused middle step, and a plan
  * that runs past the reply time and answers with a job.
  */
-import { existsSync, mkdtempSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -32,7 +32,7 @@ async function reply(session: Session, name: string, args: unknown): Promise<Rec
   }
 }
 
-type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
+type StepRow = { step: number; tool: string; ok?: boolean; result?: Record<string, unknown> };
 
 // The next step must not start until the preceding changed plate is on disk.
 {
@@ -177,6 +177,75 @@ type StepRow = { step: number; tool: string; result?: Record<string, unknown> };
   check("the default is smaller than all, and last smaller still", bytes(last) < bytes(usual) && bytes(usual) < bytes(all));
   const refusedPlan = (await new Session(fakeEngine()).call("plan_run", { results: "last", steps: [steps[0], steps[1], { tool: "model_describe", args: { object: "obj_99" } }, steps[3]] })) as { ok: boolean; failedStep?: number; steps: StepRow[] };
   check("a refused step is in full whatever the mode", refusedPlan.ok === false && refusedPlan.failedStep === 3 && refusedPlan.steps.length === 3 && (refusedPlan.steps[2]!.result as { ok?: boolean; reason?: string }).ok === false && typeof (refusedPlan.steps[2]!.result as { reason?: string }).reason === "string", JSON.stringify(refusedPlan).slice(0, 500));
+}
+
+// plan_run {path}: the steps from a workspace file, as a list or as {steps, results}.
+{
+  const dir = process.env.LIME_MCP_WORKSPACE!;
+  const list = [{ tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } }, { tool: "model_describe", args: { object: "$1.object" } }, { tool: "session_info" }];
+  writeFileSync(join(dir, "plan-list.json"), JSON.stringify(list));
+  writeFileSync(join(dir, "plan-object.json"), JSON.stringify({ steps: list, results: "all" }));
+  writeFileSync(join(dir, "plan-bad.json"), "{not json");
+  writeFileSync(join(dir, "plan-empty.json"), JSON.stringify({ nothing: true }));
+  const fromList = (await reply(new Session(fakeEngine()), "plan_run", { path: "plan-list.json" })) as { ok?: boolean; steps?: StepRow[] };
+  check("plan_run reads a JSON list of steps from a workspace file", typeof fromList === "object" && fromList.ok === true && fromList.steps?.length === 3, JSON.stringify(fromList).slice(0, 300));
+  const fromObject = (await reply(new Session(fakeEngine()), "plan_run", { path: "plan-object.json" })) as { ok?: boolean; steps?: StepRow[] };
+  check("a file of {steps, results} applies its results", typeof fromObject === "object" && fromObject.steps?.every((row) => row.result !== undefined) === true);
+  const overridden = (await reply(new Session(fakeEngine()), "plan_run", { path: "plan-object.json", results: "last" })) as { steps?: StepRow[] };
+  check("results in the call win over the file's", typeof overridden === "object" && overridden.steps?.[0]?.result === undefined);
+  const both = await reply(new Session(fakeEngine()), "plan_run", { path: "plan-list.json", steps: list });
+  check("steps and path together are refused in a sentence", both === "plan_run takes steps or path, not both. Pass the calls as steps, or the workspace file that holds them as path.", String(both));
+  const neither = await reply(new Session(fakeEngine()), "plan_run", {});
+  check("neither steps nor path is refused in a sentence", neither === "plan_run needs steps (the calls, in order) or path (a workspace file holding them as a JSON list).", String(neither));
+  const bad = await reply(new Session(fakeEngine()), "plan_run", { path: "plan-bad.json" });
+  check("a file that is not JSON is refused", typeof bad === "string" && bad.includes("is not JSON"), String(bad));
+  const empty = await reply(new Session(fakeEngine()), "plan_run", { path: "plan-empty.json" });
+  check("a file with no steps is refused", typeof empty === "string" && empty.includes("holds no list of steps"), String(empty));
+  const missing = await reply(new Session(fakeEngine()), "plan_run", { path: "nope.json" });
+  check("a missing file is refused", typeof missing === "string" && missing.includes("was not found"), String(missing));
+  const outside = mkdtempSync(join(tmpdir(), "lime-mcp-plan-outside-"));
+  writeFileSync(join(outside, "plan.json"), JSON.stringify(list));
+  const away = await reply(new Session(fakeEngine()), "plan_run", { path: join(outside, "plan.json") });
+  check("a file outside the workspace is refused", typeof away === "string" && away.includes("inside LIME_MCP_WORKSPACE"), String(away));
+  writeFileSync(join(dir, "plan-wrong.json"), JSON.stringify([{ args: {} }]));
+  const wrong = await reply(new Session(fakeEngine()), "plan_run", { path: "plan-wrong.json" });
+  check("a step with no tool in the file is refused, naming the file", typeof wrong === "string" && wrong.startsWith("In plan-wrong.json:"), String(wrong));
+}
+
+// plan_run results: a list of step numbers.
+{
+  const session = new Session(fakeEngine());
+  const steps = [{ tool: "solid_new", args: { primitive: "box", dx: 10, dy: 10, dz: 10 } }, { tool: "model_describe", args: { object: "$1.object" } }, { tool: "model_describe", args: { object: "$1.object" } }, { tool: "session_info" }];
+  const picked = (await session.call("plan_run", { steps, results: [1, 3] })) as { ok?: boolean; steps: StepRow[] };
+  check("results [1, 3] gives steps 1 and 3 in full and the others lean", picked.ok === true && picked.steps[0]!.result !== undefined && picked.steps[2]!.result !== undefined && picked.steps[1]!.result === undefined && picked.steps[3]!.result === undefined && picked.steps[3]!.ok === true, JSON.stringify(picked.steps.map((row) => Object.keys(row))));
+  const high = await reply(new Session(fakeEngine()), "plan_run", { steps, results: [2, 9] });
+  check("a step number past the plan is refused with the range", high === "results names step 9, but the plan has 4 steps. Steps are numbered from 1 to 4.", String(high));
+  const zero = await reply(new Session(fakeEngine()), "plan_run", { steps, results: [0] });
+  check("step number 0 is refused", typeof zero === "string" && zero.length > 0 && !zero.startsWith("{"), String(zero));
+}
+
+// A long plan's progress is the plan's: (step index + the step's own fraction) / steps, not the last step's own number.
+{
+  const session = new Session(fakeEngine());
+  const seen: { fraction: number; stage: string }[] = [];
+  session.onProgress = (_job, fraction, stage) => seen.push({ fraction, stage });
+  const original = session.runCall.bind(session);
+  session.runCall = (name, args, meta, inPlan) => {
+    if (inPlan && name === "session_info" && meta) session.callContext.run(meta, () => {
+      session.noteStage("inner work", 0.5);
+      session.noteStage("inner work, nearly", 1);
+    });
+    return original(name, args, meta, inPlan);
+  };
+  const ctxs: { fraction?: number }[] = [];
+  const steps = [{ tool: "session_info" }, { tool: "session_info" }, { tool: "session_info" }, { tool: "session_info" }];
+  const done = await session.call("plan_run", { steps });
+  check("the plan with progressing steps completes", done.ok === true, JSON.stringify(done).slice(0, 200));
+  const second = seen.filter((row) => row.stage.startsWith("plan step 2 of 4"));
+  check("step 2 of 4 at half its own work is 0.375 of the plan", second.some((row) => Math.abs(row.fraction - 0.375) < 1e-9), JSON.stringify(second));
+  check("the plan's fraction never goes back", seen.every((row, i) => i === 0 || row.fraction >= seen[i - 1]!.fraction - 1e-9), JSON.stringify(seen.map((row) => row.fraction)));
+  check("a step's stage is kept under the plan's step label", second.some((row) => row.stage === "plan step 2 of 4: session_info: inner work"), JSON.stringify(second));
+  void ctxs;
 }
 
 // The pure parts.
