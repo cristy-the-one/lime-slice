@@ -29,10 +29,11 @@ import { typedView } from "../../src/modeling/typed-view.ts";
 import { gearPairRows, gearsInTree } from "../../src/gear-pair.ts";
 import { CONTACT_MM, exactVerdict, interference, MESH_TOLERANCE_MM, SLIVER_MM3 } from "../../src/interference.ts";
 import { assemblyOf, drives, solveAssembly, type Assembly } from "../../src/assembly.ts";
-import { firstContact, KERNEL_CALLS, kernelContact, pairClearance, type ContactPart, type KernelVerdict } from "../../src/contact.ts";
+import { firstContactSteps, KERNEL_CALLS, kernelContact, pairClearance, type ContactPart, type KernelVerdict } from "../../src/contact.ts";
 import { trainTurn } from "../../src/gear-train.ts";
 import { featureSolidInModel } from "../../src/model-features.ts";
 import { noteTreeCall } from "./mesh-end.ts";
+import { eventLoopTurn } from "../animation-run.ts";
 import { modelMass } from "./mass.ts";
 import { CHORD, type CallMeta, type Ghost, MESH_EDIT, ModelRunaway, type ObjectToolHandler, PLACE_KEYS, type PlateObject, posedPositions, STEP, type ToolHandler, UNKNOWN_OBJECT, modelSteps, shownName, stepFileName } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -151,6 +152,8 @@ const SWEEP_REFINE_DEG = 0.5;
 const SWEEP_MAX_STEPS = 1000;
 /** The finest step a sweep takes, degrees. */
 const SWEEP_MIN_STEP = 0.01;
+/** A sweep or an until search gives the event loop a turn after this much work, ms. */
+const SWEEP_SLICE_MS = 20;
 
 /** `assembly` with no joint limits, so a sweep can find them. */
 function unlimited(assembly: Assembly): Assembly {
@@ -168,11 +171,15 @@ function movedMembers(before: Map<string, Affine>, after: Map<string, Affine>, i
 }
 
 /**
- * `model_check {sweep:{from, to, step, tolerance}}`: turn the part's hinge through the range, as model_place {angle}
- * would, its gear train with it (docs/plan-contact-poses.md: a coupled train follows; limits left out: this is for
- * finding them), and stop at the first angle where it or anything that moves with it shares volume with a part that
- * does not move. The mesh pass finds candidates; the kernel measures them, as model_check {interference, exact} does.
- * The crossing is then bisected to `tolerance` degrees. Poses are put back as they were, and nothing is undoable.
+ * `model_check {sweep:{from, to, step, tolerance, ignore}}`: turn the part's hinge through the range, as model_place
+ * {angle} would, its gear train with it (docs/plan-contact-poses.md: a coupled train follows; limits left out: this is
+ * for finding them), and stop at the first angle where it or anything that moves with it shares volume with a part that
+ * does not move. Only those pairs, a moving part with a still one, are compared. The mesh pass finds candidates; the
+ * kernel measures them, as model_check {interference, exact} does. Pairs that already cross where the hinge stands (a
+ * press or friction fit) are left out, as model_place {until} leaves them, and so are the pairs `ignore` names. The
+ * crossing is then bisected to `tolerance` degrees. The sweep gives the event loop a turn every SWEEP_SLICE_MS, so a
+ * long one sends progress, goes on as a job, and stops on cancel. Poses are put back as they were on every way out, and
+ * nothing is undoable.
  */
 async function jointSweep(this: Session, host: PlateObject, spec: Record<string, unknown>): Promise<Record<string, unknown>> {
   const part = typeof spec.object === "string" ? this.find(spec.object) : host;
@@ -192,6 +199,20 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
   if (typeof refine !== "number" || !Number.isFinite(refine) || refine < 0.001 || refine > 45) return refuse("bad-argument", "tolerance is degrees, from 0.001 to 45: the bisection pins the crossing to it.");
   const count = Math.floor(Math.abs(to - from) / step + 1e-9) + 1;
   if (count > SWEEP_MAX_STEPS) return refuse("bad-argument", `That is ${count} steps; a sweep tries at most ${SWEEP_MAX_STEPS}. Give a larger step.`);
+  // sweep.ignore: pairs of parts of this assembly the sweep leaves out, in either order.
+  const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  const named = new Map<string, [string, string]>();
+  if (spec.ignore !== undefined) {
+    const shape = "sweep.ignore is a list of pairs of parts: [[a, b], ...].";
+    if (!Array.isArray(spec.ignore)) return refuse("bad-argument", shape);
+    for (const row of spec.ignore as unknown[]) {
+      if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== "string" || typeof row[1] !== "string") return refuse("bad-argument", shape);
+      const stranger = (row as string[]).find((id) => !base.members.some((m) => m.object === id));
+      if (stranger !== undefined) return refuse("bad-argument", `sweep.ignore names ${stranger}, which is not a part of this assembly.`);
+      if (row[0] === row[1]) return refuse("bad-argument", `sweep.ignore pairs ${row[0]} with itself: name two different parts.`);
+      named.set(pairKey(row[0], row[1]), [row[0], row[1]]);
+    }
+  }
   const direction = to >= from ? 1 : -1;
   const angles = Array.from({ length: count }, (_, i) => from + direction * step * i);
   if (Math.abs(angles[angles.length - 1]! - to) > 1e-9) angles.push(to);
@@ -210,37 +231,84 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
     for (const id of movedMembers(start, solveAssembly(turned.assembly, poseOf).poses, ids)) moving.add(id);
     followers = turned.angles.filter((row) => row.object !== part.id).map((row) => row.object);
   }
+  // The pairs compared, in the assembly's order as model_check {interference} lists them: one part that moves, one that
+  // does not. A pair of two still parts cannot change along the sweep, and two that move together keep their fit.
+  const meshes = (assemblyOf(this.liveAssemblies(), part.id) ?? base).members.flatMap((row) => {
+    const obj = this.find(row.object);
+    if (!obj) return [];
+    const solid = !!obj.solid && obj.solid.positions.length >= 9;
+    const positions = solid ? obj.solid!.positions : obj.source;
+    return positions.length >= 9 ? [{ obj, solid, positions: positions instanceof Float32Array ? positions : new Float32Array(positions) }] : [];
+  });
+  type Mesh = (typeof meshes)[number];
+  const checked: [Mesh, Mesh][] = [];
+  for (let i = 0; i < meshes.length; i += 1) {
+    for (let j = i + 1; j < meshes.length; j += 1) if (moving.has(meshes[i]!.obj.id) !== moving.has(meshes[j]!.obj.id)) checked.push([meshes[i]!, meshes[j]!]);
+  }
+  const placedMesh = (row: Mesh) => ({ positions: row.positions, pose: row.solid ? row.obj.modelPose : thenPose(seatLift(row.obj.seatMm), row.obj.modelPose) });
   const saved = new Map(solved.members.flatMap((row) => { const obj = this.find(row.object); return obj ? [[obj.id, { m: [...obj.modelPose.m], t: [...obj.modelPose.t] }] as const] : []; }));
+  // A turn of the event loop every SWEEP_SLICE_MS: progress goes out, the reply timer can hand the call to a job, and
+  // slice_cancel (or the plan's cancel) is heard.
+  const signal = this.callContext.getStore()?.signal;
+  let stage = "sweep: starting";
+  let fraction = 0;
+  let last = Date.now();
+  const cancelled = { cancelled: true } as const;
+  const breathe = async (): Promise<boolean> => {
+    if (Date.now() - last <= SWEEP_SLICE_MS) return false;
+    this.noteStage(stage, fraction);
+    await eventLoopTurn();
+    last = Date.now();
+    return signal?.aborted === true;
+  };
+  const skipped = new Set<string>(named.keys());
   let evaluations = 0;
-  const crossing = async (angle: number): Promise<{ pairs: Record<string, unknown>[] } | { reason: string }> => {
+  const crossing = async (angle: number): Promise<{ pairs: Record<string, unknown>[] } | { reason: string } | typeof cancelled> => {
+    if (await breathe()) return cancelled;
     evaluations += 1;
     const turned = turnTo(angle);
     if ("reason" in turned) return { reason: turned.reason };
     this.writeSolved(turned.assembly, "", false);
-    const cheap = this.meshInterference(part);
-    if (cheap.ok !== true) return { reason: String(cheap.reason ?? "The parts could not be checked.") };
     const hits: Record<string, unknown>[] = [];
-    for (const row of cheap.pairs as Record<string, unknown>[]) {
-      if (moving.has(String(row.a)) === moving.has(String(row.b))) continue;
-      if (row.verdict !== "crossing" && !row.nested) continue;
-      const a = this.find(String(row.a)), b = this.find(String(row.b));
-      const measured = a && b ? await this.commonVolume(a, b) : { reason: "Part gone." };
+    for (const [ma, mb] of checked) {
+      if (await breathe()) return cancelled;
+      if (skipped.has(pairKey(ma.obj.id, mb.obj.id))) continue;
+      const cheap = interference(placedMesh(ma), placedMesh(mb), { toleranceMm: CONTACT_MM });
+      if (cheap.verdict !== "crossing" && !cheap.nested) continue;
+      const row = { a: ma.obj.id, b: mb.obj.id, names: [shownName(ma.obj.name), shownName(mb.obj.name)] };
+      const measured = await this.commonVolume(ma.obj, mb.obj);
       if ("reason" in measured) {
-        hits.push({ a: row.a, b: row.b, names: row.names, exact: false, note: measured.reason });
+        hits.push({ ...row, exact: false, note: measured.reason });
         continue;
       }
       const verdict = exactVerdict(measured.volumeMm3, [measured.volumes[0], measured.volumes[1]]);
-      if (verdict === "crossing") hits.push({ a: row.a, b: row.b, names: row.names, exact: true, volumeMm3: Math.round(measured.volumeMm3 * 1000) / 1000, ...(measured.boxMm ? { overlapMm: measured.boxMm } : {}) });
+      if (verdict === "crossing") hits.push({ ...row, exact: true, volumeMm3: Math.round(measured.volumeMm3 * 1000) / 1000, ...(measured.boxMm ? { overlapMm: measured.boxMm } : {}) });
     }
     return { pairs: hits };
   };
   const decimals = refine < 0.01 ? 1e4 : 100;
   const round = (value: number) => Math.round(value * decimals) / decimals + 0;
+  const r6 = (value: number) => Math.round(value * 1e6) / 1e6 + 0;
+  const total = angles.length;
+  const stopped = (where: string) => refuse("cancelled", `The sweep was cancelled ${where}; the poses are as they were and nothing changed.`);
   try {
-    let clear: number | null = null;
+    // Where the hinge stands: a pair that already crosses here is a fit meant to cross (a press or friction fit), and is
+    // left out of the sweep. When the sweep starts here, this pose is its first angle, now clear.
+    stage = "sweep: the pose where the hinge stands";
+    const atStart = await crossing(was);
+    if ("cancelled" in atStart) return stopped("at the pose where the hinge stands");
+    if ("reason" in atStart) return refuse("bad-placement", atStart.reason);
+    const fits = atStart.pairs.filter((row) => !skipped.has(pairKey(String(row.a), String(row.b))));
+    for (const row of fits) skipped.add(pairKey(String(row.a), String(row.b)));
+    const startsHere = Math.abs(angles[0]! - was) <= 1e-9;
+    let clear: number | null = startsHere ? angles[0]! : null;
     let hit: { angle: number; pairs: Record<string, unknown>[] } | null = null;
-    for (const angle of angles) {
+    for (let k = startsHere ? 1 : 0; k < total; k += 1) {
+      const angle = angles[k]!;
+      stage = `sweep: angle ${k + 1} of ${total} (${round(angle)} degrees)`;
+      fraction = (0.9 * k) / total;
       const here = await crossing(angle);
+      if ("cancelled" in here) return stopped(`at angle ${k + 1} of ${total} (${round(angle)} degrees)`);
       if ("reason" in here) return refuse("bad-placement", here.reason);
       if (here.pairs.length > 0) { hit = { angle, pairs: here.pairs }; break; }
       clear = angle;
@@ -250,30 +318,45 @@ async function jointSweep(this: Session, host: PlateObject, spec: Record<string,
       // Pin the first crossing between the last clear angle and the first crossing one.
       while (Math.abs(hit.angle - lo) > refine) {
         const mid: number = (hit.angle + lo) / 2;
+        stage = `sweep: pinning the crossing between ${round(lo)} and ${round(hit.angle)} degrees`;
+        fraction = 0.9;
         const here = await crossing(mid);
+        if ("cancelled" in here) return stopped(`while it pinned the crossing between ${round(lo)} and ${round(hit.angle)} degrees`);
         if ("reason" in here) return refuse("bad-placement", here.reason);
         if (here.pairs.length > 0) hit = { angle: mid, pairs: here.pairs };
         else lo = mid;
       }
       clear = lo;
     }
+    // How close the crossing was pinned: the bracket between the last clear angle and the first crossing one, which is
+    // the step itself when the step was already within tolerance and no bisection ran.
+    const pinned = hit && clear !== null ? r6(Math.abs(hit.angle - clear)) : null;
     const limits = { ...(hinge.min !== undefined ? { min: hinge.min } : {}), ...(hinge.max !== undefined ? { max: hinge.max } : {}) };
     const trainNote = followers.length ? ` Its gear train turned with it (${followers.map((id) => shownName(this.find(id)?.name ?? id)).join(", ")}).` : "";
+    const nameOf = (id: string) => shownName(this.find(id)?.name ?? id);
+    const ignored = [
+      ...fits.map((row) => ({ a: row.a, b: row.b, names: row.names, why: "crosses where the hinge stands" })),
+      ...[...named.values()].map(([a, b]) => ({ a, b, names: [nameOf(a), nameOf(b)], why: "named in sweep.ignore" })),
+    ];
+    const ignoredNote = ignored.length
+      ? ` Left out: ${ignored.map((row) => `${(row.names as string[]).join(" with ")} (${row.why})`).join("; ")}.${fits.length ? " A pair that already crosses where the hinge stands is taken as a fit meant to cross." : ""}`
+      : "";
     return {
       ok: true,
       object: part.id,
       assembly: base.name,
-      sweep: { from, to, step, tolerance: refine },
+      sweep: { from, to, step, tolerance: pinned ?? refine },
       ...(followers.length ? { train: followers } : {}),
       ...(hit ? { firstCollisionDeg: round(hit.angle), collidesWith: hit.pairs.map((row) => ({ ...row, other: moving.has(String(row.a)) ? row.b : row.a })) } : { collision: null }),
       clearRange: clear === null ? null : { fromDeg: from, toDeg: round(clear) },
+      ...(ignored.length ? { ignored } : {}),
       ...(Object.keys(limits).length ? { limits } : {}),
       evaluations,
       note: hit
         ? clear === null
-          ? "The part already crosses at the first angle: start the sweep from a clear pose."
-          : `Clear from ${from} to ${round(clear)}; it first crosses a fixed part by ${round(hit.angle)} (pinned to ${refine} degrees). Parts that ride on this one are swept with it.${trainNote} Poses are as they were.`
-        : `Clear over the whole sweep, ${from} to ${to}.${trainNote} Joint limits were not applied. Poses are as they were.`,
+          ? `The part already crosses at the first angle, ${from}: start the sweep from a clear pose, or name the pair in sweep.ignore.${ignoredNote}`
+          : `Clear from ${from} to ${round(clear)}; it first crosses a fixed part by ${round(hit.angle)} (pinned to ${pinned} degrees). Parts that ride on this one are swept with it.${trainNote}${ignoredNote} Poses are as they were.`
+        : `Clear over the whole sweep, ${from} to ${to}.${trainNote}${ignoredNote} Joint limits were not applied. Poses are as they were.`,
     };
   } finally {
     for (const [id, pose] of saved) { const obj = this.find(id); if (obj) obj.modelPose = pose as typeof obj.modelPose; }
@@ -327,11 +410,27 @@ async function placeUntil(this: Session, obj: PlateObject, input: Record<string,
   const solved = solveAssembly(base, poseOf, this.params).assembly;
   const name = (id: string) => shownName(this.find(id)?.name ?? id);
   const parts = contactParts.call(this, solved);
-  const found = firstContact(solved, poseOf, parts, {
+  // The shared solve a pose at a time, with a turn of the event loop every SWEEP_SLICE_MS: progress goes out, the reply
+  // timer can hand the call to a job, and slice_cancel is heard. Nothing has moved yet, so a cancel changes nothing.
+  const steps = firstContactSteps(solved, poseOf, parts, {
     object: obj.id, dir: until.dir, against, nameOf: name,
     ...(typeof until.max === "number" ? { max: until.max } : {}),
     ...(typeof until.tolerance === "number" ? { toleranceMm: until.tolerance } : {}),
   });
+  const signal = this.callContext.getStore()?.signal;
+  const cancelled = (where: string) => refuse("cancelled", `model_place {until} was cancelled ${where}; nothing moved.`);
+  let found: Exclude<ReturnType<typeof steps.next>["value"], number>;
+  let last = Date.now();
+  for (;;) {
+    const step = steps.next();
+    if (step.done) { found = step.value; break; }
+    if (Date.now() - last > SWEEP_SLICE_MS) {
+      this.noteStage(`until: ${step.value} poses tried`);
+      await eventLoopTurn();
+      last = Date.now();
+      if (signal?.aborted) return cancelled(`after ${step.value} poses`);
+    }
+  }
   if ("reason" in found) return refuse("bad-placement", found.reason);
   const unit = found.kind === "hinge" ? "degrees" : "mm";
   const key = found.kind === "hinge" ? "angle" : "travel";
@@ -393,6 +492,7 @@ async function placeUntil(this: Session, obj: PlateObject, input: Record<string,
       for (const [id, pose] of saved) { const one = this.find(id); if (one) one.modelPose = pose as typeof one.modelPose; }
     }
   }
+  if (signal?.aborted) return cancelled("after the kernel's check");
   this.remember("Pose");
   this.assemblies = assemblies.map((row) => (row.id === base.id ? placed.assembly : row));
   const moved = this.writeSolved(placed.assembly, "", true);
@@ -544,7 +644,8 @@ function gearPairs(objects: readonly PlateObject[], objectId: string) {
 
 async function modelCheck(this: Session, obj: PlateObject, input: Record<string, unknown>): Promise<Record<string, unknown>> {
   const reply = await modelCheckBody.call(this, obj, input);
-  if (reply.ok !== true) return reply;
+  // A sweep answers about its hinge; the gear pairs ride only on the other checks' replies.
+  if (reply.ok !== true || input.sweep !== undefined) return reply;
   const gears = gearPairs(this.objects, obj.id);
   return gears.length > 0 ? { ...reply, gears } : reply;
 }
