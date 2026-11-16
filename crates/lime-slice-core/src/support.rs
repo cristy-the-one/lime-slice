@@ -105,6 +105,8 @@ pub struct SupportOpts {
     /// across, prints as a bridge and asks for no support, mm. `0` asks
     /// for support under every bridge.
     pub bridge_mm: f64,
+    /// On a belt, a hairline of part over air asks for a bead of support.
+    pub hold_thin: bool,
 }
 
 /// How wide a gap between enforce dabs on one layer is filled when the
@@ -238,6 +240,7 @@ impl Default for SupportOpts {
             bead_width: 0.45,
             line_width: 0.45,
             bridge_mm: 0.0,
+            hold_thin: false,
         }
     }
 }
@@ -819,8 +822,11 @@ impl Demand {
             .into_par_iter()
             .map(|i| {
                 let asked = match opts.source {
-                    SupportSource::Auto if opts.floor.is_some() => {
+                    SupportSource::Auto if opts.floor.is_some() && opts.hold_thin => {
                         belt_overhang_at(bands, own, i, angle, opts.line_width)
+                    }
+                    SupportSource::Auto if opts.floor.is_some() => {
+                        past_hairline(overhang_at(bands, own, i, angle), bands[i].height / angle)
                     }
                     SupportSource::Auto => overhang_at(bands, own, i, angle),
                     SupportSource::Paint => Vec::new(),

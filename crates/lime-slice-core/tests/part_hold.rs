@@ -179,24 +179,50 @@ endfacet
     out
 }
 
+/// The side ledge on the belt with supports of `style`, holding thin strips
+/// when `hold_thin` is `Some`.
+fn side_ledge_hold(from_front: f64, style: &str, hold_thin: Option<bool>) -> PartHold {
+    let mut belt = ir3();
+    belt["floorSupports"] = json!(true);
+    let mut extra = json!({ "belt": belt, "supports": true, "supportStyle": style });
+    if let Some(on) = hold_thin {
+        extra["supportBeltHoldThin"] = json!(on);
+    }
+    hold(&wall_and_side_ledge(from_front), extra)
+}
+
 /// The first plane to cut a ledge may cut a hair of it. That hair printed as
 /// a thin wall 24 mm long over nothing, and the supports never asked: 3 mm
-/// and 30 mm from the front were such places, 24 mm was not.
+/// and 30 mm from the front were such places, 24 mm was not. Holding thin
+/// strips gives that first bead support wherever the ledge sits.
 #[test]
 fn a_ledge_born_on_the_belt_is_held_wherever_it_sits() {
     for style in ["tree", "grid"] {
         for from_front in [3.0, 24.0, 30.0] {
-            let mut belt = ir3();
-            belt["floorSupports"] = json!(true);
-            let part = hold(
-                &wall_and_side_ledge(from_front),
-                json!({ "belt": belt, "supports": true, "supportStyle": style }),
-            );
+            let part = side_ledge_hold(from_front, style, Some(true));
             assert!(
                 part.longest_span_mm < 6.0,
                 "{style} {from_front} mm from the front: {part:?}"
             );
         }
+    }
+}
+
+/// Without the setting (the default) the belt keeps its old supports: the
+/// ledge's first bead stays unheld 3 and 30 mm from the front, and is held
+/// 24 mm from it.
+#[test]
+fn a_ledge_born_on_the_belt_is_unheld_at_some_places_by_default() {
+    for style in ["tree", "grid"] {
+        for from_front in [3.0, 30.0] {
+            let part = side_ledge_hold(from_front, style, None);
+            assert!(
+                part.longest_span_mm > 20.0,
+                "{style} {from_front} mm from the front: {part:?}"
+            );
+        }
+        let part = side_ledge_hold(24.0, style, None);
+        assert!(part.longest_span_mm < 6.0, "{style} 24 mm: {part:?}");
     }
 }
 

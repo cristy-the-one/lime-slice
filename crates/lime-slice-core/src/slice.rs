@@ -393,6 +393,7 @@ fn resolved(settings: &SliceSettings) -> SliceSettings {
         settings.support_tree_brim_mm = None;
         settings.support_anchor_mm = None;
         settings.support_bridge_mm = 0.0;
+        settings.support_hold_thin = false;
         settings.bridge_flow_ratio = None;
         settings.bridge_speed_mm_s = None;
         settings.bridge_fan_percent = None;

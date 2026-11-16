@@ -214,6 +214,17 @@ pub struct SliceRequest {
     /// bridge, as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support_bridge_mm: Option<f64>,
+    /// On a belt, hold the thin strips the slicer prints as a whole bead: the
+    /// first hair of a flat underside a nozzle plane cuts asks for a bead of
+    /// support, and an interface patch or a grid column thinner than its line
+    /// spacing prints one line along it. Omitted or `false` leaves them as
+    /// before; a flat bed never uses it. Wire name keeps "belt" (see above).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "supportBeltHoldThin"
+    )]
+    pub support_hold_thin: Option<bool>,
     /// Multiplier on a bridge bead. Omitted keeps 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_flow_ratio: Option<f64>,
@@ -517,6 +528,8 @@ pub struct SliceSettings {
     pub support_anchor_mm: Option<f64>,
     /// Longest bridge printed without support, mm. `0` supports every bridge.
     pub support_bridge_mm: f64,
+    /// On a belt, thin strips printed as a whole bead get a bead of support.
+    pub support_hold_thin: bool,
     /// `None` keeps bridge flow at 1.
     pub bridge_flow_ratio: Option<f64>,
     /// `None` keeps the 18–36 mm/s bridge slowdown.
@@ -638,6 +651,7 @@ impl Default for SliceSettings {
             support_tree_brim_mm: None,
             support_anchor_mm: None,
             support_bridge_mm: 0.0,
+            support_hold_thin: false,
             bridge_flow_ratio: None,
             bridge_speed_mm_s: None,
             bridge_fan_percent: None,
@@ -814,6 +828,10 @@ impl SliceSettings {
                 .filter(|mm| !req.classic && req.belt.is_some() && mm.is_finite() && *mm > 0.0)
                 .map(|mm| mm.clamp(BELT_ANCHOR_MIN_MM, BELT_ANCHOR_MAX_MM)),
             support_bridge_mm: support_bridge(req.classic, req.support_bridge_mm),
+            // Only a belt cuts a flat underside in one nozzle plane.
+            support_hold_thin: req.support_hold_thin == Some(true)
+                && !req.classic
+                && req.belt.is_some(),
             bridge_flow_ratio: bridge_flow(req.classic, req.bridge_flow_ratio),
             bridge_speed_mm_s: bridge_speed(req.classic, req.bridge_speed_mm_s),
             bridge_fan_percent: bridge_fan(req.classic, req.bridge_fan_percent),
@@ -962,8 +980,13 @@ impl SliceSettings {
             } else {
                 String::new()
             };
+            let thin = if self.support_hold_thin {
+                ", thin belt strips held"
+            } else {
+                ""
+            };
             format!(
-                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim}{anchors}{bridges})",
+                "supports {style} ({angle}shaft ×{:.1}{organic}{fragile}{brim}{anchors}{bridges}{thin})",
                 self.support_height_mult.max(1.0)
             )
         } else {

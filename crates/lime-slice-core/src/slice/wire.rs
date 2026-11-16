@@ -72,6 +72,7 @@ const SETTING_SCOPES: &[(&str, Scope)] = &[
     ("supportSource", Scope::Object),
     ("supportHeightMult", Scope::Object),
     ("supportBridgeMm", Scope::Object),
+    ("supportBeltHoldThin", Scope::Object),
     ("scarfSeam", Scope::Object),
     ("scarfLength", Scope::Object),
     ("scarfSteps", Scope::Object),
