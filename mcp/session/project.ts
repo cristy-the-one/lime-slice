@@ -256,6 +256,63 @@ function fanOf(this: Session, profile: ProjectProfile): { fanPercent: number; ov
   };
 }
 
+/** What a section of a saved file weighs, in bytes of its JSON. `other` is the rest: placements, settings, summary. */
+export interface SaveSections {
+  version: number;
+  total: number;
+  sections: Record<string, number>;
+}
+
+const SECTION_NAMES: [string, string][] = [
+  ["meshes", "meshes"],
+  ["modelHistory", "model history"],
+  ["recipes", "recipes"],
+  ["fonts", "fonts"],
+  ["thumbnail", "thumbnail"],
+  ["settings", "settings"],
+  ["other", "other"],
+];
+
+/**
+ * The sections of a saved .lime by size, read from its text: meshes (every object's mesh and solid, and the file's first
+ * mesh), model history (each object's tree and the tools that left the plate), recipes (the MCP model, plugins and
+ * parameters), fonts, thumbnail, settings (settings, profile, overrides, layer actions), and the rest. Null when the
+ * text is not a project this can read.
+ */
+export function saveSections(text: string): SaveSections | null {
+  let doc: Record<string, unknown>;
+  try {
+    doc = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== "object") return null;
+  const size = (value: unknown) => (value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value, null, 2)));
+  const total = Buffer.byteLength(text);
+  const sections: Record<string, number> = { meshes: size(doc.mesh), modelHistory: size(doc.modelTools), recipes: size(doc.mcpModel) + size(doc.plugins) + size(doc.parameters), fonts: size(doc.fonts), thumbnail: size(doc.thumbnail), settings: size(doc.settings) + size(doc.profile) + size(doc.overrides) + size(doc.layerActions) };
+  for (const row of Array.isArray(doc.objects) ? (doc.objects as Record<string, unknown>[]) : []) {
+    sections.meshes! += size(row.mesh) + size(row.brep);
+    sections.modelHistory! += size(row.modelTree);
+    sections.settings! += size(row.settings);
+  }
+  const known = Object.values(sections).reduce((sum, value) => sum + value, 0);
+  sections.other = Math.max(0, total - known);
+  return { version: typeof doc.version === "number" ? doc.version : 0, total, sections };
+}
+
+const megabytes = (bytes: number) => (bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+/** The sections that weigh clearly less than in the file this save replaced (over 5 % and 4 KB), by name. */
+function shrunkSections(before: SaveSections, after: SaveSections): { section: string; from: number; to: number }[] {
+  const out: { section: string; from: number; to: number }[] = [];
+  for (const [key, label] of SECTION_NAMES) {
+    const from = before.sections[key] ?? 0;
+    const to = after.sections[key] ?? 0;
+    if (from - to > 4096 && to < from * 0.95) out.push({ section: label, from, to });
+  }
+  return out;
+}
+
 function placementOf(this: Session, obj: PlateObject): ProjectPlacement {
   return {
     orient: [...obj.orient] as ProjectPlacement["orient"],
@@ -630,6 +687,15 @@ async function projectSave(this: Session, name: string, refuseExisting = false):
     if (loss) return refuse("project-unsaved", loss);
   }
   const text = await encodeProject(doc);
+  // The file about to be replaced, when it is the project's own: its section sizes are what this save is compared with.
+  let replaced: SaveSections | null = null;
+  if (this.sourcePath && path === this.sourcePath && existsSync(path)) {
+    try {
+      replaced = saveSections(readFileSync(path, "utf8"));
+    } catch {
+      replaced = null;
+    }
+  }
   writeFileSync(path, text);
   this.sourceProject = structuredClone(doc);
   this.sourceHash = createHash("sha256").update(text).digest("hex");
@@ -641,7 +707,17 @@ async function projectSave(this: Session, name: string, refuseExisting = false):
     const kept = obj && obj.bytes.byteLength > 0 ? "the plate keeps its last committed mesh" : "the plate holds its open kernel mesh";
     return `${row.name} (${row.object}) was saved without committing its current step: ${row.reason.replace(/ It was not put on the plate[^.]*\./, "")} Its history is saved whole, and ${kept}.`;
   });
-  return { ok: true, path, bytes: Buffer.byteLength(text), ...(warnings.length ? { warnings, uncommitted: refused.map((row) => row.object) } : {}) };
+  const now = saveSections(text);
+  // A file older than version 4 holds its meshes uncompressed, so its sections are not comparable with this one's.
+  const shrank = replaced && now && replaced.version === now.version ? shrunkSections(replaced, now) : [];
+  return {
+    ok: true,
+    path,
+    bytes: Buffer.byteLength(text),
+    ...(now ? { sections: Object.fromEntries(Object.entries(now.sections).filter(([, value]) => value > 0)) } : {}),
+    ...(shrank.length ? { shrank, note: `Compared with the file this save replaced: ${shrank.map((row) => `${row.section} went from ${megabytes(row.from)} to ${megabytes(row.to)}`).join("; ")}. If you did not remove or simplify them, check that nothing was dropped.` } : {}),
+    ...(warnings.length ? { warnings, uncommitted: refused.map((row) => row.object) } : {}),
+  };
 }
 
 /**

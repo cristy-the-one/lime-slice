@@ -1018,7 +1018,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_save",
-    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse.",
+    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. The reply gives bytes per section, and names one that shrank against the file it replaced.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
