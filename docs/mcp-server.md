@@ -1792,7 +1792,7 @@ The slice body is the session: objects, machine, settings. It is not repeated in
 }
 ```
 
-`export_3mf` input is `{name}`. Output is `{ok, reason?, path, bytes}`. The bytes are `encode3mf` of the plate meshes. They are not a packed G-code 3MF.
+`export_3mf` input is `{name, object?}`. Output is `{ok, reason?, path, bytes, written: [{object, name}], note}`. The bytes are `encode3mf` of the plate meshes. With `object`, only that object is written, as it is posed on the plate (before this, `object` was accepted and ignored and the whole plate was written); `note` says which objects are in the file and how many others are not. An `object` that is not on the plate is refused (`no-object`). With `pieces: true`, `object` is the object to split, as before. There is no STL export of the plate: `stl: true` is only for pieces. They are not a packed G-code 3MF.
 
 `object_select` input is `{object}`. Output is `{ok, object, name}`.
 

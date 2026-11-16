@@ -504,15 +504,27 @@ function gcodeExport(this: Session, input: Record<string, unknown>): Record<stri
   return { ok: true, path, bytes: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") };
 }
 
-async function export3mf(this: Session, name: string): Promise<Record<string, unknown>> {
+/** The plate as a 3MF, or with `objectId` only that object, posed as it stands on the plate. The reply names the objects written. */
+async function export3mf(this: Session, name: string, objectId?: string): Promise<Record<string, unknown>> {
   if (this.objects.length === 0) return refuse("plate-empty", "The plate is empty.", undefined, NEXT.empty);
-  const refused = (await this.commitAll())[0];
+  const only = objectId !== undefined && objectId !== "" ? this.find(objectId) : null;
+  if (objectId !== undefined && objectId !== "" && !only) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+  let refused: { object: string; name: string; reason: string } | undefined;
+  if (only) {
+    const reason = await this.commitObject(only);
+    if (reason) refused = { object: only.id, name: shownName(only.name), reason };
+  } else refused = (await this.commitAll())[0];
   if (refused) return refuse("commit-failed", `${refused.name} (${refused.object}): ${refused.reason}`, { object: refused.object });
-  const meshes = this.objects.map((obj) => this.placed(obj).positions);
-  const bytes = encode3mf(meshes);
+  const written = only ? [only] : this.objects;
+  const bytes = encode3mf(written.map((obj) => this.placed(obj).positions));
   const path = resolveWrite(name, ".3mf");
   writeFileSync(path, bytes);
-  return { ok: true, path, bytes: bytes.byteLength };
+  const objects = written.map((obj) => ({ object: obj.id, name: shownName(obj.name) }));
+  const left = this.objects.length - written.length;
+  const note = only
+    ? `Wrote only ${objects[0]!.name} (${only.id}) as it stands on the plate; ${left === 0 ? "no other object is on the plate" : `${left} other object${left === 1 ? " is" : "s are"} not in the file`}.`
+    : `Wrote ${objects.length} object${objects.length === 1 ? "" : "s"}: ${objects.map((row) => `${row.name} (${row.object})`).join(", ")}.`;
+  return { ok: true, path, bytes: bytes.byteLength, written: objects, note };
 }
 
 function meshStats(this: Session, id: string): Record<string, unknown> {
@@ -608,7 +620,7 @@ export const sliceHandlers: Record<string, ToolHandler> = {
   slice_cancel: (s, input) => s.sliceCancel(String(input.job)),
   gcode_summary: (s, input) => s.gcodeSummary(typeof input.job === "string" ? input.job : undefined, input.lines === true),
   gcode_export: (s, input) => s.gcodeExport(input),
-  export_3mf: (s, input) => input.pieces === true ? s.exportPieceMeshes(input) : s.export3mf(String(input.name)),
+  export_3mf: (s, input) => input.pieces === true ? s.exportPieceMeshes(input) : s.export3mf(String(input.name), typeof input.object === "string" ? input.object : undefined),
   mesh_stats: (s, input) => s.meshStats(String(input.object)),
   layer_summary: (s, input) => s.layerSummary(typeof input.job === "string" ? input.job : undefined),
 };

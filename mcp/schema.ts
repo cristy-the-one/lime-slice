@@ -1369,7 +1369,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "export_3mf",
     description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name.",
-    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: handle, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
+    inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: { ...handle, description: "Write only this object, as posed on the plate. With pieces: the object to split." }, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {
     name: "mesh_stats",
