@@ -11,6 +11,11 @@ export interface ThinRegion {
   max: V3;
   thinnestMm: number;
   areaMm2: number;
+  /**
+   * At the thinnest reading, degrees the far face turns from facing straight back at the near one: about 0 for a wall's
+   * two sides, up to `WALL_FACING_DEG` for a wedge, a seam or a slot's edge. Read only; it changes no rule.
+   */
+  facingDeg?: number;
 }
 
 const round = (n: number, k = 2) => Math.round(n * 10 ** k) / 10 ** k;
@@ -176,7 +181,7 @@ export function thinWalls(pos: Float32Array, minMm: number, samples = 6000, opti
   }
   // Spread by area: each triangle gets its share of the samples, at least its centre when it is large enough to matter.
   const per = Math.max(total / samples, 1e-9);
-  const cells = new Map<string, { area: number; sum: V3; min: V3; max: V3; thinnest: number }>();
+  const cells = new Map<string, { area: number; sum: V3; min: V3; max: V3; thinnest: number; facingDeg: number }>();
   let thinArea = 0;
   let sampled = 0;
   let carry = 0;
@@ -208,12 +213,14 @@ export function thinWalls(pos: Float32Array, minMm: number, samples = 6000, opti
       // The far face must turn back toward this one: its outward normal against this face's (minus the inward ray).
       const far = grid.normal(hit.tri);
       const farLength = Math.hypot(far[0], far[1], far[2]);
-      if (!(farLength > 0) || -(far[0] * inward[0] + far[1] * inward[1] + far[2] * inward[2]) / farLength > facing) continue;
+      const back = (far[0] * inward[0] + far[1] * inward[1] + far[2] * inward[2]) / farLength;
+      if (!(farLength > 0) || -back > facing) continue;
       const depth = hit.distance;
       thinArea += share;
       const key = c.map((v) => Math.floor(v / 5)).join(",");
-      const row = cells.get(key) ?? { area: 0, sum: [0, 0, 0] as V3, min: [Infinity, Infinity, Infinity] as V3, max: [-Infinity, -Infinity, -Infinity] as V3, thinnest: Infinity };
+      const row = cells.get(key) ?? { area: 0, sum: [0, 0, 0] as V3, min: [Infinity, Infinity, Infinity] as V3, max: [-Infinity, -Infinity, -Infinity] as V3, thinnest: Infinity, facingDeg: 0 };
       row.area += share;
+      if (depth < row.thinnest) row.facingDeg = (Math.acos(Math.min(1, Math.max(-1, back))) * 180) / Math.PI;
       row.thinnest = Math.min(row.thinnest, depth);
       for (let m = 0; m < 3; m += 1) {
         row.sum[m] += c[m]! * share;
@@ -229,6 +236,7 @@ export function thinWalls(pos: Float32Array, minMm: number, samples = 6000, opti
     max: row.max.map((v) => round(v)) as V3,
     thinnestMm: round(row.thinnest, 3),
     areaMm2: round(row.area, 1),
+    facingDeg: round(row.facingDeg, 1),
   }));
   return { regions, areaMm2: round(thinArea, 1), sampled };
 }

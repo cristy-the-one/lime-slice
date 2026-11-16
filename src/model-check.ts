@@ -179,10 +179,15 @@ function thinRows(regions: readonly ThinRegion[]): CheckRow[] {
 }
 
 function fitRow(value: unknown, part: MmBox): CheckRow {
-  const rec = value && typeof value === "object" ? (value as { fits?: unknown; over?: unknown; buildVolumeMm?: unknown }) : {};
+  const rec = value && typeof value === "object" ? (value as { fits?: unknown; over?: unknown; buildVolumeMm?: unknown; note?: unknown }) : {};
   const over = Array.isArray(rec.over) ? rec.over.filter((axis): axis is string => typeof axis === "string" && axis.length > 0) : [];
   const around = atPhrase(centreOf(part));
   const size = sizePhrase(part);
+  // A belt's fit carries a note: it limits the width across it and the height, not the length along it.
+  if (typeof rec.note === "string") {
+    if (over.length === 0) return { text: `Fits the belt's width and the printer's height, ${size}, around ${around}.`, box: part, bad: false };
+    return { text: `Larger than the belt allows along ${over.map((axis) => axis.toUpperCase()).join(", ")}, ${size}, around ${around}.`, box: part, bad: true };
+  }
   if (over.length === 0) return { text: `Fits the build volume, ${size}, around ${around}.`, box: part, bad: false };
   const build = readVec(rec.buildVolumeMm);
   const against = build ? ` against ${build.map((axis) => roundMm(axis)).join(" × ")} mm` : "";
@@ -204,7 +209,10 @@ export function assembleCheck(
 ): ModelCheckReport {
   const warnings = [...(Array.isArray(checked.warnings) ? checked.warnings.filter((line): line is string => typeof line === "string" && line.length > 0) : []), ...extraWarnings];
   const rows = [...overhangRows(checked.overhang), ...ceilingRows(checked.ceilings), ...islandRows(checked.islands), ...thinRows(thin.regions), fitRow(checked.fit, part)];
-  return { rows, warnings, note: checkSummary(rows, warnings) };
+  // On a belt the note says which way the layers stack, so a reader knows what the overhangs were read against.
+  const build = checked.build && typeof checked.build === "object" ? (checked.build as { text?: unknown }).text : undefined;
+  const summary = checkSummary(rows, warnings);
+  return { rows, warnings, note: typeof build === "string" ? `${summary} ${build}` : summary };
 }
 
 /** The part's own box, for the fit row. Empty when the mesh has no point. */

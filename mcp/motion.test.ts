@@ -8,9 +8,12 @@
  * - slice_cancel stops a run between slices.
  * - keys:true gives a key per 1/fps s; out writes a GIF and PNG frames through pose_animate's writer, as many frames as
  *   the sampler makes of those keys, and nothing on the plate moves.
+ * - With no colours the frames draw the parts in palette colours; partColours paints a part and fit frames it (the
+ *   options render_view has), refused without out or for a part that is not there.
  * - Refusals: numbers that do not fit the parts, a drive on the frame, a part outside the assembly.
  */
-import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -116,6 +119,37 @@ check("findStart is a field", validateTool("motion_run", { object: wheel, escape
   const files = r.files as { gif: string; frames: string; count: number };
   const pngs = readdirSync(join(process.env.LIME_MCP_WORKSPACE!, "run-frames")).filter((name) => name.endsWith(".png"));
   check(`out writes the GIF and ${pngs.length} PNG frames, as many as the sampler made (${frames?.count}), no .partial left`, existsSync(files?.gif) && pngs.length === frames.count && files.count === frames.count && !readdirSync(process.env.LIME_MCP_WORKSPACE!).some((name) => name.endsWith(".partial")), { files, frames, pngs: pngs.length });
+}
+
+// --- Colours and framing of the frames (feedback 4.6): render_view's partColours and fit, and a palette by default.
+{
+  const pngRgb = (file: string) => {
+    const png = readFileSync(file), width = png.readUInt32BE(16), height = png.readUInt32BE(20), parts: Buffer[] = [];
+    for (let at = 8; at < png.length;) {
+      const length = png.readUInt32BE(at);
+      if (png.toString("latin1", at + 4, at + 8) === "IDAT") parts.push(png.subarray(at + 8, at + 8 + length));
+      at += 12 + length;
+    }
+    const raw = inflateSync(Buffer.concat(parts)), rgb: [number, number, number][] = [];
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const at = y * (width * 3 + 1) + 1 + x * 3; rgb.push([raw[at]!, raw[at + 1]!, raw[at + 2]!]); }
+    return rgb;
+  };
+  const count = (file: string, test: (rgb: [number, number, number]) => boolean) => pngRgb(file).filter(test).length;
+  const magenta = ([r, g, b]: [number, number, number]) => r > g + 60 && b > g + 60 && Math.abs(r - b) < 40;
+  const coloured = ([r, g, b]: [number, number, number]) => Math.max(r, g, b) - Math.min(r, g, b) > 30;
+  const first = (dir: string) => join(process.env.LIME_MCP_WORKSPACE!, dir, "frame-001.png");
+  // The run above gave no colours: its parts are drawn in the palette's colours, not all grey.
+  check(`no colours given: palette colours in the frames (${count(first("run-frames"), coloured)} coloured pixels)`, count(first("run-frames"), coloured) > 100);
+  const run = { object: wheel, escapement, drive: { member: wheel, torque: 0.25 }, seconds: 0.4, push: 3.5, sweep: false, fps: 5, longEdge: 96 };
+  const painted = await wait(await call("motion_run", { ...run, partColours: { [bob]: "#ff00ff" }, out: { frames: "painted-frames" } }));
+  const framed = await wait(await call("motion_run", { ...run, partColours: { "Bob.stl": "#ff00ff" }, fit: [bob], out: { frames: "framed-frames" } }));
+  const plainBob = painted.ok === true ? count(first("painted-frames"), magenta) : 0, fitBob = framed.ok === true ? count(first("framed-frames"), magenta) : 0;
+  check(`partColours paints the bob (${plainBob} magenta pixels; none in the plain run)`, painted.ok === true && plainBob > 10 && count(first("run-frames"), magenta) === 0, painted);
+  check(`fit on the bob frames it: ${fitBob} magenta pixels against ${plainBob}`, framed.ok === true && fitBob > 2 * plainBob, framed);
+  const unknown = await call("motion_run", { ...run, fit: ["Nope"], out: { frames: "never" } });
+  check(`a fit on no part is refused before the run: "${unknown.reason}"`, unknown.ok === false && unknown.code === "bad-view" && unknown.reason === 'fit: no part named "Nope" is in this assembly.', unknown);
+  const unused = await call("motion_run", { ...run, partColours: { [bob]: "#ff00ff" } });
+  check(`partColours without out is refused: "${unused.reason}"`, unused.ok === false && unused.code === "bad-view" && String(unused.reason).includes("give out"), unused);
 }
 
 // --- Refusals.

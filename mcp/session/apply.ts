@@ -291,7 +291,8 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
       meta.fraction = fraction;
       meta.stage = stage;
     }
-    this.onProgress?.("model", fraction, stage, meta?.progressToken);
+    const top = meta?.plan ?? meta;
+    this.onProgress?.("model", top?.fraction ?? fraction, top?.stage ?? stage, meta?.progressToken);
   };
   // A cancelled call, or one the client gave up on, takes the whole run back: the part is as it was before it.
   const cancelled = async (): Promise<Record<string, unknown>> => {

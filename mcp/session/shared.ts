@@ -161,7 +161,7 @@ export const IMPORT_BUILD_LIMIT_MS = 30_000;
 export const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
-  "sim_run", "sim_sweep", "model_params", "recipe_run", "pose_animate", "motion_run",
+  "sim_run", "sim_sweep", "model_params", "recipe_run", "pose_animate", "motion_run", "model_check", "model_place",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -172,7 +172,7 @@ export const WHILE_BUSY = new Set([
 ]);
 
 /** Detachable calls that change no part: a cancelled one is simply left to finish. */
-export const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step"]);
+export const CHANGES_NOTHING = new Set(["model_probe", "project_save", "app_open", "export_3mf", "model_export_step", "model_check"]);
 
 /** Seconds a detachable call runs before it answers with a job instead: under a 60 s client timeout. */
 export function replySeconds(): number {
@@ -189,6 +189,8 @@ export interface CallMeta {
   stage?: string;
   /** Reserved before a plan starts so each autosave can identify its eventual background job. */
   planJob?: string;
+  /** On a plan step's own context: the plan's. A step's progress is reported there as part of the whole plan. */
+  plan?: CallMeta;
 }
 
 /** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */

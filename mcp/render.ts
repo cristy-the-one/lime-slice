@@ -129,6 +129,18 @@ export function readBackground(raw: unknown): { rgb: Vec } | { reason: string } 
   return { rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255] };
 }
 
+/**
+ * Parts drawn together with no colour of their own take these, by their place in the assembly: an animation's frames
+ * tell the parts apart. Ten muted hues that stay apart under the shading and through a GIF's 3/3/2 palette; an
+ * eleventh part takes the first again.
+ */
+export const PART_PALETTE: readonly Vec[] = [
+  [78, 121, 167], [242, 142, 43], [89, 161, 79], [225, 87, 89], [118, 183, 178],
+  [237, 201, 72], [176, 122, 161], [255, 157, 167], [156, 117, 95], [186, 176, 172],
+];
+/** The palette colour of the part at `index` (0-based) of the parts drawn. */
+export const partPaletteColour = (index: number): Vec => PART_PALETTE[index % PART_PALETTE.length]!;
+
 /** The colour the inside of a part shows where a section cuts it. */
 const CUT: Vec = [205, 70, 60];
 /** Facets that meet at less than this many degrees share their shading. */

@@ -15,6 +15,7 @@ import { BACKGROUND, readBackground, readCamera } from "../render.ts";
 import { resolveWrite } from "../workspace.ts";
 import { NEXT, refuse } from "../refusals.ts";
 import { posedPositions, shownName, type CallMeta, type ToolHandler } from "./shared.ts";
+import { readFrameLooks } from "./animation.ts";
 import type { Session } from "../session.ts";
 
 type Input = Record<string, unknown>;
@@ -100,6 +101,9 @@ async function motionRun(this: Session, input: Input, meta?: CallMeta): Promise<
   if ("reason" in prepared) return refuse("motion-refused", prepared.reason);
   const rig = animationRig(assembly, drawn);
   const rigName = (id: string) => rig.find((row) => row.object === id)?.name ?? id;
+  // How out draws the frames, checked before a run of minutes: the parts partColours and fit name.
+  const looks = readFrameLooks(drawn, rig, input, out !== undefined);
+  if ("reason" in looks) return refuse("bad-view", looks.reason);
 
   // The runs, a slice at a time: the event loop answers slice_wait and hears slice_cancel between slices.
   const job = motionJob(prepared, rigName);
@@ -138,7 +142,7 @@ async function motionRun(this: Session, input: Input, meta?: CallMeta): Promise<
     }
   }
   const background = asked && "rgb" in asked ? asked.rgb : BACKGROUND;
-  const written = await this.writeAnimationFrames(sampled, drawn, { out, camera: input.camera, longEdge: input.longEdge, background }, meta);
+  const written = await this.writeAnimationFrames(sampled, drawn, { out, camera: input.camera, longEdge: input.longEdge, background, ...looks }, meta);
   if ("ok" in written) return written;
   return { ...reply, frames: { count: sampled.frames.length, fps: sampled.fps, durationS: sampled.durationS, times: "from sampleAnimation, as pose_animate gives them" }, files: written.files };
 }

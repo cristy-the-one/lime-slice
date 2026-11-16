@@ -154,4 +154,76 @@ assert.deepEqual(existsSync(join(workspace, "cancel-frames")) ? readdirSync(join
 assert.deepEqual(leftovers(workspace), [], "and no .partial file left");
 if (reply === undefined) delete process.env.LIME_MCP_REPLY_S;
 else process.env.LIME_MCP_REPLY_S = reply;
+
+// --- Colours and framing of the frames (feedback 4.6): render_view's partColours and fit, and a palette by default.
+const pngRgb = (file: string) => {
+  const png = readFileSync(file), width = png.readUInt32BE(16), height = png.readUInt32BE(20), parts: Buffer[] = [];
+  for (let at = 8; at < png.length;) {
+    const length = png.readUInt32BE(at);
+    if (png.toString("latin1", at + 4, at + 8) === "IDAT") parts.push(png.subarray(at + 8, at + 8 + length));
+    at += 12 + length;
+  }
+  const raw = inflateSync(Buffer.concat(parts)), rgb: [number, number, number][] = [];
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) { const at = y * (width * 3 + 1) + 1 + x * 3; rgb.push([raw[at]!, raw[at + 1]!, raw[at + 2]!]); }
+  return rgb;
+};
+const count = (file: string, test: (rgb: [number, number, number]) => boolean) => pngRgb(file).filter(test).length;
+const bluish = ([r, g, b]: [number, number, number]) => b > r + 40 && b > g + 20;
+const greenish = ([r, g, b]: [number, number, number]) => g > r + 60 && g > b + 60;
+const reddish = ([r, g, b]: [number, number, number]) => r > g + 60 && r > b + 60;
+const plainFirst = join(workspace, "arm-frames", "frame-001.png");
+// No colour given: the root, which the script leaves alone, takes the palette's first colour (a blue), not grey.
+assert.ok(count(plainFirst, bluish) > 20, "the uncoloured root is drawn in a palette colour");
+assert.ok(count(plainFirst, reddish) > 20, "the script's red Finger is still red");
+// partColours: over the script's colour, in every frame.
+const green = await call("pose_animate", { object: finger, source, longEdge: 64, partColours: { Finger: "#00ff00" }, out: { frames: "green-frames" } });
+assert.equal(green.ok, true, JSON.stringify(green));
+for (const frame of ["frame-001.png", "frame-005.png"]) {
+  const file = join(workspace, "green-frames", frame);
+  assert.ok(count(file, greenish) > 20 && count(file, reddish) === 0 && count(file, ([r, g, b]) => b > r + 60 && b > g + 60 && r < 80) === 0, `${frame}: Finger is green, not the script's red or blue`);
+}
+assert.notDeepEqual(readFileSync(join(workspace, "green-frames", "frame-001.png")), readFileSync(plainFirst));
+// fit on one part frames that part: the Finger fills much more of the picture than when every part is framed.
+const fitted = await call("pose_animate", { object: finger, source, longEdge: 64, fit: ["Finger"], out: { frames: "fit-frames" } });
+assert.equal(fitted.ok, true, JSON.stringify(fitted));
+const plainRed = count(plainFirst, reddish), fitRed = count(join(workspace, "fit-frames", "frame-001.png"), reddish);
+assert.ok(fitRed > 2 * plainRed, `fit on Finger: ${fitRed} red pixels against ${plainRed} framed whole`);
+// fit as a box: a box much larger than the parts draws them smaller.
+const boxed = await call("pose_animate", { object: finger, source, longEdge: 64, fit: { min: [-40, -40, -40], max: [40, 40, 40] }, out: { frames: "box-frames" } });
+assert.equal(boxed.ok, true, JSON.stringify(boxed));
+assert.ok(count(join(workspace, "box-frames", "frame-001.png"), reddish) < plainRed / 2);
+// Refused, naming the field, before anything is built or written.
+const refusedLooks: [Record<string, unknown>, string][] = [
+  [{ partColours: { Finger: "#00ff00" } }, "partColours and fit say how frames are drawn: give out {gif} or {frames} with them."],
+  [{ partColours: { Nope: "#00ff00" }, out: { frames: "never" } }, 'partColours: no part named "Nope" is in this assembly.'],
+  [{ partColours: { Finger: "green" }, out: { frames: "never" } }, 'partColours.Finger is a colour like "#c86450".'],
+  [{ fit: ["Finger", "Nope"], out: { frames: "never" } }, 'fit: no part named "Nope" is in this assembly.'],
+  [{ fit: { min: [0, 0, 0], max: [0, 0, 0] }, out: { frames: "never" } }, "fit is a finite nonempty box {min, max} with min no greater than max, or a list of part names or handles."],
+];
+for (const [extra, reason] of refusedLooks) {
+  const refused = await call("pose_animate", { object: finger, source, ...extra });
+  assert.equal(refused.ok, false, JSON.stringify(refused));
+  assert.equal(refused.code, "bad-view");
+  assert.equal(refused.reason, reason);
+}
+assert.ok(!existsSync(join(workspace, "never")));
+
+// --- ignore (feedback 2.13): a pin inside the Finger, which turns about it, crosses it on every frame it has moved.
+const pin = String((await call("solid_new", { primitive: "box", dx: 0.5, dy: 0.5, dz: 4 })).object);
+session.find(pin)!.name = "Pin";
+assert.equal((await call("model_place", { object: pin, to: root, x: 4 })).ok, true);
+const pinned = await call("pose_animate", { object: finger, source });
+assert.equal(pinned.ok, true, JSON.stringify(pinned));
+const pinWarnings = (pinned.warnings as { pair?: string[]; atRest?: boolean }[]).filter((row) => row.pair?.includes("Pin") && row.pair.includes("Finger"));
+assert.ok(pinWarnings.some((row) => !row.atRest), `the slipping fit is a crossing on the frames it moved: ${JSON.stringify(pinned.warnings)}`);
+assert.equal(pinned.ignored, undefined);
+const fit = await call("pose_animate", { object: finger, source, ignore: [["Finger", "Pin"]] });
+assert.equal(fit.ok, true, JSON.stringify(fit));
+assert.ok(!((fit.warnings ?? []) as { pair?: string[] }[]).some((row) => row.pair?.includes("Pin")), JSON.stringify(fit.warnings));
+assert.deepEqual(fit.ignored, { pairs: [["Finger", "Pin"]], reason: "Left out of the crossing check because the call named this pair in ignore: Finger and Pin. Their overlap on any frame is not reported." });
+const notMember = await call("pose_animate", { object: finger, source, ignore: [["Finger", "Collet"]] });
+assert.equal(notMember.ok, false);
+assert.equal(notMember.code, "bad-argument");
+assert.ok(String(notMember.reason).startsWith('ignore: "Collet" is not a member of this assembly.'), String(notMember.reason));
+console.log("pose-animate: colours, framing and ignore passed");
 console.log("pose-animate: sample, GIF, PNG, background, refusal, unchanged pose, export job and cancel passed");

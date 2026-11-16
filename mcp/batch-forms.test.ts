@@ -61,6 +61,8 @@ await call("plate_undo");
 check("and one undo puts them all back", same((await ids()).sort(), [...before].sort()));
 const one = await call("object_remove", { object: c });
 check("one object is removed as before", one.ok === true && !one.objects.includes(c));
+check("the reply names what was removed and how many stay", JSON.stringify(one.removed) === JSON.stringify([c]) && one.note === `Removed ${c}. ${(await ids()).length} objects stay on the plate (objects lists them).`, one);
+check("several removed are all named in removed", JSON.stringify(removed.removed) === JSON.stringify([a, b]) && String(removed.note).startsWith(`Removed ${a}, ${b}. `), removed);
 const neither = await call("object_remove", {});
 check("neither object nor objects is refused", neither.ok === false && neither.code === "missing-argument", neither);
 check("object and objects together are refused", (await call("object_remove", { object: a, objects: [b] })).ok === false);
