@@ -273,8 +273,8 @@ fn pruning_a_tree_prints_less_support_and_reports_the_gap() {
     ))
     .unwrap();
     assert_ne!(base["gcode"], pruned["gcode"]);
-    assert_eq!(support_mm(&base).round(), 235.0);
-    assert_eq!(support_mm(&pruned).round(), 196.0);
+    assert_eq!(support_mm(&base).round(), 237.0);
+    assert_eq!(support_mm(&pruned).round(), 197.0);
 
     let outcome = &pruned["supportEdits"][0];
     assert_eq!(pruned["supportEdits"].as_array().unwrap().len(), 1);

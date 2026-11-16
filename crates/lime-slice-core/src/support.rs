@@ -95,6 +95,9 @@ pub struct SupportOpts {
     /// Enforce paint fills the gaps up to this wide between its dabs on a
     /// layer, on what faces down there. `0` keeps each dab to itself.
     pub paint_join_mm: f64,
+    /// The support line width, mm. A tree foot on a flat bed narrows to its
+    /// trunk by at most half of it a layer.
+    pub bead_width: f64,
     /// The part's bead width, mm. On a belt a strip of part narrower than
     /// this still prints a whole bead, which needs holding.
     pub line_width: f64,
@@ -232,6 +235,7 @@ impl Default for SupportOpts {
             source: SupportSource::Auto,
             strict_stacking: false,
             paint_join_mm: 0.0,
+            bead_width: 0.45,
             line_width: 0.45,
             bridge_mm: 0.0,
         }
@@ -459,6 +463,7 @@ impl Supports {
             lean_of(opts),
             opts.floor,
             bridge_of(opts),
+            foot_taper(opts),
             watch,
             opts.job,
         ) {
@@ -1036,7 +1041,7 @@ impl<'a> Walk<'a> {
         next_id: u32,
     ) -> Self {
         let tip_r = tip_radius(opts);
-        let trunk_r = (opts.trunk_diameter * 0.5).max(tip_r + 0.3).clamp(0.6, 8.0);
+        let trunk_r = trunk_radius(opts);
         let load_factor = load_factor_of(opts);
         let lean = lean_of(opts);
         let avoidance = opts.avoidance.then(|| {
@@ -1598,6 +1603,7 @@ fn project(
     lean: f64,
     floor: Option<FloorPlane>,
     bridge: f64,
+    taper: Option<FootTaper>,
     watch: &crate::progress::Watch,
     job: crate::cancel::Job,
 ) -> bool {
@@ -1616,6 +1622,7 @@ fn project(
             lean,
             floor,
             bridge,
+            taper,
             &mut near,
         );
     }
@@ -1626,6 +1633,66 @@ fn project(
 /// the tip pitch, so a row between two tips is held from both ends.
 fn bridge_of(opts: &SupportOpts) -> f64 {
     Pitch::of(opts).keep * 0.5
+}
+
+/// How a tree's foot on a flat bed narrows to its trunk. The walk gives a
+/// trunk a wide disk on the bed layer only, and the trunk's own disk above it
+/// can be under half that wide: its beads then printed inside the foot's
+/// inner bead, over bare bed. So each disk near the bed is kept at least as
+/// wide as its own disk on the layer below, less half a bead, plus how far
+/// its centre moved: every loop of it then lies within half a bead of the
+/// loop under it. It never gets wider than the disk below, nor into the xy
+/// gap, and the rule ends where a foot could no longer still be narrowing.
+#[derive(Clone, Copy, Debug)]
+struct FootTaper {
+    /// A trunk's radius on the bed layer.
+    foot_r: f64,
+    /// The most a disk narrows from one layer to the next: half a bead.
+    step: f64,
+    xy_gap: f64,
+}
+
+/// The foot taper of trees on a flat bed. `None` on a belt, whose feet
+/// `tree::belt_feet` widens, and for grid supports.
+fn foot_taper(opts: &SupportOpts) -> Option<FootTaper> {
+    (opts.floor.is_none() && opts.style == SupportStyle::Tree).then(|| FootTaper {
+        foot_r: trunk_radius(opts) * 0.95,
+        step: (opts.bead_width * 0.5).max(0.05),
+        xy_gap: opts.xy_gap,
+    })
+}
+
+impl FootTaper {
+    /// Widen the disks of layer `i`, among `part`, on `below`. A trunk
+    /// leans at most `lean_step` a layer.
+    fn widen(self, disks: &mut [Disk], below: &[Disk], part: &[Loop], i: usize, lean_step: f64) {
+        // The widest a foot can still be on layer `i`: it narrows by at
+        // least half a bead less the lean a layer.
+        let slope = (self.step - lean_step).max(self.step * 0.25);
+        let cap = self.foot_r - i as f64 * slope;
+        if cap <= MIN_DISK_R || disks.is_empty() || below.is_empty() {
+            return;
+        }
+        let below: HashMap<NodeId, &Disk> = below.iter().map(|b| (b.node, b)).collect();
+        for d in disks.iter_mut() {
+            let Some(b) = below.get(&d.node) else {
+                continue;
+            };
+            let moved = (d.xy[0] - b.xy[0]).hypot(d.xy[1] - b.xy[1]);
+            let want = (b.r - self.step + moved).min(b.r).min(cap);
+            if want <= d.r {
+                continue;
+            }
+            let room = if part.is_empty() {
+                f64::INFINITY
+            } else if in_solid(part, d.xy[0], d.xy[1]) {
+                continue;
+            } else {
+                distance_to_outline(part, d.xy) - self.xy_gap
+            };
+            d.r = d.r.max(want.min(room));
+        }
+    }
 }
 
 /// Stand layer `i` on the finished layer below it, or on the belt. On a
@@ -1641,12 +1708,23 @@ fn stand(
     lean: f64,
     floor: Option<FloorPlane>,
     bridge: f64,
+    taper: Option<FootTaper>,
     near: &mut Vec<usize>,
 ) {
     let part = contours.get(i - 1).map(Vec::as_slice).unwrap_or(&[]);
     let reach = bands[i].height * lean + BEAD_OVERHANG_MM;
     let belt = floor.map(|floor| floor.y_max(bands[i - 1].z));
     let drift = floor.map_or(0.0, |floor| floor.fall(bands[i].height));
+    if let Some(taper) = taper.filter(|_| floor.is_none()) {
+        let own = contours.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        taper.widen(
+            &mut layer.disks,
+            &below.disks,
+            own,
+            i,
+            bands[i].height * lean,
+        );
+    }
     settle_disks(
         &mut layer.disks,
         &below.disks,
@@ -2509,6 +2587,13 @@ impl Pitch {
 
 fn tip_radius(opts: &SupportOpts) -> f64 {
     (opts.tip_diameter * 0.5).clamp(0.25, 1.6)
+}
+
+/// Radius of a trunk at the bed, and the cap after merges.
+fn trunk_radius(opts: &SupportOpts) -> f64 {
+    (opts.trunk_diameter * 0.5)
+        .max(tip_radius(opts) + 0.3)
+        .clamp(0.6, 8.0)
 }
 
 /// One packed tip per neighbourhood. A grid over the combined bbox, with the
@@ -3911,6 +3996,55 @@ mod tests {
     }
 
     #[test]
+    fn a_bed_foot_narrows_by_half_a_bead_and_keeps_the_gap() {
+        let opts = SupportOpts {
+            style: SupportStyle::Tree,
+            ..SupportOpts::default()
+        };
+        let taper = foot_taper(&opts).unwrap();
+        let disk = |x: f64, r: f64, node: u32| Disk {
+            xy: [x, 0.0],
+            r,
+            node: NodeId(node),
+        };
+        // The foot is 0.95 of the 2.1 mm trunk radius; half a bead is 0.225.
+        let foot = [disk(0.0, 1.995, 1)];
+        let mut up = vec![disk(0.0, 0.8, 1), disk(10.0, 0.8, 2)];
+        taper.widen(&mut up, &foot, &[], 1, 0.168);
+        assert!((up[0].r - 1.77).abs() < 1e-9, "{}", up[0].r);
+        assert_eq!(up[1].r, 0.8, "a branch with no disk of its own below");
+        // A trunk that moved keeps each loop within half a bead of the one
+        // under it, so it narrows less.
+        let mut moved = vec![disk(0.1, 0.8, 1)];
+        taper.widen(&mut moved, &foot, &[], 1, 0.168);
+        assert!((moved[0].r - 1.87).abs() < 1e-9, "{}", moved[0].r);
+        // A disk already wide enough is left as it is.
+        let mut done = vec![disk(0.0, 1.9, 1)];
+        taper.widen(&mut done, &foot, &[], 1, 0.168);
+        assert_eq!(done[0].r, 1.9);
+        // A wall 1 mm from the centre: the disk stays out of the xy gap.
+        let wall = vec![[1.0, -5.0], [5.0, -5.0], [5.0, 5.0], [1.0, 5.0]];
+        let mut near = vec![disk(0.0, 0.3, 1)];
+        taper.widen(&mut near, &foot, &[wall], 1, 0.168);
+        assert!(
+            (near[0].r - (1.0 - opts.xy_gap)).abs() < 1e-6,
+            "{}",
+            near[0].r
+        );
+        // Far above the bed no foot can still be narrowing.
+        let mut high = vec![disk(0.0, 0.8, 1)];
+        taper.widen(&mut high, &foot, &[], 40, 0.168);
+        assert_eq!(high[0].r, 0.8);
+        // On a belt, and for grid supports, nothing narrows from a foot.
+        let belt = SupportOpts {
+            floor: Some(FloorPlane::new(1.0, 0.0, 0.0)),
+            ..opts
+        };
+        assert!(foot_taper(&belt).is_none());
+        assert!(foot_taper(&SupportOpts::default()).is_none());
+    }
+
+    #[test]
     fn a_disk_nothing_can_hold_is_dropped() {
         let bands = [band(0, 0.2), band(1, 0.4)];
         let mut layers = vec![
@@ -3948,6 +4082,7 @@ mod tests {
             0.8,
             None,
             0.0,
+            None,
             &crate::progress::Watch::idle(),
             crate::cancel::Job::default(),
         );
@@ -4178,8 +4313,11 @@ mod tests {
                     d.node
                 );
                 assert_eq!(knot.xy, d.xy, "layer {i}: {:?} moved off its knot", d.node);
+                // Near the bed a disk may be wider than its knot: it is
+                // narrowing from its foot (`FootTaper`).
+                let foot = foot_taper(opts).map_or(0.0, |t| t.foot_r - i as f64 * t.step * 0.25);
                 assert!(
-                    d.r <= knot.radius,
+                    d.r <= knot.radius.max(foot) + 1e-9,
                     "layer {i}: {:?} is wider than its knot",
                     d.node
                 );
@@ -4372,6 +4510,7 @@ mod tests {
             lean,
             None,
             0.0,
+            None,
             &crate::progress::Watch::idle(),
             crate::cancel::Job::default(),
         );

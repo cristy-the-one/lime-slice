@@ -12,13 +12,14 @@ use crate::strategy::{
 use crate::support::tree::Foot;
 use crate::support::{Disk, FloorPlane, SupportLayer, SupportOpts, Supports};
 use crate::toolpath::{
-    plan_belt_support, plan_brim_lines, plan_support, plan_support_brim, plan_tree_support,
-    Extrusion,
+    bed_feet, plan_belt_support, plan_brim_lines, plan_support, plan_support_brim,
+    plan_tree_support, Extrusion,
 };
 use crate::{
     BlendMode, PathKind, SliceSettings, Stage, StrategyId, SupportSource, SupportStyle, Watch,
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -44,6 +45,7 @@ pub(super) fn plan_supports(
         load_factor: support_load_factor(blend),
         max_tip_spacing: support_tip_spacing(blend),
         job: settings.job,
+        bead_width: settings.line_width,
         line_width: settings.line_width,
         bridge_mm: settings.support_bridge_mm,
         ..SupportOpts::default()
@@ -205,6 +207,14 @@ pub(super) fn support_paths(
 ) -> Vec<Extrusion> {
     let line_width = settings.line_width;
     let (disks, foot) = belt_trunks(&layer.disks, feet, floor, z, contours, settings);
+    // On a flat bed the trunks of layer 0 are their feet, filled as a belt
+    // foot is. `disks` stays whole for the support brim.
+    let (trunks, foot) = if floor.is_none() && layer_index == 0 && !disks.is_empty() {
+        let (thin, feet) = bed_feet(&disks, line_width);
+        (Cow::Owned(thin), feet)
+    } else {
+        (Cow::Borrowed(&disks[..]), foot)
+    };
     // A grid column on the belt falls along gravity, which moves it in slice
     // Y from layer to layer. Its lines fall with it, through a point fixed
     // in the lab, so each layer's lines stand on the lines below.
@@ -226,7 +236,7 @@ pub(super) fn support_paths(
                 &mut paths,
                 &layer.sparse,
                 &layer.interface,
-                &disks,
+                &trunks,
                 &foot,
                 shaft_scale,
                 height,
@@ -243,7 +253,7 @@ pub(super) fn support_paths(
                 &mut paths,
                 &layer.sparse,
                 &layer.interface,
-                &disks,
+                &trunks,
                 &foot,
                 shaft_scale,
                 height,
