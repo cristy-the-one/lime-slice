@@ -124,6 +124,51 @@ export function settingRows(input: {
   return rows;
 }
 
+/** One per-object key: the panel row with the value this object slices with, whether the object sets it, and the plate's value. */
+export interface ObjectSettingRow extends SettingRow {
+  /** True when this object sets the key itself; false when it follows the plate. */
+  own: boolean;
+  /** What the plate gives an object that does not set it. null for infill, walls and speed: the strategy decides. */
+  plate: unknown;
+}
+
+const STRATEGY_ROWS: Record<"infill" | "walls" | "speed", { label: string; unit: string; min: number; max: number; step: number; help: string }> = {
+  infill: { label: "Infill", unit: "fraction", min: 0, max: 1, step: 0.01, help: "Sparse infill of this object, a fraction from 0 to 1 (0.2 is 20 %). null follows the strategy. A height range or a modifier wins where it reaches." },
+  walls: { label: "Walls", unit: "", min: 1, max: 12, step: 1, help: "Wall count of this object. null follows the strategy. A height range or a modifier wins where it reaches." },
+  speed: { label: "Speed cap", unit: "mm/s", min: 1, max: 1000, step: 1, help: "Speed cap of this object, mm/s. null follows the strategy. A height range or a modifier wins where it reaches." },
+};
+
+/**
+ * The keys settings_set {object} takes, with this object's values. A key the object does not set shows the plate's
+ * value with own false. Supports is the panel's choice (off, auto, paint), read from the object's supports and source.
+ */
+export function objectSettingRows(own: Partial<Record<ObjectSettingKey, unknown>>, plate: PresetSettings, ctx: SchemaContext): ObjectSettingRow[] {
+  const merged = { ...plate } as PresetSettings;
+  for (const key of OBJECT_KEYS) {
+    if (key in STRATEGY_ROWS || own[key] === undefined) continue;
+    (merged as unknown as Record<string, unknown>)[key] = own[key];
+  }
+  const rows: ObjectSettingRow[] = [];
+  for (const key of OBJECT_KEYS) {
+    const isOwn = own[key] !== undefined;
+    if (key === "infill" || key === "walls" || key === "speed") {
+      const spec = STRATEGY_ROWS[key];
+      rows.push({ key, label: spec.label, unit: spec.unit, type: "number", min: spec.min, max: spec.max, step: spec.step, default: null, value: isOwn ? own[key] : null, level: "simple", help: spec.help, own: isOwn, plate: null });
+      continue;
+    }
+    if (key === "supportSource") {
+      rows.push({ key, label: "Support source", unit: "", type: "select", options: ["auto", "paint"], default: DEFAULT_PRESET.supportSource, value: merged.supportSource, level: "advanced", dependsOn: "supports", help: "auto: supports wherever the part needs them; paint: only where Enforce paint asks. settings_set supports sets it too.", own: isOwn, plate: plate.supportSource });
+      continue;
+    }
+    const control = BY_KEY.get(key);
+    const row = control ? settingRow(control, merged, ctx) : null;
+    if (!row || !control) continue;
+    const plateValue = shown(control, plate);
+    rows.push({ ...row, own: isOwn, plate: plateValue });
+  }
+  return rows;
+}
+
 export function isObjectKey(key: string): key is ObjectSettingKey {
   return (OBJECT_KEYS as readonly string[]).includes(key);
 }

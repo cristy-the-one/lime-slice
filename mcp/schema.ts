@@ -1143,11 +1143,12 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "settings_schema",
-    description: "Read the slicer settings: the keys that differ from the default, in panel units, after machine_select. all lists every key. Then settings_set.",
+    description: "Read the slicer settings: the keys that differ from the default, in panel units, after machine_select. all lists every key. Then settings_set. With object, the keys that object can set itself (settings_set {object}) with the values it slices with: own true where the object sets a key, false where it follows the plate (plate gives the plate's value); infill there is a fraction from 0 to 1.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
+        object: { ...handle, description: "An object: list its own settings instead of the plate's." },
         level: { enum: ["simple", "advanced", "expert"], description: "Panel level." },
         query: { type: "string", minLength: 1, description: "Search text." },
         all: { type: "boolean", description: "Every key, including defaults." },
@@ -1290,7 +1291,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "overrides_list",
-    description: "List the height ranges and modifier volumes that range_add and modifier_add made. Then override_remove.",
+    description: "List the height ranges and modifier volumes that range_add and modifier_add made, and each object's own settings. objectSettings holds those from settings_set {object | allObjects}, infill a fraction from 0 to 1. Then override_remove for a range or a modifier, or settings_set {object} for an object's settings.",
     inputSchema: empty,
   },
   {

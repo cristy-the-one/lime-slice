@@ -6,15 +6,15 @@ import { readFileSync } from "node:fs";
 import { page } from "../../src/modeling/model-calls.ts";
 import { DEFAULT_PRESET, presetKeys, type PresetSettings } from "../../src/presets.ts";
 import { addRange, addVolume, freshOverrideId, removeRange, removeVolume, type SettingOverride } from "../../src/overrides.ts";
-import type { PlateObjectSettings } from "../../src/plate.ts";
+import { settingsEmpty, type PlateObjectSettings } from "../../src/plate.ts";
 import { parseSettingsProfile } from "../../src/ui/settings-profiles.ts";
 import { applyPreset } from "../request.ts";
 import { reviewGcode } from "../review.ts";
-import { applyObjectSetting, applySetting, beltOnlyWarning, inactiveWarning, isObjectKey, settingRows, type ObjectSettingKey } from "../settings-rows.ts";
+import { applyObjectSetting, applySetting, beltOnlyWarning, inactiveWarning, isObjectKey, objectSettingRows, settingRows, type ObjectSettingKey } from "../settings-rows.ts";
 import { settingsRangeError } from "../settings-check.ts";
 import { readVec3 } from "../../src/modeling/compose.ts";
 import { resolveRead } from "../workspace.ts";
-import { type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
+import { shownName, type ToolHandler, UNKNOWN_OBJECT } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
 
@@ -95,7 +95,11 @@ function modifierAdd(this: Session, input: Record<string, unknown>): Record<stri
 }
 
 function overridesList(this: Session): Record<string, unknown> {
-  return { ok: true, ranges: this.overrides.ranges, volumes: this.overrides.volumes };
+  // Per-object settings are overrides too (settings_set {object | allObjects}); infill there is a fraction from 0 to 1.
+  const objectSettings = this.objects
+    .filter((obj) => !settingsEmpty(obj.objectSettings))
+    .map((obj) => ({ object: obj.id, name: shownName(obj.name), settings: { ...obj.objectSettings } }));
+  return { ok: true, ranges: this.overrides.ranges, volumes: this.overrides.volumes, objectSettings };
 }
 
 function overrideRemove(this: Session, id: string): Record<string, unknown> {
@@ -162,6 +166,20 @@ function schemaContext(this: Session) {
 }
 
 function settingsSchema(this: Session, input: Record<string, unknown>): Record<string, unknown> {
+  if (typeof input.object === "string") {
+    const obj = this.find(input.object);
+    if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+    const query = typeof input.query === "string" ? input.query.toLowerCase() : "";
+    const rows = objectSettingRows(obj.objectSettings, this.settings, this.schemaContext())
+      .filter((row) => !query || row.key.toLowerCase().includes(query) || row.label.toLowerCase().includes(query));
+    return {
+      ok: true,
+      object: obj.id,
+      name: shownName(obj.name),
+      rows,
+      note: "The keys settings_set {object} takes for this object. own true: the object sets it; own false: it follows the plate (plate). infill is a fraction from 0 to 1. Every other key is plate-wide.",
+    };
+  }
   const level = input.level === "simple" || input.level === "advanced" || input.level === "expert" ? input.level : undefined;
   const rows = settingRows({
     settings: this.settings,
