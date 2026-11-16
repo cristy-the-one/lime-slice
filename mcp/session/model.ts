@@ -561,7 +561,7 @@ async function modelCheckBody(this: Session, obj: PlateObject, input: Record<str
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid || obj.solid.positions.length < 9) return refuse("solid-unreadable", "This solid could not be read.");
   const printer = this.printer();
-  return checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm }, input);
+  return checkReply(obj.solid.positions, obj.orient, obj.scale, { name: printer.name, bedMm: [printer.bedX, printer.bedY, printer.bedZ], nozzleMm: this.library.nozzleMm, belt: printer.kind === "belt" ? printer.belt : null }, input, obj.solid.triangles);
 }
 
 /** A probe, and what the edit would do to the solid when the modeler sent the result back. */

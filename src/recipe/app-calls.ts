@@ -613,7 +613,7 @@ export class AppRecipeCalls {
     const printer = this.env.printer;
     if (!printer) return { ok: false, reason: "model_check needs the plate's printer." };
     if (!p.solid || p.solid.positions.length < 9) return { ok: false, reason: "This solid could not be read." };
-    return checkReply(p.solid.positions, p.place.orient, p.place.scale, { name: printer.name, bedMm: printer.bedMm, nozzleMm: printer.nozzleMm }, input);
+    return checkReply(p.solid.positions, p.place.orient, p.place.scale, { name: printer.name, bedMm: printer.bedMm, nozzleMm: printer.nozzleMm, belt: printer.belt }, input, p.solid.triangles);
   }
 
   private measure(p: RunPart, input: Body): Promise<Body> {
