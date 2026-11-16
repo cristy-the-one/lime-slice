@@ -9,7 +9,7 @@ The pictures and clips in `README.md` are made by `tools/readme-media`, so they 
 | `clip-model.gif`, `model-history.png` | `model.media.ts` | a sketch extruded, a hole cut through it, the first step edited from History |
 | `model-text.png` | `model.media.ts` | a cylinder with text wrapped round it, built by `mcp-media.ts` |
 | `model-split.png` | `model.media.ts` | Split to print on a 320 mm bar |
-| `clip-gear-train.gif`, `pose-gears.png` | `pose.media.ts` | three gears built by `mcp-media.ts`, coupled in Pose and turned |
+| `clip-gear-train.gif` | `pose.media.ts` | three gears built by `mcp-media.ts`, coupled in Pose and turned |
 | `clip-escapement.gif` | `mcp-media.ts` | a Graham escapement run by `motion_run` and drawn by the MCP server |
 | `stress-cantilever.png` | `stress.media.ts` | the Stress worked example, with the engine's recorded reply (`e2e/fixtures/sim-cantilever.json`) |
 | `prepare-phone.png`, `preview-phone.png`, `model-phone.png` | `phone.media.ts` | the compact layout at 390 × 844 |

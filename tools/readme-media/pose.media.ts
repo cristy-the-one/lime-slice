@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { Clip, ROOT, openApp, still } from "./media";
+import { Clip, ROOT, openApp } from "./media";
 
 /**
  * Pose: three gears that mesh (made by tools/readme-media/mechanisms.ts) are coupled with one button, then the pinion
@@ -34,6 +34,5 @@ test("gear train in Pose", async ({ page }) => {
     await clip.frame();
   }
   await clip.frame(6);
-  await still(page, "pose-gears.png");
   console.log(`clip-gear-train.gif ${clip.save("clip-gear-train.gif")} bytes, ${clip.frames} frames`);
 });
