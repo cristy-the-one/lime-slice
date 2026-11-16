@@ -47,6 +47,7 @@ pub(super) fn plan_supports(
         job: settings.job,
         bead_width: settings.line_width,
         line_width: settings.line_width,
+        hold_thin: settings.support_hold_thin,
         ..SupportOpts::default()
     };
     opts.floor = floor;
@@ -263,6 +264,7 @@ pub(super) fn support_paths(
                 Some(split),
                 line_width,
                 through,
+                settings.support_hold_thin,
             );
         }
         other => {
@@ -281,6 +283,7 @@ pub(super) fn support_paths(
                 None,
                 line_width,
                 through,
+                settings.support_hold_thin,
             );
         }
     }
@@ -436,13 +439,14 @@ pub(super) fn emit_supports(
     split: Option<RegionSplit>,
     line_width: f64,
     through: Option<[f64; 2]>,
+    hold_thin: bool,
 ) {
     if support.is_empty() && interface.is_empty() && disks.is_empty() && feet.is_empty() {
         return;
     }
-    // `through` is set only on a belt, where a patch thinner than its line
-    // spacing prints a line along it.
-    let fill = if through.is_some() {
+    // `through` is set only on a belt. Asked to hold thin strips there, a
+    // patch thinner than its line spacing prints a line along it.
+    let fill = if through.is_some() && hold_thin {
         plan_belt_support
     } else {
         plan_support

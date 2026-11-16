@@ -5,9 +5,9 @@ use serde::Serialize;
 
 use crate::adaptive::LayerBand;
 use crate::poly::{
-    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, distance_to_outline, drop_slivers,
-    in_solid, local_diff, local_union, loop_bounds, offset_loops, point_in_loop, resolve_nonzero,
-    signed_area, simplify_loops, Loop, LoopIndex,
+    boolean_diff, boolean_intersect, boolean_union, clip_to_rect, distance_to_outline,
+    drop_slivers, in_solid, local_diff, local_union, loop_bounds, offset_loops, point_in_loop,
+    resolve_nonzero, signed_area, simplify_loops, Loop, LoopIndex,
 };
 
 pub(crate) mod avoidance;
@@ -106,6 +106,8 @@ pub struct SupportOpts {
     /// The part's bead width, mm. On a belt a strip of part narrower than
     /// this still prints a whole bead, which needs holding.
     pub line_width: f64,
+    /// On a belt, a hairline of part over air asks for a bead of support.
+    pub hold_thin: bool,
     /// The most a tall tree or grid column may stand against its base
     /// width: see [`Sturdy`]. `0` grows supports as they come.
     pub slender_limit: f64,
@@ -342,10 +344,7 @@ pub(crate) fn clip_half(loops: &[Loop], y_max: f64) -> Vec<Loop> {
     if inside {
         return loops.to_vec();
     }
-    drop_slivers(
-        clip_to_rect(loops, [-1.0e5, -1.0e5], [1.0e5, y_max]),
-        0.02,
-    )
+    drop_slivers(clip_to_rect(loops, [-1.0e5, -1.0e5], [1.0e5, y_max]), 0.02)
 }
 
 /// Each disk becomes the largest circle inside both it and the half-plane.
@@ -390,6 +389,7 @@ impl Default for SupportOpts {
             paint_join_mm: 0.0,
             bead_width: 0.45,
             line_width: 0.45,
+            hold_thin: false,
             slender_limit: crate::audit::SLENDER_LIMIT,
         }
     }
@@ -981,8 +981,11 @@ impl Demand {
             .into_par_iter()
             .map(|i| {
                 let asked = match opts.source {
-                    SupportSource::Auto if opts.floor.is_some() => {
+                    SupportSource::Auto if opts.floor.is_some() && opts.hold_thin => {
                         belt_overhang_at(bands, own, i, angle, opts.line_width)
+                    }
+                    SupportSource::Auto if opts.floor.is_some() => {
+                        past_hairline(overhang_at(bands, own, i, angle), bands[i].height / angle)
                     }
                     SupportSource::Auto => overhang_at(bands, own, i, angle),
                     SupportSource::Paint => Vec::new(),
