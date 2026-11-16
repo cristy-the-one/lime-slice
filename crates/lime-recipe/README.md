@@ -112,7 +112,7 @@ counter-clockwise; `outline_points` turns one into a polyline.
   pinions with radial flanks and round, medium or high ogival tops from the standard's table. The epicycloid points are
   exact; the standard's 1.4 f_a drawing arc is not used. Root corners are sharp.
 - **Bores.** `hole`, `shaft` and `pin_bore` add the mean clearance of an ISO 286 fit (running H9/d9, sliding H7/h6, press
-  H7/p6) and a printing allowance you measure; `bearing` knows 20 small ball bearings (608, 623 to 626, 683 to 685, 693 to
+  H7/p6) and a printing allowance you measure (how much your printer makes a hole of that size undersize, added to the drawn bore: positive when holes print small, usually tenths of a mm); an ISO press class differs from a sliding one by only 12 to 35 microns, below what a filament printer resolves, so a printed press fit needs its interference chosen by measurement; `bearing` knows 20 small ball bearings (608, 623 to 626, 683 to 685, 693 to
   695, MR63 to MR115) with their seats and shafts.
 ## Reads of an animation's rig (API 1.15)
 

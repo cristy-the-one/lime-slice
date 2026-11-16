@@ -4,16 +4,16 @@ import { RIG_READ_TOOLS, rigRead } from "../src/rig-reads.ts";
 import type { Assembly, PoseOf } from "../src/assembly.ts";
 import { resolveIngredients } from "./ingredients.ts";
 import { splitPluginData } from "../src/recipe/plugin-data.ts";
-import { namesInCall } from "../src/anim-members.ts";
+import { nameTracker, skipMissingOptional } from "../src/anim-members.ts";
 import { ANIMATION_LIMITS, recipeDataFile, recipeDataMissing, type RecipeHost } from "./recipe.ts";
 
 /** A turn of the event loop: timers, other requests and a cancel run before the work goes on. */
 export const eventLoopTurn = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 /** `used`: the member names and patterns the script sent (docs/plan-animation-plugins.md A2), for a keep. */
-export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; background?: string; notes: string[]; used: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
+export type AnimationRun = { ok: true; result: AnimationResult; camera?: unknown; background?: string; notes: string[]; used: string[]; colourOnly: string[]; skipped: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[]; diagnostics?: unknown[] };
 
-export async function runAnimation(host: RecipeHost, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { fps?: number; ignore?: [string, string][]; signal?: AbortSignal; progress?: (fraction: number, message: string) => void } = {}): Promise<AnimationRun> {
+export async function runAnimation(host: RecipeHost, source: string, params: Record<string, unknown>, assembly: Assembly, poseOf: PoseOf, parts: readonly AnimationPart[], options: { fps?: number; optional?: readonly string[]; ignore?: [string, string][]; signal?: AbortSignal; progress?: (fraction: number, message: string) => void } = {}): Promise<AnimationRun> {
   const ready = host.available();
   if (!ready.ok) return { ok: false, reason: ready.reason };
   const split = splitPluginData(source);
@@ -29,9 +29,10 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
   let issues: { line?: number; reason: string }[] | undefined;
   let camera: unknown;
   let background: string | undefined;
-  const used = new Set<string>();
+  const names = nameTracker();
+  let skipped: string[] = [];
   const run = await host.run(built.exe, { kind: "animation", params }, async (site) => {
-    for (const name of namesInCall(site.tool, site.args)) used.add(name);
+    names.add(site.tool, site.args);
     if (site.tool === "rig") return { ok: true, result: { members: rig } };
     // Recipe API 1.13: reads of the rig at a pose the script states (docs/plan-contact-poses.md section 3).
     if (RIG_READ_TOOLS.has(site.tool)) return rigRead(site.tool, site.args, assembly, poseOf, parts);
@@ -46,9 +47,11 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
     }
     if (site.tool === "animate") {
       if (sampled || issues) return { ok: false, error: "An animation script may animate only once." };
+      const trimmed = skipMissingOptional(site.args, options.optional, rig);
+      skipped = trimmed.skipped;
       camera = site.args.camera;
       if (typeof site.args.background === "string") background = site.args.background;
-      const input = { ...site.args, ...(options.fps !== undefined ? { fps: options.fps } : {}) } as unknown as PoseAnimation;
+      const input = { ...trimmed.args, ...(options.fps !== undefined ? { fps: options.fps } : {}) } as unknown as PoseAnimation;
       // The window's steps (sampleAnimationSteps: each frame posed and checked for crossings), with a turn of the event
       // loop between frames: a scene of many parts takes seconds a frame, and the server must go on answering (and hear
       // a cancel) meanwhile.
@@ -69,5 +72,5 @@ export async function runAnimation(host: RecipeHost, source: string, params: Rec
   }, ANIMATION_LIMITS, options.signal, options.progress);
   if (!run.ok || issues) return { ok: false, reason: run.reason ?? issues?.[0]?.reason ?? "The animation failed.", ...(issues ? { issues } : {}) };
   if (!sampled) return { ok: false, reason: "The script ended without an animation." };
-  return { ok: true, result: sampled, ...(camera ? { camera } : {}), ...(background ? { background } : {}), notes: [...notes, ...(run.notes ?? [])], used: [...used] };
+  return { ok: true, result: sampled, ...(camera ? { camera } : {}), ...(background ? { background } : {}), notes: [...notes, ...(run.notes ?? [])], used: names.used(), colourOnly: names.colourOnly(), skipped };
 }

@@ -39,6 +39,8 @@ export interface PluginFileInfo {
   memberParams?: string[];
   /** The member names or patterns an animation uses as written, that no parameter sets. */
   memberNames?: string[];
+  /** The names an animation only colours: an assembly without one still plays it. */
+  memberOptional?: string[];
   /** The header's `source-sha256`: the body the header was written for. */
   headerSha: string;
   created: string;
@@ -89,6 +91,7 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
   const animation = fields.get("kind") === "animation";
   const memberParams = animation ? readMemberList(fields.get("member-params")) : null;
   const memberNames = animation ? readMemberList(fields.get("member-names")) : null;
+  const memberOptional = animation ? readMemberList(fields.get("member-optional")) : null;
   return {
     plugin,
     ...(fields.get("kind") === "animation" ? { kind: "animation" as const } : {}),
@@ -102,6 +105,7 @@ export function readPluginFile(raw: string): PluginFileInfo | null {
     target: target === "object" || target === "either" ? target : "new",
     ...(memberParams?.length ? { memberParams } : {}),
     ...(memberNames?.length ? { memberNames } : {}),
+    ...(memberOptional?.length ? { memberOptional } : {}),
     headerSha: fields.get("source-sha256") ?? "",
     created: fields.get("created") ?? "",
     lust: fields.get("lust") ?? "",
@@ -128,6 +132,7 @@ export interface PluginHeaderOut {
   params: PluginParamInfo[];
   memberParams?: string[];
   memberNames?: string[];
+  memberOptional?: string[];
 }
 
 /** The file text: the front matter as inner doc comments, then the body, so the file is a valid main.rs as it stands. */
@@ -148,6 +153,7 @@ export function pluginFileText(header: PluginHeaderOut, body: string): string {
     ["params", JSON.stringify(header.params)],
     ["member-params", header.kind === "animation" ? memberListText(header.memberParams) : undefined],
     ["member-names", header.kind === "animation" ? memberListText(header.memberNames) : undefined],
+    ["member-optional", header.kind === "animation" ? memberListText(header.memberOptional) : undefined],
   ];
   const lines = fields.filter(([, value]) => value !== undefined && value !== "").map(([key, value]) => `//! ${key}: ${value}`);
   return [FENCE, ...lines, FENCE, body.replace(/\r\n?/g, "\n").replace(/^\n+/, "")].join("\n");

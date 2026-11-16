@@ -83,7 +83,7 @@ let animationRun = 0;
 const animationMembers = new Map<string, Record<string, string>>();
 /** The code the plugin library holds, by hash: an animation played from other code can be kept there. */
 let libraryShas = new Set<string>();
-export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[]; motion?: true }
+export interface PoseAnimationState { result: AnimationResult; spec: PoseAnimation; camera?: unknown; original: Assembly; poses: Map<string, Affine | undefined>; parts: AnimationPart[]; clock: PosePlayback; assembly: string; plugin: { sha: string; text: string; name: string; source: string; api: string; params: Record<string, unknown> }; swatches?: Map<string, string>; background?: string | undefined; used?: string[]; colourOnly?: string[]; motion?: true }
 let animation: PoseAnimationState | null = null;
 /** "Until contact" (docs/plan-contact-poses.md): the solve running, and what the last one said, for the part it ran on. */
 let contactBusy = false;
@@ -249,14 +249,14 @@ async function prepareAnimation(ticket: number, signal: AbortSignal, live: Assem
   });
   const params = animationValues(file, live);
   try {
-    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts, { signal, transfer: true, onStage: (stage) => setPreparingStage(ticket, stage) });
+    const result = await runAppAnimation(recipes, file.plugin, file.body, params, assemblySnapshot, (id) => poses.get(id), parts, { signal, transfer: true, ...(file.memberOptional ? { optional: file.memberOptional } : {}), onStage: (stage) => setPreparingStage(ticket, stage) });
     if (!current()) return;
     const { animationStale } = await import("../pose-anim.ts");
     const stale = staleSince(animationStale, assemblySnapshot, poses, objects);
     if (stale) { message = `${stale} while the animation was building. Play it again.`; return; }
     if (!result.ok) { message = result.issues?.length ? result.issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") : result.reason; return; }
     preparing = null;
-    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, used: result.used, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
+    animation = { result: result.result, spec: result.spec, camera: result.camera, original: assemblySnapshot, poses, parts, clock: new PosePlayback(result.result.frames.length, result.result.fps), assembly: live.id, plugin: { sha, text: file.text, name: file.plugin, source: file.body, api: file.api, params }, used: result.used, colourOnly: result.colourOnly, ...(result.spec.background ? { background: result.spec.background.toLowerCase() } : {}) };
     message = result.result.warnings[0]?.reason ?? "";
     animation.clock.play(performance.now()); animationDrawn = -1; animationTick(); renderPanel();
   } catch (error) {

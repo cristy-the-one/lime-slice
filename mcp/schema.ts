@@ -1018,7 +1018,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "project_save",
-    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. The reply gives bytes per section, and names one that shrank against the file it replaced.",
+    description: "Write a .lime file in the workspace. This overwrites the same name unless ifExists is refuse. The reply gives bytes per section, and names one that shrank against the file it replaced. name is a file name or a path inside the workspace (\"bracket\" or \"parts/bracket.lime\"; .lime is added when missing, and folders are made); the reply's path is the file written.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1359,7 +1359,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "gcode_export",
-    description: "Write the last slice's G-code to a file in the workspace. Overwrites the same name. Nothing is sent to a printer.",
+    description: "Write the last slice's G-code to a file in the workspace. Overwrites the same name. name is a file name or a path inside the workspace (\"bracket\" or \"out/bracket.gcode\"; .gcode is added when missing, and folders are made). Nothing is sent to a printer.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1369,7 +1369,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "export_3mf",
-    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name.",
+    description: "Write the plate as a 3MF in the workspace. Not G-code. Overwrites the same name. name is a file name or a path inside the workspace (\"plate\" or \"out/plate.3mf\"; .3mf is added when missing, and folders are made).",
     inputSchema: { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 }, object: { ...handle, description: "Write only this object, as posed on the plate. With pieces: the object to split." }, pieces: { type: "boolean", description: "Instead: the object's split to print pieces, named <name>-<n>." }, stl: { type: "boolean", description: "With pieces: one STL each." } } },
   },
   {

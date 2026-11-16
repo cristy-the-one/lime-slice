@@ -228,7 +228,7 @@ export function checkImport(raw: string, have: readonly [number, number], sha256
     if (Array.isArray(row.options) && row.options.some((o) => typeof o !== "string" || [...o].length > LABEL_MAX)) return { reason: `An option of its value ${name.slice(0, 40)} is longer than ${LABEL_MAX} characters. It was not imported.` };
   }
   // --- Animation plugins (docs/plan-animation-plugins.md A6): the members it names, as text parameters or as written.
-  for (const key of ["member-params", "member-names"] as const) {
+  for (const key of ["member-params", "member-names", "member-optional"] as const) {
     if (!fields.has(key)) continue;
     const list = readMemberList(fields.get(key));
     if (!list) return { reason: `Its ${key} line is not a list of at most ${MEMBER_LIST_MAX} member names, so it was not imported. Ask its author for the file as exported.` };

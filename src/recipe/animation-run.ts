@@ -7,10 +7,10 @@ import type { AppRecipes } from "./tauri.ts";
 import { ANIMATION_LIMITS, type RecipeReply } from "./host.ts";
 import { inlineIngredients } from "./ingredients.ts";
 import { splitPluginData } from "./plugin-data.ts";
-import { namesInCall } from "../anim-members.ts";
+import { nameTracker, skipMissingOptional } from "../anim-members.ts";
 
 /** `used`: the member names and patterns the script sent (docs/plan-animation-plugins.md A2), for Keep in library. */
-export type AppAnimation = { ok: true; result: AnimationResult; spec: PoseAnimation; camera?: unknown; notes: string[]; used: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[] };
+export type AppAnimation = { ok: true; result: AnimationResult; spec: PoseAnimation; camera?: unknown; notes: string[]; used: string[]; colourOnly: string[] } | { ok: false; reason: string; issues?: { line?: number; reason: string }[] };
 
 /**
  * Where a build stands, for the Pose panel: the script is compiled, then run; when it calls `animate` the frames are
@@ -23,6 +23,8 @@ export interface AppAnimationOptions {
   onStage?: (stage: AnimationStage) => void;
   /** Lend the parts' position buffers to the frames' worker (`sampleAnimationInBackground`): parts made for this run only. */
   transfer?: boolean;
+  /** Member names the animation only colours: an assembly without one still plays, with a note. */
+  optional?: readonly string[];
   /** False prepares the frames on this thread, in slices (`sampleAnimationSliced`). */
   worker?: boolean;
   /** Pairs of members the crossing check leaves out (`SampleOptions.ignore`), as pose_animate {ignore} gives them. */
@@ -43,9 +45,10 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
   let sampled: AnimationResult | undefined, camera: unknown, spec: PoseAnimation | undefined;
   let issues: { line?: number; reason: string }[] | undefined;
   onStage?.({ stage: "run" });
-  const used = new Set<string>();
+  const names = nameTracker();
+  let skippedColours: string[] = [];
   const run = await recipes.run(built.exe, { kind: "animation", params }, async (site): Promise<RecipeReply> => {
-    for (const name of namesInCall(site.tool, site.args)) used.add(name);
+    names.add(site.tool, site.args);
     if (site.tool === "rig") return { ok: true, result: { members: rig } };
     // Recipe API 1.13: reads of the rig at a pose the script states (docs/plan-contact-poses.md section 3).
     if (RIG_READ_TOOLS.has(site.tool)) return rigRead(site.tool, site.args, assembly, poseOf, parts);
@@ -57,14 +60,17 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
     }
     if (site.tool === "animate") {
       if (sampled || issues) return { ok: false, error: "An animation script may animate only once." };
+      const trimmed = skipMissingOptional(site.args, options.optional, rig);
+      skippedColours = trimmed.skipped;
       camera = site.args.camera;
-      spec = site.args as unknown as PoseAnimation;
+      spec = trimmed.args as unknown as PoseAnimation;
       const result = await sampleAnimationInBackground(spec, assembly, poseOf, parts, {
         onProgress: (frame, count) => onStage?.({ stage: "frames", frame, count }),
         ...(signal ? { signal } : {}), ...(options.transfer ? { transfer: true } : {}), ...(options.worker === false ? { worker: false } : {}), ...(options.ignore ? { ignore: options.ignore } : {}),
       });
       onStage?.({ stage: "finish" });
       if ("issues" in result) { issues = result.issues; return { ok: false, error: issues.map((issue) => `${issue.line ? `line ${issue.line}: ` : ""}${issue.reason}`).join("; ") }; }
+      result.warnings.unshift(...skippedColours.map((reason) => ({ reason })));
       sampled = result;
       return { ok: true, result: { frames: result.frames.length, durationS: result.durationS, fps: result.fps, keys: result.keys } };
     }
@@ -73,5 +79,5 @@ export async function runAppAnimation(recipes: AppRecipes, name: string, source:
   if (signal?.aborted) return { ok: false, reason: CANCELLED };
   if (!run.ok || issues) return { ok: false, reason: run.reason ?? issues?.[0]?.reason ?? "The animation failed.", ...(issues ? { issues } : {}) };
   if (!sampled || !spec) return { ok: false, reason: "The script ended without an animation." };
-  return { ok: true, result: sampled, spec, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])], used: [...used] };
+  return { ok: true, result: sampled, spec, ...(camera ? { camera } : {}), notes: [...notes, ...(run.notes ?? [])], used: names.used(), colourOnly: names.colourOnly() };
 }
