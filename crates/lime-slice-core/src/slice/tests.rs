@@ -41,7 +41,7 @@ fn gentle_supports_slow_and_soften_every_support_path_alike() {
         node: crate::support::NodeId(n),
     };
     let disks = [disk(0.0, 0.4, 0), disk(10.0, 1.2, 1), disk(30.0, 2.5, 2)];
-    let mut paths = plan_tree_support(&disks, &[], &strategy, 0.45);
+    let mut paths = plan_tree_support(&disks, &[], None, &strategy, 0.45);
     for interface in [false, true] {
         paths.extend(plan_support(
             &[square_loop(50.0, 0.0, 5.0)],
