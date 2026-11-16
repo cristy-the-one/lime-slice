@@ -12,7 +12,7 @@
  * - The refusals.
  */
 import { solveAssembly, type Assembly, type Member } from "./assembly.ts";
-import { buildSystem, largeSwingPeriod, restOf, Stepper, SwingMeter, turnVec, N_MM, type DynPart, type DynamicsInputs, type System } from "./dynamics.ts";
+import { buildSystem, driveSense, largeSwingPeriod, pivotShares, restOf, Stepper, SwingMeter, turnVec, N_MM, type DynPart, type DynamicsInputs, type System } from "./dynamics.ts";
 import { bodyOf, G_MM_S2, meshIntegrals, swing, type Integrals } from "./mass.ts";
 import { IDENTITY_POSE } from "./model-space.ts";
 import { turnHinge } from "./pose.ts";
@@ -204,6 +204,67 @@ function runPendulum(deg: number, swings: number, h = 1e-4): { meter: SwingMeter
   while (stepper.v[0]! > 0 && stepper.t < 2) stepper.step();
   check(`a limit at 30° with e 0.5: 3 rad/s comes back at ${stepper.v[0]!.toFixed(6)}`, Math.abs(stepper.v[0]! + 1.5) < 1e-9);
   check(`the stop took the lost energy (${(stepper.ledger.out.stops ?? 0).toFixed(1)} of ½ I (3² − 1.5²) = ${(0.5 * sys.coords[0]!.inertia * (9 - 2.25)).toFixed(1)})`, rel(stepper.ledger.out.stops ?? 0, 0.5 * sys.coords[0]!.inertia * (9 - 2.25)) < 1e-6);
+}
+
+// --- The swing meter: a release from standing still is the first turning point, and every turning point has its side.
+{
+  const run = runPendulum(10, 6);
+  const rows = run.meter.extremes;
+  const first = rows[0]!;
+  check(`the release: t 0, ${(first.a * 180 / Math.PI).toFixed(6)}° on side ${first.side}; then the sides alternate (${rows.slice(0, 5).map((r) => r.side).join(", ")})`, first.t === 0 && Math.abs(first.a * 180 / Math.PI - 10) < 1e-9 && rows.every((r, k) => k === 0 || r.side === -rows[k - 1]!.side), rows.slice(0, 4));
+  const still = new SwingMeter(0);
+  still.feed(0, 0, 0); still.feed(0.1, 0, 0);
+  check("a pendulum hanging still has no turning point", still.extremes.length === 0);
+}
+
+// --- A train's pin loss split per arbor: two wheels coupled at 3, spun and stopped by their pins. Each arbor's share is
+// |s_k| τ_k / Σ|s| τ, and share × the train's loss is that arbor's τ_k |Δθ_k| (the pins slip together).
+{
+  const w1: Member = { object: "w1", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 1, 0] } };
+  const w2: Member = { object: "w2", parent: "frame", offset: [50, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 1, 0] } };
+  const a: Assembly = { id: "c", name: "C", members: [frame, w1, w2], couplings: [{ driver: "w1", driven: "w2", ratio: 3, kind: "ratio", names: ["w1", "w2"], on: ["hinge", "hinge"] }] };
+  const sys = build(a, { frame: FRAME, w1: box(40, 5, 40), w2: box(20, 5, 20) }, { friction: 0.3 });
+  const stepper = new Stepper(sys, 1e-4, [0], [10]);
+  while (stepper.v[0]! !== 0 && stepper.t < 20) stepper.step();
+  const total = stepper.ledger.out["pivot:0"]!;
+  const shares = pivotShares(sys, 0);
+  const each = shares.map(({ body, share }) => ({ name: body.object, booked: share * total, want: body.pinFriction * Math.abs(body.scale * stepper.q[0]!) }));
+  check(`per arbor: ${each.map((row) => `${row.name} ${row.booked.toFixed(3)} against τ|Δθ| ${row.want.toFixed(3)}`).join(", ")}; shares sum to ${shares.reduce((s, x) => s + x.share, 0)}`, shares.length === 2 && Math.abs(shares.reduce((s, x) => s + x.share, 0) - 1) < 1e-12 && each.every((row) => rel(row.booked, row.want) < 1e-6), each);
+}
+
+// --- A drum radius on a drum with a declared winch (4.5): the radius stands in for the winch's for the run; the weight
+// is counted once (the drive's grams on the weight's slide, no cord weight besides). θ(t) = ½ α t² with
+// α = (m g R − τf) / (I + m R²), τf = μ r (m_drum + m) g, whatever the declared radius. Before, a cord weight was added
+// and the slide's own solid still pulled through the declared winch: the drive counted twice.
+{
+  const r = 12, R = 20;
+  const drum: Member = { object: "drum", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 1, 0] } };
+  const weight: Member = { object: "weight", parent: "frame", offset: [r, 0, -60], turn: [0, 0, 0], joint: { kind: "slide", pivot: [0, 0, 0], axis: [0, 0, 1], min: -1000, max: 50 } };
+  const a: Assembly = { id: "w", name: "W", members: [frame, drum, weight], couplings: [{ driver: "drum", driven: "weight", ratio: (2 * Math.PI * r) / 360, kind: "winch", names: ["drum", "weight"], on: ["hinge", "slide"], radius: r, wind: "in" }] };
+  const m = 300, mu = 0.2, pin = 1.5;
+  const sys = build(a, { frame: FRAME, drum: box(30, 20, 30), weight: box(20, 20, 40) }, { friction: mu, pinRadiusMm: pin, drive: { member: "drum", weightG: m, radiusMm: R } });
+  const drumBody = sys.bodies.find((b) => b.object === "drum")!, weightBody = sys.bodies.find((b) => b.object === "weight")!;
+  check(`one drive: the slide weighs the drive's ${m} g (${weightBody.massG}), no cord on the drum (${JSON.stringify(drumBody.cord)}), the slide moves R = ${R} mm a drum radian (${weightBody.scale.toFixed(9)}), the drum's pin carries drum + ${m} g once (${drumBody.pinLoadG.toFixed(4)} g)`, weightBody.drives && weightBody.massG === m && !drumBody.cord && Math.abs(Math.abs(weightBody.scale) - R) < 1e-9 && Math.abs(drumBody.pinLoadG - (drumBody.massG + m)) < 1e-9);
+  check("and the note says the radius overrides the winch, and that the animation keys still follow the declared ratio", sys.notes.some((n) => n.includes(`in place of the declared ${r} mm`) && n.includes("animation keys still follow the declared winch")), sys.notes);
+  const I = drumBody.inertiaGmm2, md = drumBody.massG;
+  const alpha = (m * G_MM_S2 * R - mu * pin * (md + m) * G_MM_S2) / (I + m * R * R);
+  const stepper = new Stepper(sys, 1e-4);
+  while (stepper.t < 0.2 - 1e-9) stepper.step();
+  const want = 0.5 * alpha * stepper.t ** 2;
+  check(`θ(0.2 s) ${Math.abs(stepper.q[0]!).toFixed(8)} rad against ½αt² on the ${R} mm radius ${want.toFixed(8)} (rel ${rel(Math.abs(stepper.q[0]!), want).toExponential(2)} < 1e-9)`, rel(Math.abs(stepper.q[0]!), want) < 1e-9);
+}
+
+// --- The drive's sense through a ratchet: held, it carries the drive's sign to the other side; its free way, refused.
+{
+  const wheel: Member = { object: "wheel", parent: "frame", offset: [0, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 1, 0] } };
+  const arbor: Member = { object: "arbor", parent: "frame", offset: [40, 0, 0], turn: [0, 0, 0], joint: { kind: "hinge", pivot: [0, 0, 0], axis: [0, 1, 0] } };
+  for (const free of [1, -1] as const) {
+    const a: Assembly = { id: "r", name: "R", members: [frame, wheel, arbor], couplings: [{ driver: "wheel", driven: "arbor", ratio: 2, kind: "ratchet", names: ["wheel", "arbor"], on: ["hinge", "hinge"], free }] };
+    const sys = build(a, { frame: FRAME, wheel: box(20, 4, 20), arbor: box(10, 4, 10) }, { drive: { member: "wheel", torqueNmm: 1 } });
+    const arborCoord = sys.bodies.find((b) => b.object === "arbor")!.coord;
+    const sense = driveSense(sys, new Float64Array(sys.coords.length), arborCoord);
+    check(`a ratchet with free way ${free}, the drive turning its wheel +: ${"reason" in sense ? `refused, "${sense.reason}"` : `the arbor is pushed ${sense.sense > 0 ? "+" : "−"}`}`, free > 0 ? "reason" in sense && sense.reason.includes("its free way") : !("reason" in sense) && sense.sense === 1, sense);
+  }
 }
 
 // --- Refusals.

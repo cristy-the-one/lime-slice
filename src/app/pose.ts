@@ -885,7 +885,7 @@ function motionSection(panel: HTMLElement, assembly: Assembly): void {
   }
   if (motionNote?.assembly === assembly.id) {
     const note = document.createElement("div"); note.dataset.poseMotionReport = ""; note.setAttribute("role", "status"); box.append(note);
-    if (motionNote.verdict) addText(note, "p", motionNote.verdict === "not converged" ? "Not converged" : motionNote.verdict === "runs" ? "It runs" : motionNote.verdict === "stalls" ? "It does not run" : "It moves", "pose-motion-verdict").dataset.verdict = motionNote.verdict;
+    if (motionNote.verdict) addText(note, "p", VERDICT_WORDS[motionNote.verdict] ?? motionNote.verdict, "pose-motion-verdict").dataset.verdict = motionNote.verdict;
     for (const line of motionNote.lines) addText(note, "p", line, motionNote.error ? "pose-error" : undefined);
   }
   if (animation?.motion && animation.assembly === assembly.id) {
@@ -897,6 +897,11 @@ function motionSection(panel: HTMLElement, assembly: Assembly): void {
   }
 }
 /** The run's progress, as the animation's preparation shows its own: what runs, a bar, Cancel. */
+/** A run's verdict as the panel's heading (src/motion.ts says what each means). */
+const VERDICT_WORDS: Record<string, string> = {
+  "not converged": "Not converged", runs: "It runs", "not settled": "Not settled", stalls: "It does not run", overswings: "It swings past its pallets",
+  swings: "It swings", "swings, decaying": "It swings, decaying", still: "It hangs still", moves: "It moves",
+};
 function motionProgressBlock(parent: HTMLElement): void {
   const block = document.createElement("div"); block.className = "pose-progress"; block.dataset.poseMotionProgress = "";
   const head = document.createElement("div"); head.className = "pose-progress-head";
