@@ -74,9 +74,15 @@ test("Run an escapement in Pose: progress and Cancel, then the answers in senten
   await section.locator("[data-pose-action='motion-run']").click();
   const report = section.locator("[data-pose-motion-report]");
   await expect(report.locator(".pose-motion-verdict")).toHaveText("It runs", { timeout: 240_000 });
-  await expect(report).toContainText("From rest as posed it does not run: it never starts; a tooth rests on the entry pallet's impulse face");
-  await expect(report).toContainText("From a 3° push it runs: the swing settles at");
-  await expect(report).toContainText("Each beat the drive gives 26.18 µJ");
+  // Let go as posed it hangs still, and the stall is told from the run's own history.
+  await expect(report).toContainText("Let go as posed, the pendulum hanging still, it does not run: the escape wheel never turns a tooth");
+  await expect(report).toContainText("it never unlocks: the anchor reaches at most 1.985° from its middle");
+  await expect(report).toContainText("a tooth rests on the entry pallet's impulse face");
+  await expect(report).not.toContainText("swings 0° each side");
+  // The default push: the let-off (2°) plus min(1, supplementary / 2), from the anchor's middle.
+  await expect(report).toContainText("From a 3° push (the anchor 3° from its middle; it unlocks at 2°), it runs: the escape wheel turns a tooth a period and the swing settles at");
+  await expect(report).toContainText("each side changing less than 0.002° a period over the last 10 periods");
+  await expect(report).toContainText("the drive gives 26.18 µJ");
   await expect(report).toContainText("the answer depends on friction the app does not know");
   await expect(report).toContainText("Left out:");
   await expect(section.locator("[data-pose-action='motion-play']")).toHaveText("Pause");
