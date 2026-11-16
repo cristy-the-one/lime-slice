@@ -211,6 +211,17 @@ pub fn plan_tree_support(
     paths
 }
 
+/// The trunks standing on a flat bed, split from `disks` (the bed layer's)
+/// as feet: each disk wider than a bead becomes a foot outline, which
+/// `plan_tree_support` fills as it fills a belt foot. A thinner disk prints
+/// as the one circle it was. A hollow foot let the trunk's next layer print
+/// inside its inner bead, over bare bed.
+pub fn bed_feet(disks: &[Disk], line_width: f64) -> (Vec<Disk>, Vec<Loop>) {
+    let (feet, thin): (Vec<Disk>, Vec<Disk>) = disks.iter().partition(|d| d.r > line_width * 0.95);
+    let feet = feet.iter().map(|d| circle_pts(d.xy, d.r)).collect();
+    (thin, feet)
+}
+
 /// Concentric loops outside the layer-0 supports that stand on the bed: the
 /// support `region` of a grid and the `disks` of trees alike, kept `gap` off
 /// the part. `brim_mm` of 0 prints nothing, and the caller skips this then.
