@@ -55,6 +55,7 @@ export type ControlId =
   | "elephantsFoot"
   | "supportStrictStacking"
   | "supportBeltAnchors"
+  | "supportBeltHoldThin"
   | "arcFit";
 
 /** Controls `disabled` can lock. Each is a check, which the panel shows off and unclickable. */
@@ -79,6 +80,8 @@ const OWNED: Record<ControlId, readonly string[]> = {
   supportStrictStacking: ["supportStrictStacking"],
   // Anchor lines lie on the belt; a flat bed has none.
   supportBeltAnchors: ["supportBeltAnchors", "supportBeltAnchorMm"],
+  // A flat bed never cuts a flat underside in one nozzle plane, so it has no hairline edges to hold.
+  supportBeltHoldThin: ["supportBeltHoldThin"],
   // Never hidden, only disabled; the request keeps the user's choice and the printer's `firmwareArcs` overrules it.
   arcFit: [],
 };
@@ -114,7 +117,7 @@ export function settingsRules(input: RuleInput): Rules {
   if (input.supportMode === "paint") hidden.add("supportAngle");
   if (belt || input.objects < 2) hidden.add("printOrder");
   if (belt) hidden.add("zHop").add("scarf");
-  if (!belt) hidden.add("beltFields").add("supportStrictStacking").add("supportBeltAnchors");
+  if (!belt) hidden.add("beltFields").add("supportStrictStacking").add("supportBeltAnchors").add("supportBeltHoldThin");
   if (belt) hidden.add("adhesion").add("elephantsFoot");
   if (input.belt.maxLengthMm == null) hidden.add("beltMaxLength");
   if (input.belt.raftLayers <= 0) hidden.add("beltRaftLayers");

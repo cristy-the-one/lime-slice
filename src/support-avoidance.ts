@@ -47,3 +47,24 @@ export function beltAnchorSliceField(on: boolean, belt: { raftLayers: number } |
   const mm = Number.isFinite(spacingMm) && spacingMm > 0 ? spacingMm : BELT_ANCHOR_LIMITS.default;
   return { supportBeltAnchorMm: Math.min(BELT_ANCHOR_LIMITS.max, Math.max(BELT_ANCHOR_LIMITS.min, Math.round(mm * 10) / 10)) };
 }
+
+/**
+ * Hairline ledge edges and thin grid columns held on a belt. Sent only on a belt with supports on,
+ * so a flat bed, a belt without supports, and the default (off) keep their recipe key.
+ */
+export function holdThinSliceField(on: boolean, belt: object | null, supports: boolean): { supportBeltHoldThin?: true } {
+  return on && belt && supports ? { supportBeltHoldThin: true } : {};
+}
+
+/** The longest unsupported bridge the engine takes, mm. 0 is off. */
+export const SUPPORT_BRIDGE_LIMITS = { min: 0, max: 50 } as const;
+
+/**
+ * Bridges held at both ends and no longer than this get no support. Sent only while supports are on
+ * and the length is above 0, so the default keeps its recipe key. Held to what the engine takes.
+ */
+export function bridgeSupportSliceField(supports: boolean, mm: number): { supportBridgeMm?: number } {
+  if (!supports || !Number.isFinite(mm) || mm <= 0) return {};
+  const kept = Math.min(SUPPORT_BRIDGE_LIMITS.max, Math.round(mm * 10) / 10);
+  return kept > 0 ? { supportBridgeMm: kept } : {};
+}

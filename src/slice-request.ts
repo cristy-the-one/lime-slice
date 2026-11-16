@@ -13,7 +13,7 @@ import { layerActionFields, type LayerAction } from "./layer-actions.ts";
 import { sliceOverrideFields, type OverrideDocument } from "./overrides.ts";
 import type { PresetSettings } from "./presets.ts";
 import { seamSliceField, type SeamChoice } from "./seam.ts";
-import { avoidanceSliceField, beltAnchorSliceField, gentleSliceFields, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, beltAnchorSliceField, bridgeSupportSliceField, gentleSliceFields, holdThinSliceField, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { supportSliceFields } from "./support-interface.ts";
 import { supportSourceSliceField } from "./support-source.ts";
 import { surfaceSliceField } from "./surface-pattern.ts";
@@ -136,6 +136,8 @@ export function sliceRequest(input: SliceRequestInput): Record<string, unknown> 
     }),
     ...supportSourceSliceField(settings.supports, settings.supportSource),
     ...beltAnchorSliceField(settings.supportBeltAnchors, input.belt, settings.supports, settings.supportBeltAnchorMm),
+    ...holdThinSliceField(settings.supportBeltHoldThin, input.belt, settings.supports),
+    ...bridgeSupportSliceField(settings.supports, settings.supportBridgeMm),
     infillCombine: settings.infillCombine,
     ...shallowSkinsSliceField(settings.shallowSkins),
     ...solidUnderWallsSliceField(settings.solidUnderWalls),

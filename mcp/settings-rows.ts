@@ -166,6 +166,16 @@ export function inactiveWarning(settings: PresetSettings, key: string): string |
   return null;
 }
 
+/** Rules that hide a control on a flat printer, so the slice leaves its key out. */
+const BELT_ONLY_RULES: ReadonlySet<string> = new Set(["supportStrictStacking", "supportBeltAnchors", "supportBeltHoldThin"]);
+
+/** A belt-only key turned on while the printer is flat: kept, but the slice leaves it out until a belt printer is selected. */
+export function beltOnlyWarning(key: string, value: unknown, ctx: SchemaContext): string | null {
+  const control = BY_KEY.get(key);
+  if (ctx.belt || !control?.rule || !BELT_ONLY_RULES.has(control.rule) || value === false) return null;
+  return `${key} applies only on a belt printer. This printer is flat, so the slice leaves it out.`;
+}
+
 /** Per-object keys the plate stores beside the preset. Infill stays a fraction from 0 to 1. */
 export function applyObjectSetting(
   plate: PresetSettings,

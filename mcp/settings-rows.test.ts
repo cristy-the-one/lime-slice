@@ -1,5 +1,5 @@
 import { DEFAULT_PRESET, type PresetSettings } from "../src/presets.ts";
-import { applyObjectSetting, applySetting, settingRows } from "./settings-rows.ts";
+import { applyObjectSetting, applySetting, beltOnlyWarning, inactiveWarning, settingRows } from "./settings-rows.ts";
 
 let failed = 0;
 
@@ -56,6 +56,22 @@ const spaced = applySetting(on, "supportBeltAnchorMm", 15, { belt: true, lineWid
 check("an anchor spacing is taken", "settings" in spaced && spaced.settings.supportBeltAnchorMm === 15, JSON.stringify(spaced));
 const anchorsOff = applySetting(on, "supportBeltAnchors", false, { belt: true, lineWidth: 0.45 });
 check("belt anchors can be turned off", "settings" in anchorsOff && anchorsOff.settings.supportBeltAnchors === false, JSON.stringify(anchorsOff));
+check("thin belt edges are a row, off by default", beltRow("supportBeltHoldThin")?.label === "Support thin belt edges" && beltRow("supportBeltHoldThin")?.default === false && beltRow("supportBeltHoldThin")?.type === "check", JSON.stringify(beltRow("supportBeltHoldThin")));
+check("thin belt edges say what they cost", !!beltRow("supportBeltHoldThin")?.help?.includes("30 %"));
+const thin = applySetting(on, "supportBeltHoldThin", true, { belt: true, lineWidth: 0.45 });
+check("thin belt edges can be turned on", "settings" in thin && thin.settings.supportBeltHoldThin === true, JSON.stringify(thin));
+check("thin belt edges read back on", "settings" in thin && settingRows({ settings: thin.settings, ctx: { belt: true, lineWidth: 0.45 } }).some((r) => r.key === "supportBeltHoldThin" && r.value === true));
+check("thin belt edges take only true or false", "reason" in applySetting(on, "supportBeltHoldThin", 1, ctx));
+check("thin belt edges on a flat printer warn that the slice leaves them out", beltOnlyWarning("supportBeltHoldThin", true, ctx)?.includes("belt printer") === true);
+check("no warning on a belt", beltOnlyWarning("supportBeltHoldThin", true, { belt: true, lineWidth: 0.45 }) === null);
+check("no warning when turned off", beltOnlyWarning("supportBeltHoldThin", false, ctx) === null);
+check("the bridge limit is a row in mm, 0 by default", row("supportBridgeMm")?.unit === "mm" && row("supportBridgeMm")?.default === 0 && row("supportBridgeMm")?.max === 50, JSON.stringify(row("supportBridgeMm")));
+const bridged = set(on, "supportBridgeMm", 5);
+check("a bridge limit is taken", "settings" in bridged && bridged.settings.supportBridgeMm === 5, JSON.stringify(bridged));
+check("a bridge limit reads back", "settings" in bridged && settingRows({ settings: bridged.settings, ctx }).some((r) => r.key === "supportBridgeMm" && r.value === 5));
+const tooLong = set(on, "supportBridgeMm", 80);
+check("a bridge limit past 50 mm is refused", "reason" in tooLong && tooLong.reason.includes("50"), JSON.stringify(tooLong));
+check("a bridge limit says it does nothing while supports are off", inactiveWarning({ ...DEFAULT_PRESET, supports: false, supportBridgeMm: 5 }, "supportBridgeMm")?.includes("supports is off") === true);
 check("the support brim is one row for every style", row("supportTreeBrimMm")?.label === "Support brim" && row("supportTreeBrimMm")?.unit === "mm");
 const gentle = set(on, "supportGentleAccelMmS2", 1500);
 check("a gentle accel is taken", "settings" in gentle && gentle.settings.supportGentleAccelMmS2 === 1500, JSON.stringify(gentle));

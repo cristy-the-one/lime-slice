@@ -1,4 +1,4 @@
-import { avoidanceSliceField, beltAnchorSliceField, gentleSliceFields, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
+import { avoidanceSliceField, beltAnchorSliceField, bridgeSupportSliceField, gentleSliceFields, holdThinSliceField, paintJoinSliceField, slowFragileSliceField, strictStackingSliceField } from "./support-avoidance.ts";
 import { DEFAULT_PRESET } from "./presets.ts";
 import { recipeKey } from "./slice-action.ts";
 import { shallowSkinsSliceField, solidUnderWallsSliceField } from "./slice-request.ts";
@@ -45,6 +45,19 @@ check("the anchor spacing is held to what the engine takes", beltAnchorSliceFiel
 check("an unset spacing sends the 10 mm default", beltAnchorSliceField(true, beltBed, true, Number.NaN).supportBeltAnchorMm === 10);
 check("omitted belt anchors leave the recipe key", recipeKey({ ...base, ...beltAnchorSliceField(true, null, true, 10) }, "mesh") === recipeKey(base, "mesh"));
 check("asking for belt anchors changes the recipe", recipeKey({ ...base, ...beltAnchorSliceField(true, beltBed, true, 10) }, "mesh") !== recipeKey(base, "mesh"));
+check("thin belt edges and the bridge limit are off by default", DEFAULT_PRESET.supportBeltHoldThin === false && DEFAULT_PRESET.supportBridgeMm === 0);
+check("thin belt edges are sent on a belt with supports", JSON.stringify(holdThinSliceField(true, beltBed, true)) === '{"supportBeltHoldThin":true}');
+check("thin belt edges are never sent on a flat bed", Object.keys(holdThinSliceField(true, null, true)).length === 0);
+check("thin belt edges are not sent without supports", Object.keys(holdThinSliceField(true, beltBed, false)).length === 0);
+check("thin belt edges off are omitted", Object.keys(holdThinSliceField(false, beltBed, true)).length === 0);
+check("asking for thin belt edges changes the recipe", recipeKey({ ...base, ...holdThinSliceField(true, beltBed, true) }, "mesh") !== recipeKey(base, "mesh"));
+check("a bridge limit is sent with supports", JSON.stringify(bridgeSupportSliceField(true, 5)) === '{"supportBridgeMm":5}');
+check("a bridge limit of 0 is omitted", Object.keys(bridgeSupportSliceField(true, 0)).length === 0);
+check("a bridge limit is not sent without supports", Object.keys(bridgeSupportSliceField(false, 5)).length === 0);
+check("a bad bridge limit is omitted", Object.keys(bridgeSupportSliceField(true, Number.NaN)).length === 0 && Object.keys(bridgeSupportSliceField(true, -3)).length === 0);
+check("the bridge limit is held to the engine's 50 mm", bridgeSupportSliceField(true, 80).supportBridgeMm === 50);
+check("omitted bridge limit leaves the recipe key", recipeKey({ ...base, ...bridgeSupportSliceField(true, 0) }, "mesh") === recipeKey(base, "mesh"));
+check("asking for a bridge limit changes the recipe", recipeKey({ ...base, ...bridgeSupportSliceField(true, 5) }, "mesh") !== recipeKey(base, "mesh"));
 check("shallow skins off is omitted", Object.keys(shallowSkinsSliceField(false)).length === 0);
 check("shallow skins on is sent", shallowSkinsSliceField(true).shallowSkins === true);
 check("omitted shallow skins leaves the recipe key", recipeKey({ ...base, ...shallowSkinsSliceField(false) }, "mesh") === recipeKey(base, "mesh"));
