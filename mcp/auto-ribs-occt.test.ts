@@ -5,7 +5,7 @@
  * 1. The wall extraction (`ribWall`) on the kernel's own display meshes: a shelled box, a floor that turns into an 8°
  *    slope, a shell with filleted inside corners, a cylinder-segment panel and a lofted freeform cover; what it takes,
  *    what it finds in the mesh (seams, T-junctions, slivers), thickness, borders.
- * 2. A shelled box 200 × 100 × 30, 2 mm walls: ribs_plan with defaults on the inner floor (a job, its progress), then
+ * 2. A shelled box, 2 mm walls: ribs_plan with defaults on the inner floor (a job, its progress), then
  *    ribs_apply: one History row, the outside unchanged by rays, ribs only on the floor, undo removes it.
  * 3. A noRibs box zone (no added material inside it), an obstacle object (capped ribs under it), a cancel mid-plan (a
  *    usable partial plan, applied), apply:true in one job, a stale plan refused.
@@ -13,6 +13,8 @@
  * 5. A curved wall: the cylinder-segment panel, planned and applied.
  * 6. The flange table: a tee with a 45° chamfered and a square flange, ribs along X, along Y and at 45°, model_check on a
  *    flat bed and on the 45° belt, against the rule auto-ribs.ts chooses by.
+ * The planning cases use a 120 × 70 × 25 box: CI's debug engine plans and slices about fifty times slower than a release
+ * build, and the 200 × 100 × 30 box took 19 minutes there. LIME_RIBS_FULL=1 runs them on 200 × 100 × 30.
  * Skips when LIME_OCCT_BRIDGE is unset, and fails in CI when it is unset.
  */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -39,6 +41,11 @@ if (!bridge || !existsSync(bridge) || !addon) {
   console.log("auto-ribs-occt: skipped (set LIME_OCCT_BRIDGE and build lime-mcp-engine)");
   process.exit(0);
 }
+
+/** The box the planning cases stand on: outside size, 2 mm walls, open on top; inner floor at z 2. */
+const FULL = process.env.LIME_RIBS_FULL === "1";
+const [BX, BY, BZ] = FULL ? [200, 100, 30] : [120, 70, 25];
+const BOX = `${BX} × ${BY} × ${BZ}`;
 
 const workspace = mkdtempSync(join(tmpdir(), "lime-mcp-auto-ribs-"));
 process.env.LIME_MCP_WORKSPACE = workspace;
@@ -105,9 +112,9 @@ async function historyCount(object: string): Promise<number> {
 }
 
 /** Wait for a job, collecting the progress each wait gives. */
-async function waitJob(job: string, onRunning?: (reply: Reply) => void | Promise<void>): Promise<Reply> {
+async function waitJob(job: string, onRunning?: (reply: Reply) => void | Promise<void>, timeoutS = 2): Promise<Reply> {
   for (;;) {
-    const reply = await call("slice_wait", { job, timeoutS: 2 });
+    const reply = await call("slice_wait", { job, timeoutS });
     if (reply.status !== "running") return reply;
     await onRunning?.(reply);
   }
@@ -199,11 +206,11 @@ function faceAt(object: string, p: V3, n: V3): number {
 }
 
 // ===== 2. The shelled box, defaults, the four actions. =====
-// Inner floor z 2, inner walls x ±98, y ±48. Outside 200 × 100 × 30.
+// Inner floor z 2, inner walls at x ±(BX/2 − 2), y ±(BY/2 − 2).
 let defaultJob = "";
 let boxObject = "";
 {
-  const object = await shellBox(200, 100, 30);
+  const object = await shellBox(BX, BY, BZ);
   boxObject = object;
   const box = held(object).bounds;
   const outside = outsideRays(box);
@@ -211,7 +218,7 @@ let boxObject = "";
   // Rays across the cavity above the ribs' greatest height: the side walls must not change.
   const sideRays: { point: V3; direction: V3 }[] = [];
   for (const z of [12, 18, 24]) for (const y of [-30, 0, 30]) sideRays.push({ point: [0, y, z], direction: [1, 0, 0] }, { point: [0, y, z], direction: [-1, 0, 0] });
-  for (const z of [12, 18, 24]) for (const x of [-60, 0, 60]) sideRays.push({ point: [x, 0, z], direction: [0, 1, 0] }, { point: [x, 0, z], direction: [0, -1, 0] });
+  for (const z of [12, 18, 24]) for (const x of [-0.3 * BX, 0, 0.3 * BX]) sideRays.push({ point: [x, 0, z], direction: [0, 1, 0] }, { point: [x, 0, z], direction: [0, -1, 0] });
   const sideBefore = await rays(object, sideRays);
   const volume = held(object).volumeMm3;
   const rows = await historyCount(object);
@@ -242,7 +249,7 @@ let boxObject = "";
   check("the defaults are named: 3 beads wide, 6 mm tall", Math.abs(done.rules.width - 1.35) < 1e-6 && Math.abs(done.rules.maxHeight - 6) < 0.1 && done.rules.defaults.length >= 5, JSON.stringify(done.rules));
   check("the comparisons are there", done.comparisons.thickening && done.comparisons.grid && typeof done.comparisons.notBetterThanBaseline === "boolean", JSON.stringify(done.comparisons).slice(0, 300));
   check("adds names mm³, grams and percent", done.adds.mm3 > 0 && done.adds.grams > 0 && done.adds.percent > 0, JSON.stringify(done.adds));
-  report.push(`default plan on the 200 × 100 × 30 box: ${plan.ribs.length} ribs (${JSON.stringify(plan.profiles)}), +${done.adds.mm3} mm³ / ${done.adds.grams} g / ${done.adds.percent} %, stiffness factor ${plan.stiffnessFactor} (shell, relative), bare ${JSON.stringify(plan.bare)}, ribbed ${JSON.stringify(plan.ribbed)}, thickening ${JSON.stringify(plan.thickening)}, grid ${JSON.stringify(plan.grid)}, notBetterThanBaseline ${plan.notBetterThanBaseline}, plan ${planMs} ms (engine ${JSON.stringify(done.seconds)}), ${events.length} progress events`);
+  report.push(`default plan on the ${BOX} box: ${plan.ribs.length} ribs (${JSON.stringify(plan.profiles)}), +${done.adds.mm3} mm³ / ${done.adds.grams} g / ${done.adds.percent} %, stiffness factor ${plan.stiffnessFactor} (shell, relative), bare ${JSON.stringify(plan.bare)}, ribbed ${JSON.stringify(plan.ribbed)}, thickening ${JSON.stringify(plan.thickening)}, grid ${JSON.stringify(plan.grid)}, notBetterThanBaseline ${plan.notBetterThanBaseline}, plan ${planMs} ms (engine ${JSON.stringify(done.seconds)}), ${events.length} progress events`);
   report.push(`default plan sentence: ${done.sentence}`);
   report.push(`default rules: ${JSON.stringify(done.rules.defaults)}`);
   // Apply.
@@ -285,7 +292,7 @@ let boxObject = "";
 
 // ===== 3a. A noRibs box zone in the middle of the floor. =====
 {
-  const object = await shellBox(200, 100, 30);
+  const object = await shellBox(BX, BY, BZ);
   const zone = { min: [-30, -20, 0] as V3, max: [30, 20, 40] as V3 };
   const started = await call("ribs_plan", { object, wall: { faces: [faceAt(object, [0, 0, 2], [0, 0, 1])] }, zones: [{ region: { box: zone }, mode: "noRibs" }] });
   const done = await waitJob(String(started.job));
@@ -306,7 +313,7 @@ let boxObject = "";
 
 // ===== 3b. An obstacle object: a 40 × 20 × 10 block standing 4 mm over the floor in the middle. =====
 {
-  const object = await shellBox(200, 100, 30);
+  const object = await shellBox(BX, BY, BZ);
   const block = String((await call("solid_new", { primitive: "box", dx: 40, dy: 20, dz: 10 })).object);
   const placed = await call("model_place", { object: block, x: 0, y: 0, z: 6 });
   const bb = posedBounds(held(block).positions, part(block).modelPose as never)!;
@@ -339,8 +346,8 @@ let boxObject = "";
 
 // ===== 3b'. A height-capped zone with the profile auto: tees where the cap holds the ribs lower, and they print. =====
 {
-  const object = await shellBox(200, 100, 30);
-  const zone = { min: [-60, -60, 0] as V3, max: [60, 60, 40] as V3 };
+  const object = await shellBox(BX, BY, BZ);
+  const zone = { min: [-0.3 * BX, -BY, 0] as V3, max: [0.3 * BX, BY, 40] as V3 };
   const done = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, zones: [{ region: { box: zone }, mode: "maxHeight", maxHeightMm: 4.5 }] })).job));
   check("a plan under a 4.5 mm cap", done.ok === true && done.plan.ribs.length > 0, JSON.stringify(done).slice(0, 400));
   const sections = (done.plan.ribs as Reply[]).flatMap((rib) => (rib.sections as Reply[]).map((s, k) => ({ s, h: rib.heights[k] as number })));
@@ -353,7 +360,8 @@ let boxObject = "";
   report.push(`4.5 mm capped zone, profile auto: ${done.plan.ribs.length} ribs, ${tees.length} of ${sections.length} stretches tee (${JSON.stringify(done.plan.flange)}), plan profile ${JSON.stringify(done.plan.profile)}, ribNet profiles ${JSON.stringify(applied.ribNet?.profiles)}, +${applied.added?.mm3} mm³, check ${JSON.stringify(applied.check)}`);
 }
 
-// ===== 3c. Cancel mid-plan: the plan so far comes back and is usable. =====
+// ===== 3c. Cancel mid-plan: the plan so far comes back and is usable. On the larger box, read every 50 ms: a release
+// engine plans the smaller one in under a second. =====
 {
   const object = await shellBox(200, 100, 30);
   const started = await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, goal: { stiffer: 1000 } });
@@ -362,7 +370,7 @@ let boxObject = "";
   const done = await waitJob(String(started.job), async (reply) => {
     const ribs = ((reply.ribs?.events ?? []) as Reply[]).filter((e) => e.kind === "rib" && e.change === "added");
     if (!cancelled && ribs.length > 0) cancelled = await call("slice_cancel", { job: started.job });
-  });
+  }, 0.05);
   const ms = Date.now() - t0;
   check("slice_cancel stops the plan", cancelled !== null && (cancelled as Reply).ok === true, JSON.stringify(cancelled).slice(0, 300));
   check("the plan so far comes back, stopped early, with ribs", done.ok === true && done.plan.stoppedEarly === true && done.plan.ribs.length >= 1, JSON.stringify(done).slice(0, 500));
@@ -373,7 +381,7 @@ let boxObject = "";
 
 // ===== 3d. apply:true in one job; 4. verify:true with the sliced Stress study. =====
 {
-  const object = await shellBox(200, 100, 30);
+  const object = await shellBox(BX, BY, BZ);
   const rows = await historyCount(object);
   const started = await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, apply: true });
   const blocked = await call("model_check", { object });
