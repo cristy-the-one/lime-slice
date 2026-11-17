@@ -1,17 +1,20 @@
 //! A rib segment: a two-node 3D Timoshenko beam (the closed form in
 //! Przemieniecki, "Theory of Matrix Structural Analysis", 1968, §5.6) with
-//! a solid rectangular section, hung off the shell's nodes by rigid links.
+//! a general rib section ([`super::rib_section`]), hung off the shell's
+//! nodes by rigid links.
 //!
 //! Local axes: x along the segment, z the rib's height direction (the
 //! shell's normal there, made square to x), y = z × x across the rib. The
-//! height h bends about y; the width b about z.
+//! section bends about y as the wall does, about z sideways.
 //!
 //! **Eccentricity.** A rib standing on one face of the wall has its
-//! centroid a distance `t/2 + h/2` off the mid-surface the shell nodes sit
-//! on. The rib's foot (on the wall's face, `e_t = t/2 n` off the node)
-//! moves with the shell node as a rigid body; the centroid sits a further
-//! `e_h = h/2 n` up the web. This is what puts the wall's membrane to work
-//! as the rib's flange, which is most of what a rib is worth.
+//! centroid a distance `t/2 + z̄` off the mid-surface the shell nodes sit
+//! on, `z̄` the section's centroid height above its foot (`h/2` for a
+//! rectangle, higher for a tee). The rib's foot (on the wall's face,
+//! `e_t = t/2 n` off the node) moves with the shell node as a rigid body;
+//! the centroid sits a further `e_h = z̄ n` up the web. This is what puts
+//! the wall's membrane to work as the rib's flange, which is most of what
+//! a rib is worth.
 //!
 //! **The web's own rotation ψ.** The wall is a Kirchhoff plate: its nodal
 //! rotation is the slope of its mid-surface. Tying the rib's section
@@ -27,64 +30,38 @@
 //! - `u_c = u + θ × e_t + θ_c × e_h`
 //!
 //! With ψ = θ·ŷ this is the rigid offset; free, the web shears against the
-//! wall's slope with the section's shear stiffness `κ G A`, κ = 5/6.
+//! wall's slope with the section's shear stiffness `G A_s`: `A_s = κ A`,
+//! κ = 5/6, for a rectangle or a trapezoid, the web's area for a tee.
 
 use super::geometry::skew;
+use super::rib_section::SectionProperties;
 use crate::units::{cross, dot, norm, normalize, scale, sub};
 
 /// The rib element's stiffness on `[u_a, θ_a, u_b, θ_b, ψ_a, ψ_b]`.
 pub(crate) type K14 = [[f64; 14]; 14];
 pub(crate) type K12 = [[f64; 12]; 12];
 
-/// Shear correction of a solid rectangle.
-const SHEAR_FACTOR: f64 = 5.0 / 6.0;
-
+/// A rib section's material and shape: moduli plus the properties of
+/// [`super::rib_section`], local y across the rib and local z up it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BeamSection {
     pub e: f64,
     pub g: f64,
-    /// Across the rib, along local y.
-    pub width: f64,
-    /// Out of the wall, along local z.
-    pub height: f64,
-}
-
-impl BeamSection {
-    fn area(&self) -> f64 {
-        self.width * self.height
-    }
-
-    /// About local y: the height bends.
-    fn i_y(&self) -> f64 {
-        self.width * self.height.powi(3) / 12.0
-    }
-
-    /// About local z: the width bends.
-    fn i_z(&self) -> f64 {
-        self.height * self.width.powi(3) / 12.0
-    }
-
-    /// St Venant torsion constant of a rectangle a ≥ b (Roark):
-    /// `J = a b³ (1/3 − 0.21 (b/a)(1 − b⁴ / (12 a⁴)))`.
-    fn torsion(&self) -> f64 {
-        let a = self.width.max(self.height);
-        let b = self.width.min(self.height);
-        let r = b / a;
-        a * b.powi(3) * (1.0 / 3.0 - 0.21 * r * (1.0 - r.powi(4) / 12.0))
-    }
+    pub props: SectionProperties,
 }
 
 /// Local stiffness, dof order `[u, v, w, θx, θy, θz]` at each end.
 pub(crate) fn local_stiffness(len: f64, s: &BeamSection) -> K12 {
     let mut k = [[0.0; 12]; 12];
     let l = len;
-    let ea = s.e * s.area() / l;
-    let gj = s.g * s.torsion() / l;
-    let shear_area = SHEAR_FACTOR * s.area();
-    let phi_y = 12.0 * s.e * s.i_z() / (s.g * shear_area * l * l);
-    let phi_z = 12.0 * s.e * s.i_y() / (s.g * shear_area * l * l);
-    let a = s.e * s.i_z() / ((1.0 + phi_y) * l.powi(3));
-    let b = s.e * s.i_y() / ((1.0 + phi_z) * l.powi(3));
+    let p = &s.props;
+    let ea = s.e * p.area / l;
+    let gj = s.g * p.torsion / l;
+    // v bends about z (sideways), w about y (as the wall does).
+    let phi_y = 12.0 * s.e * p.i_normal / (s.g * p.shear_across * l * l);
+    let phi_z = 12.0 * s.e * p.i_across / (s.g * p.shear_height * l * l);
+    let a = s.e * p.i_normal / ((1.0 + phi_y) * l.powi(3));
+    let b = s.e * p.i_across / ((1.0 + phi_z) * l.powi(3));
     let mut set = |i: usize, j: usize, v: f64| {
         k[i][j] = v;
         k[j][i] = v;
@@ -228,13 +205,19 @@ mod tests {
         BeamSection {
             e: 2000.0,
             g: 2000.0 / 2.6,
-            width: 2.0,
-            height: 8.0,
+            props: super::super::rib_section::RibSection::rectangular(2.0)
+                .properties(8.0)
+                .unwrap(),
         }
     }
 
-    /// A cantilever of one element, tip load along local z: Timoshenko's
-    /// `P L³ / (3 E I) + P L / (κ G A)`.
+    /// Timoshenko's cantilever tip under a unit tip load along local z:
+    /// `L³ / (3 E I) + L / (G A_s)`.
+    fn timoshenko_tip(s: &BeamSection, l: f64) -> f64 {
+        l.powi(3) / (3.0 * s.e * s.props.i_across) + l / (s.g * s.props.shear_height)
+    }
+
+    /// A cantilever of one element, tip load along local z.
     #[test]
     fn one_element_cantilever_is_exact() {
         let s = section();
@@ -245,14 +228,14 @@ mod tests {
         let mut rhs = faer::Mat::<f64>::zeros(6, 1);
         rhs[(2, 0)] = 1.0;
         let x = m.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
-        let want = l.powi(3) / (3.0 * s.e * s.i_y()) + l / (SHEAR_FACTOR * s.g * s.area());
+        let want = timoshenko_tip(&s, l);
         assert!(
             (x[(2, 0)] - want).abs() < 1e-10 * want,
             "{} {want}",
             x[(2, 0)]
         );
         // The tip turns by −dw/dx about y.
-        let slope = l * l / (2.0 * s.e * s.i_y());
+        let slope = l * l / (2.0 * s.e * s.props.i_across);
         assert!((x[(4, 0)] + slope).abs() < 1e-10 * slope);
     }
 
@@ -317,7 +300,7 @@ mod tests {
         let mut rhs = faer::Mat::<f64>::zeros(6, 1);
         rhs[(2, 0)] = 1.0;
         let x = m.ldlt(faer::Side::Lower).unwrap().solve(&rhs);
-        let want = l.powi(3) / (3.0 * s.e * s.i_y()) + l / (SHEAR_FACTOR * s.g * s.area());
+        let want = timoshenko_tip(&s, l);
         assert!(
             (x[(2, 0)] - want).abs() < 1e-9 * want,
             "{} {want}",

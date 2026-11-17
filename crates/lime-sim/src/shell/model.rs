@@ -11,6 +11,7 @@ use super::beam::{self, BeamSection, RibEnd, K14};
 use super::geometry::{triangle, Frame, Tri};
 use super::membrane::{self, MembraneKind, K9};
 use super::plate;
+use super::rib_section::RibSection;
 use super::section::ShellSection;
 use super::sparse::{self, Factor, Pattern, HELD};
 use super::tensor::Principal;
@@ -88,15 +89,28 @@ pub enum RibSide {
     Centered,
 }
 
-/// A rib: a rectangular section `width × height` (mm) standing on the wall
-/// along a chain of mesh edges. Its centroid sits `t/2 + height/2` off the
-/// mid-surface on its side, `t` the wall's thickness at each vertex.
+/// A rib: a cross-section ([`RibSection`]) `height` tall (mm) standing on
+/// the wall along a chain of mesh edges. Its centroid sits `t/2 + z̄` off
+/// the mid-surface on its side, `t` the wall's thickness at each vertex and
+/// `z̄` the section's centroid height above its foot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rib {
     pub edges: Vec<(u32, u32)>,
-    pub width: f64,
+    pub section: RibSection,
     pub height: f64,
     pub side: RibSide,
+}
+
+impl Rib {
+    /// A straight rib, `width × height`.
+    pub fn rectangular(edges: Vec<(u32, u32)>, width: f64, height: f64, side: RibSide) -> Self {
+        Self {
+            edges,
+            section: RibSection::rectangular(width),
+            height,
+            side,
+        }
+    }
 }
 
 /// A hold on one vertex: `Some(value)` fixes that dof (global axes) at
@@ -870,12 +884,7 @@ impl ShellModel {
     }
 
     fn check_rib(&self, rib: &Rib) -> Result<(), SimError> {
-        if !(rib.width.is_finite() && rib.width > 0.0 && rib.height.is_finite() && rib.height > 0.0)
-        {
-            return Err(SimError::new(
-                "A rib's width and height must be above zero.",
-            ));
-        }
+        rib.section.check(rib.height)?;
         if rib.edges.is_empty() {
             return Err(SimError::new("A rib needs at least one edge."));
         }
@@ -994,11 +1003,16 @@ impl ShellModel {
             RibSide::Negative => -1.0,
             RibSide::Centered => 0.0,
         };
+        // Checked when the rib came in.
+        let props = rib
+            .section
+            .properties(rib.height)
+            .expect("a checked rib section");
         let end = |v: usize, psi: usize| {
             let n = self.normals[v];
             RibEnd {
                 foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
-                up_web: scale(n, sign * 0.5 * rib.height),
+                up_web: scale(n, sign * props.centroid),
                 lateral: layout.lateral[psi],
             }
         };
@@ -1007,8 +1021,7 @@ impl ShellModel {
         let section = BeamSection {
             e: modulus,
             g: shear,
-            width: rib.width,
-            height: rib.height,
+            props,
         };
         // A mesh edge lies in the surface, so the mean normal is never along it.
         let k = beam::rib_stiffness(

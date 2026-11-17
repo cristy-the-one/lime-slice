@@ -12,7 +12,9 @@ use lime_sim::shell::planner::{
     boundary_vertices, chain_edges, embed_polylines, plan_ribs, rib_network_volume, Goal, Holds,
     RibPlan, RibPlanRequest, RibRules, Zone, ZoneMode,
 };
-use lime_sim::shell::{Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions};
+use lime_sim::shell::{
+    Rib, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions,
+};
 use shell_common::*;
 
 const E: f64 = 2000.0;
@@ -210,7 +212,7 @@ fn a_rib_across_the_mesh_matches_an_aligned_mesh() {
             model
                 .add_rib(Rib {
                     edges: chain_edges(ch),
-                    width: 1.2,
+                    section: RibSection::rectangular(1.2),
                     height: 6.0,
                     side: RibSide::Positive,
                 })
@@ -487,7 +489,7 @@ fn beats_a_uniform_shallow_lattice() {
         .flatten()
         .map(|ch| Rib {
             edges: chain_edges(ch),
-            width: 1.0,
+            section: RibSection::rectangular(1.0),
             height: 2.0,
             side: RibSide::Positive,
         })
@@ -795,7 +797,7 @@ fn cancel_returns_the_ribs_so_far_and_progress_only_grows() {
         .iter()
         .map(|r| Rib {
             edges: chain_edges(&r.vertices),
-            width: r.width,
+            section: r.profile.section_at(r.width, r.height),
             height: r.height,
             side: r.side,
         })
@@ -925,7 +927,7 @@ fn scoring_cost_and_thread_arrangement() {
         };
         let rib = |chain: Vec<u32>| Rib {
             edges: chain_edges(&chain),
-            width: 1.2,
+            section: RibSection::rectangular(1.2),
             height: 6.0,
             side: RibSide::Positive,
         };
