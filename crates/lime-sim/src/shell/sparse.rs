@@ -15,10 +15,20 @@ use faer::sparse::linalg::cholesky::{
     SymbolicCholeskyRaw, SymmetricOrdering,
 };
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
-use faer::{Conj, Mat, Side};
+use faer::{Conj, Mat, Par, Side};
 
 use crate::error::{not_held, SimError};
 use crate::solve::{parallel, pivot_ratio_of, supernodal_pivot_ratio};
+
+/// The factor's parallelism: `0` is the crate default ([`parallel`]),
+/// `1` one thread, more a rayon split over that many.
+pub(crate) fn par_of(threads: usize) -> Par {
+    match threads {
+        0 => parallel(),
+        1 => Par::Seq,
+        n => Par::rayon(n),
+    }
+}
 
 /// A free-dof matrix's upper triangle in compressed columns.
 #[derive(Clone, Debug)]
@@ -124,6 +134,7 @@ pub(crate) fn factor(
     pattern: &Pattern,
     symbolic: &SymbolicCholesky<usize>,
     values: &[f64],
+    threads: usize,
 ) -> Result<Factor, SimError> {
     let mut out = vec![0.0; symbolic.len_val()];
     if pattern.n == 0 {
@@ -133,7 +144,7 @@ pub(crate) fn factor(
         });
     }
     let matrix = SparseColMatRef::new(pattern.symbolic_ref(), values);
-    let par = parallel();
+    let par = par_of(threads);
     let scratch = symbolic.factorize_numeric_ldlt_scratch::<f64>(par, Default::default());
     let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
     symbolic
@@ -166,11 +177,12 @@ pub(crate) fn solve_in_place(
     symbolic: &SymbolicCholesky<usize>,
     factor: &Factor,
     rhs: &mut Mat<f64>,
+    threads: usize,
 ) -> Result<(), SimError> {
     if rhs.nrows() == 0 {
         return Ok(());
     }
-    let par = parallel();
+    let par = par_of(threads);
     let scratch = symbolic.solve_in_place_scratch::<f64>(rhs.ncols(), par);
     let mut mem = MemBuffer::try_new(scratch).map_err(|_| SimError::new("Out of memory."))?;
     LdltRef::new(symbolic, &factor.values).solve_in_place_with_conj(

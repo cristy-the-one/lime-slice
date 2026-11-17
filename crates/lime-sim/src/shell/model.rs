@@ -293,6 +293,8 @@ pub struct ShellModel {
     factor: Option<Factor>,
     factorisations: usize,
     timings: Timings,
+    /// Threads for the factor and the solve; 0 is the crate default.
+    threads: usize,
 }
 
 impl ShellModel {
@@ -425,6 +427,7 @@ impl ShellModel {
             factor: None,
             factorisations: 0,
             timings: Timings::default(),
+            threads: 0,
         };
         model.assemble_shell();
         // Mesh checks, adjacency and the element loop; the ordering apart.
@@ -462,6 +465,14 @@ impl ShellModel {
 
     pub fn timings(&self) -> Timings {
         self.timings
+    }
+
+    /// Threads for the numeric factor and the solve: 0 (the default) up
+    /// to 8 by the machine, 1 for one, more for that many. Several models
+    /// solving side by side each take fewer. The answer does not depend
+    /// on it beyond rounding.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
     }
 
     /// Each rib web rotation's vertex and lateral axis, in dof order: the
@@ -566,10 +577,15 @@ impl ShellModel {
     /// Give every rib a web rotation at each of its vertices, with its axis
     /// and hold.
     fn layout_ribs(&self) -> RibLayout {
+        self.layout_of(&self.ribs, self.shell_pattern.n)
+    }
+
+    /// The web-rotation layout of `ribs`, free ψ numbered from `first_free`.
+    fn layout_of(&self, ribs: &[Rib], first_free: usize) -> RibLayout {
         let mut layout = RibLayout::default();
         let mut tangent: Vec<[f64; 3]> = Vec::new();
-        let mut free = self.shell_pattern.n;
-        for rib in &self.ribs {
+        let mut free = first_free;
+        for rib in ribs {
             let mut at: Vec<(u32, usize)> = Vec::new();
             let mut edges = Vec::with_capacity(rib.edges.len());
             for &(a, b) in &rib.edges {
@@ -665,7 +681,7 @@ impl ShellModel {
             }
         }
         let factor = self.factor.as_ref().expect("factored above");
-        sparse::solve_in_place(&self.symbolic, factor, &mut rhs)?;
+        sparse::solve_in_place(&self.symbolic, factor, &mut rhs, self.threads)?;
         self.timings.solve = started.elapsed().as_secs_f64();
         let started = Instant::now();
         let mut out = Vec::with_capacity(cases.len());
@@ -724,7 +740,7 @@ impl ShellModel {
         }
         let started = Instant::now();
         let values = self.values();
-        let factor = sparse::factor(&self.pattern, &self.symbolic, &values)?;
+        let factor = sparse::factor(&self.pattern, &self.symbolic, &values, self.threads)?;
         self.factorisations += 1;
         self.factor = Some(factor);
         self.timings.factor = started.elapsed().as_secs_f64();
@@ -881,13 +897,97 @@ impl ShellModel {
 
     /// Rib `r`'s edge `e`: its 14 dof ids and its stiffness on them.
     fn rib_element(&self, r: usize, e: usize) -> ([usize; 14], K14) {
-        let rib = &self.ribs[r];
-        let (pa, pb) = self.layout.edges[r][e];
-        let g = rib_ids(&self.layout, pa, pb, 6 * self.mesh.vertices.len());
-        let (a, b) = (
-            self.layout.vertex[pa] as usize,
-            self.layout.vertex[pb] as usize,
-        );
+        self.rib_element_in(&self.layout, &self.ribs[r], r, e)
+    }
+
+    /// The strain energy rib `rib` would take if it were added to this
+    /// model and the wall kept the displacements and rotations of `result`
+    /// (a solution of this model), with the rib's own web rotations ψ
+    /// relaxed to their best fit. N·mm.
+    ///
+    /// This is the first-order estimate of what the rib is worth: adding
+    /// stiffness `ΔK` lowers the compliance by `uᵀ ΔK u = 2 ×` this, to first
+    /// order, before the wall redistributes. The rib planner ranks its
+    /// candidates with it before solving the best exactly.
+    pub fn probe_rib_energy(&self, rib: &Rib, result: &ShellResult) -> Result<f64, SimError> {
+        self.check_rib(rib)?;
+        let n = self.mesh.vertices.len();
+        if result.displacement.len() != n || result.rotation.len() != n {
+            return Err(SimError::new("The result is not one of this shell."));
+        }
+        let layout = self.layout_of(std::slice::from_ref(rib), 0);
+        let m = layout.vertex.len();
+        let base = 6 * n;
+        let value = |id: usize| -> f64 {
+            let v = id / 6;
+            let k = id % 6;
+            if k < 3 {
+                result.displacement[v][k]
+            } else {
+                result.rotation[v][k - 3]
+            }
+        };
+        let elements: Vec<([usize; 14], K14)> = (0..rib.edges.len())
+            .map(|e| self.rib_element_in(&layout, rib, 0, e))
+            .collect();
+        // Kψψ ψ = −Kψu u over the free ψ; held ψ move to the right side.
+        let free: Vec<usize> = layout.free.clone();
+        let nf = free.iter().filter(|&&f| f != HELD).count();
+        let mut kpp = vec![0.0; nf * nf];
+        let mut rhs = vec![0.0; nf];
+        for (g, k) in &elements {
+            for i in 12..14 {
+                let fi = free[g[i] - base];
+                if fi == HELD {
+                    continue;
+                }
+                for j in 0..14 {
+                    if j < 12 {
+                        rhs[fi] -= k[i][j] * value(g[j]);
+                    } else {
+                        let fj = free[g[j] - base];
+                        if fj == HELD {
+                            rhs[fi] -= k[i][j] * layout.value[g[j] - base];
+                        } else {
+                            kpp[fi * nf + fj] += k[i][j];
+                        }
+                    }
+                }
+            }
+        }
+        let psi_free = solve_small_spd(&mut kpp, &mut rhs, nf)
+            .ok_or_else(|| SimError::new("A probed rib's web has no stiffness."))?;
+        let mut psi = layout.value.clone();
+        for k in 0..m {
+            if free[k] != HELD {
+                psi[k] = psi_free[free[k]];
+            }
+        }
+        let mut energy = 0.0;
+        for (g, k) in &elements {
+            let x: [f64; 14] = std::array::from_fn(|q| {
+                if q < 12 {
+                    value(g[q])
+                } else {
+                    psi[g[q] - base]
+                }
+            });
+            energy += quadratic(k, &x);
+        }
+        Ok(energy)
+    }
+
+    /// Rib `rib`'s edge `e` under `layout`, where it is rib `r`.
+    fn rib_element_in(
+        &self,
+        layout: &RibLayout,
+        rib: &Rib,
+        r: usize,
+        e: usize,
+    ) -> ([usize; 14], K14) {
+        let (pa, pb) = layout.edges[r][e];
+        let g = rib_ids(layout, pa, pb, 6 * self.mesh.vertices.len());
+        let (a, b) = (layout.vertex[pa] as usize, layout.vertex[pb] as usize);
         let (xa, xb) = (self.mesh.vertices[a], self.mesh.vertices[b]);
         let sign = match rib.side {
             RibSide::Positive => 1.0,
@@ -899,7 +999,7 @@ impl ShellModel {
             RibEnd {
                 foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
                 up_web: scale(n, sign * 0.5 * rib.height),
-                lateral: self.layout.lateral[psi],
+                lateral: layout.lateral[psi],
             }
         };
         let axis = normalize(sub(xb, xa)).unwrap_or([1.0, 0.0, 0.0]);
@@ -1105,6 +1205,69 @@ fn rib_ids(layout: &RibLayout, pa: usize, pb: usize, base: usize) -> [usize; 14]
     g[12] = base + pa;
     g[13] = base + pb;
     g
+}
+
+/// Solve the dense symmetric positive definite `k x = b` (`k` row-major,
+/// `n × n`) by Cholesky, in place. A rib's web rotations form a chain, so
+/// `k` is tridiagonal in practice and the band is used when it is.
+fn solve_small_spd(k: &mut [f64], b: &mut [f64], n: usize) -> Option<Vec<f64>> {
+    let tridiagonal = (0..n).all(|i| (0..n).all(|j| i.abs_diff(j) <= 1 || k[i * n + j] == 0.0));
+    if tridiagonal {
+        // Thomas on the symmetric tridiagonal.
+        let mut diag: Vec<f64> = (0..n).map(|i| k[i * n + i]).collect();
+        let off: Vec<f64> = (1..n).map(|i| k[i * n + i - 1]).collect();
+        let mut x = b.to_vec();
+        for i in 1..n {
+            if diag[i - 1].abs() < 1e-300 {
+                return None;
+            }
+            let f = off[i - 1] / diag[i - 1];
+            diag[i] -= f * off[i - 1];
+            x[i] -= f * x[i - 1];
+        }
+        for i in (0..n).rev() {
+            if diag[i].is_nan() || diag[i] <= 0.0 {
+                return None;
+            }
+            if i + 1 < n {
+                x[i] -= off[i] * x[i + 1];
+            }
+            x[i] /= diag[i];
+        }
+        return Some(x);
+    }
+    for j in 0..n {
+        let mut d = k[j * n + j];
+        for q in 0..j {
+            d -= k[j * n + q] * k[j * n + q];
+        }
+        if d.is_nan() || d <= 0.0 {
+            return None;
+        }
+        let d = d.sqrt();
+        k[j * n + j] = d;
+        for i in j + 1..n {
+            let mut s = k[i * n + j];
+            for q in 0..j {
+                s -= k[i * n + q] * k[j * n + q];
+            }
+            k[i * n + j] = s / d;
+        }
+    }
+    let mut x = b.to_vec();
+    for i in 0..n {
+        for q in 0..i {
+            x[i] -= k[i * n + q] * x[q];
+        }
+        x[i] /= k[i * n + i];
+    }
+    for i in (0..n).rev() {
+        for q in i + 1..n {
+            x[i] -= k[q * n + i] * x[q];
+        }
+        x[i] /= k[i * n + i];
+    }
+    Some(x)
 }
 
 /// `½ uᵀ K u`.
