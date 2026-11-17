@@ -133,6 +133,25 @@ async fn sim_study(body: String) -> Result<String, String> {
         .map_err(|err| err.to_string())
 }
 
+/// Auto ribs from the window: the same jobs, wire and replies as the MCP
+/// engine's `ribPlanStart`, `ribPlanPoll` and `ribPlanCancel`
+/// (`lime_sim_bridge::ribs`). Start returns `{ "id" }` at once; the plan runs
+/// on a thread of its own; poll drains the progress events.
+#[tauri::command]
+fn rib_plan_start(body: String) -> String {
+    lime_sim_bridge::ribs::rib_plan_start(body)
+}
+
+#[tauri::command]
+fn rib_plan_poll(id: usize) -> String {
+    lime_sim_bridge::ribs::rib_plan_poll(id)
+}
+
+#[tauri::command]
+fn rib_plan_cancel(id: usize) -> String {
+    lime_sim_bridge::ribs::rib_plan_cancel(id)
+}
+
 #[tauri::command]
 async fn slice_model(app: AppHandle, payload: String) -> Result<String, String> {
     let job = Job::start();
@@ -501,6 +520,9 @@ pub fn run() {
             cancel_slice,
             early_preview,
             sim_study,
+            rib_plan_start,
+            rib_plan_poll,
+            rib_plan_cancel,
             calibrate_pa,
             calibrate_flow,
             calibrate_temp,

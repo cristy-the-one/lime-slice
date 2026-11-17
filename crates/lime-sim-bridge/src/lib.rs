@@ -14,6 +14,8 @@
 // Matrix loops index a fixed slot on purpose, as in lime-sim.
 #![allow(clippy::needless_range_loop)]
 
+pub mod ribs;
+
 use base64::Engine;
 use lime_sim::slice_field::{role_index, Header, LayerRow, Segment, SliceField, ROLES};
 use lime_sim::sliced_study::{cell_values, draw_surface, paint_surface, run, SlicedStudy};

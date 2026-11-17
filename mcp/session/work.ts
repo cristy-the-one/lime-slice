@@ -51,7 +51,7 @@ function startWorkJob(this: Session, name: string, input: Record<string, unknown
   // pose_animate stops between frames and removes the files it had begun; motion_run between slices of its run. Neither
   // changes a part. model_check {sweep} stops between angles and puts the poses back; model_place {until} stops between
   // poses before it moves anything.
-  const stoppable = name === "plan_run" || name === "recipe_run" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || name === "motion_run" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind))
+  const stoppable = name === "plan_run" || name === "recipe_run" || name === "ribs_plan" || name === "model_apply_batch" || name === "model_build" || name === "pose_animate" || name === "motion_run" || (name === "model_apply" && isComposite((input.op as { kind?: unknown } | undefined)?.kind))
     || (name === "model_check" && input.sweep !== undefined) || (name === "model_place" && input.until !== undefined);
   const job: WorkJob = { handle: ctx.planJob ?? `job_${this.jobSeq}`, tool: name, ...(object ? { object } : {}), started: Date.now(), ctx, stop, stoppable, done: false, settled: Promise.resolve() };
   job.settled = work.then((value) => {
@@ -76,7 +76,8 @@ function workReply(this: Session, job: WorkJob): Record<string, unknown> {
     // A call whose result is a job of its own (slice_start's slice) keeps that handle and status, so the same wait
     // loop goes on to wait for the slice; the background job is named beside it.
     if (typeof result.job === "string") return { ...result, workJob: job.handle, tool: job.tool };
-    return { ...result, job: job.handle, status: "done", tool: job.tool };
+    // Progress a wait has not read yet (a rib plan's last events) comes with the result, once.
+    return { ...result, ...(job.ctx.progress && result.ok === true ? job.ctx.progress() : {}), job: job.handle, status: "done", tool: job.tool };
   }
   return {
     ok: true,
@@ -86,6 +87,7 @@ function workReply(this: Session, job: WorkJob): Record<string, unknown> {
     ...(job.object ? { object: job.object } : {}),
     fraction: Math.round((job.ctx.fraction ?? 0) * 1000) / 1000,
     ...(job.ctx.stage ? { stage: job.ctx.stage } : {}),
+    ...(job.ctx.progress ? job.ctx.progress() : {}),
     seconds: Math.round((Date.now() - job.started) / 1000),
     note: `${job.tool} runs longer than a client waits, so it goes on in the background. Call slice_wait {job:"${job.handle}"} until status is done: that reply is the call's own result. slice_cancel takes the work back. Edits wait until it is done.`,
   };
@@ -93,7 +95,7 @@ function workReply(this: Session, job: WorkJob): Record<string, unknown> {
 
 /** While a background job runs, only reads that leave the modeler alone, and the job's wait and cancel, are answered. */
 function busyRefusal(this: Session, name: string): Record<string, unknown> | null {
-  const job = this.workJobs.find((row) => !row.done);
+  const job = this.workJobs.find((row) => !row.done && row.ctx.shared !== true);
   if (!job || WHILE_BUSY.has(name)) return null;
   const at = job.ctx.stage ? `, ${job.ctx.stage}` : "";
   return refuse("job-running", `${job.tool}${job.object ? ` on ${job.object}` : ""} is still running in the background as ${job.handle}${at}. Call slice_wait {job:"${job.handle}"} until it is done, or slice_cancel to take it back, then call this again.`, { job: job.handle }, NEXT.slicewait);
@@ -260,7 +262,7 @@ async function workCancel(this: Session, job: WorkJob): Promise<Record<string, u
   }
   job.stop.abort();
   await Promise.race([job.settled, this.pause(SLICE_WAIT_DEFAULT_S * 1000)]);
-  if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: job.tool === "plan_run" ? "The plan stops at the step it is on; a batch, build, or composite step is taken back, and the steps before it stay. Call slice_wait for the outcome." : "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
+  if (!job.done) return { ok: true, job: job.handle, status: "cancelling", reason: job.tool === "ribs_plan" ? "The planner stops after the solves it is on and returns the plan as it stands, marked stoppedEarly. Call slice_wait for it." : job.tool === "plan_run" ? "The plan stops at the step it is on; a batch, build, or composite step is taken back, and the steps before it stay. Call slice_wait for the outcome." : "The work stops after the step it is on, and is then taken back. Call slice_wait for the outcome." };
   return this.workReply(job);
 }
 

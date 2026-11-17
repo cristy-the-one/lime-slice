@@ -30,7 +30,7 @@ export const TOOL_GROUPS: Record<string, { holds: string; tools: string[] }> = {
   },
   calibration: { holds: "calibration towers and blends", tools: ["calibration_tower", "calibration_apply", "blend_compare", "blend_apply"] },
   machines: { holds: "printer and filament records: load, read, set, save, profiles", tools: ["machine_load", "machine_get", "machine_set", "machine_save", "profile_save"] },
-  stress: { holds: "stress studies: set up, solve, read a field, sweep variants", tools: ["sim_setup", "sim_run", "sim_field", "sim_sweep", "sim_cancel"] },
+  stress: { holds: "stress studies: set up, solve, read a field, sweep variants; auto ribs: plan ribs on a wall, apply them", tools: ["sim_setup", "sim_run", "sim_field", "sim_sweep", "sim_cancel", "ribs_plan", "ribs_apply"] },
 };
 
 export const GROUP_NAMES = Object.keys(TOOL_GROUPS);
@@ -84,7 +84,7 @@ const GROUP_TOOLS_SHORT: Record<string, string> = {
   layers: "layer_summary/detail/paths/image, gcode_read, layer actions",
   calibration: "calibration_tower/apply, blend_compare/apply",
   machines: "machine_load/get/set/save, profile_save",
-  stress: "sim_setup/run/field/sweep/cancel",
+  stress: "sim_setup/run/field/sweep/cancel, ribs_plan/apply",
 };
 
 export const TOOLS_ENABLE_HELP = `Open tool groups; the tool list then changes. Calling a tool of a closed group opens it too. Groups: ${Object.keys(TOOL_GROUPS).map((group) => `${group} (${GROUP_TOOLS_SHORT[group]})`).join("; ")}.`;

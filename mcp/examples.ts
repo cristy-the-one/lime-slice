@@ -104,4 +104,9 @@ export const EXAMPLES: Record<string, Record<string, unknown>[]> = {
   sim_field: [{ field: "von_mises", stride: 1, limit: 100 }],
   sim_sweep: [{ variants: [{ walls: 4, infill: 0.6 }, { walls: 3, infill: 0.4 }], includePrintTime: true }],
   sim_cancel: [{}],
+  ribs_plan: [
+    { object: "obj_1", wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } } },
+    { object: "obj_1", wall: { faces: [5] }, zones: [{ region: { box: { min: [-20, -10, 0], max: [20, 10, 40] } }, mode: "noRibs", marginMm: 2 }, { region: { obstacle: { object: "obj_2", clearanceMm: 1 } } }], goal: { stiffer: 2 }, rib: { profile: "straight" } },
+  ],
+  ribs_apply: [{ job: "job_2" }, { job: "job_2", verify: true }],
 };

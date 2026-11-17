@@ -335,6 +335,22 @@ fn sim_study_json(body: &str) -> String {
     lime_sim_bridge::study_json(body)
 }
 
+/// Auto ribs: plans run as jobs of their own in the bridge
+/// (`lime_sim_bridge::ribs`), polled and cancelled by id. A plan reads only
+/// its request, so it never waits on the slicer or the modeler, and a slice
+/// can run beside it. The desktop's commands call the same functions.
+fn rib_plan_start(body: String) -> String {
+    lime_sim_bridge::ribs::rib_plan_start(body)
+}
+
+fn rib_plan_poll(id: usize) -> String {
+    lime_sim_bridge::ribs::rib_plan_poll(id)
+}
+
+fn rib_plan_cancel(id: usize) -> String {
+    lime_sim_bridge::ribs::rib_plan_cancel(id)
+}
+
 fn occt_ready() -> bool {
     let reply = model_tree_json(r#"{"call":"close","key":"lime-mcp-occt-probe"}"#);
     let missing = reply.contains("was not found") || reply.contains("Could not load the Open CASCADE bridge");
@@ -345,7 +361,7 @@ fn occt_ready() -> bool {
 mod napi_host {
     use super::{
         calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice,
-        sim_study_json, slice_field_json, start_slice,
+        rib_plan_cancel, rib_plan_poll, rib_plan_start, sim_study_json, slice_field_json, start_slice,
     };
     use serde_json::json;
     #[cfg(not(windows))]
@@ -657,6 +673,27 @@ unsafe extern "C" fn sim_study_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiV
     return_string(env, &sim_study_json(&body))
 }
 
+unsafe extern "C" fn rib_plan_start_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &rib_plan_start(body))
+}
+
+unsafe extern "C" fn rib_plan_poll_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &rib_plan_poll(body.parse::<usize>().unwrap_or(usize::MAX)))
+}
+
+unsafe extern "C" fn rib_plan_cancel_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &rib_plan_cancel(body.parse::<usize>().unwrap_or(usize::MAX)))
+}
+
 unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallback) {
     let c_name = CString::new(name).unwrap();
     let mut func: NapiValue = ptr::null_mut();
@@ -687,6 +724,9 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "pareto", pareto_cb);
     export_fn(env, exports, "sliceField", slice_field_cb);
     export_fn(env, exports, "simStudy", sim_study_cb);
+    export_fn(env, exports, "ribPlanStart", rib_plan_start_cb);
+    export_fn(env, exports, "ribPlanPoll", rib_plan_poll_cb);
+    export_fn(env, exports, "ribPlanCancel", rib_plan_cancel_cb);
     exports
 }
 

@@ -90,6 +90,15 @@ process.on("message", (msg: { id: number; method: string; arg: string; bytes?: U
       case "simStudy":
         result = engine.simStudy(msg.arg) as string;
         break;
+      case "ribPlanStart":
+        result = engine.ribPlanStart!(msg.arg) as string;
+        break;
+      case "ribPlanPoll":
+        result = engine.ribPlanPoll!(msg.arg) as string;
+        break;
+      case "ribPlanCancel":
+        result = engine.ribPlanCancel!(msg.arg) as string;
+        break;
       default:
         throw new Error("That engine call is not on this worker.");
     }

@@ -123,6 +123,9 @@ export const TEXT_FIELDS: ReadonlySet<string> = new Set([
   "printer", "process", "orient", "type",
 ]);
 
+/** Fields kept whole, never read for numbers: a request an op carries along and never builds (ribNet's `auto`). */
+export const KEPT_FIELDS: ReadonlySet<string> = new Set(["auto"]);
+
 /**
  * Names in scope and the text each stands for. A project parameter stands for itself; a call's own name, a part's
  * parameter, or a loop value stands for the text it was given, so an expression can be written in project names alone.
@@ -153,7 +156,7 @@ export function resolveTexts(value: unknown, scope: NameScope, words: ReadonlySe
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = TEXT_FIELDS.has(key) && typeof child === "string" ? child : resolveTexts(child, scope, words);
+      out[key] = KEPT_FIELDS.has(key) || (TEXT_FIELDS.has(key) && typeof child === "string") ? child : resolveTexts(child, scope, words);
     }
     return out;
   }
@@ -178,7 +181,7 @@ export function resolveNumbers(value: unknown, params: Params, path = "op", word
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       // A text field may be a list of words too: `orient` is one choice for each piece of a split to print.
-      out[key] = TEXT_FIELDS.has(key) && (typeof child === "string" || (Array.isArray(child) && child.length > 0 && child.every((one) => typeof one === "string"))) ? child : resolveNumbers(child, params, `${path}.${key}`, words);
+      out[key] = KEPT_FIELDS.has(key) || (TEXT_FIELDS.has(key) && (typeof child === "string" || (Array.isArray(child) && child.length > 0 && child.every((one) => typeof one === "string")))) ? child : resolveNumbers(child, params, `${path}.${key}`, words);
     }
     return out;
   }

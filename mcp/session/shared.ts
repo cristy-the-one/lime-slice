@@ -162,6 +162,7 @@ export const DETACHABLE = new Set([
   "model_apply", "model_apply_batch", "model_build", "model_edit", "model_goto", "model_undo", "model_redo", "model_commit",
   "model_probe", "project_open", "project_save", "app_open", "mesh_import", "solid_new", "slice_start", "export_3mf", "model_export_step",
   "sim_run", "sim_sweep", "model_params", "recipe_run", "pose_animate", "motion_run", "model_check", "model_place",
+  "ribs_plan", "ribs_apply",
 ]);
 
 /** What may run while a background job does: reads that do not touch the modeler, and the job's own wait and cancel. */
@@ -191,6 +192,15 @@ export interface CallMeta {
   planJob?: string;
   /** On a plan step's own context: the plan's. A step's progress is reported there as part of the whole plan. */
   plan?: CallMeta;
+  /** Set by work that changes no part (a rib plan alone): its background job lets other calls run beside it. */
+  shared?: boolean;
+  /** Set by work with more to say while it runs: what a wait reads beside fraction and stage (a rib plan's events). */
+  progress?: () => Record<string, unknown>;
+}
+
+/** Calls that answer with a background job at once, whatever their length: a rib plan, and an apply that verifies. */
+export function startsAsJob(name: string, input: Record<string, unknown>): boolean {
+  return name === "ribs_plan" || (name === "ribs_apply" && input.verify === true);
 }
 
 /** A detachable call that outran its reply: it runs on, and slice_wait returns its result. */

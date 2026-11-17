@@ -39,7 +39,7 @@ import { expressionMentions, isPlainNumber } from "../src/modeling/params.ts";
 import type { Assembly } from "../src/assembly.ts";
 import { ExprError, resolveNumbers, resolveTexts, substituteNames } from "../src/modeling/expr.ts";
 import { textsNeedingFonts, UserFontShelf } from "../src/modeling/user-fonts.ts";
-import { type CallMeta, DETACHABLE, type Job, LONG_CALLS, type PickRow, type PlateObject, type PlateSnap, type Recipe, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, shownName, withPicks } from "./session/shared.ts";
+import { type CallMeta, DETACHABLE, type Job, LONG_CALLS, type PickRow, type PlateObject, type PlateSnap, type Recipe, type RustRecipe, type ToolHandler, UNKNOWN_OBJECT, type WorkJob, changedValues, changesPlate, domainRefusal, edgePicksAsTyped, shownName, startsAsJob, withPicks } from "./session/shared.ts";
 import { workMethods } from "./session/work.ts";
 import { recipeMethods, recipeHandlers } from "./session/recipe.ts";
 import { pluginMethods, pluginHandlers } from "./session/plugin.ts";
@@ -64,6 +64,7 @@ import { splitMethods } from "./session/split.ts";
 import { paintMethods, paintHandlers } from "./session/paint.ts";
 import { calibrationMethods, calibrationHandlers } from "./session/calibration.ts";
 import { stressMethods, stressHandlers } from "./session/stress.ts";
+import { ribsMethods, ribsHandlers } from "./session/ribs.ts";
 import { NEXT, refuse, withCode } from "./refusals.ts";
 import { patchStep, patchSteps } from "./edit-patch.ts";
 import type { RecipeCheckpoint } from "./recipe-checkpoint.ts";
@@ -91,6 +92,7 @@ const HANDLERS: Record<string, ToolHandler> = {
   ...paintHandlers,
   ...calibrationHandlers,
   ...stressHandlers,
+  ...ribsHandlers,
   tools_enable: (s, input) => s.toolsEnable(input),
 };
 
@@ -260,6 +262,9 @@ export class Session {
 
   jointed = new Set<string>();
 
+  /** Auto ribs: the last plan of each object, with what ribs_apply and its verify need beside the reply. */
+  readonly ribPlans = new Map<string, import("./session/ribs.ts").PlanRecord>();
+
   constructor(engine: Engine, options: { isolated?: boolean } = {}) {
     this.engine = engine;
     this.isolated = options.isolated === true;
@@ -390,6 +395,8 @@ export class Session {
     // A call from the chat reads the lean form (mcp/lean.ts); a step of a recipe or a plan reads the reply whole.
     const said = inPlan || this.recipeDepth > 0 ? chained : chained.then((value) => leanReply(name, input, value));
     if (!detachable) return said;
+    // A rib plan (and an apply that verifies) answers with its job at once: a panel reads its progress from the start.
+    if (startsAsJob(name, input)) return Promise.resolve(this.workReply(this.startWorkJob(name, input, said, ctx, stop)));
     return this.detachable(name, input, said, ctx, stop, meta?.signal);
   }
 
@@ -809,11 +816,11 @@ export class Session {
 
 }
 
-type Installed = typeof animationMethods & typeof motionMethods & typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods & typeof stressMethods;
+type Installed = typeof animationMethods & typeof motionMethods & typeof workMethods & typeof recipeMethods & typeof pluginMethods & typeof nuggetMethods & typeof fontsMethods & typeof infoMethods & typeof plateMethods & typeof projectMethods & typeof machineMethods & typeof settingsMethods & typeof sliceMethods & typeof layersMethods & typeof modelMethods & typeof placeMethods & typeof probeMethods & typeof applyMethods & typeof paramsMethods & typeof historyMethods & typeof splitMethods & typeof paintMethods & typeof calibrationMethods & typeof stressMethods & typeof ribsMethods;
 
 /** The tool modules' methods run with this: Session; they are installed here, and typed through this merge. */
 export interface Session extends Installed {}
-Object.assign(Session.prototype, animationMethods, motionMethods, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods);
+Object.assign(Session.prototype, animationMethods, motionMethods, workMethods, recipeMethods, pluginMethods, nuggetMethods, fontsMethods, infoMethods, plateMethods, projectMethods, machineMethods, settingsMethods, sliceMethods, layersMethods, modelMethods, placeMethods, probeMethods, applyMethods, paramsMethods, historyMethods, splitMethods, paintMethods, calibrationMethods, stressMethods, ribsMethods);
 
 export { blendOf };
 

@@ -320,6 +320,8 @@ jobs:
           node --experimental-strip-types mcp/pattern-combine.test.ts
           # The rib network (ribNet) on flat, sloped, cylinder and freeform shells, and the ribs leak on a sloped floor.
           node --experimental-strip-types mcp/rib-net-occt.test.ts
+          # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
+          node --experimental-strip-types mcp/auto-ribs-occt.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts
