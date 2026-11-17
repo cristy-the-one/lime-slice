@@ -284,14 +284,14 @@ pub fn node_graph_factor_len(mesh: &Mesh) -> Result<usize, SimError> {
 /// eight, and 2.4 s on all 24 of a Core Ultra 9 275HX.
 const MAX_THREADS: usize = 8;
 
-fn parallel() -> Par {
+pub(crate) fn parallel() -> Par {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
     Par::rayon(cores.min(MAX_THREADS))
 }
 
 /// `|D_min| / |D_max|` of a supernodal factor: each supernode's block
 /// diagonal holds its pivots on its own diagonal.
-fn supernodal_pivot_ratio(symbolic: &SymbolicSupernodalCholesky<usize>, values: &[f64]) -> f64 {
+pub(crate) fn supernodal_pivot_ratio(symbolic: &SymbolicSupernodalCholesky<usize>, values: &[f64]) -> f64 {
     let factor = SupernodalLdltRef::new(symbolic, values);
     let mut min_abs = f64::INFINITY;
     let mut max_abs = 0.0_f64;
@@ -311,7 +311,7 @@ fn supernodal_pivot_ratio(symbolic: &SymbolicSupernodalCholesky<usize>, values: 
 }
 
 /// `|D_min| / |D_max|`. The diagonal entries of the simplicial factor are the pivots.
-fn pivot_ratio_of(col_ptr: &[usize], row_idx: &[usize], values: &[f64]) -> f64 {
+pub(crate) fn pivot_ratio_of(col_ptr: &[usize], row_idx: &[usize], values: &[f64]) -> f64 {
     let mut min_abs = f64::INFINITY;
     let mut max_abs = 0.0_f64;
     let n = col_ptr.len().saturating_sub(1);
