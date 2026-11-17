@@ -1016,3 +1016,213 @@ fn scoring_cost_and_thread_arrangement() {
         }
     }
 }
+
+/// The plan's ribs re-solved from scratch, the way an outside check would:
+/// each stretch of equal height and section cut into the input mesh on its
+/// own (`embed_polylines`), holds carried to new vertices on held border
+/// edges only, the request's loads (or the default pressure) carried to
+/// the cut triangles, bare and ribbed solved on that one mesh. Returns
+/// (bare compliance, ribbed compliance, ribbed max deflection).
+fn independent_resolve(req: &RibPlanRequest, plan: &RibPlan) -> (f64, f64, f64) {
+    use lime_sim::shell::planner::DEFAULT_PRESSURE;
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut polys: Vec<Vec<[f64; 3]>> = Vec::new();
+    let mut stretch: Vec<(RibSection, f64, RibSide)> = Vec::new();
+    for r in &plan.ribs {
+        let mut cur = vec![r.points[0]];
+        let mut k0 = 0;
+        for k in 1..r.points.len() {
+            cur.push(r.points[k]);
+            let last = k == r.points.len() - 1;
+            if last
+                || (r.heights[k] - r.heights[k0]).abs() > 1e-9
+                || r.sections[k] != r.sections[k0]
+            {
+                polys.push(std::mem::take(&mut cur));
+                stretch.push((r.sections[k0], r.heights[k0], r.side));
+                if !last {
+                    cur = vec![r.points[k]];
+                    k0 = k;
+                }
+            }
+        }
+    }
+    let emb = embed_polylines(&req.mesh, &polys);
+    let mesh = emb.mesh.clone();
+    let n_in = req.mesh.vertices.len() as u32;
+    let holds: Vec<ShellHold> = match &req.holds {
+        Holds::Given(list) => {
+            let given: BTreeMap<u32, [Option<f64>; 6]> =
+                list.iter().map(|h| (h.node, h.dofs)).collect();
+            let mut out: Vec<ShellHold> = list.clone();
+            // Border edges of the input mesh: on one triangle only.
+            let mut count: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+            for t in &req.mesh.triangles {
+                for k in 0..3 {
+                    let (a, b) = (t[k], t[(k + 1) % 3]);
+                    *count.entry((a.min(b), a.max(b))).or_default() += 1;
+                }
+            }
+            let border: BTreeSet<u32> = boundary_vertices(&mesh).into_iter().collect();
+            for &v in &border {
+                if v < n_in {
+                    continue;
+                }
+                let p = mesh.vertices[v as usize];
+                for (&(a, b), &c) in &count {
+                    if c != 1 {
+                        continue;
+                    }
+                    let (Some(da), Some(db)) = (given.get(&a), given.get(&b)) else {
+                        continue;
+                    };
+                    let (pa, pb) = (req.mesh.vertices[a as usize], req.mesh.vertices[b as usize]);
+                    let ab = [0, 1, 2].map(|k| pb[k] - pa[k]);
+                    let ap = [0, 1, 2].map(|k| p[k] - pa[k]);
+                    let l2: f64 = ab.iter().map(|x| x * x).sum();
+                    let s = ((0..3).map(|k| ab[k] * ap[k]).sum::<f64>() / l2).clamp(0.0, 1.0);
+                    let d = (0..3)
+                        .map(|k| (pa[k] + ab[k] * s - p[k]).powi(2))
+                        .sum::<f64>()
+                        .sqrt();
+                    if da == db && d < 1e-6 {
+                        out.push(ShellHold { node: v, dofs: *da });
+                        break;
+                    }
+                }
+            }
+            out.sort_by_key(|h| h.node);
+            out
+        }
+        Holds::AllBoundaryClamped => boundary_vertices(&mesh)
+            .into_iter()
+            .map(ShellHold::clamped)
+            .collect(),
+        Holds::OuterBoundaryClamped => panic!("not used here"),
+    };
+    let mut children: Vec<Vec<u32>> = vec![Vec::new(); req.mesh.triangles.len()];
+    for (t, &p) in emb.parent.iter().enumerate() {
+        children[p as usize].push(t as u32);
+    }
+    let map = |ts: &[u32]| -> Vec<u32> {
+        ts.iter()
+            .flat_map(|&t| children[t as usize].clone())
+            .collect()
+    };
+    let cases: Vec<Vec<ShellLoad>> = if req.load_cases.is_empty() {
+        vec![vec![ShellLoad::Pressure {
+            triangles: (0..mesh.triangles.len() as u32).collect(),
+            pressure: DEFAULT_PRESSURE,
+        }]]
+    } else {
+        req.load_cases
+            .iter()
+            .map(|c| {
+                c.iter()
+                    .map(|l| match l {
+                        ShellLoad::Pressure {
+                            triangles,
+                            pressure,
+                        } => ShellLoad::Pressure {
+                            triangles: map(triangles),
+                            pressure: *pressure,
+                        },
+                        ShellLoad::SpreadForce { triangles, force } => ShellLoad::SpreadForce {
+                            triangles: map(triangles),
+                            force: *force,
+                        },
+                        other => other.clone(),
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let ribs: Vec<Rib> = emb
+        .chains
+        .iter()
+        .zip(&stretch)
+        .filter_map(|(ch, &(section, height, side))| {
+            let ch = ch.as_ref()?;
+            (ch.len() >= 2).then(|| Rib {
+                edges: chain_edges(ch),
+                section,
+                height,
+                side,
+            })
+        })
+        .collect();
+    assert_eq!(ribs.len(), polys.len(), "every stretch embeds");
+    let mut model = ShellModel::new(mesh, req.material, &holds, ShellOptions::default()).unwrap();
+    let bare: f64 = model
+        .solve_cases(&cases)
+        .unwrap()
+        .iter()
+        .map(|r| r.compliance)
+        .sum();
+    model.set_ribs(ribs).unwrap();
+    let res = model.solve_cases(&cases).unwrap();
+    let ribbed: f64 = res.iter().map(|r| r.compliance).sum();
+    let defl = res.iter().map(|r| r.max_deflection).fold(0.0, f64::max);
+    (bare, ribbed, defl)
+}
+
+/// The numbers a plan reports (bare and ribbed compliance, the factor and
+/// goalMet) are those of a clean solve of exactly the ribs it returns: an
+/// independent re-solve of them reproduces the factor within 1 %.
+#[test]
+fn the_reported_factor_matches_an_independent_resolve() {
+    let mut cases: Vec<(&str, RibPlanRequest)> = Vec::new();
+    let mut r = panel_request(300.0, 120.0, [60, 24]);
+    r.options.baselines = false;
+    cases.push(("clamped 300×120, pressure, balanced", r.clone()));
+    let mut s = r.clone();
+    s.goal = Goal::Stiffer(1.6);
+    cases.push(("clamped 300×120, pressure, 1.6×", s));
+    // Held at its borders as ribWall sends it: given holds on every border vertex.
+    let mut g = panel_request(240.0, 100.0, [48, 20]);
+    g.options.baselines = false;
+    g.holds = Holds::Given(
+        boundary_vertices(&g.mesh)
+            .into_iter()
+            .map(ShellHold::clamped)
+            .collect(),
+    );
+    g.rules.max_height = 2.0;
+    cases.push(("given border holds, 240×100, ribs ≤ 2 mm, balanced", g));
+    let mut h = RibPlanRequest::new(
+        holed_panel(300.0, 120.0, [60, 24], 2.0, [150.0, 60.0], 15.0),
+        material(E, NU),
+    );
+    h.options.baselines = false;
+    h.holds = Holds::Given(
+        boundary_vertices(&h.mesh)
+            .into_iter()
+            .map(ShellHold::clamped)
+            .collect(),
+    );
+    cases.push(("holed panel, every border held, balanced", h));
+    for (name, req) in &cases {
+        let plan = plan_ribs(req).unwrap();
+        let (bare, ribbed, defl) = independent_resolve(req, &plan);
+        let factor = bare / ribbed;
+        let gap = plan.stiffness_factor / factor - 1.0;
+        eprintln!(
+            "| {name} | ribs {} | reported ×{:.4} (bare {:.6e}, ribbed {:.6e}) | re-solve ×{factor:.4} (bare {bare:.6e}, ribbed {ribbed:.6e}) | gap {:+.2} % | goal met {} | defl {:.4} vs {defl:.4} |",
+            plan.ribs.len(),
+            plan.stiffness_factor,
+            plan.bare.compliance,
+            plan.ribbed.compliance,
+            100.0 * gap,
+            plan.goal_met,
+            plan.ribbed.max_deflection,
+        );
+        assert!(
+            gap.abs() < 0.01,
+            "{name}: reported {} vs re-solve {factor}",
+            plan.stiffness_factor
+        );
+        if let Goal::Stiffer(f) = req.goal {
+            assert_eq!(plan.goal_met, factor >= f * (1.0 - 1e-9), "{name}");
+        }
+    }
+}
