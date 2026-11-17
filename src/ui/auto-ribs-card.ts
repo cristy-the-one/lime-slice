@@ -17,7 +17,7 @@ import { Check, X, createElement } from "lucide";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
 import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
-import { planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
+import { builtVolumeOf, planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
 import { stageName, type PlanGoal, type PlanJob, type PlanSource, type RibPlanBody, type V3 } from "../auto-ribs-plan.ts";
@@ -38,6 +38,7 @@ import {
   editedNote,
   fmt,
   goalLine,
+  looseLine,
   goalOf,
   grams,
   idleRun,
@@ -899,6 +900,18 @@ function paintProgress() {
   refreshModelCard();
 }
 
+/** What the kept ribs add as built (ribNet's own plan of them on the solid), worked out once per set of kept ribs. */
+let built: { key: string; mm3: number | null } | null = null;
+function builtNow(): number | null {
+  if (!ranWith || faceRibs.length === 0) return null;
+  const key = JSON.stringify([ranWith.key, run.removed, faceRibs.length]);
+  if (built?.key !== key) {
+    const kept = faceRibs.filter((_, i) => !run.removed.includes(i));
+    built = { key, mm3: kept.length ? builtVolumeOf({ positions: ranWith.solid.positions, faceOf: ranWith.solid.faceOf }, kept) : 0 };
+  }
+  return built.mm3;
+}
+
 function paintResult() {
   const section = $<HTMLElement>("#autoRibsResult");
   const plan = run.plan;
@@ -906,7 +919,7 @@ function paintResult() {
   if (!plan || !host) return;
   const density = host.densityGCm3();
   const part = ranWith?.solid.volumeMm3 ?? host.solid()?.volumeMm3 ?? 0;
-  const numbers = resultNumbers(run, density, part);
+  const numbers = resultNumbers(run, density, part, builtNow());
   const set = (id: string, text: string, show = true) => {
     const node = $<HTMLElement>(id);
     if (!node) return;
@@ -921,7 +934,7 @@ function paintResult() {
   if (stoppedLine) stoppedLine.hidden = !plan.stoppedEarly || plan.ribs.length === 0;
   const editedBadge = $<HTMLElement>("#autoRibsEdited");
   if (editedBadge) editedBadge.hidden = run.removed.length === 0;
-  set("#autoRibsGoal", ranWith ? goalLine(ranWith.goal, plan, density) : "");
+  set("#autoRibsGoal", [ranWith ? goalLine(ranWith.goal, plan, density) : "", looseLine(plan)].filter(Boolean).join(" "));
   set("#autoRibsEditedNote", editedNote(run));
   // The card named once: the shell was solved with it, and the panel says whether it is the filament's or the default.
   set("#autoRibsRelative", materialNote ? `Stiffness numbers are relative: the wall is solved as a thin shell. Material: ${materialNote}` : RELATIVE_NOTE);

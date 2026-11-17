@@ -331,12 +331,13 @@ export function totalsLine(totals: RunState["totals"], densityGCm3: number, part
 }
 
 /** What the result shows: gain, cost, and whether a removed rib makes them estimates. */
-export function resultNumbers(run: RunState, densityGCm3: number, partMm3: number): { gain: string; cost: string; edited: boolean; ribs: number } | null {
+export function resultNumbers(run: RunState, densityGCm3: number, partMm3: number, builtMm3: number | null = null): { gain: string; cost: string; edited: boolean; ribs: number } | null {
   const plan = run.plan;
   if (!plan) return null;
   const kept = keptRibs(run);
   const edited = run.removed.length > 0;
-  const volume = edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3;
+  // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
+  const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
   return { gain: edited ? `${gainText(plan.stiffnessFactor)} before the edit` : gainText(plan.stiffnessFactor), cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
@@ -356,6 +357,16 @@ export function comparisonLines(plan: RibPlanResult, densityGCm3: number): strin
   else if (plan.notBetterThanBaseline) out.push(`These ribs are no better: a thicker wall or an even grid gets the same stiffness for no more material than the ribs' ${g(plan.ribVolumeMm3)}.`);
   else out.push(`The ribs need ${g(plan.ribVolumeMm3)}, less than either.`);
   return out;
+}
+
+/** The rib ends the plan leaves loose and why, else "": every other end meets a border, a hold or another rib. */
+export function looseLine(plan: RibPlanResult): string {
+  const loose = plan.looseEnds ?? [];
+  if (loose.length === 0) return "";
+  const zone = loose.filter((row) => row.reason === "noRibZone").length;
+  const budget = loose.length - zone;
+  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : ""].filter(Boolean).join(" and ");
+  return `${loose.length} rib end${loose.length === 1 ? " stops" : "s stop"} short of a wall or another rib: ${why}.`;
 }
 
 /** The goal's line when it was not met, else "". */

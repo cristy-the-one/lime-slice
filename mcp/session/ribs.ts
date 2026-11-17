@@ -15,7 +15,7 @@
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -412,9 +412,13 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     };
   });
   const planVolume = num(result.ribVolumeMm3) ?? 0;
-  const mm3 = planVolume;
+  // What the ribs add as built: ribNet's plan of exactly these ribs on this solid (src/modeling/auto-ribs.ts
+  // builtVolumeOf). The planner's volume runs each rib's full section to its ends on the mid-surface: a tapered end, a
+  // stretch too close to a facing wall to build, an end drawn back from a free edge all count there and not in the part.
+  const built = engineRibs.length ? builtVolumeOf(typed.solid, onSkin.ribs) : 0;
+  const mm3 = built ?? planVolume;
   const partVolume = Math.abs(obj.solid.volumeMm3 ?? 0);
-  const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, note: "The planner's rib volume: each stretch's section over its length, crossings counted once (tapered ends not taken off). ribs_apply measures the solid." };
+  const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, plannerMm3: r(planVolume, 1), note: built === null ? "The planner's rib volume (ribNet could not plan these ribs to estimate them as built): each stretch's section over its length, crossings counted once. ribs_apply measures the solid." : "As built: ribNet's plan of these ribs on this solid, each section over the wall's face along the rib after tapers and skipped stretches, ends into a wall or a rib left out, crossings counted once. plannerMm3 is the planner's own count on the mid-surface. ribs_apply measures the solid." };
   const profiles: Record<string, number> = {};
   for (const row of ribs) profiles[String(row.profile)] = (profiles[String(row.profile)] ?? 0) + 1;
   const request = structuredClone(input) as Row;

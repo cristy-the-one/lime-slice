@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, fitFlanges, flangeUndersides, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -175,6 +175,15 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
     const shape = (v: unknown): unknown => (Array.isArray(v) ? (v.length ? [shape(v[0])] : []) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shape(x)])) : v === null ? null : typeof v);
     check("the committed fixture has the shape ribWall writes now", JSON.stringify(shape(kept)) === JSON.stringify(shape(wire)), `${JSON.stringify(shape(kept)).slice(0, 300)} vs ${JSON.stringify(shape(wire)).slice(0, 300)}`);
   }
+}
+
+// --- A planned rib through every mesh edge it crosses: the points on its line go, height and section changes stay.
+{
+  const pts: [number, number, number][] = [[0, 0, 2], [5, 0.05, 2], [10, -0.13, 2], [15, 0, 2], [20, 0.0001, 2], [25, 0, 2], [30, 4, 2], [35, 8, 2]];
+  const heights = [6, 6, 6, 3, 3, 3, 3];
+  const sections = heights.map((h) => ({ profile: h < 6 ? "tee" : "straight", width: 1.35 }) as const);
+  const lean = dropStraightPoints(pts, heights, sections);
+  check("straight points go (zigs of a tenth of a millimetre too), the height change and the turn stay", JSON.stringify(lean.points) === JSON.stringify([[0, 0, 2], [15, 0, 2], [25, 0, 2], [35, 8, 2]]) && JSON.stringify(lean.heights) === "[6,3,3]" && lean.sections.map((s) => s.profile).join() === "straight,tee,tee", JSON.stringify(lean));
 }
 
 if (failed > 0) {

@@ -105,6 +105,12 @@ export interface RibNetPlan {
   sides: V3[];
   /** The part's box before, in model space. */
   bounds: { min: V3; max: V3 };
+  /**
+   * The material the network adds, mm³, from what it builds: each run's sections over the surface (the sunk part is in
+   * the wall already) along its length after tapers, skipped and lowered stretches, without the extensions into a wall
+   * or another rib, less what two crossing runs share and the half of a rib a run ending on it runs into.
+   */
+  volumeMm3: number;
 }
 
 /** Defaults a typed network leaves out. */
@@ -365,13 +371,16 @@ export class RibSurface {
   private readonly kids: Int32Array;
   private readonly range: Int32Array;
   private readonly rays: ReturnType<typeof meshRays>;
+  /** The triangles the rays run against. */
+  private readonly rayPos: ArrayLike<number>;
   readonly bounds: { min: V3; max: V3 };
 
   constructor(input: RibSurfaceInput) {
     this.pos = input.positions;
     this.faceOf = input.faceOf && input.faceOf.length >= Math.floor(input.positions.length / 9) ? input.faceOf : null;
     const count = Math.floor(this.pos.length / 9);
-    this.rays = meshRays(input.closed ?? input.positions);
+    this.rayPos = input.closed ?? input.positions;
+    this.rays = meshRays(this.rayPos);
     const min: V3 = [Infinity, Infinity, Infinity];
     const max: V3 = [-Infinity, -Infinity, -Infinity];
     for (let i = 0; i < count * 9; i += 3) {
@@ -528,14 +537,36 @@ export class RibSurface {
   ray(from: V3, dir: V3, far: number): { distance: number; leaving: boolean } | null {
     return fanRay(this.rays, from, dir, far);
   }
+
+  /**
+   * The room in front of a point along `dir`: as `ray`, past faces the ray only grazes (within 6° of running along
+   * them). From a floor's corner with a side wall, the ray up runs along the wall's plane and met it at once: the room
+   * read 0.01 mm, and ribNet skipped the stretch at every rib's end against a wall (and tapered the end).
+   */
+  room(from: V3, dir: V3, far: number): { distance: number; leaving: boolean } | null {
+    const d = unit(dir);
+    let o = from;
+    let travelled = 0;
+    for (let i = 0; i < 8 && travelled < far; i += 1) {
+      const hit = fanRay(this.rays, o, d, far - travelled);
+      if (!hit) return null;
+      const t = hit.tri * 9;
+      const p = this.rayPos;
+      const n = unit(cross([p[t + 3]! - p[t]!, p[t + 4]! - p[t + 1]!, p[t + 5]! - p[t + 2]!], [p[t + 6]! - p[t]!, p[t + 7]! - p[t + 1]!, p[t + 8]! - p[t + 2]!]));
+      if (Math.abs(dot(n, d)) >= Math.sin((6 * Math.PI) / 180)) return { distance: travelled + hit.distance, leaving: hit.leaving };
+      o = add(o, mul(d, hit.distance + 1e-3));
+      travelled += hit.distance + 1e-3;
+    }
+    return null;
+  }
 }
 
 /** The nearest hit of three rays a hair apart about `dir`. */
-function fanRay(rays: ReturnType<typeof meshRays>, from: V3, dir: V3, far: number): { distance: number; leaving: boolean } | null {
+function fanRay(rays: ReturnType<typeof meshRays>, from: V3, dir: V3, far: number): { distance: number; leaving: boolean; tri: number } | null {
   const d = unit(dir);
   const side = unit(Math.abs(d[0]) < 0.9 ? cross(d, [1, 0, 0]) : cross(d, [0, 1, 0]));
   const other = cross(d, side);
-  let best: { distance: number; leaving: boolean } | null = null;
+  let best: { distance: number; leaving: boolean; tri: number } | null = null;
   for (const tilt of [[0, 0], [3e-4, 1e-4], [-1e-4, 3e-4]] as const) {
     const aim = unit(add(d, add(mul(side, tilt[0]), mul(other, tilt[1]))));
     const hit = rays.first(from, aim, far);
@@ -727,7 +758,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
           if (!lateral || dot(lateral.normal, s.n) < Math.cos((30 * Math.PI) / 180)) continue;
           const lp = lateral.point;
           const ln = lateral.normal;
-          const up = surface.ray(add(lp, mul(s.n, 1e-3)), s.n, h + clearance + 1);
+          const up = surface.room(add(lp, mul(s.n, 1e-3)), s.n, h + clearance + 1);
           if (up) room = Math.min(room, up.distance + 1e-3);
           if (Math.abs(u) > shape.foot + 1e-9) continue;
           const down = surface.ray(sub(lp, mul(ln, 1e-3)), mul(ln, -1), 1000);
@@ -838,7 +869,10 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
         ends.joint += 1;
         continue;
       }
-      const wallEnd = wallAt(surface, s, out, run.shape, run.heights[side === 0 ? 0 : run.heights.length - 1]!);
+      // An end on the corner where the floor meets a wall can snap to the wall's face: its normal then runs along the
+      // rib, and the wall in front was never found (the end tapered). The rib's own normal there is its neighbour's.
+      const end = Math.abs(dot(out, s.n)) > 0.5 ? { ...s, n: inner.n } : s;
+      const wallEnd = wallAt(surface, end, out, run.shape, run.heights[side === 0 ? 0 : run.heights.length - 1]!);
       if (wallEnd !== null) {
         run.ends[side] = { kind: "wall", extend: wallEnd.extend };
         guards.push(...wallEnd.guards);
@@ -852,6 +886,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
   const steps: RibNetPlan["steps"] = [];
   const stepPath: number[] = [];
   const stepProfile: RibProfileKind[] = [];
+  const measured: MeasuredRun[] = [];
   for (const run of runs) {
     const taper = taperTyped < 0 ? run.height : taperTyped;
     let samples = [...run.samples];
@@ -891,6 +926,8 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
       }
       rows = split;
     }
+    // What the run adds: its rows as they stand on the surface, before the extensions into a wall or another rib.
+    measured.push({ pts: rows.map((row) => row.s.p), hs: rows.map((row) => row.h), shape: run.shape, ends: [run.ends[0].kind, run.ends[1].kind] });
     // Extensions: a joint or a wall end runs on along the run's own direction, at the end's height and frame.
     const first = rows[0]!;
     const last = rows[rows.length - 1]!;
@@ -938,7 +975,104 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     guards: guards.filter((_, i) => i % stride === 0),
     sides: dedupeSides(sides),
     bounds: surface.bounds,
+    volumeMm3: networkVolume(measured),
   };
+}
+
+/** A run as built, for its volume: points on the surface, height at each, its shape and what its ends meet. */
+interface MeasuredRun {
+  pts: V3[];
+  hs: number[];
+  shape: RibShape;
+  ends: ["free" | "wall" | "joint", "free" | "wall" | "joint"];
+}
+
+/** A section's area over the surface at height h (its sunk part left out), by its half-widths at 32 levels. */
+function areaOver(shape: RibShape, h: number, cache: Map<number, number>): number {
+  if (!(h > 0)) return 0;
+  const key = Math.round(h * 1e4);
+  const known = cache.get(key);
+  if (known !== undefined) return known;
+  const n = 32;
+  let sum = 0;
+  for (let i = 0; i < n; i += 1) sum += 2 * shape.halfAt(h, ((i + 0.5) * h) / n);
+  const area = (sum * h) / n;
+  cache.set(key, area);
+  return area;
+}
+
+/**
+ * What a network adds: each run's area over the surface along it (trapezoid per stretch), less the material two runs
+ * share where they cross (w₁ w₂ h / sin θ, sin θ at least 0.3, as the planner counts it) and, where a run ends on
+ * another, the half of the other's width it runs into.
+ */
+function networkVolume(runs: readonly MeasuredRun[]): number {
+  const caches = runs.map(() => new Map<number, number>());
+  let volume = 0;
+  runs.forEach((run, r) => {
+    for (let k = 0; k + 1 < run.pts.length; k += 1) {
+      const l = len(sub(run.pts[k + 1]!, run.pts[k]!));
+      volume += (l * (areaOver(run.shape, run.hs[k]!, caches[r]!) + areaOver(run.shape, run.hs[k + 1]!, caches[r]!))) / 2;
+    }
+  });
+  const width = (run: MeasuredRun) => 2 * run.shape.minHalf;
+  /** The closest points of two segments: parameters and distance (Ericson 5.1.9). */
+  const closest = (p1: V3, q1: V3, p2: V3, q2: V3): { s: number; t: number; d: number } => {
+    const d1 = sub(q1, p1);
+    const d2 = sub(q2, p2);
+    const r = sub(p1, p2);
+    const a = dot(d1, d1);
+    const e = dot(d2, d2);
+    const f = dot(d2, r);
+    let s = 0;
+    let t = 0;
+    if (a <= 1e-12 && e <= 1e-12) return { s, t, d: len(r) };
+    if (a <= 1e-12) t = Math.min(1, Math.max(0, f / e));
+    else {
+      const c = dot(d1, r);
+      if (e <= 1e-12) s = Math.min(1, Math.max(0, -c / a));
+      else {
+        const b = dot(d1, d2);
+        const den = a * e - b * b;
+        s = den > 1e-12 ? Math.min(1, Math.max(0, (b * f - c * e) / den)) : 0;
+        t = (b * s + f) / e;
+        if (t < 0) {
+          t = 0;
+          s = Math.min(1, Math.max(0, -c / a));
+        } else if (t > 1) {
+          t = 1;
+          s = Math.min(1, Math.max(0, (b - c) / a));
+        }
+      }
+    }
+    return { s, t, d: len(sub(add(p1, mul(d1, s)), add(p2, mul(d2, t)))) };
+  };
+  const heightAt = (run: MeasuredRun, k: number, s: number) => run.hs[k]! + (run.hs[k + 1]! - run.hs[k]!) * s;
+  for (let i = 0; i < runs.length; i += 1) {
+    for (let j = i + 1; j < runs.length; j += 1) {
+      const a = runs[i]!;
+      const b = runs[j]!;
+      const near = 0.5 * Math.max(width(a), width(b));
+      for (let ka = 0; ka + 1 < a.pts.length; ka += 1) {
+        for (let kb = 0; kb + 1 < b.pts.length; kb += 1) {
+          const c = closest(a.pts[ka]!, a.pts[ka + 1]!, b.pts[kb]!, b.pts[kb + 1]!);
+          if (c.d > near) continue;
+          // Where one run ends on the other, the end runs into half the other's width; elsewhere they cross whole.
+          const aEnd = (ka === 0 && c.s < 1e-6) || (ka + 2 === a.pts.length && c.s > 1 - 1e-6);
+          const bEnd = (kb === 0 && c.t < 1e-6) || (kb + 2 === b.pts.length && c.t > 1 - 1e-6);
+          if ((ka > 0 && c.s < 1e-6) || (kb > 0 && c.t < 1e-6)) continue; // counted on the stretch before
+          const ta = unit(sub(a.pts[ka + 1]!, a.pts[ka]!));
+          const tb = unit(sub(b.pts[kb + 1]!, b.pts[kb]!));
+          const sin = Math.max(0.3, len(cross(ta, tb)));
+          const h = Math.min(heightAt(a, ka, c.s), heightAt(b, kb, c.t));
+          if (!(h > 0)) continue;
+          const share = aEnd && bEnd ? 0.25 : aEnd || bEnd ? 0.5 : 1;
+          volume -= (share * width(a) * width(b) * h) / sin;
+        }
+      }
+    }
+  }
+  return Math.max(0, volume);
 }
 
 /** The directions ribs stand toward, a few degrees apart at most. */
@@ -1085,11 +1219,14 @@ function wallAt(surface: RibSurface, s: Sample, out: V3, shape: RibShape, h: num
   if (shape.profile.rootRadius > 0) levels.unshift(Math.max(0.02, Math.min(0.3 * shape.profile.rootRadius, 0.15 * h)));
   for (const v of levels) {
     const span = shape.hb === 0 ? 0.45 * shape.profile.width : 0.9 * shape.halfAt(h, v);
+    // Each ray starts a span back from the end: a rib that meets the wall at a slant (the planner's lines rarely meet it
+    // square) has one corner already in the wall at its end, and a ray from there met nothing (the end tapered).
+    const back = 0.05 + span;
     for (const u of [-span, 0, span]) {
-      const from = add(add(s.p, mul(s.n, v)), add(mul(across, u), mul(along, -0.05)));
-      const hit = surface.ray(from, along, reach);
+      const from = add(add(s.p, mul(s.n, v)), add(mul(across, u), mul(along, -back)));
+      const hit = surface.ray(from, along, reach + span);
       if (!hit || hit.leaving) return null;
-      meet = Math.max(meet, hit.distance - 0.05);
+      meet = Math.max(meet, hit.distance - back);
       const inside = add(from, mul(along, hit.distance + 1e-3));
       const through = surface.ray(inside, along, 1000);
       if (through?.leaving) {
