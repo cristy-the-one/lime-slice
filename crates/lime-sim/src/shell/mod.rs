@@ -30,6 +30,7 @@ mod membrane;
 mod model;
 pub mod planner;
 mod plate;
+pub mod rib_section;
 mod section;
 mod sparse;
 mod tensor;
@@ -40,5 +41,6 @@ pub use model::{
     ElementResult, LoadCase, Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel,
     ShellOptions, ShellResult, Timings, DRILL_PENALTY,
 };
+pub use rib_section::{RibSection, SectionProperties};
 pub use section::{IsotropicShell, Mat3, ShellSection};
 pub use tensor::Principal;

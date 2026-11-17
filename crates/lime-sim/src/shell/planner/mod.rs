@@ -58,7 +58,7 @@ use super::{
     ShellOptions,
 };
 
-pub use profile::RibProfile;
+pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
 pub use trace::Family;
 
 /// The default load when none is given: 1 kPa on every triangle, along
@@ -114,7 +114,7 @@ pub struct Zone {
 /// What a rib may be.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RibRules {
-    /// Rib width, mm.
+    /// Rib width, mm: the top of a straight or drafted rib, a tee's web.
     pub width: f64,
     /// Greatest rib height above the wall's face, mm.
     pub max_height: f64,
@@ -130,7 +130,8 @@ pub struct RibRules {
     pub min_length: f64,
     /// Which face ribs stand on.
     pub side: RibSide,
-    /// The cross-section shape ([`RibProfile`]: only `Rectangular` yet).
+    /// The cross-section shape ([`RibProfile`]; [`choose_profile`] picks
+    /// one by process and print pose).
     pub profile: RibProfile,
     /// How far a loose rib end may be extended to reach the boundary, a
     /// hold or another rib, mm. Default: twice `min_spacing`.
@@ -860,6 +861,9 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
     if r.min_height > r.max_height {
         return Err(SimError::new("The least rib height is above the greatest."));
     }
+    // In full at the greatest height; lower stretches may fall back to
+    // plain (see `profile`).
+    r.profile.check(r.width, r.max_height)?;
     if !positive(r.min_spacing) || !r.min_length.is_finite() || r.min_length < 0.0 {
         return Err(SimError::new(
             "Rib spacing must be above zero and length not below.",
@@ -1231,7 +1235,8 @@ pub fn rib_network_volume(mesh: &ShellMesh, ribs: &[Rib]) -> f64 {
                 let last = *chain.last().expect("chain");
                 chain.push(if a == last { b } else { a });
             }
-            select::DRib::fixed(chain, r.height, r.width, RibProfile::Rectangular)
+            let (profile, width) = RibProfile::of_section(r.section);
+            select::DRib::fixed(chain, r.height, width, profile)
         })
         .collect();
     select::network_volume(&mesh.vertices, &design)

@@ -371,7 +371,7 @@ fn a_free_shell_has_six_rigid_modes() {
                 model
                     .add_rib(lime_sim::shell::Rib {
                         edges,
-                        width: 1.2,
+                        section: lime_sim::shell::RibSection::rectangular(1.2),
                         height: 5.0,
                         side: lime_sim::shell::RibSide::Positive,
                     })

@@ -7,7 +7,7 @@ mod shell_common;
 
 use std::time::Instant;
 
-use lime_sim::shell::{Rib, RibSide, ShellMesh, ShellModel, ShellOptions};
+use lime_sim::shell::{Rib, RibSection, RibSide, ShellMesh, ShellModel, ShellOptions};
 use shell_common::*;
 
 #[test]
@@ -35,7 +35,7 @@ fn solve_time_by_triangle_count() {
                 edges: (0..n)
                     .map(|i| (((n + 1) * j + i) as u32, ((n + 1) * j + i + 1) as u32))
                     .collect(),
-                width: 1.6,
+                section: RibSection::rectangular(1.6),
                 height: 6.0,
                 side: RibSide::Positive,
             })

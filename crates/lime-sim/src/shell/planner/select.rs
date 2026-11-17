@@ -310,7 +310,7 @@ pub(crate) fn network_volume(pos: &[[f64; 3]], design: &[DRib]) -> f64 {
                 };
                 let (a, b) = (&design[ri], &design[rj]);
                 let h = hi.min(hj);
-                v -= share * a.width * b.profile.area(b.width, h) / sin;
+                v -= share * a.profile.crossing_overlap(a.width, b.profile, b.width, h, sin);
             }
         }
     }
