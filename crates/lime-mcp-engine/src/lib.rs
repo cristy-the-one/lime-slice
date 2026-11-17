@@ -335,6 +335,70 @@ fn sim_study_json(body: &str) -> String {
     lime_sim_bridge::study_json(body)
 }
 
+/// Auto ribs: plans run as jobs of their own, polled and cancelled by id. A
+/// plan reads only its request, so it never waits on the slicer or the
+/// modeler, and a slice can run beside it.
+struct RibPlanJob {
+    id: usize,
+    job: lime_sim_bridge::ribs::RibJob,
+}
+
+fn rib_jobs() -> &'static Mutex<Vec<RibPlanJob>> {
+    static JOBS: std::sync::OnceLock<Mutex<Vec<RibPlanJob>>> = std::sync::OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// `ribWall`'s request plus rules, goal and options in; `{ "id" }` or `{ "error" }` out.
+fn rib_plan_start(body: String) -> String {
+    let job = match lime_sim_bridge::ribs::RibJob::start(body) {
+        Ok(job) => job,
+        Err(err) => return json!({ "error": err }).to_string(),
+    };
+    let id = next_job_id();
+    let mut guard = match rib_jobs().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // Finished jobs are dropped first; a running one is kept until it ends.
+    while guard.len() >= JOB_KEEP {
+        match guard.iter().position(|row| !row.job.running()) {
+            Some(at) => {
+                guard.remove(at);
+            }
+            None => break,
+        }
+    }
+    guard.push(RibPlanJob { id, job });
+    json!({ "id": id }).to_string()
+}
+
+/// The job's state and the progress events since the last poll.
+fn rib_plan_poll(id: usize) -> String {
+    let guard = match rib_jobs().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match guard.iter().find(|row| row.id == id) {
+        Some(row) => row.job.poll().to_string(),
+        None => json!({ "error": "That rib plan is not in this session." }).to_string(),
+    }
+}
+
+/// Stop the planner; it returns the plan as it stands.
+fn rib_plan_cancel(id: usize) -> String {
+    let guard = match rib_jobs().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match guard.iter().find(|row| row.id == id) {
+        Some(row) => {
+            row.job.cancel();
+            json!({ "ok": true }).to_string()
+        }
+        None => json!({ "ok": false, "error": "That rib plan is not in this session." }).to_string(),
+    }
+}
+
 fn occt_ready() -> bool {
     let reply = model_tree_json(r#"{"call":"close","key":"lime-mcp-occt-probe"}"#);
     let missing = reply.contains("was not found") || reply.contains("Could not load the Open CASCADE bridge");
@@ -345,7 +409,7 @@ fn occt_ready() -> bool {
 mod napi_host {
     use super::{
         calibrate_json, cancel_slice, mesh_preview_json, model_tree_json, occt_ready, pareto_json, poll_slice,
-        sim_study_json, slice_field_json, start_slice,
+        rib_plan_cancel, rib_plan_poll, rib_plan_start, sim_study_json, slice_field_json, start_slice,
     };
     use serde_json::json;
     #[cfg(not(windows))]
@@ -657,6 +721,27 @@ unsafe extern "C" fn sim_study_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiV
     return_string(env, &sim_study_json(&body))
 }
 
+unsafe extern "C" fn rib_plan_start_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &rib_plan_start(body))
+}
+
+unsafe extern "C" fn rib_plan_poll_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &rib_plan_poll(body.parse::<usize>().unwrap_or(usize::MAX)))
+}
+
+unsafe extern "C" fn rib_plan_cancel_cb(env: NapiEnv, info: NapiCallbackInfo) -> NapiValue {
+    let Ok(body) = arg_string(env, info) else {
+        return ptr::null_mut();
+    };
+    return_string(env, &rib_plan_cancel(body.parse::<usize>().unwrap_or(usize::MAX)))
+}
+
 unsafe fn export_fn(env: NapiEnv, exports: NapiValue, name: &str, cb: NapiCallback) {
     let c_name = CString::new(name).unwrap();
     let mut func: NapiValue = ptr::null_mut();
@@ -687,6 +772,9 @@ pub unsafe extern "C" fn napi_register_module_v1(env: NapiEnv, exports: NapiValu
     export_fn(env, exports, "pareto", pareto_cb);
     export_fn(env, exports, "sliceField", slice_field_cb);
     export_fn(env, exports, "simStudy", sim_study_cb);
+    export_fn(env, exports, "ribPlanStart", rib_plan_start_cb);
+    export_fn(env, exports, "ribPlanPoll", rib_plan_poll_cb);
+    export_fn(env, exports, "ribPlanCancel", rib_plan_cancel_cb);
     exports
 }
 

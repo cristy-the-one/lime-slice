@@ -24,7 +24,7 @@ export const AREAS: Record<string, string> = {
   layers: "the sliced layers and G-code in detail, layer actions",
   calibration: "calibration towers and blends",
   machines: "printer and filament records: load, read, set, save",
-  stress: "stress studies: set up, solve, read a field, sweep",
+  stress: "stress studies: set up, solve, read a field, sweep; auto ribs: plan and apply ribs on a wall",
 };
 
 export const AREA_NAMES: readonly string[] = Object.keys(AREAS);

@@ -102,6 +102,14 @@ export interface Engine {
   pareto(body: string): string | Promise<string>;
   /** One sliced stress study: the same JSON `lime_sim_bridge::study_json` reads. */
   simStudy(body: string): string | Promise<string>;
+  /**
+   * Auto ribs (`lime_sim_bridge::ribs`): start a plan as a job from `ribWall`'s request plus rules, goal and options
+   * (`{id}` or `{error}`); poll it for its stage, fraction, the progress events since the last poll and, once done, the
+   * plan; cancel it (the plan as it stands comes back, stoppedEarly). Absent on an engine built before them.
+   */
+  ribPlanStart?(body: string): string | Promise<string>;
+  ribPlanPoll?(id: string): string | Promise<string>;
+  ribPlanCancel?(id: string): string | Promise<string>;
   /** Which library answers, and whether it is the installed app's, for session_info. */
   where?(): { path: string; installed: boolean } | Promise<{ path: string; installed: boolean }>;
   /** Drop a stuck modeler and start another. Slicing keeps its own worker. */
@@ -121,7 +129,13 @@ type NativeExports = {
   calibrate?: (body: string) => string;
   pareto?: (body: string) => string;
   simStudy?: (body: string) => string;
+  ribPlanStart?: (body: string) => string;
+  ribPlanPoll?: (id: string) => string;
+  ribPlanCancel?: (id: string) => string;
 };
+
+/** What an engine built before Auto ribs answers. */
+export const NO_RIB_PLANNER = "Rebuild the in-process engine. This one has no rib planner.";
 
 export function engineLibraryName(): string {
   if (process.platform === "win32") return "lime_mcp_engine.dll";
@@ -234,6 +248,9 @@ export function loadNativeEngine(root: string, expectVersion?: string): Engine &
     calibrate: (body) => native.calibrate?.(body) ?? JSON.stringify({ error: "Rebuild the in-process engine. This one has no calibration." }),
     pareto: (body) => native.pareto?.(body) ?? JSON.stringify({ error: "Rebuild the in-process engine. This one has no blend comparison." }),
     simStudy: (body) => native.simStudy?.(body) ?? JSON.stringify({ ok: false, reason: "Rebuild the in-process engine. This one has no stress study." }),
+    ribPlanStart: (body) => native.ribPlanStart?.(body) ?? JSON.stringify({ error: NO_RIB_PLANNER }),
+    ribPlanPoll: (id) => native.ribPlanPoll?.(id) ?? JSON.stringify({ error: NO_RIB_PLANNER }),
+    ribPlanCancel: (id) => native.ribPlanCancel?.(id) ?? JSON.stringify({ ok: false, error: NO_RIB_PLANNER }),
     resetModeler: () => undefined,
   };
 }
@@ -432,6 +449,10 @@ export function loadEngineWorker(root: string): Engine {
     calibrate: (body) => slice.call("calibrate", body) as Promise<string>,
     pareto: (body) => slice.call("pareto", body) as Promise<string>,
     simStudy: (body) => slice.call("simStudy", body) as Promise<string>,
+    // The planner runs on a thread of its own in the slicer's process: start, poll and cancel each answer at once.
+    ribPlanStart: (body) => slice.call("ribPlanStart", body) as Promise<string>,
+    ribPlanPoll: (id) => slice.call("ribPlanPoll", id) as Promise<string>,
+    ribPlanCancel: (id) => slice.call("ribPlanCancel", id) as Promise<string>,
     resetModeler: () => model.restart(),
     resetPreview: () => preview.restart(),
   };

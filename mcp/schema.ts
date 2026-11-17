@@ -714,6 +714,7 @@ const ribNetOp = {
     clearanceMm: { type: "number", minimum: 0, maximum: 50, description: "Kept from a face in front of the wall. Default 0.5." },
     ...ribProfileFields,
     label,
+    auto: { type: "object", description: "ribs_plan's request this network was planned from, kept so it can be planned again; never built." },
   },
 };
 (op.oneOf as unknown[]).push(ribNetOp);
@@ -2446,6 +2447,135 @@ export const TOOLS: ToolSpec[] = [
     name: "sim_cancel",
     description: "Cancel a running stress solve and leave the last result.",
     inputSchema: empty,
+  },
+  {
+    name: "ribs_plan",
+    description: "Auto ribs (docs/plan-auto-ribs.md): plan ribs on one wall of a solid so it bends less for the least added material. Give the wall (wall.faces, or wall.face {normal, nearPoint} for the face a point is on; faces that continue it smoothly are taken with it, so a pick on a floor or a curved panel takes the whole smooth wall), and nothing else is needed: the wall is held where it meets the rest of the part and pressed evenly. The wall is meshed, solved as a thin shell, and ribs are grown along its bending directions, the one that pays most per gram first, until the goal (balanced by default: stop when the next rib buys under a quarter of what the first did). Always answers at once with a background job: slice_wait {job} reports stage, fraction and progress (each rib added, changed or removed with its polyline and heights, and the running totals: ribs, rib volume, stiffness factor) while it runs, and the plan when done; slice_cancel {job} stops it and the plan as it stood comes back marked stoppedEarly (a plan exists after the first rib). Plan-only jobs do not block other calls. The result: the ribs (model-space points on the wall's face, width, height and heights per stretch, profile, ends), what they add (mm³, grams at the filament's density, percent of the part), the predicted stiffness factor and deflection bare and ribbed (shell model, relative: the material card is a placeholder), the same stiffness by thickening the wall and by an even grid, notBetterThanBaseline, the wall report (faces taken and where growth stopped, thickness, borders, holes, every zone with where it landed, holds or loads not on the wall), the rules used with every default named, and timings. ribs_apply {job} builds it as one History row. apply:true plans and applies in one job; verify:true (with apply) adds the sliced Stress study before and after. Defaults: rib width 3 bead widths of the nozzle (bead = 1.125 × nozzle) for filament, a typed width rounded to whole beads (at least 2); resin 0.8 × and moulded 0.6 × the wall's median thickness; greatest height 3 × the median thickness, capped by the room in front of the wall and by zones; spacing and least length from the wall's narrow width (spacing a sixth of it, least length an eighth, within set bounds); holes keep a 3 mm rim; profile auto. guide {topic:\"ribs\"} has the flow, every default and the zone kinds.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["wall"],
+      properties: {
+        object: { type: "string", description: "Handle of the solid; default the selected object." },
+        wall: {
+          type: "object",
+          additionalProperties: false,
+          description: "The wall to stiffen: faces, or face (one is enough; smooth neighbours join unless grow is false).",
+          properties: {
+            faces: { type: "array", minItems: 1, maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Face indexes (faces_find)." },
+            face: {
+              type: "object",
+              additionalProperties: false,
+              required: ["nearPoint"],
+              description: "The face nearest nearPoint, among faces whose normal there is within withinDeg of normal. Flat or curved.",
+              properties: {
+                normal: { ...vec3, description: "Which way the wall's face looks (into the cavity), model space." },
+                nearPoint: { ...vec3, description: "A model-space point on or near the face." },
+                withinDeg: { type: "number", minimum: 0, maximum: 90, description: "How far the face's normal may turn from normal. Default 30." },
+              },
+            },
+            grow: { type: "boolean", description: "Take faces that continue the picked ones smoothly. Default true." },
+            growAngleDeg: { type: "number", minimum: 0, maximum: 60, description: "The kink across an edge growth crosses, degrees. Default 15." },
+            addFaces: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Faces to add to the wall." },
+            excludeFaces: { type: "array", maxItems: 200, items: { type: "integer", minimum: 0 }, description: "Faces growth must not take." },
+          },
+        },
+        zones: {
+          type: "array",
+          maxItems: 32,
+          description: "Places ribs keep clear of. Each {region, mode, maxHeightMm, marginMm}; region is one of {faces:[..]}, {box:{min, max}} or {box:{centre, size, turn}}, {sphere:{centre, radius}}, {cylinder:{origin, axis, radius, length}}, {disks:[{p, n, r}]}, {near:{mm, faces, edges, points, holes}}, {band:{origin, normal, from, to}}, {obstacle:{object, clearanceMm}} (another object's solid as it stands in model space).",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["region"],
+            properties: {
+              region: { type: "object", description: "Where, in model space: faces, box, sphere, cylinder, disks, near, band, or obstacle {object, clearanceMm}." },
+              mode: { enum: ["noRibs", "maxHeight"], description: "noRibs (default): a rib may end at the border, never cross. maxHeight: ribs pass no taller than maxHeightMm. An obstacle sets its own." },
+              maxHeightMm: { type: "number", minimum: 0, maximum: 500, description: "For maxHeight: the tallest rib in the zone, mm." },
+              marginMm: { type: "number", minimum: 0, maximum: 200, description: "The zone also covers this far around it, mm. Default 0." },
+            },
+          },
+        },
+        holds: { type: "array", maxItems: 8, description: "As sim_setup's fixtures ({kind:\"faces\", faces}, {kind:\"region\", region}, {kind:\"bed\"}). Default: the wall's joined borders, clamped.", items: { type: "object", description: "One hold, as sim_setup takes it." } },
+        loads: { type: "array", maxItems: 8, description: "As sim_setup's loads ({kind:\"force\"|\"pressure\", faces | region, magnitude, direction}). Default: an even pressure on the wall.", items: { type: "object", description: "One load, as sim_setup takes it." } },
+        goal: {
+          type: "object",
+          additionalProperties: false,
+          description: "One of: stiffer (times bare), maxDeflectionMm, budgetMm3, budgetG, balanced. Default balanced.",
+          properties: {
+            stiffer: { type: "number", minimum: 1, maximum: 1000, description: "Reach this many times the bare wall's stiffness." },
+            maxDeflectionMm: { type: "number", exclusiveMinimum: 0, description: "Keep the wall's largest deflection under this, mm (shell model, placeholder material)." },
+            budgetMm3: { type: "number", exclusiveMinimum: 0, description: "The stiffest plan within this much rib material, mm³." },
+            budgetG: { type: "number", exclusiveMinimum: 0, description: "The same budget in grams at the filament's density." },
+            balanced: { type: "boolean", description: "Add ribs while one pays (the default)." },
+          },
+        },
+        rib: {
+          type: "object",
+          additionalProperties: false,
+          description: "Rib size and section; anything left out takes its default.",
+          properties: {
+            width: { type: "number", minimum: 0.2, maximum: 50, description: "Thickness, mm. Filament rounds it to whole beads, at least 2." },
+            maxHeight: { type: "number", minimum: 0.5, maximum: 200, description: "Greatest height off the wall, mm. Default 3 × the wall's median thickness." },
+            minHeight: { type: "number", minimum: 0.2, maximum: 200, description: "Lowest height the sizing pass goes to, mm. Default 1 (or maxHeight if lower)." },
+            minSpacing: { type: "number", minimum: 1, maximum: 500, description: "Least distance between parallel ribs, mm." },
+            minLength: { type: "number", minimum: 0, maximum: 1000, description: "Shortest rib, mm." },
+            profile: { enum: ["auto", "straight", "drafted", "tee"], description: "Section. auto: filament straight, or tee where the rib is tall enough and its flange prints in this pose; resin and moulded drafted." },
+            draftDeg: { type: "number", minimum: 0, maximum: 15, description: "drafted: each side's draft. Default 1." },
+            rootRadius: { type: "number", minimum: 0, maximum: 50, description: "Flared root into the wall, mm (ribNet's default per profile)." },
+            flangeWidth: { type: "number", minimum: 0.2, maximum: 200, description: "tee: flange width, mm. Default 3 × width." },
+            flangeThickness: { type: "number", minimum: 0.1, maximum: 100, description: "tee: flange thickness, mm. Default the width." },
+            flangeChamferDeg: { type: "number", minimum: 0, maximum: 75, description: "tee: flange underside, 45 chamfered or 0 square. Default: chosen per rib for the printer and the rib's direction." },
+          },
+        },
+        process: { enum: ["filament", "resin", "moulded"], description: "What the part is made by: sets the width default and the profile auto picks. Default filament." },
+        holeRimMm: { type: "number", minimum: 0, maximum: 50, description: "Ribs keep this far from a hole's rim, mm. Default 3; 0 lets them run to it." },
+        baselines: { type: "boolean", description: "Compute the thickening and even-grid comparisons. Default true." },
+        apply: { type: "boolean", description: "Apply the plan (ribs_apply) in the same job when it is done. A stopped plan is not applied." },
+        verify: { type: "boolean", description: "With apply: the sliced Stress study before and after (slow; two slices and two solves)." },
+      },
+    },
+  },
+  {
+    name: "ribs_apply",
+    description: "Build a rib plan as one ribNet step: one History row \"Auto ribs\", undone as one. plan is the plan from a finished ribs_plan job (job), or {ribs:[{points, height | heights, width, profile, flangeChamferDeg}]} as that result lists them, edited or not (points model-space on the wall's face). A rib whose height changes along it (a capped zone, a facing part) is split where it changes, each stretch its own path at its own height; the pieces meet as joints. The row's source keeps the ribs_plan request, so it can be planned again. Refused when the part changed since the plan was made (plan again). The reply: ribNet's own report (runs, ends, shortened and skipped stretches), the measured added volume (mm³), grams at the filament's density, percent of the part, and model_check in the current pose before and after (overhang and thin-wall areas). verify:true also runs the sliced Stress study before and after with the plan's holds and loads (or the wall's joined faces held and an even 0.01 MPa on the wall): maximum displacement and least safety before and after, and the print time and filament of the two slices. It is slow, so it answers at once with a job (slice_wait). Material cards are placeholders: compare before with after, not with a real part.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        object: { type: "string", description: "Handle; default the plan's object." },
+        job: { type: "string", description: "A finished ribs_plan job (job_N), whose plan is applied." },
+        plan: {
+          type: "object",
+          additionalProperties: false,
+          required: ["ribs"],
+          description: "Ribs to build, as a ribs_plan result lists them.",
+          properties: {
+            ribs: {
+              type: "array",
+              minItems: 1,
+              maxItems: 400,
+              description: "Each {points, height | heights, width, profile, flangeChamferDeg}.",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                required: ["points"],
+                properties: {
+                  points: { type: "array", minItems: 2, maxItems: 4000, items: vec3, description: "Model-space points on the wall's face, in order." },
+                  height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "One height, mm." },
+                  heights: { type: "array", maxItems: 4000, items: { type: "number", minimum: 0 }, description: "Height of each stretch between points, mm (one fewer than points)." },
+                  width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Thickness, mm." },
+                  profile: { enum: ["straight", "drafted", "tee"], description: "Section." },
+                  flangeChamferDeg: { type: "number", minimum: 0, maximum: 75, description: "tee: 45 chamfered, 0 square." },
+                },
+              },
+            },
+          },
+        },
+        verify: { type: "boolean", description: "Sliced Stress study before and after, and the two slices' time and filament. Slow; answers with a job." },
+        label: { ...label, description: "History row name. Default Auto ribs." },
+      },
+    },
   },
 ];
 
