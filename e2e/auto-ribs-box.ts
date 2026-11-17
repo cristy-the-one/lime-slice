@@ -126,7 +126,7 @@ export async function openPart(page: Page, options: Options = {}): Promise<TreeM
   await page.route("**/api/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/mesh", (route) => {
     const body = JSON.parse(route.request().postData() ?? "{}") as { filename?: string };
-    route.fulfill({ json: { positions: String(body.filename).startsWith("block") ? obstacle.positions : part.positions } });
+    return route.fulfill({ json: { positions: String(body.filename).startsWith("block") ? obstacle.positions : part.positions } });
   });
   await page.route("**/api/jobs**", (route) => route.fulfill({ status: 404, json: { error: "not found" } }));
   const tree = await mockModelTree(page, {
