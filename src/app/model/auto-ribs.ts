@@ -16,7 +16,7 @@ import type { GroupOp, ModelOp } from "../../model-tree";
 import type { RibWall, RibWallOptions } from "../../modeling/rib-wall.ts";
 import type { V3 } from "../../auto-ribs-plan.ts";
 import { mountAutoRibsCard, openAutoRibsEdit } from "../../ui/auto-ribs-card.ts";
-import { selection } from "../../ui/machine-library.ts";
+
 import { fx } from "../fx";
 import { livePlate } from "../files";
 import { loadMachineLibrary } from "../machine-library.ts";
@@ -30,6 +30,69 @@ import { setMode, step } from "./tree";
 import { inView, openPose, posePoints, viewed } from "./view";
 import { openObject } from "./workplane";
 import { planSource } from "./auto-ribs-source";
+import { remapFaces, ribCardFor } from "../../modeling/auto-ribs.ts";
+import { beltStamp, cardsOf, selection } from "../../ui/machine-library.ts";
+import { buildStudyBody, faceTriangles, surfaceResult } from "../../sim/bridge-body.ts";
+import { solveStudy } from "../../sim/desktop-solve.ts";
+import { beltLayerNormal, type ObjectStudy, type StudyHold, type StudyLoad } from "../../sim/study.ts";
+import type { MaterialCard } from "../../sim/cards.ts";
+import { isTauri } from "../../platform.ts";
+import { stressSliceRequest } from "../stress-slice.ts";
+import { stressMesh } from "./view";
+
+/** The pressure the check puts on the wall when no load is given, MPa, and its cell: as ribs_apply's verify. */
+const CHECK_PRESSURE = 0.01;
+const CHECK_CELL_MM = 2;
+
+/** The card the shell model uses for the selected filament (shared with ribs_plan), as the panel needs it. */
+function materialCard(): { card: MaterialCard; note: string } | null {
+  const library = loadMachineLibrary();
+  const cards = cardsOf(library);
+  const fallback = cards.find((card) => card.id === "inhouse-petg") ?? cards[0];
+  if (!fallback) return null;
+  const filament = selection(library)?.filament;
+  const chosen = ribCardFor(cards, { name: filament?.name ?? "this filament", material: filament?.material ?? "" }, fallback);
+  return { card: chosen.card, note: chosen.row.note };
+}
+
+/** The part as it was before the last Apply, for the Stress check: its study mesh and its faces. */
+let beforeApply: { mesh: ReturnType<typeof stressMesh>; positions: ArrayLike<number>; faceOf: ArrayLike<number> } | null = null;
+
+/**
+ * Check with Stress: the sliced study of the whole part before and after the ribs, as ribs_apply's verify runs it,
+ * through the desktop's existing `sim_study` (the Stress panel's solve). Holds are the user's, else the faces the wall
+ * joins; loads the user's, else an even pressure on the wall. Faces are found again on the ribbed part by where they lay.
+ */
+async function stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }> {
+  const after = viewed();
+  if (!beforeApply || !after) return { reason: "Apply the ribs first: the check compares the part before and after." };
+  const material = materialCard();
+  if (!material) return { reason: "No material card is in the library." };
+  const holds: StudyHold[] = setup.holds.length ? setup.holds : setup.joinedFaces.length ? [{ kind: "faces", faces: setup.joinedFaces }] : [];
+  if (holds.length === 0) return { reason: "The check needs a hold: the wall is joined to nothing. Give one under Hold and load." };
+  const loads: StudyLoad[] = setup.loads.length ? setup.loads : [{ kind: "pressure", faces: setup.wallFaces, magnitude: CHECK_PRESSURE, direction: [0, 0, -1] }];
+  const belt = beltStamp(loadMachineLibrary());
+  const study: ObjectStudy = { holds, loads, cardId: material.card.id, printer: true, buildAxis: belt ? beltLayerNormal(belt.angleDeg) : [0, 0, 1], gravity: false, edgeMm: CHECK_CELL_MM };
+  const again = (faces: number[]) => (faces.length ? remapFaces({ positions: beforeApply!.positions, faceOf: beforeApply!.faceOf }, faces, { positions: after.positions, faceOf: after.triangles }) : faces);
+  const ribbed: ObjectStudy = { ...study, holds: study.holds.map((hold) => ({ ...hold, faces: again(hold.faces) })), loads: study.loads.map((load) => ({ ...load, faces: again(load.faces) })) };
+  const solve = async (mesh: ReturnType<typeof stressMesh>, which: ObjectStudy) => {
+    if (mesh && "reason" in mesh) return { reason: mesh.reason };
+    const request = stressSliceRequest(undefined, mesh ?? undefined);
+    if (!request) return { reason: "Load a mesh first." };
+    const body = buildStudyBody({ request, study: which, card: material.card, triangles: (faces) => (mesh?.triangles ? faceTriangles(mesh.positions, mesh.triangles, faces) : []), checkResolution: false });
+    if (typeof body !== "string") return body;
+    const parsed = surfaceResult(await solveStudy(body), "displacement");
+    if ("error" in parsed) return { reason: parsed.error };
+    return { maxDisplacementMm: parsed.maxDisplacementMm ?? 0, minSafetyFactor: parsed.minSafetyFactor ?? null };
+  };
+  progress("Slicing and solving the part as it was… (1 of 2)");
+  const one = await solve(beforeApply.mesh, study);
+  if ("reason" in one) return one;
+  progress("Slicing and solving the ribbed part… (2 of 2)");
+  const two = await solve(stressMesh(), ribbed);
+  if ("reason" in two) return two;
+  return { before: one, after: two };
+}
 
 let worker: Worker | null = null;
 let serial = 0;
@@ -129,6 +192,7 @@ async function applyNet(raw: Record<string, unknown>): Promise<{ ok: true; befor
   const group: GroupOp = { kind: "group", label: AUTO_RIBS_LABEL, source: JSON.parse(JSON.stringify(raw)) as unknown, steps, combine: "fuse" };
   const before = solid;
   const beforeMm3 = solid.volumeMm3;
+  beforeApply = { mesh: stressMesh(), positions: solid.positions, faceOf: solid.triangles };
   pending = group;
   try {
     if (S.editing) await runEdit(S.editing);
@@ -197,6 +261,13 @@ export function bindAutoRibs() {
     },
     check: checkNow,
     apply: applyNet,
+    material() {
+      const chosen = materialCard();
+      return chosen ? { e: chosen.card.EInPlaneMPa, nu: chosen.card.nu, note: chosen.note } : null;
+    },
+    // The desktop's sim_study runs the check; a page under test may answer it (`__limeSimStudy`). A browser has neither.
+    stressAvailable: () => isTauri() || typeof (globalThis as { __limeSimStudy?: unknown }).__limeSimStudy === "function",
+    stressCheck,
     source: planSource,
     readout,
     // The edit closed without Apply: the view goes back to the step shown before it, as other cards' edits do.

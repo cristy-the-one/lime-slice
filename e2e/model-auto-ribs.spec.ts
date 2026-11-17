@@ -9,7 +9,7 @@ import type { Body } from "./model-tree-mock";
 
 test("four actions: open the card, click the floor, Run, Apply; one History row, then what it added and the print check", async ({ page }) => {
   test.setTimeout(180_000);
-  const tree = await openPart(page);
+  const tree = await openPart(page, { stress: true });
   const floor = await findFloor(page);
   await openCard(page);
   // Empty: the prompt, and Run waits for a wall.
@@ -34,7 +34,8 @@ test("four actions: open the card, click the floor, Run, Apply; one History row,
   await expect(page.locator("#autoRibsCost")).toHaveText(/^\+\d+(\.\d)? g, \+\d+(\.\d)? %$/);
   await expect(page.locator("#autoRibsCompare li")).toHaveCount(3);
   await expect(page.locator("#autoRibsCompare li").last()).toContainText("less than either");
-  await expect(page.locator("#autoRibsRelative")).toContainText("relative");
+  // The note names the material card the shell was solved with (the selected filament's, or the default standing in).
+  await expect(page.locator("#autoRibsRelative")).toContainText(/relative.* Material: /);
   const ribs = await page.locator("#autoRibsList li").count();
   expect(ribs, "the stand-in plans three ribs at Balanced (four, the weakest pruned)").toBe(3);
   await expect(page.locator("#model")).toHaveAttribute("data-ribs-ghost", "3/0");
@@ -59,6 +60,12 @@ test("four actions: open the card, click the floor, Run, Apply; one History row,
   await expect(page.locator("#autoRibsCheck li").first()).toContainText("Print check on", { timeout: 20_000 });
   await expect(primary(page)).toHaveText("Done");
   await shot(page, "6-applied.png");
+  // Check with Stress, opt-in: the sliced study before and after, through the desktop study solve.
+  await page.locator("#autoRibsStress").click();
+  await expect(page.locator("#autoRibsStressResult li").first()).toHaveText("Greatest deflection 0.4 mm → 0.1 mm: 4× as stiff on the sliced part.", { timeout: 20_000 });
+  const bodies = await page.evaluate(() => (window as unknown as { __limeSimBodies: string[] }).__limeSimBodies.length);
+  expect(bodies, "two solves: before and after").toBe(2);
+  await shot(page, "6b-stress.png");
   await primary(page).click();
   await expect(cardBox(page)).toBeHidden();
 });

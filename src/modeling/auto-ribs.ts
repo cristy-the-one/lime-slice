@@ -598,3 +598,41 @@ export function wireProfileOf(asked: "auto" | RibProfileKind, process: RibProces
   if (asked === "tee") return { kind: "tee", flange: flange ?? "chamfered", ...extra };
   return { kind: "auto", process, flange };
 }
+
+// --- The material card the shell model uses (moved from mcp/session/ribs.ts so the panel names the same card). ---
+
+/** The card fields the planner and its sentence read. */
+export interface RibCardIn {
+  id: string;
+  polymer: string;
+  provisional: boolean;
+  EInPlaneMPa: number;
+  nu: number;
+}
+
+/**
+ * The card the shell model and the verify study use: the library card for the selected filament's polymer when there
+ * is one, else `fallback` (the default card), and a row saying which, so a placeholder is never presented as the
+ * filament's. `note` is the sentence ribs_plan and the panel show.
+ */
+export function ribCardFor<C extends RibCardIn>(cards: readonly C[], filament: { name: string; material?: string | null }, fallback: C): { card: C; row: { card: string; polymer: string; eMPa: number; nu: number; provisional: boolean; filament: string; forFilament: boolean; note: string } } {
+  const wanted = String(filament.material ?? "").trim().toLowerCase();
+  const own = wanted ? cards.find((card) => card.polymer.trim().toLowerCase() === wanted) : undefined;
+  const card = own ?? fallback;
+  const values = `E ${card.EInPlaneMPa} MPa, ν ${card.nu}`;
+  return {
+    card,
+    row: {
+      card: card.id,
+      polymer: card.polymer,
+      eMPa: card.EInPlaneMPa,
+      nu: card.nu,
+      provisional: card.provisional,
+      filament: filament.name,
+      forFilament: own !== undefined,
+      note: own
+        ? `${card.id}, the library's ${card.polymer} card for ${filament.name} (${values})${card.provisional ? ": a provisional placeholder, not measured for this filament, so the numbers are relative" : ""}.`
+        : `No card in the library is for ${filament.name}'s ${filament.material || "material"}; the default ${card.id} (${card.polymer}, ${values}) stands in, so the numbers are relative and not this material's.`,
+    },
+  };
+}

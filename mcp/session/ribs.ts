@@ -15,7 +15,7 @@
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { planFlange, remapFaces, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -58,28 +58,10 @@ function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
  * is one, else the default card, and a sentence saying which, so a placeholder is never presented as the filament's.
  */
 function ribCard(this: Session): { card: ReturnType<Session["simCard"]>; row: Row } {
-  const filament = this.filament();
-  const cards = cardsOf(this.library);
-  const wanted = String(filament.material ?? "").trim().toLowerCase();
-  const own = wanted ? cards.find((card) => card.polymer.trim().toLowerCase() === wanted) : undefined;
-  const card = own ?? this.simCard(undefined);
-  if ("reason" in card) return { card, row: {} };
-  const values = `E ${card.EInPlaneMPa} MPa, ν ${card.nu}`;
-  return {
-    card,
-    row: {
-      card: card.id,
-      polymer: card.polymer,
-      eMPa: card.EInPlaneMPa,
-      nu: card.nu,
-      provisional: card.provisional,
-      filament: filament.name,
-      forFilament: own !== undefined,
-      note: own
-        ? `${card.id}, the library's ${card.polymer} card for ${filament.name} (${values})${card.provisional ? ": a provisional placeholder, not measured for this filament, so the numbers are relative" : ""}.`
-        : `No card in the library is for ${filament.name}'s ${filament.material || "material"}; the default ${card.id} (${card.polymer}, ${values}) stands in, so the numbers are relative and not this material's.`,
-    },
-  };
+  // The choice and its sentence are shared with the Auto ribs panel (src/modeling/auto-ribs.ts ribCardFor).
+  const fallback = this.simCard(undefined);
+  if ("reason" in fallback) return { card: fallback, row: {} };
+  return ribCardFor(cardsOf(this.library), this.filament(), fallback);
 }
 
 const r = (n: number, k = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** k) / 10 ** k + 0 : n);

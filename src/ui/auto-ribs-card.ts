@@ -112,6 +112,12 @@ export interface AutoRibsHost {
   cancelled(): void;
   /** Face picking on (the card takes clicks) or off. */
   pickFaces(): void;
+  /** The shell model's material card for the selected filament (shared with ribs_plan), with the sentence naming it. */
+  material(): { e: number; nu: number; note: string } | null;
+  /** Whether the Stress check can run here: the desktop's study solve. */
+  stressAvailable(): boolean;
+  /** The sliced Stress study before and after the ribs, opt-in after Apply. */
+  stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }>;
 }
 
 type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load" } | { kind: "place"; shape: ZoneShape["kind"] };
@@ -125,6 +131,13 @@ interface WallRead {
   rows: number[];
   gone: number[];
 }
+
+/** The material card the last plan was solved with, in a sentence. */
+let materialNote = "";
+/** The joined faces and the wall the last plan stood on: what the Stress check holds and presses by default. */
+let lastSetup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] } | null = null;
+/** The opt-in Stress check after Apply: not run, running (its line), done (its lines) or refused. */
+let stressRun: { phase: "running"; text: string } | { phase: "done"; lines: string[] } | { phase: "failed"; text: string } | null = null;
 
 interface Applied {
   measured: string;
@@ -211,6 +224,11 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     <section class="ar-result" id="autoRibsApplied" aria-label="Applied" hidden>
       <p class="model-note ar-strong" id="autoRibsAppliedLine" role="status"></p>
       <ul class="ar-lines" id="autoRibsCheck" aria-label="Print check"></ul>
+      <div class="ar-stress" id="autoRibsStressBox" hidden>
+        <button class="btn ar-small" id="autoRibsStress" type="button" data-tip="Slice and solve the whole part before and after the ribs, with the same holds and loads. Slow, so it runs only when asked.">Check with Stress</button>
+        <p class="model-note" id="autoRibsStressLine" role="status" aria-live="polite" hidden></p>
+        <ul class="ar-lines" id="autoRibsStressResult" aria-label="Stress before and after"></ul>
+      </div>
       <p class="model-note ar-faint">Undo takes the whole network back as one step. Its pencil in History opens this card again to re-plan.</p>
     </section>
     <details class="stress-more ar-more" id="autoRibsHowMuch">
@@ -350,6 +368,8 @@ function begin(next: AutoRibsCard, note?: string) {
   ranWith = null;
 
   applied = null;
+  stressRun = null;
+  lastSetup = null;
   picking = { kind: "wall" };
   hoverFace = null;
   hoverWall = [];
@@ -394,6 +414,8 @@ function closed() {
   faceRibs = [];
   liveDrawn = new Map();
   applied = null;
+  stressRun = null;
+  lastSetup = null;
   if (wasEdit) host?.cancelled();
 }
 
@@ -593,7 +615,9 @@ async function startRun() {
   const wall = read.wall;
   const goal = currentGoal();
   const sent: RibPlanBody["request"] = wall.request.holds.holds.length === 0 ? { ...wall.request, holds: { kind: "allBoundary" } } : wall.request;
-  const body: RibPlanBody = { request: sent, rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0 };
+  const material = host.material();
+  materialNote = material?.note ?? "";
+  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0 };
 
   generation += 1;
   const mine = generation;
@@ -705,6 +729,8 @@ async function applyPlan() {
   }
   const density = host.densityGCm3();
   applied = { measured: measuredLine(done.beforeMm3, done.afterMm3, density), check: null, problems: [] };
+  stressRun = null;
+  lastSetup = { holds: card.holds, loads: card.loads, wallFaces: ranWith.wall.faces, joinedFaces: [...new Set(ranWith.wall.report.faces.stops.map((row) => row.face))].filter((face) => !ranWith!.wall.faces.includes(face)) };
   edit = null;
   // Apply closed the card with the tool: it opens again on the new solid, with what was measured.
   root()?.toggleAttribute("hidden", false);
@@ -887,6 +913,8 @@ function paintResult() {
   if (editedBadge) editedBadge.hidden = run.removed.length === 0;
   set("#autoRibsGoal", ranWith ? goalLine(ranWith.goal, plan, density) : "");
   set("#autoRibsEditedNote", editedNote(run));
+  // The card named once: the shell was solved with it, and the panel says whether it is the filament's or the default.
+  set("#autoRibsRelative", materialNote ? `Stiffness numbers are relative: the wall is solved as a thin shell. Material: ${materialNote}` : RELATIVE_NOTE);
   const stale = $<HTMLElement>("#autoRibsStale");
   if (stale) stale.hidden = !planStale();
   const compare = $<HTMLElement>("#autoRibsCompare");
@@ -954,6 +982,55 @@ function paintApplied() {
       return li;
     }));
   }
+  const box = $<HTMLElement>("#autoRibsStressBox");
+  if (box) box.hidden = !host?.stressAvailable() || !lastSetup;
+  const button = $<HTMLButtonElement>("#autoRibsStress");
+  if (button) {
+    button.disabled = stressRun?.phase === "running";
+    button.textContent = stressRun?.phase === "done" ? "Check again" : "Check with Stress";
+  }
+  const status = $<HTMLElement>("#autoRibsStressLine");
+  if (status) {
+    const text = stressRun?.phase === "running" || stressRun?.phase === "failed" ? stressRun.text : "";
+    status.textContent = text;
+    status.hidden = text === "";
+    status.classList.toggle("is-bad", stressRun?.phase === "failed");
+  }
+  const result = $<HTMLElement>("#autoRibsStressResult");
+  if (result) result.replaceChildren(...(stressRun?.phase === "done" ? stressRun.lines : []).map((text) => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    return li;
+  }));
+}
+
+/** The opt-in Stress check after Apply: two sliced solves, with what each says while it runs. */
+async function runStressCheck() {
+  if (!host || !lastSetup || stressRun?.phase === "running") return;
+  const mine = generation;
+  stressRun = { phase: "running", text: "Starting the Stress check…" };
+  paint();
+  const reply = await host.stressCheck(lastSetup, (text) => {
+    if (mine !== generation) return;
+    stressRun = { phase: "running", text };
+    paint();
+  });
+  if (mine !== generation) return;
+  if ("reason" in reply) stressRun = { phase: "failed", text: reply.reason };
+  else {
+    const mm = (v: number) => `${fmt(v, 3)} mm`;
+    const stiffer = reply.after.maxDisplacementMm > 0 ? reply.before.maxDisplacementMm / reply.after.maxDisplacementMm : null;
+    const safety = (v: number | null) => (v == null ? "—" : fmt(v, 2));
+    stressRun = {
+      phase: "done",
+      lines: [
+        `Greatest deflection ${mm(reply.before.maxDisplacementMm)} → ${mm(reply.after.maxDisplacementMm)}${stiffer ? `: ${fmt(stiffer, 2)}× as stiff on the sliced part` : ""}.`,
+        `Least safety factor ${safety(reply.before.minSafetyFactor)} → ${safety(reply.after.minSafetyFactor)}.`,
+        "The whole part, sliced, with the same holds and loads. Material cards are placeholders: compare before with after.",
+      ],
+    };
+  }
+  paint();
 }
 
 function paintHowMuch() {
@@ -1328,6 +1405,7 @@ function onClick(ev: Event) {
   const target = ev.target instanceof Element ? ev.target.closest<HTMLElement>("button") : null;
   if (!target || !host) return;
   if (target.id === "autoRibsStop") return stop();
+  if (target.id === "autoRibsStress") return void runStressCheck();
   if (target.id === "autoRibsWallClear") {
     card = { ...card, picked: [], excluded: [] };
     return changed();

@@ -4,6 +4,7 @@ import path from "node:path";
 import { autoSliceOff } from "./auto-slice";
 import { mockModelTree, type Body, type MockSolid, type TreeMock } from "./model-tree-mock";
 import { ribSoup } from "../src/auto-ribs";
+import { mockReply } from "./stress-mock";
 
 /**
  * Auto ribs (docs/plan-auto-ribs.md 7.1), the specs' shared part: the card on a synthetic shelled box built here, never a company file. The
@@ -91,6 +92,8 @@ export interface Options {
   obstacle?: boolean;
   /** Plan with the engine at this `lime-slice serve` instead of the stand-in. */
   api?: string;
+  /** Answer the desktop study solve (Check with Stress). */
+  stress?: boolean;
 }
 
 /** What Apply adds: each path as boxes on the floor, its volume on the part's. */
@@ -136,6 +139,18 @@ export async function openPart(page: Page, options: Options = {}): Promise<TreeM
     },
     probe: () => ({ ok: true }),
   });
+  if (options.stress) {
+    // The desktop study solve, answered: the part before the ribs bends 0.4 mm, after them 0.1 mm.
+    const replies = [mockReply().replace("\"maxDisplacementMm\":0.1", "\"maxDisplacementMm\":0.4"), mockReply()];
+    await page.addInitScript((texts: string[]) => {
+      const bag = window as unknown as { __limeSimStudy?: (body: string) => string; __limeSimBodies?: string[] };
+      bag.__limeSimBodies = [];
+      bag.__limeSimStudy = (body: string) => {
+        bag.__limeSimBodies!.push(body);
+        return texts[(bag.__limeSimBodies!.length - 1) % 2]!;
+      };
+    }, replies);
+  }
   if (options.api) {
     const api = options.api;
     await page.route("**/api/ribs/**", async (route) => {

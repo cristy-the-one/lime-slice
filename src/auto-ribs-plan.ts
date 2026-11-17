@@ -147,8 +147,44 @@ export interface PlanTransport {
   pause(ms: number): Promise<void>;
 }
 
+/**
+ * The desktop's commands (src-tauri/src/lib.rs) and the argument each takes. src/auto-ribs-plan.test.ts reads lib.rs and
+ * fails when a name, an argument or its type there no longer matches these.
+ */
+export const RIB_PLAN_COMMANDS = {
+  start: { command: "rib_plan_start", arg: "body" },
+  poll: { command: "rib_plan_poll", arg: "id" },
+  cancel: { command: "rib_plan_cancel", arg: "id" },
+} as const;
+
+/** `lime-slice serve`'s routes for the same calls (crates/lime-slice/src/main.rs): start takes the body, poll and cancel `{id}`. */
+export const RIB_PLAN_ROUTE = "/api/ribs/";
+
+export type InvokeFn = (command: string, args: Record<string, unknown>) => Promise<unknown>;
+
+/** The Tauri transport: each reply is the command's JSON text. */
+export function tauriPlanTransport(invoke: InvokeFn, pause: (ms: number) => Promise<void>): PlanTransport {
+  const text = async (command: string, args: Record<string, unknown>) => String(await invoke(command, args));
+  return {
+    start: (body) => text(RIB_PLAN_COMMANDS.start.command, { [RIB_PLAN_COMMANDS.start.arg]: body }),
+    poll: (id) => text(RIB_PLAN_COMMANDS.poll.command, { [RIB_PLAN_COMMANDS.poll.arg]: id }),
+    cancel: (id) => text(RIB_PLAN_COMMANDS.cancel.command, { [RIB_PLAN_COMMANDS.cancel.arg]: id }),
+    pause,
+  };
+}
+
+/** The `serve` transport over `post(route, body)`, which answers the reply's text. */
+export function httpPlanTransport(post: (route: string, body: string) => Promise<string>, pause: (ms: number) => Promise<void>): PlanTransport {
+  return {
+    start: (body) => post(`${RIB_PLAN_ROUTE}start`, body),
+    poll: (id) => post(`${RIB_PLAN_ROUTE}poll`, JSON.stringify({ id })),
+    cancel: (id) => post(`${RIB_PLAN_ROUTE}cancel`, JSON.stringify({ id })),
+    pause,
+  };
+}
+
 type Row = Record<string, unknown>;
-const num = (v: unknown, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
+const num =(v: unknown, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
 const v3 = (v: unknown): V3 => (Array.isArray(v) ? [num(v[0]), num(v[1]), num(v[2])] : [0, 0, 0]);
 
 /** One wire event as the panel's, or null for one it does not know. */
