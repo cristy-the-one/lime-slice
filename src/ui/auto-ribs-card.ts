@@ -16,7 +16,7 @@
 import { Check, X, createElement } from "lucide";
 import type { DragHandle } from "../model-drag";
 import type { HandleDrag, ModelGhost } from "../model-view";
-import { wallFaces, ribPathsFromPlan, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
+import { wallFaces, ribPathsFromPlan, type NotOnWall, type RibWall, type RibWallOptions } from "../modeling/rib-wall.ts";
 import { planFlange, ribNetOf, ribRules, ribsOnFace, wallSurfaceOf, wireProfileOf, type BuiltRib, type FaceRib, type RibProcess, type RibRulesChosen } from "../modeling/auto-ribs.ts";
 import type { RibSurface } from "../modeling/rib-net.ts";
 import type { StudyHold, StudyLoad } from "../sim/study.ts";
@@ -57,6 +57,8 @@ import {
   toggleRemoved,
   totalsLine,
   wallLine,
+  wallReadout,
+  EVEN_PRESSURE_OFFER,
   zoneInputs,
   zoneLanded,
   zoneModeText,
@@ -102,7 +104,7 @@ export interface AutoRibsHost {
   /** Other objects on the plate, for an obstacle. */
   others(): { id: string; name: string }[];
   obstacle(id: string): Float32Array | null;
-  readWall(options: RibWallOptions): Promise<RibWall | { reason: string }>;
+  readWall(options: RibWallOptions): Promise<RibWall | { reason: string; missed?: NotOnWall[] }>;
   check(): Promise<CheckNumbers | null>;
   /** Build `op` (a ribNet in the panel's frame) as one History step, or replace the edited one. */
   apply(op: Record<string, unknown>): Promise<{ ok: true; beforeMm3: number; afterMm3: number } | { ok: false; reason: string }>;
@@ -127,6 +129,8 @@ interface WallRead {
   key: string;
   wall: RibWall | null;
   error: string | null;
+  /** Holds and loads that missed the wall, when that is why it was refused. */
+  missed: NotOnWall[];
   /** The zone rows read with it, in order, and those whose object is gone. */
   rows: number[];
   gone: number[];
@@ -282,6 +286,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
         </div>
       </fieldset>
       <ul class="ar-warnings" id="autoRibsNotOnWall" aria-label="Not on the wall"></ul>
+      <button class="btn ar-small" id="autoRibsEvenPressure" type="button" aria-pressed="false" hidden data-tip="A hold or load that misses the wall is left out and the plan says so; with no load left it runs under even pressure">Plan without it</button>
     </details>
     <details class="stress-more ar-more" id="autoRibsKeepClear">
       <summary>Keep clear <span class="model-history-count" id="autoRibsZoneCount"></span></summary>
@@ -504,12 +509,13 @@ function wallOptions(): RibWallOptions | null {
     holds: card.holds,
     loads: card.loads,
     minRibHeightMm: minHeight,
+    ...(card.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
   };
 }
 
 function readKey(): string {
   const solid = host?.solid();
-  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.zones, card.holds, card.loads]);
+  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.zones, card.holds, card.loads, card.ifMissed]);
 }
 
 function queueRead(wait: number) {
@@ -534,14 +540,18 @@ async function readWall() {
   const wall = await host.readWall(options);
   if (mine !== generation || key !== readKey()) return;
   reading = false;
-  read = "reason" in wall ? { key, wall: null, error: wall.reason, rows: zones.rows, gone: zones.gone } : { key, wall, error: null, rows: zones.rows, gone: zones.gone };
-  if (run.phase === "idle") host.readout(read.wall ? `${wallLine(read.wall.report, read.wall.faces.length)}. Run plans ribs on it (Enter).` : read.error ?? "");
+  // A hold or load that misses the wall is refused by name (never planned under even pressure in its place) unless
+  // "Plan without it" is on; the refusal opens Hold and load, where the button is.
+  const missed = "reason" in wall ? wall.missed ?? [] : [];
+  read = "reason" in wall ? { key, wall: null, error: missed.length ? `${wall.reason} ${EVEN_PRESSURE_OFFER}` : wall.reason, missed, rows: zones.rows, gone: zones.gone } : { key, wall, error: null, missed: [], rows: zones.rows, gone: zones.gone };
+  if (missed.length) $<HTMLDetailsElement>("#autoRibsHoldLoad")?.setAttribute("open", "");
+  if (run.phase === "idle") host.readout(read.wall ? wallReadout(read.wall.report, read.wall.faces.length) : read.error ?? "");
 
   paint();
 }
 
 function rulesFor(wall: RibWall): RibRulesChosen {
-  const outer = Math.max(0, ...wall.report.loops.map((loop) => loop.lengthMm));
+  const outer = wall.report.loops.reduce((most, loop) => Math.max(most, loop.lengthMm), 0);
   return ribRules({
     process: card.ribs.process,
     nozzleMm: host?.nozzleMm() ?? 0.4,
@@ -1068,12 +1078,19 @@ function paintHoldLoad() {
   if (use) use.hidden = !stress || stress.holds.length + stress.loads.length === 0;
   const not = $<HTMLElement>("#autoRibsNotOnWall");
   if (not) {
-    const lines = read?.key === readKey() ? notOnWallLines(read.wall?.report ?? null) : [];
+    const lines = read?.key === readKey() ? notOnWallLines(read.wall?.report ?? null, read.missed) : [];
     not.replaceChildren(...lines.map((text) => {
       const li = document.createElement("li");
       li.textContent = text;
       return li;
     }));
+  }
+  // Offered once something missed the wall, and kept visible while it is on so it can be turned off again.
+  const even = $<HTMLButtonElement>("#autoRibsEvenPressure");
+  if (even) {
+    const missedNow = read?.key === readKey() && (read.missed.length > 0 || !!read.wall?.report.substituted);
+    even.hidden = !missedNow && card.ifMissed !== "evenPressure";
+    press(even, card.ifMissed === "evenPressure");
   }
 }
 
@@ -1431,6 +1448,10 @@ function onClick(ev: Event) {
   if (target.dataset.profile) {
     card = { ...card, ribs: { ...card.ribs, profile: target.dataset.profile as AutoRibsCard["ribs"]["profile"] } };
     return paint();
+  }
+  if (target.id === "autoRibsEvenPressure") {
+    card = { ...card, ifMissed: card.ifMissed === "evenPressure" ? "refuse" : "evenPressure" };
+    return changed();
   }
   if (target.id === "autoRibsUseStress") {
     const stress = host.stress();

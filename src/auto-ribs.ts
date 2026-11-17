@@ -9,7 +9,7 @@
  * Shared module: no DOM.
  */
 import type { StudyHold, StudyLoad } from "./sim/study.ts";
-import type { WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
+import type { NotOnWall, WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
 import type { RibProcess } from "./modeling/auto-ribs.ts";
 import type { PlanGoal, PlanProgress, PlannedRib, RibPlanResult, V3 } from "./auto-ribs-plan.ts";
 
@@ -64,10 +64,12 @@ export interface AutoRibsCard {
   zones: ZoneRow[];
   holeRim: { on: boolean; mm: number };
   ribs: { width: number | null; height: number | null; profile: ProfileChoice; process: RibProcess };
+  /** A hold or load that misses the wall: refuse (default), or plan without it and say so. */
+  ifMissed: "refuse" | "evenPressure";
 }
 
 export function newAutoRibsCard(): AutoRibsCard {
-  return { picked: [], excluded: [], justThis: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" } };
+  return { picked: [], excluded: [], justThis: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
 }
 
 /** A card read back from a stored row (`auto.panel`), every field checked; null when it is not one. */
@@ -87,6 +89,7 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
     zones: Array.isArray(row.zones) ? row.zones : [],
     holeRim: row.holeRim && typeof row.holeRim === "object" ? row.holeRim : fresh.holeRim,
     ribs: row.ribs && typeof row.ribs === "object" ? { ...fresh.ribs, ...row.ribs } : fresh.ribs,
+    ifMissed: row.ifMissed === "evenPressure" ? "evenPressure" : "refuse",
   };
 }
 
@@ -376,9 +379,23 @@ export function wallLine(report: RibWallReport | null, faces: number): string {
   return `${n} face${n === 1 ? "" : "s"} · ${fmt(report.areaMm2, 0)} mm² · wall ${thick}`;
 }
 
-/** Holds and loads the wall cannot carry, each with its sentence. */
-export function notOnWallLines(report: RibWallReport | null): string[] {
-  return (report?.notOnWall ?? []).map((row) => `${row.kind === "hold" ? "Hold" : "Load"} ${row.index + 1}: ${row.why}`);
+/**
+ * Holds and loads the wall cannot carry, each with its sentence: from the wall's report, or from a refusal (`missed`)
+ * when the wall was not read because of them. Planned anyway, the sentence saying what was left out comes first.
+ */
+export function notOnWallLines(report: RibWallReport | null, missed: readonly NotOnWall[] = []): string[] {
+  const rows = report?.notOnWall ?? missed;
+  return [...(report?.substituted ? [report.substituted.sentence] : []), ...rows.map((row) => `${row.kind === "hold" ? "Hold" : "Load"} ${row.index + 1}: ${row.why}`)];
+}
+
+/** The panel's words for planning without what missed, after the shared refusal. */
+export const EVEN_PRESSURE_OFFER = "Or choose “Plan without it” under Hold and load: it plans under even pressure when no load is left, and says so.";
+
+/** The readout after the wall is read: what was left out first, when anything was, then what was taken. */
+export function wallReadout(report: RibWallReport, faces: number): string {
+  const line = `${wallLine(report, faces)}. Run plans ribs on it (Enter).`;
+  const features = report.features?.count ? ` ${report.features.note}` : "";
+  return report.substituted ? `${report.substituted.sentence} ${line}${features}` : `${line}${features}`;
 }
 
 // ------------------------------------------------------------------------------------------------ after Apply

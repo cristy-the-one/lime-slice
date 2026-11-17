@@ -370,9 +370,12 @@ const chan = channel(100, 30, 2, 6, 150).solid();
   check("flange: the free edge at y 60 is free", loop.spans.some((s) => s.class === "free" && s.lengthMm > 190));
   check("flange: only the leg's border is held", f.request.holds.holds.length > 0 && f.request.holds.holds.every((h) => near(f.skin[h.node]![1], 2, 1e-6)));
 
-  // A pad under the plate (y 40..60, 10 mm deep): thick there, flagged.
+  // A pad under the plate (y 40..60, 10 mm deep). Read as wall (features off): thick there, flagged.
   const padded = extrude([{ p: [0, 0], face: 0 }, { p: [40, 0], face: 1 }, { p: [40, -10], face: 2 }, { p: [60, -10], face: 3 }, { p: [60, 0], face: 4 }, { p: [100, 0], face: 5 }, { p: [100, 2], face: 6 }, { p: [0, 2], face: 7 }], 80, [8, 9]).solid();
-  const p = wallOf(padded, { picked: [6] });
+  const asWall = wallOf(padded, { picked: [6] });
+  const overPad = asWall.skin.map((s, v) => ({ y: s[1], t: asWall.request.mesh.thickness[v]! }));
+  check("pad, by default: something standing on the far side, the thickness over it filled in from the wall around (2 mm), counted", overPad.every((o) => near(o.t, 2, 0.05)) && asWall.report.thickness.underFeatures > 0 && asWall.report.thickness.thick === 0 && asWall.report.warnings.some((s) => s.includes("filled in from the wall around")), `${asWall.report.thickness.underFeatures} under, ${asWall.report.thickness.minMm}..${asWall.report.thickness.maxMm}`);
+  const p = wallOf(padded, { picked: [6], features: false });
   const over = p.skin.map((s, v) => ({ y: s[1], thick: p.thick[v]! }));
   check("pad: the cap is 3 × the median (6 mm)", near(p.report.thickness.capMm, 6, 0.01), String(p.report.thickness.capMm));
   check("pad: every vertex over the pad's middle is thick", over.filter((o) => o.y > 41 && o.y < 59).every((o) => o.thick));
@@ -470,7 +473,7 @@ const chan = channel(100, 30, 2, 6, 150).solid();
 
 // ---------------------------------------------------------------------------------------------- holds and loads
 {
-  const w = wallOf(box1, {
+  const given: RibWallOptions = {
     picked: [6],
     holds: [{ kind: "faces", faces: [9] }, { kind: "plane", faces: [], origin: [0, 0, 100], normal: [0, 0, 1] }],
     loads: [
@@ -478,7 +481,17 @@ const chan = channel(100, 30, 2, 6, 150).solid();
       { kind: "force", faces: [0], magnitude: 50, direction: [0, 0, 1] },
       { kind: "force", faces: [3], magnitude: 20, direction: [-1, 0, 0] },
     ],
-  });
+  };
+  // A hold and a load the wall cannot carry: refused by name with what to do, never planned without them silently.
+  const refused = ribWall(box1, given);
+  check("a missed hold and load: refused, each named with why and what to do", "reason" in refused && /Hold 2: The held plane/.test(refused.reason) && /Load 3: The load is not on the wall/.test(refused.reason) && /Include the face it is on in the wall/.test(refused.reason) && (refused as { missed?: unknown[] }).missed?.length === 2, "reason" in refused ? refused.reason : "planned");
+  const w = wallOf(box1, { ...given, ifMissed: "evenPressure" });
+  check("asked to plan anyway: what was left out is said in one sentence, first among the warnings", w.report.substituted?.loads.join() === "2" && w.report.substituted?.holds.join() === "1" && w.report.substituted.evenPressure === false && w.report.warnings[0] === w.report.substituted.sentence && /load 3 misses the wall/.test(w.report.substituted.sentence), JSON.stringify(w.report.substituted));
+  const only = wallOf(box1, { picked: [6], loads: [{ kind: "force", faces: [3], magnitude: 20, direction: [-1, 0, 0] }], ifMissed: "evenPressure" });
+  check("the only load missed, asked to plan anyway: under even pressure, said so", only.request.loadCases.length === 0 && only.report.substituted?.evenPressure === true && /^Planned under even pressure instead of the given load: load 1 misses the wall/.test(only.report.substituted.sentence), JSON.stringify(only.report.substituted));
+  // A pressure with under 90 % of its area on the wall or behind it is refused like a force; over 90 % it is kept, the rest said.
+  const half = ribWall(box1, { picked: [6], loads: [{ kind: "pressure", faces: [0, 3], magnitude: 0.01, direction: [0, 0, 1] }] });
+  check("a pressure mostly off the wall: refused with its covered share", "reason" in half && /Load 1: Only \d+ % of the pressed area/.test(half.reason), "reason" in half ? half.reason : "planned");
   const held = w.request.holds.holds.map((h) => w.skin[h.node]!);
   check("hold on the +X side wall: the floor's border along it, only", held.length > 0 && held.every((p) => near(p[0], 198, 1e-3)) && w.report.holds.mode === "given", `${held.length} held`);
   const cases = w.request.loadCases;

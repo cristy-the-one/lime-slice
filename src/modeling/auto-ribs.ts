@@ -265,7 +265,7 @@ export function splitByHeight(points: readonly V3[], heights: readonly number[],
   for (let k = 1; k <= heights.length; k += 1) {
     if (k < heights.length && Math.abs(heights[k]! - heights[start]!) <= tol && sectionKey(sections?.[k]) === sectionKey(sections?.[start])) continue;
     const run = heights.slice(start, k);
-    pieces.push({ points: points.slice(start, k + 1).map((p) => [...p] as V3), height: Math.min(...run), ...(sections?.[start] ? { section: sections[start] } : {}) });
+    pieces.push({ points: points.slice(start, k + 1).map((p) => [...p] as V3), height: run.reduce((least, h) => Math.min(least, h), Infinity), ...(sections?.[start] ? { section: sections[start] } : {}) });
     start = k;
   }
   return pieces;
