@@ -28,6 +28,7 @@ mod beam;
 mod geometry;
 mod membrane;
 mod model;
+pub mod planner;
 mod plate;
 mod section;
 mod sparse;

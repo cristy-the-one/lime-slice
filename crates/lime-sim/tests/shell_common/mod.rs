@@ -231,3 +231,51 @@ pub fn row(case: &str, mesh: &str, value: f64, reference: f64) -> f64 {
     );
     err
 }
+
+/// `mesh` without the triangles `drop` says to drop (by centroid), and
+/// without the vertices left on no triangle.
+pub fn cut_mesh(mesh: &ShellMesh, drop: impl Fn([f64; 3]) -> bool) -> ShellMesh {
+    let mut used = vec![u32::MAX; mesh.vertices.len()];
+    let mut out = ShellMesh::default();
+    for t in &mesh.triangles {
+        let p = t.map(|v| mesh.vertices[v as usize]);
+        let c = [0, 1, 2].map(|k| (p[0][k] + p[1][k] + p[2][k]) / 3.0);
+        if drop(c) {
+            continue;
+        }
+        let tri = t.map(|v| {
+            if used[v as usize] == u32::MAX {
+                used[v as usize] = out.vertices.len() as u32;
+                out.vertices.push(mesh.vertices[v as usize]);
+                out.thickness.push(mesh.thickness[v as usize]);
+            }
+            used[v as usize]
+        });
+        out.triangles.push(tri);
+    }
+    out
+}
+
+/// An `a × b` panel with a round hole of radius `r` at `centre`.
+pub fn holed_panel(a: f64, b: f64, div: [usize; 2], t: f64, centre: [f64; 2], r: f64) -> ShellMesh {
+    let mesh = ShellMesh::rectangle([a, b], div, t);
+    cut_mesh(&mesh, |c| (c[0] - centre[0]).hypot(c[1] - centre[1]) < r)
+}
+
+/// An `a × b` panel without its top-right quarter: an L.
+pub fn l_panel(a: f64, b: f64, div: [usize; 2], t: f64) -> ShellMesh {
+    let mesh = ShellMesh::rectangle([a, b], div, t);
+    cut_mesh(&mesh, |c| c[0] > 0.5 * a && c[1] > 0.5 * b)
+}
+
+/// A cylinder segment of radius `r`: `length` along x, `angle` (radians)
+/// of arc centred on the top, normals outward. Vertex `i + (nx+1) j` is at
+/// x = i length/nx and arc position j of ny.
+pub fn cylinder_segment(r: f64, length: f64, angle: f64, div: [usize; 2], t: f64) -> ShellMesh {
+    let mut mesh = ShellMesh::rectangle([length, r * angle], div, t);
+    for p in &mut mesh.vertices {
+        let phi = p[1] / r - 0.5 * angle;
+        *p = [p[0], r * phi.sin(), r * phi.cos()];
+    }
+    mesh
+}
