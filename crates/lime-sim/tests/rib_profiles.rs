@@ -27,7 +27,7 @@ fn rel(a: f64, b: f64) -> f64 {
 
 fn prop_row(case: &str, what: &str, got: f64, want: f64) -> f64 {
     let e = rel(got, want);
-    eprintln!("| {case} | {what} | {got:.6e} | {want:.6e} | {:+.2e} |", e);
+    eprintln!("| {case} | {what} | {got:.6e} | {want:.6e} | {e:+.2e} |");
     e
 }
 
@@ -40,8 +40,8 @@ fn prop_row(case: &str, what: &str, got: f64, want: f64) -> f64 {
 /// `I_normal = h (b1 + b2)(b1² + b2²) / 48`.
 #[test]
 fn trapezoid_properties_are_exact() {
-    let (w, deg, h) = (2.0, 3.0, 10.0);
-    let t = (deg as f64).to_radians().tan();
+    let (w, deg, h): (f64, f64, f64) = (2.0, 3.0, 10.0);
+    let t = deg.to_radians().tan();
     let (b1, b2) = (w + h * t, w - h * t);
     let p = RibSection::Drafted {
         width: w,
@@ -184,9 +184,11 @@ fn root_arcs_against_a_fine_reference() {
         ];
         // The built chords stand within 0.05 mm of the arc. They add a
         // little material outside it (a chord of a concave arc cuts the
-        // corner the arc rounds), most in the sideways second moment: up
-        // to 1.9 % on a 1 mm root. The solver models what is built.
-        assert!(errs.iter().all(|e| e.abs() < 0.025), "{name}: {errs:?}");
+        // corner the arc rounds), most in the sideways second moment: 1.9 %
+        // on a 1 mm root, 3.6 % on the default 1.2 mm drafted rib's 0.59 mm
+        // root (two chords). The solver models what is built.
+        assert!(errs[..3].iter().all(|e| e.abs() < 0.02), "{name}: {errs:?}");
+        assert!(errs[3].abs() < 0.05, "{name}: {errs:?}");
     }
     let r = 1.0;
     let s = RibSection::Rectangular {
@@ -644,7 +646,11 @@ fn planner_straight_against_tee_at_equal_budget() {
 /// answer as the closed-form rectangle did: the section's polygon and the
 /// textbook formulas agree to round-off (see `shell::rib_section`), so
 /// the old straight-rib numbers stand. This checks the solve end to end on
-/// the clamped plate and the strip quoted in `shell_ribs`.
+/// the clamped plate quoted in `shell_ribs`. When profiles came in, the
+/// `shell_plates`, `shell_ribs` and `rib_planner` suites printed the same
+/// 174 rows before and after, but one planner baseline's solve count
+/// (9 → 8, one bisection step decided the other way by round-off; the same
+/// grid and stiffness).
 #[test]
 fn straight_ribs_are_unchanged() {
     // From the shell solver's own tests before profiles (shell_ribs.rs).

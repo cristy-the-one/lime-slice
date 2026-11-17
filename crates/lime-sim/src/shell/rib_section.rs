@@ -219,7 +219,9 @@ impl RibSection {
                 flange_chamfer_deg,
                 ..
             } => {
-                if !(0.5 * flange_width > 0.5 * web_width + 0.05) {
+                // As ribNet: the flange's half-width past the web's by
+                // more than 0.05 mm (a NaN width fails too).
+                if flange_width.is_nan() || 0.5 * flange_width <= 0.5 * web_width + 0.05 {
                     return Err(SimError::new(
                         "A T-rib's flange must be wider than its web.",
                     ));
