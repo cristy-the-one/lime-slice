@@ -146,6 +146,9 @@ Optional, never required:
 - **How much**: one slider between "lightest" and "stiffest", or a target ("twice as stiff", "under 0.5 mm"), or a budget ("at most 10 g").
 - **Hold and Load**, the same controls as the Stress panel, when the real load is known.
 - **Keep clear**: zones the user defines. Nothing tries to detect them: something that sits inside the part may be tall and would bump into ribs there, and only the user knows. A zone is a region of the wall, given the same ways Reinforce takes a region (picked faces, a box, a sphere, a painted patch), with one of two modes: "no ribs" (a rib may end at the zone's border, never cross it) or "ribs up to N mm" (a rib may pass at reduced height), plus an optional margin. Holes in the wall keep a rim margin by default (3 mm), which can be turned off.
+  - **A zone is an actual place.** It has coordinates in the part's own frame (a box by its corners, a sphere or cylinder by centre and radius, a painted patch by its strokes), so it can be drawn in the view, typed as numbers over MCP, saved with the step and replayed. The panel lists each zone with where it landed on the wall and its area.
+  - **Given interactively**: pick faces, drag a box or a sphere in the view, or paint on the wall.
+  - **Or by a rule**: within N mm of picked faces, edges or holes; everything beyond a plane or between two planes; or **another object as the obstacle**, with a clearance. The obstacle rule is the direct answer to "something sits inside": where the gap between the wall and that object, less the clearance, leaves no room for a rib, the wall is "no ribs"; elsewhere ribs are capped at the room there is.
 - **Rib size**: thickness and greatest height. Defaults come from the process: filament (bead widths, no draft), resin, or moulded (60 % of the wall, draft).
 - **Rib profile**: chosen automatically from the process and the print pose; the user can pick another in the panel (section 7.5).
 
