@@ -269,6 +269,17 @@ let boxObject = "";
   check("redo brings it back", stale.ok === true && held(object).volumeMm3 > volume + 1);
   const again = await call("ribs_apply", { job: defaultJob });
   check("the same plan on the ribbed part is refused as stale", again.ok === false && again.code === "stale-rib-plan", JSON.stringify(again).slice(0, 300));
+  // A plan passed whole: its fingerprint is the bare part's, so on the ribbed part it is refused even with no node.
+  const { node: _node, ...noNode } = plan;
+  const passed = await call("ribs_apply", { object, plan: noNode });
+  check("a plan passed without its node is refused by its fingerprint", passed.ok === false && passed.code === "stale-rib-plan" && /not the solid this plan was made for/.test(String(passed.reason)), JSON.stringify(passed).slice(0, 300));
+  const { node: _n2, fingerprint: _fp, ...bare } = plan;
+  const blind = await call("ribs_apply", { object, plan: bare });
+  check("a plan with no fingerprint is refused", blind.ok === false && blind.code === "bad-rib-plan" && /fingerprint/.test(String(blind.reason)), JSON.stringify(blind).slice(0, 300));
+  check("the plan carries the solid's fingerprint", typeof plan.fingerprint?.volumeMm3 === "number" && plan.fingerprint.faces > 0 && plan.fingerprint.edges > 0, JSON.stringify(plan.fingerprint));
+  const material = done.rules.material as Reply;
+  check(`the shell model names its card: ${material.card} (${material.polymer}) for ${material.filament}, ${material.forFilament ? "the filament's own" : "the default standing in"}`, typeof material.card === "string" && typeof material.note === "string" && (material.forFilament ? /library's .* card for/.test(material.note) : /stands in/.test(material.note)) && /relative/.test(material.note), JSON.stringify(material));
+  report.push(`material: ${material.note}`);
   await call("model_undo", { object });
 }
 

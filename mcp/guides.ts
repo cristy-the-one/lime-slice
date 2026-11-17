@@ -281,7 +281,7 @@ GUIDES.push({
     "  {obstacle:{object:\"obj_2\", clearanceMm:1}}: another object as it stands in model space (place it with model_place). Where the gap from the wall to it, less the clearance, leaves no room for a rib the wall is noRibs; elsewhere ribs are capped at the room there is. Example: a 40 × 20 block standing 4 mm over the floor gives ribs under it 3 mm tall with clearanceMm:1.",
     "  The reply's wall.zones gives each zone's triangles, area, centre and box on the wall, how it landed, and missed when it is not on the wall.",
     "What the comparisons mean: thickening is the whole wall made thicker until it is as stiff as the ribbed plan (addedThicknessMm, addedVolumeMm3); grid is an even orthogonal grid of the same rib section, the coarsest pitch as stiff (volumeMm3 interpolated to exactly the plan's stiffness; reached false when no grid down to the least spacing gets there). notBetterThanBaseline: the plan needs no less material than both; say so before using it. Ribs pay off in bending; under a mostly in-plane (membrane) load thickening can match them.",
-    "Numbers are relative: the shell model holds the wall at its borders and ignores how much the side walls give, and material cards are placeholders. Compare plans with each other and the part before with after; the sliced Stress study (verify) is the whole part as printed.",
+    "Numbers are relative: the shell model holds the wall at its borders and ignores how much the side walls give, and the material card (rules.material: the library card for the selected filament, else the default standing in, and which) is provisional. Compare plans with each other and the part before with after; the sliced Stress study (verify) is the whole part as printed.",
   ].join("\n"),
 });
 
