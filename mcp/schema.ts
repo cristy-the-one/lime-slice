@@ -675,6 +675,15 @@ const surfaceOps = [
 (op.oneOf as unknown[]).push(...surfaceOps);
 
 /** --- Rib network (docs/plan-auto-ribs.md 7.4): ribs along paths on the surface, flat or curved, as one fuse. */
+/** The rib's section, on the network as the default for every path or on one path. */
+const ribProfileFields = {
+  profile: { enum: ["straight", "drafted", "tee"], description: "The rib's section: straight (a rectangle, the default), drafted (a trapezoid, width at half its height), tee (a web under a flange)." },
+  draftDeg: { type: "number", minimum: 0, maximum: 15, description: "drafted: each side leans this far from the normal. Default 1." },
+  rootRadius: { type: "number", minimum: 0, maximum: 50, description: "A flared root into the wall, built into the section. Default half the top width (drafted), half the web (tee), none (straight)." },
+  flangeWidth: { type: "number", minimum: 0.2, maximum: 200, description: "tee: the flange's width, mm. Default 3 × width." },
+  flangeThickness: { type: "number", minimum: 0.1, maximum: 100, description: "tee: the flange's thickness, mm. Default the width." },
+  flangeChamferDeg: { type: "number", minimum: 0, maximum: 75, description: "tee: the flange's underside slopes down to the web at this angle from the wall. Default 45 (prints standing up); 0 square." },
+};
 const ribNetOp = {
   type: "object",
   additionalProperties: false,
@@ -694,6 +703,7 @@ const ribNetOp = {
           points: { type: "array", minItems: 2, maxItems: 2000, items: vec3, description: "Model-space points on the part's surface, in order." },
           width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "This run's thickness, mm." },
           height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "This run's height off the surface, mm." },
+          ...ribProfileFields,
         },
       },
     },
@@ -702,6 +712,7 @@ const ribNetOp = {
     taper: { type: "number", minimum: 0, maximum: 1000, description: "A loose end comes down to the surface over this, mm. Default the height; 0 square." },
     sinkMm: { type: "number", minimum: 0.05, maximum: 5, description: "Into the wall so it fuses. Default 0.5." },
     clearanceMm: { type: "number", minimum: 0, maximum: 50, description: "Kept from a face in front of the wall. Default 0.5." },
+    ...ribProfileFields,
     label,
   },
 };
@@ -867,7 +878,7 @@ export const OP_SUMMARY: Record<string, string> = {
   text: "text {text, height, depth, face, at}: raised or cut letters.",
   array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
   ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
-  ribNet: "ribNet {paths:[{points}], width, height}: ribs along paths on any faces, flat or curved, as one step.",
+  ribNet: "ribNet {paths:[{points}], width, height, profile}: ribs along paths on any faces, flat or curved, as one step; straight, drafted or tee sections.",
   transition: "transition {edges, mode, angleDeg, size}: a wedge in a concave corner or a gusset under a lip.",
   gear: "gear {op, teeth, module, thickness}: spur gear.",
 };
