@@ -135,16 +135,16 @@ class Grid {
 
 /**
  * Rays through a part's triangles (nine numbers each, wound outward): the first surface a ray meets, how far along,
- * and whether the ray leaves the part there, which says the ray started inside it.
+ * whether the ray leaves the part there, which says the ray started inside it, and which triangle it met.
  */
-export function meshRays(pos: ArrayLike<number>): { first(from: V3, dir: V3, far: number): { distance: number; leaving: boolean } | null } {
+export function meshRays(pos: ArrayLike<number>): { first(from: V3, dir: V3, far: number): { distance: number; leaving: boolean; tri: number } | null } {
   const grid = new Grid(pos);
   return {
     first(from, dir, far) {
       const hit = grid.nearest(from, dir, -1, far);
       if (!hit) return null;
       const n = grid.normal(hit.tri);
-      return { distance: hit.distance, leaving: n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2] > 0 };
+      return { distance: hit.distance, leaving: n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2] > 0, tri: hit.tri };
     },
   };
 }
