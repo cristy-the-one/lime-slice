@@ -1160,7 +1160,8 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
         const { kind: _kind, op: _op, ...spec } = step;
         return { op: "fuse", spec };
       }
-      return { op: "fuse", spec: planePrimitive({ primitive: "box", origin: step.sections[0]!.origin, size: [1, 1, 1], radius: 0, height: 0, turn: [0, 0, 0] }, GLOBAL_PLANE), step: step as unknown as Record<string, unknown> };
+      const at = step.kind === "extrude" ? step.origin : step.sections[0]!.origin;
+      return { op: "fuse", spec: planePrimitive({ primitive: "box", origin: at, size: [1, 1, 1], radius: 0, height: 0, turn: [0, 0, 0] }, GLOBAL_PLANE), step: step as unknown as Record<string, unknown> };
     });
   }
   if (kind === "pattern" || kind === "mirror") {
