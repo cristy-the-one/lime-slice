@@ -72,6 +72,25 @@ fn a_new_group_stops_at_its_budget_and_a_saved_one_replays() {
     lime_model_occt::set_group_budget(Duration::from_secs(60));
     let fits = call(json!({ "call": "apply", "key": "b", "parent": 0, "node": 5, "op": ring }));
     assert!(fits.get("error").is_none(), "{fits}");
+
+    // A plane section has a deadline too (20 s, or the group budget when shorter): on a damaged solid Open CASCADE
+    // cut one for more than 25 minutes while holding every part's lock. Past it, a sentence and a usable tree.
+    let section = json!({
+        "call": "section", "key": "b", "node": 5, "origin": [5.0, 5.0, 9.5], "normal": [0.0, 0.0, 1.0],
+        "frame": [5.0, 5.0, 9.5, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    });
+    lime_model_occt::set_group_budget(Duration::ZERO);
+    let stopped = call(section.clone());
+    assert!(
+        stopped["error"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("Open CASCADE could not cut this section within 1 s, so it was stopped."),
+        "{stopped}"
+    );
+    lime_model_occt::set_group_budget(Duration::from_secs(60));
+    let cut = call(section);
+    assert!(cut.get("error").is_none() && cut["regions"].as_array().is_some_and(|r| !r.is_empty()), "{cut}");
     let applied = call(json!({ "call": "apply", "key": "b", "parent": 0, "node": 1, "op": group }));
     assert!(applied.get("error").is_none(), "{applied}");
     assert!(

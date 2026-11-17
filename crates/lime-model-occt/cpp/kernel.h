@@ -109,6 +109,8 @@ bool editable(const TopoDS_Shape& shape, std::string& error);
 void set_deadline(long long budget_ms);
 bool past_deadline();
 std::string deadline_message();
+/// Why a section stopped at its deadline (`set_deadline`), as a sentence.
+std::string section_overran();
 double volume_of(const TopoDS_Shape& shape);
 /// Each face integrated about `about` (in parallel), added in order: a part's volume is the sum over its faces, so a swap of faces moves it by the
 /// difference of those faces' volumes about one point.

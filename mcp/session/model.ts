@@ -9,7 +9,7 @@ import { disjointBoolean } from "../../src/model-feasibility.ts";
 import { facePlane, formatMm } from "../../src/model-plane.ts";
 import { gearOf, rootSpec, type PrimitiveSpec } from "../../src/model-primitive.ts";
 import { isBrep, newSolidRequest, openRequest, wholeTreeRequest } from "../../src/model-request.ts";
-import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView } from "../../src/modeling/model-calls.ts";
+import { boundsOf, solidSections, describeReply, edgesReply, facesReply, nodeHandle, solidView, stepGuard } from "../../src/modeling/model-calls.ts";
 import { onFaceIndex } from "../../src/modeling/bake.ts";
 import { checkReply } from "../../src/modeling/part-reads.ts";
 import { exprLeaves } from "../../src/modeling/links.ts";
@@ -682,6 +682,9 @@ async function probeMeasured(this: Session, obj: PlateObject, input: Record<stri
     after = solidMetrics(lastPreview);
   }
   if (input.node !== undefined && this.nodeOf(obj, input.node) !== obj.tree?.current) return out;
+  // model_apply judges the built step with the step guard; the probe has the same result in hand, so it says the same.
+  const guarded = op && lastPreview && op.kind !== "group" ? stepGuard(op, obj.solid, lastPreview, typedPoseOf(obj)) : null;
+  if (guarded) return { ...out, ok: false, code: "step-guard", ...guarded };
   const measured = probeMetrics(before, after);
   return { ...out, ...(measured.warning ? { reason: `${String(out.reason)} ${measured.warning}`, warning: measured.warning } : {}), metrics: measured.metrics };
 }
@@ -696,6 +699,9 @@ function model(this: Session, name: string, input: Record<string, unknown>): Rec
   if (!tool) throw new ProtocolError(`There is no tool named ${name}.`);
   return tool(this, obj, input);
 }
+
+/** The most one section call may take, whatever the modeler's timeout: about 5 s a plane on a 680 mm imported part. */
+const SECTION_BUDGET_MS = 30_000;
 
 /**
  * How long one modeler call may run before the server kills the modeler, which closes every open tree. --- 3.1 F9.
@@ -724,6 +730,7 @@ function replayBudgetMs(this: Session, steps: number): number {
 function runawayMessage(this: Session, kind: string, budgetMs: number): string {
   const seconds = Math.max(1, Math.round(budgetMs / 1000));
   if (kind === "preview") return `This mesh did not finish opening in ${seconds} s. Nothing changed.`;
+  if (kind === "section") return `This section did not finish in ${seconds} s, so it was stopped. A plane cut is quick on a sound solid, so this one is likely damaged: model_check lists edges where pieces meet only along a line and walls too thin to print. Undo the step that made them.`;
   const name = kind === "fillet" || kind === "chamfer" ? kind : "edit";
   return `This ${name} did not finish in ${seconds} s. Nothing changed. Try a smaller size or fewer edges.`;
 }
@@ -1039,7 +1046,17 @@ async function sectionTool(this: Session, obj: PlateObject, input: Record<string
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid) return refuse("solid-unreadable", "This solid could not be read.");
-  const cut = await solidSections(input, chordMm, cuts, typedPoseOf(obj), this.expandContext(obj), (request) => this.treeCall({ ...request, key: tree.key, node: tree.current }, "section"));
+  // A plane cut of a damaged solid has kept Open CASCADE busy for more than 25 minutes, inside a build that never
+  // looks at the kernel's own 20 s deadline. Whatever the modeler's timeout, a section gets SECTION_BUDGET_MS.
+  const budget = Math.min(this.modelTimeoutMs(), SECTION_BUDGET_MS);
+  let cut: Awaited<ReturnType<typeof solidSections>>;
+  try {
+    cut = await solidSections(input, chordMm, cuts, typedPoseOf(obj), this.expandContext(obj), (request) => this.treeCall({ ...request, key: tree.key, node: tree.current }, "section", budget));
+  } catch (err) {
+    const lost = this.lostReply(err);
+    if (lost) return lost;
+    throw err;
+  }
   if ("reason" in cut) return refuse("bad-argument", cut.reason);
   return answer(cut.sections, cut.extra);
 }

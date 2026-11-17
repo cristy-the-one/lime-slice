@@ -74,6 +74,29 @@ impl Drop for GroupBudget {
     }
 }
 
+/// How long a plane section may cut. On a sound solid it takes well under a second; on a damaged one Open CASCADE
+/// has worked for more than 25 minutes, holding the store lock all that time.
+const SECTION_BUDGET_MS: u64 = 20_000;
+
+/// Holds the section deadline (20 s, or the group budget when that is shorter) and clears it however the call ends.
+pub(super) struct SectionBudget;
+
+impl SectionBudget {
+    pub(super) fn start() -> SectionBudget {
+        let ms = SECTION_BUDGET_MS.min(GROUP_BUDGET_MS.load(Ordering::Relaxed)).max(1);
+        // SAFETY: plain value in, no pointers.
+        unsafe { lime_tree_set_deadline(i64::try_from(ms).unwrap_or(i64::MAX)) };
+        SectionBudget
+    }
+}
+
+impl Drop for SectionBudget {
+    fn drop(&mut self) {
+        // SAFETY: plain value in, no pointers.
+        unsafe { lime_tree_set_deadline(0) };
+    }
+}
+
 /// The refusal for a group past its deadline, before step `index` of `count`.
 fn group_overran(index: usize, count: usize) -> Option<String> {
     let deadline = GROUP_DEADLINE.get()?;
