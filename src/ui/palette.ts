@@ -469,6 +469,9 @@ export function runCommand(id: string) {
     case "model-split-print":
       withModel((model) => model.openSplitPrint());
       return;
+    case "model-auto-ribs":
+      withModel((model) => model.openAutoRibsCard());
+      return;
     case "redo":
       // In Model this steps the solid's history only, never Prepare's, even with nothing left to redo.
       if (state.stage === "model") {

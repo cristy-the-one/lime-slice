@@ -20,6 +20,7 @@ import { state } from "../state";
 import { stressPickFace, stressPicking } from "../../ui/stress.ts";
 import { splitPrintOpen, splitPrintPicked } from "../../ui/split-print.ts";
 import { transitionCardOpen, transitionChainClick, transitionPicked } from "../../ui/transition-card.ts";
+import { autoRibsTakesPick } from "../../ui/auto-ribs-card.ts";
 import { S } from "./shared";
 import { paintBlendHighlight, treeOf } from "./edges";
 import { mm, text, treeCall } from "./engine";
@@ -111,6 +112,8 @@ export async function onPick(pick: ModelPick | null, shift: boolean, pointer: { 
   // --- B13. A loft or sweep in Look around takes the click as a section or a profile. ---
   if (sketchTakesPick(pointer.x, pointer.y)) return;
   if (takePluginFacePick(pick)) return;
+  // --- Auto ribs: with the card open, a face click is the wall, a zone's face, a hold or a load, or where a zone goes.
+  if (autoRibsTakesPick(pick)) return;
   // A Stress pick mode takes face clicks as holds or loads; the selection stays as it was.
   if (stressPicking()) {
     if (pick?.kind === "face") stressPickFace(pick.index);

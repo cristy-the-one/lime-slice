@@ -1667,6 +1667,26 @@ fn handle(mut request: tiny_http::Request, token: Option<&str>) {
             }
         } else if method == "POST" && path.starts_with("/api/model/tree") {
             model_reply(lime_model_load::tree(&body))
+        } else if method == "POST" && path.starts_with("/api/ribs/") {
+            // Auto ribs from a browser: the desktop's rib_plan_start/poll/cancel commands, over the same jobs.
+            let id = || {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| v["id"].as_u64())
+                    .map(|id| id as usize)
+            };
+            match path.trim_start_matches("/api/ribs/") {
+                "start" => (200, lime_sim_bridge::ribs::rib_plan_start(body.clone())),
+                "poll" => match id() {
+                    Some(id) => (200, lime_sim_bridge::ribs::rib_plan_poll(id)),
+                    None => (400, err_json("poll needs {id}")),
+                },
+                "cancel" => match id() {
+                    Some(id) => (200, lime_sim_bridge::ribs::rib_plan_cancel(id)),
+                    None => (400, err_json("cancel needs {id}")),
+                },
+                _ => (404, err_json("not found")),
+            }
         } else if method == "POST" && path.starts_with("/api/mesh") {
             match serde_json::from_str::<SliceRequest>(&body) {
                 Ok(req) => match decode_mesh(&req) {

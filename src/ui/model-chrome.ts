@@ -748,6 +748,8 @@ export interface ModelCard {
   drag(drag: HandleDrag): void;
   /** The card left the pane: Esc, Cancel, another tool, or a solid that can no longer be edited. */
   closed(): void;
+  /** Esc, before it closes the card: true when the card took it (a running job stopped, a pick ended). */
+  escape?(): boolean;
 }
 
 let card: ModelCard | null = null;
@@ -817,6 +819,8 @@ export function escapeModel() {
   }
   // --- end A3 ---
   if (card) {
+    // A card may take Esc for itself first: Auto ribs stops a running plan, or ends a pick, before it closes.
+    if (card.escape?.()) return;
     closeModelCard();
     return;
   }

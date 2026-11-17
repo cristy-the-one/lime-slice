@@ -2885,6 +2885,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "lime-model-load",
+ "lime-sim-bridge",
  "lime-slice-core",
  "mimalloc",
  "serde_json",

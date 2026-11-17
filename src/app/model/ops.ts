@@ -23,6 +23,8 @@ import {
 import { holesInModel, type HoleSizes } from "../../sketch/holes.ts";
 import { transitionCardOp } from "../../ui/transition-card.ts";
 import { planePoint, planePrimitive } from "../../workplane";
+import { ribNetSource } from "../../auto-ribs.ts";
+import { autoRibsPendingOp } from "./auto-ribs";
 import { S } from "./shared";
 import { featureNow } from "./features";
 import { drillAxis, num, splitState } from "./geometry";
@@ -45,6 +47,8 @@ export function editOp(run: Editing): ModelOp | null {
   if (run.edgeOp) return run.edgeOp;
   // --- Print transitions: the card is the editor.
   if (run.op.kind === "transition") return transitionCardOp();
+  // --- Auto ribs: the card's Update builds the group it planned.
+  if (ribNetSource(run.op)) return autoRibsPendingOp();
   const tool = openModelTool();
   if (run.op.kind === "root") {
     if (tool !== "create") return null;

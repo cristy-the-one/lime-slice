@@ -47,6 +47,7 @@ import { modelTrees } from "../model-trees";
 import { state } from "../state";
 import { closeSplitPrint, openSplitPrintEdit } from "../../ui/split-print.ts";
 import { closeTransitionCard, openTransitionEdit } from "../../ui/transition-card.ts";
+import { startAutoRibsEdit } from "./auto-ribs";
 import { S } from "./shared";
 import { applyOp, keepSolid } from "./apply";
 import { createFeatureSolid } from "./create";
@@ -145,6 +146,8 @@ async function startOwnEdit(node: NodeId) {
     if (edges.missing > 0) readout(`${edges.missing === op.edges.length ? "This step's edges are" : `${edges.missing} of this step's edges are`} not on this solid any more: pick them again.`);
     return;
   }
+  // --- Auto ribs: a rib network reopens its card with the request it was planned from, to plan again.
+  if (startAutoRibsEdit(op, editHead(latest, node))) return;
   openEditPanel(run, editHead(latest, node));
 }
 

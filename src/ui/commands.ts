@@ -114,6 +114,8 @@ export const COMMANDS: CommandSpec[] = [
   { id: "model-parameters", label: "Parameters", group: "Model", keys: ["Ctrl+Alt+P"], when: "model-any", typing: true, keywords: "expression variable wall height rebuild" },
   // --- Plugins (D13): the Features menu's card, and Ctrl+Alt+L.
   { id: "model-plugins", label: "Plugins", group: "Model", keys: ["Ctrl+Alt+L"], when: "model", keywords: "plugin recipe library preset run lust apply preview" },
+  // --- Auto ribs: the Features menu card next to Stress. No key.
+  { id: "model-auto-ribs", label: "Auto ribs", group: "Model", when: "model", keywords: "rib ribs stiffen reinforce wall floppy cover stiffness" },
   { id: "model-stress", label: "Stress", group: "Model", when: "model", keywords: "stress fem load fixture safety" },
   // --- Split to print (D10): the Features menu's card. No key, so the ? sheet leaves it out; the rail's Split keeps D.
   { id: "model-split-print", label: "Split to print", group: "Model", when: "model", keywords: "split cut connector peg dowel bed resin export" },
