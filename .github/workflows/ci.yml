@@ -318,6 +318,8 @@ jobs:
           node --experimental-strip-types mcp/text-hershey.test.ts
           # A pattern in one boolean (combine: true): every pattern kind against the per-copy solid, the refusals, undo, save and reopen.
           node --experimental-strip-types mcp/pattern-combine.test.ts
+          # The rib network (ribNet) on flat, sloped, cylinder and freeform shells, and the ribs leak on a sloped floor.
+          node --experimental-strip-types mcp/rib-net-occt.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
           node --experimental-strip-types mcp/assemblies-m3.test.ts
           node --experimental-strip-types mcp/assembly.test.ts

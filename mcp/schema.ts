@@ -341,7 +341,7 @@ const op = {
   ],
 };
 
-const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text"]);
+const COMPOSITE = new Set(["pocket", "boss", "texture", "pattern", "mirror", "array", "ribs", "text", "ribNet"]);
 const REPEATABLE = new Set(["boolean", "extrude", "revolve", "pocket", "boss", "texture", "array", "ribs", "pattern", "mirror", "text"]);
 
 /** The op schema model_apply lists. Other Model tools name it and are checked against it here. */
@@ -674,6 +674,39 @@ const surfaceOps = [
 ];
 (op.oneOf as unknown[]).push(...surfaceOps);
 
+/** --- Rib network (docs/plan-auto-ribs.md 7.4): ribs along paths on the surface, flat or curved, as one fuse. */
+const ribNetOp = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "paths", "width", "height"],
+  properties: {
+    kind: { const: "ribNet" },
+    paths: {
+      type: "array",
+      minItems: 1,
+      maxItems: 400,
+      description: "Rib runs: each {points:[[x, y, z], ...]} on the surface (within 2 mm), over any faces, with its own width and height if given.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["points"],
+        properties: {
+          points: { type: "array", minItems: 2, maxItems: 2000, items: vec3, description: "Model-space points on the part's surface, in order." },
+          width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "This run's thickness, mm." },
+          height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "This run's height off the surface, mm." },
+        },
+      },
+    },
+    width: { type: "number", minimum: 0.1, maximum: 100, description: "Rib thickness, mm." },
+    height: { type: "number", minimum: 0.1, maximum: 500, description: "Off the surface along its normal, mm; less where a face stands in front." },
+    taper: { type: "number", minimum: 0, maximum: 1000, description: "A loose end comes down to the surface over this, mm. Default the height; 0 square." },
+    sinkMm: { type: "number", minimum: 0.05, maximum: 5, description: "Into the wall so it fuses. Default 0.5." },
+    clearanceMm: { type: "number", minimum: 0, maximum: 50, description: "Kept from a face in front of the wall. Default 0.5." },
+    label,
+  },
+};
+(op.oneOf as unknown[]).push(ribNetOp);
+
 /** --- Split to print (docs/plan-split-connectors.md, section 13). One name on the list; guide {kind} has its fields. */
 const partitionOp = {
   type: "object",
@@ -834,6 +867,7 @@ export const OP_SUMMARY: Record<string, string> = {
   text: "text {text, height, depth, face, at}: raised or cut letters.",
   array: "array {face, cell, pitch, depth}: a shape repeated over a face.",
   ribs: "ribs {face, along, width, pitch | count, depth}: strips across a face.",
+  ribNet: "ribNet {paths:[{points}], width, height}: ribs along paths on any faces, flat or curved, as one step.",
   transition: "transition {edges, mode, angleDeg, size}: a wedge in a concave corner or a gusset under a lip.",
   gear: "gear {op, teeth, module, thickness}: spur gear.",
 };

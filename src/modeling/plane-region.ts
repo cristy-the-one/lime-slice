@@ -105,9 +105,51 @@ export function subtractSpans(a: readonly Span[], b: readonly Span[]): Span[] {
 }
 
 /**
- * Where a piece `depth` tall stands on the plane W = 0 of `frame`: material just under the plane, and none at the
- * piece's top. Where the top runs into a wall, the region reaches `overlap` into it, so a rib's end overlaps the wall
- * instead of touching it face to face. A line whose crossings do not pair up even a hair to either side reads as null.
+ * A stretch of the plane shorter than this, between material under it and material over it, is not ground: where the
+ * plane leaves the part through a skin at a shallow angle, the lines just under and just over it come out a little
+ * apart (0.15 mm at 1°), and that sliver must not make the wall beyond it read as a bump standing on the floor.
+ */
+const GROUND_SLIVER = 0.5;
+
+/**
+ * Where the plane is the part's own surface, along one line: material just under it and none just over it. Material
+ * over the plane with that surface on both sides is a bump standing on it (an earlier rib, a low boss), and the ground
+ * runs under it. Material over the plane that runs on to where the material under it ends is not standing on the
+ * plane: it is a wall the plane runs into, or, past a kink, the part's own wall the plane has gone inside. The ground
+ * stops there, `overlap` into it, so a rib's end overlaps the wall instead of touching it face to face, and never runs
+ * on inside the wall to break through the far skin (the sloped-floor leak of the probe of 2026-11-17).
+ */
+export function groundSpans(under: readonly Span[], over: readonly Span[], overlap: number): Span[] {
+  const surface = subtractSpans(under, over).filter(([from, to]) => to - from > GROUND_SLIVER);
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-7;
+  const ground: Span[] = [...surface];
+  for (const bump of over) {
+    if (surface.some(([, to]) => near(to, bump[0])) && surface.some(([from]) => near(from, bump[1]))) ground.push([bump[0], bump[1]]);
+  }
+  ground.sort((x, y) => x[0] - y[0]);
+  const merged: Span[] = [];
+  for (const span of ground) {
+    const last = merged[merged.length - 1];
+    if (last && span[0] <= last[1] + 1e-7) last[1] = Math.max(last[1], span[1]);
+    else merged.push([span[0], span[1]]);
+  }
+  // Each end that meets material over the plane reaches `overlap` into it; an end over open air stays where it is.
+  const walled = (at: number) => over.some(([from, to]) => at >= from - 1e-7 && at <= to + 1e-7);
+  const reached = merged.map(([from, to]): Span => [walled(from) ? from - overlap : from, walled(to) ? to + overlap : to]);
+  const out: Span[] = [];
+  for (const span of reached) for (const room of under) {
+    const from = Math.max(span[0], room[0]);
+    const to = Math.min(span[1], room[1]);
+    if (to > from) out.push([from, to]);
+  }
+  return out;
+}
+
+/**
+ * Where a piece `depth` tall stands on the plane W = 0 of `frame`: the plane's ground (`groundSpans`), and no material
+ * at the piece's top. Where the top runs into a wall, the region reaches `overlap` into it, so a rib's end overlaps the
+ * wall instead of touching it face to face. A line whose crossings do not pair up even a hair to either side reads as
+ * null.
  */
 export function standRegion(positions: Float32Array, frame: Workplane, depth: number, overlap: number): StandRegion {
   const lines = materialLines(positions, frame);
@@ -120,10 +162,11 @@ export function standRegion(positions: Float32Array, frame: Workplane, depth: nu
     let found: Span[] | null = null;
     for (const nudge of [0, 2.3e-6, -2.9e-6]) {
       const under = lines(-UNDER, b + nudge, deg);
+      const over = lines(OVER, b + nudge, deg);
       const top = lines(depth + OVER, b + nudge, deg);
-      if (!under || !top) continue;
+      if (!under || !over || !top) continue;
       const walls = top.map(([from, to]): Span => [from + overlap, to - overlap]).filter(([from, to]) => to > from);
-      found = subtractSpans(under, walls);
+      found = subtractSpans(groundSpans(under, over, overlap), walls);
       break;
     }
     seen.set(key, found);

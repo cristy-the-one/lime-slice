@@ -7,6 +7,7 @@ import { orientEuler } from "../mesh-place.ts";
 import { facePlane } from "../model-plane.ts";
 import { CURVED_FACE, localPoint, workplaneOnFace, type Workplane } from "../workplane.ts";
 import { readVec3, type ExpandContext, type FaceExtent, type FacePick, type Rays, type StandRegion } from "./compose.ts";
+import type { RibSurfaceInput } from "./rib-net.ts";
 import { meshRays } from "./thin.ts";
 
 /** A flat face the way the session stores one: array index is the face index. */
@@ -100,9 +101,12 @@ export function expandContextFromSolid(solid: FramedSolid | null, plane: Workpla
     };
   }
   let rays: Rays | null = null;
+  let surface: RibSurfaceInput | null = null;
   return {
     plane,
     rays: () => (rays ??= meshRays(solid.positions)),
+    // --- Rib network: the triangles with their faces, and with the cracks between faces closed for rays.
+    surface: () => (surface ??= { positions: solid.positions, faceOf: solid.triangles, closed: deps.closeCracks(solid.positions) }),
     face: (index: number, coplanar = false) => {
       const face = solid.faces[index];
       if (!face) return { reason: "That face is not on this solid." };

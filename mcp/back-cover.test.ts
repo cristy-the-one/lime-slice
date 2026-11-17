@@ -70,9 +70,9 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
   const floor = { source: "face" as const, origin: [0, 0, 2.5] as [number, number, number], turn: [0, 0, 0] as [number, number, number] };
   const stand = standRegion(Float32Array.from(soup), floor, 8, 0.5);
   const across = stand.spans(-50, 90)!.map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
-  check("a rib across the floor runs through the earlier rib and 0.5 mm into the wall", same(across, [[0, 48.5], [49.5, 50]]), JSON.stringify(across));
+  check("a rib across the floor runs through the earlier rib and 0.5 mm into the wall, and no further", same(across, [[0, 48.5]]), JSON.stringify(across));
   const taller = standRegion(Float32Array.from(soup), floor, 6, 0.5).spans(-50, 90)!.map(([a, b]) => [Math.round(a * 1000) / 1000, Math.round(b * 1000) / 1000]);
-  check("a rib lower than the earlier one stops 0.5 mm into it", same(taller, [[0, 20.5], [21.5, 48.5], [49.5, 50]]), JSON.stringify(taller));
+  check("a rib lower than the earlier one stops 0.5 mm into it", same(taller, [[0, 20.5], [21.5, 48.5]]), JSON.stringify(taller));
   // One wall alone: a line meets it once, its crossings do not pair, and it reads as null so the face outline decides.
   const wall = standRegion(Float32Array.from([0, 10, -5, 100, 10, -5, 0, 10, 20, 100, 10, -5, 100, 10, 20, 0, 10, 20]), floor, 8, 0.5);
   check("a line whose crossings do not pair reads as null", wall.spans(-50, 90) === null);
