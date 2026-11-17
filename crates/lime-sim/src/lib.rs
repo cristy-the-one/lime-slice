@@ -24,6 +24,7 @@ pub mod memory;
 pub mod multigrid;
 pub mod mesh;
 pub mod recipe;
+pub mod shell;
 pub mod skin;
 pub mod slice_field;
 pub mod sliced;
