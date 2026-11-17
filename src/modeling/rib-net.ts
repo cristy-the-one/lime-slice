@@ -6,6 +6,12 @@
  * normal, `width` wide and `height` tall, sunk `sinkMm` into the wall so it fuses. All runs are the tools of one fuse
  * (a Group with `combine: "fuse"`), so the network is one History row.
  *
+ * Profiles (`profile`, on the network or a path): `"straight"` (a rectangle, the default), `"drafted"` (a trapezoid
+ * with `draftDeg` a side, `width` its thickness at half its height) and `"tee"` (a web under a flange, its underside
+ * chamfered `flangeChamferDeg` so it prints standing up). Any of them may flare into the wall over `rootRadius`, a
+ * concave arc cut into a few chords inside the section itself, not a fillet after (a fillet over a whole network ran
+ * past 90 s in a probe). A straight run of one height is one box (a plain rectangle) or one extrude of its section.
+ *
  * Guards, all read from the part's own triangles before anything is built:
  * - the height is capped by the room in front of the wall (a ray along the normal, less `clearanceMm`); a stretch with
  *   less room than a useful rib is left out, and both are reported;
@@ -65,6 +71,16 @@ export interface RibBox {
   turn: V3;
 }
 
+/** A straight run of one height whose section is not a plain rectangle: its section pushed along the run, one extrude. */
+export interface RibExtrude {
+  kind: "extrude";
+  op: "fuse";
+  origin: V3;
+  turn: V3;
+  profile: [number, number][];
+  depth: number;
+}
+
 /** Every other run: a ruled loft through its sections. */
 export interface RibLoft {
   kind: "loft";
@@ -74,9 +90,11 @@ export interface RibLoft {
 }
 
 export interface RibNetPlan {
-  steps: (RibLoft | RibBox)[];
+  steps: (RibLoft | RibBox | RibExtrude)[];
   /** For each step, the path it came from (from 1). */
   stepPath: number[];
+  /** For each step, its path's section profile. */
+  stepProfile: RibProfileKind[];
   paths: number;
   runs: number;
   shortened: RibStretch[];
@@ -105,6 +123,173 @@ const INTO_WALL = 0.5;
 const TURN_DEG = 6;
 /** A turn sharper than this (1 + cos of the turn under it) is a butt joint of two runs, not a mitre. */
 const MITRE_LIMIT = 0.35;
+
+// --- Rib profiles: the section a rib has across its run. ---
+
+/** The section kinds: a rectangle, a trapezoid with draft, and a web under a flange. */
+export const RIB_PROFILES = ["straight", "drafted", "tee"] as const;
+export type RibProfileKind = (typeof RIB_PROFILES)[number];
+
+/**
+ * One path's section, as typed with the network's defaults filled in. `width` is the web's thickness at half the rib's
+ * height (for a straight or tee web, everywhere). `rootRadius` 0 is a sharp root. The flange fields are the tee's.
+ */
+export interface RibProfile {
+  kind: RibProfileKind;
+  width: number;
+  draftDeg: number;
+  rootRadius: number;
+  flangeWidth: number;
+  flangeThickness: number;
+  flangeChamferDeg: number;
+}
+
+type P2 = [number, number];
+
+/**
+ * A profile at one rib's height, ready to give its section at any height up to it. Sections are closed polygons in
+ * rib-local [u, v]: u across the run, v along the surface normal from the surface, the part under v = 0 sunk `sink`
+ * into the wall. Every section of one rib has the same corners in the same order, so a ruled loft pairs them.
+ */
+export interface RibShape {
+  profile: RibProfile;
+  height: number;
+  sink: number;
+  /**
+   * Under this height the section no longer keeps its root and flange whole: it shrinks to the surface, the flange
+   * narrowing into the web, as a straight blend to a flat section at height 0. 0 for a plain rectangle.
+   */
+  hb: number;
+  /** Half the footprint on the wall: the root's foot, or the web's base. */
+  foot: number;
+  /** Half the widest extent anywhere: the flange, or the foot. */
+  reach: number;
+  /** Half the narrowest web anywhere: how far past its centre line a run that ends on this one must go. */
+  minHalf: number;
+  /** Chords each root arc is cut into. */
+  arcChords: number;
+  section(hk: number): P2[];
+  /** Half the section's width at `v` over the surface, at height hk. */
+  halfAt(hk: number, v: number): number;
+}
+
+/** The fewest and most chords one root arc is cut into. */
+const ROOT_CHORDS = [2, 6] as const;
+
+/**
+ * The section of a rib with `profile`, `height` tall at full height, sunk `sink`; the root arc within `tol` of the
+ * circle. A sentence when the profile cannot be built at this height. Polygons, right half (u ≥ 0) from the bottom up:
+ * - straight: (w/2, −sink), [foot (w/2 + r, 0), root arc to (w/2, r)], (w/2, hk);
+ * - drafted: the web's half-width at v is w/2 + (hk/2 − v)·tan(draft), so w is its width at half its height and the
+ *   area over the surface w·hk; then (base, −sink), (base, 0) or the root's foot and arc, (w/2 − hk·tan/2, hk);
+ * - tee: (w/2, −sink), [foot, root arc to (w/2, r)], web top (w/2, hk − ft − c), flange (F/2, hk − ft), (F/2, hk),
+ *   where c = (F/2 − w/2)·tan(chamfer) is the chamfer under the flange (0 for a square flange).
+ * The left half mirrors it. Under `hb` the section blends to a flat one (see RibShape.hb).
+ */
+export function ribShape(profile: RibProfile, height: number, sink: number, tol: number): RibShape | { reason: string } {
+  const a = profile.width / 2;
+  const r = profile.rootRadius;
+  const tee = profile.kind === "tee";
+  const t = profile.kind === "drafted" ? Math.tan((profile.draftDeg * Math.PI) / 180) : 0;
+  const f = profile.flangeWidth / 2;
+  const ft = profile.flangeThickness;
+  const c = tee ? (f - a) * Math.tan((profile.flangeChamferDeg * Math.PI) / 180) : 0;
+  const plain = profile.kind === "straight" && !(r > 0);
+  if (profile.kind === "drafted") {
+    const top = profile.width - height * t;
+    if (top < 0.1) return { reason: `a ${r2(profile.draftDeg)}° draft closes a ${r2(profile.width)} mm rib to ${top > 0 ? `${r2(top)} mm` : "nothing"} at the top of its ${r2(height)} mm height (the width is the rib's at half its height). Give a smaller draftDeg, a wider rib, or a lower height.` };
+  }
+  if (tee && !(f > a + 0.05)) return { reason: `a tee's flangeWidth (${r2(profile.flangeWidth)} mm) must be wider than its web (${r2(profile.width)} mm).` };
+  // The root's arc: from its foot on the wall up to where it meets the web's side, `sweep` radians about its centre.
+  const root = r > 0;
+  const rootTop = root ? r * (1 - t / Math.sqrt(1 + t * t)) : 0;
+  const sweep = Math.PI / 2 - Math.atan(t);
+  const arcChords = root ? Math.max(ROOT_CHORDS[0], Math.min(ROOT_CHORDS[1], Math.ceil(sweep / (2 * Math.acos(Math.max(-1, 1 - Math.min(tol, r) / r))) - 1e-9))) : 0;
+  const needs = rootTop + (tee ? c + ft : 0);
+  if (!plain && height < needs + 0.1) {
+    const parts = [...(root ? [`a ${r2(r)} mm root`] : []), ...(tee ? [`a ${r2(ft)} mm flange`, ...(c > 0 ? [`its ${r2(c)} mm chamfer`] : [])] : [])];
+    return { reason: `${parts.join(", ")} need${parts.length === 1 && root ? "s" : ""} the rib to stand more than ${r2(needs + 0.1)} mm tall; it is ${r2(height)} mm. Give a smaller ${root ? "rootRadius" : "flange"}${tee ? ", a thinner flange or a smaller flangeChamferDeg" : ""}, or a taller rib.` };
+  }
+  const hb = plain ? 0 : needs + Math.min(0.25 * profile.width, 0.5 * (height - needs));
+  /** The right half at height hk ≥ hb (or any height for a plain rectangle), and the last point of its root. */
+  const full = (hk: number): { pts: P2[]; anchor: number } => {
+    const pts: P2[] = [];
+    let anchor = 0;
+    const K = a + (hk * t) / 2;
+    if (root) {
+      // The root circle touches the wall (v = 0) and the web's side: its centre r from both.
+      const cu = K - t * r + r * Math.sqrt(1 + t * t);
+      pts.push([cu, -sink], [cu, 0]);
+      for (let j = 1; j <= arcChords; j += 1) {
+        const ang = 1.5 * Math.PI - (sweep * j) / arcChords;
+        pts.push([cu + r * Math.cos(ang), r + r * Math.sin(ang)]);
+      }
+      anchor = pts.length - 1;
+    } else if (t > 0) {
+      pts.push([K, -sink], [K, 0]);
+      anchor = 1;
+    } else if (tee) {
+      pts.push([a, -sink], [a, 0]);
+      anchor = 1;
+    } else pts.push([a, -sink]);
+    if (tee) pts.push([a, hk - ft - c], [f, hk - ft], [f, hk]);
+    else pts.push([a - (hk * t) / 2, hk]);
+    return { pts, anchor };
+  };
+  const top = full(hb);
+  const right = (hk: number): P2[] => {
+    if (hk >= hb || plain) return full(hk).pts;
+    // Under hb: a straight blend from a flat section (every corner over the surface on v = 0, spread across the web
+    // in order, so no two meet) to the section at hb. The right half then rises from bottom to top at every height,
+    // and the left mirrors it, so no section crosses itself.
+    const lambda = Math.max(0, hk / hb);
+    const anchorU = top.pts[top.anchor]![0];
+    const upper = top.pts.length - 1 - top.anchor;
+    return top.pts.map(([u, v], i) => {
+      if (i === 0) return [u, v];
+      if (i <= top.anchor) return [u, v * lambda];
+      const j = i - top.anchor;
+      const flat = anchorU * (1 - j / (upper + 1));
+      return [flat + (u - flat) * lambda, v * lambda];
+    });
+  };
+  const section = (hk: number): P2[] => {
+    const pts = right(hk);
+    return [[-pts[0]![0], pts[0]![1]], ...pts, ...pts.slice(1).reverse().map(([u, v]): P2 => [-u, v])];
+  };
+  const at = full(height).pts;
+  const foot = at[0]![0];
+  return {
+    profile,
+    height,
+    sink,
+    hb,
+    foot,
+    reach: Math.max(...at.map((p) => p[0])),
+    minHalf: a - (height * t) / 2,
+    arcChords,
+    section,
+    halfAt: (hk, v) => polygonHalf(section(hk), v),
+  };
+}
+
+/** Half a symmetric polygon's width on the line v: its furthest crossing from u = 0. */
+function polygonHalf(poly: readonly P2[], v: number): number {
+  let best = 0;
+  for (let i = 0; i < poly.length; i += 1) {
+    const p = poly[i]!;
+    const q = poly[(i + 1) % poly.length]!;
+    if ((p[1] - v) * (q[1] - v) > 0) continue;
+    if (Math.abs(q[1] - p[1]) < 1e-12) best = Math.max(best, Math.abs(p[0]), Math.abs(q[0]));
+    else best = Math.max(best, Math.abs(p[0] + ((q[0] - p[0]) * (v - p[1])) / (q[1] - p[1])));
+  }
+  return best;
+}
+
+/** Whether a section is the plain rectangle, built as a box. */
+function isRect(poly: readonly P2[], width: number): boolean {
+  return poly.length === 4 && poly.every((p, i) => Math.abs(p[0] - [-width / 2, width / 2, width / 2, -width / 2][i]!) < 1e-6);
+}
 
 const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -370,6 +555,8 @@ interface Run {
   path: number;
   width: number;
   height: number;
+  /** Its section, from its path's profile at its height. */
+  shape: RibShape;
   samples: Sample[];
   heights: number[];
   /** What each end is: a joint or a wall gets an extension along the run, a free end tapers. */
@@ -383,11 +570,35 @@ function readPoint(value: unknown): V3 | null {
 }
 
 /** A number field: absent gives `fallback`, a typed one must lie in [lo, hi]. */
-function field(raw: Record<string, unknown>, key: string, fallback: number | null, lo: number, hi: number, what: string): number | { reason: string } {
+function field(raw: Record<string, unknown>, key: string, fallback: number | null, lo: number, hi: number, what: string, unit = " mm"): number | { reason: string } {
   const value = raw[key];
   if (value === undefined) return fallback === null ? { reason: `A rib network needs ${key}: ${what}.` } : fallback;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < lo || value > hi) return { reason: `${key} is ${what}, from ${lo} to ${hi} mm.` };
+  if (typeof value !== "number" || !Number.isFinite(value) || value < lo || value > hi) return { reason: `${key} is ${what}, from ${lo} to ${hi}${unit}.` };
   return value;
+}
+
+/**
+ * A path's profile: its own fields first, then the network's, then the defaults. Fields of another profile are
+ * ignored, so one network can mix profiles. Draft defaults to 1° a side, the root to half the rib's top width (half the
+ * web for a tee; none for straight), the flange to three webs wide and one web thick, chamfered 45° underneath.
+ */
+function profileOf(net: Record<string, unknown>, path: Record<string, unknown>, width: number, height: number): RibProfile | { reason: string } {
+  const own = (key: string): Record<string, unknown> => (path[key] !== undefined ? path : net);
+  const kind = own("profile").profile ?? "straight";
+  if (typeof kind !== "string" || !(RIB_PROFILES as readonly string[]).includes(kind)) return { reason: `profile is "straight", "drafted" or "tee", not ${JSON.stringify(kind)}.` };
+  const k = kind as RibProfileKind;
+  const draftDeg = k === "drafted" ? field(own("draftDeg"), "draftDeg", 1, 0, 15, "the draft of each side of a drafted rib", "°") : 0;
+  if (typeof draftDeg !== "number") return draftDeg;
+  const top = width - height * Math.tan((draftDeg * Math.PI) / 180);
+  const rootRadius = field(own("rootRadius"), "rootRadius", k === "straight" ? 0 : 0.5 * (k === "tee" ? width : Math.max(0, top)), 0, 50, "the radius of the flared root where the rib meets the wall");
+  if (typeof rootRadius !== "number") return rootRadius;
+  const flangeWidth = k === "tee" ? field(own("flangeWidth"), "flangeWidth", 3 * width, 0.2, 200, "the tee's flange width") : 0;
+  if (typeof flangeWidth !== "number") return flangeWidth;
+  const flangeThickness = k === "tee" ? field(own("flangeThickness"), "flangeThickness", width, 0.1, 100, "the tee's flange thickness") : 0;
+  if (typeof flangeThickness !== "number") return flangeThickness;
+  const flangeChamferDeg = k === "tee" ? field(own("flangeChamferDeg"), "flangeChamferDeg", 45, 0, 75, "the slope of the chamfer under the tee's flange, from the wall", "°") : 0;
+  if (typeof flangeChamferDeg !== "number") return flangeChamferDeg;
+  return { kind: k, width, draftDeg, rootRadius, flangeWidth, flangeThickness, flangeChamferDeg };
 }
 
 /**
@@ -441,6 +652,13 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     if (typeof w !== "number") return { reason: `${name}: ${w.reason}` };
     const h = field(path, "height", height, 0.1, 500, "this path's rib height");
     if (typeof h !== "number") return { reason: `${name}: ${h.reason}` };
+    const profile = profileOf(raw, path, w, h);
+    if ("reason" in profile) return { reason: `${name}: ${profile.reason}` };
+    const shape = ribShape(profile, h, sink, chordTol);
+    if ("reason" in shape) return { reason: `${name}: ${shape.reason}` };
+    const plain = shape.hb === 0;
+    // Across the run: the footprint (root or base) on the wall, and the widest reach (a flange) for the room over it.
+    const lateralAt = [...new Set([-shape.reach, -shape.foot, 0, shape.foot, shape.reach])];
     const minHeight = Math.min(h, Math.max(0.5, h * 0.25));
     const maxStep = Math.max(1, Math.min(4, 2 * w));
     // --- Snap each typed point; a point off the surface is refused with where it is.
@@ -494,22 +712,47 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
       if (piece.length < 2) continue;
       // --- Room and wall at each sample: rays along the normal for the height, against it for the wall under the sink.
       const caps: number[] = [];
+      // Where a root's foot or a drafted base would stand over no wall (a ledge's edge, a wall curving away).
+      const overhung: (V3 | null)[] = [];
+      const across: V3[] = [];
       for (let k = 0; k < piece.length; k += 1) {
         const s = piece[k]!;
         const f = sampleFrame(piece, k);
         if (!f) return { reason: `${name} runs straight off the surface near (${at2(s.p).join(", ")}); a rib path lies along the surface.` };
+        across.push(f.b);
         let room = Infinity;
         let wall = Infinity;
-        for (const u of [-w / 2, 0, w / 2]) {
-          const lateral: SurfacePoint | null = u === 0 ? { point: s.p, normal: s.n, face: s.face } : surface.closest(add(s.p, mul(f.b, u)), Math.max(w, 1), s.n);
+        for (const u of lateralAt) {
+          const lateral: SurfacePoint | null = u === 0 ? { point: s.p, normal: s.n, face: s.face } : surface.closest(add(s.p, mul(f.b, u)), Math.max(2 * Math.abs(u), 1), s.n);
           if (!lateral || dot(lateral.normal, s.n) < Math.cos((30 * Math.PI) / 180)) continue;
           const lp = lateral.point;
           const ln = lateral.normal;
           const up = surface.ray(add(lp, mul(s.n, 1e-3)), s.n, h + clearance + 1);
           if (up) room = Math.min(room, up.distance + 1e-3);
+          if (Math.abs(u) > shape.foot + 1e-9) continue;
           const down = surface.ray(sub(lp, mul(ln, 1e-3)), mul(ln, -1), 1000);
-          if (down?.leaving) wall = Math.min(wall, down.distance + 1e-3);
+          if (down?.leaving) {
+            wall = Math.min(wall, down.distance + 1e-3);
+            // The footprint's edges are guarded from beyond the wall too.
+            if (!plain && u !== 0) {
+              const back = down.distance + 2;
+              const from = sub(lp, mul(ln, back));
+              const before = surface.ray(from, ln, back + 1);
+              guards.push({ from, dir: [...ln], far: back + 1, before: before ? before.distance : null });
+            }
+          }
         }
+        // The footprint's edges, square across from the path: the wall must lie under them within the sink.
+        let hangs: V3 | null = null;
+        if (shape.foot > w / 2 + 1e-9) {
+          for (const u of [-shape.foot, shape.foot]) {
+            const q = add(s.p, mul(f.b, u));
+            // Inside the material (a wall beside the rib, a hollow wall) the ray leaves it: the foot is buried.
+            const hit = surface.ray(add(q, mul(s.n, 1e-3)), mul(s.n, -1), 1000);
+            if (!hit || (!hit.leaving && hit.distance > 0.8 * sink)) hangs = q;
+          }
+        }
+        overhung.push(hangs);
         caps.push(Math.min(h, room - clearance));
         if (Number.isFinite(wall)) {
           if (wall < sink + MIN_SKIN && (!thinnest || wall < thinnest.wall)) thinnest = { at: s.p, wall, path: pi + 1 };
@@ -529,7 +772,27 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
           while (k < piece.length && caps[k]! >= minHeight) k += 1;
           const kept = piece.slice(start, k);
           const heights = caps.slice(start, k);
-          if (kept.length >= 2) runs.push({ path: pi + 1, width: w, height: h, samples: kept, heights, ends: [{ kind: "free" }, { kind: "free" }] });
+          const hung = overhung.slice(start, k).find((q) => q !== null);
+          if (hung && kept.length >= 2) {
+            return { reason: `${name} near (${at2(hung).join(", ")}): the rib's ${r2(2 * shape.foot)} mm footprint (its ${profile.rootRadius > 0 ? `${r2(profile.rootRadius)} mm root` : "drafted base"}) runs off the wall there, so its edge would stand in the air. Give a smaller rootRadius${profile.kind === "drafted" ? " or draftDeg" : ""}, or keep the path further from the wall's edge. Nothing was built.` };
+          }
+          // A tee's flange needs room beside the rib, away from the ends (an end that meets a wall runs into it).
+          if (profile.kind === "tee" && kept.length >= 2) {
+            const total = arc(kept, 0, kept.length - 1);
+            for (let m = 0; m < kept.length; m += 1) {
+              const along = arc(kept, 0, m);
+              if (along < 2 * shape.reach || total - along < 2 * shape.reach || heights[m]! < shape.hb) continue;
+              const s = kept[m]!;
+              const mid = add(s.p, mul(s.n, heights[m]! - profile.flangeThickness / 2));
+              for (const sign of [-1, 1]) {
+                const hit = surface.ray(mid, mul(across[start + m]!, sign), shape.reach + clearance);
+                if (hit && !hit.leaving) {
+                  return { reason: `${name} near (${at2(s.p).join(", ")}): a face stands ${r2(hit.distance)} mm beside the rib at its flange, inside the flange's ${r2(shape.reach)} mm half-width plus ${r2(clearance)} mm clearance. Give a narrower flangeWidth, or move the path. Nothing was built.` };
+                }
+              }
+            }
+          }
+          if (kept.length >= 2) runs.push({ path: pi + 1, width: w, height: h, shape, samples: kept, heights, ends: [{ kind: "free" }, { kind: "free" }] });
           else if (kept.length === 1) {
             skipped.push({ path: pi + 1, lengthMm: 0, at: at2(kept[0]!.p), why: "a single point with room between two stretches without" });
           }
@@ -575,7 +838,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
         ends.joint += 1;
         continue;
       }
-      const wallEnd = wallAt(surface, s, out, run.width, run.heights[side === 0 ? 0 : run.heights.length - 1]!);
+      const wallEnd = wallAt(surface, s, out, run.shape, run.heights[side === 0 ? 0 : run.heights.length - 1]!);
       if (wallEnd !== null) {
         run.ends[side] = { kind: "wall", extend: wallEnd.extend };
         guards.push(...wallEnd.guards);
@@ -588,6 +851,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
   // --- Each run becomes its sections: tapered, simplified, mitred, and cut into lofts of at most MAX_SECTIONS.
   const steps: RibNetPlan["steps"] = [];
   const stepPath: number[] = [];
+  const stepProfile: RibProfileKind[] = [];
   for (const run of runs) {
     const taper = taperTyped < 0 ? run.height : taperTyped;
     let samples = [...run.samples];
@@ -611,6 +875,22 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     });
     const kept = simplify(samples, heights, chordTol);
     let rows = kept.map((k) => ({ s: samples[k]!, h: heights[k]! }));
+    // A section at hb wherever the height passes it: above it the section keeps its root and flange, under it it blends
+    // flat, and a ruled loft between sections either side of it would cut that corner.
+    const hb = run.shape.hb;
+    if (hb > 0) {
+      const split: typeof rows = [rows[0]!];
+      for (let k = 1; k < rows.length; k += 1) {
+        const a = rows[k - 1]!;
+        const b = rows[k]!;
+        if ((a.h - hb) * (b.h - hb) < 0) {
+          const f = (hb - a.h) / (b.h - a.h);
+          split.push({ s: { p: lerp(a.s.p, b.s.p, f), n: unit(lerp(a.s.n, b.s.n, f)), face: a.s.face }, h: hb });
+        }
+        split.push(b);
+      }
+      rows = split;
+    }
     // Extensions: a joint or a wall end runs on along the run's own direction, at the end's height and frame.
     const first = rows[0]!;
     const last = rows[rows.length - 1]!;
@@ -625,19 +905,22 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
       const dir = unit(sub(last.s.p, rows[rows.length - 2]!.s.p));
       rows = [...rows.slice(0, -1), { s: { ...last.s, p: add(last.s.p, mul(dir, e1.extend)) }, h: last.h }];
     }
-    const sections = sectionsOf(rows, run.width, sink);
+    const sections = sectionsOf(rows, run.shape);
     if ("reason" in sections) return { reason: `Path ${run.path}: ${sections.reason}` };
-    // A straight run of one height is a box: plain planes, far quicker in the fuse than a loft's ruled faces.
-    const box = boxOf(rows, sections, run.width, sink);
-    if (box) {
-      steps.push(box);
+    // A straight run of one height is a box, or for any other section one extrude of it: plain faces, far quicker in
+    // the fuse than a loft's ruled ones.
+    const straight = straightOf(rows, sections, run.width, sink);
+    if (straight) {
+      steps.push(straight);
       stepPath.push(run.path);
+      stepProfile.push(run.shape.profile.kind);
       continue;
     }
     // Long runs are several lofts that share a section.
     for (let from = 0; from < sections.length - 1; from += MAX_SECTIONS - 1) {
       steps.push({ kind: "loft", op: "fuse", ruled: true, sections: sections.slice(from, Math.min(sections.length, from + MAX_SECTIONS)) });
       stepPath.push(run.path);
+      stepProfile.push(run.shape.profile.kind);
     }
   }
   if (steps.length > RIB_NET_MAX_RUNS) return { reason: `This network makes ${steps.length} runs, more than ${RIB_NET_MAX_RUNS}. Split its paths over several ribNet steps.` };
@@ -646,6 +929,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
   return {
     steps,
     stepPath,
+    stepProfile,
     paths: rawPaths.length,
     runs: steps.length,
     shortened,
@@ -754,7 +1038,7 @@ function sampleFrame(samples: readonly Sample[], k: number): { b: V3 } | null {
  */
 function jointAt(runs: readonly Run[], self: number, side: 0 | 1, p: V3, out: V3): number | null {
   const run = runs[self]!;
-  let best: { d: number; q: V3; width: number } | null = null;
+  let best: { d: number; q: V3; width: number; reach: number; minHalf: number } | null = null;
   const ownLength = arc(run.samples, 0, run.samples.length - 1);
   for (let ri = 0; ri < runs.length; ri += 1) {
     const other = runs[ri]!;
@@ -767,17 +1051,21 @@ function jointAt(runs: readonly Run[], self: number, side: 0 | 1, p: V3, out: V3
       // Its own run near this end is not a joint: only a part of it more than two widths along.
       if (ri === self) {
         const fromEnd = side === 0 ? walked - span : ownLength - walked;
-        if (fromEnd < 2 * run.width + 1e-6) continue;
+        // Further along than the joint reach below, so a wide flange does not meet its own run.
+        const own = run.shape.hb === 0 ? 2 * run.width : Math.max(2 * run.width, 2 * run.shape.reach + 0.5);
+        if (fromEnd < own + 1e-6) continue;
       }
       const t = span > 0 ? Math.max(0, Math.min(1, dot(sub(p, a), sub(b, a)) / (span * span))) : 0;
       const q = lerp(a, b, t);
       const d = len(sub(q, p));
-      if (!best || d < best.d) best = { d, q, width: other.width };
+      if (!best || d < best.d) best = { d, q, width: other.width, reach: other.shape.reach, minHalf: other.shape.minHalf };
     }
   }
-  if (!best || best.d > (run.width + best.width) / 2 + 0.25) return null;
+  // Within the two ribs' widest reaches of each other (a flange or a root counts): a joint.
+  if (!best || best.d > run.shape.reach + best.reach + 0.25) return null;
   const ahead = dot(sub(best.q, p), out);
-  return Math.max(0, Math.min(ahead + best.width / 2, best.width + best.d));
+  // On past the other's centre line by its narrowest web half, so the end stays inside it at every height.
+  return Math.max(0, Math.min(ahead + best.minHalf, best.width + best.d));
 }
 
 /**
@@ -785,15 +1073,19 @@ function jointAt(runs: readonly Run[], self: number, side: 0 | 1, p: V3, out: V3
  * meet the part within reach. The rib then runs into it, `INTO_WALL` past where it meets it or less, keeping
  * `WALL_SKIN` of the wall beyond. Null when the wall does not cover the rib's whole end (a low lip): that end tapers.
  */
-function wallAt(surface: RibSurface, s: Sample, out: V3, width: number, h: number): { extend: number; guards: RibGuard[] } | null {
+function wallAt(surface: RibSurface, s: Sample, out: V3, shape: RibShape, h: number): { extend: number; guards: RibGuard[] } | null {
   const along = unit(sub(out, mul(s.n, dot(out, s.n))));
   const across = cross(s.n, along);
-  const reach = Math.max(1, width) + 0.05;
+  const reach = Math.max(1, 2 * shape.reach) + 0.05;
   let meet = 0;
   let wall = Infinity;
   const guards: RibGuard[] = [];
-  for (const v of [0.2, 0.5, 0.95].map((f) => Math.max(0.05, f * h))) {
-    for (const u of [-0.45 * width, 0, 0.45 * width]) {
+  // Across the section's own width at each height (a flange at the top, a root at the foot), so the wall covers it all.
+  const levels = [0.2, 0.5, 0.95].map((f) => Math.max(0.05, f * h));
+  if (shape.profile.rootRadius > 0) levels.unshift(Math.max(0.02, Math.min(0.3 * shape.profile.rootRadius, 0.15 * h)));
+  for (const v of levels) {
+    const span = shape.hb === 0 ? 0.45 * shape.profile.width : 0.9 * shape.halfAt(h, v);
+    for (const u of [-span, 0, span]) {
       const from = add(add(s.p, mul(s.n, v)), add(mul(across, u), mul(along, -0.05)));
       const hit = surface.ray(from, along, reach);
       if (!hit || hit.leaving) return null;
@@ -815,9 +1107,10 @@ function wallAt(surface: RibSurface, s: Sample, out: V3, width: number, h: numbe
 
 /**
  * A run of two sections in the same frame and of the same height, as the box it is: `width` across, from `sink` under
- * the surface to the height over it, from one section to the other. Null for any other run.
+ * the surface to the height over it, from one section to the other; or, for a section that is not a plain rectangle,
+ * that section pushed from one to the other. Null for any other run.
  */
-function boxOf(rows: { s: Sample; h: number }[], sections: LoftSection[], width: number, sink: number): RibBox | null {
+function straightOf(rows: { s: Sample; h: number }[], sections: LoftSection[], width: number, sink: number): RibBox | RibExtrude | null {
   if (sections.length !== 2 || rows.length !== 2) return null;
   const [a, b] = sections as [LoftSection, LoftSection];
   if (a.turn.some((v, i) => Math.abs(v - b.turn[i]!) > 1e-6) || Math.abs(rows[0]!.h - rows[1]!.h) > 1e-6) return null;
@@ -828,17 +1121,19 @@ function boxOf(rows: { s: Sample; h: number }[], sections: LoftSection[], width:
   const w = framePose(plane).m;
   const W: V3 = [w[2], w[5], w[8]];
   if (!(length > 1e-3) || dot(unit(along), W) < 1 - 1e-9) return null;
-  const sq = a.profile!.every((p, i) => Math.abs(p[0] - [-width / 2, width / 2, width / 2, -width / 2][i]!) < 1e-6);
-  if (!sq) return null;
+  if (!isRect(a.profile as P2[], width)) {
+    return { kind: "extrude", op: "fuse", origin: [...a.origin] as V3, turn: [...a.turn] as V3, profile: a.profile!.map((p): P2 => [p[0], p[1]]), depth: r6(length) };
+  }
   const spec = planePrimitive({ primitive: "box", origin: [-width / 2, -sink, 0], size: [width, rows[0]!.h + sink, length], radius: 0, height: 0, turn: [0, 0, 0] }, plane);
   return { kind: "boolean", op: "fuse", primitive: "box", origin: spec.origin.map(r6) as V3, size: spec.size.map(r6) as V3, radius: 0, height: 0, turn: spec.turn.map(r6) as V3 };
 }
 
 /**
- * The loft sections of one run: each a rectangle `width` across, from `sink` under the surface to its height over it,
- * in the plane that mitres the stretches either side, so the ruled loft follows the turn without pinching.
+ * The loft sections of one run: each its profile's section at its height (a rectangle `width` across for a straight
+ * rib), from `sink` under the surface to its height over it, in the plane that mitres the stretches either side, so
+ * the ruled loft follows the turn without pinching.
  */
-function sectionsOf(rows: { s: Sample; h: number }[], width: number, sink: number): LoftSection[] | { reason: string } {
+function sectionsOf(rows: { s: Sample; h: number }[], shape: RibShape): LoftSection[] | { reason: string } {
   const frames: { t: V3; n: V3; b: V3 }[] = [];
   for (let k = 1; k < rows.length; k += 1) {
     const f = segFrame(rows[k - 1]!.s, rows[k]!.s);
@@ -866,7 +1161,7 @@ function sectionsOf(rows: { s: Sample; h: number }[], width: number, sink: numbe
     out.push({
       origin: rows[k]!.s.p.map(r6) as V3,
       turn: [r6(turn.rx), r6(turn.ry), r6(turn.rz)],
-      profile: [corner(-width / 2, -sink), corner(width / 2, -sink), corner(width / 2, h), corner(-width / 2, h)],
+      profile: shape.section(h).map(([u, v]) => corner(u, v)),
     });
   }
   return out;
@@ -920,7 +1215,13 @@ function boundsOf(pos: ArrayLike<number>): { min: V3; max: V3 } {
  */
 export function ribNetReport(plan: RibNetPlan, addedMm3: number | null, missed: readonly number[]): Record<string, unknown> {
   const built = plan.runs - missed.length;
-  const parts = [`${built} run${built === 1 ? "" : "s"} built from ${plan.paths} path${plan.paths === 1 ? "" : "s"}`];
+  // Runs built, by profile.
+  const profiles: Partial<Record<RibProfileKind, number>> = {};
+  plan.stepProfile.forEach((kind, i) => {
+    if (!missed.includes(i)) profiles[kind] = (profiles[kind] ?? 0) + 1;
+  });
+  const byProfile = RIB_PROFILES.filter((kind) => profiles[kind]).map((kind) => `${profiles[kind]} ${kind}`);
+  const parts = [`${built} run${built === 1 ? "" : "s"}${byProfile.length > 1 || (byProfile.length === 1 && !profiles.straight) ? ` (${byProfile.join(", ")})` : ""} built from ${plan.paths} path${plan.paths === 1 ? "" : "s"}`];
   if (addedMm3 !== null) parts.push(`adding ${Math.round(addedMm3 * 10) / 10} mm³`);
   const ends = [`${plan.ends.wall} into a wall`, `${plan.ends.joint} at a joint`, `${plan.ends.tapered} tapered to the surface`, ...(plan.ends.square ? [`${plan.ends.square} square`] : [])];
   let note = `${parts.join(", ")}. Ends: ${ends.join(", ")}.`;
@@ -930,6 +1231,7 @@ export function ribNetReport(plan: RibNetPlan, addedMm3: number | null, missed: 
   return {
     paths: plan.paths,
     runs: built,
+    profiles,
     ...(addedMm3 !== null ? { addedMm3: Math.round(addedMm3 * 1000) / 1000 } : {}),
     ends: plan.ends,
     ...(plan.shortened.length ? { shortened: plan.shortened.slice(0, 50) } : {}),
