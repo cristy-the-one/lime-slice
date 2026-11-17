@@ -14,7 +14,8 @@ use super::select::{network_volume, DRib};
 use super::surface::Surface;
 use super::trace::{simplify, Family};
 use super::{
-    edge_caps, remap_cases, resolve_holds, GridBaseline, Holds, RibRules, ThickeningBaseline,
+    edge_caps, remap_cases, resolve_holds, GridBaseline, Holds, PlanStage, Reporter, RibRules,
+    ThickeningBaseline,
 };
 
 /// The even added thickness at which the bare wall's compliance is
@@ -27,7 +28,8 @@ pub(crate) fn thickening(
     cases: &[LoadCase],
     c0: f64,
     target: f64,
-) -> Result<ThickeningBaseline, SimError> {
+    rep: &Reporter,
+) -> Result<Option<ThickeningBaseline>, SimError> {
     let area: f64 = mesh
         .triangles
         .iter()
@@ -37,21 +39,26 @@ pub(crate) fn thickening(
         })
         .sum();
     if target >= c0 {
-        return Ok(ThickeningBaseline {
+        return Ok(Some(ThickeningBaseline {
             added_thickness_mm: 0.0,
             added_volume_mm3: 0.0,
             compliance: c0,
             solves: 0,
-        });
+        }));
     }
     let mean_t = mesh.thickness.iter().sum::<f64>() / mesh.thickness.len() as f64;
     let mut solves = 0;
     let mut f = |dt: f64| -> Result<f64, SimError> {
+        if rep.cancelled() {
+            return Err(SimError::new(CANCELLED));
+        }
+        rep.stage(PlanStage::Baselines, solves as f64 / 30.0);
         let mut m = mesh.clone();
         for t in &mut m.thickness {
             *t += dt;
         }
         let mut model = ShellModel::new(m, material, holds, ShellOptions::default())?;
+        model.set_threads(1);
         let r = model.solve_cases(cases)?;
         solves += 1;
         Ok(r.iter().map(|x| x.compliance).sum::<f64>())
@@ -60,54 +67,65 @@ pub(crate) fn thickening(
     let (mut lo, mut glo) = (0.0, g(c0));
     // Plate bending: compliance goes as t⁻³.
     let mut hi = mean_t * ((c0 / target).powf(1.0 / 3.0) - 1.0);
-    let mut chi = f(hi)?;
-    let mut ghi = g(chi);
-    let mut grow = 0;
-    while ghi > 0.0 && grow < 8 {
-        lo = hi;
-        glo = ghi;
-        hi *= 2.0;
-        chi = f(hi)?;
-        ghi = g(chi);
-        grow += 1;
-    }
-    let mut side = 0;
-    for _ in 0..12 {
-        if ghi.abs() < 2e-3 {
-            break;
+    let found = (|| -> Result<(f64, f64, f64, f64, f64), SimError> {
+        let mut chi = f(hi)?;
+        let mut ghi = g(chi);
+        let mut grow = 0;
+        while ghi > 0.0 && grow < 8 {
+            lo = hi;
+            glo = ghi;
+            hi *= 2.0;
+            chi = f(hi)?;
+            ghi = g(chi);
+            grow += 1;
         }
-        let x = hi - ghi * (hi - lo) / (ghi - glo);
-        let cx = f(x)?;
-        let gx = g(cx);
-        if gx > 0.0 {
-            lo = x;
-            glo = gx;
-            if side == -1 {
-                ghi *= 0.5;
+        let mut side = 0;
+        for _ in 0..12 {
+            if ghi.abs() < 2e-3 {
+                break;
             }
-            side = -1;
-        } else {
-            hi = x;
-            ghi = gx;
-            chi = cx;
-            if side == 1 {
-                glo *= 0.5;
+            let x = hi - ghi * (hi - lo) / (ghi - glo);
+            let cx = f(x)?;
+            let gx = g(cx);
+            if gx > 0.0 {
+                lo = x;
+                glo = gx;
+                if side == -1 {
+                    ghi *= 0.5;
+                }
+                side = -1;
+            } else {
+                hi = x;
+                ghi = gx;
+                chi = cx;
+                if side == 1 {
+                    glo *= 0.5;
+                }
+                side = 1;
             }
-            side = 1;
         }
-    }
+        Ok((lo, glo, hi, ghi, chi))
+    })();
+    let (lo, glo, hi, ghi, chi) = match found {
+        Ok(x) => x,
+        Err(e) if e.message == CANCELLED => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let dt = if (glo - ghi).abs() > 0.0 && ghi.abs() >= 2e-3 {
         hi - ghi * (hi - lo) / (ghi - glo)
     } else {
         hi
     };
-    Ok(ThickeningBaseline {
+    Ok(Some(ThickeningBaseline {
         added_thickness_mm: dt,
         added_volume_mm3: dt * area,
         compliance: chi,
         solves,
-    })
+    }))
 }
+
+/// The private message a cancelled baseline unwinds with.
+const CANCELLED: &str = "\u{0}cancelled";
 
 pub(crate) struct GridInput<'a> {
     pub surface: &'a Surface,
@@ -120,6 +138,7 @@ pub(crate) struct GridInput<'a> {
     pub cases: &'a [LoadCase],
     pub target: f64,
     pub tolerance: f64,
+    pub rep: &'a Reporter<'a>,
 }
 
 struct GridEval {
@@ -132,7 +151,15 @@ struct GridEval {
 /// bisection in log pitch between `min_spacing` and the longer extent;
 /// line counts are `round(extent / pitch)` per axis, lines at the centres
 /// of equal bands.
-pub(crate) fn grid(input: &GridInput) -> Result<GridBaseline, SimError> {
+pub(crate) fn grid(input: &GridInput) -> Result<Option<GridBaseline>, SimError> {
+    match grid_search(input) {
+        Ok(g) => Ok(Some(g)),
+        Err(e) if e.message == CANCELLED => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn grid_search(input: &GridInput) -> Result<GridBaseline, SimError> {
     let s = input.surface;
     let mut lo = [f64::INFINITY; 3];
     let mut hi = [f64::NEG_INFINITY; 3];
@@ -153,6 +180,12 @@ pub(crate) fn grid(input: &GridInput) -> Result<GridBaseline, SimError> {
         if let Some(e) = cache.get(&lines) {
             return Ok((lines, e.volume, e.compliance));
         }
+        if input.rep.cancelled() {
+            return Err(SimError::new(CANCELLED));
+        }
+        input
+            .rep
+            .stage(PlanStage::Baselines, 0.3 + *solves as f64 / 25.0);
         let (volume, compliance) = grid_design(input, axes, lo, ext, lines)?;
         *solves += 1;
         cache.insert(
@@ -270,6 +303,7 @@ fn grid_design(
     let holds = resolve_holds(&s, input.holds);
     let cases = remap_cases(&s, input.cases, input.surface.tris.len());
     let mut model = ShellModel::new(mesh, input.material, &holds, ShellOptions::default())?;
+    model.set_threads(1);
     let ribs = design.iter().flat_map(|d| d.solver_ribs(r.side)).collect();
     model.set_ribs(ribs)?;
     let res = model.solve_cases(&cases)?;

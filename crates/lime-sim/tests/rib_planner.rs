@@ -589,6 +589,7 @@ fn the_shortlist_finds_the_same_ribs_as_exhaustive_scoring() {
     req.rules.min_spacing = 10.0;
     req.goal = Goal::Stiffer(2.5);
     req.options.baselines = false;
+    req.options.shortlist = 4;
     let short = plan_ribs(&req).unwrap();
     req.options.shortlist = 0;
     let all = plan_ribs(&req).unwrap();
@@ -712,38 +713,304 @@ fn plans_are_deterministic() {
     assert!((a.ribbed.compliance - b.ribbed.compliance).abs() <= 1e-12 * a.ribbed.compliance);
 }
 
-/// Time and solves for the 600 × 120 panel at about 5k and 20k triangles.
+/// Cancel after the third rib: the plan comes back at once with exactly
+/// those three ribs, marked stopped, and numbers that agree with a fresh
+/// solve of them; progress never goes back, and each rib was announced
+/// with its polyline as it was chosen.
+#[test]
+fn cancel_returns_the_ribs_so_far_and_progress_only_grows() {
+    use lime_sim::shell::planner::{plan_ribs_with, PlanControl, PlanEvent, RibChange};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    let mut req = panel_request(300.0, 120.0, [60, 24]);
+    req.goal = Goal::Stiffer(1000.0);
+    let cancel = AtomicBool::new(false);
+    let log: Mutex<Vec<PlanEvent>> = Mutex::new(Vec::new());
+    let sink = |e: &PlanEvent| {
+        let mut l = log.lock().unwrap();
+        l.push(e.clone());
+        let added = l
+            .iter()
+            .filter(|e| matches!(e, PlanEvent::Rib(r) if r.change == RibChange::Added))
+            .count();
+        if added >= 3 {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    };
+    let plan = plan_ribs_with(
+        &req,
+        PlanControl {
+            progress: Some(&sink),
+            cancel: Some(&cancel),
+        },
+    )
+    .unwrap();
+    let log = log.into_inner().unwrap();
+    report("cancelled after 3 ribs", &plan);
+    assert!(plan.stopped_early);
+    assert_eq!(plan.ribs.len(), 3);
+    assert!(plan.thickening.is_none() && plan.grid.is_none());
+    // Fractions never go back.
+    let mut last = 0.0;
+    for e in &log {
+        let f = match e {
+            PlanEvent::Stage { fraction, .. } => *fraction,
+            PlanEvent::Rib(r) => r.fraction,
+        };
+        assert!(f >= last, "{f} after {last}");
+        assert!((0.0..=1.0).contains(&f));
+        last = f;
+    }
+    // The rib events carry what was chosen, in order.
+    let added: Vec<_> = log
+        .iter()
+        .filter_map(|e| match e {
+            PlanEvent::Rib(r) if r.change == RibChange::Added => Some(r.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(added.len(), 3);
+    for (ev, rib) in added.iter().zip(&plan.ribs) {
+        assert_eq!(ev.points, rib.points);
+        assert_eq!(ev.heights, rib.heights);
+    }
+    let last_rib = added.last().unwrap();
+    assert_eq!(last_rib.ribs, 3);
+    assert!((last_rib.compliance - plan.ribbed.compliance).abs() <= 1e-12 * plan.ribbed.compliance);
+    assert!((last_rib.rib_volume_mm3 - plan.rib_volume_mm3).abs() < 1e-9);
+    // The numbers agree with a fresh solve of the three ribs.
+    let holds: Vec<ShellHold> = boundary_vertices(&plan.mesh)
+        .into_iter()
+        .map(ShellHold::clamped)
+        .collect();
+    let mut model = ShellModel::new(
+        plan.mesh.clone(),
+        material(E, NU),
+        &holds,
+        ShellOptions::default(),
+    )
+    .unwrap();
+    let ribs: Vec<Rib> = plan
+        .ribs
+        .iter()
+        .map(|r| Rib {
+            edges: chain_edges(&r.vertices),
+            width: r.width,
+            height: r.height,
+            side: r.side,
+        })
+        .collect();
+    let bare = model
+        .solve(&pressure(model.mesh(), 0.001))
+        .unwrap()
+        .compliance;
+    model.set_ribs(ribs.clone()).unwrap();
+    let ribbed = model
+        .solve(&pressure(model.mesh(), 0.001))
+        .unwrap()
+        .compliance;
+    assert!(
+        (ribbed - plan.ribbed.compliance).abs() < 1e-9 * ribbed,
+        "{ribbed} vs {}",
+        plan.ribbed.compliance
+    );
+    assert!((bare / ribbed - plan.stiffness_factor).abs() < 1e-9 * plan.stiffness_factor);
+    assert!(
+        (rib_network_volume(&plan.mesh, &ribs) - plan.rib_volume_mm3).abs()
+            < 1e-9 * plan.rib_volume_mm3
+    );
+}
+
+/// One thread and one model, or many of each: the same plan, bit for bit.
+#[test]
+fn the_plan_does_not_depend_on_threads() {
+    let mut req = panel_request(200.0, 80.0, [40, 16]);
+    req.goal = Goal::Stiffer(2.5);
+    let run = |threads: usize, workers: usize| {
+        let mut r = req.clone();
+        r.options.workers = workers;
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| plan_ribs(&r).unwrap())
+    };
+    let one = run(1, 1);
+    let many = run(12, 6);
+    report("1 thread, 1 model", &one);
+    report("12 threads, 6 models", &many);
+    assert_eq!(one.ribs.len(), many.ribs.len());
+    for (a, b) in one.ribs.iter().zip(&many.ribs) {
+        assert_eq!(a.vertices, b.vertices);
+        assert_eq!(a.heights, b.heights);
+    }
+    assert_eq!(
+        one.ribbed.compliance.to_bits(),
+        many.ribbed.compliance.to_bits()
+    );
+    assert_eq!(one.rib_volume_mm3.to_bits(), many.rib_volume_mm3.to_bits());
+    let (ta, tb) = (one.thickening.unwrap(), many.thickening.unwrap());
+    assert_eq!(ta.added_volume_mm3.to_bits(), tb.added_volume_mm3.to_bits());
+}
+
+/// Time and solves for the 600 × 120 panel at about 5k and 20k triangles,
+/// by arrangement: models side by side and candidates solved per round.
 /// Measure in release:
-/// `cargo test -p lime-sim --release --test rib_planner -- --ignored --nocapture`
+/// `cargo test -p lime-sim --release --test rib_planner planning_time -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn planning_time_by_triangle_count() {
-    eprintln!("| triangles | cut in | candidates | ribs | factor | plan solves | baseline solves | bare s | field s | trace s | embed s | select s | connect s | prune s | size s | solver s | baselines s | total s |");
+    eprintln!("| triangles | cut in | models | shortlist | candidates | ribs | factor | rib mm³ | plan solves | baseline solves | bare s | trace+embed s | select s | connect s | prune s | size s | solver s | baselines s | total s |");
     for div in [[100, 25], [200, 50]] {
-        let mut req = panel_request(600.0, 120.0, div);
-        req.goal = Goal::Stiffer(3.0);
-        let p = plan_ribs(&req).unwrap();
-        let s = p.stats.seconds;
+        // Also measured once: shortlist 16 took 29.1 s and every candidate
+        // (858 solves) 83.8 s at 20k, for the same plan.
+        for (workers, shortlist) in [(1usize, 4usize), (8, 4), (8, 8)] {
+            let mut req = panel_request(600.0, 120.0, div);
+            req.goal = Goal::Stiffer(3.0);
+            req.options.workers = workers;
+            req.options.shortlist = shortlist;
+            let p = plan_ribs(&req).unwrap();
+            let s = p.stats.seconds;
+            eprintln!(
+                "| {} | {} | {workers} | {} | {} | {} | {:.2} | {:.0} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
+                p.stats.input_triangles,
+                p.stats.embedded_triangles,
+                if shortlist == 0 { "all".to_string() } else { shortlist.to_string() },
+                p.stats.embedded_candidates,
+                p.ribs.len(),
+                p.stiffness_factor,
+                p.rib_volume_mm3,
+                p.stats.solves,
+                p.stats.baseline_solves,
+                s.bare,
+                s.trace + s.embed,
+                s.select,
+                s.connect,
+                s.prune,
+                s.size,
+                s.solver,
+                s.baselines,
+                s.total
+            );
+        }
+    }
+}
+/// What exact scoring costs, to choose between a fresh factor per
+/// candidate and a low-rank (Woodbury) update of the current factor, and
+/// how to spread candidate factorisations over the cores. Measure in
+/// release:
+/// `cargo test -p lime-sim --release --test rib_planner scoring_cost -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn scoring_cost_and_thread_arrangement() {
+    use std::time::Instant;
+    // The planner's cut-in meshes of the 600 × 120 panel come to about
+    // 15k and 39k triangles; regular meshes of that size stand in.
+    for div in [[175usize, 43usize], [280, 70]] {
+        let mesh = ShellMesh::rectangle([600.0, 120.0], div, 2.0);
+        let tris = mesh.triangles.len();
+        let holds: Vec<ShellHold> = boundary_vertices(&mesh)
+            .into_iter()
+            .map(ShellHold::clamped)
+            .collect();
+        let row = |j: usize| -> Vec<u32> {
+            (0..=div[0])
+                .map(|i| (i + (div[0] + 1) * j) as u32)
+                .collect()
+        };
+        let col = |i: usize| -> Vec<u32> {
+            (0..=div[1])
+                .map(|j| (i + (div[0] + 1) * j) as u32)
+                .collect()
+        };
+        let rib = |chain: Vec<u32>| Rib {
+            edges: chain_edges(&chain),
+            width: 1.2,
+            height: 6.0,
+            side: RibSide::Positive,
+        };
+        let make = || {
+            ShellModel::new(
+                mesh.clone(),
+                material(E, NU),
+                &holds,
+                ShellOptions::default(),
+            )
+            .unwrap()
+        };
+        let mut m = make();
+        let case = pressure(m.mesh(), 0.001);
+        m.set_ribs(vec![rib(col(div[0] / 3))]).unwrap();
+        m.solve(&case).unwrap();
+        let t = m.timings();
         eprintln!(
-            "| {} | {} | {} | {} | {:.2} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
-            p.stats.input_triangles,
-            p.stats.embedded_triangles,
-            p.stats.embedded_candidates,
-            p.ribs.len(),
-            p.stiffness_factor,
-            p.stats.solves,
-            p.stats.baseline_solves,
-            s.bare,
-            s.field,
-            s.trace,
-            s.embed,
-            s.select,
-            s.connect,
-            s.prune,
-            s.size,
-            s.solver,
-            s.baselines,
-            s.total
+            "| {tris} tris, {} free dofs | refactor: rib rebuild {:.3} s, ordering {:.3} s, factor {:.3} s, solve 1 rhs {:.4} s |",
+            m.free_dofs(), t.assemble_ribs, t.analyse, t.factor, t.solve
         );
+        // Multi-rhs solves on the same factor: Woodbury needs one column per
+        // dof the rib touches (6 per rib vertex).
+        for k in [6usize, 36, 216, 1080] {
+            let cases: Vec<Vec<ShellLoad>> = (0..k)
+                .map(|q| {
+                    vec![ShellLoad::Force {
+                        node: (q % mesh.vertices.len()) as u32,
+                        force: [0.0, 0.0, 1.0],
+                    }]
+                })
+                .collect();
+            let started = Instant::now();
+            m.solve_cases(&cases).unwrap();
+            let all = started.elapsed().as_secs_f64();
+            eprintln!(
+                "|   {k} rhs: solve {:.3} s ({:.4} s per rhs), with recovery {all:.2} s | a cross rib has {} vertices ({} dofs), a long one {} ({} dofs) |",
+                m.timings().solve,
+                m.timings().solve / k as f64,
+                div[1] + 1,
+                6 * (div[1] + 1),
+                div[0] + 1,
+                6 * (div[0] + 1),
+            );
+        }
+        // Eight candidate ribs scored by refactoring, arranged four ways.
+        let cands: Vec<Rib> = (1..=8).map(|q| rib(col(q * div[0] / 9))).collect();
+        let _ = row;
+        let started = Instant::now();
+        let mut seq = make();
+        let mut seq_c = Vec::new();
+        for r in &cands {
+            seq.set_ribs(vec![r.clone()]).unwrap();
+            seq_c.push(seq.solve(&case).unwrap().compliance);
+        }
+        let sequential = started.elapsed().as_secs_f64();
+        eprintln!("|   8 candidates, one model, factor on up to 8 threads: {sequential:.2} s |");
+        for (workers, threads) in [(8usize, 1usize), (4, 2), (2, 4), (4, 4), (8, 3)] {
+            use rayon::prelude::*;
+            let mut models: Vec<ShellModel> = (0..workers).map(|_| make()).collect();
+            for m in &mut models {
+                m.set_threads(threads);
+            }
+            let started = Instant::now();
+            let got: Vec<(usize, f64)> = models
+                .par_iter_mut()
+                .enumerate()
+                .flat_map_iter(|(w, m)| {
+                    let mut out = Vec::new();
+                    for (q, r) in cands.iter().enumerate().filter(|(q, _)| q % workers == w) {
+                        m.set_ribs(vec![r.clone()]).unwrap();
+                        out.push((q, m.solve(&case).unwrap().compliance));
+                    }
+                    out
+                })
+                .collect();
+            let wall = started.elapsed().as_secs_f64();
+            let worst = got
+                .iter()
+                .map(|(q, c)| ((c - seq_c[*q]) / seq_c[*q]).abs())
+                .fold(0.0, f64::max);
+            eprintln!(
+                "|   8 candidates, {workers} models × {threads} threads: {wall:.2} s ({:.2}× the single model), largest compliance difference {worst:.1e} |",
+                sequential / wall
+            );
+        }
     }
 }

@@ -14,10 +14,26 @@
 //! the one-spring saturation `C g / (C + g)` (exact for a single dof)
 //! keeps stiff ribs from being over-promised. The best
 //! [`super::PlannerOptions::shortlist`] by estimate per volume are solved
-//! exactly and the best of those is added.
+//! exactly, side by side on the [`Evaluator`]'s models, and the best of
+//! those is added.
+//!
+//! **Why a fresh factor per candidate, not a low-rank update.** Adding a
+//! rib changes the stiffness only on its own dofs, so its exact gain could
+//! come from the current factor by Sherman–Morrison–Woodbury (the web
+//! rotations as a bordered block): `ΔC = u_Sᵀ S (I + G S)⁻¹ u_S` with
+//! `G = K⁻¹` on the rib's dofs. But `G` needs one solve per dof the rib
+//! touches, six per rib vertex, and the rib's condensed stiffness is of
+//! full rank on them. Measured (`scoring_cost_and_thread_arrangement`,
+//! release): at 39k triangles a refactor costs 0.76 s and one right-hand
+//! side 0.035 s alone or 0.013 s in a batch of 216; a cross candidate
+//! touches 426 dofs (≈ 4.5 s of solves) and a long one 1686 (≈ 11 s). The
+//! update wins only for ribs under about 7–16 vertices, shorter than any
+//! candidate. Eight refactors side by side, one thread each, cost 0.64 s.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 use crate::error::SimError;
 use crate::shell::{LoadCase, Rib, RibSide, ShellModel, ShellResult};
@@ -25,7 +41,7 @@ use crate::units::{cross, norm, normalize, sub};
 
 use super::profile::RibProfile;
 use super::trace::Family;
-use super::{Goal, BALANCED_FLOOR, TARGET_FLOOR};
+use super::{Goal, PlanStage, Reporter, RibChange, BALANCED_FLOOR, TARGET_FLOOR};
 
 /// A candidate cut into the mesh.
 #[derive(Clone, Debug)]
@@ -123,18 +139,66 @@ pub(crate) struct Eval {
     pub results: Vec<ShellResult>,
 }
 
+/// Solves designs on the cut mesh, several at once.
+///
+/// One model per worker, each factoring on a single thread. Measured on
+/// a 24-core machine (`scoring_cost_and_thread_arrangement`, 39k
+/// triangles): eight candidates took 5.34 s one after another on one
+/// model factoring on 8 threads, and 0.64 s on eight single-threaded
+/// models side by side; 4 × 2 threads took 1.16 s and 2 × 4 took 2.00 s.
+/// A sparse factor this size gains little from threads of its own, so the
+/// cores are better spent on candidates.
+///
+/// Every model is the same and factors on one thread, so a design's
+/// answer is bit for bit the same whichever model, worker count or thread
+/// pool solves it.
 pub(crate) struct Evaluator {
-    pub model: ShellModel,
+    pub models: Vec<ShellModel>,
     pub cases: Vec<LoadCase>,
     pub side: RibSide,
     pub solves: usize,
     pub seconds: f64,
 }
 
+fn evaluate(
+    model: &mut ShellModel,
+    cases: &[LoadCase],
+    side: RibSide,
+    design: &[DRib],
+) -> Result<Eval, SimError> {
+    let mut ribs: Vec<Rib> = Vec::new();
+    let mut owner: Vec<usize> = Vec::new();
+    for (i, d) in design.iter().enumerate() {
+        for r in d.solver_ribs(side) {
+            ribs.push(r);
+            owner.push(i);
+        }
+    }
+    model.set_ribs(ribs)?;
+    let results = model.solve_cases(cases)?;
+    let mut rib_energy = vec![0.0; design.len()];
+    for r in &results {
+        for (k, e) in r.rib_energy.iter().enumerate() {
+            rib_energy[owner[k]] += e;
+        }
+    }
+    Ok(Eval {
+        compliance: results.iter().map(|r| r.compliance).sum(),
+        max_deflection: results.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
+        strain_energy: results.iter().map(|r| r.strain_energy).sum(),
+        rib_energy,
+        results,
+    })
+}
+
 impl Evaluator {
-    pub fn new(model: ShellModel, cases: Vec<LoadCase>, side: RibSide) -> Self {
+    /// `models` must all be the same shell; each is set to one thread.
+    pub fn new(mut models: Vec<ShellModel>, cases: Vec<LoadCase>, side: RibSide) -> Self {
+        for m in &mut models {
+            m.set_threads(1);
+        }
         Self {
-            model,
+            models,
             cases,
             side,
             solves: 0,
@@ -142,44 +206,49 @@ impl Evaluator {
         }
     }
 
+    pub fn workers(&self) -> usize {
+        self.models.len()
+    }
+
     pub fn eval(&mut self, design: &[DRib]) -> Result<Eval, SimError> {
+        let mut all = self.eval_many(&[design.to_vec()])?;
+        Ok(all.remove(0))
+    }
+
+    /// Solve every design, spread over the models; answers in order.
+    pub fn eval_many(&mut self, designs: &[Vec<DRib>]) -> Result<Vec<Eval>, SimError> {
         let started = Instant::now();
-        let mut ribs: Vec<Rib> = Vec::new();
-        let mut owner: Vec<usize> = Vec::new();
-        for (i, d) in design.iter().enumerate() {
-            for r in d.solver_ribs(self.side) {
-                ribs.push(r);
-                owner.push(i);
-            }
-        }
-        self.model.set_ribs(ribs)?;
-        let results = self.model.solve_cases(&self.cases)?;
-        self.solves += 1;
+        let w = self.models.len();
+        let (cases, side) = (&self.cases, self.side);
+        let mut out: Vec<(usize, Result<Eval, SimError>)> = self
+            .models
+            .par_iter_mut()
+            .enumerate()
+            .flat_map_iter(|(k, m)| {
+                designs
+                    .iter()
+                    .enumerate()
+                    .filter(|(q, _)| q % w == k)
+                    .map(|(q, d)| (q, evaluate(m, cases, side, d)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        out.sort_by_key(|x| x.0);
+        self.solves += designs.len();
         self.seconds += started.elapsed().as_secs_f64();
-        let mut rib_energy = vec![0.0; design.len()];
-        for r in &results {
-            for (k, e) in r.rib_energy.iter().enumerate() {
-                rib_energy[owner[k]] += e;
-            }
-        }
-        Ok(Eval {
-            compliance: results.iter().map(|r| r.compliance).sum(),
-            max_deflection: results.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
-            strain_energy: results.iter().map(|r| r.strain_energy).sum(),
-            rib_energy,
-            results,
-        })
+        out.into_iter().map(|x| x.1).collect()
     }
 
     /// The first-order compliance drop of adding rib `d` to the design
     /// `at` was solved for.
     fn estimate(&self, d: &DRib, at: &Eval) -> Result<f64, SimError> {
         let ribs = d.solver_ribs(self.side);
+        let model = &self.models[0];
         let mut drop = 0.0;
         for r in &at.results {
             let mut u = 0.0;
             for rib in &ribs {
-                u += self.model.probe_rib_energy(rib, r)?;
+                u += model.probe_rib_energy(rib, r)?;
             }
             let g = 2.0 * u;
             let c = r.compliance.abs();
@@ -253,6 +322,8 @@ pub(crate) struct Outcome {
     pub bare: Eval,
     pub current: Eval,
     pub goal_met: bool,
+    /// Cancelled: the design is the best valid one when it stopped.
+    pub stopped: bool,
     /// Seconds in selection, connection, pruning, sizing.
     pub seconds: [f64; 4],
 }
@@ -272,7 +343,32 @@ fn floor_share(goal: Goal) -> f64 {
     }
 }
 
-pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<Outcome, SimError> {
+/// How far toward the goal, 0 to 1, for the progress bar.
+fn goal_progress(goal: Goal, bare: &Eval, cur: &Eval, volume: f64, eff: Option<(f64, f64)>) -> f64 {
+    let g = match goal {
+        Goal::Stiffer(f) if f > 1.0 => (bare.compliance / cur.compliance).ln() / f.ln(),
+        Goal::MaxDeflection(d) if bare.max_deflection > d => {
+            (bare.max_deflection / cur.max_deflection).ln() / (bare.max_deflection / d).ln()
+        }
+        Goal::Budget { volume_mm3 } if volume_mm3 > 0.0 => volume / volume_mm3,
+        Goal::Balanced => eff.map_or(0.0, |(last, first)| {
+            (1.0 - last / first) / (1.0 - BALANCED_FLOOR)
+        }),
+        _ => 1.0,
+    };
+    if g.is_finite() {
+        g.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn run(
+    ev: &mut Evaluator,
+    ctx: &Ctx,
+    cands: &[CandChain],
+    rep: &Reporter,
+) -> Result<Outcome, SimError> {
     let bare = ev.eval(&[])?;
     let c0 = bare.compliance;
     let mut cur = bare.clone();
@@ -280,11 +376,33 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
     let mut used = vec![false; cands.len()];
     let mut first_eff: Option<f64> = None;
     let mut seconds = [0.0; 4];
+    let mut stopped = false;
+    let workers = ev.workers().max(1);
+    let finish = |design: Vec<DRib>, cur: Eval, stopped: bool, seconds: [f64; 4]| {
+        let met = match ctx.goal {
+            Goal::Budget { volume_mm3 } => network_volume(&ctx.pos, &design) <= volume_mm3,
+            Goal::Balanced => !stopped,
+            g => goal_met(g, c0, &cur),
+        };
+        Outcome {
+            design,
+            bare: bare.clone(),
+            current: cur,
+            goal_met: met,
+            stopped,
+            seconds,
+        }
+    };
 
     // Greedy growth.
     let t = Instant::now();
+    rep.stage(PlanStage::Select, 0.0);
     if !goal_met(ctx.goal, c0, &cur) {
         loop {
+            if rep.cancelled() {
+                stopped = true;
+                break;
+            }
             let base_volume = network_volume(&ctx.pos, &design);
             let mut pool: Vec<(f64, usize, f64)> = Vec::new();
             for (i, c) in cands.iter().enumerate() {
@@ -313,10 +431,17 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
             } else {
                 ctx.shortlist.min(pool.len())
             };
+            let trials: Vec<Vec<DRib>> = pool[..k]
+                .iter()
+                .map(|&(_, i, _)| with(&design, &cands[i], i, ctx))
+                .collect();
+            let evals = ev.eval_many(&trials)?;
+            if rep.cancelled() {
+                stopped = true;
+                break;
+            }
             let mut best: Option<(f64, usize, Eval)> = None;
-            for &(_, i, dv) in &pool[..k] {
-                let trial = with(&design, &cands[i], i, ctx);
-                let e = ev.eval(&trial)?;
+            for (&(_, i, dv), e) in pool[..k].iter().zip(evals) {
                 let eff = (cur.compliance - e.compliance) / dv;
                 let better = match &best {
                     None => true,
@@ -339,17 +464,36 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
             design.push(rib);
             used[i] = true;
             cur = e;
+            let volume = network_volume(&ctx.pos, &design);
+            rep.stage(
+                PlanStage::Select,
+                goal_progress(ctx.goal, &bare, &cur, volume, Some((eff, first))),
+            );
+            rep.rib(
+                RibChange::Added,
+                design.last(),
+                i,
+                &ctx.pos,
+                &design,
+                &cur,
+                c0,
+            );
             if goal_met(ctx.goal, c0, &cur) {
                 break;
             }
         }
     }
     seconds[0] = t.elapsed().as_secs_f64();
+    if stopped {
+        return Ok(finish(design, cur, true, seconds));
+    }
     let floor = first_eff.map_or(0.0, |f| floor_share(ctx.goal) * f);
 
     // Loose ends: extend along the stub to the boundary, a hold or a rib.
     let t = Instant::now();
-    for i in 0..design.len() {
+    rep.stage(PlanStage::Connect, 0.0);
+    'ends: for i in 0..design.len() {
+        rep.stage(PlanStage::Connect, i as f64 / design.len() as f64);
         for end in 0..2 {
             let chain = &design[i].chain;
             let v = if end == 0 {
@@ -398,13 +542,30 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
             trial[i].chain = new_chain;
             trial[i].caps = new_caps;
             let dv = network_volume(&ctx.pos, &trial) - network_volume(&ctx.pos, &design);
+            if rep.cancelled() {
+                stopped = true;
+                break 'ends;
+            }
             let e = ev.eval(&trial)?;
             let dc = cur.compliance - e.compliance;
             if dc > 0.0 && (dv <= 0.0 || dc / dv >= floor) {
                 design = trial;
                 cur = e;
+                rep.rib(
+                    RibChange::Changed,
+                    Some(&design[i]),
+                    design[i].id,
+                    &ctx.pos,
+                    &design,
+                    &cur,
+                    c0,
+                );
             }
         }
+    }
+    if stopped {
+        seconds[1] = t.elapsed().as_secs_f64();
+        return Ok(finish(design, cur, true, seconds));
     }
     // Join ribs that meet end to end nearly straight.
     let mut joined = false;
@@ -415,7 +576,16 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
                     design[i].chain = chain;
                     design[i].caps = caps;
                     design[i].gain += design[j].gain;
-                    design.remove(j);
+                    let gone = design.remove(j);
+                    rep.rib(
+                        RibChange::Removed,
+                        None,
+                        gone.id,
+                        &ctx.pos,
+                        &design,
+                        &cur,
+                        c0,
+                    );
                     joined = true;
                     continue 'outer;
                 }
@@ -425,11 +595,27 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
     }
     if joined {
         cur = ev.eval(&design)?;
+        for d in &design {
+            rep.rib(
+                RibChange::Changed,
+                Some(d),
+                d.id,
+                &ctx.pos,
+                &design,
+                &cur,
+                c0,
+            );
+        }
     }
     seconds[1] = t.elapsed().as_secs_f64();
 
-    // Prune, weakest first by energy per volume.
+    // Prune, weakest first by energy per volume. Removals are tried in
+    // batches of one per worker, each against the current design; the
+    // first that is taken changes the design, and the rest of its batch
+    // is tried again against the new one, so the outcome is the same as
+    // trying them one by one.
     let t = Instant::now();
+    rep.stage(PlanStage::Prune, 0.0);
     if !design.is_empty() {
         let mut order: Vec<(f64, usize)> = design
             .iter()
@@ -437,42 +623,69 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
             .map(|(i, d)| (cur.rib_energy[i] / d.volume(&ctx.pos), d.id))
             .collect();
         order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        for (_, id) in order {
-            let Some(idx) = design.iter().position(|d| d.id == id) else {
-                continue;
-            };
-            let mut trial = design.clone();
-            trial.remove(idx);
-            let e = ev.eval(&trial)?;
-            let remove = match ctx.goal {
-                Goal::Stiffer(_) | Goal::MaxDeflection(_) => goal_met(ctx.goal, c0, &e),
-                Goal::Balanced | Goal::Budget { .. } => {
-                    let dv = network_volume(&ctx.pos, &design) - network_volume(&ctx.pos, &trial);
-                    dv > 0.0 && (e.compliance - cur.compliance) / dv < floor
-                }
-            };
-            if remove {
-                design = trial;
-                cur = e;
+        let order: Vec<usize> = order.into_iter().map(|x| x.1).collect();
+        let total = order.len();
+        let mut next = 0;
+        while next < total {
+            if rep.cancelled() {
+                stopped = true;
+                break;
             }
+            let batch: Vec<usize> = order[next..(next + workers).min(total)].to_vec();
+            let trials: Vec<Vec<DRib>> = batch
+                .iter()
+                .map(|&id| design.iter().filter(|d| d.id != id).cloned().collect())
+                .collect();
+            let evals = ev.eval_many(&trials)?;
+            for ((id, trial), e) in batch.into_iter().zip(trials).zip(evals) {
+                next += 1;
+                let remove = match ctx.goal {
+                    Goal::Stiffer(_) | Goal::MaxDeflection(_) => goal_met(ctx.goal, c0, &e),
+                    Goal::Balanced | Goal::Budget { .. } => {
+                        let dv =
+                            network_volume(&ctx.pos, &design) - network_volume(&ctx.pos, &trial);
+                        dv > 0.0 && (e.compliance - cur.compliance) / dv < floor
+                    }
+                };
+                if remove {
+                    design = trial;
+                    cur = e;
+                    rep.rib(RibChange::Removed, None, id, &ctx.pos, &design, &cur, c0);
+                    break;
+                }
+            }
+            rep.stage(PlanStage::Prune, next as f64 / total as f64);
         }
     }
     seconds[2] = t.elapsed().as_secs_f64();
+    if stopped {
+        return Ok(finish(design, cur, true, seconds));
+    }
 
     // Heights: lower each rib's nominal height (edges under a lower cap
     // stay at their cap) where the goal allows, most volume saved per
     // estimated stiffness lost first. A budget plan keeps its heights
-    // (lowering only loses stiffness there).
+    // (lowering only loses stiffness there). The best few cuts are solved
+    // side by side: a refused cut freezes its rib and leaves the design as
+    // it was, so the next in the ranking is the one a one-by-one pass would
+    // try next; a taken cut changes the design and the ranking is redone.
     let t = Instant::now();
+    rep.stage(PlanStage::Size, 0.0);
     if !matches!(ctx.goal, Goal::Budget { .. }) && !design.is_empty() {
         let step = ctx.max_height / 6.0;
-        let mut frozen = vec![false; design.len()];
-        loop {
+        let mut frozen: Vec<usize> = Vec::new();
+        let budget_steps = (design.len() * 7).max(1) as f64;
+        let mut tried = 0usize;
+        'size: loop {
+            if rep.cancelled() {
+                stopped = true;
+                break;
+            }
             let volume = network_volume(&ctx.pos, &design);
-            let mut best: Option<(f64, usize, f64)> = None;
+            let mut ranked: Vec<(f64, usize, f64)> = Vec::new();
             for (i, d) in design.iter().enumerate() {
                 let top = d.tallest();
-                if frozen[i] || top <= ctx.min_height + 1e-9 {
+                if frozen.contains(&d.id) || top <= ctx.min_height + 1e-9 {
                     continue;
                 }
                 let h2 = (top - step).max(ctx.min_height);
@@ -500,43 +713,52 @@ pub(crate) fn run(ev: &mut Evaluator, ctx: &Ctx, cands: &[CandChain]) -> Result<
                 } else {
                     f64::INFINITY
                 };
-                if best.is_none_or(|b| ratio > b.0) {
-                    best = Some((ratio, i, h2));
-                }
+                ranked.push((ratio, i, h2));
             }
-            let Some((_, i, h2)) = best else { break };
-            let mut trial = design.clone();
-            trial[i].height = h2;
-            let e = ev.eval(&trial)?;
-            let accept = match ctx.goal {
-                Goal::Stiffer(_) | Goal::MaxDeflection(_) => goal_met(ctx.goal, c0, &e),
-                _ => {
-                    let dv = volume - network_volume(&ctx.pos, &trial);
-                    dv > 0.0 && (e.compliance - cur.compliance) / dv < floor
+            if ranked.is_empty() {
+                break;
+            }
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            ranked.truncate(workers);
+            let trials: Vec<Vec<DRib>> = ranked
+                .iter()
+                .map(|&(_, i, h2)| {
+                    let mut t = design.clone();
+                    t[i].height = h2;
+                    t
+                })
+                .collect();
+            let evals = ev.eval_many(&trials)?;
+            for ((&(_, i, _), trial), e) in ranked.iter().zip(trials).zip(evals) {
+                tried += 1;
+                let accept = match ctx.goal {
+                    Goal::Stiffer(_) | Goal::MaxDeflection(_) => goal_met(ctx.goal, c0, &e),
+                    _ => {
+                        let dv = volume - network_volume(&ctx.pos, &trial);
+                        dv > 0.0 && (e.compliance - cur.compliance) / dv < floor
+                    }
+                };
+                rep.stage(PlanStage::Size, tried as f64 / budget_steps);
+                if accept {
+                    design = trial;
+                    cur = e;
+                    rep.rib(
+                        RibChange::Changed,
+                        Some(&design[i]),
+                        design[i].id,
+                        &ctx.pos,
+                        &design,
+                        &cur,
+                        c0,
+                    );
+                    continue 'size;
                 }
-            };
-            if accept {
-                design = trial;
-                cur = e;
-            } else {
-                frozen[i] = true;
+                frozen.push(design[i].id);
             }
         }
     }
     seconds[3] = t.elapsed().as_secs_f64();
-
-    let met = match ctx.goal {
-        Goal::Budget { volume_mm3 } => network_volume(&ctx.pos, &design) <= volume_mm3,
-        Goal::Balanced => true,
-        g => goal_met(g, c0, &cur),
-    };
-    Ok(Outcome {
-        design,
-        bare,
-        current: cur,
-        goal_met: met,
-        seconds,
-    })
+    Ok(finish(design, cur, stopped, seconds))
 }
 
 /// The design with candidate `i` added at the greatest height.

@@ -44,7 +44,11 @@ mod select;
 mod surface;
 mod trace;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
+
+use rayon::prelude::*;
 
 use crate::error::SimError;
 use crate::units::{dot, norm, sub};
@@ -172,15 +176,22 @@ pub struct PlannerOptions {
     pub simplify_tolerance: f64,
     /// Smoothness weight of the direction field (Li et al.: 0.8).
     pub field_alpha: f64,
+    /// Shell models solving side by side, each on one thread; 0 picks the
+    /// cores, at most 8. The plan does not depend on it.
+    pub workers: usize,
     /// Compute the thickening and even-grid comparisons. The planner's
     /// report always carries them; turn off only to time the plan alone.
     pub baselines: bool,
 }
 
-/// Exactly solved candidates per round. The test
-/// `the_shortlist_finds_the_same_ribs_as_exhaustive_scoring` checks that
-/// four finds the same first ribs as solving all of them.
-pub const SHORTLIST: usize = 4;
+/// Exactly solved candidates per round: one batch for eight models. The
+/// test `the_shortlist_finds_the_same_ribs_as_exhaustive_scoring` checks
+/// that even four finds the same ribs as solving all of them, and so did
+/// the 600 × 120 panel at 20k triangles (4, 8, 16 and all gave the same
+/// 14 ribs; release wall time 16.7, 19.2, 29.1 and 83.8 s on eight
+/// models). Eight keeps a margin for walls where the estimate ranks less
+/// well, for about 15 % more time.
+pub const SHORTLIST: usize = 8;
 
 impl Default for PlannerOptions {
     fn default() -> Self {
@@ -188,6 +199,7 @@ impl Default for PlannerOptions {
             shortlist: SHORTLIST,
             simplify_tolerance: 0.2,
             field_alpha: field::ALPHA,
+            workers: 0,
             baselines: true,
         }
     }
@@ -348,14 +360,163 @@ pub struct RibPlan {
     /// The plan needs no less material than the thickening and no less
     /// than the grid (an unreached grid counts as beaten).
     pub not_better_than_baseline: bool,
+    /// Cancelled: the best valid plan when it stopped. Selection may have
+    /// been cut short, and the later passes and the baselines left out.
+    pub stopped_early: bool,
     /// The mesh the plan was solved on: the input with every candidate cut
     /// in. Rib vertices index it.
     pub mesh: ShellMesh,
     pub stats: PlanStats,
 }
 
+/// A stage of planning, in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanStage {
+    BareSolve,
+    Field,
+    Trace,
+    Embed,
+    Select,
+    Connect,
+    Prune,
+    Size,
+    Baselines,
+    Done,
+}
+
+impl PlanStage {
+    /// The share of the whole run each stage starts at and ends at, from
+    /// the measured split of a 20k-triangle plan (selection and the
+    /// solves after it are most of it).
+    fn span(self) -> (f64, f64) {
+        match self {
+            Self::BareSolve => (0.0, 0.02),
+            Self::Field => (0.02, 0.03),
+            Self::Trace => (0.03, 0.05),
+            Self::Embed => (0.05, 0.08),
+            Self::Select => (0.08, 0.65),
+            Self::Connect => (0.65, 0.68),
+            Self::Prune => (0.68, 0.78),
+            Self::Size => (0.78, 0.88),
+            Self::Baselines => (0.88, 1.0),
+            Self::Done => (1.0, 1.0),
+        }
+    }
+}
+
+/// What happened to a rib.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RibChange {
+    Added,
+    /// Extended, joined or lowered.
+    Changed,
+    Removed,
+}
+
+/// A rib as it now stands, and the design's totals after the change.
+#[derive(Clone, Debug)]
+pub struct RibEvent {
+    pub change: RibChange,
+    /// Stable for the rib through the run (its candidate's index).
+    pub id: usize,
+    /// Empty when removed.
+    pub points: Vec<[f64; 3]>,
+    /// Per stretch between points, mm.
+    pub heights: Vec<f64>,
+    pub ribs: usize,
+    pub rib_volume_mm3: f64,
+    pub compliance: f64,
+    pub stiffness_factor: f64,
+    pub fraction: f64,
+}
+
+#[derive(Clone, Debug)]
+pub enum PlanEvent {
+    /// Entering or moving through a stage; `fraction` of the whole run,
+    /// never going back.
+    Stage {
+        stage: PlanStage,
+        fraction: f64,
+    },
+    Rib(RibEvent),
+}
+
+/// Live progress and cancel for [`plan_ribs_with`]. Events come one at a
+/// time, in order, mostly on the calling thread (the two baselines run
+/// side by side and report from theirs). A channel works as a sink:
+/// `let sink = |e: &PlanEvent| { let _ = tx.send(e.clone()); };`.
+#[derive(Clone, Copy, Default)]
+pub struct PlanControl<'a> {
+    pub progress: Option<&'a (dyn Fn(&PlanEvent) + Sync)>,
+    /// Set it to stop: the run returns the best valid plan so far, marked
+    /// [`RibPlan::stopped_early`], within about one batch of solves.
+    pub cancel: Option<&'a AtomicBool>,
+}
+
+/// Sends events with a fraction that never goes back, one at a time.
+pub(crate) struct Reporter<'a> {
+    ctl: PlanControl<'a>,
+    last: Mutex<f64>,
+}
+
+impl Reporter<'_> {
+    pub fn cancelled(&self) -> bool {
+        self.ctl.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    pub fn stage(&self, stage: PlanStage, within: f64) {
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        let (a, b) = stage.span();
+        let fraction = (a + (b - a) * within.clamp(0.0, 1.0)).max(*last);
+        *last = fraction;
+        if let Some(p) = self.ctl.progress {
+            p(&PlanEvent::Stage { stage, fraction });
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn rib(
+        &self,
+        change: RibChange,
+        rib: Option<&select::DRib>,
+        id: usize,
+        pos: &[[f64; 3]],
+        design: &[select::DRib],
+        cur: &select::Eval,
+        c0: f64,
+    ) {
+        let Some(p) = self.ctl.progress else { return };
+        let last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        p(&PlanEvent::Rib(RibEvent {
+            change,
+            id,
+            points: rib.map_or_else(Vec::new, |d| {
+                d.chain.iter().map(|&v| pos[v as usize]).collect()
+            }),
+            heights: rib.map_or_else(Vec::new, select::DRib::heights),
+            ribs: design.len(),
+            rib_volume_mm3: select::network_volume(pos, design),
+            compliance: cur.compliance,
+            stiffness_factor: c0 / cur.compliance,
+            fraction: *last,
+        }));
+    }
+}
+
 /// Plan ribs on a wall.
 pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
+    plan_ribs_with(req, PlanControl::default())
+}
+
+/// Plan ribs on a wall, with live progress and a cancel flag. Once a
+/// first rib is chosen there is always a valid plan to return: a cancel
+/// gives back the design as it stood after its last complete step, never
+/// an error.
+pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibPlan, SimError> {
+    let rep = Reporter {
+        ctl: control,
+        last: Mutex::new(0.0),
+    };
     let started = Instant::now();
     check(req)?;
     let mut stats = PlanStats {
@@ -382,19 +543,55 @@ pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
         &holds0,
         ShellOptions::default(),
     )?;
+    rep.stage(PlanStage::BareSolve, 0.0);
+    // One thread, as every planning model: the answer then does not depend
+    // on the machine or the pool.
+    model0.set_threads(1);
     let bare0 = model0.solve_cases(&cases0)?;
     stats.solves += 1;
     stats.seconds.bare = t.elapsed().as_secs_f64();
+    drop(model0);
+    let early = |stats: PlanStats| {
+        let bare = Response {
+            compliance: bare0.iter().map(|r| r.compliance).sum(),
+            max_deflection: bare0.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
+        };
+        let mut stats = stats;
+        stats.seconds.total = started.elapsed().as_secs_f64();
+        rep.stage(PlanStage::Done, 1.0);
+        RibPlan {
+            ribs: Vec::new(),
+            rib_volume_mm3: 0.0,
+            bare,
+            ribbed: bare,
+            stiffness_factor: 1.0,
+            goal_met: false,
+            thickening: None,
+            grid: None,
+            not_better_than_baseline: false,
+            stopped_early: true,
+            mesh: req.mesh.clone(),
+            stats,
+        }
+    };
+    if rep.cancelled() {
+        return Ok(early(stats));
+    }
 
     // 2. The field.
     let t = Instant::now();
+    rep.stage(PlanStage::Field, 0.0);
     let field = field::Field::new(&s0, &bare0, req.options.field_alpha);
     let zones = restrictions(&s0, &req.zones, req.hole_rim_margin, rules.min_height);
     let blocked0 = zones.blocked.clone();
     stats.seconds.field = t.elapsed().as_secs_f64();
 
     // 3. Candidates and their extension stubs.
+    if rep.cancelled() {
+        return Ok(early(stats));
+    }
     let t = Instant::now();
+    rep.stage(PlanStage::Trace, 0.0);
     let extend_limit = rules.extend_limit.unwrap_or(2.0 * rules.min_spacing);
     let trace_rules = trace::TraceRules {
         spacing: rules.min_spacing,
@@ -433,7 +630,11 @@ pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
     stats.seconds.trace = t.elapsed().as_secs_f64();
 
     // 4. Cut every line into one mesh.
+    if rep.cancelled() {
+        return Ok(early(stats));
+    }
     let t = Instant::now();
+    rep.stage(PlanStage::Embed, 0.0);
     let mut s1 = s0.clone();
     let ids: Vec<Option<usize>> = candidates
         .iter()
@@ -493,14 +694,28 @@ pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
         goal: req.goal,
         shortlist: req.options.shortlist,
     };
-    let model1 = ShellModel::new(
-        mesh1.clone(),
-        req.material,
-        &holds1,
-        ShellOptions::default(),
-    )?;
-    let mut ev = select::Evaluator::new(model1, cases1.clone(), rules.side);
-    let outcome = select::run(&mut ev, &ctx, &cands)?;
+    if rep.cancelled() {
+        return Ok(early(stats));
+    }
+    let workers = match req.options.workers {
+        0 => std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(8),
+        n => n,
+    };
+    let models: Vec<ShellModel> = (0..workers)
+        .into_par_iter()
+        .map(|_| {
+            ShellModel::new(
+                mesh1.clone(),
+                req.material,
+                &holds1,
+                ShellOptions::default(),
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let mut ev = select::Evaluator::new(models, cases1.clone(), rules.side);
+    let outcome = select::run(&mut ev, &ctx, &cands, &rep)?;
     stats.solves += ev.solves;
     stats.seconds.select = outcome.seconds[0];
     stats.seconds.connect = outcome.seconds[1];
@@ -567,31 +782,48 @@ pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
 
     // 6. Baselines.
     let t = Instant::now();
-    let (thickening, grid) = if req.options.baselines && !ribs.is_empty() {
-        let th = baseline::thickening(
-            &mesh1,
-            req.material,
-            &holds1,
-            &cases1,
-            bare.compliance,
-            ribbed.compliance,
-        )?;
-        let gr = baseline::grid(&baseline::GridInput {
-            surface: &s0,
-            blocked: &blocked0,
-            tri_cap: &zones.cap,
-            rules,
-            material: req.material,
-            holds: &req.holds,
-            cases: &cases0,
-            target: ribbed.compliance,
-            tolerance: req.options.simplify_tolerance,
-        })?;
-        stats.baseline_solves = th.solves + gr.solves;
-        (Some(th), Some(gr))
-    } else {
-        (None, None)
-    };
+    let (thickening, grid) =
+        if req.options.baselines && !ribs.is_empty() && !outcome.stopped && !rep.cancelled() {
+            rep.stage(PlanStage::Baselines, 0.0);
+            let grid_input = baseline::GridInput {
+                surface: &s0,
+                blocked: &blocked0,
+                tri_cap: &zones.cap,
+                rules,
+                material: req.material,
+                holds: &req.holds,
+                cases: &cases0,
+                target: ribbed.compliance,
+                tolerance: req.options.simplify_tolerance,
+                rep: &rep,
+            };
+            // The two searches are independent: run them side by side.
+            let (th, gr) = rayon::join(
+                || {
+                    baseline::thickening(
+                        &mesh1,
+                        req.material,
+                        &holds1,
+                        &cases1,
+                        bare.compliance,
+                        ribbed.compliance,
+                        &rep,
+                    )
+                },
+                || baseline::grid(&grid_input),
+            );
+            match (th?, gr?) {
+                (Some(th), Some(gr)) => {
+                    stats.baseline_solves = th.solves + gr.solves;
+                    (Some(th), Some(gr))
+                }
+                _ => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+    let stopped_early =
+        outcome.stopped || (req.options.baselines && !ribs.is_empty() && thickening.is_none());
     stats.seconds.baselines = t.elapsed().as_secs_f64();
     let not_better = match (&thickening, &grid) {
         (Some(th), Some(gr)) => {
@@ -602,6 +834,7 @@ pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
         _ => false,
     };
     stats.seconds.total = started.elapsed().as_secs_f64();
+    rep.stage(PlanStage::Done, 1.0);
     Ok(RibPlan {
         ribs,
         rib_volume_mm3: rib_volume,
@@ -612,6 +845,7 @@ pub fn plan_ribs(req: &RibPlanRequest) -> Result<RibPlan, SimError> {
         thickening,
         grid,
         not_better_than_baseline: not_better,
+        stopped_early,
         mesh: mesh1,
         stats,
     })

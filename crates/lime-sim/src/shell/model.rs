@@ -293,6 +293,8 @@ pub struct ShellModel {
     factor: Option<Factor>,
     factorisations: usize,
     timings: Timings,
+    /// Threads for the factor and the solve; 0 is the crate default.
+    threads: usize,
 }
 
 impl ShellModel {
@@ -425,6 +427,7 @@ impl ShellModel {
             factor: None,
             factorisations: 0,
             timings: Timings::default(),
+            threads: 0,
         };
         model.assemble_shell();
         // Mesh checks, adjacency and the element loop; the ordering apart.
@@ -462,6 +465,14 @@ impl ShellModel {
 
     pub fn timings(&self) -> Timings {
         self.timings
+    }
+
+    /// Threads for the numeric factor and the solve: 0 (the default) up
+    /// to 8 by the machine, 1 for one, more for that many. Several models
+    /// solving side by side each take fewer. The answer does not depend
+    /// on it beyond rounding.
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads;
     }
 
     /// Each rib web rotation's vertex and lateral axis, in dof order: the
@@ -670,7 +681,7 @@ impl ShellModel {
             }
         }
         let factor = self.factor.as_ref().expect("factored above");
-        sparse::solve_in_place(&self.symbolic, factor, &mut rhs)?;
+        sparse::solve_in_place(&self.symbolic, factor, &mut rhs, self.threads)?;
         self.timings.solve = started.elapsed().as_secs_f64();
         let started = Instant::now();
         let mut out = Vec::with_capacity(cases.len());
@@ -729,7 +740,7 @@ impl ShellModel {
         }
         let started = Instant::now();
         let values = self.values();
-        let factor = sparse::factor(&self.pattern, &self.symbolic, &values)?;
+        let factor = sparse::factor(&self.pattern, &self.symbolic, &values, self.threads)?;
         self.factorisations += 1;
         self.factor = Some(factor);
         self.timings.factor = started.elapsed().as_secs_f64();
