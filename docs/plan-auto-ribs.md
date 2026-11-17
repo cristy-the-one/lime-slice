@@ -175,6 +175,7 @@ Deterministic: the same part and inputs give the same ribs.
 - Guards: every rib is checked against the outside by rays before it is built, and the built step is refused if the outside surface changed anywhere.
 - Usable by hand and over MCP as well, so a person or an agent can add or edit a rib path without the planner.
 - Root fillets are off in the first version (the whole-network fillet is the one operation that ran away in the probe); a fillet per rib is listed for later.
+- Profiles (built after the first version): `profile` on the network or a path picks the section, `straight`, `drafted` (draft a side, width at half height) or `tee` (a web under a flange chamfered 45° underneath so it prints standing up; Li et al. 2017 for the stiffness per material). A flared root (`rootRadius`) is a concave arc cut into chords inside the section itself, so no fillet op runs. The planner can choose among them later; `docs/mcp-server.md` has the fields.
 
 ### 7.5 Printability
 

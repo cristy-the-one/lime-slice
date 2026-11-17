@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { engineCandidates, loadEngineWorker } from "./engine.ts";
 import { Session } from "./session.ts";
 import { shellCount } from "../src/mesh-shells.ts";
+import { ribShape, type RibProfile, type RibShape } from "../src/modeling/rib-net.ts";
 
 const bridge = process.env.LIME_OCCT_BRIDGE ?? "";
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -125,7 +126,9 @@ async function network(title: string, object: string, op: Record<string, unknown
   const shift = await outsideShift(object, outside, before);
   check(`${title}: the outside is unchanged (${outside.length} rays from beyond the walls)`, shift < 0.01, `moved ${shift} mm`);
   const grew = held(object).bounds;
-  check(`${title}: the box did not grow but rib-side`, [0, 1].every((k) => grew.min[k]! >= box.min[k]! - 1e-3 && grew.max[k]! <= box.max[k]! + 1e-3) && grew.min[2] >= box.min[2] - 1e-3, JSON.stringify([box, grew]));
+  // On the cylinder panel (outside +X) the ribs stand toward -X, and a square end may reach past the panel's edges there.
+  const inward = sides?.includes("+x") ?? false;
+  check(`${title}: the box did not grow but rib-side`, [0, 1].every((k) => (grew.min[k]! >= box.min[k]! - 1e-3 || (k === 0 && inward)) && grew.max[k]! <= box.max[k]! + 1e-3) && grew.min[2] >= box.min[2] - 1e-3, JSON.stringify([box, grew]));
   check(`${title}: the reply's addedMm3 is the volume change`, Math.abs(Number(report.addedMm3) - added) < 0.01, JSON.stringify(report).slice(0, 400));
   if (expect !== null) check(`${title}: adds ${r3(added)} mm³ against ${r3(expect)} mm³ analytic (±${tol * 100} %)`, Math.abs(added - expect) <= tol * expect, `${r3(added)} vs ${r3(expect)}`);
   const after = ((await call("model_history", { object })).nodes ?? []) as unknown[];
@@ -275,8 +278,177 @@ const h = 6;
   check("and the part is as it was", JSON.stringify(held(object).fingerprint) === before);
 }
 
+// ===== Profiles: drafted and tee (with their default flared roots) on every wall, mixed, tapered, and timed. =====
+// The analytic volume is the section's area over the wall times the length; the section's area is the closed form the
+// unit test (src/modeling/rib-net.test.ts) checks the polygon against. Crossings take off ∫ w1(v)·w2(v) dv, the
+// square the two sections share at each height.
+type P2 = [number, number];
+const profiles: Record<"drafted" | "tee", (width: number, height: number) => RibProfile> = {
+  drafted: (width, height) => ({ kind: "drafted", width, draftDeg: 1, rootRadius: 0.5 * (width - height * Math.tan(Math.PI / 180)), flangeWidth: 0, flangeThickness: 0, flangeChamferDeg: 0 }),
+  tee: (width) => ({ kind: "tee", width, draftDeg: 0, rootRadius: 0.5 * width, flangeWidth: 3 * width, flangeThickness: width, flangeChamferDeg: 45 }),
+};
+const straightProfile = (width: number): RibProfile => ({ kind: "straight", width, draftDeg: 0, rootRadius: 0, flangeWidth: 0, flangeThickness: 0, flangeChamferDeg: 0 });
+const shapeOf = (profile: RibProfile, height: number): RibShape => {
+  const made = ribShape(profile, height, 0.5, 0.05);
+  if ("reason" in made) throw new Error(made.reason);
+  return made;
+};
+/** The section over the wall (v ≥ 0), clipped. */
+function overWall(poly: readonly P2[]): P2[] {
+  const out: P2[] = [];
+  for (let i = 0; i < poly.length; i += 1) {
+    const p = poly[i]!;
+    const q = poly[(i + 1) % poly.length]!;
+    if (p[1] >= 0) out.push(p);
+    if ((p[1] >= 0) !== (q[1] >= 0)) out.push([p[0] + ((q[0] - p[0]) * (0 - p[1])) / (q[1] - p[1]), 0]);
+  }
+  return out;
+}
+/** Area and first moment about v = 0 of the section over the wall. */
+function areaOver(shape: RibShape, hk: number): { area: number; moment: number } {
+  const poly = overWall(shape.section(hk));
+  let area = 0;
+  let moment = 0;
+  poly.forEach((p, i) => {
+    const q = poly[(i + 1) % poly.length]!;
+    const c = p[0] * q[1] - q[0] * p[1];
+    area += c / 2;
+    moment += ((p[1] + q[1]) * c) / 6;
+  });
+  return { area, moment };
+}
+/** ∫ over v of what two sections share where they cross square: widths at each height, multiplied. */
+function crossing(a: RibShape, b: RibShape, width: (s: RibShape, v: number) => number = (s, v) => 2 * s.halfAt(s.height, v)): number {
+  const top = Math.min(a.height, b.height);
+  const n = 4000;
+  let sum = 0;
+  for (let i = 0; i < n; i += 1) {
+    const v = ((i + 0.5) * top) / n;
+    sum += width(a, v) * width(b, v);
+  }
+  return (sum * top) / n;
+}
+/** A taper from 0 to the full height over `length`: Simpson's rule on each straight blend (exact, the area being quadratic). */
+function taperVolume(shape: RibShape, length: number): number {
+  const A = (hk: number) => areaOver(shape, hk).area;
+  const h = shape.height;
+  const hb = shape.hb;
+  const l1 = (length * hb) / h;
+  const l2 = length - l1;
+  return (l1 / 6) * (A(0) + 4 * A(hb / 2) + A(hb)) + (l2 / 6) * (A(hb) + 4 * A((hb + h) / 2) + A(h));
+}
+const timings: string[] = [];
+const checkedBoxes: { title: string; object: string }[] = [];
+for (const kind of ["drafted", "tee"] as const) {
+  const shape = shapeOf(profiles[kind](w, h), h);
+  const A = areaOver(shape, h).area;
+  console.log(`  ${kind}: section ${shape.section(h).length} corners, ${r3(A)} mm² over the wall (a plain rib ${r3(w * h)}), reach ${r3(shape.reach)} mm, hb ${r3(shape.hb)} mm`);
+  {
+    const object = await shellBox(120, 80, 30);
+    const volume = held(object).fingerprint.volumeMm3;
+    const done = await network(`${kind}: wall to wall on a flat floor`, object, { width: w, height: h, profile: kind, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] }, A * 116, 0.002);
+    check(`${kind}: the reply counts one ${kind} run`, JSON.stringify((done.ribNet as Reply | undefined)?.profiles) === JSON.stringify({ [kind]: 1 }), JSON.stringify(done.ribNet));
+    await undoes(`${kind}: wall to wall`, object, volume);
+  }
+  {
+    const object = await shellBox(120, 80, 30);
+    await network(`${kind}: two crossing ribs, wall to wall each way`, object, { width: w, height: h, profile: kind, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }, { points: [[0, -38, 2], [0, 38, 2]] }] }, A * 116 + A * 76 - crossing(shape, shape), 0.005);
+  }
+  {
+    const object = await shellBox(120, 80, 30);
+    // One loose end tapered over the height (to hb with the root and flange whole, then flat), the other into the wall.
+    await network(`${kind}: a tapered free end`, object, { width: w, height: h, profile: kind, paths: [{ points: [[20, 0, 2], [58, 0, 2]] }] }, taperVolume(shape, h) + A * (38 - h), 0.005);
+  }
+  {
+    // The cylinder panel, R 78 inside: an arc rib round it and an upright rib up it, square ends (taper 0).
+    const object = String((await call("solid_new", { primitive: "tube", radius: 80, innerRadius: 78, height: 60 })).object);
+    await call("model_apply", { object, probe: true, op: { kind: "boolean", op: "common", primitive: "box", origin: [0, -40, -1], dx: 100, dy: 80, dz: 62 } });
+    const R = 78;
+    const arcPts: V3[] = [];
+    for (let deg = -25; deg <= 25; deg += 5) arcPts.push([R * Math.cos((deg * Math.PI) / 180), R * Math.sin((deg * Math.PI) / 180), 30]);
+    const { area, moment } = areaOver(shape, h);
+    // The arc rib turns its section about the axis (Pappus); the upright one stands on a wall that rises u²/2R across it.
+    const arcVolume = ((50 * Math.PI) / 180) * (R * area - moment);
+    const upright = (area - (2 * shape.foot ** 3) / (6 * R)) * 50;
+    await network(`${kind}: a cylinder-segment shell, R 78 inside`, object, { width: w, height: h, profile: kind, taper: 0, paths: [{ points: arcPts }, { points: [[R, 0, 5], [R, 0, 55]] }] }, arcVolume + upright - crossing(shape, shape), 0.02, ["+x"]);
+  }
+  {
+    // The freeform cover (see above): ribs under its B-spline roof, 1.2 wide and 4 tall, square loose ends.
+    const object = String((await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 5 })).object);
+    const section = (x: number, top: number, half: number, low: number) => ({ origin: [x, 0, 0], turn: [0, 90, 0], profile: [[-low, -half], [-low, half], [-top, half], [-top, -half]] });
+    await call("model_apply", { object, probe: true, op: { kind: "loft", op: "fuse", sections: [[-60, 20], [-20, 32], [20, 26], [60, 22]].map(([x, top]) => section(x!, top!, 40, 0)) } });
+    await call("model_apply", { object, probe: true, op: { kind: "loft", op: "cut", sections: [[-58, 18.5], [-20, 30], [20, 24], [58, 20]].map(([x, top]) => section(x!, top!, 38, -1)) } });
+    const along = await call("surface_at", { object, rays: Array.from({ length: 23 }, (_, i) => ({ point: [-55 + i * 5, 0, 1], direction: [0, 0, 1] })) });
+    const across = await call("surface_at", { object, rays: Array.from({ length: 16 }, (_, i) => ({ point: [10, -37.5 + i * 5, 1], direction: [0, 0, 1] })) });
+    const pts = (reply: Reply) => ((reply.hits ?? []) as Reply[]).filter((hit) => hit.hit === true).map((hit) => hit.point as V3);
+    const a = pts(along);
+    const b = [[10, -38, pts(across)[0]![2]] as V3, ...pts(across), [10, 38, pts(across).at(-1)![2]] as V3];
+    const arcLength = (list: V3[]) => list.slice(1).reduce((sum, p, i) => sum + Math.hypot(p[0] - list[i]![0], p[1] - list[i]![1], p[2] - list[i]![2]), 0);
+    const small = shapeOf(profiles[kind](1.2, 4), 4);
+    const As = areaOver(small, 4).area;
+    await network(`${kind}: a freeform lofted shell (ribs under its roof)`, object, { width: 1.2, height: 4, profile: kind, taper: 0, paths: [{ points: a }, { points: b }] }, As * arcLength(a) + As * arcLength(b) - crossing(small, small), 0.1, ["x", "y", "z+"]);
+  }
+  {
+    // The 312-run lattice (as below for straight ribs), this profile, timed.
+    const object = await shellBox(200, 140, 30);
+    const paths: { points: V3[] }[] = [];
+    const xs = Array.from({ length: 13 }, (_, i) => -90 + i * 15);
+    const ys = Array.from({ length: 13 }, (_, j) => -60 + j * 10);
+    for (const y of ys) for (let i = 0; i + 1 < xs.length; i += 1) paths.push({ points: [[xs[i]!, y, 2], [xs[i + 1]!, y, 2]] });
+    for (const x of xs) for (let j = 0; j + 1 < ys.length; j += 1) paths.push({ points: [[x, ys[j]!, 2], [x, ys[j + 1]!, 2]] });
+    const done = await network(`${kind}: ${paths.length} runs in one network`, object, { width: 1.2, height: 5, profile: kind, paths }, null, 0);
+    timings.push(`${kind} ${paths.length} runs: ${done.ms} ms, +${r3(Number(done.added))} mm³`);
+    check(`${kind}: ${paths.length} runs build within 60 s`, Number(done.ms) < 60000, String(done.ms));
+  }
+  {
+    // A ribbed box for model_check: three ribs of this profile across the floor.
+    const object = await shellBox(120, 80, 30);
+    await network(`${kind}: three ribs for model_check`, object, { width: w, height: h, profile: kind, paths: [-20, 0, 20].map((y) => ({ points: [[-58, y, 2], [58, y, 2]] as V3[] })) }, 3 * A * 116, 0.005);
+    checkedBoxes.push({ title: kind, object });
+  }
+}
+{
+  // Mixed profiles meeting: a drafted rib wall to wall along X, a tee from the +Y wall ending on it (a joint), and a
+  // straight rib along X at y 20 the tee crosses.
+  const object = await shellBox(120, 80, 30);
+  const d = shapeOf(profiles.drafted(w, h), h);
+  const t = shapeOf(profiles.tee(w, h), h);
+  const s = shapeOf(straightProfile(w), h);
+  const Ad = areaOver(d, h).area;
+  const At = areaOver(t, h).area;
+  // The tee runs from the wall to past the drafted rib's centre by the drafted top's half-width; where it lies over the
+  // drafted rib, at each height it shares its width times the drafted half-width plus that.
+  const shared = crossing(t, d, (shape, v) => (shape === d ? d.halfAt(h, v) + d.minHalf : 2 * shape.halfAt(h, v)));
+  const expect = Ad * 116 + At * (38 + d.minHalf) + w * h * 116 - shared - crossing(t, s);
+  const done = await network("mixed: a tee ends on a drafted rib and crosses a straight one", object, { width: w, height: h, paths: [{ points: [[-58, 0, 2], [58, 0, 2]], profile: "drafted" }, { points: [[0, 38, 2], [0, 0, 2]], profile: "tee" }, { points: [[-58, 20, 2], [58, 20, 2]] }] }, expect, 0.005);
+  const report = (done.ribNet ?? {}) as Reply;
+  check("mixed: one joint, five wall ends, a run of each profile", report.ends?.joint === 1 && report.ends?.wall === 5 && JSON.stringify(report.profiles) === JSON.stringify({ drafted: 1, tee: 1, straight: 1 }), JSON.stringify(report).slice(0, 400));
+}
+{
+  // The square flange (flangeChamferDeg 0), for model_check against the 45° one.
+  const object = await shellBox(120, 80, 30);
+  const sq = shapeOf({ ...profiles.tee(w, h), flangeChamferDeg: 0 }, h);
+  await network("tee, square flange: three ribs for model_check", object, { width: w, height: h, profile: "tee", flangeChamferDeg: 0, paths: [-20, 0, 20].map((y) => ({ points: [[-58, y, 2], [58, y, 2]] as V3[] })) }, 3 * areaOver(sq, h).area * 116, 0.005);
+  checkedBoxes.push({ title: "tee, square flange", object });
+  const plain = await shellBox(120, 80, 30);
+  await network("straight: three ribs for model_check", plain, { width: w, height: h, paths: [-20, 0, 20].map((y) => ({ points: [[-58, y, 2], [58, y, 2]] as V3[] })) }, 3 * w * h * 116, 0.005);
+  checkedBoxes.unshift({ title: "straight", object: plain });
+}
+/** model_check's overhang and thin-wall numbers, in a line. */
+const checkLine = (reply: Reply) => `overhang ${reply.overhang?.areaMm2} mm² (${(reply.overhang?.regions ?? []).length} regions), thin walls ${reply.thinWalls?.areaMm2 ?? "n/a"} mm²${reply.thinWalls?.regions?.length ? ` thinnest ${Math.min(...(reply.thinWalls.regions as Reply[]).map((row) => Number(row.thinnestMm)))} mm` : ""}, open edges ${reply.edges?.open ?? "n/a"}`;
+const flatOverhang: Record<string, number> = {};
+for (const { title, object } of checkedBoxes) {
+  const reply = await call("model_check", { object });
+  check(`model_check on the flat bed reads the ${title} box`, reply.ok === true, JSON.stringify(reply).slice(0, 300));
+  flatOverhang[title] = Number(reply.overhang?.areaMm2 ?? NaN);
+  console.log(`  model_check flat, ${title}: ${checkLine(reply)}`);
+}
+// The 45° chamfer under the flange is at the threshold, not over it; the square flange's underside is a ceiling.
+check("flat bed: the 45° chamfered tee reports no more overhang than the plain box, the square flange does", flatOverhang.tee === flatOverhang.straight && flatOverhang["tee, square flange"]! > flatOverhang.straight! + 3 * 2 * 1.5 * 116 * 0.95, JSON.stringify(flatOverhang));
+
 // ===== 312 runs in one network: a 13 × 13 lattice of short ribs on a 200 × 140 floor, every end a joint. =====
 let lattice = "";
+let beltSelected = false;
 {
   const object = await shellBox(200, 140, 30);
   const paths: { points: V3[] }[] = [];
@@ -293,14 +465,24 @@ let lattice = "";
   const flatCheck = await call("model_check", { object });
   check("model_check reads the ribbed box", flatCheck.ok === true, JSON.stringify(flatCheck).slice(0, 300));
   const belt = await call("machine_select", { printerId: "ideaformer-ir3-v2", filamentId: "lime-petg" });
+  beltSelected = belt.ok === true;
   const beltCheck = belt.ok === true ? await call("model_check", { object }) : null;
   check("model_check reads it on the belt", beltCheck?.ok === true, JSON.stringify([belt, beltCheck]).slice(0, 300));
   const brief = (reply: Reply | null) => JSON.stringify(reply ? { overhang: reply.overhang ?? reply.overhangs, thin: reply.thin ?? reply.thinWalls, fits: reply.fits ?? reply.fit, summary: reply.summary ?? reply.note } : null).slice(0, 700);
   console.log(`  model_check flat: ${brief(flatCheck)}`);
   console.log(`  model_check belt: ${brief(beltCheck)}`);
 }
+// The profiled boxes on the belt (selected above): overhang read in the tilted layer frame.
+if (beltSelected) {
+  for (const { title, object } of checkedBoxes) {
+    const reply = await call("model_check", { object });
+    check(`model_check on the belt reads the ${title} box`, reply.ok === true, JSON.stringify(reply).slice(0, 300));
+    console.log(`  model_check belt, ${title}: ${checkLine(reply)}`);
+  }
+}
 
 console.log(`  timing: ${lattice}`);
+for (const line of timings) console.log(`  timing: ${line}`);
 rmSync(workspace, { recursive: true, force: true });
 if (failed > 0) {
   console.error(`${failed} failed`);

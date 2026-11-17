@@ -6,7 +6,7 @@
 import { levelFrame } from "./frames.ts";
 import { standRegion } from "./plane-region.ts";
 import { boxOf as boxOfMesh, toolMesh } from "./inspect.ts";
-import { ribNetPlan, type RibNetPlan } from "./rib-net.ts";
+import { ribNetPlan, ribNetReport, ribShape, type RibNetPlan, type RibProfile, type RibShape } from "./rib-net.ts";
 import type { LoftSection } from "../model-tree.ts";
 
 /** A step's loft sections; a box step has none. */
@@ -189,6 +189,169 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
   const toKink = -(50 - kink) / c;
   check("a rib up the slope stops 0.5 mm past the kink, not inside the floor's wall", !!spans && spans.length === 1 && Math.abs(spans[0]![0] - (toKink - 0.5)) < 0.01, JSON.stringify({ spans, expect: toKink - 0.5 }));
   check("and 0.5 mm into the wall at the top of the slope", !!spans && Math.abs(spans[0]![1] - ((98 - 50) / c + 0.5)) < 0.05, JSON.stringify(spans));
+}
+
+// ===== Profiles: drafted, tee, and a flared root on any of them. =====
+
+type P2 = [number, number];
+/** A polygon's area, positive counter-clockwise. */
+const area = (poly: readonly P2[]) => poly.reduce((sum, p, i) => sum + p[0] * poly[(i + 1) % poly.length]![1] - poly[(i + 1) % poly.length]![0] * p[1], 0) / 2;
+/** Its area over the surface: all of it less the sunk rectangle under v = 0 (the bottom edge is its second corner). */
+const above = (poly: readonly P2[], sink: number) => area(poly) - 2 * poly[1]![0] * sink;
+/** Whether no two of its edges cross or touch but at the corner they share, and no edge has no length. */
+function simple(poly: readonly P2[]): boolean {
+  const n = poly.length;
+  const cross2 = (o: P2, a: P2, b: P2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  for (let i = 0; i < n; i += 1) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % n]!;
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) < 1e-9) return false;
+    for (let j = i + 2; j < n; j += 1) {
+      if (i === 0 && j === n - 1) continue;
+      const c = poly[j]!;
+      const d = poly[(j + 1) % n]!;
+      const d1 = cross2(c, d, a);
+      const d2 = cross2(c, d, b);
+      const d3 = cross2(a, b, c);
+      const d4 = cross2(a, b, d);
+      if (((d1 > 1e-12 && d2 < -1e-12) || (d1 < -1e-12 && d2 > 1e-12)) && ((d3 > 1e-12 && d4 < -1e-12) || (d3 < -1e-12 && d4 > 1e-12))) return false;
+    }
+  }
+  return true;
+}
+const profile = (kind: RibProfile["kind"], over: Partial<RibProfile> = {}): RibProfile => ({ kind, width: 1.5, draftDeg: 0, rootRadius: 0, flangeWidth: 0, flangeThickness: 0, flangeChamferDeg: 0, ...over });
+const shapeOf = (p: RibProfile, h: number, sink = 0.5, tol = 0.05): RibShape => {
+  const made = ribShape(p, h, sink, tol);
+  if ("reason" in made) throw new Error(made.reason);
+  return made;
+};
+/** The area the chords add over the true arcs: two roots of n chords, each a circular segment. */
+const chordExcess = (s: RibShape, sweep: number) => (s.arcChords ? 2 * s.arcChords * ((s.profile.rootRadius ** 2) / 2) * (sweep / s.arcChords - Math.sin(sweep / s.arcChords)) : 0);
+/** The area a root fillet adds between a wall and a side at angle phi to it. */
+const fillet = (r: number, phi: number) => r * r * (1 / Math.tan(phi / 2) - (Math.PI - phi) / 2);
+
+// --- Section areas against the analytic ones, and the root arc within the chord tolerance.
+{
+  const w = 1.5;
+  const h = 6;
+  const r = 0.75;
+  const straight = shapeOf(profile("straight", { rootRadius: r }), h);
+  const s0 = straight.section(h);
+  const wantStraight = w * h + 2 * fillet(r, Math.PI / 2) + chordExcess(straight, Math.PI / 2);
+  check("a straight rib with a 0.75 mm root: its area over the wall is w·h + 2 r²(1 − π/4) plus the chords' segments", Math.abs(above(s0, 0.5) - wantStraight) < 1e-9, JSON.stringify({ got: above(s0, 0.5), want: wantStraight, chords: straight.arcChords }));
+  check("its footprint is w + 2r and it has 2 + 2 × (2 + chords) corners", Math.abs(straight.foot - (w / 2 + r)) < 1e-12 && s0.length === 2 * (3 + straight.arcChords), JSON.stringify({ foot: straight.foot, corners: s0.length }));
+  // Every root corner on the circle about (w/2 + r, r), and each chord within the tolerance of it.
+  const right = s0.slice(2, 3 + straight.arcChords);
+  const onCircle = right.every((p) => Math.abs(Math.hypot(p[0] - (w / 2 + r), p[1] - r) - r) < 1e-12);
+  const sagitta = r * (1 - Math.cos(Math.PI / 2 / straight.arcChords / 2));
+  check(`the root arc: ${straight.arcChords} chords, each within ${Math.round(sagitta * 1e4) / 1e4} mm of the circle (tolerance 0.05)`, onCircle && sagitta <= 0.05 && right.length === straight.arcChords + 1, JSON.stringify(right));
+
+  const draft = 1;
+  const th = Math.tan((draft * Math.PI) / 180);
+  const drafted = shapeOf(profile("drafted", { draftDeg: draft, rootRadius: 0.5 * (w - h * th) }), h);
+  const d0 = drafted.section(h);
+  const rd = drafted.profile.rootRadius;
+  const phi = Math.PI / 2 + (draft * Math.PI) / 180;
+  const wantDrafted = w * h + 2 * fillet(rd, phi) + chordExcess(drafted, Math.PI - phi);
+  check("a drafted rib, 1° a side, its root half its top width: area w·h (w at half height) + 2 fillets at 91° + chord segments", Math.abs(above(d0, 0.5) - wantDrafted) < 1e-9, JSON.stringify({ got: above(d0, 0.5), want: wantDrafted }));
+  check("its top is w − h·tan 1° wide and its sides lean 1°", Math.abs(2 * drafted.halfAt(h, h) - (w - h * th)) < 1e-9 && Math.abs(2 * drafted.halfAt(h, h / 2) - w) < 1e-9, JSON.stringify([2 * drafted.halfAt(h, h), 2 * drafted.halfAt(h, h / 2)]));
+  const bare = shapeOf(profile("drafted", { draftDeg: 2 }), h);
+  check("a drafted rib with a sharp root is a trapezoid of area w·h", Math.abs(above(bare.section(h), 0.5) - w * h) < 1e-9 && bare.section(h).length === 6);
+
+  const tee = shapeOf(profile("tee", { rootRadius: 0.75, flangeWidth: 4.5, flangeThickness: 1.5, flangeChamferDeg: 45 }), h);
+  const t0 = tee.section(h);
+  const fa = 4.5 / 2 - w / 2;
+  const wantTee = w * h + 2 * fa * 1.5 + fa * fa + 2 * fillet(0.75, Math.PI / 2) + chordExcess(tee, Math.PI / 2);
+  check("a tee (web 1.5, flange 4.5 × 1.5, 45° chamfer, 0.75 root): area web + flange + chamfer triangles + fillets + chords", Math.abs(above(t0, 0.5) - wantTee) < 1e-9, JSON.stringify({ got: above(t0, 0.5), want: wantTee }));
+  check("its reach is the flange's half-width and its footprint the root's", tee.reach === 2.25 && tee.foot === 1.5, JSON.stringify([tee.reach, tee.foot]));
+  const square = shapeOf(profile("tee", { flangeWidth: 4.5, flangeThickness: 1.5, flangeChamferDeg: 0 }), h);
+  check("a square tee with a sharp root: web + flange, 10 corners", Math.abs(above(square.section(h), 0.5) - (w * h + 2 * fa * 1.5)) < 1e-9 && square.section(h).length === 10,String(square.section(h).length));
+  // The 45° chamfer: the edge from the web's top to the flange's underside rises as far as it runs out.
+  const web = t0.findIndex((p, i) => i > 1 && Math.abs(p[0] - w / 2) < 1e-12 && p[1] > 1);
+  const out = t0[web + 1]!;
+  check("the chamfer under the flange is 45° to the wall", Math.abs(out[1] - t0[web]![1] - (out[0] - t0[web]![0])) < 1e-12, JSON.stringify([t0[web], out]));
+  for (const [name, s] of [["straight", straight], ["drafted", drafted], ["tee", tee], ["square tee", square], ["sharp drafted", bare]] as const) {
+    check(`${name}: every section from the full height to the surface is a simple polygon with the same corners`, [1, 0.9, 0.75, 0.5, 0.3, 0.2, 0.1, 0.05, 0.01, 0].every((f) => s.section(h * f).length === s.section(h).length && simple(s.section(h * f))));
+    check(`${name}: at height 0 nothing stands over the wall`, Math.abs(above(s.section(0), 0.5)) < 1e-12 && s.section(0).every((p) => p[1] <= 1e-12));
+  }
+  // The flange rides at the top while the rib is lower (a face in front of the wall) and above hb.
+  check("a lower tee keeps its flange whole at its top", [h, 5, tee.hb].every((hk) => Math.abs(tee.halfAt(hk, hk - 0.75) - 2.25) < 1e-9 && Math.max(...tee.section(hk).map((p) => p[1])) === hk), String(tee.hb));
+  check("under hb the flange narrows into the web as it comes down", tee.halfAt(tee.hb / 2, (tee.hb / 2) * 0.99) < 2.25 && tee.halfAt(tee.hb / 4, (tee.hb / 4) * 0.99) < tee.halfAt(tee.hb / 2, (tee.hb / 2) * 0.99));
+  check("the same profile gives the same section", JSON.stringify(shapeOf(profile("tee", { rootRadius: 0.75, flangeWidth: 4.5, flangeThickness: 1.5, flangeChamferDeg: 45 }), h).section(4.2)) === JSON.stringify(tee.section(4.2)));
+}
+
+// --- Profiles in a plan: wall to wall each is one extrude, a taper is a loft through hb, the reply counts profiles.
+{
+  for (const kind of ["drafted", "tee"] as const) {
+    const made = plan({ width: 1.5, height: 6, profile: kind, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+    check(`a ${kind} rib wall to wall is one extrude, both ends into a wall`, ok(made) && made.runs === 1 && made.steps[0]!.kind === "extrude" && made.ends.wall === 2 && made.stepProfile[0] === kind, JSON.stringify(ok(made) ? made.steps[0] : made).slice(0, 300));
+    if (ok(made) && made.steps[0]!.kind === "extrude") check(`  and it runs from 0.5 mm into one wall to 0.5 mm into the other`, Math.abs(made.steps[0]!.depth - 117) < 1e-6 && Math.abs(made.steps[0]!.origin[0] + 58.5) < 1e-6, JSON.stringify(made.steps[0]!.origin));
+  }
+  const rooted = plan({ width: 1.5, height: 6, rootRadius: 0.75, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("a straight rib with a root is an extrude too", ok(rooted) && rooted.steps[0]!.kind === "extrude");
+  const taper = plan({ width: 1.5, height: 6, profile: "tee", paths: [{ points: [[20, 0, 2], [58, 0, 2]] }] });
+  check("a tapered tee is one loft: 0 at the free end, hb, then full height", ok(taper) && taper.steps.length === 1 && lofted(taper.steps[0]!).length === 4, JSON.stringify(ok(taper) ? lofted(taper.steps[0]!).map((s) => [s.origin[0], Math.max(...s.profile!.map((p) => p[1]))]) : taper));
+  if (ok(taper)) {
+    const tops = lofted(taper.steps[0]!).map((s) => Math.max(...s.profile!.map((p) => p[1])));
+    check("  its heights rise 0, hb, 6, 6 along it, every section the same corners", Math.abs(tops[0]!) < 1e-9 && tops[1]! > 0 && tops[1]! < 6 && Math.abs(tops[2]! - 6) < 1e-9 && new Set(lofted(taper.steps[0]!).map((s) => s.profile!.length)).size === 1, JSON.stringify(tops));
+  }
+  const mixed = plan({ width: 1.5, height: 6, paths: [{ points: [[-58, 0, 2], [58, 0, 2]], profile: "drafted" }, { points: [[0, 38, 2], [0, 0, 2]], profile: "tee" }, { points: [[-30, -38, 2], [-30, 30, 2]] }] });
+  check("mixed profiles: a tee ending on a drafted rib is a joint, a straight rib crosses the drafted one", ok(mixed) && mixed.ends.joint === 1 && mixed.ends.wall === 4 && mixed.stepProfile.join() === "drafted,tee,straight", JSON.stringify(ok(mixed) ? [mixed.ends, mixed.stepProfile] : mixed));
+  if (ok(mixed)) {
+    const teeStep = mixed.steps[1]!;
+    const minHalf = 0.75 - (6 * Math.tan(Math.PI / 180)) / 2;
+    // The tee runs from 0.5 mm into the wall at y 38 to past the drafted rib's centre by its narrowest half (its top).
+    check("  the tee runs on past the drafted rib's centre by the drafted top's half-width", teeStep.kind === "extrude" && Math.abs(teeStep.origin[1] - 38.5) < 1e-6 && Math.abs(teeStep.depth - (38.5 + minHalf)) < 1e-6, JSON.stringify(teeStep).slice(0, 300));
+    const report = ribNetReport(mixed, 123.4, []);
+    check("  the reply counts runs by profile", JSON.stringify(report.profiles) === JSON.stringify({ drafted: 1, tee: 1, straight: 1 }) && /3 runs \(1 straight, 1 drafted, 1 tee\)/.test(String(report.note)), JSON.stringify(report));
+  }
+  // Under the lid a 25 mm tee is kept to 21.5 mm with its flange at the top.
+  const lidded = plan({ width: 1.5, height: 25, profile: "tee", paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] }, shellBox(true));
+  check("a tee under the lid plans, kept lower", ok(lidded) && lidded.shortened.length === 1 && lidded.shortened[0]!.heightMm === 21.5, JSON.stringify(ok(lidded) ? lidded.shortened : lidded));
+  if (ok(lidded)) {
+    const under = lofted(lidded.steps[0]!).filter((s) => s.origin[0] < -1);
+    check("  its flange rides at 21.5 mm under the lid, as wide as at full height", under.length > 0 && under.every((s) => Math.abs(Math.max(...s.profile!.map((p) => p[1])) - 21.5) < 1e-6 && Math.abs(Math.max(...s.profile!.map((p) => p[0])) - 2.25) < 1e-6), JSON.stringify(under.map((s) => s.profile)).slice(0, 300));
+  }
+  // A 312-run lattice of each profile (13 × 13 nodes, every end a joint): every run one box or extrude.
+  const paths: { points: number[][] }[] = [];
+  const xs = Array.from({ length: 13 }, (_, i) => -54 + i * 9);
+  const ys = Array.from({ length: 13 }, (_, j) => -33 + j * 5.5);
+  for (const y of ys) for (let i = 0; i + 1 < xs.length; i += 1) paths.push({ points: [[xs[i]!, y, 2], [xs[i + 1]!, y, 2]] });
+  for (const x of xs) for (let j = 0; j + 1 < ys.length; j += 1) paths.push({ points: [[x, ys[j]!, 2], [x, ys[j + 1]!, 2]] });
+  for (const kind of ["straight", "drafted", "tee"] as const) {
+    const started = performance.now();
+    const made = plan({ width: 1.2, height: 5, profile: kind, paths });
+    const ms = Math.round(performance.now() - started);
+    check(`${paths.length} paths of ${kind} plan as ${paths.length} straight runs (${ms} ms to plan)`, ok(made) && made.runs === paths.length && made.steps.every((s) => s.kind === (kind === "straight" ? "boolean" : "extrude")), JSON.stringify(ok(made) ? made.runs : made).slice(0, 300));
+  }
+}
+
+// --- Refusals in a sentence.
+{
+  const closed = plan({ width: 1, height: 30, profile: "drafted", draftDeg: 2, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("a draft that closes the rib at its height is refused", !ok(closed) && /a 2° draft closes a 1 mm rib to nothing at the top of its 30 mm height/.test(closed.reason), JSON.stringify(closed));
+  const narrow = plan({ width: 1.5, height: 6, profile: "tee", flangeWidth: 1.5, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("a flange no wider than its web is refused", !ok(narrow) && /flangeWidth \(1.5 mm\) must be wider than its web/.test(narrow.reason), JSON.stringify(narrow));
+  const tall = plan({ width: 1.5, height: 3, profile: "tee", paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("a root and flange taller than the rib are refused", !ok(tall) && /need the rib to stand more than 3.85 mm tall; it is 3 mm/.test(tall.reason), JSON.stringify(tall));
+  const rootTall = plan({ width: 1.5, height: 2, rootRadius: 3, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("a root radius larger than the rib is tall is refused", !ok(rootTall) && /a 3 mm root needs the rib to stand more than 3.1 mm tall/.test(rootTall.reason), JSON.stringify(rootTall));
+  const ledge = plan({ width: 1.2, height: 4, rootRadius: 0.6, paths: [{ points: [[59, -30, 30], [59, 30, 30]] }] });
+  check("a root wider than the rim it stands on is refused", !ok(ledge) && /footprint \(its 0.6 mm root\) runs off the wall there/.test(ledge.reason), JSON.stringify(ledge));
+  const besides = plan({ width: 1.5, height: 6, profile: "tee", paths: [{ points: [[-40, 37, 2], [40, 37, 2]] }] });
+  check("a flange that would run into a side wall beside the rib is refused", !ok(besides) && /a face stands 1 mm beside the rib at its flange/.test(besides.reason), JSON.stringify(besides));
+  const unknown = plan({ width: 1.5, height: 6, profile: "round", paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("an unknown profile is refused", !ok(unknown) && /profile is "straight", "drafted" or "tee"/.test(unknown.reason), JSON.stringify(unknown));
+  const perPath = plan({ width: 1.5, height: 6, paths: [{ points: [[-58, 0, 2], [58, 0, 2]], profile: "drafted", draftDeg: 20 }] });
+  check("a path's own draft out of range is refused with its path", !ok(perPath) && /^Path 1: draftDeg is the draft of each side of a drafted rib, from 0 to 15°/.test(perPath.reason), JSON.stringify(perPath));
+}
+
+// --- Profiles: the same op gives the same plan.
+{
+  const op = { width: 1.2, height: 5, profile: "tee", paths: [{ points: [[-40, -20, 2], [10, 25, 2], [40, -10, 2]] }, { points: [[-58, 10, 2], [58, 10, 2]], profile: "drafted" }] };
+  const a = JSON.stringify(plan(op));
+  const b = JSON.stringify(plan(JSON.parse(JSON.stringify(op)) as Record<string, unknown>, shellBox()));
+  check("a profiled plan is the same every time", a === b && a.includes("sections") && a.includes("extrude"));
 }
 
 if (failed > 0) {
