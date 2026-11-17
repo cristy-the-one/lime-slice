@@ -39,6 +39,7 @@
 
 mod baseline;
 mod field;
+mod loose;
 mod profile;
 mod select;
 mod surface;
@@ -133,8 +134,10 @@ pub struct RibRules {
     /// The cross-section shape ([`RibProfile`]; [`choose_profile`] picks
     /// one by process and print pose).
     pub profile: RibProfile,
-    /// How far a loose rib end may be extended to reach the boundary, a
-    /// hold or another rib, mm. Default: twice `min_spacing`.
+    /// How far the first pass over loose rib ends (before pruning) may
+    /// extend one to reach the boundary, a hold or another rib, mm. Default:
+    /// twice `min_spacing`. The closing pass after pruning has no limit
+    /// (see [`PlannerOptions::close_loose_ends`]).
     pub extend_limit: Option<f64>,
 }
 
@@ -183,6 +186,11 @@ pub struct PlannerOptions {
     /// Compute the thickening and even-grid comparisons. The planner's
     /// report always carries them; turn off only to time the plan alone.
     pub baselines: bool,
+    /// After pruning, extend every rib end left in mid-wall to the
+    /// boundary, a hold or another rib, else trim the rib back to its last
+    /// junction or drop it (see [`RibPlan::loose_ends`]). Turn off only to
+    /// measure what it costs.
+    pub close_loose_ends: bool,
 }
 
 /// Exactly solved candidates per round: one batch for eight models. The
@@ -202,6 +210,7 @@ impl Default for PlannerOptions {
             field_alpha: field::ALPHA,
             workers: 0,
             baselines: true,
+            close_loose_ends: true,
         }
     }
 }
@@ -330,7 +339,24 @@ pub struct PlanStats {
     /// the two baselines.
     pub solves: usize,
     pub baseline_solves: usize,
+    /// The stiffness factor selection saw on the mesh with every candidate
+    /// cut in, before the clean solve the plan reports.
+    pub selection_factor: f64,
+    /// Selections run again because the clean solve missed the goal.
+    pub clean_retries: usize,
+    pub loose_ends: LooseEndStats,
     pub seconds: PlanSeconds,
+}
+
+/// Loose rib ends (in mid-wall, on no boundary, hold or other rib) in the
+/// last selection: before the closing pass, what it did, and after.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LooseEndStats {
+    pub before: usize,
+    pub extended: usize,
+    pub trimmed: usize,
+    pub dropped: usize,
+    pub after: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -368,10 +394,34 @@ pub struct RibPlan {
     /// Cancelled: the best valid plan when it stopped. Selection may have
     /// been cut short, and the later passes and the baselines left out.
     pub stopped_early: bool,
-    /// The mesh the plan was solved on: the input with every candidate cut
-    /// in. Rib vertices index it.
+    /// Rib ends left in mid-wall (on no boundary, hold or other rib), each
+    /// with the reason it could not be closed. Every other end is anchored.
+    pub loose_ends: Vec<LooseEnd>,
+    /// The mesh the reported numbers were solved on: the input with only
+    /// the returned ribs cut in. Rib vertices index it.
     pub mesh: ShellMesh,
     pub stats: PlanStats,
+}
+
+/// Why a rib end was left in mid-wall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LooseEndReason {
+    /// It stands at a no-rib zone's border (or a hole's rim margin, or where
+    /// nothing has room in front of the wall): extending it would cross.
+    NoRibZone,
+    /// An extension reached an anchor, but the budget does not allow it.
+    Budget,
+}
+
+/// A rib end left in mid-wall.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LooseEnd {
+    /// Index into [`RibPlan::ribs`].
+    pub rib: usize,
+    /// 0 for its first point, 1 for its last.
+    pub end: usize,
+    pub point: [f64; 3],
+    pub reason: LooseEndReason,
 }
 
 /// A stage of planning, in order.
@@ -575,6 +625,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             grid: None,
             not_better_than_baseline: false,
             stopped_early: true,
+            loose_ends: Vec::new(),
             mesh: req.mesh.clone(),
             stats,
         }
@@ -602,7 +653,6 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         spacing: rules.min_spacing,
         min_length: rules.min_length,
         tolerance: req.options.simplify_tolerance,
-        extend_limit,
     };
     let diag = bbox_diagonal(&req.mesh.vertices);
     let tracer = trace::Tracer {
@@ -626,8 +676,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 } else {
                     *c.points.last().expect("a line has points")
                 };
-                let stub =
-                    tracer.straight(c.end_tri[end], p, c.end_dir[end], trace_rules.extend_limit);
+                let (stub, _) = tracer.straight_to(c.end_tri[end], p, c.end_dir[end], extend_limit);
                 (stub.len() >= 2).then_some(stub)
             })
         })
@@ -687,7 +736,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
 
     // 5. Selection on the cut mesh.
     let held = held_flags(&holds1, s1.pos.len());
-    let ctx = select::Ctx {
+    let mut ctx = select::Ctx {
         pos: s1.pos.clone(),
         thickness: s1.thickness.clone(),
         boundary: s1.boundary_flags(),
@@ -720,52 +769,132 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         })
         .collect::<Result<_, _>>()?;
     let mut ev = select::Evaluator::new(models, cases1.clone(), rules.side);
-    let outcome = select::run(&mut ev, &ctx, &cands, &rep)?;
-    stats.solves += ev.solves;
-    stats.seconds.select = outcome.seconds[0];
-    stats.seconds.connect = outcome.seconds[1];
-    stats.seconds.prune = outcome.seconds[2];
-    stats.seconds.size = outcome.seconds[3];
-    stats.seconds.solver = ev.seconds;
-
-    let bare = Response {
-        compliance: outcome.bare.compliance,
-        max_deflection: outcome.bare.max_deflection,
+    let loose_input = loose::Input {
+        req,
+        s0: &s0,
+        tracer: &tracer,
+        tri_cap: &zones.cap,
+        blocked: &blocked0,
+        cases0: &cases0,
     };
-    let ribbed = Response {
-        compliance: outcome.current.compliance,
-        max_deflection: outcome.current.max_deflection,
-    };
-    let rib_volume = select::network_volume(&ctx.pos, &outcome.design);
-    let total_energy: f64 = outcome.current.strain_energy;
-    let mut ribs = Vec::new();
-    for (i, d) in outcome.design.iter().enumerate() {
-        let points: Vec<[f64; 3]> = d.chain.iter().map(|&v| s1.pos[v as usize]).collect();
-        let length = s1.chain_length(&d.chain);
-        let ends = [0, 1].map(|end| {
-            let v = if end == 0 {
-                d.chain[0]
-            } else {
-                *d.chain.last().expect("chain")
-            };
-            if ctx.boundary[v as usize] {
-                RibEndKind::Boundary
-            } else if ctx.held[v as usize] {
-                RibEndKind::Hold
-            } else if outcome
-                .design
-                .iter()
-                .enumerate()
-                .any(|(j, o)| j != i && o.chain.contains(&v))
-            {
-                RibEndKind::Rib
-            } else {
-                RibEndKind::Free
+    // Select; close the loose ends; then solve exactly the chosen ribs on
+    // the input mesh with only them cut in. The selection mesh, with every
+    // candidate cut in, is full of sliver triangles that make a rib look
+    // stiffer than it is. When the clean solve misses a stiffness or
+    // deflection goal the selection reached, selection runs again with the
+    // target moved by the gap (two more times at most).
+    let (outcome, closed, clean, goal_met) = loop {
+        let outcome = select::run(&mut ev, &ctx, &cands, &rep)?;
+        stats.seconds.select += outcome.seconds[0];
+        stats.seconds.connect += outcome.seconds[1];
+        stats.seconds.prune += outcome.seconds[2];
+        stats.seconds.size += outcome.seconds[3];
+        stats.selection_factor = outcome.bare.compliance / outcome.current.compliance;
+        let ribs: Vec<GRib> = outcome
+            .design
+            .iter()
+            .map(|d| GRib {
+                points: d.chain.iter().map(|&v| ctx.pos[v as usize]).collect(),
+                heights: d.heights(),
+                d: d.clone(),
+            })
+            .collect();
+        let t = Instant::now();
+        let closed = if req.options.close_loose_ends && !outcome.stopped {
+            loose::close(
+                &loose_input,
+                ribs,
+                outcome.floor,
+                outcome.bare.compliance,
+                &rep,
+            )?
+        } else {
+            loose::Closed::unchanged(&loose_input, ribs)
+        };
+        let mut closed = closed;
+        stats.seconds.prune += t.elapsed().as_secs_f64();
+        stats.solves += closed.solves;
+        // Extensions stand at full height: size the ribs again, on the
+        // pass's own mesh, now that they are joined up.
+        if closed.stats.extended > 0 && !closed.stopped && !matches!(ctx.goal, Goal::Budget { .. })
+        {
+            let t = Instant::now();
+            let (ribs, solves, cut) = resize(
+                &loose_input,
+                &closed.ribs,
+                ctx.goal,
+                outcome.floor,
+                workers,
+                &rep,
+            )?;
+            closed.ribs = ribs;
+            closed.stopped |= cut;
+            stats.solves += solves;
+            stats.seconds.size += t.elapsed().as_secs_f64();
+        }
+        let clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
+        stats.solves += 2;
+        let factor = clean.bare.compliance / clean.ribbed.compliance;
+        let met = match req.goal {
+            Goal::Stiffer(f) => factor >= f,
+            Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
+            Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
+            Goal::Balanced => outcome.goal_met,
+        };
+        let again = !met
+            && outcome.reached
+            && !outcome.stopped
+            && !closed.stopped
+            && !rep.cancelled()
+            && stats.clean_retries < 2;
+        let tighter = match (req.goal, ctx.goal) {
+            (Goal::Stiffer(f), Goal::Stiffer(now)) => {
+                Some(Goal::Stiffer(now * (f / factor) * 1.002))
             }
-        });
+            (Goal::MaxDeflection(d), Goal::MaxDeflection(now)) => Some(Goal::MaxDeflection(
+                now / (clean.ribbed.max_deflection / d) / 1.002,
+            )),
+            _ => None,
+        };
+        match tighter {
+            Some(g) if again => {
+                ctx.goal = g;
+                stats.clean_retries += 1;
+            }
+            _ => break (outcome, closed, clean, met),
+        }
+    };
+    stats.solves += ev.solves;
+    stats.seconds.solver = ev.seconds;
+    stats.loose_ends = closed.stats;
+
+    let bare = clean.bare;
+    let ribbed = clean.ribbed;
+    let rib_volume = clean.volume;
+    let total_energy: f64 = clean.eval.strain_energy;
+    let mut ribs = Vec::new();
+    let mut loose_ends = Vec::new();
+    for (k, (&i, d)) in clean.kept.iter().zip(&clean.design).enumerate() {
+        let g = &closed.ribs[i];
+        let points: Vec<[f64; 3]> = d.chain.iter().map(|&v| clean.pos[v as usize]).collect();
+        for &(rib, end, reason) in &closed.loose {
+            if rib == i {
+                loose_ends.push(LooseEnd {
+                    rib: k,
+                    end,
+                    point: if end == 0 {
+                        points[0]
+                    } else {
+                        *points.last().expect("points")
+                    },
+                    reason,
+                });
+            }
+        }
+        let length = points.windows(2).map(|w| norm(sub(w[1], w[0]))).sum();
         ribs.push(PlannedRib {
-            points,
             vertices: d.chain.clone(),
+            points,
             width: d.width,
             height: d.tallest(),
             heights: d.heights(),
@@ -776,13 +905,13 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 .map(|&h| d.profile.section_at(d.width, h))
                 .collect(),
             side: rules.side,
-            ends,
+            ends: clean.ends[k],
             family: d.family,
             length_mm: length,
-            volume_mm3: d.volume(&ctx.pos),
-            gain: d.gain,
+            volume_mm3: d.volume(&clean.pos),
+            gain: g.d.gain,
             energy_share: if total_energy > 0.0 {
-                outcome.current.rib_energy.get(i).copied().unwrap_or(0.0) / total_energy
+                clean.eval.rib_energy.get(k).copied().unwrap_or(0.0) / total_energy
             } else {
                 0.0
             },
@@ -790,10 +919,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     }
     let stiffness_factor = bare.compliance / ribbed.compliance;
 
-    // 6. Baselines.
+    // 6. Baselines, on the clean solve's footing.
     let t = Instant::now();
+    let stopped = outcome.stopped || closed.stopped;
     let (thickening, grid) =
-        if req.options.baselines && !ribs.is_empty() && !outcome.stopped && !rep.cancelled() {
+        if req.options.baselines && !ribs.is_empty() && !stopped && !rep.cancelled() {
             rep.stage(PlanStage::Baselines, 0.0);
             let grid_input = baseline::GridInput {
                 surface: &s0,
@@ -811,10 +941,10 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             let (th, gr) = rayon::join(
                 || {
                     baseline::thickening(
-                        &mesh1,
+                        &clean.mesh,
                         req.material,
-                        &holds1,
-                        &cases1,
+                        &clean.holds,
+                        &clean.cases,
                         bare.compliance,
                         ribbed.compliance,
                         &rep,
@@ -833,7 +963,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             (None, None)
         };
     let stopped_early =
-        outcome.stopped || (req.options.baselines && !ribs.is_empty() && thickening.is_none());
+        stopped || (req.options.baselines && !ribs.is_empty() && thickening.is_none());
     stats.seconds.baselines = t.elapsed().as_secs_f64();
     let not_better = match (&thickening, &grid) {
         (Some(th), Some(gr)) => {
@@ -851,13 +981,234 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         bare,
         ribbed,
         stiffness_factor,
-        goal_met: outcome.goal_met,
+        goal_met: goal_met && !stopped,
         thickening,
         grid,
         not_better_than_baseline: not_better,
         stopped_early,
-        mesh: mesh1,
+        loose_ends,
+        mesh: clean.mesh,
         stats,
+    })
+}
+
+/// A chosen rib by its geometry: points on the mid-surface and the height
+/// of each stretch between them, with its section and history in `d` (whose
+/// own chain is on some other mesh and is not read).
+#[derive(Clone, Debug)]
+pub(crate) struct GRib {
+    pub points: Vec<[f64; 3]>,
+    pub heights: Vec<f64>,
+    pub d: select::DRib,
+}
+
+/// What [`embed_design`] gives: the surface, the ribs on it, the indexes
+/// of the ribs that could be cut in, and the extra lines' chains.
+pub(crate) type Embedded = (
+    surface::Surface,
+    Vec<select::DRib>,
+    Vec<usize>,
+    Vec<Option<Vec<u32>>>,
+);
+
+/// Ribs (and `extra` lines after them) cut into a copy of `s0`: the
+/// surface, each rib as a chain of it with the height of the stretch each
+/// of its edges lies on, the indexes of the ribs that could be cut in, and
+/// the chains of the extra lines (`None` where one could not be cut in).
+pub(crate) fn embed_design(
+    s0: &surface::Surface,
+    ribs: &[GRib],
+    extra: &[Vec<[f64; 3]>],
+) -> Embedded {
+    let mut s = s0.clone();
+    let ids: Vec<Option<usize>> = ribs.iter().map(|g| s.embed_polyline(&g.points)).collect();
+    let extra_ids: Vec<Option<usize>> = extra.iter().map(|p| s.embed_polyline(p)).collect();
+    let mut kept = Vec::new();
+    let mut design = Vec::new();
+    for (i, g) in ribs.iter().enumerate() {
+        let Some(id) = ids[i] else { continue };
+        // Chains are kept whole through the later cuts.
+        let chain = s.chains[id].clone();
+        // Each edge takes the height of the stretch its middle lies on,
+        // walking forward along the rib.
+        let mut j = 0usize;
+        let caps: Vec<f64> = chain
+            .windows(2)
+            .map(|w| {
+                let m = scale3(add3(s.pos[w[0] as usize], s.pos[w[1] as usize]), 0.5);
+                let mut best = (f64::INFINITY, j);
+                for (q, seg) in g.points.windows(2).enumerate().skip(j) {
+                    let ab = sub(seg[1], seg[0]);
+                    let l2 = dot(ab, ab);
+                    let u = if l2 > 0.0 {
+                        (dot(sub(m, seg[0]), ab) / l2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let dist = norm(sub(m, add3(seg[0], scale3(ab, u))));
+                    if dist < best.0 - 1e-9 {
+                        best = (dist, q);
+                    }
+                }
+                j = best.1;
+                g.heights[j]
+            })
+            .collect();
+        let mut d = g.d.clone();
+        d.chain = chain;
+        d.caps = caps;
+        design.push(d);
+        kept.push(i);
+    }
+    let extra_chains = extra_ids
+        .iter()
+        .map(|id| id.map(|i| s.chains[i].clone()))
+        .collect();
+    (s, design, kept, extra_chains)
+}
+
+/// The sizing pass ([`select::size`]) run again on the input mesh with
+/// only `ribs` cut in. Returns the ribs, the solves, and whether a cancel
+/// cut it short.
+fn resize(
+    input: &loose::Input,
+    ribs: &[GRib],
+    goal: Goal,
+    floor: f64,
+    workers: usize,
+    rep: &Reporter,
+) -> Result<(Vec<GRib>, usize, bool), SimError> {
+    let req = input.req;
+    let (s, design, _, _) = embed_design(input.s0, ribs, &[]);
+    let holds = resolve_holds(&s, &req.holds);
+    let cases = remap_cases(&s, input.cases0, req.mesh.triangles.len());
+    let mesh = s.to_mesh();
+    let models: Vec<ShellModel> = (0..workers)
+        .into_par_iter()
+        .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default()))
+        .collect::<Result<_, _>>()?;
+    let mut ev = select::Evaluator::new(models, cases, req.rules.side);
+    let bare = ev.eval(&[])?;
+    let cur = ev.eval(&design)?;
+    let ctx = select::Ctx {
+        pos: s.pos.clone(),
+        thickness: s.thickness.clone(),
+        boundary: s.boundary_flags(),
+        held: held_flags(&holds, s.pos.len()),
+        width: req.rules.width,
+        profile: req.rules.profile,
+        min_height: req.rules.min_height,
+        max_height: req.rules.max_height,
+        goal,
+        shortlist: req.options.shortlist,
+    };
+    let (design, _, cut) = select::size(&mut ev, &ctx, design, cur, floor, bare.compliance, rep)?;
+    let out = design
+        .iter()
+        .map(|d| GRib {
+            points: d.chain.iter().map(|&v| s.pos[v as usize]).collect(),
+            heights: d.heights(),
+            d: d.clone(),
+        })
+        .collect();
+    Ok((out, ev.solves, cut))
+}
+
+/// What each end of each rib meets on surface `s`.
+pub(crate) fn rib_ends(
+    s: &surface::Surface,
+    held: &[bool],
+    design: &[select::DRib],
+) -> Vec<[RibEndKind; 2]> {
+    let boundary = s.boundary_flags();
+    design
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            [0, 1].map(|end| {
+                let v = if end == 0 {
+                    d.chain[0]
+                } else {
+                    *d.chain.last().expect("chain")
+                };
+                if boundary[v as usize] {
+                    RibEndKind::Boundary
+                } else if held[v as usize] {
+                    RibEndKind::Hold
+                } else if design
+                    .iter()
+                    .enumerate()
+                    .any(|(j, o)| j != i && o.chain.contains(&v))
+                {
+                    RibEndKind::Rib
+                } else {
+                    RibEndKind::Free
+                }
+            })
+        })
+        .collect()
+}
+
+fn add3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn scale3(a: [f64; 3], k: f64) -> [f64; 3] {
+    [a[0] * k, a[1] * k, a[2] * k]
+}
+
+/// The chosen ribs solved on their own: the input surface with only them
+/// cut in, holds and loads carried the planner's way, bare and ribbed.
+struct Clean {
+    mesh: ShellMesh,
+    pos: Vec<[f64; 3]>,
+    holds: Vec<ShellHold>,
+    cases: Vec<LoadCase>,
+    /// The ribs on the clean mesh, and for each the index of the rib it is
+    /// (a rib that could not be cut in is left out).
+    design: Vec<select::DRib>,
+    kept: Vec<usize>,
+    ends: Vec<[RibEndKind; 2]>,
+    bare: Response,
+    ribbed: Response,
+    eval: select::Eval,
+    volume: f64,
+}
+
+fn clean_solve(
+    req: &RibPlanRequest,
+    s0: &surface::Surface,
+    cases0: &[LoadCase],
+    ribs: &[GRib],
+) -> Result<Clean, SimError> {
+    let (s, design, kept, _) = embed_design(s0, ribs, &[]);
+    let holds = resolve_holds(&s, &req.holds);
+    let cases = remap_cases(&s, cases0, req.mesh.triangles.len());
+    let mesh = s.to_mesh();
+    let mut model = ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default())?;
+    model.set_threads(1);
+    let bare = model.solve_cases(&cases)?;
+    let eval = select::evaluate(&mut model, &cases, req.rules.side, &design)?;
+    let volume = select::network_volume(&s.pos, &design);
+    let ends = rib_ends(&s, &held_flags(&holds, s.pos.len()), &design);
+    Ok(Clean {
+        bare: Response {
+            compliance: bare.iter().map(|r| r.compliance).sum(),
+            max_deflection: bare.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
+        },
+        ribbed: Response {
+            compliance: eval.compliance,
+            max_deflection: eval.max_deflection,
+        },
+        mesh,
+        pos: s.pos,
+        holds,
+        cases,
+        design,
+        kept,
+        ends,
+        eval,
+        volume,
     })
 }
 

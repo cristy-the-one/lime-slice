@@ -67,7 +67,6 @@ pub(crate) struct TraceRules {
     pub spacing: f64,
     pub min_length: f64,
     pub tolerance: f64,
-    pub extend_limit: f64,
 }
 
 /// Samples of accepted lines in a uniform grid of `cell` mm.
@@ -371,9 +370,32 @@ impl Tracer<'_> {
         out
     }
 
+    /// The field's own continuation of a line from `p` in `t`, heading `d`,
+    /// with no spacing rule (it may run beside other lines): up to the
+    /// boundary, a keep-out, a sharp turn or low confidence. The points and
+    /// whether it stopped at a keep-out.
+    pub fn follow(&self, t: u32, p: [f64; 3], d: [f64; 3]) -> (Vec<[f64; 3]>, bool) {
+        let empty = Samples::new(self.rules.spacing);
+        let Some(h) = project(d, self.s.normal(t)) else {
+            return (vec![p], false);
+        };
+        let traced = self.trace(&empty, t, p, h);
+        (
+            simplify(&traced.points, self.rules.tolerance),
+            traced.end == TraceEnd::KeepOut,
+        )
+    }
+
     /// A straight continuation from `p` in or next to triangle `t` along
-    /// `d`, up to `limit` mm, stopping at the boundary or a keep-out.
-    pub fn straight(&self, t: u32, p: [f64; 3], d: [f64; 3], limit: f64) -> Vec<[f64; 3]> {
+    /// `d`, up to `limit` mm, stopping at the boundary or a keep-out; and
+    /// whether it stopped at a keep-out.
+    pub fn straight_to(
+        &self,
+        t: u32,
+        p: [f64; 3],
+        d: [f64; 3],
+        limit: f64,
+    ) -> (Vec<[f64; 3]>, bool) {
         let s = self.s;
         // Start in whichever of t and its neighbours the ray enters.
         let mut start = None;
@@ -395,11 +417,12 @@ impl Tracer<'_> {
             }
         }
         let Some((mut t, mut h)) = start else {
-            return vec![p];
+            return (vec![p], false);
         };
         let mut pts = vec![p];
         let mut p = p;
         let mut len = 0.0;
+        let mut keep_out = false;
         while len < limit {
             let Some((q, k, corner)) = exit(s, t, p, h) else {
                 break;
@@ -415,6 +438,7 @@ impl Tracer<'_> {
                 break;
             };
             if self.blocked[next as usize] {
+                keep_out = true;
                 break;
             }
             let Some(hn) = project(h, s.normal(next)) else {
@@ -424,7 +448,7 @@ impl Tracer<'_> {
             t = next;
             p = q;
         }
-        simplify(&pts, self.rules.tolerance)
+        (simplify(&pts, self.rules.tolerance), keep_out)
     }
 }
 
