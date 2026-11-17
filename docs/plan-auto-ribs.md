@@ -1,6 +1,6 @@
 # Plan: reinforcement ribs added automatically, where the part needs them
 
-Status: plan, for review. Written 2026-11-17 against `main` at e00c56b0 (6.10.0). It changes no code. The owner has approved building after this plan; each step in section 8 ships as its own small PR with before/after numbers.
+Status: plan merged as #727. Written 2026-11-17 against `main` at e00c56b0 (6.10.0). Steps 1 and 2 of section 8 are merged (#728 and #729); the rest is planned. After the plan merged the owner added three requirements: clearings are zones the user defines, rib profiles are chosen automatically with an override, and planning never blocks the window. They are written into sections 7, 8, 9, 10 and 11. The owner has approved building; each step in section 8 ships as its own small PR with before/after numbers.
 
 The request, in short: add reinforcement ribs to a part automatically, where they are needed and no more than needed, as a change to the solid (so the STEP changes), without getting in the way of what the part is for. The nearest thing a designer does today is apply one uniform rib pattern over the whole inside of a cover, known to be overkill. The team's worked example is such a ribbed cover; it is a company part, so its measurements and pictures are kept outside the repository and this document does not describe it.
 
@@ -139,14 +139,15 @@ User effort is counted in actions (a click, a pick, a number typed). The manual 
 
 1. **Open Auto ribs** (Model menu, next to Stress) on a solid.
 2. **Click the wall to reinforce.** The inside face; faces that continue it smoothly are taken with it. This is also the answer to "do not touch the outside": ribs only ever stand on picked faces.
-3. **Run.** With no holds or loads given: the wall is held where it meets the rest of the part and pressed evenly. A preview shows the ribs, the predicted gain ("3.1× stiffer"), and the cost ("+9.4 g, +6 %").
+3. **Run.** With no holds or loads given: the wall is held where it meets the rest of the part and pressed evenly. Planning runs as a background job, like slicing, so the window never blocks. It shows the stage and a fraction done. After every rib accepted or removed it reports that rib and the running totals (material added, stiffness factor), so the preview grows live. The preview shows the ribs, the predicted gain ("3.1× stiffer"), and the cost ("+9.4 g, +6 %"). **Stop** returns the best plan so far, marked as stopped early.
 4. **Apply.** One History row, "Auto ribs", editable and removable as a unit.
 
 Optional, never required:
 - **How much**: one slider between "lightest" and "stiffest", or a target ("twice as stiff", "under 0.5 mm"), or a budget ("at most 10 g").
 - **Hold and Load**, the same controls as the Stress panel, when the real load is known.
-- **Keep clear**: faces, or a distance from picked features, where no rib may stand. Holes, bosses and openings inside the wall are kept clear by default with a margin.
+- **Keep clear**: zones the user defines. Nothing tries to detect them: something that sits inside the part may be tall and would bump into ribs there, and only the user knows. A zone is a region of the wall, given the same ways Reinforce takes a region (picked faces, a box, a sphere, a painted patch), with one of two modes: "no ribs" (a rib may end at the zone's border, never cross it) or "ribs up to N mm" (a rib may pass at reduced height), plus an optional margin. Holes in the wall keep a rim margin by default (3 mm), which can be turned off.
 - **Rib size**: thickness and greatest height. Defaults come from the process: filament (bead widths, no draft), resin, or moulded (60 % of the wall, draft).
+- **Rib profile**: chosen automatically from the process and the print pose; the user can pick another in the panel (section 7.5).
 
 After Apply the panel reports: grams and percent added, extra print time from a slice, stiffness before and after on the real sliced part from the existing Stress study, and the print check for the current printer (flat bed or belt).
 
@@ -155,17 +156,21 @@ After Apply the panel reports: grams and percent added, extra print time from a 
 - **Model.** The picked wall is meshed from the kernel's triangulation and solved as a thin shell: a membrane triangle plus a plate-bending triangle per facet, with ribs as beam elements along mesh edges (the model of Li et al., which they checked against a commercial solver). Wall thickness per vertex comes from inward rays, as `model_check` already does. This lives in `lime-sim` beside the existing solver and reuses its sparse solve.
 - **Edges of the picked wall** are held where the wall runs into the rest of the part (side walls, rims), unless the user's own holds say otherwise.
 - **Outputs**: deflection, strain energy per element, and the two principal bending directions per element.
-- **Why not the existing block-grid solver**: section 4. A shell of 20,000 triangles solves in well under a second, so the planner can afford a few hundred solves.
+- **Why not the existing block-grid solver**: section 4. One solve of a 20,000-triangle wall takes 0.37 s.
+- **Speed of a whole plan.** A first version of the planner took 64 s for a whole plan at that size, because every rib it tried re-factored the whole system. The plan is to score a candidate rib from the current factor (a low-rank update, no new factorisation) and to score candidates in parallel across cores. The GPU is not used here: a wall is a small sparse direct problem, where it does not help. The Stress study uses the GPU only from 400,000 nodes.
+- **Each rib profile is modelled by its real area, second moment and centroid height**, not by a plain rectangle (section 7.5).
 - **What is rough here, said plainly**: treating a wall of a solid part as a shell held at its edges ignores how much the side walls give. The ranking of where ribs help survives this; the absolute numbers do not. That is why the number shown to the user after Apply comes from the existing Stress study on the whole sliced part, not from the shell.
 
 ### 7.3 The planner: grow, score, prune
 
 1. Solve the bare wall.
-2. Smooth the bending directions and trace candidate lines along both, spaced by rule, kept off keep-clear areas and away from points where the direction is undefined.
-3. Score each candidate by the strain energy it removes per gram. Add the best, re-solve, repeat. Ribs that meet are joined; a rib that ends in mid-wall is extended to the nearest wall or rib, since a loose end does little.
+2. Smooth the bending directions and trace candidate lines along both, spaced by rule, away from points where the direction is undefined. The user's zones apply here: a "no ribs" zone is never crossed (a rib may end at its border), and a "ribs up to N mm" zone caps the height of any rib passing through it. Holes keep their rim margin unless it is turned off.
+3. Score each candidate by the strain energy it removes per gram. The score comes from the current factor (a low-rank update), and candidates are scored in parallel across cores (7.2). Add the best, re-solve, repeat. Ribs that meet are joined; a rib that ends in mid-wall is extended to the nearest wall or rib, since a loose end does little.
 4. Stop at the target, the budget, or when the next rib gains under a set fraction.
-5. Size by rule (7.1), with height capped by the clearance to whatever faces the wall.
+5. Size by rule (7.1), with height capped by the clearance to whatever faces the wall and by any zone.
 6. Always computed for the report: the same stiffness reached by simply thickening the wall, and by an even grid of the same weight. A plan that beats neither is shown as such.
+
+Planning is a background job. It reports the stage and a fraction done. After every rib accepted or removed it reports that rib and the running totals (material added, stiffness factor), so the preview grows as ribs are chosen. Stop returns the best plan so far, marked as stopped early. The method adds one rib at a time, so after the first rib there is always a valid plan.
 
 Deterministic: the same part and inputs give the same ribs.
 
@@ -174,9 +179,22 @@ Deterministic: the same part and inputs give the same ribs.
 - A new composite step, `ribNet`: a list of paths on the solid's faces, with thickness, height and end taper. Each run becomes a loft through sections that stand along the surface normal and sink half a millimetre into the wall; all runs are fused in one combined step. This uses steps the kernel already has [probe].
 - Guards: every rib is checked against the outside by rays before it is built, and the built step is refused if the outside surface changed anywhere.
 - Usable by hand and over MCP as well, so a person or an agent can add or edit a rib path without the planner.
-- Root fillets are off in the first version (the whole-network fillet is the one operation that ran away in the probe); a fillet per rib is listed for later.
+- No fillet step. The whole-network fillet is the one operation that ran away in the probe, so the flared root is built into the rib's cross-section itself (see the profiles below), not added afterwards.
 
-### 7.5 Printability
+### 7.5 Rib profiles
+
+More than one profile, chosen automatically, with an override in the panel.
+
+| Profile | Why | Default for |
+|---|---|---|
+| Straight (rectangular) | Simplest. Printing has no sink problem. | Filament |
+| Drafted with a flared root | The root radius cuts the stress concentration where the rib meets the wall. Draft is needed for moulding. The stronger choice for prints too. | Moulded |
+| T-rib: a flange on top, its underside chamfered at 45° so it prints without support | The most stiffness per gram. The published rib-shell work found flanged, rounded sections beat a plain rectangle (Li et al. 2017, section 2.2). | Chosen where the pose allows |
+| Height varying along the rib, on any of the above | Tall where the wall bends, low elsewhere and under a height-capped zone. | Any |
+
+The default follows the process and the print pose. For example, there is no T-rib where its flange would hang unsupported on the belt. The user can pick a profile in the panel. The solver models each profile by its real area, second moment and centroid height.
+
+### 7.6 Printability
 
 - **Filament, flat bed and 45° belt**: after planning, `model_check` runs in the current pose. Rib ends are tapered so they start from the wall, not in the air. A rib whose top would be an unsupported ceiling in this pose is reported, with the choice to drop it or keep it.
 - **Resin**: closed pockets between ribs facing the build plate are reported (cupping). Vent notches are listed for later.
@@ -186,20 +204,24 @@ Deterministic: the same part and inputs give the same ribs.
 
 | # | What ships | Evidence in the PR |
 |---|---|---|
-| 1 | The rib-network step (`ribNet`): paths in, one editable History row out; on flat, sloped, cylinder and freeform walls. Fix for the sloped-floor leak of the existing `ribs` step | Outside surface unchanged by rays; mass added; print check on flat bed and belt; timing for 300 runs |
-| 2 | The shell solver in `lime-sim`: membrane plus bending triangles, beam ribs, strain energy and bending directions | Textbook plate cases (clamped and simply supported plates under pressure and point load) within a stated error; a ribbed plate against the existing solver |
-| 3 | The planner as an engine call and an MCP tool: wall, optional holds and loads, target or budget in; rib paths and the predicted gain out | On synthetic covers: stiffness per gram against wall thickening and against an even grid; the Stress study before and after on the sliced part |
-| 4 | The Auto ribs panel: pick, Run, preview, Apply, report | Screenshots in the owner's theme; the four-action count on a real import |
-| 5 | The acceptance run of section 9, and what it shows | Numbers kept local for the company part; synthetic twin in the repo |
+| 1 | **Merged (#728).** The rib-network step (`ribNet`): paths in, one editable History row out; on flat, sloped, cylinder and freeform walls. Fix for the sloped-floor leak of the existing `ribs` step | Outside surface unchanged by rays; mass added; print check on flat bed and belt; timing for 300 runs |
+| 2 | **Merged (#729).** The shell solver in `lime-sim`: membrane plus bending triangles, beam ribs, strain energy and bending directions | Textbook plate cases (clamped and simply supported plates under pressure and point load) within a stated error; a ribbed plate against the existing solver |
+| 3 | The planner core: rib placement, zones, goals (target or budget), progress and stop, and the speed work of 7.2 (low-rank scoring, parallel candidates) | Time for a whole plan at 20,000 triangles; stiffness per gram against wall thickening and against an even grid; Stop returns a valid plan |
+| 4 | Rib profiles in the rib-network step and in the solver: straight, flared root, T-rib, varying height | Each profile's area, second moment and centroid height against hand values; outside surface unchanged; T-rib flange prints without support |
+| 5 | Wall extraction: picked faces to the planner's input (remeshed wall, thickness, borders, zones, holds and loads) | On flat, sloped, cylinder and freeform walls: thickness against rays, borders found, zones mapped onto the mesh |
+| 6 | The engine call and the MCP tool: a background job with stage, fraction, per-rib progress and Stop | A job run end to end over MCP; the Stress study before and after on the sliced part |
+| 7 | The Auto ribs panel: pick, zones, profile choice, Run with live preview, Stop, Apply, report | Screenshots in the owner's theme; the four-action count on a real import |
+| 8 | The acceptance run of section 9, and what it shows | Numbers kept local for the company part; synthetic twin in the repo |
 
 ## 9. How we know it worked
 
 - **The yardstick**: a cover imported from STEP gets useful ribs in four actions and no repair.
 - **Least material**: on a cover with its hand-made ribs removed, the automatic ribs reach the stiffness of the hand-made pattern with clearly less added material, under even pressure and under one real load.
-- **Function**: the outside surface is unchanged; no rib stands on a keep-clear area or closer to a facing part than the clearance.
+- **Function**: the outside surface is unchanged; no rib crosses a "no ribs" zone or exceeds a zone's height cap, and none stands closer to a facing part than the clearance.
 - **Editable**: the result is one History row; a rib can be deleted or changed; the STEP exports.
 - **Printable**: the print check reports nothing new on a flat bed and on the belt, or names each rib that is a problem.
 - **Honest numbers**: every stiffness figure says it is relative (placeholder material cards), and the report shows the thickening and even-grid comparisons.
+- **Measured so far** (planner prototype, relative numbers): on a synthetic long clamped panel, the planner matched the stiffness of an even shallow lattice with 16 % of its rib material (3,312 against 20,274 mm³), and beat both wall thickening and an even grid. On a curved wall under membrane load it only just beat thickening. Ribs pay off in bending, and the report says so when the load is mostly membrane.
 
 ## 10. Research-grade, and not in the first version
 
@@ -207,7 +229,7 @@ Deterministic: the same part and inputs give the same ribs.
 - Buckling and vibration targets.
 - The shell model of a whole solid part, side walls and bosses included (needs a mid-surface, which nothing here builds).
 - A continuous blend between ribs and local wall thickening (Gil-Ureta's cell model).
-- Root fillets per rib, draft on existing faces, vent notches for resin.
+- Draft on existing faces, vent notches for resin. (Root fillets are not needed: the flared root is part of the rib profile, 7.5.)
 - A plugin hook so rib planners can be written as plugins.
 - Topology optimisation of any kind.
 
@@ -221,7 +243,10 @@ The owner put the method and scope decisions with the coordinating session. Reco
 | What the user must give | loads and holds always; or nothing beyond the wall | nothing beyond the wall; loads optional | Asking for loads first would make hand-drawn ribs look reasonable |
 | Solver for placement | the existing block-grid solver; a new shell solver; CalculiX as a separate program | a new shell solver in `lime-sim` | The block grid cannot resolve a thin wall on a large part; a bundled GPL program is not needed |
 | Geometry | new kernel op; or a composite from existing steps | composite from existing steps first | Proven in the probe; a kernel op only if speed or robustness demands it |
-| Root fillets in the first version | on; off | off | The one operation that ran away in the probe |
+| Root fillets | a fillet step after the ribs; a flared root built into the cross-section | flared root in the section, no fillet step | The whole-network fillet ran away in the probe; the section gives the same stress relief without it |
+| Clearings | detect them automatically; zones the user defines | zones the user defines, "no ribs" or "ribs up to N mm", with a margin; holes keep a 3 mm rim by default | Something inside the part may be tall and bump into ribs; only the user knows |
+| Rib profile | one fixed profile; chosen by process and pose with an override | chosen automatically, user can override | Straight suits filament, flared root suits moulding, T-rib gives most stiffness per gram where the pose allows |
+| Planning | block the window until done; a background job | background job with live progress, Stop returns the best plan so far | The method adds one rib at a time, so a valid plan exists after the first rib |
 | Bio patterns as a library | ship them; or growth by strain only | growth by strain only | No evidence they save material |
 | Added print time and material | treat as a cost to approve; or expected | expected, and reported | The owner: a part without ribs is lighter and faster; the point is the least that meets the target |
 
