@@ -17,6 +17,7 @@ import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { planFlange, remapFaces, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
+import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
 import type { Session } from "../session.ts";
 import { NEXT, refuse } from "../refusals.ts";
@@ -29,7 +30,57 @@ const LABEL = "Auto ribs";
 const VERIFY_PRESSURE = 0.01;
 /** The verify study's cell, mm: fine enough for a 2 mm wall to bend in. */
 const VERIFY_CELL_MM = 2;
-const RELATIVE = "Relative numbers: the material card is a placeholder and the wall is solved as a thin shell held at its borders; compare plans and before with after, not with a real part.";
+const RELATIVE = "Relative numbers: the wall is solved as a thin shell held at its borders, with the material card named in rules.material (the library's cards are provisional placeholders, not measured for this filament); compare plans and before with after, not with a real part.";
+
+/** The solid a plan was made for, as plan.fingerprint carries it: ribs_apply refuses a plan for another shape. */
+interface Fingerprint {
+  volumeMm3: number;
+  faces: number;
+  edges: number;
+}
+
+function fingerprintOf(obj: PlateObject): Fingerprint | null {
+  const f = obj.solid?.fingerprint as { volumeMm3?: number; faces?: number; edges?: number } | undefined;
+  return f && typeof f.volumeMm3 === "number" && typeof f.faces === "number" && typeof f.edges === "number" ? { volumeMm3: f.volumeMm3, faces: f.faces, edges: f.edges } : null;
+}
+
+function readFingerprint(value: unknown): Fingerprint | null {
+  const f = value as Partial<Fingerprint> | null | undefined;
+  return f && typeof f.volumeMm3 === "number" && typeof f.faces === "number" && typeof f.edges === "number" ? { volumeMm3: f.volumeMm3, faces: f.faces, edges: f.edges } : null;
+}
+
+function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
+  return a.faces === b.faces && a.edges === b.edges && Math.abs(a.volumeMm3 - b.volumeMm3) <= 1e-6 * Math.max(1, Math.abs(a.volumeMm3)) + 1e-6;
+}
+
+/**
+ * The card the shell model and the verify study use: the library card for the selected filament's polymer when there
+ * is one, else the default card, and a sentence saying which, so a placeholder is never presented as the filament's.
+ */
+function ribCard(this: Session): { card: ReturnType<Session["simCard"]>; row: Row } {
+  const filament = this.filament();
+  const cards = cardsOf(this.library);
+  const wanted = String(filament.material ?? "").trim().toLowerCase();
+  const own = wanted ? cards.find((card) => card.polymer.trim().toLowerCase() === wanted) : undefined;
+  const card = own ?? this.simCard(undefined);
+  if ("reason" in card) return { card, row: {} };
+  const values = `E ${card.EInPlaneMPa} MPa, ν ${card.nu}`;
+  return {
+    card,
+    row: {
+      card: card.id,
+      polymer: card.polymer,
+      eMPa: card.EInPlaneMPa,
+      nu: card.nu,
+      provisional: card.provisional,
+      filament: filament.name,
+      forFilament: own !== undefined,
+      note: own
+        ? `${card.id}, the library's ${card.polymer} card for ${filament.name} (${values})${card.provisional ? ": a provisional placeholder, not measured for this filament, so the numbers are relative" : ""}.`
+        : `No card in the library is for ${filament.name}'s ${filament.material || "material"}; the default ${card.id} (${card.polymer}, ${values}) stands in, so the numbers are relative and not this material's.`,
+    },
+  };
+}
 
 const r = (n: number, k = 3) => (Number.isFinite(n) ? Math.round(n * 10 ** k) / 10 ** k + 0 : n);
 const rv = (p: readonly number[]): V3 => [r(p[0]!, 4), r(p[1]!, 4), r(p[2]!, 4)];
@@ -194,6 +245,8 @@ export interface PlanRecord {
   loads?: unknown;
   wallFaces: number[];
   joinedFaces: number[];
+  /** The solid the plan was made for; null only for a plan given without one, which is refused. */
+  fingerprint: Fingerprint | null;
 }
 
 async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row> {
@@ -270,7 +323,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     outerLoopMm: outer,
     given: { width: num(rib.width), maxHeight: num(rib.maxHeight), minHeight: num(rib.minHeight), minSpacing: num(rib.minSpacing), minLength: num(rib.minLength) },
   });
-  const card = this.simCard(undefined);
+  const material = ribCard.call(this);
+  const card = material.card;
   if ("reason" in card) return refuse("no-card", card.reason);
   const wallSet = new Set(wall.faces);
   const printer = this.printer();
@@ -363,9 +417,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   delete request.apply;
   delete request.verify;
   const stoppedEarly = result.stoppedEarly === true;
+  const fingerprint = fingerprintOf(obj);
   const plan: Row = {
     object: obj.id,
     node: node === null ? null : `n${node}`,
+    fingerprint,
     request,
     ribs,
     ribVolumeMm3: r(planVolume, 2),
@@ -385,7 +441,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     stats: result.stats,
   };
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: input.holds, loads: input.loads, wallFaces: wall.faces, joinedFaces: joined });
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: input.holds, loads: input.loads, wallFaces: wall.faces, joinedFaces: joined, fingerprint });
   const reply: Row = {
     ok: true,
     object: obj.id,
@@ -393,7 +449,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     plan,
     adds,
     wall: wallReport(wall),
-    rules: { width: r(rules.width, 4), maxHeight: r(rules.maxHeight, 3), minHeight: r(rules.minHeight, 3), minSpacing: r(rules.minSpacing, 2), minLength: r(rules.minLength, 2), profile: asked, process, printer: printer.name, build: build.map((v) => r(v, 4)), material: { card: card.id, eMPa: card.EInPlaneMPa, nu: card.nu, provisional: card.provisional }, defaults: rules.defaults },
+    rules: { width: r(rules.width, 4), maxHeight: r(rules.maxHeight, 3), minHeight: r(rules.minHeight, 3), minSpacing: r(rules.minSpacing, 2), minLength: r(rules.minLength, 2), profile: asked, process, printer: printer.name, build: build.map((v) => r(v, 4)), material: material.row, defaults: rules.defaults },
     comparisons: {
       thickening: result.thickening ?? null,
       grid: result.grid ?? null,
@@ -453,12 +509,14 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
     if (job.tool !== "ribs_plan" || !job.result || job.result.ok !== true) return refuse("rib-plan-lost", `${input.job} is not a finished rib plan.`);
     const plan = job.result.plan as Row;
     const stored = this.ribPlans.get(String(plan.object));
-    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [] };
+    record = stored && stored.request && JSON.stringify(stored.ribs) === JSON.stringify(plan.ribs) ? stored : { object: String(plan.object), node: parseNodeId(plan.node), request: plan.request as Row, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, wallFaces: [], joinedFaces: [], fingerprint: readFingerprint(plan.fingerprint) };
   } else if (input.plan && typeof input.plan === "object") {
     const plan = input.plan as Row;
     const object = typeof input.object === "string" ? input.object : typeof plan.object === "string" ? plan.object : this.selected;
     const stored = this.ribPlans.get(object);
-    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [] };
+    const fingerprint = readFingerprint(plan.fingerprint);
+    if (!fingerprint) return refuse("bad-rib-plan", "A plan given to ribs_apply carries the fingerprint of the solid it was made for (plan.fingerprint {volumeMm3, faces, edges}, as ribs_plan gives it), so a plan for another shape is never built. Pass the plan whole, or plan again.");
+    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint };
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
@@ -482,6 +540,10 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
   const tree = await this.opened(obj);
   if ("reason" in tree) return refuse("model-unavailable", tree.reason);
   if (!obj.solid || !obj.solid.editable) return refuse("solid-unreadable", "This part has no solid to add ribs to.");
+  const now = fingerprintOf(obj);
+  if (record.fingerprint && now && !sameFingerprint(record.fingerprint, now)) {
+    return refuse("stale-rib-plan", `The part is not the solid this plan was made for (planned on ${record.fingerprint.faces} faces, ${record.fingerprint.edges} edges, ${r(record.fingerprint.volumeMm3, 1)} mm³; it is now ${now.faces} faces, ${now.edges} edges, ${r(now.volumeMm3, 1)} mm³). Plan again with ribs_plan.`);
+  }
   if (record.node !== null && obj.tree && obj.tree.current !== record.node) {
     return refuse("stale-rib-plan", `The part changed since this plan was made (it was planned on n${record.node}; the part is at n${obj.tree.current}). Plan again with ribs_plan, or model_goto n${record.node} first.`);
   }
@@ -563,7 +625,7 @@ function ribsStudy(this: Session, _obj: PlateObject, record: PlanRecord): Object
   if ("reason" in holds) return holds;
   const loads = this.readLoads(record.loads);
   if ("reason" in loads) return loads;
-  const card = this.simCard(undefined);
+  const card = ribCard.call(this).card;
   if ("reason" in card) return card;
   const wallFaces = record.wallFaces.length ? record.wallFaces : [];
   const heldFaces: StudyHold[] = holds.length ? holds : record.joinedFaces.length ? [{ kind: "faces", faces: record.joinedFaces }] : [];
