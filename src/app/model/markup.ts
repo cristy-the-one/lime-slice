@@ -57,6 +57,8 @@ const RAIL = `
                 <button id="modelMenuParameters" type="button" role="menuitem" data-tip="Open Parameters. Ctrl+Alt+P also opens them when the dock is closed.">Parameters</button>
                 <!-- --- Plugins (docs/plan-recipe-plugins.md D13): the library's card, beside Parameters. No rail button. --- -->
                 <button id="modelMenuPlugins" type="button" role="menuitem" data-tip="Run a plugin from your library on this part or as a new one. Ctrl+Alt+L">Plugins…</button>
+                <!-- --- Auto ribs (docs/plan-auto-ribs.md 7.1): a card like Print transition's, next to Stress. --- -->
+                <button id="modelMenuAutoRibs" type="button" role="menuitem" data-tip="Click a wall, Run, Apply: ribs where the wall bends, and no more than it needs. One History step.">Auto ribs…</button>
                 <button id="modelMenuStress" type="button" role="menuitem" data-tip="Hold, load, and solve for stress. The solid is not edited.">Stress…</button>
                 <!-- --- Split to print (D10): a card of its own, not a rail tool. The rail's Split stays one plane. --- -->
                 <button id="modelMenuSplitPrint" type="button" role="menuitem" data-tip="Cut a part too large for the printer into pieces that fit, each an object on the plate.">Split to print…</button>
@@ -455,6 +457,8 @@ const DOCK = `
               <div class="model-split-print" id="modelSplitPrint" data-card-for="split-print" hidden></div>
               <!-- --- Print transitions: the card's form, drawn by ui/transition-card.ts while that card holds the pane. --- -->
               <div class="model-transition" id="modelTransition" data-card-for="transition" hidden></div>
+              <!-- --- Auto ribs: the card's steps and sections, drawn by ui/auto-ribs-card.ts while that card holds the pane. --- -->
+              <div class="model-auto-ribs" id="modelAutoRibs" data-card-for="auto-ribs" hidden></div>
               <!-- --- Plugins: the card's list and form, drawn by ui/plugins-panel.ts while that card holds the pane. --- -->
               <div class="model-plugins" id="modelPlugins" data-card-for="plugins" hidden></div>
             </div>

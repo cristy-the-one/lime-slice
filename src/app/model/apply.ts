@@ -36,6 +36,7 @@ import {
   transitionCardOp,
   transitionCardOpen,
 } from "../../ui/transition-card.ts";
+import { autoRibsCardOpen, autoRibsPrimary } from "../../ui/auto-ribs-card.ts";
 import { S } from "./shared";
 import { addPiece, createSolid } from "./create";
 import { nodeName, treeOf } from "./edges";
@@ -121,6 +122,11 @@ export async function applyTool() {
     if (!typed || !button || button.disabled) return;
     if (S.editing) await updateSplitPrint(S.editing, typed);
     else await applySplitPrint(typed);
+    return;
+  }
+  // --- Auto ribs: the card's primary button is Run until there is a plan, then Apply (src/ui/auto-ribs-card.ts).
+  if (autoRibsCardOpen()) {
+    if (button && !button.disabled) await autoRibsPrimary();
     return;
   }
   if (transitionCardOpen()) {

@@ -14,6 +14,7 @@ import { bindPull } from "./model/pull";
 import { releaseModelTrees } from "./model/save";
 import { bindSplitPrint, exportedPart, exportSplitNote } from "./model/split-print";
 import { bindTransition, keepStale, requestReaim, transitionStaleNote } from "./model/transition";
+import { bindAutoRibs } from "./model/auto-ribs";
 import { bindInspect, bindLook, refreshModelContext } from "./model/view";
 export { commonVolume, exportAssemblyStep } from "./model/assembly";
 export { captureOpenSolid, commitModel } from "./model/commit";
@@ -34,6 +35,7 @@ export function bindModelView() {
   bindSplitPrint();
   bindPlugins();
   bindTransition();
+  bindAutoRibs();
   bindParameters();
   bindStress();
   noteParametersBuilt();
