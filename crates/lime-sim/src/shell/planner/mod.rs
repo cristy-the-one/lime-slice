@@ -54,8 +54,8 @@ use crate::error::SimError;
 use crate::units::{dot, norm, sub};
 
 use super::{
-    IsotropicShell, LoadCase, Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel,
-    ShellOptions,
+    IsotropicShell, LoadCase, Rib, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh,
+    ShellModel, ShellOptions,
 };
 
 pub use profile::{choose_profile, FlangeShape, Process, ProfileRules, RibProfile};
@@ -265,6 +265,10 @@ pub struct PlannedRib {
     /// or lower where a height-capped zone or the clearance says so.
     pub heights: Vec<f64>,
     pub profile: RibProfile,
+    /// The section each stretch is built with, as `heights`: the profile's
+    /// at that height (a tee only where it was limited, or straight where a
+    /// stretch is too low for its root and flange).
+    pub sections: Vec<RibSection>,
     pub side: RibSide,
     pub ends: [RibEndKind; 2],
     pub family: Family,
@@ -766,6 +770,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             height: d.tallest(),
             heights: d.heights(),
             profile: d.profile,
+            sections: d
+                .heights()
+                .iter()
+                .map(|&h| d.profile.section_at(d.width, h))
+                .collect(),
             side: rules.side,
             ends,
             family: d.family,

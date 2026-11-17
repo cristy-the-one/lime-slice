@@ -11,7 +11,8 @@ mod shell_common;
 use lime_sim::assemble::{Hold, Load, NodeHold};
 use lime_sim::mesh::faces_on_plane;
 use lime_sim::shell::planner::{
-    choose_profile, plan_ribs, FlangeShape, Goal, Process, ProfileRules, RibPlanRequest, RibProfile,
+    choose_profile, plan_ribs, FlangeShape, Goal, Process, ProfileRules, RibPlanRequest,
+    RibProfile, Zone, ZoneMode,
 };
 use lime_sim::shell::rib_section::rectangle_torsion;
 use lime_sim::shell::{
@@ -597,49 +598,149 @@ fn one_rib_of_equal_area() {
 /// budget, straight against tee ribs (the default tee, chamfered).
 #[test]
 fn planner_straight_against_tee_at_equal_budget() {
-    let mesh = ShellMesh::rectangle([240.0, 100.0], [48, 20], 2.0);
-    let mut results = Vec::new();
+    let tee = RibProfile::default_tee(1.2, FlangeShape::Chamfered);
+    let auto = choose_profile(&ProfileRules {
+        process: Process::Filament,
+        flange: Some(FlangeShape::Chamfered),
+        width: 1.2,
+        max_height: 6.0,
+        wall: 2.0,
+        force: None,
+    });
     for budget in [3000.0, 6000.0] {
-        for profile in [
+        let s = panel_plan(
+            "max height 6",
+            "straight",
             RibProfile::Rectangular,
-            choose_profile(&ProfileRules {
-                process: Process::Filament,
-                flange: Some(FlangeShape::Chamfered),
-                width: 1.2,
-                max_height: 6.0,
-                force: None,
-            }),
-        ] {
-            let mut req = RibPlanRequest::new(mesh.clone(), material(E, 0.35));
-            req.goal = Goal::Budget { volume_mm3: budget };
-            req.rules.profile = profile;
-            req.options.baselines = false;
-            let plan = plan_ribs(&req).unwrap();
-            let kind = if profile == RibProfile::Rectangular {
-                "straight"
+            6.0,
+            None,
+            budget,
+        );
+        panel_plan("max height 6", "tee 45°", tee, 6.0, None, budget);
+        // Nothing limits the height: the automatic choice is straight.
+        let a = panel_plan("max height 6", "automatic", auto, 6.0, None, budget);
+        assert!((a - s).abs() < 1e-9 * s, "{a} {s}");
+    }
+}
+
+/// The 240 × 100 clamped panel under even pressure, planned to a budget.
+/// Every plan stays within it, counted as the plan reports volume: real
+/// section areas, crossing overlaps once. Returns the stiffness factor.
+fn panel_plan(
+    case: &str,
+    kind: &str,
+    profile: RibProfile,
+    max_height: f64,
+    cap: Option<f64>,
+    budget: f64,
+) -> f64 {
+    let mesh = ShellMesh::rectangle([240.0, 100.0], [48, 20], 2.0);
+    let mut req = RibPlanRequest::new(mesh.clone(), material(E, 0.35));
+    if let Some(cap) = cap {
+        // The middle third, x 80 to 160, no taller than `cap`.
+        let triangles = (0..mesh.triangles.len() as u32)
+            .filter(|&t| {
+                let x = mesh.triangles[t as usize]
+                    .iter()
+                    .map(|&v| mesh.vertices[v as usize][0])
+                    .sum::<f64>()
+                    / 3.0;
+                (80.0..160.0).contains(&x)
+            })
+            .collect();
+        req.zones.push(Zone {
+            triangles,
+            mode: ZoneMode::MaxHeight(cap),
+            margin: 0.0,
+        });
+    }
+    req.goal = Goal::Budget { volume_mm3: budget };
+    req.rules.profile = profile;
+    req.rules.max_height = max_height;
+    req.options.baselines = false;
+    let plan = plan_ribs(&req).unwrap();
+    eprintln!(
+        "| {case} | budget {budget:.0} | {kind} | {} ribs | {:.0} mm³ | {:.3}× | {:.3} per cm³ |",
+        plan.ribs.len(),
+        plan.rib_volume_mm3,
+        plan.stiffness_factor,
+        (plan.stiffness_factor - 1.0) / (plan.rib_volume_mm3 / 1000.0)
+    );
+    assert!(
+        plan.rib_volume_mm3 <= budget,
+        "{case} {kind}: {} mm³ over a {budget} mm³ budget",
+        plan.rib_volume_mm3
+    );
+    assert!(!plan.ribs.is_empty());
+    plan.stiffness_factor
+}
+
+/// Where a rib may not stand as tall as it would like: the greatest
+/// height lowered to 4 mm and 3 mm all over, and a zone capping the middle
+/// third at 3 mm under a 6 mm limit. Straight against the default tees.
+/// The chamfered tee needs 3.1 mm to stand (root 0.6 + chamfer 1.2 +
+/// flange 1.2); under that a stretch is planned straight. The square
+/// flange needs 1.9 mm.
+#[test]
+fn straight_against_tee_where_height_is_limited() {
+    let chamfered = RibProfile::default_tee(1.2, FlangeShape::Chamfered);
+    let square = RibProfile::default_tee(1.2, FlangeShape::Square);
+    let cases: [(&str, f64, Option<f64>); 3] = [
+        ("max height 4", 4.0, None),
+        ("max height 3", 3.0, None),
+        ("max 6, middle third capped 3", 6.0, Some(3.0)),
+    ];
+    let mut rows = Vec::new();
+    for (case, max_height, cap) in cases {
+        // The automatic choice, on a 45° belt across the belt (square
+        // flange): tees only on the stretches held low.
+        let auto = choose_profile(&ProfileRules {
+            process: Process::Filament,
+            flange: Some(FlangeShape::Square),
+            width: 1.2,
+            max_height,
+            wall: 2.0,
+            force: None,
+        });
+        for budget in [3000.0, 6000.0] {
+            let s = panel_plan(
+                case,
+                "straight",
+                RibProfile::Rectangular,
+                max_height,
+                cap,
+                budget,
+            );
+            let c = if max_height >= 3.1 {
+                panel_plan(case, "tee 45°", chamfered, max_height, cap, budget)
             } else {
-                "tee"
+                f64::NAN
             };
-            eprintln!(
-                "| budget {budget:.0} mm³ | {kind} | {} ribs | {:.0} mm³ | stiffness {:.3}× | per cm³ {:.3} |",
-                plan.ribs.len(),
-                plan.rib_volume_mm3,
-                plan.stiffness_factor,
-                (plan.stiffness_factor - 1.0) / (plan.rib_volume_mm3 / 1000.0)
-            );
-            // Within 2 % of the budget: the planner's straight plan at
-            // 6000 mm³ came out at 6102 mm³ (its own accounting, the same
-            // with or without profiles; reported, not fixed here).
-            assert!(
-                plan.rib_volume_mm3 <= 1.02 * budget,
-                "{}",
-                plan.rib_volume_mm3
-            );
-            assert!(!plan.ribs.is_empty());
-            results.push((budget, kind, plan.stiffness_factor, plan.rib_volume_mm3));
+            let q = panel_plan(case, "tee square", square, max_height, cap, budget);
+            let a = panel_plan(case, "automatic (square)", auto, max_height, cap, budget);
+            rows.push((case, budget, s, c, q, a));
         }
     }
-    eprintln!("{results:?}");
+    eprintln!(
+        "| case | budget | straight | tee 45° | tee square | automatic | automatic vs straight |"
+    );
+    for r in &rows {
+        eprintln!(
+            "| {} | {:.0} mm³ | {:.3}× | {:.3}× | {:.3}× | {:.3}× | {:+.1} % |",
+            r.0,
+            r.1,
+            r.2,
+            r.3,
+            r.4,
+            r.5,
+            100.0 * (r.5 - r.2) / r.2
+        );
+    }
+    // Where the height is limited and the material is enough for a few
+    // ribs, the automatic choice is stiffer than straight ribs.
+    for r in rows.iter().filter(|r| r.1 == 6000.0) {
+        assert!(r.5 > r.2, "{r:?}");
+    }
 }
 
 /// A straight rib built through `RibSection::rectangular` gives the same

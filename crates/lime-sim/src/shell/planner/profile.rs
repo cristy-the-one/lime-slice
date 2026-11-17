@@ -41,6 +41,15 @@ pub enum RibProfile {
         flange_chamfer_deg: f64,
         root_radius: f64,
     },
+    /// Straight where a stretch may stand `straight_height` tall, and the
+    /// default tee ([`RibProfile::default_tee`] with `flange`) on each
+    /// stretch held lower, by a clearance, a zone's height cap or the
+    /// greatest height, when the tee stands there; straight otherwise.
+    /// What [`choose_profile`] gives a print whose flange prints.
+    TeeWhereLimited {
+        flange: FlangeShape,
+        straight_height: f64,
+    },
 }
 
 /// What a part is made by.
@@ -75,6 +84,8 @@ pub struct ProfileRules {
     pub width: f64,
     /// Greatest rib height, mm.
     pub max_height: f64,
+    /// The wall's thickness, mm (the thinnest, for a varying wall).
+    pub wall: f64,
     /// Take this profile, whatever the rest says.
     pub force: Option<RibProfile>,
 }
@@ -86,6 +97,10 @@ pub const TEE_FLANGE_WIDTHS: f64 = 3.0;
 pub const TEE_CHAMFER_DEG: f64 = 45.0;
 /// A drafted rib's draft, degrees per side (as `ribNet`).
 pub const DRAFT_DEG: f64 = 1.0;
+/// A greatest height under this many wall thicknesses limits a straight
+/// rib (the usual rib rule, and where the measured panel stopped needing
+/// a flange: 6 mm on a 2 mm wall).
+pub const STRAIGHT_HEIGHT_WALLS: f64 = 3.0;
 
 impl RibProfile {
     /// `ribNet`'s default tee for a web `width` wide: a flange three webs
@@ -112,10 +127,11 @@ impl RibProfile {
         }
     }
 
-    /// The full section, before any height is fitted.
+    /// The full section, before any height is fitted (straight for
+    /// [`RibProfile::TeeWhereLimited`], its section where unlimited).
     pub fn section(self, width: f64) -> RibSection {
         match self {
-            Self::Rectangular => RibSection::rectangular(width),
+            Self::Rectangular | Self::TeeWhereLimited { .. } => RibSection::rectangular(width),
             Self::Drafted {
                 draft_deg,
                 root_radius,
@@ -143,6 +159,16 @@ impl RibProfile {
     /// plain straight rib when the stretch is too low for its root and
     /// flange (see the module notes).
     pub fn section_at(self, width: f64, height: f64) -> RibSection {
+        if let Self::TeeWhereLimited {
+            flange,
+            straight_height,
+        } = self
+        {
+            if height < straight_height - 1e-9 {
+                return Self::default_tee(width, flange).section_at(width, height);
+            }
+            return RibSection::rectangular(width);
+        }
         let full = self.section(width);
         if full.check(height).is_ok() {
             full
@@ -290,13 +316,18 @@ impl RibProfile {
     }
 }
 
-/// The profile for a process and a print pose.
+/// The profile for a process and a print pose, following what the rib
+/// tests measured (`tests/rib_profiles.rs`): at equal material a straight
+/// rib that may stand taller beats a tee, and a tee beats a straight rib
+/// of the same height.
 ///
 /// - A forced profile wins.
-/// - Filament or resin: a tee ([`RibProfile::default_tee`], with the
-///   caller's flange shape) when a flange prints in this pose and the rib
-///   may stand tall enough to carry one: its root, chamfer and flange
-///   plus a web one width tall; a straight rib otherwise.
+/// - Filament or resin: straight, but where a flange prints in this pose
+///   [`RibProfile::TeeWhereLimited`]: a tee on each stretch whose height
+///   is limited below a straight rib's. A straight rib would stand the
+///   greatest height, so a clearance or a zone cap under it is a limit;
+///   and a greatest height under [`STRAIGHT_HEIGHT_WALLS`] walls is a limit
+///   everywhere. A stretch too low for the tee stays straight.
 /// - Moulded: drafted ([`RibProfile::default_drafted`]).
 pub fn choose_profile(rules: &ProfileRules) -> RibProfile {
     if let Some(p) = rules.force {
@@ -305,13 +336,15 @@ pub fn choose_profile(rules: &ProfileRules) -> RibProfile {
     match rules.process {
         Process::Moulded => RibProfile::default_drafted(rules.width, rules.max_height),
         Process::Filament | Process::Resin => match rules.flange {
-            Some(shape) => {
-                let tee = RibProfile::default_tee(rules.width, shape);
-                let needs = tee.section(rules.width).least_height() + rules.width;
-                if rules.max_height >= needs {
-                    tee
-                } else {
-                    RibProfile::Rectangular
+            Some(flange) => {
+                let limited_everywhere = rules.max_height < STRAIGHT_HEIGHT_WALLS * rules.wall;
+                RibProfile::TeeWhereLimited {
+                    flange,
+                    straight_height: if limited_everywhere {
+                        f64::INFINITY
+                    } else {
+                        rules.max_height
+                    },
                 }
             }
             None => RibProfile::Rectangular,
@@ -330,35 +363,46 @@ mod tests {
             flange: None,
             width: 1.2,
             max_height: 6.0,
+            wall: 2.0,
             force: None,
         };
+        // No flange prints: straight.
         assert_eq!(choose_profile(&base), RibProfile::Rectangular);
+        // A flange prints, the height is free: straight but where a cap
+        // or the clearance holds a stretch under 6 mm.
         let bed = ProfileRules {
             flange: Some(FlangeShape::Chamfered),
             ..base
         };
+        let auto = choose_profile(&bed);
         assert_eq!(
-            choose_profile(&bed),
-            RibProfile::default_tee(1.2, FlangeShape::Chamfered)
+            auto,
+            RibProfile::TeeWhereLimited {
+                flange: FlangeShape::Chamfered,
+                straight_height: 6.0
+            }
         );
-        let belt = ProfileRules {
+        assert_eq!(auto.section_at(1.2, 6.0), RibSection::rectangular(1.2));
+        assert_eq!(
+            auto.section_at(1.2, 4.0),
+            RibProfile::default_tee(1.2, FlangeShape::Chamfered).section(1.2)
+        );
+        // Under 3.1 mm the chamfered tee does not stand: straight.
+        assert_eq!(auto.section_at(1.2, 3.0), RibSection::rectangular(1.2));
+        // The greatest height itself under three walls: a limit everywhere.
+        let low = ProfileRules {
+            max_height: 4.0,
             flange: Some(FlangeShape::Square),
             ..base
         };
-        let RibProfile::Tee {
+        let auto = choose_profile(&low);
+        let RibSection::Tee {
             flange_chamfer_deg, ..
-        } = choose_profile(&belt)
+        } = auto.section_at(1.2, 4.0)
         else {
-            panic!("a tee");
+            panic!("a tee at the greatest height");
         };
         assert_eq!(flange_chamfer_deg, 0.0);
-        // Chamfered default at 1.2: root 0.6 + chamfer 1.2 + flange 1.2,
-        // then a web of 1.2: 4.2 mm.
-        let short = ProfileRules {
-            max_height: 4.1,
-            ..bed
-        };
-        assert_eq!(choose_profile(&short), RibProfile::Rectangular);
         let mould = ProfileRules {
             process: Process::Moulded,
             ..base
