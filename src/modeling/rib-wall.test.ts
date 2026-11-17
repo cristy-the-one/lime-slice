@@ -412,26 +412,27 @@ const chan = channel(100, 30, 2, 6, 150).solid();
   const w = wallOf(box1, opts);
   const T = w.request.mesh.triangles;
   const all = T.map((_, t) => t);
-  const sameSet = (name: string, index: number, want: (c: V3, t: number) => boolean) => {
+  // A place takes every triangle any part of which is in it: its centroid or a corner.
+  const sameSet = (name: string, index: number, want: (c: V3, t: number) => boolean, corners = false) => {
     const zone = w.zones[index]!;
     const got = new Set(zone.triangles);
-    const expect = all.filter((t) => want(centroidOf(w, t), t));
+    const expect = all.filter((t) => want(centroidOf(w, t), t) || (corners && T[t]!.some((v) => want(w.skin[v]!, t))));
     const ok = expect.length === got.size && expect.every((t) => got.has(t));
     check(`zone ${name}: ${zone.triangles.length} triangles, ${zone.areaMm2} mm²`, ok && expect.length > 0, `${expect.length} expected, ${got.size} got`);
   };
   sameSet("faces (the floor)", 0, () => true);
-  sameSet("box min/max", 1, (c) => c[0] >= 20 && c[0] <= 60 && c[1] >= 20 && c[1] <= 50);
+  sameSet("box min/max", 1, (c) => c[0] >= 20 && c[0] <= 60 && c[1] >= 20 && c[1] <= 50, true);
   const cos = Math.SQRT1_2;
   sameSet("box turned 45°", 2, (c) => {
     const dx = c[0] - 150;
     const dy = c[1] - 50;
     return Math.abs(cos * dx + cos * dy) <= 20 && Math.abs(-cos * dx + cos * dy) <= 5;
-  });
-  sameSet("sphere", 3, (c) => Math.hypot(c[0] - 100, c[1] - 80, c[2] - 2) <= 8);
-  sameSet("cylinder", 4, (c) => Math.hypot(c[0] - 40, c[1] - 70) <= 6);
-  sameSet("painted disks (the one facing away paints nothing)", 5, (c) => Math.hypot(c[0] - 170, c[1] - 20) <= 5 || Math.hypot(c[0] - 178, c[1] - 20) <= 5);
-  sameSet("band (half-space)", 6, (c) => c[0] >= 190);
-  sameSet("band (slab)", 7, (c) => c[1] >= 45 && c[1] <= 55);
+  }, true);
+  sameSet("sphere", 3, (c) => Math.hypot(c[0] - 100, c[1] - 80, c[2] - 2) <= 8, true);
+  sameSet("cylinder", 4, (c) => Math.hypot(c[0] - 40, c[1] - 70) <= 6, true);
+  sameSet("painted disks (the one facing away paints nothing)", 5, (c) => Math.hypot(c[0] - 170, c[1] - 20) <= 5 || Math.hypot(c[0] - 178, c[1] - 20) <= 5, true);
+  sameSet("band (half-space)", 6, (c) => c[0] >= 190, true);
+  sameSet("band (slab)", 7, (c) => c[1] >= 45 && c[1] <= 55, true);
   check("zone off the wall: reported, not in the request", !!w.zones[8]!.missed && w.report.zones[8]!.missed !== undefined && w.request.zones.length === 11, JSON.stringify(w.report.zones[8]));
   sameSet("face off the wall (the +X side wall): triangles touching it", 9, (_, t) => T[t]!.some((v) => near(w.skin[v]![0], 198, 1e-3)));
   sameSet("near a point", 10, (c) => Math.hypot(c[0] - 60, c[1] - 40) <= 6);
@@ -439,7 +440,7 @@ const chan = channel(100, 30, 2, 6, 150).solid();
   const z1 = w.request.zones[1]!;
   check("zone mode and margin carried", z1.mode.kind === "maxHeight" && (z1.mode as { mm: number }).mm === 2 && z1.margin === 1 && w.request.zones[0]!.mode.kind === "noRibs");
   const rep = w.report.zones[1]!;
-  check("zone report: area, centre, bounds", near(rep.areaMm2, 40 * 30, 40) && near(rep.centre![0], 40, 1) && near(rep.centre![1], 35, 1) && rep.bounds!.min[0] >= 17 && rep.bounds!.max[0] <= 63, JSON.stringify(rep));
+  check("zone report: area, centre, bounds", rep.areaMm2 >= 40 * 30 && rep.areaMm2 <= 1600 && near(rep.centre![0], 40, 1) && near(rep.centre![1], 35, 1) && rep.bounds!.min[0] >= 14 && rep.bounds!.max[0] <= 66 && rep.bounds!.min[0] <= 20 && rep.bounds!.max[0] >= 60, JSON.stringify(rep));
   check("zone keeps its definition", JSON.stringify(w.zones[3]!.definition) === JSON.stringify(opts.zones![3]));
 
   // An obstacle: a box hovering 4 mm over part of the floor, clearance 1: a 3 mm cap under it, none elsewhere.

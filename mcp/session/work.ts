@@ -76,7 +76,8 @@ function workReply(this: Session, job: WorkJob): Record<string, unknown> {
     // A call whose result is a job of its own (slice_start's slice) keeps that handle and status, so the same wait
     // loop goes on to wait for the slice; the background job is named beside it.
     if (typeof result.job === "string") return { ...result, workJob: job.handle, tool: job.tool };
-    return { ...result, job: job.handle, status: "done", tool: job.tool };
+    // Progress a wait has not read yet (a rib plan's last events) comes with the result, once.
+    return { ...result, ...(job.ctx.progress && result.ok === true ? job.ctx.progress() : {}), job: job.handle, status: "done", tool: job.tool };
   }
   return {
     ok: true,

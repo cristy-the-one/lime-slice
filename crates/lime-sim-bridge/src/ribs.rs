@@ -13,10 +13,11 @@
 //! returns the plan as it stood (`stoppedEarly`), never an error. The MCP
 //! engine keeps the jobs; a desktop command can keep them the same way.
 //!
-//! The solver's rib section is a field of its own (`rules.solverProfile`,
-//! "rectangular" by default) beside the profile the geometry is built with,
-//! which the TypeScript side passes to `ribNet` and never sends here. When
-//! the solver models drafted and tee sections, that field selects them.
+//! The rib section is `rules.profile`: a fixed one (straight, drafted, tee)
+//! or `auto` (the planner's `choose_profile` from the process and the flange
+//! that prints in the current pose, which only the caller knows). Each
+//! planned rib comes back with the section of every stretch, as `ribNet`
+//! builds it.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,10 +25,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use lime_sim::shell::planner::{
-    plan_ribs_with, Family, Goal, Holds, PlanControl, PlanEvent, PlanStage, PlannerOptions,
-    RibChange, RibEndKind, RibPlan, RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
+    choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, PlanControl, PlanEvent,
+    PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
+    RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
 };
-use lime_sim::shell::{IsotropicShell, RibSide, ShellHold, ShellLoad, ShellMesh};
+use lime_sim::shell::{IsotropicShell, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -129,9 +131,72 @@ pub struct WireRules {
     pub min_length: f64,
     #[serde(default)]
     pub extend_limit: Option<f64>,
-    /// The section the solver models: "rectangular" (the only one yet).
+    /// The rib section. Default `{kind: "auto", process: "filament",
+    /// flange: null}`: straight.
     #[serde(default)]
-    pub solver_profile: Option<String>,
+    pub profile: Option<WireProfile>,
+}
+
+/// A flange underside, as the caller found it prints.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum WireFlange {
+    Chamfered,
+    Square,
+}
+
+impl From<WireFlange> for FlangeShape {
+    fn from(f: WireFlange) -> Self {
+        match f {
+            WireFlange::Chamfered => FlangeShape::Chamfered,
+            WireFlange::Square => FlangeShape::Square,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum WireProcess {
+    Filament,
+    Resin,
+    Moulded,
+}
+
+/// `rules.profile`. A field left out takes `ribNet`'s default.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum WireProfile {
+    /// The planner's own choice: [`choose_profile`].
+    #[serde(rename_all = "camelCase")]
+    Auto {
+        #[serde(default)]
+        process: Option<WireProcess>,
+        /// The flange underside that prints in this pose; null for none.
+        #[serde(default)]
+        flange: Option<WireFlange>,
+    },
+    #[serde(alias = "rectangular")]
+    Straight,
+    #[serde(rename_all = "camelCase")]
+    Drafted {
+        #[serde(default)]
+        draft_deg: Option<f64>,
+        #[serde(default)]
+        root_radius: Option<f64>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Tee {
+        #[serde(default)]
+        flange: Option<WireFlange>,
+        #[serde(default)]
+        flange_width: Option<f64>,
+        #[serde(default)]
+        flange_thickness: Option<f64>,
+        #[serde(default)]
+        flange_chamfer_deg: Option<f64>,
+        #[serde(default)]
+        root_radius: Option<f64>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -185,21 +250,128 @@ pub const DEFAULT_E_MPA: f64 = 2000.0;
 pub const DEFAULT_NU: f64 = 0.38;
 pub const DEFAULT_HOLE_RIM_MM: f64 = 3.0;
 
-/// The solver's rib section by name. Drafted and tee sections are not in
-/// the solver yet: the geometry may be built with them while the plan is
-/// solved with the rectangle of the same width and height.
-pub fn solver_profile(name: Option<&str>) -> Result<RibProfile, String> {
-    match name.unwrap_or("rectangular") {
-        "rectangular" | "straight" => Ok(RibProfile::Rectangular),
-        other => Err(format!(
-            "The planner's solver models a rectangular rib section; {other:?} is not in it yet."
-        )),
+/// The planner's profile for the wire's, with `ribNet`'s defaults filled
+/// in. `wall` is the wall's thinnest thickness.
+pub fn profile_of(given: Option<WireProfile>, width: f64, max_height: f64, wall: f64) -> RibProfile {
+    match given.unwrap_or(WireProfile::Auto {
+        process: None,
+        flange: None,
+    }) {
+        WireProfile::Auto { process, flange } => choose_profile(&ProfileRules {
+            process: match process.unwrap_or(WireProcess::Filament) {
+                WireProcess::Filament => Process::Filament,
+                WireProcess::Resin => Process::Resin,
+                WireProcess::Moulded => Process::Moulded,
+            },
+            flange: flange.map(FlangeShape::from),
+            width,
+            max_height,
+            wall,
+            force: None,
+        }),
+        WireProfile::Straight => RibProfile::Rectangular,
+        WireProfile::Drafted {
+            draft_deg,
+            root_radius,
+        } => match RibProfile::default_drafted(width, max_height) {
+            RibProfile::Drafted {
+                draft_deg: d,
+                root_radius: r,
+            } => RibProfile::Drafted {
+                draft_deg: draft_deg.unwrap_or(d),
+                root_radius: root_radius.unwrap_or(r),
+            },
+            other => other,
+        },
+        WireProfile::Tee {
+            flange,
+            flange_width,
+            flange_thickness,
+            flange_chamfer_deg,
+            root_radius,
+        } => match RibProfile::default_tee(
+            width,
+            flange.map_or(FlangeShape::Chamfered, FlangeShape::from),
+        ) {
+            RibProfile::Tee {
+                flange_width: fw,
+                flange_thickness: ft,
+                flange_chamfer_deg: fc,
+                root_radius: rr,
+            } => RibProfile::Tee {
+                flange_width: flange_width.unwrap_or(fw),
+                flange_thickness: flange_thickness.unwrap_or(ft),
+                flange_chamfer_deg: flange_chamfer_deg.unwrap_or(fc),
+                root_radius: root_radius.unwrap_or(rr),
+            },
+            other => other,
+        },
     }
 }
 
-fn profile_name(p: RibProfile) -> &'static str {
+fn flange_name(f: FlangeShape) -> &'static str {
+    match f {
+        FlangeShape::Chamfered => "chamfered",
+        FlangeShape::Square => "square",
+    }
+}
+
+/// The profile as JSON, for the reply.
+pub fn profile_json(p: RibProfile) -> Value {
     match p {
-        RibProfile::Rectangular => "rectangular",
+        RibProfile::Rectangular => json!({ "kind": "straight" }),
+        RibProfile::Drafted {
+            draft_deg,
+            root_radius,
+        } => json!({ "kind": "drafted", "draftDeg": r6(draft_deg), "rootRadius": r6(root_radius) }),
+        RibProfile::Tee {
+            flange_width,
+            flange_thickness,
+            flange_chamfer_deg,
+            root_radius,
+        } => json!({
+            "kind": "tee",
+            "flangeWidth": r6(flange_width),
+            "flangeThickness": r6(flange_thickness),
+            "flangeChamferDeg": r6(flange_chamfer_deg),
+            "rootRadius": r6(root_radius),
+        }),
+        RibProfile::TeeWhereLimited {
+            flange,
+            straight_height,
+        } => json!({
+            "kind": "teeWhereLimited",
+            "flange": flange_name(flange),
+            "straightHeight": if straight_height.is_finite() { json!(r6(straight_height)) } else { Value::Null },
+        }),
+    }
+}
+
+/// A stretch's section as `ribNet` takes it: its profile name and fields.
+pub fn section_json(s: &RibSection) -> Value {
+    match *s {
+        RibSection::Rectangular { width, root_radius } => {
+            json!({ "profile": "straight", "width": r6(width), "rootRadius": r6(root_radius) })
+        }
+        RibSection::Drafted {
+            width,
+            draft_deg,
+            root_radius,
+        } => json!({ "profile": "drafted", "width": r6(width), "draftDeg": r6(draft_deg), "rootRadius": r6(root_radius) }),
+        RibSection::Tee {
+            web_width,
+            flange_width,
+            flange_thickness,
+            flange_chamfer_deg,
+            root_radius,
+        } => json!({
+            "profile": "tee",
+            "width": r6(web_width),
+            "flangeWidth": r6(flange_width),
+            "flangeThickness": r6(flange_thickness),
+            "flangeChamferDeg": r6(flange_chamfer_deg),
+            "rootRadius": r6(root_radius),
+        }),
     }
 }
 
@@ -319,6 +491,7 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         other => return Err(format!("side is \"positive\" or \"negative\", not {other:?}.")),
     };
     let r = &body.rules;
+    let thinnest = wall.mesh.thickness.iter().copied().fold(f64::INFINITY, f64::min);
     let rules = RibRules {
         width: r.width,
         max_height: r.max_height,
@@ -327,7 +500,7 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         min_spacing: r.min_spacing,
         min_length: r.min_length,
         side,
-        profile: solver_profile(r.solver_profile.as_deref())?,
+        profile: profile_of(r.profile, r.width, r.max_height, thinnest),
         extend_limit: r.extend_limit,
     };
     let goal = match body.goal.unwrap_or(WireGoal::Balanced) {
@@ -443,7 +616,8 @@ pub fn plan_json(plan: &RibPlan) -> Value {
                 "width": r6(r.width),
                 "height": r6(r.height),
                 "heights": r.heights.iter().map(|h| r6(*h)).collect::<Vec<_>>(),
-                "solverProfile": profile_name(r.profile),
+                "profile": profile_json(r.profile),
+                "sections": r.sections.iter().map(section_json).collect::<Vec<_>>(),
                 "ends": [end_name(r.ends[0]), end_name(r.ends[1])],
                 "family": match r.family { Family::Major => "major", Family::Minor => "minor" },
                 "lengthMm": r6(r.length_mm),
@@ -509,7 +683,7 @@ pub fn plan_value(body: &str, control: PlanControl) -> Value {
     match plan_ribs_with(&req, control) {
         Ok(plan) => {
             let mut out = plan_json(&plan);
-            out["solverProfile"] = json!(profile_name(req.rules.profile));
+            out["profile"] = profile_json(req.rules.profile);
             out
         }
         Err(err) => json!({ "ok": false, "reason": err.message }),
@@ -596,7 +770,7 @@ impl RibJob {
                     ) {
                         Ok(plan) => {
                             let mut out = plan_json(&plan);
-                            out["solverProfile"] = json!(profile_name(req.rules.profile));
+                            out["profile"] = profile_json(req.rules.profile);
                             out
                         }
                         Err(err) => json!({ "ok": false, "reason": err.message }),
@@ -649,6 +823,70 @@ impl RibJob {
     }
 }
 
+/// The most rib plans kept at once. Finished ones are dropped first; a
+/// running one is kept until it ends.
+pub const JOB_KEEP: usize = 8;
+
+struct Kept {
+    id: usize,
+    job: RibJob,
+}
+
+fn kept() -> &'static Mutex<Vec<Kept>> {
+    static JOBS: std::sync::OnceLock<Mutex<Vec<Kept>>> = std::sync::OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn next_id() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Start a plan: `ribWall`'s request plus rules, goal and options in
+/// ([`RibPlanBody`]); `{ "id" }` or `{ "error" }` out. The MCP engine's
+/// `ribPlanStart` and the desktop's `rib_plan_start` command both call this,
+/// so both see the same jobs, wire and replies.
+pub fn rib_plan_start(body: String) -> String {
+    let job = match RibJob::start(body) {
+        Ok(job) => job,
+        Err(err) => return json!({ "error": err }).to_string(),
+    };
+    let id = next_id();
+    let mut guard = kept().lock().unwrap_or_else(|e| e.into_inner());
+    while guard.len() >= JOB_KEEP {
+        match guard.iter().position(|row| !row.job.running()) {
+            Some(at) => {
+                guard.remove(at);
+            }
+            None => break,
+        }
+    }
+    guard.push(Kept { id, job });
+    json!({ "id": id }).to_string()
+}
+
+/// A job's state and the progress events since the last poll
+/// ([`RibJob::poll`]), or `{ "error" }` for an id this process never had.
+pub fn rib_plan_poll(id: usize) -> String {
+    let guard = kept().lock().unwrap_or_else(|e| e.into_inner());
+    match guard.iter().find(|row| row.id == id) {
+        Some(row) => row.job.poll().to_string(),
+        None => json!({ "error": "That rib plan is not in this session." }).to_string(),
+    }
+}
+
+/// Stop a plan; it returns the plan as it stands, marked `stoppedEarly`.
+pub fn rib_plan_cancel(id: usize) -> String {
+    let guard = kept().lock().unwrap_or_else(|e| e.into_inner());
+    match guard.iter().find(|row| row.id == id) {
+        Some(row) => {
+            row.job.cancel();
+            json!({ "ok": true }).to_string()
+        }
+        None => json!({ "ok": false, "error": "That rib plan is not in this session." }).to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,9 +930,11 @@ mod tests {
         assert_eq!(out["ok"], true, "{out}");
         assert!(!out["ribs"].as_array().unwrap().is_empty());
         assert!(out["stiffnessFactor"].as_f64().unwrap() > 1.0);
-        assert_eq!(out["solverProfile"], "rectangular");
+        assert_eq!(out["profile"]["kind"], "straight");
         let rib = &out["ribs"][0];
         assert_eq!(rib["heights"].as_array().unwrap().len() + 1, rib["points"].as_array().unwrap().len());
+        assert_eq!(rib["sections"].as_array().unwrap().len(), rib["heights"].as_array().unwrap().len());
+        assert_eq!(rib["sections"][0]["profile"], "straight");
     }
 
     #[test]
@@ -711,13 +951,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_field_and_a_solver_profile_not_built_are_refused() {
+    fn an_unknown_field_is_refused_and_profiles_read() {
         let mut bad: Value = serde_json::from_str(&flat_body(json!({}))).unwrap();
         bad["request"]["extra"] = json!(1);
         assert!(plan_ribs_json(&bad.to_string()).contains("could not be read"));
-        let tee = flat_body(json!({ "rules": { "width": 1.2, "maxHeight": 6.0, "minSpacing": 15.0, "minLength": 10.0, "solverProfile": "tee" } }));
-        let out: Value = serde_json::from_str(&plan_ribs_json(&tee)).unwrap();
-        assert!(out["reason"].as_str().unwrap().contains("not in it yet"), "{out}");
+        let p = |v: Value| profile_of(Some(serde_json::from_value(v).unwrap()), 1.35, 6.0, 2.0);
+        assert_eq!(p(json!({ "kind": "straight" })), RibProfile::Rectangular);
+        assert!(matches!(p(json!({ "kind": "tee", "flange": "square" })), RibProfile::Tee { flange_chamfer_deg, .. } if flange_chamfer_deg == 0.0));
+        assert!(matches!(p(json!({ "kind": "auto", "process": "moulded" })), RibProfile::Drafted { .. }));
+        assert!(matches!(p(json!({ "kind": "auto", "flange": "chamfered" })), RibProfile::TeeWhereLimited { .. }));
+        assert_eq!(p(json!({ "kind": "auto", "flange": null })), RibProfile::Rectangular);
     }
 
     #[test]

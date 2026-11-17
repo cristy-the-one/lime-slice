@@ -815,6 +815,18 @@ Cameras sit on the part's own axes, orthographic, Z up. `front` is a camera on â
 
 Layer polylines stay off the default slice (`includePreview: false`). A later `layer_page` can return one layer's path lengths by feature. Returning the polyline coordinates is a debug file, same as the mesh.
 
+### Auto ribs
+
+`ribs_plan` and `ribs_apply` (in the `stress` group; `guide {topic:"ribs"}` has the flow, every default and the zone kinds; plan in `docs/plan-auto-ribs.md`, step 6). The route copies the Stress study's:
+
+- **Wall.** The session poses the solid's display mesh into the frame its Model numbers are typed in, resolves the pick (`wall.faces`, or `wall.face {normal, nearPoint}`, which takes curved faces too), turns an obstacle zone's object into its triangles in that frame, and runs `ribWall` (`src/modeling/rib-wall.ts`): the wall's mid-surface, thickness, joined borders as holds, loads, zones and the clearance in front of it.
+- **Rules.** `src/modeling/auto-ribs.ts` fills the defaults from the process, the nozzle and the wall, and finds which flange underside prints over the wall for the printer's build direction (`planFlange`).
+- **Engine.** `ribPlanStart` on the slicer's engine process (`crates/lime-mcp-engine`, `lime_sim_bridge::ribs::RibJob`) reads `ribWall`'s request on the wire (camelCase serde structs that refuse unknown fields; a `null` clearance is no cap) plus rules, goal and options, and runs `plan_ribs_with` on a thread of its own. Stage events and every rib added, changed or removed are queued; `ribPlanPoll` drains them, `ribPlanCancel` sets the planner's cancel flag and the plan as it stood comes back marked `stoppedEarly`. A start or a poll answers at once, so a slice can run beside a plan.
+- **Job.** `ribs_plan` always answers with a background job (`startsAsJob` in `mcp/session/shared.ts`). A wait on it gives `stage`, `fraction` and `ribs: {events, totals}` (each event once; the rest come with the result). `slice_cancel` stops it (`ribs_plan` is stoppable). A plan alone is `shared`: other calls run beside it. With `apply:true` it holds the part like any edit.
+- **Back to the part.** The plan's polylines are on the mid-surface; `ribPathsFromPlan` takes them onto the wall's face. Each rib's sections (one per stretch) are checked against the rib's own direction (`fitFlanges`). `ribs_apply` builds them as one `ribNet` step through `model_apply` (one History row, `auto` keeping the request), split where height or section changes, and reports the measured volume and `model_check` before and after; `verify:true` runs the sliced Stress study before and after with faces found again on the ribbed part (`remapFaces`).
+
+Refusals: `bad-wall`, `bad-zone`, `bad-goal`, `rib-plan-failed`, `rib-plan-lost`, `stale-rib-plan`, `bad-rib-plan`, `bad-study`.
+
 ### Resources
 
 Resources are reads. They do not slice and they do not apply.

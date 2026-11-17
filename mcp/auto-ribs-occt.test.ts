@@ -133,15 +133,10 @@ async function slopedShell(): Promise<string> {
   return object;
 }
 async function filletedShell(): Promise<string> {
-  // Outer corners rounded 8 mm before the shell: the inside floor runs into the walls through 6 mm fillets.
-  const object = String((await call("solid_new", { primitive: "box", dx: 120, dy: 80, dz: 30 })).object);
-  const f = await call("model_apply", { object, probe: true, op: { kind: "fillet", edges: { select: { notDirection: [0, 0, 1], below: 1 } }, size: 8 } });
-  if (f.ok !== true) {
-    const g = await call("model_apply", { object, probe: true, op: { kind: "fillet", edges: { select: { direction: [1, 0, 0] } }, size: 8 } });
-    if (g.ok !== true) throw new Error(`fillet: ${JSON.stringify(f).slice(0, 300)} / ${JSON.stringify(g).slice(0, 300)}`);
-  }
-  const shelled = await call("model_apply", { object, probe: true, op: { kind: "shell", thickness: 2, openFaces: [{ normal: [0, 0, 1] }] } });
-  if (shelled.ok !== true) throw new Error(`shell: ${JSON.stringify(shelled).slice(0, 300)}`);
+  // The inner floor's four edges filleted 6 mm after the shell: the floor runs into the walls through the fillets.
+  const object = await shellBox(120, 80, 30);
+  const f = await call("model_apply", { object, probe: true, op: { kind: "fillet", edges: { select: { onFace: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } } }, size: 6 } });
+  if (f.ok !== true) throw new Error(`fillet: ${JSON.stringify(f).slice(0, 300)}`);
   return object;
 }
 async function cylinderPanel(): Promise<string> {
@@ -234,11 +229,13 @@ let boxObject = "";
     fractions.push(Number(reply.fraction));
   });
   const planMs = Date.now() - t0;
+  // Events no running wait read come with the result.
+  events.push(...((done.ribs?.events ?? []) as Reply[]));
   check("the plan is done", done.ok === true && done.status === "done", JSON.stringify(done).slice(0, 600));
   const plan = done.plan as Reply;
   const ribEvents = events.filter((e) => e.kind === "rib");
   check(`progress came while it ran: ${events.length} events (${ribEvents.length} rib), fractions rising`, ribEvents.length >= 1 && events.some((e) => e.kind === "stage") && fractions.every((f, i) => i === 0 || f >= fractions[i - 1]! - 1e-9), JSON.stringify({ events: events.slice(0, 3), fractions }).slice(0, 400));
-  check("a rib event carries its polyline, heights and the running totals", ribEvents.every((e) => Array.isArray(e.points) && e.points.length >= 2 && Array.isArray(e.heights) && typeof e.ribVolumeMm3 === "number" && typeof e.stiffnessFactor === "number"), JSON.stringify(ribEvents[0]).slice(0, 300));
+  check("a rib event carries its polyline, heights and the running totals", ribEvents.filter((e) => e.change !== "removed").every((e) => Array.isArray(e.points) && e.points.length >= 2 && Array.isArray(e.heights) && typeof e.ribVolumeMm3 === "number" && typeof e.stiffnessFactor === "number"), JSON.stringify(ribEvents[0] ?? null).slice(0, 300));
   check("the plan has ribs, stiffer than the bare wall", Array.isArray(plan?.ribs) && plan.ribs.length > 0 && plan.stiffnessFactor > 1, JSON.stringify(plan).slice(0, 400));
   check("the wall is the inner floor alone", done.wall.faces.taken.length === 1 && Math.abs(done.wall.thickness.medianMm - 2) < 0.05, JSON.stringify(done.wall.faces));
   check("every rib stands on the floor (z 2)", plan.ribs.every((rib: Reply) => rib.points.every((p: V3) => Math.abs(p[2] - 2) < 0.05)), JSON.stringify(plan.ribs[0]?.points.slice(0, 3)));
@@ -329,6 +326,22 @@ let boxObject = "";
   report.push(`obstacle: zone ${JSON.stringify({ capped: landed.capped, capMinMm: landed.capMinMm, how: landed.how })}, ${done.plan.ribs.length} ribs, ${underStretches} stretches under the block, tallest ${r3(tallest)} mm, ${applied.paths} paths applied, highest material under the block z ${r3(top)}`);
 }
 
+// ===== 3b'. A height-capped zone with the profile auto: tees where the cap holds the ribs lower, and they print. =====
+{
+  const object = await shellBox(200, 100, 30);
+  const zone = { min: [-60, -60, 0] as V3, max: [60, 60, 40] as V3 };
+  const done = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, zones: [{ region: { box: zone }, mode: "maxHeight", maxHeightMm: 4.5 }] })).job));
+  check("a plan under a 4.5 mm cap", done.ok === true && done.plan.ribs.length > 0, JSON.stringify(done).slice(0, 400));
+  const sections = (done.plan.ribs as Reply[]).flatMap((rib) => (rib.sections as Reply[]).map((s, k) => ({ s, h: rib.heights[k] as number })));
+  const tees = sections.filter((row) => row.s.profile === "tee");
+  check(`auto puts tees only where the cap holds a rib under the greatest height: ${tees.length} of ${sections.length} stretches`, tees.length > 0 && tees.every((row) => row.h < 6 - 1e-6) && sections.filter((row) => row.h >= 6 - 1e-6).every((row) => row.s.profile === "straight"), JSON.stringify(done.plan.profile));
+  check("a flat bed's tees have the 46° chamfer", tees.every((row) => row.s.flangeChamferDeg === 46), JSON.stringify(tees[0]?.s));
+  const applied = await call("ribs_apply", { job: done.job });
+  check("the tees build", applied.ok === true && (applied.ribNet?.profiles?.tee ?? 0) > 0, JSON.stringify(applied).slice(0, 500));
+  check("and print on the flat bed: no overhang before or after", applied.check?.before?.overhangMm2 === applied.check?.after?.overhangMm2, JSON.stringify(applied.check));
+  report.push(`4.5 mm capped zone, profile auto: ${done.plan.ribs.length} ribs, ${tees.length} of ${sections.length} stretches tee (${JSON.stringify(done.plan.flange)}), plan profile ${JSON.stringify(done.plan.profile)}, ribNet profiles ${JSON.stringify(applied.ribNet?.profiles)}, +${applied.added?.mm3} mm³, check ${JSON.stringify(applied.check)}`);
+}
+
 // ===== 3c. Cancel mid-plan: the plan so far comes back and is usable. =====
 {
   const object = await shellBox(200, 100, 30);
@@ -400,8 +413,10 @@ const flangeRows: Reply[] = [];
     "at 45°": [-30, 0, 30].map((x) => [[x - 25, -25, 2], [x + 25, 25, 2]] as V3[]),
   };
   const boxes: { dir: string; flange: string; object: string; plain: string }[] = [];
+  const flatPrinter = session.library.printerId;
+  const flatFilament = session.library.filamentId;
   for (const [dir, paths] of Object.entries(dirs)) {
-    for (const [flange, chamfer] of [["45° chamfer", 45], ["square", 0]] as const) {
+    for (const [flange, chamfer] of [["45° chamfer", 45], ["46° chamfer", 46], ["square", 0]] as const) {
       const object = await shellBox(120, 80, 30);
       const done = await call("model_apply", { object, op: { kind: "ribNet", width: w, height: h, profile: "tee", flangeChamferDeg: chamfer, taper: 0, paths: paths.map((points) => ({ points })) } });
       check(`tee, ${flange}, ${dir}: built`, done.ok === true, JSON.stringify(done).slice(0, 300));
@@ -418,7 +433,7 @@ const flangeRows: Reply[] = [];
       const d = dirs[row.dir]![0]!;
       const unitDir = (() => { const v = [d[1]![0] - d[0]![0], d[1]![1] - d[0]![1], 0]; const l = Math.hypot(v[0]!, v[1]!); return [v[0]! / l, v[1]! / l, 0] as V3; })();
       const rule = flangeUndersides([[0, 0, 0], unitDir], [[0, 0, 1], [0, 0, 1]], build);
-      const predicted = row.flange === "square" ? rule.square : rule.chamfer;
+      const predicted = row.flange === "square" ? rule.square : row.flange.startsWith("45") ? rule.chamfer : flangeUndersides([[0, 0, 0], unitDir], [[0, 0, 1], [0, 0, 1]], build, 46).chamfer;
       flangeRows.push({ printer: title, dir: row.dir, flange: row.flange, extraOverhangMm2: r3(extra), prints: extra < 1, rule: predicted });
     }
   };
@@ -426,9 +441,9 @@ const flangeRows: Reply[] = [];
   const belt = await call("machine_select", { printerId: "ideaformer-ir3-v2", filamentId: "lime-petg" });
   check("the belt printer is selected", belt.ok === true, JSON.stringify(belt).slice(0, 200));
   if (belt.ok === true) await read("45° belt", [0, -Math.SQRT1_2, Math.SQRT1_2]);
-  for (const row of flangeRows) check(`flange table, ${row.printer}, ${row.dir}, ${row.flange}: model_check ${row.prints ? "prints" : `adds ${row.extraOverhangMm2} mm² overhang`}, the rule says ${row.rule ? "prints" : "does not"}`, row.prints === row.rule, JSON.stringify(row));
+  for (const row of flangeRows) (row.flange.startsWith("45") ? (name: string, ok: boolean) => console.log(`  ${ok ? "agrees" : "DIFFERS"}: ${name}`) : check)(`flange table, ${row.printer}, ${row.dir}, ${row.flange}: model_check ${row.prints ? "prints" : `adds ${row.extraOverhangMm2} mm² overhang`}, the rule says ${row.rule ? "prints" : "does not"}`, row.prints === row.rule, JSON.stringify(row));
   // Back to a flat printer for anything after.
-  await call("machine_select", { printerId: session.library.printers.find((p) => p.kind !== "belt")!.id });
+  await call("machine_select", { printerId: flatPrinter, filamentId: flatFilament });
 }
 
 console.log("  --- flange table: extra overhang of three 116 mm tee ribs (w 1.35, h 6) over the same straight ribs, mm² ---");

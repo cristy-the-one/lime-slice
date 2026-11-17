@@ -335,68 +335,20 @@ fn sim_study_json(body: &str) -> String {
     lime_sim_bridge::study_json(body)
 }
 
-/// Auto ribs: plans run as jobs of their own, polled and cancelled by id. A
-/// plan reads only its request, so it never waits on the slicer or the
-/// modeler, and a slice can run beside it.
-struct RibPlanJob {
-    id: usize,
-    job: lime_sim_bridge::ribs::RibJob,
-}
-
-fn rib_jobs() -> &'static Mutex<Vec<RibPlanJob>> {
-    static JOBS: std::sync::OnceLock<Mutex<Vec<RibPlanJob>>> = std::sync::OnceLock::new();
-    JOBS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-/// `ribWall`'s request plus rules, goal and options in; `{ "id" }` or `{ "error" }` out.
+/// Auto ribs: plans run as jobs of their own in the bridge
+/// (`lime_sim_bridge::ribs`), polled and cancelled by id. A plan reads only
+/// its request, so it never waits on the slicer or the modeler, and a slice
+/// can run beside it. The desktop's commands call the same functions.
 fn rib_plan_start(body: String) -> String {
-    let job = match lime_sim_bridge::ribs::RibJob::start(body) {
-        Ok(job) => job,
-        Err(err) => return json!({ "error": err }).to_string(),
-    };
-    let id = next_job_id();
-    let mut guard = match rib_jobs().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    // Finished jobs are dropped first; a running one is kept until it ends.
-    while guard.len() >= JOB_KEEP {
-        match guard.iter().position(|row| !row.job.running()) {
-            Some(at) => {
-                guard.remove(at);
-            }
-            None => break,
-        }
-    }
-    guard.push(RibPlanJob { id, job });
-    json!({ "id": id }).to_string()
+    lime_sim_bridge::ribs::rib_plan_start(body)
 }
 
-/// The job's state and the progress events since the last poll.
 fn rib_plan_poll(id: usize) -> String {
-    let guard = match rib_jobs().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    match guard.iter().find(|row| row.id == id) {
-        Some(row) => row.job.poll().to_string(),
-        None => json!({ "error": "That rib plan is not in this session." }).to_string(),
-    }
+    lime_sim_bridge::ribs::rib_plan_poll(id)
 }
 
-/// Stop the planner; it returns the plan as it stands.
 fn rib_plan_cancel(id: usize) -> String {
-    let guard = match rib_jobs().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    match guard.iter().find(|row| row.id == id) {
-        Some(row) => {
-            row.job.cancel();
-            json!({ "ok": true }).to_string()
-        }
-        None => json!({ "ok": false, "error": "That rib plan is not in this session." }).to_string(),
-    }
+    lime_sim_bridge::ribs::rib_plan_cancel(id)
 }
 
 fn occt_ready() -> bool {

@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, chooseSection, flangeUndersides, isOverhang, narrowWidth, remapFaces, ribNetOf, ribRules, sectionArea, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, fitFlanges, flangeUndersides, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -60,11 +60,11 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("belt at 45°: the square prints, the chamfer does not", table["belt, at 45°"].square && !table["belt, at 45°"].chamfer);
   const w = 1.35;
   const tall = chooseSection("auto", "filament", w, 6, along([1, 0, 0]), up, flat, {});
-  check("a filament rib tall enough on a flat bed is a tee with a 45° chamfer", tall.profile === "tee" && tall.flangeChamferDeg === 45, JSON.stringify(tall));
+  check("a filament rib tall enough on a flat bed is a tee with a 46° chamfer", tall.profile === "tee" && tall.flangeChamferDeg === CHAMFER_DEG, JSON.stringify(tall));
   const belted = chooseSection("auto", "filament", w, 6, along([1, 0, 0]), up, belt, {});
   check("on the belt across it, a tee with a square flange", belted.profile === "tee" && belted.flangeChamferDeg === 0, JSON.stringify(belted));
   const low = chooseSection("auto", "filament", w, 4, along([1, 0, 0]), up, flat, {});
-  check(`under ${teeMinHeight(w, {}, 45).toFixed(2)} mm a filament rib is straight, and says why`, low.profile === "straight" && /needs/.test(low.why), JSON.stringify(low));
+  check(`under ${teeMinHeight(w, {}, CHAMFER_DEG).toFixed(2)} mm a filament rib is straight, and says why`, low.profile === "straight" && /needs/.test(low.why), JSON.stringify(low));
   // A side wall (normal +X) with a rib running up it (along Z): the square underside looks −X (fine), the chamfer ±Y−X.
   const wallUp = chooseSection("auto", "filament", w, 6, [[0, 0, 0], [0, 0, 10]], [[1, 0, 0], [1, 0, 0]], flat, {});
   check("a rib up a side wall on a flat bed may still be a tee", wallUp.profile === "tee", JSON.stringify(wallUp));
@@ -92,6 +92,32 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("the op is one ribNet with the request kept, a rib with no height left out", !("reason" in op) && op.kind === "ribNet" && (op.paths as unknown[]).length === 3 && op.height === 6 && JSON.stringify(op.auto) === JSON.stringify({ wall: { faces: [6] } }) && (op.paths as Record<string, unknown>[])[0]!.flangeChamferDeg === 0, JSON.stringify(op).slice(0, 300));
   const many = ribNetOf(Array.from({ length: 201 }, () => ({ points: pts, heights: [6, 3, 6, 6], width: 1, profile: "straight" as const })), "x", undefined);
   check("more than 400 runs is refused in a sentence", "reason" in many && /at most 400/.test(String(many.reason)));
+}
+
+// --- The flange for the whole plan, and each rib's tee stretches fitted to its own direction.
+{
+  const s = Math.SQRT1_2;
+  const floor: V3[] = [[0, 0, 1]];
+  const flat = planFlange(floor, [0, 0, 1]);
+  check("flat bed: the chamfered flange prints for a floor's ribs in every direction", flat.flange === "chamfered" && flat.chamfered === 1 && flat.square === 0, JSON.stringify(flat));
+  const belt = planFlange(floor, [0, -s, s]);
+  check("45° belt: the square flange prints for every direction, the chamfer for few", belt.flange === "square" && belt.square === 1 && belt.chamfered < 0.5, JSON.stringify(belt));
+  const tee = { profile: "tee" as const, width: 1.35, flangeChamferDeg: 45 };
+  const pts: V3[] = [[0, 0, 2], [10, 0, 2], [20, 0, 2]];
+  const up: V3[] = [[0, 0, 1], [0, 0, 1], [0, 0, 1]];
+  const kept = fitFlanges(pts, up, [6, 4], [{ profile: "straight", width: 1.35 }, tee], [0, 0, 1]);
+  check("a chamfered tee across a flat bed stays, built at 46°", kept.sections[1]!.flangeChamferDeg === CHAMFER_DEG && kept.notes.length === 0, JSON.stringify(kept));
+  const swapped = fitFlanges(pts, up, [6, 4], [{ profile: "straight", width: 1.35 }, tee], [0, -s, s]);
+  check("on the belt across it, the tee takes the square flange and says so", swapped.sections[1]!.profile === "tee" && swapped.sections[1]!.flangeChamferDeg === 0 && swapped.notes.length === 1, JSON.stringify(swapped));
+  const tilt = (20 * Math.PI) / 180;
+  const tilted: V3[] = up.map(() => [0, Math.sin(tilt), Math.cos(tilt)] as V3);
+  const none = fitFlanges(pts, tilted, [6, 4], [{ profile: "straight", width: 1.35 }, tee], [0, 0, 1]);
+  check("where neither prints, the stretch is straight and says so", none.sections[1]!.profile === "straight" && /no flange prints/.test(none.notes[0] ?? ""), JSON.stringify(none));
+  check("a chamfered tee needs 3.1 mm at 1.35 wide, a square one 2.1", near(sectionLeast(tee), 0.675 + 1.35 + 1.35 + 0.1, 1e-9) && near(sectionLeast({ ...tee, flangeChamferDeg: 0 }), 0.675 + 1.35 + 0.1, 1e-9));
+  const op = ribNetOf([{ points: pts, heights: [6, 4], width: 1.35, profile: "straight", sections: [{ profile: "straight", width: 1.35 }, { ...tee, flangeChamferDeg: 0 }] }], "Auto ribs", undefined);
+  check("a rib straight then tee is two paths, each its section", !("reason" in op) && (op.paths as Record<string, unknown>[]).length === 2 && (op.paths as Record<string, unknown>[])[1]!.profile === "tee" && (op.paths as Record<string, unknown>[])[0]!.profile === "straight", JSON.stringify(op).slice(0, 400));
+  const low = ribNetOf([{ points: pts, heights: [6, 2], width: 1.35, profile: "straight", sections: [{ profile: "straight", width: 1.35 }, tee] }], "Auto ribs", undefined);
+  check("a tee stretch too low for its flange is built straight", !("reason" in low) && (low.paths as Record<string, unknown>[])[1]!.profile === "straight", JSON.stringify(low).slice(0, 400));
 }
 
 // --- Faces found again: a floor face split in two by an edit keeps both halves; a face moved away is lost.

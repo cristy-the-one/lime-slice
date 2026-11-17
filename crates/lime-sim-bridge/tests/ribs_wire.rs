@@ -14,7 +14,7 @@ fn fixture() -> Value {
 fn body(request: Value) -> Value {
     json!({
         "request": request,
-        "rules": { "width": 1.35, "maxHeight": 6.0, "minSpacing": 8.0, "minLength": 5.0, "solverProfile": "rectangular" },
+        "rules": { "width": 1.35, "maxHeight": 6.0, "minSpacing": 8.0, "minLength": 5.0, "profile": { "kind": "auto", "flange": "square" } },
         "goal": { "kind": "balanced" },
         "options": { "workers": 2 },
     })

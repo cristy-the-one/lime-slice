@@ -2450,7 +2450,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "ribs_plan",
-    description: "Auto ribs (docs/plan-auto-ribs.md): plan ribs on one wall of a solid so it bends less for the least added material. Give the wall (wall.faces, or wall.face {normal, nearPoint} for the face a point is on; faces that continue it smoothly are taken with it, so a pick on a floor or a curved panel takes the whole smooth wall), and nothing else is needed: the wall is held where it meets the rest of the part and pressed evenly. The wall is meshed, solved as a thin shell, and ribs are grown along its bending directions, the one that pays most per gram first, until the goal (balanced by default: stop when the next rib buys under a quarter of what the first did). Always answers at once with a background job: slice_wait {job} reports stage, fraction and progress (each rib added, changed or removed with its polyline and heights, and the running totals: ribs, rib volume, stiffness factor) while it runs, and the plan when done; slice_cancel {job} stops it and the plan as it stood comes back marked stoppedEarly (a plan exists after the first rib). Plan-only jobs do not block other calls. The result: the ribs (model-space points on the wall's face, width, height and heights per stretch, profile, ends), what they add (mm³, grams at the filament's density, percent of the part), the predicted stiffness factor and deflection bare and ribbed (shell model, relative: the material card is a placeholder), the same stiffness by thickening the wall and by an even grid, notBetterThanBaseline, the wall report (faces taken and where growth stopped, thickness, borders, holes, every zone with where it landed, holds or loads not on the wall), the rules used with every default named, and timings. ribs_apply {job} builds it as one History row. apply:true plans and applies in one job; verify:true (with apply) adds the sliced Stress study before and after. Defaults: rib width 3 bead widths of the nozzle (bead = 1.125 × nozzle) for filament, a typed width rounded to whole beads (at least 2); resin 0.8 × and moulded 0.6 × the wall's median thickness; greatest height 3 × the median thickness, capped by the room in front of the wall and by zones; spacing and least length from the wall's narrow width (spacing a sixth of it, least length an eighth, within set bounds); holes keep a 3 mm rim; profile auto. guide {topic:\"ribs\"} has the flow, every default and the zone kinds.",
+    description: "Auto ribs (docs/plan-auto-ribs.md): plan ribs on one wall of a solid so it bends less for the least added material. Give the wall (wall.faces, or wall.face {normal, nearPoint} for the face a point is on; faces that continue it smoothly are taken with it, so a pick on a floor or a curved panel takes the whole smooth wall), and nothing else is needed: the wall is held where it meets the rest of the part and pressed evenly. The wall is meshed, solved as a thin shell, and ribs are grown along its bending directions, the one that pays most per gram first, until the goal (balanced by default: stop when the next rib buys under a quarter of what the first did). Always answers at once with a background job: slice_wait {job} reports stage, fraction and progress (each rib added, changed or removed with its polyline and heights, and the running totals: ribs, rib volume, stiffness factor) while it runs, and the plan when done; slice_cancel {job} stops it and the plan as it stood comes back marked stoppedEarly (a plan exists after the first rib). Plan-only jobs do not block other calls. The result: the ribs (model-space points on the wall's face, width, height and heights per stretch, profile, ends), what they add (mm³, grams at the filament's density, percent of the part), the predicted stiffness factor and deflection bare and ribbed (shell model, relative: the material card is a placeholder), the same stiffness by thickening the wall and by an even grid, notBetterThanBaseline, the wall report (faces taken and where growth stopped, thickness, borders, holes, every zone with where it landed, holds or loads not on the wall), the rules used with every default named, and timings. ribs_apply {job} builds it as one History row. apply:true plans and applies in one job; verify:true (with apply) adds the sliced Stress study before and after. Defaults: rib width 3 bead widths of the nozzle (bead = 1.125 × nozzle) for filament, a typed width rounded to whole beads (at least 2); resin 0.8 × and moulded 0.6 × the wall's median thickness; greatest height 3 × the median thickness, capped by the room in front of the wall and by zones; spacing and least length from the wall's narrow width (spacing a sixth of it, least length an eighth, within set bounds); holes keep a 3 mm rim; profile auto (straight; a tee only where a stretch is held lower, its flange underside, 45° chamfer or square, the one that prints for this printer and the rib's direction). guide {topic:\"ribs\"} has the flow, every default and the zone kinds.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -2520,7 +2520,7 @@ export const TOOLS: ToolSpec[] = [
             minHeight: { type: "number", minimum: 0.2, maximum: 200, description: "Lowest height the sizing pass goes to, mm. Default 1 (or maxHeight if lower)." },
             minSpacing: { type: "number", minimum: 1, maximum: 500, description: "Least distance between parallel ribs, mm." },
             minLength: { type: "number", minimum: 0, maximum: 1000, description: "Shortest rib, mm." },
-            profile: { enum: ["auto", "straight", "drafted", "tee"], description: "Section. auto: filament straight, or tee where the rib is tall enough and its flange prints in this pose; resin and moulded drafted." },
+            profile: { enum: ["auto", "straight", "drafted", "tee"], description: "Section. auto: filament straight, with a tee only on stretches held under the greatest height (a zone cap, a facing part) where its flange prints in this pose; resin and moulded drafted. straight, drafted or tee: every stretch (one too low for a root or flange is straight)." },
             draftDeg: { type: "number", minimum: 0, maximum: 15, description: "drafted: each side's draft. Default 1." },
             rootRadius: { type: "number", minimum: 0, maximum: 50, description: "Flared root into the wall, mm (ribNet's default per profile)." },
             flangeWidth: { type: "number", minimum: 0.2, maximum: 200, description: "tee: flange width, mm. Default 3 × width." },
@@ -2547,25 +2547,27 @@ export const TOOLS: ToolSpec[] = [
         job: { type: "string", description: "A finished ribs_plan job (job_N), whose plan is applied." },
         plan: {
           type: "object",
-          additionalProperties: false,
           required: ["ribs"],
-          description: "Ribs to build, as a ribs_plan result lists them.",
+          description: "Ribs to build: a ribs_plan result's plan as it is (other fields are kept or ignored), or edited.",
           properties: {
+            object: { type: "string", description: "The planned object." },
+            node: { type: "string", description: "The step it was planned on; the part must still be there." },
+            request: { type: "object", description: "The ribs_plan request, kept in the History row." },
             ribs: {
               type: "array",
               minItems: 1,
               maxItems: 400,
-              description: "Each {points, height | heights, width, profile, flangeChamferDeg}.",
+              description: "Each {points, heights | height, sections | profile, width}.",
               items: {
                 type: "object",
-                additionalProperties: false,
                 required: ["points"],
                 properties: {
                   points: { type: "array", minItems: 2, maxItems: 4000, items: vec3, description: "Model-space points on the wall's face, in order." },
+                  sections: { type: "array", maxItems: 4000, items: { type: "object", description: "{profile, width, rootRadius, draftDeg, flangeWidth, flangeThickness, flangeChamferDeg}." }, description: "Section of each stretch (one fewer than points), as the plan gives them." },
                   height: { type: "number", exclusiveMinimum: 0, maximum: 500, description: "One height, mm." },
                   heights: { type: "array", maxItems: 4000, items: { type: "number", minimum: 0 }, description: "Height of each stretch between points, mm (one fewer than points)." },
                   width: { type: "number", exclusiveMinimum: 0, maximum: 100, description: "Thickness, mm." },
-                  profile: { enum: ["straight", "drafted", "tee"], description: "Section." },
+                  profile: { type: "string", description: "straight, drafted or tee, when sections are not given." },
                   flangeChamferDeg: { type: "number", minimum: 0, maximum: 75, description: "tee: 45 chamfered, 0 square." },
                 },
               },

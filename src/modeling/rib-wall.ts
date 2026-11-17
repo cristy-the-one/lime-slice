@@ -61,7 +61,8 @@ export interface RibWallSolid {
  * - `obstacle`: another object's triangles (nine numbers each, same frame) and a clearance. Per wall vertex, the gap
  *   along the wall's normal to it; where gap − clearance is under the least rib height the wall is `noRibs`,
  *   elsewhere gap − clearance caps the rib height through the request's `clearance` (the lower of the two wins).
- * A triangle belongs to a place zone when its centroid is inside (an obstacle reads the ray from the centroid).
+ * A triangle belongs to a place zone when its centroid or a corner is inside, so a rib that ends at the border ends
+ * outside the place (an obstacle reads the ray from the centroid).
  */
 export type WallRegion =
   | { faces: number[] }
@@ -1958,7 +1959,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   (options.zones ?? []).forEach((zone, index) => {
     const region = zone.region;
     let tris: number[] = [];
-    let how = "centroid inside";
+    let how = "centroid or a corner inside";
     let mode_: PlannerZone["mode"] = zone.mode === "maxHeight" ? { kind: "maxHeight", mm: Math.max(0, zone.maxHeightMm ?? 0) } : { kind: "noRibs" };
     let capped: number | undefined;
     let capMin: number | undefined;
@@ -2064,7 +2065,9 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
       tris = [...set].sort((a, b) => a - b);
       how = [inWall.size ? "faces of the wall" : "", border ? "triangles touching the faces at the wall's border" : "", behind ? "triangles over the faces on the far side" : ""].filter(Boolean).join(", ");
     } else {
-      tris = T.map((_, t) => t).filter((t) => insideRegion(region, centroid[t]!, tn[t]!, triThickness(t)));
+      // A triangle any part of which is in the place: its centroid or a corner. By the centroid alone, a rib could end up
+      // to a triangle's size inside the place, where nothing may stand (found on a shelled box's floor, 3.5 mm triangles).
+      tris = T.map((_, t) => t).filter((t) => insideRegion(region, centroid[t]!, tn[t]!, triThickness(t)) || T[t]!.some((v) => insideRegion(region, V[v]!, tn[t]!, triThickness(t))));
     }
     if (tris.length === 0) {
       wallZones.push({ index, definition: zone, triangles: [], areaMm2: 0, centre: null, bounds: null, how, missed: "The zone does not meet the wall; it was left out." });

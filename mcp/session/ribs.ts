@@ -16,7 +16,7 @@ import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, ribPathsFromPlan, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
 import { RibSurface } from "../../src/modeling/rib-net.ts";
-import { chooseSection, remapFaces, ribNetOf, ribRules, sectionArea, type BuiltRib, type ProfileFields, type RibProcess } from "../../src/modeling/auto-ribs.ts";
+import { fitFlanges, planFlange, remapFaces, ribNetOf, ribRules, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
 import type { Session } from "../session.ts";
@@ -255,6 +255,13 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   });
   if ("reason" in wall) return refuse("bad-wall", wall.reason);
   const wallMs = Date.now() - ribWallMs;
+  const notes: string[] = [];
+  // A wall joined to nothing (a free panel) with no holds given: held all round its borders, and said so.
+  const sent: Row = { ...wall.request };
+  if (wall.request.holds.holds.length === 0) {
+    sent.holds = { kind: "allBoundary" };
+    notes.push("Nothing joins this wall to the rest of the part and no holds were given, so it is planned held all round its borders. Give holds for a truer plan.");
+  }
   const outer = Math.max(0, ...wall.report.loops.map((loop) => loop.lengthMm));
   const rules = ribRules({
     process,
@@ -266,10 +273,39 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   });
   const card = this.simCard(undefined);
   if ("reason" in card) return refuse("no-card", card.reason);
+  // The wall's own triangles, for the normal under each point (the rib stands along it).
+  const wallSet = new Set(wall.faces);
+  const own: number[] = [];
+  const ownFace: number[] = [];
+  const count = Math.floor(typed.solid.positions.length / 9);
+  for (let t = 0; t < count; t += 1) {
+    if (!wallSet.has(Number(typed.solid.faceOf[t]))) continue;
+    for (let i = 0; i < 9; i += 1) own.push(typed.solid.positions[t * 9 + i]!);
+    ownFace.push(Number(typed.solid.faceOf[t]));
+  }
+  const surface = new RibSurface({ positions: own, faceOf: ownFace });
+  const printer = this.printer();
+  const belt = printer.kind === "belt" ? printer.belt : null;
+  // The build direction in the solid's frame, then in the typed frame.
+  const build = turnDir(typed.pose, buildDirection(obj.orient, belt));
+  const asked = rib.profile === "straight" || rib.profile === "drafted" || rib.profile === "tee" ? rib.profile : "auto";
+  // Which flange underside prints over this wall, ribs in any direction: the planner puts tees only where it prints.
+  const step = Math.max(1, Math.floor(wall.normals.length / 64));
+  const flanges = planFlange(wall.normals.filter((_, i) => i % step === 0), build);
+  const typedChamfer = num(rib.flangeChamferDeg);
+  const flange = typedChamfer !== undefined ? (typedChamfer > 0 ? "chamfered" : "square") : flanges.flange;
+  const extra = (keys: string[]) => Object.fromEntries(keys.filter((key) => num(rib[key]) !== undefined).map((key) => [key, num(rib[key])]));
+  const profile: Row = asked === "straight"
+    ? { kind: "straight" }
+    : asked === "drafted" || (asked === "auto" && process === "resin")
+      ? { kind: "drafted", ...extra(["draftDeg", "rootRadius"]) }
+      : asked === "tee"
+        ? { kind: "tee", flange: flange ?? "chamfered", ...extra(["flangeWidth", "flangeThickness", "flangeChamferDeg", "rootRadius"]) }
+        : { kind: "auto", process, flange };
   const body = {
-    request: wall.request,
+    request: sent,
     material: { e: card.EInPlaneMPa, nu: card.nu },
-    rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, solverProfile: "rectangular" },
+    rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile },
     goal,
     options: { baselines: input.baselines !== false },
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
@@ -302,7 +338,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     const fraction = num(poll.fraction) ?? 0;
     stage(`planning: ${String(poll.stage ?? "")}`, 0.05 + span * Math.min(1, fraction));
     if (poll.status !== "running") {
-      result = (poll.result ?? { ok: false, reason: "The rib planner did not finish." }) as Row;
+      result = (poll.result ?? { reason: "The rib planner did not finish." }) as Row;
       break;
     }
     await this.pause(100);
@@ -312,65 +348,42 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   stage("taking the ribs onto the wall", 0.05 + span);
   const engineRibs = (result.ribs ?? []) as Row[];
   const onSkin = ribPathsFromPlan(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[] })));
-  // The wall's own triangles, for the normal under each point (the rib stands along it).
-  const wallSet = new Set(wall.faces);
-  const own: number[] = [];
-  const ownFace: number[] = [];
-  const count = Math.floor(typed.solid.positions.length / 9);
-  for (let t = 0; t < count; t += 1) {
-    if (!wallSet.has(Number(typed.solid.faceOf[t]))) continue;
-    for (let i = 0; i < 9; i += 1) own.push(typed.solid.positions[t * 9 + i]!);
-    ownFace.push(Number(typed.solid.faceOf[t]));
-  }
-  const surface = new RibSurface({ positions: own, faceOf: ownFace });
-  const printer = this.printer();
-  const belt = printer.kind === "belt" ? printer.belt : null;
-  // The build direction in the solid's frame, then in the typed frame.
-  const build = turnDir(typed.pose, buildDirection(obj.orient, belt));
-  const asked = rib.profile === "straight" || rib.profile === "drafted" || rib.profile === "tee" ? rib.profile : "auto";
-  const fields: ProfileFields = {
-    ...(num(rib.draftDeg) !== undefined ? { draftDeg: num(rib.draftDeg)! } : {}),
-    ...(num(rib.rootRadius) !== undefined ? { rootRadius: num(rib.rootRadius)! } : {}),
-    ...(num(rib.flangeWidth) !== undefined ? { flangeWidth: num(rib.flangeWidth)! } : {}),
-    ...(num(rib.flangeThickness) !== undefined ? { flangeThickness: num(rib.flangeThickness)! } : {}),
-    ...(num(rib.flangeChamferDeg) !== undefined ? { flangeChamferDeg: num(rib.flangeChamferDeg)! } : {}),
-  };
-  let rectVolume = 0;
-  let profiledVolume = 0;
+  const whole = new RibSurface({ positions: typed.solid.positions, faceOf: typed.solid.faceOf });
   const ribs: Row[] = engineRibs.map((row, i) => {
-    const points = onSkin.paths[i]!.points;
-    const heights = (row.heights as number[]) ?? [];
+    const width = num(row.width) ?? rules.width;
+    const trimmed = trimThinEnds(onSkin.paths[i]!.points, (row.heights as number[]) ?? [], ((row.sections as Section[] | undefined) ?? []).map((s) => ({ ...s })), surface, whole, width);
+    const points = trimmed.points;
+    const heights = trimmed.heights;
     const height = num(row.height) ?? Math.max(0, ...heights);
     const normals = points.map((p) => surface.closest(p, 5)?.normal ?? ([0, 0, 1] as V3));
-    const choice = chooseSection(asked, process, rules.width, height, points, normals, build, fields);
-    const ribFields: ProfileFields = { ...fields, ...(choice.flangeChamferDeg !== undefined ? { flangeChamferDeg: choice.flangeChamferDeg } : {}) };
-    // The volume estimate: the planner's rectangle scaled by the chosen section's area, stretch by stretch.
-    for (let k = 0; k + 1 < points.length; k += 1) {
-      const l = Math.hypot(points[k + 1]![0] - points[k]![0], points[k + 1]![1] - points[k]![1], points[k + 1]![2] - points[k]![2]);
-      const h = heights[k] ?? height;
-      rectVolume += l * rules.width * h;
-      profiledVolume += l * (h >= 0.1 ? sectionArea(choice.profile, rules.width, h, ribFields) : rules.width * h);
-    }
+    const planned = trimmed.sections;
+    // Each tee stretch checked against this rib's own direction: the plan's flange, the other one, or straight.
+    const fitted = fitFlanges(points, normals, heights, planned, build);
+    const length = (kind: string) => fitted.sections.reduce((sum, s, k) => sum + (s.profile === kind ? Math.hypot(points[k + 1]![0] - points[k]![0], points[k + 1]![1] - points[k]![1], points[k + 1]![2] - points[k]![2]) : 0), 0);
+    const kinds = [...new Set(fitted.sections.map((s) => s.profile))];
+    const tee = fitted.sections.find((s) => s.profile === "tee");
     return {
       points: points.map(rv),
       heights: heights.map((h) => r(h, 3)),
+      sections: fitted.sections,
       height: r(height, 3),
-      width: r(rules.width, 4),
-      profile: choice.profile,
-      ...(choice.flangeChamferDeg !== undefined ? { flangeChamferDeg: choice.flangeChamferDeg } : {}),
-      ...(Object.keys(fields).length ? fields : {}),
-      why: choice.why,
+      width: r(num(row.width) ?? rules.width, 4),
+      profile: kinds.length === 1 ? kinds[0] : kinds.join("+"),
+      ...(tee ? { flangeChamferDeg: tee.flangeChamferDeg ?? 45, teeMm: r(length("tee"), 1) } : {}),
+      ...(trimmed.trimmedMm.some((mm) => mm > 0) ? { trimmedMm: trimmed.trimmedMm.map((mm) => r(mm, 2)) } : {}),
+      why: fitted.notes.length || trimmed.trimmedMm.some((mm) => mm > 0) ? [...fitted.notes, ...(trimmed.trimmedMm.some((mm) => mm > 0) ? [`an end stood on a free edge of the wall (nothing to run into, or too thin to sink into), so it was drawn back ${trimmed.trimmedMm.map((mm) => r(mm, 2)).join(" and ")} mm`] : [])].join("; ") : tee ? `a tee with a ${(tee.flangeChamferDeg ?? 45) > 0 ? "45° chamfered" : "square"} flange where the rib's height is held under the greatest, straight elsewhere` : kinds[0] === "drafted" ? "drafted, as the process asks" : "straight",
       ends: row.ends,
       family: row.family,
       lengthMm: r(num(row.lengthMm) ?? 0, 2),
+      volumeMm3: r(num(row.volumeMm3) ?? 0, 2),
       gain: r(num(row.gain) ?? 0, 4),
       energyShare: r(num(row.energyShare) ?? 0, 4),
     };
   });
   const planVolume = num(result.ribVolumeMm3) ?? 0;
-  const mm3 = rectVolume > 0 ? (planVolume * profiledVolume) / rectVolume : 0;
+  const mm3 = planVolume;
   const partVolume = Math.abs(obj.solid.volumeMm3 ?? 0);
-  const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, note: "Estimated from the plan: each rib's section over its length, crossings counted once. ribs_apply measures the solid." };
+  const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, note: "The planner's rib volume: each stretch's section over its length, crossings counted once (tapered ends not taken off). ribs_apply measures the solid." };
   const profiles: Record<string, number> = {};
   for (const row of ribs) profiles[String(row.profile)] = (profiles[String(row.profile)] ?? 0) + 1;
   const request = structuredClone(input) as Row;
@@ -392,7 +405,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     grid: result.grid ?? null,
     notBetterThanBaseline: result.notBetterThanBaseline === true,
     stoppedEarly,
-    solverProfile: result.solverProfile ?? "rectangular",
+    profile: result.profile ?? null,
+    flange: { planned: flange, prints: { chamfered: flanges.chamfered, square: flanges.square } },
     profiles,
     snapMaxMm: onSkin.snapMaxMm,
     stats: result.stats,
@@ -413,6 +427,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
       notBetterThanBaseline: result.notBetterThanBaseline === true,
       means: "thickening: the whole wall made thicker until it is as stiff as the ribbed plan, and the material that takes; grid: an even orthogonal grid of the same rib section at the coarsest pitch as stiff (volumeMm3 interpolated to exactly the plan's stiffness). A plan that needs no less material than both is marked notBetterThanBaseline.",
     },
+    ...(notes.length ? { notes } : {}),
     relative: RELATIVE,
     seconds: { wall: r(wallMs / 1000, 2), plan: r(planSeconds, 2), planner: result.seconds, total: r((Date.now() - started) / 1000, 2) },
   };
@@ -422,6 +437,91 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const applied = await this.ribsApplyPlan(obj, this.ribPlans.get(String(obj.id))!, input.verify === true, typeof input.label === "string" ? input.label : LABEL, ctx, 0.05 + span);
   return { ...reply, applied: applied.ok === true, apply: applied };
 }
+
+/** What a rib sunk into the wall must find under it: ribNet's 0.5 mm sink and 0.2 mm skin, and a little more. */
+const WALL_UNDER_MM = 0.8;
+
+/** The wall under a rib's foot at p, across it ±half: the least depth a ray straight in finds, 0 off the part. */
+function wallUnder(all: RibSurface, p: V3, n: V3, b: V3, half: number): number {
+  let least = Infinity;
+  for (const u of [-half, 0, half]) {
+    // From 0.3 mm in: a point between two snapped ones on a curved wall sits a chord's depth off the facets.
+    const q: V3 = [p[0] + b[0] * u - n[0] * 0.3, p[1] + b[1] * u - n[1] * 0.3, p[2] + b[2] * u - n[2] * 0.3];
+    const hit = all.ray(q, [-n[0], -n[1], -n[2]], 50);
+    least = Math.min(least, hit && hit.leaving ? hit.distance + 0.3 : 0);
+  }
+  return least;
+}
+
+/**
+ * A planned rib that ends on a free edge of the wall (a panel's cut side, an open rim) is refused by ribNet: either the
+ * wall under its foot runs out there, or its end runs into the thin rim and out past the part. Such an end starts a
+ * rib width back from the edge, and is then drawn back 0.25 mm at a time, at most 4 mm, to where the wall under the
+ * foot is WALL_UNDER_MM deep. An end against a wall (a box's side) is kept. Heights and sections keep their stretches.
+ */
+function trimThinEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number): { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number] } {
+  const trimmedMm: [number, number] = [0, 0];
+  let pts = points.map((p) => [...p] as V3);
+  let hs = [...heights];
+  let ss = [...sections];
+  for (const end of [0, 1] as const) {
+    if (pts.length < 2) break;
+    const order = end === 0 ? pts : [...pts].reverse();
+    let walked = 0;
+    let k = 0;
+    let found: { at: V3; k: number } | null = null;
+    // An end with no wall in front of it, half its height up and within 2 mm, is on a free edge: ribNet would run it
+    // into the rim there and out past the part. It starts a width back from the edge.
+    const e0 = order[0]!;
+    // The rib's way out at this end, read over its last 2 mm or more: the last stretch alone can be a sliver.
+    let e1 = order[1]!;
+    for (let j = 1; j < order.length && dist(e0, order[j]!) < 2; j += 1) e1 = order[j]!;
+    const run = dist(e0, e1);
+    const n0 = wallSurface.closest(e0, 5)?.normal ?? ([0, 0, 1] as V3);
+    const lift = Math.min(2, Math.max(0.5, (end === 0 ? heights[0] ?? 1 : heights.at(-1) ?? 1) / 2));
+    const out: V3 = run > 1e-9 ? [(e0[0] - e1[0]) / run, (e0[1] - e1[1]) / run, (e0[2] - e1[2]) / run] : [0, 0, 0];
+    // From 1 mm back along the rib: an end on a side wall's foot starts on that wall's plane, where a ray sees nothing.
+    const free = run > 1e-9 && !all.ray([e0[0] + n0[0] * lift - out[0], e0[1] + n0[1] * lift - out[1], e0[2] + n0[2] * lift - out[2]], out, 3);
+    const start = free ? Math.min(4, Math.max(0.25, Math.ceil(width / 0.25) * 0.25)) : 0;
+    for (let s = start; s <= 4 + 1e-9; s += 0.25) {
+      while (k + 1 < order.length - 1 && walked + dist(order[k]!, order[k + 1]!) < s) {
+        walked += dist(order[k]!, order[k + 1]!);
+        k += 1;
+      }
+      const a = order[k]!;
+      const b = order[k + 1]!;
+      const seg = dist(a, b);
+      if (seg < 1e-9) break;
+      const f = Math.min(1, (s - walked) / seg);
+      const at: V3 = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+      const n = wallSurface.closest(at, 5)?.normal ?? ([0, 0, 1] as V3);
+      const t: V3 = [(b[0] - a[0]) / seg, (b[1] - a[1]) / seg, (b[2] - a[2]) / seg];
+      const across: V3 = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]];
+      if (wallUnder(all, at, n, across, width / 2) >= WALL_UNDER_MM) {
+        found = s === 0 ? null : { at, k };
+        if (s > 0) trimmedMm[end] = s;
+        break;
+      }
+      if (f >= 1 && k + 1 >= order.length - 1) break;
+    }
+    if (!found) continue;
+    // Keep the stretch the cut falls in, from the cut point on.
+    const n = pts.length;
+    if (end === 0) {
+      pts = [found.at, ...pts.slice(found.k + 1)];
+      hs = hs.slice(found.k);
+      ss = ss.slice(found.k);
+    } else {
+      const j = n - 1 - found.k;
+      pts = [...pts.slice(0, j), found.at];
+      hs = hs.slice(0, j);
+      ss = ss.slice(0, j);
+    }
+  }
+  return { points: pts, heights: hs, sections: ss, trimmedMm };
+}
+
+const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
 /** The wall report a reply carries: what was taken, where it stopped, thickness, borders, zones, and what missed. */
 function wallReport(wall: RibWall): Row {
@@ -484,7 +584,7 @@ function parseNodeId(value: unknown): number | null {
 
 /** The sliced study's numbers a verify compares. */
 function studyNumbers(reply: Row): Row {
-  if (reply.ok !== true) return { ok: false, reason: reply.reason ?? "The study did not finish." };
+  if (reply.ok !== true) return { failed: true, reason: reply.reason ?? "The study did not finish." };
   return { maxDisplacementMm: num(reply.maxDisplacementMm) ?? null, minSafetyFactor: num(reply.minSafetyFactor) ?? null, massG: num(reply.massG) ?? null, trust: (reply.trust as Row | undefined)?.level ?? null, slicerSeconds: num(reply.slicerSeconds) ?? null, slicerGrams: num(reply.slicerGrams) ?? null };
 }
 
@@ -502,11 +602,14 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     if (!Array.isArray(points) || points.length < 2) return refuse("bad-rib-plan", `Rib ${i + 1} needs at least two points.`);
     const heights = Array.isArray(row.heights) && (row.heights as number[]).length === points.length - 1 ? (row.heights as number[]) : Array.from({ length: points.length - 1 }, () => num(row.height) ?? 0);
     const profile = row.profile === "drafted" || row.profile === "tee" ? row.profile : "straight";
+    // A rib with sections per stretch takes its width from them when it gives none.
+    if (num(row.width) === undefined && Array.isArray(row.sections) && (row.sections as Section[])[0]) row.width = (row.sections as Section[])[0]!.width;
     const fields: ProfileFields = {};
     for (const key of ["draftDeg", "rootRadius", "flangeWidth", "flangeThickness", "flangeChamferDeg"] as const) if (num(row[key]) !== undefined) fields[key] = num(row[key])!;
     const width = num(row.width);
     if (width === undefined) return refuse("bad-rib-plan", `Rib ${i + 1} needs a width.`);
-    built.push({ points, heights, width, profile, fields });
+    const sections = Array.isArray(row.sections) && (row.sections as unknown[]).length === points.length - 1 ? (row.sections as Section[]) : undefined;
+    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}) });
   }
   const op = ribNetOf(built, label, record.request);
   if ("reason" in op) return refuse("bad-rib-plan", String(op.reason));

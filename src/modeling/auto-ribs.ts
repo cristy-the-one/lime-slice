@@ -5,7 +5,7 @@
  * - Defaults from the process and the wall (`ribRules`): filament ribs are whole beads wide, resin and moulded ribs a
  *   share of the wall; the greatest height is three walls; spacing and least length follow the wall's narrow width.
  * - The section (`chooseSection`): moulded and resin ribs are drafted; a filament rib is straight, or a tee where it is
- *   tall enough for a flange and the flange's underside prints in this pose. The underside is a 45° chamfer or square,
+ *   tall enough for a flange and the flange's underside prints in this pose. The underside is a 46° chamfer or square,
  *   whichever is not an overhang for the printer's build direction along that rib (read the way `model_check` reads an
  *   overhang: a face is one when it looks more than 45° down against the build direction). Neither prints: straight.
  * - The network (`ribNetOf`): each rib a path; a rib whose height changes along it (a capped zone, a facing part) is
@@ -115,6 +115,13 @@ const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[
 const len = (a: V3): number => Math.hypot(a[0], a[1], a[2]);
 const unit = (a: V3): V3 => mul(a, 1 / (len(a) || 1));
 
+/**
+ * The chamfer a chamfered flange is built with, degrees from the wall. 45° sits exactly on model_check's 45° limit, and
+ * the kernel's float tessellation tips some of those faces over it: three 116 mm tees 1.35 mm wide counted 871 to
+ * 1329 mm² of overhang on a flat bed at 45°, none at 46° (mcp/auto-ribs-occt.test.ts, the flange table).
+ */
+export const CHAMFER_DEG = 46;
+
 /** model_check's overhang rule: a face looking more than `deg` down against the build direction (src/modeling/inspect.ts). */
 export function isOverhang(normal: V3, build: V3, deg = 45): boolean {
   return -dot(unit(normal), unit(build)) > Math.sin((deg * Math.PI) / 180) + 1e-6;
@@ -127,7 +134,7 @@ export type FlangeUnderside = "chamfer" | "square";
  * stands along it) and across it `b`; a square underside looks along −n, a chamfer of `chamferDeg` from the wall along
  * ±b·sin − n·cos. An underside prints when no stretch has it as an overhang.
  */
-export function flangeUndersides(points: readonly V3[], normals: readonly V3[], build: V3, chamferDeg = 45): Record<FlangeUnderside, boolean> {
+export function flangeUndersides(points: readonly V3[], normals: readonly V3[], build: V3, chamferDeg = CHAMFER_DEG): Record<FlangeUnderside, boolean> {
   const c = Math.cos((chamferDeg * Math.PI) / 180);
   const s = Math.sin((chamferDeg * Math.PI) / 180);
   let square = true;
@@ -182,16 +189,16 @@ export function chooseSection(asked: "auto" | RibProfileKind, process: RibProces
   const typed = fields.flangeChamferDeg;
   if (asked === "tee") {
     if (typed !== undefined) return { profile: "tee", flangeChamferDeg: typed, why: "as asked" };
-    if (prints.chamfer) return { profile: "tee", flangeChamferDeg: 45, why: "as asked; the 45° chamfered underside prints along this rib" };
+    if (prints.chamfer) return { profile: "tee", flangeChamferDeg: CHAMFER_DEG, why: `as asked; the ${CHAMFER_DEG}° chamfered underside prints along this rib` };
     if (prints.square) return { profile: "tee", flangeChamferDeg: 0, why: "as asked; the square underside prints along this rib, the chamfer does not" };
-    return { profile: "tee", flangeChamferDeg: 45, why: "as asked, but neither flange underside prints without support along this rib" };
+    return { profile: "tee", flangeChamferDeg: CHAMFER_DEG, why: "as asked, but neither flange underside prints without support along this rib" };
   }
-  const chamfer = typed ?? (prints.chamfer ? 45 : prints.square ? 0 : null);
+  const chamfer = typed ?? (prints.chamfer ? CHAMFER_DEG : prints.square ? 0 : null);
   if (chamfer === null) return { profile: "straight", why: "neither a chamfered nor a square flange prints without support along this rib in this pose" };
   if (typed !== undefined && !(typed === 0 ? prints.square : prints.chamfer)) return { profile: "straight", why: `a flange with a ${typed}° underside does not print along this rib in this pose` };
   const least = teeMinHeight(width, fields, chamfer);
   if (height < least) return { profile: "straight", why: `${Math.round(height * 100) / 100} mm is under the ${Math.round(least * 100) / 100} mm a tee needs` };
-  return { profile: "tee", flangeChamferDeg: chamfer, why: chamfer === 45 ? "tall enough for a flange; its 45° chamfered underside prints along this rib" : "tall enough for a flange; its square underside prints along this rib, a chamfered one would not" };
+  return { profile: "tee", flangeChamferDeg: chamfer, why: chamfer > 0 ? `tall enough for a flange; its ${chamfer}° chamfered underside prints along this rib` : "tall enough for a flange; its square underside prints along this rib, a chamfered one would not" };
 }
 
 type P2 = [number, number];
@@ -227,39 +234,129 @@ export function sectionArea(profile: RibProfileKind, width: number, height: numb
   return Math.abs(area);
 }
 
-/** A rib to build: points on the wall's face, its height per stretch, its section. */
+/** One stretch's section as ribNet takes a path's: its profile, its width and the profile's fields. */
+export interface Section extends ProfileFields {
+  profile: RibProfileKind;
+  width: number;
+}
+
+/** A rib to build: points on the wall's face, its height per stretch and its section per stretch (or one for all). */
 export interface BuiltRib {
   points: V3[];
   heights: number[];
   width: number;
   profile: RibProfileKind;
   fields?: ProfileFields;
+  /** One per stretch, as the planner gives them; absent, every stretch is `profile` with `fields`. */
+  sections?: Section[];
 }
 
-/** Runs of one height, within `tol` mm: each piece's points (sharing the point where the height changes) and its height. */
-export function splitByHeight(points: readonly V3[], heights: readonly number[], tol = 0.05): { points: V3[]; height: number }[] {
+const sectionKey = (s: Section | undefined) => (s ? JSON.stringify([s.profile, s.width, s.draftDeg, s.rootRadius, s.flangeWidth, s.flangeThickness, s.flangeChamferDeg]) : "");
+
+/**
+ * Runs of one height (within `tol` mm) and one section: each piece's points (sharing the point where either changes),
+ * its height (the lowest of the run) and its section.
+ */
+export function splitByHeight(points: readonly V3[], heights: readonly number[], tol = 0.05, sections?: readonly Section[]): { points: V3[]; height: number; section?: Section }[] {
   if (points.length < 2) return [];
-  const pieces: { points: V3[]; height: number }[] = [];
+  const pieces: { points: V3[]; height: number; section?: Section }[] = [];
   let start = 0;
   for (let k = 1; k <= heights.length; k += 1) {
-    if (k < heights.length && Math.abs(heights[k]! - heights[start]!) <= tol) continue;
+    if (k < heights.length && Math.abs(heights[k]! - heights[start]!) <= tol && sectionKey(sections?.[k]) === sectionKey(sections?.[start])) continue;
     const run = heights.slice(start, k);
-    pieces.push({ points: points.slice(start, k + 1).map((p) => [...p] as V3), height: Math.min(...run) });
+    pieces.push({ points: points.slice(start, k + 1).map((p) => [...p] as V3), height: Math.min(...run), ...(sections?.[start] ? { section: sections[start] } : {}) });
     start = k;
   }
   return pieces;
 }
 
+/** The least height a section stands at in ribNet (its root, chamfer and flange, plus 0.1 mm); 0 for a plain one. */
+export function sectionLeast(s: Section): number {
+  const root = s.rootRadius ?? (s.profile === "straight" ? 0 : 0.5 * s.width);
+  if (s.profile === "straight" && !(root > 0)) return 0;
+  if (s.profile !== "tee") return root + 0.1;
+  const flange = s.flangeWidth ?? 3 * s.width;
+  const c = Math.max(0, (flange / 2 - s.width / 2) * Math.tan(((s.flangeChamferDeg ?? 45) * Math.PI) / 180));
+  return root + c + (s.flangeThickness ?? s.width) + 0.1;
+}
+
 /**
- * The ribNet op for a set of ribs: a path per run of one height. A rib with no height left anywhere (all under 0.1 mm)
+ * Which flange underside prints over a wall, for ribs in any direction on it: `samples` are wall normals spread over
+ * it, each tried with ribs every 15° round it. "chamfered" when the chamfer prints everywhere, else "square" when the
+ * square one does, else whichever prints for most (and at least half), else null. The share of each is returned.
+ */
+export function planFlange(samples: readonly V3[], build: V3): { flange: "chamfered" | "square" | null; chamfered: number; square: number } {
+  let chamfer = 0;
+  let square = 0;
+  let total = 0;
+  for (const n0 of samples) {
+    const n = unit(n0);
+    const seed: V3 = Math.abs(n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const u = unit(cross(n, seed));
+    const v = cross(n, u);
+    for (let k = 0; k < 12; k += 1) {
+      const a = (k * Math.PI) / 12;
+      const t = add(mul(u, Math.cos(a)), mul(v, Math.sin(a)));
+      const row = flangeUndersides([[0, 0, 0], t], [n, n], build);
+      total += 1;
+      if (row.chamfer) chamfer += 1;
+      if (row.square) square += 1;
+    }
+  }
+  const c = total ? chamfer / total : 0;
+  const s = total ? square / total : 0;
+  const flange = c >= 1 ? "chamfered" : s >= 1 ? "square" : Math.max(c, s) >= 0.5 ? (c >= s ? "chamfered" : "square") : null;
+  return { flange, chamfered: Math.round(c * 1000) / 1000, square: Math.round(s * 1000) / 1000 };
+}
+
+/**
+ * The planner's sections along one rib, checked against this rib's direction: a tee stretch whose flange underside does
+ * not print along the rib takes the other underside when that one prints and the stretch is tall enough for it, else it
+ * is built straight. Returns the sections to build and a sentence for each change.
+ */
+export function fitFlanges(points: readonly V3[], normals: readonly V3[], heights: readonly number[], sections: readonly Section[], build: V3): { sections: Section[]; notes: string[] } {
+  const out: Section[] = [];
+  const notes = new Set<string>();
+  for (let k = 0; k < sections.length; k += 1) {
+    const s = sections[k]!;
+    if (s.profile !== "tee") {
+      out.push(s);
+      continue;
+    }
+    const chamfered = (s.flangeChamferDeg ?? 45) > 0;
+    // The planner's 45° chamfer is built at CHAMFER_DEG, off model_check's limit, where the stretch stands it.
+    const steeper: Section = { ...s, flangeChamferDeg: CHAMFER_DEG };
+    const own: Section = chamfered && s.flangeChamferDeg === 45 && heights[k]! >= sectionLeast(steeper) ? steeper : s;
+    const prints = flangeUndersides([points[k]!, points[k + 1]!], [normals[k]!, normals[k + 1]!], build, chamfered ? own.flangeChamferDeg ?? CHAMFER_DEG : CHAMFER_DEG);
+    if (chamfered ? prints.chamfer : prints.square) {
+      out.push(own);
+      continue;
+    }
+    const other: Section = { ...s, flangeChamferDeg: chamfered ? 0 : CHAMFER_DEG };
+    if ((chamfered ? prints.square : prints.chamfer) && heights[k]! >= sectionLeast(other)) {
+      out.push(other);
+      notes.add(chamfered ? "the chamfered flange does not print along this rib, so its tee stretches have a square flange" : `the square flange does not print along this rib, so its tee stretches have a ${CHAMFER_DEG}° chamfered flange`);
+      continue;
+    }
+    out.push({ profile: "straight", width: s.width });
+    notes.add("no flange prints along this rib in this pose, so it is straight where the plan had a tee");
+  }
+  return { sections: out, notes: [...notes] };
+}
+
+/**
+ * The ribNet op for a set of ribs: a path per run of one height and section. A run with no height left (under 0.1 mm)
  * is left out. Refused in a sentence when it would take more than ribNet's 400 paths.
  */
 export function ribNetOf(ribs: readonly BuiltRib[], label: string, auto: unknown): Record<string, unknown> | { reason: string } {
   const paths: Record<string, unknown>[] = [];
   for (const rib of ribs) {
-    for (const piece of splitByHeight(rib.points, rib.heights)) {
+    for (const piece of splitByHeight(rib.points, rib.heights, 0.05, rib.sections)) {
       if (!(piece.height >= 0.1)) continue;
-      paths.push({ points: piece.points, width: rib.width, height: Math.round(piece.height * 1e4) / 1e4, profile: rib.profile, ...(rib.fields ?? {}) });
+      const section: Section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
+      // A stretch too low for its root and flange is built straight, as the planner solved it.
+      const built: Section = piece.height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
+      paths.push({ points: piece.points, height: Math.round(piece.height * 1e4) / 1e4, ...built });
     }
   }
   if (paths.length === 0) return { reason: "The plan has no rib tall enough to build (every stretch is under 0.1 mm)." };
