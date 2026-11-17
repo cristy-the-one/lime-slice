@@ -6,7 +6,8 @@
 import { eulerOrient, matMul, orientEuler, type Mat3 } from "../mesh-place.ts";
 import { GEAR_DEFAULTS, isBoreShape, type GearFields } from "../model-gear.ts";
 import { isPrimitiveKind, primitiveSpec, turnCentre, type PrimitiveFields, type PrimitiveKind, type PrimitiveSpec } from "../model-primitive.ts";
-import { framePose, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
+import { framePose, GLOBAL_WORKPLANE as GLOBAL_PLANE, planePrimitive, planePoint, type Workplane } from "../workplane.ts";
+import { ribNetPlan, type RibSurfaceInput } from "./rib-net.ts";
 import { pathSamples } from "./sweep.ts";
 import { textStrokes } from "./text.ts";
 import { fontById, isOutlineFont, isPenFont, isUserFont, MAX_OUTLINE_CHARS, penFontOf, penVersionedId, STROKE_FONT, styleOf, styleRefusal, versionedId, type PenFont } from "./text-fonts.ts";
@@ -43,7 +44,7 @@ export function combineOfPieces(pieces: readonly Piece[]): "cut" | "fuse" | { re
 }
 
 /** The kinds that expand. A plain `boolean` is a piece of one. */
-export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture", "array", "ribs", "text"] as const;
+export const COMPOSITE_KINDS = ["pattern", "mirror", "pocket", "boss", "texture", "array", "ribs", "text", "ribNet"] as const;
 export type CompositeKind = (typeof COMPOSITE_KINDS)[number];
 
 export function isComposite(kind: unknown): kind is CompositeKind {
@@ -542,6 +543,8 @@ export interface ExpandContext {
    * its seam) for a curved face, or why the text cannot go there.
    */
   round?(index: number): { surface: RoundSurface; point: Vec3 } | { reason: string } | null;
+  /** --- Rib network (docs/plan-auto-ribs.md 7.4). The part's surface in the frame ops are typed in: triangles, their faces, and the same with cracks closed. */
+  surface?(): RibSurfaceInput;
 }
 
 /** The first surface a ray meets, how far along, and whether the ray leaves the part there (it started inside). */
@@ -1148,11 +1151,24 @@ export function expand(raw: Record<string, unknown>, ctx: ExpandContext, toPart:
   if (kind === "array") return capped(arrayPieces(raw, ctx));
   if (kind === "ribs") return capped(ribPieces(raw, ctx));
   if (kind === "text") return capped(textPieces(raw, ctx));
+  // --- Rib network: one loft a run, in model space, built as the tools of one fuse (composite-apply.ts runCombined).
+  if (kind === "ribNet") {
+    const plan = ribNetPlan(raw, ctx.surface?.() ?? null);
+    if ("reason" in plan) return plan;
+    return plan.steps.map((step): Piece => {
+      if (step.kind === "boolean") {
+        const { kind: _kind, op: _op, ...spec } = step;
+        return { op: "fuse", spec };
+      }
+      return { op: "fuse", spec: planePrimitive({ primitive: "box", origin: step.sections[0]!.origin, size: [1, 1, 1], radius: 0, height: 0, turn: [0, 0, 0] }, GLOBAL_PLANE), step: step as unknown as Record<string, unknown> };
+    });
+  }
   if (kind === "pattern" || kind === "mirror") {
     const inner = raw.op;
     if (!inner || typeof inner !== "object") return { reason: `A ${kind} needs the op it repeats.` };
     const pieces = expand(inner as Record<string, unknown>, ctx, toPart, depth + 1);
     if ("reason" in pieces) return pieces;
+    if ((inner as { kind?: unknown }).kind === "ribNet") return { reason: `A ${kind} of a rib network is not supported. Give the one network every path it needs instead.` };
     if (pieces.some((piece) => piece.step)) return { reason: `A ${kind} of text in a font is not supported yet. Place each text on its own, or use the stroke font.` };
     let motions: Motion[];
     if (kind === "pattern") {

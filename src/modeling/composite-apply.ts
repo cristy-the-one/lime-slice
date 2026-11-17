@@ -13,6 +13,7 @@ import { featureLabel, isFeatureTool } from "../model-features.ts";
 import type { PrimitiveSpec } from "../model-primitive.ts";
 import { repeatLabel } from "../model-repeat.ts";
 import { primitiveBox } from "../model-feasibility.ts";
+import { ribNetLabel, ribNetPlan, ribNetReport, ribNetVerify } from "./rib-net.ts";
 import { lostVolume, touchingEdges, touchingReason } from "./step-guard.ts";
 import { applyPose, toSolidOp, type Affine } from "../model-space.ts";
 import type { GroupOp, ModelOp, NodeId, ProfileLoop } from "../model-tree.ts";
@@ -156,6 +157,7 @@ export function compositeGroupLabel(raw: Record<string, unknown>, given?: string
   if (typed) return typed.slice(0, 80);
   // --- D39. The app's own row labels: "Pattern × 6 around Z", "Mirror across X".
   if (raw.kind === "pattern" || raw.kind === "mirror") return repeatLabel(raw);
+  if (raw.kind === "ribNet") return ribNetLabel(raw);
   if (isFeatureTool(raw.kind)) return featureLabel(raw).slice(0, 80);
   return "Group";
 }
@@ -205,9 +207,9 @@ export async function storeGroup(port: GroupPort, before: NodeId, firstPiece: No
 
 // --- A pattern in one boolean (`combine: true`). Keep this block together. ---
 
-/** Whether a pattern asks for all its copies in one boolean. */
+/** Whether a pattern asks for all its copies in one boolean. A rib network is always one boolean. */
 export function wantsCombine(raw: Record<string, unknown>): boolean {
-  return raw.kind === "pattern" && raw.combine === true;
+  return (raw.kind === "pattern" && raw.combine === true) || raw.kind === "ribNet";
 }
 
 export { COMBINE_BOTH, COMBINE_KIND };
@@ -247,7 +249,7 @@ export interface CombinedPort {
   linked?(steps: ModelOp[]): ModelOp[];
 }
 
-export type CombinedRun = { ok: true; node: NodeId; count: number; skipped: number } | { refused: Record<string, unknown> };
+export type CombinedRun = { ok: true; node: NodeId; count: number; skipped: number; report?: Record<string, unknown> } | { refused: Record<string, unknown> };
 
 /**
  * A pattern with `combine: true`: its copies expanded as always, then built as one group whose steps are the tools of
@@ -258,10 +260,13 @@ export type CombinedRun = { ok: true; node: NodeId; count: number; skipped: numb
  */
 export async function runCombined(raw: Record<string, unknown>, port: CombinedPort, label: string | undefined): Promise<CombinedRun> {
   const context = port.context();
-  const copies = featureCopies(raw, context.plane, (spec) => port.profilePlane(spec));
-  const expanded = copies === null ? expand(raw, context, (op) => port.pieceOf(op)) : copies;
+  // --- Rib network (docs/plan-auto-ribs.md 7.4): its runs are lofts, planned with the guards checked after the build.
+  const net = raw.kind === "ribNet" ? ribNetPlan(raw, context.surface?.() ?? null) : null;
+  if (net && "reason" in net) return { refused: { reason: net.reason } };
+  const copies = net ? null : featureCopies(raw, context.plane, (spec) => port.profilePlane(spec));
+  const expanded = net ? [] : copies === null ? expand(raw, context, (op) => port.pieceOf(op)) : copies;
   if ("reason" in expanded) return { refused: { reason: expanded.reason } };
-  const steps: ModelOp[] = [];
+  const steps: ModelOp[] = net ? net.steps.map((step) => toSolidOp(step as unknown as ModelOp, port.pose())) : [];
   for (const one of expanded) {
     if (copies !== null) {
       const baked = port.bakeCopy(one as Record<string, unknown>);
@@ -296,12 +301,22 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
   };
   const report = (done.combined ?? {}) as { failed?: { index: number; reason: string }[]; missed?: number[] };
   const left = report.failed?.[0];
-  if (left) return refuse({ reason: `Copy ${left.index + 1} of ${count}: ${left.reason}`, step: left.index + 1, of: count, failedStep: left.index + 1 });
+  if (left) return refuse({ reason: net ? `Run ${left.index + 1} of ${count} (path ${net.stepPath[left.index] ?? "?"}): ${left.reason}` : `Copy ${left.index + 1} of ${count}: ${left.reason}`, step: left.index + 1, of: count, failedStep: left.index + 1 });
   const after = port.solid();
   if (prior && after) {
     const lost = lostVolume({ kind: "boolean", op: combine }, prior.volumeMm3, after.volumeMm3, null);
     if (lost) return refuse({ reason: lost });
-    if (prior.positions.length > 0 && after.positions.length > 0) {
+    if (net) {
+      // The outside must be as it was: every guard ray meets the part where it did, and the part grew only rib-side.
+      const pose = port.pose();
+      const model = new Float32Array(after.positions.length);
+      for (let i = 0; i + 2 < after.positions.length; i += 3) model.set(applyPose(pose, [after.positions[i]!, after.positions[i + 1]!, after.positions[i + 2]!]), i);
+      const broke = ribNetVerify(net, model);
+      if (broke) return refuse({ reason: broke });
+      const missed = report.missed ?? [];
+      return { ok: true, node, count, skipped: missed.length, report: ribNetReport(net, after.volumeMm3 - prior.volumeMm3, missed) };
+    }
+    if (!net && prior.positions.length > 0 && after.positions.length > 0) {
       for (let k = 0; k < steps.length; k += 1) {
         const step = steps[k]!;
         if (step.kind !== "boolean") continue;
@@ -314,6 +329,7 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
       }
     }
   }
+  if (net) return { ok: true, node, count, skipped: report.missed?.length ?? 0, report: ribNetReport(net, null, report.missed ?? []) };
   return { ok: true, node, count, skipped: report.missed?.length ?? 0 };
 }
 // --- end pattern in one boolean ---

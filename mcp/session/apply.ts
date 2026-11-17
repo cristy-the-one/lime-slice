@@ -281,6 +281,8 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
   let made = 0;
   /** I20: what became of each loops array's cells, by op. */
   const cellReports: Record<string, unknown>[] = [];
+  // --- Rib network: what each built network added, and what it shortened or left out.
+  const ribReports: Record<string, unknown>[] = [];
   const result = (body: Record<string, unknown>) => ({ ...body, checkpoints });
   const meta = this.callContext.getStore();
   // Progress per step, so a client that resets its timeout on progress keeps waiting for a long batch.
@@ -447,7 +449,9 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
         continue;
       }
       nodes.push(combined.node);
-      skipped += combined.skipped;
+      if (combined.report) ribReports.push({ index: index + offset, ...combined.report });
+      // A network reports its own runs that missed, by run and path.
+      if (!combined.report) skipped += combined.skipped;
       checkpoints.push(obj.tree?.current ?? null);
       continue;
     }
@@ -522,6 +526,7 @@ async function applyMany(this: Session, obj: PlateObject, raws: Record<string, u
     ...(touching ? { leftOut: touching, leftOutNote: `${touching} step${touching === 1 ? "" : "s"} would have left pieces meeting only along an edge, even ${TOUCH_TRIM} mm shorter at each end, and ${touching === 1 ? "was" : "were"} left out. The first: ${touchingAt}` } : {}),
     ...(nodes.length ? { first: nodeHandle(nodes[0]!), node: nodeHandle(nodes[nodes.length - 1]!) } : {}),
     ...(cellReports.length ? { cells: cellReports.length === 1 ? cellReports[0] : cellReports } : {}),
+    ...(ribReports.length ? { ribNet: ribReports.length === 1 ? ribReports[0] : ribReports } : {}),
     ...(options.label ? { label: options.label } : {}),
     fingerprint: obj.solid?.fingerprint ?? null,
     bounds: obj.solid?.bounds ?? null,
