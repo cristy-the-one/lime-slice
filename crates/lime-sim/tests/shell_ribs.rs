@@ -10,7 +10,9 @@ mod shell_common;
 
 use lime_sim::assemble::{Hold, Load, NodeHold};
 use lime_sim::mesh::faces_on_plane;
-use lime_sim::shell::{Rib, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions};
+use lime_sim::shell::{
+    Rib, RibSection, RibSide, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions,
+};
 use shell_common::*;
 
 const E: f64 = 2000.0;
@@ -74,7 +76,7 @@ fn strip_shell(nx: usize, ny: usize, side: Option<RibSide>) -> f64 {
         model
             .add_rib(Rib {
                 edges: row_edges(nx, ny / 2),
-                width: W,
+                section: RibSection::rectangular(W),
                 height: H,
                 side,
             })
@@ -214,7 +216,7 @@ fn plate_shell(n: usize, ribbed: bool) -> (f64, f64) {
         model
             .add_rib(Rib {
                 edges: row_edges(n, n / 2),
-                width: RIB.0,
+                section: RibSection::rectangular(RIB.0),
                 height: RIB.1,
                 side: RibSide::Positive,
             })
@@ -331,7 +333,7 @@ fn ribs_come_and_go_without_rebuilding_the_shell() {
     };
     let rib = |j: usize| Rib {
         edges: row_edges(n, j),
-        width: 2.0,
+        section: RibSection::rectangular(2.0),
         height: 6.0,
         side: RibSide::Positive,
     };
@@ -385,7 +387,7 @@ fn ribs_come_and_go_without_rebuilding_the_shell() {
     // vertex 0), and so is an unheld shell.
     let bad = Rib {
         edges: vec![(0, 15)],
-        width: 1.0,
+        section: RibSection::rectangular(1.0),
         height: 1.0,
         side: RibSide::Positive,
     };

@@ -310,7 +310,9 @@ pub(crate) fn network_volume(pos: &[[f64; 3]], design: &[DRib]) -> f64 {
                 };
                 let (a, b) = (&design[ri], &design[rj]);
                 let h = hi.min(hj);
-                v -= share * a.width * b.profile.area(b.width, h) / sin;
+                v -= share
+                    * a.profile
+                        .crossing_overlap(a.width, b.profile, b.width, h, sin);
             }
         }
     }
@@ -541,6 +543,9 @@ pub(crate) fn run(
             let mut trial = design.clone();
             trial[i].chain = new_chain;
             trial[i].caps = new_caps;
+            if over_budget(ctx, &trial) {
+                continue;
+            }
             let dv = network_volume(&ctx.pos, &trial) - network_volume(&ctx.pos, &design);
             if rep.cancelled() {
                 stopped = true;
@@ -573,10 +578,17 @@ pub(crate) fn run(
         for i in 0..design.len() {
             for j in i + 1..design.len() {
                 if let Some((chain, caps)) = join(&ctx.pos, &design[i], &design[j]) {
-                    design[i].chain = chain;
-                    design[i].caps = caps;
-                    design[i].gain += design[j].gain;
-                    let gone = design.remove(j);
+                    // Joined, their shared end is no longer an overlap: the
+                    // network grows a little, which a budget may not take.
+                    let mut trial = design.clone();
+                    trial[i].chain = chain;
+                    trial[i].caps = caps;
+                    trial[i].gain += trial[j].gain;
+                    let gone = trial.remove(j);
+                    if over_budget(ctx, &trial) {
+                        continue;
+                    }
+                    design = trial;
                     rep.rib(
                         RibChange::Removed,
                         None,
@@ -759,6 +771,15 @@ pub(crate) fn run(
     }
     seconds[3] = t.elapsed().as_secs_f64();
     Ok(finish(design, cur, stopped, seconds))
+}
+
+/// Whether a design spends more than a [`Goal::Budget`] allows, counted as
+/// the plan reports it: real section areas, crossing overlaps once.
+fn over_budget(ctx: &Ctx, design: &[DRib]) -> bool {
+    match ctx.goal {
+        Goal::Budget { volume_mm3 } => network_volume(&ctx.pos, design) > volume_mm3,
+        _ => false,
+    }
 }
 
 /// The design with candidate `i` added at the greatest height.

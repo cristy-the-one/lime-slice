@@ -55,6 +55,101 @@ pub fn solid(
     }
 }
 
+/// A TET10 brick grid with cell boundaries at `xs`, `ys`, `zs` (each
+/// increasing), keeping the tets whose corner centroid passes `keep`.
+///
+/// The grid is built in index space and each axis mapped piecewise
+/// linearly with its kinks on cell boundaries, so every cell is an affine
+/// box and its quadratic nodes stay at edge midpoints. Each brick is six
+/// tets around its corner-0-to-corner-6 diagonal, so a plane through
+/// corners 0, 1, 6, 7 (a 45° line in y–z through a square cell, rising
+/// with y) splits a brick into whole tets: such a boundary is exact.
+pub fn graded_solid(xs: &[f64], ys: &[f64], zs: &[f64], keep: impl Fn([f64; 3]) -> bool) -> Mesh {
+    let div = [xs.len() - 1, ys.len() - 1, zs.len() - 1];
+    let full = grid(
+        [0.0; 3],
+        [div[0] as f64, div[1] as f64, div[2] as f64],
+        div,
+        ElementKind::Tet10,
+    )
+    .unwrap();
+    let map = |arr: &[f64], v: f64| {
+        let i = (v.floor() as usize).min(arr.len() - 2);
+        arr[i] + (v - i as f64) * (arr[i + 1] - arr[i])
+    };
+    let placed: Vec<[f64; 3]> = full
+        .nodes
+        .iter()
+        .map(|p| [map(xs, p[0]), map(ys, p[1]), map(zs, p[2])])
+        .collect();
+    let mut used = vec![usize::MAX; placed.len()];
+    let mut nodes = Vec::new();
+    let mut elements = Vec::new();
+    for cell in &full.elements {
+        let c = [0, 1, 2].map(|k| cell.nodes[..4].iter().map(|&n| placed[n][k]).sum::<f64>() / 4.0);
+        if !keep(c) {
+            continue;
+        }
+        let mut cn = Vec::with_capacity(cell.nodes.len());
+        for &n in &cell.nodes {
+            if used[n] == usize::MAX {
+                used[n] = nodes.len();
+                nodes.push(placed[n]);
+            }
+            cn.push(used[n]);
+        }
+        elements.push(Cell { nodes: cn });
+    }
+    Mesh {
+        nodes,
+        elements,
+        kind: ElementKind::Tet10,
+    }
+}
+
+/// Boundaries from `from` to `to` in cells of `step` (the last may be
+/// short), without `from` when `skip_first`.
+pub fn cells(from: f64, to: f64, step: f64, skip_first: bool) -> Vec<f64> {
+    let n = ((to - from) / step - 1e-9).ceil() as usize;
+    (0..=n)
+        .skip(usize::from(skip_first))
+        .map(|k| (from + k as f64 * step).min(to))
+        .collect()
+}
+
+/// Volume of a mesh of tets, by their corners (exact for straight edges).
+pub fn mesh_volume(mesh: &Mesh) -> f64 {
+    mesh.elements
+        .iter()
+        .map(|c| {
+            let p = |i: usize| mesh.nodes[c.nodes[i]];
+            let (a, b, cc, d) = (p(0), p(1), p(2), p(3));
+            let u = [0, 1, 2].map(|k| b[k] - a[k]);
+            let v = [0, 1, 2].map(|k| cc[k] - a[k]);
+            let w = [0, 1, 2].map(|k| d[k] - a[k]);
+            let det = u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0])
+                + u[2] * (v[0] * w[1] - v[1] * w[0]);
+            det.abs() / 6.0
+        })
+        .sum()
+}
+
+/// Whether `p` is inside the counter-clockwise polygon `poly`.
+pub fn inside(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let mut c = false;
+    let n = poly.len();
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + n - 1) % n];
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]
+        {
+            c = !c;
+        }
+    }
+    c
+}
+
 /// A linear static TET10 solve through the existing study path.
 pub fn tet_solve(
     mesh: Mesh,
