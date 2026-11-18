@@ -139,7 +139,7 @@ export async function previewRemote(name: string, bytes: ArrayBuffer, stepTolera
   const payload = { filename: name, dataB64: bytesToBase64(new Uint8Array(bytes)), stepToleranceMm };
   const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   try {
-    let body: { positions?: number[]; seatMm?: number; error?: string };
+    let body: { positions?: number[]; seatMm?: number; note?: string; error?: string };
     if (tauri) {
       const { invoke } = await import("@tauri-apps/api/core");
       body = JSON.parse(await invoke<string>("preview_mesh", { payload: JSON.stringify(payload) }));
@@ -149,9 +149,12 @@ export async function previewRemote(name: string, bytes: ArrayBuffer, stepTolera
       if (!res.ok) throw new Error(body.error || "Could not preview this mesh.");
     }
     if (!body.positions) throw new Error(body.error || "Could not preview this mesh.");
+    // The engine read the file, but not as what its format promises (a STEP that is a mesh with open edges).
+    if (body.note) pushToast(body.note, "warn");
     return { positions: new Float32Array(body.positions), ...(typeof body.seatMm === "number" && Number.isFinite(body.seatMm) ? { seatMm: body.seatMm } : {}) };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Could not preview this mesh.";
+    // The desktop engine refuses with a plain sentence, not an Error.
+    const message = err instanceof Error ? err.message : typeof err === "string" && err ? err : "Could not preview this mesh.";
     state.error = message === "Failed to fetch"
       ? `STEP and 3MF need the slicer engine at ${apiBase()}. Start it with cargo run -p lime-slice --release -- serve.`
       : message;
