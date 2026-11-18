@@ -493,6 +493,29 @@ let boxObject = "";
   report.push(`two cases on the ${BOX} box: ${cases.map((c: Reply) => `${c.name} w${c.weight} ×${c.factor} (bare ${c.bare.deflectionMm} → ribbed ${c.ribbed.deflectionMm} mm)`).join("; ")}; combined ×${done.plan.stiffnessFactor}`);
 }
 
+// ===== 5c. ribs_apply {verify:true} with two load cases. A 64 × 40 × 14 box: four sliced studies on the
+// 120 × 70 box would run this job past its 25 minutes (the one-case study there took about 200 s). =====
+{
+  const [sx, sy, sz] = [64, 40, 14];
+  const object = await shellBox(sx, sy, sz);
+  const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
+  const loadCases = [
+    { name: "spread", loads: [{ kind: "pressure", faces: [floor], magnitude: 0.01, direction: [0, 0, -1] }] },
+    { name: "point", weight: 2, loads: [{ kind: "force", region: { sphere: { centre: [0, 0, 2], radiusMm: 8 } }, magnitude: 20, direction: [0, 0, -1] }] },
+  ];
+  const planned = await waitJob(String((await call("ribs_plan", { object, wall: { faces: [floor] }, loadCases, goal: { budgetMm3: 600 }, baselines: false })).job));
+  check("two-case verify: the plan has ribs", planned.ok === true && planned.plan?.ribs?.length > 0, JSON.stringify(planned).slice(0, 400));
+  const t0 = Date.now();
+  const verifying = await call("ribs_apply", { job: planned.job, verify: true });
+  const verified = await waitJob(String(verifying.job));
+  const ms = Date.now() - t0;
+  const rows = verified.verify?.cases as Reply[] | undefined;
+  check("two-case verify: each case has a before and an after", verified.ok === true && rows?.length === 2 && rows.every((c) => typeof c.name === "string" && c.before?.maxDisplacementMm > 0 && c.after?.maxDisplacementMm > 0), JSON.stringify(verified.verify ?? verified).slice(0, 900));
+  check("two-case verify: the ribbed part is stiffer for each case", !!rows && rows.every((c) => c.after.maxDisplacementMm < c.before.maxDisplacementMm), JSON.stringify(rows?.map((c) => ({ name: c.name, before: c.before?.maxDisplacementMm, after: c.after?.maxDisplacementMm, stiffer: c.stiffer }))));
+  report.push(`verify two cases on ${sx} × ${sy} × ${sz}: ${(rows ?? []).map((c) => `${c.name} ${c.before.maxDisplacementMm} → ${c.after.maxDisplacementMm} mm (${c.stiffer}×)`).join("; ")} in ${ms} ms (reported ${verified.verify?.seconds} s)`);
+  timings.push(`verify two cases ${ms} ms`);
+}
+
 // ===== 6. The flange table: tees with a 45° chamfered and a square flange, along X, along Y and at 45°. =====
 const flangeRows: Reply[] = [];
 {
