@@ -38,9 +38,10 @@
 //!
 //! Units: mm, N, MPa. Compliance is the work of the loads, N·mm. Several
 //! cases are scored as `sum w_i C_i / C_i0` (each `C_i0` the bare wall on
-//! the same mesh), or, in [`LoadCombine::Worst`], by the worst of them.
-//! A single case is the compliance itself, in either mode. The reported
-//! stiffness factor is that combined number.
+//! the same mesh), or, in [`LoadCombine::Worst`], by the p-norm of those
+//! scaled compliances. A single case is the compliance itself, in either
+//! mode. The reported stiffness factor is the combined number, and in
+//! worst-case mode that number is `min_i C_i0 / C_i`.
 
 mod baseline;
 mod field;
@@ -168,10 +169,17 @@ pub enum LoadCombine {
     /// `sum w_i C_i / C_i0`. Empty weights are all 1.
     #[default]
     Weighted,
-    /// The worst case: maximise `min_i C_i0 / C_i`. Weights are not used.
-    /// [`Goal::Stiffer`] then means every case reaches the factor.
+    /// Minimise `(sum_i (s_i C_i)^p)^(1/p)` with [`WORST_P`] unless
+    /// [`PlannerOptions::worst_p`] says otherwise. `s_i` normalises each
+    /// case by its bare compliance, at unit weight. The reported factor
+    /// is still `min_i C_i0 / C_i`, so [`Goal::Stiffer`] means every case
+    /// reaches it. Load-case weights are refused.
     Worst,
 }
+
+/// Default exponent of [`LoadCombine::Worst`]. A hard minimum stalled the
+/// greedy loop; p = 8 keeps a gradient on the second-worst case.
+pub const WORST_P: f64 = 8.0;
 
 /// One greedy step in [`LoadCombine::Worst`]: which case limited the
 /// objective, and the worst stiffness factor, on the selection mesh.
@@ -218,6 +226,9 @@ pub struct PlannerOptions {
     /// junction or drop it (see [`RibPlan::loose_ends`]). Turn off only to
     /// measure what it costs.
     pub close_loose_ends: bool,
+    /// Exponent of [`LoadCombine::Worst`]'s p-norm. A weighted or one-case
+    /// plan does not read it.
+    pub worst_p: f64,
 }
 
 /// Exactly solved candidates per round: one batch for eight models. The
@@ -238,6 +249,7 @@ impl Default for PlannerOptions {
             workers: 0,
             baselines: true,
             close_loose_ends: true,
+            worst_p: WORST_P,
         }
     }
 }
@@ -252,8 +264,8 @@ pub struct RibPlanRequest {
     /// every triangle. Several are scored as `sum w_i C_i / C_i0`.
     pub load_cases: Vec<LoadCase>,
     /// One weight per load case. Empty means every case weighs 1. A single
-    /// case then scores exactly as its compliance. Unused by
-    /// [`LoadCombine::Worst`].
+    /// case then scores exactly as its compliance. [`LoadCombine::Worst`]
+    /// refuses a non-empty list.
     pub case_weights: Vec<f64>,
     /// How several cases combine. [`LoadCombine::Weighted`] by default; a
     /// one-case plan does not depend on it.
@@ -834,7 +846,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         cases1.clone(),
         rules.side,
         req.case_weights.clone(),
-        select::Mix::unbound(req.combine),
+        select::Mix::unbound(req.combine, req.options.worst_p),
     );
     let loose_input = loose::Input {
         req,
@@ -1287,7 +1299,12 @@ fn clean_solve(
     model.set_threads(1);
     let bare = model.solve_cases(&cases)?;
     let bare_cs: Vec<f64> = bare.iter().map(|r| r.compliance).collect();
-    let mix = select::Mix::from_bare(&req.case_weights, &bare_cs, req.combine);
+    let mix = select::Mix::from_bare(
+        &req.case_weights,
+        &bare_cs,
+        req.combine,
+        req.options.worst_p,
+    );
     let eval = select::evaluate(&mut model, &cases, req.rules.side, &design, &mix)?;
     let rib_cs: Vec<f64> = eval.results.iter().map(|r| r.compliance).collect();
     let volume = select::network_volume(&s.pos, &design);
@@ -1387,6 +1404,17 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
         .any(|w| !(w.is_finite() && *w > 0.0))
     {
         return Err(SimError::new("A load-case weight must be above zero."));
+    }
+    if req.combine == LoadCombine::Worst && !req.case_weights.is_empty() {
+        return Err(SimError::new(
+            "Worst-case mode does not take load-case weights.",
+        ));
+    }
+    if req.combine == LoadCombine::Worst {
+        let p = req.options.worst_p;
+        if !(p.is_finite() && p >= 1.0) {
+            return Err(SimError::new("The worst-case exponent must be 1 or more."));
+        }
     }
     match req.goal {
         Goal::Stiffer(f) if !(f.is_finite() && f >= 1.0) => {
