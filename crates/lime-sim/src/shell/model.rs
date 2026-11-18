@@ -282,8 +282,11 @@ struct RibLayout {
 /// and the ribs' web rotations after them, so the shell's columns of the
 /// matrix never move: its values are reused as they are, and a rib change
 /// appends columns, re-runs the ordering (AMD) and the numeric
-/// factorisation. The timing test gives both costs. A rank-k update of the
-/// factor for a rib of k edges would be cheaper and is left for later.
+/// factorisation. The timing test gives both costs. A rank-k update of
+/// that factor (Sherman–Morrison–Woodbury on the rib's own dofs) was
+/// measured and lost: the condensed block is full rank, and one solve
+/// per rib dof costs more than refactoring except for ribs shorter than
+/// any candidate (see the note in `select`, and handover §3).
 ///
 /// **Web rotations.** Each rib has one extra dof per vertex it runs
 /// through, ψ (see [`super::beam`]). It is held when the vertex's three
