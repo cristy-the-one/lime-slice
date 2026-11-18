@@ -436,6 +436,9 @@ pub struct RibPlan {
     pub stiffness_factor: f64,
     /// `C_i0 / C_i` for each load case, on [`RibPlan::mesh`].
     pub case_factors: Vec<f64>,
+    /// Peak deflection per load case, `[bare, ribbed]` in mm, in case order.
+    /// [`RibPlan::bare`] and [`RibPlan::ribbed`] carry the greatest of these.
+    pub case_deflection_mm: Vec<[f64; 2]>,
     /// Greedy rounds when [`RibPlanRequest::combine`] is
     /// [`LoadCombine::Worst`]: the limiting case and the worst factor after
     /// each accepted rib, including the bare wall as round 0. Empty for a
@@ -677,6 +680,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             ribbed: bare,
             stiffness_factor: 1.0,
             case_factors: vec![1.0; bare0.len()],
+            case_deflection_mm: bare0.iter().map(|r| [r.max_deflection, r.max_deflection]).collect(),
             worst_trace: Vec::new(),
             goal_met: false,
             thickening: None,
@@ -1076,6 +1080,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         ribbed,
         stiffness_factor,
         case_factors: clean.case_factors,
+        case_deflection_mm: clean.case_deflection_mm,
         worst_trace: outcome.worst_trace,
         goal_met: goal_met && !stopped,
         thickening,
@@ -1283,6 +1288,7 @@ struct Clean {
     target: f64,
     factor: f64,
     case_factors: Vec<f64>,
+    case_deflection_mm: Vec<[f64; 2]>,
 }
 
 fn clean_solve(
@@ -1325,6 +1331,11 @@ fn clean_solve(
         target: mix.of(&rib_cs),
         factor: mix.factor(&bare_cs, &rib_cs),
         case_factors: select::Mix::case_factors(&bare_cs, &rib_cs),
+        case_deflection_mm: bare
+            .iter()
+            .zip(&eval.results)
+            .map(|(b, r)| [b.max_deflection, r.max_deflection])
+            .collect(),
         mesh,
         pos: s.pos,
         holds,

@@ -784,6 +784,67 @@ fn a_curved_balanced_plan_matches_v6_11_0() {
     }
 }
 
+/// A centre load spans the whole panel; a load 10 mm from a clamped edge
+/// barely spans anything, so a gram of rib buys far less stiffness there.
+/// Equal budget, p = 8. The symmetric panel made every p tie the weighted
+/// plan. This one asks whether worst-case mode raises the weaker factor
+/// enough (2%) to be worth exposing on the tool.
+///
+/// It does not. The edge load is already carried by the clamp, so ribs
+/// cannot lift it, and both modes leave it at the same factor. Worst-case
+/// mode stays in the crate and off the tool.
+#[test]
+fn a_lopsided_pair_does_not_favour_worst_case() {
+    let mesh = ShellMesh::rectangle([160.0, 80.0], [16, 8], 2.0);
+    let centre = mesh.nearest_vertex([80.0, 40.0, 0.0]);
+    let edge = mesh.nearest_vertex([10.0, 40.0, 0.0]);
+    let at = |node: u32| mesh.vertices[node as usize];
+    assert!((at(centre)[0] - 80.0).abs() < 1e-9 && (at(centre)[1] - 40.0).abs() < 1e-9);
+    assert!((at(edge)[0] - 10.0).abs() < 1e-9 && (at(edge)[1] - 40.0).abs() < 1e-9);
+    let plan_at = |combine: LoadCombine| {
+        let mut req = RibPlanRequest::new(mesh.clone(), material(E, NU));
+        req.holds = Holds::AllBoundaryClamped;
+        req.load_cases = vec![
+            vec![ShellLoad::Force {
+                node: centre,
+                force: [0.0, 0.0, -1.0],
+            }],
+            vec![ShellLoad::Force {
+                node: edge,
+                force: [0.0, 0.0, -1.0],
+            }],
+        ];
+        req.goal = Goal::Budget { volume_mm3: 1800.0 };
+        req.rules.min_spacing = 18.0;
+        req.rules.min_length = 12.0;
+        req.options.baselines = false;
+        req.combine = combine;
+        if combine == LoadCombine::Worst {
+            req.options.worst_p = 8.0;
+        }
+        plan_ribs(&req).unwrap()
+    };
+    let weighted = plan_at(LoadCombine::Weighted);
+    let worst = plan_at(LoadCombine::Worst);
+    let w = case_factors(&weighted, &[centre, edge], &[1.0, 1.0]);
+    let u = case_factors(&worst, &[centre, edge], &[1.0, 1.0]);
+    let wmin = w[0].min(w[1]);
+    let umin = u[0].min(u[1]);
+    // Locked from the release run of this test.
+    within_1e_12(w[0], 4.401264978619979, "weighted centre");
+    within_1e_12(w[1], 1.2607959330185834, "weighted edge");
+    within_1e_12(u[0], 2.5583306328964595, "worst centre");
+    within_1e_12(u[1], 1.260_120_465_903_264, "worst edge");
+    assert_eq!(weighted.ribs.len(), 5);
+    assert_eq!(worst.ribs.len(), 2);
+    within_1e_12(weighted.rib_volume_mm3, 1713.6773280957775, "weighted volume");
+    within_1e_12(worst.rib_volume_mm3, 936.0688139731215, "worst volume");
+    assert!(
+        umin < 1.02 * wmin,
+        "worst min {umin} beats weighted {wmin} by 2%; expose combine"
+    );
+}
+
 fn dump_trace(plan: &RibPlan) {
     for (i, round) in plan.worst_trace.iter().enumerate() {
         eprintln!(
