@@ -44,3 +44,15 @@ pub use model::{
 pub use rib_section::{RibSection, SectionProperties};
 pub use section::{IsotropicShell, Mat3, ShellSection};
 pub use tensor::Principal;
+
+#[cfg(test)]
+mod folded_probe;
+
+// The folded-shell probe reads the planner's private mesh. These names exist
+// only while tests build; the library's public surface is unchanged.
+#[cfg(test)]
+pub(crate) use planner::field::{Field, ALPHA as FIELD_ALPHA};
+#[cfg(test)]
+pub(crate) use planner::surface::Surface;
+#[cfg(test)]
+pub(crate) use planner::trace::{TraceRules, Tracer};

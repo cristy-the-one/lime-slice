@@ -38,11 +38,23 @@
 //! over the load cases.
 
 mod baseline;
+// `pub(crate)` only while tests build, so the folded-shell probe can call the
+// real field, surface and tracer. The non-test crate keeps these private.
+// This visibility is probe scaffolding and is not part of the study PR.
+#[cfg(test)]
+pub(crate) mod field;
+#[cfg(not(test))]
 mod field;
 mod loose;
 mod profile;
 mod select;
+#[cfg(test)]
+pub(crate) mod surface;
+#[cfg(not(test))]
 mod surface;
+#[cfg(test)]
+pub(crate) mod trace;
+#[cfg(not(test))]
 mod trace;
 
 use std::sync::atomic::{AtomicBool, Ordering};
