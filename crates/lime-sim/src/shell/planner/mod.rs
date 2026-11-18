@@ -112,6 +112,61 @@ pub struct Zone {
     /// it (a corner or the centroid within it of one of its vertices).
     pub margin: f64,
 }
+/// How a rib's free end comes down to the wall, as `ribNet` builds it: the
+/// height falls linearly from the rib's height to zero over a length at
+/// the end, `h(s) = min(cap, H s / L)` with `s` the distance from the end
+/// along the rib and `H` the rib's tallest stretch. Only free ends taper:
+/// an end on a held vertex (a joined border, a hold) or on another rib
+/// runs into it at full height.
+///
+/// The planner models it on the mesh's own edges: each edge takes the
+/// height at its middle, so the volume is exact for a straight rib except
+/// on the one edge the taper starts in, and the stiffness is that of a
+/// stepped web (one ψ through the steps, see
+/// [`super::ShellModel`]'s continued webs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EndTaper {
+    /// Square ends, full height to the end.
+    None,
+    /// Over this length, mm.
+    Length(f64),
+    /// Over this many times the rib's height.
+    TimesHeight(f64),
+}
+
+/// The taper the truth study found worth building: three times the rib's
+/// height moves the weakest point off the free end's toe (safety factor
+/// about 0.9 → 1.65 in the solid reference) for the same gain per mm³.
+pub const DEFAULT_END_TAPER: EndTaper = EndTaper::TimesHeight(3.0);
+
+impl EndTaper {
+    /// The taper's length for a rib `height` tall, mm.
+    pub fn length(self, height: f64) -> f64 {
+        match self {
+            Self::None => 0.0,
+            Self::Length(l) => l,
+            Self::TimesHeight(k) => k * height,
+        }
+    }
+
+    /// The height `s` mm from a free end of a rib `height` tall.
+    pub fn height_at(self, height: f64, s: f64) -> f64 {
+        let l = self.length(height);
+        if l > 0.0 {
+            height * (s / l).clamp(0.0, 1.0)
+        } else {
+            height
+        }
+    }
+
+    fn valid(self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Length(x) | Self::TimesHeight(x) => x.is_finite() && x >= 0.0,
+        }
+    }
+}
+
 /// What a rib may be.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RibRules {
@@ -139,6 +194,10 @@ pub struct RibRules {
     /// twice `min_spacing`. The closing pass after pruning has no limit
     /// (see [`PlannerOptions::close_loose_ends`]).
     pub extend_limit: Option<f64>,
+    /// How free ends come down to the wall ([`EndTaper`]); the plan's
+    /// stiffness and volume are those of the tapered ribs. Default
+    /// [`DEFAULT_END_TAPER`].
+    pub end_taper: EndTaper,
 }
 
 impl Default for RibRules {
@@ -153,6 +212,7 @@ impl Default for RibRules {
             side: RibSide::Positive,
             profile: RibProfile::Rectangular,
             extend_limit: None,
+            end_taper: DEFAULT_END_TAPER,
         }
     }
 }
@@ -191,6 +251,9 @@ pub struct PlannerOptions {
     /// junction or drop it (see [`RibPlan::loose_ends`]). Turn off only to
     /// measure what it costs.
     pub close_loose_ends: bool,
+    /// Solve the plan once more with its held borders pinned instead of
+    /// clamped ([`RibPlan::pinned`]). Two more factorisations.
+    pub fixity_check: bool,
 }
 
 /// Exactly solved candidates per round: one batch for eight models. The
@@ -211,6 +274,7 @@ impl Default for PlannerOptions {
             workers: 0,
             baselines: true,
             close_loose_ends: true,
+            fixity_check: true,
         }
     }
 }
@@ -271,8 +335,16 @@ pub struct PlannedRib {
     /// The tallest stretch, mm.
     pub height: f64,
     /// Height of each stretch between consecutive points, mm: `height`,
-    /// or lower where a height-capped zone or the clearance says so.
+    /// or lower where a height-capped zone or the clearance says so. These
+    /// are the heights `ribNet` takes; it tapers the free ends itself (see
+    /// `taper_mm`).
     pub heights: Vec<f64>,
+    /// Height of each stretch as the plan solved it: `heights` with the
+    /// free ends tapered ([`EndTaper`]), mm.
+    pub built_heights: Vec<f64>,
+    /// The taper length at each end, mm: 0 where the end runs into a held
+    /// border, a hold or another rib (or the taper is off).
+    pub taper_mm: [f64; 2],
     pub profile: RibProfile,
     /// The section each stretch is built with, as `heights`: the profile's
     /// at that height (a tee only where it was limited, or straight where a
@@ -282,8 +354,8 @@ pub struct PlannedRib {
     pub ends: [RibEndKind; 2],
     pub family: Family,
     pub length_mm: f64,
-    /// Section area × length per stretch, before any overlap with other
-    /// ribs.
+    /// Section area × length per stretch, at the built (tapered) heights,
+    /// before any overlap with other ribs.
     pub volume_mm3: f64,
     /// The compliance drop when it was added, as a share of the bare
     /// compliance.
@@ -370,21 +442,63 @@ pub struct PlanSeconds {
     pub prune: f64,
     pub size: f64,
     pub baselines: f64,
+    /// The border-fixity check (two solves, run beside the baselines when
+    /// they run).
+    pub fixity: f64,
     /// Inside the solver, over every plan solve (rib rebuild, ordering,
     /// factor, solve, recovery).
     pub solver: f64,
     pub total: f64,
 }
 
+/// The plan solved again with its held borders pinned (translations held,
+/// rotations free) instead of clamped: what the ribs are worth if the
+/// walls around the wall do not hold it square.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PinnedCheck {
+    pub bare: Response,
+    pub ribbed: Response,
+    /// Bare compliance over ribbed, pinned.
+    pub compliance_factor: f64,
+    /// Bare peak deflection over ribbed, pinned.
+    pub peak_factor: f64,
+    /// How much of the clamped gain survives pinning, in log terms:
+    /// `ln(pinned compliance factor) / ln(clamped compliance factor)`.
+    /// 1 when pinning costs nothing, 0 when the ribs then do nothing.
+    pub retained: f64,
+    /// `retained` under [`PINNED_RETAINED_FLOOR`]: the ribs work only if
+    /// the wall is rigidly built into the walls around it.
+    pub needs_rigid_borders: bool,
+}
+
+/// [`PinnedCheck::needs_rigid_borders`] when pinning keeps less than this
+/// share of the clamped gain (in log terms). The truth study's rule of
+/// thumb was "pinned gain under 0.8 of the clamped gain"; gains are
+/// ratios, so the share is taken of their logarithms, which is the same
+/// for small gains (1.016 against 1.256: 0.07, warn) and does not warn on
+/// a large gain that pinning trims a little (2.15 against 2.17: 0.99; 2.5
+/// against 3.0: 0.83, where `(f − 1)` shares would say 0.75 and warn on
+/// ribs that still give 2.5×).
+pub const PINNED_RETAINED_FLOOR: f64 = 0.8;
+
 #[derive(Clone, Debug)]
 pub struct RibPlan {
     pub ribs: Vec<PlannedRib>,
-    /// All ribs, overlaps at crossings and junctions counted once.
+    /// All ribs, overlaps at crossings and junctions counted once, at the
+    /// built (tapered) heights.
     pub rib_volume_mm3: f64,
     pub bare: Response,
     pub ribbed: Response,
-    /// Bare compliance over ribbed.
+    /// Bare compliance over ribbed (strain energy: what selection
+    /// optimises), for the ribs as built.
     pub stiffness_factor: f64,
+    /// Bare peak deflection over ribbed: how much less the wall bends at
+    /// its worst point, for the ribs as built.
+    pub peak_factor: f64,
+    /// The border-fixity check ([`PinnedCheck`]); `None` when it was off,
+    /// cancelled, there are no ribs, or the pinned wall could not be solved
+    /// (held at too few points to stand pinned).
+    pub pinned: Option<PinnedCheck>,
     pub goal_met: bool,
     pub thickening: Option<ThickeningBaseline>,
     pub grid: Option<GridBaseline>,
@@ -548,7 +662,7 @@ impl Reporter<'_> {
             points: rib.map_or_else(Vec::new, |d| {
                 d.chain.iter().map(|&v| pos[v as usize]).collect()
             }),
-            heights: rib.map_or_else(Vec::new, select::DRib::heights),
+            heights: rib.map_or_else(Vec::new, select::DRib::base_heights),
             ribs: design.len(),
             rib_volume_mm3: select::network_volume(pos, design),
             compliance: cur.compliance,
@@ -620,6 +734,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             bare,
             ribbed: bare,
             stiffness_factor: 1.0,
+            peak_factor: 1.0,
+            pinned: None,
             goal_met: false,
             thickening: None,
             grid: None,
@@ -747,6 +863,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         max_height: rules.max_height,
         goal: req.goal,
         shortlist: req.options.shortlist,
+        taper: rules.end_taper,
     };
     if rep.cancelled() {
         return Ok(early(stats));
@@ -795,7 +912,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             .iter()
             .map(|d| GRib {
                 points: d.chain.iter().map(|&v| ctx.pos[v as usize]).collect(),
-                heights: d.heights(),
+                heights: d.base_heights(),
                 d: d.clone(),
             })
             .collect();
@@ -891,40 +1008,31 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 });
             }
         }
-        let length = points.windows(2).map(|w| norm(sub(w[1], w[0]))).sum();
-        ribs.push(PlannedRib {
-            vertices: d.chain.clone(),
-            points,
-            width: d.width,
-            height: d.tallest(),
-            heights: d.heights(),
-            profile: d.profile,
-            sections: d
-                .heights()
-                .iter()
-                .map(|&h| d.profile.section_at(d.width, h))
-                .collect(),
-            side: rules.side,
-            ends: clean.ends[k],
-            family: d.family,
-            length_mm: length,
-            volume_mm3: d.volume(&clean.pos),
-            gain: g.d.gain,
-            energy_share: if total_energy > 0.0 {
-                clean.eval.rib_energy.get(k).copied().unwrap_or(0.0) / total_energy
-            } else {
-                0.0
-            },
-        });
+        ribs.push(planned_rib(&clean, k, rules.side, g.d.gain, total_energy));
     }
     let stiffness_factor = bare.compliance / ribbed.compliance;
+    let peak_factor = peak_ratio(&bare, &ribbed);
 
-    // 6. Baselines, on the clean solve's footing.
+    // 6. Baselines, on the clean solve's footing, and beside them the
+    // border-fixity check.
     let t = Instant::now();
     let stopped = outcome.stopped || closed.stopped;
-    let (thickening, grid) =
-        if req.options.baselines && !ribs.is_empty() && !stopped && !rep.cancelled() {
-            rep.stage(PlanStage::Baselines, 0.0);
+    let go = !ribs.is_empty() && !stopped && !rep.cancelled();
+    let do_pinned = req.options.fixity_check && go;
+    let do_baselines = req.options.baselines && go;
+    if do_pinned || do_baselines {
+        rep.stage(PlanStage::Baselines, 0.0);
+    }
+    let fixity = || -> (Option<PinnedCheck>, f64) {
+        if !do_pinned {
+            return (None, 0.0);
+        }
+        let t = Instant::now();
+        let p = pinned_check(req, &clean, stiffness_factor, &rep);
+        (p, t.elapsed().as_secs_f64())
+    };
+    let comparisons = || -> Result<_, SimError> {
+        if do_baselines {
             let grid_input = baseline::GridInput {
                 surface: &s0,
                 blocked: &blocked0,
@@ -952,16 +1060,23 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 },
                 || baseline::grid(&grid_input),
             );
-            match (th?, gr?) {
-                (Some(th), Some(gr)) => {
-                    stats.baseline_solves = th.solves + gr.solves;
-                    (Some(th), Some(gr))
-                }
+            Ok(match (th?, gr?) {
+                (Some(th), Some(gr)) => (Some(th), Some(gr)),
                 _ => (None, None),
-            }
+            })
         } else {
-            (None, None)
-        };
+            Ok((None, None))
+        }
+    };
+    let ((pinned, fixity_seconds), compared) = rayon::join(fixity, comparisons);
+    let (thickening, grid): (Option<ThickeningBaseline>, Option<GridBaseline>) = compared?;
+    if let (Some(th), Some(gr)) = (&thickening, &grid) {
+        stats.baseline_solves = th.solves + gr.solves;
+    }
+    if pinned.is_some() {
+        stats.solves += 2;
+    }
+    stats.seconds.fixity = fixity_seconds;
     let stopped_early =
         stopped || (req.options.baselines && !ribs.is_empty() && thickening.is_none());
     stats.seconds.baselines = t.elapsed().as_secs_f64();
@@ -981,6 +1096,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         bare,
         ribbed,
         stiffness_factor,
+        peak_factor,
+        pinned,
         goal_met: goal_met && !stopped,
         thickening,
         grid,
@@ -989,6 +1106,146 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         loose_ends,
         mesh: clean.mesh,
         stats,
+    })
+}
+
+/// Bare peak deflection over ribbed (1 when the ribbed wall does not move).
+fn peak_ratio(bare: &Response, ribbed: &Response) -> f64 {
+    if ribbed.max_deflection > 0.0 {
+        bare.max_deflection / ribbed.max_deflection
+    } else {
+        1.0
+    }
+}
+
+/// Rib `k` of a clean solve, as the plan reports it.
+fn planned_rib(clean: &Clean, k: usize, side: RibSide, gain: f64, total_energy: f64) -> PlannedRib {
+    let d = &clean.design[k];
+    let points: Vec<[f64; 3]> = d.chain.iter().map(|&v| clean.pos[v as usize]).collect();
+    let length = points.windows(2).map(|w| norm(sub(w[1], w[0]))).sum();
+    PlannedRib {
+        vertices: d.chain.clone(),
+        points,
+        width: d.width,
+        height: d.tallest(),
+        heights: d.base_heights(),
+        built_heights: d.heights(),
+        taper_mm: d.taper_lengths(),
+        profile: d.profile,
+        sections: d
+            .base_heights()
+            .iter()
+            .map(|&h| d.profile.section_at(d.width, h))
+            .collect(),
+        side,
+        ends: clean.ends[k],
+        family: d.family,
+        length_mm: length,
+        volume_mm3: d.volume(&clean.pos),
+        gain,
+        energy_share: if total_energy > 0.0 {
+            clean.eval.rib_energy.get(k).copied().unwrap_or(0.0) / total_energy
+        } else {
+            0.0
+        },
+    }
+}
+
+/// A rib given by its path on the wall's mid-surface and the height of
+/// each stretch between its points (before the free ends' taper), for
+/// [`solve_paths`].
+#[derive(Clone, Debug)]
+pub struct RibPath {
+    pub points: Vec<[f64; 3]>,
+    pub heights: Vec<f64>,
+}
+
+/// Given ribs solved the way a plan reports its own ([`solve_paths`]).
+#[derive(Clone, Debug)]
+pub struct PathSolve {
+    /// The ribs that could be cut in, in order (`gain` is 0).
+    pub ribs: Vec<PlannedRib>,
+    /// The index into the given paths of each rib in `ribs`.
+    pub kept: Vec<usize>,
+    pub rib_volume_mm3: f64,
+    pub bare: Response,
+    pub ribbed: Response,
+    pub stiffness_factor: f64,
+    pub peak_factor: f64,
+    pub pinned: Option<PinnedCheck>,
+    pub mesh: ShellMesh,
+}
+
+/// Solve given ribs exactly as a plan solves its own: cut into the input
+/// mesh on their own, with the request's holds, loads, section
+/// (`rules.width`, `rules.profile`, `rules.side`) and end taper
+/// (`rules.end_taper`, free ends found as the plan finds them), bare and
+/// ribbed, and the border-fixity check when `options.fixity_check` is on.
+/// The goal, zones and the rest of the rules are not read.
+pub fn solve_paths(req: &RibPlanRequest, paths: &[RibPath]) -> Result<PathSolve, SimError> {
+    let rules = &req.rules;
+    for p in paths {
+        if p.points.len() < 2 || p.heights.len() + 1 != p.points.len() {
+            return Err(SimError::new(
+                "A rib path needs two points or more and one height per stretch.",
+            ));
+        }
+        if p.heights.iter().any(|h| !(h.is_finite() && *h > 0.0)) {
+            return Err(SimError::new("A rib path's heights must be above zero."));
+        }
+    }
+    if !rules.end_taper.valid() {
+        return Err(SimError::new("The end taper must not be below zero."));
+    }
+    let s0 = surface::Surface::new(&req.mesh, None);
+    let cases0 = if req.load_cases.is_empty() {
+        vec![vec![ShellLoad::Pressure {
+            triangles: (0..req.mesh.triangles.len() as u32).collect(),
+            pressure: DEFAULT_PRESSURE,
+        }]]
+    } else {
+        req.load_cases.clone()
+    };
+    let ribs: Vec<GRib> = paths
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let top = p.heights.iter().copied().fold(0.0, f64::max);
+            let mut d = select::DRib::fixed(Vec::new(), top, rules.width, rules.profile);
+            d.taper = rules.end_taper;
+            d.id = i;
+            GRib {
+                points: p.points.clone(),
+                heights: p.heights.clone(),
+                d,
+            }
+        })
+        .collect();
+    let clean = clean_solve(req, &s0, &cases0, &ribs)?;
+    let total_energy = clean.eval.strain_energy;
+    let out: Vec<PlannedRib> = (0..clean.design.len())
+        .map(|k| planned_rib(&clean, k, rules.side, 0.0, total_energy))
+        .collect();
+    let stiffness_factor = clean.bare.compliance / clean.ribbed.compliance;
+    let pinned = if req.options.fixity_check && !out.is_empty() {
+        let rep = Reporter {
+            ctl: PlanControl::default(),
+            last: Mutex::new(0.0),
+        };
+        pinned_check(req, &clean, stiffness_factor, &rep)
+    } else {
+        None
+    };
+    Ok(PathSolve {
+        ribs: out,
+        kept: clean.kept.clone(),
+        rib_volume_mm3: clean.volume,
+        bare: clean.bare,
+        ribbed: clean.ribbed,
+        stiffness_factor,
+        peak_factor: peak_ratio(&clean.bare, &clean.ribbed),
+        pinned,
+        mesh: clean.mesh,
     })
 }
 
@@ -1019,6 +1276,7 @@ pub(crate) fn embed_design(
     s0: &surface::Surface,
     ribs: &[GRib],
     extra: &[Vec<[f64; 3]>],
+    holds: &Holds,
 ) -> Embedded {
     let mut s = s0.clone();
     let ids: Vec<Option<usize>> = ribs.iter().map(|g| s.embed_polyline(&g.points)).collect();
@@ -1064,6 +1322,8 @@ pub(crate) fn embed_design(
         .iter()
         .map(|id| id.map(|i| s.chains[i].clone()))
         .collect();
+    let held = held_flags(&resolve_holds(&s, holds), s.pos.len());
+    select::retaper(&mut design, &s.pos, &held);
     (s, design, kept, extra_chains)
 }
 
@@ -1079,7 +1339,7 @@ fn resize(
     rep: &Reporter,
 ) -> Result<(Vec<GRib>, usize, bool), SimError> {
     let req = input.req;
-    let (s, design, _, _) = embed_design(input.s0, ribs, &[]);
+    let (s, design, _, _) = embed_design(input.s0, ribs, &[], &req.holds);
     let holds = resolve_holds(&s, &req.holds);
     let cases = remap_cases(&s, input.cases0, req.mesh.triangles.len());
     let mesh = s.to_mesh();
@@ -1101,13 +1361,14 @@ fn resize(
         max_height: req.rules.max_height,
         goal,
         shortlist: req.options.shortlist,
+        taper: req.rules.end_taper,
     };
     let (design, _, cut) = select::size(&mut ev, &ctx, design, cur, floor, bare.compliance, rep)?;
     let out = design
         .iter()
         .map(|d| GRib {
             points: d.chain.iter().map(|&v| s.pos[v as usize]).collect(),
-            heights: d.heights(),
+            heights: d.base_heights(),
             d: d.clone(),
         })
         .collect();
@@ -1181,7 +1442,7 @@ fn clean_solve(
     cases0: &[LoadCase],
     ribs: &[GRib],
 ) -> Result<Clean, SimError> {
-    let (s, design, kept, _) = embed_design(s0, ribs, &[]);
+    let (s, design, kept, _) = embed_design(s0, ribs, &[], &req.holds);
     let holds = resolve_holds(&s, &req.holds);
     let cases = remap_cases(&s, cases0, req.mesh.triangles.len());
     let mesh = s.to_mesh();
@@ -1212,6 +1473,70 @@ fn clean_solve(
     })
 }
 
+/// The plan's bare wall and ribs solved with every held vertex pinned:
+/// its translations held as they were, its rotations freed (so the ribs'
+/// web rotations there are free too). `None` when cancelled or when the
+/// pinned wall cannot be solved (held at too few points to stand).
+fn pinned_check(
+    req: &RibPlanRequest,
+    clean: &Clean,
+    clamped_factor: f64,
+    rep: &Reporter,
+) -> Option<PinnedCheck> {
+    if rep.cancelled() {
+        return None;
+    }
+    let holds: Vec<ShellHold> = clean
+        .holds
+        .iter()
+        .map(|h| {
+            let mut dofs = h.dofs;
+            dofs[3..].fill(None);
+            ShellHold { node: h.node, dofs }
+        })
+        .collect();
+    let solve = |ribbed: bool| -> Result<Response, SimError> {
+        let mut m = ShellModel::new(
+            clean.mesh.clone(),
+            req.material,
+            &holds,
+            ShellOptions::default(),
+        )?;
+        m.set_threads(1);
+        let design: &[select::DRib] = if ribbed { &clean.design } else { &[] };
+        let e = select::evaluate(&mut m, &clean.cases, req.rules.side, design)?;
+        Ok(Response {
+            compliance: e.compliance,
+            max_deflection: e.max_deflection,
+        })
+    };
+    let (bare, ribbed) = rayon::join(|| solve(false), || solve(true));
+    let (bare, ribbed) = (bare.ok()?, ribbed.ok()?);
+    let ok = |r: &Response| r.compliance.is_finite() && r.compliance > 0.0;
+    if !(ok(&bare) && ok(&ribbed)) {
+        return None;
+    }
+    let compliance_factor = bare.compliance / ribbed.compliance;
+    let peak_factor = if ribbed.max_deflection > 0.0 {
+        bare.max_deflection / ribbed.max_deflection
+    } else {
+        1.0
+    };
+    let retained = if clamped_factor > 1.0 + 1e-9 {
+        compliance_factor.ln() / clamped_factor.ln()
+    } else {
+        1.0
+    };
+    Some(PinnedCheck {
+        bare,
+        ribbed,
+        compliance_factor,
+        peak_factor,
+        retained,
+        needs_rigid_borders: retained < PINNED_RETAINED_FLOOR,
+    })
+}
+
 fn check(req: &RibPlanRequest) -> Result<(), SimError> {
     let r = &req.rules;
     let positive = |x: f64| x.is_finite() && x > 0.0;
@@ -1228,6 +1553,9 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
         return Err(SimError::new(
             "Rib spacing must be above zero and length not below.",
         ));
+    }
+    if !r.end_taper.valid() {
+        return Err(SimError::new("The end taper must not be below zero."));
     }
     if r.extend_limit.is_some_and(|x| !(x.is_finite() && x >= 0.0)) {
         return Err(SimError::new("The extension limit must not be below zero."));

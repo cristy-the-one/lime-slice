@@ -60,7 +60,7 @@ pub(crate) struct Closed {
 impl Closed {
     /// The ribs as they are, their loose ends counted, none closed.
     pub fn unchanged(input: &Input, ribs: Vec<GRib>) -> Self {
-        let (s, design, _, _) = embed_design(input.s0, &ribs, &[]);
+        let (s, design, _, _) = embed_design(input.s0, &ribs, &[], &input.req.holds);
         let held = held_flags(&resolve_holds(&s, &input.req.holds), s.pos.len());
         let free = rib_ends(&s, &held, &design)
             .iter()
@@ -135,7 +135,7 @@ fn solve_all(input: &Input, s: &Surface, designs: &[Vec<DRib>]) -> Result<Vec<Ev
 fn as_grib(s: &Surface, d: &DRib) -> GRib {
     GRib {
         points: d.chain.iter().map(|&v| s.pos[v as usize]).collect(),
-        heights: d.heights(),
+        heights: d.base_heights(),
         d: d.clone(),
     }
 }
@@ -169,7 +169,7 @@ pub(crate) fn close(
                 stopped: true,
             });
         }
-        let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[]);
+        let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[], &req.holds);
         if kept_idx.len() < ribs.len() {
             ribs = kept_idx.iter().map(|&i| ribs[i].clone()).collect();
             continue;
@@ -219,7 +219,7 @@ pub(crate) fn close(
                 }
             }
         }
-        let (s2, design2, kept2, ext) = embed_design(input.s0, &ribs, &lines);
+        let (s2, design2, kept2, ext) = embed_design(input.s0, &ribs, &lines, &req.holds);
         if kept2.len() < ribs.len() {
             kept.push((design[i].id, end, LooseEndReason::NoRibZone));
             continue;
@@ -256,6 +256,7 @@ pub(crate) fn close(
             let mut trial = design2.clone();
             trial[i].chain = chain;
             trial[i].caps = caps;
+            select::retaper(&mut trial, &s2.pos, &held2);
             if let Goal::Budget { volume_mm3 } = req.goal {
                 if select::network_volume(&s2.pos, &trial) > volume_mm3 {
                     budget_blocked = true;
@@ -286,11 +287,13 @@ pub(crate) fn close(
                 let mut trial = design2.clone();
                 trial[i].chain = chain;
                 trial[i].caps = caps;
+                select::retaper(&mut trial, &s2.pos, &held2);
                 options.push((trial, false));
             }
         }
         let mut dropped = design2.clone();
         let gone = dropped.remove(i).id;
+        select::retaper(&mut dropped, &s2.pos, &held2);
         let mut designs: Vec<Vec<DRib>> = options.iter().map(|o| o.0.clone()).collect();
         designs.push(dropped.clone());
         let evals = solve_all(input, &s2, &designs)?;
@@ -341,7 +344,7 @@ pub(crate) fn close(
         ribs = dropped.iter().map(|d| as_grib(&s2, d)).collect();
     }
     // What is left loose, with its reason.
-    let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[]);
+    let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[], &req.holds);
     let held = held_flags(&resolve_holds(&s, &req.holds), s.pos.len());
     let mut loose = Vec::new();
     for (k, e) in rib_ends(&s, &held, &design).iter().enumerate() {

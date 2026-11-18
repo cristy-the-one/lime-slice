@@ -595,13 +595,59 @@ impl ShellModel {
     }
 
     /// The web-rotation layout of `ribs`, free ψ numbered from `first_free`.
+    ///
+    /// **Continued webs.** Where a rib ends at the vertex another (earlier)
+    /// rib ends at, on the same side, and the two run on from each other
+    /// within 30°, they share that vertex's ψ: one web whose height or
+    /// section steps there (a height-capped stretch, a tapered end built
+    /// from stretches of falling height), not two webs hinged at the step.
+    /// Ribs crossing, meeting at a corner or ending on another's middle keep
+    /// a ψ each.
     fn layout_of(&self, ribs: &[Rib], first_free: usize) -> RibLayout {
         let mut layout = RibLayout::default();
         let mut tangent: Vec<[f64; 3]> = Vec::new();
         let mut free = first_free;
+        // Rib ends a later rib may continue: per vertex, (ψ id, direction
+        // out of the rib there, side, already continued).
+        let mut open: std::collections::BTreeMap<u32, Vec<(usize, [f64; 3], RibSide, bool)>> =
+            std::collections::BTreeMap::new();
+        let continue_cos = 30f64.to_radians().cos();
         for rib in ribs {
+            // This rib's ends: vertices on one of its edges only, with the
+            // direction out of the rib there.
+            let mut degree: Vec<(u32, usize, [f64; 3])> = Vec::new();
+            for &(a, b) in &rib.edges {
+                for (v, w) in [(a, b), (b, a)] {
+                    let out = normalize(sub(
+                        self.mesh.vertices[v as usize],
+                        self.mesh.vertices[w as usize],
+                    ))
+                    .unwrap_or([0.0; 3]);
+                    match degree.iter_mut().find(|d| d.0 == v) {
+                        Some(d) => d.1 += 1,
+                        None => degree.push((v, 1, out)),
+                    }
+                }
+            }
+            let ends: Vec<(u32, [f64; 3])> = degree
+                .iter()
+                .filter(|d| d.1 == 1)
+                .map(|d| (d.0, d.2))
+                .collect();
             let mut at: Vec<(u32, usize)> = Vec::new();
             let mut edges = Vec::with_capacity(rib.edges.len());
+            // ψ of earlier ribs this one continues at its ends.
+            for &(v, out) in &ends {
+                if let Some(list) = open.get_mut(&v) {
+                    if let Some(slot) = list
+                        .iter_mut()
+                        .find(|o| !o.3 && o.2 == rib.side && dot(o.1, out) <= -continue_cos)
+                    {
+                        slot.3 = true;
+                        at.push((v, slot.0));
+                    }
+                }
+            }
             for &(a, b) in &rib.edges {
                 let dir = normalize(sub(
                     self.mesh.vertices[b as usize],
@@ -632,6 +678,16 @@ impl ShellModel {
                     ids[slot] = id;
                 }
                 edges.push((ids[0], ids[1]));
+            }
+            for &(v, out) in &ends {
+                let id = at.iter().find(|(w, _)| *w == v).expect("an end has a ψ").1;
+                // An end that continued an earlier rib is spoken for.
+                let taken = open
+                    .get(&v)
+                    .is_some_and(|list| list.iter().any(|o| o.0 == id));
+                if !taken {
+                    open.entry(v).or_default().push((id, out, rib.side, false));
+                }
             }
             layout.edges.push(edges);
         }

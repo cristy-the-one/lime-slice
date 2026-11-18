@@ -529,8 +529,12 @@ fn beats_a_uniform_shallow_lattice() {
     report("600×120 planner to the lattice's stiffness", &plan);
     let ratio = plan.rib_volume_mm3 / lattice_volume;
     eprintln!(
-        "| lattice vs planner | lattice {lattice_volume:.0} mm³ | planner {:.0} mm³ | planner / lattice {ratio:.3} | goal met {} |",
-        plan.rib_volume_mm3, plan.goal_met
+        "| lattice vs planner | lattice {lattice_volume:.0} mm³ | planner {:.0} mm³ | planner / lattice {ratio:.3} | goal met {} (×{:.4} against ×{factor:.4}, selection ×{:.4}, retries {}) |",
+        plan.rib_volume_mm3,
+        plan.goal_met,
+        plan.stiffness_factor,
+        plan.stats.selection_factor,
+        plan.stats.clean_retries
     );
     assert!(plan.goal_met);
     assert!(

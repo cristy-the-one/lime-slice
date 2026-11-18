@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use lime_sim::shell::planner::{
-    choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LooseEndReason, PlanControl, PlanEvent,
+    choose_profile, plan_ribs_with, EndTaper, Family, FlangeShape, Goal, Holds, LooseEndReason, PlanControl, PlanEvent,
     PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
     RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
 };
@@ -135,6 +135,43 @@ pub struct WireRules {
     /// flange: null}`: straight.
     #[serde(default)]
     pub profile: Option<WireProfile>,
+    /// How free rib ends come down to the wall, as `ribNet` builds them
+    /// (its `taper`). Default `{kind: "timesHeight", factor: 3}`.
+    #[serde(default)]
+    pub end_taper: Option<WireEndTaper>,
+}
+
+/// `rules.endTaper`: `{kind: "none"}` (square ends), `{kind: "length", mm}`
+/// or `{kind: "timesHeight", factor}`.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum WireEndTaper {
+    None,
+    Length { mm: f64 },
+    TimesHeight { factor: f64 },
+}
+
+/// The taper when the request names none: three times the rib's height
+/// (the truth study's long taper; see `EndTaper`).
+pub const DEFAULT_END_TAPER_TIMES_HEIGHT: f64 = 3.0;
+
+impl From<WireEndTaper> for EndTaper {
+    fn from(t: WireEndTaper) -> Self {
+        match t {
+            WireEndTaper::None => EndTaper::None,
+            WireEndTaper::Length { mm } => EndTaper::Length(mm),
+            WireEndTaper::TimesHeight { factor } => EndTaper::TimesHeight(factor),
+        }
+    }
+}
+
+/// The taper as JSON, for the reply.
+pub fn end_taper_json(t: EndTaper) -> Value {
+    match t {
+        EndTaper::None => json!({ "kind": "none" }),
+        EndTaper::Length(mm) => json!({ "kind": "length", "mm": r6(mm) }),
+        EndTaper::TimesHeight(factor) => json!({ "kind": "timesHeight", "factor": r6(factor) }),
+    }
 }
 
 /// A flange underside, as the caller found it prints.
@@ -502,6 +539,9 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         side,
         profile: profile_of(r.profile, r.width, r.max_height, thinnest),
         extend_limit: r.extend_limit,
+        end_taper: r
+            .end_taper
+            .map_or(EndTaper::TimesHeight(DEFAULT_END_TAPER_TIMES_HEIGHT), EndTaper::from),
     };
     let goal = match body.goal.unwrap_or(WireGoal::Balanced) {
         WireGoal::Stiffer { factor } => Goal::Stiffer(factor),
@@ -616,6 +656,8 @@ pub fn plan_json(plan: &RibPlan) -> Value {
                 "width": r6(r.width),
                 "height": r6(r.height),
                 "heights": r.heights.iter().map(|h| r6(*h)).collect::<Vec<_>>(),
+                "builtHeights": r.built_heights.iter().map(|h| r6(*h)).collect::<Vec<_>>(),
+                "taperMm": [r6(r.taper_mm[0]), r6(r.taper_mm[1])],
                 "profile": profile_json(r.profile),
                 "sections": r.sections.iter().map(section_json).collect::<Vec<_>>(),
                 "ends": [end_name(r.ends[0]), end_name(r.ends[1])],
@@ -635,6 +677,18 @@ pub fn plan_json(plan: &RibPlan) -> Value {
         "bare": { "compliance": r6(plan.bare.compliance), "maxDeflectionMm": r6(plan.bare.max_deflection) },
         "ribbed": { "compliance": r6(plan.ribbed.compliance), "maxDeflectionMm": r6(plan.ribbed.max_deflection) },
         "stiffnessFactor": r6(plan.stiffness_factor),
+        "complianceFactor": r6(plan.stiffness_factor),
+        "peakFactor": r6(plan.peak_factor),
+        "pinned": plan.pinned.map(|p| json!({
+            "bare": { "compliance": r6(p.bare.compliance), "maxDeflectionMm": r6(p.bare.max_deflection) },
+            "ribbed": { "compliance": r6(p.ribbed.compliance), "maxDeflectionMm": r6(p.ribbed.max_deflection) },
+            "complianceFactor": r6(p.compliance_factor),
+            "peakFactor": r6(p.peak_factor),
+            "retained": r6(p.retained),
+            "needsRigidBorders": p.needs_rigid_borders,
+        })),
+        "pinnedGain": plan.pinned.map(|p| r6(p.compliance_factor)),
+        "needsRigidBorders": plan.pinned.is_some_and(|p| p.needs_rigid_borders),
         "goalMet": plan.goal_met,
         "thickening": plan.thickening.map(|t| json!({
             "addedThicknessMm": r6(t.added_thickness_mm),
@@ -682,7 +736,7 @@ pub fn plan_json(plan: &RibPlan) -> Value {
         "seconds": {
             "bare": r6(s.bare), "field": r6(s.field), "trace": r6(s.trace), "embed": r6(s.embed),
             "select": r6(s.select), "connect": r6(s.connect), "prune": r6(s.prune), "size": r6(s.size),
-            "baselines": r6(s.baselines), "solver": r6(s.solver), "total": r6(s.total),
+            "baselines": r6(s.baselines), "fixity": r6(s.fixity), "solver": r6(s.solver), "total": r6(s.total),
         },
     })
 }
@@ -702,6 +756,7 @@ pub fn plan_value(body: &str, control: PlanControl) -> Value {
         Ok(plan) => {
             let mut out = plan_json(&plan);
             out["profile"] = profile_json(req.rules.profile);
+            out["endTaper"] = end_taper_json(req.rules.end_taper);
             out
         }
         Err(err) => json!({ "ok": false, "reason": err.message }),
@@ -789,6 +844,7 @@ impl RibJob {
                         Ok(plan) => {
                             let mut out = plan_json(&plan);
                             out["profile"] = profile_json(req.rules.profile);
+                            out["endTaper"] = end_taper_json(req.rules.end_taper);
                             out
                         }
                         Err(err) => json!({ "ok": false, "reason": err.message }),
