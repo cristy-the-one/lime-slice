@@ -8,6 +8,7 @@ import {
   applicable,
   cardFromRibNet,
   cardFromStored,
+  caseResultLines,
   checkLines,
   clickWall,
   comparisonLines,
@@ -44,7 +45,7 @@ import {
   type CheckNumbers,
 } from "./auto-ribs.ts";
 import { COMMANDS } from "./ui/commands.ts";
-import type { RibPlanResult, V3 } from "./auto-ribs-plan.ts";
+import { caseOutcomes, type RibPlanResult, type V3 } from "./auto-ribs-plan.ts";
 import type { RibWallReport } from "./modeling/rib-wall.ts";
 
 let failed = 0;
@@ -202,6 +203,9 @@ const back = cardFromStored({ ...newAutoRibsCard(), picked: [6], loads: [], case
 eq("two cases come back with the card", back?.cases, kept);
 eq("two cases leave the single load empty", back?.loads, []);
 eq("one stored case folds away", cardFromStored({ ...newAutoRibsCard(), picked: [6], loads: [force], cases: [{ name: "only", weight: 3, loads: [pressure] }] })?.cases, undefined);
+const outcomes = caseOutcomes(2.4, 0.8, [1, 4]);
+eq("two cases, beside the combined factor", caseResultLines(["spread", "point"], outcomes.map((row) => row.factor), outcomes.map((row) => ({ bare: row.bareMm, ribbed: row.ribbedMm }))), ["spread: 1.4× stiffer, deflection 0.8 mm → 0.593 mm", "point: 2.4× stiffer, deflection 0.8 mm → 0.333 mm"]);
+eq("one case shows nothing new", caseResultLines(["only"], [2.4], [{ bare: 0.8, ribbed: 0.333 }]), []);
 
 // --- The preview: a box per stretch, and the rib under a ray.
 const drawn = [

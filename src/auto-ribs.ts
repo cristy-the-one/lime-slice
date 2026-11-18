@@ -377,6 +377,12 @@ export function totalsLine(totals: RunState["totals"], densityGCm3: number, part
   return `${totals.ribs} rib${totals.ribs === 1 ? "" : "s"} · ${costText(totals.ribVolumeMm3, densityGCm3, partMm3)} · ${gainText(totals.stiffnessFactor)}`;
 }
 
+/** One line per case, beside the combined factor. One case, or a plan that did not report cases, is no lines. */
+export function caseResultLines(names: readonly string[], factors: readonly number[] | undefined, deflection: readonly { bare: number; ribbed: number }[] | undefined): string[] {
+  if (!factors || !deflection || names.length < 2 || factors.length !== names.length || deflection.length !== names.length) return [];
+  return names.map((name, i) => `${name}: ${gainText(factors[i]!)}, deflection ${fmt(deflection[i]!.bare, 3)} mm → ${fmt(deflection[i]!.ribbed, 3)} mm`);
+}
+
 /** What the result shows: gain, cost, and whether a removed rib makes them estimates. */
 export function resultNumbers(run: RunState, densityGCm3: number, partMm3: number, builtMm3: number | null = null): { gain: string; cost: string; edited: boolean; ribs: number } | null {
   const plan = run.plan;

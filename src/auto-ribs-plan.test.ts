@@ -6,7 +6,7 @@
  */
 import { readFileSync } from "node:fs";
 import { ribWall } from "./modeling/rib-wall.ts";
-import { RIB_PLAN_COMMANDS, RIB_PLAN_ROUTE, STAGE_NAMES, enginePlanSource, fakePlanSource, httpPlanTransport, readEvent, readPlan, stageName, tauriPlanTransport, type PlanProgress, type RibPlanBody } from "./auto-ribs-plan.ts";
+import { RIB_PLAN_COMMANDS, RIB_PLAN_ROUTE, STAGE_NAMES, caseOutcomes, enginePlanSource, fakePlanSource, httpPlanTransport, readEvent, readPlan, stageName, tauriPlanTransport, type PlanProgress, type RibPlanBody } from "./auto-ribs-plan.ts";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail: unknown = "") {
@@ -39,7 +39,7 @@ for (const key of ["status", "stage", "fraction", "events", "dropped", "totals",
 check("start answers {id} or {error}", bridge.includes('json!({ "id": id })') && bridge.includes('json!({ "error": err })'));
 const eventKeys = ["kind", "change", "id", "points", "heights", "ribs", "ribVolumeMm3", "compliance", "stiffnessFactor", "fraction"];
 for (const key of eventKeys) check(`a rib event has ${key}`, bridge.includes(`"${key}":`), key);
-for (const key of ["ribs", "ribVolumeMm3", "bare", "ribbed", "stiffnessFactor", "goalMet", "thickening", "grid", "notBetterThanBaseline", "stoppedEarly", "sections", "maxDeflectionMm", "addedThicknessMm", "addedVolumeMm3", "pitchMm", "volumeMm3", "gridVolumeMm3", "reached"]) check(`the plan has ${key}`, bridge.includes(`"${key}":`), key);
+for (const key of ["ribs", "ribVolumeMm3", "bare", "ribbed", "stiffnessFactor", "goalMet", "thickening", "grid", "notBetterThanBaseline", "stoppedEarly", "sections", "maxDeflectionMm", "addedThicknessMm", "addedVolumeMm3", "pitchMm", "volumeMm3", "gridVolumeMm3", "reached", "caseFactors", "caseDeflectionMm"]) check(`the plan has ${key}`, bridge.includes(`"${key}":`), key);
 // Every stage name the bridge writes has a name on screen.
 const stages = [...(/fn stage_name[\s\S]*?\n\}/.exec(bridge)?.[0] ?? "").matchAll(/=> "([^"]+)"/g)].map((m) => m[1]!);
 check("the bridge's stage names were read", stages.length === 10, stages);
@@ -103,6 +103,13 @@ check("start sent the body as JSON text", typeof calls[0]!.args.body === "string
 eq("every event came through, in order", seen.map((e) => (e.kind === "stage" ? e.stage : `${e.change} ${e.id}`)), ["bare solve", "choosing ribs", "added 4", "added 5", "removed 5", "done"]);
 check("the fraction never goes back", seen.every((e, i) => i === 0 || e.fraction >= seen[i - 1]!.fraction), seen.map((e) => e.fraction));
 check("the plan came back", reply.ok && reply.plan.ribs.length === 1 && reply.plan.stiffnessFactor === 2 && reply.plan.grid?.volumeMm3 === 140 && reply.plan.ribs[0]!.sections[0]!.profile === "straight", reply);
+check("one case on the wire adds nothing", reply.ok && reply.plan.caseFactors === undefined, reply);
+eq("the heavier case takes the combined factor", caseOutcomes(2.4, 0.8, [1, 4]).map((row) => row.factor), [1.35, 2.4]);
+eq("one weight is not a case list", caseOutcomes(2.4, 0.8, [1]), []);
+const twoCases = readPlan({ ok: true, ribs: [], stiffnessFactor: 2.4, caseFactors: [1.35, 2.4], caseDeflectionMm: [{ bare: 0.8, ribbed: 0.592593 }, { bare: 0.8, ribbed: 0.333333 }] });
+eq("two cases come back with their factors and deflections", twoCases.ok ? [twoCases.plan.caseFactors, twoCases.plan.caseDeflectionMm] : null, [[1.35, 2.4], [{ bare: 0.8, ribbed: 0.592593 }, { bare: 0.8, ribbed: 0.333333 }]]);
+const oneCase = readPlan({ ok: true, ribs: [], stiffnessFactor: 2, caseFactors: [2], caseDeflectionMm: [{ bare: 0.8, ribbed: 0.4 }] });
+check("a single case factor is left off", oneCase.ok && oneCase.plan.caseFactors === undefined, oneCase);
 eq("a refusal in the result is the sentence", readPlan({ ok: false, reason: "The wall has no triangles to plan on." }), { ok: false, reason: "The wall has no triangles to plan on." });
 eq("an event of another kind is skipped", readEvent({ kind: "later" }), null);
 

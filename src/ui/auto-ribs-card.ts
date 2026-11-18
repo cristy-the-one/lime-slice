@@ -37,6 +37,7 @@ import {
   comparisonLines,
   editedNote,
   fmt,
+  caseResultLines,
   goalLine,
   loadRequest,
   looseLine,
@@ -174,7 +175,7 @@ let faceRibs: FaceRib[] = [];
 let liveDrawn = new Map<number, DrawnRib>();
 
 /** The run's request and the read it came from: what the plan answers. */
-let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid } | null = null;
+let ranWith: { key: string; goal: PlanGoal; body: RibPlanBody; wall: RibWall; solid: AutoRibsSolid; caseNames: string[] | null } | null = null;
 let balancedFactor: number | null = null;
 let edit: { head: string } | null = null;
 let applying = false;
@@ -223,6 +224,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     </fieldset>
     <section class="ar-result" id="autoRibsResult" aria-label="The plan" hidden>
       <div class="ar-headline"><strong id="autoRibsGain"></strong><span id="autoRibsCost"></span><span class="ar-badge" id="autoRibsStopped" hidden>stopped early</span><span class="ar-badge" id="autoRibsEdited" hidden>edited</span></div>
+      <ul class="ar-lines" id="autoRibsCaseLines" aria-label="Each load case" hidden></ul>
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
       <ul class="ar-lines" id="autoRibsCompare" aria-label="Compared with"></ul>
@@ -652,7 +654,7 @@ async function startRun() {
   faceRibs = [];
   liveDrawn = new Map();
   lit = null;
-  ranWith = { key: read.key, goal, body, wall, solid };
+  ranWith = { key: read.key, goal, body, wall, solid, caseNames: (card.cases?.length ?? 0) >= 2 ? card.cases!.map((row) => row.name) : null };
   const source = host.source();
   const note = $<HTMLElement>("#autoRibsSourceNote");
   if (note) note.hidden = source.kind !== "stand-in";
@@ -942,6 +944,16 @@ function paintResult() {
     node.hidden = !show || text === "";
   };
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : "No ribs");
+  const caseLines = $<HTMLElement>("#autoRibsCaseLines");
+  if (caseLines) {
+    const lines = caseResultLines(ranWith?.caseNames ?? [], plan.caseFactors, plan.caseDeflectionMm);
+    caseLines.hidden = lines.length === 0;
+    caseLines.replaceChildren(...lines.map((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      return li;
+    }));
+  }
   set("#autoRibsCost", plan.ribs.length ? numbers?.cost ?? "" : "");
   const stopped = $<HTMLElement>("#autoRibsStopped");
   if (stopped) stopped.hidden = !plan.stoppedEarly;
@@ -1896,6 +1908,8 @@ function wallExtent(): number {
 (globalThis as { __limeAutoRibs?: unknown }).__limeAutoRibs = {
   card: () => card,
   run: () => ({ phase: run.phase, stage: run.stage, fraction: run.fraction, ribs: run.ribs.length, plan: run.plan ? { ribs: run.plan.ribs.length, stoppedEarly: run.plan.stoppedEarly } : null, removed: run.removed }),
+  body: () => ranWith?.body ?? null,
+  plan: () => run.plan,
   zonesRead: () => (read?.wall ? read.wall.report.zones : null),
   faceRibs: () => faceRibs.map((rib) => ({ points: rib.points, heights: rib.heights })),
 };
