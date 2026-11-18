@@ -322,7 +322,7 @@ jobs:
           # The rib network (ribNet) on flat, sloped, cylinder and freeform shells, and the ribs leak on a sloped floor.
           node --experimental-strip-types mcp/rib-net-occt.test.ts
           # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
-          # Two load cases (section 5b): per-case factors against a fresh solve, the stored request re-plans the same ribs, verify per case.
+          # Two load cases (section 5b): per-case factors against a fresh solve, and the stored request re-plans the same ribs.
           node --experimental-strip-types mcp/auto-ribs-occt.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts
