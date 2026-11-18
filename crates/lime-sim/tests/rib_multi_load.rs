@@ -8,7 +8,7 @@
 mod shell_common;
 
 use lime_sim::shell::planner::{
-    boundary_vertices, plan_ribs, Goal, Holds, RibPlan, RibPlanRequest,
+    boundary_vertices, plan_ribs, Goal, Holds, LoadCombine, RibPlan, RibPlanRequest,
 };
 use lime_sim::shell::{Rib, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions};
 use shell_common::material;
@@ -150,12 +150,12 @@ fn weighted_objective_serves_both_opposed_loads() {
     let (eq, nodes) = opposed_request(1.0, true);
     let eq_plan = plan_ribs(&eq).unwrap();
     let eq_f = case_factors(&eq_plan, &nodes, &[1.0, 1.0]);
-    dump("equal loads, summed", &eq_plan, &eq_f);
+    dump("equal loads, weighted", &eq_plan, &eq_f);
 
     let (heavy, _) = opposed_request(10.0, true);
     let heavy_plan = plan_ribs(&heavy).unwrap();
     let heavy_f = case_factors(&heavy_plan, &nodes, &[10.0, 1.0]);
-    dump("left ×10, summed", &heavy_plan, &heavy_f);
+    dump("left ×10, weighted", &heavy_plan, &heavy_f);
 
     let (only, _) = opposed_request(1.0, false);
     let only_plan = plan_ribs(&only).unwrap();
@@ -292,6 +292,112 @@ fn plan_seconds_for_one_two_and_four_cases() {
             plan.case_factors.iter().all(|f| *f > 1.2),
             "{:?}",
             plan.case_factors
+        );
+    }
+}
+
+/// Worst-case mode maximises the lesser factor, so the combined number is
+/// that minimum. On this panel the hard min flips the limiting case as
+/// ribs are added and stops inside the 1800 mm³ budget, short of the
+/// weighted plan (×2.13 on both cases). A stiffness goal still means
+/// every case; the trace is the greedy loop's limiting case.
+#[test]
+fn worst_case_raises_the_weaker_load() {
+    let (mut eq, nodes) = opposed_request(1.0, true);
+    eq.combine = LoadCombine::Worst;
+    let eq_plan = plan_ribs(&eq).unwrap();
+    let eq_f = case_factors(&eq_plan, &nodes, &[1.0, 1.0]);
+    dump("equal loads, worst", &eq_plan, &eq_f);
+    dump_trace(&eq_plan);
+
+    let (mut heavy, _) = opposed_request(10.0, true);
+    heavy.combine = LoadCombine::Worst;
+    let heavy_plan = plan_ribs(&heavy).unwrap();
+    let heavy_f = case_factors(&heavy_plan, &nodes, &[10.0, 1.0]);
+    dump("left ×10, worst", &heavy_plan, &heavy_f);
+    dump_trace(&heavy_plan);
+
+    // One case is the plain sum in either mode: same ribs, same factor.
+    let (weighted_only, _) = opposed_request(1.0, false);
+    let (mut worst_only, _) = opposed_request(1.0, false);
+    worst_only.combine = LoadCombine::Worst;
+    let a = plan_ribs(&weighted_only).unwrap();
+    let b = plan_ribs(&worst_only).unwrap();
+    assert_eq!(a.ribs.len(), b.ribs.len());
+    assert!(
+        (a.stiffness_factor - b.stiffness_factor).abs() < 1e-12,
+        "{} vs {}",
+        a.stiffness_factor,
+        b.stiffness_factor
+    );
+    for (ra, rb) in a.ribs.iter().zip(&b.ribs) {
+        assert_eq!(ra.points.len(), rb.points.len());
+        for (p, q) in ra.points.iter().zip(&rb.points) {
+            for k in 0..3 {
+                assert!((p[k] - q[k]).abs() < 1e-12, "{p:?} vs {q:?}");
+            }
+        }
+    }
+
+    // Equal loads: the limiting case alternates every rib, and the plan
+    // stops at ×1.51 with budget left. ×10 still serves case 2 (the summed
+    // objective left it at ×1.002) but the two factors stay apart.
+    close_to(eq_f[0], 1.747455483192);
+    close_to(eq_f[1], 1.511892284271);
+    close_to(eq_plan.stiffness_factor, eq_f[1]);
+    assert_eq!(eq_plan.ribs.len(), 7);
+    assert!(
+        eq_plan.rib_volume_mm3 < 1700.0,
+        "stopped inside the budget at {:.1}",
+        eq_plan.rib_volume_mm3
+    );
+    close_to(heavy_f[0], 2.616723527980);
+    close_to(heavy_f[1], 1.677856186096);
+    close_to(heavy_plan.stiffness_factor, heavy_f[1]);
+    assert!(
+        (heavy_f[1] - SUMMED_HEAVY[1]).abs() > 0.5,
+        "case 2 was ignored at {:.6}",
+        SUMMED_HEAVY[1]
+    );
+    close_to(eq_plan.rib_volume_mm3, 1590.892727);
+    close_to(heavy_plan.rib_volume_mm3, 1726.242969);
+    for (label, plan, flips_want) in [("equal", &eq_plan, 7), ("×10", &heavy_plan, 4)] {
+        close_to(plan.worst_trace[0].min_factor, 1.0);
+        let flips = plan
+            .worst_trace
+            .windows(2)
+            .filter(|w| w[0].limiting_case != w[1].limiting_case)
+            .count();
+        eprintln!(
+            "| {label} worst flips {flips} over {} rounds |",
+            plan.worst_trace.len()
+        );
+        assert_eq!(flips, flips_want, "{label}");
+    }
+
+    // Stiffer(2) means both cases. The loop still flips, and it does reach
+    // 2 on each case (the budget above runs out first).
+    let (mut stiff, nodes) = opposed_request(10.0, true);
+    stiff.combine = LoadCombine::Worst;
+    stiff.goal = Goal::Stiffer(2.0);
+    let plan = plan_ribs(&stiff).unwrap();
+    let f = case_factors(&plan, &nodes, &[10.0, 1.0]);
+    dump("left ×10, worst, stiffer 2", &plan, &f);
+    dump_trace(&plan);
+    assert!(plan.goal_met, "{f:?}");
+    close_to(f[0], 2.054683256112);
+    close_to(f[1], 2.040479530533);
+    close_to(plan.stiffness_factor, f[1]);
+    assert_eq!(plan.ribs.len(), 6);
+    close_to(plan.rib_volume_mm3, 1893.236492);
+    assert!(f.iter().all(|x| *x >= 2.0 - 1e-9), "{f:?}");
+}
+
+fn dump_trace(plan: &RibPlan) {
+    for (i, round) in plan.worst_trace.iter().enumerate() {
+        eprintln!(
+            "|   round {i} | case {} | min ×{:.6} |",
+            round.limiting_case, round.min_factor
         );
     }
 }

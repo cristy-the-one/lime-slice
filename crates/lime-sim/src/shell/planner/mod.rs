@@ -38,8 +38,9 @@
 //!
 //! Units: mm, N, MPa. Compliance is the work of the loads, N·mm. Several
 //! cases are scored as `sum w_i C_i / C_i0` (each `C_i0` the bare wall on
-//! the same mesh); a single case is the compliance itself. The reported
-//! stiffness factor is `(sum w_i) / (sum w_i C_i / C_i0)`.
+//! the same mesh), or, in [`LoadCombine::Worst`], by the worst of them.
+//! A single case is the compliance itself, in either mode. The reported
+//! stiffness factor is that combined number.
 
 mod baseline;
 mod field;
@@ -161,11 +162,32 @@ impl Default for RibRules {
     }
 }
 
+/// How several load cases become the one number the planner minimises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LoadCombine {
+    /// `sum w_i C_i / C_i0`. Empty weights are all 1.
+    #[default]
+    Weighted,
+    /// The worst case: maximise `min_i C_i0 / C_i`. Weights are not used.
+    /// [`Goal::Stiffer`] then means every case reaches the factor.
+    Worst,
+}
+
+/// One greedy step in [`LoadCombine::Worst`]: which case limited the
+/// objective, and the worst stiffness factor, on the selection mesh.
+#[derive(Clone, Copy, Debug)]
+pub struct WorstRound {
+    pub limiting_case: usize,
+    /// `min_i C_i0 / C_i` after this rib (1 before any rib).
+    pub min_factor: f64,
+}
+
 /// What the plan must reach. One of them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Goal {
-    /// Combined stiffness factor at least this: bare over ribbed for one
-    /// case, `(sum w_i) / (sum w_i C_i / C_i0)` for several.
+    /// Combined stiffness at least this. One case: bare over ribbed.
+    /// Weighted: `(sum w_i) / (sum w_i C_i / C_i0)`. Worst: every case,
+    /// `min_i C_i0 / C_i`.
     Stiffer(f64),
     /// The largest displacement (over all cases) at most this, mm.
     MaxDeflection(f64),
@@ -230,8 +252,12 @@ pub struct RibPlanRequest {
     /// every triangle. Several are scored as `sum w_i C_i / C_i0`.
     pub load_cases: Vec<LoadCase>,
     /// One weight per load case. Empty means every case weighs 1. A single
-    /// case then scores exactly as its compliance.
+    /// case then scores exactly as its compliance. Unused by
+    /// [`LoadCombine::Worst`].
     pub case_weights: Vec<f64>,
+    /// How several cases combine. [`LoadCombine::Weighted`] by default; a
+    /// one-case plan does not depend on it.
+    pub combine: LoadCombine,
     /// User-defined zones: no ribs, or ribs no taller than a cap.
     pub zones: Vec<Zone>,
     /// Keep this far (mm) from the rim of every hole in the wall (each
@@ -252,6 +278,7 @@ impl RibPlanRequest {
             holds: Holds::AllBoundaryClamped,
             load_cases: Vec::new(),
             case_weights: Vec::new(),
+            combine: LoadCombine::Weighted,
             zones: Vec::new(),
             hole_rim_margin: Some(3.0),
             rules: RibRules::default(),
@@ -392,12 +419,16 @@ pub struct RibPlan {
     pub rib_volume_mm3: f64,
     pub bare: Response,
     pub ribbed: Response,
-    /// Combined stiffness: bare over ribbed for one case, and
-    /// `(sum w_i) / (sum w_i C_i / C_i0)` for several. `C_i0` and `C_i`
-    /// are on [`RibPlan::mesh`].
+    /// Combined stiffness on [`RibPlan::mesh`]. One case: bare over ribbed.
+    /// Weighted: `(sum w_i) / (sum w_i C_i / C_i0)`. Worst: `min_i C_i0 / C_i`.
     pub stiffness_factor: f64,
     /// `C_i0 / C_i` for each load case, on [`RibPlan::mesh`].
     pub case_factors: Vec<f64>,
+    /// Greedy rounds when [`RibPlanRequest::combine`] is
+    /// [`LoadCombine::Worst`]: the limiting case and the worst factor after
+    /// each accepted rib, including the bare wall as round 0. Empty for a
+    /// weighted plan, and for one case (that plan is the plain sum).
+    pub worst_trace: Vec<WorstRound>,
     pub goal_met: bool,
     pub thickening: Option<ThickeningBaseline>,
     pub grid: Option<GridBaseline>,
@@ -634,6 +665,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             ribbed: bare,
             stiffness_factor: 1.0,
             case_factors: vec![1.0; bare0.len()],
+            worst_trace: Vec::new(),
             goal_met: false,
             thickening: None,
             grid: None,
@@ -656,7 +688,16 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         &s0,
         &bare0,
         req.options.field_alpha,
-        &field::energy_scales(&req.case_weights, &bare0_c),
+        // Worst-case ignores weights, so a heavier load does not own the
+        // directions. Empty weights are all 1; one case stays at scale 1.
+        &field::energy_scales(
+            if req.combine == LoadCombine::Worst {
+                &[]
+            } else {
+                &req.case_weights
+            },
+            &bare0_c,
+        ),
     );
     let zones = restrictions(&s0, &req.zones, req.hole_rim_margin, rules.min_height);
     let blocked0 = zones.blocked.clone();
@@ -793,7 +834,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         cases1.clone(),
         rules.side,
         req.case_weights.clone(),
-        select::Mix::default(),
+        select::Mix::unbound(req.combine),
     );
     let loose_input = loose::Input {
         req,
@@ -1023,6 +1064,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         ribbed,
         stiffness_factor,
         case_factors: clean.case_factors,
+        worst_trace: outcome.worst_trace,
         goal_met: goal_met && !stopped,
         thickening,
         grid,
@@ -1245,7 +1287,7 @@ fn clean_solve(
     model.set_threads(1);
     let bare = model.solve_cases(&cases)?;
     let bare_cs: Vec<f64> = bare.iter().map(|r| r.compliance).collect();
-    let mix = select::Mix::from_bare(&req.case_weights, &bare_cs);
+    let mix = select::Mix::from_bare(&req.case_weights, &bare_cs, req.combine);
     let eval = select::evaluate(&mut model, &cases, req.rules.side, &design, &mix)?;
     let rib_cs: Vec<f64> = eval.results.iter().map(|r| r.compliance).collect();
     let volume = select::network_volume(&s.pos, &design);

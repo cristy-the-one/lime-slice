@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use lime_sim::shell::planner::{
-    choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LooseEndReason, PlanControl, PlanEvent,
+    choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LoadCombine, LooseEndReason, PlanControl, PlanEvent,
     PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
     RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
 };
@@ -527,6 +527,7 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         holds,
         load_cases,
         case_weights: Vec::new(),
+        combine: LoadCombine::Weighted,
         zones,
         hole_rim_margin: (rim > 0.0).then_some(rim),
         rules,
