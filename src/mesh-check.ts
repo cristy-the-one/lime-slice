@@ -137,18 +137,6 @@ export function nonManifoldSegments(positions: ArrayLike<number>): Float64Array 
   return Float64Array.from(out);
 }
 
-/** The volume a closed soup holds, by the divergence theorem; a soup that does not close gives a number, not a volume. */
-export function soupVolume(positions: ArrayLike<number>): number {
-  let sum = 0;
-  for (let t = 0; t + 8 < positions.length; t += 9) {
-    const ax = positions[t]!, ay = positions[t + 1]!, az = positions[t + 2]!;
-    const bx = positions[t + 3]!, by = positions[t + 4]!, bz = positions[t + 5]!;
-    const cx = positions[t + 6]!, cy = positions[t + 7]!, cz = positions[t + 8]!;
-    sum += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
-  }
-  return sum / 6;
-}
-
 /**
  * Cracks mended: where one triangle's open edge runs past corners of the faces beside it (within `tolMm` of the
  * edge), that triangle is split at those corners, so both sides of the seam share the same points. Points move by at

@@ -99,30 +99,7 @@ const damaged = (): number[] => {
   check("an extrude-cut whose result is damaged is refused", verdict?.damaged === true, JSON.stringify(verdict));
 }
 
-// 4b. The real part's other variant: the solid reported +0.68 mm³, inside the slack, while its mesh grew by a quarter.
-{
-  const cut: ModelOp = { kind: "extrude", op: "cut", origin: [0, 0, 2], turn: [0, 0, 0], profile: [[0, 0], [100, 0], [100, 60], [0, 60]], depth: 1.8 } as unknown as ModelOp;
-  const grown = [...floor, ...ribs(0, 0), ...ownEdge(), ...box([20, 70, 0], [70, 120, 2])];
-  const verdict = stepGuard(cut, before, solid(grown, before.volumeMm3 + 0.68), IDENTITY_POSE);
-  check("a cut whose mesh grew while its solid barely changed is refused", verdict?.damaged === true && /its mesh holds/.test(verdict.reason), JSON.stringify(verdict));
-}
-
-// 5. A mesh that holds far more than the solid it shows.
-{
-  const fuse: ModelOp = { kind: "extrude", op: "fuse", origin: [0, 0, 2], turn: [0, 0, 0], profile: [[0, 0], [10, 0], [10, 10], [0, 10]], depth: 1 } as unknown as ModelOp;
-  const grown = [...floor, ...ribs(0, 0), ...ownEdge(), ...box([20, 70, 0], [80, 120, 10])];
-  const verdict = stepGuard(fuse, before, solid(grown, before.volumeMm3 + 100), IDENTITY_POSE);
-  check("a mesh whose volume is not the solid's is refused", verdict?.damaged === true && /its mesh holds/.test(verdict.reason), JSON.stringify(verdict));
-}
-
-// 5b. A result that carries the solid before's own mesh (a host that did not mesh this step) is not judged by it.
-{
-  const cut: ModelOp = { kind: "extrude", op: "cut", origin: [0, 0, 2], turn: [0, 0, 0], profile: [[0, 0], [10, 0], [10, 10], [0, 10]], depth: -1 } as unknown as ModelOp;
-  const verdict = stepGuard(cut, before, solid(Array.from(before.positions), before.volumeMm3 * 0.8), IDENTITY_POSE);
-  check("a result with the mesh from before is not read by its mesh", verdict === null, JSON.stringify(verdict));
-}
-
-// 6. A box placed against the part along one edge keeps the wording that says to move it, and stays shortenable.
+// 4. A box placed against the part along one edge keeps the wording that says to move it, and stays shortenable.
 {
   const fuse: ModelOp = { kind: "boolean", op: "fuse", primitive: "box", origin: [-10, -10, 0], size: [10, 10, 2], turn: [0, 0, 0] } as ModelOp;
   const after = solid([...floor, ...ribs(0, 0), ...ownEdge(), ...box([-10, -10, 0], [0, 0, 2])]);
@@ -130,7 +107,7 @@ const damaged = (): number[] => {
   check("a tool against the part along an edge is a touching refusal", verdict?.touching === true && verdict.reason.startsWith("This step would leave pieces that meet only along an edge at (0, 0, 1)"), JSON.stringify(verdict));
 }
 
-// 7. A step built without its mesh yet is judged by its volume alone.
+// 5. A step built without its mesh yet is judged by its volume alone.
 {
   const cut: ModelOp = { kind: "boolean", op: "cut", primitive: "box", origin: [40, 0, 2], size: [20, 60, 2], turn: [0, 0, 0] } as ModelOp;
   const verdict = stepGuard(cut, before, solid([], before.volumeMm3 - 100), IDENTITY_POSE);

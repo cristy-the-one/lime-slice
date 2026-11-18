@@ -2,10 +2,10 @@
  * Checks on a step the kernel has already applied, for results Open CASCADE reports as done but that are not what
  * the step meant: a fuse that hands back only the tool, a cut that takes more than its tool, a fillet that loses most
  * of the part, a piece that meets the part only along an edge, or a damaged solid (new edges where pieces meet only
- * along a line, a mesh whose volume is not the solid's). The session takes such a step back
- * and refuses it. Only what the step changed counts: edges like these that the part already had are left alone.
+ * along a line, away from any tool). The session takes such a step back and refuses it. Only what the step changed
+ * counts: edges like these that the part already had are left alone.
  */
-import { edgeReport, nonManifoldSegments, soupVolume, type EdgeReport, type Vec3 } from "../mesh-check.ts";
+import { edgeReport, nonManifoldSegments, type EdgeReport, type Vec3 } from "../mesh-check.ts";
 
 type Box = { min: Vec3 | number[]; max: Vec3 | number[] };
 
@@ -161,38 +161,6 @@ export function damagedReason(count: number, at: Vec3 | null): string {
   return `Open CASCADE returned a damaged solid for this step: ${count} new edge${count === 1 ? "" : "s"} where pieces meet only along a line${where}. model_check and the plate would reject it, so the step was taken back. On an imported part a tool that crosses many faces at once can do this: split the edit into smaller steps, or keep the tool's faces off the part's own faces.`;
 }
 
-/**
- * The mesh and the solid disagree about the volume by more than this share, and by more than half of it beyond what
- * they did before the step. A sound mesh of a small round part can be a few percent under its solid (a 1 mm radius at
- * a 0.05 mm chord is about 6 % under); a damaged one has been 25 % over.
- */
-const VOLUME_DISAGREES = 0.1;
-
-/**
- * Why a step's result is not a sound solid by its volume, or null: a mesh that holds a different volume from the solid
- * it shows (a damaged cut on an imported part reported +0.68 mm³ while its mesh grew by a quarter). `before` and
- * `after` carry the solid's volume and its mesh; a step whose mesh is not built yet (an empty soup) passes.
- */
-export function brokenVolume(before: { volumeMm3: number; positions: ArrayLike<number> }, after: { volumeMm3: number; positions: ArrayLike<number> }): string | null {
-  if (!(before.volumeMm3 > 0) || !Number.isFinite(after.volumeMm3)) return null;
-  if (before.positions.length < 9 || after.positions.length < 9 || !(after.volumeMm3 > 0)) return null;
-  // A mesh that is the solid before's, point for point, was not built for this step, so it says nothing about it.
-  if (sameSoup(before.positions, after.positions)) return null;
-  const off = (solid: { volumeMm3: number; positions: ArrayLike<number> }) => Math.abs(Math.abs(soupVolume(solid.positions)) - solid.volumeMm3) / solid.volumeMm3;
-  const now = off(after);
-  if (now > VOLUME_DISAGREES && now > off(before) + VOLUME_DISAGREES / 2) {
-    return `Open CASCADE returned a damaged solid for this step: its mesh holds ${mm3(Math.abs(soupVolume(after.positions)))} but the solid reports ${mm3(after.volumeMm3)}. The step was taken back. Split the edit into smaller steps, or keep the tool's faces off the part's own faces.`;
-  }
-  return null;
-}
-
-function sameSoup(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
-  return true;
-}
-
 /** Kinds that move or rebuild the whole part, so every touching edge it had is somewhere new: not judged by edges. */
 const MOVES_ALL = new Set(["scale", "root"]);
 
@@ -203,24 +171,19 @@ const MOVES_ALL = new Set(["scale", "root"]);
  */
 export function meshGuard(
   op: { kind: string; op?: string },
-  before: { volumeMm3: number; positions: ArrayLike<number> },
-  after: { volumeMm3: number; positions: ArrayLike<number> },
+  before: { positions: ArrayLike<number> },
+  after: { positions: ArrayLike<number> },
   box: Box | null,
   place: (at: Vec3) => Vec3 = (at) => at,
 ): { reason: string; touching?: true; damaged?: true } | null {
-  // The edges first: where pieces meet only along a line says more than a volume that is off.
-  if (before.positions.length >= 9 && after.positions.length >= 9 && !MOVES_ALL.has(op.kind)) {
-    const fresh = newTouchingEdges(before.positions, after.positions);
-    if (fresh.count > 0) {
-      const at = fresh.at ? place(fresh.at) : null;
-      if (box && fresh.count <= FEW_TOUCHING && newTouchingEdges(before.positions, after.positions, box).count === fresh.count) {
-        return { reason: touchingReason(at), touching: true };
-      }
-      return { reason: damagedReason(fresh.count, at), damaged: true };
-    }
+  if (before.positions.length < 9 || after.positions.length < 9 || MOVES_ALL.has(op.kind)) return null;
+  const fresh = newTouchingEdges(before.positions, after.positions);
+  if (fresh.count === 0) return null;
+  const at = fresh.at ? place(fresh.at) : null;
+  if (box && fresh.count <= FEW_TOUCHING && newTouchingEdges(before.positions, after.positions, box).count === fresh.count) {
+    return { reason: touchingReason(at), touching: true };
   }
-  const broken = brokenVolume(before, after);
-  return broken ? { reason: broken, damaged: true } : null;
+  return { reason: damagedReason(fresh.count, at), damaged: true };
 }
 
 /** Why a mesh that does not close stays off the plate, with where the first open and touching edges are: in the solid's frame, as model_check lists them. */
