@@ -304,6 +304,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const rib = (input.rib ?? {}) as Row;
   if (input.ifMissed !== undefined && input.ifMissed !== "refuse" && input.ifMissed !== "evenPressure") return refuse("bad-argument", `ifMissed is "refuse" (the default) or "evenPressure"; it is ${JSON.stringify(input.ifMissed)}.`);
   if (wallIn.thicknessMm !== undefined && !(num(wallIn.thicknessMm) !== undefined && (wallIn.thicknessMm as number) > 0)) return refuse("bad-wall", "wall.thicknessMm is the wall's thickness in mm, a number above zero.");
+  if (wallIn.folded !== undefined && wallIn.folded !== true && wallIn.folded !== false) return refuse("bad-wall", "wall.folded is true or false. Default false: a sharp edge stops the wall. true takes every thin face across a sharp edge.");
   const ribWallMs = Date.now();
   // Holds and loads that name places are typed in this frame, as the wall is; face holds name faces.
   const wall = ribWall(typed.solid, {
@@ -319,6 +320,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ...(input.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
     ...(num(wallIn.thicknessMm) !== undefined ? { thicknessMm: num(wallIn.thicknessMm)! } : {}),
     ...(wallIn.features === false ? { features: false } : {}),
+    ...(wallIn.folded === true ? { folded: true } : {}),
   });
   if ("reason" in wall) {
     // A hold or load the wall cannot carry: refused by name, never planned under even pressure in its place.
@@ -537,6 +539,7 @@ function wallReport(wall: RibWall): Row {
     loads: rep.loads,
     ...(rep.cases ? { cases: rep.cases } : {}),
     zones: rep.zones,
+    ...(rep.patches ? { patches: rep.patches } : {}),
     notOnWall: rep.notOnWall,
     input: rep.input,
     quality: rep.quality,

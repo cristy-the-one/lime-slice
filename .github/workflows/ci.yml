@@ -324,6 +324,8 @@ jobs:
           # Auto ribs end to end: ribWall on kernel meshes, ribs_plan as a job, ribs_apply, zones, an obstacle, cancel, verify, a curved wall, the flange table.
           # Two load cases (section 5b): per-case factors against a fresh solve, and the stored request re-plans the same ribs.
           node --experimental-strip-types mcp/auto-ribs-occt.test.ts
+          # Folded walls, opt-in: the synthetic cover and open box through ribs_plan {wall.folded:true}, against the solid study.
+          node --experimental-strip-types mcp/folded-shell-occt.test.ts
           # The step guard on a ribbed shell: cuts at a wall are probed and applied, an edge-only touch is refused by both.
           node --experimental-strip-types mcp/step-guard-occt.test.ts
           node --experimental-strip-types mcp/assemblies-m1.test.ts
