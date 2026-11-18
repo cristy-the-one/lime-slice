@@ -7,7 +7,7 @@ import { meshTokenOf } from "../../plate";
 import { endModelVisit, flushEdit } from "../history";
 import { closeSketchSession, forgetSketches } from "../sketch";
 import { modelTrees } from "../model-trees";
-import { refreshObjectList } from "../settings";
+import { isStepName, refreshObjectList } from "../settings";
 import { state } from "../state";
 import { endStressPick } from "../../ui/stress.ts";
 import { S } from "./shared";
@@ -197,7 +197,7 @@ export function showModel() {
   // A tree that has no node with this mesh stays open: a Prepare undo or redo can bring one of its meshes back.
   const source = rootSource({ fileName: mesh.name, bytes: mesh.bytes, sourcePos: state.sourcePos ?? new Float32Array(0), ...(obj.brep ? { brep: obj.brep } : {}) });
   if (!source) {
-    showEmpty(true);
+    showEmpty(true, isStepName(mesh.name));
     return;
   }
   if ("from" in source) {
