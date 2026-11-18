@@ -234,6 +234,8 @@ export interface PlanRecord {
   stoppedEarly: boolean;
   holds?: unknown;
   loads?: unknown;
+  /** The load cases the verify study checks one at a time, with the loads that landed. Absent for the one-case `loads`. */
+  cases?: { name: string; loads: StudyLoad[] }[];
   wallFaces: number[];
   joinedFaces: number[];
   /** The solid the plan was made for; null only for a plan given without one, which is refused. */
@@ -277,6 +279,23 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if ("reason" in holds) return refuse("bad-fixture", holds.reason);
   const loads = this.readLoads(input.loads);
   if ("reason" in loads) return refuse("bad-load", loads.reason);
+  const rawCases = input.loadCases;
+  if (rawCases !== undefined && !Array.isArray(rawCases)) return refuse("bad-argument", "loadCases is a list of load cases, each {name?, weight?, loads}.");
+  const caseList = Array.isArray(rawCases) ? (rawCases as Row[]) : [];
+  if (caseList.length && loads.length) return refuse("bad-argument", "Give loads or loadCases, not both. loads is one case; loadCases weighs several together.");
+  if (caseList.length > 8) return refuse("bad-argument", `loadCases takes up to 8 cases; this has ${caseList.length}.`);
+  const parsedCases: { name: string; weight: number; loads: StudyLoad[] }[] = [];
+  for (const [ci, item] of caseList.entries()) {
+    const row = (item ?? {}) as Row;
+    if (!Array.isArray(row.loads)) return refuse("bad-argument", `Load case ${ci + 1} needs loads, a list of loads as loads takes them.`);
+    const got = this.readLoads(row.loads);
+    if ("reason" in got) return refuse("bad-load", `Load case ${ci + 1}: ${got.reason}`);
+    if (got.length === 0) return refuse("bad-argument", `Load case ${ci + 1} has no load.`);
+    const weight = num(row.weight);
+    if (row.weight !== undefined && !(weight !== undefined && weight > 0)) return refuse("bad-argument", `Load case ${ci + 1}: weight is a number above zero.`);
+    const named = typeof row.name === "string" && row.name.trim() ? row.name.trim() : `Case ${ci + 1}`;
+    parsedCases.push({ name: named, weight: weight ?? 1, loads: got });
+  }
   const filament = this.filament();
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
   const goal = goalOf(input.goal, density);
@@ -295,7 +314,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     ...(Array.isArray(wallIn.excludeFaces) ? { excludeFaces: wallIn.excludeFaces as number[] } : {}),
     zones,
     holds,
-    loads,
+    ...(parsedCases.length ? { loadCases: parsedCases.map((c) => ({ name: c.name, loads: c.loads })) } : { loads }),
     ...(num(rib.minHeight) !== undefined ? { minRibHeightMm: num(rib.minHeight)! } : {}),
     ...(input.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
     ...(num(wallIn.thicknessMm) !== undefined ? { thicknessMm: num(wallIn.thicknessMm)! } : {}),
@@ -303,7 +322,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   });
   if ("reason" in wall) {
     // A hold or load the wall cannot carry: refused by name, never planned under even pressure in its place.
-    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why })) });
+    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why, ...(row.case ? { case: row.case } : {}) })) });
     return refuse("bad-wall", wall.reason);
   }
   const wallMs = Date.now() - ribWallMs;
@@ -350,6 +369,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     goal,
     options: { baselines: input.baselines !== false },
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
+    ...(parsedCases.length ? { caseWeights: parsedCases.map((c) => c.weight) } : {}),
   };
   if (!this.engine.ribPlanStart || !this.engine.ribPlanPoll || !this.engine.ribPlanCancel) return refuse("solver-unavailable", "This engine has no rib planner. Rebuild the in-process engine.");
   stage("planning: starting", 0.05);
@@ -426,6 +446,17 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   delete request.verify;
   const stoppedEarly = result.stoppedEarly === true;
   const fingerprint = fingerprintOf(obj);
+  const deflection = (result.caseDeflectionMm as Row[] | undefined) ?? [];
+  const factors = (result.caseFactors as number[] | undefined) ?? [];
+  const caseRows = parsedCases.length
+    ? parsedCases.map((c, i) => ({
+        name: c.name,
+        weight: c.weight,
+        factor: num(factors[i]) !== undefined ? r(num(factors[i])!, 6) : null,
+        bare: { deflectionMm: num(deflection[i]?.bare) !== undefined ? r(num(deflection[i]!.bare)!, 4) : null },
+        ribbed: { deflectionMm: num(deflection[i]?.ribbed) !== undefined ? r(num(deflection[i]!.ribbed)!, 4) : null },
+      }))
+    : null;
   const plan: Row = {
     object: obj.id,
     node: node === null ? null : `n${node}`,
@@ -436,6 +467,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     bare: result.bare,
     ribbed: result.ribbed,
     stiffnessFactor: r(num(result.stiffnessFactor) ?? 1, 4),
+    ...(caseRows ? { cases: caseRows } : {}),
     goal,
     goalMet: result.goalMet === true,
     thickening: result.thickening ?? null,
@@ -454,11 +486,18 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.
   const kept = (rows: unknown, gone: readonly number[] | undefined) => (Array.isArray(rows) && gone?.length ? rows.filter((_, i) => !gone.includes(i)) : rows);
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, fingerprint });
+  // Each case keeps the loads that landed; one whose loads all missed keeps none, and the verify study presses it evenly.
+  const verifyCases = parsedCases.length
+    ? parsedCases.map((c) => {
+        const gone = new Set(wall.report.notOnWall.filter((row) => row.dropped && row.kind === "load" && row.case === c.name).map((row) => row.index));
+        return { name: c.name, loads: c.loads.filter((_, i) => !gone.has(i)) };
+      })
+    : undefined;
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), ...(verifyCases ? { cases: verifyCases } : {}), wallFaces: wall.faces, joinedFaces: joined, fingerprint });
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result))}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
+    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result))}${caseRows ? ` Per case: ${caseRows.map((c) => `${c.name} ${c.factor}×`).join(", ")}.` : ""}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
     plan,
     adds,
     wall: wallReport(wall),
@@ -496,6 +535,7 @@ function wallReport(wall: RibWall): Row {
     holes: rep.holes,
     holds: rep.holds,
     loads: rep.loads,
+    ...(rep.cases ? { cases: rep.cases } : {}),
     zones: rep.zones,
     notOnWall: rep.notOnWall,
     input: rep.input,
@@ -531,7 +571,7 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
     const stored = this.ribPlans.get(object);
     const fingerprint = readFingerprint(plan.fingerprint);
     if (!fingerprint) return refuse("bad-rib-plan", "A plan given to ribs_apply carries the fingerprint of the solid it was made for (plan.fingerprint {volumeMm3, faces, edges}, as ribs_plan gives it), so a plan for another shape is never built. Pass the plan whole, or plan again.");
-    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint };
+    record = { object, node: plan.node === undefined ? null : parseNodeId(plan.node), request: (plan.request as Row) ?? stored?.request ?? {}, ribs: plan.ribs as Row[], stoppedEarly: plan.stoppedEarly === true, holds: stored?.holds, loads: stored?.loads, ...(stored?.cases ? { cases: stored.cases } : {}), wallFaces: stored?.wallFaces ?? [], joinedFaces: stored?.joinedFaces ?? [], fingerprint };
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
@@ -584,7 +624,20 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
   const density = filament.densityGCm3 > 0 ? filament.densityGCm3 : 1.24;
   let studyBefore: Row | null = null;
   let study: ObjectStudy | null = null;
-  if (verify) {
+  let caseBefore: { name: string; study: ObjectStudy; result: Row }[] | null = null;
+  const verifyT0 = Date.now();
+  if (verify && record.cases?.length) {
+    // One sliced Stress study per load case, on the part as it is. Each case is its own solve.
+    caseBefore = [];
+    for (const [i, c] of record.cases.entries()) {
+      stage(`verify: ${c.name}, the part as it is`, 0.05 + (0.25 * i) / record.cases.length);
+      const made = this.ribsStudy(obj, record, c.loads);
+      if ("reason" in made) return refuse("bad-study", `${c.name}: ${made.reason}`);
+      const res = await this.solveSliced(obj, made, false);
+      if (res.ok !== true) return { ...res, applied: false, note: `The Stress study for ${c.name} before the ribs did not run, so nothing was applied.` };
+      caseBefore.push({ name: c.name, study: made, result: res });
+    }
+  } else if (verify) {
     stage("verify: slicing and solving the part as it is", 0.05);
     const made = this.ribsStudy(obj, record);
     if ("reason" in made) return refuse("bad-study", made.reason);
@@ -614,7 +667,29 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     check: { before: checkNumbers(checkBefore), after: checkNumbers(checkAfter), printer: this.printer().name },
     undo: "model_undo takes the whole network back as one step.",
   };
-  if (verify && study && studyBefore) {
+  if (caseBefore) {
+    const reported: Row[] = [];
+    for (const [i, c] of caseBefore.entries()) {
+      stage(`verify: ${c.name}, the ribbed part`, 0.65 + (0.3 * i) / caseBefore.length);
+      const mapped = this.ribsStudyAfter(c.study, before, { positions: after.positions, faceOf: after.triangles });
+      const studyAfter = await this.solveSliced(obj, mapped, false);
+      const b = studyNumbers(c.result);
+      const a = studyNumbers(studyAfter);
+      const diff = (key: string) => (typeof a[key] === "number" && typeof b[key] === "number" ? r((a[key] as number) - (b[key] as number), 4) : null);
+      reported.push({
+        name: c.name,
+        before: b,
+        after: a,
+        change: { maxDisplacementMm: diff("maxDisplacementMm"), minSafetyFactor: diff("minSafetyFactor") },
+        stiffer: typeof a.maxDisplacementMm === "number" && typeof b.maxDisplacementMm === "number" && (a.maxDisplacementMm as number) > 0 ? r((b.maxDisplacementMm as number) / (a.maxDisplacementMm as number), 3) : null,
+      });
+    }
+    reply.verify = {
+      cases: reported,
+      seconds: r((Date.now() - verifyT0) / 1000, 1),
+      note: "The sliced Stress study of the whole part for each load case, before and after (faces found again on the ribbed part by where they lie). One case is two slices and two solves; each further case adds two more. Material cards are placeholders: the numbers are relative.",
+    };
+  } else if (verify && study && studyBefore) {
     stage("verify: slicing and solving the ribbed part", 0.65);
     const mapped = this.ribsStudyAfter(study, before, { positions: after.positions, faceOf: after.triangles });
     const studyAfter = await this.solveSliced(obj, mapped, false);
@@ -637,10 +712,10 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
  * The verify study on the part as it is: the plan's holds and loads when they were given, else the faces the wall is
  * joined to held and an even pressure on the wall's faces.
  */
-function ribsStudy(this: Session, _obj: PlateObject, record: PlanRecord): ObjectStudy | { reason: string } {
+function ribsStudy(this: Session, _obj: PlateObject, record: PlanRecord, loadsGiven?: unknown): ObjectStudy | { reason: string } {
   const holds = this.readFixtures(record.holds);
   if ("reason" in holds) return holds;
-  const loads = this.readLoads(record.loads);
+  const loads = this.readLoads(loadsGiven === undefined ? record.loads : loadsGiven);
   if ("reason" in loads) return loads;
   const card = ribCard.call(this).card;
   if ("reason" in card) return card;
