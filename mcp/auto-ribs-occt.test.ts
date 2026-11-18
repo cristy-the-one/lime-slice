@@ -107,6 +107,16 @@ async function shift(object: string, list: { point: V3; direction: V3 }[], befor
   });
   return worst;
 }
+/** The plan's estimate of what it adds against the volume the kernel measured after apply: within 5 %. */
+const volumeRows: string[] = [];
+function addedAsPlanned(title: string, done: Reply, applied: Reply) {
+  const estimate = Number(done.adds?.mm3);
+  const planner = Number(done.adds?.plannerMm3);
+  const measured = Number(applied.added?.mm3);
+  const off = (x: number) => `${x >= measured ? "+" : ""}${Math.round((1000 * (x - measured)) / measured) / 10} %`;
+  volumeRows.push(`${title}: measured ${r3(measured)} mm³; estimate ${estimate} (${off(estimate)}); the planner's own ${planner} (${off(planner)})`);
+  check(`${title}: the plan's added volume is the built one within 5 % (estimate ${estimate}, measured ${r3(measured)} mm³)`, measured > 0 && Math.abs(estimate - measured) <= 0.05 * measured, JSON.stringify({ adds: done.adds, added: applied.added }));
+}
 async function historyCount(object: string): Promise<number> {
   return (((await call("model_history", { object })).nodes ?? []) as unknown[]).length;
 }
@@ -158,6 +168,15 @@ async function loftedCover(): Promise<string> {
   await call("model_apply", { object, probe: true, op: { kind: "loft", op: "cut", sections: [[-58, 18.5], [-20, 30], [20, 24], [58, 20]].map(([x, top]) => section(x!, top!, 38, -1)) } });
   return object;
 }
+async function ribbedShell(): Promise<string> {
+  // A shelled box whose floor already carries a rib across it (splitting the floor in two) and a boss on one half.
+  const object = await shellBox(120, 70, 25);
+  const rib = await call("model_apply", { object, probe: true, op: { kind: "boolean", op: "fuse", primitive: "box", dx: 117, dy: 2, dz: 6, centre: [0, 0, 5] } });
+  if (rib.ok !== true) throw new Error(`rib: ${JSON.stringify(rib).slice(0, 300)}`);
+  const boss = await call("model_apply", { object, probe: true, op: { kind: "boolean", op: "fuse", primitive: "cylinder", radius: 3, height: 8, centre: [-30, -18, 5] } });
+  if (boss.ok !== true) throw new Error(`boss: ${JSON.stringify(boss).slice(0, 300)}`);
+  return object;
+}
 const solidOf = (object: string): RibWallSolid => ({ positions: held(object).positions, faceOf: held(object).triangles });
 /** The face of the nearest triangle to `p` whose normal is within 30° of `n`. */
 function faceAt(object: string, p: V3, n: V3): number {
@@ -186,6 +205,9 @@ function faceAt(object: string, p: V3, n: V3): number {
     { title: "shell with filleted inside corners", make: filletedShell, at: [0, 0, 2], n: [0, 0, 1], expect: (rep) => (rep.faces.taken.length > 1 ? null : "the floor grows over its fillets") },
     { title: "cylinder-segment panel R 78 inside", make: cylinderPanel, at: [78, 0, 30], n: [-1, 0, 0], expect: (rep) => (rep.faces.taken.length === 1 && Math.abs(rep.thickness.medianMm - 2) < 0.1 && rep.loops.length === 1 ? null : "one face, 2 mm, one border") },
     { title: "lofted freeform cover", make: loftedCover, at: [0, 0, 26], n: [0, 0, -1], expect: (rep) => (rep.faces.taken.length >= 1 && rep.thickness.medianMm > 1 && rep.thickness.medianMm < 3 ? null : "the roof's inside, about 2 mm") },
+    // One click on one half takes the floor on both sides of the rib; the rib and the boss are features, their
+    // footprints (116 × 2 and π 3², kernel facets) filled in and not held, one border left.
+    { title: "floor already carrying a rib and a boss", make: ribbedShell, at: [30, 18, 2], n: [0, 0, 1], expect: (rep) => (rep.faces.taken.length >= 2 && rep.features.count === 2 && Math.abs(rep.features.footprintMm2 - (116 * 2 + Math.PI * 9)) < 8 && rep.loops.length === 1 && Math.abs(rep.areaMm2 - 116 * 66) < 10 && Math.abs(rep.thickness.medianMm - 2) < 0.05 ? null : `the whole floor, 2 features (${rep.features.count}, ${rep.features.footprintMm2} mm²), one border (${rep.loops.length}), ${rep.areaMm2} mm²`) },
   ];
   for (const row of cases) {
     const object = await row.make();
@@ -269,6 +291,8 @@ let boxObject = "";
   check("model_check before and after are in the reply", typeof applied.check.before.overhangMm2 === "number" && typeof applied.check.after.overhangMm2 === "number", JSON.stringify(applied.check));
   check("the row keeps the request", JSON.stringify(((await call("model_history", { object })).nodes as Reply[]).at(-1)).includes("Auto ribs"));
   report.push(`default apply: ${applied.paths} paths, ribNet ${JSON.stringify({ runs: applied.ribNet?.runs, ends: applied.ribNet?.ends, profiles: applied.ribNet?.profiles, shortened: applied.ribNet?.shortened?.length ?? 0, skipped: applied.ribNet?.skipped?.length ?? 0 })}, measured +${r3(grew)} mm³ (planned ${done.adds.mm3}), ${applied.added.grams} g, ${applied.added.percent} %, check ${JSON.stringify(applied.check)}, ${applyMs} ms`);
+  addedAsPlanned("default plan", done, applied);
+  check("every rib end meets a border, a hold or another rib, or is listed with why", (plan.ribs as Reply[]).every((rib, i) => (rib.ends as string[]).every((end, k) => end !== "free" || (plan.looseEnds as Reply[]).some((row) => row.rib === i && row.end === k))), JSON.stringify({ ends: (plan.ribs as Reply[]).map((rib) => rib.ends), loose: plan.looseEnds }));
   timings.push(`default plan ${planMs} ms, apply ${applyMs} ms`);
   const undone = await call("model_undo", { object });
   check("undo removes the row: the volume is back", undone.ok === true && Math.abs(held(object).volumeMm3 - volume) < 1e-6, JSON.stringify(undone).slice(0, 300));
@@ -290,13 +314,21 @@ let boxObject = "";
   await call("model_undo", { object });
 }
 
-// ===== 3a. A noRibs box zone in the middle of the floor. =====
+// ===== 3a. A noRibs box zone in the middle of the floor; a load on a side wall, which the floor cannot carry. =====
 {
   const object = await shellBox(BX, BY, BZ);
   const zone = { min: [-30, -20, 0] as V3, max: [30, 20, 40] as V3 };
-  const started = await call("ribs_plan", { object, wall: { faces: [faceAt(object, [0, 0, 2], [0, 0, 1])] }, zones: [{ region: { box: zone }, mode: "noRibs" }] });
+  const side = faceAt(object, [BX / 2 - 2, 0, BZ / 2], [-1, 0, 0]);
+  const missedLoad = { kind: "force", faces: [side], magnitude: 20, direction: [1, 0, 0] };
+  // Refused by name, before any planning: never planned under even pressure in the load's place.
+  const asked = await call("ribs_plan", { object, wall: { faces: [faceAt(object, [0, 0, 2], [0, 0, 1])] }, loads: [missedLoad] });
+  const refused = typeof asked.job === "string" ? await waitJob(asked.job) : asked;
+  check("a load that misses the wall: refused, naming it, why and what to do", refused.ok === false && refused.code === "off-wall" && /Load 1: /.test(String(refused.reason)) && /Include the face it is on in the wall/.test(String(refused.reason)) && /ifMissed:"evenPressure"/.test(String(refused.reason)) && refused.missed?.length === 1, JSON.stringify(refused).slice(0, 500));
+  // Asked to plan without it: the even pressure, and said first.
+  const started = await call("ribs_plan", { object, wall: { faces: [faceAt(object, [0, 0, 2], [0, 0, 1])] }, zones: [{ region: { box: zone }, mode: "noRibs" }], loads: [missedLoad], ifMissed: "evenPressure" });
   const done = await waitJob(String(started.job));
   check("a plan with a noRibs zone", done.ok === true && done.plan.ribs.length > 0, JSON.stringify(done).slice(0, 400));
+  check("ifMissed:evenPressure: the plan says first that it ran under even pressure, in notes and the sentence", /^Planned under even pressure instead of the given load: load 1 misses the wall/.test(String(done.sentence)) && done.notes?.[0] === done.wall.substituted?.sentence, JSON.stringify({ sentence: done.sentence, notes: done.notes }).slice(0, 500));
   const landed = done.wall.zones[0] as Reply;
   check("the zone landed on the floor where it is", landed.triangles > 0 && landed.areaMm2 > 0.8 * 60 * 40 && landed.areaMm2 < 1.3 * 60 * 40, JSON.stringify(landed));
   const inside = (p: V3, m: number) => p[0] > zone.min[0] + m && p[0] < zone.max[0] - m && p[1] > zone.min[1] + m && p[1] < zone.max[1] - m;
@@ -308,7 +340,8 @@ let boxObject = "";
   const hits = await rays(object, down);
   const high = hits.filter((d) => d === null || Math.abs(d - 38) > 0.01).length;
   check(`no added material inside the zone: ${down.length} rays from above all meet the floor at z 2`, high === 0, `${high} rays met something higher`);
-  report.push(`noRibs zone: ${done.plan.ribs.length} ribs, zone ${landed.triangles} triangles ${landed.areaMm2} mm², ${down.length} rays inside, ${high} higher than the floor`);
+  report.push(`noRibs zone: ${done.plan.ribs.length} ribs, zone ${landed.triangles} triangles ${landed.areaMm2} mm², ${down.length} rays inside, ${high} higher than the floor, ribNet ${JSON.stringify({ ends: applied.ribNet?.ends, shortened: applied.ribNet?.shortened, skipped: applied.ribNet?.skipped })}, looseEnds ${JSON.stringify(done.plan.looseEnds)}, ribs ${JSON.stringify((done.plan.ribs as Reply[]).map((rib) => ({ n: rib.points.length, ends: rib.ends, len: rib.lengthMm, h: rib.height, trimmed: rib.trimmedMm })))}`);
+  addedAsPlanned("noRibs zone", done, applied);
 }
 
 // ===== 3b. An obstacle object: a 40 × 20 × 10 block standing 4 mm over the floor in the middle. =====
@@ -326,9 +359,12 @@ let boxObject = "";
   const under = (p: V3) => Math.abs(p[0]) < bb.max[0] - 1 && Math.abs(p[1]) < bb.max[1] - 1;
   let underStretches = 0;
   let tallest = 0;
+  // A stretch is under the block by its middle: the plan keeps a point only where the height changes or the rib turns.
   for (const rib of done.plan.ribs as Reply[]) {
     for (let k = 0; k + 1 < rib.points.length; k += 1) {
-      if (!under(rib.points[k]) || !under(rib.points[k + 1])) continue;
+      const a = rib.points[k] as V3;
+      const b = rib.points[k + 1] as V3;
+      if (!under([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2])) continue;
       underStretches += 1;
       tallest = Math.max(tallest, rib.heights[k]);
     }
@@ -342,6 +378,7 @@ let boxObject = "";
   const top = Math.max(...hits.map((d) => (d === null ? 0 : 5.9 - d)));
   check(`nothing built under the block stands above z 5 (2 + 3): highest ${r3(top)}`, top <= 5 + 0.05, String(top));
   report.push(`obstacle: zone ${JSON.stringify({ capped: landed.capped, capMinMm: landed.capMinMm, how: landed.how })}, ${done.plan.ribs.length} ribs, ${underStretches} stretches under the block, tallest ${r3(tallest)} mm, ${applied.paths} paths applied, highest material under the block z ${r3(top)}`);
+  addedAsPlanned("obstacle", done, applied);
 }
 
 // ===== 3b'. A height-capped zone with the profile auto: tees where the cap holds the ribs lower, and they print. =====
@@ -357,6 +394,7 @@ let boxObject = "";
   const applied = await call("ribs_apply", { job: done.job });
   check("the tees build", applied.ok === true && (applied.ribNet?.profiles?.tee ?? 0) > 0, JSON.stringify(applied).slice(0, 500));
   check("and print on the flat bed: no overhang before or after", applied.check?.before?.overhangMm2 === applied.check?.after?.overhangMm2, JSON.stringify(applied.check));
+  addedAsPlanned("4.5 mm capped zone", done, applied);
   report.push(`4.5 mm capped zone, profile auto: ${done.plan.ribs.length} ribs, ${tees.length} of ${sections.length} stretches tee (${JSON.stringify(done.plan.flange)}), plan profile ${JSON.stringify(done.plan.profile)}, ribNet profiles ${JSON.stringify(applied.ribNet?.profiles)}, +${applied.added?.mm3} mm³, check ${JSON.stringify(applied.check)}`);
 }
 
@@ -377,6 +415,7 @@ let boxObject = "";
   const applied = await call("ribs_apply", { job: done.job });
   check("and it applies", applied.ok === true, JSON.stringify(applied).slice(0, 300));
   report.push(`cancel: stopped after ${ms} ms with ${done.plan?.ribs?.length} ribs, factor ${done.plan?.stiffnessFactor}, applied ${applied.ok}`);
+  addedAsPlanned("cancelled plan", done, applied);
 }
 
 // ===== 3d. apply:true in one job; 4. verify:true with the sliced Stress study. =====
@@ -419,6 +458,7 @@ let boxObject = "";
   const moved = await shift(object, outside, before);
   check("the panel's outside is unchanged", moved < 0.01, `moved ${moved} mm`);
   report.push(`cylinder panel: ${done.plan?.ribs?.length} ribs ${JSON.stringify(done.plan?.profiles)}, factor ${done.plan?.stiffnessFactor}, +${applied.added?.mm3} mm³ (${applied.added?.percent} %), plan ${planMs} ms, apply ${Date.now() - t1} ms, ribNet ${JSON.stringify({ runs: applied.ribNet?.runs, shortened: applied.ribNet?.shortened?.length ?? 0, skipped: applied.ribNet?.skipped?.length ?? 0 })}`);
+  addedAsPlanned("cylinder panel", done, applied);
 }
 
 // ===== 6. The flange table: tees with a 45° chamfered and a square flange, along X, along Y and at 45°. =====
@@ -469,6 +509,7 @@ console.log("  --- flange table: extra overhang of three 116 mm tee ribs (w 1.35
 for (const row of flangeRows) console.log(`  ${row.printer.padEnd(9)} ${row.dir.padEnd(8)} ${row.flange.padEnd(12)} ${String(row.extraOverhangMm2).padStart(9)}  ${row.prints ? "prints" : "overhang"} (rule: ${row.rule ? "prints" : "overhang"})`);
 for (const line of report) console.log(`  ${line}`);
 for (const line of timings) console.log(`  timing: ${line}`);
+for (const line of volumeRows) console.log(`  added volume, ${line}`);
 void boxObject;
 rmSync(workspace, { recursive: true, force: true });
 if (failed > 0) {

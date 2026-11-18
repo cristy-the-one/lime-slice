@@ -123,6 +123,7 @@ export const REFUSAL_CODES = {
   "no-load": "The study has no load or nothing is held.",
   "bad-representation": "The study representation or reslice option does not apply here.",
   "bad-wall": "The wall to rib is not given, matches no face, or could not be read as a wall.",
+  "off-wall": "A hold or load given to ribs_plan cannot be put on the picked wall; the plan was not made in its place.",
   "bad-zone": "A rib zone is malformed or names an object that is not on the plate.",
   "bad-goal": "A rib goal is not one of stiffer, maxDeflectionMm, budgetMm3, budgetG or balanced.",
   "rib-plan-failed": "The rib planner did not start or did not finish.",

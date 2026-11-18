@@ -13,7 +13,7 @@
  *
  * Shared module: no Node builtins, no DOM, no MCP session. Same input, same output.
  */
-import { RibSurface, ribShape, type RibProfileKind } from "./rib-net.ts";
+import { RibSurface, ribNetPlan, ribShape, type RibProfileKind } from "./rib-net.ts";
 import { ribPathsFromPlan, type RibWall, type RibWallSolid } from "./rib-wall.ts";
 
 type V3 = [number, number, number];
@@ -265,7 +265,7 @@ export function splitByHeight(points: readonly V3[], heights: readonly number[],
   for (let k = 1; k <= heights.length; k += 1) {
     if (k < heights.length && Math.abs(heights[k]! - heights[start]!) <= tol && sectionKey(sections?.[k]) === sectionKey(sections?.[start])) continue;
     const run = heights.slice(start, k);
-    pieces.push({ points: points.slice(start, k + 1).map((p) => [...p] as V3), height: Math.min(...run), ...(sections?.[start] ? { section: sections[start] } : {}) });
+    pieces.push({ points: points.slice(start, k + 1).map((p) => [...p] as V3), height: run.reduce((least, h) => Math.min(least, h), Infinity), ...(sections?.[start] ? { section: sections[start] } : {}) });
     start = k;
   }
   return pieces;
@@ -466,7 +466,9 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
     const lift = Math.min(2, Math.max(0.5, (end === 0 ? heights[0] ?? 1 : heights.at(-1) ?? 1) / 2));
     const out: V3 = run > 1e-9 ? [(e0[0] - e1[0]) / run, (e0[1] - e1[1]) / run, (e0[2] - e1[2]) / run] : [0, 0, 0];
     // From 1 mm back along the rib: an end on a side wall's foot starts on that wall's plane, where a ray sees nothing.
-    const free = run > 1e-9 && !all.ray([e0[0] + n0[0] * lift - out[0], e0[1] + n0[1] * lift - out[1], e0[2] + n0[2] * lift - out[2]], out, 3);
+    // An end in mid-wall (at a no-rib zone's border) is not on an edge: the wall runs on ahead of it, and it stays.
+    const ahead = wallSurface.closest([e0[0] + out[0] * 1.5, e0[1] + out[1] * 1.5, e0[2] + out[2] * 1.5], 0.5);
+    const free = run > 1e-9 && !ahead && !all.ray([e0[0] + n0[0] * lift - out[0], e0[1] + n0[1] * lift - out[1], e0[2] + n0[2] * lift - out[2]], out, 3);
     const start = free ? Math.min(4, Math.max(0.25, Math.ceil(width / 0.25) * 0.25)) : 0;
     for (let s = start; s <= 4 + 1e-9; s += 0.25) {
       while (k + 1 < order.length - 1 && walked + dist(order[k]!, order[k + 1]!) < s) {
@@ -507,6 +509,63 @@ export function trimThinEnds(points: V3[], heights: number[], sections: Section[
 }
 
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+/**
+ * A rib's points without those that lie on the line between their neighbours (within `tol` mm, the planner's own
+ * line tolerance), in runs of one height and section; heights and sections follow. The planner reports a rib through
+ * every mesh edge it crosses, each snapped to a vertex within a tenth of an edge, so a straight rib comes as dozens of
+ * points with zigs of a tenth of a millimetre; a tee lofted through them had slivers of overhang at its root. ribNet
+ * puts the rib back on the surface between the points that stay.
+ */
+export function dropStraightPoints(points: readonly V3[], heights: readonly number[], sections: readonly Section[], tol = 0.2): { points: V3[]; heights: number[]; sections: Section[] } {
+  if (points.length <= 2 || heights.length !== points.length - 1) return { points: points.map((p) => [...p] as V3), heights: [...heights], sections: [...sections] };
+  const keep = new Array<boolean>(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
+  // Where the height or the section changes, the point stays.
+  for (let k = 1; k < heights.length; k += 1) if (Math.abs(heights[k]! - heights[k - 1]!) > 1e-9 || sectionKey(sections[k]) !== sectionKey(sections[k - 1])) keep[k] = true;
+  const stack: [number, number][] = [];
+  let a = 0;
+  for (let k = 1; k < points.length; k += 1) {
+    if (!keep[k]) continue;
+    stack.push([a, k]);
+    a = k;
+  }
+  while (stack.length) {
+    const [i, j] = stack.pop()!;
+    const p = points[i]!;
+    const q = points[j]!;
+    const d: V3 = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    const l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    let worst = 0;
+    let at = -1;
+    for (let k = i + 1; k < j; k += 1) {
+      const r = points[k]!;
+      const s = l2 > 0 ? Math.max(0, Math.min(1, ((r[0] - p[0]) * d[0] + (r[1] - p[1]) * d[1] + (r[2] - p[2]) * d[2]) / l2)) : 0;
+      const off = dist(r, [p[0] + d[0] * s, p[1] + d[1] * s, p[2] + d[2] * s]);
+      if (off > worst) {
+        worst = off;
+        at = k;
+      }
+    }
+    if (at >= 0 && worst > tol) {
+      keep[at] = true;
+      stack.push([i, at], [at, j]);
+    }
+  }
+  const out: V3[] = [];
+  const hs: number[] = [];
+  const ss: Section[] = [];
+  for (let k = 0; k < points.length; k += 1) {
+    if (!keep[k]) continue;
+    out.push([...points[k]!] as V3);
+    if (k < points.length - 1) {
+      hs.push(heights[k]!);
+      if (sections[k]) ss.push(sections[k]!);
+    }
+  }
+  return { points: out, heights: hs, sections: ss.length === hs.length ? ss : [] };
+}
 
 // --- From the plan to ribs on the wall's face (shared by ribs_plan and the Auto ribs panel). ---
 
@@ -561,7 +620,8 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
   const whole = new RibSurface({ positions: solid.positions, faceOf: solid.faceOf });
   const ribs = planned.map((row, i): FaceRib => {
     const width = row.width ?? fallbackWidth;
-    const trimmed = trimThinEnds(onSkin.paths[i]!.points, row.heights ?? [], (row.sections ?? []).map((s) => ({ ...s })), surface, whole, width);
+    const lean = dropStraightPoints(onSkin.paths[i]!.points, row.heights ?? [], (row.sections ?? []).map((s) => ({ ...s })));
+    const trimmed = trimThinEnds(lean.points, lean.heights, lean.sections, surface, whole, width);
     const points = trimmed.points;
     const heights = trimmed.heights;
     const height = row.height ?? Math.max(0, ...heights);
@@ -589,6 +649,19 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
     };
   });
   return { ribs, snapMaxMm: onSkin.snapMaxMm };
+}
+
+/**
+ * What the ribs will add when built, mm³: ribNet's own plan of them on this solid (sections over the surface, tapered and
+ * skipped stretches, ends run into a wall or a rib left out, crossings counted once). Null when ribNet would refuse
+ * them. The planner's own volume is the network on the mid-surface before any of that.
+ */
+export function builtVolumeOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, "points" | "heights" | "sections" | "width">[]): number | null {
+  const built: BuiltRib[] = ribs.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: rib.sections[0]?.profile ?? "straight", sections: rib.sections }));
+  const op = ribNetOf(built, "estimate", undefined);
+  if ("reason" in op) return null;
+  const plan = ribNetPlan(op, { positions: solid.positions, faceOf: solid.faceOf });
+  return "reason" in plan ? null : plan.volumeMm3;
 }
 
 /** The planner's profile on the wire (`WireProfile`) for what was asked, the process and the flange that prints here. */

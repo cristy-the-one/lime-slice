@@ -118,6 +118,33 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
   check("crossing paths are two runs with loose ends", ok(crossing) && crossing.runs === 2 && crossing.ends.tapered === 4);
 }
 
+// --- What a network adds (volumeMm3), against the closed form of what it builds.
+{
+  // Wall to wall: 116 × 1.5 × 6 over the floor (the sunk half millimetre and the ends into the walls add nothing).
+  const wall = plan({ width: 1.5, height: 6, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }] });
+  check("volume, wall to wall: 116 × 1.5 × 6", ok(wall) && Math.abs(wall.volumeMm3 - 116 * 1.5 * 6) < 0.5, ok(wall) ? String(wall.volumeMm3) : "");
+  // One loose end tapering over its 5 mm height: 38 mm less half the taper's 5 mm, × 1.2 × 5.
+  const loose = plan({ width: 1.2, height: 5, paths: [{ points: [[20, 0, 2], [58, 0, 2]] }] });
+  check("volume, a loose end: the taper takes half its length off", ok(loose) && Math.abs(loose.volumeMm3 - (38 - 2.5) * 1.2 * 5) < 0.5, ok(loose) ? String(loose.volumeMm3) : "");
+  // Two crossing ribs, every end tapered: their lengths less the tapers, less the crossing they share once.
+  const crossing = plan({ width: 2, height: 4, paths: [{ points: [[-40, 0, 2], [40, 0, 2]] }, { points: [[0, -30, 2], [0, 30, 2]] }] });
+  const want = (80 - 4) * 2 * 4 + (60 - 4) * 2 * 4 - 2 * 2 * 4;
+  check("volume, a crossing counted once", ok(crossing) && Math.abs(crossing.volumeMm3 - want) < 0.5, ok(crossing) ? `${crossing.volumeMm3} against ${want}` : "");
+  // A T: the branch runs from the wall to the trunk's centre line; half the trunk's width of it is in the trunk.
+  const tee = plan({ width: 2, height: 4, paths: [{ points: [[-58, 0, 2], [58, 0, 2]] }, { points: [[0, 38, 2], [0, 0, 2]] }] });
+  check("volume, a T: the branch's end in the trunk counted once", ok(tee) && Math.abs(tee.volumeMm3 - (116 * 2 * 4 + (38 - 1) * 2 * 4)) < 0.5, ok(tee) ? String(tee.volumeMm3) : "");
+}
+
+// --- A rib that meets the wall at a slant still runs into it, and the floor's corner reads the room it has.
+{
+  // 6° off square: at its end one corner of the rib is already in the wall. It used to taper; it runs into the wall.
+  const slant = plan({ width: 1.35, height: 6, paths: [{ points: [[0, 10, 2], [2.94, 38, 2]] }] });
+  check("a slanted end against a wall runs into it", ok(slant) && slant.ends.wall === 1 && slant.ends.tapered === 1, ok(slant) ? JSON.stringify(slant.ends) : slant.reason);
+  // A path that starts on the corner where floor meets wall: the room up runs along the wall's plane, not into it.
+  const corner = plan({ width: 1.35, height: 6, paths: [{ points: [[0, -38, 2], [0, 38, 2]] }] });
+  check("a rib from corner to corner: nothing skipped, both ends into the walls", ok(corner) && corner.skipped.length === 0 && corner.ends.wall === 2 && Math.abs(corner.volumeMm3 - 76 * 1.35 * 6) < 0.5, ok(corner) ? JSON.stringify({ skipped: corner.skipped, ends: corner.ends, volume: corner.volumeMm3 }) : corner.reason);
+}
+
 // --- A sharp corner in one path: two runs that meet in a joint.
 {
   const made = plan({ width: 1.5, height: 4, paths: [{ points: [[-20, -20, 2], [20, -20, 2], [-20, 0, 2]] }] });

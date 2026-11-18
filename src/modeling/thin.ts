@@ -74,6 +74,8 @@ class Grid {
   }
   /** The nearest triangle the ray meets, other than `skip`, up to `far`, and how far along the ray it is. */
   nearest(o: V3, d: V3, skip: number, far: number): { distance: number; tri: number } | null {
+    // A ray with no direction (the normal of a sliver of no area) never leaves its cell: with no limit it walked forever.
+    if (!(Math.abs(d[0]) + Math.abs(d[1]) + Math.abs(d[2]) > 0) || !o.every(Number.isFinite)) return null;
     let cell: V3 = [this.cellOf(o[0], 0), this.cellOf(o[1], 1), this.cellOf(o[2], 2)];
     const step = d.map((v) => (v > 0 ? 1 : v < 0 ? -1 : 0)) as V3;
     const next = [0, 1, 2].map((k) => {
@@ -98,6 +100,7 @@ class Grid {
       }
       const k = next[0]! < next[1]! ? (next[0]! < next[2]! ? 0 : 2) : next[1]! < next[2]! ? 1 : 2;
       travelled = next[k]!;
+      if (!Number.isFinite(travelled)) break;
       next[k] = next[k]! + delta[k]!;
       cell = [...cell] as V3;
       cell[k] = cell[k]! + step[k]!;
