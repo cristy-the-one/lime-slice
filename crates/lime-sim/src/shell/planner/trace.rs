@@ -627,3 +627,7 @@ pub(crate) fn simplify(points: &[[f64; 3]], tol: f64) -> Vec<[f64; 3]> {
         .map(|(p, _)| *p)
         .collect()
 }
+
+#[cfg(test)]
+#[path = "fold_tests.rs"]
+mod fold_tests;
