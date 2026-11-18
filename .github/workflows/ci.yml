@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # PRs into the long-lived ribs-next feature branch (docs/handover-auto-ribs-next.md) get the same checks.
+    branches: [main, feature/ribs-next]
 
 env:
   CARGO_TERM_COLOR: always
