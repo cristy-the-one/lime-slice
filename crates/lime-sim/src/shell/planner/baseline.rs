@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::shell::{IsotropicShell, LoadCase, ShellHold, ShellMesh, ShellModel, ShellOptions};
 use crate::units::{add, scale, sub};
 
-use super::select::{network_volume, DRib};
+use super::select::{network_volume, DRib, Mix};
 use super::surface::Surface;
 use super::trace::{simplify, Family};
 use super::{
@@ -21,15 +21,24 @@ use super::{
 /// The even added thickness at which the bare wall's compliance is
 /// `target`. Regula falsi (Illinois) on log compliance; the answer is the
 /// linear interpolation between the bracketing solves, within 0.2 %.
+pub(crate) struct ThickeningGoal<'a> {
+    pub mix: &'a Mix,
+    /// Bare objective and the ribbed objective to reach.
+    pub bare: f64,
+    pub target: f64,
+}
+
 pub(crate) fn thickening(
     mesh: &ShellMesh,
     material: IsotropicShell,
     holds: &[ShellHold],
     cases: &[LoadCase],
-    c0: f64,
-    target: f64,
+    goal: &ThickeningGoal,
     rep: &Reporter,
 ) -> Result<Option<ThickeningBaseline>, SimError> {
+    let mix = goal.mix;
+    let c0 = goal.bare;
+    let target = goal.target;
     let area: f64 = mesh
         .triangles
         .iter()
@@ -61,7 +70,8 @@ pub(crate) fn thickening(
         model.set_threads(1);
         let r = model.solve_cases(cases)?;
         solves += 1;
-        Ok(r.iter().map(|x| x.compliance).sum::<f64>())
+        let cs: Vec<f64> = r.iter().map(|x| x.compliance).collect();
+        Ok(mix.of(&cs))
     };
     let g = |c: f64| c.ln() - target.ln();
     let (mut lo, mut glo) = (0.0, g(c0));
@@ -136,6 +146,8 @@ pub(crate) struct GridInput<'a> {
     pub material: IsotropicShell,
     pub holds: &'a Holds,
     pub cases: &'a [LoadCase],
+    /// Scores a solve the way the plan's reported factor is scored.
+    pub mix: &'a Mix,
     pub target: f64,
     pub tolerance: f64,
     pub rep: &'a Reporter<'a>,
@@ -307,8 +319,8 @@ fn grid_design(
     let ribs = design.iter().flat_map(|d| d.solver_ribs(r.side)).collect();
     model.set_ribs(ribs)?;
     let res = model.solve_cases(&cases)?;
-    let c: f64 = res.iter().map(|x| x.compliance).sum();
-    Ok((network_volume(&s.pos, &design), c))
+    let cs: Vec<f64> = res.iter().map(|x| x.compliance).collect();
+    Ok((network_volume(&s.pos, &design), input.mix.of(&cs)))
 }
 
 /// Where the plane `x[axis] = offset` cuts the surface, as polylines,

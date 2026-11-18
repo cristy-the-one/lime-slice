@@ -8,7 +8,8 @@
 //! 1. **Solve the bare wall** under each load case ([`ShellModel`]).
 //! 2. **Direction field** ([`field`]): principal bending-moment directions
 //!    (membrane-force directions where membrane energy dominates), combined
-//!    over cases weighted by strain energy, smoothed as a cross field with
+//!    over cases by strain energy divided by each case's bare compliance,
+//!    smoothed as a cross field with
 //!    Li et al.'s smoothness/alignment blend (α = 0.8), with low-confidence
 //!    zones marked.
 //! 3. **Candidates** ([`trace`]): evenly spaced streamlines along both
@@ -22,7 +23,8 @@
 //!    ranks the remaining candidates by a first-order estimate (the energy
 //!    the rib would take in the current solution) and solves the best
 //!    [`PlannerOptions::shortlist`] exactly; the one with the largest
-//!    compliance drop per added volume (Li et al.'s score per volume) is
+//!    drop in the weighted compliance (each case divided by its own bare
+//!    compliance) per added volume (Li et al.'s score per volume) is
 //!    added. Then loose ends are extended to the boundary, a hold or
 //!    another rib; ribs that meet end to end are joined; ribs the goal does
 //!    not need are pruned, weakest first; and heights are lowered where the
@@ -34,8 +36,11 @@
 //! Everything is deterministic: no hash-map iteration, ties broken by
 //! index, Gauss–Seidel in index order.
 //!
-//! Units: mm, N, MPa. Compliance is the work of the loads, N·mm, summed
-//! over the load cases.
+//! Units: mm, N, MPa. Compliance is the work of the loads, N·mm. Several
+//! cases are scored as `sum w_i C_i / C_i0` (each `C_i0` the bare wall on
+//! the same mesh), or, in [`LoadCombine::Worst`], by the worst of them.
+//! A single case is the compliance itself, in either mode. The reported
+//! stiffness factor is that combined number.
 
 mod baseline;
 mod field;
@@ -157,10 +162,32 @@ impl Default for RibRules {
     }
 }
 
+/// How several load cases become the one number the planner minimises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LoadCombine {
+    /// `sum w_i C_i / C_i0`. Empty weights are all 1.
+    #[default]
+    Weighted,
+    /// The worst case: maximise `min_i C_i0 / C_i`. Weights are not used.
+    /// [`Goal::Stiffer`] then means every case reaches the factor.
+    Worst,
+}
+
+/// One greedy step in [`LoadCombine::Worst`]: which case limited the
+/// objective, and the worst stiffness factor, on the selection mesh.
+#[derive(Clone, Copy, Debug)]
+pub struct WorstRound {
+    pub limiting_case: usize,
+    /// `min_i C_i0 / C_i` after this rib (1 before any rib).
+    pub min_factor: f64,
+}
+
 /// What the plan must reach. One of them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Goal {
-    /// Bare compliance over ribbed compliance at least this.
+    /// Combined stiffness at least this. One case: bare over ribbed.
+    /// Weighted: `(sum w_i) / (sum w_i C_i / C_i0)`. Worst: every case,
+    /// `min_i C_i0 / C_i`.
     Stiffer(f64),
     /// The largest displacement (over all cases) at most this, mm.
     MaxDeflection(f64),
@@ -222,8 +249,15 @@ pub struct RibPlanRequest {
     pub material: IsotropicShell,
     pub holds: Holds,
     /// Load cases on the input mesh; none means [`DEFAULT_PRESSURE`] on
-    /// every triangle. Several are combined by summed compliance.
+    /// every triangle. Several are scored as `sum w_i C_i / C_i0`.
     pub load_cases: Vec<LoadCase>,
+    /// One weight per load case. Empty means every case weighs 1. A single
+    /// case then scores exactly as its compliance. Unused by
+    /// [`LoadCombine::Worst`].
+    pub case_weights: Vec<f64>,
+    /// How several cases combine. [`LoadCombine::Weighted`] by default; a
+    /// one-case plan does not depend on it.
+    pub combine: LoadCombine,
     /// User-defined zones: no ribs, or ribs no taller than a cap.
     pub zones: Vec<Zone>,
     /// Keep this far (mm) from the rim of every hole in the wall (each
@@ -243,6 +277,8 @@ impl RibPlanRequest {
             material,
             holds: Holds::AllBoundaryClamped,
             load_cases: Vec::new(),
+            case_weights: Vec::new(),
+            combine: LoadCombine::Weighted,
             zones: Vec::new(),
             hole_rim_margin: Some(3.0),
             rules: RibRules::default(),
@@ -383,8 +419,16 @@ pub struct RibPlan {
     pub rib_volume_mm3: f64,
     pub bare: Response,
     pub ribbed: Response,
-    /// Bare compliance over ribbed.
+    /// Combined stiffness on [`RibPlan::mesh`]. One case: bare over ribbed.
+    /// Weighted: `(sum w_i) / (sum w_i C_i / C_i0)`. Worst: `min_i C_i0 / C_i`.
     pub stiffness_factor: f64,
+    /// `C_i0 / C_i` for each load case, on [`RibPlan::mesh`].
+    pub case_factors: Vec<f64>,
+    /// Greedy rounds when [`RibPlanRequest::combine`] is
+    /// [`LoadCombine::Worst`]: the limiting case and the worst factor after
+    /// each accepted rib, including the bare wall as round 0. Empty for a
+    /// weighted plan, and for one case (that plan is the plain sum).
+    pub worst_trace: Vec<WorstRound>,
     pub goal_met: bool,
     pub thickening: Option<ThickeningBaseline>,
     pub grid: Option<GridBaseline>,
@@ -620,6 +664,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             bare,
             ribbed: bare,
             stiffness_factor: 1.0,
+            case_factors: vec![1.0; bare0.len()],
+            worst_trace: Vec::new(),
             goal_met: false,
             thickening: None,
             grid: None,
@@ -637,7 +683,22 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     // 2. The field.
     let t = Instant::now();
     rep.stage(PlanStage::Field, 0.0);
-    let field = field::Field::new(&s0, &bare0, req.options.field_alpha);
+    let bare0_c: Vec<f64> = bare0.iter().map(|r| r.compliance).collect();
+    let field = field::Field::new(
+        &s0,
+        &bare0,
+        req.options.field_alpha,
+        // Worst-case ignores weights, so a heavier load does not own the
+        // directions. Empty weights are all 1; one case stays at scale 1.
+        &field::energy_scales(
+            if req.combine == LoadCombine::Worst {
+                &[]
+            } else {
+                &req.case_weights
+            },
+            &bare0_c,
+        ),
+    );
     let zones = restrictions(&s0, &req.zones, req.hole_rim_margin, rules.min_height);
     let blocked0 = zones.blocked.clone();
     stats.seconds.field = t.elapsed().as_secs_f64();
@@ -768,7 +829,13 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             )
         })
         .collect::<Result<_, _>>()?;
-    let mut ev = select::Evaluator::new(models, cases1.clone(), rules.side);
+    let mut ev = select::Evaluator::new(
+        models,
+        cases1.clone(),
+        rules.side,
+        req.case_weights.clone(),
+        select::Mix::unbound(req.combine),
+    );
     let loose_input = loose::Input {
         req,
         s0: &s0,
@@ -806,6 +873,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 ribs,
                 outcome.floor,
                 outcome.bare.compliance,
+                &outcome.mix,
                 &rep,
             )?
         } else {
@@ -824,6 +892,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 &closed.ribs,
                 ctx.goal,
                 outcome.floor,
+                &outcome.mix,
                 workers,
                 &rep,
             )?;
@@ -834,7 +903,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         }
         let clean = clean_solve(req, &s0, &cases0, &closed.ribs)?;
         stats.solves += 2;
-        let factor = clean.bare.compliance / clean.ribbed.compliance;
+        let factor = clean.factor;
         let met = match req.goal {
             Goal::Stiffer(f) => factor >= f,
             Goal::MaxDeflection(d) => clean.ribbed.max_deflection <= d,
@@ -926,7 +995,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             },
         });
     }
-    let stiffness_factor = bare.compliance / ribbed.compliance;
+    let stiffness_factor = clean.factor;
 
     // 6. Baselines, on the clean solve's footing.
     let t = Instant::now();
@@ -942,7 +1011,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                 material: req.material,
                 holds: &req.holds,
                 cases: &cases0,
-                target: ribbed.compliance,
+                mix: &clean.mix,
+                target: clean.target,
                 tolerance: req.options.simplify_tolerance,
                 rep: &rep,
             };
@@ -954,8 +1024,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
                         req.material,
                         &clean.holds,
                         &clean.cases,
-                        bare.compliance,
-                        ribbed.compliance,
+                        &baseline::ThickeningGoal {
+                            mix: &clean.mix,
+                            bare: clean.bare_objective,
+                            target: clean.target,
+                        },
                         &rep,
                     )
                 },
@@ -990,6 +1063,8 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
         bare,
         ribbed,
         stiffness_factor,
+        case_factors: clean.case_factors,
+        worst_trace: outcome.worst_trace,
         goal_met: goal_met && !stopped,
         thickening,
         grid,
@@ -1084,6 +1159,7 @@ fn resize(
     ribs: &[GRib],
     goal: Goal,
     floor: f64,
+    mix: &select::Mix,
     workers: usize,
     rep: &Reporter,
 ) -> Result<(Vec<GRib>, usize, bool), SimError> {
@@ -1096,7 +1172,13 @@ fn resize(
         .into_par_iter()
         .map(|_| ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default()))
         .collect::<Result<_, _>>()?;
-    let mut ev = select::Evaluator::new(models, cases, req.rules.side);
+    let mut ev = select::Evaluator::new(
+        models,
+        cases,
+        req.rules.side,
+        req.case_weights.clone(),
+        mix.clone(),
+    );
     let bare = ev.eval(&[])?;
     let cur = ev.eval(&design)?;
     let ctx = select::Ctx {
@@ -1182,6 +1264,13 @@ struct Clean {
     ribbed: Response,
     eval: select::Eval,
     volume: f64,
+    /// Scales from this mesh's bare compliances.
+    mix: select::Mix,
+    /// Bare and ribbed objective (`mix.of`), the target the baselines match.
+    bare_objective: f64,
+    target: f64,
+    factor: f64,
+    case_factors: Vec<f64>,
 }
 
 fn clean_solve(
@@ -1197,18 +1286,28 @@ fn clean_solve(
     let mut model = ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default())?;
     model.set_threads(1);
     let bare = model.solve_cases(&cases)?;
-    let eval = select::evaluate(&mut model, &cases, req.rules.side, &design)?;
+    let bare_cs: Vec<f64> = bare.iter().map(|r| r.compliance).collect();
+    let mix = select::Mix::from_bare(&req.case_weights, &bare_cs, req.combine);
+    let eval = select::evaluate(&mut model, &cases, req.rules.side, &design, &mix)?;
+    let rib_cs: Vec<f64> = eval.results.iter().map(|r| r.compliance).collect();
     let volume = select::network_volume(&s.pos, &design);
     let ends = rib_ends(&s, &held_flags(&holds, s.pos.len()), &design);
+    let bare_sum: f64 = bare_cs.iter().copied().sum();
+    let rib_sum: f64 = rib_cs.iter().copied().sum();
     Ok(Clean {
         bare: Response {
-            compliance: bare.iter().map(|r| r.compliance).sum(),
+            compliance: bare_sum,
             max_deflection: bare.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
         },
         ribbed: Response {
-            compliance: eval.compliance,
+            compliance: rib_sum,
             max_deflection: eval.max_deflection,
         },
+        mix: mix.clone(),
+        bare_objective: mix.of(&bare_cs),
+        target: mix.of(&rib_cs),
+        factor: mix.factor(&bare_cs, &rib_cs),
+        case_factors: select::Mix::case_factors(&bare_cs, &rib_cs),
         mesh,
         pos: s.pos,
         holds,
@@ -1271,6 +1370,23 @@ fn check(req: &RibPlanRequest) -> Result<(), SimError> {
         .is_some_and(|m| !(m.is_finite() && m >= 0.0))
     {
         return Err(SimError::new("The hole rim margin must not be below zero."));
+    }
+    let n_cases = if req.load_cases.is_empty() {
+        1
+    } else {
+        req.load_cases.len()
+    };
+    if !req.case_weights.is_empty() && req.case_weights.len() != n_cases {
+        return Err(SimError::new(
+            "Each load case needs one weight, or none (every case weighs 1).",
+        ));
+    }
+    if req
+        .case_weights
+        .iter()
+        .any(|w| !(w.is_finite() && *w > 0.0))
+    {
+        return Err(SimError::new("A load-case weight must be above zero."));
     }
     match req.goal {
         Goal::Stiffer(f) if !(f.is_finite() && f >= 1.0) => {

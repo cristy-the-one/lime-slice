@@ -34,6 +34,39 @@ use super::surface::Surface;
 
 /// Li et al.'s blend.
 pub(crate) const ALPHA: f64 = 0.8;
+
+/// Per-case weight for the field: `w_i / C_i0`, divided by the first
+/// case's so a single case is exactly 1. Energy density scales with the
+/// square of the load; dividing by `C_i0` (which scales the same way)
+/// keeps a heavier case from owning the directions. A uniform scale would
+/// cancel again when the field divides by its mean, and leaving the single
+/// case at 1 keeps that plan bit for bit.
+pub(crate) fn energy_scales(weights: &[f64], c0: &[f64]) -> Vec<f64> {
+    let n = c0.len();
+    if n == 0 || c0[0] == 0.0 {
+        return vec![1.0; n];
+    }
+    let w = |i: usize| {
+        if weights.is_empty() {
+            1.0
+        } else {
+            weights[i]
+        }
+    };
+    let base = w(0) / c0[0];
+    if base == 0.0 {
+        return vec![1.0; n];
+    }
+    (0..n)
+        .map(|i| {
+            if c0[i] > 0.0 {
+                (w(i) / c0[i]) / base
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
 pub(crate) const MIN_COHERENCE: f64 = 0.35;
 pub(crate) const LOW_ENERGY: f64 = 0.01;
 const ITERATIONS: usize = 400;
@@ -103,7 +136,9 @@ impl TFrame {
 pub(crate) struct Field {
     pub frames: Vec<TFrame>,
     pub confident: Vec<bool>,
-    /// Strain energy density per triangle (summed over cases), N·mm/mm².
+    /// Strain energy density per triangle, each case divided by its bare
+    /// compliance and weighted (see [`energy_scales`]), N·mm/mm² up to that
+    /// shared scale.
     pub density: Vec<f64>,
     /// The 90th percentile of `density`.
     pub density_p90: f64,
@@ -118,8 +153,9 @@ pub(crate) struct Field {
 
 impl Field {
     /// Build the field on `surface` (the mesh the results were solved on)
-    /// from one result per load case.
-    pub fn new(surface: &Surface, results: &[ShellResult], alpha: f64) -> Self {
+    /// from one result per load case. `scales` is [`energy_scales`]; a
+    /// missing entry weighs 1.
+    pub fn new(surface: &Surface, results: &[ShellResult], alpha: f64, scales: &[f64]) -> Self {
         let nt = surface.tris.len();
         let frames: Vec<TFrame> = (0..nt as u32)
             .map(|t| {
@@ -130,10 +166,11 @@ impl Field {
         let mut density = vec![0.0; nt];
         let mut data = vec![C::default(); nt];
         let mut line = vec![C::default(); nt];
-        for r in results {
+        for (case_i, r) in results.iter().enumerate() {
+            let scale = scales.get(case_i).copied().unwrap_or(1.0);
             for (t, el) in r.elements.iter().enumerate() {
                 let energy = el.bending_energy + el.membrane_energy;
-                let rho = energy / el.area;
+                let rho = scale * energy / el.area;
                 density[t] += rho;
                 let tensor = if el.membrane_energy > el.bending_energy {
                     &el.membrane_force

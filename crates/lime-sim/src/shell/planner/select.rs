@@ -41,7 +41,136 @@ use crate::units::{cross, norm, normalize, sub};
 
 use super::profile::RibProfile;
 use super::trace::Family;
-use super::{Goal, PlanStage, Reporter, RibChange, BALANCED_FLOOR, TARGET_FLOOR};
+use super::{
+    Goal, LoadCombine, PlanStage, Reporter, RibChange, WorstRound, BALANCED_FLOOR, TARGET_FLOOR,
+};
+
+/// How several load cases become one number the planner minimises.
+///
+/// `scale[i] * C_i` is case i's share. The scales come from the bare
+/// compliances `C_i0` on the mesh being scored:
+/// `scale_i = (w_i / w_0) * (C_00 / C_i0)`, so a single case of weight 1
+/// has scale 1 and the objective is the compliance itself. Empty `scale`
+/// (not yet bound to a bare solve) is that same plain sum.
+/// [`LoadCombine::Worst`] ignores the weights (`w_i = 1`) and minimises
+/// the largest scaled compliance, which is `min_i C_i0 / C_i` as a factor.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Mix {
+    pub scale: Vec<f64>,
+    pub weights: Vec<f64>,
+    pub combine: LoadCombine,
+}
+
+impl Mix {
+    /// Not yet bound to a bare solve. Scoring before [`Mix::from_bare`] is
+    /// the plain sum, including when `combine` is [`LoadCombine::Worst`].
+    pub fn unbound(combine: LoadCombine) -> Self {
+        Self {
+            combine,
+            ..Self::default()
+        }
+    }
+
+    /// `c0` is each case's bare compliance on the mesh these scales belong to.
+    /// Empty `weights` means every case weighs 1. [`LoadCombine::Worst`]
+    /// does not use the weights.
+    pub fn from_bare(weights: &[f64], c0: &[f64], combine: LoadCombine) -> Self {
+        let n = c0.len();
+        let weights = if combine == LoadCombine::Worst {
+            &[]
+        } else {
+            weights
+        };
+        let w: Vec<f64> = if weights.is_empty() {
+            vec![1.0; n]
+        } else {
+            weights.to_vec()
+        };
+        let scale = if n == 0 || c0[0] == 0.0 || w[0] == 0.0 {
+            vec![1.0; n]
+        } else {
+            let (c00, w0) = (c0[0], w[0]);
+            (0..n)
+                .map(|i| {
+                    if c0[i] > 0.0 && w0 > 0.0 {
+                        (w[i] / w0) * (c00 / c0[i])
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
+        Self {
+            scale,
+            weights: w,
+            combine,
+        }
+    }
+
+    /// The objective is the sum of the compliances, as a one-case plan
+    /// always is. Multiplying by these scales would not change a value.
+    /// One case stays on this path in either combine mode, so the first-order
+    /// estimate and the reported factor do not move.
+    pub fn plain_sum(&self) -> bool {
+        let unit = self.scale.iter().all(|s| *s == 1.0);
+        unit && (self.combine == LoadCombine::Weighted || self.scale.len() <= 1)
+    }
+
+    fn worst(&self) -> bool {
+        self.combine == LoadCombine::Worst && !self.plain_sum()
+    }
+
+    /// Decision objective for compliances `c` (absolute, one per case).
+    pub fn of(&self, c: &[f64]) -> f64 {
+        if self.plain_sum() {
+            c.iter().copied().sum()
+        } else if self.worst() {
+            c.iter()
+                .zip(&self.scale)
+                .map(|(c, s)| c * s)
+                .fold(f64::NEG_INFINITY, f64::max)
+        } else {
+            c.iter().zip(&self.scale).map(|(c, s)| c * s).sum()
+        }
+    }
+
+    /// Combined stiffness on one mesh. A plain sum is `sum C_i0 / sum C_i`,
+    /// the ratio a one-case plan reports. Worst is `min_i C_i0 / C_i`.
+    /// Weighted is `(sum w) / (sum w_i C_i / C_i0)`.
+    pub fn factor(&self, c0: &[f64], c: &[f64]) -> f64 {
+        if self.plain_sum() {
+            let a: f64 = c0.iter().copied().sum();
+            let b: f64 = c.iter().copied().sum();
+            return if b > 0.0 { a / b } else { f64::INFINITY };
+        }
+        if self.worst() {
+            return Self::case_factors(c0, c)
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+        }
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for i in 0..c.len() {
+            let w = self.weights.get(i).copied().unwrap_or(1.0);
+            num += w;
+            if c0[i] > 0.0 {
+                den += w * c[i] / c0[i];
+            }
+        }
+        if den > 0.0 {
+            num / den
+        } else {
+            f64::INFINITY
+        }
+    }
+
+    pub fn case_factors(c0: &[f64], c: &[f64]) -> Vec<f64> {
+        c0.iter()
+            .zip(c)
+            .map(|(a, b)| if *b > 0.0 { a / b } else { f64::INFINITY })
+            .collect()
+    }
+}
 
 /// A candidate cut into the mesh.
 #[derive(Clone, Debug)]
@@ -158,6 +287,9 @@ pub(crate) struct Evaluator {
     pub side: RibSide,
     pub solves: usize,
     pub seconds: f64,
+    /// Case weights. Empty means all 1. The [`Mix`] is bound to a bare solve.
+    weights: Vec<f64>,
+    pub mix: Mix,
 }
 
 pub(crate) fn evaluate(
@@ -165,6 +297,7 @@ pub(crate) fn evaluate(
     cases: &[LoadCase],
     side: RibSide,
     design: &[DRib],
+    mix: &Mix,
 ) -> Result<Eval, SimError> {
     let mut ribs: Vec<Rib> = Vec::new();
     let mut owner: Vec<usize> = Vec::new();
@@ -182,8 +315,9 @@ pub(crate) fn evaluate(
             rib_energy[owner[k]] += e;
         }
     }
+    let cs: Vec<f64> = results.iter().map(|r| r.compliance).collect();
     Ok(Eval {
-        compliance: results.iter().map(|r| r.compliance).sum(),
+        compliance: mix.of(&cs),
         max_deflection: results.iter().map(|r| r.max_deflection).fold(0.0, f64::max),
         strain_energy: results.iter().map(|r| r.strain_energy).sum(),
         rib_energy,
@@ -193,7 +327,15 @@ pub(crate) fn evaluate(
 
 impl Evaluator {
     /// `models` must all be the same shell; each is set to one thread.
-    pub fn new(mut models: Vec<ShellModel>, cases: Vec<LoadCase>, side: RibSide) -> Self {
+    /// `mix` is [`Mix::default`] until [`Evaluator::bind_bare`], or the
+    /// selection's mix when a later pass must score in the same units.
+    pub fn new(
+        mut models: Vec<ShellModel>,
+        cases: Vec<LoadCase>,
+        side: RibSide,
+        weights: Vec<f64>,
+        mix: Mix,
+    ) -> Self {
         for m in &mut models {
             m.set_threads(1);
         }
@@ -203,7 +345,17 @@ impl Evaluator {
             side,
             solves: 0,
             seconds: 0.0,
+            weights,
+            mix,
         }
+    }
+
+    /// Scales from this mesh's bare compliances. Returns the bare objective,
+    /// which for one case is the bare compliance.
+    pub fn bind_bare(&mut self, bare: &Eval) -> f64 {
+        let cs: Vec<f64> = bare.results.iter().map(|r| r.compliance).collect();
+        self.mix = Mix::from_bare(&self.weights, &cs, self.mix.combine);
+        self.mix.of(&cs)
     }
 
     pub fn workers(&self) -> usize {
@@ -229,7 +381,7 @@ impl Evaluator {
                     .iter()
                     .enumerate()
                     .filter(|(q, _)| q % w == k)
-                    .map(|(q, d)| (q, evaluate(m, cases, side, d)))
+                    .map(|(q, d)| (q, evaluate(m, cases, side, d, &self.mix)))
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -244,8 +396,27 @@ impl Evaluator {
     fn estimate(&self, d: &DRib, at: &Eval) -> Result<f64, SimError> {
         let ribs = d.solver_ribs(self.side);
         let model = &self.models[0];
+        // Hard min: the drop in the worst scaled compliance. A rib that
+        // misses the current worst case scores nothing, and the greedy
+        // stops when nothing reduces it. One case stays on the sum below.
+        if self.mix.worst() {
+            let mut next = Vec::with_capacity(at.results.len());
+            for (i, r) in at.results.iter().enumerate() {
+                let mut u = 0.0;
+                for rib in &ribs {
+                    u += model.probe_rib_energy(rib, r)?;
+                }
+                let g = 2.0 * u;
+                let c = r.compliance.abs();
+                let sat = if c + g > 0.0 { c * g / (c + g) } else { 0.0 };
+                let scale = self.mix.scale.get(i).copied().unwrap_or(1.0);
+                next.push(scale * (r.compliance - sat));
+            }
+            let now: Vec<f64> = at.results.iter().map(|r| r.compliance).collect();
+            return Ok(self.mix.of(&now) - self.mix.of(&next));
+        }
         let mut drop = 0.0;
-        for r in &at.results {
+        for (i, r) in at.results.iter().enumerate() {
             let mut u = 0.0;
             for rib in &ribs {
                 u += model.probe_rib_energy(rib, r)?;
@@ -253,7 +424,8 @@ impl Evaluator {
             let g = 2.0 * u;
             let c = r.compliance.abs();
             if c + g > 0.0 {
-                drop += c * g / (c + g);
+                let scale = self.mix.scale.get(i).copied().unwrap_or(1.0);
+                drop += scale * (c * g / (c + g));
             }
         }
         Ok(drop)
@@ -333,6 +505,12 @@ pub(crate) struct Outcome {
     pub reached: bool,
     /// The gain per volume a rib had to bring (compliance per mm³).
     pub floor: f64,
+    /// Scales bound to the selection mesh's bare solve, so later passes
+    /// score a compliance drop in the same units as `floor`.
+    pub mix: Mix,
+    /// [`LoadCombine::Worst`] only: limiting case and worst factor at the
+    /// bare wall and after each accepted rib. Empty otherwise.
+    pub worst_trace: Vec<WorstRound>,
 }
 
 fn goal_met(goal: Goal, c0: f64, e: &Eval) -> bool {
@@ -370,15 +548,45 @@ fn goal_progress(goal: Goal, bare: &Eval, cur: &Eval, volume: f64, eff: Option<(
     }
 }
 
+/// Limiting case and worst factor, for [`LoadCombine::Worst`] only.
+fn push_worst(worst: bool, scale: &[f64], bare_cs: &[f64], e: &Eval, trace: &mut Vec<WorstRound>) {
+    if !worst {
+        return;
+    }
+    let cs: Vec<f64> = e.results.iter().map(|r| r.compliance).collect();
+    let mut limiting = 0;
+    let mut largest = f64::NEG_INFINITY;
+    for (i, c) in cs.iter().enumerate() {
+        let j = scale.get(i).copied().unwrap_or(1.0) * c;
+        if j > largest {
+            largest = j;
+            limiting = i;
+        }
+    }
+    let min_factor = Mix::case_factors(bare_cs, &cs)
+        .into_iter()
+        .fold(f64::INFINITY, f64::min);
+    trace.push(WorstRound {
+        limiting_case: limiting,
+        min_factor,
+    });
+}
+
 pub(crate) fn run(
     ev: &mut Evaluator,
     ctx: &Ctx,
     cands: &[CandChain],
     rep: &Reporter,
 ) -> Result<Outcome, SimError> {
-    let bare = ev.eval(&[])?;
+    let mut bare = ev.eval(&[])?;
+    bare.compliance = ev.bind_bare(&bare);
     let c0 = bare.compliance;
     let mut cur = bare.clone();
+    let mut worst_trace: Vec<WorstRound> = Vec::new();
+    let worst = ev.mix.worst();
+    let worst_scale = ev.mix.scale.clone();
+    let bare_cs: Vec<f64> = bare.results.iter().map(|r| r.compliance).collect();
+    push_worst(worst, &worst_scale, &bare_cs, &cur, &mut worst_trace);
     let mut design: Vec<DRib> = Vec::new();
     let mut used = vec![false; cands.len()];
     let mut first_eff: Option<f64> = None;
@@ -390,7 +598,8 @@ pub(crate) fn run(
                   stopped: bool,
                   seconds: [f64; 4],
                   reached: bool,
-                  floor: f64| {
+                  floor: f64,
+                  mix: Mix| {
         let met = match ctx.goal {
             Goal::Budget { volume_mm3 } => network_volume(&ctx.pos, &design) <= volume_mm3,
             Goal::Balanced => !stopped,
@@ -405,6 +614,8 @@ pub(crate) fn run(
             seconds,
             reached,
             floor,
+            mix,
+            worst_trace: Vec::new(),
         }
     };
 
@@ -478,6 +689,7 @@ pub(crate) fn run(
             design.push(rib);
             used[i] = true;
             cur = e;
+            push_worst(worst, &worst_scale, &bare_cs, &cur, &mut worst_trace);
             let volume = network_volume(&ctx.pos, &design);
             rep.stage(
                 PlanStage::Select,
@@ -498,8 +710,20 @@ pub(crate) fn run(
         }
     }
     seconds[0] = t.elapsed().as_secs_f64();
+    let with_trace = |mut o: Outcome| {
+        o.worst_trace = worst_trace.clone();
+        o
+    };
     if stopped {
-        return Ok(finish(design, cur, true, seconds, false, 0.0));
+        return Ok(with_trace(finish(
+            design,
+            cur,
+            true,
+            seconds,
+            false,
+            0.0,
+            ev.mix.clone(),
+        )));
     }
     let reached = goal_met(ctx.goal, c0, &cur);
     let floor = first_eff.map_or(0.0, |f| floor_share(ctx.goal) * f);
@@ -583,7 +807,15 @@ pub(crate) fn run(
     }
     if stopped {
         seconds[1] = t.elapsed().as_secs_f64();
-        return Ok(finish(design, cur, true, seconds, reached, floor));
+        return Ok(with_trace(finish(
+            design,
+            cur,
+            true,
+            seconds,
+            reached,
+            floor,
+            ev.mix.clone(),
+        )));
     }
     // Join ribs that meet end to end nearly straight.
     let mut joined = false;
@@ -684,14 +916,30 @@ pub(crate) fn run(
     }
     seconds[2] = t.elapsed().as_secs_f64();
     if stopped {
-        return Ok(finish(design, cur, true, seconds, reached, floor));
+        return Ok(with_trace(finish(
+            design,
+            cur,
+            true,
+            seconds,
+            reached,
+            floor,
+            ev.mix.clone(),
+        )));
     }
 
     let t = Instant::now();
     let (design, cur, cut_short) = size(ev, ctx, design, cur, floor, c0, rep)?;
     stopped |= cut_short;
     seconds[3] = t.elapsed().as_secs_f64();
-    Ok(finish(design, cur, stopped, seconds, reached, floor))
+    Ok(with_trace(finish(
+        design,
+        cur,
+        stopped,
+        seconds,
+        reached,
+        floor,
+        ev.mix.clone(),
+    )))
 }
 
 /// Heights: lower each rib's nominal height (edges under a lower cap stay
@@ -883,4 +1131,47 @@ fn join(pos: &[[f64; 3]], a: &DRib, b: &DRib) -> Option<(Vec<u32>, Vec<f64>)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod mix_tests {
+    use super::{LoadCombine, Mix};
+
+    #[test]
+    fn one_case_is_the_compliance_and_a_heavy_case_is_normalised() {
+        let one = Mix::from_bare(&[], &[4.0], LoadCombine::Weighted);
+        assert!(one.plain_sum());
+        assert_eq!(one.of(&[4.0]), 4.0);
+        assert_eq!(one.factor(&[4.0], &[2.0]), 2.0);
+        // One case in worst-case mode is the same number, on the same path.
+        let one_worst = Mix::from_bare(&[], &[4.0], LoadCombine::Worst);
+        assert!(one_worst.plain_sum());
+        assert_eq!(one_worst.of(&[4.0]), 4.0);
+        assert_eq!(one_worst.factor(&[4.0], &[2.0]), 2.0);
+
+        // C_i0 = 100 and 1. Halving the heavy case and leaving the light
+        // one: weighted factor 2 / (0.5 + 1) = 4/3, not the summed 101/51.
+        let two = Mix::from_bare(&[], &[100.0, 1.0], LoadCombine::Weighted);
+        assert!(!two.plain_sum());
+        assert!((two.scale[0] - 1.0).abs() < 1e-15);
+        assert!((two.scale[1] - 100.0).abs() < 1e-12);
+        let f = two.factor(&[100.0, 1.0], &[50.0, 1.0]);
+        assert!((f - 4.0 / 3.0).abs() < 1e-12, "{f}");
+        // Weight 3 on the light case: scale_1 = 3 * 100 / 1.
+        let w = Mix::from_bare(&[1.0, 3.0], &[100.0, 1.0], LoadCombine::Weighted);
+        assert!((w.scale[1] - 300.0).abs() < 1e-9);
+        let f = w.factor(&[100.0, 1.0], &[100.0, 0.5]);
+        // (1+3) / (1*1 + 3*0.5) = 4 / 2.5
+        assert!((f - 1.6).abs() < 1e-12, "{f}");
+
+        // Worst ignores the weight and reports the lesser factor.
+        // Halving only the heavy case leaves the light one at 1.
+        let worst = Mix::from_bare(&[1.0, 100.0], &[100.0, 1.0], LoadCombine::Worst);
+        assert!((worst.scale[1] - 100.0).abs() < 1e-9, "{:?}", worst.scale);
+        assert!((worst.factor(&[100.0, 1.0], &[50.0, 1.0]) - 1.0).abs() < 1e-12);
+        // Both cases doubled: the min is 2, and the objective is the
+        // scaled compliance of either (100 * 0.5 = 50, 1 * 50 = 50).
+        assert!((worst.of(&[50.0, 0.5]) - 50.0).abs() < 1e-12);
+        assert!((worst.factor(&[100.0, 1.0], &[50.0, 0.5]) - 2.0).abs() < 1e-12);
+    }
 }

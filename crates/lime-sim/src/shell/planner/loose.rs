@@ -29,7 +29,7 @@ use crate::error::SimError;
 use crate::shell::{LoadCase, ShellModel, ShellOptions};
 use crate::units::{norm, normalize, sub};
 
-use super::select::{self, DRib, Eval};
+use super::select::{self, DRib, Eval, Mix};
 use super::surface::Surface;
 use super::trace::Tracer;
 use super::{
@@ -115,7 +115,12 @@ fn has_repeat(chain: &[u32]) -> bool {
 
 /// Each design solved on `s` (holds and loads carried the planner's way),
 /// side by side, each model on one thread.
-fn solve_all(input: &Input, s: &Surface, designs: &[Vec<DRib>]) -> Result<Vec<Eval>, SimError> {
+fn solve_all(
+    input: &Input,
+    s: &Surface,
+    designs: &[Vec<DRib>],
+    mix: &Mix,
+) -> Result<Vec<Eval>, SimError> {
     let req = input.req;
     let holds = resolve_holds(s, &req.holds);
     let cases = remap_cases(s, input.cases0, req.mesh.triangles.len());
@@ -126,7 +131,7 @@ fn solve_all(input: &Input, s: &Surface, designs: &[Vec<DRib>]) -> Result<Vec<Ev
             let mut m =
                 ShellModel::new(mesh.clone(), req.material, &holds, ShellOptions::default())?;
             m.set_threads(1);
-            select::evaluate(&mut m, &cases, req.rules.side, d)
+            select::evaluate(&mut m, &cases, req.rules.side, d, mix)
         })
         .collect()
 }
@@ -148,6 +153,7 @@ pub(crate) fn close(
     mut ribs: Vec<GRib>,
     floor: f64,
     c0: f64,
+    mix: &Mix,
     rep: &Reporter,
 ) -> Result<Closed, SimError> {
     let req = input.req;
@@ -293,7 +299,7 @@ pub(crate) fn close(
         let gone = dropped.remove(i).id;
         let mut designs: Vec<Vec<DRib>> = options.iter().map(|o| o.0.clone()).collect();
         designs.push(dropped.clone());
-        let evals = solve_all(input, &s2, &designs)?;
+        let evals = solve_all(input, &s2, &designs, mix)?;
         solves += designs.len();
         let c_drop = evals.last().expect("the dropped design").compliance;
         let mut best: Option<(f64, usize)> = None;
