@@ -2902,7 +2902,7 @@ export function missedSentence(missed: readonly NotOnWall[]): string {
   const holds = missed.some((row) => row.kind === "hold");
   const what = loads && holds ? "holds and loads" : loads ? "load" : "hold";
   const fix = [
-    "Include the face it is on in the wall (click it, or wall.addFaces)",
+    "Include the face it is on in the wall",
     loads ? "or put the load on a face of the wall or of its far side" : "",
     holds ? "or hold a face of the wall or one along its border" : "",
   ].filter(Boolean).join(", ");

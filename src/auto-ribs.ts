@@ -400,7 +400,7 @@ export function notOnWallLines(report: RibWallReport | null, missed: readonly No
 }
 
 /** The panel's words for planning without what missed, after the shared refusal. */
-export const EVEN_PRESSURE_OFFER = "Or choose “Plan without it” under Hold and load: it plans under even pressure when no load is left, and says so.";
+export const EVEN_PRESSURE_OFFER = "Click that face to add it to the wall. Or choose “Plan without it” under Hold and load: it plans under even pressure when no load is left, and says so.";
 
 /** The readout after the wall is read: what was left out first, when anything was, then what was taken. */
 export function wallReadout(report: RibWallReport, faces: number): string {

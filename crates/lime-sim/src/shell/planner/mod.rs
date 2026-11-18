@@ -841,8 +841,12 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             Goal::Budget { volume_mm3 } => clean.volume <= volume_mm3,
             Goal::Balanced => outcome.goal_met,
         };
+        // A budget is kept by the clean count too: the ribs cut into the
+        // input mesh run through vertices snapped within a tenth of an edge,
+        // a few tenths of a percent longer than on the selection mesh.
+        let budget = matches!(req.goal, Goal::Budget { .. });
         let again = !met
-            && outcome.reached
+            && (outcome.reached || budget)
             && !outcome.stopped
             && !closed.stopped
             && !rep.cancelled()
@@ -854,6 +858,11 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             (Goal::MaxDeflection(d), Goal::MaxDeflection(now)) => Some(Goal::MaxDeflection(
                 now / (clean.ribbed.max_deflection / d) / 1.002,
             )),
+            (Goal::Budget { volume_mm3: b }, Goal::Budget { volume_mm3: now }) => {
+                Some(Goal::Budget {
+                    volume_mm3: now * (b / clean.volume) * 0.998,
+                })
+            }
             _ => None,
         };
         match tighter {

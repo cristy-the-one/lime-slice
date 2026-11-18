@@ -303,7 +303,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   });
   if ("reason" in wall) {
     // A hold or load the wall cannot carry: refused by name, never planned under even pressure in its place.
-    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why })) });
+    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why })) });
     return refuse("bad-wall", wall.reason);
   }
   const wallMs = Date.now() - ribWallMs;
