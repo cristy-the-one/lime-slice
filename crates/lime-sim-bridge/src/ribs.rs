@@ -526,6 +526,7 @@ pub fn request_of(body: &RibPlanBody) -> Result<RibPlanRequest, String> {
         material,
         holds,
         load_cases,
+        case_weights: Vec::new(),
         zones,
         hole_rim_margin: (rim > 0.0).then_some(rim),
         rules,

@@ -1,9 +1,9 @@
 //! Several load cases on one wall.
 //!
-//! The first test records what v6.11.0 does: compliance is summed, so a
-//! load ten times the other (a hundred times the compliance) spends the
-//! rib material on itself. Later tests are the weighted objective, the
-//! worst case, and the one-case plan that must match v6.11.0.
+//! v6.11.0 summed compliance, so a load ten times the other (about a
+//! hundred times the compliance) spent the rib material on itself. The
+//! constants `SUMMED_*` are that measurement. The planner now minimises
+//! `sum w_i C_i / C_i0`.
 
 mod shell_common;
 
@@ -35,9 +35,7 @@ fn opposed_request(scale_left: f64, right: bool) -> (RibPlanRequest, [u32; 2]) {
     let mut req = RibPlanRequest::new(mesh, material(E, NU));
     req.holds = Holds::AllBoundaryClamped;
     req.load_cases = cases;
-    req.goal = Goal::Budget {
-        volume_mm3: 1800.0,
-    };
+    req.goal = Goal::Budget { volume_mm3: 1800.0 };
     req.rules.min_spacing = 18.0;
     req.rules.min_length = 12.0;
     req.options.baselines = false;
@@ -74,7 +72,10 @@ fn case_factors(plan: &RibPlan, nodes: &[u32], scales: &[f64]) -> Vec<f64> {
     let ribs: Vec<Rib> = plan
         .ribs
         .iter()
-        .flat_map(|r| r.profile.solver_ribs(&r.vertices, &r.heights, r.width, r.side))
+        .flat_map(|r| {
+            r.profile
+                .solver_ribs(&r.vertices, &r.heights, r.width, r.side)
+        })
         .collect();
     model.set_ribs(ribs).unwrap();
     let ribbed = model.solve_cases(&cases).unwrap();
@@ -133,17 +134,19 @@ fn dump(label: &str, plan: &RibPlan, factors: &[f64]) {
     }
 }
 
-/// What summing the two compliances does on this panel, measured against
-/// v6.11.0 before the weighted objective. The ×10 column is the bad one:
-/// case 2 stays at 1.002, the same as planning for the left load alone.
+/// What summing the two compliances did on this panel, at v6.11.0. The
+/// ×10 column is the bad one: case 2 stayed at 1.002, the same miss as
+/// planning for the left load alone.
 const SUMMED_EQUAL: [f64; 2] = [2.146639343320, 2.114592183597];
 const SUMMED_HEAVY: [f64; 2] = [3.469144151550, 1.002061434711];
 const SUMMED_LEFT_ON_BOTH: [f64; 2] = [3.459900734848, 1.002059653687];
 
-/// v6.11.0 sums compliance. Equal loads share the ribs; ×10 ignores the
-/// right-hand load.
+/// Weighted objective. Equal loads keep the summed plan (the two bare
+/// compliances match, so the weights are equal). ×10 is normalised and
+/// comes out the same plan: both cases near 2.13×, where the sum had
+/// left case 2 at 1.002. The left load alone still misses the right one.
 #[test]
-fn summed_compliance_on_opposed_loads() {
+fn weighted_objective_serves_both_opposed_loads() {
     let (eq, nodes) = opposed_request(1.0, true);
     let eq_plan = plan_ribs(&eq).unwrap();
     let eq_f = case_factors(&eq_plan, &nodes, &[1.0, 1.0]);
@@ -160,24 +163,135 @@ fn summed_compliance_on_opposed_loads() {
     dump("left alone, factors on both loads", &only_plan, &only_f);
 
     assert_eq!(eq_plan.ribs.len(), 8, "equal loads");
-    assert_eq!(heavy_plan.ribs.len(), 7, "left ×10");
+    assert_eq!(heavy_plan.ribs.len(), 8, "left ×10, normalised");
     assert_eq!(only_plan.ribs.len(), 7, "left alone");
+    // Equal bare compliances: the weighted plan is the old summed plan.
     for (got, want) in eq_f.iter().zip(SUMMED_EQUAL) {
         close_to(*got, want);
     }
-    for (got, want) in heavy_f.iter().zip(SUMMED_HEAVY) {
+    // ×10 used to be SUMMED_HEAVY (3.469 and 1.002). Normalised, it is the
+    // equal-load plan: both cases move, and the ribs sit in the middle.
+    for (got, want) in heavy_f.iter().zip(SUMMED_EQUAL) {
         close_to(*got, want);
     }
+    assert!(
+        (heavy_f[1] - SUMMED_HEAVY[1]).abs() > 1.0,
+        "case 2 was ignored at {:.6} and is not now",
+        SUMMED_HEAVY[1]
+    );
     for (got, want) in only_f.iter().zip(SUMMED_LEFT_ON_BOTH) {
         close_to(*got, want);
     }
-    // The summed factor is the ratio of the summed compliances.
-    close_to(eq_plan.stiffness_factor, 2.130496019041);
-    close_to(heavy_plan.stiffness_factor, 3.386264618617);
-    // ×10 spends the budget on the left load. The right-hand case does
-    // not move, and the ribs sit on the left, as they do for that load alone.
-    assert!(heavy_f[1] < 1.01, "case 2 is ignored: {}", heavy_f[1]);
+    close_to(eq_plan.stiffness_factor, 2.130495255991);
+    close_to(heavy_plan.stiffness_factor, 2.130495255991);
+    close_to(only_plan.stiffness_factor, 3.459900734848);
+    // The plan's own per-case factors are the re-solve.
+    for (got, want) in eq_plan.case_factors.iter().zip(&eq_f) {
+        close_to(*got, *want);
+    }
+    for (got, want) in heavy_plan.case_factors.iter().zip(&heavy_f) {
+        close_to(*got, *want);
+    }
     assert!(only_f[1] < 1.01, "left-only ribs miss the right load");
-    assert!(mean_x(&heavy_plan) < 50.0, "{}", mean_x(&heavy_plan));
-    assert!((mean_x(&eq_plan) - 80.0).abs() < 2.0, "{}", mean_x(&eq_plan));
+    assert!(heavy_f[1] > 2.0, "normalised ×10 still serves case 2");
+    assert!(
+        (mean_x(&heavy_plan) - 80.0).abs() < 2.0,
+        "{}",
+        mean_x(&heavy_plan)
+    );
+    assert!(
+        (mean_x(&eq_plan) - 80.0).abs() < 2.0,
+        "{}",
+        mean_x(&eq_plan)
+    );
+    assert!(mean_x(&only_plan) < 50.0, "{}", mean_x(&only_plan));
+}
+
+/// A weight on the right-hand load moves the ribs toward it.
+#[test]
+fn a_weight_pulls_ribs_toward_that_load() {
+    let (mut req, nodes) = opposed_request(1.0, true);
+    req.case_weights = vec![1.0, 8.0];
+    let plan = plan_ribs(&req).unwrap();
+    let f = case_factors(&plan, &nodes, &[1.0, 1.0]);
+    dump("weights 1 and 8", &plan, &f);
+    assert!(
+        mean_x(&plan) > 100.0,
+        "ribs should sit right of centre, x {}",
+        mean_x(&plan)
+    );
+    assert!(f[1] > f[0], "the heavier case gains more: {f:?}");
+    assert_eq!(plan.case_factors.len(), 2);
+}
+
+/// Thickening and an even grid brought to the same combined stiffness.
+#[test]
+fn material_at_the_same_combined_stiffness() {
+    let (mut req, nodes) = opposed_request(10.0, true);
+    req.options.baselines = true;
+    let plan = plan_ribs(&req).unwrap();
+    let f = case_factors(&plan, &nodes, &[10.0, 1.0]);
+    let th = plan.thickening.expect("thickening");
+    let grid = plan.grid.expect("grid");
+    eprintln!(
+        "| material | ribs {:.1} mm³ ×{:.4} | thickening {:.1} mm³ ({:.3} mm) | grid {:?} mm³ pitch {:.2} | cases {f:?} |",
+        plan.rib_volume_mm3,
+        plan.stiffness_factor,
+        th.added_volume_mm3,
+        th.added_thickness_mm,
+        grid.volume_mm3,
+        grid.pitch_mm
+    );
+    assert!(f[0] > 2.0 && f[1] > 2.0, "{f:?}");
+    assert!(th.added_volume_mm3 > plan.rib_volume_mm3);
+    let grid_v = grid.volume_mm3.expect("the grid reaches the factor");
+    assert!(grid_v > plan.rib_volume_mm3);
+}
+
+/// Plan time for 1, 2 and 4 cases on the same wall. Printing is the record;
+/// the bound only catches a hang.
+#[test]
+fn plan_seconds_for_one_two_and_four_cases() {
+    let mesh = ShellMesh::rectangle([160.0, 80.0], [24, 12], 2.0);
+    let xs = [32.0, 64.0, 96.0, 128.0];
+    let nodes: Vec<u32> = xs
+        .iter()
+        .map(|&x| mesh.nearest_vertex([x, 40.0, 0.0]))
+        .collect();
+    for n in [1usize, 2, 4] {
+        let mut req = RibPlanRequest::new(mesh.clone(), material(E, NU));
+        req.load_cases = nodes
+            .iter()
+            .take(n)
+            .map(|&node| {
+                vec![ShellLoad::Force {
+                    node,
+                    force: [0.0, 0.0, -1.0],
+                }]
+            })
+            .collect();
+        req.goal = Goal::Budget { volume_mm3: 1800.0 };
+        req.rules.min_spacing = 18.0;
+        req.rules.min_length = 12.0;
+        req.options.baselines = false;
+        let plan = plan_ribs(&req).unwrap();
+        eprintln!(
+            "| {n} cases | {:.3} s | ribs {} | ×{:.3} | factors {:?} |",
+            plan.stats.seconds.total,
+            plan.ribs.len(),
+            plan.stiffness_factor,
+            plan.case_factors
+        );
+        assert!(
+            plan.stats.seconds.total < 30.0,
+            "{}",
+            plan.stats.seconds.total
+        );
+        assert_eq!(plan.case_factors.len(), n);
+        assert!(
+            plan.case_factors.iter().all(|f| *f > 1.2),
+            "{:?}",
+            plan.case_factors
+        );
+    }
 }
