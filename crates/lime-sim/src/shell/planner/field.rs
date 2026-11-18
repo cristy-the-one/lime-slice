@@ -8,7 +8,9 @@
 //! triangle's frame (θ from the frame's `e1`): the four directions θ + kπ/2
 //! are one value. Neighbours compare after carrying `z` across the shared
 //! edge (the angle between the two frames' `e1`, measured in the receiving
-//! plane).
+//! plane; across a crease the other `e1` is unfolded about the edge first,
+//! and a vertex where faces meet at more than 20° keeps one face's frame
+//! instead of the area-weighted bisector).
 //!
 //! **Smoothing** (Li et al. 2017, §4: a blend of smoothness and alignment
 //! with α = 0.8). Minimise
@@ -26,6 +28,8 @@
 //! triangle is low-confidence when its coherence is under
 //! [`MIN_COHERENCE`] or its energy density is under [`LOW_ENERGY`] of the
 //! 90th percentile.
+
+use std::collections::{HashMap, VecDeque};
 
 use crate::shell::ShellResult;
 use crate::units::{cross, dot, normalize, scale, sub};
@@ -194,12 +198,14 @@ impl Field {
         sorted.sort_by(f64::total_cmp);
         let density_p90 = sorted[((nt - 1) as f64 * 0.9) as usize];
 
-        // Dual graph with the frame rotations.
+        // Dual graph with the frame rotations. Every triangle on an edge
+        // is a neighbour, so a T-junction's third face joins the smooth;
+        // a two-triangle edge still contributes the one `neighbour` did.
         let mut nbrs: Vec<Vec<(u32, C)>> = vec![Vec::new(); nt];
         for t in 0..nt as u32 {
             for k in 0..3 {
-                if let Some(o) = surface.neighbour(t, k) {
-                    let delta = frames[t as usize].offset_from(&frames[o as usize]);
+                for o in surface.neighbours(t, k) {
+                    let delta = carried_offset(surface, &frames, t, o, k);
                     nbrs[t as usize].push((o, C::polar(1.0, 4.0 * delta)));
                 }
             }
@@ -226,7 +232,19 @@ impl Field {
             .collect();
 
         // Vertex frames and the field carried to them, area-weighted.
+        // A vertex whose incident faces stay within 20° keeps the
+        // area-weighted normal, the same construction as before. A crease
+        // vertex takes the first incident face as its frame and carries
+        // the other faces across by unfolding about the edges, so the
+        // value stored at the vertex is not the bisector's.
         let nv = surface.pos.len();
+        let sharp = crease_vertices(surface, &frames);
+        let mut fans: Vec<Option<HashMap<u32, (f64, f64)>>> = vec![None; nv];
+        for v in 0..nv {
+            if sharp[v] {
+                fans[v] = Some(fan_angles(surface, &frames, v as u32));
+            }
+        }
         let mut vnormal = vec![[0.0; 3]; nv];
         for t in 0..nt {
             for &v in &surface.tris[t] {
@@ -236,25 +254,49 @@ impl Field {
         }
         let vframes: Vec<TFrame> = (0..nv)
             .map(|v| {
-                let n = normalize(vnormal[v]).unwrap_or([0.0, 0.0, 1.0]);
-                let hint = surface.vert_tris[v]
-                    .first()
-                    .map_or([1.0, 0.0, 0.0], |&t| frames[t as usize].e1);
-                TFrame::from(hint, n)
+                if sharp[v] {
+                    let t = surface.vert_tris[v][0];
+                    frames[t as usize]
+                } else {
+                    let n = normalize(vnormal[v]).unwrap_or([0.0, 0.0, 1.0]);
+                    let hint = surface.vert_tris[v]
+                        .first()
+                        .map_or([1.0, 0.0, 0.0], |&t| frames[t as usize].e1);
+                    TFrame::from(hint, n)
+                }
             })
             .collect();
         let mut vertex_z = vec![C::default(); nv];
         for t in 0..nt {
             for &v in &surface.tris[t] {
-                let vf = &vframes[v as usize];
-                let rot = C::polar(1.0, 4.0 * vf.offset_from(&frames[t]));
+                let rot = if sharp[v as usize] {
+                    let delta = fans[v as usize]
+                        .as_ref()
+                        .and_then(|f| f.get(&(t as u32)))
+                        .map(|p| p.0)
+                        .unwrap_or_else(|| vframes[v as usize].offset_from(&frames[t]));
+                    C::polar(1.0, 4.0 * delta)
+                } else {
+                    let vf = &vframes[v as usize];
+                    C::polar(1.0, 4.0 * vf.offset_from(&frames[t]))
+                };
                 vertex_z[v as usize] = vertex_z[v as usize].add(z[t].mul(rot).scale(area[t]));
             }
         }
         let corner_rot: Vec<[C; 3]> = (0..nt)
             .map(|t| {
-                surface.tris[t]
-                    .map(|v| C::polar(1.0, 4.0 * frames[t].offset_from(&vframes[v as usize])))
+                surface.tris[t].map(|v| {
+                    let delta = if sharp[v as usize] {
+                        fans[v as usize]
+                            .as_ref()
+                            .and_then(|f| f.get(&(t as u32)))
+                            .map(|p| p.1)
+                            .unwrap_or_else(|| frames[t].offset_from(&vframes[v as usize]))
+                    } else {
+                        frames[t].offset_from(&vframes[v as usize])
+                    };
+                    C::polar(1.0, 4.0 * delta)
+                })
             })
             .collect();
         Self {
@@ -299,6 +341,95 @@ impl Field {
         }
         Some(best.1)
     }
+}
+
+/// The angle of `frames[o].e1` in `frames[t]`. Flatter than 20° this is
+/// the projection [`TFrame::offset_from`] used before. Across a crease the
+/// other `e1` is unfolded about the shared edge first, so a direction
+/// square to the fold is not dropped.
+fn carried_offset(surface: &Surface, frames: &[TFrame], t: u32, o: u32, k: usize) -> f64 {
+    let here = &frames[t as usize];
+    let there = &frames[o as usize];
+    if dot(here.n, there.n) >= super::surface::CREASE_COS {
+        return here.offset_from(there);
+    }
+    let tri = surface.tris[t as usize];
+    let Some(edge) = normalize(sub(
+        surface.pos[tri[(k + 1) % 3] as usize],
+        surface.pos[tri[k] as usize],
+    )) else {
+        return here.offset_from(there);
+    };
+    let carried = super::surface::unfold_about(there.e1, edge, there.n, here.n);
+    here.angle(carried)
+}
+
+/// Vertices on an edge whose two faces turn more than 20°.
+fn crease_vertices(surface: &Surface, frames: &[TFrame]) -> Vec<bool> {
+    let mut sharp = vec![false; surface.pos.len()];
+    for t in 0..surface.tris.len() as u32 {
+        for k in 0..3 {
+            for o in surface.neighbours(t, k) {
+                if dot(frames[t as usize].n, frames[o as usize].n) < super::surface::CREASE_COS {
+                    let tri = surface.tris[t as usize];
+                    sharp[tri[k] as usize] = true;
+                    sharp[tri[(k + 1) % 3] as usize] = true;
+                }
+            }
+        }
+    }
+    sharp
+}
+
+/// For every triangle around vertex `v`, the angle of its `e1` unfolded
+/// into the reference face (`vert_tris[v][0]`), and the angle of the
+/// reference `e1` unfolded back. The link is walked breadth-first in
+/// triangle-index order, so a corner where the unfold does not close
+/// still picks one path and picks it the same way every time.
+fn fan_angles(surface: &Surface, frames: &[TFrame], v: u32) -> HashMap<u32, (f64, f64)> {
+    let reference = surface.vert_tris[v as usize][0];
+    let mut rot: HashMap<u32, [[f64; 3]; 3]> = HashMap::new();
+    rot.insert(
+        reference,
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    );
+    let mut queue = VecDeque::new();
+    queue.push_back(reference);
+    while let Some(t) = queue.pop_front() {
+        let rt = rot[&t];
+        let tri = surface.tris[t as usize];
+        for k in 0..3 {
+            if tri[k] != v && tri[(k + 1) % 3] != v {
+                continue;
+            }
+            let Some(edge) = normalize(sub(
+                surface.pos[tri[(k + 1) % 3] as usize],
+                surface.pos[tri[k] as usize],
+            )) else {
+                continue;
+            };
+            let mut others = surface.neighbours(t, k);
+            others.sort_unstable();
+            for o in others {
+                if rot.contains_key(&o) || !surface.tris[o as usize].contains(&v) {
+                    continue;
+                }
+                let step =
+                    super::surface::unfold_matrix(edge, frames[o as usize].n, frames[t as usize].n);
+                rot.insert(o, super::surface::mat_mul(rt, step));
+                queue.push_back(o);
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    let ref_frame = &frames[reference as usize];
+    for (&o, r) in &rot {
+        let into_ref = ref_frame.angle(super::surface::apply(*r, frames[o as usize].e1));
+        let back = super::surface::apply(super::surface::transpose(*r), ref_frame.e1);
+        let into_o = frames[o as usize].angle(back);
+        out.insert(o, (into_ref, into_o));
+    }
+    out
 }
 
 /// Gauss–Seidel on `(1 − α)(zᵢ − dᵢ) + α Σⱼ (zᵢ − Rᵢⱼ zⱼ) = 0`.

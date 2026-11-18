@@ -172,8 +172,105 @@ fn angle(a: [f64; 3], b: [f64; 3]) -> f64 {
     dot(a, b).clamp(-1.0, 1.0).acos()
 }
 
+/// A continuation that turns more than this folds back onto the face it
+/// came from and stops. A right-angle fold is well under it, so a crease
+/// is crossed; only a reversal is refused.
+const FOLD_BACK: f64 = 150.0 * std::f64::consts::PI / 180.0;
+
+/// `d` as it continues from a face of normal `n_from` onto `n_to`.
+/// Flatter than [`super::surface::CREASE_COS`] this is [`project`], so a
+/// flat trace is unchanged. A crease rotates `d` about `edge` into the
+/// next plane; the projection afterwards only removes the drift.
+fn carry_heading(
+    d: [f64; 3],
+    n_from: [f64; 3],
+    n_to: [f64; 3],
+    edge: Option<[f64; 3]>,
+) -> Option<[f64; 3]> {
+    if dot(n_from, n_to) >= super::surface::CREASE_COS {
+        return project(d, n_to);
+    }
+    let Some(edge) = edge else {
+        return project(d, n_to);
+    };
+    let rotated = super::surface::unfold_about(d, edge, n_from, n_to);
+    project(rotated, n_to).or_else(|| project(d, n_to))
+}
+
+fn edge_unit(s: &Surface, t: u32, k: usize) -> Option<[f64; 3]> {
+    let tri = s.tris[t as usize];
+    normalize(sub(
+        s.pos[tri[(k + 1) % 3] as usize],
+        s.pos[tri[k] as usize],
+    ))
+}
+
+/// A unit direction along an edge `a` and `b` share, if they share one.
+fn shared_edge(s: &Surface, a: u32, b: u32) -> Option<[f64; 3]> {
+    let ta = s.tris[a as usize];
+    let tb = s.tris[b as usize];
+    for i in 0..3 {
+        let (u, v) = (ta[i], ta[(i + 1) % 3]);
+        if tb.contains(&u) && tb.contains(&v) {
+            return normalize(sub(s.pos[v as usize], s.pos[u as usize]));
+        }
+    }
+    None
+}
+
+/// Does a short step from `q` along `heading` land inside triangle `t`?
+fn enters(s: &Surface, t: u32, q: [f64; 3], heading: [f64; 3]) -> bool {
+    let [a, b, c] = s.corners(t);
+    let span = norm(sub(b, a)).max(norm(sub(c, a))).max(norm(sub(c, b)));
+    let (l, _) = s.barycentric(t, add(q, scale(heading, 1e-4 * span)));
+    l.iter().all(|&x| x >= -1e-6)
+}
+
+/// Which face to take when three or more triangles share the edge.
+///
+/// The two-triangle case never comes here: it is [`Surface::neighbour`],
+/// the same triangle as before. Each other face is unfolded about the
+/// edge and kept only when the heading enters it and the turn is at most
+/// [`FOLD_BACK`]. The smallest turn wins. A coplanar continuation turns
+/// about nothing and beats a wall standing on the edge, so a trace
+/// crossing a T-junction in the floor stays in the floor. A trace that
+/// comes down the wall onto two coplanar faces takes the one it enters.
+/// Nothing enters, or every continuation folds back, and the trace stops.
+fn continue_across(
+    s: &Surface,
+    t: u32,
+    k: usize,
+    q: [f64; 3],
+    d: [f64; 3],
+    others: &[u32],
+) -> Option<u32> {
+    let n_from = s.normal(t);
+    let edge = edge_unit(s, t, k)?;
+    let mut best: Option<(f64, u32)> = None;
+    for &o in others {
+        let Some(heading) = carry_heading(d, n_from, s.normal(o), Some(edge)) else {
+            continue;
+        };
+        let turn = angle(d, heading);
+        if turn > FOLD_BACK || !enters(s, o, q, heading) {
+            continue;
+        }
+        if best.is_none_or(|(so_far, _)| turn < so_far) {
+            best = Some((turn, o));
+        }
+    }
+    best.map(|(_, o)| o)
+}
+
 /// The triangle after leaving `t` at `q` through local edge `k` (or corner
 /// `corner`), heading `d`.
+///
+/// Two triangles on the edge: [`Surface::neighbour`], unchanged. Three or
+/// more (a T-junction, the wall welded onto an edge the floor already
+/// shares): [`continue_across`] picks the smallest turn that the unfolded
+/// heading enters, and stops on a fold-back. A corner on a flat wall uses
+/// the same sector test as before; a corner on a crease unfolds the
+/// heading into each face first.
 fn next_triangle(
     s: &Surface,
     t: u32,
@@ -183,24 +280,62 @@ fn next_triangle(
     d: [f64; 3],
 ) -> Option<u32> {
     match corner {
-        None => s.neighbour(t, k),
+        None => {
+            let others = s.neighbours(t, k);
+            if others.len() <= 1 {
+                // The same triangle `neighbour` has always returned.
+                s.neighbour(t, k)
+            } else {
+                continue_across(s, t, k, q, d, &others)
+            }
+        }
         Some(c) => {
             // Through a vertex: the other triangle around it whose sector
             // holds the heading.
             let v = s.tris[t as usize][c];
-            let target = add(q, d);
-            let mut best: Option<(f64, u32)> = None;
-            for &o in &s.vert_tris[v as usize] {
-                if o == t {
-                    continue;
+            let n_from = s.normal(t);
+            let folded = s.vert_tris[v as usize]
+                .iter()
+                .any(|&o| o != t && dot(n_from, s.normal(o)) < super::surface::CREASE_COS);
+            if !folded {
+                let target = add(q, d);
+                let mut best: Option<(f64, u32)> = None;
+                for &o in &s.vert_tris[v as usize] {
+                    if o == t {
+                        continue;
+                    }
+                    let (l, _) = s.barycentric(o, add(q, scale(sub(target, q), 1e-3)));
+                    let m = l[0].min(l[1]).min(l[2]);
+                    if best.is_none_or(|b| m > b.0) {
+                        best = Some((m, o));
+                    }
                 }
-                let (l, _) = s.barycentric(o, add(q, scale(sub(target, q), 1e-3)));
-                let m = l[0].min(l[1]).min(l[2]);
-                if best.is_none_or(|b| m > b.0) {
-                    best = Some((m, o));
+                best.filter(|b| b.0 > -1e-6).map(|b| b.1)
+            } else {
+                let mut best: Option<(f64, u32)> = None;
+                for &o in &s.vert_tris[v as usize] {
+                    if o == t {
+                        continue;
+                    }
+                    let heading = if dot(n_from, s.normal(o)) >= super::surface::CREASE_COS {
+                        d
+                    } else {
+                        match carry_heading(d, n_from, s.normal(o), shared_edge(s, t, o)) {
+                            Some(h) => h,
+                            None => continue,
+                        }
+                    };
+                    let (l, _) = s.barycentric(o, add(q, scale(heading, 1e-3)));
+                    let m = l[0].min(l[1]).min(l[2]);
+                    if m <= -1e-6 {
+                        continue;
+                    }
+                    if best.is_none_or(|b| m > b.0) {
+                        best = Some((m, o));
+                    }
                 }
+                best.map(|b| b.1)
             }
-            best.filter(|b| b.0 > -1e-6).map(|b| b.1)
         }
     }
 }
@@ -298,7 +433,8 @@ impl Tracer<'_> {
             if self.blocked[next as usize] {
                 break TraceEnd::KeepOut;
             }
-            let Some(hn) = project(dir, s.normal(next)) else {
+            let Some(hn) = carry_heading(dir, s.normal(t), s.normal(next), shared_edge(s, t, next))
+            else {
                 break TraceEnd::Turn;
             };
             h = hn;
@@ -401,9 +537,7 @@ impl Tracer<'_> {
         let mut start = None;
         let mut cands = vec![t];
         for k in 0..3 {
-            if let Some(o) = s.neighbour(t, k) {
-                cands.push(o);
-            }
+            cands.extend(s.neighbours(t, k));
         }
         for c in cands {
             let (l, _) = s.barycentric(c, p);
@@ -441,7 +575,8 @@ impl Tracer<'_> {
                 keep_out = true;
                 break;
             }
-            let Some(hn) = project(h, s.normal(next)) else {
+            let Some(hn) = carry_heading(h, s.normal(t), s.normal(next), shared_edge(s, t, next))
+            else {
                 break;
             };
             h = hn;
@@ -492,3 +627,7 @@ pub(crate) fn simplify(points: &[[f64; 3]], tol: f64) -> Vec<[f64; 3]> {
         .map(|(p, _)| *p)
         .collect()
 }
+
+#[cfg(test)]
+#[path = "fold_tests.rs"]
+mod fold_tests;

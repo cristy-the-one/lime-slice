@@ -1,6 +1,7 @@
 //! The shell model: mesh, holds and ribs in; displacements, energies and
 //! principal directions out.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use faer::sparse::linalg::cholesky::SymbolicCholesky;
@@ -251,6 +252,12 @@ const BENDING: [usize; 3] = [2, 3, 4];
 /// How many elements are built in parallel before they are scattered.
 const CHUNK: usize = 4096;
 
+/// Cosine of 20°, the same crease the planner unfolds across. Flatter
+/// than this, a rib keeps the area-weighted vertex normal, so a flat wall
+/// is unchanged. A fold uses the rib's own face, or the miter of the
+/// faces the rib itself stands on.
+const CREASE_COS: f64 = 0.939_692_620_785_908_4;
+
 /// The ribs' web rotations ψ. Ids run from 0 over all ribs; in the model's
 /// dof id space ψ `k` is `6 n + k` after the vertices' `6 n`.
 #[derive(Clone, Debug, Default)]
@@ -275,8 +282,11 @@ struct RibLayout {
 /// and the ribs' web rotations after them, so the shell's columns of the
 /// matrix never move: its values are reused as they are, and a rib change
 /// appends columns, re-runs the ordering (AMD) and the numeric
-/// factorisation. The timing test gives both costs. A rank-k update of the
-/// factor for a rib of k edges would be cheaper and is left for later.
+/// factorisation. The timing test gives both costs. A rank-k update of
+/// that factor (Sherman–Morrison–Woodbury on the rib's own dofs) was
+/// measured and lost: the condensed block is full rank, and one solve
+/// per rib dof costs more than refactoring except for ribs shorter than
+/// any candidate (see the note in `select`, and handover §3).
 ///
 /// **Web rotations.** Each rib has one extra dof per vertex it runs
 /// through, ψ (see [`super::beam`]). It is held when the vertex's three
@@ -289,6 +299,10 @@ pub struct ShellModel {
     tris: Vec<Tri>,
     element_thickness: Vec<f64>,
     normals: Vec<[f64; 3]>,
+    /// True on a vertex of an edge whose faces turn more than 20°.
+    on_crease: Vec<bool>,
+    /// Triangles on each undirected edge, in triangle-index order.
+    edge_faces: HashMap<(u32, u32), Vec<u32>>,
     neighbours: Vec<Vec<u32>>,
     dof: Vec<usize>,
     prescribed: Vec<f64>,
@@ -309,6 +323,40 @@ pub struct ShellModel {
     timings: Timings,
     /// Threads for the factor and the solve; 0 is the crate default.
     threads: usize,
+}
+
+/// Triangles on one undirected edge, in triangle-index order.
+type EdgeFaces = HashMap<(u32, u32), Vec<u32>>;
+
+/// Crease vertices, and the triangles on each undirected edge. A vertex
+/// is a crease when two triangles on one of its edges turn more than 20°.
+fn crease_map(mesh: &ShellMesh, tris: &[Tri]) -> (Vec<bool>, EdgeFaces) {
+    let mut edge_faces: EdgeFaces = HashMap::new();
+    for (e, t) in mesh.triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_faces.entry(key).or_default().push(e as u32);
+        }
+    }
+    let mut on_crease = vec![false; mesh.vertices.len()];
+    for (&(a, b), faces) in &edge_faces {
+        let mut sharp = false;
+        for i in 0..faces.len() {
+            for j in (i + 1)..faces.len() {
+                let ni = tris[faces[i] as usize].frame.normal;
+                let nj = tris[faces[j] as usize].frame.normal;
+                if dot(ni, nj) < CREASE_COS {
+                    sharp = true;
+                }
+            }
+        }
+        if sharp {
+            on_crease[a as usize] = true;
+            on_crease[b as usize] = true;
+        }
+    }
+    (on_crease, edge_faces)
 }
 
 impl ShellModel {
@@ -369,6 +417,7 @@ impl ShellModel {
                     .ok_or_else(|| SimError::new(format!("Vertex {i} is on no triangle.")))?,
             );
         }
+        let (on_crease, edge_faces) = crease_map(&mesh, &tris);
         pairs.sort_unstable();
         pairs.dedup();
         let mut neighbours: Vec<Vec<u32>> = vec![Vec::new(); n];
@@ -426,6 +475,8 @@ impl ShellModel {
             tris,
             element_thickness,
             normals: normal_unit,
+            on_crease,
+            edge_faces,
             neighbours,
             dof,
             prescribed,
@@ -598,6 +649,9 @@ impl ShellModel {
     fn layout_of(&self, ribs: &[Rib], first_free: usize) -> RibLayout {
         let mut layout = RibLayout::default();
         let mut tangent: Vec<[f64; 3]> = Vec::new();
+        // Face normals of the rib edges at each crease vertex. A vertex
+        // that is not a crease never reads this and keeps `self.normals`.
+        let mut face_sum: Vec<[f64; 3]> = Vec::new();
         let mut free = first_free;
         for rib in ribs {
             let mut at: Vec<(u32, usize)> = Vec::new();
@@ -617,6 +671,7 @@ impl ShellModel {
                             at.push((v, id));
                             layout.vertex.push(v);
                             tangent.push([0.0; 3]);
+                            face_sum.push([0.0; 3]);
                             id
                         }
                     };
@@ -631,12 +686,25 @@ impl ShellModel {
                     tangent[id] = add(t, d);
                     ids[slot] = id;
                 }
+                if self.on_crease[a as usize] || self.on_crease[b as usize] {
+                    let nf = self.rib_face_normal(a, b);
+                    if self.on_crease[a as usize] {
+                        face_sum[ids[0]] = add(face_sum[ids[0]], nf);
+                    }
+                    if self.on_crease[b as usize] {
+                        face_sum[ids[1]] = add(face_sum[ids[1]], nf);
+                    }
+                }
                 edges.push((ids[0], ids[1]));
             }
             layout.edges.push(edges);
         }
         for (k, &v) in layout.vertex.iter().enumerate() {
-            let n = self.normals[v as usize];
+            let n = if self.on_crease[v as usize] {
+                normalize(face_sum[k]).unwrap_or(self.normals[v as usize])
+            } else {
+                self.normals[v as usize]
+            };
             let lateral = normalize(cross(n, tangent[k]))
                 .or_else(|| normalize(cross(n, [1.0, 0.0, 0.0])))
                 .or_else(|| normalize(cross(n, [0.0, 1.0, 0.0])))
@@ -986,6 +1054,32 @@ impl ShellModel {
         Ok(energy)
     }
 
+    /// The normal of the face the directed edge `a` → `b` belongs to.
+    /// The triangle of lowest index that lists the edge in that order
+    /// wins; if none does, the lowest that lists it reversed. Both ends
+    /// of a rib element call this once, so they stand on the same face.
+    fn rib_face_normal(&self, a: u32, b: u32) -> [f64; 3] {
+        let key = if a < b { (a, b) } else { (b, a) };
+        let Some(faces) = self.edge_faces.get(&key) else {
+            return self.normals[a as usize];
+        };
+        let mut forward = None;
+        let mut reverse = None;
+        for &e in faces {
+            let t = self.mesh.triangles[e as usize];
+            let goes = (0..3).any(|k| t[k] == a && t[(k + 1) % 3] == b);
+            if goes && forward.is_none() {
+                forward = Some(e);
+            } else if !goes && reverse.is_none() {
+                reverse = Some(e);
+            }
+        }
+        match forward.or(reverse) {
+            Some(e) => self.tris[e as usize].frame.normal,
+            None => self.normals[a as usize],
+        }
+    }
+
     /// Rib `rib`'s edge `e` under `layout`, where it is rib `r`.
     fn rib_element_in(
         &self,
@@ -1008,8 +1102,24 @@ impl ShellModel {
             .section
             .properties(rib.height)
             .expect("a checked rib section");
+        // Both ends of one element stand on the same face: the triangle
+        // that contains the edge in the stored a → b order. A vertex in
+        // the middle of one face is not a crease and keeps its averaged
+        // normal, so a flat wall is unchanged. At a crease the foot is
+        // that face's normal; the web axis (set in `layout_of`) is the
+        // miter of the rib's own faces.
+        let on_edge = self.on_crease[a] || self.on_crease[b];
+        let face = if on_edge {
+            self.rib_face_normal(a as u32, b as u32)
+        } else {
+            [0.0; 3]
+        };
         let end = |v: usize, psi: usize| {
-            let n = self.normals[v];
+            let n = if self.on_crease[v] {
+                face
+            } else {
+                self.normals[v]
+            };
             RibEnd {
                 foot: scale(n, sign * 0.5 * self.mesh.thickness[v]),
                 up_web: scale(n, sign * props.centroid),
@@ -1023,15 +1133,19 @@ impl ShellModel {
             g: shear,
             props,
         };
+        let na = if self.on_crease[a] {
+            face
+        } else {
+            self.normals[a]
+        };
+        let nb = if self.on_crease[b] {
+            face
+        } else {
+            self.normals[b]
+        };
         // A mesh edge lies in the surface, so the mean normal is never along it.
-        let k = beam::rib_stiffness(
-            xa,
-            xb,
-            add(self.normals[a], self.normals[b]),
-            [end(a, pa), end(b, pb)],
-            &section,
-        )
-        .expect("a mesh edge is never along the surface normal");
+        let k = beam::rib_stiffness(xa, xb, add(na, nb), [end(a, pa), end(b, pb)], &section)
+            .expect("a mesh edge is never along the surface normal");
         (g, k)
     }
 
