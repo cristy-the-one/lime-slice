@@ -10,7 +10,7 @@
  */
 import type { StudyHold, StudyLoad } from "./sim/study.ts";
 import type { NotOnWall, WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
-import { FREE_END_LINE, hasFreeEnds, peakFactorOf, slicedVerdict, WALL_ALONE, type RibProcess } from "./modeling/auto-ribs.ts";
+import { FREE_END_LINE, hasFreeEnds, peakFactorOf, RIGID_BORDERS_LINE, slicedVerdict, taperedEndsText, WALL_ALONE, type RibProcess } from "./modeling/auto-ribs.ts";
 import type { PlanGoal, PlanProgress, PlannedRib, RibPlanResult, V3 } from "./auto-ribs-plan.ts";
 
 export const AUTO_RIBS_TITLE = "Auto ribs";
@@ -363,6 +363,11 @@ export function stressCheckLines(reply: { before: StressCheckSide; after: Stress
   return lines;
 }
 
+/** The border line when the plan's gain mostly goes with the wall's borders free to turn, else "". */
+export function bordersLine(plan: RibPlanResult): string {
+  return plan.ribs.length && plan.needsRigidBorders ? RIGID_BORDERS_LINE : "";
+}
+
 /** The safety line when a planned rib ends free in mid-wall, else "". */
 export function freeEndsLine(ribs: readonly PlannedRib[]): string {
   return hasFreeEnds(ribs) ? FREE_END_LINE : "";
@@ -390,7 +395,7 @@ export function resultNumbers(run: RunState, densityGCm3: number, partMm3: numbe
   // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
   const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
   // The headline is the worst point; a plan without both deflections falls back to the overall figure.
-  const peak = peakFactorOf(plan.bare, plan.ribbed);
+  const peak = plan.peakFactor ?? peakFactorOf(plan.bare, plan.ribbed);
   const head = peak === null ? gainText(plan.stiffnessFactor).replace(/^./, (c) => c.toUpperCase()) : peakGainText(peak);
   return { gain: edited ? `${head} before the edit` : head, cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
@@ -415,12 +420,20 @@ export function comparisonLines(plan: RibPlanResult, densityGCm3: number): strin
 
 /** The rib ends the plan leaves loose and why, else "": every other end meets a border, a hold or another rib. */
 export function looseLine(plan: RibPlanResult): string {
-  const loose = plan.looseEnds ?? [];
-  if (loose.length === 0) return "";
-  const zone = loose.filter((row) => row.reason === "noRibZone").length;
-  const budget = loose.length - zone;
-  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : ""].filter(Boolean).join(" and ");
-  return `${loose.length} rib end${loose.length === 1 ? " stops" : "s stop"} short of a wall or another rib: ${why}.`;
+  const all = plan.looseEnds ?? [];
+  if (all.length === 0) return "";
+  // Ends kept in the open wall with a taper are how the ribs are built, said plainly; the others were cut short.
+  const tapered = all.filter((row) => row.reason === "tapered");
+  const loose = all.filter((row) => row.reason !== "tapered");
+  const out: string[] = [];
+  if (tapered.length) out.push(`${taperedEndsText(tapered.map((row) => plan.ribs[row.rib]?.taperMm?.[row.end === 1 ? 1 : 0] ?? null))}.`);
+  if (loose.length) {
+    const zone = loose.filter((row) => row.reason === "noRibZone").length;
+    const budget = loose.length - zone;
+    const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : ""].filter(Boolean).join(" and ");
+    out.push(`${loose.length} rib end${loose.length === 1 ? " stops" : "s stop"} short of a wall or another rib: ${why}.`);
+  }
+  return out.join(" ");
 }
 
 /** The goal's line when it was not met, else "". */

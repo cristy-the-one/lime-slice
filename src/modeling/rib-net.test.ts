@@ -126,6 +126,14 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
   // One loose end tapering over its 5 mm height: 38 mm less half the taper's 5 mm, × 1.2 × 5.
   const loose = plan({ width: 1.2, height: 5, paths: [{ points: [[20, 0, 2], [58, 0, 2]] }] });
   check("volume, a loose end: the taper takes half its length off", ok(loose) && Math.abs(loose.volumeMm3 - (38 - 2.5) * 1.2 * 5) < 0.5, ok(loose) ? String(loose.volumeMm3) : "");
+  // A path's own taper at its free first point (15 mm, 3 × the height) over the network's; its end at the wall ignores
+  // its taper and runs into the wall. The path's ends are reported.
+  const own = plan({ width: 1.2, height: 5, taper: 2, paths: [{ points: [[20, 0, 2], [58, 0, 2]], taperMm: [15, 40] }] });
+  check("a path's own taper at its free end: half of 15 mm off, the wall end runs in", ok(own) && Math.abs(own.volumeMm3 - (38 - 7.5) * 1.2 * 5) < 0.5 && own.ends.tapered === 1 && own.ends.wall === 1 && JSON.stringify(own.pathEnds) === '[["free","wall"]]', ok(own) ? JSON.stringify({ v: own.volumeMm3, ends: own.ends, pathEnds: own.pathEnds }) : own.reason);
+  const fallback = plan({ width: 1.2, height: 5, taper: 2, paths: [{ points: [[20, 0, 2], [58, 0, 2]], taperMm: [null, null] }] });
+  check("null takes the network's taper", ok(fallback) && Math.abs(fallback.volumeMm3 - (38 - 1) * 1.2 * 5) < 0.5, ok(fallback) ? String(fallback.volumeMm3) : "");
+  const bad = plan({ width: 1.2, height: 5, paths: [{ points: [[20, 0, 2], [58, 0, 2]], taperMm: [-1, 0] }] });
+  check("a bad taperMm is refused in a sentence", !ok(bad) && /taperMm is \[start, end\]/.test(bad.reason), JSON.stringify(bad));
   // Two crossing ribs, every end tapered: their lengths less the tapers, less the crossing they share once.
   const crossing = plan({ width: 2, height: 4, paths: [{ points: [[-40, 0, 2], [40, 0, 2]] }, { points: [[0, -30, 2], [0, 30, 2]] }] });
   const want = (80 - 4) * 2 * 4 + (60 - 4) * 2 * 4 - 2 * 2 * 4;

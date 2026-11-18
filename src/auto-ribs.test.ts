@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import {
   applicable,
+  bordersLine,
   cardFromRibNet,
   cardFromStored,
   checkLines,
@@ -173,6 +174,11 @@ eq("a target not met", goalLine({ kind: "stiffer", factor: 3 }, { ...plan, goalM
 eq("a met goal says nothing", goalLine({ kind: "stiffer", factor: 3 }, plan, 1.24), "");
 eq("loose ends said with why", looseLine({ ...plan, looseEnds: [{ rib: 0, end: 1, reason: "noRibZone" }, { rib: 2, end: 0, reason: "noRibZone" }] }), "2 rib ends stop short of a wall or another rib: 2 at a keep-clear zone.");
 eq("no loose end, no line", looseLine({ ...plan, looseEnds: [] }), "");
+const taperedPlan: RibPlanResult = { ...plan, ribs: plan.ribs.map((rib) => ({ ...rib, taperMm: [18, 0] as [number, number] })), looseEnds: [{ rib: 0, end: 0, reason: "tapered" }, { rib: 1, end: 0, reason: "tapered" }, { rib: 1, end: 1, reason: "budget" }] };
+eq("tapered ends said plainly, not as a defect; the others with why", looseLine(taperedPlan), "2 rib ends stop in the open wall, tapered over 18 mm. 1 rib end stops short of a wall or another rib: 1 where the budget runs out.");
+eq("the safety line with tapered ends", freeEndsLine(taperedPlan.ribs), "Ribs can lower the least safety factor at a rib's free end and in its web; longer end tapers help.");
+eq("the border line only when the planner says so", [bordersLine(plan), bordersLine({ ...plan, needsRigidBorders: true })], ["", "These ribs work only if the wall is rigidly built into the walls around it."]);
+eq("the planner's own worst-point figure is the headline when it gives one", resultNumbers({ ...run, removed: [], plan: { ...plan, peakFactor: 1.8 } }, 1.24, 200000)?.gain, "Bends 1.8× less at its worst point");
 eq("gain words", [gainText(1.01), gainText(3.14), gainText(12.6)], ["about as stiff overall", "3.1× as stiff overall", "13× as stiff overall"]);
 eq("cost words", costText(9400 / 1.24, 1.24, 9400 / 1.24 / 0.06), "+9.4 g, +6 %");
 

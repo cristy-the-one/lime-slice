@@ -200,7 +200,7 @@ test("the History row's pencil opens the card on its request; planning again rep
 test("the states it refuses or warns in say so in plain words", async ({ page }) => {
   test.setTimeout(180_000);
   // A plan that beats neither comparison, and a goal that is not met.
-  await openPart(page, { beatsNeither: true });
+  await openPart(page, { beatsNeither: true, needsRigidBorders: true, taperedEnds: true });
   const floor = await findFloor(page);
   await openCard(page);
   await page.mouse.click(floor.x, floor.y);
@@ -212,6 +212,10 @@ test("the states it refuses or warns in say so in plain words", async ({ page })
   await primary(page).click();
   await expect(page.locator("#autoRibsGoal")).toHaveText(/^Reached \d+(\.\d)?× of the 50× asked/, { timeout: 20_000 });
   await expect(page.locator("#autoRibsCompare li").last()).toContainText("These ribs are no better");
+  // Ribs whose gain needs clamped borders say so; ends kept in the open wall are said plainly, with the safety line.
+  await expect(page.locator("#autoRibsBorders")).toHaveText("These ribs work only if the wall is rigidly built into the walls around it.");
+  await expect(page.locator("#autoRibsGoal")).toContainText(/\d+ rib ends? stops? in the open wall, tapered over [\d.]+ (to [\d.]+ )?mm\./);
+  await expect(page.locator("#autoRibsFreeEnds")).toHaveText(/longer end tapers help\.$/);
   await shot(page, "7-beats-neither.png");
 });
 

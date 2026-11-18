@@ -35,6 +35,7 @@ import {
   checkLines,
   clickWall,
   comparisonLines,
+  bordersLine,
   editedNote,
   fmt,
   freeEndsLine,
@@ -224,6 +225,7 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
     <section class="ar-result" id="autoRibsResult" aria-label="The plan" hidden>
       <div class="ar-headline"><strong id="autoRibsGain"></strong><span id="autoRibsCost"></span><span class="ar-badge" id="autoRibsStopped" hidden>stopped early</span><span class="ar-badge" id="autoRibsEdited" hidden>edited</span></div>
       <p class="model-note" id="autoRibsOverall" hidden></p>
+      <p class="model-note is-warn" id="autoRibsBorders" hidden></p>
       <p class="model-note" id="autoRibsStoppedLine" hidden>${STOPPED_LINE}</p>
       <p class="model-note is-warn" id="autoRibsFreeEnds" hidden></p>
       <p class="model-note is-warn" id="autoRibsGoal" hidden></p>
@@ -715,7 +717,8 @@ async function applyPlan() {
     host.readout("Every rib was taken out: there is nothing to apply.");
     return;
   }
-  const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections }));
+  // Each free end tapers as the planner solved it (taperMm), else over 3 × the height (ribNetOf).
+  const built: BuiltRib[] = keptFace.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: (rib.sections[0]?.profile ?? "straight"), sections: rib.sections, ...(rib.taperMm ? { taperMm: rib.taperMm } : {}) }));
   const plan = run.plan!;
   const auto = { panel: card, plan: { ribs: kept.length, stiffnessFactor: plan.stiffnessFactor, ribVolumeMm3: plan.ribVolumeMm3, stoppedEarly: plan.stoppedEarly, edited: run.removed.length > 0 } };
   const op = ribNetOf(built, AUTO_RIBS_LABEL, auto);
@@ -938,6 +941,7 @@ function paintResult() {
   set("#autoRibsGain", plan.ribs.length ? numbers?.gain ?? "" : "No ribs");
   set("#autoRibsCost", plan.ribs.length ? numbers?.cost ?? "" : "");
   set("#autoRibsOverall", overallLine(plan, run.removed.length > 0));
+  set("#autoRibsBorders", bordersLine(plan));
   set("#autoRibsFreeEnds", freeEndsLine(keptRibs(run)));
   const stopped = $<HTMLElement>("#autoRibsStopped");
   if (stopped) stopped.hidden = !plan.stoppedEarly;

@@ -114,7 +114,10 @@ function addedAsPlanned(title: string, done: Reply, applied: Reply) {
   const planner = Number(done.adds?.plannerMm3);
   const measured = Number(applied.added?.mm3);
   const off = (x: number) => `${x >= measured ? "+" : ""}${Math.round((1000 * (x - measured)) / measured) / 10} %`;
-  volumeRows.push(`${title}: measured ${r3(measured)} mm³; estimate ${estimate} (${off(estimate)}); the planner's own ${planner} (${off(planner)})`);
+  const differ = (done.plan?.endsDiffer as Reply[] | undefined) ?? [];
+  const tapered = ((done.plan?.ribs as Reply[] | undefined) ?? []).flatMap((rib) => (rib.taperMm as number[] | undefined) ?? []).filter((mm) => mm > 0).length;
+  volumeRows.push(`${title}: measured ${r3(measured)} mm³; estimate ${estimate} (${off(estimate)}); the planner's own ${planner} (${off(planner)}); planner tapered ${tapered} ends, ribNet ${applied.ribNet?.ends?.tapered ?? "?"}; ends read differently: ${differ.length ? JSON.stringify(differ) : "none"}`);
+  check(`${title}: every end the planner and ribNet read differently is listed in plan.endsDiffer`, Array.isArray(done.plan?.endsDiffer), JSON.stringify(done.plan?.endsDiffer));
   check(`${title}: the plan's added volume is the built one within 5 % (estimate ${estimate}, measured ${r3(measured)} mm³)`, measured > 0 && Math.abs(estimate - measured) <= 0.05 * measured, JSON.stringify({ adds: done.adds, added: applied.added, paths: applied.paths, ribNet: applied.ribNet, leftOut: applied.leftOut, leftOutNote: applied.leftOutNote, skipped: applied.skipped, ribs: (done.plan?.ribs as Reply[] | undefined)?.map((rib) => ({ points: rib.points, heights: rib.heights, ends: rib.ends, trimmedMm: rib.trimmedMm })) }));
 }
 async function historyCount(object: string): Promise<number> {
@@ -385,8 +388,10 @@ let boxObject = "";
 {
   const object = await shellBox(BX, BY, BZ);
   const zone = { min: [-0.3 * BX, -BY, 0] as V3, max: [0.3 * BX, BY, 40] as V3 };
-  const done = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, zones: [{ region: { box: zone }, mode: "maxHeight", maxHeightMm: 4.5 }] })).job));
+  const done = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } }, zones: [{ region: { box: zone }, mode: "maxHeight", maxHeightMm: 4.5 }], rib: { taperMm: 8 } })).job));
   check("a plan under a 4.5 mm cap", done.ok === true && done.plan.ribs.length > 0, JSON.stringify(done).slice(0, 400));
+  // A typed taper goes to the planner (its figures are of 8 mm tapers) and ribs_apply builds it.
+  check("a typed taper is the planner's: endTaper length 8, every rib end 0 (anchored) or 8", done.plan.endTaper?.kind === "length" && done.plan.endTaper.mm === 8 && (done.plan.ribs as Reply[]).every((rib) => (rib.taperMm as number[]).every((mm) => mm === 0 || Math.abs(mm - 8) < 1e-6)), JSON.stringify({ endTaper: done.plan.endTaper, tapers: (done.plan.ribs as Reply[]).map((rib) => rib.taperMm) }));
   const sections = (done.plan.ribs as Reply[]).flatMap((rib) => (rib.sections as Reply[]).map((s, k) => ({ s, h: rib.heights[k] as number })));
   const tees = sections.filter((row) => row.s.profile === "tee");
   check(`auto puts tees only where the cap holds a rib under the greatest height: ${tees.length} of ${sections.length} stretches`, tees.length > 0 && tees.every((row) => row.h < 6 - 1e-6) && sections.filter((row) => row.h >= 6 - 1e-6).every((row) => row.s.profile === "straight"), JSON.stringify(done.plan.profile));
@@ -453,8 +458,11 @@ let boxObject = "";
   const plan = await waitJob(String((await call("ribs_plan", { object, wall: { face: { normal: [0, 0, 1], nearPoint: [0, 0, 2] } } })).job));
   // The headline is the worst point; the strain-energy figure is labelled for what it is.
   const peak = plan.plan?.bare?.maxDeflectionMm / plan.plan?.ribbed?.maxDeflectionMm;
-  check("the plan's worst-point figure is bare peak over ribbed peak", plan.plan?.peakFactor > 1 && Math.abs(plan.plan.peakFactor - peak) < 1e-3 && typeof plan.plan.stiffnessFactor === "number" && typeof plan.plan.figures?.peakFactor === "string", JSON.stringify({ peakFactor: plan.plan?.peakFactor, peak, stiffnessFactor: plan.plan?.stiffnessFactor }));
+  check("the planner's worst-point figure agrees with bare peak over ribbed peak", plan.plan?.peakFactor > 1 && Math.abs(plan.plan.peakFactor - peak) < 1e-3 && typeof plan.plan.stiffnessFactor === "number" && typeof plan.plan.figures?.peakFactor === "string", JSON.stringify({ peakFactor: plan.plan?.peakFactor, peak, stiffnessFactor: plan.plan?.stiffnessFactor }));
   check("the plan sentence leads with the worst point, then the overall figure labelled", /^\d+ ribs?: bends [\d.]+× less at its worst point; [\d.]+× as stiff overall \(this wall alone, held at its edges\)\. Shell model, relative\./.test(String(plan.sentence)), String(plan.sentence));
+  check("the planner's pinned-border solve is carried, and the border line is said exactly when it needs rigid borders", plan.plan?.pinned && typeof plan.plan.pinned.complianceFactor === "number" && typeof plan.plan.needsRigidBorders === "boolean" && plan.plan.needsRigidBorders === /rigidly built into the walls around it/.test(String(plan.sentence)), JSON.stringify({ pinned: plan.plan?.pinned, needsRigidBorders: plan.plan?.needsRigidBorders }));
+  check("the default taper is 3 × the height, echoed", plan.plan?.endTaper?.kind === "timesHeight" && plan.plan.endTaper.factor === 3, JSON.stringify(plan.plan?.endTaper));
+  report.push(`pinned borders: ${JSON.stringify(plan.plan?.pinned)}, pinnedGain ${plan.plan?.pinnedGain}, needsRigidBorders ${plan.plan?.needsRigidBorders}`);
   check("free rib ends carry the safety line, and only then", plan.plan?.freeEnds === /longer end tapers help/.test(String(plan.sentence)), JSON.stringify({ freeEnds: plan.plan?.freeEnds, sentence: plan.sentence }));
   const border = plan.wall?.borderFaces;
   check("the opening's sides are free border, the inner walls held", JSON.stringify([...(border?.free ?? [])].sort((a: number, b: number) => a - b)) === JSON.stringify([...opening].sort((a, b) => a - b)) && border.held.length === 4 && border.held.every((face: number) => !opening.has(face)) && border.allBorders === false, JSON.stringify(border));

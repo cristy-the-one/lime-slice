@@ -87,6 +87,10 @@ export interface Options {
   tickMs?: number;
   beatsNeither?: boolean;
   refuse?: string;
+  /** The stand-in plans ribs whose gain needs rigid borders. */
+  needsRigidBorders?: boolean;
+  /** The stand-in keeps each rib's first end in the open wall, tapered. */
+  taperedEnds?: boolean;
   applyError?: string;
   surfaces?: boolean;
   obstacle?: boolean;
@@ -118,7 +122,7 @@ export async function openPart(page: Page, options: Options = {}): Promise<TreeM
   if (!options.api) {
     await page.addInitScript((knobs) => {
       (globalThis as { __limeRibPlanFake?: unknown }).__limeRibPlanFake = knobs;
-    }, { tickMs: options.tickMs ?? 40, ...(options.beatsNeither ? { beatsNeither: true } : {}), ...(options.refuse ? { refuse: options.refuse } : {}) });
+    }, { tickMs: options.tickMs ?? 40, ...(options.beatsNeither ? { beatsNeither: true } : {}), ...(options.refuse ? { refuse: options.refuse } : {}), ...(options.needsRigidBorders ? { needsRigidBorders: true } : {}), ...(options.taperedEnds ? { taperedEnds: true } : {}) });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   const part = openBox();

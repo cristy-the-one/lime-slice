@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, hasFreeEnds, isOverhang, narrowWidth, overallText, peakFactorOf, peakText, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, slicedVerdict, splitByHeight, teeMinHeight, timesText } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, hasFreeEnds, isOverhang, narrowWidth, overallText, peakFactorOf, peakText, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, slicedVerdict, splitByHeight, taperedEndsText, teeMinHeight, timesText } from "./auto-ribs.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -210,6 +210,15 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("one cell size is rough whatever the study's label says", !labelled.showSafety && labelled.sentence === "Sliced check, rough: bends 2× less.", JSON.stringify(labelled));
   const trusted = slicedVerdict({ maxDisplacementMm: 2, minSafetyFactor: 3, trust: "converged" }, { maxDisplacementMm: 1, minSafetyFactor: 2.5, trust: "usable" }, 2, 2, true);
   check("a study whose resolution was checked and trusted shows its safety factor", trusted.showSafety && trusted.why === null && trusted.sentence === "Sliced check, usable: bends 2× less. Least safety factor 3 → 2.5.", JSON.stringify(trusted));
+  // Plan and build agree on the taper: each rib's own ends get the planner's taperMm, else 3 × the height there.
+  const taperOf = (op: Record<string, unknown> | { reason: string }) => ("reason" in op ? op.reason : (op.paths as { taperMm: unknown }[]).map((p) => p.taperMm));
+  const straightRib = { points: [[0, 0, 2], [20, 0, 2], [40, 0, 2]] as V3[], heights: [6, 4], width: 1.35, profile: "straight" as const };
+  check("a straight rib through a height change is one path; its ends 3 × the height there by default", JSON.stringify(taperOf(ribNetOf([straightRib], "t", undefined))) === "[[18,12]]", JSON.stringify(taperOf(ribNetOf([straightRib], "t", undefined))));
+  check("the planner's taper where it gives one (0, an anchored end, falls back to 3 × the height)", JSON.stringify(taperOf(ribNetOf([{ ...straightRib, taperMm: [9, 0] }], "t", undefined))) === "[[9,12]]");
+  check("a typed taper sets every end, 0 square", JSON.stringify(taperOf(ribNetOf([{ ...straightRib, taperMm: [9, 0] }], "t", undefined, { taperMm: 0 }))) === "[[0,0]]");
+  const teeRib = { ...straightRib, profile: "tee" as const };
+  check("a tee split at its height change: the rib's two ends only, the joint between pieces null", JSON.stringify(taperOf(ribNetOf([teeRib], "t", undefined))) === "[[18,null],[null,12]]", JSON.stringify(taperOf(ribNetOf([teeRib], "t", undefined))));
+  check("tapered loose ends said plainly", taperedEndsText([18, 18]) === "2 rib ends stop in the open wall, tapered over 18 mm" && taperedEndsText([9, 18]) === "2 rib ends stop in the open wall, tapered over 9 to 18 mm" && taperedEndsText([null]) === "1 rib end stops in the open wall, tapered");
   check("a wall within 2 % of the cell is thick enough", slicedVerdict({ maxDisplacementMm: 2, minSafetyFactor: null, trust: null }, { maxDisplacementMm: 1, minSafetyFactor: null, trust: null }, 2, 1.99).meaningful);
 }
 
