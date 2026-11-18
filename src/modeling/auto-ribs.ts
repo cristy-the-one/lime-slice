@@ -352,12 +352,29 @@ export function fitFlanges(points: readonly V3[], normals: readonly V3[], height
 export function ribNetOf(ribs: readonly BuiltRib[], label: string, auto: unknown): Record<string, unknown> | { reason: string } {
   const paths: Record<string, unknown>[] = [];
   for (const rib of ribs) {
-    for (const piece of splitByHeight(rib.points, rib.heights, 0.05, rib.sections)) {
-      if (!(piece.height >= 0.1)) continue;
+    // A plain (straight) section keeps one path through its height changes, its heights per stretch: separate paths
+    // meeting end to end in a straight line overlap with coincident faces, and a kernel fuse of those lost whole runs
+    // on one platform (Linux CI built 640 of 997 mm³). A root or flange still splits where the height changes.
+    const pieces = splitByHeight(rib.points, rib.heights, 0.05, rib.sections);
+    const merged: { points: V3[]; heights: number[]; section?: Section }[] = [];
+    for (const piece of pieces) {
+      const section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
+      const plain = section.profile === "straight" && !(section.rootRadius && section.rootRadius > 0);
+      const last = merged[merged.length - 1];
+      const hs = piece.points.slice(1).map(() => piece.height);
+      if (last && plain && sectionKey(last.section) === sectionKey(piece.section) && piece.height >= 0.1 && last.heights.every((x) => x >= 0.1)) {
+        last.points.push(...piece.points.slice(1));
+        last.heights.push(...hs);
+      } else merged.push({ points: piece.points.map((p) => [...p] as V3), heights: hs, ...(piece.section ? { section: piece.section } : {}) });
+    }
+    for (const piece of merged) {
+      const height = piece.heights.reduce((most, x) => Math.max(most, x), 0);
+      if (!(height >= 0.1)) continue;
       const section: Section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
       // A stretch too low for its root and flange is built straight, as the planner solved it.
-      const built: Section = piece.height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
-      paths.push({ points: piece.points, height: Math.round(piece.height * 1e4) / 1e4, ...built });
+      const built: Section = height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
+      const varies = piece.heights.some((x) => Math.abs(x - height) > 1e-9);
+      paths.push({ points: piece.points, height: Math.round(height * 1e4) / 1e4, ...(varies ? { heights: piece.heights.map((x) => Math.round(x * 1e4) / 1e4) } : {}), ...built });
     }
   }
   if (paths.length === 0) return { reason: "The plan has no rib tall enough to build (every stretch is under 0.1 mm)." };

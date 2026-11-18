@@ -90,7 +90,12 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("small wobble stays one path", splitByHeight(pts, [6, 5.97, 6, 6]).length === 1);
   const op = ribNetOf([{ points: pts, heights: [6, 6, 3, 6], width: 1.35, profile: "tee", fields: { flangeChamferDeg: 0 } }, { points: [[0, 10, 2], [40, 10, 2]], heights: [0.05], width: 1.35, profile: "straight" }], "Auto ribs", { wall: { faces: [6] } });
   check("the op is one ribNet with the request kept, a rib with no height left out", !("reason" in op) && op.kind === "ribNet" && (op.paths as unknown[]).length === 3 && op.height === 6 && JSON.stringify(op.auto) === JSON.stringify({ wall: { faces: [6] } }) && (op.paths as Record<string, unknown>[])[0]!.flangeChamferDeg === 0, JSON.stringify(op).slice(0, 300));
-  const many = ribNetOf(Array.from({ length: 201 }, () => ({ points: pts, heights: [6, 3, 6, 6], width: 1, profile: "straight" as const })), "x", undefined);
+  // A straight rib capped in its middle is one path, its heights per stretch: three runs end to end overlapped with
+  // coincident faces, and a kernel fuse of those lost whole runs on Linux.
+  const straight = ribNetOf([{ points: pts, heights: [6, 6, 3, 6], width: 1.35, profile: "straight" }], "x", undefined);
+  const one = "reason" in straight ? null : (straight.paths as Record<string, unknown>[]);
+  check("a straight rib capped in its middle is one path with its heights", !!one && one.length === 1 && one[0]!.height === 6 && JSON.stringify(one[0]!.heights) === "[6,6,3,6]", JSON.stringify(straight).slice(0, 300));
+  const many = ribNetOf(Array.from({ length: 201 }, () => ({ points: pts, heights: [6, 3, 6, 6], width: 1.35, profile: "tee" as const, fields: { flangeChamferDeg: 0 } })), "x", undefined);
   check("more than 400 runs is refused in a sentence", "reason" in many && /at most 400/.test(String(many.reason)));
 }
 

@@ -145,6 +145,19 @@ const ok = (made: ReturnType<typeof plan>): made is RibNetPlan => !("reason" in 
   check("a rib from corner to corner: nothing skipped, both ends into the walls", ok(corner) && corner.skipped.length === 0 && corner.ends.wall === 2 && Math.abs(corner.volumeMm3 - 76 * 1.35 * 6) < 0.5, ok(corner) ? JSON.stringify({ skipped: corner.skipped, ends: corner.ends, volume: corner.volumeMm3 }) : corner.reason);
 }
 
+// --- Heights per stretch: one run that steps down in its middle and up again, not three runs end to end.
+{
+  const made = plan({ width: 1.35, height: 6, paths: [{ points: [[-58, 0, 2], [-10, 0, 2], [10, 0, 2], [58, 0, 2]], heights: [6, 3, 6] }] });
+  check("a path with heights per stretch plans as one run", ok(made) && made.runs === 1 && made.ends.wall === 2 && made.ends.joint === 0 && made.shortened.length === 0 && made.skipped.length === 0, ok(made) ? JSON.stringify({ runs: made.runs, ends: made.ends, shortened: made.shortened }) : made.reason);
+  const tops = ok(made) ? lofted(made.steps[0]!).map((row) => ({ x: row.origin[0], top: Math.max(...row.profile!.map((p) => p[1])) })) : [];
+  check("it stands 3 mm over the middle stretch and 6 mm elsewhere", tops.length > 2 && tops.filter((t) => t.x > -9.9 && t.x < 9.9).every((t) => Math.abs(t.top - 3) < 1e-6) && tops.filter((t) => Math.abs(t.x) > 13).every((t) => Math.abs(t.top - 6) < 1e-6), JSON.stringify(tops));
+  // 116 mm × 1.35 at 6, less the middle 20 mm at 3 and a ramp a sample long each side.
+  const want = 116 * 1.35 * 6 - 20 * 1.35 * 3;
+  check("its volume: the steps cost a ramp each, under 2 %", ok(made) && made.volumeMm3 < want + 1e-6 && made.volumeMm3 > 0.98 * want, ok(made) ? `${made.volumeMm3} against ${want}` : "");
+  const bad = plan({ width: 1.35, height: 6, paths: [{ points: [[-58, 0, 2], [58, 0, 2]], heights: [7] }] });
+  check("heights above the path's height are refused in a sentence", !ok(bad) && /heights is one height per stretch/.test(bad.reason), ok(bad) ? "planned" : bad.reason);
+}
+
 // --- A sharp corner in one path: two runs that meet in a joint.
 {
   const made = plan({ width: 1.5, height: 4, paths: [{ points: [[-20, -20, 2], [20, -20, 2], [-20, 0, 2]] }] });
