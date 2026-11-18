@@ -247,6 +247,7 @@ src/modeling/index.test.ts
 src/modeling/thin.test.ts
 src/modeling/rib-net.test.ts
 src/modeling/rib-wall.test.ts
+src/modeling/rib-wall-features.test.ts
 src/modeling/auto-ribs.test.ts
 src/modeling/step-guard.test.ts
 src/auto-ribs.test.ts

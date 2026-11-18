@@ -521,6 +521,7 @@ Every refusal is `{ok: false, code, reason}`. `reason` is the sentence a person 
 - `no-load`: The study has no load or nothing is held.
 - `bad-representation`: The study representation or reslice option does not apply here.
 - `bad-wall`: The wall to rib is not given, matches no face, or could not be read as a wall.
+- `off-wall`: A hold or load given to ribs_plan cannot be put on the picked wall; the plan was not made in its place.
 - `bad-zone`: A rib zone is malformed or names an object that is not on the plate.
 - `bad-goal`: A rib goal is not one of stiffer, maxDeflectionMm, budgetMm3, budgetG or balanced.
 - `rib-plan-failed`: The rib planner did not start or did not finish.
@@ -825,7 +826,7 @@ Layer polylines stay off the default slice (`includePreview: false`). A later `l
 - **Job.** `ribs_plan` always answers with a background job (`startsAsJob` in `mcp/session/shared.ts`). A wait on it gives `stage`, `fraction` and `ribs: {events, totals}` (each event once; the rest come with the result). `slice_cancel` stops it (`ribs_plan` is stoppable). A plan alone is `shared`: other calls run beside it. With `apply:true` it holds the part like any edit.
 - **Back to the part.** The plan's polylines are on the mid-surface; `ribPathsFromPlan` takes them onto the wall's face. Each rib's sections (one per stretch) are checked against the rib's own direction (`fitFlanges`). `ribs_apply` builds them as one `ribNet` step through `model_apply` (one History row, `auto` keeping the request), split where height or section changes, and reports the measured volume and `model_check` before and after; `verify:true` runs the sliced Stress study before and after with faces found again on the ribbed part (`remapFaces`).
 
-Refusals: `bad-wall`, `bad-zone`, `bad-goal`, `rib-plan-failed`, `rib-plan-lost`, `stale-rib-plan`, `bad-rib-plan`, `bad-study`.
+Refusals: `bad-wall`, `off-wall` (a hold or load that misses the wall; `ifMissed:"evenPressure"` plans without it and says so), `bad-zone`, `bad-goal`, `rib-plan-failed`, `rib-plan-lost`, `stale-rib-plan`, `bad-rib-plan`, `bad-study`.
 
 ### Resources
 

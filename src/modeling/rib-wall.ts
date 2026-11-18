@@ -126,6 +126,25 @@ export interface RibWallOptions {
   bedZ?: number;
   /** The least rib height (the planner's `min_height`): an obstacle closer than this plus its clearance clears the wall. Default 1. */
   minRibHeightMm?: number;
+  /**
+   * A hold or load that cannot be put on the wall (none of it lands, a force with under 90 % of its area on the wall or
+   * behind it, a pressure with under 90 %): `refuse` (default) answers with a sentence naming it and what to do;
+   * `evenPressure` leaves it out, plans under the even pressure (or the loads that remain), and says so in
+   * `report.substituted`.
+   */
+  ifMissed?: "refuse" | "evenPressure";
+  /** The wall's thickness, given: every vertex takes it, nothing is read by rays. */
+  thicknessMm?: number;
+  /**
+   * Find what already stands on the wall (ribs, bosses): default true. Their faces stay out of the wall, the wall beyond
+   * them on the same surface is taken, the wall under them is modelled plain (their stiffness is not counted) and kept
+   * clear of new ribs by `featureMarginMm`.
+   */
+  features?: boolean;
+  /** How far new ribs keep from a feature's footprint, mm. Default 3, as a hole's rim. */
+  featureMarginMm?: number;
+  /** The most triangles the wall is meshed with: a curved wall is meshed coarser to fit, and one too big is refused. */
+  maxTriangles?: number;
 }
 
 /** `lime-sim` `ShellLoad`, in JSON. */
@@ -182,17 +201,25 @@ export interface NotOnWall {
   kind: "hold" | "load";
   index: number;
   why: string;
+  /**
+   * The hold or load (or a part of it) is not in the model: refused unless `ifMissed` is `evenPressure`. False for a note
+   * that changes nothing the model carries (a pressure of which a small share, under 10 %, lies off the wall).
+   */
+  dropped: boolean;
 }
 
 export interface RibWallReport {
-  faces: { taken: number[]; picked: number[]; grown: number[]; added: number[]; excluded: number[]; stops: { face: number; from: number; kinkDeg: number }[] };
+  faces: { taken: number[]; picked: number[]; grown: number[]; added: number[]; excluded: number[]; stops: { face: number; from: number; kinkDeg: number }[]; across: number[] };
   areaMm2: number;
   vertices: number;
   triangles: number;
   input: { triangles: number; degenerate: number; duplicate: number; tJunctions: number; flipped: number; nonManifoldEdges: number };
   edge: { targetMm: number; minMm: number; meanMm: number; maxMm: number; chordMm: number; chordMaxMm: number };
   quality: { minAngleDeg: number; under15: number; under15Share: number };
-  thickness: { minMm: number; medianMm: number; maxMm: number; thick: number; capMm: number; unread: number };
+  /** `underFeatures`: vertices whose ray left through something standing on the far side, filled in from around; `givenMm` when given. */
+  thickness: { minMm: number; medianMm: number; maxMm: number; thick: number; capMm: number; unread: number; underFeatures: number; givenMm?: number };
+  /** What already stands on the wall: each footprint is plain wall and a no-rib zone with `margin`. */
+  features: { count: number; faces: number; footprintMm2: number; margin: number; note: string; items: { kind: "island" | "standing"; faces: number; on: number; triangles: number; areaMm2: number; centre: V3 | null; filled: boolean; how: "outline" | "shadow" }[] };
   clearance: { minMm: number; open: number };
   loops: { class: LoopClass; lengthMm: number; joinedShare: number; vertices: number; hole: boolean }[];
   holes: WallHole[];
@@ -200,6 +227,11 @@ export interface RibWallReport {
   loads: { index: number; triangles: number; share: number; how: string }[];
   zones: { index: number; kind: string; triangles: number; areaMm2: number; centre: V3 | null; bounds: { min: V3; max: V3 } | null; how: string; capped?: number; capMinMm?: number; missed?: string }[];
   notOnWall: NotOnWall[];
+  /**
+   * Only with `ifMissed: "evenPressure"`: the holds and loads left out (indexes), whether the plan now runs under the even
+   * pressure for want of any load, and the sentence that must be shown with the plan.
+   */
+  substituted?: { holds: number[]; loads: number[]; evenPressure: boolean; sentence: string };
   warnings: string[];
   ms: { select: number; remesh: number; measure: number; total: number };
 }
@@ -235,6 +267,9 @@ export const RIB_WALL_DEFAULTS = {
   minAngleDeg: 15,
   /** A load mapped onto less than this share of its area is not taken. */
   loadShare: 0.9,
+  /** One and a half times the target count: past it the mesh along curves and outlines is coarser, and a wall too big even then is refused. */
+  maxTriangles: 27000,
+  featureMarginMm: 3,
 } as const;
 
 // ------------------------------------------------------------------------------------------------ vectors
@@ -257,6 +292,17 @@ const r3v = (p: V3): V3 => [round(p[0]), round(p[1]), round(p[2])];
 const now = (): number => (globalThis.performance ? globalThis.performance.now() : Date.now());
 const BIG = 67108864;
 const ekey = (a: number, b: number): number => (a < b ? a * BIG + b : b * BIG + a);
+/** Least and greatest by a loop: `Math.min(...values)` throws "Maximum call stack size exceeded" past ~100k values. */
+const minOf = (values: ArrayLike<number>): number => {
+  let m = Infinity;
+  for (let i = 0; i < values.length; i += 1) if (values[i]! < m) m = values[i]!;
+  return m;
+};
+const maxOf = (values: ArrayLike<number>): number => {
+  let m = -Infinity;
+  for (let i = 0; i < values.length; i += 1) if (values[i]! > m) m = values[i]!;
+  return m;
+};
 const median = (values: number[]): number => {
   if (values.length === 0) return NaN;
   const s = [...values].sort((x, y) => x - y);
@@ -536,6 +582,10 @@ interface Indexed {
   facet: Float64Array;
   all: TriSet;
   touch: number;
+  /** Welded vertex positions, three numbers per `vid`. */
+  vp: number[];
+  /** Per face, its loops and surface, read once (`faceGeometry`). */
+  geometry: Map<number, FaceGeometry>;
 }
 
 const indexCache = new WeakMap<object, Map<number, Indexed>>();
@@ -586,7 +636,7 @@ function indexSolid(solid: RibWallSolid, weld: number): Indexed {
     }
     facet[t] = most;
   }
-  const out: Indexed = { count, pos, face, vid, normal, area, edges, faceTris, facet, all, touch: Math.max(0.05, weld * 5) };
+  const out: Indexed = { count, pos, face, vid, normal, area, edges, faceTris, facet, all, touch: Math.max(0.05, weld * 5), vp: welder.pts, geometry: new Map() };
   const row = indexCache.get(solid) ?? new Map<number, Indexed>();
   row.set(weld, out);
   indexCache.set(solid, row);
@@ -594,9 +644,242 @@ function indexSolid(solid: RibWallSolid, weld: number): Indexed {
 }
 
 const triNormal = (ix: Indexed, t: number): V3 => [ix.normal[t * 3]!, ix.normal[t * 3 + 1]!, ix.normal[t * 3 + 2]!];
+const vAt = (ix: Indexed, v: number): V3 => [ix.vp[v * 3]!, ix.vp[v * 3 + 1]!, ix.vp[v * 3 + 2]!];
 
-/** Each face across a face's border: shared length, the share of it that is smooth, and the worst kink. */
-function borderOf(ix: Indexed, f: number, angle: number): Map<number, { lengthMm: number; smoothMm: number; kinkDeg: number }> {
+/** The surface a face lies on, when it is a plane or a cylinder within a tolerance. */
+type FitSurface = { kind: "plane"; p: V3; n: V3 } | { kind: "cylinder"; origin: V3; axis: V3; radius: number; inward: boolean };
+
+interface FaceLoop {
+  /** Welded vertex ids in order, as the face's triangles run its border. */
+  verts: number[];
+  /** ½ Σ pᵢ × pᵢ₊₁: along the face's normal for its outer loop, against it for a hole in its outline. */
+  vecArea: V3;
+}
+
+interface FaceGeometry {
+  area: number;
+  /** Σ area × normal over the face's triangles. */
+  normalSum: V3;
+  loops: FaceLoop[];
+  /** Each border edge's loop (index into `loops`). */
+  loopOf: Map<number, number>;
+  /** Edge keys of the loops that are holes in the face's outline (inner loops). Empty when the face has no clear side. */
+  inner: Set<number>;
+  surface: FitSurface | null;
+  /** Faces sharing an edge with this one. */
+  neighbours: number[];
+  /** Welded vertex ids on the face. */
+  verts: number[];
+}
+
+/** A face's loops, which of them are holes in its outline, its neighbours and the plane or cylinder it lies on. */
+function faceGeometry(ix: Indexed, f: number): FaceGeometry {
+  const cached = ix.geometry.get(f);
+  if (cached) return cached;
+  const tris = ix.faceTris.get(f) ?? [];
+  const own = new Map<number, { count: number; a: number; b: number }>();
+  let area = 0;
+  let normalSum: V3 = [0, 0, 0];
+  const verts = new Set<number>();
+  const neighbours = new Set<number>();
+  for (const t of tris) {
+    area += ix.area[t]!;
+    normalSum = add(normalSum, mul(triNormal(ix, t), ix.area[t]!));
+    for (let k = 0; k < 3; k += 1) {
+      const a = ix.vid[t * 3 + k]!;
+      const b = ix.vid[t * 3 + ((k + 1) % 3)]!;
+      verts.add(a);
+      if (a === b) continue;
+      const key = ekey(a, b);
+      const e = own.get(key);
+      if (e) e.count += 1;
+      else own.set(key, { count: 1, a, b });
+      for (const o of ix.edges.get(key) ?? []) if (ix.face[o] !== f) neighbours.add(ix.face[o]!);
+    }
+  }
+  // Border edges, directed as the face's triangles run them; walked into loops. A border edge no other face shares (the
+  // faces meshed apart along their seam) finds its neighbour by the nearest triangle of another face to its middle.
+  const next = new Map<number, number[]>();
+  for (const [key, e] of own) {
+    if (e.count !== 1) continue;
+    if (!(ix.edges.get(key) ?? []).some((o) => ix.face[o] !== f)) {
+      const m = mul(add(vAt(ix, e.a), vAt(ix, e.b)), 0.5);
+      const hit = ix.all.closest(m, ix.touch, (o) => ix.face[o] === f);
+      if (hit) neighbours.add(ix.face[hit.t]!);
+    }
+    const row = next.get(e.a);
+    if (row) row.push(e.b);
+    else next.set(e.a, [e.b]);
+  }
+  const used = new Set<number>();
+  const loops: FaceLoop[] = [];
+  for (const s of [...next.keys()].sort((x, y) => x - y)) {
+    for (const first of next.get(s)!) {
+      if (used.has(s * BIG + first)) continue;
+      const loop = [s];
+      let x = s;
+      let y = first;
+      for (let guard = 0; guard <= own.size; guard += 1) {
+        used.add(x * BIG + y);
+        if (y === s) break;
+        loop.push(y);
+        const options = (next.get(y) ?? []).filter((z) => !used.has(y * BIG + z));
+        if (options.length === 0) break;
+        x = y;
+        y = options[0]!;
+      }
+      let vec: V3 = [0, 0, 0];
+      for (let i = 0; i < loop.length; i += 1) vec = add(vec, cross(vAt(ix, loop[i]!), vAt(ix, loop[(i + 1) % loop.length]!)));
+      loops.push({ verts: loop, vecArea: mul(vec, 0.5) });
+    }
+  }
+  // A face with a clear side (its triangles' area vectors mostly agree): loops turning against it are holes.
+  const inner = new Set<number>();
+  if (len(normalSum) >= 0.5 * area && loops.length > 1) {
+    for (const loop of loops) {
+      if (dot(loop.vecArea, normalSum) >= 0) continue;
+      for (let i = 0; i < loop.verts.length; i += 1) inner.add(ekey(loop.verts[i]!, loop.verts[(i + 1) % loop.verts.length]!));
+    }
+  }
+  const loopOf = new Map<number, number>();
+  loops.forEach((loop, li) => {
+    for (let i = 0; i < loop.verts.length; i += 1) loopOf.set(ekey(loop.verts[i]!, loop.verts[(i + 1) % loop.verts.length]!), li);
+  });
+  const out: FaceGeometry = { area, normalSum, loops, loopOf, inner, surface: fitSurface(ix, tris, [...verts]), neighbours: [...neighbours].sort((a, b) => a - b), verts: [...verts].sort((a, b) => a - b) };
+  ix.geometry.set(f, out);
+  return out;
+}
+
+/** The plane or cylinder a face's vertices lie on, within max(0.02 mm, 0.2 % of its size); null for anything else. */
+function fitSurface(ix: Indexed, all: readonly number[], verts: readonly number[]): FitSurface | null {
+  // Slivers of no area have no normal to go by.
+  const tris = all.filter((t) => ix.area[t]! > 1e-9);
+  if (tris.length === 0 || verts.length < 3) return null;
+  let lo: V3 = [Infinity, Infinity, Infinity];
+  let hi: V3 = [-Infinity, -Infinity, -Infinity];
+  for (const v of verts) {
+    const p = vAt(ix, v);
+    lo = [Math.min(lo[0], p[0]), Math.min(lo[1], p[1]), Math.min(lo[2], p[2])];
+    hi = [Math.max(hi[0], p[0]), Math.max(hi[1], p[1]), Math.max(hi[2], p[2])];
+  }
+  const tol = Math.max(0.02, 0.002 * dist(lo, hi));
+  // A plane: every triangle's normal within 1° of the mean, every vertex within tol of the plane.
+  let ns: V3 = [0, 0, 0];
+  let c: V3 = [0, 0, 0];
+  let area = 0;
+  for (const t of tris) {
+    ns = add(ns, mul(triNormal(ix, t), ix.area[t]!));
+    area += ix.area[t]!;
+  }
+  for (const v of verts) c = add(c, vAt(ix, v));
+  c = mul(c, 1 / verts.length);
+  const n = unit(ns);
+  if (len(ns) > 0.999 * area && tris.every((t) => dot(triNormal(ix, t), n) > Math.cos((1 * Math.PI) / 180)) && verts.every((v) => Math.abs(dot(sub(vAt(ix, v), c), n)) <= tol)) {
+    return { kind: "plane", p: c, n };
+  }
+  // A cylinder: the axis square to every normal; centre and radius by least squares on the vertices of each triangle.
+  const n0 = triNormal(ix, tris[0]!);
+  let axis: V3 | null = null;
+  let best = 0;
+  for (const t of tris) {
+    const k = cross(n0, triNormal(ix, t));
+    if (len(k) > best) {
+      best = len(k);
+      axis = k;
+    }
+  }
+  if (!axis || best < 0.05) return null;
+  axis = unit(axis);
+  if (!tris.every((t) => Math.abs(dot(triNormal(ix, t), axis!)) < 0.03)) return null;
+  const e1 = unit(Math.abs(axis[0]) < 0.9 ? cross(axis, [1, 0, 0]) : cross(axis, [0, 1, 0]));
+  const e2 = cross(axis, e1);
+  // q = c + ρ m for each vertex q (in the plane square to the axis) and its triangle's normal m: unknowns cx, cy, ρ.
+  const A = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+  const B = [0, 0, 0];
+  for (const t of tris) {
+    const m = triNormal(ix, t);
+    const mx = dot(m, e1);
+    const my = dot(m, e2);
+    for (let k = 0; k < 3; k += 1) {
+      const p = ix.all.corner(t, k);
+      const qx = dot(p, e1);
+      const qy = dot(p, e2);
+      for (const [row, rhs] of [[[1, 0, mx], qx], [[0, 1, my], qy]] as [number[], number][]) {
+        for (let i = 0; i < 3; i += 1) {
+          for (let j = 0; j < 3; j += 1) A[i * 3 + j] += row[i]! * row[j]!;
+          B[i] += row[i]! * rhs;
+        }
+      }
+    }
+  }
+  const sol = solve3(A, B);
+  if (!sol) return null;
+  const [cx, cy, rho] = sol;
+  const radius = Math.abs(rho);
+  if (!(radius > tol)) return null;
+  const origin = add(mul(e1, cx), mul(e2, cy));
+  const off = (p: V3) => {
+    const d = sub(p, origin);
+    return len(sub(d, mul(axis!, dot(d, axis!))));
+  };
+  if (!verts.every((v) => Math.abs(off(vAt(ix, v)) - radius) <= tol)) return null;
+  return { kind: "cylinder", origin, axis, radius, inward: rho < 0 };
+}
+
+/** A 3 × 3 linear solve by Cramer's rule; null when singular. */
+function solve3(A: number[], B: number[]): [number, number, number] | null {
+  const det = (m: number[]) => m[0]! * (m[4]! * m[8]! - m[5]! * m[7]!) - m[1]! * (m[3]! * m[8]! - m[5]! * m[6]!) + m[2]! * (m[3]! * m[7]! - m[4]! * m[6]!);
+  const d = det(A);
+  if (!(Math.abs(d) > 1e-12 * Math.max(1, Math.abs(A[0]! * A[4]! * A[8]!)))) return null;
+  const col = (k: number) => A.map((x, i) => (i % 3 === k ? B[Math.floor(i / 3)]! : x));
+  return [det(col(0)) / d, det(col(1)) / d, det(col(2)) / d];
+}
+
+/** Signed height of p over a surface: along its normal (out of the material), 0 on it. */
+function heightOver(s: FitSurface, p: V3): number {
+  if (s.kind === "plane") return dot(sub(p, s.p), s.n);
+  const d = sub(p, s.origin);
+  const r = len(sub(d, mul(s.axis, dot(d, s.axis))));
+  return s.inward ? s.radius - r : r - s.radius;
+}
+
+/** p moved onto the surface along its normal there. */
+function ontoSurface(s: FitSurface, p: V3): V3 {
+  if (s.kind === "plane") return sub(p, mul(s.n, dot(sub(p, s.p), s.n)));
+  const d = sub(p, s.origin);
+  const along = dot(d, s.axis);
+  const radial = sub(d, mul(s.axis, along));
+  const r = len(radial);
+  if (!(r > 0)) return p;
+  return add(add(s.origin, mul(s.axis, along)), mul(radial, s.radius / r));
+}
+
+/** The surface's normal (out of the material) at p. */
+function normalOf(s: FitSurface, p: V3): V3 {
+  if (s.kind === "plane") return s.n;
+  const d = sub(p, s.origin);
+  const radial = unit(sub(d, mul(s.axis, dot(d, s.axis))));
+  return s.inward ? mul(radial, -1) : radial;
+}
+
+/** Whether face g lies on surface s, turned the same way (its normals along s's within 3°). */
+function onSurface(ix: Indexed, s: FitSurface, g: number, tol: number): boolean {
+  const geo = faceGeometry(ix, g);
+  if (geo.verts.length === 0) return false;
+  if (!geo.verts.every((v) => Math.abs(heightOver(s, vAt(ix, v))) <= tol)) return false;
+  const cos = Math.cos((3 * Math.PI) / 180);
+  return (ix.faceTris.get(g) ?? []).every((t) => {
+    if (!(ix.area[t]! > 1e-9)) return true;
+    const c = mul(add(add(ix.all.corner(t, 0), ix.all.corner(t, 1)), ix.all.corner(t, 2)), 1 / 3);
+    return dot(triNormal(ix, t), normalOf(s, c)) >= cos;
+  });
+}
+
+/**
+ * Each face across a face's border: shared length, the share of it that is smooth, the worst kink, and the length that
+ * runs along one of the face's inner loops (`inner`: a hole in its outline, where what stands on it begins).
+ */
+function borderOf(ix: Indexed, f: number, angle: number, inner?: ReadonlySet<number>): Map<number, { lengthMm: number; smoothMm: number; kinkDeg: number; innerMm: number }> {
   const own = new Map<number, { count: number; t: number; k: number }>();
   for (const t of ix.faceTris.get(f) ?? []) {
     for (let k = 0; k < 3; k += 1) {
@@ -609,7 +892,7 @@ function borderOf(ix: Indexed, f: number, angle: number): Map<number, { lengthMm
       else own.set(key, { count: 1, t, k });
     }
   }
-  const out = new Map<number, { lengthMm: number; smoothMm: number; kinkDeg: number }>();
+  const out = new Map<number, { lengthMm: number; smoothMm: number; kinkDeg: number; innerMm: number }>();
   for (const [key, e] of own) {
     if (e.count !== 1) continue;
     const { t, k } = e;
@@ -643,13 +926,28 @@ function borderOf(ix: Indexed, f: number, angle: number): Map<number, { lengthMm
     // Folding back: the face across turns back over this one (both run off the edge to the same side, within 60°).
     const folds = dot(tA, tB) > 0.5;
     const smooth = kink <= angle && !folds;
-    const row = out.get(g) ?? { lengthMm: 0, smoothMm: 0, kinkDeg: 0 };
+    const row = out.get(g) ?? { lengthMm: 0, smoothMm: 0, kinkDeg: 0, innerMm: 0 };
     row.lengthMm += length;
     if (smooth) row.smoothMm += length;
+    if (inner?.has(key)) row.innerMm += length;
     row.kinkDeg = Math.max(row.kinkDeg, folds ? 180 : kink);
     out.set(g, row);
   }
   return out;
+}
+
+/**
+ * Something that stands on the wall: a rib, a boss, a pad. `island` when it rises from a hole in a wall face's outline
+ * (a boss); `standing` when it rises from the wall's border or between wall faces (a rib, which may split the floor).
+ */
+export interface WallFeature {
+  kind: "island" | "standing";
+  /** The feature's own faces. */
+  faces: number[];
+  /** The wall face it was found from. */
+  on: number;
+  /** For an island, the hole in `on`'s outline it rises from (welded vertex ids, in order). */
+  loop?: number[];
 }
 
 export interface WallFaces {
@@ -658,43 +956,161 @@ export interface WallFaces {
   grown: number[];
   added: number[];
   excluded: number[];
-  /** Neighbours the growth stopped at, with the kink across the edge. */
+  /** Neighbours the growth stopped at, with the kink across the edge (features standing on the wall left out). */
   stops: { face: number; from: number; kinkDeg: number }[];
+  /** What stands on the wall; its faces are not part of it, and wall faces found beyond a feature are in `grown`. */
+  features: WallFeature[];
+  /** Wall faces taken because they lie on the surface of a wall face, on the far side of a feature standing between. */
+  across: number[];
+}
+
+/** A feature is never taller than this over the wall, mm: a face rising higher is the part's own wall. */
+export const FEATURE_HEIGHT_MM = 15;
+/** Faces a single feature may have: past it, what stands on the wall is the rest of the part. */
+const FEATURE_FACES = 20000;
+
+/**
+ * What stands on wall face `f`, starting at its neighbour `seed`: the faces reached through faces wholly in front of
+ * `f`'s surface (out of the material) and no taller than `tallMm` over it. Null when it reaches behind the wall's
+ * surface (the part's body: a side wall that runs down to the outside), or is too big. Faces on `f`'s own surface met on
+ * the way are returned apart: they continue the wall beyond the feature.
+ */
+function standingOn(ix: Indexed, f: number, seed: number, tallMm: number, wall: ReadonlySet<number>, excluded: ReadonlySet<number>): { faces: number[]; same: number[] } | null {
+  const geo = faceGeometry(ix, f);
+  const surface = geo.surface;
+  if (!surface) return null;
+  const size = geo.verts.reduce((s, v) => Math.max(s, dist(vAt(ix, v), vAt(ix, geo.verts[0]!))), 0);
+  const tol = Math.max(0.02, 0.002 * size);
+  const faces: number[] = [];
+  const same: number[] = [];
+  const seen = new Set<number>([seed]);
+  const stack = [seed];
+  while (stack.length) {
+    const h = stack.pop()!;
+    if (wall.has(h) || excluded.has(h)) continue;
+    if (onSurface(ix, surface, h, tol)) {
+      same.push(h);
+      continue;
+    }
+    const verts = faceGeometry(ix, h).verts;
+    let low = Infinity;
+    let high = -Infinity;
+    for (const v of verts) {
+      const z = heightOver(surface, vAt(ix, v));
+      low = Math.min(low, z);
+      high = Math.max(high, z);
+    }
+    if (low < -tol) return null;
+    if (high > tallMm) continue;
+    faces.push(h);
+    if (faces.length > FEATURE_FACES) return null;
+    for (const n of faceGeometry(ix, h).neighbours) {
+      if (seen.has(n)) continue;
+      seen.add(n);
+      stack.push(n);
+    }
+  }
+  return faces.length ? { faces: faces.sort((a, b) => a - b), same: same.sort((a, b) => a - b) } : null;
 }
 
 /**
  * The wall's faces: the picked ones, grown (unless `grow` is false) over neighbours whose shared border is smooth along
  * at least half its length, then `addFaces` added and `excludeFaces` taken out. Breadth first, lowest face first.
+ *
+ * What already stands on the wall (unless `features` is false) is found and kept out of it: growth never runs up from
+ * a hole in a face's outline (a boss's fillet continues the floor smoothly, yet is not the floor), and a feature rising
+ * from the wall at a sharp edge (a rib) is crossed to the faces beyond it on the same plane or cylinder, which join the
+ * wall (one click takes the floor between ribs). A feature is wholly in front of the wall, under `FEATURE_HEIGHT_MM`
+ * tall (a taller face is the part's own wall), and never reaches behind it.
  */
 export function wallFaces(
   solid: RibWallSolid,
-  options: { picked: number[]; grow?: boolean; growAngleDeg?: number; addFaces?: number[]; excludeFaces?: number[]; weldMm?: number },
+  options: { picked: number[]; grow?: boolean; growAngleDeg?: number; addFaces?: number[]; excludeFaces?: number[]; weldMm?: number; features?: boolean; featureHeightMm?: number },
 ): WallFaces {
   const ix = indexSolid(solid, options.weldMm ?? RIB_WALL_DEFAULTS.weldMm);
   const angle = options.growAngleDeg ?? RIB_WALL_DEFAULTS.growAngleDeg;
+  const findFeatures = options.features !== false;
+  const tallMm = options.featureHeightMm ?? FEATURE_HEIGHT_MM;
   const excluded = new Set(options.excludeFaces ?? []);
   const picked = [...new Set(options.picked)].filter((f) => ix.faceTris.has(f)).sort((a, b) => a - b);
   const taken = new Set(picked.filter((f) => !excluded.has(f)));
   const grown: number[] = [];
+  const across: number[] = [];
   const stops = new Map<number, { face: number; from: number; kinkDeg: number }>();
-  if (options.grow !== false) {
-    const queue = [...taken].sort((a, b) => a - b);
-    while (queue.length) {
-      const f = queue.shift()!;
-      const border = borderOf(ix, f, angle);
+  const features: WallFeature[] = [];
+  const inFeature = new Set<number>();
+  const islandSeeds: { f: number; g: number }[] = [];
+  const sharpSeeds: { f: number; g: number }[] = [];
+  const queue = [...taken].sort((a, b) => a - b);
+  let head = 0;
+  const growNow = () => {
+    for (; head < queue.length; head += 1) {
+      const f = queue[head]!;
+      const border = borderOf(ix, f, angle, findFeatures ? faceGeometry(ix, f).inner : undefined);
       for (const g of [...border.keys()].sort((a, b) => a - b)) {
         if (taken.has(g) || excluded.has(g)) continue;
         const row = border.get(g)!;
-        if (row.smoothMm >= row.lengthMm * 0.5) {
+        const island = findFeatures && row.innerMm > row.lengthMm * 0.5;
+        if (!island && options.grow !== false && row.smoothMm >= row.lengthMm * 0.5) {
           taken.add(g);
           grown.push(g);
           queue.push(g);
-        } else {
-          const kink = round(row.kinkDeg, 1);
-          const old = stops.get(g);
-          if (!old || kink < old.kinkDeg) stops.set(g, { face: g, from: f, kinkDeg: kink });
+          continue;
+        }
+        const kink = round(row.kinkDeg, 1);
+        const old = stops.get(g);
+        if (!old || kink < old.kinkDeg) stops.set(g, { face: g, from: f, kinkDeg: kink });
+        if (island) islandSeeds.push({ f, g });
+        else if (findFeatures) sharpSeeds.push({ f, g });
+      }
+    }
+  };
+  growNow();
+  if (findFeatures) {
+    let island = 0;
+    let sharp = 0;
+    for (;;) {
+      for (; island < islandSeeds.length; island += 1) {
+        const { f, g } = islandSeeds[island]!;
+        if (inFeature.has(g) || taken.has(g)) continue;
+        const found = standingOn(ix, f, g, Infinity, taken, excluded);
+        if (!found) continue;
+        // The hole in f's outline the feature rises from.
+        const geo = faceGeometry(ix, f);
+        let loop: FaceLoop | undefined;
+        for (const h of found.faces) {
+          for (const t of ix.faceTris.get(h) ?? []) {
+            for (let k = 0; k < 3 && !loop; k += 1) {
+              const i = geo.loopOf.get(ekey(ix.vid[t * 3 + k]!, ix.vid[t * 3 + ((k + 1) % 3)]!));
+              if (i !== undefined && dot(geo.loops[i]!.vecArea, geo.normalSum) < 0) loop = geo.loops[i];
+            }
+            if (loop) break;
+          }
+          if (loop) break;
+        }
+        for (const h of found.faces) inFeature.add(h);
+        features.push({ kind: "island", faces: found.faces, on: f, ...(loop ? { loop: loop.verts } : {}) });
+      }
+      let more = false;
+      for (; sharp < sharpSeeds.length; sharp += 1) {
+        const { f, g } = sharpSeeds[sharp]!;
+        if (inFeature.has(g) || taken.has(g)) continue;
+        const found = standingOn(ix, f, g, tallMm, taken, excluded);
+        if (!found) continue;
+        for (const h of found.faces) inFeature.add(h);
+        features.push({ kind: "standing", faces: found.faces, on: f });
+        if (options.grow === false) continue;
+        for (const h of found.same) {
+          if (taken.has(h) || excluded.has(h)) continue;
+          taken.add(h);
+          grown.push(h);
+          across.push(h);
+          queue.push(h);
+          more = true;
         }
       }
+      if (!more) break;
+      growNow();
     }
   }
   const added: number[] = [];
@@ -709,7 +1125,9 @@ export function wallFaces(
     grown,
     added,
     excluded: [...excluded].sort((a, b) => a - b),
-    stops: [...stops.values()].filter((s) => !taken.has(s.face)).sort((a, b) => a.face - b.face),
+    stops: [...stops.values()].filter((s) => !taken.has(s.face) && !inFeature.has(s.face)).sort((a, b) => a.face - b.face),
+    features: features.filter((feat) => !feat.faces.some((h) => taken.has(h))),
+    across: across.sort((a, b) => a - b),
   };
 }
 
@@ -721,8 +1139,127 @@ interface InMesh {
   L: number[];
 }
 
+/** Ear clipping of a simple polygon in 2D (either winding): triangles as index triples, empty when it will not clip. */
+function earClip(poly: readonly [number, number][]): [number, number, number][] {
+  const n = poly.length;
+  if (n < 3) return [];
+  let area = 0;
+  for (let i = 0; i < n; i += 1) area += poly[i]![0] * poly[(i + 1) % n]![1] - poly[(i + 1) % n]![0] * poly[i]![1];
+  const idx = poly.map((_, i) => i);
+  if (area < 0) idx.reverse();
+  const out: [number, number, number][] = [];
+  const crossZ = (a: [number, number], b: [number, number], c: [number, number]) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const eps = 1e-12 * Math.max(1, Math.abs(area));
+  let guard = n * n + 10;
+  while (idx.length > 3 && guard-- > 0) {
+    let cut = false;
+    for (let i = 0; i < idx.length; i += 1) {
+      const ia = idx[(i + idx.length - 1) % idx.length]!;
+      const ib = idx[i]!;
+      const ic = idx[(i + 1) % idx.length]!;
+      const a = poly[ia]!;
+      const b = poly[ib]!;
+      const c = poly[ic]!;
+      if (crossZ(a, b, c) <= eps) continue;
+      let inside = false;
+      for (const k of idx) {
+        if (k === ia || k === ib || k === ic) continue;
+        const p = poly[k]!;
+        if (crossZ(a, b, p) >= 0 && crossZ(b, c, p) >= 0 && crossZ(c, a, p) >= 0) {
+          inside = true;
+          break;
+        }
+      }
+      if (inside) continue;
+      out.push([ia, ib, ic]);
+      idx.splice(i, 1);
+      cut = true;
+      break;
+    }
+    if (!cut) return [];
+  }
+  if (idx.length === 3) out.push([idx[0]!, idx[1]!, idx[2]!]);
+  return out;
+}
+
+/** One footprint: the wall under a feature, filled in as plain wall. */
+interface Footprint {
+  feature: number;
+  triangles: number;
+  areaMm2: number;
+  how: "outline" | "shadow";
+}
+
+/**
+ * The wall under each feature, filled in, as triangles (nine numbers each) labelled −1 − the feature's index: an island's
+ * hole in the floor's outline clipped into triangles; a standing feature's faces that look away from the wall cast onto
+ * it (a rib's top covers its foot exactly; a flange that would overhang the wall around it is left out). A feature that
+ * gives nothing stays a hole in the wall.
+ */
+function featureFills(ix: Indexed, features: readonly WallFeature[], wallFacesSet: ReadonlySet<number>): { pos: number[]; label: number[]; footprints: Footprint[] } {
+  const pos: number[] = [];
+  const label: number[] = [];
+  const footprints: Footprint[] = [];
+  if (features.length === 0) return { pos, label, footprints };
+  const own: number[] = [];
+  for (let t = 0; t < ix.count; t += 1) if (wallFacesSet.has(ix.face[t]!)) for (let i = 0; i < 9; i += 1) own.push(ix.pos[t * 9 + i]!);
+  const wallTris = new TriSet(Float64Array.from(own));
+  const push = (a: V3, b: V3, c: V3, n: V3, lab: number): number => {
+    const tn = cross(sub(b, a), sub(c, a));
+    const area = len(tn) / 2;
+    if (!(area > 1e-9)) return 0;
+    if (dot(tn, n) < 0) [b, c] = [c, b];
+    pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    label.push(lab);
+    return area;
+  };
+  features.forEach((feat, k) => {
+    const lab = -1 - k;
+    const geo = faceGeometry(ix, feat.on);
+    const surface = geo.surface;
+    let count = 0;
+    let area = 0;
+    let how: Footprint["how"] = "shadow";
+    if (feat.kind === "island" && feat.loop && feat.loop.length >= 3) {
+      how = "outline";
+      const pts = feat.loop.map((v) => vAt(ix, v));
+      const n = unit(geo.normalSum);
+      const e1 = unit(Math.abs(n[0]) < 0.9 ? cross(n, [1, 0, 0]) : cross(n, [0, 1, 0]));
+      const e2 = cross(n, e1);
+      for (const [a, b, c] of earClip(pts.map((p) => [dot(p, e1), dot(p, e2)] as [number, number]))) {
+        const nn = surface ? normalOf(surface, mul(add(add(pts[a]!, pts[b]!), pts[c]!), 1 / 3)) : n;
+        const got = push(pts[a]!, pts[b]!, pts[c]!, nn, lab);
+        if (got > 0) {
+          count += 1;
+          area += got;
+        }
+      }
+    } else if (surface) {
+      for (const h of feat.faces) {
+        for (const t of ix.faceTris.get(h) ?? []) {
+          const c = mul(add(add(ix.all.corner(t, 0), ix.all.corner(t, 1)), ix.all.corner(t, 2)), 1 / 3);
+          const n = normalOf(surface, ontoSurface(surface, c));
+          if (dot(triNormal(ix, t), n) <= 0.2) continue;
+          const [a, b, cc] = [0, 1, 2].map((j) => ontoSurface(surface, ix.all.corner(t, j))) as [V3, V3, V3];
+          // Where the cast lands on the wall itself (an overhang), it would lie twice: left out.
+          const mid = mul(add(add(a, b), cc), 1 / 3);
+          const onWall = wallTris.closest(mid, 1e-3);
+          if (onWall && onWall.d < 1e-3) continue;
+          const got = push(a, b, cc, n, lab);
+          if (got > 0) {
+            count += 1;
+            area += got;
+          }
+        }
+      }
+    }
+    footprints.push({ feature: k, triangles: count, areaMm2: round(area, 2), how });
+  });
+  return { pos, label, footprints };
+}
+
 /** The wall's triangles welded into one mesh: T-junctions split, degenerate and duplicate triangles out, winding consistent. */
-function weldWall(ix: Indexed, faces: ReadonlySet<number>, weld: number): { mesh: InMesh; stats: RibWallReport["input"] } {
+function weldWall(soup: { pos: ArrayLike<number>; label: ArrayLike<number> }, weld: number): { mesh: InMesh; stats: RibWallReport["input"] } {
   const welder = new Welder(weld);
   const T: number[] = [];
   const L: number[] = [];
@@ -730,10 +1267,11 @@ function weldWall(ix: Indexed, faces: ReadonlySet<number>, weld: number): { mesh
   let duplicate = 0;
   let source = 0;
   const seen = new Set<string>();
-  for (let t = 0; t < ix.count; t += 1) {
-    if (!faces.has(ix.face[t]!)) continue;
+  const count = Math.floor(soup.pos.length / 9);
+  const corner = (t: number, k: number): V3 => [soup.pos[t * 9 + k * 3]!, soup.pos[t * 9 + k * 3 + 1]!, soup.pos[t * 9 + k * 3 + 2]!];
+  for (let t = 0; t < count; t += 1) {
     source += 1;
-    const ids = [0, 1, 2].map((k) => welder.id(ix.all.corner(t, k)));
+    const ids = [0, 1, 2].map((k) => welder.id(corner(t, k)));
     const [a, b, c] = ids as Tri3;
     const pa: V3 = [welder.pts[a * 3]!, welder.pts[a * 3 + 1]!, welder.pts[a * 3 + 2]!];
     const pb: V3 = [welder.pts[b * 3]!, welder.pts[b * 3 + 1]!, welder.pts[b * 3 + 2]!];
@@ -749,7 +1287,7 @@ function weldWall(ix: Indexed, faces: ReadonlySet<number>, weld: number): { mesh
     }
     seen.add(key);
     T.push(a, b, c);
-    L.push(ix.face[t]!);
+    L.push(soup.label[t]!);
   }
   const P = welder.pts;
   const at = (v: number): V3 => [P[v * 3]!, P[v * 3 + 1]!, P[v * 3 + 2]!];
@@ -757,17 +1295,17 @@ function weldWall(ix: Indexed, faces: ReadonlySet<number>, weld: number): { mesh
   let tJunctions = 0;
   const tol = Math.max(weld * 2, 1e-3);
   for (let round_ = 0; round_ < 4; round_ += 1) {
-    const count = new Map<number, number>();
+    const uses = new Map<number, number>();
     for (let t = 0; t < T.length / 3; t += 1) for (let k = 0; k < 3; k += 1) {
       const key = ekey(T[t * 3 + k]!, T[t * 3 + ((k + 1) % 3)]!);
-      count.set(key, (count.get(key) ?? 0) + 1);
+      uses.set(key, (uses.get(key) ?? 0) + 1);
     }
     const onBoundary = new Set<number>();
     const open: [number, number, number][] = [];
     for (let t = 0; t < T.length / 3; t += 1) for (let k = 0; k < 3; k += 1) {
       const a = T[t * 3 + k]!;
       const b = T[t * 3 + ((k + 1) % 3)]!;
-      if (count.get(ekey(a, b)) === 1) {
+      if (uses.get(ekey(a, b)) === 1) {
         open.push([t, k, 0]);
         onBoundary.add(a);
         onBoundary.add(b);
@@ -894,10 +1432,15 @@ class Remesher {
   private readonly lmin: number;
   private readonly target: number;
   private readonly chord: number;
+  /** The most triangles the sizes may come to (0: no limit). */
+  private readonly budget: number;
+  /** The most the budget grew the sizes by, 1 when it never did. */
+  coarsened = 1;
 
-  constructor(mesh: InMesh, target: number, chord: number, cornerDeg: number) {
+  constructor(mesh: InMesh, target: number, chord: number, cornerDeg: number, budget = 0) {
     this.target = target;
     this.chord = chord;
+    this.budget = budget;
     this.P = [...mesh.P];
     this.T = [...mesh.T];
     this.L = [...mesh.L];
@@ -1137,6 +1680,32 @@ class Remesher {
         const l = dist(this.at(a), this.at(b));
         this.H[a] = Math.min(this.H[a]!, this.H[b]! + 0.3 * l);
         this.H[b] = Math.min(this.H[b]!, this.H[a]! + 0.3 * l);
+      }
+    }
+    // The budget: the triangles these sizes come to (each triangle's area over an equilateral one of its corners' mean
+    // size). Over it, every size short of the target grows by the same factor, so tight curves still get the finest
+    // mesh and the whole stays within it.
+    if (this.budget > 0) {
+      for (let tries = 0; tries < 6; tries += 1) {
+        let count = 0;
+        for (let t = 0; t < this.T.length / 3; t += 1) {
+          if (!this.alive(t)) continue;
+          const [a, b, c] = [this.T[t * 3]!, this.T[t * 3 + 1]!, this.T[t * 3 + 2]!];
+          const h = (this.H[a]! + this.H[b]! + this.H[c]!) / 3;
+          count += len(cross(sub(this.at(b), this.at(a)), sub(this.at(c), this.at(a)))) / 2 / ((Math.sqrt(3) / 4) * h * h);
+        }
+        // Measured: the remesh ends about a fifth over this count (edges run between 4/5 and 4/3 of the size).
+        const expected = 1.2 * count;
+        if (expected <= this.budget) break;
+        const grow = Math.sqrt(expected / this.budget) * 1.05;
+        let moved = false;
+        for (let v = 0; v < nv; v += 1) {
+          if (this.H[v]! >= this.target) continue;
+          this.H[v] = Math.min(this.target, this.H[v]! * grow);
+          moved = true;
+        }
+        this.coarsened = Math.max(this.coarsened, grow);
+        if (!moved) break;
       }
     }
   }
@@ -1551,12 +2120,13 @@ function insideRegion(region: PlaceRegion, p: V3, n: V3, thickness: number): boo
 /**
  * Everything the planner needs from the part, from a solid and the faces the user clicked. A refusal is a sentence.
  */
-export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall | { reason: string } {
+export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall | { reason: string; missed?: NotOnWall[] } {
   const start = now();
   const count = Math.floor(solid.positions.length / 9);
   if (count === 0 || solid.positions.length % 9 !== 0) return { reason: "The solid has no triangles to read." };
   if (solid.faceOf.length < count) return { reason: "The solid's mesh does not name the face of every triangle." };
   if (!options.picked || options.picked.length === 0) return { reason: "Pick a face of the wall to reinforce." };
+  if (options.thicknessMm !== undefined && !(Number.isFinite(options.thicknessMm) && options.thicknessMm > 0)) return { reason: "A given wall thickness must be a number above zero, in mm." };
   const weld = options.weldMm ?? RIB_WALL_DEFAULTS.weldMm;
   const ix = indexSolid(solid, weld);
   const missing = options.picked.filter((f) => !ix.faceTris.has(f));
@@ -1568,9 +2138,11 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   if (missing.length) warnings.push(`The solid has no face ${missing.join(", ")}; it was left out.`);
 
   // --- 1. Faces.
-  const sel = wallFaces(solid, { picked: options.picked, grow: options.grow, growAngleDeg: options.growAngleDeg, addFaces: options.addFaces, excludeFaces: options.excludeFaces, weldMm: weld });
+  const sel = wallFaces(solid, { picked: options.picked, grow: options.grow, growAngleDeg: options.growAngleDeg, addFaces: options.addFaces, excludeFaces: options.excludeFaces, weldMm: weld, ...(options.features === false ? { features: false } : {}) });
   if (sel.faces.length === 0) return { reason: "Every picked face is excluded, so there is no wall." };
   const wallSet = new Set(sel.faces);
+  // The wall under each feature standing on it, filled in as plain wall.
+  const fills = featureFills(ix, sel.features, wallSet);
   const tSelect = now();
 
   // --- The solid's rays, and thickness on the original wall triangles for the target edge.
@@ -1586,16 +2158,62 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     if (read) samples.push(read.distance);
   }
   const first = median(samples);
-  const roughT = Number.isFinite(first) ? first : 2;
+  const roughT = options.thicknessMm !== undefined && options.thicknessMm > 0 ? options.thicknessMm : Number.isFinite(first) ? first : 2;
+  for (let i = 0; i < fills.label.length; i += 1) areaIn += len(cross(sub([fills.pos[i * 9 + 3]!, fills.pos[i * 9 + 4]!, fills.pos[i * 9 + 5]!], [fills.pos[i * 9]!, fills.pos[i * 9 + 1]!, fills.pos[i * 9 + 2]!]), sub([fills.pos[i * 9 + 6]!, fills.pos[i * 9 + 7]!, fills.pos[i * 9 + 8]!], [fills.pos[i * 9]!, fills.pos[i * 9 + 1]!, fills.pos[i * 9 + 2]!]))) / 2;
   const byCount = Math.sqrt((4 * areaIn) / (Math.sqrt(3) * (options.targetTriangles ?? RIB_WALL_DEFAULTS.targetTriangles)));
   const target = options.targetEdgeMm ?? Math.max(2 * roughT, byCount);
 
-  // --- 2. Mesh.
-  const welded = weldWall(ix, wallSet, weld);
-  const rm = new Remesher(welded.mesh, target, chord, RIB_WALL_DEFAULTS.cornerDeg);
+  // --- 2. Mesh. The wall's own triangles and the filled footprints, welded.
+  const soupPos: number[] = [];
+  const soupLabel: number[] = [];
+  const soupFacet: number[] = [];
+  for (let t = 0; t < ix.count; t += 1) {
+    if (!wallSet.has(ix.face[t]!)) continue;
+    for (let i = 0; i < 9; i += 1) soupPos.push(ix.pos[t * 9 + i]!);
+    soupLabel.push(ix.face[t]!);
+    soupFacet.push(ix.facet[t]!);
+  }
+  for (let i = 0; i < fills.label.length; i += 1) {
+    for (let k = 0; k < 9; k += 1) soupPos.push(fills.pos[i * 9 + k]!);
+    soupLabel.push(fills.label[i]!);
+    soupFacet.push(0);
+  }
+  // The size the remesh will come to, from the curvature it must follow at this chord: a wall that would mesh over
+  // the limit is meshed at a coarser chord, and one too big at any chord is refused with the numbers.
+  const maxTriangles = options.maxTriangles ?? RIB_WALL_DEFAULTS.maxTriangles;
+  const estimate = (c: number): number => {
+    let sum = 0;
+    for (let t = 0; t < soupLabel.length; t += 1) {
+      const p = (k: number): V3 => [soupPos[t * 9 + k * 3]!, soupPos[t * 9 + k * 3 + 1]!, soupPos[t * 9 + k * 3 + 2]!];
+      const a = p(0);
+      const b = p(1);
+      const cc = p(2);
+      const area = len(cross(sub(b, a), sub(cc, a))) / 2;
+      const edge = Math.max(dist(a, b), dist(b, cc), dist(cc, a));
+      const k = edge > 0 ? ((soupFacet[t]! * Math.PI) / 180) / edge : 0;
+      const h = k > 0 ? Math.max(target / 8, Math.min(target, 0.75 * Math.sqrt((8 * c) / k))) : target;
+      sum += area / ((Math.sqrt(3) / 4) * h * h);
+    }
+    return sum;
+  };
+  let chordUsed = chord;
+  const atChord = estimate(chord);
+  let planned = atChord;
+  const chordCap = Math.max(chord, Math.min(1, 0.5 * roughT));
+  while (planned > maxTriangles && chordUsed < chordCap) {
+    chordUsed = Math.min(chordCap, chordUsed * 2);
+    planned = estimate(chordUsed);
+  }
+  if (planned > maxTriangles) {
+    return { reason: `The wall is too big to plan in one go: ${sel.faces.length} face${sel.faces.length === 1 ? "" : "s"}, ${round(areaIn, 0)} mm², about ${Math.round(planned)} triangles even with the mesh following its curves to ${round(chordUsed, 2)} mm (the limit is ${maxTriangles}). Take a smaller wall: click one face with growth off (grow: false), or leave faces out (excludeFaces).` };
+  }
+  if (chordUsed > chord) warnings.push(`The wall is curved over much of its ${round(areaIn, 0)} mm²: meshed to follow its curves within ${round(chord, 2)} mm it would take about ${Math.round(atChord)} triangles, over the limit of ${maxTriangles}, so it follows them within ${round(chordUsed, 2)} mm (about ${Math.round(planned)}).`);
+  const welded = weldWall({ pos: soupPos, label: soupLabel }, weld);
+  const rm = new Remesher(welded.mesh, target, chordUsed, RIB_WALL_DEFAULTS.cornerDeg, maxTriangles);
   rm.run(options.iterations ?? RIB_WALL_DEFAULTS.iterations, minDeg);
   const chordMax = rm.chordError();
   const out = rm.compact();
+  if (rm.coarsened > 1.05) warnings.push(`Followed to ${round(chordUsed, 2)} mm, the wall's curves and outlines (holes, footprints) would mesh past ${maxTriangles} triangles, so the mesh along them is up to ${round(rm.coarsened, 2)}× coarser.`);
   const tRemesh = now();
   const V = out.P;
   const T = out.T;
@@ -1651,13 +2269,53 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
       oppFace[v] = read.face;
     }
   }
-  const readings = raw.filter((x) => Number.isFinite(x));
+  // What stands on the far side (ribs under an outer face, a collar, a pad) is not the wall: a ray that leaves through
+  // a face off the far skin and reads thicker than the wall around is set aside, and the thickness there is filled in
+  // from the readings around it. The far skin: the face most rays leave through, grown as the wall is (smooth faces,
+  // and faces on its surface beyond what stands on it).
+  const underFeature = new Array<boolean>(nv).fill(false);
+  if (options.thicknessMm === undefined && options.features !== false) {
+    const votes = new Map<number, number>();
+    for (const f of oppFace) if (f >= 0) votes.set(f, (votes.get(f) ?? 0) + 1);
+    let top = -1;
+    for (const [f, n] of [...votes.entries()].sort((a, b) => a[0] - b[0])) if (top < 0 || n > votes.get(top)!) top = f;
+    if (top >= 0) {
+      const farSkin = new Set(wallFaces(solid, { picked: [top], weldMm: weld }).faces);
+      const skinReadings = raw.filter((x, v) => Number.isFinite(x) && farSkin.has(oppFace[v]!));
+      const skinMedian = skinReadings.length ? median(skinReadings) : NaN;
+      if (Number.isFinite(skinMedian)) {
+        for (let v = 0; v < nv; v += 1) {
+          if (oppFace[v]! >= 0 && !farSkin.has(oppFace[v]!) && raw[v]! > 1.15 * skinMedian) underFeature[v] = true;
+        }
+      }
+    }
+  }
+  const readings = raw.filter((x, v) => Number.isFinite(x) && !underFeature[v]);
   const med = readings.length ? median(readings) : roughT;
   const cap = thickRatio * med;
-  const capped = raw.map((x) => (Number.isFinite(x) ? Math.min(x, cap) : cap));
-  const thickness = capped.map((x, v) => median([x, ...[...ring[v]!].map((y) => capped[y]!)]));
-  const thick = thickness.map((x) => x >= cap - 1e-9);
+  const capped = raw.map((x, v) => (underFeature[v] ? NaN : Number.isFinite(x) ? Math.min(x, cap) : cap));
+  // Filled in under features: each from the readings around it, ring by ring (Jacobi passes), the median at the last.
+  for (let pass = 0; pass < 500; pass += 1) {
+    const next: [number, number][] = [];
+    for (let v = 0; v < nv; v += 1) {
+      if (!Number.isNaN(capped[v]!)) continue;
+      let sum = 0;
+      let n = 0;
+      for (const y of ring[v]!) if (!Number.isNaN(capped[y]!)) {
+        sum += capped[y]!;
+        n += 1;
+      }
+      if (n) next.push([v, sum / n]);
+    }
+    if (next.length === 0) break;
+    for (const [v, x] of next) capped[v] = x;
+  }
+  for (let v = 0; v < nv; v += 1) if (Number.isNaN(capped[v]!)) capped[v] = med;
+  const givenT = options.thicknessMm !== undefined && options.thicknessMm > 0 ? options.thicknessMm : null;
+  const thickness = givenT !== null ? capped.map(() => givenT) : capped.map((x, v) => (underFeature[v] ? x : median([x, ...[...ring[v]!].filter((y) => !underFeature[y]).map((y) => capped[y]!)])));
+  const thick = thickness.map((x) => givenT === null && x >= cap - 1e-9);
   const unread = raw.filter((x) => !Number.isFinite(x)).length;
+  const underCount = underFeature.filter(Boolean).length;
 
   // --- 4. Boundary loops.
   const nextOf = new Map<number, number[]>();
@@ -1816,7 +2474,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   const given = new Set<number>();
   (options.holds ?? []).forEach((hold, index) => {
     const hit = new Set<number>();
-    const why = (text: string) => notOnWall.push({ kind: "hold", index, why: text });
+    const why = (text: string) => notOnWall.push({ kind: "hold", index, why: text, dropped: true });
     if (hold.kind === "bed" || hold.kind === "plane") {
       let origin: V3;
       let normal: V3;
@@ -1876,7 +2534,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   const loadCase: WallLoad[] = [];
   const loadReport: RibWallReport["loads"] = [];
   (options.loads ?? []).forEach((load, index) => {
-    const why = (text: string) => notOnWall.push({ kind: "load", index, why: text });
+    const why = (text: string, dropped = true) => notOnWall.push({ kind: "load", index, why: text, dropped });
     let tris: number[] = [];
     let sign = 1;
     let share = 0;
@@ -1933,9 +2591,14 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
       return;
     }
     if (load.kind === "pressure") {
+      // Under the share a force needs, the pressure that is left is not the load that was given: refused like a force.
+      if (share < RIB_WALL_DEFAULTS.loadShare) {
+        why(`Only ${Math.round(share * 100)} % of the pressed area is on the wall or behind it; the rest of the pressure would be left out.`);
+        return;
+      }
       // Pressure presses into the face it is on: on the wall that is against its normal, from the far side along it.
       loadCase.push({ kind: "pressure", triangles: tris, pressure: sign * load.magnitude });
-      if (share < 0.999) why(`Only ${Math.round(share * 100)} % of the pressed area is on the wall or behind it; the rest is left out.`);
+      if (share < 0.999) why(`Only ${Math.round(share * 100)} % of the pressed area is on the wall or behind it; the rest is left out.`, false);
     } else {
       if (share < RIB_WALL_DEFAULTS.loadShare) {
         why(`Only ${Math.round(share * 100)} % of the loaded area is on the wall or behind it; the force cannot be shared out without guessing.`);
@@ -1950,6 +2613,24 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     }
     loadReport.push({ index, triangles: tris.length, share: round(share, 3), how });
   });
+  // A hold or load the model cannot carry is never swapped silently for the default: refused by name, or left out
+  // only when the caller asked for even pressure instead, and then said so.
+  const missed = notOnWall.filter((row) => row.dropped);
+  let substituted: RibWallReport["substituted"];
+  if (missed.length) {
+    if ((options.ifMissed ?? "refuse") === "refuse") return { reason: missedSentence(missed), missed };
+    const loadsGiven = (options.loads ?? []).length > 0;
+    const evenPressure = loadsGiven && loadCase.length === 0;
+    const holds = [...new Set(missed.filter((row) => row.kind === "hold").map((row) => row.index))];
+    const loads = [...new Set(missed.filter((row) => row.kind === "load").map((row) => row.index))];
+    const parts: string[] = [];
+    if (loads.length) parts.push(`${listOf("load", loads)} ${loads.length > 1 ? "miss" : "misses"} the wall and ${loads.length > 1 ? "were" : "was"} left out`);
+    if (holds.length) parts.push(`${listOf("hold", holds)} ${holds.length > 1 ? "miss" : "misses"} the wall and ${holds.length > 1 ? "were" : "was"} left out`);
+    const head = evenPressure ? "Planned under even pressure instead of the given load" : "Planned without part of what was given";
+    const sentence = `${head}: ${parts.join("; ")}${given.size === 0 && holds.length ? ", so the wall is held where it joins the part" : ""}.`;
+    substituted = { holds, loads, evenPressure, sentence };
+    warnings.unshift(sentence);
+  }
 
   // --- 6. Zones.
   const zones: PlannerZone[] = [];
@@ -2088,6 +2769,41 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     }
     wallZones.push({ index, definition: zone, triangles: tris, areaMm2: round(area, 2), centre: r3v(mul(c, 1 / (area || 1))), bounds: { min: r3v(lo), max: r3v(hi) }, how, ...(capped !== undefined ? { capped } : {}), ...(capMin !== undefined ? { capMinMm: capMin } : {}) });
   });
+  // --- What stands on the wall: each footprint a no-rib zone with a margin; the wall under it is plain, so the
+  // feature's own stiffness is not counted.
+  const featureMargin = Math.max(0, options.featureMarginMm ?? RIB_WALL_DEFAULTS.featureMarginMm);
+  const featureReport: RibWallReport["features"] = { count: 0, faces: 0, footprintMm2: 0, items: [], margin: featureMargin, note: "" };
+  const underFeatureTris = new Map<number, number[]>();
+  out.L.forEach((label, t) => {
+    if (label >= 0) return;
+    const row = underFeatureTris.get(-1 - label);
+    if (row) row.push(t);
+    else underFeatureTris.set(-1 - label, [t]);
+  });
+  sel.features.forEach((feat, k) => {
+    const tris = underFeatureTris.get(k) ?? [];
+    let area = 0;
+    let c: V3 = [0, 0, 0];
+    for (const t of tris) {
+      area += tarea[t]!;
+      c = add(c, mul(centroid[t]!, tarea[t]!));
+    }
+    const fp = fills.footprints[k];
+    featureReport.items.push({ kind: feat.kind, faces: feat.faces.length, on: feat.on, triangles: tris.length, areaMm2: round(area, 2), centre: tris.length ? r3v(mul(c, 1 / (area || 1))) : null, filled: tris.length > 0, how: fp?.how ?? "shadow" });
+    featureReport.count += 1;
+    featureReport.faces += feat.faces.length;
+    featureReport.footprintMm2 += area;
+  });
+  // One planner zone for every footprint: the same rule and margin, and one pass over the mesh for the margin.
+  const footprintTris = [...underFeatureTris.values()].flat().sort((a, b) => a - b);
+  if (footprintTris.length) zones.push({ triangles: footprintTris, mode: { kind: "noRibs" }, margin: featureMargin });
+  featureReport.footprintMm2 = round(featureReport.footprintMm2, 1);
+  if (featureReport.count) {
+    const unfilled = featureReport.items.filter((row) => !row.filled).length;
+    featureReport.note = `${featureReport.count} feature${featureReport.count === 1 ? "" : "s"} already stand${featureReport.count === 1 ? "s" : ""} on the wall (${featureReport.faces} faces, ${featureReport.footprintMm2} mm² of footprint). The wall is modelled plain under ${featureReport.count === 1 ? "it" : "them"}, so ${featureReport.count === 1 ? "its" : "their"} stiffness is not counted, and new ribs keep ${round(featureMargin, 1)} mm clear of ${featureReport.count === 1 ? "it" : "them"}.${unfilled ? ` ${unfilled} could not be filled in under and stay${unfilled === 1 ? "s" : ""} a hole in the wall.` : ""}`;
+    warnings.push(featureReport.note);
+  }
+  if (underCount) warnings.push(`${underCount} vertices read through something standing on the far side (a rib, a collar, a pad); the thickness there is filled in from the wall around it, not read.`);
   const zoneKind = (z: WallZoneInput) => Object.keys(z.region)[0] ?? "?";
   const zoneReport: RibWallReport["zones"] = wallZones.map((z) => ({
     index: z.index,
@@ -2125,21 +2841,23 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   const finiteClear = clearance.filter((x) => Number.isFinite(x));
   const end = now();
   const report: RibWallReport = {
-    faces: { taken: sel.faces, picked: sel.picked, grown: sel.grown, added: sel.added, excluded: sel.excluded, stops: sel.stops },
+    faces: { taken: sel.faces, picked: sel.picked, grown: sel.grown, added: sel.added, excluded: sel.excluded, stops: sel.stops, across: sel.across },
     areaMm2: round(tarea.reduce((s, a) => s + a, 0), 1),
     vertices: nv,
     triangles: nt,
     input: welded.stats,
-    edge: { targetMm: round(target), minMm: round(emin), meanMm: round(esum / (ecount || 1)), maxMm: round(emax), chordMm: chord, chordMaxMm: round(chordMax, 4) },
+    edge: { targetMm: round(target), minMm: round(emin), meanMm: round(esum / (ecount || 1)), maxMm: round(emax), chordMm: round(chordUsed, 4), chordMaxMm: round(chordMax, 4) },
     quality: { minAngleDeg: round(minAngle, 2), under15: under, under15Share: round(under / (nt || 1), 4) },
-    thickness: { minMm: round(Math.min(...thickness)), medianMm: round(median(thickness)), maxMm: round(Math.max(...thickness)), thick: thick.filter(Boolean).length, capMm: round(cap), unread },
-    clearance: { minMm: finiteClear.length ? round(Math.min(...finiteClear)) : Infinity, open: nv - finiteClear.length },
+    thickness: { minMm: round(minOf(thickness)), medianMm: round(median(thickness)), maxMm: round(maxOf(thickness)), thick: thick.filter(Boolean).length, capMm: round(cap), unread, underFeatures: underCount, ...(givenT !== null ? { givenMm: givenT } : {}) },
+    features: featureReport,
+    clearance: { minMm: finiteClear.length ? round(minOf(finiteClear)) : Infinity, open: nv - finiteClear.length },
     loops: loops.map((l, i) => ({ class: l.class, lengthMm: l.lengthMm, joinedShare: l.joinedShare, vertices: l.vertices.length, hole: i !== longest })),
     holes,
     holds: { mode: useJoined && useGiven ? "both" : useGiven ? "given" : "joined", clamped: clamped.size, joined: joinedVerts.size, given: given.size },
     loads: loadReport,
     zones: zoneReport,
     notOnWall,
+    ...(substituted ? { substituted } : {}),
     warnings,
     ms: { select: round(tSelect - start, 1), remesh: round(tRemesh - tSelect, 1), measure: round(end - tRemesh, 1), total: round(end - start, 1) },
   };
@@ -2166,6 +2884,30 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
 
 const r6 = (n: number) => round(n, 6);
 const r3v6 = (p: V3): V3 => [r6(p[0]), r6(p[1]), r6(p[2])];
+
+/** "Load 1", "Loads 1 and 3", "Holds 1, 2 and 4", counting from one. */
+function listOf(what: string, indexes: readonly number[]): string {
+  const n = indexes.map((i) => String(i + 1));
+  if (n.length === 1) return `${what} ${n[0]}`;
+  return `${what}s ${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
+}
+
+/**
+ * The refusal when a hold or load cannot be put on the wall: each one by name with why, then what to do. The caller adds
+ * how to plan under even pressure instead in its own words (a field over MCP, a button in the panel).
+ */
+export function missedSentence(missed: readonly NotOnWall[]): string {
+  const rows = missed.map((row) => `${row.kind === "hold" ? "Hold" : "Load"} ${row.index + 1}: ${row.why.replace(/\.$/, "")}.`);
+  const loads = missed.some((row) => row.kind === "load");
+  const holds = missed.some((row) => row.kind === "hold");
+  const what = loads && holds ? "holds and loads" : loads ? "load" : "hold";
+  const fix = [
+    "Include the face it is on in the wall",
+    loads ? "or put the load on a face of the wall or of its far side" : "",
+    holds ? "or hold a face of the wall or one along its border" : "",
+  ].filter(Boolean).join(", ");
+  return `The plan would not carry the ${what} you gave, so it was not made. ${rows.join(" ")} ${fix}.`;
+}
 
 /** Three fixed directions, none along an axis, for the inside test. */
 const INSIDE_DIRS: V3[] = [unit([0.31, 0.52, 0.79]), unit([-0.67, 0.21, -0.71]), unit([0.43, -0.83, 0.35])];
@@ -2218,7 +2960,7 @@ export function ribPathsFromPlan(solid: RibWallSolid, wall: Pick<RibWall, "reque
     faceOf.push(solid.faceOf[t]!);
   }
   const surface = new RibSurface({ positions: own, faceOf });
-  const reach = Math.max(2, 2 * Math.max(...wall.request.mesh.thickness));
+  const reach = Math.max(2, 2 * maxOf(wall.request.mesh.thickness));
   let snapMax = 0;
   const paths = ribs.map((rib) => {
     const row: PlannedPath = Array.isArray(rib) ? { points: rib } : rib;

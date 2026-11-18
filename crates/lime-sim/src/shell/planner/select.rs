@@ -160,7 +160,7 @@ pub(crate) struct Evaluator {
     pub seconds: f64,
 }
 
-fn evaluate(
+pub(crate) fn evaluate(
     model: &mut ShellModel,
     cases: &[LoadCase],
     side: RibSide,
@@ -328,6 +328,11 @@ pub(crate) struct Outcome {
     pub stopped: bool,
     /// Seconds in selection, connection, pruning, sizing.
     pub seconds: [f64; 4],
+    /// The greedy growth reached a stiffness or deflection goal (before
+    /// the later passes, which may give a little back).
+    pub reached: bool,
+    /// The gain per volume a rib had to bring (compliance per mm³).
+    pub floor: f64,
 }
 
 fn goal_met(goal: Goal, c0: f64, e: &Eval) -> bool {
@@ -380,7 +385,12 @@ pub(crate) fn run(
     let mut seconds = [0.0; 4];
     let mut stopped = false;
     let workers = ev.workers().max(1);
-    let finish = |design: Vec<DRib>, cur: Eval, stopped: bool, seconds: [f64; 4]| {
+    let finish = |design: Vec<DRib>,
+                  cur: Eval,
+                  stopped: bool,
+                  seconds: [f64; 4],
+                  reached: bool,
+                  floor: f64| {
         let met = match ctx.goal {
             Goal::Budget { volume_mm3 } => network_volume(&ctx.pos, &design) <= volume_mm3,
             Goal::Balanced => !stopped,
@@ -393,6 +403,8 @@ pub(crate) fn run(
             goal_met: met,
             stopped,
             seconds,
+            reached,
+            floor,
         }
     };
 
@@ -487,8 +499,9 @@ pub(crate) fn run(
     }
     seconds[0] = t.elapsed().as_secs_f64();
     if stopped {
-        return Ok(finish(design, cur, true, seconds));
+        return Ok(finish(design, cur, true, seconds, false, 0.0));
     }
+    let reached = goal_met(ctx.goal, c0, &cur);
     let floor = first_eff.map_or(0.0, |f| floor_share(ctx.goal) * f);
 
     // Loose ends: extend along the stub to the boundary, a hold or a rib.
@@ -570,7 +583,7 @@ pub(crate) fn run(
     }
     if stopped {
         seconds[1] = t.elapsed().as_secs_f64();
-        return Ok(finish(design, cur, true, seconds));
+        return Ok(finish(design, cur, true, seconds, reached, floor));
     }
     // Join ribs that meet end to end nearly straight.
     let mut joined = false;
@@ -671,17 +684,36 @@ pub(crate) fn run(
     }
     seconds[2] = t.elapsed().as_secs_f64();
     if stopped {
-        return Ok(finish(design, cur, true, seconds));
+        return Ok(finish(design, cur, true, seconds, reached, floor));
     }
 
-    // Heights: lower each rib's nominal height (edges under a lower cap
-    // stay at their cap) where the goal allows, most volume saved per
-    // estimated stiffness lost first. A budget plan keeps its heights
-    // (lowering only loses stiffness there). The best few cuts are solved
-    // side by side: a refused cut freezes its rib and leaves the design as
-    // it was, so the next in the ranking is the one a one-by-one pass would
-    // try next; a taken cut changes the design and the ranking is redone.
     let t = Instant::now();
+    let (design, cur, cut_short) = size(ev, ctx, design, cur, floor, c0, rep)?;
+    stopped |= cut_short;
+    seconds[3] = t.elapsed().as_secs_f64();
+    Ok(finish(design, cur, stopped, seconds, reached, floor))
+}
+
+/// Heights: lower each rib's nominal height (edges under a lower cap stay
+/// at their cap) where the goal allows, most volume saved per estimated
+/// stiffness lost first. A budget plan keeps its heights (lowering only
+/// loses stiffness there). The best few cuts are solved side by side: a
+/// refused cut freezes its rib and leaves the design as it was, so the next
+/// in the ranking is the one a one-by-one pass would try next; a taken cut
+/// changes the design and the ranking is redone. `cur` is `design` solved
+/// on `ev`'s mesh, `c0` the bare compliance there. Returns the design, its
+/// solution, and whether a cancel cut it short.
+pub(crate) fn size(
+    ev: &mut Evaluator,
+    ctx: &Ctx,
+    mut design: Vec<DRib>,
+    mut cur: Eval,
+    floor: f64,
+    c0: f64,
+    rep: &Reporter,
+) -> Result<(Vec<DRib>, Eval, bool), SimError> {
+    let workers = ev.workers().max(1);
+    let mut stopped = false;
     rep.stage(PlanStage::Size, 0.0);
     if !matches!(ctx.goal, Goal::Budget { .. }) && !design.is_empty() {
         let step = ctx.max_height / 6.0;
@@ -769,8 +801,7 @@ pub(crate) fn run(
             }
         }
     }
-    seconds[3] = t.elapsed().as_secs_f64();
-    Ok(finish(design, cur, stopped, seconds))
+    Ok((design, cur, stopped))
 }
 
 /// Whether a design spends more than a [`Goal::Budget`] allows, counted as

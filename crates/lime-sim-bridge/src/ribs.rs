@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use lime_sim::shell::planner::{
-    choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, PlanControl, PlanEvent,
+    choose_profile, plan_ribs_with, Family, FlangeShape, Goal, Holds, LooseEndReason, PlanControl, PlanEvent,
     PlanStage, PlannerOptions, Process, ProfileRules, RibChange, RibEndKind, RibPlan,
     RibPlanRequest, RibProfile, RibRules, Zone, ZoneMode,
 };
@@ -653,6 +653,15 @@ pub fn plan_json(plan: &RibPlan) -> Value {
         })),
         "notBetterThanBaseline": plan.not_better_than_baseline,
         "stoppedEarly": plan.stopped_early,
+        "looseEnds": plan.loose_ends.iter().map(|l| json!({
+            "rib": l.rib,
+            "end": l.end,
+            "point": p6(&l.point),
+            "reason": match l.reason {
+                LooseEndReason::NoRibZone => "noRibZone",
+                LooseEndReason::Budget => "budget",
+            },
+        })).collect::<Vec<_>>(),
         "stats": {
             "candidates": plan.stats.candidates,
             "embeddedCandidates": plan.stats.embedded_candidates,
@@ -660,6 +669,15 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "embeddedTriangles": plan.stats.embedded_triangles,
             "solves": plan.stats.solves,
             "baselineSolves": plan.stats.baseline_solves,
+            "selectionFactor": r6(plan.stats.selection_factor),
+            "cleanRetries": plan.stats.clean_retries,
+            "looseEnds": {
+                "before": plan.stats.loose_ends.before,
+                "extended": plan.stats.loose_ends.extended,
+                "trimmed": plan.stats.loose_ends.trimmed,
+                "dropped": plan.stats.loose_ends.dropped,
+                "after": plan.stats.loose_ends.after,
+            },
         },
         "seconds": {
             "bare": r6(s.bare), "field": r6(s.field), "trace": r6(s.trace), "embed": r6(s.embed),

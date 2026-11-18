@@ -6,7 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-import { beadWidth, CHAMFER_DEG, chooseSection, fitFlanges, flangeUndersides, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
+import { beadWidth, CHAMFER_DEG, chooseSection, dropStraightPoints, fitFlanges, flangeUndersides, isOverhang, narrowWidth, planFlange, remapFaces, ribNetOf, ribRules, sectionArea, sectionLeast, splitByHeight, teeMinHeight } from "./auto-ribs.ts";
 import { ribWall, type RibWallSolid } from "./rib-wall.ts";
 
 let failed = 0;
@@ -90,7 +90,12 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   check("small wobble stays one path", splitByHeight(pts, [6, 5.97, 6, 6]).length === 1);
   const op = ribNetOf([{ points: pts, heights: [6, 6, 3, 6], width: 1.35, profile: "tee", fields: { flangeChamferDeg: 0 } }, { points: [[0, 10, 2], [40, 10, 2]], heights: [0.05], width: 1.35, profile: "straight" }], "Auto ribs", { wall: { faces: [6] } });
   check("the op is one ribNet with the request kept, a rib with no height left out", !("reason" in op) && op.kind === "ribNet" && (op.paths as unknown[]).length === 3 && op.height === 6 && JSON.stringify(op.auto) === JSON.stringify({ wall: { faces: [6] } }) && (op.paths as Record<string, unknown>[])[0]!.flangeChamferDeg === 0, JSON.stringify(op).slice(0, 300));
-  const many = ribNetOf(Array.from({ length: 201 }, () => ({ points: pts, heights: [6, 3, 6, 6], width: 1, profile: "straight" as const })), "x", undefined);
+  // A straight rib capped in its middle is one path, its heights per stretch: three runs end to end overlapped with
+  // coincident faces, and a kernel fuse of those lost whole runs on Linux.
+  const straight = ribNetOf([{ points: pts, heights: [6, 6, 3, 6], width: 1.35, profile: "straight" }], "x", undefined);
+  const one = "reason" in straight ? null : (straight.paths as Record<string, unknown>[]);
+  check("a straight rib capped in its middle is one path with its heights", !!one && one.length === 1 && one[0]!.height === 6 && JSON.stringify(one[0]!.heights) === "[6,6,3,6]", JSON.stringify(straight).slice(0, 300));
+  const many = ribNetOf(Array.from({ length: 201 }, () => ({ points: pts, heights: [6, 3, 6, 6], width: 1.35, profile: "tee" as const, fields: { flangeChamferDeg: 0 } })), "x", undefined);
   check("more than 400 runs is refused in a sentence", "reason" in many && /at most 400/.test(String(many.reason)));
 }
 
@@ -175,6 +180,15 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
     const shape = (v: unknown): unknown => (Array.isArray(v) ? (v.length ? [shape(v[0])] : []) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, shape(x)])) : v === null ? null : typeof v);
     check("the committed fixture has the shape ribWall writes now", JSON.stringify(shape(kept)) === JSON.stringify(shape(wire)), `${JSON.stringify(shape(kept)).slice(0, 300)} vs ${JSON.stringify(shape(wire)).slice(0, 300)}`);
   }
+}
+
+// --- A planned rib through every mesh edge it crosses: the points on its line go, height and section changes stay.
+{
+  const pts: [number, number, number][] = [[0, 0, 2], [5, 0.05, 2], [10, -0.13, 2], [15, 0, 2], [20, 0.0001, 2], [25, 0, 2], [30, 4, 2], [35, 8, 2]];
+  const heights = [6, 6, 6, 3, 3, 3, 3];
+  const sections = heights.map((h) => ({ profile: h < 6 ? "tee" : "straight", width: 1.35 }) as const);
+  const lean = dropStraightPoints(pts, heights, sections);
+  check("straight points go (zigs of a tenth of a millimetre too), the height change and the turn stay", JSON.stringify(lean.points) === JSON.stringify([[0, 0, 2], [15, 0, 2], [25, 0, 2], [35, 8, 2]]) && JSON.stringify(lean.heights) === "[6,3,3]" && lean.sections.map((s) => s.profile).join() === "straight,tee,tee", JSON.stringify(lean));
 }
 
 if (failed > 0) {

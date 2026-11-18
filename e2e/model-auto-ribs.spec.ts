@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { FLOOR, cardBox, findFloor, labels, openCard, openPart, panelRun, planRibs, primary, shot } from "./auto-ribs-box";
+import { FLOOR, cardBox, findFloor, labels, openCard, openPart, panelRun, planRibs, primary, readout, shot } from "./auto-ribs-box";
 import type { Body } from "./model-tree-mock";
 
 /**
@@ -209,6 +209,46 @@ test("the states it refuses or warns in say so in plain words", async ({ page })
   await expect(page.locator("#autoRibsGoal")).toHaveText(/^Reached \d+(\.\d)?× of the 50× asked/, { timeout: 20_000 });
   await expect(page.locator("#autoRibsCompare li").last()).toContainText("These ribs are no better");
   await shot(page, "7-beats-neither.png");
+});
+
+test("a load that misses the wall is refused by name; Plan without it plans under even pressure and says so first", async ({ page }) => {
+  test.setTimeout(180_000);
+  await openPart(page);
+  const floor = await findFloor(page);
+  // A point on an inner side wall (faces 8..11, "Face 9" to "Face 12" in the readout): not on the floor or behind it.
+  const box = (await page.locator("#model").boundingBox())!;
+  let side: { x: number; y: number } | null = null;
+  for (let row = 0; row < 24 && !side; row += 1) {
+    for (let col = 0; col < 24 && !side; col += 1) {
+      const x = box.x + box.width * (0.2 + col * 0.025);
+      const y = box.y + box.height * (0.2 + row * 0.025);
+      await page.mouse.click(x, y);
+      if (/^Face (9|10|11|12) /.test(await readout(page).innerText())) side = { x, y };
+    }
+  }
+  expect(side, "an inner side wall on screen").not.toBeNull();
+  await page.keyboard.press("Escape");
+  await openCard(page);
+  await page.mouse.click(floor.x, floor.y);
+  await expect(primary(page)).toBeEnabled();
+  await page.locator("#autoRibsHoldLoad > summary").click();
+  await page.locator("#autoRibsLoadPick").click();
+  await page.mouse.click(side!.x, side!.y);
+  await page.locator("#autoRibsLoadPick").click();
+  // Refused: the readout names the load, why, and what to do; the list under Hold and load says it; the offer shows.
+  await expect(readout(page)).toContainText("Load 1: The load is not on the wall or on its far side", { timeout: 20_000 });
+  await expect(readout(page)).toContainText("Include the face it is on in the wall");
+  await expect(page.locator("#autoRibsNotOnWall li").first()).toContainText("Load 1:");
+  await expect(page.locator("#autoRibsEvenPressure")).toBeVisible();
+  await shot(page, "9-load-off-wall.png");
+  // Plan without it: read again, the sentence first, and the plan runs.
+  await page.locator("#autoRibsEvenPressure").click();
+  await expect(page.locator("#autoRibsEvenPressure")).toHaveAttribute("aria-pressed", "true");
+  await expect(readout(page)).toContainText(/^Planned under even pressure instead of the given load: load 1 misses the wall/, { timeout: 20_000 });
+  await expect(page.locator("#autoRibsNotOnWall li").first()).toHaveText(/^Planned under even pressure/);
+  await primary(page).click();
+  await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
+  await shot(page, "9b-even-pressure.png");
 });
 
 test("an engine refusal, a failed apply and a surfaces-only import each say what happened and change nothing", async ({ page, browser }) => {

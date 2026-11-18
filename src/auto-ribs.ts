@@ -9,7 +9,7 @@
  * Shared module: no DOM.
  */
 import type { StudyHold, StudyLoad } from "./sim/study.ts";
-import type { WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
+import type { NotOnWall, WallRegion, WallZoneInput, RibWallReport } from "./modeling/rib-wall.ts";
 import type { RibProcess } from "./modeling/auto-ribs.ts";
 import type { PlanGoal, PlanProgress, PlannedRib, RibPlanResult, V3 } from "./auto-ribs-plan.ts";
 
@@ -64,10 +64,12 @@ export interface AutoRibsCard {
   zones: ZoneRow[];
   holeRim: { on: boolean; mm: number };
   ribs: { width: number | null; height: number | null; profile: ProfileChoice; process: RibProcess };
+  /** A hold or load that misses the wall: refuse (default), or plan without it and say so. */
+  ifMissed: "refuse" | "evenPressure";
 }
 
 export function newAutoRibsCard(): AutoRibsCard {
-  return { picked: [], excluded: [], justThis: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" } };
+  return { picked: [], excluded: [], justThis: false, amount: { kind: "slider", stop: 0 }, holds: [], loads: [], zones: [], holeRim: { on: true, mm: 3 }, ribs: { width: null, height: null, profile: "auto", process: "filament" }, ifMissed: "refuse" };
 }
 
 /** A card read back from a stored row (`auto.panel`), every field checked; null when it is not one. */
@@ -87,6 +89,7 @@ export function cardFromStored(value: unknown): AutoRibsCard | null {
     zones: Array.isArray(row.zones) ? row.zones : [],
     holeRim: row.holeRim && typeof row.holeRim === "object" ? row.holeRim : fresh.holeRim,
     ribs: row.ribs && typeof row.ribs === "object" ? { ...fresh.ribs, ...row.ribs } : fresh.ribs,
+    ifMissed: row.ifMissed === "evenPressure" ? "evenPressure" : "refuse",
   };
 }
 
@@ -328,12 +331,13 @@ export function totalsLine(totals: RunState["totals"], densityGCm3: number, part
 }
 
 /** What the result shows: gain, cost, and whether a removed rib makes them estimates. */
-export function resultNumbers(run: RunState, densityGCm3: number, partMm3: number): { gain: string; cost: string; edited: boolean; ribs: number } | null {
+export function resultNumbers(run: RunState, densityGCm3: number, partMm3: number, builtMm3: number | null = null): { gain: string; cost: string; edited: boolean; ribs: number } | null {
   const plan = run.plan;
   if (!plan) return null;
   const kept = keptRibs(run);
   const edited = run.removed.length > 0;
-  const volume = edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3;
+  // As built when known (ribNet's own plan of the kept ribs: tapers, skipped stretches and crossings), else the planner's.
+  const volume = builtMm3 ?? (edited ? kept.reduce((sum, rib) => sum + rib.volumeMm3, 0) : plan.ribVolumeMm3);
   return { gain: edited ? `${gainText(plan.stiffnessFactor)} before the edit` : gainText(plan.stiffnessFactor), cost: costText(volume, densityGCm3, partMm3), edited, ribs: kept.length };
 }
 
@@ -353,6 +357,16 @@ export function comparisonLines(plan: RibPlanResult, densityGCm3: number): strin
   else if (plan.notBetterThanBaseline) out.push(`These ribs are no better: a thicker wall or an even grid gets the same stiffness for no more material than the ribs' ${g(plan.ribVolumeMm3)}.`);
   else out.push(`The ribs need ${g(plan.ribVolumeMm3)}, less than either.`);
   return out;
+}
+
+/** The rib ends the plan leaves loose and why, else "": every other end meets a border, a hold or another rib. */
+export function looseLine(plan: RibPlanResult): string {
+  const loose = plan.looseEnds ?? [];
+  if (loose.length === 0) return "";
+  const zone = loose.filter((row) => row.reason === "noRibZone").length;
+  const budget = loose.length - zone;
+  const why = [zone ? `${zone} at a keep-clear zone` : "", budget ? `${budget} where the budget runs out` : ""].filter(Boolean).join(" and ");
+  return `${loose.length} rib end${loose.length === 1 ? " stops" : "s stop"} short of a wall or another rib: ${why}.`;
 }
 
 /** The goal's line when it was not met, else "". */
@@ -376,9 +390,23 @@ export function wallLine(report: RibWallReport | null, faces: number): string {
   return `${n} face${n === 1 ? "" : "s"} · ${fmt(report.areaMm2, 0)} mm² · wall ${thick}`;
 }
 
-/** Holds and loads the wall cannot carry, each with its sentence. */
-export function notOnWallLines(report: RibWallReport | null): string[] {
-  return (report?.notOnWall ?? []).map((row) => `${row.kind === "hold" ? "Hold" : "Load"} ${row.index + 1}: ${row.why}`);
+/**
+ * Holds and loads the wall cannot carry, each with its sentence: from the wall's report, or from a refusal (`missed`)
+ * when the wall was not read because of them. Planned anyway, the sentence saying what was left out comes first.
+ */
+export function notOnWallLines(report: RibWallReport | null, missed: readonly NotOnWall[] = []): string[] {
+  const rows = report?.notOnWall ?? missed;
+  return [...(report?.substituted ? [report.substituted.sentence] : []), ...rows.map((row) => `${row.kind === "hold" ? "Hold" : "Load"} ${row.index + 1}: ${row.why}`)];
+}
+
+/** The panel's words for planning without what missed, after the shared refusal. */
+export const EVEN_PRESSURE_OFFER = "Click that face to add it to the wall. Or choose “Plan without it” under Hold and load: it plans under even pressure when no load is left, and says so.";
+
+/** The readout after the wall is read: what was left out first, when anything was, then what was taken. */
+export function wallReadout(report: RibWallReport, faces: number): string {
+  const line = `${wallLine(report, faces)}. Run plans ribs on it (Enter).`;
+  const features = report.features?.count ? ` ${report.features.note}` : "";
+  return report.substituted ? `${report.substituted.sentence} ${line}${features}` : `${line}${features}`;
 }
 
 // ------------------------------------------------------------------------------------------------ after Apply

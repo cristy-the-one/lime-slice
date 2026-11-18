@@ -47,4 +47,25 @@ fn ribwall_request_plans() {
         }
     }
     assert!(out["stiffnessFactor"].as_f64().unwrap() > 1.0);
+    // Loose ends: every free end is listed with a reason, and the counts say so.
+    let loose = out["looseEnds"].as_array().expect("looseEnds");
+    let free: Vec<(usize, usize)> = ribs
+        .iter()
+        .enumerate()
+        .flat_map(|(k, r)| (0..2).filter(move |&e| r["ends"][e] == "free").map(move |e| (k, e)))
+        .collect();
+    assert_eq!(free.len(), loose.len(), "{out}");
+    for l in loose {
+        let at = (l["rib"].as_u64().unwrap() as usize, l["end"].as_u64().unwrap() as usize);
+        assert!(free.contains(&at), "{l}");
+        assert!(l["reason"] == "noRibZone" || l["reason"] == "budget", "{l}");
+        assert_eq!(l["point"].as_array().unwrap().len(), 3);
+    }
+    let stats = &out["stats"];
+    assert_eq!(stats["looseEnds"]["after"].as_u64().unwrap() as usize, loose.len());
+    for key in ["before", "extended", "trimmed", "dropped"] {
+        assert!(stats["looseEnds"][key].is_u64(), "{key}");
+    }
+    assert!(stats["selectionFactor"].as_f64().unwrap() > 1.0);
+    assert!(stats["cleanRetries"].is_u64());
 }

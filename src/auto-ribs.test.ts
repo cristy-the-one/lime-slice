@@ -15,6 +15,7 @@ import {
   editedNote,
   gainText,
   goalLine,
+  looseLine,
   goalOf,
   idleRun,
   keptRibs,
@@ -32,6 +33,9 @@ import {
   toggleRemoved,
   totalsLine,
   wallLine,
+  wallReadout,
+  notOnWallLines,
+  EVEN_PRESSURE_OFFER,
   zoneInputs,
   zoneLanded,
   zoneSoup,
@@ -147,6 +151,8 @@ eq("an unreached grid", comparisonLines({ ...plan, grid: { reached: false, pitch
 eq("stopped before the comparisons", comparisonLines({ ...plan, thickening: null, grid: null, stoppedEarly: true }, 1.24), ["Stopped before the comparisons with a thicker wall and an even grid."]);
 eq("a target not met", goalLine({ kind: "stiffer", factor: 3 }, { ...plan, goalMet: false, stiffnessFactor: 2.3 }, 1.24), "Reached 2.3× of the 3× asked: no further rib pays enough.");
 eq("a met goal says nothing", goalLine({ kind: "stiffer", factor: 3 }, plan, 1.24), "");
+eq("loose ends said with why", looseLine({ ...plan, looseEnds: [{ rib: 0, end: 1, reason: "noRibZone" }, { rib: 2, end: 0, reason: "noRibZone" }] }), "2 rib ends stop short of a wall or another rib: 2 at a keep-clear zone.");
+eq("no loose end, no line", looseLine({ ...plan, looseEnds: [] }), "");
 eq("gain words", [gainText(1.01), gainText(3.14), gainText(12.6)], ["about as stiff", "3.1× stiffer", "13× stiffer"]);
 eq("cost words", costText(9400 / 1.24, 1.24, 9400 / 1.24 / 0.06), "+9.4 g, +6 %");
 
@@ -154,6 +160,16 @@ eq("cost words", costText(9400 / 1.24, 1.24, 9400 / 1.24 / 0.06), "+9.4 g, +6 %"
 const report = { faces: { taken: [6, 7], picked: [6], grown: [7], added: [], excluded: [], stops: [] }, areaMm2: 8816, thickness: { minMm: 1.9, medianMm: 2, maxMm: 2.4, thick: 0, capMm: 6, unread: 0 } } as unknown as RibWallReport;
 eq("faces, area and thickness read", wallLine(report, 1), "2 faces · 8,816 mm² · wall 2 mm (1.9–2.4)");
 eq("the prompt with nothing picked", wallLine(null, 0), "Click the inside wall to reinforce.");
+
+// --- A hold or load that misses the wall: refused by name, or (asked for) left out and said first.
+const missedRow = { kind: "load" as const, index: 0, why: "The load is not on the wall or on its far side; a model of the wall alone cannot carry it.", dropped: true };
+eq("a refusal lists what missed", notOnWallLines(null, [missedRow]), ["Load 1: The load is not on the wall or on its far side; a model of the wall alone cannot carry it."]);
+const substituted = { ...report, notOnWall: [missedRow], substituted: { holds: [], loads: [0], evenPressure: true, sentence: "Planned under even pressure instead of the given load: load 1 misses the wall and was left out." } } as unknown as RibWallReport;
+eq("planned anyway: the sentence first, then each row", notOnWallLines(substituted)[0], "Planned under even pressure instead of the given load: load 1 misses the wall and was left out.");
+check("planned anyway: the readout leads with it", wallReadout(substituted, 1).startsWith("Planned under even pressure instead of the given load"));
+check("the panel offers its own way to plan without it", EVEN_PRESSURE_OFFER.includes("Plan without it"));
+eq("the choice is kept with the card", cardFromStored({ ...newAutoRibsCard(), picked: [1], ifMissed: "evenPressure" })?.ifMissed, "evenPressure");
+eq("refusing is the default", newAutoRibsCard().ifMissed, "refuse");
 
 // --- After Apply.
 eq("measured on the solid", measuredLine(100000, 107600, 1.24), "Added 9.4 g (7.6 % of the part), measured on the solid: 7,600 mm³.");

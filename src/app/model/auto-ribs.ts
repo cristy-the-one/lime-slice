@@ -13,7 +13,7 @@ import { meshToModel } from "../../plate";
 import { AUTO_RIBS_LABEL, cardFromRibNet, ribNetSource, type CheckNumbers } from "../../auto-ribs.ts";
 import type { AutoRibsJob, AutoRibsJobBody, AutoRibsReply } from "../../auto-ribs-worker.ts";
 import type { GroupOp, ModelOp } from "../../model-tree";
-import type { RibWall, RibWallOptions } from "../../modeling/rib-wall.ts";
+import type { NotOnWall, RibWall, RibWallOptions } from "../../modeling/rib-wall.ts";
 import type { V3 } from "../../auto-ribs-plan.ts";
 import { mountAutoRibsCard, openAutoRibsEdit } from "../../ui/auto-ribs-card.ts";
 
@@ -251,7 +251,7 @@ export function bindAutoRibs() {
       const obj = livePlate().find((row) => row.id === id && row.id !== S.open?.objectId);
       return obj ? posedArray(obj.sourcePos, inView(meshToModel(obj))) : null;
     },
-    async readWall(options: RibWallOptions): Promise<RibWall | { reason: string }> {
+    async readWall(options: RibWallOptions): Promise<RibWall | { reason: string; missed?: NotOnWall[] }> {
       const solid = panelSolid();
       if (!solid) return { reason: "No solid is open." };
       const positions = new Float32Array(solid.positions);

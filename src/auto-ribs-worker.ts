@@ -2,7 +2,7 @@
  * Auto ribs off the UI thread: reading the wall (`ribWall`, 0.5 to 3 s on a real cover) and the print check before and
  * after Apply (overhang and thin walls, as model_check reads them). The caller copies what it sends.
  */
-import { ribWall, type RibWallOptions, type RibWall } from "./modeling/rib-wall.ts";
+import { ribWall, type NotOnWall, type RibWallOptions, type RibWall } from "./modeling/rib-wall.ts";
 import { printCheck, type CheckBelt } from "./modeling/inspect.ts";
 import { thinWalls } from "./modeling/thin.ts";
 import { OVERHANG_DEG, type Vec3 } from "./model-check.ts";
@@ -26,7 +26,7 @@ export interface AutoRibsCheck {
   thin: CheckRegion[];
 }
 
-export type AutoRibsReply = { id: number; kind: "wall"; wall: RibWall | { reason: string } } | { id: number; kind: "check"; check: AutoRibsCheck };
+export type AutoRibsReply = { id: number; kind: "wall"; wall: RibWall | { reason: string; missed?: NotOnWall[] } } | { id: number; kind: "check"; check: AutoRibsCheck };
 
 const scope = self as unknown as {
   onmessage: ((ev: MessageEvent<AutoRibsJob>) => void) | null;
@@ -36,7 +36,7 @@ const scope = self as unknown as {
 scope.onmessage = (ev: MessageEvent<AutoRibsJob>) => {
   const job = ev.data;
   if (job.kind === "wall") {
-    let wall: RibWall | { reason: string };
+    let wall: RibWall | { reason: string; missed?: NotOnWall[] };
     try {
       wall = ribWall({ positions: job.positions, faceOf: job.faceOf }, job.options);
     } catch (err) {

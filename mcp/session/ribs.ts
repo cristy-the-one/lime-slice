@@ -15,7 +15,7 @@
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { builtVolumeOf, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -206,6 +206,15 @@ function planSentence(ribs: number, factor: number, adds: { mm3: number; grams: 
   return `${ribs} rib${ribs === 1 ? "" : "s"}, ${r(factor, 2)}× as stiff as the bare wall (shell model, relative), adding about ${r(adds.mm3, 0)} mm³, ${r(adds.grams, 2)} g, ${r(adds.percent, 1)} % of the part.${stopped ? " Stopped early: the best plan so far." : ""}${goalMet ? "" : " The goal is not met."} ${baseline}`;
 }
 
+/** The rib ends the plan leaves loose, and why, in a sentence ("" when every end meets something). */
+function looseSentence(loose: readonly Row[]): string {
+  if (loose.length === 0) return "";
+  const zone = loose.filter((row) => row.reason === "noRibZone").length;
+  const budget = loose.length - zone;
+  const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : ""].filter(Boolean).join(" and ");
+  return ` ${loose.length} rib end${loose.length === 1 ? " stays" : "s stay"} loose: ${why} (plan.looseEnds).`;
+}
+
 /** What the two comparisons mean, in a sentence. */
 function baselineSentence(plan: Row): string {
   const vol = num(plan.ribVolumeMm3) ?? 0;
@@ -274,6 +283,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
   const rib = (input.rib ?? {}) as Row;
+  if (input.ifMissed !== undefined && input.ifMissed !== "refuse" && input.ifMissed !== "evenPressure") return refuse("bad-argument", `ifMissed is "refuse" (the default) or "evenPressure"; it is ${JSON.stringify(input.ifMissed)}.`);
+  if (wallIn.thicknessMm !== undefined && !(num(wallIn.thicknessMm) !== undefined && (wallIn.thicknessMm as number) > 0)) return refuse("bad-wall", "wall.thicknessMm is the wall's thickness in mm, a number above zero.");
   const ribWallMs = Date.now();
   // Holds and loads that name places are typed in this frame, as the wall is; face holds name faces.
   const wall = ribWall(typed.solid, {
@@ -286,17 +297,28 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     holds,
     loads,
     ...(num(rib.minHeight) !== undefined ? { minRibHeightMm: num(rib.minHeight)! } : {}),
+    ...(input.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
+    ...(num(wallIn.thicknessMm) !== undefined ? { thicknessMm: num(wallIn.thicknessMm)! } : {}),
+    ...(wallIn.features === false ? { features: false } : {}),
   });
-  if ("reason" in wall) return refuse("bad-wall", wall.reason);
+  if ("reason" in wall) {
+    // A hold or load the wall cannot carry: refused by name, never planned under even pressure in its place.
+    if (wall.missed?.length) return refuse("off-wall", `${wall.reason} wall.addFaces adds a face to the wall. Or pass ifMissed:"evenPressure" to plan without ${wall.missed.length === 1 ? "it" : "them"}, under even pressure when no load is left.`, { missed: wall.missed.map((row) => ({ kind: row.kind, index: row.index, why: row.why })) });
+    return refuse("bad-wall", wall.reason);
+  }
   const wallMs = Date.now() - ribWallMs;
   const notes: string[] = [];
+  // Asked to plan anyway: what was left out comes first, in the notes and in the sentence.
+  const substituted = wall.report.substituted;
+  if (substituted) notes.push(substituted.sentence);
+  if (wall.report.features.count) notes.push(wall.report.features.note);
   // A wall joined to nothing (a free panel) with no holds given: held all round its borders, and said so.
   const sent: Row = { ...wall.request };
   if (wall.request.holds.holds.length === 0) {
     sent.holds = { kind: "allBoundary" };
     notes.push("Nothing joins this wall to the rest of the part and no holds were given, so it is planned held all round its borders. Give holds for a truer plan.");
   }
-  const outer = Math.max(0, ...wall.report.loops.map((loop) => loop.lengthMm));
+  const outer = wall.report.loops.reduce((most, loop) => Math.max(most, loop.lengthMm), 0);
   const rules = ribRules({
     process,
     nozzleMm: this.library.nozzleMm,
@@ -390,9 +412,13 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     };
   });
   const planVolume = num(result.ribVolumeMm3) ?? 0;
-  const mm3 = planVolume;
+  // What the ribs add as built: ribNet's plan of exactly these ribs on this solid (src/modeling/auto-ribs.ts
+  // builtVolumeOf). The planner's volume runs each rib's full section to its ends on the mid-surface: a tapered end, a
+  // stretch too close to a facing wall to build, an end drawn back from a free edge all count there and not in the part.
+  const built = engineRibs.length ? builtVolumeOf(typed.solid, onSkin.ribs) : 0;
+  const mm3 = built ?? planVolume;
   const partVolume = Math.abs(obj.solid.volumeMm3 ?? 0);
-  const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, note: "The planner's rib volume: each stretch's section over its length, crossings counted once (tapered ends not taken off). ribs_apply measures the solid." };
+  const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, plannerMm3: r(planVolume, 1), note: built === null ? "The planner's rib volume (ribNet could not plan these ribs to estimate them as built): each stretch's section over its length, crossings counted once. ribs_apply measures the solid." : "As built: ribNet's plan of these ribs on this solid, each section over the wall's face along the rib after tapers and skipped stretches, ends into a wall or a rib left out, crossings counted once. plannerMm3 is the planner's own count on the mid-surface. ribs_apply measures the solid." };
   const profiles: Record<string, number> = {};
   for (const row of ribs) profiles[String(row.profile)] = (profiles[String(row.profile)] ?? 0) + 1;
   const request = structuredClone(input) as Row;
@@ -420,14 +446,19 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     flange: { planned: flange, prints: { chamfered: flanges.chamfered, square: flanges.square } },
     profiles,
     snapMaxMm: onSkin.snapMaxMm,
+    // Rib ends left loose, each with why (a no-rib zone's border, or the budget); every other end meets a border, a
+    // hold or another rib.
+    looseEnds: ((result.looseEnds as Row[] | undefined) ?? []).map((row) => ({ rib: row.rib, end: row.end, point: Array.isArray(row.point) ? rv(row.point as number[]) : null, reason: row.reason })),
     stats: result.stats,
   };
   const joined = [...new Set(wall.report.faces.stops.map((row) => row.face))].filter((face) => !wallSet.has(face));
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: input.holds, loads: input.loads, wallFaces: wall.faces, joinedFaces: joined, fingerprint });
+  // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.
+  const kept = (rows: unknown, gone: readonly number[] | undefined) => (Array.isArray(rows) && gone?.length ? rows.filter((_, i) => !gone.includes(i)) : rows);
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, fingerprint });
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result)),
+    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, num(result.stiffnessFactor) ?? 1, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result))}${looseSentence((result.looseEnds as Row[] | undefined) ?? [])}`,
     plan,
     adds,
     wall: wallReport(wall),
@@ -458,6 +489,8 @@ function wallReport(wall: RibWall): Row {
     areaMm2: rep.areaMm2,
     triangles: rep.triangles,
     thickness: rep.thickness,
+    features: rep.features,
+    ...(rep.substituted ? { substituted: rep.substituted } : {}),
     clearance: rep.clearance,
     borders: rep.loops,
     holes: rep.holes,
@@ -575,6 +608,8 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     label: done.label ?? label,
     paths: (op as Row & { paths: unknown[] }).paths.length,
     ribNet: done.ribNet,
+    ...(done.leftOut ? { leftOut: done.leftOut, leftOutNote: done.leftOutNote } : {}),
+    ...(done.skipped ? { skipped: done.skipped, missedNote: done.missedNote } : {}),
     added: { mm3: r(added, 2), grams: r((added / 1000) * density, 3), percent: before.volume > 0 ? r((100 * added) / before.volume, 3) : null, densityGCm3: density },
     check: { before: checkNumbers(checkBefore), after: checkNumbers(checkAfter), printer: this.printer().name },
     undo: "model_undo takes the whole network back as one step.",
