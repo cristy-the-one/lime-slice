@@ -714,6 +714,7 @@ pub fn plan_json(plan: &RibPlan) -> Value {
             "reason": match l.reason {
                 LooseEndReason::NoRibZone => "noRibZone",
                 LooseEndReason::Budget => "budget",
+                LooseEndReason::Tapered => "tapered",
             },
         })).collect::<Vec<_>>(),
         "stats": {
@@ -1009,6 +1010,34 @@ mod tests {
         assert_eq!(rib["heights"].as_array().unwrap().len() + 1, rib["points"].as_array().unwrap().len());
         assert_eq!(rib["sections"].as_array().unwrap().len(), rib["heights"].as_array().unwrap().len());
         assert_eq!(rib["sections"][0]["profile"], "straight");
+    }
+
+    #[test]
+    fn the_end_taper_reads_with_its_default_and_the_reply_carries_the_built_ribs() {
+        let body: RibPlanBody = serde_json::from_str(&flat_body(json!({}))).unwrap();
+        assert_eq!(request_of(&body).unwrap().rules.end_taper, EndTaper::TimesHeight(3.0));
+        let given = |t: Value| {
+            let mut v: Value = serde_json::from_str(&flat_body(json!({}))).unwrap();
+            v["rules"]["endTaper"] = t;
+            let body: RibPlanBody = serde_json::from_value(v).unwrap();
+            request_of(&body).unwrap().rules.end_taper
+        };
+        assert_eq!(given(json!({ "kind": "none" })), EndTaper::None);
+        assert_eq!(given(json!({ "kind": "length", "mm": 6.0 })), EndTaper::Length(6.0));
+        assert_eq!(given(json!({ "kind": "timesHeight", "factor": 1.0 })), EndTaper::TimesHeight(1.0));
+        let out: Value = serde_json::from_str(&plan_ribs_json(&flat_body(json!({})))).unwrap();
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["endTaper"], json!({ "kind": "timesHeight", "factor": 3.0 }));
+        assert_eq!(out["complianceFactor"], out["stiffnessFactor"]);
+        assert!(out["peakFactor"].as_f64().unwrap() > 1.0);
+        let pinned = &out["pinned"];
+        assert!(pinned["complianceFactor"].as_f64().unwrap() > 0.0, "{pinned}");
+        assert_eq!(out["pinnedGain"], pinned["complianceFactor"]);
+        assert!(pinned["needsRigidBorders"].is_boolean() && out["needsRigidBorders"].is_boolean());
+        for rib in out["ribs"].as_array().unwrap() {
+            assert_eq!(rib["builtHeights"].as_array().unwrap().len(), rib["heights"].as_array().unwrap().len());
+            assert_eq!(rib["taperMm"].as_array().unwrap().len(), 2);
+        }
     }
 
     #[test]

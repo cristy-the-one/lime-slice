@@ -820,7 +820,18 @@ fn cancel_returns_the_ribs_so_far_and_progress_only_grows() {
         ShellOptions::default(),
     )
     .unwrap();
+    // As built: each stretch of one height (free ends tapered) a rib of
+    // its own, as the planner hands them to the solver.
     let ribs: Vec<Rib> = plan
+        .ribs
+        .iter()
+        .flat_map(|r| {
+            r.profile
+                .solver_ribs(&r.vertices, &r.built_heights, r.width, r.side)
+        })
+        .collect();
+    // Whole ribs at their untapered heights, for the volume.
+    let whole: Vec<Rib> = plan
         .ribs
         .iter()
         .map(|r| Rib {
@@ -845,9 +856,28 @@ fn cancel_returns_the_ribs_so_far_and_progress_only_grows() {
         plan.ribbed.compliance
     );
     assert!((bare / ribbed - plan.stiffness_factor).abs() < 1e-9 * plan.stiffness_factor);
+    // The volume as built: the untapered network less what each tapered
+    // stretch leaves off.
+    let taken_off: f64 = plan
+        .ribs
+        .iter()
+        .map(|r| {
+            r.points
+                .windows(2)
+                .zip(r.heights.iter().zip(&r.built_heights))
+                .map(|(w, (&h, &b))| {
+                    let len = (0..3).map(|k| (w[1][k] - w[0][k]).powi(2)).sum::<f64>().sqrt();
+                    len * (r.profile.area(r.width, h) - r.profile.area(r.width, b))
+                })
+                .sum::<f64>()
+        })
+        .sum();
     assert!(
-        (rib_network_volume(&plan.mesh, &ribs) - plan.rib_volume_mm3).abs()
-            < 1e-9 * plan.rib_volume_mm3
+        (rib_network_volume(&plan.mesh, &whole) - taken_off - plan.rib_volume_mm3).abs()
+            < 1e-9 * plan.rib_volume_mm3,
+        "{} - {taken_off} vs {}",
+        rib_network_volume(&plan.mesh, &whole),
+        plan.rib_volume_mm3
     );
 }
 
@@ -1057,17 +1087,18 @@ fn independent_resolve(req: &RibPlanRequest, plan: &RibPlan) -> (f64, f64, f64, 
     let mut polys: Vec<Vec<[f64; 3]>> = Vec::new();
     let mut stretch: Vec<(RibSection, f64, RibSide)> = Vec::new();
     for r in &plan.ribs {
+        // As built: free ends tapered.
+        let hs = &r.built_heights;
+        let sections: Vec<RibSection> =
+            hs.iter().map(|&h| r.profile.section_at(r.width, h)).collect();
         let mut cur = vec![r.points[0]];
         let mut k0 = 0;
         for k in 1..r.points.len() {
             cur.push(r.points[k]);
             let last = k == r.points.len() - 1;
-            if last
-                || (r.heights[k] - r.heights[k0]).abs() > 1e-9
-                || r.sections[k] != r.sections[k0]
-            {
+            if last || (hs[k] - hs[k0]).abs() > 1e-9 || sections[k] != sections[k0] {
                 polys.push(std::mem::take(&mut cur));
-                stretch.push((r.sections[k0], r.heights[k0], r.side));
+                stretch.push((sections[k0], hs[k0], r.side));
                 if !last {
                     cur = vec![r.points[k]];
                     k0 = k;

@@ -9,8 +9,8 @@ mod shell_common;
 use lime_sim::assemble::{Hold, Load, NodeHold};
 use lime_sim::mesh::faces_on_plane;
 use lime_sim::shell::planner::{
-    plan_ribs, solve_paths, EndTaper, Goal, Holds, PathSolve, RibEndKind,
-    RibPath, RibPlanRequest, RibProfile, PINNED_RETAINED_FLOOR,
+    plan_ribs, solve_paths, EndTaper, Goal, Holds, PathSolve, RibEndKind, RibPath, RibPlanRequest,
+    RibProfile, PINNED_RETAINED_FLOOR,
 };
 use lime_sim::shell::{ShellHold, ShellLoad, ShellMesh};
 use shell_common::*;
@@ -72,7 +72,11 @@ fn a_tapered_stub_is_lighter_and_less_stiff_and_its_volume_is_analytic() {
     assert_eq!(r.ends, [RibEndKind::Boundary, RibEndKind::Free]);
     assert_eq!(r.taper_mm, [0.0, 18.0]);
     assert!(r.heights.iter().all(|&h| h == H), "{:?}", r.heights);
-    assert!(*r.built_heights.last().unwrap() < 0.5, "{:?}", r.built_heights);
+    assert!(
+        *r.built_heights.last().unwrap() < 0.5,
+        "{:?}",
+        r.built_heights
+    );
     let analytic = W * H * (40.0 - 0.5 * 18.0);
     let err = tapered.rib_volume_mm3 / analytic - 1.0;
     eprintln!(
@@ -82,7 +86,11 @@ fn a_tapered_stub_is_lighter_and_less_stiff_and_its_volume_is_analytic() {
         square.rib_volume_mm3,
         W * H * 40.0
     );
-    assert!(err.abs() < 0.02, "tapered volume off by {:.2} %", 100.0 * err);
+    assert!(
+        err.abs() < 0.02,
+        "tapered volume off by {:.2} %",
+        100.0 * err
+    );
     assert!(tapered.rib_volume_mm3 < square.rib_volume_mm3);
     assert!(tapered.stiffness_factor < square.stiffness_factor);
     assert!(tapered.stiffness_factor > 1.0);
@@ -116,7 +124,10 @@ fn only_free_ends_taper() {
         let mid = 0.5 * (c.points[k][0] + c.points[k + 1][0]);
         let from_end = mid - 90.0;
         let want = H * (from_end / 18.0).min(1.0);
-        assert!((built - want.min(h)).abs() < 1e-9, "edge {k}: {built} vs {want}");
+        assert!(
+            (built - want.min(h)).abs() < 1e-9,
+            "edge {k}: {built} vs {want}"
+        );
     }
 }
 
@@ -227,7 +238,11 @@ fn a_tapered_end_against_the_solid() {
         strip_shell(Some(EndTaper::None)),
         strip_shell(Some(EndTaper::TimesHeight(3.0))),
     ];
-    let solid = [strip_solid(None), strip_solid(Some(0.0)), strip_solid(Some(18.0))];
+    let solid = [
+        strip_solid(None),
+        strip_solid(Some(0.0)),
+        strip_solid(Some(18.0)),
+    ];
     let names = ["bare", "square end", "tapered 18 mm"];
     for k in 0..3 {
         eprintln!(
@@ -275,7 +290,9 @@ fn a_tapered_end_against_the_solid() {
 /// whose free ends taper.
 fn holed_floor() -> ShellMesh {
     let full = ShellMesh::rectangle([200.0, 80.0], [100, 40], 2.0);
-    cut_mesh(&full, |c| (c[0] - 100.0).abs() < 90.0 && (c[1] - 40.0).abs() < 15.0)
+    cut_mesh(&full, |c| {
+        (c[0] - 100.0).abs() < 90.0 && (c[1] - 40.0).abs() < 15.0
+    })
 }
 
 #[test]
@@ -316,7 +333,10 @@ fn a_stiffness_goal_is_met_by_the_tapered_ribs() {
     let again = solve_paths(&req, &paths).unwrap();
     eprintln!(
         "| same ribs | tapered re-solve ×{:.4} ({:.1} mm³) | square ends ×{:.4} ({:.1} mm³) |",
-        again.stiffness_factor, again.rib_volume_mm3, square.stiffness_factor, square.rib_volume_mm3
+        again.stiffness_factor,
+        again.rib_volume_mm3,
+        square.stiffness_factor,
+        square.rib_volume_mm3
     );
     assert!(tapered > 0, "the case needs a free end to test the taper");
     assert!(plan.goal_met);
@@ -382,17 +402,32 @@ fn plan_time_with_tapers_and_the_fixity_check() {
     let cases: Vec<Case> = vec![
         (
             "600x120 20k",
-            Box::new(|| RibPlanRequest::new(ShellMesh::rectangle([600.0, 120.0], [200, 50], 2.0), material(E, NU))),
+            Box::new(|| {
+                RibPlanRequest::new(
+                    ShellMesh::rectangle([600.0, 120.0], [200, 50], 2.0),
+                    material(E, NU),
+                )
+            }),
             Goal::Stiffer(3.0),
         ),
         (
             "120x70 floor",
-            Box::new(|| RibPlanRequest::new(ShellMesh::rectangle([120.0, 70.0], [60, 35], 2.0), material(E, NU))),
+            Box::new(|| {
+                RibPlanRequest::new(
+                    ShellMesh::rectangle([120.0, 70.0], [60, 35], 2.0),
+                    material(E, NU),
+                )
+            }),
             Goal::Stiffer(2.0),
         ),
         (
             "120x70 floor balanced",
-            Box::new(|| RibPlanRequest::new(ShellMesh::rectangle([120.0, 70.0], [60, 35], 2.0), material(E, NU))),
+            Box::new(|| {
+                RibPlanRequest::new(
+                    ShellMesh::rectangle([120.0, 70.0], [60, 35], 2.0),
+                    material(E, NU),
+                )
+            }),
             Goal::Balanced,
         ),
         ("holed floor x1.2", Box::new(holed), Goal::Stiffer(1.2)),

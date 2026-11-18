@@ -246,15 +246,20 @@ pub struct PlannerOptions {
     /// Compute the thickening and even-grid comparisons. The planner's
     /// report always carries them; turn off only to time the plan alone.
     pub baselines: bool,
-    /// After pruning, extend every rib end left in mid-wall to the
-    /// boundary, a hold or another rib, else trim the rib back to its last
-    /// junction or drop it (see [`RibPlan::loose_ends`]). Turn off only to
-    /// measure what it costs.
+    /// After pruning, extend each rib end left in mid-wall to the boundary,
+    /// a hold or another rib where the extension pays its own way; else the
+    /// rib keeps its tapered free end, or is dropped if it no longer pays
+    /// as it stands (see [`RibPlan::loose_ends`]). Turn off only to measure
+    /// what it costs.
     pub close_loose_ends: bool,
     /// Solve the plan once more with its held borders pinned instead of
     /// clamped ([`RibPlan::pinned`]). Two more factorisations.
     pub fixity_check: bool,
 }
+
+/// Selections run again at most when the clean solve misses a goal the
+/// selection reached.
+pub const CLEAN_RETRIES: usize = 3;
 
 /// Exactly solved candidates per round: one batch for eight models. The
 /// test `the_shortlist_finds_the_same_ribs_as_exhaustive_scoring` checks
@@ -426,6 +431,8 @@ pub struct PlanStats {
 pub struct LooseEndStats {
     pub before: usize,
     pub extended: usize,
+    /// Always 0 since free ends taper: the pass no longer trims ribs back
+    /// (kept for the wire).
     pub trimmed: usize,
     pub dropped: usize,
     pub after: usize,
@@ -509,7 +516,9 @@ pub struct RibPlan {
     /// been cut short, and the later passes and the baselines left out.
     pub stopped_early: bool,
     /// Rib ends left in mid-wall (on no boundary, hold or other rib), each
-    /// with the reason it could not be closed. Every other end is anchored.
+    /// with the reason it was not closed (most often
+    /// [`LooseEndReason::Tapered`]: no extension paid, the rib does with
+    /// its tapered end). Every other end is anchored.
     pub loose_ends: Vec<LooseEnd>,
     /// The mesh the reported numbers were solved on: the input with only
     /// the returned ribs cut in. Rib vertices index it.
@@ -525,6 +534,9 @@ pub enum LooseEndReason {
     NoRibZone,
     /// An extension reached an anchor, but the budget does not allow it.
     Budget,
+    /// No extension paid its own way, and the rib pays as it stands: it
+    /// keeps its free end, tapered ([`EndTaper`]).
+    Tapered,
 }
 
 /// A rib end left in mid-wall.
@@ -899,7 +911,7 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
     // candidate cut in, is full of sliver triangles that make a rib look
     // stiffer than it is. When the clean solve misses a stiffness or
     // deflection goal the selection reached, selection runs again with the
-    // target moved by the gap (two more times at most).
+    // target moved by the gap ([`CLEAN_RETRIES`] more times at most).
     let (outcome, closed, clean, goal_met) = loop {
         let outcome = select::run(&mut ev, &ctx, &cands, &rep)?;
         stats.seconds.select += outcome.seconds[0];
@@ -967,13 +979,18 @@ pub fn plan_ribs_with(req: &RibPlanRequest, control: PlanControl) -> Result<RibP
             && !outcome.stopped
             && !closed.stopped
             && !rep.cancelled()
-            && stats.clean_retries < 2;
+            && stats.clean_retries < CLEAN_RETRIES;
+        // Each retry aims a little further past the gap than the last: the
+        // sizing pass lowers heights in whole steps, so the same aim can land
+        // just short again (the 600 × 120 lattice case: ×1.6002 for ×1.6008
+        // twice at a fixed 0.2 %).
+        let margin = 1.0 + 0.002 * (stats.clean_retries + 1) as f64;
         let tighter = match (req.goal, ctx.goal) {
             (Goal::Stiffer(f), Goal::Stiffer(now)) => {
-                Some(Goal::Stiffer(now * (f / factor) * 1.002))
+                Some(Goal::Stiffer(now * (f / factor) * margin))
             }
             (Goal::MaxDeflection(d), Goal::MaxDeflection(now)) => Some(Goal::MaxDeflection(
-                now / (clean.ribbed.max_deflection / d) / 1.002,
+                now / (clean.ribbed.max_deflection / d) / margin,
             )),
             (Goal::Budget { volume_mm3: b }, Goal::Budget { volume_mm3: now }) => {
                 Some(Goal::Budget {

@@ -265,6 +265,11 @@ struct RibLayout {
     value: Vec<f64>,
 }
 
+/// A rib end another rib may continue in [`ShellModel::layout_of`]: its
+/// ψ id, the direction out of the rib, its side, and whether a later rib
+/// already continued it.
+type OpenEnd = (usize, [f64; 3], RibSide, bool);
+
 /// A shell with its stiffness assembled and its pattern analysed, ready to
 /// take ribs and load cases.
 ///
@@ -609,7 +614,7 @@ impl ShellModel {
         let mut free = first_free;
         // Rib ends a later rib may continue: per vertex, (ψ id, direction
         // out of the rib there, side, already continued).
-        let mut open: std::collections::BTreeMap<u32, Vec<(usize, [f64; 3], RibSide, bool)>> =
+        let mut open: std::collections::BTreeMap<u32, Vec<OpenEnd>> =
             std::collections::BTreeMap::new();
         let continue_cos = 30f64.to_radians().cos();
         for rib in ribs {

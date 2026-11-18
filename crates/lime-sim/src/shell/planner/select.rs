@@ -134,9 +134,45 @@ impl DRib {
         self.free_ends.map(|f| if f { l } else { 0.0 })
     }
 
+    /// The profile each edge is built with. A tapered stretch keeps the
+    /// section of the stretch it tapers from: under
+    /// [`RibProfile::TeeWhereLimited`] a full-height straight stretch stays
+    /// straight as it comes down (a taper is not a height limit), and a
+    /// limited one stays a tee until it is too low for one.
+    pub fn edge_profiles(&self) -> Vec<RibProfile> {
+        self.base_heights()
+            .into_iter()
+            .map(|h| match self.profile {
+                RibProfile::TeeWhereLimited {
+                    straight_height, ..
+                } if h >= straight_height - 1e-9 => RibProfile::Rectangular,
+                p => p,
+            })
+            .collect()
+    }
+
+    /// Its stretches as the solver takes them: consecutive edges of one
+    /// height and section are one rib.
     pub fn solver_ribs(&self, side: RibSide) -> Vec<Rib> {
-        self.profile
-            .solver_ribs(&self.chain, &self.heights(), self.width, side)
+        let heights = self.heights();
+        let profiles = self.edge_profiles();
+        let mut out: Vec<Rib> = Vec::new();
+        for (e, w) in self.chain.windows(2).enumerate() {
+            let h = heights[e];
+            let section = profiles[e].section_at(self.width, h);
+            match out.last_mut() {
+                Some(r) if (r.height - h).abs() < 1e-12 && r.section == section => {
+                    r.edges.push((w[0], w[1]))
+                }
+                _ => out.push(Rib {
+                    edges: vec![(w[0], w[1])],
+                    section,
+                    height: h,
+                    side,
+                }),
+            }
+        }
+        out
     }
 
     /// Its own volume, before overlaps.
@@ -144,8 +180,9 @@ impl DRib {
         self.chain
             .windows(2)
             .zip(self.heights())
-            .map(|(w, h)| {
-                norm(sub(pos[w[1] as usize], pos[w[0] as usize])) * self.profile.area(self.width, h)
+            .zip(self.edge_profiles())
+            .map(|((w, h), p)| {
+                norm(sub(pos[w[1] as usize], pos[w[0] as usize])) * p.area(self.width, h)
             })
             .sum()
     }
@@ -370,10 +407,7 @@ pub(crate) fn retaper(design: &mut [DRib], pos: &[[f64; 3]], held: &[bool]) {
     on.dedup();
     let other = |v: u32, i: usize| {
         let at = on.partition_point(|x| x.0 < v);
-        on[at..]
-            .iter()
-            .take_while(|x| x.0 == v)
-            .any(|x| x.1 != i)
+        on[at..].iter().take_while(|x| x.0 == v).any(|x| x.1 != i)
     };
     let free: Vec<[bool; 2]> = design
         .iter()
