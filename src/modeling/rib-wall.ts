@@ -224,6 +224,19 @@ export interface NotOnWall {
   case?: string;
 }
 
+/**
+ * A thick region kept on the vertices it touches. A plate keeps its real thickness. A lump (thicker than 10× the wall
+ * and thicker than its own radius) is a rigid patch: the same real thickness, whose bending stiffness is then over
+ * 1000× the wall, which is as rigid as this shell request can say. A kinematic tie is a solver change and is not made.
+ */
+export interface WallPatch {
+  vertices: number;
+  thicknessMm: number;
+  radiusMm: number;
+  rigid: boolean;
+  rule: string;
+}
+
 export interface RibWallReport {
   faces: {
     taken: number[];
@@ -264,6 +277,8 @@ export interface RibWallReport {
    */
   substituted?: { holds: number[]; loads: number[]; evenPressure: boolean; sentence: string };
   warnings: string[];
+  /** Thick regions kept at their real thickness. Present only when `folded` was asked. */
+  patches?: WallPatch[];
   ms: { select: number; remesh: number; measure: number; total: number };
 }
 
@@ -2369,7 +2384,8 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   // from the readings around it. The far skin: the face most rays leave through, grown as the wall is (smooth faces,
   // and faces on its surface beyond what stands on it).
   const underFeature = new Array<boolean>(nv).fill(false);
-  if (options.thicknessMm === undefined && options.features !== false) {
+  // Folded keeps a thick reading as a patch. The default still fills it in from the wall around it.
+  if (options.thicknessMm === undefined && options.features !== false && options.folded !== true) {
     const votes = new Map<number, number>();
     for (const f of oppFace) if (f >= 0) votes.set(f, (votes.get(f) ?? 0) + 1);
     let top = -1;
@@ -2388,7 +2404,9 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   const readings = raw.filter((x, v) => Number.isFinite(x) && !underFeature[v]);
   const med = readings.length ? median(readings) : roughT;
   const cap = thickRatio * med;
-  const capped = raw.map((x, v) => (underFeature[v] ? NaN : Number.isFinite(x) ? Math.min(x, cap) : cap));
+  const capped = options.folded
+    ? raw.map((x, v) => (underFeature[v] ? NaN : Number.isFinite(x) ? x : cap))
+    : raw.map((x, v) => (underFeature[v] ? NaN : Number.isFinite(x) ? Math.min(x, cap) : cap));
   // Filled in under features: each from the readings around it, ring by ring (Jacobi passes), the median at the last.
   for (let pass = 0; pass < 500; pass += 1) {
     const next: [number, number][] = [];
@@ -2407,7 +2425,13 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   }
   for (let v = 0; v < nv; v += 1) if (Number.isNaN(capped[v]!)) capped[v] = med;
   const givenT = options.thicknessMm !== undefined && options.thicknessMm > 0 ? options.thicknessMm : null;
-  const thickness = givenT !== null ? capped.map(() => givenT) : capped.map((x, v) => (underFeature[v] ? x : median([x, ...[...ring[v]!].filter((y) => !underFeature[y]).map((y) => capped[y]!)])));
+  // A patch vertex keeps the ray. Smoothing it with the thin wall around it would put the median back.
+  const patchAt = (v: number) => options.folded === true && Number.isFinite(raw[v]!) && raw[v]! > cap + 1e-6;
+  const thickness = givenT !== null
+    ? capped.map(() => givenT)
+    : options.folded
+      ? capped.map((x, v) => (patchAt(v) ? raw[v]! : median([x, ...[...ring[v]!].filter((y) => !patchAt(y)).map((y) => capped[y]!)])))
+      : capped.map((x, v) => (underFeature[v] ? x : median([x, ...[...ring[v]!].filter((y) => !underFeature[y]).map((y) => capped[y]!)])));
   const thick = thickness.map((x) => givenT === null && x >= cap - 1e-9);
   const unread = raw.filter((x) => !Number.isFinite(x)).length;
   const underCount = underFeature.filter(Boolean).length;
@@ -2578,7 +2602,10 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   /** Wall triangles straight over a face of the far skin: their corners' rays all left through it. */
   const through = (faces: ReadonlySet<number>) => T.map((_, t) => t).filter((t) => T[t]!.every((v) => faces.has(oppFace[v]!)));
   const opposite = (v: number): V3 => sub(V[v]!, mul(normals[v]!, thick[v] ? NaN : thickness[v]!));
-  const mid = V.map((p, v) => sub(p, mul(normals[v]!, (thick[v] ? med : thickness[v]!) / 2)));
+  // Folded: a thick vertex sits half its own thickness in, not half the median. A thin vertex is the same offset as before.
+  const mid = options.folded
+    ? V.map((p, v) => sub(p, mul(normals[v]!, thickness[v]! / 2)))
+    : V.map((p, v) => sub(p, mul(normals[v]!, (thick[v] ? med : thickness[v]!) / 2)));
   const triArea = (tris: number[]) => tris.reduce((s, t) => s + tarea[t]!, 0);
 
   // --- 7. Holds.
@@ -2968,6 +2995,37 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     warnings.push(featureReport.note);
   }
   if (underCount) warnings.push(`${underCount} vertices read through something standing on the far side (a rib, a collar, a pad); the thickness there is filled in from the wall around it, not read.`);
+  // A patch is one connected run of vertices whose ray beat the old cap. Rigid when that thickness is a lump:
+  // more than 10× the wall and more than the patch's own radius. The shell request has no rigid-body tie, so the
+  // vertices keep the real thickness. Past 10× the wall, bending stiffness is over 1000× and the patch does not bend.
+  const RIGID_RATIO = 10;
+  const plateRule = "Real thickness, uncapped. The region is still a plate (thinner than 10× the wall, or thinner than its own radius), so the shell's bending stiffness is the model.";
+  const rigidRule = "Thicker than 10× the wall and thicker than its own radius: a lump, so shell bending is not the load path. The vertices keep the real thickness. At 10× the wall that is over 1000× the bending stiffness, which is the rigid patch this shell can express; a kinematic rigid tie would be a solver change and is not added.";
+  const patches: WallPatch[] = [];
+  if (options.folded && givenT === null) {
+    const seen = new Uint8Array(nv);
+    for (let seed = 0; seed < nv; seed += 1) {
+      if (seen[seed] || !patchAt(seed)) continue;
+      const comp = [seed];
+      seen[seed] = 1;
+      for (let i = 0; i < comp.length; i += 1) for (const y of ring[comp[i]!]!) if (!seen[y] && patchAt(y)) {
+        seen[y] = 1;
+        comp.push(y);
+      }
+      const th = median(comp.map((v) => thickness[v]!));
+      const centre = mul(comp.reduce((s, v) => add(s, V[v]!), [0, 0, 0] as V3), 1 / comp.length);
+      let radius = 0;
+      for (const v of comp) radius = Math.max(radius, dist(V[v]!, centre));
+      // One vertex has no radius, so it cannot be a lump. It keeps the real thickness as a plate.
+      const rigid = comp.length >= 3 && th > RIGID_RATIO * med && th > radius;
+      patches.push({ vertices: comp.length, thicknessMm: round(th, 3), radiusMm: round(radius, 3), rigid, rule: rigid ? rigidRule : plateRule });
+    }
+    patches.sort((a, b) => b.vertices - a.vertices || b.thicknessMm - a.thicknessMm);
+    if (patches.length) {
+      const rigidN = patches.filter((p) => p.rigid).length;
+      warnings.push(`${patches.length} thick patch${patches.length === 1 ? "" : "es"} kept at the real thickness, not capped at ${round(cap, 2)} mm.${rigidN ? ` ${rigidN} ${rigidN === 1 ? "is a rigid patch" : "are rigid patches"}: thicker than ${RIGID_RATIO}× the wall and thicker than its own radius.` : ""}`);
+    }
+  }
   const zoneKind = (z: WallZoneInput) => Object.keys(z.region)[0] ?? "?";
   const zoneReport: RibWallReport["zones"] = wallZones.map((z) => ({
     index: z.index,
@@ -3024,6 +3082,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     notOnWall,
     ...(substituted ? { substituted } : {}),
     warnings,
+    ...(options.folded ? { patches } : {}),
     ms: { select: round(tSelect - start, 1), remesh: round(tRemesh - tSelect, 1), measure: round(end - tRemesh, 1), total: round(end - start, 1) },
   };
   return {
