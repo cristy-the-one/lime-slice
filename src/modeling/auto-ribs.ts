@@ -13,7 +13,8 @@
  *
  * Shared module: no Node builtins, no DOM, no MCP session. Same input, same output.
  */
-import { ribShape, type RibProfileKind } from "./rib-net.ts";
+import { RibSurface, ribShape, type RibProfileKind } from "./rib-net.ts";
+import { ribPathsFromPlan, type RibWall, type RibWallSolid } from "./rib-wall.ts";
 
 type V3 = [number, number, number];
 
@@ -418,4 +419,220 @@ function insideTriangle(p: V3, t: { a: V3; b: V3; c: V3; n: V3 }, tol: number): 
     const inward = unit(cross(t.n, e));
     return dot(sub(p, u), inward) >= -tol;
   });
+}
+
+// --- Ends on a free edge (moved from mcp/session/ribs.ts so the panel shares them). ---
+
+/** What a rib sunk into the wall must find under it: ribNet's 0.5 mm sink and 0.2 mm skin, and a little more. */
+export const WALL_UNDER_MM = 0.8;
+
+/** The wall under a rib's foot at p, across it ±half: the least depth a ray straight in finds, 0 off the part. */
+export function wallUnder(all: RibSurface, p: V3, n: V3, b: V3, half: number): number {
+  let least = Infinity;
+  for (const u of [-half, 0, half]) {
+    // From 0.3 mm in: a point between two snapped ones on a curved wall sits a chord's depth off the facets.
+    const q: V3 = [p[0] + b[0] * u - n[0] * 0.3, p[1] + b[1] * u - n[1] * 0.3, p[2] + b[2] * u - n[2] * 0.3];
+    const hit = all.ray(q, [-n[0], -n[1], -n[2]], 50);
+    least = Math.min(least, hit && hit.leaving ? hit.distance + 0.3 : 0);
+  }
+  return least;
+}
+
+/**
+ * A planned rib that ends on a free edge of the wall (a panel's cut side, an open rim) is refused by ribNet: either the
+ * wall under its foot runs out there, or its end runs into the thin rim and out past the part. Such an end starts a
+ * rib width back from the edge, and is then drawn back 0.25 mm at a time, at most 4 mm, to where the wall under the
+ * foot is WALL_UNDER_MM deep. An end against a wall (a box's side) is kept. Heights and sections keep their stretches.
+ */
+export function trimThinEnds(points: V3[], heights: number[], sections: Section[], wallSurface: RibSurface, all: RibSurface, width: number): { points: V3[]; heights: number[]; sections: Section[]; trimmedMm: [number, number] } {
+  const trimmedMm: [number, number] = [0, 0];
+  let pts = points.map((p) => [...p] as V3);
+  let hs = [...heights];
+  let ss = [...sections];
+  for (const end of [0, 1] as const) {
+    if (pts.length < 2) break;
+    const order = end === 0 ? pts : [...pts].reverse();
+    let walked = 0;
+    let k = 0;
+    let found: { at: V3; k: number } | null = null;
+    // An end with no wall in front of it, half its height up and within 2 mm, is on a free edge: ribNet would run it
+    // into the rim there and out past the part. It starts a width back from the edge.
+    const e0 = order[0]!;
+    // The rib's way out at this end, read over its last 2 mm or more: the last stretch alone can be a sliver.
+    let e1 = order[1]!;
+    for (let j = 1; j < order.length && dist(e0, order[j]!) < 2; j += 1) e1 = order[j]!;
+    const run = dist(e0, e1);
+    const n0 = wallSurface.closest(e0, 5)?.normal ?? ([0, 0, 1] as V3);
+    const lift = Math.min(2, Math.max(0.5, (end === 0 ? heights[0] ?? 1 : heights.at(-1) ?? 1) / 2));
+    const out: V3 = run > 1e-9 ? [(e0[0] - e1[0]) / run, (e0[1] - e1[1]) / run, (e0[2] - e1[2]) / run] : [0, 0, 0];
+    // From 1 mm back along the rib: an end on a side wall's foot starts on that wall's plane, where a ray sees nothing.
+    const free = run > 1e-9 && !all.ray([e0[0] + n0[0] * lift - out[0], e0[1] + n0[1] * lift - out[1], e0[2] + n0[2] * lift - out[2]], out, 3);
+    const start = free ? Math.min(4, Math.max(0.25, Math.ceil(width / 0.25) * 0.25)) : 0;
+    for (let s = start; s <= 4 + 1e-9; s += 0.25) {
+      while (k + 1 < order.length - 1 && walked + dist(order[k]!, order[k + 1]!) < s) {
+        walked += dist(order[k]!, order[k + 1]!);
+        k += 1;
+      }
+      const a = order[k]!;
+      const b = order[k + 1]!;
+      const seg = dist(a, b);
+      if (seg < 1e-9) break;
+      const f = Math.min(1, (s - walked) / seg);
+      const at: V3 = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+      const n = wallSurface.closest(at, 5)?.normal ?? ([0, 0, 1] as V3);
+      const t: V3 = [(b[0] - a[0]) / seg, (b[1] - a[1]) / seg, (b[2] - a[2]) / seg];
+      const across: V3 = [n[1] * t[2] - n[2] * t[1], n[2] * t[0] - n[0] * t[2], n[0] * t[1] - n[1] * t[0]];
+      if (wallUnder(all, at, n, across, width / 2) >= WALL_UNDER_MM) {
+        found = s === 0 ? null : { at, k };
+        if (s > 0) trimmedMm[end] = s;
+        break;
+      }
+      if (f >= 1 && k + 1 >= order.length - 1) break;
+    }
+    if (!found) continue;
+    // Keep the stretch the cut falls in, from the cut point on.
+    const n = pts.length;
+    if (end === 0) {
+      pts = [found.at, ...pts.slice(found.k + 1)];
+      hs = hs.slice(found.k);
+      ss = ss.slice(found.k);
+    } else {
+      const j = n - 1 - found.k;
+      pts = [...pts.slice(0, j), found.at];
+      hs = hs.slice(0, j);
+      ss = ss.slice(0, j);
+    }
+  }
+  return { points: pts, heights: hs, sections: ss, trimmedMm };
+}
+
+const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+// --- From the plan to ribs on the wall's face (shared by ribs_plan and the Auto ribs panel). ---
+
+/** The wall's own triangles as a surface, for the normal under each point (a rib stands along it). */
+export function wallSurfaceOf(solid: RibWallSolid, faces: readonly number[]): RibSurface {
+  const wallSet = new Set(faces);
+  const own: number[] = [];
+  const ownFace: number[] = [];
+  const count = Math.floor(solid.positions.length / 9);
+  for (let t = 0; t < count; t += 1) {
+    if (!wallSet.has(Number(solid.faceOf[t]))) continue;
+    for (let i = 0; i < 9; i += 1) own.push(solid.positions[t * 9 + i]!);
+    ownFace.push(Number(solid.faceOf[t]));
+  }
+  return new RibSurface({ positions: own, faceOf: ownFace });
+}
+
+/** A planned rib taken onto the wall's face, with the sections it is built with and why. */
+export interface FaceRib {
+  points: V3[];
+  heights: number[];
+  sections: Section[];
+  normals: V3[];
+  width: number;
+  height: number;
+  /** One profile, or "straight+tee" when it changes along the rib. */
+  profile: string;
+  flangeChamferDeg?: number;
+  /** For a rib with tee stretches: their length, mm. */
+  teeMm?: number;
+  /** How far each end was drawn back from a free edge, mm, when either was. */
+  trimmedMm?: [number, number];
+  why: string;
+}
+
+/** What a planned rib carries: points on the mid-surface, heights and sections per stretch. */
+export interface PlanRibIn {
+  points: V3[];
+  heights?: number[];
+  sections?: Section[];
+  width?: number;
+  height?: number;
+}
+
+/**
+ * The plan's ribs on the wall's face: each taken off the mid-surface (`ribPathsFromPlan`), its ends drawn back from a
+ * free edge (`trimThinEnds`), and each tee stretch checked against the rib's own direction (`fitFlanges`).
+ */
+export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | "skin" | "faces">, planned: readonly PlanRibIn[], build: V3, fallbackWidth: number): { ribs: FaceRib[]; snapMaxMm: number } {
+  const onSkin = ribPathsFromPlan(solid, wall, planned.map((row) => ({ points: row.points })));
+  const surface = wallSurfaceOf(solid, wall.faces);
+  const whole = new RibSurface({ positions: solid.positions, faceOf: solid.faceOf });
+  const ribs = planned.map((row, i): FaceRib => {
+    const width = row.width ?? fallbackWidth;
+    const trimmed = trimThinEnds(onSkin.paths[i]!.points, row.heights ?? [], (row.sections ?? []).map((s) => ({ ...s })), surface, whole, width);
+    const points = trimmed.points;
+    const heights = trimmed.heights;
+    const height = row.height ?? Math.max(0, ...heights);
+    const normals = points.map((p) => surface.closest(p, 5)?.normal ?? ([0, 0, 1] as V3));
+    const fitted = fitFlanges(points, normals, heights, trimmed.sections, build);
+    const length = (kind: string) => fitted.sections.reduce((sum, s, k) => sum + (s.profile === kind ? dist(points[k + 1]!, points[k]!) : 0), 0);
+    const kinds = [...new Set(fitted.sections.map((s) => s.profile))];
+    const tee = fitted.sections.find((s) => s.profile === "tee");
+    const cut = trimmed.trimmedMm.some((mm) => mm > 0);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const why = fitted.notes.length || cut
+      ? [...fitted.notes, ...(cut ? [`an end stood on a free edge of the wall (nothing to run into, or too thin to sink into), so it was drawn back ${trimmed.trimmedMm.map(r2).join(" and ")} mm`] : [])].join("; ")
+      : tee ? `a tee with a ${(tee.flangeChamferDeg ?? 45) > 0 ? "45° chamfered" : "square"} flange where the rib's height is held under the greatest, straight elsewhere` : kinds[0] === "drafted" ? "drafted, as the process asks" : "straight";
+    return {
+      points,
+      heights,
+      sections: fitted.sections,
+      normals,
+      width,
+      height,
+      profile: kinds.length === 1 ? kinds[0]! : kinds.join("+"),
+      ...(tee ? { flangeChamferDeg: tee.flangeChamferDeg ?? 45, teeMm: length("tee") } : {}),
+      ...(cut ? { trimmedMm: trimmed.trimmedMm } : {}),
+      why,
+    };
+  });
+  return { ribs, snapMaxMm: onSkin.snapMaxMm };
+}
+
+/** The planner's profile on the wire (`WireProfile`) for what was asked, the process and the flange that prints here. */
+export function wireProfileOf(asked: "auto" | RibProfileKind, process: RibProcess, flange: "chamfered" | "square" | null, extra: Record<string, number> = {}): Record<string, unknown> {
+  if (asked === "straight") return { kind: "straight" };
+  if (asked === "drafted" || (asked === "auto" && process === "resin")) return { kind: "drafted", ...extra };
+  if (asked === "tee") return { kind: "tee", flange: flange ?? "chamfered", ...extra };
+  return { kind: "auto", process, flange };
+}
+
+// --- The material card the shell model uses (moved from mcp/session/ribs.ts so the panel names the same card). ---
+
+/** The card fields the planner and its sentence read. */
+export interface RibCardIn {
+  id: string;
+  polymer: string;
+  provisional: boolean;
+  EInPlaneMPa: number;
+  nu: number;
+}
+
+/**
+ * The card the shell model and the verify study use: the library card for the selected filament's polymer when there
+ * is one, else `fallback` (the default card), and a row saying which, so a placeholder is never presented as the
+ * filament's. `note` is the sentence ribs_plan and the panel show.
+ */
+export function ribCardFor<C extends RibCardIn>(cards: readonly C[], filament: { name: string; material?: string | null }, fallback: C): { card: C; row: { card: string; polymer: string; eMPa: number; nu: number; provisional: boolean; filament: string; forFilament: boolean; note: string } } {
+  const wanted = String(filament.material ?? "").trim().toLowerCase();
+  const own = wanted ? cards.find((card) => card.polymer.trim().toLowerCase() === wanted) : undefined;
+  const card = own ?? fallback;
+  const values = `E ${card.EInPlaneMPa} MPa, ν ${card.nu}`;
+  return {
+    card,
+    row: {
+      card: card.id,
+      polymer: card.polymer,
+      eMPa: card.EInPlaneMPa,
+      nu: card.nu,
+      provisional: card.provisional,
+      filament: filament.name,
+      forFilament: own !== undefined,
+      note: own
+        ? `${card.id}, the library's ${card.polymer} card for ${filament.name} (${values})${card.provisional ? ": a provisional placeholder, not measured for this filament, so the numbers are relative" : ""}.`
+        : `No card in the library is for ${filament.name}'s ${filament.material || "material"}; the default ${card.id} (${card.polymer}, ${values}) stands in, so the numbers are relative and not this material's.`,
+    },
+  };
 }

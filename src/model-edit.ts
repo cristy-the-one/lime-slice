@@ -6,6 +6,7 @@
  */
 import type { ModelTool } from "./model-drag.ts";
 import { featurePanel, featureSource, type FeatureChoices } from "./model-features.ts";
+import { ribNetSource } from "./auto-ribs.ts";
 import { repeatPanel, repeatSource, type RepeatChoices } from "./model-repeat.ts";
 import { stepLabel } from "./model-history.ts";
 import { tiltOf } from "./model-plane.ts";
@@ -115,7 +116,8 @@ function hasPanel(op: ModelOp): boolean {
   // --- F1/E1. A group of sketch extrudes reopens the sketch, not a feature panel. ---
   // --- F2. A group of sketch revolves does too. ---
   // --- F4. Holes from a sketch reopen the Hole panel. ---
-  if (op.kind === "group") return featureSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchRevolveGroup(op) || isSketchHoleGroup(op);
+  // --- Auto ribs: a rib network reopens the Auto ribs card, which plans it again.
+  if (op.kind === "group") return featureSource(op) != null || ribNetSource(op) != null || repeatSource(op) != null || isSketchExtrudeGroup(op) || isSketchRevolveGroup(op) || isSketchHoleGroup(op);
   // --- end A3 ---
   // --- F3. A loft, including a sweep stored as a loft, reopens its sketches. ---
   if (op.kind === "extrude" || op.kind === "revolve" || op.kind === "loft") return true;

@@ -279,6 +279,35 @@ export function installGhost(ctx: ViewCtx): void {
   function buildGhost() {
     const current = ctx.ghost;
     if (!current) return;
+    // --- Auto ribs: the wall under the pointer, the keep-clear zones, the ribs, and the lit one, in the solid's frame.
+    if (current.kind === "ribs") {
+      const layer = (positions: Float32Array | undefined, opacity: number, color: string | null, order: number, through: boolean, outline: boolean) => {
+        if (!positions || positions.length < 9) return;
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geometry.computeVertexNormals();
+        const material = ghostMaterial(opacity);
+        if (color) material.color.set(hexToThree(color));
+        if (through) material.depthTest = false;
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.copy(posed.matrix);
+        mesh.renderOrder = order;
+        mesh.raycast = () => undefined;
+        if (outline) {
+          const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 30), new THREE.LineBasicMaterial({ color: color ? hexToThree(color) : ctx.accent, transparent: true, opacity: 0.9, depthTest: !through }));
+          edges.raycast = () => undefined;
+          mesh.add(edges);
+        }
+        ghosts.add(mesh);
+      };
+      layer(current.wall, 0.22, null, 1, false, false);
+      layer(current.zones, 0.16, ctx.colors.amber, 3, true, true);
+      layer(current.ribs, 0.7, null, 2, false, true);
+      layer(current.lit, 0.95, ctx.colors.ok, 4, true, true);
+      canvas.dataset.ribsGhost = `${current.counts?.ribs ?? 0}/${current.counts?.zones ?? 0}`;
+      return;
+    }
     // --- P1: the client prism, in the solid's frame. ---
     if (current.kind === "soup") {
       // --- Text with real fonts: the letters too thin for the nozzle are drawn apart, in the refusal colour.

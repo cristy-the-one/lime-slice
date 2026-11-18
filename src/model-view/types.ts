@@ -56,7 +56,13 @@ export type ModelGhost =
   /** A composite feature: every piece, or outlines only past the cap. `failed` (from 1) is the step a probe refused. */
   | { kind: "pieces"; parts: { spec: PrimitiveSpec; mesh: Float32Array }[]; outlines: boolean; failed?: number }
   /** P1. A face prism in the solid's own frame, drawn with the solid. `tone` "add" draws material to be added, green. */
-  | { kind: "soup"; positions: Float32Array; tone?: "add" | "cut"; flagged?: Float32Array };
+  | { kind: "soup"; positions: Float32Array; tone?: "add" | "cut"; flagged?: Float32Array }
+  /**
+   * --- Auto ribs. In the solid's frame: `ribs` the planned ribs in the highlight colour, `lit` the one under the pointer
+   * or the list's focus, `zones` the keep-clear places (translucent, drawn through the part), `wall` the faces a click
+   * would take (a light wash).
+   */
+  | { kind: "ribs"; ribs: Float32Array; lit?: Float32Array; zones?: Float32Array; wall?: Float32Array; counts?: { ribs: number; zones: number } };
 
 /** P1. A pointer event on a face, in model space. `local` is the solid's own frame. `cancel` is a press the system took away. */
 export interface FacePointer {

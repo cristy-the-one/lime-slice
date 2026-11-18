@@ -654,8 +654,6 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
     next.volume *= factor ** 3;
   } else if (op?.kind === "hole") {
     next.volume = Math.max(1, next.volume - 100);
-    const extra = new Float32Array(next.positions.length + 36);
-    extra.set(next.positions);
     const z = (next.max[2] ?? 0) + 0.2;
     const x0 = next.min[0] ?? 0;
     const y0 = next.min[1] ?? 0;
@@ -664,8 +662,18 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
     const b = [x0, y0 + 6, z];
     const c = [x0 + 6, y0, z];
     const d = [x0 + 2, y0 + 2, z + 0.4];
-    extra.set([...a, ...b, ...c, ...a, ...d, ...b, ...b, ...d, ...c, ...c, ...d, ...a], next.positions.length);
-    next.positions = extra;
+    const mark = Float32Array.from([...a, ...b, ...c, ...a, ...d, ...b, ...b, ...d, ...c, ...c, ...d, ...a]);
+    // One mark is enough: a second hole's mark on the first would share its edges, which no real hole does.
+    const marked = (() => {
+      for (let t = 0; t + 9 <= next.positions.length; t += 9) if (mark.every((v, i) => i >= 9 || next.positions[t + i] === v)) return true;
+      return false;
+    })();
+    if (!marked) {
+      const extra = new Float32Array(next.positions.length + 36);
+      extra.set(next.positions);
+      extra.set(mark, next.positions.length);
+      next.positions = extra;
+    }
   } else if (op?.kind === "boolean" && op.op === "cut" && op.primitive === "box" && op.origin && op.size) {
     const [ox, oy, oz] = op.origin as [number, number, number];
     const [sx, sy, sz] = op.size as [number, number, number];
@@ -702,8 +710,8 @@ export const FAKE_PART_HOLD = {
  * probed or applied, carries a chain of blocks beside the part, each meeting the next only along an edge; its volume
  * is the cut's as reported.
  */
-function damagedCut(prior: { max: number[] }, next: { volume: number; positions: Float32Array; min: number[]; max: number[] }, op: { op?: string } | undefined) {
-  if (process.env.LIME_MCP_FAKE_DAMAGE !== "1" || op?.op !== "cut") return next;
+function damagedCut(prior: { max: number[] }, next: { volume: number; positions: Float32Array; min: number[]; max: number[] }, op: object | undefined) {
+  if (process.env.LIME_MCP_FAKE_DAMAGE !== "1" || (op as { op?: unknown } | undefined)?.op !== "cut") return next;
   const [x, y, z] = [prior.max[0] ?? 20, prior.max[1] ?? 20, 0];
   const blocks = [0, 1, 2, 3, 4, 5].map((i) => boxSolid([x + 5 + i * 2, y + 5 + i * 2, z], [x + 7 + i * 2, y + 7 + i * 2, z + 2], 8).positions);
   const both = new Float32Array(next.positions.length + blocks.reduce((sum, b) => sum + b.length, 0));

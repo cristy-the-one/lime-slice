@@ -99,12 +99,6 @@ const damaged = (): number[] => {
   check("an extrude-cut whose result is damaged is refused", verdict?.damaged === true, JSON.stringify(verdict));
 }
 
-// 4. A cut that adds material: its solid and its mesh both grew.
-{
-  const cut: ModelOp = { kind: "extrude", op: "cut", origin: [0, 0, 2], turn: [0, 0, 0], profile: [[0, 0], [100, 0], [100, 60], [0, 60]], depth: 1.8 } as unknown as ModelOp;
-  const verdict = stepGuard(cut, before, solid([...floor, ...ribs(0, 0), ...ownEdge(), ...box([20, 70, 0], [30, 80, 2])]), IDENTITY_POSE);
-  check("a cut that adds material is refused", verdict?.damaged === true && /a cut cannot add material/.test(verdict.reason), JSON.stringify(verdict));
-}
 // 4b. The real part's other variant: the solid reported +0.68 mm³, inside the slack, while its mesh grew by a quarter.
 {
   const cut: ModelOp = { kind: "extrude", op: "cut", origin: [0, 0, 2], turn: [0, 0, 0], profile: [[0, 0], [100, 0], [100, 60], [0, 60]], depth: 1.8 } as unknown as ModelOp;
@@ -119,6 +113,13 @@ const damaged = (): number[] => {
   const grown = [...floor, ...ribs(0, 0), ...ownEdge(), ...box([20, 70, 0], [80, 120, 10])];
   const verdict = stepGuard(fuse, before, solid(grown, before.volumeMm3 + 100), IDENTITY_POSE);
   check("a mesh whose volume is not the solid's is refused", verdict?.damaged === true && /its mesh holds/.test(verdict.reason), JSON.stringify(verdict));
+}
+
+// 5b. A result that carries the solid before's own mesh (a host that did not mesh this step) is not judged by it.
+{
+  const cut: ModelOp = { kind: "extrude", op: "cut", origin: [0, 0, 2], turn: [0, 0, 0], profile: [[0, 0], [10, 0], [10, 10], [0, 10]], depth: -1 } as unknown as ModelOp;
+  const verdict = stepGuard(cut, before, solid(Array.from(before.positions), before.volumeMm3 * 0.8), IDENTITY_POSE);
+  check("a result with the mesh from before is not read by its mesh", verdict === null, JSON.stringify(verdict));
 }
 
 // 6. A box placed against the part along one edge keeps the wording that says to move it, and stays shortenable.

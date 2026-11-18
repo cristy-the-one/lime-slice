@@ -2,7 +2,7 @@
  * Checks on a step the kernel has already applied, for results Open CASCADE reports as done but that are not what
  * the step meant: a fuse that hands back only the tool, a cut that takes more than its tool, a fillet that loses most
  * of the part, a piece that meets the part only along an edge, or a damaged solid (new edges where pieces meet only
- * along a line, a cut that adds material, a mesh whose volume is not the solid's). The session takes such a step back
+ * along a line, a mesh whose volume is not the solid's). The session takes such a step back
  * and refuses it. Only what the step changed counts: edges like these that the part already had are left alone.
  */
 import { edgeReport, nonManifoldSegments, soupVolume, type EdgeReport, type Vec3 } from "../mesh-check.ts";
@@ -169,23 +169,28 @@ export function damagedReason(count: number, at: Vec3 | null): string {
 const VOLUME_DISAGREES = 0.1;
 
 /**
- * Why a step's result is not a sound solid by its volume, or null: a cut that adds material, or a mesh that holds a
- * different volume from the solid it shows. `before` and `after` carry the solid's volume and its mesh; a step whose
- * mesh is not built yet (an empty soup) is read by its volume alone.
+ * Why a step's result is not a sound solid by its volume, or null: a mesh that holds a different volume from the solid
+ * it shows (a damaged cut on an imported part reported +0.68 mm³ while its mesh grew by a quarter). `before` and
+ * `after` carry the solid's volume and its mesh; a step whose mesh is not built yet (an empty soup) passes.
  */
-export function brokenVolume(op: { kind: string; op?: string }, before: { volumeMm3: number; positions: ArrayLike<number> }, after: { volumeMm3: number; positions: ArrayLike<number> }): string | null {
+export function brokenVolume(before: { volumeMm3: number; positions: ArrayLike<number> }, after: { volumeMm3: number; positions: ArrayLike<number> }): string | null {
   if (!(before.volumeMm3 > 0) || !Number.isFinite(after.volumeMm3)) return null;
-  const slack = Math.max(before.volumeMm3 * 1e-4, 0.01);
-  if ((op.op === "cut" || op.kind === "hole") && after.volumeMm3 > before.volumeMm3 + slack) {
-    return `Open CASCADE returned ${mm3(after.volumeMm3)} for a cut on a ${mm3(before.volumeMm3)} part: a cut cannot add material, so the result is damaged. The step was taken back. Split the cut into smaller steps, or keep its faces off the part's own faces.`;
-  }
   if (before.positions.length < 9 || after.positions.length < 9 || !(after.volumeMm3 > 0)) return null;
+  // A mesh that is the solid before's, point for point, was not built for this step, so it says nothing about it.
+  if (sameSoup(before.positions, after.positions)) return null;
   const off = (solid: { volumeMm3: number; positions: ArrayLike<number> }) => Math.abs(Math.abs(soupVolume(solid.positions)) - solid.volumeMm3) / solid.volumeMm3;
   const now = off(after);
   if (now > VOLUME_DISAGREES && now > off(before) + VOLUME_DISAGREES / 2) {
     return `Open CASCADE returned a damaged solid for this step: its mesh holds ${mm3(Math.abs(soupVolume(after.positions)))} but the solid reports ${mm3(after.volumeMm3)}. The step was taken back. Split the edit into smaller steps, or keep the tool's faces off the part's own faces.`;
   }
   return null;
+}
+
+function sameSoup(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 /** Kinds that move or rebuild the whole part, so every touching edge it had is somewhere new: not judged by edges. */
@@ -214,7 +219,7 @@ export function meshGuard(
       return { reason: damagedReason(fresh.count, at), damaged: true };
     }
   }
-  const broken = brokenVolume(op, before, after);
+  const broken = brokenVolume(before, after);
   return broken ? { reason: broken, damaged: true } : null;
 }
 

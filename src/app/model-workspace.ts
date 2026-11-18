@@ -49,6 +49,7 @@ export { escapeModel, openJoinTool } from "../ui/model-chrome";
 export { editModelStep, toggleModelHistoryFocus } from "../ui/model-history";
 export { toggleParameters } from "../ui/parameters";
 export { openSplitPrint } from "../ui/split-print";
+export { openAutoRibsCard } from "../ui/auto-ribs-card";
 
 let mounted = false;
 
