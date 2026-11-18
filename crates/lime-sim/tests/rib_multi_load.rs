@@ -8,7 +8,8 @@
 mod shell_common;
 
 use lime_sim::shell::planner::{
-    boundary_vertices, plan_ribs, Goal, Holds, LoadCombine, RibPlan, RibPlanRequest,
+    boundary_vertices, plan_ribs, Family, Goal, Holds, LoadCombine, RibEndKind, RibPlan,
+    RibPlanRequest,
 };
 use lime_sim::shell::{Rib, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions};
 use shell_common::material;
@@ -391,6 +392,109 @@ fn worst_case_raises_the_weaker_load() {
     assert_eq!(plan.ribs.len(), 6);
     close_to(plan.rib_volume_mm3, 1893.236492);
     assert!(f.iter().all(|x| *x >= 2.0 - 1e-9), "{f:?}");
+}
+
+/// v6.11.0, one load case, this mesh and `Goal::Stiffer(2)`. The factor
+/// must match to 1e-12 and the ribs must be the same ones. Recorded before
+/// the multi-load objective, and not to be loosened: an absolute cutoff
+/// on compliance would move these ribs.
+const ONE_CASE_V6110: &str = include_str!("one_case_v6110.txt");
+
+struct SnapRib {
+    height: f64,
+    points: Vec<[f64; 3]>,
+    heights: Vec<f64>,
+}
+
+struct Snap {
+    factor: f64,
+    volume: f64,
+    bare: f64,
+    ribbed: f64,
+    ribs: Vec<SnapRib>,
+}
+
+fn parse_snap(text: &str) -> Snap {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let head: Vec<&str> = lines.next().unwrap().split_whitespace().collect();
+    let mut snap = Snap {
+        factor: head[4].parse().unwrap(),
+        volume: head[6].parse().unwrap(),
+        bare: head[9].parse().unwrap(),
+        ribbed: head[11].parse().unwrap(),
+        ribs: Vec::new(),
+    };
+    let mut rib: Option<SnapRib> = None;
+    for line in lines {
+        let p: Vec<&str> = line.split_whitespace().collect();
+        match p[1] {
+            "rib" => {
+                if let Some(r) = rib.take() {
+                    snap.ribs.push(r);
+                }
+                rib = Some(SnapRib {
+                    height: p[4].parse().unwrap(),
+                    points: Vec::new(),
+                    heights: Vec::new(),
+                });
+            }
+            "pt" => {
+                let r = rib.as_mut().unwrap();
+                r.points.push([
+                    p[2].parse().unwrap(),
+                    p[3].parse().unwrap(),
+                    p[4].parse().unwrap(),
+                ]);
+            }
+            "ht" => rib.as_mut().unwrap().heights.push(p[2].parse().unwrap()),
+            other => panic!("unexpected snapshot line {other}"),
+        }
+    }
+    snap.ribs.push(rib.unwrap());
+    assert_eq!(snap.ribs.len(), head[2].parse::<usize>().unwrap());
+    snap
+}
+
+fn within_1e_12(got: f64, want: f64, what: &str) {
+    assert!(
+        (got - want).abs() <= 1e-12,
+        "{what}: {got:.16} vs {want:.16}"
+    );
+}
+
+#[test]
+fn a_one_case_plan_matches_v6_11_0() {
+    let snap = parse_snap(ONE_CASE_V6110);
+    let mut req = RibPlanRequest::new(
+        ShellMesh::rectangle([160.0, 80.0], [24, 12], 2.0),
+        material(E, NU),
+    );
+    req.goal = Goal::Stiffer(2.0);
+    req.options.baselines = false;
+    let plan = plan_ribs(&req).unwrap();
+    within_1e_12(plan.stiffness_factor, snap.factor, "factor");
+    within_1e_12(plan.rib_volume_mm3, snap.volume, "volume");
+    within_1e_12(plan.bare.compliance, snap.bare, "bare compliance");
+    within_1e_12(plan.ribbed.compliance, snap.ribbed, "ribbed compliance");
+    assert_eq!(plan.case_factors.len(), 1);
+    within_1e_12(plan.case_factors[0], plan.stiffness_factor, "case factor");
+    assert!(plan.worst_trace.is_empty());
+    assert_eq!(plan.ribs.len(), snap.ribs.len());
+    for (got, want) in plan.ribs.iter().zip(&snap.ribs) {
+        within_1e_12(got.height, want.height, "rib height");
+        assert_eq!(got.ends, [RibEndKind::Boundary, RibEndKind::Boundary]);
+        assert_eq!(got.family, Family::Major);
+        assert_eq!(got.points.len(), want.points.len(), "point count");
+        assert_eq!(got.heights.len(), want.heights.len(), "height count");
+        for (p, q) in got.points.iter().zip(&want.points) {
+            for k in 0..3 {
+                within_1e_12(p[k], q[k], "point");
+            }
+        }
+        for (h, w) in got.heights.iter().zip(&want.heights) {
+            within_1e_12(*h, *w, "stretch height");
+        }
+    }
 }
 
 fn dump_trace(plan: &RibPlan) {
