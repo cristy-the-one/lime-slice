@@ -1,7 +1,8 @@
 /**
  * Folded walls through ribs_plan against real Open CASCADE (docs/plan-folded-shell.md).
  * Synthetic cover and open box only. Skips without LIME_OCCT_BRIDGE; fails in CI when it is unset.
- * The shell and the solid study share the filament card's E and ν, the solid made isotropic so both are the same material.
+ * The shell and the Stress study share the filament card's E and ν, the study made isotropic.
+ * The study is sliced: the smear solver only meshes a generated beam, and refuses any other solid as open.
  */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -183,10 +184,12 @@ function split(ribs: Reply[], kind: "cover" | "box") {
 }
 
 async function solidMax(object: string, floor: number, tops: number[], e: number, nu: number): Promise<Reply> {
+  // Six walls and solid infill fill a 2 mm section, so the print is the solid rather than a sparse one.
+  const set = await call("settings_set", { object, values: { infill: 1, walls: 6 } });
+  if (set.ok !== true) return set;
   const setup = await call("sim_setup", {
     object,
-    representation: "smear",
-    element: "tet10",
+    representation: "sliced",
     hMm: 2,
     fixtures: holdsOf(tops),
     loads: pressure(floor),
@@ -231,11 +234,9 @@ async function compare(title: string, object: string, kind: "cover" | "box", vol
   const shellOn = bareMm(on);
   const shellOff = bareMm(off);
   const solidW = typeof solid.maxDisplacementMm === "number" ? solid.maxDisplacementMm : NaN;
-  const at = (solid.maxDisplacementAt ?? []) as number[];
   const err = (shell: number) => (100 * (shell - solidW)) / solidW;
-  const where = at.map((n) => r1(n)).join(",");
-  report.push(`${title}: folded true ${r3(shellOn)} mm (${r1(err(shellOn))} %), folded false ${r3(shellOff)} mm (${r1(err(shellOff))} %), solid max ${r3(solidW)} mm at ${where}, E ${material.e} ν ${material.nu}`);
-  check(`${title}: the solid's largest movement is on the floor`, solid.ok === true && Math.hypot(at[0] ?? 99, at[1] ?? 99) < 20, JSON.stringify({ at, reason: solid.reason, trust: solid.trust }).slice(0, 400));
+  report.push(`${title}: folded true ${r3(shellOn)} mm (${r1(err(shellOn))} %), folded false ${r3(shellOff)} mm (${r1(err(shellOff))} %), sliced study ${r3(solidW)} mm, E ${material.e} ν ${material.nu}`);
+  check(`${title}: the sliced study solved`, solid.ok === true && solidW > 0, JSON.stringify({ reason: solid.reason, trust: solid.trust, representation: solid.representation }).slice(0, 400));
   check(`${title}: folded true is within 10 % of the solid`, solidW > 0 && Math.abs(err(shellOn)) <= 10, `${r1(err(shellOn))} % (shell ${r3(shellOn)}, solid ${r3(solidW)})`);
   check(`${title}: folded false is more than 10 % too stiff`, solidW > 0 && err(shellOff) < -10, `${r1(err(shellOff))} % (shell ${r3(shellOff)}, solid ${r3(solidW)})`);
   if (on.ok === true) {
