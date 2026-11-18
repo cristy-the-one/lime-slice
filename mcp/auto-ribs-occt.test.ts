@@ -461,6 +461,53 @@ let boxObject = "";
   addedAsPlanned("cylinder panel", done, applied);
 }
 
+// ===== 5b. Two load cases: per-case factors, the stored request re-plans the same ribs, verify per case. =====
+{
+  const pressure = { kind: "pressure", faces: [] as number[], magnitude: 0.01, direction: [0, 0, -1] };
+  const point = { kind: "force", region: { sphere: { centre: [0, 0, 2], radiusMm: 12 } }, magnitude: 30, direction: [0, 0, -1] };
+  const object = await shellBox(BX, BY, BZ);
+  const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
+  pressure.faces = [floor];
+  const side = faceAt(object, [BX / 2 - 2, 0, BZ / 2], [-1, 0, 0]);
+  const missed = await call("ribs_plan", { object, wall: { faces: [floor] }, loadCases: [{ name: "spread", loads: [pressure] }, { name: "sideways", loads: [{ kind: "force", faces: [side], magnitude: 20, direction: [1, 0, 0] }] }] });
+  const missedDone = typeof missed.job === "string" ? await waitJob(missed.job) : missed;
+  check("a case whose loads all miss: refused, named by its case", missedDone.ok === false && missedDone.code === "off-wall" && /sideways/.test(String(missedDone.reason)), JSON.stringify(missedDone).slice(0, 400));
+  const loadCases = [{ name: "spread", loads: [pressure] }, { name: "point", weight: 2, loads: [point] }];
+  const args = { object, wall: { faces: [floor] }, loadCases, goal: { budgetMm3: 2000 }, baselines: false };
+  const done = await waitJob(String((await call("ribs_plan", args)).job));
+  const cases = done.plan?.cases as Reply[];
+  check("two cases: each named, with its factor and its bare and ribbed deflection", done.ok === true && cases?.length === 2 && cases[0]?.name === "spread" && cases[1]?.name === "point" && cases[1]?.weight === 2 && cases.every((c: Reply) => typeof c.factor === "number" && c.factor > 1 && c.bare?.deflectionMm > 0 && c.ribbed?.deflectionMm > 0 && c.ribbed.deflectionMm < c.bare.deflectionMm), JSON.stringify(cases));
+  const ribKey = (ribs: Reply[]) => JSON.stringify(ribs.map((rb) => ({ points: rb.points, heights: rb.heights, family: rb.family })));
+  const firstRibs = ribKey(done.plan.ribs);
+  const firstFactors = cases.map((c: Reply) => c.factor as number);
+  const applied = await call("ribs_apply", { job: done.job });
+  check("two cases: the plan applies", applied.ok === true, JSON.stringify(applied).slice(0, 300));
+  await call("model_undo", { object });
+  const again = await waitJob(String((await call("ribs_plan", done.plan.request)).job));
+  const againCases = again.plan?.cases as Reply[];
+  check("re-planning the stored request repeats the ribs", again.ok === true && ribKey(again.plan.ribs) === firstRibs, `first ${done.plan.ribs.length}, again ${again.plan?.ribs?.length}`);
+  const rel = (a: number, b: number) => Math.abs(a - b) / Math.max(Math.abs(b), 1e-9);
+  check("two cases: the factors match a fresh solve of the same ribs within 1e-6", againCases?.length === 2 && againCases.every((c: Reply, i: number) => rel(c.factor, firstFactors[i]!) <= 1e-6), JSON.stringify({ first: firstFactors, again: againCases?.map((c: Reply) => c.factor) }));
+  report.push(`two cases on the ${BOX} box: ${cases.map((c: Reply) => `${c.name} w${c.weight} ×${c.factor} (bare ${c.bare.deflectionMm} → ribbed ${c.ribbed.deflectionMm} mm)`).join("; ")}; combined ×${done.plan.stiffnessFactor}`);
+  // What verify costs: one case, then two, the same box and budget, baselines off.
+  const timeVerify = async (label: string, given: Reply) => {
+    const box = await shellBox(BX, BY, BZ);
+    const face = faceAt(box, [0, 0, 2], [0, 0, 1]);
+    const planned = await waitJob(String((await call("ribs_plan", { object: box, wall: { faces: [face] }, goal: { budgetMm3: 2000 }, baselines: false, ...given, ...(given.loads ? { loads: [{ ...pressure, faces: [face] }] } : {}), ...(given.loadCases ? { loadCases: [{ ...loadCases[0], loads: [{ ...pressure, faces: [face] }] }, loadCases[1]] } : {}) })).job));
+    const t = Date.now();
+    const verified = await waitJob(String((await call("ribs_apply", { job: planned.job, verify: true })).job));
+    const seconds = (Date.now() - t) / 1000;
+    return { label, seconds, verify: verified.verify as Reply, ok: verified.ok === true };
+  };
+  const one = await timeVerify("1 case", { loads: [pressure] });
+  const two = await timeVerify("2 cases", { loadCases });
+  check("verify, one case: the study before and after", one.ok && one.verify?.before?.maxDisplacementMm > 0 && one.verify?.after?.maxDisplacementMm > 0, JSON.stringify(one.verify).slice(0, 300));
+  check("verify, two cases: each case before and after", two.ok && two.verify?.cases?.length === 2 && two.verify.cases.every((c: Reply) => c.before?.maxDisplacementMm > 0 && c.after?.maxDisplacementMm > 0), JSON.stringify(two.verify).slice(0, 400));
+  timings.push(`verify 1 case ${one.seconds.toFixed(1)} s`);
+  timings.push(`verify 2 cases ${two.seconds.toFixed(1)} s (${two.verify?.seconds} s reported)`);
+  report.push(`verify: 1 case ${one.seconds.toFixed(1)} s, 2 cases ${two.seconds.toFixed(1)} s`);
+}
+
 // ===== 6. The flange table: tees with a 45° chamfered and a square flange, along X, along Y and at 45°. =====
 const flangeRows: Reply[] = [];
 {
