@@ -500,6 +500,13 @@ let boxObject = "";
   check("it applies as one row", applied.ok === true && (await historyCount(object)) === rows + 1, JSON.stringify(applied).slice(0, 500));
   const moved = await shift(object, outside, before);
   check("the panel's outside is unchanged", moved < 0.01, `moved ${moved} mm`);
+  // Ends the planner anchors at the panel's held free edges are built square at full height, as it modelled them.
+  const anchored = (done.plan.ribs as Reply[]).flatMap((rib) => rib.taperMm as number[]).filter((mm) => mm === 0).length;
+  check(`anchored ends built square: ribNet tapers none of the ${anchored} the planner anchored`, (applied.ribNet?.ends?.tapered ?? -1) === (done.plan.ribs as Reply[]).flatMap((rib) => rib.taperMm as number[]).filter((mm) => mm > 0).length, JSON.stringify({ ends: applied.ribNet?.ends, endsDiffer: done.plan.endsDiffer }));
+  // Not asserted yet: square ends at the panel's free edges add an overhang (471 mm² on 2026-11-18), reported to the
+  // coordinator for a decision. The thin-wall area must not grow.
+  check("the print check finds no new thin walls", (applied.check?.after?.thinWallsMm2 ?? 0) <= (applied.check?.before?.thinWallsMm2 ?? 0) + 1e-6, JSON.stringify(applied.check));
+  report.push(`cylinder panel check: ${JSON.stringify(applied.check)}; ends ${JSON.stringify(applied.ribNet?.ends)}; endsDiffer ${JSON.stringify(done.plan.endsDiffer)}`);
   report.push(`cylinder panel: ${done.plan?.ribs?.length} ribs ${JSON.stringify(done.plan?.profiles)}, factor ${done.plan?.stiffnessFactor}, +${applied.added?.mm3} mm³ (${applied.added?.percent} %), plan ${planMs} ms, apply ${Date.now() - t1} ms, ribNet ${JSON.stringify({ runs: applied.ribNet?.runs, shortened: applied.ribNet?.shortened?.length ?? 0, skipped: applied.ribNet?.skipped?.length ?? 0 })}`);
   addedAsPlanned("cylinder panel", done, applied);
 }

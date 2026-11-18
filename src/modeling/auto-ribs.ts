@@ -366,13 +366,14 @@ export const END_TAPER_TIMES_HEIGHT = 3;
 
 /**
  * The taper a rib's own end is built with if ribNet finds it free: the typed override, else the planner's (`taperMm`,
- * the one its figures were solved with), else three times the height there. The planner gives 0 at an end it anchors; if
- * ribNet finds nothing there to run into, the end still tapers by the default rule rather than stand square.
+ * the one its figures were solved with), so the plan's numbers describe what is built. The planner gives 0 at an end it
+ * anchors (a hold, a held free edge): that end is built square at full height as modelled, even where ribNet finds no
+ * wall to run into. Only a rib with no `taperMm` at all (a hand-given plan) takes three times the height there.
  */
 function endTaperOf(rib: BuiltRib, side: 0 | 1, height: number, options: RibNetOptions): number {
   if (options.taperMm !== undefined) return options.taperMm;
   const planned = rib.taperMm?.[side];
-  return planned !== undefined && planned > 0 ? planned : END_TAPER_TIMES_HEIGHT * height;
+  return planned !== undefined ? Math.max(0, planned) : END_TAPER_TIMES_HEIGHT * height;
 }
 
 /** The ribNet op and, per path, the rib it came from and whether it holds the rib's first or last point. */

@@ -214,7 +214,7 @@ const near = (a: number, b: number, tol = 1e-6) => Math.abs(a - b) <= tol;
   const taperOf = (op: Record<string, unknown> | { reason: string }) => ("reason" in op ? op.reason : (op.paths as { taperMm: unknown }[]).map((p) => p.taperMm));
   const straightRib = { points: [[0, 0, 2], [20, 0, 2], [40, 0, 2]] as V3[], heights: [6, 4], width: 1.35, profile: "straight" as const };
   check("a straight rib through a height change is one path; its ends 3 × the height there by default", JSON.stringify(taperOf(ribNetOf([straightRib], "t", undefined))) === "[[18,12]]", JSON.stringify(taperOf(ribNetOf([straightRib], "t", undefined))));
-  check("the planner's taper where it gives one (0, an anchored end, falls back to 3 × the height)", JSON.stringify(taperOf(ribNetOf([{ ...straightRib, taperMm: [9, 0] }], "t", undefined))) === "[[9,12]]");
+  check("the planner's taper where it gives one; 0, an end it anchors, is built square as modelled", JSON.stringify(taperOf(ribNetOf([{ ...straightRib, taperMm: [9, 0] }], "t", undefined))) === "[[9,0]]");
   check("a typed taper sets every end, 0 square", JSON.stringify(taperOf(ribNetOf([{ ...straightRib, taperMm: [9, 0] }], "t", undefined, { taperMm: 0 }))) === "[[0,0]]");
   const teeRib = { ...straightRib, profile: "tee" as const };
   check("a tee split at its height change: the rib's two ends only, the joint between pieces null", JSON.stringify(taperOf(ribNetOf([teeRib], "t", undefined))) === "[[18,null],[null,12]]", JSON.stringify(taperOf(ribNetOf([teeRib], "t", undefined))));

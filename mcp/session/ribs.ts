@@ -247,9 +247,10 @@ function taperPair(value: unknown): [number, number] | null {
 }
 
 /**
- * Each rib end the planner and ribNet read differently: the planner tapers an end it holds nothing at (taperMm > 0) and
- * anchors the rest (0); ribNet finds a wall or another rib at an end by rays, or nothing (free, then it tapers). What is
- * built is what ribNet finds.
+ * Each rib end the build cannot make as planned, with why. The planner tapers an end it holds nothing at (taperMm > 0)
+ * and anchors the rest (0); the build makes each end so (a tapered end over taperMm, an anchored one square at full
+ * height even where nothing stands there), except where it cannot: the end was drawn back from a free edge too thin to
+ * sink into, its stretch was left out for want of room, or a tapered end meets a wall or another rib and runs into it.
  */
 function endDisagreements(ribs: readonly Row[], found: readonly (readonly (string | null)[])[] | null): Row[] {
   if (!found) return [];
@@ -257,11 +258,13 @@ function endDisagreements(ribs: readonly Row[], found: readonly (readonly (strin
   ribs.forEach((rib, i) => {
     const pair = taperPair(rib.taperMm);
     if (!pair) return;
+    const trimmed = Array.isArray(rib.trimmedMm) ? (rib.trimmedMm as number[]) : [0, 0];
     for (const end of [0, 1] as const) {
+      const planner = pair[end] > 0 ? "tapered" : "anchored";
       const built = found[i]?.[end] ?? null;
-      if (built === null) continue;
-      const plannerFree = pair[end] > 0;
-      if (plannerFree !== (built === "free")) out.push({ rib: i, end, planner: plannerFree ? "tapered" : "anchored", built: built === "free" ? "free, tapered" : built });
+      if ((trimmed[end] ?? 0) > 0) out.push({ rib: i, end, planner, built: "drawn back", why: `drawn back ${r(trimmed[end]!, 2)} mm from a free edge of the wall too thin to sink into` });
+      else if (built === null) out.push({ rib: i, end, planner, built: "left out", why: "the stretch at this end has no room in front of the wall for a rib, so it was left out" });
+      else if (planner === "tapered" && built !== "free") out.push({ rib: i, end, planner, built, why: built === "wall" ? "a wall stands at this end, so the rib runs into it instead of tapering" : "another rib meets this end, so it joins it instead of tapering" });
     }
   });
   return out;
