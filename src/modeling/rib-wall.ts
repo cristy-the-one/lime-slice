@@ -118,6 +118,11 @@ export interface RibWallOptions {
   holds?: StudyHold[];
   loads?: StudyLoad[];
   /**
+   * Load cases, each mapped onto the wall on its own. Mutually exclusive with `loads`, which stays the one case. A case
+   * whose loads all miss the wall is refused by its name, or planned under even pressure when `ifMissed` says so.
+   */
+  loadCases?: { name?: string; loads: StudyLoad[] }[];
+  /**
    * `auto` (default): the user's holds when any of them lands on the wall, else the joined borders. `joined`, `given`
    * and `both` force one or the other or both.
    */
@@ -169,7 +174,7 @@ export interface RibWallRequest {
   mesh: { vertices: V3[]; triangles: Tri3[]; thickness: number[] };
   /** `Holds::Given`: each node clamped (all six dofs held at zero). */
   holds: { kind: "given"; holds: { node: number; dofs: [0, 0, 0, 0, 0, 0] }[] };
-  /** One case of the user's loads; empty means the planner's even pressure. */
+  /** One entry per load case, in the order given. Empty means the planner's even pressure. */
   loadCases: WallLoad[][];
   zones: PlannerZone[];
   /** `RibRules.clearance`: room in front of the wall per vertex, mm; Infinity when nothing faces it (null in JSON). */
@@ -206,6 +211,8 @@ export interface NotOnWall {
    * that changes nothing the model carries (a pressure of which a small share, under 10 %, lies off the wall).
    */
   dropped: boolean;
+  /** The load case this belongs to, set when the wall was asked for `loadCases`. Absent for the one-case `loads`. */
+  case?: string;
 }
 
 export interface RibWallReport {
@@ -225,6 +232,11 @@ export interface RibWallReport {
   holes: WallHole[];
   holds: { mode: string; clamped: number; joined: number; given: number };
   loads: { index: number; triangles: number; share: number; how: string }[];
+  /**
+   * One entry per load case, in order, when `loadCases` was given: its name, the loads that landed with their share, and
+   * whether it fell back to even pressure because nothing landed. Absent for the one-case `loads`.
+   */
+  cases?: { name: string; loads: { index: number; triangles: number; share: number; how: string }[]; evenPressure: boolean }[];
   zones: { index: number; kind: string; triangles: number; areaMm2: number; centre: V3 | null; bounds: { min: V3; max: V3 } | null; how: string; capped?: number; capMinMm?: number; missed?: string }[];
   notOnWall: NotOnWall[];
   /**
@@ -267,6 +279,8 @@ export const RIB_WALL_DEFAULTS = {
   minAngleDeg: 15,
   /** A load mapped onto less than this share of its area is not taken. */
   loadShare: 0.9,
+  /** The planner's even pressure (`lime-sim` `DEFAULT_PRESSURE`), for a case whose loads all miss under `evenPressure`. */
+  evenPressure: 0.001,
   /** One and a half times the target count: past it the mesh along curves and outlines is coarser, and a wall too big even then is refused. */
   maxTriangles: 27000,
   featureMarginMm: 3,
@@ -2530,11 +2544,14 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   if (useGiven) for (const v of given) clamped.add(v);
   if (clamped.size === 0) warnings.push("Nothing holds the wall: it meets no other part of the solid and no hold lands on it. Give a hold.");
 
-  // --- 7. Loads.
-  const loadCase: WallLoad[] = [];
+  // --- 7. Loads. `loads` is one case, unchanged. `loadCases` maps every case on its own: each case's loads land on the
+  // wall, and a case whose loads all miss is refused by its name, or planned under even pressure when asked.
   const loadReport: RibWallReport["loads"] = [];
-  (options.loads ?? []).forEach((load, index) => {
-    const why = (text: string, dropped = true) => notOnWall.push({ kind: "load", index, why: text, dropped });
+  let requestCases: WallLoad[][] = [];
+  let caseReports: RibWallReport["cases"];
+  let substituted: RibWallReport["substituted"];
+  const mapLoad = (load: StudyLoad, index: number, caseName?: string): { load: WallLoad; row: RibWallReport["loads"][number] } | null => {
+    const why = (text: string, dropped = true) => notOnWall.push({ kind: "load", index, why: text, dropped, ...(caseName !== undefined ? { case: caseName } : {}) });
     let tris: number[] = [];
     let sign = 1;
     let share = 0;
@@ -2575,7 +2592,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
       share = total > 0 ? covered / total : 0;
       if (onWall.length && overWall.length) {
         why("The load is on both sides of the wall at once; give it as two loads.");
-        return;
+        return null;
       }
       if (overWall.length) {
         tris = overWall;
@@ -2588,48 +2605,97 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     }
     if (tris.length === 0) {
       why("The load is not on the wall or on its far side; a model of the wall alone cannot carry it.");
-      return;
+      return null;
     }
+    let made: WallLoad;
     if (load.kind === "pressure") {
       // Under the share a force needs, the pressure that is left is not the load that was given: refused like a force.
       if (share < RIB_WALL_DEFAULTS.loadShare) {
         why(`Only ${Math.round(share * 100)} % of the pressed area is on the wall or behind it; the rest of the pressure would be left out.`);
-        return;
+        return null;
       }
       // Pressure presses into the face it is on: on the wall that is against its normal, from the far side along it.
-      loadCase.push({ kind: "pressure", triangles: tris, pressure: sign * load.magnitude });
+      made = { kind: "pressure", triangles: tris, pressure: sign * load.magnitude };
       if (share < 0.999) why(`Only ${Math.round(share * 100)} % of the pressed area is on the wall or behind it; the rest is left out.`, false);
     } else {
       if (share < RIB_WALL_DEFAULTS.loadShare) {
         why(`Only ${Math.round(share * 100)} % of the loaded area is on the wall or behind it; the force cannot be shared out without guessing.`);
-        return;
+        return null;
       }
       const d = load.direction;
       if (!(len(d) > 0)) {
         why("The load direction has zero length.");
-        return;
+        return null;
       }
-      loadCase.push({ kind: "spreadForce", triangles: tris, force: mul(unit(d), load.magnitude) });
+      made = { kind: "spreadForce", triangles: tris, force: mul(unit(d), load.magnitude) };
     }
-    loadReport.push({ index, triangles: tris.length, share: round(share, 3), how });
-  });
+    return { load: made, row: { index, triangles: tris.length, share: round(share, 3), how } };
+  };
   // A hold or load the model cannot carry is never swapped silently for the default: refused by name, or left out
   // only when the caller asked for even pressure instead, and then said so.
-  const missed = notOnWall.filter((row) => row.dropped);
-  let substituted: RibWallReport["substituted"];
-  if (missed.length) {
-    if ((options.ifMissed ?? "refuse") === "refuse") return { reason: missedSentence(missed), missed };
-    const loadsGiven = (options.loads ?? []).length > 0;
-    const evenPressure = loadsGiven && loadCase.length === 0;
-    const holds = [...new Set(missed.filter((row) => row.kind === "hold").map((row) => row.index))];
-    const loads = [...new Set(missed.filter((row) => row.kind === "load").map((row) => row.index))];
-    const parts: string[] = [];
-    if (loads.length) parts.push(`${listOf("load", loads)} ${loads.length > 1 ? "miss" : "misses"} the wall and ${loads.length > 1 ? "were" : "was"} left out`);
-    if (holds.length) parts.push(`${listOf("hold", holds)} ${holds.length > 1 ? "miss" : "misses"} the wall and ${holds.length > 1 ? "were" : "was"} left out`);
-    const head = evenPressure ? "Planned under even pressure instead of the given load" : "Planned without part of what was given";
-    const sentence = `${head}: ${parts.join("; ")}${given.size === 0 && holds.length ? ", so the wall is held where it joins the part" : ""}.`;
-    substituted = { holds, loads, evenPressure, sentence };
-    warnings.unshift(sentence);
+  const givenCases = options.loadCases;
+  if (givenCases?.length && (options.loads?.length ?? 0) > 0) return { reason: "Give the load as loads or as loadCases, not both.", missed: [] };
+  if (givenCases?.length) {
+    const perCase = givenCases.map((item, ci) => {
+      const name = item.name?.trim() ? item.name.trim() : `Case ${ci + 1}`;
+      const loads: WallLoad[] = [];
+      const rows: RibWallReport["loads"] = [];
+      item.loads.forEach((load, index) => {
+        const mapped = mapLoad(load, index, name);
+        if (!mapped) return;
+        loads.push(mapped.load);
+        rows.push(mapped.row);
+      });
+      for (const row of rows) loadReport.push(row);
+      return { name, loads, rows };
+    });
+    const missed = notOnWall.filter((row) => row.dropped);
+    // A case that keeps nothing: every load missed, or it had none.
+    const dead = perCase.filter((c) => c.loads.length === 0);
+    if ((options.ifMissed ?? "refuse") === "refuse" && (missed.length || dead.length)) {
+      const head = missed.length ? missedSentence(missed) : "";
+      const tail = dead.filter((c) => c.rows.length === 0).map((c) => `Case ${c.name}: it has no load on the wall.`).join(" ");
+      return { reason: [head, tail].filter(Boolean).join(" "), missed };
+    }
+    const even = (): WallLoad => ({ kind: "pressure", triangles: T.map((_, t) => t), pressure: RIB_WALL_DEFAULTS.evenPressure });
+    requestCases = perCase.map((c) => (c.loads.length ? c.loads : [even()]));
+    caseReports = perCase.map((c) => ({ name: c.name, loads: c.rows, evenPressure: c.loads.length === 0 }));
+    if (missed.length || dead.length) {
+      const holds = [...new Set(missed.filter((row) => row.kind === "hold").map((row) => row.index))];
+      const parts: string[] = [];
+      for (const c of dead) parts.push(`case ${c.name} misses the wall and is planned under even pressure`);
+      for (const row of missed) if (row.kind === "load" && !dead.some((c) => c.name === row.case)) parts.push(`load ${row.index + 1} of ${row.case} misses the wall and was left out`);
+      if (holds.length) parts.push(`${listOf("hold", holds)} ${holds.length > 1 ? "miss" : "misses"} the wall and ${holds.length > 1 ? "were" : "was"} left out`);
+      const allEven = perCase.every((c) => c.loads.length === 0);
+      const head = allEven ? "Planned under even pressure instead of the given loads" : "Planned without part of what was given";
+      const sentence = `${head}: ${parts.join("; ")}${given.size === 0 && holds.length ? ", so the wall is held where it joins the part" : ""}.`;
+      substituted = { holds, loads: [], evenPressure: allEven, sentence };
+      warnings.unshift(sentence);
+    }
+  } else {
+    const loadCase: WallLoad[] = [];
+    (options.loads ?? []).forEach((load, index) => {
+      const mapped = mapLoad(load, index);
+      if (!mapped) return;
+      loadCase.push(mapped.load);
+      loadReport.push(mapped.row);
+    });
+    requestCases = loadCase.length ? [loadCase] : [];
+    const missed = notOnWall.filter((row) => row.dropped);
+    if (missed.length) {
+      if ((options.ifMissed ?? "refuse") === "refuse") return { reason: missedSentence(missed), missed };
+      const loadsGiven = (options.loads ?? []).length > 0;
+      const evenPressure = loadsGiven && loadCase.length === 0;
+      const holds = [...new Set(missed.filter((row) => row.kind === "hold").map((row) => row.index))];
+      const loads = [...new Set(missed.filter((row) => row.kind === "load").map((row) => row.index))];
+      const parts: string[] = [];
+      if (loads.length) parts.push(`${listOf("load", loads)} ${loads.length > 1 ? "miss" : "misses"} the wall and ${loads.length > 1 ? "were" : "was"} left out`);
+      if (holds.length) parts.push(`${listOf("hold", holds)} ${holds.length > 1 ? "miss" : "misses"} the wall and ${holds.length > 1 ? "were" : "was"} left out`);
+      const head = evenPressure ? "Planned under even pressure instead of the given load" : "Planned without part of what was given";
+      const sentence = `${head}: ${parts.join("; ")}${given.size === 0 && holds.length ? ", so the wall is held where it joins the part" : ""}.`;
+      substituted = { holds, loads, evenPressure, sentence };
+      warnings.unshift(sentence);
+    }
   }
 
   // --- 6. Zones.
@@ -2855,6 +2921,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     holes,
     holds: { mode: useJoined && useGiven ? "both" : useGiven ? "given" : "joined", clamped: clamped.size, joined: joinedVerts.size, given: given.size },
     loads: loadReport,
+    ...(caseReports ? { cases: caseReports } : {}),
     zones: zoneReport,
     notOnWall,
     ...(substituted ? { substituted } : {}),
@@ -2865,7 +2932,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
     request: {
       mesh: { vertices: mid.map(r3v6), triangles: T, thickness: thickness.map((x) => round(x, 4)) },
       holds: { kind: "given", holds: [...clamped].sort((a, b) => a - b).map((node) => ({ node, dofs: [0, 0, 0, 0, 0, 0] })) },
-      loadCases: loadCase.length ? [loadCase] : [],
+      loadCases: requestCases,
       zones,
       clearance,
       side: "positive",
@@ -2897,7 +2964,11 @@ function listOf(what: string, indexes: readonly number[]): string {
  * how to plan under even pressure instead in its own words (a field over MCP, a button in the panel).
  */
 export function missedSentence(missed: readonly NotOnWall[]): string {
-  const rows = missed.map((row) => `${row.kind === "hold" ? "Hold" : "Load"} ${row.index + 1}: ${row.why.replace(/\.$/, "")}.`);
+  const who = (row: NotOnWall) => {
+    if (row.kind === "hold") return `Hold ${row.index + 1}`;
+    return row.case ? `Load ${row.index + 1} of ${row.case}` : `Load ${row.index + 1}`;
+  };
+  const rows = missed.map((row) => `${who(row)}: ${row.why.replace(/\.$/, "")}.`);
   const loads = missed.some((row) => row.kind === "load");
   const holds = missed.some((row) => row.kind === "hold");
   const what = loads && holds ? "holds and loads" : loads ? "load" : "hold";

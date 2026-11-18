@@ -834,7 +834,7 @@ fn a_lopsided_pair_does_not_favour_worst_case() {
     within_1e_12(w[0], 4.401264978619979, "weighted centre");
     within_1e_12(w[1], 1.2607959330185834, "weighted edge");
     within_1e_12(u[0], 2.5583306328964595, "worst centre");
-    within_1e_12(u[1], 1.2601204659032641, "worst edge");
+    within_1e_12(u[1], 1.260_120_465_903_264, "worst edge");
     assert_eq!(weighted.ribs.len(), 5);
     assert_eq!(worst.ribs.len(), 2);
     within_1e_12(weighted.rib_volume_mm3, 1713.6773280957775, "weighted volume");
