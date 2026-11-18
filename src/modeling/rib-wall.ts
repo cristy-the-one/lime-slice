@@ -3191,7 +3191,7 @@ function pointsInward(rays: ReturnType<typeof meshRays>, origin: V3, n: V3): boo
 }
 
 /** The display mesh wound out of the material, so a fold is read with one cavity-side orientation. */
-function orientSoup(positions: Float32Array): Float32Array {
+function orientSoup(positions: ArrayLike<number>): Float32Array {
   const out = new Float32Array(positions);
   const count = Math.floor(out.length / 9);
   const corner = (t: number, k: number): V3 => [out[t * 9 + k * 3]!, out[t * 9 + k * 3 + 1]!, out[t * 9 + k * 3 + 2]!];

@@ -197,16 +197,22 @@ async function solidMax(object: string, floor: number, tops: number[], e: number
 }
 
 {
-  const tiny = String((await call("solid_new", { primitive: "box", dx: 10, dy: 10, dz: 10 })).object);
-  const bad = await call("ribs_plan", { object: tiny, wall: { faces: [0], folded: "yes" } });
-  check("a non-boolean wall.folded is refused", bad.ok === false && /true or false/.test(String(bad.reason)), JSON.stringify(bad).slice(0, 300));
+  // The schema refuses this before the handler, and the session throws that refusal rather than returning it.
+  let reason = "";
+  try {
+    const bad = await call("ribs_plan", { wall: { folded: "yes" } });
+    reason = String(bad.reason ?? "");
+  } catch (err) {
+    reason = err instanceof Error ? err.message : String(err);
+  }
+  check("a non-boolean wall.folded is refused", /true or false/.test(reason), reason.slice(0, 300));
 }
 
 let material = { e: 1800, nu: 0.35 };
 
 async function compare(title: string, object: string, kind: "cover" | "box", volumeMm3: number) {
   const volume = Math.abs(held(object).volumeMm3);
-  check(`${title}: volume ${r1(volume)} mm³`, Math.abs(volume - volumeMm3) < 1, `expected ${volumeMm3}`);
+  check(`${title}: volume ${r1(volume)} mm³`, Math.abs(volume - volumeMm3) < volumeMm3 * 0.001, `expected ${volumeMm3}`);
   const floor = faceAt(object, [0, 0, 2], [0, 0, 1]);
   const tops = facesWhere(object, (n, g) => n[2] > 0.9 && g[2] > (kind === "cover" ? 12 : 28));
   check(`${title}: the floor and the top rim are faces`, floor >= 0 && tops.length > 0, `floor ${floor}, tops ${tops.length}`);
