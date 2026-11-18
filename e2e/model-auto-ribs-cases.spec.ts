@@ -18,6 +18,8 @@ test("two load cases with different weights show each factor, equal to the plan 
   await page.locator("#autoRibsHoldLoad > summary").click();
   await expect(page.locator("#autoRibsLoad")).toBeVisible();
   await expect(page.locator("#autoRibsCases")).toBeHidden();
+  await page.locator("#autoRibsLoad").screenshot({ path: "test-results/auto-ribs/one-load-fieldset.png" });
+  await shot(page, "10-one-load.png");
 
   await page.locator("#autoRibsAddCase").click();
   await expect(page.locator("#autoRibsCases fieldset")).toHaveCount(2);
@@ -36,6 +38,13 @@ test("two load cases with different weights show each factor, equal to the plan 
   await name(1).fill("point");
   await weight(1).fill("4");
   await weight(1).press("Tab");
+  // Each case's load is picked the way today's one load is: on the floor, so the wall can carry it.
+  for (const index of [0, 1]) {
+    await page.locator(`[data-case-pick="${index}"]`).click();
+    await page.mouse.click(floor.x, floor.y);
+    await page.locator(`[data-case-pick="${index}"]`).click();
+  }
+  await expect(page.locator("#autoRibsNotOnWall li")).toHaveCount(0, { timeout: 20_000 });
 
   await primary(page).click();
   await expect(page.locator("#autoRibsResult")).toBeVisible({ timeout: 20_000 });
@@ -56,6 +65,8 @@ test("two load cases with different weights show each factor, equal to the plan 
   expect(read.plan?.caseFactors).toEqual(outcomes.map((row) => row.factor));
   expect(read.plan?.caseDeflectionMm).toEqual(outcomes.map((row) => ({ bare: row.bareMm, ribbed: row.ribbedMm })));
   expect(shown).toEqual(caseResultLines(["spread", "point"], read.plan?.caseFactors, read.plan?.caseDeflectionMm));
+  await page.locator("#autoRibsGain").scrollIntoViewIfNeeded();
+  await page.locator("#autoRibsResult").screenshot({ path: "test-results/auto-ribs/10-two-cases-result.png" });
   await shot(page, "10-two-cases.png");
 
   await primary(page).click();
