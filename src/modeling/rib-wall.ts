@@ -4,7 +4,9 @@
  *
  * 1. Wall selection (`wallFaces`): the picked faces, grown over every face that continues them smoothly (the kink across
  *    the shared edge, less the faceting of a curved face, within `growAngleDeg`, and not folding back), stopping at sharp
- *    edges. Extra and excluded faces override the growth.
+ *    edges. Extra and excluded faces override the growth. With `folded` (off unless asked), a sharp edge between two thin
+ *    faces is crossed too: the kink above `growAngleDeg` and below 150°, and both faces within `thickRatio` of the median.
+ *    An edge into thick material stays a stop.
  * 2. Wall mesh: the wall's triangles welded into one indexed mesh (T-junctions on face seams split, degenerate and
  *    duplicate triangles dropped, winding made consistent and kept outward, so normals point into the cavity), then
  *    remeshed isotropically (Botsch & Kobbelt 2004: split, collapse, valence flips, tangential relaxation with projection
@@ -150,6 +152,13 @@ export interface RibWallOptions {
   featureMarginMm?: number;
   /** The most triangles the wall is meshed with: a curved wall is meshed coarser to fit, and one too big is refused. */
   maxTriangles?: number;
+  /**
+   * Take every thin face joined across a sharp edge as one shell. The kink is above `growAngleDeg` and below 150°, and
+   * both faces read within `thickRatio` of the median; an edge into thicker material stays a joined border. A thick
+   * reading is kept (a patch), and a crease vertex is offset onto the miter. Off unless asked: a sharp edge stops the
+   * wall, and the request is unchanged.
+   */
+  folded?: boolean;
 }
 
 /** `lime-sim` `ShellLoad`, in JSON. */
@@ -216,7 +225,17 @@ export interface NotOnWall {
 }
 
 export interface RibWallReport {
-  faces: { taken: number[]; picked: number[]; grown: number[]; added: number[]; excluded: number[]; stops: { face: number; from: number; kinkDeg: number }[]; across: number[] };
+  faces: {
+    taken: number[];
+    picked: number[];
+    grown: number[];
+    added: number[];
+    excluded: number[];
+    stops: { face: number; from: number; kinkDeg: number; why?: "kink" | "fold-back" | "thick" }[];
+    across: number[];
+    /** Faces taken across a sharp edge. Present only when `folded` was asked. */
+    folded?: number[];
+  };
   areaMm2: number;
   vertices: number;
   triangles: number;
@@ -971,11 +990,13 @@ export interface WallFaces {
   added: number[];
   excluded: number[];
   /** Neighbours the growth stopped at, with the kink across the edge (features standing on the wall left out). */
-  stops: { face: number; from: number; kinkDeg: number }[];
+  stops: { face: number; from: number; kinkDeg: number; why?: "kink" | "fold-back" | "thick" }[];
   /** What stands on the wall; its faces are not part of it, and wall faces found beyond a feature are in `grown`. */
   features: WallFeature[];
   /** Wall faces taken because they lie on the surface of a wall face, on the far side of a feature standing between. */
   across: number[];
+  /** Faces taken across a sharp edge between two thin faces. Empty unless `folded` was asked. */
+  foldedFaces: number[];
 }
 
 /** A feature is never taller than this over the wall, mm: a face rising higher is the part's own wall. */
@@ -1039,7 +1060,7 @@ function standingOn(ix: Indexed, f: number, seed: number, tallMm: number, wall: 
  */
 export function wallFaces(
   solid: RibWallSolid,
-  options: { picked: number[]; grow?: boolean; growAngleDeg?: number; addFaces?: number[]; excludeFaces?: number[]; weldMm?: number; features?: boolean; featureHeightMm?: number },
+  options: { picked: number[]; grow?: boolean; growAngleDeg?: number; addFaces?: number[]; excludeFaces?: number[]; weldMm?: number; features?: boolean; featureHeightMm?: number; folded?: boolean; thickRatio?: number },
 ): WallFaces {
   const ix = indexSolid(solid, options.weldMm ?? RIB_WALL_DEFAULTS.weldMm);
   const angle = options.growAngleDeg ?? RIB_WALL_DEFAULTS.growAngleDeg;
@@ -1050,7 +1071,48 @@ export function wallFaces(
   const taken = new Set(picked.filter((f) => !excluded.has(f)));
   const grown: number[] = [];
   const across: number[] = [];
-  const stops = new Map<number, { face: number; from: number; kinkDeg: number }>();
+  const foldedFaces: number[] = [];
+  const folded = options.folded === true;
+  const thickRatio = options.thickRatio ?? RIB_WALL_DEFAULTS.thickRatio;
+  const stops = new Map<number, { face: number; from: number; kinkDeg: number; why?: "kink" | "fold-back" | "thick" }>();
+  // Thickness of a face, for the fold test only: a few rays straight in. The median is of the faces already taken.
+  const facing = Math.cos((WALL_FACING_DEG * Math.PI) / 180);
+  const rays = folded ? meshRays(ix.pos) : null;
+  const faceTh = new Map<number, number>();
+  const readFace = (face: number): number => {
+    const hit = faceTh.get(face);
+    if (hit !== undefined) return hit;
+    const tris = ix.faceTris.get(face) ?? [];
+    const step = Math.max(1, Math.ceil(tris.length / 5));
+    const samples: number[] = [];
+    for (let i = 0; i < tris.length; i += step) {
+      const t = tris[i]!;
+      const c = mul(add(add(ix.all.corner(t, 0), ix.all.corner(t, 1)), ix.all.corner(t, 2)), 1 / 3);
+      const read = throughWall(rays!, ix, c, triNormal(ix, t), Infinity, facing);
+      if (read) samples.push(read.distance);
+    }
+    const value = samples.length ? median(samples) : NaN;
+    faceTh.set(face, value);
+    return value;
+  };
+  let medCache = NaN;
+  let medN = -1;
+  const medianTaken = (): number => {
+    if (medN === taken.size) return medCache;
+    const samples: number[] = [];
+    for (const face of taken) {
+      const t = readFace(face);
+      if (Number.isFinite(t)) samples.push(t);
+    }
+    medN = taken.size;
+    medCache = samples.length ? median(samples) : NaN;
+    return medCache;
+  };
+  const readsThin = (face: number): boolean => {
+    const med = medianTaken();
+    const t = readFace(face);
+    return Number.isFinite(med) && med > 0 && Number.isFinite(t) && t > 0 && t <= thickRatio * med;
+  };
   const features: WallFeature[] = [];
   const inFeature = new Set<number>();
   const islandSeeds: { f: number; g: number }[] = [];
@@ -1071,9 +1133,27 @@ export function wallFaces(
           queue.push(g);
           continue;
         }
+        // A fold: both faces thin, the kink past the smooth limit and short of folding back on itself.
+        if (!island && folded && options.grow !== false && row.kinkDeg > angle && row.kinkDeg < 150 && readsThin(f) && readsThin(g)) {
+          taken.add(g);
+          grown.push(g);
+          foldedFaces.push(g);
+          queue.push(g);
+          continue;
+        }
         const kink = round(row.kinkDeg, 1);
         const old = stops.get(g);
-        if (!old || kink < old.kinkDeg) stops.set(g, { face: g, from: f, kinkDeg: kink });
+        if (!old || kink < old.kinkDeg) {
+          let why: "kink" | "fold-back" | "thick" | undefined;
+          if (folded) {
+            const med = medianTaken();
+            const tg = readFace(g);
+            const tf = readFace(f);
+            const over = (t: number) => Number.isFinite(med) && med > 0 && Number.isFinite(t) && t > thickRatio * med;
+            why = row.kinkDeg >= 150 ? "fold-back" : over(tg) || over(tf) ? "thick" : "kink";
+          }
+          stops.set(g, { face: g, from: f, kinkDeg: kink, ...(why ? { why } : {}) });
+        }
         if (island) islandSeeds.push({ f, g });
         else if (findFeatures) sharpSeeds.push({ f, g });
       }
@@ -1142,6 +1222,7 @@ export function wallFaces(
     stops: [...stops.values()].filter((s) => !taken.has(s.face) && !inFeature.has(s.face)).sort((a, b) => a.face - b.face),
     features: features.filter((feat) => !feat.faces.some((h) => taken.has(h))),
     across: across.sort((a, b) => a - b),
+    foldedFaces: foldedFaces.sort((a, b) => a - b),
   };
 }
 
@@ -2152,7 +2233,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   if (missing.length) warnings.push(`The solid has no face ${missing.join(", ")}; it was left out.`);
 
   // --- 1. Faces.
-  const sel = wallFaces(solid, { picked: options.picked, grow: options.grow, growAngleDeg: options.growAngleDeg, addFaces: options.addFaces, excludeFaces: options.excludeFaces, weldMm: weld, ...(options.features === false ? { features: false } : {}) });
+  const sel = wallFaces(solid, { picked: options.picked, grow: options.grow, growAngleDeg: options.growAngleDeg, addFaces: options.addFaces, excludeFaces: options.excludeFaces, weldMm: weld, ...(options.features === false ? { features: false } : {}), ...(options.folded ? { folded: true, thickRatio } : {}) });
   if (sel.faces.length === 0) return { reason: "Every picked face is excluded, so there is no wall." };
   const wallSet = new Set(sel.faces);
   // The wall under each feature standing on it, filled in as plain wall.
@@ -2388,6 +2469,23 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
         for (let j = -w; j <= w; j += 1) if (raw_[(i + j + n) % n]) votes += 1;
         return votes * 2 > 2 * w + 1;
       });
+      // A fold into a thick face ends the sheet on that face. The probe above steps off the sheet first, so it misses
+      // a neighbour that lies across the edge rather than beyond it; the edge still runs into the part and stays clamped.
+      if (options.folded) {
+        const thickStops = sel.stops.filter((s) => s.why === "thick").map((s) => s.face);
+        const onThick = (p: V3): boolean => {
+          for (const face of thickStops) {
+            for (const t of ix.faceTris.get(face) ?? []) {
+              const q = closestOnTriangle(p, ix.all.corner(t, 0), ix.all.corner(t, 1), ix.all.corner(t, 2)).q;
+              if (dist(q, p) <= Math.max(ix.touch, 0.05)) return true;
+            }
+          }
+          return false;
+        };
+        if (thickStops.length) edgesOf.forEach(([a, b], i) => {
+          if (!cls[i] && onThick(mul(add(V[a]!, V[b]!), 0.5))) cls[i] = true;
+        });
+      }
       let total = 0;
       let joinedLen = 0;
       const spans: WallLoop["spans"] = [];
@@ -2907,7 +3005,7 @@ export function ribWall(solid: RibWallSolid, options: RibWallOptions): RibWall |
   const finiteClear = clearance.filter((x) => Number.isFinite(x));
   const end = now();
   const report: RibWallReport = {
-    faces: { taken: sel.faces, picked: sel.picked, grown: sel.grown, added: sel.added, excluded: sel.excluded, stops: sel.stops, across: sel.across },
+    faces: { taken: sel.faces, picked: sel.picked, grown: sel.grown, added: sel.added, excluded: sel.excluded, stops: sel.stops, across: sel.across, ...(options.folded ? { folded: sel.foldedFaces } : {}) },
     areaMm2: round(tarea.reduce((s, a) => s + a, 0), 1),
     vertices: nv,
     triangles: nt,
