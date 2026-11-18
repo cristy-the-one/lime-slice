@@ -52,29 +52,45 @@ use super::{
 /// `scale_i = (w_i / w_0) * (C_00 / C_i0)`, so a single case of weight 1
 /// has scale 1 and the objective is the compliance itself. Empty `scale`
 /// (not yet bound to a bare solve) is that same plain sum.
-/// [`LoadCombine::Worst`] ignores the weights (`w_i = 1`) and minimises
-/// the largest scaled compliance, which is `min_i C_i0 / C_i` as a factor.
-#[derive(Clone, Debug, Default)]
+/// [`LoadCombine::Worst`] uses unit weights and minimises the p-norm of
+/// the scaled compliances, `(sum_i (scale_i C_i)^p)^(1/p)`. The reported
+/// factor stays `min_i C_i0 / C_i`.
+#[derive(Clone, Debug)]
 pub(crate) struct Mix {
     pub scale: Vec<f64>,
     pub weights: Vec<f64>,
     pub combine: LoadCombine,
+    /// Exponent of the worst-case p-norm. Unused by a weighted sum.
+    pub p: f64,
+}
+
+impl Default for Mix {
+    fn default() -> Self {
+        Self {
+            scale: Vec::new(),
+            weights: Vec::new(),
+            combine: LoadCombine::Weighted,
+            p: super::WORST_P,
+        }
+    }
 }
 
 impl Mix {
     /// Not yet bound to a bare solve. Scoring before [`Mix::from_bare`] is
     /// the plain sum, including when `combine` is [`LoadCombine::Worst`].
-    pub fn unbound(combine: LoadCombine) -> Self {
+    pub fn unbound(combine: LoadCombine, p: f64) -> Self {
         Self {
             combine,
+            p,
             ..Self::default()
         }
     }
 
     /// `c0` is each case's bare compliance on the mesh these scales belong to.
     /// Empty `weights` means every case weighs 1. [`LoadCombine::Worst`]
-    /// does not use the weights.
-    pub fn from_bare(weights: &[f64], c0: &[f64], combine: LoadCombine) -> Self {
+    /// always uses unit weights: the request check refuses weights there,
+    /// and a weighted p-norm would be a different mode.
+    pub fn from_bare(weights: &[f64], c0: &[f64], combine: LoadCombine, p: f64) -> Self {
         let n = c0.len();
         let weights = if combine == LoadCombine::Worst {
             &[]
@@ -104,6 +120,7 @@ impl Mix {
             scale,
             weights: w,
             combine,
+            p,
         }
     }
 
@@ -121,17 +138,22 @@ impl Mix {
     }
 
     /// Decision objective for compliances `c` (absolute, one per case).
+    /// Worst-case is the p-norm of the scaled compliances.
     pub fn of(&self, c: &[f64]) -> f64 {
         if self.plain_sum() {
             c.iter().copied().sum()
         } else if self.worst() {
-            c.iter()
-                .zip(&self.scale)
-                .map(|(c, s)| c * s)
-                .fold(f64::NEG_INFINITY, f64::max)
+            p_norm(self.scaled(c), self.p)
         } else {
             c.iter().zip(&self.scale).map(|(c, s)| c * s).sum()
         }
+    }
+
+    fn scaled<'a>(&'a self, c: &'a [f64]) -> impl Iterator<Item = f64> + 'a {
+        c.iter().enumerate().map(|(i, c)| {
+            let s = self.scale.get(i).copied().unwrap_or(1.0);
+            s * c
+        })
     }
 
     /// Combined stiffness on one mesh. A plain sum is `sum C_i0 / sum C_i`,
@@ -170,6 +192,23 @@ impl Mix {
             .map(|(a, b)| if *b > 0.0 { a / b } else { f64::INFINITY })
             .collect()
     }
+}
+
+/// `(sum |x_i|^p)^(1/p)`, scaled by the largest term so `p = 8` does not
+/// overflow. An empty set is 0.
+fn p_norm(terms: impl Iterator<Item = f64>, p: f64) -> f64 {
+    let mut vals = Vec::new();
+    let mut max = 0.0_f64;
+    for t in terms {
+        let a = t.abs();
+        max = max.max(a);
+        vals.push(a);
+    }
+    if vals.is_empty() || max == 0.0 {
+        return 0.0;
+    }
+    let sum: f64 = vals.iter().map(|a| (a / max).powf(p)).sum();
+    max * sum.powf(1.0 / p)
 }
 
 /// A candidate cut into the mesh.
@@ -354,7 +393,7 @@ impl Evaluator {
     /// which for one case is the bare compliance.
     pub fn bind_bare(&mut self, bare: &Eval) -> f64 {
         let cs: Vec<f64> = bare.results.iter().map(|r| r.compliance).collect();
-        self.mix = Mix::from_bare(&self.weights, &cs, self.mix.combine);
+        self.mix = Mix::from_bare(&self.weights, &cs, self.mix.combine, self.mix.p);
         self.mix.of(&cs)
     }
 
@@ -391,17 +430,19 @@ impl Evaluator {
         out.into_iter().map(|x| x.1).collect()
     }
 
-    /// The first-order compliance drop of adding rib `d` to the design
-    /// `at` was solved for.
+    /// The first-order drop in the decision objective of adding rib `d` to
+    /// the design `at` was solved for.
+    ///
+    /// Each case's compliance falls by the one-spring saturation
+    /// `C g / (C + g)`. A weighted sum adds those drops, which is what a
+    /// one-case plan has always done. Worst-case subtracts the p-norm of
+    /// the predicted compliances from the p-norm of the current ones.
     fn estimate(&self, d: &DRib, at: &Eval) -> Result<f64, SimError> {
         let ribs = d.solver_ribs(self.side);
         let model = &self.models[0];
-        // Hard min: the drop in the worst scaled compliance. A rib that
-        // misses the current worst case scores nothing, and the greedy
-        // stops when nothing reduces it. One case stays on the sum below.
         if self.mix.worst() {
             let mut next = Vec::with_capacity(at.results.len());
-            for (i, r) in at.results.iter().enumerate() {
+            for r in &at.results {
                 let mut u = 0.0;
                 for rib in &ribs {
                     u += model.probe_rib_energy(rib, r)?;
@@ -409,8 +450,7 @@ impl Evaluator {
                 let g = 2.0 * u;
                 let c = r.compliance.abs();
                 let sat = if c + g > 0.0 { c * g / (c + g) } else { 0.0 };
-                let scale = self.mix.scale.get(i).copied().unwrap_or(1.0);
-                next.push(scale * (r.compliance - sat));
+                next.push(r.compliance - sat);
             }
             let now: Vec<f64> = at.results.iter().map(|r| r.compliance).collect();
             return Ok(self.mix.of(&now) - self.mix.of(&next));
@@ -1139,39 +1179,42 @@ mod mix_tests {
 
     #[test]
     fn one_case_is_the_compliance_and_a_heavy_case_is_normalised() {
-        let one = Mix::from_bare(&[], &[4.0], LoadCombine::Weighted);
+        let one = Mix::from_bare(&[], &[4.0], LoadCombine::Weighted, 8.0);
         assert!(one.plain_sum());
         assert_eq!(one.of(&[4.0]), 4.0);
         assert_eq!(one.factor(&[4.0], &[2.0]), 2.0);
         // One case in worst-case mode is the same number, on the same path.
-        let one_worst = Mix::from_bare(&[], &[4.0], LoadCombine::Worst);
+        let one_worst = Mix::from_bare(&[], &[4.0], LoadCombine::Worst, 8.0);
         assert!(one_worst.plain_sum());
         assert_eq!(one_worst.of(&[4.0]), 4.0);
         assert_eq!(one_worst.factor(&[4.0], &[2.0]), 2.0);
 
         // C_i0 = 100 and 1. Halving the heavy case and leaving the light
         // one: weighted factor 2 / (0.5 + 1) = 4/3, not the summed 101/51.
-        let two = Mix::from_bare(&[], &[100.0, 1.0], LoadCombine::Weighted);
+        let two = Mix::from_bare(&[], &[100.0, 1.0], LoadCombine::Weighted, 8.0);
         assert!(!two.plain_sum());
         assert!((two.scale[0] - 1.0).abs() < 1e-15);
         assert!((two.scale[1] - 100.0).abs() < 1e-12);
         let f = two.factor(&[100.0, 1.0], &[50.0, 1.0]);
         assert!((f - 4.0 / 3.0).abs() < 1e-12, "{f}");
         // Weight 3 on the light case: scale_1 = 3 * 100 / 1.
-        let w = Mix::from_bare(&[1.0, 3.0], &[100.0, 1.0], LoadCombine::Weighted);
+        let w = Mix::from_bare(&[1.0, 3.0], &[100.0, 1.0], LoadCombine::Weighted, 8.0);
         assert!((w.scale[1] - 300.0).abs() < 1e-9);
         let f = w.factor(&[100.0, 1.0], &[100.0, 0.5]);
         // (1+3) / (1*1 + 3*0.5) = 4 / 2.5
         assert!((f - 1.6).abs() < 1e-12, "{f}");
 
-        // Worst ignores the weight and reports the lesser factor.
+        // Worst ignores a weight passed in here and reports the lesser
+        // factor. The request check refuses weights before a plan runs.
         // Halving only the heavy case leaves the light one at 1.
-        let worst = Mix::from_bare(&[1.0, 100.0], &[100.0, 1.0], LoadCombine::Worst);
+        let worst = Mix::from_bare(&[1.0, 100.0], &[100.0, 1.0], LoadCombine::Worst, 8.0);
         assert!((worst.scale[1] - 100.0).abs() < 1e-9, "{:?}", worst.scale);
         assert!((worst.factor(&[100.0, 1.0], &[50.0, 1.0]) - 1.0).abs() < 1e-12);
-        // Both cases doubled: the min is 2, and the objective is the
-        // scaled compliance of either (100 * 0.5 = 50, 1 * 50 = 50).
-        assert!((worst.of(&[50.0, 0.5]) - 50.0).abs() < 1e-12);
+        // Both scaled compliances are 50. The p-norm is 50 * 2^(1/8),
+        // and the reported factor is the minimum, 2.
+        let expect = 50.0 * 2.0_f64.powf(1.0 / 8.0);
+        let got = worst.of(&[50.0, 0.5]);
+        assert!((got - expect).abs() < 1e-9, "{got} vs {expect}");
         assert!((worst.factor(&[100.0, 1.0], &[50.0, 0.5]) - 2.0).abs() < 1e-12);
     }
 }

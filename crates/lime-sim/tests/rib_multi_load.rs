@@ -8,11 +8,11 @@
 mod shell_common;
 
 use lime_sim::shell::planner::{
-    boundary_vertices, plan_ribs, Family, Goal, Holds, LoadCombine, RibEndKind, RibPlan,
-    RibPlanRequest,
+    boundary_vertices, plan_ribs, Family, Goal, Holds, LoadCombine, PlannerOptions, RibEndKind,
+    RibPlan, RibPlanRequest,
 };
 use lime_sim::shell::{Rib, ShellHold, ShellLoad, ShellMesh, ShellModel, ShellOptions};
-use shell_common::material;
+use shell_common::{cylinder_segment, material};
 
 const E: f64 = 2000.0;
 const NU: f64 = 0.35;
@@ -249,8 +249,74 @@ fn material_at_the_same_combined_stiffness() {
     assert!(grid_v > plan.rib_volume_mm3);
 }
 
-/// Plan time for 1, 2 and 4 cases on the same wall. Printing is the record;
-/// the bound only catches a hang.
+/// Pressure on each half of the panel, so an even grid is a real
+/// competitor: several lines, pitch below the panel length. The point-load
+/// panel's grid collapsed to a 160 mm pitch.
+#[test]
+fn an_even_grid_competes_under_half_panel_pressure() {
+    let mesh = ShellMesh::rectangle([160.0, 80.0], [24, 12], 2.0);
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for (i, tri) in mesh.triangles.iter().enumerate() {
+        let x: f64 = tri
+            .map(|v| mesh.vertices[v as usize][0])
+            .into_iter()
+            .sum::<f64>()
+            / 3.0;
+        if x < 80.0 {
+            left.push(i as u32);
+        } else {
+            right.push(i as u32);
+        }
+    }
+    let mut req = RibPlanRequest::new(mesh, material(E, NU));
+    req.load_cases = vec![
+        vec![ShellLoad::Pressure {
+            triangles: left,
+            pressure: lime_sim::shell::planner::DEFAULT_PRESSURE,
+        }],
+        vec![ShellLoad::Pressure {
+            triangles: right,
+            pressure: lime_sim::shell::planner::DEFAULT_PRESSURE,
+        }],
+    ];
+    req.goal = Goal::Budget { volume_mm3: 1800.0 };
+    req.rules.min_spacing = 18.0;
+    req.rules.min_length = 12.0;
+    req.options.baselines = true;
+    let plan = plan_ribs(&req).unwrap();
+    let th = plan.thickening.expect("thickening");
+    let grid = plan.grid.expect("grid");
+    let grid_v = grid.volume_mm3.expect("the grid reaches the factor");
+    eprintln!(
+        "| half pressure | ribs {:.3} mm³ ×{:.4} ({} ribs) | thickening {:.3} mm³ ({:.4} mm) | grid {:.3} mm³ pitch {:.3} lines {:?} | cases {:?} |",
+        plan.rib_volume_mm3,
+        plan.stiffness_factor,
+        plan.ribs.len(),
+        th.added_volume_mm3,
+        th.added_thickness_mm,
+        grid_v,
+        grid.pitch_mm,
+        grid.lines,
+        plan.case_factors
+    );
+    assert!(
+        plan.case_factors.iter().all(|f| *f > 1.5),
+        "{:?}",
+        plan.case_factors
+    );
+    assert!(th.added_volume_mm3 > plan.rib_volume_mm3);
+    assert!(
+        grid.pitch_mm < 80.0,
+        "pitch {:.2} is still a one-rib grid",
+        grid.pitch_mm
+    );
+    assert!(grid.lines[0] + grid.lines[1] >= 3, "lines {:?}", grid.lines);
+    assert!(grid_v > 0.0);
+}
+
+/// Plan time for 1, 2 and 4 of the same four load positions. Wall time is
+/// not comparable across rib counts; solves and seconds per solve are.
 #[test]
 fn plan_seconds_for_one_two_and_four_cases() {
     let mesh = ShellMesh::rectangle([160.0, 80.0], [24, 12], 2.0);
@@ -276,9 +342,14 @@ fn plan_seconds_for_one_two_and_four_cases() {
         req.rules.min_length = 12.0;
         req.options.baselines = false;
         let plan = plan_ribs(&req).unwrap();
+        let solves = plan.stats.solves.max(1);
+        let each = plan.stats.seconds.total / solves as f64;
         eprintln!(
-            "| {n} cases | {:.3} s | ribs {} | ×{:.3} | factors {:?} |",
+            "| {n} cases | {:.3} s | solves {} | {:.4} s/solve | solver {:.3} s | ribs {} | ×{:.3} | factors {:?} |",
             plan.stats.seconds.total,
+            plan.stats.solves,
+            each,
+            plan.stats.seconds.solver,
             plan.ribs.len(),
             plan.stiffness_factor,
             plan.case_factors
@@ -288,6 +359,7 @@ fn plan_seconds_for_one_two_and_four_cases() {
             "{}",
             plan.stats.seconds.total
         );
+        assert!(plan.stats.solves > 0);
         assert_eq!(plan.case_factors.len(), n);
         assert!(
             plan.case_factors.iter().all(|f| *f > 1.2),
@@ -297,26 +369,80 @@ fn plan_seconds_for_one_two_and_four_cases() {
     }
 }
 
-/// Worst-case mode maximises the lesser factor, so the combined number is
-/// that minimum. On this panel the hard min flips the limiting case as
-/// ribs are added and stops inside the 1800 mm³ budget, short of the
-/// weighted plan (×2.13 on both cases). A stiffness goal still means
-/// every case; the trace is the greedy loop's limiting case.
-#[test]
-fn worst_case_raises_the_weaker_load() {
-    let (mut eq, nodes) = opposed_request(1.0, true);
-    eq.combine = LoadCombine::Worst;
-    let eq_plan = plan_ribs(&eq).unwrap();
-    let eq_f = case_factors(&eq_plan, &nodes, &[1.0, 1.0]);
-    dump("equal loads, worst", &eq_plan, &eq_f);
-    dump_trace(&eq_plan);
+/// The weighted plan's weaker factor on this panel, equal loads and ×10
+/// (they are the same plan). Worst-case mode has to reach it at p = 8.
+fn weighted_weaker() -> f64 {
+    SUMMED_EQUAL.into_iter().fold(f64::INFINITY, f64::min)
+}
 
-    let (mut heavy, _) = opposed_request(10.0, true);
-    heavy.combine = LoadCombine::Worst;
-    let heavy_plan = plan_ribs(&heavy).unwrap();
-    let heavy_f = case_factors(&heavy_plan, &nodes, &[10.0, 1.0]);
-    dump("left ×10, worst", &heavy_plan, &heavy_f);
-    dump_trace(&heavy_plan);
+struct SweepRow {
+    p: f64,
+    panel: &'static str,
+    factors: [f64; 2],
+    ribs: usize,
+}
+
+/// Worst-case mode minimises a p-norm of the scaled compliances and still
+/// reports `min_i C_i0 / C_i`. At the 1800 mm³ budget the default p = 8
+/// must meet or beat the weighted plan on that minimum, on both panels.
+/// The other exponents are the sweep; they are printed and not required.
+#[test]
+fn worst_case_p_norm_meets_the_weighted_min() {
+    let bar = weighted_weaker();
+    assert_eq!(PlannerOptions::default().worst_p, 8.0);
+    let mut rows = Vec::new();
+    for &p in &[2.0_f64, 4.0, 8.0, 16.0] {
+        for (scale, panel) in [(1.0, "equal"), (10.0, "x10")] {
+            let (mut req, nodes) = opposed_request(scale, true);
+            req.combine = LoadCombine::Worst;
+            req.options.worst_p = p;
+            let plan = plan_ribs(&req).unwrap();
+            let scales = if scale == 1.0 {
+                vec![1.0, 1.0]
+            } else {
+                vec![10.0, 1.0]
+            };
+            let f = case_factors(&plan, &nodes, &scales);
+            let min = f[0].min(f[1]);
+            eprintln!(
+                "| p {p:.0} | {panel} | min {min:.6} | {:.6} {:.6} | ribs {} | vol {:.3} | reported {:.6} | trace {} |",
+                f[0],
+                f[1],
+                plan.ribs.len(),
+                plan.rib_volume_mm3,
+                plan.stiffness_factor,
+                plan.worst_trace.len()
+            );
+            if (p - 8.0).abs() < 1e-12 {
+                dump_trace(&plan);
+            }
+            rows.push(SweepRow {
+                p,
+                panel,
+                factors: [f[0], f[1]],
+                ribs: plan.ribs.len(),
+            });
+            close_to(plan.stiffness_factor, min);
+            assert!(
+                plan.goal_met,
+                "{panel} p={p} left the budget, vol {}",
+                plan.rib_volume_mm3
+            );
+        }
+    }
+    eprintln!("| acceptance | weighted weaker {bar:.6} | p=8 must reach it on both panels |");
+    for row in &rows {
+        if (row.p - 8.0).abs() > 1e-12 {
+            continue;
+        }
+        let min = row.factors[0].min(row.factors[1]);
+        assert!(
+            min + 1e-9 >= bar,
+            "{} p=8 min {min:.6} is under the weighted {bar:.6}",
+            row.panel
+        );
+        assert!(row.ribs >= 1, "{}", row.panel);
+    }
 
     // One case is the plain sum in either mode: same ribs, same factor.
     let (weighted_only, _) = opposed_request(1.0, false);
@@ -340,58 +466,30 @@ fn worst_case_raises_the_weaker_load() {
         }
     }
 
-    // Equal loads: the limiting case alternates every rib, and the plan
-    // stops at ×1.51 with budget left. ×10 still serves case 2 (the summed
-    // objective left it at ×1.002) but the two factors stay apart.
-    close_to(eq_f[0], 1.747455483192);
-    close_to(eq_f[1], 1.511892284271);
-    close_to(eq_plan.stiffness_factor, eq_f[1]);
-    assert_eq!(eq_plan.ribs.len(), 7);
-    assert!(
-        eq_plan.rib_volume_mm3 < 1700.0,
-        "stopped inside the budget at {:.1}",
-        eq_plan.rib_volume_mm3
-    );
-    close_to(heavy_f[0], 2.616723527980);
-    close_to(heavy_f[1], 1.677856186096);
-    close_to(heavy_plan.stiffness_factor, heavy_f[1]);
-    assert!(
-        (heavy_f[1] - SUMMED_HEAVY[1]).abs() > 0.5,
-        "case 2 was ignored at {:.6}",
-        SUMMED_HEAVY[1]
-    );
-    close_to(eq_plan.rib_volume_mm3, 1590.892727);
-    close_to(heavy_plan.rib_volume_mm3, 1726.242969);
-    for (label, plan, flips_want) in [("equal", &eq_plan, 7), ("×10", &heavy_plan, 4)] {
-        close_to(plan.worst_trace[0].min_factor, 1.0);
-        let flips = plan
-            .worst_trace
-            .windows(2)
-            .filter(|w| w[0].limiting_case != w[1].limiting_case)
-            .count();
-        eprintln!(
-            "| {label} worst flips {flips} over {} rounds |",
-            plan.worst_trace.len()
-        );
-        assert_eq!(flips, flips_want, "{label}");
-    }
-
-    // Stiffer(2) means both cases. The loop still flips, and it does reach
-    // 2 on each case (the budget above runs out first).
+    // Stiffer(2) means both cases, not the p-norm ratio.
     let (mut stiff, nodes) = opposed_request(10.0, true);
     stiff.combine = LoadCombine::Worst;
     stiff.goal = Goal::Stiffer(2.0);
     let plan = plan_ribs(&stiff).unwrap();
     let f = case_factors(&plan, &nodes, &[10.0, 1.0]);
-    dump("left ×10, worst, stiffer 2", &plan, &f);
-    dump_trace(&plan);
+    dump("left ×10, worst p=8, stiffer 2", &plan, &f);
     assert!(plan.goal_met, "{f:?}");
-    close_to(f[0], 2.054683256112);
-    close_to(f[1], 2.040479530533);
-    close_to(plan.stiffness_factor, f[1]);
-    assert_eq!(plan.ribs.len(), 6);
-    close_to(plan.rib_volume_mm3, 1893.236492);
     assert!(f.iter().all(|x| *x >= 2.0 - 1e-9), "{f:?}");
+    close_to(plan.stiffness_factor, f[0].min(f[1]));
+}
+
+/// A worst-case request with weights is refused. They used to be dropped.
+#[test]
+fn worst_case_refuses_weights() {
+    let (mut req, _) = opposed_request(1.0, true);
+    req.combine = LoadCombine::Worst;
+    req.case_weights = vec![1.0, 8.0];
+    let err = plan_ribs(&req).unwrap_err();
+    assert!(err.message.contains("weights"), "{}", err.message);
+    req.case_weights.clear();
+    req.options.worst_p = 0.5;
+    let err = plan_ribs(&req).unwrap_err();
+    assert!(err.message.contains("exponent"), "{}", err.message);
 }
 
 /// v6.11.0, one load case, this mesh and `Goal::Stiffer(2)`. The factor
@@ -404,6 +502,8 @@ struct SnapRib {
     height: f64,
     points: Vec<[f64; 3]>,
     heights: Vec<f64>,
+    ends: [RibEndKind; 2],
+    family: Family,
 }
 
 struct Snap {
@@ -436,6 +536,8 @@ fn parse_snap(text: &str) -> Snap {
                     height: p[4].parse().unwrap(),
                     points: Vec::new(),
                     heights: Vec::new(),
+                    ends: [RibEndKind::Boundary, RibEndKind::Boundary],
+                    family: Family::Major,
                 });
             }
             "pt" => {
@@ -493,6 +595,191 @@ fn a_one_case_plan_matches_v6_11_0() {
         }
         for (h, w) in got.heights.iter().zip(&want.heights) {
             within_1e_12(*h, *w, "stretch height");
+        }
+    }
+}
+
+/// v6.11.0 `Goal::Budget` of 1800 mm³ with both baselines, on the same
+/// flat panel as [`a_one_case_plan_matches_v6_11_0`]. Recorded by running
+/// that commit (`8486f501`) and copying its print.
+const ONE_CASE_BUDGET_V6110: &str = include_str!("one_case_budget_v6110.txt");
+
+/// v6.11.0 `Goal::Balanced` on a cylinder segment, baselines off. Same
+/// commit as the flat snapshots.
+const ONE_CASE_CURVED_V6110: &str = include_str!("one_case_curved_v6110.txt");
+
+struct LockSnap {
+    factor: f64,
+    volume: f64,
+    bare: f64,
+    ribbed: f64,
+    thick: Option<(f64, f64)>,
+    grid_pitch: Option<f64>,
+    grid_volume: Option<f64>,
+    ribs: Vec<SnapRib>,
+}
+
+fn end_kind(s: &str) -> RibEndKind {
+    match s {
+        "Boundary" => RibEndKind::Boundary,
+        "Hold" => RibEndKind::Hold,
+        "Rib" => RibEndKind::Rib,
+        "Free" => RibEndKind::Free,
+        other => panic!("rib end {other}"),
+    }
+}
+
+fn family_of(s: &str) -> Family {
+    match s {
+        "Major" => Family::Major,
+        "Minor" => Family::Minor,
+        other => panic!("family {other}"),
+    }
+}
+
+fn parse_lock(text: &str) -> LockSnap {
+    let mut factor = None;
+    let mut volume = None;
+    let mut bare = None;
+    let mut ribbed = None;
+    let mut n_ribs = None;
+    let mut thick = None;
+    let mut grid_pitch = None;
+    let mut grid_volume = None;
+    let mut ribs = Vec::new();
+    let mut rib: Option<SnapRib> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let p: Vec<&str> = line.split_whitespace().collect();
+        match p[1] {
+            "head" => {
+                n_ribs = Some(p[3].parse::<usize>().unwrap());
+                factor = Some(p[5].parse().unwrap());
+                volume = Some(p[7].parse().unwrap());
+                bare = Some(p[9].parse().unwrap());
+                ribbed = Some(p[11].parse().unwrap());
+            }
+            "thick" => thick = Some((p[2].parse().unwrap(), p[3].parse().unwrap())),
+            "grid" => {
+                grid_pitch = Some(p[2].parse().unwrap());
+                grid_volume = Some(p[3].parse().unwrap());
+            }
+            "rib" => {
+                if let Some(r) = rib.take() {
+                    ribs.push(r);
+                }
+                rib = Some(SnapRib {
+                    height: p[3].parse().unwrap(),
+                    points: Vec::new(),
+                    heights: Vec::new(),
+                    ends: [end_kind(p[6]), end_kind(p[7])],
+                    family: family_of(p[8]),
+                });
+            }
+            "pt" => {
+                rib.as_mut().unwrap().points.push([
+                    p[2].parse().unwrap(),
+                    p[3].parse().unwrap(),
+                    p[4].parse().unwrap(),
+                ]);
+            }
+            "ht" => rib.as_mut().unwrap().heights.push(p[2].parse().unwrap()),
+            other => panic!("unexpected snapshot line {other}"),
+        }
+    }
+    ribs.push(rib.expect("a rib"));
+    let n_ribs = n_ribs.unwrap();
+    assert_eq!(ribs.len(), n_ribs);
+    LockSnap {
+        factor: factor.unwrap(),
+        volume: volume.unwrap(),
+        bare: bare.unwrap(),
+        ribbed: ribbed.unwrap(),
+        thick,
+        grid_pitch,
+        grid_volume,
+        ribs,
+    }
+}
+
+fn same_ribs(plan: &RibPlan, snap: &LockSnap) {
+    assert_eq!(plan.ribs.len(), snap.ribs.len());
+    for (got, want) in plan.ribs.iter().zip(&snap.ribs) {
+        within_1e_12(got.height, want.height, "rib height");
+        assert_eq!(got.ends[0], want.ends[0]);
+        assert_eq!(got.ends[1], want.ends[1]);
+        assert_eq!(got.family, want.family);
+        assert_eq!(got.points.len(), want.points.len(), "point count");
+        assert_eq!(got.heights.len(), want.heights.len(), "height count");
+        for (p, q) in got.points.iter().zip(&want.points) {
+            for k in 0..3 {
+                within_1e_12(p[k], q[k], "point");
+            }
+        }
+        for (h, w) in got.heights.iter().zip(&want.heights) {
+            within_1e_12(*h, *w, "stretch height");
+        }
+    }
+}
+
+/// Budget, baselines on. Ribs, factor, thickening and the grid, each to
+/// 1e-12 against the v6.11.0 print.
+#[test]
+fn a_budget_plan_matches_v6_11_0() {
+    let snap = parse_lock(ONE_CASE_BUDGET_V6110);
+    let mut req = RibPlanRequest::new(
+        ShellMesh::rectangle([160.0, 80.0], [24, 12], 2.0),
+        material(E, NU),
+    );
+    req.goal = Goal::Budget { volume_mm3: 1800.0 };
+    req.options.baselines = true;
+    let plan = plan_ribs(&req).unwrap();
+    within_1e_12(plan.stiffness_factor, snap.factor, "factor");
+    within_1e_12(plan.rib_volume_mm3, snap.volume, "volume");
+    within_1e_12(plan.bare.compliance, snap.bare, "bare compliance");
+    within_1e_12(plan.ribbed.compliance, snap.ribbed, "ribbed compliance");
+    let (tv, tt) = snap.thick.expect("thickening in the snapshot");
+    let th = plan.thickening.expect("thickening");
+    within_1e_12(th.added_volume_mm3, tv, "thickening volume");
+    within_1e_12(th.added_thickness_mm, tt, "thickening thickness");
+    let grid = plan.grid.expect("grid");
+    let gv = grid.volume_mm3.expect("grid volume");
+    within_1e_12(grid.pitch_mm, snap.grid_pitch.unwrap(), "grid pitch");
+    within_1e_12(gv, snap.grid_volume.unwrap(), "grid volume");
+    same_ribs(&plan, &snap);
+}
+
+/// Balanced ribs on a curved wall, against the v6.11.0 print.
+#[test]
+fn a_curved_balanced_plan_matches_v6_11_0() {
+    let snap = parse_lock(ONE_CASE_CURVED_V6110);
+    let (r, len, angle) = (40.0, 80.0, std::f64::consts::FRAC_PI_2);
+    let div = [16, 8];
+    let mesh = cylinder_segment(r, len, angle, div, 2.0);
+    let holds: Vec<ShellHold> = (0..mesh.vertices.len())
+        .filter(|&i| {
+            let j = i / (div[0] + 1);
+            j == 0 || j == div[1]
+        })
+        .map(|i| ShellHold::clamped(i as u32))
+        .collect();
+    let mut req = RibPlanRequest::new(mesh, material(E, NU));
+    req.holds = Holds::Given(holds);
+    req.goal = Goal::Balanced;
+    req.options.baselines = false;
+    let plan = plan_ribs(&req).unwrap();
+    within_1e_12(plan.stiffness_factor, snap.factor, "factor");
+    within_1e_12(plan.rib_volume_mm3, snap.volume, "volume");
+    within_1e_12(plan.bare.compliance, snap.bare, "bare compliance");
+    within_1e_12(plan.ribbed.compliance, snap.ribbed, "ribbed compliance");
+    same_ribs(&plan, &snap);
+    for rb in &plan.ribs {
+        for p in &rb.points {
+            let rr = p[1].hypot(p[2]);
+            assert!((rr - r).abs() < 0.2, "{p:?} at r {rr}");
         }
     }
 }
