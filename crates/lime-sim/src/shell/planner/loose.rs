@@ -8,26 +8,27 @@
 //! survive it. This pass runs after selection, one loose end at a time,
 //! on a mesh of its own: the input with the chosen ribs and that end's
 //! extensions cut in (not the selection mesh, whose sliver triangles make
-//! ribs look stiffer than they are). For each end it weighs:
+//! ribs look stiffer than they are). For each end it weighs **extending**
+//! it along the straight continuation or the field's own continuation
+//! (traced with no spacing rule), each to the first boundary, hold or
+//! other rib it meets, at any length.
 //!
-//! - **extend** along the straight continuation or the field's own
-//!   continuation (traced with no spacing rule), each to the first
-//!   boundary, hold or other rib it meets, at any length;
-//! - **trim** the rib back to its last junction (the nearest vertex along
-//!   it on the boundary, a hold or another rib);
-//!
-//! each against dropping the rib: an option is worth the compliance it
-//! saves over the design without the rib, per the rib's volume, and it is
-//! taken when that passes the selection's gain floor, the best first.
-//! When none does, the rib is dropped, unless the end stands at a no-rib
-//! zone's border or the only extension that reached was over the budget:
-//! then it stays loose and is listed with that reason.
+//! An extension is taken when its own gain pays: the compliance it saves
+//! over the rib as it stands (free end tapered, see `EndTaper`), per the
+//! material it adds, passes the selection's gain floor; the best first.
+//! A free end is no longer a reason to cut a rib: with a long taper the
+//! end is not the weak point (the truth study: the weakest place moves off
+//! the end into the web). So when no extension pays the rib stays with
+//! its tapered end, listed with a reason (a no-rib zone's border, the
+//! budget, or simply tapered), unless the rib as it stands no longer
+//! passes the gain floor against the design without it: then it is
+//! dropped. Ribs are never trimmed back here.
 
 use rayon::prelude::*;
 
 use crate::error::SimError;
 use crate::shell::{LoadCase, ShellModel, ShellOptions};
-use crate::units::{norm, normalize, sub};
+use crate::units::{normalize, sub};
 
 use super::select::{self, DRib, Eval};
 use super::surface::Surface;
@@ -60,7 +61,7 @@ pub(crate) struct Closed {
 impl Closed {
     /// The ribs as they are, their loose ends counted, none closed.
     pub fn unchanged(input: &Input, ribs: Vec<GRib>) -> Self {
-        let (s, design, _, _) = embed_design(input.s0, &ribs, &[]);
+        let (s, design, _, _) = embed_design(input.s0, &ribs, &[], &input.req.holds);
         let held = held_flags(&resolve_holds(&s, &input.req.holds), s.pos.len());
         let free = rib_ends(&s, &held, &design)
             .iter()
@@ -135,7 +136,7 @@ fn solve_all(input: &Input, s: &Surface, designs: &[Vec<DRib>]) -> Result<Vec<Ev
 fn as_grib(s: &Surface, d: &DRib) -> GRib {
     GRib {
         points: d.chain.iter().map(|&v| s.pos[v as usize]).collect(),
-        heights: d.heights(),
+        heights: d.base_heights(),
         d: d.clone(),
     }
 }
@@ -169,7 +170,7 @@ pub(crate) fn close(
                 stopped: true,
             });
         }
-        let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[]);
+        let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[], &req.holds);
         if kept_idx.len() < ribs.len() {
             ribs = kept_idx.iter().map(|&i| ribs[i].clone()).collect();
             continue;
@@ -219,7 +220,7 @@ pub(crate) fn close(
                 }
             }
         }
-        let (s2, design2, kept2, ext) = embed_design(input.s0, &ribs, &lines);
+        let (s2, design2, kept2, ext) = embed_design(input.s0, &ribs, &lines, &req.holds);
         if kept2.len() < ribs.len() {
             kept.push((design[i].id, end, LooseEndReason::NoRibZone));
             continue;
@@ -236,7 +237,7 @@ pub(crate) fn close(
         };
         let d2 = &design2[i];
         let v2 = end_vertex(d2, end);
-        let mut options: Vec<(Vec<DRib>, bool)> = Vec::new();
+        let mut options: Vec<Vec<DRib>> = Vec::new();
         let mut budget_blocked = false;
         for ec in ext.iter().flatten() {
             if ec.first() != Some(&v2) || ec.len() < 2 || d2.chain.contains(&ec[1]) {
@@ -256,51 +257,37 @@ pub(crate) fn close(
             let mut trial = design2.clone();
             trial[i].chain = chain;
             trial[i].caps = caps;
+            select::retaper(&mut trial, &s2.pos, &held2);
             if let Goal::Budget { volume_mm3 } = req.goal {
                 if select::network_volume(&s2.pos, &trial) > volume_mm3 {
                     budget_blocked = true;
                     continue;
                 }
             }
-            options.push((trial, true));
+            options.push(trial);
         }
-        // Trimmed back to the last junction.
-        let cut = if end == 0 {
-            (1..d2.chain.len()).find(|&j| anchored(&design2, i, d2.chain[j]))
-        } else {
-            (0..d2.chain.len() - 1)
-                .rev()
-                .find(|&j| anchored(&design2, i, d2.chain[j]))
-        };
-        if let Some(j) = cut {
-            let (chain, caps) = if end == 0 {
-                (d2.chain[j..].to_vec(), d2.caps[j..].to_vec())
-            } else {
-                (d2.chain[..=j].to_vec(), d2.caps[..j].to_vec())
-            };
-            let length: f64 = chain
-                .windows(2)
-                .map(|w| norm(sub(s2.pos[w[1] as usize], s2.pos[w[0] as usize])))
-                .sum();
-            if chain.len() >= 2 && length >= rules.min_length {
-                let mut trial = design2.clone();
-                trial[i].chain = chain;
-                trial[i].caps = caps;
-                options.push((trial, false));
-            }
-        }
+        // Each extension against the rib as it stands (its free end
+        // tapered), and the rib against none at all.
         let mut dropped = design2.clone();
         let gone = dropped.remove(i).id;
-        let mut designs: Vec<Vec<DRib>> = options.iter().map(|o| o.0.clone()).collect();
+        select::retaper(&mut dropped, &s2.pos, &held2);
+        let mut designs: Vec<Vec<DRib>> = options.clone();
+        designs.push(design2.clone());
         designs.push(dropped.clone());
         let evals = solve_all(input, &s2, &designs)?;
         solves += designs.len();
-        let c_drop = evals.last().expect("the dropped design").compliance;
+        let c_drop = evals[designs.len() - 1].compliance;
+        let as_is = &evals[designs.len() - 2];
+        let vol_as_is = d2.volume(&s2.pos);
         let mut best: Option<(f64, usize)> = None;
-        for (q, (trial, _)) in options.iter().enumerate() {
-            let vol = trial[i].volume(&s2.pos);
-            let ratio = if vol > 0.0 {
-                (c_drop - evals[q].compliance) / vol
+        for (q, trial) in options.iter().enumerate() {
+            // The extension's own gain per the material it adds.
+            let dc = as_is.compliance - evals[q].compliance;
+            let dv = trial[i].volume(&s2.pos) - vol_as_is;
+            let ratio = if dv > 0.0 {
+                dc / dv
+            } else if dc > 0.0 {
+                f64::INFINITY
             } else {
                 f64::NEG_INFINITY
             };
@@ -309,12 +296,8 @@ pub(crate) fn close(
             }
         }
         if let Some((_, q)) = best {
-            let (trial, is_extension) = &options[q];
-            if *is_extension {
-                stats.extended += 1;
-            } else {
-                stats.trimmed += 1;
-            }
+            let trial = &options[q];
+            stats.extended += 1;
             rep.rib(
                 RibChange::Changed,
                 Some(&trial[i]),
@@ -327,12 +310,22 @@ pub(crate) fn close(
             ribs = trial.iter().map(|d| as_grib(&s2, d)).collect();
             continue;
         }
-        if near_block {
-            kept.push((design[i].id, end, LooseEndReason::NoRibZone));
-            continue;
-        }
-        if budget_blocked {
-            kept.push((design[i].id, end, LooseEndReason::Budget));
+        // No extension pays: the rib stays with its free end (tapered) if
+        // it still pays its way as it stands; only one that does not goes.
+        let worth = if vol_as_is > 0.0 {
+            (c_drop - as_is.compliance) / vol_as_is
+        } else {
+            f64::NEG_INFINITY
+        };
+        if worth >= floor && worth > 0.0 {
+            let reason = if near_block {
+                LooseEndReason::NoRibZone
+            } else if budget_blocked {
+                LooseEndReason::Budget
+            } else {
+                LooseEndReason::Tapered
+            };
+            kept.push((design[i].id, end, reason));
             continue;
         }
         stats.dropped += 1;
@@ -341,7 +334,7 @@ pub(crate) fn close(
         ribs = dropped.iter().map(|d| as_grib(&s2, d)).collect();
     }
     // What is left loose, with its reason.
-    let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[]);
+    let (s, design, kept_idx, _) = embed_design(input.s0, &ribs, &[], &req.holds);
     let held = held_flags(&resolve_holds(&s, &req.holds), s.pos.len());
     let mut loose = Vec::new();
     for (k, e) in rib_ends(&s, &held, &design).iter().enumerate() {

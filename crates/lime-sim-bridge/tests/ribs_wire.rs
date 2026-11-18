@@ -58,7 +58,10 @@ fn ribwall_request_plans() {
     for l in loose {
         let at = (l["rib"].as_u64().unwrap() as usize, l["end"].as_u64().unwrap() as usize);
         assert!(free.contains(&at), "{l}");
-        assert!(l["reason"] == "noRibZone" || l["reason"] == "budget", "{l}");
+        assert!(
+            l["reason"] == "noRibZone" || l["reason"] == "budget" || l["reason"] == "tapered",
+            "{l}"
+        );
         assert_eq!(l["point"].as_array().unwrap().len(), 3);
     }
     let stats = &out["stats"];

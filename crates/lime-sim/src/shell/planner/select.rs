@@ -41,7 +41,7 @@ use crate::units::{cross, norm, normalize, sub};
 
 use super::profile::RibProfile;
 use super::trace::Family;
-use super::{Goal, PlanStage, Reporter, RibChange, BALANCED_FLOOR, TARGET_FLOOR};
+use super::{EndTaper, Goal, PlanStage, Reporter, RibChange, BALANCED_FLOOR, TARGET_FLOOR};
 
 /// A candidate cut into the mesh.
 #[derive(Clone, Debug)]
@@ -71,10 +71,19 @@ pub(crate) struct DRib {
     pub gain: f64,
     /// A stable identity through removals.
     pub id: usize,
+    /// How its free ends come down to the wall.
+    pub taper: EndTaper,
+    /// Per edge, the distance along the rib from its middle to the nearer
+    /// free end, mm; empty when neither end is free. Set by [`retaper`]
+    /// whenever the chain or the design around it changes.
+    pub free_dist: Vec<f64>,
+    /// Which ends are free (on no held vertex and no other rib), as
+    /// [`retaper`] last found them.
+    pub free_ends: [bool; 2],
 }
 
 impl DRib {
-    /// A rib of one height everywhere.
+    /// A rib of one height everywhere, square ends.
     pub fn fixed(chain: Vec<u32>, height: f64, width: f64, profile: RibProfile) -> Self {
         let caps = vec![height; chain.len().saturating_sub(1)];
         Self {
@@ -87,21 +96,83 @@ impl DRib {
             cand: usize::MAX,
             gain: 0.0,
             id: 0,
+            taper: EndTaper::None,
+            free_dist: Vec::new(),
+            free_ends: [false; 2],
         }
     }
 
-    /// The height of each edge.
-    pub fn heights(&self) -> Vec<f64> {
+    /// The height of each edge before the free ends' taper: the nominal
+    /// height under each edge's cap. What `ribNet` is given.
+    pub fn base_heights(&self) -> Vec<f64> {
         self.caps.iter().map(|c| c.min(self.height)).collect()
     }
 
-    pub fn tallest(&self) -> f64 {
-        self.heights().into_iter().fold(0.0, f64::max)
+    /// The height of each edge as built: [`DRib::base_heights`] with the
+    /// free ends tapered.
+    pub fn heights(&self) -> Vec<f64> {
+        let base = self.base_heights();
+        if self.free_dist.len() != base.len() || self.taper == EndTaper::None {
+            debug_assert!(self.free_dist.is_empty() || self.free_dist.len() == base.len());
+            return base;
+        }
+        let top = base.iter().copied().fold(0.0, f64::max);
+        base.iter()
+            .zip(&self.free_dist)
+            .map(|(&h, &d)| h.min(self.taper.height_at(top, d)))
+            .collect()
     }
 
+    /// The tallest stretch (the taper never lowers it).
+    pub fn tallest(&self) -> f64 {
+        self.base_heights().into_iter().fold(0.0, f64::max)
+    }
+
+    /// The taper length at each end: 0 where the end is not free.
+    pub fn taper_lengths(&self) -> [f64; 2] {
+        let l = self.taper.length(self.tallest());
+        self.free_ends.map(|f| if f { l } else { 0.0 })
+    }
+
+    /// The profile each edge is built with. A tapered stretch keeps the
+    /// section of the stretch it tapers from: under
+    /// [`RibProfile::TeeWhereLimited`] a full-height straight stretch stays
+    /// straight as it comes down (a taper is not a height limit), and a
+    /// limited one stays a tee until it is too low for one.
+    pub fn edge_profiles(&self) -> Vec<RibProfile> {
+        self.base_heights()
+            .into_iter()
+            .map(|h| match self.profile {
+                RibProfile::TeeWhereLimited {
+                    straight_height, ..
+                } if h >= straight_height - 1e-9 => RibProfile::Rectangular,
+                p => p,
+            })
+            .collect()
+    }
+
+    /// Its stretches as the solver takes them: consecutive edges of one
+    /// height and section are one rib.
     pub fn solver_ribs(&self, side: RibSide) -> Vec<Rib> {
-        self.profile
-            .solver_ribs(&self.chain, &self.heights(), self.width, side)
+        let heights = self.heights();
+        let profiles = self.edge_profiles();
+        let mut out: Vec<Rib> = Vec::new();
+        for (e, w) in self.chain.windows(2).enumerate() {
+            let h = heights[e];
+            let section = profiles[e].section_at(self.width, h);
+            match out.last_mut() {
+                Some(r) if (r.height - h).abs() < 1e-12 && r.section == section => {
+                    r.edges.push((w[0], w[1]))
+                }
+                _ => out.push(Rib {
+                    edges: vec![(w[0], w[1])],
+                    section,
+                    height: h,
+                    side,
+                }),
+            }
+        }
+        out
     }
 
     /// Its own volume, before overlaps.
@@ -109,8 +180,9 @@ impl DRib {
         self.chain
             .windows(2)
             .zip(self.heights())
-            .map(|(w, h)| {
-                norm(sub(pos[w[1] as usize], pos[w[0] as usize])) * self.profile.area(self.width, h)
+            .zip(self.edge_profiles())
+            .map(|((w, h), p)| {
+                norm(sub(pos[w[1] as usize], pos[w[0] as usize])) * p.area(self.width, h)
             })
             .sum()
     }
@@ -127,6 +199,7 @@ pub(crate) struct Ctx {
     pub max_height: f64,
     pub goal: Goal,
     pub shortlist: usize,
+    pub taper: EndTaper,
 }
 
 #[derive(Clone, Debug)]
@@ -319,6 +392,56 @@ pub(crate) fn network_volume(pos: &[[f64; 3]], design: &[DRib]) -> f64 {
     v.max(0.0)
 }
 
+/// Find each rib's free ends (on no `held` vertex and on no other rib of
+/// the design) and, per edge, how far its middle is from the nearer free
+/// end along the rib: what [`DRib::heights`] tapers by. Call it whenever a
+/// chain changes or a rib comes or goes, since either can free or anchor
+/// another rib's end.
+pub(crate) fn retaper(design: &mut [DRib], pos: &[[f64; 3]], held: &[bool]) {
+    let mut on: Vec<(u32, usize)> = design
+        .iter()
+        .enumerate()
+        .flat_map(|(i, d)| d.chain.iter().map(move |&v| (v, i)))
+        .collect();
+    on.sort_unstable();
+    on.dedup();
+    let other = |v: u32, i: usize| {
+        let at = on.partition_point(|x| x.0 < v);
+        on[at..].iter().take_while(|x| x.0 == v).any(|x| x.1 != i)
+    };
+    let free: Vec<[bool; 2]> = design
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            if d.chain.len() < 2 {
+                return [false; 2];
+            }
+            [d.chain[0], d.chain[d.chain.len() - 1]]
+                .map(|v| !held.get(v as usize).copied().unwrap_or(false) && !other(v, i))
+        })
+        .collect();
+    for (d, f) in design.iter_mut().zip(free) {
+        d.free_ends = f;
+        d.free_dist.clear();
+        if !(f[0] || f[1]) || d.taper == EndTaper::None {
+            continue;
+        }
+        let mut s = vec![0.0; d.chain.len()];
+        for k in 1..d.chain.len() {
+            s[k] = s[k - 1] + norm(sub(pos[d.chain[k] as usize], pos[d.chain[k - 1] as usize]));
+        }
+        let total = s[s.len() - 1];
+        d.free_dist = (0..d.chain.len() - 1)
+            .map(|k| {
+                let m = 0.5 * (s[k] + s[k + 1]);
+                let a = if f[0] { m } else { f64::INFINITY };
+                let b = if f[1] { total - m } else { f64::INFINITY };
+                a.min(b)
+            })
+            .collect();
+    }
+}
+
 pub(crate) struct Outcome {
     pub design: Vec<DRib>,
     pub bare: Eval,
@@ -473,9 +596,10 @@ pub(crate) fn run(
             if eff < floor_share(ctx.goal) * first {
                 break;
             }
-            let mut rib = with(&design, &cands[i], i, ctx).pop().expect("added");
-            rib.gain = (cur.compliance - e.compliance) / c0;
-            design.push(rib);
+            // The whole trial: the new rib may anchor another's free end.
+            let mut trial = with(&design, &cands[i], i, ctx);
+            trial.last_mut().expect("added").gain = (cur.compliance - e.compliance) / c0;
+            design = trial;
             used[i] = true;
             cur = e;
             let volume = network_volume(&ctx.pos, &design);
@@ -556,6 +680,7 @@ pub(crate) fn run(
             let mut trial = design.clone();
             trial[i].chain = new_chain;
             trial[i].caps = new_caps;
+            retaper(&mut trial, &ctx.pos, &ctx.held);
             if over_budget(ctx, &trial) {
                 continue;
             }
@@ -598,6 +723,7 @@ pub(crate) fn run(
                     trial[i].caps = caps;
                     trial[i].gain += trial[j].gain;
                     let gone = trial.remove(j);
+                    retaper(&mut trial, &ctx.pos, &ctx.held);
                     if over_budget(ctx, &trial) {
                         continue;
                     }
@@ -659,7 +785,11 @@ pub(crate) fn run(
             let batch: Vec<usize> = order[next..(next + workers).min(total)].to_vec();
             let trials: Vec<Vec<DRib>> = batch
                 .iter()
-                .map(|&id| design.iter().filter(|d| d.id != id).cloned().collect())
+                .map(|&id| {
+                    let mut t: Vec<DRib> = design.iter().filter(|d| d.id != id).cloned().collect();
+                    retaper(&mut t, &ctx.pos, &ctx.held);
+                    t
+                })
                 .collect();
             let evals = ev.eval_many(&trials)?;
             for ((id, trial), e) in batch.into_iter().zip(trials).zip(evals) {
@@ -826,7 +956,11 @@ fn with(design: &[DRib], c: &CandChain, i: usize, ctx: &Ctx) -> Vec<DRib> {
         cand: i,
         gain: 0.0,
         id: i,
+        taper: ctx.taper,
+        free_dist: Vec::new(),
+        free_ends: [false; 2],
     });
+    retaper(&mut d, &ctx.pos, &ctx.held);
     d
 }
 
