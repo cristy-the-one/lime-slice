@@ -122,6 +122,8 @@ export interface RibPlanBody {
   goal?: PlanGoal;
   options?: { baselines?: boolean };
   holeRimMarginMm?: number;
+  /** One weight per load case, in order. Absent for one load, which is a plain sum, as before. */
+  caseWeights?: number[];
 }
 
 export type PlanReply = { ok: true; plan: RibPlanResult } | { ok: false; reason: string };

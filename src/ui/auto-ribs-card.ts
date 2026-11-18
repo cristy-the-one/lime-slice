@@ -38,7 +38,9 @@ import {
   editedNote,
   fmt,
   goalLine,
+  loadRequest,
   looseLine,
+  MAX_LOAD_CASES,
   goalOf,
   grams,
   idleRun,
@@ -46,6 +48,7 @@ import {
   measuredLine,
   newAutoRibsCard,
   newZone,
+  type PanelLoadCase,
   notOnWallLines,
   resultNumbers,
   ribBox,
@@ -123,7 +126,7 @@ export interface AutoRibsHost {
   stressCheck(setup: { holds: StudyHold[]; loads: StudyLoad[]; wallFaces: number[]; joinedFaces: number[] }, progress: (text: string) => void): Promise<{ before: { maxDisplacementMm: number; minSafetyFactor: number | null }; after: { maxDisplacementMm: number; minSafetyFactor: number | null } } | { reason: string }>;
 }
 
-type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load" } | { kind: "place"; shape: ZoneShape["kind"] };
+type Pick = { kind: "wall" } | { kind: "zoneFaces"; zone: number } | { kind: "hold" } | { kind: "load"; case?: number } | { kind: "place"; shape: ZoneShape["kind"] };
 
 interface WallRead {
   /** What was asked, so a stale read is known. */
@@ -177,6 +180,8 @@ let edit: { head: string } | null = null;
 let applying = false;
 let applied: Applied | null = null;
 let liftQueue = new Set<number>();
+/** The case list last drawn, so typing a name or a weight does not rebuild it and drop the cursor. */
+let paintedCases = "";
 let liftFrame = 0;
 let wallSurface: { wall: RibWall; surface: RibSurface } | null = null;
 
@@ -286,6 +291,8 @@ export function mountAutoRibsCard(next: AutoRibsHost) {
           <input id="autoRibsDirZ" type="number" step="0.1" value="-1" aria-label="Direction Z">
         </div>
       </fieldset>
+      <div id="autoRibsCases" hidden></div>
+      <button class="btn ar-small" id="autoRibsAddCase" type="button">Add a load case</button>
       <ul class="ar-warnings" id="autoRibsNotOnWall" aria-label="Not on the wall"></ul>
       <button class="btn ar-small" id="autoRibsEvenPressure" type="button" aria-pressed="false" hidden data-tip="A hold or load that misses the wall is left out and the plan says so; with no load left it runs under even pressure">Plan without it</button>
     </details>
@@ -367,6 +374,7 @@ function begin(next: AutoRibsCard, note?: string) {
   job?.cancel();
   job = null;
   card = structuredClone(next);
+  paintedCases = "";
   run = idleRun();
   read = null;
   faceRibs = [];
@@ -466,8 +474,13 @@ export function autoRibsTakesPick(pick: { kind: "face" | "edge"; index: number; 
     return true;
   }
   if (picking.kind === "load") {
-    const load = card.loads[0] ?? readLoad([]);
-    card = { ...card, loads: [{ ...load, faces: toggled(load.faces, face) }] };
+    if (picking.case != null && (card.cases?.length ?? 0) >= 2) {
+      const at = picking.case;
+      card = { ...card, cases: card.cases!.map((row, i) => (i === at ? { ...row, loads: [withFace(row.loads[0] ?? freshLoad(), face)] } : row)) };
+    } else {
+      const load = card.loads[0] ?? readLoad([]);
+      card = { ...card, loads: [{ ...load, faces: toggled(load.faces, face) }] };
+    }
     changed();
     return true;
   }
@@ -502,13 +515,14 @@ function wallOptions(): RibWallOptions | null {
   if (!host) return null;
   const zones = zoneInputs(card.zones, (id) => host!.obstacle(id));
   const minHeight = 1;
+  const asked = loadRequest(card.loads, card.cases);
   return {
     picked: card.picked,
     ...(card.justThis ? { grow: false } : {}),
     ...(card.excluded.length ? { excludeFaces: card.excluded } : {}),
     zones: zones.inputs,
     holds: card.holds,
-    loads: card.loads,
+    ...(asked.loadCases ? { loadCases: asked.loadCases } : { loads: card.loads }),
     minRibHeightMm: minHeight,
     ...(card.ifMissed === "evenPressure" ? { ifMissed: "evenPressure" as const } : {}),
   };
@@ -516,7 +530,7 @@ function wallOptions(): RibWallOptions | null {
 
 function readKey(): string {
   const solid = host?.solid();
-  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.zones, card.holds, card.loads, card.ifMissed]);
+  return JSON.stringify([solid?.key ?? "", card.picked, card.excluded, card.justThis, card.zones, card.holds, card.loads, card.cases ?? null, card.ifMissed]);
 }
 
 function queueRead(wait: number) {
@@ -628,7 +642,8 @@ async function startRun() {
   const sent: RibPlanBody["request"] = wall.request.holds.holds.length === 0 ? { ...wall.request, holds: { kind: "allBoundary" } } : wall.request;
   const material = host.material();
   materialNote = material?.note ?? "";
-  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0 };
+  const asked = loadRequest(card.loads, card.cases);
+  const body: RibPlanBody = { request: sent, ...(material ? { material: { e: material.e, nu: material.nu } } : {}), rules: bodyRules(wall), goal, options: { baselines: true }, holeRimMarginMm: card.holeRim.on ? Math.max(0, card.holeRim.mm) : 0, ...(asked.caseWeights ? { caseWeights: asked.caseWeights } : {}) };
 
   generation += 1;
   const mine = generation;
@@ -794,7 +809,7 @@ function writeFields() {
     const node = $<HTMLDetailsElement>(details);
     if (!node) continue;
     // A section the request uses opens with it; the rest stay folded.
-    const used = details === "#autoRibsHowMuch" ? !(a.kind === "slider" && a.stop === 0) : details === "#autoRibsHoldLoad" ? card.holds.length + card.loads.length > 0 : details === "#autoRibsKeepClear" ? card.zones.length > 0 : card.ribs.width != null || card.ribs.height != null || card.ribs.profile !== "auto" || card.ribs.process !== "filament";
+    const used = details === "#autoRibsHowMuch" ? !(a.kind === "slider" && a.stop === 0) : details === "#autoRibsHoldLoad" ? card.holds.length + card.loads.length > 0 || (card.cases?.length ?? 0) >= 2 : details === "#autoRibsKeepClear" ? card.zones.length > 0 : card.ribs.width != null || card.ribs.height != null || card.ribs.profile !== "auto" || card.ribs.process !== "filament";
     node.open = used;
   }
 }
@@ -1076,16 +1091,36 @@ function paintHoldLoad() {
   if (row) row.hidden = !held;
   press($("#autoRibsHoldPick"), picking.kind === "hold");
   chips("#autoRibsHoldChips", held?.faces ?? [], "hold");
-  const load = card.loads[0];
-  const pressure = load?.kind === "pressure";
-  press($("#autoRibsLoadForce"), !pressure);
-  press($("#autoRibsLoadPressure"), pressure);
-  const label = $<HTMLElement>("#autoRibsForceLabel");
-  if (label) label.textContent = pressure ? "Pressure" : "Force";
-  const unit = $<HTMLElement>("#autoRibsForceUnit");
-  if (unit) unit.textContent = pressure ? "MPa" : "N";
-  press($("#autoRibsLoadPick"), picking.kind === "load");
-  chips("#autoRibsLoadChips", load?.faces ?? [], "load");
+  const multi = (card.cases?.length ?? 0) >= 2;
+  const single = $<HTMLElement>("#autoRibsLoad");
+  if (single) single.hidden = multi;
+  const add = $<HTMLButtonElement>("#autoRibsAddCase");
+  if (add) {
+    const full = multi && card.cases!.length >= MAX_LOAD_CASES;
+    add.disabled = full;
+    add.dataset.tip = full ? "Eight load cases is the most." : "Turn this load into a case and add another. Each case has a name, a weight and its own loads.";
+  }
+  const cases = $<HTMLElement>("#autoRibsCases");
+  if (cases) {
+    cases.hidden = !multi;
+    const key = multi ? JSON.stringify({ pick: picking, rows: card.cases!.map((item) => ({ kind: item.loads[0]?.kind ?? "force", faces: item.loads[0]?.faces ?? [] })) }) : "";
+    if (key !== paintedCases) {
+      paintedCases = key;
+      cases.replaceChildren(...(multi ? card.cases!.map((item, i) => caseField(item, i)) : []));
+    }
+  }
+  if (!multi) {
+    const load = card.loads[0];
+    const pressure = load?.kind === "pressure";
+    press($("#autoRibsLoadForce"), !pressure);
+    press($("#autoRibsLoadPressure"), pressure);
+    const label = $<HTMLElement>("#autoRibsForceLabel");
+    if (label) label.textContent = pressure ? "Pressure" : "Force";
+    const unit = $<HTMLElement>("#autoRibsForceUnit");
+    if (unit) unit.textContent = pressure ? "MPa" : "N";
+    press($("#autoRibsLoadPick"), picking.kind === "load");
+    chips("#autoRibsLoadChips", load?.faces ?? [], "load");
+  }
   const stress = host.stress();
   const use = $<HTMLButtonElement>("#autoRibsUseStress");
   if (use) use.hidden = !stress || stress.holds.length + stress.loads.length === 0;
@@ -1416,6 +1451,149 @@ function hoverList(target: EventTarget | null, on: boolean) {
 // Input.
 // ---------------------------------------------------------------------------
 
+function freshLoad(): StudyLoad {
+  return { kind: "force", faces: [], magnitude: 10, direction: [0, 0, -1] };
+}
+
+function withFace(load: StudyLoad, face: number): StudyLoad {
+  return { ...load, faces: toggled(load.faces, face) };
+}
+
+/** The single load becomes case 1, and case 2 is added. Further clicks add a case, up to eight. */
+function addLoadCase() {
+  if ((card.cases?.length ?? 0) >= MAX_LOAD_CASES) return;
+  const cases = (card.cases?.length ?? 0) >= 2 ? card.cases! : [{ name: "Case 1", weight: 1, loads: card.loads.length ? structuredClone(card.loads) : [freshLoad()] }];
+  const n = cases.length + 1;
+  card = { ...card, loads: [], cases: [...cases, { name: `Case ${n}`, weight: 1, loads: [freshLoad()] }] };
+}
+
+/** Drop one case. The last remaining case becomes today's single load, and the case list goes away. */
+function removeLoadCase(index: number) {
+  const left = (card.cases ?? []).filter((_, i) => i !== index);
+  if (picking.kind === "load") picking = { kind: "wall" };
+  if (left.length >= 2) {
+    card = { ...card, cases: left };
+    return;
+  }
+  const { cases: _gone, ...rest } = card;
+  card = { ...rest, loads: left[0]?.loads.length ? left[0].loads : rest.loads.length ? rest.loads : [freshLoad()] };
+}
+
+function caseField(row: PanelLoadCase, index: number): HTMLElement {
+  const load = row.loads[0] ?? freshLoad();
+  const pressure = load.kind === "pressure";
+  const box = document.createElement("fieldset");
+  box.className = "stress-group";
+  box.dataset.case = String(index);
+  const legend = document.createElement("legend");
+  legend.textContent = `Case ${index + 1}`;
+  const head = document.createElement("div");
+  head.className = "ar-case-head";
+  const name = document.createElement("input");
+  name.type = "text";
+  name.value = row.name;
+  name.dataset.case = String(index);
+  name.dataset.caseField = "name";
+  name.setAttribute("aria-label", `Case ${index + 1} name`);
+  const weight = document.createElement("input");
+  weight.type = "number";
+  weight.step = "0.1";
+  weight.min = "0.1";
+  weight.value = String(row.weight);
+  weight.dataset.case = String(index);
+  weight.dataset.caseField = "weight";
+  weight.setAttribute("aria-label", `Case ${index + 1} weight`);
+  const weightLabel = document.createElement("label");
+  weightLabel.className = "ar-inline";
+  weightLabel.append("Weight ", weight);
+  head.append(name, weightLabel);
+  const modes = document.createElement("div");
+  modes.className = "modes";
+  modes.setAttribute("role", "group");
+  modes.setAttribute("aria-label", `Case ${index + 1} load kind`);
+  const kindButton = (kind: "force" | "pressure", text: string, on: boolean) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn mode";
+    button.dataset.caseKind = kind;
+    button.dataset.case = String(index);
+    button.textContent = text;
+    press(button, on);
+    return button;
+  };
+  modes.append(kindButton("force", "Force N", !pressure), kindButton("pressure", "Pressure MPa", pressure));
+  const magLabel = document.createElement("label");
+  magLabel.className = "stress-inline";
+  const magName = document.createElement("span");
+  magName.textContent = pressure ? "Pressure" : "Force";
+  const magField = document.createElement("span");
+  magField.className = "stress-unit-field";
+  const mag = document.createElement("input");
+  mag.type = "number";
+  mag.step = "0.1";
+  mag.value = String(load.magnitude);
+  mag.dataset.case = String(index);
+  mag.dataset.caseField = "mag";
+  mag.setAttribute("aria-label", `Case ${index + 1} load magnitude`);
+  const unit = document.createElement("span");
+  unit.className = "stress-unit";
+  unit.textContent = pressure ? "MPa" : "N";
+  magField.append(mag, unit);
+  magLabel.append(magName, magField);
+  const pickRow = document.createElement("div");
+  pickRow.className = "stress-pick-row";
+  const pick = document.createElement("button");
+  pick.type = "button";
+  pick.className = "btn stress-pick";
+  pick.dataset.casePick = String(index);
+  pick.textContent = "Pick faces";
+  press(pick, picking.kind === "load" && picking.case === index);
+  const list = document.createElement("ul");
+  list.className = "stress-chips";
+  list.setAttribute("aria-label", `Case ${index + 1} loaded faces`);
+  for (const face of load.faces) {
+    const item = document.createElement("li");
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "stress-chip";
+    chip.dataset.face = String(face);
+    chip.dataset.chip = "case";
+    chip.dataset.case = String(index);
+    chip.setAttribute("aria-label", `Remove face ${face + 1} from case ${index + 1}`);
+    chip.append(`Face ${face + 1}`, createElement(X, { width: 12, height: 12, "aria-hidden": "true", class: "ico" }));
+    item.append(chip);
+    list.append(item);
+  }
+  pickRow.append(pick, list);
+  const axis = document.createElement("div");
+  axis.className = "stress-axis";
+  axis.setAttribute("role", "group");
+  axis.setAttribute("aria-label", `Case ${index + 1} direction`);
+  const axisLabel = document.createElement("span");
+  axisLabel.className = "stress-axis-label";
+  axisLabel.textContent = "Direction (X, Y, Z)";
+  axis.append(axisLabel);
+  for (const [axisIndex, letter] of ["X", "Y", "Z"].entries()) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.1";
+    input.value = String(load.direction[axisIndex] ?? 0);
+    input.dataset.case = String(index);
+    input.dataset.caseField = "dir";
+    input.dataset.axis = String(axisIndex);
+    input.setAttribute("aria-label", `Case ${index + 1} direction ${letter}`);
+    axis.append(input);
+  }
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "btn ar-small";
+  remove.dataset.caseRemove = String(index);
+  remove.textContent = "Remove";
+  remove.setAttribute("aria-label", `Remove case ${index + 1}`);
+  box.append(legend, head, modes, magLabel, pickRow, axis, remove);
+  return box;
+}
+
 function readLoad(faces: number[]): StudyLoad {
   const num = (id: string, d: number) => {
     const v = Number($<HTMLInputElement>(id)?.value);
@@ -1468,9 +1646,30 @@ function onClick(ev: Event) {
   }
   if (target.id === "autoRibsUseStress") {
     const stress = host.stress();
-    if (stress) card = { ...card, holds: structuredClone(stress.holds), loads: structuredClone(stress.loads) };
+    if (stress) {
+      const { cases: _gone, ...rest } = card;
+      card = { ...rest, holds: structuredClone(stress.holds), loads: structuredClone(stress.loads) };
+    }
     writeFields();
     return changed();
+  }
+  if (target.id === "autoRibsAddCase") {
+    addLoadCase();
+    return changed();
+  }
+  if (target.dataset.caseRemove) {
+    removeLoadCase(Number(target.dataset.caseRemove));
+    return changed();
+  }
+  if (target.dataset.caseKind && card.cases) {
+    const index = Number(target.dataset.case);
+    const kind = target.dataset.caseKind === "pressure" ? "pressure" : "force";
+    card = { ...card, cases: card.cases.map((row, i) => (i === index ? { ...row, loads: [{ ...(row.loads[0] ?? freshLoad()), kind, magnitude: kind === "pressure" ? 0.01 : 10 }] } : row)) };
+    return changed();
+  }
+  if (target.dataset.casePick) {
+    const index = Number(target.dataset.casePick);
+    return setPick({ kind: "load", case: index });
   }
   if (target.id === "autoRibsHoldFaces") {
     card = { ...card, holds: card.holds.some((h) => h.kind === "faces") ? [] : [{ kind: "faces", faces: [] }] };
@@ -1497,7 +1696,10 @@ function onClick(ev: Event) {
   if (target.dataset.chip) {
     const face = Number(target.dataset.face);
     if (target.dataset.chip === "hold") card = { ...card, holds: card.holds.map((h) => (h.kind === "faces" ? { ...h, faces: h.faces.filter((f) => f !== face) } : h)) };
-    else card = { ...card, loads: card.loads.map((l) => ({ ...l, faces: l.faces.filter((f) => f !== face) })) };
+    else if (target.dataset.chip === "case" && card.cases) {
+      const index = Number(target.dataset.case);
+      card = { ...card, cases: card.cases.map((row, i) => (i === index ? { ...row, loads: row.loads.map((l) => ({ ...l, faces: l.faces.filter((f) => f !== face) })) } : row)) };
+    } else card = { ...card, loads: card.loads.map((l) => ({ ...l, faces: l.faces.filter((f) => f !== face) })) };
     return changed();
   }
   if (target.dataset.addZone) {
@@ -1582,6 +1784,32 @@ function onInput(ev: Event) {
   if (["autoRibsForce", "autoRibsDirX", "autoRibsDirY", "autoRibsDirZ"].includes(target.id)) {
     if (card.loads.length === 0 && !finished) return;
     card = { ...card, loads: [readLoad(card.loads[0]?.faces ?? [])] };
+    return finished ? changed() : undefined;
+  }
+  if (target.dataset.caseField && card.cases) {
+    const index = Number(target.dataset.case);
+    const row = card.cases[index];
+    if (!row) return;
+    const load = row.loads[0] ?? freshLoad();
+    const field = target.dataset.caseField;
+    let next = row;
+    if (field === "name") next = { ...row, name: target.value };
+    else if (field === "weight") {
+      if (!(value > 0)) {
+        if (finished) target.value = String(row.weight);
+        return;
+      }
+      next = { ...row, weight: value };
+    } else if (field === "mag") {
+      if (!Number.isFinite(value)) return;
+      next = { ...row, loads: [{ ...load, magnitude: value }] };
+    } else if (field === "dir") {
+      if (!Number.isFinite(value)) return;
+      const direction: [number, number, number] = [load.direction[0], load.direction[1], load.direction[2]];
+      direction[Number(target.dataset.axis)] = value;
+      next = { ...row, loads: [{ ...load, direction }] };
+    }
+    card = { ...card, cases: card.cases.map((item, i) => (i === index ? next : item)) };
     return finished ? changed() : undefined;
   }
   const zoneId = Number(target.dataset.zone ?? target.dataset.zoneMode ?? target.dataset.zoneObject);

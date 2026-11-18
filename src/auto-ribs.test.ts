@@ -20,6 +20,7 @@ import {
   idleRun,
   keptRibs,
   measuredLine,
+  loadRequest,
   newAutoRibsCard,
   newZone,
   resultNumbers,
@@ -187,6 +188,20 @@ eq("the panel's request comes back whole", cardFromRibNet({ kind: "ribNet", auto
 eq("ribs_plan's request gives its wall", cardFromRibNet({ kind: "ribNet", auto: { wall: { faces: [3, 4] } } })?.picked, [3, 4]);
 eq("a typed network has no request", cardFromRibNet({ kind: "ribNet" }), null);
 eq("a stored card that is not one", cardFromStored({ zones: [] }), null);
+
+// --- The request the panel's cases build: the same shape ribs_plan sends. One load stays `loads` alone.
+const force = { kind: "force" as const, faces: [6], magnitude: 10, direction: [0, 0, -1] as [number, number, number] };
+const pressure = { kind: "pressure" as const, faces: [6], magnitude: 0.01, direction: [0, 0, -1] as [number, number, number] };
+eq("one load: loads only, no cases and no weights", loadRequest([force], undefined), { loads: [force] });
+eq("a single case stays the one load", loadRequest([force], [{ name: "only", weight: 3, loads: [pressure] }]), { loads: [force] });
+const two = loadRequest([], [{ name: "spread", weight: 1, loads: [pressure] }, { name: "point", weight: 4, loads: [force] }]);
+eq("two cases: loadCases and caseWeights, and no loads beside them", two, { loads: [], loadCases: [{ name: "spread", loads: [pressure] }, { name: "point", loads: [force] }], caseWeights: [1, 4] });
+eq("a weight that is not above zero is 1", loadRequest([], [{ name: "a", weight: 0, loads: [force] }, { name: "b", weight: -2, loads: [pressure] }]).caseWeights, [1, 1]);
+const kept = [{ name: "spread", weight: 1, loads: [pressure] }, { name: "point", weight: 4, loads: [force] }];
+const back = cardFromStored({ ...newAutoRibsCard(), picked: [6], loads: [], cases: kept });
+eq("two cases come back with the card", back?.cases, kept);
+eq("two cases leave the single load empty", back?.loads, []);
+eq("one stored case folds away", cardFromStored({ ...newAutoRibsCard(), picked: [6], loads: [force], cases: [{ name: "only", weight: 3, loads: [pressure] }] })?.cases, undefined);
 
 // --- The preview: a box per stretch, and the rib under a ray.
 const drawn = [
