@@ -1227,6 +1227,14 @@ std::string deadline_message() {
            "in the way, or split the part and edit one piece";
 }
 
+/// Why a section stopped at its deadline: on a sound solid a plane cut takes well under a second.
+std::string section_overran() {
+    const long long seconds = (g_budget_ms.load() + 999) / 1000;
+    return "Open CASCADE could not cut this section within " + std::to_string(seconds) +
+           " s, so it was stopped. A plane cut is quick on a sound solid, so this one is likely damaged: model_check "
+           "lists edges where pieces meet only along a line and walls too thin to print. Undo the step that made them";
+}
+
 /// A progress range that stops at the deadline, or a plain one when no step is being timed. `watch` keeps the indicator
 /// alive while the build runs.
 Message_ProgressRange deadline_range(Handle(Message_ProgressIndicator)& watch) {
@@ -7609,6 +7617,10 @@ std::string region_json(
     size_t region_count = 0;
     try {
         for (const TopoDS_Face& face : faces) {
+            if (past_deadline()) {
+                error = section_overran();
+                return {};
+            }
             const TopoDS_Wire outer = BRepTools::OuterWire(face);
             if (outer.IsNull()) {
                 continue;
@@ -7855,7 +7867,15 @@ std::string section_json(const TopoDS_Shape& shape, const double* plane, const d
         common.SetFuzzyValue(1.0e-7);
         common.SetNonDestructive(Standard_True);
         common.SetRunParallel(Standard_True);
-        common.Build();
+        // A damaged solid (faces that meet only along a line, walls a few hundredths thin) could keep this cut
+        // working for many minutes. The caller's deadline stops it with a sentence wherever Open CASCADE looks at it;
+        // on the damaged part that sent us here it never did, so the MCP session also caps the whole call.
+        Handle(Message_ProgressIndicator) watch;
+        common.Build(deadline_range(watch));
+        if (past_deadline()) {
+            error = section_overran();
+            return {};
+        }
         if (!common.IsDone() || common.HasErrors()) {
             error = "Open CASCADE did not cut this section.";
             return {};

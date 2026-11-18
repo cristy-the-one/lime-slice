@@ -123,6 +123,20 @@ export function edgeReport(positions: ArrayLike<number>, limit = 8): EdgeReport 
   return report;
 }
 
+/** Every edge used by more than two triangles, as its two welded ends: six numbers an edge, in the soup's frame. */
+export function nonManifoldSegments(positions: ArrayLike<number>): Float64Array {
+  const welded = weld(positions);
+  const p = welded.points;
+  const out: number[] = [];
+  for (const [key, count] of edgeUse(welded.tris)) {
+    if (count <= 2) continue;
+    const a = Math.floor(key / 0x4000000);
+    const b = key % 0x4000000;
+    out.push(p[a * 3]!, p[a * 3 + 1]!, p[a * 3 + 2]!, p[b * 3]!, p[b * 3 + 1]!, p[b * 3 + 2]!);
+  }
+  return Float64Array.from(out);
+}
+
 /**
  * Cracks mended: where one triangle's open edge runs past corners of the faces beside it (within `tolMm` of the
  * edge), that triangle is split at those corners, so both sides of the seam share the same points. Points move by at

@@ -14,7 +14,7 @@ import type { PrimitiveSpec } from "../model-primitive.ts";
 import { repeatLabel } from "../model-repeat.ts";
 import { primitiveBox } from "../model-feasibility.ts";
 import { ribNetLabel, ribNetPlan, ribNetReport, ribNetVerify } from "./rib-net.ts";
-import { lostVolume, touchingEdges, touchingReason } from "./step-guard.ts";
+import { lostVolume, newTouchingEdges, touchingReason } from "./step-guard.ts";
 import { applyPose, toSolidOp, type Affine } from "../model-space.ts";
 import type { GroupOp, ModelOp, NodeId, ProfileLoop } from "../model-tree.ts";
 import { workplaneOwn, type Workplane } from "../workplane.ts";
@@ -321,8 +321,8 @@ export async function runCombined(raw: Record<string, unknown>, port: CombinedPo
         const step = steps[k]!;
         if (step.kind !== "boolean") continue;
         const box = primitiveBox(step);
-        const now = touchingEdges(after.positions, box);
-        if (now.count > touchingEdges(prior.positions, box).count) {
+        const now = newTouchingEdges(prior.positions, after.positions, box);
+        if (now.count > 0) {
           const at = now.at ? (applyPose(port.pose(), now.at).map((v) => Math.round(v * 100) / 100) as [number, number, number]) : null;
           return refuse({ reason: touchingReason(at), touching: true, step: k + 1, of: count, failedStep: k + 1 });
         }

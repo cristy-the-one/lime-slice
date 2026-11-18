@@ -23,7 +23,7 @@ import { primitiveBox } from "../model-feasibility.ts";
 import type { PrimitiveSpec } from "../model-primitive.ts";
 import type { Fingerprint, ModelOp } from "../model-tree.ts";
 import type { SolidView } from "../modeling/model-calls.ts";
-import { lostVolume, touchingEdges, touchingReason } from "../modeling/step-guard.ts";
+import { lostVolume, newTouchingEdges, touchingEdges, touchingReason } from "../modeling/step-guard.ts";
 import type { RecipeCallSite, RecipeReply } from "./host.ts";
 
 export type QueueKind = "fuse" | "cut";
@@ -112,9 +112,8 @@ export function queuedGuard(ops: readonly ModelOp[], before: Guarded | null, aft
   }
   for (const box of boxes) {
     if (!box) continue;
-    const was = touchingEdges(before.positions, box);
-    const now = touchingEdges(after.positions, box);
-    if (now.count > was.count) return touchingReason(now.at);
+    const now = newTouchingEdges(before.positions, after.positions, box);
+    if (now.count > 0) return touchingReason(now.at);
   }
   return null;
 }

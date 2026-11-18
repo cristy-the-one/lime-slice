@@ -15,7 +15,7 @@ import { axesOf, isGlobalFrame, workplaneIn, workplaneOwn, type Workplane } from
 import { standRegion } from "./plane-region.ts";
 import type { Fingerprint, ModelOp } from "../model-tree.ts";
 import { readFingerprint } from "../model-reply.ts";
-import { lostVolume, touchingEdges, touchingReason } from "./step-guard.ts";
+import { lostVolume, meshGuard } from "./step-guard.ts";
 import { frameNumbers, frameOf, type CutPlane } from "./sections.ts";
 import { plainModelError } from "./model-error.ts";
 import { addsPiece, cleanOp, cutsOffPiece, pieceReport, separateReason, splitReason, type ExpandContext } from "./compose.ts";
@@ -280,17 +280,15 @@ export function storedOp(op: ModelOp, reply: Record<string, unknown>): ModelOp {
  * A step the kernel applied but that is not what it meant: a fuse that lost the part, a cut that took more than its
  * tool, a step that lost most of the volume, or a Boolean that left pieces meeting along an edge.
  */
-export function stepGuard(op: ModelOp, prior: SolidView | null, after: SolidView | null, pose: Affine): { reason: string; touching?: true } | null {
+export function stepGuard(op: ModelOp, prior: SolidView | null, after: SolidView | null, pose: Affine): { reason: string; touching?: true; damaged?: true } | null {
   if (!prior || !after) return null;
   const box = op.kind === "boolean" ? primitiveBox(op) : null;
   const lost = lostVolume(op as { kind: string; op?: string }, prior.volumeMm3, after.volumeMm3, box);
   if (lost) return { reason: lost };
-  if (box) {
-    const was = touchingEdges(prior.positions, box);
-    const now = touchingEdges(after.positions, box);
-    if (now.count > was.count) return { reason: touchingReason(now.at ? applyPose(pose, now.at).map((v) => Math.round(v * 100) / 100) as [number, number, number] : null), touching: true };
-  }
-  return null;
+  // Every kind is judged by what it changed: an extrude-cut whose result Open CASCADE built wrong is refused as a
+  // Boolean's is, and edges the part already had (an imported part may bring some) never refuse a sound step.
+  const place = (at: [number, number, number]) => applyPose(pose, at).map((v) => Math.round(v * 100) / 100) as [number, number, number];
+  return meshGuard(op as { kind: string; op?: string }, prior, after, box, place);
 }
 
 /** An applied step's reply: its handle, the op as stored and as typed, and what a combined group or cells counted. */

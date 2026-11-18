@@ -654,8 +654,6 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
     next.volume *= factor ** 3;
   } else if (op?.kind === "hole") {
     next.volume = Math.max(1, next.volume - 100);
-    const extra = new Float32Array(next.positions.length + 36);
-    extra.set(next.positions);
     const z = (next.max[2] ?? 0) + 0.2;
     const x0 = next.min[0] ?? 0;
     const y0 = next.min[1] ?? 0;
@@ -664,8 +662,18 @@ function applied(prior: KeptSolid, op: { kind?: string; factor?: number; op?: st
     const b = [x0, y0 + 6, z];
     const c = [x0 + 6, y0, z];
     const d = [x0 + 2, y0 + 2, z + 0.4];
-    extra.set([...a, ...b, ...c, ...a, ...d, ...b, ...b, ...d, ...c, ...c, ...d, ...a], next.positions.length);
-    next.positions = extra;
+    const mark = Float32Array.from([...a, ...b, ...c, ...a, ...d, ...b, ...b, ...d, ...c, ...c, ...d, ...a]);
+    // One mark is enough: a second hole's mark on the first would share its edges, which no real hole does.
+    const marked = (() => {
+      for (let t = 0; t + 9 <= next.positions.length; t += 9) if (mark.every((v, i) => i >= 9 || next.positions[t + i] === v)) return true;
+      return false;
+    })();
+    if (!marked) {
+      const extra = new Float32Array(next.positions.length + 36);
+      extra.set(next.positions);
+      extra.set(mark, next.positions.length);
+      next.positions = extra;
+    }
   } else if (op?.kind === "boolean" && op.op === "cut" && op.primitive === "box" && op.origin && op.size) {
     const [ox, oy, oz] = op.origin as [number, number, number];
     const [sx, sy, sz] = op.size as [number, number, number];
@@ -696,6 +704,25 @@ export const FAKE_PART_HOLD = {
     { mm: 11.21, danglingMm: 2.3, longestSpanMm: 2.36, layers: [30, 30], at: [1, 2, 6.2], first: [[1, 2, 6.2]] },
   ],
 };
+
+/**
+ * LIME_MCP_FAKE_DAMAGE=1: a cut that Open CASCADE builds wrong, as it did on an imported ribbed part. The result,
+ * probed or applied, carries a chain of blocks beside the part, each meeting the next only along an edge; its volume
+ * is the cut's as reported.
+ */
+function damagedCut(prior: { max: number[] }, next: { volume: number; positions: Float32Array; min: number[]; max: number[] }, op: object | undefined) {
+  if (process.env.LIME_MCP_FAKE_DAMAGE !== "1" || (op as { op?: unknown } | undefined)?.op !== "cut") return next;
+  const [x, y, z] = [prior.max[0] ?? 20, prior.max[1] ?? 20, 0];
+  const blocks = [0, 1, 2, 3, 4, 5].map((i) => boxSolid([x + 5 + i * 2, y + 5 + i * 2, z], [x + 7 + i * 2, y + 7 + i * 2, z + 2], 8).positions);
+  const both = new Float32Array(next.positions.length + blocks.reduce((sum, b) => sum + b.length, 0));
+  both.set(next.positions, 0);
+  let at = next.positions.length;
+  for (const b of blocks) {
+    both.set(b, at);
+    at += b.length;
+  }
+  return { ...next, positions: both };
+}
 
 export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; opens: Record<string, unknown>[]; lastProbe: unknown; lastProbeBody: unknown; lastFind: unknown; resets: number; previewResets: number; folds: number } {
   const jobs = new Map<number, { status: string; body: string; polls: number }>();
@@ -880,6 +907,11 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         for (const lost of kept.keys()) if (!lost.includes("#")) engine.lost.add(lost);
         return Promise.reject(new EngineStopped("model", stopReason(0xc00000fd, null)));
       }
+      // A section of a damaged solid: Open CASCADE never answers, and never looks at its deadline.
+      if (process.env.LIME_MCP_HANG_SECTION === "1" && req.call === "section" && !engine.hung) {
+        engine.hung = true;
+        return new Promise<string>(() => undefined);
+      }
       if (process.env.LIME_MCP_HANG_MODEL === "1" && req.op?.kind === "fillet" && (req.call === "probe" || req.call === "apply") && !engine.hung) {
         engine.hung = true;
         return new Promise<string>(() => undefined);
@@ -966,7 +998,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
         if (req.op?.kind === "shell" && ((req.op as { thickness?: number }).thickness ?? 0) > 3) return JSON.stringify({ ok: false, error: "This wall is too thick for the part's smallest feature." });
         if (!req.preview) return JSON.stringify({ ok: true });
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
-        const shown = remember(`${key}#preview`, applied(prior, req.op), 0);
+        const shown = remember(`${key}#preview`, damagedCut(prior, applied(prior, req.op), req.op), 0);
         return JSON.stringify({ ok: true, preview: shown });
       }
       if (req.call === "distance") {
@@ -981,7 +1013,7 @@ export function fakeEngine(): Engine & { lastSlice: string; calls: string[]; ope
       }
       if (req.call === "apply") {
         const prior = kept.get(key) ?? { volume: 8000, positions: boxSolid([0, 0, 0], [20, 20, 20], 8000).positions, min: [0, 0, 0], max: [20, 20, 20] };
-        const nextSolid = applied(prior, req.op);
+        const nextSolid = damagedCut(prior, applied(prior, req.op), req.op);
         if (req.op?.kind === "split") nextSolid.volume = Math.max(1, prior.volume / 2);
         const fuse = req.op?.kind === "boolean" && (req.op as { op?: string }).op === "fuse";
         // Kernel failures the session must catch: a fuse that hands back only its tool, or a box that meets the part

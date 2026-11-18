@@ -5,6 +5,7 @@ use serde_json::json;
 
 use super::{doc_in, lettering, rebuilt_differently, root_shape, NodeId, Store, ROOT};
 use super::fit_coupon::fit_coupon_reply;
+use super::group::SectionBudget;
 use super::outcome::{Answer, Failure};
 use super::partition::PieceKeys;
 use super::request::{ExportFormat, OwnEdit, Request, ToolEdit};
@@ -396,6 +397,8 @@ impl Store {
             Request::Section { key, node, origin, normal, frame, chord_mm } => {
                 self.ensure(&key, node)?;
                 let shape = doc_in(&mut self.docs, &key)?.shape(node);
+                // A damaged solid stops at the deadline with a sentence instead of holding the engine for minutes.
+                let _budget = SectionBudget::start();
                 let mut body = shape.section(origin, normal, &frame, chord_mm).map_err(Failure::Message)?;
                 if let Some(fields) = body.as_object_mut() {
                     fields.insert("id".into(), json!(node));
