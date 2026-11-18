@@ -115,6 +115,8 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
   const held = new Map<Float32Array, { geometry: THREE.BufferGeometry; edges: THREE.BufferGeometry }>();
   let box: Bounds | null = null;
   let framed = false;
+  /** The meshes of the scene last shown: a scene that shares none of them is another plate, and is framed anew. */
+  let shown = new Set<Float32Array>();
   let pickCb: ((id: string | null, hit?: PoseHit) => void) | null = null;
   let turnCb: ((event: TurnEvent) => void) | null = null;
   let reachCb: ((event: ReachEvent) => boolean | void) | null = null;
@@ -147,6 +149,9 @@ export function createPoseView(canvas: HTMLCanvasElement): PoseView {
 
   function setScene(next: PoseScene) {
     const wanted = new Set(next.parts.map((part) => part.positions));
+    // Another file was opened: the camera still looks at where the last one stood, and a small part is out of view.
+    if (framed && shown.size > 0 && wanted.size > 0 && ![...wanted].some((positions) => shown.has(positions))) framed = false;
+    shown = wanted;
     for (const [positions, entry] of held) {
       if (wanted.has(positions)) continue;
       entry.geometry.dispose();
