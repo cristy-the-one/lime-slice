@@ -100,6 +100,8 @@ export interface RibNetPlan {
   shortened: RibStretch[];
   skipped: RibStretch[];
   ends: { wall: number; joint: number; tapered: number; square: number };
+  /** Per path, what its own first and last point became (null where no run starts or ends there). */
+  pathEnds: [RibEndKind | null, RibEndKind | null][];
   guards: RibGuard[];
   /** The directions the ribs stand toward: the part may grow only that way. */
   sides: V3[];
@@ -592,9 +594,14 @@ interface Run {
   heights: number[];
   /** What each end is: a joint or a wall gets an extension along the run, a free end tapers. */
   ends: [End, End];
+  /** How long each end takes to come down to the surface when it is free, mm (0 square). */
+  taper: [number, number];
+  /** Whether each end is its path's own first or last point (not a cut where a stretch was left out or a turn split it). */
+  pathEnd: [boolean, boolean];
 }
 
 type End = { kind: "free" } | { kind: "wall"; extend: number } | { kind: "joint"; extend: number };
+export type RibEndKind = End["kind"];
 
 function readPoint(value: unknown): V3 | null {
   return Array.isArray(value) && value.length === 3 && value.every((n) => typeof n === "number" && Number.isFinite(n)) ? [value[0], value[1], value[2]] : null;
@@ -606,6 +613,17 @@ function field(raw: Record<string, unknown>, key: string, fallback: number | nul
   if (value === undefined) return fallback === null ? { reason: `A rib network needs ${key}: ${what}.` } : fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value < lo || value > hi) return { reason: `${key} is ${what}, from ${lo} to ${hi}${unit}.` };
   return value;
+}
+
+/**
+ * A path's own taper at its first and last point (`taperMm: [start, end]`, mm, 0 square, null the network's), or a
+ * sentence. It applies only where that end is free when built; an end that meets a wall or another rib runs into it.
+ */
+function pathTaper(value: unknown): [number | null, number | null] | { reason: string } {
+  if (value === undefined || value === null) return [null, null];
+  const ok = (v: unknown) => v === null || (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1000);
+  if (!Array.isArray(value) || value.length !== 2 || !value.every(ok)) return { reason: "taperMm is [start, end]: how long each end of the path takes to come down to the surface, from 0 to 1000 mm, or null for the network's taper." };
+  return [value[0] as number | null, value[1] as number | null];
 }
 
 /**
@@ -683,6 +701,8 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     if (typeof w !== "number") return { reason: `${name}: ${w.reason}` };
     const h = field(path, "height", height, 0.1, 500, "this path's rib height");
     if (typeof h !== "number") return { reason: `${name}: ${h.reason}` };
+    const ownTaper = pathTaper(path.taperMm);
+    if ("reason" in ownTaper) return { reason: `${name}: ${ownTaper.reason}` };
     const profile = profileOf(raw, path, w, h);
     if ("reason" in profile) return { reason: `${name}: ${profile.reason}` };
     const shape = ribShape(profile, h, sink, chordTol);
@@ -823,7 +843,12 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
               }
             }
           }
-          if (kept.length >= 2) runs.push({ path: pi + 1, width: w, height: h, shape, samples: kept, heights, ends: [{ kind: "free" }, { kind: "free" }] });
+          if (kept.length >= 2) {
+            const fallback = taperTyped < 0 ? h : taperTyped;
+            const isFirst = kept[0] === samples[0];
+            const isLast = kept[kept.length - 1] === samples[samples.length - 1];
+            runs.push({ path: pi + 1, width: w, height: h, shape, samples: kept, heights, ends: [{ kind: "free" }, { kind: "free" }], taper: [isFirst ? (ownTaper[0] ?? fallback) : fallback, isLast ? (ownTaper[1] ?? fallback) : fallback], pathEnd: [isFirst, isLast] });
+          }
           else if (kept.length === 1) {
             skipped.push({ path: pi + 1, lengthMm: 0, at: at2(kept[0]!.p), why: "a single point with room between two stretches without" });
           }
@@ -879,20 +904,24 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
         ends.wall += 1;
         continue;
       }
-      ends[(taperTyped < 0 ? run.height : taperTyped) > 0 ? "tapered" : "square"] += 1;
+      ends[run.taper[side] > 0 ? "tapered" : "square"] += 1;
     }
   }
+  // What each path's own first and last point became: a wall, a joint, a free end, or null where no run starts there.
+  const pathEnds: RibNetPlan["pathEnds"] = rawPaths.map(() => [null, null]);
+  for (const run of runs) for (const side of [0, 1] as const) if (run.pathEnd[side]) pathEnds[run.path - 1]![side] = run.ends[side].kind;
   // --- Each run becomes its sections: tapered, simplified, mitred, and cut into lofts of at most MAX_SECTIONS.
   const steps: RibNetPlan["steps"] = [];
   const stepPath: number[] = [];
   const stepProfile: RibProfileKind[] = [];
   const measured: MeasuredRun[] = [];
   for (const run of runs) {
-    const taper = taperTyped < 0 ? run.height : taperTyped;
+    const [taper0, taper1] = run.taper;
     let samples = [...run.samples];
     let heights = [...run.heights];
     // Taper knots: a sample where each free end's taper reaches full height.
     for (const side of [0, 1] as const) {
+      const taper = run.taper[side];
       if (run.ends[side].kind !== "free" || !(taper > 0)) continue;
       const total = arc(samples, 0, samples.length - 1);
       const at = side === 0 ? Math.min(taper, total) : Math.max(0, total - taper);
@@ -904,8 +933,8 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     const lengths = samples.map((_, k) => arc(samples, 0, k));
     heights = heights.map((cap, k) => {
       let hh = cap;
-      if (taper > 0 && run.ends[0].kind === "free") hh = Math.min(hh, (run.height * lengths[k]!) / taper);
-      if (taper > 0 && run.ends[1].kind === "free") hh = Math.min(hh, (run.height * (total - lengths[k]!)) / taper);
+      if (taper0 > 0 && run.ends[0].kind === "free") hh = Math.min(hh, (run.height * lengths[k]!) / taper0);
+      if (taper1 > 0 && run.ends[1].kind === "free") hh = Math.min(hh, (run.height * (total - lengths[k]!)) / taper1);
       return Math.max(0, hh);
     });
     const kept = simplify(samples, heights, chordTol);
@@ -972,6 +1001,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     shortened,
     skipped,
     ends,
+    pathEnds,
     guards: guards.filter((_, i) => i % stride === 0),
     sides: dedupeSides(sides),
     bounds: surface.bounds,

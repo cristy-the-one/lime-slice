@@ -15,7 +15,7 @@
 import { inversePose, thenPose, turnDir, typedPoseOf, type Affine } from "../../src/model-space.ts";
 import { buildDirection } from "../../src/belt.ts";
 import { heldStopFaces, ribWall, type RibWall, type RibWallSolid, type WallZoneInput } from "../../src/modeling/rib-wall.ts";
-import { builtVolumeOf, FREE_END_LINE, hasFreeEnds, overallText, peakFactorOf, peakText, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, slicedVerdict, WALL_ALONE, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
+import { builtPlanOf, FREE_END_LINE, hasFreeEnds, RIGID_BORDERS_LINE, taperedEndsText, overallText, peakFactorOf, peakText, planFlange, remapFaces, ribCardFor, ribNetOf, ribRules, ribsOnFace, slicedVerdict, WALL_ALONE, wireProfileOf, type BuiltRib, type ProfileFields, type RibProcess, type Section } from "../../src/modeling/auto-ribs.ts";
 import type { ObjectStudy, StudyHold, StudyLoad } from "../../src/sim/study.ts";
 import { cardsOf } from "../../src/ui/machine-library.ts";
 import { type CallMeta, type PlateObject, type ToolHandler, UNKNOWN_OBJECT, posedPositions } from "./shared.ts";
@@ -210,19 +210,61 @@ const FIGURES = {
  * A short plain summary of the plan: the worst-point figure first, the strain-energy figure labelled for what it is,
  * and, when a rib ends in mid-wall, the line on its safety factor.
  */
-function planSentence(ribs: number, factor: number, peak: number | null, adds: { mm3: number; grams: number; percent: number }, stopped: boolean, goalMet: boolean, baseline: string, loose: string, freeEnds: boolean): string {
+function planSentence(ribs: number, factor: number, peak: number | null, adds: { mm3: number; grams: number; percent: number }, stopped: boolean, goalMet: boolean, baseline: string, loose: string, freeEnds: boolean, rigid: boolean): string {
   if (ribs === 0) return stopped ? "Stopped before the first rib: no plan." : "No rib pays on this wall under these rules.";
   const figures = peak === null ? `${overallText(factor)}` : `${peakText(peak)}; ${overallText(factor)}`;
-  return `${ribs} rib${ribs === 1 ? "" : "s"}: ${figures}. Shell model, relative. Adds about ${r(adds.mm3, 0)} mm³, ${r(adds.grams, 2)} g, ${r(adds.percent, 1)} % of the part.${stopped ? " Stopped early: the best plan so far." : ""}${goalMet ? "" : " The goal is not met."} ${baseline}${loose}${freeEnds ? ` ${FREE_END_LINE}` : ""}`;
+  return `${ribs} rib${ribs === 1 ? "" : "s"}: ${figures}. Shell model, relative.${rigid ? ` ${RIGID_BORDERS_LINE}` : ""} Adds about ${r(adds.mm3, 0)} mm³, ${r(adds.grams, 2)} g, ${r(adds.percent, 1)} % of the part.${stopped ? " Stopped early: the best plan so far." : ""}${goalMet ? "" : " The goal is not met."} ${baseline}${loose}${freeEnds ? ` ${FREE_END_LINE}` : ""}`;
 }
 
-/** The rib ends the plan leaves loose, and why, in a sentence ("" when every end meets something). */
-function looseSentence(loose: readonly Row[]): string {
+/**
+ * The rib ends that meet nothing, in a sentence ("" when every end meets something): those the planner keeps in the open
+ * wall with a taper said plainly, as built, not as a defect; those cut short by a no-rib zone or the budget with why.
+ */
+function looseSentence(loose: readonly Row[], ribs: readonly Row[]): string {
   if (loose.length === 0) return "";
+  const tapered = loose.filter((row) => row.reason === "tapered");
   const zone = loose.filter((row) => row.reason === "noRibZone").length;
-  const budget = loose.length - zone;
-  const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : ""].filter(Boolean).join(" and ");
-  return ` ${loose.length} rib end${loose.length === 1 ? " stays" : "s stay"} loose: ${why} (plan.looseEnds).`;
+  const budget = loose.length - tapered.length - zone;
+  const out: string[] = [];
+  if (tapered.length) out.push(` ${taperedEndsText(tapered.map((row) => taperOfEnd(ribs, row)))}.`);
+  if (zone + budget) {
+    const why = [zone ? `${zone} at a no-rib zone's border` : "", budget ? `${budget} where the budget leaves no material to carry ${budget === 1 ? "it" : "them"} on` : ""].filter(Boolean).join(" and ");
+    out.push(` ${zone + budget} rib end${zone + budget === 1 ? " stays" : "s stay"} loose: ${why} (plan.looseEnds).`);
+  }
+  return out.join("");
+}
+
+/** The taper the planner gave a loose end, mm (null when the rib carries none). */
+function taperOfEnd(ribs: readonly Row[], row: Row): number | null {
+  const pair = taperPair(ribs[num(row.rib) ?? -1]?.taperMm);
+  const end = num(row.end);
+  return pair && (end === 0 || end === 1) ? pair[end] : null;
+}
+
+/** A rib's [start, end] taper, mm, or null. */
+function taperPair(value: unknown): [number, number] | null {
+  return Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0) ? [value[0] as number, value[1] as number] : null;
+}
+
+/**
+ * Each rib end the planner and ribNet read differently: the planner tapers an end it holds nothing at (taperMm > 0) and
+ * anchors the rest (0); ribNet finds a wall or another rib at an end by rays, or nothing (free, then it tapers). What is
+ * built is what ribNet finds.
+ */
+function endDisagreements(ribs: readonly Row[], found: readonly (readonly (string | null)[])[] | null): Row[] {
+  if (!found) return [];
+  const out: Row[] = [];
+  ribs.forEach((rib, i) => {
+    const pair = taperPair(rib.taperMm);
+    if (!pair) return;
+    for (const end of [0, 1] as const) {
+      const built = found[i]?.[end] ?? null;
+      if (built === null) continue;
+      const plannerFree = pair[end] > 0;
+      if (plannerFree !== (built === "free")) out.push({ rib: i, end, planner: plannerFree ? "tapered" : "anchored", built: built === "free" ? "free, tapered" : built });
+    }
+  });
+  return out;
 }
 
 /** What the two comparisons mean, in a sentence. */
@@ -252,7 +294,9 @@ export interface PlanRecord {
   /** The wall's median thickness, mm: a sliced check with a thicker cell is not meaningful. */
   wallThicknessMm?: number | null;
   /** The plan's own figures, for the apply sentence. */
-  planned?: { peakFactor: number | null; stiffnessFactor: number };
+  planned?: { peakFactor: number | null; stiffnessFactor: number; needsRigidBorders?: boolean };
+  /** A typed taper for every free end, mm (ribs_apply taperMm), over the plan's own. */
+  taperMm?: number;
   /** The solid the plan was made for; null only for a plan given without one, which is refused. */
   fingerprint: Fingerprint | null;
 }
@@ -300,6 +344,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   if ("reason" in goal) return refuse("bad-goal", String(goal.reason));
   const process: RibProcess = input.process === "resin" || input.process === "moulded" ? input.process : "filament";
   const rib = (input.rib ?? {}) as Row;
+  const typedTaper = num(rib.taperMm);
+  if (rib.taperMm !== undefined && !(typedTaper !== undefined && typedTaper >= 0)) return refuse("bad-argument", "rib.taperMm is how long a rib end in the open wall takes to come down to it, mm (0 square).");
   if (input.ifMissed !== undefined && input.ifMissed !== "refuse" && input.ifMissed !== "evenPressure") return refuse("bad-argument", `ifMissed is "refuse" (the default) or "evenPressure"; it is ${JSON.stringify(input.ifMissed)}.`);
   if (wallIn.thicknessMm !== undefined && !(num(wallIn.thicknessMm) !== undefined && (wallIn.thicknessMm as number) > 0)) return refuse("bad-wall", "wall.thicknessMm is the wall's thickness in mm, a number above zero.");
   const ribWallMs = Date.now();
@@ -363,7 +409,8 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const body = {
     request: sent,
     material: { e: card.EInPlaneMPa, nu: card.nu },
-    rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile },
+    // A typed taper is the planner's too, so its figures are of the ends as built; absent, it models 3 × the height.
+    rules: { width: rules.width, maxHeight: rules.maxHeight, minHeight: rules.minHeight, minSpacing: rules.minSpacing, minLength: rules.minLength, profile, ...(typedTaper !== undefined ? { endTaper: typedTaper > 0 ? { kind: "length", mm: typedTaper } : { kind: "none" } } : {}) },
     goal,
     options: { baselines: input.baselines !== false },
     holeRimMarginMm: num(input.holeRimMm) ?? 3,
@@ -407,7 +454,7 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const engineRibs = (result.ribs ?? []) as Row[];
   // Each rib off the mid-surface onto the face, its ends drawn back from a free edge, its tee stretches checked against
   // its own direction (src/modeling/auto-ribs.ts ribsOnFace, shared with the Auto ribs panel).
-  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}) })), build, rules.width);
+  const onSkin = ribsOnFace(typed.solid, wall, engineRibs.map((row) => ({ points: row.points as V3[], heights: (row.heights as number[]) ?? [], sections: (row.sections as Section[] | undefined) ?? [], ...(num(row.width) !== undefined ? { width: num(row.width)! } : {}), ...(num(row.height) !== undefined ? { height: num(row.height)! } : {}), ...(taperPair(row.taperMm) ? { taperMm: taperPair(row.taperMm)! } : {}) })), build, rules.width);
   const ribs: Row[] = engineRibs.map((row, i) => {
     const face = onSkin.ribs[i]!;
     return {
@@ -419,6 +466,10 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
       profile: face.profile,
       ...(face.teeMm !== undefined ? { flangeChamferDeg: face.flangeChamferDeg ?? 45, teeMm: r(face.teeMm, 1) } : {}),
       ...(face.trimmedMm ? { trimmedMm: face.trimmedMm.map((mm) => r(mm, 2)) } : {}),
+      // The planner's taper at each end (0 where it anchors the end) and its heights with the tapers in: ribs_apply
+      // builds each free end over taperMm, so what it builds is what was solved.
+      ...(face.taperMm ? { taperMm: face.taperMm.map((mm) => r(mm, 3)) } : {}),
+      ...(Array.isArray(row.builtHeights) ? { builtHeights: (row.builtHeights as number[]).map((h) => r(h, 3)) } : {}),
       why: face.why,
       ends: row.ends,
       family: row.family,
@@ -432,8 +483,13 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   // What the ribs add as built: ribNet's plan of exactly these ribs on this solid (src/modeling/auto-ribs.ts
   // builtVolumeOf). The planner's volume runs each rib's full section to its ends on the mid-surface: a tapered end, a
   // stretch too close to a facing wall to build, an end drawn back from a free edge all count there and not in the part.
-  const built = engineRibs.length ? builtVolumeOf(typed.solid, onSkin.ribs) : 0;
+  const asBuilt = engineRibs.length ? builtPlanOf(typed.solid, onSkin.ribs) : null;
+  const built = engineRibs.length ? (asBuilt?.volumeMm3 ?? null) : 0;
   const mm3 = built ?? planVolume;
+  // Where the planner and ribNet read a rib's end differently: the planner by held vertices and other ribs, ribNet by
+  // rays against what stands at the end. ribs_apply builds what ribNet finds.
+  const endsDiffer = endDisagreements(ribs, asBuilt?.ends ?? null);
+  if (endsDiffer.length) notes.push(`${endsDiffer.length} rib end${endsDiffer.length === 1 ? " is" : "s are"} read differently by the planner and by the build (plan.endsDiffer): the build follows what stands at the end, so its volume (adds) is the build's.`);
   const partVolume = Math.abs(obj.solid.volumeMm3 ?? 0);
   const adds = { mm3: r(mm3, 1), grams: r((mm3 / 1000) * density, 3), percent: partVolume > 0 ? r((100 * mm3) / partVolume, 2) : null, densityGCm3: density, plannerMm3: r(planVolume, 1), note: built === null ? "The planner's rib volume (ribNet could not plan these ribs to estimate them as built): each stretch's section over its length, crossings counted once. ribs_apply measures the solid." : "As built: ribNet's plan of these ribs on this solid, each section over the wall's face along the rib after tapers and skipped stretches, ends into a wall or a rib left out, crossings counted once. plannerMm3 is the planner's own count on the mid-surface. ribs_apply measures the solid." };
   const profiles: Record<string, number> = {};
@@ -444,8 +500,10 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const stoppedEarly = result.stoppedEarly === true;
   const fingerprint = fingerprintOf(obj);
   const stiffnessFactor = num(result.stiffnessFactor) ?? 1;
-  const peakFactor = peakFactorOf(result.bare as Row | undefined, result.ribbed as Row | undefined);
-  const freeEnds = hasFreeEnds(ribs as { ends?: unknown[] }[]);
+  // The planner's own worst-point figure when it gives one (of the ribs as built, tapers in), else worked out here.
+  const peakFactor = num(result.peakFactor) ?? peakFactorOf(result.bare as Row | undefined, result.ribbed as Row | undefined);
+  const freeEnds = hasFreeEnds(ribs as { ends?: unknown[]; taperMm?: unknown[] }[]);
+  const needsRigidBorders = result.needsRigidBorders === true;
   const wallThicknessMm = num(wall.report.thickness.medianMm) ?? null;
   const plan: Row = {
     object: obj.id,
@@ -459,8 +517,17 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
     // The headline: how much less the wall bends at its worst point (new in this field; stiffnessFactor is unchanged).
     peakFactor: peakFactor === null ? null : r(peakFactor, 4),
     stiffnessFactor: r(stiffnessFactor, 4),
+    ...(num(result.complianceFactor) !== undefined ? { complianceFactor: r(num(result.complianceFactor)!, 4) } : {}),
     figures: FIGURES,
     freeEnds,
+    // The taper the planner solved free ends with (echo of rules.endTaper; 3 × the height unless rib.taperMm was given).
+    endTaper: result.endTaper ?? null,
+    // The same ribs with the wall's borders pinned (free to turn) instead of clamped; needsRigidBorders when most of the
+    // gain is gone then.
+    pinned: result.pinned ?? null,
+    pinnedGain: num(result.pinnedGain) ?? null,
+    needsRigidBorders,
+    endsDiffer,
     wallThicknessMm,
     goal,
     goalMet: result.goalMet === true,
@@ -484,11 +551,11 @@ async function ribsPlan(this: Session, input: Row, meta?: CallMeta): Promise<Row
   const joined = notWall(border.held);
   // The verify study carries what the plan carried: holds and loads left out under ifMissed stay out of it too.
   const kept = (rows: unknown, gone: readonly number[] | undefined) => (Array.isArray(rows) && gone?.length ? rows.filter((_, i) => !gone.includes(i)) : rows);
-  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, freeFaces: notWall(border.free), wallThicknessMm, planned: { peakFactor, stiffnessFactor }, fingerprint });
+  this.ribPlans.set(String(obj.id), { object: obj.id, node, request, ribs, stoppedEarly, holds: kept(input.holds, substituted?.holds), loads: kept(input.loads, substituted?.loads), wallFaces: wall.faces, joinedFaces: joined, freeFaces: notWall(border.free), wallThicknessMm, planned: { peakFactor, stiffnessFactor, needsRigidBorders }, fingerprint });
   const reply: Row = {
     ok: true,
     object: obj.id,
-    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, stiffnessFactor, peakFactor, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result), looseSentence((result.looseEnds as Row[] | undefined) ?? []), freeEnds)}`,
+    sentence: `${substituted ? `${substituted.sentence} ` : ""}${planSentence(ribs.length, stiffnessFactor, peakFactor, { mm3, grams: (mm3 / 1000) * density, percent: partVolume > 0 ? (100 * mm3) / partVolume : 0 }, stoppedEarly, result.goalMet === true, baselineSentence(result), looseSentence((result.looseEnds as Row[] | undefined) ?? [], ribs), freeEnds, needsRigidBorders)}`,
     plan,
     adds,
     wall: { ...wallReport(wall), borderFaces: { held: joined, free: notWall(border.free), allBorders: border.allBorders, means: "The faces the wall runs on into: held (across joined border spans, where the part's material continues) and free (only across free spans, such as an open hole's sides). ribs_apply {verify:true} holds the held ones when no holds were given, as the planner clamps the joined borders and leaves the free ones free." } },
@@ -565,6 +632,11 @@ async function ribsApply(this: Session, input: Row, meta?: CallMeta): Promise<Ro
   } else return refuse("bad-argument", "ribs_apply takes job (a finished ribs_plan job) or plan ({ribs}).");
   const obj = this.find(typeof input.object === "string" ? input.object : record.object);
   if (!obj) return refuse("no-object", UNKNOWN_OBJECT, undefined, NEXT.plate);
+  if (input.taperMm !== undefined) {
+    const mm = num(input.taperMm);
+    if (mm === undefined || mm < 0) return refuse("bad-argument", "taperMm is how long a rib end in the open wall takes to come down to it, mm (0 square).");
+    record = { ...record, taperMm: mm };
+  }
   return this.ribsApplyPlan(obj, record, input.verify === true, typeof input.label === "string" ? input.label : LABEL, ctx, 0);
 }
 
@@ -573,7 +645,7 @@ function plannedOf(plan: Row): Pick<PlanRecord, "wallThicknessMm" | "planned"> {
   const stiffness = num(plan.stiffnessFactor);
   return {
     wallThicknessMm: num(plan.wallThicknessMm) ?? null,
-    ...(stiffness !== undefined ? { planned: { peakFactor: num(plan.peakFactor) ?? peakFactorOf(plan.bare as Row | undefined, plan.ribbed as Row | undefined), stiffnessFactor: stiffness } } : {}),
+    ...(stiffness !== undefined ? { planned: { peakFactor: num(plan.peakFactor) ?? peakFactorOf(plan.bare as Row | undefined, plan.ribbed as Row | undefined), stiffnessFactor: stiffness, needsRigidBorders: plan.needsRigidBorders === true } } : {}),
   };
 }
 
@@ -614,9 +686,13 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     const width = num(row.width);
     if (width === undefined) return refuse("bad-rib-plan", `Rib ${i + 1} needs a width.`);
     const sections = Array.isArray(row.sections) && (row.sections as unknown[]).length === points.length - 1 ? (row.sections as Section[]) : undefined;
-    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}) });
+    const taper = taperPair(row.taperMm);
+    built.push({ points, heights, width, profile, fields, ...(sections ? { sections } : {}), ...(taper ? { taperMm: taper } : {}) });
   }
-  const op = ribNetOf(built, label, record.request);
+  // Free ends taper as the planner solved them (each rib's taperMm), else 3 × the height; a typed taper (ribs_apply
+  // taperMm, or rib.taperMm the plan was made with) sets every free end.
+  const typedTaper = record.taperMm ?? num((record.request.rib as Row | undefined)?.taperMm);
+  const op = ribNetOf(built, label, record.request, typedTaper !== undefined ? { taperMm: typedTaper } : {});
   if ("reason" in op) return refuse("bad-rib-plan", String(op.reason));
   const before = { volume: obj.solid.volumeMm3, positions: obj.solid.positions, faceOf: obj.solid.triangles };
   const filament = this.filament();
@@ -654,7 +730,11 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
   const lines = [`Built ${reply.paths} rib path${reply.paths === 1 ? "" : "s"} as one step, adding ${r(added, 0)} mm³ (${r((added / 1000) * density, 2)} g).`];
   const planned = record.planned;
   if (planned) lines.push(`Planned (shell model, relative): ${planned.peakFactor === null ? overallText(planned.stiffnessFactor) : `${peakText(planned.peakFactor)}; ${overallText(planned.stiffnessFactor)}`}.`);
-  if (hasFreeEnds(record.ribs as { ends?: unknown[] }[])) lines.push(FREE_END_LINE);
+  if (planned?.needsRigidBorders) lines.push(RIGID_BORDERS_LINE);
+  const tapered = (done.ribNet as Row | undefined)?.ends as Row | undefined;
+  // ribNet's own count of the ends it found free and tapered (it reads ends by rays; the plan by held vertices).
+  if (num(tapered?.tapered)) lines.push(`${taperedEndsText(Array.from({ length: num(tapered!.tapered)! }, () => null))}.`);
+  if (hasFreeEnds(record.ribs as { ends?: unknown[]; taperMm?: unknown[] }[])) lines.push(FREE_END_LINE);
   if (verify && study && studyBefore) {
     stage("verify: slicing and solving the ribbed part", 0.65);
     const mapped = this.ribsStudyAfter(study, before, { positions: after.positions, faceOf: after.triangles });

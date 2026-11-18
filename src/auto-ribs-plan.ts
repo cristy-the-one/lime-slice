@@ -79,6 +79,8 @@ export interface PlannedRib {
   volumeMm3: number;
   /** The compliance drop when it was added, as a share of the bare compliance. */
   gain: number;
+  /** The planner's taper at each end, mm (0 where the end is anchored): Apply builds a free end over it. */
+  taperMm?: [number, number];
 }
 
 export interface PlanResponse {
@@ -100,8 +102,16 @@ export interface RibPlanResult {
   grid: { reached: boolean; pitchMm: number; volumeMm3: number | null; gridVolumeMm3: number } | null;
   notBetterThanBaseline: boolean;
   stoppedEarly: boolean;
-  /** Rib ends left loose, each with why: a no-rib zone's border, or the budget. Every other end meets something. */
-  looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" }[];
+  /**
+   * Rib ends that meet nothing, each with why: kept in the open wall with a taper (`tapered`), or cut short at a no-rib
+   * zone's border or by the budget. Every other end meets something.
+   */
+  looseEnds?: { rib: number; end: number; reason: "noRibZone" | "budget" | "tapered" }[];
+  /** The worst-point figure, bare over ribbed greatest deflection, as the planner gives it. */
+  peakFactor?: number;
+  /** The same ribs with the wall's borders pinned; needsRigidBorders when most of the gain goes then. */
+  pinned?: { complianceFactor?: number; peakFactor?: number; needsRigidBorders?: boolean } | null;
+  needsRigidBorders?: boolean;
 }
 
 /** `WireGoal`. */
@@ -228,6 +238,7 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       lengthMm: num(rib.lengthMm),
       volumeMm3: num(rib.volumeMm3),
       gain: num(rib.gain),
+      ...(Array.isArray(rib.taperMm) && rib.taperMm.length === 2 ? { taperMm: [num(rib.taperMm[0]), num(rib.taperMm[1])] as [number, number] } : {}),
     };
   });
   const response = (v: unknown): PlanResponse => ({ compliance: num((v as Row | null)?.compliance), maxDeflectionMm: num((v as Row | null)?.maxDeflectionMm) });
@@ -246,7 +257,10 @@ export function readPlan(row: Row | null | undefined): PlanReply {
       grid: grid ? { reached: grid.reached === true, pitchMm: num(grid.pitchMm), volumeMm3: typeof grid.volumeMm3 === "number" ? grid.volumeMm3 : null, gridVolumeMm3: num(grid.gridVolumeMm3) } : null,
       notBetterThanBaseline: row.notBetterThanBaseline === true,
       stoppedEarly: row.stoppedEarly === true,
-      looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : "noRibZone" })),
+      looseEnds: (Array.isArray(row.looseEnds) ? (row.looseEnds as Row[]) : []).map((l) => ({ rib: num(l.rib), end: num(l.end), reason: l.reason === "budget" ? "budget" : l.reason === "tapered" ? "tapered" : "noRibZone" })),
+      ...(typeof row.peakFactor === "number" && Number.isFinite(row.peakFactor) ? { peakFactor: row.peakFactor } : {}),
+      ...(row.pinned && typeof row.pinned === "object" ? { pinned: row.pinned as RibPlanResult["pinned"] } : {}),
+      needsRigidBorders: row.needsRigidBorders === true,
     },
   };
 }
@@ -323,6 +337,10 @@ export interface FakeKnobs {
   tickMs?: number;
   beatsNeither?: boolean;
   refuse?: string;
+  /** The plan's gain mostly goes with its borders pinned: needsRigidBorders. */
+  needsRigidBorders?: boolean;
+  /** Each rib's first end stops in the open wall, tapered over 3 × its height (a "tapered" loose end). */
+  taperedEnds?: boolean;
 }
 
 type V2 = [number, number];
@@ -531,17 +549,25 @@ export function fakePlanSource(knobs: () => FakeKnobs = () => ({})): PlanSource 
         const ribs: PlannedRib[] = [...live.values()].map((row) => {
           let length = 0;
           for (let i = 1; i < row.points.length; i += 1) length += norm(sub(row.points[i]!, row.points[i - 1]!));
-          return { points: row.points, heights: row.heights, width, height: Math.max(...row.heights), sections: row.heights.map(() => ({ profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1 };
+          const height = Math.max(...row.heights);
+          return { points: row.points, heights: row.heights, width, height, sections: row.heights.map(() => ({ profile, width })), lengthMm: r3(length), volumeMm3: r3(volumeOf(row.points, row.heights, width)), gain: 0.1, taperMm: set.taperedEnds ? [r3(3 * height), 0] : [0, 0] };
         });
         const volume = totals().ribVolumeMm3;
         const thin = set.beatsNeither ? 0.8 : 1.9;
         const gridShare = set.beatsNeither ? 0.9 : 1.35;
+        // The worst point gains less than the wall overall, as on real walls.
+        const peak = r3(factor ** 0.9);
+        const pinnedFactor = set.needsRigidBorders ? r3(1 + (factor - 1) * 0.1) : r3(1 + (factor - 1) * 0.95);
         return {
           ribs,
           ribVolumeMm3: volume,
           bare: { compliance: 1, maxDeflectionMm: bareDeflection },
-          ribbed: { compliance: r3(1 / factor), maxDeflectionMm: r3(bareDeflection / factor) },
+          ribbed: { compliance: r3(1 / factor), maxDeflectionMm: r3(bareDeflection / peak) },
           stiffnessFactor: r3(factor),
+          peakFactor: peak,
+          pinned: { complianceFactor: pinnedFactor, needsRigidBorders: !!set.needsRigidBorders },
+          needsRigidBorders: !!set.needsRigidBorders,
+          ...(set.taperedEnds ? { looseEnds: ribs.map((_, i) => ({ rib: i, end: 0, reason: "tapered" as const })) } : {}),
           goalMet,
           thickening: stopped ? null : { addedThicknessMm: 0.4, addedVolumeMm3: r3(volume * thin) },
           grid: stopped ? null : { reached: true, pitchMm: Math.max(body.rules.minSpacing, 5), volumeMm3: r3(volume * gridShare), gridVolumeMm3: r3(volume * gridShare) },

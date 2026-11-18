@@ -13,7 +13,7 @@
  *
  * Shared module: no Node builtins, no DOM, no MCP session. Same input, same output.
  */
-import { RibSurface, ribNetPlan, ribShape, type RibProfileKind } from "./rib-net.ts";
+import { RibSurface, ribNetPlan, ribShape, type RibEndKind, type RibProfileKind } from "./rib-net.ts";
 import { ribPathsFromPlan, type RibWall, type RibWallSolid } from "./rib-wall.ts";
 
 type V3 = [number, number, number];
@@ -250,6 +250,8 @@ export interface BuiltRib {
   fields?: ProfileFields;
   /** One per stretch, as the planner gives them; absent, every stretch is `profile` with `fields`. */
   sections?: Section[];
+  /** The planner's taper at each end, mm (0 where it anchors the end): what its figures were solved with. */
+  taperMm?: [number, number];
 }
 
 const sectionKey = (s: Section | undefined) => (s ? JSON.stringify([s.profile, s.width, s.draftDeg, s.rootRadius, s.flangeWidth, s.flangeThickness, s.flangeChamferDeg]) : "");
@@ -349,23 +351,56 @@ export function fitFlanges(points: readonly V3[], normals: readonly V3[], height
  * The ribNet op for a set of ribs: a path per run of one height and section. A run with no height left (under 0.1 mm)
  * is left out. Refused in a sentence when it would take more than ribNet's 400 paths.
  */
-export function ribNetOf(ribs: readonly BuiltRib[], label: string, auto: unknown): Record<string, unknown> | { reason: string } {
+export function ribNetOf(ribs: readonly BuiltRib[], label: string, auto: unknown, options: RibNetOptions = {}): Record<string, unknown> | { reason: string } {
+  const made = ribNetWithOrigin(ribs, label, auto, options);
+  return "reason" in made ? made : made.op;
+}
+
+/** How a plan's ribs are built: `taperMm` overrides every free end's taper (mm, 0 square). */
+export interface RibNetOptions {
+  taperMm?: number;
+}
+
+/** A free rib end's taper by default: three times the rib's height (docs/plan-auto-ribs.md 9.1), as the planner models it. */
+export const END_TAPER_TIMES_HEIGHT = 3;
+
+/**
+ * The taper a rib's own end is built with if ribNet finds it free: the typed override, else the planner's (`taperMm`,
+ * the one its figures were solved with), else three times the height there. The planner gives 0 at an end it anchors; if
+ * ribNet finds nothing there to run into, the end still tapers by the default rule rather than stand square.
+ */
+function endTaperOf(rib: BuiltRib, side: 0 | 1, height: number, options: RibNetOptions): number {
+  if (options.taperMm !== undefined) return options.taperMm;
+  const planned = rib.taperMm?.[side];
+  return planned !== undefined && planned > 0 ? planned : END_TAPER_TIMES_HEIGHT * height;
+}
+
+/** The ribNet op and, per path, the rib it came from and whether it holds the rib's first or last point. */
+export function ribNetWithOrigin(ribs: readonly BuiltRib[], label: string, auto: unknown, options: RibNetOptions = {}): { op: Record<string, unknown>; origin: { rib: number; first: boolean; last: boolean }[] } | { reason: string } {
   const paths: Record<string, unknown>[] = [];
-  for (const rib of ribs) {
-    for (const piece of splitByHeight(rib.points, rib.heights, 0.05, rib.sections)) {
-      if (!(piece.height >= 0.1)) continue;
+  const origin: { rib: number; first: boolean; last: boolean }[] = [];
+  ribs.forEach((rib, ri) => {
+    const pieces = splitByHeight(rib.points, rib.heights, 0.05, rib.sections).filter((piece) => piece.height >= 0.1);
+    pieces.forEach((piece, k) => {
       const section: Section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
       // A stretch too low for its root and flange is built straight, as the planner solved it.
       const built: Section = piece.height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
-      paths.push({ points: piece.points, height: Math.round(piece.height * 1e4) / 1e4, ...built });
-    }
-  }
+      const first = k === 0;
+      const last = k === pieces.length - 1;
+      // Each end of the rib its own taper; ends between pieces meet as joints (null: the network's, if ever free).
+      const taperMm = [first ? r4(endTaperOf(rib, 0, piece.height, options)) : null, last ? r4(endTaperOf(rib, 1, piece.height, options)) : null];
+      paths.push({ points: piece.points, height: r4(piece.height), ...built, taperMm });
+      origin.push({ rib: ri, first, last });
+    });
+  });
   if (paths.length === 0) return { reason: "The plan has no rib tall enough to build (every stretch is under 0.1 mm)." };
   if (paths.length > 400) return { reason: `The plan splits into ${paths.length} runs of one height; a rib network takes at most 400. Plan with fewer ribs (a budget or a lighter goal), or fewer height caps.` };
   const width = Math.max(...paths.map((row) => row.width as number));
   const height = Math.max(...paths.map((row) => row.height as number));
-  return { kind: "ribNet", label, width, height, paths, ...(auto === undefined ? {} : { auto }) };
+  return { op: { kind: "ribNet", label, width, height, paths, ...(auto === undefined ? {} : { auto }) }, origin };
 }
+
+const r4 = (n: number) => Math.round(n * 1e4) / 1e4;
 
 /**
  * Faces of one solid named again on another made from it (a rib step splits a floor into strips and renumbers): each
@@ -598,6 +633,8 @@ export interface FaceRib {
   teeMm?: number;
   /** How far each end was drawn back from a free edge, mm, when either was. */
   trimmedMm?: [number, number];
+  /** The planner's taper at each end, mm (0 where it anchors the end), carried to ribNet. */
+  taperMm?: [number, number];
   why: string;
 }
 
@@ -608,6 +645,7 @@ export interface PlanRibIn {
   sections?: Section[];
   width?: number;
   height?: number;
+  taperMm?: [number, number];
 }
 
 /**
@@ -645,6 +683,7 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
       profile: kinds.length === 1 ? kinds[0]! : kinds.join("+"),
       ...(tee ? { flangeChamferDeg: tee.flangeChamferDeg ?? 45, teeMm: length("tee") } : {}),
       ...(cut ? { trimmedMm: trimmed.trimmedMm } : {}),
+      ...(row.taperMm ? { taperMm: row.taperMm } : {}),
       why,
     };
   });
@@ -656,12 +695,28 @@ export function ribsOnFace(solid: RibWallSolid, wall: Pick<RibWall, "request" | 
  * skipped stretches, ends run into a wall or a rib left out, crossings counted once). Null when ribNet would refuse
  * them. The planner's own volume is the network on the mid-surface before any of that.
  */
-export function builtVolumeOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, "points" | "heights" | "sections" | "width">[]): number | null {
-  const built: BuiltRib[] = ribs.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: rib.sections[0]?.profile ?? "straight", sections: rib.sections }));
-  const op = ribNetOf(built, "estimate", undefined);
-  if ("reason" in op) return null;
-  const plan = ribNetPlan(op, { positions: solid.positions, faceOf: solid.faceOf });
-  return "reason" in plan ? null : plan.volumeMm3;
+export function builtVolumeOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, "points" | "heights" | "sections" | "width" | "taperMm">[], options: RibNetOptions = {}): number | null {
+  return builtPlanOf(solid, ribs, options)?.volumeMm3 ?? null;
+}
+
+/**
+ * ribNet's plan of a plan's ribs on this solid: the volume they add as built, and what ribNet finds at each rib's own
+ * two ends (a wall, a joint with another rib, or free: then it tapers). Null when ribNet would refuse them.
+ */
+export function builtPlanOf(solid: RibWallSolid, ribs: readonly Pick<FaceRib, "points" | "heights" | "sections" | "width" | "taperMm">[], options: RibNetOptions = {}): { volumeMm3: number; ends: [RibEndKind | null, RibEndKind | null][] } | null {
+  const built: BuiltRib[] = ribs.map((rib) => ({ points: rib.points, heights: rib.heights, width: rib.width, profile: rib.sections[0]?.profile ?? "straight", sections: rib.sections, ...(rib.taperMm ? { taperMm: rib.taperMm } : {}) }));
+  const made = ribNetWithOrigin(built, "estimate", undefined, options);
+  if ("reason" in made) return null;
+  const plan = ribNetPlan(made.op, { positions: solid.positions, faceOf: solid.faceOf });
+  if ("reason" in plan) return null;
+  const ends: [RibEndKind | null, RibEndKind | null][] = ribs.map(() => [null, null]);
+  made.origin.forEach((o, i) => {
+    const at = plan.pathEnds[i];
+    if (!at) return;
+    if (o.first) ends[o.rib]![0] = at[0];
+    if (o.last) ends[o.rib]![1] = at[1];
+  });
+  return { volumeMm3: plan.volumeMm3, ends };
 }
 
 /** The planner's profile on the wire (`WireProfile`) for what was asked, the process and the flange that prints here. */
@@ -743,9 +798,26 @@ export function overallText(factor: number): string {
   return `${timesText(factor)} as stiff overall (${WALL_ALONE})`;
 }
 
-/** Whether any rib of a plan ends free (in mid-wall, not at a border, a hold or another rib). */
-export function hasFreeEnds(ribs: readonly { ends?: readonly unknown[] | null }[]): boolean {
-  return ribs.some((rib) => Array.isArray(rib.ends) && rib.ends.some((end) => end === "free"));
+/** Whether any rib of a plan ends free (in mid-wall, not at a border, a hold or another rib): named so, or tapered. */
+export function hasFreeEnds(ribs: readonly { ends?: readonly unknown[] | null; taperMm?: readonly unknown[] | null }[]): boolean {
+  return ribs.some((rib) => (Array.isArray(rib.ends) && rib.ends.some((end) => end === "free")) || (Array.isArray(rib.taperMm) && rib.taperMm.some((mm) => typeof mm === "number" && mm > 0)));
+}
+
+/** The line a plan carries when its gain mostly goes once the wall's borders may turn (the planner's needsRigidBorders). */
+export const RIGID_BORDERS_LINE = "These ribs work only if the wall is rigidly built into the walls around it.";
+
+/**
+ * Rib ends the planner keeps in the open wall, said as what they are: "2 rib ends stop in the open wall, tapered over
+ * 18 mm" (or "over 9 to 18 mm"), no full stop. Unknown tapers (null) are left out of the length.
+ */
+export function taperedEndsText(tapers: readonly (number | null)[]): string {
+  const n = tapers.length;
+  const known = tapers.filter((mm): mm is number => mm !== null && mm > 0);
+  const lo = Math.min(...known);
+  const hi = Math.max(...known);
+  const mm = (v: number) => `${Math.round(v * 10) / 10}`;
+  const over = known.length === 0 ? "tapered" : hi - lo < 0.05 ? `tapered over ${mm(hi)} mm` : `tapered over ${mm(lo)} to ${mm(hi)} mm`;
+  return `${n} rib end${n === 1 ? " stops" : "s stop"} in the open wall, ${over}`;
 }
 
 /** One side of a sliced check: what the study answered. */
