@@ -581,6 +581,8 @@ interface Sample {
   p: V3;
   n: V3;
   face: number;
+  /** The typed height here (a path's `heights`), when it has one. */
+  cap?: number;
 }
 
 /** A stretch of one path that will become one or more lofts. */
@@ -712,8 +714,25 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
     const lateralAt = [...new Set([-shape.reach, -shape.foot, 0, shape.foot, shape.reach])];
     const minHeight = Math.min(h, Math.max(0.5, h * 0.25));
     const maxStep = Math.max(1, Math.min(4, 2 * w));
+    // --- Heights per stretch, when typed: the rib changes height along one run (a ramp over a sample's step at each
+    // change, the lower height on the point where it changes), never more than `height`.
+    let stretchHeights: number[] | null = null;
+    if (path.heights !== undefined) {
+      const hs = path.heights;
+      if (!Array.isArray(hs) || hs.length !== path.points.length - 1 || !hs.every((x) => typeof x === "number" && Number.isFinite(x) && x >= 0.1 && x <= h + 1e-9)) {
+        return { reason: `${name}: heights is one height per stretch between points (${path.points.length - 1} here), each from 0.1 mm to the path's height (${r2(h)} mm).` };
+      }
+      stretchHeights = hs as number[];
+    }
+    const pointCap = (k: number): number | undefined => {
+      if (!stretchHeights) return undefined;
+      const before = k > 0 ? stretchHeights[k - 1]! : Infinity;
+      const after = k < stretchHeights.length ? stretchHeights[k]! : Infinity;
+      return Math.min(before, after);
+    };
     // --- Snap each typed point; a point off the surface is refused with where it is.
     const typed: Sample[] = [];
+    const typedStretch: number[] = [];
     // A first point on an edge (a floor's corner with a wall) keeps to the face the path goes on along: the one whose
     // normal the second point's face shares.
     const second = readPoint(path.points[1]);
@@ -724,28 +743,33 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
       const prev = typed[typed.length - 1];
       const hit = surface.closest(p, SNAP_MM, prev?.n ?? lead);
       if (!hit) return { reason: `${name}, point ${k + 1} (${at2(p).join(", ")}) is more than ${SNAP_MM} mm from the part's surface. Put the points on the face the rib stands on; surface_at gives points on it.` };
-      if (prev && len(sub(hit.point, prev.p)) < 1e-4) continue;
-      typed.push({ p: hit.point, n: hit.normal, face: hit.face });
+      const cap = pointCap(k);
+      if (prev && len(sub(hit.point, prev.p)) < 1e-4) {
+        if (cap !== undefined) prev.cap = Math.min(prev.cap ?? Infinity, cap);
+        continue;
+      }
+      typed.push({ p: hit.point, n: hit.normal, face: hit.face, ...(cap !== undefined ? { cap } : {}) });
+      typedStretch.push(k);
     }
     if (typed.length < 2) return { reason: `${name}'s points all land on one spot of the surface.` };
     // --- Resample: halve each stretch until it is short, follows the surface within the chord tolerance, and turns
-    // little in normal. A midpoint snaps to the surface with the normal the stretch's ends share.
+    // little in normal. A midpoint snaps to the surface with the normal the stretch's ends share, and its height.
     const samples: Sample[] = [typed[0]!];
-    const refine = (a: Sample, b: Sample, depth: number) => {
+    const refine = (a: Sample, b: Sample, depth: number, hk: number | undefined) => {
       const span = len(sub(b.p, a.p));
       const mid = lerp(a.p, b.p, 0.5);
       const m = span > 1e-3 ? surface.closest(mid, Math.max(SNAP_MM, span), unit(add(a.n, b.n))) : null;
       const err = m ? len(sub(m.point, mid)) : 0;
       const turn = angleDeg(a.n, b.n);
       if (m && depth < 16 && span > 0.05 && (span > maxStep || err > chordTol || turn > TURN_DEG)) {
-        const ms: Sample = { p: m.point, n: m.normal, face: m.face };
-        refine(a, ms, depth + 1);
-        refine(ms, b, depth + 1);
+        const ms: Sample = { p: m.point, n: m.normal, face: m.face, ...(hk !== undefined ? { cap: hk } : {}) };
+        refine(a, ms, depth + 1, hk);
+        refine(ms, b, depth + 1, hk);
         return;
       }
       if (len(sub(b.p, samples[samples.length - 1]!.p)) > 1e-4) samples.push(b);
     };
-    for (let k = 1; k < typed.length; k += 1) refine(typed[k - 1]!, typed[k]!, 0);
+    for (let k = 1; k < typed.length; k += 1) refine(typed[k - 1]!, typed[k]!, 0, stretchHeights ? stretchHeights[typedStretch[k]! - 1] : undefined);
     if (samples.length < 2) return { reason: `${name} has no length on the surface.` };
     // --- Split where the path turns too sharply for a mitre: two runs that meet there, each ending in a joint.
     const pieces: Sample[][] = [[samples[0]!]];
@@ -763,6 +787,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
       if (piece.length < 2) continue;
       // --- Room and wall at each sample: rays along the normal for the height, against it for the wall under the sink.
       const caps: number[] = [];
+      const typedCaps: number[] = [];
       // Where a root's foot or a drafted base would stand over no wall (a ledge's edge, a wall curving away).
       const overhung: (V3 | null)[] = [];
       const across: V3[] = [];
@@ -805,6 +830,7 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
         }
         overhung.push(hangs);
         caps.push(Math.min(h, room - clearance));
+        typedCaps.push(s.cap ?? Infinity);
         if (Number.isFinite(wall)) {
           if (wall < sink + MIN_SKIN && (!thinnest || wall < thinnest.wall)) thinnest = { at: s.p, wall, path: pi + 1 };
           // --- From beyond the far side of the wall back toward the rib: what this ray meets now must not come closer.
@@ -822,7 +848,8 @@ function planOf(raw: Record<string, unknown>, input: RibSurfaceInput | null): Ri
           const start = k;
           while (k < piece.length && caps[k]! >= minHeight) k += 1;
           const kept = piece.slice(start, k);
-          const heights = caps.slice(start, k);
+          // The room caps the typed height; only the room decides what is left out or reported shortened.
+          const heights = caps.slice(start, k).map((cap, j) => Math.min(cap, typedCaps[start + j]!));
           const hung = overhung.slice(start, k).find((q) => q !== null);
           if (hung && kept.length >= 2) {
             return { reason: `${name} near (${at2(hung).join(", ")}): the rib's ${r2(2 * shape.foot)} mm footprint (its ${profile.rootRadius > 0 ? `${r2(profile.rootRadius)} mm root` : "drafted base"}) runs off the wall there, so its edge would stand in the air. Give a smaller rootRadius${profile.kind === "drafted" ? " or draftDeg" : ""}, or keep the path further from the wall's edge. Nothing was built.` };

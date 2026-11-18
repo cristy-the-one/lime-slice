@@ -115,7 +115,7 @@ function addedAsPlanned(title: string, done: Reply, applied: Reply) {
   const measured = Number(applied.added?.mm3);
   const off = (x: number) => `${x >= measured ? "+" : ""}${Math.round((1000 * (x - measured)) / measured) / 10} %`;
   volumeRows.push(`${title}: measured ${r3(measured)} mm³; estimate ${estimate} (${off(estimate)}); the planner's own ${planner} (${off(planner)})`);
-  check(`${title}: the plan's added volume is the built one within 5 % (estimate ${estimate}, measured ${r3(measured)} mm³)`, measured > 0 && Math.abs(estimate - measured) <= 0.05 * measured, JSON.stringify({ adds: done.adds, added: applied.added }));
+  check(`${title}: the plan's added volume is the built one within 5 % (estimate ${estimate}, measured ${r3(measured)} mm³)`, measured > 0 && Math.abs(estimate - measured) <= 0.05 * measured, JSON.stringify({ adds: done.adds, added: applied.added, paths: applied.paths, ribNet: applied.ribNet, leftOut: applied.leftOut, leftOutNote: applied.leftOutNote, skipped: applied.skipped, ribs: (done.plan?.ribs as Reply[] | undefined)?.map((rib) => ({ points: rib.points, heights: rib.heights, ends: rib.ends, trimmedMm: rib.trimmedMm })) }));
 }
 async function historyCount(object: string): Promise<number> {
   return (((await call("model_history", { object })).nodes ?? []) as unknown[]).length;
@@ -371,7 +371,7 @@ let boxObject = "";
   }
   check(`ribs under the block are capped: ${underStretches} stretches, tallest ${r3(tallest)} mm`, underStretches > 0 && tallest <= 3 + 0.05, JSON.stringify({ underStretches, tallest }));
   const applied = await call("ribs_apply", { job: done.job });
-  check("the capped plan applies, split where the height changes", applied.ok === true && applied.paths > done.plan.ribs.length, JSON.stringify(applied).slice(0, 600));
+  check("the capped plan applies, a straight rib one path through its height change (no runs meeting end to end)", applied.ok === true && applied.paths === done.plan.ribs.length && applied.ribNet?.ends?.joint === 0, JSON.stringify(applied).slice(0, 600));
   const down: { point: V3; direction: V3 }[] = [];
   for (const x of steps(bb.min[0] + 1, bb.max[0] - 1, 41)) for (const y of steps(bb.min[1] + 1, bb.max[1] - 1, 21)) down.push({ point: [x, y, 5.9], direction: [0, 0, -1] });
   const hits = await rays(object, down);

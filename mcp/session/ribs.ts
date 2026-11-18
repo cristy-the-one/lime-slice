@@ -723,6 +723,8 @@ async function ribsApplyPlan(this: Session, obj: PlateObject, record: PlanRecord
     label: done.label ?? label,
     paths: (op as Row & { paths: unknown[] }).paths.length,
     ribNet: done.ribNet,
+    ...(done.leftOut ? { leftOut: done.leftOut, leftOutNote: done.leftOutNote } : {}),
+    ...(done.skipped ? { skipped: done.skipped, missedNote: done.missedNote } : {}),
     added: { mm3: r(added, 2), grams: r((added / 1000) * density, 3), percent: before.volume > 0 ? r((100 * added) / before.volume, 3) : null, densityGCm3: density },
     check: { before: checkNumbers(checkBefore), after: checkNumbers(checkAfter), printer: this.printer().name },
     undo: "model_undo takes the whole network back as one step.",

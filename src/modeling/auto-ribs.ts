@@ -380,16 +380,34 @@ export function ribNetWithOrigin(ribs: readonly BuiltRib[], label: string, auto:
   const paths: Record<string, unknown>[] = [];
   const origin: { rib: number; first: boolean; last: boolean }[] = [];
   ribs.forEach((rib, ri) => {
-    const pieces = splitByHeight(rib.points, rib.heights, 0.05, rib.sections).filter((piece) => piece.height >= 0.1);
-    pieces.forEach((piece, k) => {
+    // A plain (straight) section keeps one path through its height changes, its heights per stretch: separate paths
+    // meeting end to end in a straight line overlap with coincident faces, and a kernel fuse of those lost whole runs
+    // on one platform (Linux CI built 640 of 997 mm³). A root or flange still splits where the height changes.
+    const pieces = splitByHeight(rib.points, rib.heights, 0.05, rib.sections);
+    const merged: { points: V3[]; heights: number[]; section?: Section }[] = [];
+    for (const piece of pieces) {
+      const section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
+      const plain = section.profile === "straight" && !(section.rootRadius && section.rootRadius > 0);
+      const last = merged[merged.length - 1];
+      const hs = piece.points.slice(1).map(() => piece.height);
+      if (last && plain && sectionKey(last.section) === sectionKey(piece.section) && piece.height >= 0.1 && last.heights.every((x) => x >= 0.1)) {
+        last.points.push(...piece.points.slice(1));
+        last.heights.push(...hs);
+      } else merged.push({ points: piece.points.map((p) => [...p] as V3), heights: hs, ...(piece.section ? { section: piece.section } : {}) });
+    }
+    const kept = merged.filter((piece) => piece.heights.reduce((most, x) => Math.max(most, x), 0) >= 0.1);
+    kept.forEach((piece, k) => {
+      const height = piece.heights.reduce((most, x) => Math.max(most, x), 0);
       const section: Section = piece.section ?? { profile: rib.profile, width: rib.width, ...(rib.fields ?? {}) };
       // A stretch too low for its root and flange is built straight, as the planner solved it.
-      const built: Section = piece.height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
+      const built: Section = height >= sectionLeast(section) ? section : { profile: "straight", width: section.width };
+      const varies = piece.heights.some((x) => Math.abs(x - height) > 1e-9);
       const first = k === 0;
-      const last = k === pieces.length - 1;
-      // Each end of the rib its own taper; ends between pieces meet as joints (null: the network's, if ever free).
-      const taperMm = [first ? r4(endTaperOf(rib, 0, piece.height, options)) : null, last ? r4(endTaperOf(rib, 1, piece.height, options)) : null];
-      paths.push({ points: piece.points, height: r4(piece.height), ...built, taperMm });
+      const last = k === kept.length - 1;
+      // The rib's own two ends each get their taper (used only where ribNet finds the end free); ends between pieces
+      // meet as joints (null: the network's taper, if ever free).
+      const taperMm = [first ? r4(endTaperOf(rib, 0, piece.heights[0]!, options)) : null, last ? r4(endTaperOf(rib, 1, piece.heights[piece.heights.length - 1]!, options)) : null];
+      paths.push({ points: piece.points, height: r4(height), ...(varies ? { heights: piece.heights.map(r4) } : {}), ...built, taperMm });
       origin.push({ rib: ri, first, last });
     });
   });
